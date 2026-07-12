@@ -1210,12 +1210,14 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // load of this game would use (one copy per game, not two).
       const url = payload.url;
 
-      // DEV: stream on-demand straight off the dev server via synchronous XHR range
-      // reads (SyncHttpRangeSource) — instant start, NO blocking OPFS full-copy (the slow
-      // part of opening a fresh multi-GB bundle). Gated on the server honoring Range:
-      // create() probes for 206, so a server that ignores it throws and we fall through
-      // to the OPFS-staging path below, unchanged.
-      if (import.meta.env?.DEV) {
+      // Stream the bundle on demand instead of a full OPFS download — instant start,
+      // NO blocking multi-GB copy (a 1.6 GB game boots after fetching just what the
+      // boot path reads). Needs cross-origin isolation for the SAB I/O worker (prod
+      // Pages sets COOP/COEP; the dev server too) and a Range-honoring origin (the R2
+      // Pages Function serves 206). create() probes both, so any failure throws and we
+      // fall through to the OPFS-download/staging path below, unchanged.
+      const streamCapable = (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+      if (streamCapable) {
         try {
           // Preferred: serve the guest's synchronous reads from a dedicated I/O
           // worker over a SharedArrayBuffer. The I/O worker owns the network,
@@ -1229,10 +1231,10 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             sabIo = await SabIoSource.create(url);
             src = sabIo;
             (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = src;
-            Logger.log(LogCategory.SYSTEM, `WGB: dev-streaming "${url}" via SAB I/O worker (parallel prefetch)`);
+            Logger.log(LogCategory.SYSTEM, `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`);
           } catch (sabErr) {
             src = await SyncHttpRangeSource.create(url);
-            Logger.log(LogCategory.SYSTEM, `WGB: SAB I/O unavailable (${(sabErr as Error).message}) — dev-streaming via sync-XHR range`);
+            Logger.log(LogCategory.SYSTEM, `WGB: SAB I/O unavailable (${(sabErr as Error).message}) — streaming via sync-XHR range`);
           }
           self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Streaming" });
           try {
@@ -1245,7 +1247,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             throw loadErr;
           }
         } catch (e) {
-          Logger.log(LogCategory.SYSTEM, `WGB: dev sync-stream unavailable (${(e as Error).message}) — staging to OPFS`);
+          Logger.log(LogCategory.SYSTEM, `WGB: sync-stream unavailable (${(e as Error).message}) — staging to OPFS`);
         }
       }
 
