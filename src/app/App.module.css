@@ -30,6 +30,13 @@
   touch-action: none;
   position: relative;
   z-index: 1;
+  /* The canvas is programmatically focused (tabIndex -1) to capture keyboard input;
+     suppress the browser focus ring — it's just visual noise around the game. */
+  outline: none;
+}
+.app__canvas:focus,
+.app__canvas:focus-visible {
+  outline: none;
 }
 
 .app__canvas--pixelated {
