@@ -1,0 +1,319 @@
+{
+  "source": "objbase.h",
+  "generated": "2026-01-19T08:18:38.647Z",
+  "module": "ole32",
+  "functions": [
+    {
+      "name": "_CoBuildVersion@0",
+      "argCount": 0,
+      "signature": "DWORD CoBuildVersion()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_CoInitializeEx@8",
+      "argCount": 2,
+      "signature": "HRESULT CoInitializeEx(_In_opt_ LPVOID, _In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoUninitialize@0",
+      "argCount": 0,
+      "signature": "void CoUninitialize()",
+      "returnType": "void"
+    },
+    {
+      "name": "_CoGetCurrentProcess@0",
+      "argCount": 0,
+      "signature": "DWORD CoGetCurrentProcess()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_CoGetCurrentLogicalThreadId@4",
+      "argCount": 1,
+      "signature": "HRESULT CoGetCurrentLogicalThreadId(_Out_ GUID *id)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetApartmentType@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetApartmentType(_Out_ APTTYPE *type, _Out_ APTTYPEQUALIFIER *qualifier)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoLoadLibrary@8",
+      "argCount": 2,
+      "signature": "HINSTANCE CoLoadLibrary(_In_ LPOLESTR, _In_ BOOL)",
+      "returnType": "HINSTANCE"
+    },
+    {
+      "name": "_CoFreeAllLibraries@0",
+      "argCount": 0,
+      "signature": "void CoFreeAllLibraries()",
+      "returnType": "void"
+    },
+    {
+      "name": "_CoFreeLibrary@4",
+      "argCount": 1,
+      "signature": "void CoFreeLibrary(_In_ HINSTANCE)",
+      "returnType": "void"
+    },
+    {
+      "name": "_CoFreeUnusedLibraries@0",
+      "argCount": 0,
+      "signature": "void CoFreeUnusedLibraries()",
+      "returnType": "void"
+    },
+    {
+      "name": "_CoFreeUnusedLibrariesEx@8",
+      "argCount": 2,
+      "signature": "void CoFreeUnusedLibrariesEx(_In_ DWORD, _In_ DWORD)",
+      "returnType": "void"
+    },
+    {
+      "name": "_CoGetMalloc@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetMalloc(_In_ DWORD, _Outptr_ LPMALLOC *lpMalloc)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterMallocSpy@4",
+      "argCount": 1,
+      "signature": "HRESULT CoRegisterMallocSpy(_In_ LPMALLOCSPY)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRevokeMallocSpy@0",
+      "argCount": 0,
+      "signature": "HRESULT CoRevokeMallocSpy()",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetClassObject@20",
+      "argCount": 5,
+      "signature": "HRESULT CoGetClassObject(_In_ REFCLSID, _In_ DWORD, _In_opt_ COSERVERINFO *pServerInfo, _In_ REFIID, _Outptr_ LPVOID *ppv)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterClassObject@20",
+      "argCount": 5,
+      "signature": "HRESULT CoRegisterClassObject(_In_ REFCLSID, _In_ LPUNKNOWN, _In_ DWORD, _In_ DWORD, _Out_ LPDWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRevokeClassObject@4",
+      "argCount": 1,
+      "signature": "HRESULT CoRevokeClassObject(_In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetPSClsid@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetPSClsid(_In_ REFIID, _Out_ CLSID *pclsid)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterPSClsid@8",
+      "argCount": 2,
+      "signature": "HRESULT CoRegisterPSClsid(_In_ REFIID, _In_ REFCLSID)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoAddRefServerProcess@0",
+      "argCount": 0,
+      "signature": "ULONG CoAddRefServerProcess()",
+      "returnType": "ULONG"
+    },
+    {
+      "name": "_CoReleaseServerProcess@0",
+      "argCount": 0,
+      "signature": "ULONG CoReleaseServerProcess()",
+      "returnType": "ULONG"
+    },
+    {
+      "name": "_CoCreateFreeThreadedMarshaler@8",
+      "argCount": 2,
+      "signature": "HRESULT CoCreateFreeThreadedMarshaler(_In_opt_ LPUNKNOWN, _Outptr_ LPUNKNOWN *ppunkMarshal)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetInterfaceAndReleaseStream@12",
+      "argCount": 3,
+      "signature": "HRESULT CoGetInterfaceAndReleaseStream(_In_ LPSTREAM, _In_ REFIID, _Outptr_ LPVOID *ppv)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetMarshalSizeMax@24",
+      "argCount": 6,
+      "signature": "HRESULT CoGetMarshalSizeMax(_Out_ ULONG *pulSize, _In_ REFIID, _In_ LPUNKNOWN, _In_ DWORD, _In_opt_ LPVOID, _In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetStandardMarshal@24",
+      "argCount": 6,
+      "signature": "HRESULT CoGetStandardMarshal(_In_ REFIID, _In_ LPUNKNOWN, _In_ DWORD, _In_opt_ LPVOID, _In_ DWORD, _Outptr_ LPMARSHAL *ppMarshal)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoMarshalHresult@8",
+      "argCount": 2,
+      "signature": "HRESULT CoMarshalHresult(_In_ LPSTREAM, _In_ HRESULT)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoMarshalInterface@24",
+      "argCount": 6,
+      "signature": "HRESULT CoMarshalInterface(_In_ LPSTREAM, _In_ REFIID, _In_ LPUNKNOWN, _In_ DWORD, _In_opt_ LPVOID, _In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoMarshalInterThreadInterfaceInStream@12",
+      "argCount": 3,
+      "signature": "HRESULT CoMarshalInterThreadInterfaceInStream(_In_ REFIID, _In_ LPUNKNOWN, _Outptr_ LPSTREAM *ppStm)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoDisconnectObject@8",
+      "argCount": 2,
+      "signature": "HRESULT CoDisconnectObject(_In_ LPUNKNOWN, _In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoUnmarshalHresult@8",
+      "argCount": 2,
+      "signature": "HRESULT CoUnmarshalHresult(_In_ LPSTREAM, _Out_ HRESULT *phresult)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoUnmarshalInterface@12",
+      "argCount": 3,
+      "signature": "HRESULT CoUnmarshalInterface(_In_ LPSTREAM, _In_ REFIID, _Outptr_ LPVOID *ppv)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoLockObjectExternal@12",
+      "argCount": 3,
+      "signature": "HRESULT CoLockObjectExternal(_In_ LPUNKNOWN, _In_ BOOL, _In_ BOOL)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoIsHandlerConnected@4",
+      "argCount": 1,
+      "signature": "BOOL CoIsHandlerConnected(_In_ LPUNKNOWN)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CoGetCallContext@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetCallContext(_In_ REFIID, _Outptr_ void **ppInterface)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoSwitchCallContext@8",
+      "argCount": 2,
+      "signature": "HRESULT CoSwitchCallContext(_In_opt_ IUnknown *pContext, _Outptr_ IUnknown **ppOldContext)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoQueryProxyBlanket@32",
+      "argCount": 8,
+      "signature": "HRESULT CoQueryProxyBlanket(_In_ IUnknown *pProxy, _Out_opt_ DWORD *pwAuthnSvc, _Out_opt_ DWORD *pAuthzSvc, _Outptr_opt_ OLECHAR **pServerPrincName, _Out_opt_ DWORD *pAuthnLevel, _Out_opt_ DWORD *pImpLevel, _Out_opt_ RPC_AUTH_IDENTITY_HANDLE *pAuthInfo, _Out_opt_ DWORD *pCapabilities)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoSetProxyBlanket@32",
+      "argCount": 8,
+      "signature": "HRESULT CoSetProxyBlanket(_In_ IUnknown *pProxy, _In_ DWORD, _In_ DWORD, _In_opt_ OLECHAR *pServerPrincName, _In_ DWORD, _In_ DWORD, _In_opt_ RPC_AUTH_IDENTITY_HANDLE, _In_ DWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoCopyProxy@8",
+      "argCount": 2,
+      "signature": "HRESULT CoCopyProxy(_In_ IUnknown *pProxy, _Outptr_ IUnknown **ppCopy)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoQueryClientBlanket@28",
+      "argCount": 7,
+      "signature": "HRESULT CoQueryClientBlanket(_Out_opt_ DWORD *pAuthnSvc, _Out_opt_ DWORD *pAuthzSvc, _Outptr_opt_ OLECHAR **pServerPrincName, _Out_opt_ DWORD *pAuthnLevel, _Out_opt_ DWORD *pImpLevel, _Outptr_opt_ RPC_AUTHZ_HANDLE *pPrivs, _Inout_opt_ DWORD *pCapabilities)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetTreatAsClass@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetTreatAsClass(_In_ REFCLSID, _Out_ LPCLSID)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoTreatAsClass@8",
+      "argCount": 2,
+      "signature": "HRESULT CoTreatAsClass(_In_ REFCLSID, _In_ REFCLSID)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoAllowSetForegroundWindow@8",
+      "argCount": 2,
+      "signature": "HRESULT CoAllowSetForegroundWindow(_In_ IUnknown *pUnk, _In_opt_ LPVOID)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetObjectContext@8",
+      "argCount": 2,
+      "signature": "HRESULT CoGetObjectContext(_In_ REFIID, _Outptr_ LPVOID *ppv)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterInitializeSpy@8",
+      "argCount": 2,
+      "signature": "HRESULT CoRegisterInitializeSpy(_In_ IInitializeSpy *spy, _Out_ ULARGE_INTEGER *cookie)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRevokeInitializeSpy@4",
+      "argCount": 1,
+      "signature": "HRESULT CoRevokeInitializeSpy(_In_ ULARGE_INTEGER)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoIsOle1Class@4",
+      "argCount": 1,
+      "signature": "BOOL CoIsOle1Class(_In_ REFCLSID)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CoDosDateTimeToFileTime@12",
+      "argCount": 3,
+      "signature": "BOOL CoDosDateTimeToFileTime(_In_ WORD, _In_ WORD, _Out_ FILETIME *lpFileTime)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CoFileTimeToDosDateTime@12",
+      "argCount": 3,
+      "signature": "BOOL CoFileTimeToDosDateTime(_In_ FILETIME *lpFileTime, _Out_ WORD *lpDosDate, _Out_ WORD *lpDosTime)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CoFileTimeNow@4",
+      "argCount": 1,
+      "signature": "HRESULT CoFileTimeNow(_Out_ FILETIME *lpFileTime)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterMessageFilter@8",
+      "argCount": 2,
+      "signature": "HRESULT CoRegisterMessageFilter(_In_opt_ LPMESSAGEFILTER, _Outptr_opt_result_maybenull_ LPMESSAGEFILTER *lplpMessageFilter)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoRegisterChannelHook@8",
+      "argCount": 2,
+      "signature": "HRESULT CoRegisterChannelHook(_In_ REFGUID, _In_ IChannelHook *pChannelHook)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CoGetObject@16",
+      "argCount": 4,
+      "signature": "HRESULT CoGetObject(_In_ LPCWSTR, _In_opt_ BIND_OPTS *pBindOptions, _In_ REFIID, _Outptr_ void **ppv)",
+      "returnType": "HRESULT"
+    }
+  ]
+}

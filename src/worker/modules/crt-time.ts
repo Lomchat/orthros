@@ -1,0 +1,176 @@
+/**
+ * CRT time/date functions (time, _ftime, difftime, gmtime, mktime, _strdate,
+ * _strtime and the wide variants).
+ *
+ * Coupling to Msvcrt is only via CrtTimeHost: v86 handle (difftime returns via
+ * the FPU), process allocator (gmtime's static struct-tm scratch), and the
+ * string/word writers. The gmtime scratch buffer lives in this register call's
+ * closure (one per registration). These CRT entry points are wall-clock
+ * (Date.now()/new Date()).
+ */
+
+import { Mem } from "../core/memory/mem-accessor";
+import { fpuPush } from "../core/fpu-helper";
+import { TimeService } from "../runtime/time";
+import type { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
+import type { Process } from "../core/process";
+
+export interface CrtTimeHost {
+    process: Process;
+    writeUint16(addr: number, value: number): void;
+    writeCString(ptr: number, value: string): void;
+    writeWString(ptr: number, value: string, maxChars?: number): void;
+}
+
+export function registerCrtTimeExports(exports: Record<string, ThunkImplementation>, host: CrtTimeHost): void {
+    // Lazily-allocated struct tm scratch returned by gmtime (per-registration).
+    let gmtimeBuf = 0;
+
+    exports["time"] = (_c, _m, a) => {
+        const ptr = a[0] ?? 0;
+        const seconds = Math.floor(Date.now() / 1000) >>> 0;
+        if (ptr) Mem.writeUint32(ptr, seconds);
+        return seconds;
+    };
+
+    // clock() — processor-time ticks (Windows: ms, CLOCKS_PER_SEC=1000).
+    // Must advance with guest virtual time (same source as GetTickCount).
+    exports["clock"] = () => TimeService.getInstance().nowMs() | 0;
+
+    exports["_sleep"] = (_c, _m, a) => {
+        const seconds = (a[0] ?? 0) >>> 0;
+        if (seconds > 0) {
+            TimeService.getInstance().advanceVirtualTime(seconds * 1000);
+        }
+        return 0;
+    };
+
+    exports["_ftime"] = (_c, _m, a) => {
+        const ptr = a[0] ?? 0;
+        if (!ptr) return 0;
+        const now = Date.now();
+        const seconds = Math.floor(now / 1000) >>> 0;
+        const millis = now % 1000;
+        Mem.writeUint32(ptr, seconds);
+        host.writeUint16(ptr + 4, millis);
+        host.writeUint16(ptr + 6, 0);
+        host.writeUint16(ptr + 8, 0);
+        return 0;
+    };
+
+    exports["difftime"] = (_c, _m, a) => {
+        // Win32 time_t is 32-bit; difftime(time_t t1, time_t t0) — the first two
+        // u32 args are the two time_t values (not halves of one double).
+        const t1 = (a[0] ?? 0) >>> 0;
+        const t0 = (a[1] ?? 0) >>> 0;
+        fpuPush(host.process.v86, t1 - t0);
+        return 0;
+    };
+
+    // Lazily-allocated struct tm scratch returned by localtime (per-registration).
+    let localtimeBuf = 0;
+
+    exports["localtime"] = (_c, _m, a) => {
+        const timePtr = a[0] ?? 0;
+        if (!timePtr) return 0;
+        const seconds = Mem.readUint32(timePtr) ?? 0;
+        const date = new Date(seconds * 1000);
+        if (!localtimeBuf) {
+            localtimeBuf = host.process.memory.alloc(36, "THUNK_DATA", "rw");
+        }
+        const buf = localtimeBuf;
+        Mem.writeUint32(buf + 0, date.getSeconds());
+        Mem.writeUint32(buf + 4, date.getMinutes());
+        Mem.writeUint32(buf + 8, date.getHours());
+        Mem.writeUint32(buf + 12, date.getDate());
+        Mem.writeUint32(buf + 16, date.getMonth());
+        Mem.writeUint32(buf + 20, date.getFullYear() - 1900);
+        Mem.writeUint32(buf + 24, date.getDay());
+        const start = new Date(date.getFullYear(), 0, 1);
+        const yday = Math.floor((date.getTime() - start.getTime()) / 86400000);
+        Mem.writeUint32(buf + 28, yday);
+        Mem.writeUint32(buf + 32, 0);
+        return buf >>> 0;
+    };
+
+    exports["gmtime"] = (_c, _m, a) => {
+        const timePtr = a[0] ?? 0;
+        if (!timePtr) return 0;
+        const seconds = Mem.readUint32(timePtr) ?? 0;
+        const date = new Date(seconds * 1000);
+        if (!gmtimeBuf) {
+            gmtimeBuf = host.process.memory.alloc(36, "THUNK_DATA", "rw");
+        }
+        const buf = gmtimeBuf;
+        // struct tm: sec, min, hour, mday, mon, year, wday, yday, isdst
+        Mem.writeUint32(buf + 0, date.getUTCSeconds());
+        Mem.writeUint32(buf + 4, date.getUTCMinutes());
+        Mem.writeUint32(buf + 8, date.getUTCHours());
+        Mem.writeUint32(buf + 12, date.getUTCDate());
+        Mem.writeUint32(buf + 16, date.getUTCMonth());
+        Mem.writeUint32(buf + 20, date.getUTCFullYear() - 1900);
+        Mem.writeUint32(buf + 24, date.getUTCDay());
+        const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+        const yday = Math.floor((date.getTime() - start.getTime()) / 86400000);
+        Mem.writeUint32(buf + 28, yday);
+        Mem.writeUint32(buf + 32, 0); // isdst
+        return buf >>> 0;
+    };
+
+    exports["mktime"] = (_c, _m, a) => {
+        const tmPtr = a[0] ?? 0;
+        if (!tmPtr) return -1;
+        const sec = Mem.readUint32(tmPtr + 0) ?? 0;
+        const min = Mem.readUint32(tmPtr + 4) ?? 0;
+        const hour = Mem.readUint32(tmPtr + 8) ?? 0;
+        const mday = Mem.readUint32(tmPtr + 12) ?? 0;
+        const mon = Mem.readUint32(tmPtr + 16) ?? 0;
+        const year = (Mem.readUint32(tmPtr + 20) ?? 0) + 1900;
+        const date = new Date(year, mon, mday, hour, min, sec);
+        return (Math.floor(date.getTime() / 1000)) >>> 0;
+    };
+
+    exports["_strdate"] = (_c, _m, a) => {
+        const buffer = a[0] ?? 0;
+        if (!buffer) return 0;
+        const now = new Date();
+        const mm = String(now.getMonth() + 1).padStart(2, "0");
+        const dd = String(now.getDate()).padStart(2, "0");
+        const yy = String(now.getFullYear() % 100).padStart(2, "0");
+        host.writeCString(buffer, `${mm}/${dd}/${yy}`);
+        return buffer >>> 0;
+    };
+
+    exports["_strtime"] = (_c, _m, a) => {
+        const buffer = a[0] ?? 0;
+        if (!buffer) return 0;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        const ss = String(now.getSeconds()).padStart(2, "0");
+        host.writeCString(buffer, `${hh}:${mm}:${ss}`);
+        return buffer >>> 0;
+    };
+
+    exports["_wstrdate"] = (_c, _m, a) => {
+        const buffer = a[0] ?? 0;
+        if (!buffer) return 0;
+        const now = new Date();
+        const mm = String(now.getMonth() + 1).padStart(2, "0");
+        const dd = String(now.getDate()).padStart(2, "0");
+        const yy = String(now.getFullYear() % 100).padStart(2, "0");
+        host.writeWString(buffer, `${mm}/${dd}/${yy}`);
+        return buffer >>> 0;
+    };
+
+    exports["_wstrtime"] = (_c, _m, a) => {
+        const buffer = a[0] ?? 0;
+        if (!buffer) return 0;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        const ss = String(now.getSeconds()).padStart(2, "0");
+        host.writeWString(buffer, `${hh}:${mm}:${ss}`);
+        return buffer >>> 0;
+    };
+}

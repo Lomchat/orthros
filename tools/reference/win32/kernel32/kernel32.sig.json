@@ -1,0 +1,2167 @@
+{
+  "source": "winbase.h",
+  "generated": "2026-01-19T08:18:38.599Z",
+  "module": "kernel32",
+  "functions": [
+    {
+      "name": "_CreateActCtxA@4",
+      "argCount": 1,
+      "signature": "HANDLE CreateActCtxA(_In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateActCtxW@4",
+      "argCount": 1,
+      "signature": "HANDLE CreateActCtxW(_In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateDirectoryA@8",
+      "argCount": 2,
+      "signature": "BOOL CreateDirectoryA(LPCSTR, LPSECURITY_ATTRIBUTES)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateDirectoryW@8",
+      "argCount": 2,
+      "signature": "BOOL CreateDirectoryW(LPCWSTR, LPSECURITY_ATTRIBUTES)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateDirectoryExA@12",
+      "argCount": 3,
+      "signature": "BOOL CreateDirectoryExA(_In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateDirectoryExW@12",
+      "argCount": 3,
+      "signature": "BOOL CreateDirectoryExW(_In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateEventA@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateEventA(_In_opt_ LPSECURITY_ATTRIBUTES, _In_ BOOL, _In_ BOOL, _In_opt_ LPCSTR)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateEventW@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateEventW(_In_opt_, _In_ BOOL, _In_ BOOL, _In_opt_ LPCWSTR)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateEventExA@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateEventExA(LPSECURITY_ATTRIBUTES, LPCSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateEventExW@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateEventExW(LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateFileA@28",
+      "argCount": 7,
+      "signature": "HANDLE CreateFileA(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateFileW@28",
+      "argCount": 7,
+      "signature": "HANDLE CreateFileW(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateFileMappingW@24",
+      "argCount": 6,
+      "signature": "HANDLE CreateFileMappingW(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCWSTR)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateHardLinkA@12",
+      "argCount": 3,
+      "signature": "BOOL CreateHardLinkA(_In_, _In_, _Reserved_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateHardLinkW@12",
+      "argCount": 3,
+      "signature": "BOOL CreateHardLinkW(_In_, _In_, _Reserved_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateMailslotA@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateMailslotA(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMailslotW@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateMailslotW(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMemoryResourceNotification@4",
+      "argCount": 1,
+      "signature": "HANDLE CreateMemoryResourceNotification(MEMORY_RESOURCE_NOTIFICATION_TYPE)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMutexA@12",
+      "argCount": 3,
+      "signature": "HANDLE CreateMutexA(LPSECURITY_ATTRIBUTES, BOOL, LPCSTR)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMutexW@12",
+      "argCount": 3,
+      "signature": "HANDLE CreateMutexW(LPSECURITY_ATTRIBUTES, BOOL, LPCWSTR)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMutexExA@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateMutexExA(LPSECURITY_ATTRIBUTES, LPCSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateMutexExW@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateMutexExW(LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateNamedPipeA@32",
+      "argCount": 8,
+      "signature": "HANDLE CreateNamedPipeA(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateNamedPipeW@32",
+      "argCount": 8,
+      "signature": "HANDLE CreateNamedPipeW(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreatePipe@16",
+      "argCount": 4,
+      "signature": "BOOL CreatePipe(PHANDLE, PHANDLE, LPSECURITY_ATTRIBUTES, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreatePrivateObjectSecurity@24",
+      "argCount": 6,
+      "signature": "BOOL CreatePrivateObjectSecurity(PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR*, BOOL, HANDLE, PGENERIC_MAPPING)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessA@40",
+      "argCount": 10,
+      "signature": "BOOL CreateProcessA(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, PVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessW@40",
+      "argCount": 10,
+      "signature": "BOOL CreateProcessW(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, PVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessAsUserA@44",
+      "argCount": 11,
+      "signature": "BOOL CreateProcessAsUserA(_In_opt_, _In_opt_, _Inout_opt_, _In_opt_, _In_opt_, _In_, _In_, _In_opt_, _In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessAsUserW@44",
+      "argCount": 11,
+      "signature": "BOOL CreateProcessAsUserW(HANDLE, LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, PVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessWithLogonW@44",
+      "argCount": 11,
+      "signature": "BOOL CreateProcessWithLogonW(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, LPCWSTR, LPWSTR, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateProcessWithTokenW@36",
+      "argCount": 9,
+      "signature": "BOOL CreateProcessWithTokenW(HANDLE, DWORD, LPCWSTR, LPWSTR, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateRemoteThread@28",
+      "argCount": 7,
+      "signature": "HANDLE CreateRemoteThread(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateSemaphoreExW@24",
+      "argCount": 6,
+      "signature": "HANDLE CreateSemaphoreExW(LPSECURITY_ATTRIBUTES, LONG, LONG, LPCWSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateTapePartition@16",
+      "argCount": 4,
+      "signature": "DWORD CreateTapePartition(_In_, _In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_CreateTimerQueue@0",
+      "argCount": 0,
+      "signature": "HANDLE CreateTimerQueue()",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateTimerQueueTimer@28",
+      "argCount": 7,
+      "signature": "BOOL CreateTimerQueueTimer(_Outptr_, _In_opt_, _In_, _In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateThread@24",
+      "argCount": 6,
+      "signature": "HANDLE CreateThread(LPSECURITY_ATTRIBUTES, DWORD, LPTHREAD_START_ROUTINE, PVOID, DWORD, PDWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateWaitableTimerExW@16",
+      "argCount": 4,
+      "signature": "HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_CreateWellKnownSid@16",
+      "argCount": 4,
+      "signature": "BOOL CreateWellKnownSid(WELL_KNOWN_SID_TYPE, PSID, PSID, DWORD*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ReadFile@20",
+      "argCount": 5,
+      "signature": "BOOL ReadFile(HANDLE, PVOID, DWORD, PDWORD, LPOVERLAPPED)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ReadFileEx@20",
+      "argCount": 5,
+      "signature": "BOOL ReadFileEx(HANDLE, PVOID, DWORD, LPOVERLAPPED, LPOVERLAPPED_COMPLETION_ROUTINE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ReadFileScatter@20",
+      "argCount": 5,
+      "signature": "BOOL ReadFileScatter(HANDLE, FILE_SEGMENT_ELEMENT*, DWORD, LPDWORD, LPOVERLAPPED)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ReadProcessMemory@20",
+      "argCount": 5,
+      "signature": "BOOL ReadProcessMemory(HANDLE, LPCVOID, LPVOID, SIZE_T, PSIZE_T)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteEncryptedFileRaw@12",
+      "argCount": 3,
+      "signature": "DWORD WriteEncryptedFileRaw(_In_, _In_opt_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_WriteFile@20",
+      "argCount": 5,
+      "signature": "BOOL WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteFileEx@20",
+      "argCount": 5,
+      "signature": "BOOL WriteFileEx(HANDLE, LPCVOID, DWORD, LPOVERLAPPED, LPOVERLAPPED_COMPLETION_ROUTINE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteFileGather@20",
+      "argCount": 5,
+      "signature": "BOOL WriteFileGather(HANDLE, FILE_SEGMENT_ELEMENT*, DWORD, LPDWORD, LPOVERLAPPED)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WritePrivateProfileSectionA@12",
+      "argCount": 3,
+      "signature": "BOOL WritePrivateProfileSectionA(_In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WritePrivateProfileSectionW@12",
+      "argCount": 3,
+      "signature": "BOOL WritePrivateProfileSectionW(_In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WritePrivateProfileStringA@16",
+      "argCount": 4,
+      "signature": "BOOL WritePrivateProfileStringA(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WritePrivateProfileStringW@16",
+      "argCount": 4,
+      "signature": "BOOL WritePrivateProfileStringW(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteProcessMemory@20",
+      "argCount": 5,
+      "signature": "BOOL WriteProcessMemory(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteProfileSectionA@8",
+      "argCount": 2,
+      "signature": "BOOL WriteProfileSectionA(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteProfileSectionW@8",
+      "argCount": 2,
+      "signature": "BOOL WriteProfileSectionW(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteProfileStringA@12",
+      "argCount": 3,
+      "signature": "BOOL WriteProfileStringA(_In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteProfileStringW@12",
+      "argCount": 3,
+      "signature": "BOOL WriteProfileStringW(_In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_WriteTapemark@16",
+      "argCount": 4,
+      "signature": "DWORD WriteTapemark(_In_, _In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_CloseEventLog@4",
+      "argCount": 1,
+      "signature": "BOOL CloseEventLog(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CloseHandle@4",
+      "argCount": 1,
+      "signature": "BOOL CloseHandle(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetNamedPipeClientProcessId@8",
+      "argCount": 2,
+      "signature": "BOOL GetNamedPipeClientProcessId(_In_ HANDLE, _Out_ PULONG)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFirmwareType@4",
+      "argCount": 1,
+      "signature": "BOOL GetFirmwareType(_Out_ PFIRMWARE_TYPE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetAce@12",
+      "argCount": 3,
+      "signature": "BOOL GetAce(PACL, DWORD, LPVOID*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetAclInformation@16",
+      "argCount": 4,
+      "signature": "BOOL GetAclInformation(PACL, PVOID, DWORD, ACL_INFORMATION_CLASS)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetApplicationRecoveryCallback@20",
+      "argCount": 5,
+      "signature": "HRESULT GetApplicationRecoveryCallback(_In_, _Out_ APPLICATION_RECOVERY_CALLBACK*, _Outptr_opt_result_maybenull_ PVOID*, _Out_opt_ DWORD*, _Out_opt_ DWORD*)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_GetApplicationRestart@16",
+      "argCount": 4,
+      "signature": "HRESULT GetApplicationRestart(HANDLE, PWSTR, PDWORD, PDWORD)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_GetBinaryTypeA@8",
+      "argCount": 2,
+      "signature": "BOOL GetBinaryTypeA(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetBinaryTypeW@8",
+      "argCount": 2,
+      "signature": "BOOL GetBinaryTypeW(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCommandLineA@0",
+      "argCount": 0,
+      "signature": "LPSTR GetCommandLineA(VOID)",
+      "returnType": "LPSTR"
+    },
+    {
+      "name": "_GetCommandLineW@0",
+      "argCount": 0,
+      "signature": "LPWSTR GetCommandLineW(VOID)",
+      "returnType": "LPWSTR"
+    },
+    {
+      "name": "_GetCommMask@8",
+      "argCount": 2,
+      "signature": "BOOL GetCommMask(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCommModemStatus@8",
+      "argCount": 2,
+      "signature": "BOOL GetCommModemStatus(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCommProperties@8",
+      "argCount": 2,
+      "signature": "BOOL GetCommProperties(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCommState@8",
+      "argCount": 2,
+      "signature": "BOOL GetCommState(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCommTimeouts@8",
+      "argCount": 2,
+      "signature": "BOOL GetCommTimeouts(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCompressedFileSizeA@8",
+      "argCount": 2,
+      "signature": "DWORD GetCompressedFileSizeA(_In_, _Out_opt_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetCompressedFileSizeW@8",
+      "argCount": 2,
+      "signature": "DWORD GetCompressedFileSizeW(_In_, _Out_opt_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetComputerNameExA@12",
+      "argCount": 3,
+      "signature": "BOOL GetComputerNameExA(COMPUTER_NAME_FORMAT, LPSTR, LPDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetComputerNameExW@12",
+      "argCount": 3,
+      "signature": "BOOL GetComputerNameExW(COMPUTER_NAME_FORMAT, LPWSTR, LPDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCurrentActCtx@4",
+      "argCount": 1,
+      "signature": "BOOL GetCurrentActCtx(_Outptr_ HANDLE*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCurrentDirectoryA@8",
+      "argCount": 2,
+      "signature": "DWORD GetCurrentDirectoryA(DWORD, LPSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetCurrentDirectoryW@8",
+      "argCount": 2,
+      "signature": "DWORD GetCurrentDirectoryW(DWORD, LPWSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetCurrentHwProfileA@4",
+      "argCount": 1,
+      "signature": "BOOL GetCurrentHwProfileA(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCurrentHwProfileW@4",
+      "argCount": 1,
+      "signature": "BOOL GetCurrentHwProfileW(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCurrentProcess@0",
+      "argCount": 0,
+      "signature": "HANDLE GetCurrentProcess()",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetCurrentProcessId@0",
+      "argCount": 0,
+      "signature": "DWORD GetCurrentProcessId()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetCurrentThread@0",
+      "argCount": 0,
+      "signature": "HANDLE GetCurrentThread()",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetCurrentThreadId@0",
+      "argCount": 0,
+      "signature": "DWORD GetCurrentThreadId()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetDiskFreeSpaceA@20",
+      "argCount": 5,
+      "signature": "BOOL GetDiskFreeSpaceA(LPCSTR, PDWORD, PDWORD, PDWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDiskFreeSpaceW@20",
+      "argCount": 5,
+      "signature": "BOOL GetDiskFreeSpaceW(LPCWSTR, PDWORD, PDWORD, PDWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDiskFreeSpaceExA@16",
+      "argCount": 4,
+      "signature": "BOOL GetDiskFreeSpaceExA(LPCSTR, PULARGE_INTEGER, PULARGE_INTEGER, PULARGE_INTEGER)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDiskFreeSpaceExW@16",
+      "argCount": 4,
+      "signature": "BOOL GetDiskFreeSpaceExW(LPCWSTR, PULARGE_INTEGER, PULARGE_INTEGER, PULARGE_INTEGER)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDriveTypeA@4",
+      "argCount": 1,
+      "signature": "UINT GetDriveTypeA(LPCSTR)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetDriveTypeW@4",
+      "argCount": 1,
+      "signature": "UINT GetDriveTypeW(LPCWSTR)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetEnvironmentStrings@0",
+      "argCount": 0,
+      "signature": "LPSTR GetEnvironmentStrings()",
+      "returnType": "LPSTR"
+    },
+    {
+      "name": "_GetEnvironmentStringsW@0",
+      "argCount": 0,
+      "signature": "LPWSTR GetEnvironmentStringsW()",
+      "returnType": "LPWSTR"
+    },
+    {
+      "name": "_GetEnvironmentVariableA@12",
+      "argCount": 3,
+      "signature": "DWORD GetEnvironmentVariableA(LPCSTR, LPSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetEnvironmentVariableW@12",
+      "argCount": 3,
+      "signature": "DWORD GetEnvironmentVariableW(LPCWSTR, LPWSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetExitCodeProcess@8",
+      "argCount": 2,
+      "signature": "BOOL GetExitCodeProcess(HANDLE, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetExitCodeThread@8",
+      "argCount": 2,
+      "signature": "BOOL GetExitCodeThread(HANDLE, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileAttributesA@4",
+      "argCount": 1,
+      "signature": "DWORD GetFileAttributesA(LPCSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFileAttributesByHandle@12",
+      "argCount": 3,
+      "signature": "BOOL GetFileAttributesByHandle(HANDLE, LPDWORD, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFinalPathNameByHandleA@16",
+      "argCount": 4,
+      "signature": "DWORD GetFinalPathNameByHandleA(HANDLE, LPSTR, DWORD, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFinalPathNameByHandleW@16",
+      "argCount": 4,
+      "signature": "DWORD GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFileAttributesW@4",
+      "argCount": 1,
+      "signature": "DWORD GetFileAttributesW(LPCWSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFileAttributesExA@12",
+      "argCount": 3,
+      "signature": "BOOL GetFileAttributesExA(LPCSTR, GET_FILEEX_INFO_LEVELS, PVOID)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileAttributesExW@12",
+      "argCount": 3,
+      "signature": "BOOL GetFileAttributesExW(LPCWSTR, GET_FILEEX_INFO_LEVELS, PVOID)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileBandwidthReservation@24",
+      "argCount": 6,
+      "signature": "BOOL GetFileBandwidthReservation(_In_, _Out_, _Out_, _Out_, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileInformationByHandle@8",
+      "argCount": 2,
+      "signature": "BOOL GetFileInformationByHandle(HANDLE, LPBY_HANDLE_FILE_INFORMATION)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileSecurityW@20",
+      "argCount": 5,
+      "signature": "BOOL GetFileSecurityW(LPCWSTR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileSize@8",
+      "argCount": 2,
+      "signature": "DWORD GetFileSize(HANDLE, PDWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFileSizeEx@8",
+      "argCount": 2,
+      "signature": "BOOL GetFileSizeEx(HANDLE, PLARGE_INTEGER)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileTime@16",
+      "argCount": 4,
+      "signature": "BOOL GetFileTime(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileType@4",
+      "argCount": 1,
+      "signature": "DWORD GetFileType(HANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFullPathNameA@16",
+      "argCount": 4,
+      "signature": "DWORD GetFullPathNameA(LPCSTR, DWORD, LPSTR, LPSTR*)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetFullPathNameW@16",
+      "argCount": 4,
+      "signature": "DWORD GetFullPathNameW(LPCWSTR, DWORD, LPWSTR, LPWSTR*)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetHandleInformation@8",
+      "argCount": 2,
+      "signature": "BOOL GetHandleInformation(HANDLE, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetKernelObjectSecurity@20",
+      "argCount": 5,
+      "signature": "BOOL GetKernelObjectSecurity(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetLastError@0",
+      "argCount": 0,
+      "signature": "DWORD GetLastError()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetLengthSid@4",
+      "argCount": 1,
+      "signature": "DWORD GetLengthSid(PSID)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetLocalTime@4",
+      "argCount": 1,
+      "signature": "void GetLocalTime(LPSYSTEMTIME)",
+      "returnType": "void"
+    },
+    {
+      "name": "_GetLogicalDrives@0",
+      "argCount": 0,
+      "signature": "DWORD GetLogicalDrives()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetLogicalDriveStringsW@8",
+      "argCount": 2,
+      "signature": "DWORD GetLogicalDriveStringsW(DWORD, LPWSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetLongPathNameA@12",
+      "argCount": 3,
+      "signature": "DWORD GetLongPathNameA(LPCSTR, LPSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetLongPathNameW@12",
+      "argCount": 3,
+      "signature": "DWORD GetLongPathNameW(LPCWSTR, LPWSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetMailslotInfo@20",
+      "argCount": 5,
+      "signature": "BOOL GetMailslotInfo(_In_, _Out_opt_, _Out_opt_, _Out_opt_, _Out_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetModuleFileNameA@12",
+      "argCount": 3,
+      "signature": "DWORD GetModuleFileNameA(HINSTANCE, LPSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetModuleFileNameW@12",
+      "argCount": 3,
+      "signature": "DWORD GetModuleFileNameW(HINSTANCE, LPWSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetModuleHandleA@4",
+      "argCount": 1,
+      "signature": "HMODULE GetModuleHandleA(LPCSTR)",
+      "returnType": "HMODULE"
+    },
+    {
+      "name": "_GetModuleHandleW@4",
+      "argCount": 1,
+      "signature": "HMODULE GetModuleHandleW(LPCWSTR)",
+      "returnType": "HMODULE"
+    },
+    {
+      "name": "_GetModuleHandleExA@12",
+      "argCount": 3,
+      "signature": "BOOL GetModuleHandleExA(DWORD, LPCSTR, HMODULE*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetModuleHandleExW@12",
+      "argCount": 3,
+      "signature": "BOOL GetModuleHandleExW(DWORD, LPCWSTR, HMODULE*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetNamedPipeInfo@20",
+      "argCount": 5,
+      "signature": "BOOL GetNamedPipeInfo(_In_, _Out_opt_, _Out_opt_, _Out_opt_, _Out_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetNativeSystemInfo@4",
+      "argCount": 1,
+      "signature": "VOID GetNativeSystemInfo(LPSYSTEM_INFO)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_GetNumberOfEventLogRecords@8",
+      "argCount": 2,
+      "signature": "BOOL GetNumberOfEventLogRecords(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetOldestEventLogRecord@8",
+      "argCount": 2,
+      "signature": "BOOL GetOldestEventLogRecord(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetPriorityClass@4",
+      "argCount": 1,
+      "signature": "DWORD GetPriorityClass(HANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetPrivateObjectSecurity@20",
+      "argCount": 5,
+      "signature": "BOOL GetPrivateObjectSecurity(PSECURITY_DESCRIPTOR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetPrivateProfileIntA@16",
+      "argCount": 4,
+      "signature": "UINT GetPrivateProfileIntA(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetPrivateProfileIntW@16",
+      "argCount": 4,
+      "signature": "UINT GetPrivateProfileIntW(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetProcAddress@8",
+      "argCount": 2,
+      "signature": "FARPROC GetProcAddress(HINSTANCE, LPCSTR)",
+      "returnType": "FARPROC"
+    },
+    {
+      "name": "_GetProcessAffinityMask@12",
+      "argCount": 3,
+      "signature": "BOOL GetProcessAffinityMask(_In_, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessHandleCount@8",
+      "argCount": 2,
+      "signature": "BOOL GetProcessHandleCount(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessHeap@0",
+      "argCount": 0,
+      "signature": "HANDLE GetProcessHeap(VOID)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetProcessHeaps@8",
+      "argCount": 2,
+      "signature": "DWORD GetProcessHeaps(DWORD, PHANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetProcessId@4",
+      "argCount": 1,
+      "signature": "DWORD GetProcessId(HANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetProcessIdOfThread@4",
+      "argCount": 1,
+      "signature": "DWORD GetProcessIdOfThread(HANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetProcessIoCounters@8",
+      "argCount": 2,
+      "signature": "BOOL GetProcessIoCounters(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessPriorityBoost@8",
+      "argCount": 2,
+      "signature": "BOOL GetProcessPriorityBoost(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessShutdownParameters@8",
+      "argCount": 2,
+      "signature": "BOOL GetProcessShutdownParameters(_Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessTimes@20",
+      "argCount": 5,
+      "signature": "BOOL GetProcessTimes(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessVersion@4",
+      "argCount": 1,
+      "signature": "DWORD GetProcessVersion(DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetProcessWindowStation@0",
+      "argCount": 0,
+      "signature": "HWINSTA GetProcessWindowStation()",
+      "returnType": "HWINSTA"
+    },
+    {
+      "name": "_GetProcessWorkingSetSize@12",
+      "argCount": 3,
+      "signature": "BOOL GetProcessWorkingSetSize(_In_, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProfileIntA@12",
+      "argCount": 3,
+      "signature": "UINT GetProfileIntA(_In_, _In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetProfileIntW@12",
+      "argCount": 3,
+      "signature": "UINT GetProfileIntW(_In_, _In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetSecurityDescriptorControl@12",
+      "argCount": 3,
+      "signature": "BOOL GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR_CONTROL, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSecurityDescriptorDacl@16",
+      "argCount": 4,
+      "signature": "BOOL GetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR, LPBOOL, PACL*, LPBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSecurityDescriptorGroup@12",
+      "argCount": 3,
+      "signature": "BOOL GetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR, PSID*, LPBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSecurityDescriptorLength@4",
+      "argCount": 1,
+      "signature": "DWORD GetSecurityDescriptorLength(PSECURITY_DESCRIPTOR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetSecurityDescriptorOwner@12",
+      "argCount": 3,
+      "signature": "BOOL GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR, PSID*, LPBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSecurityDescriptorRMControl@8",
+      "argCount": 2,
+      "signature": "DWORD GetSecurityDescriptorRMControl(PSECURITY_DESCRIPTOR, PUCHAR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetSecurityDescriptorSacl@16",
+      "argCount": 4,
+      "signature": "BOOL GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR, LPBOOL, PACL*, LPBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetShortPathNameW@12",
+      "argCount": 3,
+      "signature": "DWORD GetShortPathNameW(LPCWSTR, LPWSTR, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetSidIdentifierAuthority@4",
+      "argCount": 1,
+      "signature": "PSID_IDENTIFIER_AUTHORITY GetSidIdentifierAuthority(PSID)",
+      "returnType": "PSID_IDENTIFIER_AUTHORITY"
+    },
+    {
+      "name": "_GetSidLengthRequired@4",
+      "argCount": 1,
+      "signature": "DWORD GetSidLengthRequired(UCHAR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetSidSubAuthority@8",
+      "argCount": 2,
+      "signature": "PDWORD GetSidSubAuthority(PSID, DWORD)",
+      "returnType": "PDWORD"
+    },
+    {
+      "name": "_GetSidSubAuthorityCount@4",
+      "argCount": 1,
+      "signature": "PUCHAR GetSidSubAuthorityCount(PSID)",
+      "returnType": "PUCHAR"
+    },
+    {
+      "name": "_GetStartupInfoA@4",
+      "argCount": 1,
+      "signature": "VOID GetStartupInfoA(_Out_)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_GetStartupInfoW@4",
+      "argCount": 1,
+      "signature": "VOID GetStartupInfoW(LPSTARTUPINFOW)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_GetStdHandle@4",
+      "argCount": 1,
+      "signature": "HANDLE GetStdHandle(_In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetSystemDirectoryA@8",
+      "argCount": 2,
+      "signature": "UINT GetSystemDirectoryA(LPSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetSystemDirectoryW@8",
+      "argCount": 2,
+      "signature": "UINT GetSystemDirectoryW(LPWSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetSystemInfo@4",
+      "argCount": 1,
+      "signature": "VOID GetSystemInfo(LPSYSTEM_INFO)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_GetSystemPowerStatus@4",
+      "argCount": 1,
+      "signature": "BOOL GetSystemPowerStatus(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSystemRegistryQuota@8",
+      "argCount": 2,
+      "signature": "BOOL GetSystemRegistryQuota(_Out_opt_, _Out_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSystemTime@4",
+      "argCount": 1,
+      "signature": "VOID GetSystemTime(LPSYSTEMTIME)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_GetSystemTimes@12",
+      "argCount": 3,
+      "signature": "BOOL GetSystemTimes(_Out_opt_, _Out_opt_, _Out_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSystemTimeAdjustment@12",
+      "argCount": 3,
+      "signature": "BOOL GetSystemTimeAdjustment(PDWORD, PDWORD, PBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetSystemTimeAsFileTime@4",
+      "argCount": 1,
+      "signature": "void GetSystemTimeAsFileTime(LPFILETIME)",
+      "returnType": "void"
+    },
+    {
+      "name": "_GetSystemWindowsDirectoryA@8",
+      "argCount": 2,
+      "signature": "UINT GetSystemWindowsDirectoryA(LPSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetSystemWindowsDirectoryW@8",
+      "argCount": 2,
+      "signature": "UINT GetSystemWindowsDirectoryW(LPWSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetTapePosition@20",
+      "argCount": 5,
+      "signature": "DWORD GetTapePosition(_In_, _In_, _Out_, _Out_, _Out_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetTapeStatus@4",
+      "argCount": 1,
+      "signature": "DWORD GetTapeStatus(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetTempFileNameW@16",
+      "argCount": 4,
+      "signature": "UINT GetTempFileNameW(LPCWSTR, LPCWSTR, UINT, LPWSTR)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetTempPathW@8",
+      "argCount": 2,
+      "signature": "DWORD GetTempPathW(DWORD, LPWSTR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetThreadContext@8",
+      "argCount": 2,
+      "signature": "BOOL GetThreadContext(HANDLE, LPCONTEXT)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetThreadIOPendingFlag@8",
+      "argCount": 2,
+      "signature": "BOOL GetThreadIOPendingFlag(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetThreadPriority@4",
+      "argCount": 1,
+      "signature": "int GetThreadPriority(HANDLE)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetThreadPriorityBoost@8",
+      "argCount": 2,
+      "signature": "BOOL GetThreadPriorityBoost(HANDLE, PBOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetThreadSelectorEntry@12",
+      "argCount": 3,
+      "signature": "BOOL GetThreadSelectorEntry(_In_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetThreadTimes@20",
+      "argCount": 5,
+      "signature": "BOOL GetThreadTimes(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetTickCount@0",
+      "argCount": 0,
+      "signature": "DWORD GetTickCount(VOID)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetTickCount64@0",
+      "argCount": 0,
+      "signature": "ULONGLONG GetTickCount64(VOID)",
+      "returnType": "ULONGLONG"
+    },
+    {
+      "name": "_GetThreadId@4",
+      "argCount": 1,
+      "signature": "DWORD GetThreadId(HANDLE)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetTimeZoneInformation@4",
+      "argCount": 1,
+      "signature": "DWORD GetTimeZoneInformation(LPTIME_ZONE_INFORMATION)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetTokenInformation@20",
+      "argCount": 5,
+      "signature": "BOOL GetTokenInformation(HANDLE, TOKEN_INFORMATION_CLASS, PVOID, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVersion@0",
+      "argCount": 0,
+      "signature": "DWORD GetVersion()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetVersionExA@4",
+      "argCount": 1,
+      "signature": "BOOL GetVersionExA(LPOSVERSIONINFOA)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVersionExW@4",
+      "argCount": 1,
+      "signature": "BOOL GetVersionExW(LPOSVERSIONINFOW)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVolumeInformationW@32",
+      "argCount": 8,
+      "signature": "BOOL GetVolumeInformationW(LPCWSTR, LPWSTR, DWORD, PDWORD, PDWORD, PDWORD, LPWSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVolumeNameForVolumeMountPointW@12",
+      "argCount": 3,
+      "signature": "BOOL GetVolumeNameForVolumeMountPointW(LPCWSTR, LPWSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVolumePathNameW@12",
+      "argCount": 3,
+      "signature": "BOOL GetVolumePathNameW(LPCWSTR, LPWSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetVolumePathNamesForVolumeNameW@16",
+      "argCount": 4,
+      "signature": "BOOL GetVolumePathNamesForVolumeNameW(LPCWSTR, LPWSTR, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetWindowsDirectoryA@8",
+      "argCount": 2,
+      "signature": "UINT GetWindowsDirectoryA(LPSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetWindowsDirectoryW@8",
+      "argCount": 2,
+      "signature": "UINT GetWindowsDirectoryW(LPWSTR, UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetWindowThreadProcessId@8",
+      "argCount": 2,
+      "signature": "DWORD GetWindowThreadProcessId(HWND, PDWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetWriteWatch@24",
+      "argCount": 6,
+      "signature": "UINT GetWriteWatch(DWORD, PVOID, SIZE_T, PVOID*, PULONG_PTR, PULONG)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_SetCriticalSectionSpinCount@8",
+      "argCount": 2,
+      "signature": "DWORD SetCriticalSectionSpinCount(LPCRITICAL_SECTION, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetAclInformation@16",
+      "argCount": 4,
+      "signature": "BOOL SetAclInformation(PACL, PVOID, DWORD, ACL_INFORMATION_CLASS)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCommBreak@4",
+      "argCount": 1,
+      "signature": "BOOL SetCommBreak(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCommMask@8",
+      "argCount": 2,
+      "signature": "BOOL SetCommMask(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCommState@8",
+      "argCount": 2,
+      "signature": "BOOL SetCommState(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCommTimeouts@8",
+      "argCount": 2,
+      "signature": "BOOL SetCommTimeouts(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetComputerNameA@4",
+      "argCount": 1,
+      "signature": "BOOL SetComputerNameA(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetComputerNameW@4",
+      "argCount": 1,
+      "signature": "BOOL SetComputerNameW(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetComputerNameExA@8",
+      "argCount": 2,
+      "signature": "BOOL SetComputerNameExA(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetComputerNameExW@8",
+      "argCount": 2,
+      "signature": "BOOL SetComputerNameExW(COMPUTER_NAME_FORMAT, LPCWSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCurrentDirectoryA@4",
+      "argCount": 1,
+      "signature": "BOOL SetCurrentDirectoryA(LPCSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCurrentDirectoryW@4",
+      "argCount": 1,
+      "signature": "BOOL SetCurrentDirectoryW(LPCWSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDllDirectoryA@4",
+      "argCount": 1,
+      "signature": "BOOL SetDllDirectoryA(_In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDllDirectoryW@4",
+      "argCount": 1,
+      "signature": "BOOL SetDllDirectoryW(_In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetEndOfFile@4",
+      "argCount": 1,
+      "signature": "BOOL SetEndOfFile(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetEnvironmentVariableA@8",
+      "argCount": 2,
+      "signature": "BOOL SetEnvironmentVariableA(LPCSTR, LPCSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetEnvironmentVariableW@8",
+      "argCount": 2,
+      "signature": "BOOL SetEnvironmentVariableW(LPCWSTR, LPCWSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetErrorMode@4",
+      "argCount": 1,
+      "signature": "UINT SetErrorMode(UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_SetEvent@4",
+      "argCount": 1,
+      "signature": "BOOL SetEvent(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileApisToANSI@0",
+      "argCount": 0,
+      "signature": "VOID SetFileApisToANSI()",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_SetFileApisToOEM@0",
+      "argCount": 0,
+      "signature": "VOID SetFileApisToOEM()",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_SetFileAttributesA@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileAttributesA(LPCSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileAttributesByHandle@12",
+      "argCount": 3,
+      "signature": "BOOL SetFileAttributesByHandle(HANDLE, DWORD, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileAttributesW@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileAttributesW(LPCWSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileBandwidthReservation@24",
+      "argCount": 6,
+      "signature": "BOOL SetFileBandwidthReservation(_In_, _In_, _In_, _In_, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileCompletionNotificationModes@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileCompletionNotificationModes(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFilePointer@16",
+      "argCount": 4,
+      "signature": "DWORD SetFilePointer(HANDLE, LONG, PLONG, DWORD)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetFilePointerEx@20",
+      "argCount": 5,
+      "signature": "BOOL SetFilePointerEx(HANDLE, LARGE_INTEGER, PLARGE_INTEGER, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileSecurityA@12",
+      "argCount": 3,
+      "signature": "BOOL SetFileSecurityA(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileSecurityW@12",
+      "argCount": 3,
+      "signature": "BOOL SetFileSecurityW(LPCWSTR, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileShortNameA@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileShortNameA(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileShortNameW@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileShortNameW(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileTime@16",
+      "argCount": 4,
+      "signature": "BOOL SetFileTime(HANDLE, const FILETIME*, const FILETIME*, const FILETIME*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFileValidData@8",
+      "argCount": 2,
+      "signature": "BOOL SetFileValidData(HANDLE, LONGLONG)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetHandleCount@4",
+      "argCount": 1,
+      "signature": "UINT SetHandleCount(UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_SetHandleInformation@12",
+      "argCount": 3,
+      "signature": "BOOL SetHandleInformation(HANDLE, DWORD, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetKernelObjectSecurity@12",
+      "argCount": 3,
+      "signature": "BOOL SetKernelObjectSecurity(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetLastError@4",
+      "argCount": 1,
+      "signature": "void SetLastError(DWORD)",
+      "returnType": "void"
+    },
+    {
+      "name": "_SetLastErrorEx@8",
+      "argCount": 2,
+      "signature": "void SetLastErrorEx(DWORD, DWORD)",
+      "returnType": "void"
+    },
+    {
+      "name": "_SetLocalTime@4",
+      "argCount": 1,
+      "signature": "BOOL SetLocalTime(const SYSTEMTIME*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMailslotInfo@8",
+      "argCount": 2,
+      "signature": "BOOL SetMailslotInfo(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetNamedPipeHandleState@16",
+      "argCount": 4,
+      "signature": "BOOL SetNamedPipeHandleState(HANDLE, PDWORD, PDWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetPriorityClass@8",
+      "argCount": 2,
+      "signature": "BOOL SetPriorityClass(HANDLE, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetPrivateObjectSecurity@20",
+      "argCount": 5,
+      "signature": "BOOL SetPrivateObjectSecurity(SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR *, PGENERIC_MAPPING, HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetProcessAffinityMask@8",
+      "argCount": 2,
+      "signature": "BOOL SetProcessAffinityMask(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetProcessPriorityBoost@8",
+      "argCount": 2,
+      "signature": "BOOL SetProcessPriorityBoost(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetProcessShutdownParameters@8",
+      "argCount": 2,
+      "signature": "BOOL SetProcessShutdownParameters(DWORD, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetProcessWorkingSetSize@12",
+      "argCount": 3,
+      "signature": "BOOL SetProcessWorkingSetSize(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSecurityAccessMask@8",
+      "argCount": 2,
+      "signature": "VOID SetSecurityAccessMask(SECURITY_INFORMATION, LPDWORD)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_SetSecurityDescriptorControl@12",
+      "argCount": 3,
+      "signature": "BOOL SetSecurityDescriptorControl(PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_DESCRIPTOR_CONTROL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSecurityDescriptorDacl@16",
+      "argCount": 4,
+      "signature": "BOOL SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR, BOOL, PACL, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSecurityDescriptorGroup@12",
+      "argCount": 3,
+      "signature": "BOOL SetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR, PSID, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSecurityDescriptorOwner@12",
+      "argCount": 3,
+      "signature": "BOOL SetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR, PSID, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSecurityDescriptorRMControl@8",
+      "argCount": 2,
+      "signature": "DWORD SetSecurityDescriptorRMControl(PSECURITY_DESCRIPTOR, PUCHAR)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetSecurityDescriptorSacl@16",
+      "argCount": 4,
+      "signature": "BOOL SetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR, BOOL, PACL, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetStdHandle@8",
+      "argCount": 2,
+      "signature": "BOOL SetStdHandle(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSystemPowerState@8",
+      "argCount": 2,
+      "signature": "BOOL SetSystemPowerState(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSystemTime@4",
+      "argCount": 1,
+      "signature": "BOOL SetSystemTime(const SYSTEMTIME*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSystemTimeAdjustment@8",
+      "argCount": 2,
+      "signature": "BOOL SetSystemTimeAdjustment(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetTapeParameters@12",
+      "argCount": 3,
+      "signature": "DWORD SetTapeParameters(_In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetTapePosition@24",
+      "argCount": 6,
+      "signature": "DWORD SetTapePosition(_In_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetThreadAffinityMask@8",
+      "argCount": 2,
+      "signature": "DWORD_PTR SetThreadAffinityMask(_In_, _In_)",
+      "returnType": "DWORD_PTR"
+    },
+    {
+      "name": "_SetThreadContext@8",
+      "argCount": 2,
+      "signature": "BOOL SetThreadContext(HANDLE, const CONTEXT*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetThreadIdealProcessor@8",
+      "argCount": 2,
+      "signature": "DWORD SetThreadIdealProcessor(_In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetThreadPriority@8",
+      "argCount": 2,
+      "signature": "BOOL SetThreadPriority(HANDLE, int)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetThreadPriorityBoost@8",
+      "argCount": 2,
+      "signature": "BOOL SetThreadPriorityBoost(HANDLE, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetThreadToken@8",
+      "argCount": 2,
+      "signature": "BOOL SetThreadToken(PHANDLE, HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetTimeZoneInformation@4",
+      "argCount": 1,
+      "signature": "BOOL SetTimeZoneInformation(const TIME_ZONE_INFORMATION *)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetTokenInformation@16",
+      "argCount": 4,
+      "signature": "BOOL SetTokenInformation(HANDLE, TOKEN_INFORMATION_CLASS, PVOID, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetUnhandledExceptionFilter@4",
+      "argCount": 1,
+      "signature": "LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER)",
+      "returnType": "LPTOP_LEVEL_EXCEPTION_FILTER"
+    },
+    {
+      "name": "_SetupComm@12",
+      "argCount": 3,
+      "signature": "BOOL SetupComm(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetVolumeLabelA@8",
+      "argCount": 2,
+      "signature": "BOOL SetVolumeLabelA(_In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetVolumeLabelW@8",
+      "argCount": 2,
+      "signature": "BOOL SetVolumeLabelW(_In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetVolumeMountPointA@8",
+      "argCount": 2,
+      "signature": "BOOL SetVolumeMountPointA(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetVolumeMountPointW@8",
+      "argCount": 2,
+      "signature": "BOOL SetVolumeMountPointW(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWaitableTimer@24",
+      "argCount": 6,
+      "signature": "BOOL SetWaitableTimer(HANDLE, const LARGE_INTEGER*, LONG, PTIMERAPCROUTINE, PVOID, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindActCtxSectionGuid@20",
+      "argCount": 5,
+      "signature": "BOOL FindActCtxSectionGuid(_In_, _Reserved_ const GUID*, _In_, _In_opt_ const GUID*, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindActCtxSectionStringA@20",
+      "argCount": 5,
+      "signature": "BOOL FindActCtxSectionStringA(_In_, _Reserved_ const GUID*, _In_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindActCtxSectionStringW@20",
+      "argCount": 5,
+      "signature": "BOOL FindActCtxSectionStringW(_In_, _Reserved_ const GUID*, _In_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindAtomA@4",
+      "argCount": 1,
+      "signature": "ATOM FindAtomA(_In_opt_)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_FindAtomW@4",
+      "argCount": 1,
+      "signature": "ATOM FindAtomW(_In_opt_)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_FindClose@4",
+      "argCount": 1,
+      "signature": "BOOL FindClose(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindCloseChangeNotification@4",
+      "argCount": 1,
+      "signature": "BOOL FindCloseChangeNotification(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindFirstChangeNotificationA@12",
+      "argCount": 3,
+      "signature": "HANDLE FindFirstChangeNotificationA(LPCSTR, BOOL, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstChangeNotificationW@12",
+      "argCount": 3,
+      "signature": "HANDLE FindFirstChangeNotificationW(LPCWSTR, BOOL, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstFileA@8",
+      "argCount": 2,
+      "signature": "HANDLE FindFirstFileA(LPCSTR, LPWIN32_FIND_DATAA)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstFileW@8",
+      "argCount": 2,
+      "signature": "HANDLE FindFirstFileW(LPCWSTR, LPWIN32_FIND_DATAW)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstFileExA@24",
+      "argCount": 6,
+      "signature": "HANDLE FindFirstFileExA(LPCSTR, FINDEX_INFO_LEVELS, PVOID, FINDEX_SEARCH_OPS, PVOID, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstFileExW@24",
+      "argCount": 6,
+      "signature": "HANDLE FindFirstFileExW(LPCWSTR, FINDEX_INFO_LEVELS, PVOID, FINDEX_SEARCH_OPS, PVOID, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstStreamW@16",
+      "argCount": 4,
+      "signature": "HANDLE FindFirstStreamW(_In_, _In_, _Out_, _Reserved_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindFirstFreeAce@8",
+      "argCount": 2,
+      "signature": "BOOL FindFirstFreeAce(PACL, PVOID*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindFirstVolumeW@8",
+      "argCount": 2,
+      "signature": "HANDLE FindFirstVolumeW(LPWSTR, DWORD)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_FindNextChangeNotification@4",
+      "argCount": 1,
+      "signature": "BOOL FindNextChangeNotification(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindNextFileA@8",
+      "argCount": 2,
+      "signature": "BOOL FindNextFileA(HANDLE, LPWIN32_FIND_DATAA)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindNextFileW@8",
+      "argCount": 2,
+      "signature": "BOOL FindNextFileW(HANDLE, LPWIN32_FIND_DATAW)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindNextStreamW@8",
+      "argCount": 2,
+      "signature": "BOOL FindNextStreamW(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindNextVolumeW@12",
+      "argCount": 3,
+      "signature": "BOOL FindNextVolumeW(HANDLE, LPWSTR, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindVolumeClose@4",
+      "argCount": 1,
+      "signature": "BOOL FindVolumeClose(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindVolumeMountPointClose@4",
+      "argCount": 1,
+      "signature": "BOOL FindVolumeMountPointClose(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FindResourceExW@16",
+      "argCount": 4,
+      "signature": "HRSRC FindResourceExW(HINSTANCE, LPCWSTR, LPCWSTR, WORD)",
+      "returnType": "HRSRC"
+    },
+    {
+      "name": "_LoadLibraryExA@12",
+      "argCount": 3,
+      "signature": "HINSTANCE LoadLibraryExA(LPCSTR, HANDLE, DWORD)",
+      "returnType": "HINSTANCE"
+    },
+    {
+      "name": "_LoadLibraryExW@12",
+      "argCount": 3,
+      "signature": "HINSTANCE LoadLibraryExW(LPCWSTR, HANDLE, DWORD)",
+      "returnType": "HINSTANCE"
+    },
+    {
+      "name": "_LoadModule@8",
+      "argCount": 2,
+      "signature": "DWORD LoadModule(_In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_LoadResource@8",
+      "argCount": 2,
+      "signature": "HGLOBAL LoadResource(HINSTANCE, HRSRC)",
+      "returnType": "HGLOBAL"
+    },
+    {
+      "name": "_FreeEnvironmentStringsA@4",
+      "argCount": 1,
+      "signature": "BOOL FreeEnvironmentStringsA(LPSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FreeEnvironmentStringsW@4",
+      "argCount": 1,
+      "signature": "BOOL FreeEnvironmentStringsW(LPWSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FreeLibrary@4",
+      "argCount": 1,
+      "signature": "BOOL FreeLibrary(HMODULE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FreeResource@4",
+      "argCount": 1,
+      "signature": "BOOL FreeResource(HGLOBAL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FreeSid@4",
+      "argCount": 1,
+      "signature": "PVOID FreeSid(PSID)",
+      "returnType": "PVOID"
+    },
+    {
+      "name": "_VirtualAlloc@16",
+      "argCount": 4,
+      "signature": "PVOID VirtualAlloc(PVOID, SIZE_T, DWORD, DWORD)",
+      "returnType": "PVOID"
+    },
+    {
+      "name": "_VirtualAllocEx@20",
+      "argCount": 5,
+      "signature": "PVOID VirtualAllocEx(HANDLE, PVOID, SIZE_T, DWORD, DWORD)",
+      "returnType": "PVOID"
+    },
+    {
+      "name": "_VirtualFree@12",
+      "argCount": 3,
+      "signature": "BOOL VirtualFree(PVOID, SIZE_T, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_VirtualFreeEx@16",
+      "argCount": 4,
+      "signature": "BOOL VirtualFreeEx(HANDLE, PVOID, SIZE_T, DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_VirtualLock@8",
+      "argCount": 2,
+      "signature": "BOOL VirtualLock(PVOID, SIZE_T)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_VirtualProtect@16",
+      "argCount": 4,
+      "signature": "BOOL VirtualProtect(PVOID, SIZE_T, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_VirtualProtectEx@20",
+      "argCount": 5,
+      "signature": "BOOL VirtualProtectEx(HANDLE, PVOID, SIZE_T, DWORD, PDWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_VirtualQuery@12",
+      "argCount": 3,
+      "signature": "SIZE_T VirtualQuery(LPCVOID, PMEMORY_BASIC_INFORMATION, SIZE_T)",
+      "returnType": "SIZE_T"
+    },
+    {
+      "name": "_VirtualQueryEx@16",
+      "argCount": 4,
+      "signature": "SIZE_T VirtualQueryEx(HANDLE, LPCVOID, PMEMORY_BASIC_INFORMATION, SIZE_T)",
+      "returnType": "SIZE_T"
+    },
+    {
+      "name": "_VirtualUnlock@8",
+      "argCount": 2,
+      "signature": "BOOL VirtualUnlock(PVOID, SIZE_T)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapAlloc@12",
+      "argCount": 3,
+      "signature": "PVOID HeapAlloc(HANDLE, DWORD, SIZE_T)",
+      "returnType": "PVOID"
+    },
+    {
+      "name": "_HeapCompact@8",
+      "argCount": 2,
+      "signature": "SIZE_T HeapCompact(HANDLE, DWORD)",
+      "returnType": "SIZE_T"
+    },
+    {
+      "name": "_HeapCreate@12",
+      "argCount": 3,
+      "signature": "HANDLE HeapCreate(DWORD, SIZE_T, SIZE_T)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_HeapDestroy@4",
+      "argCount": 1,
+      "signature": "BOOL HeapDestroy(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapFree@12",
+      "argCount": 3,
+      "signature": "BOOL HeapFree(HANDLE, DWORD, PVOID)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapLock@4",
+      "argCount": 1,
+      "signature": "BOOL HeapLock(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapQueryInformation@20",
+      "argCount": 5,
+      "signature": "BOOL HeapQueryInformation(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapReAlloc@16",
+      "argCount": 4,
+      "signature": "PVOID HeapReAlloc(HANDLE, DWORD, PVOID, SIZE_T)",
+      "returnType": "PVOID"
+    },
+    {
+      "name": "_HeapSetInformation@16",
+      "argCount": 4,
+      "signature": "BOOL HeapSetInformation(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapSize@12",
+      "argCount": 3,
+      "signature": "SIZE_T HeapSize(HANDLE, DWORD, LPCVOID)",
+      "returnType": "SIZE_T"
+    },
+    {
+      "name": "_HeapUnlock@4",
+      "argCount": 1,
+      "signature": "BOOL HeapUnlock(HANDLE)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapValidate@12",
+      "argCount": 3,
+      "signature": "BOOL HeapValidate(HANDLE, DWORD, LPCVOID)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_HeapWalk@8",
+      "argCount": 2,
+      "signature": "BOOL HeapWalk(HANDLE, LPPROCESS_HEAP_ENTRY)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FileEncryptionStatusA@8",
+      "argCount": 2,
+      "signature": "BOOL FileEncryptionStatusA(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FileEncryptionStatusW@8",
+      "argCount": 2,
+      "signature": "BOOL FileEncryptionStatusW(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FileTimeToDosDateTime@12",
+      "argCount": 3,
+      "signature": "BOOL FileTimeToDosDateTime(_In_ CONST FILETIME *, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FileTimeToLocalFileTime@8",
+      "argCount": 2,
+      "signature": "BOOL FileTimeToLocalFileTime(CONST FILETIME *, LPFILETIME)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_FileTimeToSystemTime@8",
+      "argCount": 2,
+      "signature": "BOOL FileTimeToSystemTime(CONST FILETIME *, LPSYSTEMTIME)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileA@8",
+      "argCount": 2,
+      "signature": "BOOL MoveFileA(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileW@8",
+      "argCount": 2,
+      "signature": "BOOL MoveFileW(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileExA@12",
+      "argCount": 3,
+      "signature": "BOOL MoveFileExA(_In_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileExW@12",
+      "argCount": 3,
+      "signature": "BOOL MoveFileExW(_In_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileWithProgressA@20",
+      "argCount": 5,
+      "signature": "BOOL MoveFileWithProgressA(_In_, _In_opt_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveFileWithProgressW@20",
+      "argCount": 5,
+      "signature": "BOOL MoveFileWithProgressW(_In_, _In_opt_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteFileA@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteFileA(LPCSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteFileW@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteFileW(LPCWSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CopyFile2@12",
+      "argCount": 3,
+      "signature": "HRESULT CopyFile2(_In_ PCWSTR, _In_ PCWSTR, _In_opt_ COPYFILE2_EXTENDED_PARAMETERS *pExtendedParameters)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_CopyFileA@12",
+      "argCount": 3,
+      "signature": "BOOL CopyFileA(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CopyFileW@12",
+      "argCount": 3,
+      "signature": "BOOL CopyFileW(_In_ LPCWSTR, _In_ LPCWSTR, _In_ BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CopyFileExA@24",
+      "argCount": 6,
+      "signature": "BOOL CopyFileExA(_In_, _In_, _In_opt_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CopyFileExW@24",
+      "argCount": 6,
+      "signature": "BOOL CopyFileExW(_In_, _In_, _In_opt_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_Sleep@4",
+      "argCount": 1,
+      "signature": "void Sleep(DWORD)",
+      "returnType": "void"
+    },
+    {
+      "name": "_SystemTimeToFileTime@8",
+      "argCount": 2,
+      "signature": "BOOL SystemTimeToFileTime(const SYSTEMTIME*, LPFILETIME)",
+      "returnType": "BOOL"
+    }
+  ]
+}

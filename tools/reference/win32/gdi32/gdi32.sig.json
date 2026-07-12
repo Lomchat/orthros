@@ -1,0 +1,457 @@
+{
+  "source": "wingdi.h",
+  "generated": "2026-01-19T08:18:38.642Z",
+  "module": "gdi32",
+  "functions": [
+    {
+      "name": "_GetStockObject@4",
+      "argCount": 1,
+      "signature": "HGDIOBJ GetStockObject(_In_)",
+      "returnType": "HGDIOBJ"
+    },
+    {
+      "name": "_SetBkColor@8",
+      "argCount": 2,
+      "signature": "COLORREF SetBkColor(_In_, _In_)",
+      "returnType": "COLORREF"
+    },
+    {
+      "name": "_SetBkMode@8",
+      "argCount": 2,
+      "signature": "int SetBkMode(_In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SetTextAlign@8",
+      "argCount": 2,
+      "signature": "UINT SetTextAlign(_In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_SetTextCharacterExtra@8",
+      "argCount": 2,
+      "signature": "int SetTextCharacterExtra(_In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SetTextColor@8",
+      "argCount": 2,
+      "signature": "COLORREF SetTextColor(_In_, _In_)",
+      "returnType": "COLORREF"
+    },
+    {
+      "name": "_SetTextJustification@12",
+      "argCount": 3,
+      "signature": "BOOL SetTextJustification(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateBitmap@20",
+      "argCount": 5,
+      "signature": "HBITMAP CreateBitmap(_In_ INT, _In_ INT, _In_ UINT, _In_ UINT, _In_opt_ const VOID*)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_CreateBitmapIndirect@4",
+      "argCount": 1,
+      "signature": "HBITMAP CreateBitmapIndirect(_In_ const BITMAP*)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_CreateBrushIndirect@4",
+      "argCount": 1,
+      "signature": "HBRUSH CreateBrushIndirect(_In_ const LOGBRUSH*)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_CreateColorSpaceA@4",
+      "argCount": 1,
+      "signature": "HCOLORSPACE CreateColorSpaceA(_In_ LPLOGCOLORSPACEA)",
+      "returnType": "HCOLORSPACE"
+    },
+    {
+      "name": "_CreateColorSpaceW@4",
+      "argCount": 1,
+      "signature": "HCOLORSPACE CreateColorSpaceW(_In_ LPLOGCOLORSPACEW)",
+      "returnType": "HCOLORSPACE"
+    },
+    {
+      "name": "_CreateCompatibleBitmap@12",
+      "argCount": 3,
+      "signature": "HBITMAP CreateCompatibleBitmap(_In_ HDC, _In_ INT, _In_ INT)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_CreateCompatibleDC@4",
+      "argCount": 1,
+      "signature": "HDC CreateCompatibleDC(_In_opt_ HDC)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateDCA@16",
+      "argCount": 4,
+      "signature": "HDC CreateDCA(_In_opt_ LPCSTR, _In_opt_ LPCSTR, _In_opt_ LPCSTR, _In_opt_ const DEVMODEA*)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateDCW@16",
+      "argCount": 4,
+      "signature": "HDC CreateDCW(_In_opt_ LPCWSTR, _In_opt_ LPCWSTR, _In_opt_ LPCWSTR, _In_opt_ const DEVMODEW*)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateDIBitmap@24",
+      "argCount": 6,
+      "signature": "HBITMAP CreateDIBitmap(_In_ HDC, _In_opt_ const BITMAPINFOHEADER*, _In_ DWORD, _In_opt_ const VOID*, _In_opt_ const BITMAPINFO*, _In_ UINT)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_CreateDIBPatternBrush@8",
+      "argCount": 2,
+      "signature": "HBRUSH CreateDIBPatternBrush(_In_ HGLOBAL, _In_ UINT)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_CreateDIBPatternBrushPt@8",
+      "argCount": 2,
+      "signature": "HBRUSH CreateDIBPatternBrushPt(_In_ const VOID*, _In_ UINT)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_CreateDiscardableBitmap@12",
+      "argCount": 3,
+      "signature": "HBITMAP CreateDiscardableBitmap(_In_, _In_, _In_)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_CreateEllipticRgn@16",
+      "argCount": 4,
+      "signature": "HRGN CreateEllipticRgn(_In_, _In_, _In_, _In_)",
+      "returnType": "HRGN"
+    },
+    {
+      "name": "_CreateEllipticRgnIndirect@4",
+      "argCount": 1,
+      "signature": "HRGN CreateEllipticRgnIndirect(_In_)",
+      "returnType": "HRGN"
+    },
+    {
+      "name": "_CreateEnhMetaFileA@16",
+      "argCount": 4,
+      "signature": "HDC CreateEnhMetaFileA(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateEnhMetaFileW@16",
+      "argCount": 4,
+      "signature": "HDC CreateEnhMetaFileW(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateFontA@56",
+      "argCount": 14,
+      "signature": "HFONT CreateFontA(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateFontW@56",
+      "argCount": 14,
+      "signature": "HFONT CreateFontW(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateFontIndirectA@4",
+      "argCount": 1,
+      "signature": "HFONT CreateFontIndirectA(_In_ const LOGFONTA*)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateFontIndirectW@4",
+      "argCount": 1,
+      "signature": "HFONT CreateFontIndirectW(_In_ const LOGFONTW*)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateFontIndirectExA@4",
+      "argCount": 1,
+      "signature": "HFONT CreateFontIndirectExA(const ENUMLOGFONTEXDVA *)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateFontIndirectExW@4",
+      "argCount": 1,
+      "signature": "HFONT CreateFontIndirectExW(const ENUMLOGFONTEXDVW *)",
+      "returnType": "HFONT"
+    },
+    {
+      "name": "_CreateHalftonePalette@4",
+      "argCount": 1,
+      "signature": "HPALETTE CreateHalftonePalette(_In_opt_)",
+      "returnType": "HPALETTE"
+    },
+    {
+      "name": "_CreateHatchBrush@8",
+      "argCount": 2,
+      "signature": "HBRUSH CreateHatchBrush(_In_, _In_)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_CreateICA@16",
+      "argCount": 4,
+      "signature": "HDC CreateICA(_In_opt_, _In_opt_, _In_opt_, _In_opt_ const DEVMODEA*)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateICW@16",
+      "argCount": 4,
+      "signature": "HDC CreateICW(_In_opt_, _In_opt_, _In_opt_, _In_opt_ const DEVMODEW*)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateMetaFileA@4",
+      "argCount": 1,
+      "signature": "HDC CreateMetaFileA(_In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreateMetaFileW@4",
+      "argCount": 1,
+      "signature": "HDC CreateMetaFileW(_In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_CreatePatternBrush@4",
+      "argCount": 1,
+      "signature": "HBRUSH CreatePatternBrush(_In_)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_CreatePen@12",
+      "argCount": 3,
+      "signature": "HPEN CreatePen(_In_, _In_, _In_)",
+      "returnType": "HPEN"
+    },
+    {
+      "name": "_CreatePenIndirect@4",
+      "argCount": 1,
+      "signature": "HPEN CreatePenIndirect(_In_ const LOGPEN*)",
+      "returnType": "HPEN"
+    },
+    {
+      "name": "_CreateRectRgn@16",
+      "argCount": 4,
+      "signature": "HRGN CreateRectRgn(_In_, _In_, _In_, _In_)",
+      "returnType": "HRGN"
+    },
+    {
+      "name": "_CreateRectRgnIndirect@4",
+      "argCount": 1,
+      "signature": "HRGN CreateRectRgnIndirect(_In_)",
+      "returnType": "HRGN"
+    },
+    {
+      "name": "_CreateRoundRectRgn@24",
+      "argCount": 6,
+      "signature": "HRGN CreateRoundRectRgn(_In_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "HRGN"
+    },
+    {
+      "name": "_CreateScalableFontResourceA@16",
+      "argCount": 4,
+      "signature": "BOOL CreateScalableFontResourceA(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateScalableFontResourceW@16",
+      "argCount": 4,
+      "signature": "BOOL CreateScalableFontResourceW(_In_, _In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateSolidBrush@4",
+      "argCount": 1,
+      "signature": "HBRUSH CreateSolidBrush(_In_)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_SelectVisRgn@8",
+      "argCount": 2,
+      "signature": "INT SelectVisRgn(HDC, HRGN)",
+      "returnType": "INT"
+    },
+    {
+      "name": "_SelectClipPath@8",
+      "argCount": 2,
+      "signature": "BOOL SelectClipPath(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SelectClipRgn@8",
+      "argCount": 2,
+      "signature": "int SelectClipRgn(_In_, _In_opt_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SelectObject@8",
+      "argCount": 2,
+      "signature": "HGDIOBJ SelectObject(_In_, _In_)",
+      "returnType": "HGDIOBJ"
+    },
+    {
+      "name": "_SelectPalette@12",
+      "argCount": 3,
+      "signature": "HPALETTE SelectPalette(_In_, _In_, _In_)",
+      "returnType": "HPALETTE"
+    },
+    {
+      "name": "_DeleteColorSpace@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteColorSpace(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteDC@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteDC(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteEnhMetaFile@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteEnhMetaFile(_In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteMetaFile@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteMetaFile(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DeleteObject@4",
+      "argCount": 1,
+      "signature": "BOOL DeleteObject(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_Rectangle@20",
+      "argCount": 5,
+      "signature": "BOOL Rectangle(_In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_Ellipse@20",
+      "argCount": 5,
+      "signature": "BOOL Ellipse(_In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MoveToEx@16",
+      "argCount": 4,
+      "signature": "BOOL MoveToEx(_In_, _In_, _In_, _Out_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_LineTo@12",
+      "argCount": 3,
+      "signature": "BOOL LineTo(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDeviceCaps@8",
+      "argCount": 2,
+      "signature": "int GetDeviceCaps(_In_opt_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetTextAlign@4",
+      "argCount": 1,
+      "signature": "UINT GetTextAlign(_In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetTextCharacterExtra@4",
+      "argCount": 1,
+      "signature": "int GetTextCharacterExtra(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetTextCharset@4",
+      "argCount": 1,
+      "signature": "int GetTextCharset(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetTextCharsetInfo@12",
+      "argCount": 3,
+      "signature": "int GetTextCharsetInfo(_In_, _Out_opt_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetTextColor@4",
+      "argCount": 1,
+      "signature": "COLORREF GetTextColor(_In_)",
+      "returnType": "COLORREF"
+    },
+    {
+      "name": "_GetTextMetricsA@8",
+      "argCount": 2,
+      "signature": "BOOL GetTextMetricsA(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetTextMetricsW@8",
+      "argCount": 2,
+      "signature": "BOOL GetTextMetricsW(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetObjectType@4",
+      "argCount": 1,
+      "signature": "DWORD GetObjectType(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetPixel@12",
+      "argCount": 3,
+      "signature": "COLORREF GetPixel(_In_, _In_, _In_)",
+      "returnType": "COLORREF"
+    },
+    {
+      "name": "_GetPixelFormat@4",
+      "argCount": 1,
+      "signature": "int GetPixelFormat(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_StretchBlt@44",
+      "argCount": 11,
+      "signature": "BOOL StretchBlt(_In_, _In_, _In_, _In_, _In_, _In_opt_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_StretchDIBits@52",
+      "argCount": 13,
+      "signature": "int StretchDIBits(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_ const VOID *, _In_ const BITMAPINFO *, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_BitBlt@36",
+      "argCount": 9,
+      "signature": "BOOL BitBlt(_In_ HDC, _In_ INT, _In_ INT, _In_ INT, _In_ INT, _In_opt_ HDC, _In_ INT, _In_ INT, _In_ DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDIBits@28",
+      "argCount": 7,
+      "signature": "int GetDIBits(_In_ HDC, _In_ HBITMAP, _In_ UINT, _In_ UINT, _Out_opt_ LPVOID, _Inout_ LPBITMAPINFO, _In_ UINT)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetDIBColorTable@16",
+      "argCount": 4,
+      "signature": "UINT GetDIBColorTable(_In_ HDC, _In_ UINT, _In_ UINT, _Out_ RGBQUAD *)",
+      "returnType": "UINT"
+    }
+  ]
+}

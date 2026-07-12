@@ -1,0 +1,1194 @@
+{
+  "source": "ddraw.h",
+  "generated": "2026-01-19T08:26:10.682Z",
+  "interfaces": [
+    {
+      "interface": "IDirectDraw",
+      "methods": [
+        {
+          "name": "Compact",
+          "cParams": 0,
+          "vtableIndex": 0,
+          "signature": "IDirectDraw::Compact()"
+        },
+        {
+          "name": "CreateClipper",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirectDraw::CreateClipper(DWORD, LPDIRECTDRAWCLIPPER *, IUnknown *)"
+        },
+        {
+          "name": "CreatePalette",
+          "cParams": 4,
+          "vtableIndex": 2,
+          "signature": "IDirectDraw::CreatePalette(DWORD, LPPALETTEENTRY, LPDIRECTDRAWPALETTE *, IUnknown *)"
+        },
+        {
+          "name": "CreateSurface",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDraw::CreateSurface(LPDDSURFACEDESC, LPDIRECTDRAWSURFACE *, IUnknown *)"
+        },
+        {
+          "name": "DuplicateSurface",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirectDraw::DuplicateSurface(LPDIRECTDRAWSURFACE, LPDIRECTDRAWSURFACE *)"
+        },
+        {
+          "name": "EnumDisplayModes",
+          "cParams": 4,
+          "vtableIndex": 5,
+          "signature": "IDirectDraw::EnumDisplayModes(DWORD, LPDDSURFACEDESC, LPVOID, LPDDENUMMODESCALLBACK)"
+        },
+        {
+          "name": "EnumSurfaces",
+          "cParams": 4,
+          "vtableIndex": 6,
+          "signature": "IDirectDraw::EnumSurfaces(DWORD, LPDDSURFACEDESC, LPVOID, LPDDENUMSURFACESCALLBACK)"
+        },
+        {
+          "name": "FlipToGDISurface",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirectDraw::FlipToGDISurface()"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDraw::GetCaps(LPDDCAPS, LPDDCAPS)"
+        },
+        {
+          "name": "GetDisplayMode",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirectDraw::GetDisplayMode(LPDDSURFACEDESC)"
+        },
+        {
+          "name": "GetFourCCCodes",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirectDraw::GetFourCCCodes(LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetGDISurface",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDraw::GetGDISurface(LPDIRECTDRAWSURFACE *)"
+        },
+        {
+          "name": "GetMonitorFrequency",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDraw::GetMonitorFrequency(LPDWORD)"
+        },
+        {
+          "name": "GetScanLine",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirectDraw::GetScanLine(LPDWORD)"
+        },
+        {
+          "name": "GetVerticalBlankStatus",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDraw::GetVerticalBlankStatus(LPBOOL)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDraw::Initialize(GUID *)"
+        },
+        {
+          "name": "RestoreDisplayMode",
+          "cParams": 0,
+          "vtableIndex": 16,
+          "signature": "IDirectDraw::RestoreDisplayMode()"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 17,
+          "signature": "IDirectDraw::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "SetDisplayMode",
+          "cParams": 3,
+          "vtableIndex": 18,
+          "signature": "IDirectDraw::SetDisplayMode(DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "WaitForVerticalBlank",
+          "cParams": 2,
+          "vtableIndex": 19,
+          "signature": "IDirectDraw::WaitForVerticalBlank(DWORD, HANDLE)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectDraw4",
+      "methods": [
+        {
+          "name": "Compact",
+          "cParams": 0,
+          "vtableIndex": 0,
+          "signature": "IDirectDraw4::Compact()"
+        },
+        {
+          "name": "CreateClipper",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirectDraw4::CreateClipper(DWORD, LPDIRECTDRAWCLIPPER *, IUnknown *)"
+        },
+        {
+          "name": "CreatePalette",
+          "cParams": 4,
+          "vtableIndex": 2,
+          "signature": "IDirectDraw4::CreatePalette(DWORD, LPPALETTEENTRY, LPDIRECTDRAWPALETTE *, IUnknown *)"
+        },
+        {
+          "name": "CreateSurface",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDraw4::CreateSurface(LPDDSURFACEDESC2, LPDIRECTDRAWSURFACE4 *, IUnknown *)"
+        },
+        {
+          "name": "DuplicateSurface",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirectDraw4::DuplicateSurface(LPDIRECTDRAWSURFACE4, LPDIRECTDRAWSURFACE4 *)"
+        },
+        {
+          "name": "EnumDisplayModes",
+          "cParams": 4,
+          "vtableIndex": 5,
+          "signature": "IDirectDraw4::EnumDisplayModes(DWORD, LPDDSURFACEDESC2, LPVOID, LPDDENUMMODESCALLBACK2)"
+        },
+        {
+          "name": "EnumSurfaces",
+          "cParams": 4,
+          "vtableIndex": 6,
+          "signature": "IDirectDraw4::EnumSurfaces(DWORD, LPDDSURFACEDESC2, LPVOID, LPDDENUMSURFACESCALLBACK2)"
+        },
+        {
+          "name": "FlipToGDISurface",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirectDraw4::FlipToGDISurface()"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDraw4::GetCaps(LPDDCAPS, LPDDCAPS)"
+        },
+        {
+          "name": "GetDisplayMode",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirectDraw4::GetDisplayMode(LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "GetFourCCCodes",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirectDraw4::GetFourCCCodes(LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetGDISurface",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDraw4::GetGDISurface(LPDIRECTDRAWSURFACE4 *)"
+        },
+        {
+          "name": "GetMonitorFrequency",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDraw4::GetMonitorFrequency(LPDWORD)"
+        },
+        {
+          "name": "GetScanLine",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirectDraw4::GetScanLine(LPDWORD)"
+        },
+        {
+          "name": "GetVerticalBlankStatus",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDraw4::GetVerticalBlankStatus(LPBOOL)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDraw4::Initialize(GUID *)"
+        },
+        {
+          "name": "RestoreDisplayMode",
+          "cParams": 0,
+          "vtableIndex": 16,
+          "signature": "IDirectDraw4::RestoreDisplayMode()"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 17,
+          "signature": "IDirectDraw4::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "SetDisplayMode",
+          "cParams": 5,
+          "vtableIndex": 18,
+          "signature": "IDirectDraw4::SetDisplayMode(DWORD, DWORD, DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "WaitForVerticalBlank",
+          "cParams": 2,
+          "vtableIndex": 19,
+          "signature": "IDirectDraw4::WaitForVerticalBlank(DWORD, HANDLE)"
+        },
+        {
+          "name": "GetAvailableVidMem",
+          "cParams": 3,
+          "vtableIndex": 20,
+          "signature": "IDirectDraw4::GetAvailableVidMem(LPDDSCAPS2, LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetSurfaceFromDC",
+          "cParams": 2,
+          "vtableIndex": 21,
+          "signature": "IDirectDraw4::GetSurfaceFromDC(HDC, LPDIRECTDRAWSURFACE4 *)"
+        },
+        {
+          "name": "RestoreAllSurfaces",
+          "cParams": 0,
+          "vtableIndex": 22,
+          "signature": "IDirectDraw4::RestoreAllSurfaces()"
+        },
+        {
+          "name": "TestCooperativeLevel",
+          "cParams": 0,
+          "vtableIndex": 23,
+          "signature": "IDirectDraw4::TestCooperativeLevel()"
+        },
+        {
+          "name": "GetDeviceIdentifier",
+          "cParams": 2,
+          "vtableIndex": 24,
+          "signature": "IDirectDraw4::GetDeviceIdentifier(LPDDDEVICEIDENTIFIER, DWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectDraw7",
+      "methods": [
+        {
+          "name": "Compact",
+          "cParams": 0,
+          "vtableIndex": 0,
+          "signature": "IDirectDraw7::Compact()"
+        },
+        {
+          "name": "CreateClipper",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirectDraw7::CreateClipper(DWORD, LPDIRECTDRAWCLIPPER *, IUnknown *)"
+        },
+        {
+          "name": "CreatePalette",
+          "cParams": 4,
+          "vtableIndex": 2,
+          "signature": "IDirectDraw7::CreatePalette(DWORD, LPPALETTEENTRY, LPDIRECTDRAWPALETTE *, IUnknown *)"
+        },
+        {
+          "name": "CreateSurface",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDraw7::CreateSurface(LPDDSURFACEDESC2, LPDIRECTDRAWSURFACE7 *, IUnknown *)"
+        },
+        {
+          "name": "DuplicateSurface",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirectDraw7::DuplicateSurface(LPDIRECTDRAWSURFACE7, LPDIRECTDRAWSURFACE7 *)"
+        },
+        {
+          "name": "EnumDisplayModes",
+          "cParams": 4,
+          "vtableIndex": 5,
+          "signature": "IDirectDraw7::EnumDisplayModes(DWORD, LPDDSURFACEDESC2, LPVOID, LPDDENUMMODESCALLBACK2)"
+        },
+        {
+          "name": "EnumSurfaces",
+          "cParams": 4,
+          "vtableIndex": 6,
+          "signature": "IDirectDraw7::EnumSurfaces(DWORD, LPDDSURFACEDESC2, LPVOID, LPDDENUMSURFACESCALLBACK7)"
+        },
+        {
+          "name": "FlipToGDISurface",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirectDraw7::FlipToGDISurface()"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDraw7::GetCaps(LPDDCAPS, LPDDCAPS)"
+        },
+        {
+          "name": "GetDisplayMode",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirectDraw7::GetDisplayMode(LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "GetFourCCCodes",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirectDraw7::GetFourCCCodes(LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetGDISurface",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDraw7::GetGDISurface(LPDIRECTDRAWSURFACE7 *)"
+        },
+        {
+          "name": "GetMonitorFrequency",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDraw7::GetMonitorFrequency(LPDWORD)"
+        },
+        {
+          "name": "GetScanLine",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirectDraw7::GetScanLine(LPDWORD)"
+        },
+        {
+          "name": "GetVerticalBlankStatus",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDraw7::GetVerticalBlankStatus(LPBOOL)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDraw7::Initialize(GUID *)"
+        },
+        {
+          "name": "RestoreDisplayMode",
+          "cParams": 0,
+          "vtableIndex": 16,
+          "signature": "IDirectDraw7::RestoreDisplayMode()"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 17,
+          "signature": "IDirectDraw7::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "SetDisplayMode",
+          "cParams": 5,
+          "vtableIndex": 18,
+          "signature": "IDirectDraw7::SetDisplayMode(DWORD, DWORD, DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "WaitForVerticalBlank",
+          "cParams": 2,
+          "vtableIndex": 19,
+          "signature": "IDirectDraw7::WaitForVerticalBlank(DWORD, HANDLE)"
+        },
+        {
+          "name": "GetAvailableVidMem",
+          "cParams": 3,
+          "vtableIndex": 20,
+          "signature": "IDirectDraw7::GetAvailableVidMem(LPDDSCAPS2, LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetSurfaceFromDC",
+          "cParams": 2,
+          "vtableIndex": 21,
+          "signature": "IDirectDraw7::GetSurfaceFromDC(HDC, LPDIRECTDRAWSURFACE7 *)"
+        },
+        {
+          "name": "RestoreAllSurfaces",
+          "cParams": 0,
+          "vtableIndex": 22,
+          "signature": "IDirectDraw7::RestoreAllSurfaces()"
+        },
+        {
+          "name": "TestCooperativeLevel",
+          "cParams": 0,
+          "vtableIndex": 23,
+          "signature": "IDirectDraw7::TestCooperativeLevel()"
+        },
+        {
+          "name": "GetDeviceIdentifier",
+          "cParams": 2,
+          "vtableIndex": 24,
+          "signature": "IDirectDraw7::GetDeviceIdentifier(LPDDDEVICEIDENTIFIER2, DWORD)"
+        },
+        {
+          "name": "StartModeTest",
+          "cParams": 3,
+          "vtableIndex": 25,
+          "signature": "IDirectDraw7::StartModeTest(LPSIZE, DWORD, DWORD)"
+        },
+        {
+          "name": "EvaluateMode",
+          "cParams": 2,
+          "vtableIndex": 26,
+          "signature": "IDirectDraw7::EvaluateMode(DWORD, DWORD *)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectDrawSurface",
+      "methods": [
+        {
+          "name": "AddAttachedSurface",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectDrawSurface::AddAttachedSurface(LPDIRECTDRAWSURFACE)"
+        },
+        {
+          "name": "AddOverlayDirtyRect",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirectDrawSurface::AddOverlayDirtyRect(LPRECT)"
+        },
+        {
+          "name": "Blt",
+          "cParams": 5,
+          "vtableIndex": 2,
+          "signature": "IDirectDrawSurface::Blt(LPRECT, LPDIRECTDRAWSURFACE, LPRECT, DWORD, LPDDBLTFX)"
+        },
+        {
+          "name": "BltBatch",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDrawSurface::BltBatch(LPDDBLTBATCH, DWORD, DWORD)"
+        },
+        {
+          "name": "BltFast",
+          "cParams": 5,
+          "vtableIndex": 4,
+          "signature": "IDirectDrawSurface::BltFast(DWORD, DWORD, LPDIRECTDRAWSURFACE, LPRECT, DWORD)"
+        },
+        {
+          "name": "DeleteAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirectDrawSurface::DeleteAttachedSurface(DWORD, LPDIRECTDRAWSURFACE)"
+        },
+        {
+          "name": "EnumAttachedSurfaces",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirectDrawSurface::EnumAttachedSurfaces(LPVOID, LPDDENUMSURFACESCALLBACK)"
+        },
+        {
+          "name": "EnumOverlayZOrders",
+          "cParams": 3,
+          "vtableIndex": 7,
+          "signature": "IDirectDrawSurface::EnumOverlayZOrders(DWORD, LPVOID, LPDDENUMSURFACESCALLBACK)"
+        },
+        {
+          "name": "Flip",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDrawSurface::Flip(LPDIRECTDRAWSURFACE, DWORD)"
+        },
+        {
+          "name": "GetAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 9,
+          "signature": "IDirectDrawSurface::GetAttachedSurface(LPDDSCAPS, LPDIRECTDRAWSURFACE *)"
+        },
+        {
+          "name": "GetBltStatus",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirectDrawSurface::GetBltStatus(DWORD)"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDrawSurface::GetCaps(LPDDSCAPS)"
+        },
+        {
+          "name": "GetClipper",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDrawSurface::GetClipper(LPDIRECTDRAWCLIPPER *)"
+        },
+        {
+          "name": "GetColorKey",
+          "cParams": 2,
+          "vtableIndex": 13,
+          "signature": "IDirectDrawSurface::GetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "GetDC",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDrawSurface::GetDC(HDC *)"
+        },
+        {
+          "name": "GetFlipStatus",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDrawSurface::GetFlipStatus(DWORD)"
+        },
+        {
+          "name": "GetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirectDrawSurface::GetOverlayPosition(LPLONG, LPLONG)"
+        },
+        {
+          "name": "GetPalette",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirectDrawSurface::GetPalette(LPDIRECTDRAWPALETTE *)"
+        },
+        {
+          "name": "GetPixelFormat",
+          "cParams": 1,
+          "vtableIndex": 18,
+          "signature": "IDirectDrawSurface::GetPixelFormat(LPDDPIXELFORMAT)"
+        },
+        {
+          "name": "GetSurfaceDesc",
+          "cParams": 1,
+          "vtableIndex": 19,
+          "signature": "IDirectDrawSurface::GetSurfaceDesc(LPDDSURFACEDESC)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 20,
+          "signature": "IDirectDrawSurface::Initialize(LPDIRECTDRAW, LPDDSURFACEDESC)"
+        },
+        {
+          "name": "IsLost",
+          "cParams": 0,
+          "vtableIndex": 21,
+          "signature": "IDirectDrawSurface::IsLost()"
+        },
+        {
+          "name": "Lock",
+          "cParams": 4,
+          "vtableIndex": 22,
+          "signature": "IDirectDrawSurface::Lock(LPRECT, LPDDSURFACEDESC, DWORD, HANDLE)"
+        },
+        {
+          "name": "ReleaseDC",
+          "cParams": 1,
+          "vtableIndex": 23,
+          "signature": "IDirectDrawSurface::ReleaseDC(HDC)"
+        },
+        {
+          "name": "Restore",
+          "cParams": 0,
+          "vtableIndex": 24,
+          "signature": "IDirectDrawSurface::Restore()"
+        },
+        {
+          "name": "SetClipper",
+          "cParams": 1,
+          "vtableIndex": 25,
+          "signature": "IDirectDrawSurface::SetClipper(LPDIRECTDRAWCLIPPER)"
+        },
+        {
+          "name": "SetColorKey",
+          "cParams": 2,
+          "vtableIndex": 26,
+          "signature": "IDirectDrawSurface::SetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "SetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 27,
+          "signature": "IDirectDrawSurface::SetOverlayPosition(LONG, LONG)"
+        },
+        {
+          "name": "SetPalette",
+          "cParams": 1,
+          "vtableIndex": 28,
+          "signature": "IDirectDrawSurface::SetPalette(LPDIRECTDRAWPALETTE)"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 1,
+          "vtableIndex": 29,
+          "signature": "IDirectDrawSurface::Unlock(LPVOID)"
+        },
+        {
+          "name": "UpdateOverlay",
+          "cParams": 5,
+          "vtableIndex": 30,
+          "signature": "IDirectDrawSurface::UpdateOverlay(LPRECT, LPDIRECTDRAWSURFACE, LPRECT, DWORD, LPDDOVERLAYFX)"
+        },
+        {
+          "name": "UpdateOverlayDisplay",
+          "cParams": 1,
+          "vtableIndex": 31,
+          "signature": "IDirectDrawSurface::UpdateOverlayDisplay(DWORD)"
+        },
+        {
+          "name": "UpdateOverlayZOrder",
+          "cParams": 2,
+          "vtableIndex": 32,
+          "signature": "IDirectDrawSurface::UpdateOverlayZOrder(DWORD, LPDIRECTDRAWSURFACE)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectDrawSurface4",
+      "methods": [
+        {
+          "name": "AddAttachedSurface",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectDrawSurface4::AddAttachedSurface(LPDIRECTDRAWSURFACE4)"
+        },
+        {
+          "name": "AddOverlayDirtyRect",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirectDrawSurface4::AddOverlayDirtyRect(LPRECT)"
+        },
+        {
+          "name": "Blt",
+          "cParams": 5,
+          "vtableIndex": 2,
+          "signature": "IDirectDrawSurface4::Blt(LPRECT, LPDIRECTDRAWSURFACE4, LPRECT, DWORD, LPDDBLTFX)"
+        },
+        {
+          "name": "BltBatch",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDrawSurface4::BltBatch(LPDDBLTBATCH, DWORD, DWORD)"
+        },
+        {
+          "name": "BltFast",
+          "cParams": 5,
+          "vtableIndex": 4,
+          "signature": "IDirectDrawSurface4::BltFast(DWORD, DWORD, LPDIRECTDRAWSURFACE4, LPRECT, DWORD)"
+        },
+        {
+          "name": "DeleteAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirectDrawSurface4::DeleteAttachedSurface(DWORD, LPDIRECTDRAWSURFACE4)"
+        },
+        {
+          "name": "EnumAttachedSurfaces",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirectDrawSurface4::EnumAttachedSurfaces(LPVOID, LPDDENUMSURFACESCALLBACK2)"
+        },
+        {
+          "name": "EnumOverlayZOrders",
+          "cParams": 3,
+          "vtableIndex": 7,
+          "signature": "IDirectDrawSurface4::EnumOverlayZOrders(DWORD, LPVOID, LPDDENUMSURFACESCALLBACK2)"
+        },
+        {
+          "name": "Flip",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDrawSurface4::Flip(LPDIRECTDRAWSURFACE4, DWORD)"
+        },
+        {
+          "name": "GetAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 9,
+          "signature": "IDirectDrawSurface4::GetAttachedSurface(LPDDSCAPS2, LPDIRECTDRAWSURFACE4 *)"
+        },
+        {
+          "name": "GetBltStatus",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirectDrawSurface4::GetBltStatus(DWORD)"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDrawSurface4::GetCaps(LPDDSCAPS2)"
+        },
+        {
+          "name": "GetClipper",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDrawSurface4::GetClipper(LPDIRECTDRAWCLIPPER *)"
+        },
+        {
+          "name": "GetColorKey",
+          "cParams": 2,
+          "vtableIndex": 13,
+          "signature": "IDirectDrawSurface4::GetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "GetDC",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDrawSurface4::GetDC(HDC *)"
+        },
+        {
+          "name": "GetFlipStatus",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDrawSurface4::GetFlipStatus(DWORD)"
+        },
+        {
+          "name": "GetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirectDrawSurface4::GetOverlayPosition(LPLONG, LPLONG)"
+        },
+        {
+          "name": "GetPalette",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirectDrawSurface4::GetPalette(LPDIRECTDRAWPALETTE *)"
+        },
+        {
+          "name": "GetPixelFormat",
+          "cParams": 1,
+          "vtableIndex": 18,
+          "signature": "IDirectDrawSurface4::GetPixelFormat(LPDDPIXELFORMAT)"
+        },
+        {
+          "name": "GetSurfaceDesc",
+          "cParams": 1,
+          "vtableIndex": 19,
+          "signature": "IDirectDrawSurface4::GetSurfaceDesc(LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 20,
+          "signature": "IDirectDrawSurface4::Initialize(LPDIRECTDRAW, LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "IsLost",
+          "cParams": 0,
+          "vtableIndex": 21,
+          "signature": "IDirectDrawSurface4::IsLost()"
+        },
+        {
+          "name": "Lock",
+          "cParams": 4,
+          "vtableIndex": 22,
+          "signature": "IDirectDrawSurface4::Lock(LPRECT, LPDDSURFACEDESC2, DWORD, HANDLE)"
+        },
+        {
+          "name": "ReleaseDC",
+          "cParams": 1,
+          "vtableIndex": 23,
+          "signature": "IDirectDrawSurface4::ReleaseDC(HDC)"
+        },
+        {
+          "name": "Restore",
+          "cParams": 0,
+          "vtableIndex": 24,
+          "signature": "IDirectDrawSurface4::Restore()"
+        },
+        {
+          "name": "SetClipper",
+          "cParams": 1,
+          "vtableIndex": 25,
+          "signature": "IDirectDrawSurface4::SetClipper(LPDIRECTDRAWCLIPPER)"
+        },
+        {
+          "name": "SetColorKey",
+          "cParams": 2,
+          "vtableIndex": 26,
+          "signature": "IDirectDrawSurface4::SetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "SetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 27,
+          "signature": "IDirectDrawSurface4::SetOverlayPosition(LONG, LONG)"
+        },
+        {
+          "name": "SetPalette",
+          "cParams": 1,
+          "vtableIndex": 28,
+          "signature": "IDirectDrawSurface4::SetPalette(LPDIRECTDRAWPALETTE)"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 1,
+          "vtableIndex": 29,
+          "signature": "IDirectDrawSurface4::Unlock(LPRECT)"
+        },
+        {
+          "name": "UpdateOverlay",
+          "cParams": 5,
+          "vtableIndex": 30,
+          "signature": "IDirectDrawSurface4::UpdateOverlay(LPRECT, LPDIRECTDRAWSURFACE4, LPRECT, DWORD, LPDDOVERLAYFX)"
+        },
+        {
+          "name": "UpdateOverlayDisplay",
+          "cParams": 1,
+          "vtableIndex": 31,
+          "signature": "IDirectDrawSurface4::UpdateOverlayDisplay(DWORD)"
+        },
+        {
+          "name": "UpdateOverlayZOrder",
+          "cParams": 2,
+          "vtableIndex": 32,
+          "signature": "IDirectDrawSurface4::UpdateOverlayZOrder(DWORD, LPDIRECTDRAWSURFACE4)"
+        },
+        {
+          "name": "GetDDInterface",
+          "cParams": 1,
+          "vtableIndex": 33,
+          "signature": "IDirectDrawSurface4::GetDDInterface(LPVOID *)"
+        },
+        {
+          "name": "PageLock",
+          "cParams": 1,
+          "vtableIndex": 34,
+          "signature": "IDirectDrawSurface4::PageLock(DWORD)"
+        },
+        {
+          "name": "PageUnlock",
+          "cParams": 1,
+          "vtableIndex": 35,
+          "signature": "IDirectDrawSurface4::PageUnlock(DWORD)"
+        },
+        {
+          "name": "SetSurfaceDesc",
+          "cParams": 2,
+          "vtableIndex": 36,
+          "signature": "IDirectDrawSurface4::SetSurfaceDesc(LPDDSURFACEDESC2, DWORD)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 37,
+          "signature": "IDirectDrawSurface4::SetPrivateData(REFGUID, LPVOID, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 38,
+          "signature": "IDirectDrawSurface4::GetPrivateData(REFGUID, LPVOID, LPDWORD)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 39,
+          "signature": "IDirectDrawSurface4::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "GetUniquenessValue",
+          "cParams": 1,
+          "vtableIndex": 40,
+          "signature": "IDirectDrawSurface4::GetUniquenessValue(LPDWORD)"
+        },
+        {
+          "name": "ChangeUniquenessValue",
+          "cParams": 0,
+          "vtableIndex": 41,
+          "signature": "IDirectDrawSurface4::ChangeUniquenessValue()"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectDrawSurface7",
+      "methods": [
+        {
+          "name": "AddAttachedSurface",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectDrawSurface7::AddAttachedSurface(LPDIRECTDRAWSURFACE7)"
+        },
+        {
+          "name": "AddOverlayDirtyRect",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirectDrawSurface7::AddOverlayDirtyRect(LPRECT)"
+        },
+        {
+          "name": "Blt",
+          "cParams": 5,
+          "vtableIndex": 2,
+          "signature": "IDirectDrawSurface7::Blt(LPRECT, LPDIRECTDRAWSURFACE7, LPRECT, DWORD, LPDDBLTFX)"
+        },
+        {
+          "name": "BltBatch",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirectDrawSurface7::BltBatch(LPDDBLTBATCH, DWORD, DWORD)"
+        },
+        {
+          "name": "BltFast",
+          "cParams": 5,
+          "vtableIndex": 4,
+          "signature": "IDirectDrawSurface7::BltFast(DWORD, DWORD, LPDIRECTDRAWSURFACE7, LPRECT, DWORD)"
+        },
+        {
+          "name": "DeleteAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirectDrawSurface7::DeleteAttachedSurface(DWORD, LPDIRECTDRAWSURFACE7)"
+        },
+        {
+          "name": "EnumAttachedSurfaces",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirectDrawSurface7::EnumAttachedSurfaces(LPVOID, LPDDENUMSURFACESCALLBACK7)"
+        },
+        {
+          "name": "EnumOverlayZOrders",
+          "cParams": 3,
+          "vtableIndex": 7,
+          "signature": "IDirectDrawSurface7::EnumOverlayZOrders(DWORD, LPVOID, LPDDENUMSURFACESCALLBACK7)"
+        },
+        {
+          "name": "Flip",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirectDrawSurface7::Flip(LPDIRECTDRAWSURFACE7, DWORD)"
+        },
+        {
+          "name": "GetAttachedSurface",
+          "cParams": 2,
+          "vtableIndex": 9,
+          "signature": "IDirectDrawSurface7::GetAttachedSurface(LPDDSCAPS2, LPDIRECTDRAWSURFACE7 *)"
+        },
+        {
+          "name": "GetBltStatus",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirectDrawSurface7::GetBltStatus(DWORD)"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectDrawSurface7::GetCaps(LPDDSCAPS2)"
+        },
+        {
+          "name": "GetClipper",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectDrawSurface7::GetClipper(LPDIRECTDRAWCLIPPER *)"
+        },
+        {
+          "name": "GetColorKey",
+          "cParams": 2,
+          "vtableIndex": 13,
+          "signature": "IDirectDrawSurface7::GetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "GetDC",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectDrawSurface7::GetDC(HDC *)"
+        },
+        {
+          "name": "GetFlipStatus",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirectDrawSurface7::GetFlipStatus(DWORD)"
+        },
+        {
+          "name": "GetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirectDrawSurface7::GetOverlayPosition(LPLONG, LPLONG)"
+        },
+        {
+          "name": "GetPalette",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirectDrawSurface7::GetPalette(LPDIRECTDRAWPALETTE *)"
+        },
+        {
+          "name": "GetPixelFormat",
+          "cParams": 1,
+          "vtableIndex": 18,
+          "signature": "IDirectDrawSurface7::GetPixelFormat(LPDDPIXELFORMAT)"
+        },
+        {
+          "name": "GetSurfaceDesc",
+          "cParams": 1,
+          "vtableIndex": 19,
+          "signature": "IDirectDrawSurface7::GetSurfaceDesc(LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 20,
+          "signature": "IDirectDrawSurface7::Initialize(LPDIRECTDRAW, LPDDSURFACEDESC2)"
+        },
+        {
+          "name": "IsLost",
+          "cParams": 0,
+          "vtableIndex": 21,
+          "signature": "IDirectDrawSurface7::IsLost()"
+        },
+        {
+          "name": "Lock",
+          "cParams": 4,
+          "vtableIndex": 22,
+          "signature": "IDirectDrawSurface7::Lock(LPRECT, LPDDSURFACEDESC2, DWORD, HANDLE)"
+        },
+        {
+          "name": "ReleaseDC",
+          "cParams": 1,
+          "vtableIndex": 23,
+          "signature": "IDirectDrawSurface7::ReleaseDC(HDC)"
+        },
+        {
+          "name": "Restore",
+          "cParams": 0,
+          "vtableIndex": 24,
+          "signature": "IDirectDrawSurface7::Restore()"
+        },
+        {
+          "name": "SetClipper",
+          "cParams": 1,
+          "vtableIndex": 25,
+          "signature": "IDirectDrawSurface7::SetClipper(LPDIRECTDRAWCLIPPER)"
+        },
+        {
+          "name": "SetColorKey",
+          "cParams": 2,
+          "vtableIndex": 26,
+          "signature": "IDirectDrawSurface7::SetColorKey(DWORD, LPDDCOLORKEY)"
+        },
+        {
+          "name": "SetOverlayPosition",
+          "cParams": 2,
+          "vtableIndex": 27,
+          "signature": "IDirectDrawSurface7::SetOverlayPosition(LONG, LONG)"
+        },
+        {
+          "name": "SetPalette",
+          "cParams": 1,
+          "vtableIndex": 28,
+          "signature": "IDirectDrawSurface7::SetPalette(LPDIRECTDRAWPALETTE)"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 1,
+          "vtableIndex": 29,
+          "signature": "IDirectDrawSurface7::Unlock(LPRECT)"
+        },
+        {
+          "name": "UpdateOverlay",
+          "cParams": 5,
+          "vtableIndex": 30,
+          "signature": "IDirectDrawSurface7::UpdateOverlay(LPRECT, LPDIRECTDRAWSURFACE7, LPRECT, DWORD, LPDDOVERLAYFX)"
+        },
+        {
+          "name": "UpdateOverlayDisplay",
+          "cParams": 1,
+          "vtableIndex": 31,
+          "signature": "IDirectDrawSurface7::UpdateOverlayDisplay(DWORD)"
+        },
+        {
+          "name": "UpdateOverlayZOrder",
+          "cParams": 2,
+          "vtableIndex": 32,
+          "signature": "IDirectDrawSurface7::UpdateOverlayZOrder(DWORD, LPDIRECTDRAWSURFACE7)"
+        },
+        {
+          "name": "GetDDInterface",
+          "cParams": 1,
+          "vtableIndex": 33,
+          "signature": "IDirectDrawSurface7::GetDDInterface(LPVOID *)"
+        },
+        {
+          "name": "PageLock",
+          "cParams": 1,
+          "vtableIndex": 34,
+          "signature": "IDirectDrawSurface7::PageLock(DWORD)"
+        },
+        {
+          "name": "PageUnlock",
+          "cParams": 1,
+          "vtableIndex": 35,
+          "signature": "IDirectDrawSurface7::PageUnlock(DWORD)"
+        },
+        {
+          "name": "SetSurfaceDesc",
+          "cParams": 2,
+          "vtableIndex": 36,
+          "signature": "IDirectDrawSurface7::SetSurfaceDesc(LPDDSURFACEDESC2, DWORD)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 37,
+          "signature": "IDirectDrawSurface7::SetPrivateData(REFGUID, LPVOID, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 38,
+          "signature": "IDirectDrawSurface7::GetPrivateData(REFGUID, LPVOID, LPDWORD)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 39,
+          "signature": "IDirectDrawSurface7::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "GetUniquenessValue",
+          "cParams": 1,
+          "vtableIndex": 40,
+          "signature": "IDirectDrawSurface7::GetUniquenessValue(LPDWORD)"
+        },
+        {
+          "name": "ChangeUniquenessValue",
+          "cParams": 0,
+          "vtableIndex": 41,
+          "signature": "IDirectDrawSurface7::ChangeUniquenessValue()"
+        },
+        {
+          "name": "SetPriority",
+          "cParams": 1,
+          "vtableIndex": 42,
+          "signature": "IDirectDrawSurface7::SetPriority(DWORD)"
+        },
+        {
+          "name": "GetPriority",
+          "cParams": 1,
+          "vtableIndex": 43,
+          "signature": "IDirectDrawSurface7::GetPriority(LPDWORD)"
+        },
+        {
+          "name": "SetLOD",
+          "cParams": 1,
+          "vtableIndex": 44,
+          "signature": "IDirectDrawSurface7::SetLOD(DWORD)"
+        },
+        {
+          "name": "GetLOD",
+          "cParams": 1,
+          "vtableIndex": 45,
+          "signature": "IDirectDrawSurface7::GetLOD(LPDWORD)"
+        }
+      ]
+    }
+  ]
+}

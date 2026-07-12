@@ -1,0 +1,21 @@
+[package]
+name = "unpack-streaming"
+version = "0.1.0"
+edition = "2021"
+description = "Installer/archive unpack codecs for BottleShip — LZMA1/LZMA2 (Inno), srep (FreeArc); wasm32 callback I/O"
+
+[lib]
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "gen-fixtures"
+path = "src/bin/gen-fixtures.rs"
+
+[dependencies]
+lzma-rust2 = "0.16"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"
+strip = true

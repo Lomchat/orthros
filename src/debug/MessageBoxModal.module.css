@@ -1,0 +1,21 @@
+.messagebox-modal {
+  min-width: 360px;
+  max-width: 520px;
+}
+
+.messagebox-text {
+  margin: 0;
+  color: #e6f0ff;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.messagebox-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px 20px;
+  border-top: 1px solid #1f2a3a;
+}

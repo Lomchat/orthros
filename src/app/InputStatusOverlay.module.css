@@ -1,0 +1,42 @@
+/* Input-device status — corner overlay on the canvas panel. */
+.input-status {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  gap: 6px;
+}
+
+.input-status__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+  transition: color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+/* Plugged in but game isn't reading it. */
+.input-status__chip--connected {
+  color: rgba(220, 226, 235, 0.65);
+  border-color: rgba(220, 226, 235, 0.22);
+}
+
+/* Game is actively polling the pad. */
+.input-status__chip--active {
+  color: #46d27a;
+  border-color: rgba(70, 210, 122, 0.55);
+  background: rgba(20, 50, 32, 0.55);
+  box-shadow: 0 0 10px rgba(70, 210, 122, 0.35);
+}
+
+.input-status__chip--idle {
+  color: rgba(220, 226, 235, 0.35);
+}

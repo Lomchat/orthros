@@ -1,0 +1,1146 @@
+{
+  "source": "d3d9.h",
+  "generated": "2026-01-19T08:26:10.688Z",
+  "interfaces": [
+    {
+      "interface": "IDirect3D9",
+      "methods": [
+        {
+          "name": "RegisterSoftwareDevice",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3D9::RegisterSoftwareDevice(void*)"
+        },
+        {
+          "name": "GetAdapterCount",
+          "cParams": 0,
+          "vtableIndex": 1,
+          "signature": "IDirect3D9::GetAdapterCount()"
+        },
+        {
+          "name": "GetAdapterIdentifier",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3D9::GetAdapterIdentifier(UINT, DWORD, D3DADAPTER_IDENTIFIER9*)"
+        },
+        {
+          "name": "GetAdapterModeCount",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirect3D9::GetAdapterModeCount(UINT, D3DFORMAT)"
+        },
+        {
+          "name": "EnumAdapterModes",
+          "cParams": 4,
+          "vtableIndex": 4,
+          "signature": "IDirect3D9::EnumAdapterModes(UINT, D3DFORMAT, UINT, D3DDISPLAYMODE*)"
+        },
+        {
+          "name": "GetAdapterDisplayMode",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirect3D9::GetAdapterDisplayMode(UINT, D3DDISPLAYMODE*)"
+        },
+        {
+          "name": "CheckDeviceType",
+          "cParams": 5,
+          "vtableIndex": 6,
+          "signature": "IDirect3D9::CheckDeviceType(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL)"
+        },
+        {
+          "name": "CheckDeviceFormat",
+          "cParams": 6,
+          "vtableIndex": 7,
+          "signature": "IDirect3D9::CheckDeviceFormat(UINT, D3DDEVTYPE, D3DFORMAT, DWORD, D3DRESOURCETYPE, D3DFORMAT)"
+        },
+        {
+          "name": "CheckDeviceMultiSampleType",
+          "cParams": 6,
+          "vtableIndex": 8,
+          "signature": "IDirect3D9::CheckDeviceMultiSampleType(UINT, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE, DWORD*)"
+        },
+        {
+          "name": "CheckDepthStencilMatch",
+          "cParams": 5,
+          "vtableIndex": 9,
+          "signature": "IDirect3D9::CheckDepthStencilMatch(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, D3DFORMAT)"
+        },
+        {
+          "name": "CheckDeviceFormatConversion",
+          "cParams": 4,
+          "vtableIndex": 10,
+          "signature": "IDirect3D9::CheckDeviceFormatConversion(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT)"
+        },
+        {
+          "name": "GetDeviceCaps",
+          "cParams": 3,
+          "vtableIndex": 11,
+          "signature": "IDirect3D9::GetDeviceCaps(UINT, D3DDEVTYPE, D3DCAPS9*)"
+        },
+        {
+          "name": "GetAdapterMonitor",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirect3D9::GetAdapterMonitor(UINT)"
+        },
+        {
+          "name": "CreateDevice",
+          "cParams": 6,
+          "vtableIndex": 13,
+          "signature": "IDirect3D9::CreateDevice(UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*, struct IDirect3DDevice9**)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DDevice9",
+      "methods": [
+        {
+          "name": "TestCooperativeLevel",
+          "cParams": 0,
+          "vtableIndex": 0,
+          "signature": "IDirect3DDevice9::TestCooperativeLevel()"
+        },
+        {
+          "name": "GetAvailableTextureMem",
+          "cParams": 0,
+          "vtableIndex": 1,
+          "signature": "IDirect3DDevice9::GetAvailableTextureMem()"
+        },
+        {
+          "name": "EvictManagedResources",
+          "cParams": 0,
+          "vtableIndex": 2,
+          "signature": "IDirect3DDevice9::EvictManagedResources()"
+        },
+        {
+          "name": "GetDirect3D",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DDevice9::GetDirect3D(IDirect3D9**)"
+        },
+        {
+          "name": "GetDeviceCaps",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DDevice9::GetDeviceCaps(D3DCAPS9*)"
+        },
+        {
+          "name": "GetDisplayMode",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirect3DDevice9::GetDisplayMode(UINT, D3DDISPLAYMODE*)"
+        },
+        {
+          "name": "GetCreationParameters",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirect3DDevice9::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters)"
+        },
+        {
+          "name": "SetCursorProperties",
+          "cParams": 3,
+          "vtableIndex": 7,
+          "signature": "IDirect3DDevice9::SetCursorProperties(UINT, UINT, IDirect3DSurface9*)"
+        },
+        {
+          "name": "SetCursorPosition",
+          "cParams": 3,
+          "vtableIndex": 8,
+          "signature": "IDirect3DDevice9::SetCursorPosition(int, int, DWORD)"
+        },
+        {
+          "name": "ShowCursor",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirect3DDevice9::ShowCursor(BOOL)"
+        },
+        {
+          "name": "CreateAdditionalSwapChain",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirect3DDevice9::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS*, IDirect3DSwapChain9**)"
+        },
+        {
+          "name": "GetSwapChain",
+          "cParams": 2,
+          "vtableIndex": 11,
+          "signature": "IDirect3DDevice9::GetSwapChain(UINT, IDirect3DSwapChain9**)"
+        },
+        {
+          "name": "GetNumberOfSwapChains",
+          "cParams": 0,
+          "vtableIndex": 12,
+          "signature": "IDirect3DDevice9::GetNumberOfSwapChains()"
+        },
+        {
+          "name": "Reset",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirect3DDevice9::Reset(D3DPRESENT_PARAMETERS*)"
+        },
+        {
+          "name": "Present",
+          "cParams": 4,
+          "vtableIndex": 14,
+          "signature": "IDirect3DDevice9::Present(const RECT *src_rect, const RECT *dst_rect, HWND, const RGNDATA *dirty_region)"
+        },
+        {
+          "name": "GetBackBuffer",
+          "cParams": 4,
+          "vtableIndex": 15,
+          "signature": "IDirect3DDevice9::GetBackBuffer(UINT, UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface9**)"
+        },
+        {
+          "name": "GetRasterStatus",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirect3DDevice9::GetRasterStatus(UINT, D3DRASTER_STATUS*)"
+        },
+        {
+          "name": "SetDialogBoxMode",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirect3DDevice9::SetDialogBoxMode(BOOL)"
+        },
+        {
+          "name": "SetGammaRamp",
+          "cParams": 3,
+          "vtableIndex": 18,
+          "signature": "IDirect3DDevice9::SetGammaRamp(UINT, DWORD, const D3DGAMMARAMP *ramp)"
+        },
+        {
+          "name": "GetGammaRamp",
+          "cParams": 2,
+          "vtableIndex": 19,
+          "signature": "IDirect3DDevice9::GetGammaRamp(UINT, D3DGAMMARAMP*)"
+        },
+        {
+          "name": "CreateTexture",
+          "cParams": 8,
+          "vtableIndex": 20,
+          "signature": "IDirect3DDevice9::CreateTexture(UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*)"
+        },
+        {
+          "name": "CreateVolumeTexture",
+          "cParams": 9,
+          "vtableIndex": 21,
+          "signature": "IDirect3DDevice9::CreateVolumeTexture(UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DVolumeTexture9**, HANDLE*)"
+        },
+        {
+          "name": "CreateCubeTexture",
+          "cParams": 7,
+          "vtableIndex": 22,
+          "signature": "IDirect3DDevice9::CreateCubeTexture(UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DCubeTexture9**, HANDLE*)"
+        },
+        {
+          "name": "CreateVertexBuffer",
+          "cParams": 6,
+          "vtableIndex": 23,
+          "signature": "IDirect3DDevice9::CreateVertexBuffer(UINT, DWORD, DWORD, D3DPOOL, IDirect3DVertexBuffer9**, HANDLE*)"
+        },
+        {
+          "name": "CreateIndexBuffer",
+          "cParams": 6,
+          "vtableIndex": 24,
+          "signature": "IDirect3DDevice9::CreateIndexBuffer(UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DIndexBuffer9**, HANDLE*)"
+        },
+        {
+          "name": "CreateRenderTarget",
+          "cParams": 8,
+          "vtableIndex": 25,
+          "signature": "IDirect3DDevice9::CreateRenderTarget(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*)"
+        },
+        {
+          "name": "CreateDepthStencilSurface",
+          "cParams": 8,
+          "vtableIndex": 26,
+          "signature": "IDirect3DDevice9::CreateDepthStencilSurface(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*)"
+        },
+        {
+          "name": "UpdateSurface",
+          "cParams": 4,
+          "vtableIndex": 27,
+          "signature": "IDirect3DDevice9::UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point)"
+        },
+        {
+          "name": "UpdateTexture",
+          "cParams": 2,
+          "vtableIndex": 28,
+          "signature": "IDirect3DDevice9::UpdateTexture(IDirect3DBaseTexture9*, IDirect3DBaseTexture9*)"
+        },
+        {
+          "name": "GetRenderTargetData",
+          "cParams": 2,
+          "vtableIndex": 29,
+          "signature": "IDirect3DDevice9::GetRenderTargetData(IDirect3DSurface9*, IDirect3DSurface9*)"
+        },
+        {
+          "name": "GetFrontBufferData",
+          "cParams": 2,
+          "vtableIndex": 30,
+          "signature": "IDirect3DDevice9::GetFrontBufferData(UINT, IDirect3DSurface9*)"
+        },
+        {
+          "name": "StretchRect",
+          "cParams": 5,
+          "vtableIndex": 31,
+          "signature": "IDirect3DDevice9::StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE)"
+        },
+        {
+          "name": "ColorFill",
+          "cParams": 3,
+          "vtableIndex": 32,
+          "signature": "IDirect3DDevice9::ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR)"
+        },
+        {
+          "name": "CreateOffscreenPlainSurface",
+          "cParams": 6,
+          "vtableIndex": 33,
+          "signature": "IDirect3DDevice9::CreateOffscreenPlainSurface(UINT, UINT, D3DFORMAT, D3DPOOL, IDirect3DSurface9**, HANDLE*)"
+        },
+        {
+          "name": "SetRenderTarget",
+          "cParams": 2,
+          "vtableIndex": 34,
+          "signature": "IDirect3DDevice9::SetRenderTarget(DWORD, IDirect3DSurface9*)"
+        },
+        {
+          "name": "GetRenderTarget",
+          "cParams": 2,
+          "vtableIndex": 35,
+          "signature": "IDirect3DDevice9::GetRenderTarget(DWORD, IDirect3DSurface9**)"
+        },
+        {
+          "name": "SetDepthStencilSurface",
+          "cParams": 1,
+          "vtableIndex": 36,
+          "signature": "IDirect3DDevice9::SetDepthStencilSurface(IDirect3DSurface9*)"
+        },
+        {
+          "name": "GetDepthStencilSurface",
+          "cParams": 1,
+          "vtableIndex": 37,
+          "signature": "IDirect3DDevice9::GetDepthStencilSurface(IDirect3DSurface9**)"
+        },
+        {
+          "name": "BeginScene",
+          "cParams": 0,
+          "vtableIndex": 38,
+          "signature": "IDirect3DDevice9::BeginScene()"
+        },
+        {
+          "name": "EndScene",
+          "cParams": 0,
+          "vtableIndex": 39,
+          "signature": "IDirect3DDevice9::EndScene()"
+        },
+        {
+          "name": "Clear",
+          "cParams": 6,
+          "vtableIndex": 40,
+          "signature": "IDirect3DDevice9::Clear(DWORD, const D3DRECT *rects, DWORD, D3DCOLOR, float, DWORD)"
+        },
+        {
+          "name": "SetTransform",
+          "cParams": 2,
+          "vtableIndex": 41,
+          "signature": "IDirect3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE, const D3DMATRIX *matrix)"
+        },
+        {
+          "name": "GetTransform",
+          "cParams": 2,
+          "vtableIndex": 42,
+          "signature": "IDirect3DDevice9::GetTransform(D3DTRANSFORMSTATETYPE, D3DMATRIX*)"
+        },
+        {
+          "name": "MultiplyTransform",
+          "cParams": 2,
+          "vtableIndex": 43,
+          "signature": "IDirect3DDevice9::MultiplyTransform(D3DTRANSFORMSTATETYPE, const D3DMATRIX *matrix)"
+        },
+        {
+          "name": "SetViewport",
+          "cParams": 1,
+          "vtableIndex": 44,
+          "signature": "IDirect3DDevice9::SetViewport(const D3DVIEWPORT9 *viewport)"
+        },
+        {
+          "name": "GetViewport",
+          "cParams": 1,
+          "vtableIndex": 45,
+          "signature": "IDirect3DDevice9::GetViewport(D3DVIEWPORT9*)"
+        },
+        {
+          "name": "SetMaterial",
+          "cParams": 1,
+          "vtableIndex": 46,
+          "signature": "IDirect3DDevice9::SetMaterial(const D3DMATERIAL9 *material)"
+        },
+        {
+          "name": "GetMaterial",
+          "cParams": 1,
+          "vtableIndex": 47,
+          "signature": "IDirect3DDevice9::GetMaterial(D3DMATERIAL9*)"
+        },
+        {
+          "name": "SetLight",
+          "cParams": 2,
+          "vtableIndex": 48,
+          "signature": "IDirect3DDevice9::SetLight(DWORD, const D3DLIGHT9 *light)"
+        },
+        {
+          "name": "GetLight",
+          "cParams": 2,
+          "vtableIndex": 49,
+          "signature": "IDirect3DDevice9::GetLight(DWORD, D3DLIGHT9*)"
+        },
+        {
+          "name": "LightEnable",
+          "cParams": 2,
+          "vtableIndex": 50,
+          "signature": "IDirect3DDevice9::LightEnable(DWORD, BOOL)"
+        },
+        {
+          "name": "GetLightEnable",
+          "cParams": 2,
+          "vtableIndex": 51,
+          "signature": "IDirect3DDevice9::GetLightEnable(DWORD, BOOL*)"
+        },
+        {
+          "name": "SetClipPlane",
+          "cParams": 2,
+          "vtableIndex": 52,
+          "signature": "IDirect3DDevice9::SetClipPlane(DWORD, const float *plane)"
+        },
+        {
+          "name": "GetClipPlane",
+          "cParams": 2,
+          "vtableIndex": 53,
+          "signature": "IDirect3DDevice9::GetClipPlane(DWORD, float*)"
+        },
+        {
+          "name": "SetRenderState",
+          "cParams": 2,
+          "vtableIndex": 54,
+          "signature": "IDirect3DDevice9::SetRenderState(D3DRENDERSTATETYPE, DWORD)"
+        },
+        {
+          "name": "GetRenderState",
+          "cParams": 2,
+          "vtableIndex": 55,
+          "signature": "IDirect3DDevice9::GetRenderState(D3DRENDERSTATETYPE, DWORD*)"
+        },
+        {
+          "name": "CreateStateBlock",
+          "cParams": 2,
+          "vtableIndex": 56,
+          "signature": "IDirect3DDevice9::CreateStateBlock(D3DSTATEBLOCKTYPE, IDirect3DStateBlock9**)"
+        },
+        {
+          "name": "BeginStateBlock",
+          "cParams": 0,
+          "vtableIndex": 57,
+          "signature": "IDirect3DDevice9::BeginStateBlock()"
+        },
+        {
+          "name": "EndStateBlock",
+          "cParams": 1,
+          "vtableIndex": 58,
+          "signature": "IDirect3DDevice9::EndStateBlock(IDirect3DStateBlock9**)"
+        },
+        {
+          "name": "SetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 59,
+          "signature": "IDirect3DDevice9::SetClipStatus(const D3DCLIPSTATUS9 *clip_status)"
+        },
+        {
+          "name": "GetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 60,
+          "signature": "IDirect3DDevice9::GetClipStatus(D3DCLIPSTATUS9*)"
+        },
+        {
+          "name": "GetTexture",
+          "cParams": 2,
+          "vtableIndex": 61,
+          "signature": "IDirect3DDevice9::GetTexture(DWORD, IDirect3DBaseTexture9**)"
+        },
+        {
+          "name": "SetTexture",
+          "cParams": 2,
+          "vtableIndex": 62,
+          "signature": "IDirect3DDevice9::SetTexture(DWORD, IDirect3DBaseTexture9*)"
+        },
+        {
+          "name": "GetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 63,
+          "signature": "IDirect3DDevice9::GetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, DWORD*)"
+        },
+        {
+          "name": "SetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 64,
+          "signature": "IDirect3DDevice9::SetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, DWORD)"
+        },
+        {
+          "name": "GetSamplerState",
+          "cParams": 3,
+          "vtableIndex": 65,
+          "signature": "IDirect3DDevice9::GetSamplerState(DWORD, D3DSAMPLERSTATETYPE, DWORD*)"
+        },
+        {
+          "name": "SetSamplerState",
+          "cParams": 3,
+          "vtableIndex": 66,
+          "signature": "IDirect3DDevice9::SetSamplerState(DWORD, D3DSAMPLERSTATETYPE, DWORD)"
+        },
+        {
+          "name": "ValidateDevice",
+          "cParams": 1,
+          "vtableIndex": 67,
+          "signature": "IDirect3DDevice9::ValidateDevice(DWORD*)"
+        },
+        {
+          "name": "SetPaletteEntries",
+          "cParams": 2,
+          "vtableIndex": 68,
+          "signature": "IDirect3DDevice9::SetPaletteEntries(UINT, const PALETTEENTRY *entries)"
+        },
+        {
+          "name": "GetPaletteEntries",
+          "cParams": 2,
+          "vtableIndex": 69,
+          "signature": "IDirect3DDevice9::GetPaletteEntries(UINT, PALETTEENTRY*)"
+        },
+        {
+          "name": "SetCurrentTexturePalette",
+          "cParams": 1,
+          "vtableIndex": 70,
+          "signature": "IDirect3DDevice9::SetCurrentTexturePalette(UINT)"
+        },
+        {
+          "name": "GetCurrentTexturePalette",
+          "cParams": 1,
+          "vtableIndex": 71,
+          "signature": "IDirect3DDevice9::GetCurrentTexturePalette(UINT *PaletteNumber)"
+        },
+        {
+          "name": "SetScissorRect",
+          "cParams": 1,
+          "vtableIndex": 72,
+          "signature": "IDirect3DDevice9::SetScissorRect(const RECT *rect)"
+        },
+        {
+          "name": "GetScissorRect",
+          "cParams": 1,
+          "vtableIndex": 73,
+          "signature": "IDirect3DDevice9::GetScissorRect(RECT*)"
+        },
+        {
+          "name": "SetSoftwareVertexProcessing",
+          "cParams": 1,
+          "vtableIndex": 74,
+          "signature": "IDirect3DDevice9::SetSoftwareVertexProcessing(BOOL)"
+        },
+        {
+          "name": "GetSoftwareVertexProcessing",
+          "cParams": 0,
+          "vtableIndex": 75,
+          "signature": "IDirect3DDevice9::GetSoftwareVertexProcessing()"
+        },
+        {
+          "name": "SetNPatchMode",
+          "cParams": 1,
+          "vtableIndex": 76,
+          "signature": "IDirect3DDevice9::SetNPatchMode(float)"
+        },
+        {
+          "name": "GetNPatchMode",
+          "cParams": 0,
+          "vtableIndex": 77,
+          "signature": "IDirect3DDevice9::GetNPatchMode()"
+        },
+        {
+          "name": "DrawPrimitive",
+          "cParams": 3,
+          "vtableIndex": 78,
+          "signature": "IDirect3DDevice9::DrawPrimitive(D3DPRIMITIVETYPE, UINT, UINT)"
+        },
+        {
+          "name": "DrawIndexedPrimitive",
+          "cParams": 6,
+          "vtableIndex": 79,
+          "signature": "IDirect3DDevice9::DrawIndexedPrimitive(D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT)"
+        },
+        {
+          "name": "DrawPrimitiveUP",
+          "cParams": 4,
+          "vtableIndex": 80,
+          "signature": "IDirect3DDevice9::DrawPrimitiveUP(D3DPRIMITIVETYPE, UINT, const void *data, UINT)"
+        },
+        {
+          "name": "DrawIndexedPrimitiveUP",
+          "cParams": 8,
+          "vtableIndex": 81,
+          "signature": "IDirect3DDevice9::DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE, UINT, UINT, UINT, const void *index_data, D3DFORMAT, const void *data, UINT)"
+        },
+        {
+          "name": "ProcessVertices",
+          "cParams": 6,
+          "vtableIndex": 82,
+          "signature": "IDirect3DDevice9::ProcessVertices(UINT, UINT, UINT, IDirect3DVertexBuffer9*, IDirect3DVertexDeclaration9*, DWORD)"
+        },
+        {
+          "name": "CreateVertexDeclaration",
+          "cParams": 2,
+          "vtableIndex": 83,
+          "signature": "IDirect3DDevice9::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *elements, IDirect3DVertexDeclaration9 **declaration)"
+        },
+        {
+          "name": "SetVertexDeclaration",
+          "cParams": 1,
+          "vtableIndex": 84,
+          "signature": "IDirect3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclaration9*)"
+        },
+        {
+          "name": "GetVertexDeclaration",
+          "cParams": 1,
+          "vtableIndex": 85,
+          "signature": "IDirect3DDevice9::GetVertexDeclaration(IDirect3DVertexDeclaration9**)"
+        },
+        {
+          "name": "SetFVF",
+          "cParams": 1,
+          "vtableIndex": 86,
+          "signature": "IDirect3DDevice9::SetFVF(DWORD)"
+        },
+        {
+          "name": "GetFVF",
+          "cParams": 1,
+          "vtableIndex": 87,
+          "signature": "IDirect3DDevice9::GetFVF(DWORD*)"
+        },
+        {
+          "name": "CreateVertexShader",
+          "cParams": 2,
+          "vtableIndex": 88,
+          "signature": "IDirect3DDevice9::CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader)"
+        },
+        {
+          "name": "SetVertexShader",
+          "cParams": 1,
+          "vtableIndex": 89,
+          "signature": "IDirect3DDevice9::SetVertexShader(IDirect3DVertexShader9*)"
+        },
+        {
+          "name": "GetVertexShader",
+          "cParams": 1,
+          "vtableIndex": 90,
+          "signature": "IDirect3DDevice9::GetVertexShader(IDirect3DVertexShader9**)"
+        },
+        {
+          "name": "SetVertexShaderConstantF",
+          "cParams": 3,
+          "vtableIndex": 91,
+          "signature": "IDirect3DDevice9::SetVertexShaderConstantF(UINT, const float *data, UINT)"
+        },
+        {
+          "name": "GetVertexShaderConstantF",
+          "cParams": 3,
+          "vtableIndex": 92,
+          "signature": "IDirect3DDevice9::GetVertexShaderConstantF(UINT, float*, UINT)"
+        },
+        {
+          "name": "SetVertexShaderConstantI",
+          "cParams": 3,
+          "vtableIndex": 93,
+          "signature": "IDirect3DDevice9::SetVertexShaderConstantI(UINT, const int *data, UINT)"
+        },
+        {
+          "name": "GetVertexShaderConstantI",
+          "cParams": 3,
+          "vtableIndex": 94,
+          "signature": "IDirect3DDevice9::GetVertexShaderConstantI(UINT, int*, UINT)"
+        },
+        {
+          "name": "SetVertexShaderConstantB",
+          "cParams": 3,
+          "vtableIndex": 95,
+          "signature": "IDirect3DDevice9::SetVertexShaderConstantB(UINT, const BOOL *data, UINT)"
+        },
+        {
+          "name": "GetVertexShaderConstantB",
+          "cParams": 3,
+          "vtableIndex": 96,
+          "signature": "IDirect3DDevice9::GetVertexShaderConstantB(UINT, BOOL*, UINT)"
+        },
+        {
+          "name": "SetStreamSource",
+          "cParams": 4,
+          "vtableIndex": 97,
+          "signature": "IDirect3DDevice9::SetStreamSource(UINT, IDirect3DVertexBuffer9*, UINT, UINT)"
+        },
+        {
+          "name": "GetStreamSource",
+          "cParams": 4,
+          "vtableIndex": 98,
+          "signature": "IDirect3DDevice9::GetStreamSource(UINT, IDirect3DVertexBuffer9**, UINT*, UINT*)"
+        },
+        {
+          "name": "SetStreamSourceFreq",
+          "cParams": 2,
+          "vtableIndex": 99,
+          "signature": "IDirect3DDevice9::SetStreamSourceFreq(UINT, UINT)"
+        },
+        {
+          "name": "GetStreamSourceFreq",
+          "cParams": 2,
+          "vtableIndex": 100,
+          "signature": "IDirect3DDevice9::GetStreamSourceFreq(UINT, UINT*)"
+        },
+        {
+          "name": "SetIndices",
+          "cParams": 1,
+          "vtableIndex": 101,
+          "signature": "IDirect3DDevice9::SetIndices(IDirect3DIndexBuffer9*)"
+        },
+        {
+          "name": "GetIndices",
+          "cParams": 1,
+          "vtableIndex": 102,
+          "signature": "IDirect3DDevice9::GetIndices(IDirect3DIndexBuffer9**)"
+        },
+        {
+          "name": "CreatePixelShader",
+          "cParams": 2,
+          "vtableIndex": 103,
+          "signature": "IDirect3DDevice9::CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader)"
+        },
+        {
+          "name": "SetPixelShader",
+          "cParams": 1,
+          "vtableIndex": 104,
+          "signature": "IDirect3DDevice9::SetPixelShader(IDirect3DPixelShader9*)"
+        },
+        {
+          "name": "GetPixelShader",
+          "cParams": 1,
+          "vtableIndex": 105,
+          "signature": "IDirect3DDevice9::GetPixelShader(IDirect3DPixelShader9**)"
+        },
+        {
+          "name": "SetPixelShaderConstantF",
+          "cParams": 3,
+          "vtableIndex": 106,
+          "signature": "IDirect3DDevice9::SetPixelShaderConstantF(UINT, const float *data, UINT)"
+        },
+        {
+          "name": "GetPixelShaderConstantF",
+          "cParams": 3,
+          "vtableIndex": 107,
+          "signature": "IDirect3DDevice9::GetPixelShaderConstantF(UINT, float*, UINT)"
+        },
+        {
+          "name": "SetPixelShaderConstantI",
+          "cParams": 3,
+          "vtableIndex": 108,
+          "signature": "IDirect3DDevice9::SetPixelShaderConstantI(UINT, const int *data, UINT)"
+        },
+        {
+          "name": "GetPixelShaderConstantI",
+          "cParams": 3,
+          "vtableIndex": 109,
+          "signature": "IDirect3DDevice9::GetPixelShaderConstantI(UINT, int*, UINT)"
+        },
+        {
+          "name": "SetPixelShaderConstantB",
+          "cParams": 3,
+          "vtableIndex": 110,
+          "signature": "IDirect3DDevice9::SetPixelShaderConstantB(UINT, const BOOL *data, UINT)"
+        },
+        {
+          "name": "GetPixelShaderConstantB",
+          "cParams": 3,
+          "vtableIndex": 111,
+          "signature": "IDirect3DDevice9::GetPixelShaderConstantB(UINT, BOOL*, UINT)"
+        },
+        {
+          "name": "DrawRectPatch",
+          "cParams": 3,
+          "vtableIndex": 112,
+          "signature": "IDirect3DDevice9::DrawRectPatch(UINT, const float *segment_count, const D3DRECTPATCH_INFO *patch_info)"
+        },
+        {
+          "name": "DrawTriPatch",
+          "cParams": 3,
+          "vtableIndex": 113,
+          "signature": "IDirect3DDevice9::DrawTriPatch(UINT, const float *segment_count, const D3DTRIPATCH_INFO *patch_info)"
+        },
+        {
+          "name": "DeletePatch",
+          "cParams": 1,
+          "vtableIndex": 114,
+          "signature": "IDirect3DDevice9::DeletePatch(UINT)"
+        },
+        {
+          "name": "CreateQuery",
+          "cParams": 2,
+          "vtableIndex": 115,
+          "signature": "IDirect3DDevice9::CreateQuery(D3DQUERYTYPE, IDirect3DQuery9**)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DVertexBuffer9",
+      "methods": [
+        {
+          "name": "GetDevice",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DVertexBuffer9::GetDevice(struct IDirect3DDevice9**)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirect3DVertexBuffer9::SetPrivateData(REFGUID, const void *data, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3DVertexBuffer9::GetPrivateData(REFGUID, void*, DWORD*)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DVertexBuffer9::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "SetPriority",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DVertexBuffer9::SetPriority(DWORD)"
+        },
+        {
+          "name": "GetPriority",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirect3DVertexBuffer9::GetPriority()"
+        },
+        {
+          "name": "PreLoad",
+          "cParams": 0,
+          "vtableIndex": 6,
+          "signature": "IDirect3DVertexBuffer9::PreLoad()"
+        },
+        {
+          "name": "GetType",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirect3DVertexBuffer9::GetType()"
+        },
+        {
+          "name": "Lock",
+          "cParams": 4,
+          "vtableIndex": 8,
+          "signature": "IDirect3DVertexBuffer9::Lock(UINT, UINT, void**, DWORD)"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 0,
+          "vtableIndex": 9,
+          "signature": "IDirect3DVertexBuffer9::Unlock()"
+        },
+        {
+          "name": "GetDesc",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DVertexBuffer9::GetDesc(D3DVERTEXBUFFER_DESC*)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DIndexBuffer9",
+      "methods": [
+        {
+          "name": "GetDevice",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DIndexBuffer9::GetDevice(struct IDirect3DDevice9**)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirect3DIndexBuffer9::SetPrivateData(REFGUID, const void *data, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3DIndexBuffer9::GetPrivateData(REFGUID, void*, DWORD*)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DIndexBuffer9::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "SetPriority",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DIndexBuffer9::SetPriority(DWORD)"
+        },
+        {
+          "name": "GetPriority",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirect3DIndexBuffer9::GetPriority()"
+        },
+        {
+          "name": "PreLoad",
+          "cParams": 0,
+          "vtableIndex": 6,
+          "signature": "IDirect3DIndexBuffer9::PreLoad()"
+        },
+        {
+          "name": "GetType",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirect3DIndexBuffer9::GetType()"
+        },
+        {
+          "name": "Lock",
+          "cParams": 4,
+          "vtableIndex": 8,
+          "signature": "IDirect3DIndexBuffer9::Lock(UINT, UINT, void**, DWORD)"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 0,
+          "vtableIndex": 9,
+          "signature": "IDirect3DIndexBuffer9::Unlock()"
+        },
+        {
+          "name": "GetDesc",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DIndexBuffer9::GetDesc(D3DINDEXBUFFER_DESC*)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DTexture9",
+      "methods": [
+        {
+          "name": "GetDevice",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DTexture9::GetDevice(struct IDirect3DDevice9**)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirect3DTexture9::SetPrivateData(REFGUID, const void *data, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3DTexture9::GetPrivateData(REFGUID, void*, DWORD*)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DTexture9::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "SetPriority",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DTexture9::SetPriority(DWORD)"
+        },
+        {
+          "name": "GetPriority",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirect3DTexture9::GetPriority()"
+        },
+        {
+          "name": "PreLoad",
+          "cParams": 0,
+          "vtableIndex": 6,
+          "signature": "IDirect3DTexture9::PreLoad()"
+        },
+        {
+          "name": "GetType",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirect3DTexture9::GetType()"
+        },
+        {
+          "name": "SetLOD",
+          "cParams": 1,
+          "vtableIndex": 8,
+          "signature": "IDirect3DTexture9::SetLOD(DWORD)"
+        },
+        {
+          "name": "GetLOD",
+          "cParams": 0,
+          "vtableIndex": 9,
+          "signature": "IDirect3DTexture9::GetLOD()"
+        },
+        {
+          "name": "GetLevelCount",
+          "cParams": 0,
+          "vtableIndex": 10,
+          "signature": "IDirect3DTexture9::GetLevelCount()"
+        },
+        {
+          "name": "SetAutoGenFilterType",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirect3DTexture9::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE)"
+        },
+        {
+          "name": "GetAutoGenFilterType",
+          "cParams": 0,
+          "vtableIndex": 12,
+          "signature": "IDirect3DTexture9::GetAutoGenFilterType()"
+        },
+        {
+          "name": "GenerateMipSubLevels",
+          "cParams": 0,
+          "vtableIndex": 13,
+          "signature": "IDirect3DTexture9::GenerateMipSubLevels()"
+        },
+        {
+          "name": "GetLevelDesc",
+          "cParams": 2,
+          "vtableIndex": 14,
+          "signature": "IDirect3DTexture9::GetLevelDesc(UINT, D3DSURFACE_DESC*)"
+        },
+        {
+          "name": "GetSurfaceLevel",
+          "cParams": 2,
+          "vtableIndex": 15,
+          "signature": "IDirect3DTexture9::GetSurfaceLevel(UINT, IDirect3DSurface9**)"
+        },
+        {
+          "name": "LockRect",
+          "cParams": 4,
+          "vtableIndex": 16,
+          "signature": "IDirect3DTexture9::LockRect(UINT, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD)"
+        },
+        {
+          "name": "UnlockRect",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirect3DTexture9::UnlockRect(UINT)"
+        },
+        {
+          "name": "AddDirtyRect",
+          "cParams": 1,
+          "vtableIndex": 18,
+          "signature": "IDirect3DTexture9::AddDirtyRect(const RECT *dirty_rect)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DSurface9",
+      "methods": [
+        {
+          "name": "GetDevice",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DSurface9::GetDevice(struct IDirect3DDevice9**)"
+        },
+        {
+          "name": "SetPrivateData",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirect3DSurface9::SetPrivateData(REFGUID, const void *data, DWORD, DWORD)"
+        },
+        {
+          "name": "GetPrivateData",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3DSurface9::GetPrivateData(REFGUID, void*, DWORD*)"
+        },
+        {
+          "name": "FreePrivateData",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DSurface9::FreePrivateData(REFGUID)"
+        },
+        {
+          "name": "SetPriority",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DSurface9::SetPriority(DWORD)"
+        },
+        {
+          "name": "GetPriority",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirect3DSurface9::GetPriority()"
+        },
+        {
+          "name": "PreLoad",
+          "cParams": 0,
+          "vtableIndex": 6,
+          "signature": "IDirect3DSurface9::PreLoad()"
+        },
+        {
+          "name": "GetType",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirect3DSurface9::GetType()"
+        },
+        {
+          "name": "GetContainer",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirect3DSurface9::GetContainer(REFIID, void**)"
+        },
+        {
+          "name": "GetDesc",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirect3DSurface9::GetDesc(D3DSURFACE_DESC*)"
+        },
+        {
+          "name": "LockRect",
+          "cParams": 3,
+          "vtableIndex": 10,
+          "signature": "IDirect3DSurface9::LockRect(D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD)"
+        },
+        {
+          "name": "UnlockRect",
+          "cParams": 0,
+          "vtableIndex": 11,
+          "signature": "IDirect3DSurface9::UnlockRect()"
+        },
+        {
+          "name": "GetDC",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirect3DSurface9::GetDC(HDC*)"
+        },
+        {
+          "name": "ReleaseDC",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirect3DSurface9::ReleaseDC(HDC)"
+        }
+      ]
+    }
+  ]
+}

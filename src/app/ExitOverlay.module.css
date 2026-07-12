@@ -1,0 +1,132 @@
+.app__exit-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 11, 16, 0.82);
+  backdrop-filter: blur(2px);
+  z-index: 20;
+}
+
+.app__exit-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 40px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #131b27 0%, #0d141d 100%);
+  border: 1px solid #243246;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  text-align: center;
+  min-width: 300px;
+  animation: app__exit-pop 0.18s ease-out;
+}
+
+@keyframes app__exit-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.app__exit-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: rgba(120, 140, 165, 0.12);
+  color: #aebccf;
+  font-size: 24px;
+}
+
+.app__exit-glyph--crash {
+  background: rgba(214, 90, 100, 0.16);
+  color: #f2b8be;
+}
+
+.app__exit-title {
+  font-size: 19px;
+  font-weight: 600;
+  color: #eef3fa;
+  letter-spacing: 0.2px;
+}
+
+.app__exit-sub {
+  font-size: 13px;
+  color: #8595a8;
+  margin-bottom: 8px;
+}
+
+.app__exit-report {
+  margin-top: 8px;
+  width: 100%;
+  max-width: 560px;
+  text-align: left;
+}
+
+.app__exit-report > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #93a1b3;
+  user-select: none;
+}
+
+.app__exit-report > pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 340px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0a0f16;
+  border: 1px solid #1f2a3a;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #aebccf;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app__exit-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.app__exit-btn {
+  padding: 9px 18px;
+  border-radius: 9px;
+  border: 1px solid #2c3a4f;
+  background: #1a2433;
+  color: #cdd8e6;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+
+.app__exit-btn:hover {
+  background: #213047;
+  border-color: #3a4d68;
+}
+
+.app__exit-btn:active {
+  transform: translateY(1px);
+}
+
+.app__exit-btn--primary {
+  background: #2d6cdf;
+  border-color: #2d6cdf;
+  color: #fff;
+}
+
+.app__exit-btn--primary:hover {
+  background: #3b7bee;
+  border-color: #3b7bee;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app__exit-card { animation: none; }
+}

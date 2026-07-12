@@ -1,0 +1,1795 @@
+{
+  "source": "winuser.h",
+  "generated": "2026-01-19T08:18:38.628Z",
+  "module": "user32",
+  "functions": [
+    {
+      "name": "_GetKeyNameTextA@12",
+      "argCount": 3,
+      "signature": "int GetKeyNameTextA(_In_ LONG, _Out_ LPSTR, _In_ int)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetKeyNameTextW@12",
+      "argCount": 3,
+      "signature": "int GetKeyNameTextW(_In_ LONG, _Out_ LPWSTR, _In_ int)",
+      "returnType": "int"
+    },
+    {
+      "name": "_RegisterClassA@4",
+      "argCount": 1,
+      "signature": "ATOM RegisterClassA(_In_ CONST WNDCLASSA*)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_RegisterClassW@4",
+      "argCount": 1,
+      "signature": "ATOM RegisterClassW(_In_ CONST WNDCLASSW*)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_RegisterClassExA@4",
+      "argCount": 1,
+      "signature": "ATOM RegisterClassExA(_In_ CONST WNDCLASSEXA*)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_RegisterClassExW@4",
+      "argCount": 1,
+      "signature": "ATOM RegisterClassExW(_In_ CONST WNDCLASSEXW*)",
+      "returnType": "ATOM"
+    },
+    {
+      "name": "_RegisterClipboardFormatA@4",
+      "argCount": 1,
+      "signature": "UINT RegisterClipboardFormatA(_In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_RegisterClipboardFormatW@4",
+      "argCount": 1,
+      "signature": "UINT RegisterClipboardFormatW(_In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_RegisterDeviceNotificationA@12",
+      "argCount": 3,
+      "signature": "HDEVNOTIFY RegisterDeviceNotificationA(_In_, _In_, _In_)",
+      "returnType": "HDEVNOTIFY"
+    },
+    {
+      "name": "_RegisterDeviceNotificationW@12",
+      "argCount": 3,
+      "signature": "HDEVNOTIFY RegisterDeviceNotificationW(_In_, _In_, _In_)",
+      "returnType": "HDEVNOTIFY"
+    },
+    {
+      "name": "_RegisterHotKey@16",
+      "argCount": 4,
+      "signature": "BOOL RegisterHotKey(_In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_RegisterLogonProcess@8",
+      "argCount": 2,
+      "signature": "BOOL RegisterLogonProcess(DWORD, BOOL)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_RegisterShellHookWindow@4",
+      "argCount": 1,
+      "signature": "BOOL RegisterShellHookWindow(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_RegisterWindowMessageA@4",
+      "argCount": 1,
+      "signature": "UINT RegisterWindowMessageA(_In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_RegisterWindowMessageW@4",
+      "argCount": 1,
+      "signature": "UINT RegisterWindowMessageW(_In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_CreateCaret@16",
+      "argCount": 4,
+      "signature": "BOOL CreateCaret(_In_, _In_opt_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_CreateCursor@28",
+      "argCount": 7,
+      "signature": "HCURSOR CreateCursor(_In_opt_, _In_, _In_, _In_, _In_, _In_ CONST VOID*, _In_ CONST VOID*)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_CreateDesktopA@24",
+      "argCount": 6,
+      "signature": "HDESK CreateDesktopA(_In_ LPCSTR, _Reserved_ LPCSTR, _Reserved_ DEVMODEA*, _In_ DWORD, _In_ ACCESS_MASK, _In_opt_ LPSECURITY_ATTRIBUTES)",
+      "returnType": "HDESK"
+    },
+    {
+      "name": "_CreateDesktopW@24",
+      "argCount": 6,
+      "signature": "HDESK CreateDesktopW(_In_ LPCWSTR, _Reserved_ LPCWSTR, _Reserved_ DEVMODEW*, _In_ DWORD, _In_ ACCESS_MASK, _In_opt_ LPSECURITY_ATTRIBUTES)",
+      "returnType": "HDESK"
+    },
+    {
+      "name": "_CreateDialogIndirectParamA@20",
+      "argCount": 5,
+      "signature": "HWND CreateDialogIndirectParamA(_In_opt_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateDialogIndirectParamW@20",
+      "argCount": 5,
+      "signature": "HWND CreateDialogIndirectParamW(_In_opt_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateDialogParamA@20",
+      "argCount": 5,
+      "signature": "HWND CreateDialogParamA(_In_opt_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateDialogParamW@20",
+      "argCount": 5,
+      "signature": "HWND CreateDialogParamW(_In_opt_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateIcon@28",
+      "argCount": 7,
+      "signature": "HICON CreateIcon(_In_opt_, _In_, _In_, _In_, _In_, _In_ const BYTE*, _In_ const BYTE*)",
+      "returnType": "HICON"
+    },
+    {
+      "name": "_CreateIconIndirect@4",
+      "argCount": 1,
+      "signature": "HICON CreateIconIndirect(_In_)",
+      "returnType": "HICON"
+    },
+    {
+      "name": "_CreateMDIWindowA@40",
+      "argCount": 10,
+      "signature": "HWND CreateMDIWindowA(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateMDIWindowW@40",
+      "argCount": 10,
+      "signature": "HWND CreateMDIWindowW(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateMenu@0",
+      "argCount": 0,
+      "signature": "HMENU CreateMenu()",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_CreatePopupMenu@0",
+      "argCount": 0,
+      "signature": "HMENU CreatePopupMenu()",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_CreateWindowExA@48",
+      "argCount": 12,
+      "signature": "HWND CreateWindowExA(_In_ DWORD, _In_opt_ LPCSTR, _In_opt_ LPCSTR, _In_ DWORD, _In_ int, _In_ int, _In_ int, _In_ int, _In_opt_ HWND, _In_opt_ HMENU, _In_opt_ HINSTANCE, _In_opt_ LPVOID)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateWindowExW@48",
+      "argCount": 12,
+      "signature": "HWND CreateWindowExW(_In_ DWORD, _In_opt_ LPCWSTR, _In_opt_ LPCWSTR, _In_ DWORD, _In_ int, _In_ int, _In_ int, _In_ int, _In_opt_ HWND, _In_opt_ HMENU, _In_opt_ HINSTANCE, _In_opt_ LPVOID)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_CreateWindowStationA@16",
+      "argCount": 4,
+      "signature": "HWINSTA CreateWindowStationA(_In_opt_ LPCSTR, _In_ DWORD, _In_ ACCESS_MASK, _In_opt_ LPSECURITY_ATTRIBUTES)",
+      "returnType": "HWINSTA"
+    },
+    {
+      "name": "_CreateWindowStationW@16",
+      "argCount": 4,
+      "signature": "HWINSTA CreateWindowStationW(_In_opt_ LPCWSTR, _In_ DWORD, _In_ ACCESS_MASK, _In_opt_ LPSECURITY_ATTRIBUTES)",
+      "returnType": "HWINSTA"
+    },
+    {
+      "name": "_ShowCaret@4",
+      "argCount": 1,
+      "signature": "BOOL ShowCaret(_In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ShowCursor@4",
+      "argCount": 1,
+      "signature": "int ShowCursor(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_ShowOwnedPopups@8",
+      "argCount": 2,
+      "signature": "BOOL ShowOwnedPopups(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ShowScrollBar@12",
+      "argCount": 3,
+      "signature": "BOOL ShowScrollBar(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ShowWindow@8",
+      "argCount": 2,
+      "signature": "BOOL ShowWindow(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ShowWindowAsync@8",
+      "argCount": 2,
+      "signature": "BOOL ShowWindowAsync(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_UpdateWindow@4",
+      "argCount": 1,
+      "signature": "BOOL UpdateWindow(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_UpdateLayeredWindow@36",
+      "argCount": 9,
+      "signature": "BOOL UpdateLayeredWindow(_In_ HWND, _In_opt_ HDC, _In_opt_ POINT*, _In_opt_ SIZE*, _In_opt_ HDC, _In_opt_ POINT*, _In_ COLORREF, _In_opt_ BLENDFUNCTION*, _In_ DWORD)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_UpdateLayeredWindowIndirect@8",
+      "argCount": 2,
+      "signature": "BOOL UpdateLayeredWindowIndirect(_In_, _In_ const UPDATELAYEREDWINDOWINFO*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetActiveWindow@0",
+      "argCount": 0,
+      "signature": "HWND GetActiveWindow()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetAncestor@8",
+      "argCount": 2,
+      "signature": "HWND GetAncestor(_In_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetAsyncKeyState@4",
+      "argCount": 1,
+      "signature": "SHORT GetAsyncKeyState(_In_)",
+      "returnType": "SHORT"
+    },
+    {
+      "name": "_GetCapture@0",
+      "argCount": 0,
+      "signature": "HWND GetCapture()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetCaretBlinkTime@0",
+      "argCount": 0,
+      "signature": "UINT GetCaretBlinkTime()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetCaretPos@4",
+      "argCount": 1,
+      "signature": "BOOL GetCaretPos(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClassInfoA@12",
+      "argCount": 3,
+      "signature": "BOOL GetClassInfoA(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClassInfoExA@12",
+      "argCount": 3,
+      "signature": "BOOL GetClassInfoExA(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClassInfoW@12",
+      "argCount": 3,
+      "signature": "BOOL GetClassInfoW(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClassInfoExW@12",
+      "argCount": 3,
+      "signature": "BOOL GetClassInfoExW(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClassLongA@8",
+      "argCount": 2,
+      "signature": "DWORD GetClassLongA(_In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetClassLongW@8",
+      "argCount": 2,
+      "signature": "DWORD GetClassLongW(_In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetClassLongPtrA@8",
+      "argCount": 2,
+      "signature": "ULONG_PTR GetClassLongPtrA(_In_, _In_)",
+      "returnType": "ULONG_PTR"
+    },
+    {
+      "name": "_GetClassLongPtrW@8",
+      "argCount": 2,
+      "signature": "ULONG_PTR GetClassLongPtrW(_In_, _In_)",
+      "returnType": "ULONG_PTR"
+    },
+    {
+      "name": "_GetClassWord@8",
+      "argCount": 2,
+      "signature": "WORD GetClassWord(_In_, _In_)",
+      "returnType": "WORD"
+    },
+    {
+      "name": "_GetClientRect@8",
+      "argCount": 2,
+      "signature": "BOOL GetClientRect(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetClipboardData@4",
+      "argCount": 1,
+      "signature": "HANDLE GetClipboardData(_In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetClipboardOwner@0",
+      "argCount": 0,
+      "signature": "HWND GetClipboardOwner()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetClipboardSequenceNumber@0",
+      "argCount": 0,
+      "signature": "DWORD GetClipboardSequenceNumber()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetClipboardViewer@0",
+      "argCount": 0,
+      "signature": "HWND GetClipboardViewer()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetClipCursor@4",
+      "argCount": 1,
+      "signature": "BOOL GetClipCursor(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCursorPos@4",
+      "argCount": 1,
+      "signature": "BOOL GetCursorPos(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDC@4",
+      "argCount": 1,
+      "signature": "HDC GetDC(_In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_GetDCEx@12",
+      "argCount": 3,
+      "signature": "HDC GetDCEx(_In_opt_, _In_opt_, _In_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_GetDesktopWindow@0",
+      "argCount": 0,
+      "signature": "HWND GetDesktopWindow()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetDialogBaseUnits@0",
+      "argCount": 0,
+      "signature": "LONG GetDialogBaseUnits()",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_GetDlgCtrlID@4",
+      "argCount": 1,
+      "signature": "int GetDlgCtrlID(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetDlgItem@8",
+      "argCount": 2,
+      "signature": "HWND GetDlgItem(_In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetDlgItemInt@16",
+      "argCount": 4,
+      "signature": "UINT GetDlgItemInt(_In_, _In_, _Out_opt_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetDoubleClickTime@0",
+      "argCount": 0,
+      "signature": "UINT GetDoubleClickTime()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetFocus@0",
+      "argCount": 0,
+      "signature": "HWND GetFocus()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetForegroundWindow@0",
+      "argCount": 0,
+      "signature": "HWND GetForegroundWindow()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetGuiResources@8",
+      "argCount": 2,
+      "signature": "DWORD GetGuiResources(_In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetIconInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetIconInfo(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetIconInfoExA@8",
+      "argCount": 2,
+      "signature": "BOOL GetIconInfoExA(_In_, _Inout_ ICONINFOEXA*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetIconInfoExW@8",
+      "argCount": 2,
+      "signature": "BOOL GetIconInfoExW(_In_, _Inout_ ICONINFOEXW*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetInputState@0",
+      "argCount": 0,
+      "signature": "BOOL GetInputState()",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetKBCodePage@0",
+      "argCount": 0,
+      "signature": "UINT GetKBCodePage()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetKeyboardLayout@4",
+      "argCount": 1,
+      "signature": "HKL GetKeyboardLayout(_In_)",
+      "returnType": "HKL"
+    },
+    {
+      "name": "_GetKeyboardType@4",
+      "argCount": 1,
+      "signature": "int GetKeyboardType(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetKeyState@4",
+      "argCount": 1,
+      "signature": "SHORT GetKeyState(_In_)",
+      "returnType": "SHORT"
+    },
+    {
+      "name": "_GetLastActivePopup@4",
+      "argCount": 1,
+      "signature": "HWND GetLastActivePopup(_In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetMenu@4",
+      "argCount": 1,
+      "signature": "HMENU GetMenu(_In_)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_GetMenuCheckMarkDimensions@0",
+      "argCount": 0,
+      "signature": "LONG GetMenuCheckMarkDimensions()",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_GetMenuContextHelpId@4",
+      "argCount": 1,
+      "signature": "DWORD GetMenuContextHelpId(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetMenuDefaultItem@12",
+      "argCount": 3,
+      "signature": "UINT GetMenuDefaultItem(_In_ HMENU, _In_ UINT, _In_ UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetMenuItemCount@4",
+      "argCount": 1,
+      "signature": "int GetMenuItemCount(_In_opt_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetMenuItemID@8",
+      "argCount": 2,
+      "signature": "UINT GetMenuItemID(_In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetMenuItemInfoA@16",
+      "argCount": 4,
+      "signature": "BOOL GetMenuItemInfoA(_In_, _In_, _In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMenuItemInfoW@16",
+      "argCount": 4,
+      "signature": "BOOL GetMenuItemInfoW(_In_, _In_, _In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMenuItemRect@16",
+      "argCount": 4,
+      "signature": "BOOL GetMenuItemRect(_In_opt_, _In_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMenuState@12",
+      "argCount": 3,
+      "signature": "UINT GetMenuState(_In_, _In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetMessageA@16",
+      "argCount": 4,
+      "signature": "BOOL GetMessageA(_Out_, _In_opt_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMessageW@16",
+      "argCount": 4,
+      "signature": "BOOL GetMessageW(_Out_, _In_opt_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMessageExtraInfo@0",
+      "argCount": 0,
+      "signature": "LPARAM GetMessageExtraInfo()",
+      "returnType": "LPARAM"
+    },
+    {
+      "name": "_GetMessagePos@0",
+      "argCount": 0,
+      "signature": "DWORD GetMessagePos()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetMessageTime@0",
+      "argCount": 0,
+      "signature": "LONG GetMessageTime()",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_GetNextDlgGroupItem@12",
+      "argCount": 3,
+      "signature": "HWND GetNextDlgGroupItem(_In_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetNextDlgTabItem@12",
+      "argCount": 3,
+      "signature": "HWND GetNextDlgTabItem(_In_, _In_opt_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetOpenClipboardWindow@0",
+      "argCount": 0,
+      "signature": "HWND GetOpenClipboardWindow()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetParent@4",
+      "argCount": 1,
+      "signature": "HWND GetParent(_In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetPropA@8",
+      "argCount": 2,
+      "signature": "HANDLE GetPropA(_In_, _In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetPropW@8",
+      "argCount": 2,
+      "signature": "HANDLE GetPropW(_In_, _In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_GetQueueStatus@4",
+      "argCount": 1,
+      "signature": "DWORD GetQueueStatus(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetRawInputData@20",
+      "argCount": 5,
+      "signature": "UINT GetRawInputData(_In_ HRAWINPUT, _In_ UINT, _Out_opt_ LPVOID, _Inout_ PUINT, _In_ UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetRawInputBuffer@12",
+      "argCount": 3,
+      "signature": "UINT GetRawInputBuffer(_Out_opt_ PRAWINPUT, _Inout_ PUINT, _In_ UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetRawInputDeviceList@12",
+      "argCount": 3,
+      "signature": "UINT GetRawInputDeviceList(_Out_opt_ PRAWINPUTDEVICELIST, _Inout_ PUINT, _In_ UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetRawInputDeviceInfoW@16",
+      "argCount": 4,
+      "signature": "UINT GetRawInputDeviceInfoW(_In_opt_ HANDLE, _In_ UINT, _Inout_opt_ LPVOID, _Inout_ PUINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetRawInputDeviceInfoA@16",
+      "argCount": 4,
+      "signature": "UINT GetRawInputDeviceInfoA(_In_opt_ HANDLE, _In_ UINT, _Inout_opt_ LPVOID, _Inout_ PUINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetRegisteredRawInputDevices@12",
+      "argCount": 3,
+      "signature": "UINT GetRegisteredRawInputDevices(_Out_opt_ PRAWINPUTDEVICE, _Inout_ PUINT, _In_ UINT)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_RegisterRawInputDevices@12",
+      "argCount": 3,
+      "signature": "BOOL RegisterRawInputDevices(_In_ PCRAWINPUTDEVICE, _In_ UINT, _In_ UINT)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DefRawInputProc@12",
+      "argCount": 3,
+      "signature": "LRESULT DefRawInputProc(_In_ PRAWINPUT*, _In_ INT, _In_ UINT)",
+      "returnType": "LRESULT"
+    },
+    {
+      "name": "_GetScrollInfo@12",
+      "argCount": 3,
+      "signature": "BOOL GetScrollInfo(_In_, _In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetScrollPos@8",
+      "argCount": 2,
+      "signature": "int GetScrollPos(_In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetScrollRange@16",
+      "argCount": 4,
+      "signature": "BOOL GetScrollRange(_In_, _In_, _Out_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetShellWindow@0",
+      "argCount": 0,
+      "signature": "HWND GetShellWindow()",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetSubMenu@8",
+      "argCount": 2,
+      "signature": "HMENU GetSubMenu(_In_, _In_)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_GetSysColor@4",
+      "argCount": 1,
+      "signature": "DWORD GetSysColor(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetSysColorBrush@4",
+      "argCount": 1,
+      "signature": "HBRUSH GetSysColorBrush(_In_)",
+      "returnType": "HBRUSH"
+    },
+    {
+      "name": "_GetSystemMenu@8",
+      "argCount": 2,
+      "signature": "HMENU GetSystemMenu(_In_, _In_)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_GetSystemMetrics@4",
+      "argCount": 1,
+      "signature": "int GetSystemMetrics(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetWindowLongA@8",
+      "argCount": 2,
+      "signature": "LONG GetWindowLongA(_In_, _In_)",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_GetWindowLongW@8",
+      "argCount": 2,
+      "signature": "LONG GetWindowLongW(_In_, _In_)",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_GetWindowLongPtrA@8",
+      "argCount": 2,
+      "signature": "LONG_PTR GetWindowLongPtrA(_In_, _In_)",
+      "returnType": "LONG_PTR"
+    },
+    {
+      "name": "_GetWindowLongPtrW@8",
+      "argCount": 2,
+      "signature": "LONG_PTR GetWindowLongPtrW(_In_, _In_)",
+      "returnType": "LONG_PTR"
+    },
+    {
+      "name": "_GetThreadDesktop@4",
+      "argCount": 1,
+      "signature": "HDESK GetThreadDesktop(_In_)",
+      "returnType": "HDESK"
+    },
+    {
+      "name": "_GetTopWindow@4",
+      "argCount": 1,
+      "signature": "HWND GetTopWindow(_In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetUpdateRect@12",
+      "argCount": 3,
+      "signature": "BOOL GetUpdateRect(_In_, _Out_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetUpdateRgn@12",
+      "argCount": 3,
+      "signature": "int GetUpdateRgn(_In_, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetWindow@8",
+      "argCount": 2,
+      "signature": "HWND GetWindow(_In_, _In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_GetWindowContextHelpId@4",
+      "argCount": 1,
+      "signature": "DWORD GetWindowContextHelpId(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetWindowDC@4",
+      "argCount": 1,
+      "signature": "HDC GetWindowDC(_In_opt_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_GetWindowPlacement@8",
+      "argCount": 2,
+      "signature": "BOOL GetWindowPlacement(_In_, _Inout_ WINDOWPLACEMENT*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetWindowRect@8",
+      "argCount": 2,
+      "signature": "BOOL GetWindowRect(_In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetWindowRgn@8",
+      "argCount": 2,
+      "signature": "int GetWindowRgn(_In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetWindowTextLengthA@4",
+      "argCount": 1,
+      "signature": "int GetWindowTextLengthA(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetWindowTextLengthW@4",
+      "argCount": 1,
+      "signature": "int GetWindowTextLengthW(_In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_GetWindowWord@8",
+      "argCount": 2,
+      "signature": "WORD GetWindowWord(_In_, _In_)",
+      "returnType": "WORD"
+    },
+    {
+      "name": "_GetComboBoxInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetComboBoxInfo(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetCursorInfo@4",
+      "argCount": 1,
+      "signature": "BOOL GetCursorInfo(_Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetGUIThreadInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetGUIThreadInfo(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetLastInputInfo@4",
+      "argCount": 1,
+      "signature": "BOOL GetLastInputInfo(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetListBoxInfo@4",
+      "argCount": 1,
+      "signature": "DWORD GetListBoxInfo(_In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetMenuBarInfo@16",
+      "argCount": 4,
+      "signature": "BOOL GetMenuBarInfo(_In_, _In_, _In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMenuInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetMenuInfo(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetProcessDefaultLayout@4",
+      "argCount": 1,
+      "signature": "BOOL GetProcessDefaultLayout(_Out_ DWORD*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetScrollBarInfo@12",
+      "argCount": 3,
+      "signature": "BOOL GetScrollBarInfo(_In_, _In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetTitleBarInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetTitleBarInfo(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetWindowInfo@8",
+      "argCount": 2,
+      "signature": "BOOL GetWindowInfo(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMonitorInfoA@8",
+      "argCount": 2,
+      "signature": "BOOL GetMonitorInfoA(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetMonitorInfoW@8",
+      "argCount": 2,
+      "signature": "BOOL GetMonitorInfoW(_In_, _Inout_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetDpiForSystem@4",
+      "argCount": 1,
+      "signature": "UINT GetDpiForSystem(VOID)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetDpiForWindow@4",
+      "argCount": 1,
+      "signature": "UINT GetDpiForWindow(_In_ HWND)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_GetLayeredWindowAttributes@16",
+      "argCount": 4,
+      "signature": "BOOL GetLayeredWindowAttributes(_In_, _Out_opt_ COLORREF*, _Out_opt_ BYTE*, _Out_opt_ DWORD*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_TranslateAcceleratorA@12",
+      "argCount": 3,
+      "signature": "int TranslateAcceleratorA(_In_, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_TranslateAcceleratorW@12",
+      "argCount": 3,
+      "signature": "int TranslateAcceleratorW(_In_, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_TranslateMDISysAccel@8",
+      "argCount": 2,
+      "signature": "BOOL TranslateMDISysAccel(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_TranslateMessage@4",
+      "argCount": 1,
+      "signature": "BOOL TranslateMessage(_In_ const MSG*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DispatchMessageA@4",
+      "argCount": 1,
+      "signature": "LRESULT DispatchMessageA(_In_ const MSG*)",
+      "returnType": "LRESULT"
+    },
+    {
+      "name": "_DispatchMessageW@4",
+      "argCount": 1,
+      "signature": "LRESULT DispatchMessageW(_In_ const MSG*)",
+      "returnType": "LRESULT"
+    },
+    {
+      "name": "_PostMessageA@16",
+      "argCount": 4,
+      "signature": "BOOL PostMessageA(_In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_PostMessageW@16",
+      "argCount": 4,
+      "signature": "BOOL PostMessageW(_In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_PostQuitMessage@4",
+      "argCount": 1,
+      "signature": "void PostQuitMessage(_In_)",
+      "returnType": "void"
+    },
+    {
+      "name": "_PostThreadMessageA@16",
+      "argCount": 4,
+      "signature": "BOOL PostThreadMessageA(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_PostThreadMessageW@16",
+      "argCount": 4,
+      "signature": "BOOL PostThreadMessageW(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DefWindowProcA@16",
+      "argCount": 4,
+      "signature": "LRESULT DefWindowProcA(_In_, _In_, _In_, _In_)",
+      "returnType": "LRESULT"
+    },
+    {
+      "name": "_DefWindowProcW@16",
+      "argCount": 4,
+      "signature": "LRESULT DefWindowProcW(_In_, _In_, _In_, _In_)",
+      "returnType": "LRESULT"
+    },
+    {
+      "name": "_LoadAcceleratorsA@8",
+      "argCount": 2,
+      "signature": "HACCEL LoadAcceleratorsA(_In_opt_, _In_)",
+      "returnType": "HACCEL"
+    },
+    {
+      "name": "_LoadAcceleratorsW@8",
+      "argCount": 2,
+      "signature": "HACCEL LoadAcceleratorsW(_In_opt_, _In_)",
+      "returnType": "HACCEL"
+    },
+    {
+      "name": "_LoadBitmapA@8",
+      "argCount": 2,
+      "signature": "HBITMAP LoadBitmapA(_In_opt_, _In_)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_LoadBitmapW@8",
+      "argCount": 2,
+      "signature": "HBITMAP LoadBitmapW(_In_opt_, _In_)",
+      "returnType": "HBITMAP"
+    },
+    {
+      "name": "_LoadCursorA@8",
+      "argCount": 2,
+      "signature": "HCURSOR LoadCursorA(_In_opt_, _In_)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_LoadCursorW@8",
+      "argCount": 2,
+      "signature": "HCURSOR LoadCursorW(_In_opt_, _In_)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_LoadCursorFromFileA@4",
+      "argCount": 1,
+      "signature": "HCURSOR LoadCursorFromFileA(_In_)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_LoadCursorFromFileW@4",
+      "argCount": 1,
+      "signature": "HCURSOR LoadCursorFromFileW(_In_)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_LoadIconA@8",
+      "argCount": 2,
+      "signature": "HICON LoadIconA(_In_opt_ HINSTANCE, _In_ LPCSTR)",
+      "returnType": "HICON"
+    },
+    {
+      "name": "_LoadIconW@8",
+      "argCount": 2,
+      "signature": "HICON LoadIconW(_In_opt_ HINSTANCE, _In_ LPCWSTR)",
+      "returnType": "HICON"
+    },
+    {
+      "name": "_LoadImageA@24",
+      "argCount": 6,
+      "signature": "HANDLE LoadImageA(_In_opt_ HINSTANCE, _In_ LPCSTR, _In_ UINT, _In_ int, _In_ int, _In_ UINT)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_LoadImageW@24",
+      "argCount": 6,
+      "signature": "HANDLE LoadImageW(_In_opt_ HINSTANCE, _In_ LPCWSTR, _In_ UINT, _In_ int, _In_ int, _In_ UINT)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_LoadKeyboardLayoutA@8",
+      "argCount": 2,
+      "signature": "HKL LoadKeyboardLayoutA(_In_, _In_)",
+      "returnType": "HKL"
+    },
+    {
+      "name": "_LoadKeyboardLayoutW@8",
+      "argCount": 2,
+      "signature": "HKL LoadKeyboardLayoutW(_In_, _In_)",
+      "returnType": "HKL"
+    },
+    {
+      "name": "_LoadMenuA@8",
+      "argCount": 2,
+      "signature": "HMENU LoadMenuA(_In_opt_, _In_)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_LoadMenuIndirectA@4",
+      "argCount": 1,
+      "signature": "HMENU LoadMenuIndirectA(_In_ const MENUTEMPLATE*)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_LoadMenuIndirectW@4",
+      "argCount": 1,
+      "signature": "HMENU LoadMenuIndirectW(_In_ const MENUTEMPLATE*)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_LoadMenuW@8",
+      "argCount": 2,
+      "signature": "HMENU LoadMenuW(_In_opt_, _In_)",
+      "returnType": "HMENU"
+    },
+    {
+      "name": "_MessageBeep@4",
+      "argCount": 1,
+      "signature": "BOOL MessageBeep(_In_ UINT)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_MessageBoxA@16",
+      "argCount": 4,
+      "signature": "int MessageBoxA(_In_opt_ HWND, _In_opt_ LPCSTR, _In_opt_ LPCSTR, _In_ UINT)",
+      "returnType": "int"
+    },
+    {
+      "name": "_MessageBoxW@16",
+      "argCount": 4,
+      "signature": "int MessageBoxW(_In_opt_ HWND, _In_opt_ LPCWSTR, _In_opt_ LPCWSTR, _In_ UINT)",
+      "returnType": "int"
+    },
+    {
+      "name": "_MessageBoxExA@20",
+      "argCount": 5,
+      "signature": "int MessageBoxExA(_In_opt_ HWND, _In_opt_ LPCSTR, _In_opt_ LPCSTR, _In_ UINT, _In_ WORD)",
+      "returnType": "int"
+    },
+    {
+      "name": "_MessageBoxExW@20",
+      "argCount": 5,
+      "signature": "int MessageBoxExW(_In_opt_ HWND, _In_opt_ LPCWSTR, _In_opt_ LPCWSTR, _In_ UINT, _In_ WORD)",
+      "returnType": "int"
+    },
+    {
+      "name": "_MessageBoxIndirectA@4",
+      "argCount": 1,
+      "signature": "int MessageBoxIndirectA(_In_ CONST MSGBOXPARAMSA*)",
+      "returnType": "int"
+    },
+    {
+      "name": "_MessageBoxIndirectW@4",
+      "argCount": 1,
+      "signature": "int MessageBoxIndirectW(_In_ CONST MSGBOXPARAMSW*)",
+      "returnType": "int"
+    },
+    {
+      "name": "_BeginDeferWindowPos@4",
+      "argCount": 1,
+      "signature": "HDWP BeginDeferWindowPos(_In_)",
+      "returnType": "HDWP"
+    },
+    {
+      "name": "_BeginPaint@8",
+      "argCount": 2,
+      "signature": "HDC BeginPaint(_In_, _Out_)",
+      "returnType": "HDC"
+    },
+    {
+      "name": "_EndDeferWindowPos@4",
+      "argCount": 1,
+      "signature": "BOOL EndDeferWindowPos(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_EndDialog@8",
+      "argCount": 2,
+      "signature": "BOOL EndDialog(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_EndMenu@0",
+      "argCount": 0,
+      "signature": "BOOL EndMenu()",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_EndPaint@8",
+      "argCount": 2,
+      "signature": "BOOL EndPaint(_In_, _In_ const PAINTSTRUCT*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_EndTask@12",
+      "argCount": 3,
+      "signature": "BOOL EndTask(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyAcceleratorTable@4",
+      "argCount": 1,
+      "signature": "BOOL DestroyAcceleratorTable(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyCaret@0",
+      "argCount": 0,
+      "signature": "BOOL DestroyCaret()",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyCursor@4",
+      "argCount": 1,
+      "signature": "BOOL DestroyCursor(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyIcon@4",
+      "argCount": 1,
+      "signature": "BOOL DestroyIcon(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyMenu@4",
+      "argCount": 1,
+      "signature": "BOOL DestroyMenu(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DestroyWindow@4",
+      "argCount": 1,
+      "signature": "BOOL DestroyWindow(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_PeekMessageA@20",
+      "argCount": 5,
+      "signature": "BOOL PeekMessageA(_Out_, _In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_PeekMessageW@20",
+      "argCount": 5,
+      "signature": "BOOL PeekMessageW(_Out_, _In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_InvalidateRect@12",
+      "argCount": 3,
+      "signature": "BOOL InvalidateRect(_In_opt_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_InvalidateRgn@12",
+      "argCount": 3,
+      "signature": "BOOL InvalidateRgn(_In_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawAnimatedRects@16",
+      "argCount": 4,
+      "signature": "BOOL DrawAnimatedRects(_In_opt_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawCaption@16",
+      "argCount": 4,
+      "signature": "BOOL DrawCaption(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawEdge@16",
+      "argCount": 4,
+      "signature": "BOOL DrawEdge(_In_, _Inout_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawFocusRect@8",
+      "argCount": 2,
+      "signature": "BOOL DrawFocusRect(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawFrameControl@16",
+      "argCount": 4,
+      "signature": "BOOL DrawFrameControl(_In_, _Inout_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawIcon@16",
+      "argCount": 4,
+      "signature": "BOOL DrawIcon(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawIconEx@36",
+      "argCount": 9,
+      "signature": "BOOL DrawIconEx(_In_, _In_, _In_, _In_, _In_, _In_, _In_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawMenuBar@4",
+      "argCount": 1,
+      "signature": "BOOL DrawMenuBar(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawMenuBarTemp@20",
+      "argCount": 5,
+      "signature": "DWORD DrawMenuBarTemp(HWND, HDC, LPRECT, HMENU, HFONT)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_DrawStateA@40",
+      "argCount": 10,
+      "signature": "BOOL DrawStateA(_In_, _In_opt_, _In_opt_, _In_, _In_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_DrawStateW@40",
+      "argCount": 10,
+      "signature": "BOOL DrawStateW(_In_, _In_opt_, _In_opt_, _In_, _In_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_wsprintfA@12",
+      "argCount": 3,
+      "signature": "WINAPIV wsprintfA(_Out_, _In_ _Printf_format_string_, ...)",
+      "returnType": "WINAPIV"
+    },
+    {
+      "name": "_wsprintfW@12",
+      "argCount": 3,
+      "signature": "WINAPIV wsprintfW(_Out_, _In_ _Printf_format_string_, ...)",
+      "returnType": "WINAPIV"
+    },
+    {
+      "name": "_MapVirtualKeyA@8",
+      "argCount": 2,
+      "signature": "UINT MapVirtualKeyA(_In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_MapVirtualKeyExA@12",
+      "argCount": 3,
+      "signature": "UINT MapVirtualKeyExA(_In_, _In_, _In_opt_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_MapVirtualKeyExW@12",
+      "argCount": 3,
+      "signature": "UINT MapVirtualKeyExW(_In_, _In_, _In_opt_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_MapVirtualKeyW@8",
+      "argCount": 2,
+      "signature": "UINT MapVirtualKeyW(_In_, _In_)",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_FindWindowA@8",
+      "argCount": 2,
+      "signature": "HWND FindWindowA(_In_opt_, _In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_FindWindowW@8",
+      "argCount": 2,
+      "signature": "HWND FindWindowW(_In_opt_, _In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_FindWindowExA@16",
+      "argCount": 4,
+      "signature": "HWND FindWindowExA(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_FindWindowExW@16",
+      "argCount": 4,
+      "signature": "HWND FindWindowExW(_In_opt_, _In_opt_, _In_opt_, _In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetActiveWindow@4",
+      "argCount": 1,
+      "signature": "HWND SetActiveWindow(_In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetCapture@4",
+      "argCount": 1,
+      "signature": "HWND SetCapture(_In_ HWND)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetCaretBlinkTime@4",
+      "argCount": 1,
+      "signature": "BOOL SetCaretBlinkTime(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetCaretPos@8",
+      "argCount": 2,
+      "signature": "BOOL SetCaretPos(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetClassLongA@12",
+      "argCount": 3,
+      "signature": "DWORD SetClassLongA(_In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetClassLongW@12",
+      "argCount": 3,
+      "signature": "DWORD SetClassLongW(_In_, _In_, _In_)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_SetClassLongPtrA@12",
+      "argCount": 3,
+      "signature": "ULONG_PTR SetClassLongPtrA(_In_, _In_, _In_)",
+      "returnType": "ULONG_PTR"
+    },
+    {
+      "name": "_SetClassLongPtrW@12",
+      "argCount": 3,
+      "signature": "ULONG_PTR SetClassLongPtrW(_In_, _In_, _In_)",
+      "returnType": "ULONG_PTR"
+    },
+    {
+      "name": "_SetClassWord@12",
+      "argCount": 3,
+      "signature": "WORD SetClassWord(_In_, _In_, _In_)",
+      "returnType": "WORD"
+    },
+    {
+      "name": "_SetClipboardData@8",
+      "argCount": 2,
+      "signature": "HANDLE SetClipboardData(_In_, _In_opt_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_SetClipboardViewer@4",
+      "argCount": 1,
+      "signature": "HWND SetClipboardViewer(_In_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetCursor@4",
+      "argCount": 1,
+      "signature": "HCURSOR SetCursor(_In_opt_)",
+      "returnType": "HCURSOR"
+    },
+    {
+      "name": "_SetCursorPos@8",
+      "argCount": 2,
+      "signature": "BOOL SetCursorPos(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDebugErrorLevel@4",
+      "argCount": 1,
+      "signature": "VOID SetDebugErrorLevel(_In_)",
+      "returnType": "VOID"
+    },
+    {
+      "name": "_SetDeskWallPaper@4",
+      "argCount": 1,
+      "signature": "BOOL SetDeskWallPaper(LPCSTR)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDlgItemInt@16",
+      "argCount": 4,
+      "signature": "BOOL SetDlgItemInt(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDlgItemTextA@12",
+      "argCount": 3,
+      "signature": "BOOL SetDlgItemTextA(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDlgItemTextW@12",
+      "argCount": 3,
+      "signature": "BOOL SetDlgItemTextW(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetDoubleClickTime@4",
+      "argCount": 1,
+      "signature": "BOOL SetDoubleClickTime(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetFocus@4",
+      "argCount": 1,
+      "signature": "HWND SetFocus(_In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetForegroundWindow@4",
+      "argCount": 1,
+      "signature": "BOOL SetForegroundWindow(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenu@8",
+      "argCount": 2,
+      "signature": "BOOL SetMenu(_In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuContextHelpId@8",
+      "argCount": 2,
+      "signature": "BOOL SetMenuContextHelpId(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuDefaultItem@12",
+      "argCount": 3,
+      "signature": "BOOL SetMenuDefaultItem(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuInfo@8",
+      "argCount": 2,
+      "signature": "BOOL SetMenuInfo(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuItemBitmaps@20",
+      "argCount": 5,
+      "signature": "BOOL SetMenuItemBitmaps(_In_, _In_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuItemInfoA@16",
+      "argCount": 4,
+      "signature": "BOOL SetMenuItemInfoA(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMenuItemInfoW@16",
+      "argCount": 4,
+      "signature": "BOOL SetMenuItemInfoW(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetMessageExtraInfo@4",
+      "argCount": 1,
+      "signature": "LPARAM SetMessageExtraInfo(_In_)",
+      "returnType": "LPARAM"
+    },
+    {
+      "name": "_SetMessageQueue@4",
+      "argCount": 1,
+      "signature": "BOOL SetMessageQueue(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetParent@8",
+      "argCount": 2,
+      "signature": "HWND SetParent(_In_, _In_opt_)",
+      "returnType": "HWND"
+    },
+    {
+      "name": "_SetProcessDefaultLayout@4",
+      "argCount": 1,
+      "signature": "BOOL SetProcessDefaultLayout(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetProcessWindowStation@4",
+      "argCount": 1,
+      "signature": "BOOL SetProcessWindowStation(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetPropA@12",
+      "argCount": 3,
+      "signature": "BOOL SetPropA(_In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetPropW@12",
+      "argCount": 3,
+      "signature": "BOOL SetPropW(_In_, _In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetRect@20",
+      "argCount": 5,
+      "signature": "BOOL SetRect(_Out_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetRectEmpty@4",
+      "argCount": 1,
+      "signature": "BOOL SetRectEmpty(_Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetScrollInfo@16",
+      "argCount": 4,
+      "signature": "int SetScrollInfo(_In_, _In_, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SetScrollPos@16",
+      "argCount": 4,
+      "signature": "int SetScrollPos(_In_, _In_, _In_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SetScrollRange@20",
+      "argCount": 5,
+      "signature": "BOOL SetScrollRange(_In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSysColorsTemp@12",
+      "argCount": 3,
+      "signature": "DWORD_PTR SetSysColorsTemp(const COLORREF *, const HBRUSH *, DWORD_PTR)",
+      "returnType": "DWORD_PTR"
+    },
+    {
+      "name": "_SetSystemCursor@8",
+      "argCount": 2,
+      "signature": "BOOL SetSystemCursor(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetSystemMenu@8",
+      "argCount": 2,
+      "signature": "BOOL SetSystemMenu(HWND, HMENU)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetThreadDesktop@4",
+      "argCount": 1,
+      "signature": "BOOL SetThreadDesktop(_In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetTimer@16",
+      "argCount": 4,
+      "signature": "UINT_PTR SetTimer(_In_opt_, _In_, _In_, _In_opt_)",
+      "returnType": "UINT_PTR"
+    },
+    {
+      "name": "_SetSystemTimer@16",
+      "argCount": 4,
+      "signature": "UINT_PTR SetSystemTimer(HWND, UINT_PTR, UINT, TIMERPROC)",
+      "returnType": "UINT_PTR"
+    },
+    {
+      "name": "_SetUserObjectSecurity@12",
+      "argCount": 3,
+      "signature": "BOOL SetUserObjectSecurity(_In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWinEventHook@28",
+      "argCount": 7,
+      "signature": "HWINEVENTHOOK SetWinEventHook(_In_, _In_, _In_opt_, _In_, _In_, _In_, _In_)",
+      "returnType": "HWINEVENTHOOK"
+    },
+    {
+      "name": "_SetWindowContextHelpId@8",
+      "argCount": 2,
+      "signature": "BOOL SetWindowContextHelpId(_In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWindowLongA@12",
+      "argCount": 3,
+      "signature": "LONG SetWindowLongA(_In_, _In_, _In_)",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_SetWindowLongW@12",
+      "argCount": 3,
+      "signature": "LONG SetWindowLongW(_In_, _In_, _In_)",
+      "returnType": "LONG"
+    },
+    {
+      "name": "_SetWindowLongPtrA@12",
+      "argCount": 3,
+      "signature": "LONG_PTR SetWindowLongPtrA(_In_, _In_, _In_)",
+      "returnType": "LONG_PTR"
+    },
+    {
+      "name": "_SetWindowLongPtrW@12",
+      "argCount": 3,
+      "signature": "LONG_PTR SetWindowLongPtrW(_In_, _In_, _In_)",
+      "returnType": "LONG_PTR"
+    },
+    {
+      "name": "_SetWindowPlacement@8",
+      "argCount": 2,
+      "signature": "BOOL SetWindowPlacement(_In_ HWND, _In_ const WINDOWPLACEMENT*)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWindowPos@28",
+      "argCount": 7,
+      "signature": "BOOL SetWindowPos(_In_, _In_opt_, _In_, _In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWindowRgn@12",
+      "argCount": 3,
+      "signature": "int SetWindowRgn(_In_, _In_opt_, _In_)",
+      "returnType": "int"
+    },
+    {
+      "name": "_SetWindowsHookA@8",
+      "argCount": 2,
+      "signature": "HHOOK SetWindowsHookA(_In_, _In_)",
+      "returnType": "HHOOK"
+    },
+    {
+      "name": "_SetWindowsHookW@8",
+      "argCount": 2,
+      "signature": "HHOOK SetWindowsHookW(_In_, _In_)",
+      "returnType": "HHOOK"
+    },
+    {
+      "name": "_SetWindowsHookExA@16",
+      "argCount": 4,
+      "signature": "HHOOK SetWindowsHookExA(_In_, _In_, _In_opt_, _In_)",
+      "returnType": "HHOOK"
+    },
+    {
+      "name": "_SetWindowsHookExW@16",
+      "argCount": 4,
+      "signature": "HHOOK SetWindowsHookExW(_In_, _In_, _In_opt_, _In_)",
+      "returnType": "HHOOK"
+    },
+    {
+      "name": "_SetWindowTextA@8",
+      "argCount": 2,
+      "signature": "BOOL SetWindowTextA(_In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWindowTextW@8",
+      "argCount": 2,
+      "signature": "BOOL SetWindowTextW(_In_, _In_opt_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_SetWindowWord@12",
+      "argCount": 3,
+      "signature": "WORD SetWindowWord(_In_, _In_, _In_)",
+      "returnType": "WORD"
+    },
+    {
+      "name": "_SetLayeredWindowAttributes@16",
+      "argCount": 4,
+      "signature": "BOOL SetLayeredWindowAttributes(_In_, _In_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_KillTimer@8",
+      "argCount": 2,
+      "signature": "BOOL KillTimer(_In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ReleaseDC@8",
+      "argCount": 2,
+      "signature": "int ReleaseDC(_In_opt_, _In_)",
+      "returnType": "int"
+    }
+  ]
+}

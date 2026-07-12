@@ -1,0 +1,4 @@
+[submodule "vendor/v86"]
+	path = vendor/v86
+	url = https://github.com/jenissimo/v86.git
+	branch = bottleship

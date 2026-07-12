@@ -1,0 +1,1368 @@
+/**
+ * OpenGL Backend Executor
+ *
+ * Executes OpenGL command stream on WebGPU:
+ * - CLEAR / DRAW command processing
+ * - fixed-function style fragment pipeline (vertex color + 2 texture units)
+ * - depth / stencil / blend / cull / scissor state mapping
+ * - offscreen rendering + present to swapchain
+ */
+
+import { OpenGLFrameInput } from "./opengl-types";
+import { OpenGLPipelineConfig, pipelineConfigKey } from "./opengl-pipeline-factory";
+import { EmulatorConfig } from "../../../core/emulator-config-manager";
+import { GLCommand, GLDrawCommand, GLDrawCommandType, GLTextureObject, VERT_FLOATS } from "../../../modules/opengl32/context";
+import {
+    GL_ADD,
+    GL_ALWAYS,
+    GL_BACK,
+    GL_CLAMP,
+    GL_CLAMP_TO_EDGE,
+    GL_CCW,
+    GL_COLOR_BUFFER_BIT,
+    GL_DECAL,
+    GL_DECR,
+    GL_DEPTH_BUFFER_BIT,
+    GL_DST_ALPHA,
+    GL_DST_COLOR,
+    GL_EQUAL,
+    GL_EXP,
+    GL_EXP2,
+    GL_FILL,
+    GL_FRONT,
+    GL_FRONT_AND_BACK,
+    GL_GEQUAL,
+    GL_GREATER,
+    GL_INCR,
+    GL_KEEP,
+    GL_LEQUAL,
+    GL_LESS,
+    GL_LINEAR,
+    GL_LINEAR_MIPMAP_LINEAR,
+    GL_LINEAR_MIPMAP_NEAREST,
+    GL_LINE,
+    GL_LINES,
+    GL_LINE_LOOP,
+    GL_LINE_STRIP,
+    GL_MODULATE,
+    GL_NEAREST,
+    GL_NEAREST_MIPMAP_LINEAR,
+    GL_NEAREST_MIPMAP_NEAREST,
+    GL_NEVER,
+    GL_NOTEQUAL,
+    GL_ONE,
+    GL_ONE_MINUS_DST_ALPHA,
+    GL_ONE_MINUS_DST_COLOR,
+    GL_ONE_MINUS_SRC_ALPHA,
+    GL_ONE_MINUS_SRC_COLOR,
+    GL_POINT,
+    GL_POINTS,
+    GL_REPLACE,
+    GL_REPEAT,
+    GL_SRC_ALPHA,
+    GL_SRC_ALPHA_SATURATE,
+    GL_SRC_COLOR,
+    GL_STENCIL_BUFFER_BIT,
+    GL_ZERO,
+} from "../../../modules/opengl32/constants";
+import { Logger, LogCategory } from "../../../core/logger";
+import { WebGPUBackend } from "../webgpu-backend";
+import { statsOverlay } from "../../../core/stats-overlay";
+
+type OpenGLTopology = "triangle-list" | "line-list" | "line-strip" | "point-list";
+
+interface CachedTexture {
+    id: number;
+    texture: GPUTexture;
+    view: GPUTextureView;
+    width: number;
+    height: number;
+    version: number;
+    wrapS: number;
+    wrapT: number;
+    minFilter: number;
+    magFilter: number;
+}
+
+interface PreparedDrawData {
+    topology: OpenGLTopology;
+    vertexCount: number;
+    data: Float32Array;
+    byteLength: number;
+}
+
+const VERTEX_FLOAT_STRIDE = 12; // pos.xyz + color.rgba + uv0.xy + uv1.xy + pad
+const VERTEX_BYTE_STRIDE = VERTEX_FLOAT_STRIDE * 4;
+const UNIFORM_BLOCK_SIZE = 96;
+
+export class OpenGLBackendExecutor {
+    private readonly backend: WebGPUBackend;
+
+    private offscreenTexture: GPUTexture | null = null;
+    private offscreenView: GPUTextureView | null = null;
+    private depthTexture: GPUTexture | null = null;
+    private depthView: GPUTextureView | null = null;
+    private offscreenSize: { width: number; height: number } | null = null;
+    private offscreenInitialized = false;
+    /** Last frame render resolution (GL viewport); may be smaller than the canvas. */
+    private presentSourceW = 0;
+    private presentSourceH = 0;
+    private targetFormat: GPUTextureFormat | null = null;
+
+    private shaderModule: GPUShaderModule | null = null;
+    private bindGroupLayout: GPUBindGroupLayout | null = null;
+    private pipelineLayout: GPUPipelineLayout | null = null;
+    private readonly pipelineCache = new Map<string, GPURenderPipeline>();
+
+    private readonly textureCache = new Map<number, CachedTexture>();
+    private readonly samplerCache = new Map<string, GPUSampler>();
+    private readonly bindGroupCache = new Map<string, GPUBindGroup>();
+
+    private whiteTexture: GPUTexture | null = null;
+    private whiteTextureView: GPUTextureView | null = null;
+    private defaultSampler: GPUSampler | null = null;
+
+    private vertexBuffer: GPUBuffer | null = null;
+    private vertexBufferSize = 0;
+    private vertexUploadCursor = 0;
+    private vertexScratch = new Float32Array(0);
+
+    private uniformBuffer: GPUBuffer | null = null;
+    private uniformStride = 256;
+    private uniformCapacity = 0;
+    private uniformCursor = 0;
+    private readonly uniformScratchBuffer = new ArrayBuffer(UNIFORM_BLOCK_SIZE);
+    private readonly uniformScratchF32 = new Float32Array(this.uniformScratchBuffer);
+    private readonly uniformScratchU32 = new Uint32Array(this.uniformScratchBuffer);
+
+    private readonly samplerIds = new WeakMap<GPUSampler, number>();
+    private readonly textureViewIds = new WeakMap<GPUTextureView, number>();
+    private nextObjectId = 1;
+
+    constructor(backend: WebGPUBackend) {
+        this.backend = backend;
+    }
+
+    executeFrame(input: OpenGLFrameInput): void {
+        const device = this.backend.getDevice();
+        const queue = this.backend.getQueue();
+        const context = this.backend.getContext();
+        if (!device || !queue || !context) {
+            Logger.warn(LogCategory.SYSTEM,
+                `OpenGL executeFrame: early exit — device=${!!device} queue=${!!queue} context=${!!context}`);
+            return;
+        }
+
+        const canvas = context.canvas as OffscreenCanvas | undefined;
+        const screenW = canvas?.width ?? 0;
+        const screenH = canvas?.height ?? 0;
+        if (screenW <= 0 || screenH <= 0) {
+            Logger.warn(LogCategory.SYSTEM,
+                `OpenGL executeFrame: early exit — canvas ${screenW}x${screenH}`);
+            return;
+        }
+
+        const format = this.backend.getFormat() ?? "bgra8unorm";
+        const renderW = input.viewportW > 0 ? input.viewportW : screenW;
+        const renderH = input.viewportH > 0 ? input.viewportH : screenH;
+        this.presentSourceW = renderW;
+        this.presentSourceH = renderH;
+        this.ensureStaticResources(device);
+        this.ensureTargets(device, renderW, renderH, format);
+        this.pruneTextureCache(input.textures);
+
+        const drawCount = this.countDrawCommands(input.commands);
+        this.ensureUniformCapacity(device, drawCount);
+        this.ensureVertexBufferCapacity(device, this.estimateVertexBytes(input.commands));
+
+        if (!this.offscreenView || !this.depthView || !this.uniformBuffer || !this.vertexBuffer) {
+            Logger.warn(LogCategory.SYSTEM,
+                `OpenGL executeFrame: early exit — offscreen=${!!this.offscreenView} depth=${!!this.depthView} uniform=${!!this.uniformBuffer} vertex=${!!this.vertexBuffer}`);
+            return;
+        }
+
+        this.uniformCursor = 0;
+        this.vertexUploadCursor = 0;
+
+        const encoder = device.createCommandEncoder();
+        let renderPass: GPURenderPassEncoder | null = null;
+        let colorHasContent = this.offscreenInitialized;
+        // Do not preserve depth/stencil across presents by default.
+        let depthStencilHasContent = false;
+        let drawsIssued = 0;
+
+        const endPass = (): void => {
+            if (!renderPass) return;
+            renderPass.end();
+            renderPass = null;
+        };
+
+        const beginDrawPass = (): GPURenderPassEncoder => {
+            if (renderPass) return renderPass;
+            renderPass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: this.offscreenView!,
+                    loadOp: colorHasContent ? "load" : "clear",
+                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                    storeOp: "store",
+                }],
+                depthStencilAttachment: {
+                    view: this.depthView!,
+                    depthLoadOp: depthStencilHasContent ? "load" : "clear",
+                    depthClearValue: 1,
+                    depthStoreOp: "store",
+                    stencilLoadOp: depthStencilHasContent ? "load" : "clear",
+                    stencilClearValue: 0,
+                    stencilStoreOp: "store",
+                },
+            });
+            // Viewport is set per-draw in the DRAW handler (OpenGL Y-flip).
+            colorHasContent = true;
+            depthStencilHasContent = true;
+            return renderPass;
+        };
+
+        for (const command of input.commands) {
+            switch (command.type) {
+                case GLDrawCommandType.CLEAR: {
+                    endPass();
+                    if (this.encodeClearPass(
+                        encoder,
+                        command.mask,
+                        command.r,
+                        command.g,
+                        command.b,
+                        command.a,
+                        command.depth,
+                        command.stencil,
+                        colorHasContent,
+                        depthStencilHasContent,
+                    )) {
+                        colorHasContent = true;
+                        depthStencilHasContent = true;
+                    }
+                    break;
+                }
+                case GLDrawCommandType.DRAW: {
+                    const cmd = command as GLDrawCommand;
+                    if (cmd.vertCount <= 0) break;
+                    if (cmd.cullEnabled && cmd.cullFace === GL_FRONT_AND_BACK) break;
+
+                    const prepared = this.prepareDrawData(cmd);
+                    if (!prepared || prepared.vertexCount <= 0) break;
+
+                    const vertexOffset = this.uploadVertices(queue, prepared.data, prepared.byteLength);
+                    if (vertexOffset < 0) break;
+
+                    const tex0 = this.resolveTexture(device, queue, input.textures, cmd.textureId0);
+                    const tex1 = this.resolveTexture(device, queue, input.textures, cmd.textureId1);
+                    const useTex0 = !!tex0;
+                    const useTex1 = !!tex1;
+
+                    const sampler0 = tex0
+                        ? this.getOrCreateSampler(device, tex0.wrapS, tex0.wrapT, tex0.minFilter, tex0.magFilter)
+                        : this.getDefaultSampler(device);
+                    const sampler1 = tex1
+                        ? this.getOrCreateSampler(device, tex1.wrapS, tex1.wrapT, tex1.minFilter, tex1.magFilter)
+                        : this.getDefaultSampler(device);
+
+                    const view0 = tex0?.view ?? this.getWhiteTextureView(device, queue);
+                    const view1 = tex1?.view ?? this.getWhiteTextureView(device, queue);
+                    if (!view0 || !view1) break;
+
+                    const uniformOffset = this.allocateUniformSlot();
+                    if (uniformOffset < 0) break;
+
+                    this.writeUniforms(
+                        queue,
+                        uniformOffset,
+                        renderW,
+                        renderH,
+                        cmd,
+                        useTex0,
+                        useTex1,
+                    );
+
+                    const pipelineCfg: OpenGLPipelineConfig = {
+                        topology: prepared.topology,
+                        blendEnabled: cmd.blendEnabled,
+                        blendSrc: cmd.blendSrc,
+                        blendDst: cmd.blendDst,
+                        depthTest: cmd.depthTest,
+                        depthWrite: cmd.depthMask,
+                        depthFunc: cmd.depthFunc,
+                        cullEnabled: cmd.cullEnabled,
+                        cullFace: cmd.cullFace,
+                        frontFace: cmd.frontFace,
+                        colorMaskR: cmd.colorMaskR,
+                        colorMaskG: cmd.colorMaskG,
+                        colorMaskB: cmd.colorMaskB,
+                        colorMaskA: cmd.colorMaskA,
+                        stencilTest: cmd.stencilTest,
+                        stencilFunc: cmd.stencilFunc,
+                        stencilMask: cmd.stencilMask,
+                        stencilWriteMask: cmd.stencilWriteMask,
+                        stencilFail: cmd.stencilFail,
+                        stencilZFail: cmd.stencilZFail,
+                        stencilZPass: cmd.stencilZPass,
+                    };
+
+                    const pipeline = this.getOrCreatePipeline(device, pipelineCfg);
+                    const bindGroup = this.getOrCreateBindGroup(device, sampler0, view0, sampler1, view1);
+                    const pass = beginDrawPass();
+                    if (!this.applyScissor(pass, cmd, renderW, renderH)) break;
+
+                    // OpenGL Y-up → WebGPU Y-down; render at the app's viewport resolution.
+                    const vpW = cmd.vpW > 0 ? cmd.vpW : renderW;
+                    const vpH = cmd.vpH > 0 ? cmd.vpH : renderH;
+                    const vpX = cmd.vpX;
+                    const vpY = renderH - cmd.vpY - vpH;
+                    pass.setViewport(vpX, vpY, vpW, vpH, cmd.depthRangeNear, cmd.depthRangeFar);
+
+                    pass.setPipeline(pipeline);
+                    if (cmd.stencilTest) {
+                        pass.setStencilReference(cmd.stencilRef >>> 0);
+                    }
+                    pass.setBindGroup(0, bindGroup, [uniformOffset]);
+                    pass.setVertexBuffer(0, this.vertexBuffer!, vertexOffset, prepared.byteLength);
+                    pass.draw(prepared.vertexCount, 1, 0, 0);
+                    drawsIssued++;
+                    break;
+                }
+                case GLDrawCommandType.VIEWPORT:
+                case GLDrawCommandType.SCISSOR:
+                default:
+                    break;
+            }
+        }
+
+        endPass();
+
+        // Compatibility path:
+        // some legacy GL apps update textures every frame but geometry command stream
+        // may be missing due partial list/FFP emulation gaps. If no draws were issued,
+        // present the most relevant GL texture directly to avoid a hard black screen.
+        if (drawsIssued === 0) {
+            const fallbackTex = this.resolveFallbackPresentTexture(device, queue, input.textures);
+            if (fallbackTex) {
+                const targetView = context.getCurrentTexture().createView();
+                this.backend.drawTexture(
+                    fallbackTex.view,
+                    targetView,
+                    encoder,
+                    true,
+                    screenW,
+                    screenH,
+                    { r: 0, g: 0, b: 0, a: 1 },
+                );
+                this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
+                queue.submit([encoder.finish()]);
+                this.offscreenInitialized = false;
+                const cmdSummary = input.commands.map(c => {
+                    if (c.type === GLDrawCommandType.CLEAR) return `CLEAR(m=0x${(c as any).mask?.toString(16)})`;
+                    if (c.type === GLDrawCommandType.VIEWPORT) return `VP(${(c as any).w}x${(c as any).h})`;
+                    if (c.type === GLDrawCommandType.SCISSOR) return `SCISSOR`;
+                    if (c.type === GLDrawCommandType.DRAW) return `DRAW(v=${(c as any).vertCount})`;
+                    return `?${(c as any).type}`;
+                }).join(',');
+                Logger.log(
+                    LogCategory.SYSTEM,
+                    `OpenGL fallback present: tex=${fallbackTex.id} ${fallbackTex.width}x${fallbackTex.height} draws=0 cmds=${input.commands.length} [${cmdSummary}]`,
+                );
+                return;
+            }
+        }
+
+        if (!colorHasContent) {
+            this.encodeClearPass(
+                encoder,
+                GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                false,
+                false,
+            );
+            colorHasContent = true;
+        }
+
+        this.offscreenInitialized = colorHasContent;
+
+        const targetView = context.getCurrentTexture().createView();
+        this.blitOffscreenToCanvas(targetView, encoder, screenW, screenH);
+        this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
+        queue.submit([encoder.finish()]);
+
+        Logger.verbose(
+            LogCategory.SYSTEM,
+            `OpenGL frame: cmds=${input.commands.length} draws=${drawCount} viewport=${input.viewportW}x${input.viewportH}`,
+        );
+    }
+
+    /**
+     * Re-present the last rendered offscreen to the canvas without re-rendering.
+     * Low-fps wglSwapBuffers presenters need this so the swapchain holds the frame
+     * between browser composites (single blit, no geometry re-draw).
+     */
+    repaintLastFrame(): void {
+        if (!this.offscreenView || !this.offscreenInitialized) return;
+        const device = this.backend.getDevice();
+        const queue = this.backend.getQueue();
+        const context = this.backend.getContext();
+        if (!device || !queue || !context) return;
+        const canvas = context.canvas as OffscreenCanvas | undefined;
+        const screenW = canvas?.width ?? 0;
+        const screenH = canvas?.height ?? 0;
+        if (screenW <= 0 || screenH <= 0) return;
+        const encoder = device.createCommandEncoder();
+        const targetView = context.getCurrentTexture().createView();
+        this.blitOffscreenToCanvas(targetView, encoder, screenW, screenH);
+        this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
+        queue.submit([encoder.finish()]);
+    }
+
+    /** Blit offscreen render target to the swapchain, upscaling with nearest filter when needed. */
+    private blitOffscreenToCanvas(
+        targetView: GPUTextureView,
+        encoder: GPUCommandEncoder,
+        screenW: number,
+        screenH: number,
+    ): void {
+        if (!this.offscreenView) return;
+        const srcW = this.presentSourceW > 0 ? this.presentSourceW : screenW;
+        const srcH = this.presentSourceH > 0 ? this.presentSourceH : screenH;
+        const upscale = srcW !== screenW || srcH !== screenH;
+        this.backend.drawTexture(
+            this.offscreenView,
+            targetView,
+            encoder,
+            true,
+            screenW,
+            screenH,
+            { r: 0, g: 0, b: 0, a: 1 },
+            upscale,
+        );
+    }
+
+    private compositeStatsOverlay(
+        targetView: GPUTextureView,
+        encoder: GPUCommandEncoder,
+        width: number,
+        height: number,
+    ): void {
+        if (!statsOverlay.isEnabled()) return;
+        const statsCanvas = statsOverlay.getCanvas();
+        if (!statsCanvas) return;
+        if (statsOverlay.isDirty()) {
+            this.backend.updateStatsTexture(statsCanvas);
+            statsOverlay.clearDirty();
+        }
+        this.backend.renderStatsOverlay(targetView, encoder, width, height);
+    }
+
+    destroy(): void {
+        for (const tex of this.textureCache.values()) {
+            tex.texture.destroy();
+        }
+        this.textureCache.clear();
+        this.samplerCache.clear();
+        this.bindGroupCache.clear();
+        this.pipelineCache.clear();
+
+        if (this.whiteTexture) {
+            this.whiteTexture.destroy();
+            this.whiteTexture = null;
+            this.whiteTextureView = null;
+        }
+        this.defaultSampler = null;
+
+        if (this.vertexBuffer) {
+            this.vertexBuffer.destroy();
+            this.vertexBuffer = null;
+            this.vertexBufferSize = 0;
+        }
+
+        if (this.uniformBuffer) {
+            this.uniformBuffer.destroy();
+            this.uniformBuffer = null;
+            this.uniformCapacity = 0;
+        }
+
+        if (this.offscreenTexture) {
+            this.offscreenTexture.destroy();
+            this.offscreenTexture = null;
+            this.offscreenView = null;
+        }
+        if (this.depthTexture) {
+            this.depthTexture.destroy();
+            this.depthTexture = null;
+            this.depthView = null;
+        }
+        this.offscreenSize = null;
+        this.offscreenInitialized = false;
+        this.targetFormat = null;
+
+        this.shaderModule = null;
+        this.bindGroupLayout = null;
+        this.pipelineLayout = null;
+    }
+
+    private ensureStaticResources(device: GPUDevice): void {
+        if (!this.bindGroupLayout) {
+            this.bindGroupLayout = device.createBindGroupLayout({
+                entries: [
+                    {
+                        binding: 0,
+                        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                        buffer: {
+                            type: "uniform",
+                            hasDynamicOffset: true,
+                            minBindingSize: UNIFORM_BLOCK_SIZE,
+                        },
+                    },
+                    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                    { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                    { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                    { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                ],
+            });
+        }
+
+        if (!this.pipelineLayout && this.bindGroupLayout) {
+            this.pipelineLayout = device.createPipelineLayout({
+                bindGroupLayouts: [this.bindGroupLayout],
+            });
+        }
+
+        if (!this.shaderModule) {
+            this.shaderModule = device.createShaderModule({ code: this.buildShaderCode() });
+        }
+
+        const align = device.limits.minUniformBufferOffsetAlignment || 256;
+        this.uniformStride = Math.max(256, align);
+    }
+
+    private ensureTargets(device: GPUDevice, width: number, height: number, format: GPUTextureFormat): void {
+        const sameSize = this.offscreenSize && this.offscreenSize.width === width && this.offscreenSize.height === height;
+        const sameFormat = this.targetFormat === format;
+        if (sameSize && sameFormat && this.offscreenTexture && this.depthTexture) {
+            return;
+        }
+
+        if (this.offscreenTexture) {
+            this.offscreenTexture.destroy();
+        }
+        if (this.depthTexture) {
+            this.depthTexture.destroy();
+        }
+
+        if (!sameFormat) {
+            this.pipelineCache.clear();
+            this.bindGroupCache.clear();
+        }
+
+        this.targetFormat = format;
+        this.offscreenTexture = device.createTexture({
+            size: { width, height, depthOrArrayLayers: 1 },
+            format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+        });
+        this.offscreenView = this.offscreenTexture.createView();
+
+        this.depthTexture = device.createTexture({
+            size: { width, height, depthOrArrayLayers: 1 },
+            format: "depth24plus-stencil8",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        this.depthView = this.depthTexture.createView();
+
+        this.offscreenSize = { width, height };
+        this.offscreenInitialized = false;
+    }
+
+    private pruneTextureCache(textures: Map<number, GLTextureObject>): void {
+        let removed = false;
+        for (const [id, cached] of this.textureCache.entries()) {
+            if (textures.has(id)) continue;
+            cached.texture.destroy();
+            this.textureCache.delete(id);
+            removed = true;
+        }
+        if (removed) {
+            this.bindGroupCache.clear();
+        }
+    }
+
+    private countDrawCommands(commands: GLCommand[]): number {
+        let count = 0;
+        for (const cmd of commands) {
+            if (cmd.type === GLDrawCommandType.DRAW) count++;
+        }
+        return count;
+    }
+
+    private estimateVertexBytes(commands: GLCommand[]): number {
+        let totalVertices = 0;
+        for (const cmd of commands) {
+            if (cmd.type !== GLDrawCommandType.DRAW) continue;
+            let count = cmd.vertCount;
+            if (cmd.mode === GL_LINE_LOOP) count += 1;
+            if (cmd.polygonMode === GL_LINE && this.isTriangleLikeMode(cmd.mode)) {
+                count *= 2;
+            }
+            totalVertices += count;
+        }
+        return Math.max(1, totalVertices * VERTEX_BYTE_STRIDE);
+    }
+
+    private ensureUniformCapacity(device: GPUDevice, drawCount: number): void {
+        const required = Math.max(1, drawCount + 8);
+        if (this.uniformBuffer && this.uniformCapacity >= required) {
+            return;
+        }
+
+        const nextCapacity = this.nextPow2(required);
+        const size = nextCapacity * this.uniformStride;
+
+        if (this.uniformBuffer) {
+            this.uniformBuffer.destroy();
+        }
+        this.uniformBuffer = device.createBuffer({
+            size,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this.uniformCapacity = nextCapacity;
+        this.bindGroupCache.clear();
+    }
+
+    private ensureVertexBufferCapacity(device: GPUDevice, requiredBytes: number): void {
+        if (this.vertexBuffer && this.vertexBufferSize >= requiredBytes) return;
+
+        const nextSize = this.nextPow2(Math.max(requiredBytes, 64 * 1024));
+        if (this.vertexBuffer) {
+            this.vertexBuffer.destroy();
+        }
+        this.vertexBuffer = device.createBuffer({
+            size: nextSize,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        this.vertexBufferSize = nextSize;
+    }
+
+    private allocateUniformSlot(): number {
+        if (!this.uniformBuffer || this.uniformCursor >= this.uniformCapacity) {
+            return -1;
+        }
+        const offset = this.uniformCursor * this.uniformStride;
+        this.uniformCursor++;
+        return offset;
+    }
+
+    private uploadVertices(queue: GPUQueue, vertices: Float32Array, byteLength: number): number {
+        if (!this.vertexBuffer) return -1;
+        const offset = this.vertexUploadCursor;
+        this.vertexUploadCursor += byteLength;
+        if (this.vertexUploadCursor > this.vertexBufferSize) return -1;
+        queue.writeBuffer(this.vertexBuffer, offset, vertices.buffer, vertices.byteOffset, byteLength);
+        return offset;
+    }
+
+    private prepareDrawData(cmd: GLDrawCommand): PreparedDrawData | null {
+        const selected = this.selectFlatVertices(cmd);
+        if (!selected || selected.count <= 0) return null;
+
+        const vertexCount = selected.count;
+        const floatCount = vertexCount * VERTEX_FLOAT_STRIDE;
+        if (this.vertexScratch.length < floatCount) {
+            this.vertexScratch = new Float32Array(this.nextPow2(floatCount));
+        }
+        const out = this.vertexScratch.subarray(0, floatCount);
+
+        const src = selected.data;
+        let idx = 0;
+        for (let i = 0; i < vertexCount; i++) {
+            const si = i * VERT_FLOATS;
+            out[idx++] = src[si];       // clip.x
+            out[idx++] = src[si+1];     // clip.y
+            out[idx++] = src[si+2];     // clip.z
+            out[idx++] = src[si+3];     // clip.w
+            out[idx++] = this.clamp01(src[si+4]); // r
+            out[idx++] = this.clamp01(src[si+5]); // g
+            out[idx++] = this.clamp01(src[si+6]); // b
+            out[idx++] = this.clamp01(src[si+7]); // a
+            out[idx++] = src[si+11];    // s0
+            out[idx++] = src[si+12];    // t0
+            out[idx++] = src[si+13];    // s1
+            out[idx++] = src[si+14];    // t1
+        }
+
+        return {
+            topology: selected.topology,
+            vertexCount,
+            data: out,
+            byteLength: vertexCount * VERTEX_BYTE_STRIDE,
+        };
+    }
+
+    private selectFlatVertices(cmd: GLDrawCommand): { data: Float32Array; count: number; topology: OpenGLTopology } | null {
+        let topology: OpenGLTopology = "triangle-list";
+        let data = cmd.vertData;
+        let count = cmd.vertCount;
+
+        if (cmd.polygonMode === GL_LINE && this.isTriangleLikeMode(cmd.mode)) {
+            const triCount = (count / 3) | 0;
+            if (triCount <= 0) return null;
+            const wireCount = triCount * 6;
+            const wire = new Float32Array(wireCount * VERT_FLOATS);
+            let wi = 0;
+            for (let i = 0; i + 2 < count; i += 3) {
+                const ai = i * VERT_FLOATS, bi = (i+1) * VERT_FLOATS, ci = (i+2) * VERT_FLOATS;
+                wire.set(data.subarray(ai, ai+VERT_FLOATS), (wi++) * VERT_FLOATS);
+                wire.set(data.subarray(bi, bi+VERT_FLOATS), (wi++) * VERT_FLOATS);
+                wire.set(data.subarray(bi, bi+VERT_FLOATS), (wi++) * VERT_FLOATS);
+                wire.set(data.subarray(ci, ci+VERT_FLOATS), (wi++) * VERT_FLOATS);
+                wire.set(data.subarray(ci, ci+VERT_FLOATS), (wi++) * VERT_FLOATS);
+                wire.set(data.subarray(ai, ai+VERT_FLOATS), (wi++) * VERT_FLOATS);
+            }
+            data = wire;
+            count = wireCount;
+            topology = "line-list";
+        } else if (cmd.polygonMode === GL_POINT && this.isTriangleLikeMode(cmd.mode)) {
+            topology = "point-list";
+        } else {
+            switch (cmd.mode) {
+                case GL_POINTS:
+                    topology = "point-list";
+                    break;
+                case GL_LINES:
+                    topology = "line-list";
+                    break;
+                case GL_LINE_STRIP:
+                    topology = "line-strip";
+                    break;
+                case GL_LINE_LOOP: {
+                    if (count < 2) return null;
+                    // Append first vertex to close the loop
+                    const looped = new Float32Array((count + 1) * VERT_FLOATS);
+                    looped.set(data.subarray(0, count * VERT_FLOATS));
+                    looped.set(data.subarray(0, VERT_FLOATS), count * VERT_FLOATS);
+                    data = looped;
+                    count = count + 1;
+                    topology = "line-strip";
+                    break;
+                }
+                default:
+                    topology = "triangle-list";
+                    break;
+            }
+        }
+
+        return { data, count, topology };
+    }
+
+    private isTriangleLikeMode(mode: number): boolean {
+        return mode !== GL_POINTS &&
+            mode !== GL_LINES &&
+            mode !== GL_LINE_STRIP &&
+            mode !== GL_LINE_LOOP;
+    }
+
+    private resolveTexture(device: GPUDevice, queue: GPUQueue, textures: Map<number, GLTextureObject>, texId: number): CachedTexture | null {
+        if (!texId) return null;
+        const src = textures.get(texId);
+        if (!src || !src.data || src.width <= 0 || src.height <= 0) return null;
+
+        const expectedBytes = src.width * src.height * 4;
+        if (src.data.length < expectedBytes) return null;
+
+        let cached = this.textureCache.get(texId);
+        const recreate = !cached || cached.width !== src.width || cached.height !== src.height;
+        if (recreate) {
+            if (cached) {
+                cached.texture.destroy();
+            }
+            const texture = device.createTexture({
+                size: { width: src.width, height: src.height, depthOrArrayLayers: 1 },
+                format: "rgba8unorm",
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            cached = {
+                id: texId,
+                texture,
+                view: texture.createView(),
+                width: src.width,
+                height: src.height,
+                version: -1,
+                wrapS: src.wrapS,
+                wrapT: src.wrapT,
+                minFilter: src.minFilter,
+                magFilter: src.magFilter,
+            };
+            this.textureCache.set(texId, cached);
+            this.bindGroupCache.clear();
+        }
+        if (!cached) return null;
+
+        if (recreate || cached.version !== src.gpuVersion || src.dirty) {
+            queue.writeTexture(
+                { texture: cached.texture },
+                src.data.subarray(0, expectedBytes),
+                { bytesPerRow: src.width * 4 },
+                { width: src.width, height: src.height, depthOrArrayLayers: 1 },
+            );
+            cached.version = src.gpuVersion;
+            src.dirty = false;
+        }
+
+        cached.wrapS = src.wrapS;
+        cached.wrapT = src.wrapT;
+        cached.minFilter = src.minFilter;
+        cached.magFilter = src.magFilter;
+        return cached;
+    }
+
+    private resolveFallbackPresentTexture(
+        device: GPUDevice,
+        queue: GPUQueue,
+        textures: Map<number, GLTextureObject>,
+    ): CachedTexture | null {
+        // Prefer texture #1 (common for simple fixed-function video quads).
+        const preferred = textures.get(1);
+        if (preferred?.data && preferred.width > 0 && preferred.height > 0) {
+            return this.resolveTexture(device, queue, textures, 1);
+        }
+
+        // Otherwise choose the most recently updated valid texture.
+        let best: GLTextureObject | null = null;
+        for (const tex of textures.values()) {
+            if (!tex.data || tex.width <= 0 || tex.height <= 0) continue;
+            if (!best || tex.gpuVersion > best.gpuVersion) {
+                best = tex;
+            }
+        }
+        if (!best) return null;
+        return this.resolveTexture(device, queue, textures, best.id);
+    }
+    private getWhiteTextureView(device: GPUDevice, queue: GPUQueue): GPUTextureView | null {
+        if (this.whiteTextureView) return this.whiteTextureView;
+        this.whiteTexture = device.createTexture({
+            size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+            format: "rgba8unorm",
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        queue.writeTexture(
+            { texture: this.whiteTexture },
+            new Uint8Array([255, 255, 255, 255]),
+            { bytesPerRow: 4 },
+            { width: 1, height: 1, depthOrArrayLayers: 1 },
+        );
+        this.whiteTextureView = this.whiteTexture.createView();
+        return this.whiteTextureView;
+    }
+
+    private getDefaultSampler(device: GPUDevice): GPUSampler {
+        if (this.defaultSampler) return this.defaultSampler;
+        this.defaultSampler = device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+            mipmapFilter: "linear",
+            addressModeU: "repeat",
+            addressModeV: "repeat",
+        });
+        return this.defaultSampler;
+    }
+
+    private getOrCreateSampler(device: GPUDevice, wrapS: number, wrapT: number, minFilter: number, magFilter: number): GPUSampler {
+        const addrU = this.mapAddressMode(wrapS);
+        const addrV = this.mapAddressMode(wrapT);
+        let wMin = this.mapMinMagFilter(minFilter);
+        let wMag = this.mapMinMagFilter(magFilter);
+        let wMip = this.mapMipmapFilter(minFilter);
+
+        // Quality overrides — same policy as the ddraw sampler: never
+        // upgrade point-sampled textures; maxAnisotropy>1 forces all-linear filters.
+        const q = EmulatorConfig.getInstance().quality;
+        const usesPoint = wMin === "nearest" || wMag === "nearest";
+        let aniso = 1;
+        if (q.anisotropy > 1 && !usesPoint) aniso = Math.min(16, q.anisotropy);
+        if (q.forceTrilinear && !usesPoint) wMip = "linear";
+        if (aniso > 1) { wMin = "linear"; wMag = "linear"; wMip = "linear"; }
+
+        const key = `${addrU}|${addrV}|${wMin}|${wMag}|${wMip}|${aniso}`;
+        const cached = this.samplerCache.get(key);
+        if (cached) return cached;
+
+        const sampler = device.createSampler({
+            addressModeU: addrU,
+            addressModeV: addrV,
+            minFilter: wMin,
+            magFilter: wMag,
+            mipmapFilter: wMip,
+            maxAnisotropy: aniso,
+        });
+        this.samplerCache.set(key, sampler);
+        return sampler;
+    }
+
+    private getOrCreateBindGroup(
+        device: GPUDevice,
+        sampler0: GPUSampler,
+        view0: GPUTextureView,
+        sampler1: GPUSampler,
+        view1: GPUTextureView,
+    ): GPUBindGroup {
+        const layout = this.bindGroupLayout!;
+        const uniformBuffer = this.uniformBuffer!;
+        const key = `${this.getWeakId(this.samplerIds, sampler0)}|${this.getWeakId(this.textureViewIds, view0)}|${this.getWeakId(this.samplerIds, sampler1)}|${this.getWeakId(this.textureViewIds, view1)}`;
+        const cached = this.bindGroupCache.get(key);
+        if (cached) return cached;
+
+        const bindGroup = device.createBindGroup({
+            layout,
+            entries: [
+                { binding: 0, resource: { buffer: uniformBuffer, size: UNIFORM_BLOCK_SIZE } },
+                { binding: 1, resource: sampler0 },
+                { binding: 2, resource: view0 },
+                { binding: 3, resource: sampler1 },
+                { binding: 4, resource: view1 },
+            ],
+        });
+        this.bindGroupCache.set(key, bindGroup);
+        if (this.bindGroupCache.size > 4096) {
+            this.bindGroupCache.clear();
+            this.bindGroupCache.set(key, bindGroup);
+        }
+        return bindGroup;
+    }
+
+    private getOrCreatePipeline(device: GPUDevice, cfg: OpenGLPipelineConfig): GPURenderPipeline {
+        const key = pipelineConfigKey(cfg);
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+
+        const colorWriteMask =
+            (cfg.colorMaskR ? GPUColorWrite.RED : 0) |
+            (cfg.colorMaskG ? GPUColorWrite.GREEN : 0) |
+            (cfg.colorMaskB ? GPUColorWrite.BLUE : 0) |
+            (cfg.colorMaskA ? GPUColorWrite.ALPHA : 0);
+
+        const cullMode: GPUCullMode =
+            !cfg.cullEnabled ? "none"
+                : cfg.cullFace === GL_FRONT ? "front"
+                    : cfg.cullFace === GL_BACK ? "back"
+                        : "none";
+
+        const frontFace: GPUFrontFace = cfg.frontFace === GL_CCW ? "ccw" : "cw";
+        const blend: GPUBlendState | undefined = cfg.blendEnabled
+            ? {
+                color: {
+                    srcFactor: this.mapBlendFactor(cfg.blendSrc),
+                    dstFactor: this.mapBlendFactor(cfg.blendDst),
+                    operation: "add",
+                },
+                alpha: {
+                    srcFactor: this.mapBlendFactor(cfg.blendSrc),
+                    dstFactor: this.mapBlendFactor(cfg.blendDst),
+                    operation: "add",
+                },
+            }
+            : undefined;
+
+        const depthCompare = cfg.depthTest ? this.mapCompareFunc(cfg.depthFunc) : "always";
+        const stencilCompare = cfg.stencilTest ? this.mapCompareFunc(cfg.stencilFunc) : "always";
+        const stencilFront: GPUStencilFaceState = {
+            compare: stencilCompare,
+            failOp: cfg.stencilTest ? this.mapStencilOp(cfg.stencilFail) : "keep",
+            depthFailOp: cfg.stencilTest ? this.mapStencilOp(cfg.stencilZFail) : "keep",
+            passOp: cfg.stencilTest ? this.mapStencilOp(cfg.stencilZPass) : "keep",
+        };
+
+        const pipeline = device.createRenderPipeline({
+            layout: this.pipelineLayout!,
+            vertex: {
+                module: this.shaderModule!,
+                entryPoint: "vs_main",
+                buffers: [{
+                    arrayStride: VERTEX_BYTE_STRIDE,
+                    attributes: [
+                        { shaderLocation: 0, offset: 0, format: "float32x4" },
+                        { shaderLocation: 1, offset: 16, format: "float32x4" },
+                        { shaderLocation: 2, offset: 32, format: "float32x2" },
+                        { shaderLocation: 3, offset: 40, format: "float32x2" },
+                    ],
+                }],
+            },
+            fragment: {
+                module: this.shaderModule!,
+                entryPoint: "fs_main",
+                targets: [{
+                    format: this.targetFormat ?? "bgra8unorm",
+                    blend,
+                    writeMask: colorWriteMask,
+                }],
+            },
+            primitive: {
+                topology: cfg.topology,
+                frontFace,
+                cullMode,
+            },
+            depthStencil: {
+                format: "depth24plus-stencil8",
+                // In OpenGL depth writes happen only when depth test is enabled.
+                depthWriteEnabled: cfg.depthTest && cfg.depthWrite,
+                depthCompare,
+                stencilFront,
+                stencilBack: stencilFront,
+                stencilReadMask: cfg.stencilMask >>> 0,
+                stencilWriteMask: cfg.stencilTest ? (cfg.stencilWriteMask >>> 0) : 0,
+            },
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private writeUniforms(
+        queue: GPUQueue,
+        offset: number,
+        _screenW: number,
+        _screenH: number,
+        cmd: GLDrawCommand,
+        useTex0: boolean,
+        useTex1: boolean,
+    ): void {
+        this.uniformScratchF32.fill(0);
+
+        // 0..16 — use the viewport dimensions that were active when vertices were
+        // transformed (in transformVertices), NOT the canvas size. The vertex shader
+        // reverses the viewport transform: ndcX = (pos.x / screen.x) * 2 - 1, so
+        // screen.x must match the viewportW used in the JS-side viewport transform.
+        this.uniformScratchF32[0] = cmd.vpW > 0 ? cmd.vpW : _screenW;
+        this.uniformScratchF32[1] = cmd.vpH > 0 ? cmd.vpH : _screenH;
+        this.uniformScratchF32[2] = this.clamp01(cmd.alphaRef);
+
+        // 16..48 (u32s)
+        this.uniformScratchU32[4] = cmd.alphaFunc >>> 0;
+        this.uniformScratchU32[5] = cmd.texEnvMode0 >>> 0;
+        this.uniformScratchU32[6] = cmd.texEnvMode1 >>> 0;
+        this.uniformScratchU32[7] = cmd.alphaTest ? 1 : 0;
+        this.uniformScratchU32[8] = useTex0 ? 1 : 0;
+        this.uniformScratchU32[9] = useTex1 ? 1 : 0;
+        this.uniformScratchU32[10] = cmd.fogEnabled ? 1 : 0;
+        this.uniformScratchU32[11] = cmd.fogMode >>> 0;
+
+        // 48..64
+        this.uniformScratchF32[12] = Math.max(0, cmd.fogDensity);
+        this.uniformScratchF32[13] = cmd.fogStart;
+        this.uniformScratchF32[14] = cmd.fogEnd;
+
+        // 64..80 fogColor
+        this.uniformScratchF32[16] = this.clamp01(cmd.fogR);
+        this.uniformScratchF32[17] = this.clamp01(cmd.fogG);
+        this.uniformScratchF32[18] = this.clamp01(cmd.fogB);
+        this.uniformScratchF32[19] = this.clamp01(cmd.fogA);
+
+        queue.writeBuffer(this.uniformBuffer!, offset, this.uniformScratchBuffer, 0, UNIFORM_BLOCK_SIZE);
+    }
+
+    private applyScissor(pass: GPURenderPassEncoder, cmd: GLDrawCommand, screenW: number, screenH: number): boolean {
+        if (!cmd.scissorEnabled) {
+            pass.setScissorRect(0, 0, screenW, screenH);
+            return true;
+        }
+
+        const sx = Math.round(cmd.scissorX);
+        const sy = Math.round(cmd.scissorY);
+        const sw = Math.max(0, Math.round(cmd.scissorW));
+        const sh = Math.max(0, Math.round(cmd.scissorH));
+
+        // OpenGL scissor origin is lower-left, WebGPU scissor origin is top-left.
+        const x = this.clampInt(sx, 0, screenW);
+        const y = this.clampInt(screenH - (sy + sh), 0, screenH);
+        const w = this.clampInt(sw, 0, screenW - x);
+        const h = this.clampInt(sh, 0, screenH - y);
+        if (w <= 0 || h <= 0) {
+            return false;
+        }
+
+        pass.setScissorRect(x, y, w, h);
+        return true;
+    }
+
+    private encodeClearPass(
+        encoder: GPUCommandEncoder,
+        mask: number,
+        r: number,
+        g: number,
+        b: number,
+        a: number,
+        depth: number,
+        stencil: number,
+        colorHasContent: boolean,
+        depthStencilHasContent: boolean,
+    ): boolean {
+        if (!this.offscreenView || !this.depthView) return false;
+        const clearColor = (mask & GL_COLOR_BUFFER_BIT) !== 0;
+        const clearDepth = (mask & GL_DEPTH_BUFFER_BIT) !== 0;
+        const clearStencil = (mask & GL_STENCIL_BUFFER_BIT) !== 0;
+        if (!clearColor && !clearDepth && !clearStencil) return false;
+
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [{
+                view: this.offscreenView,
+                loadOp: clearColor ? "clear" : (colorHasContent ? "load" : "clear"),
+                clearValue: clearColor
+                    ? { r: this.clamp01(r), g: this.clamp01(g), b: this.clamp01(b), a: this.clamp01(a) }
+                    : { r: 0, g: 0, b: 0, a: 1 },
+                storeOp: "store",
+            }],
+            depthStencilAttachment: {
+                view: this.depthView,
+                depthLoadOp: clearDepth ? "clear" : (depthStencilHasContent ? "load" : "clear"),
+                depthClearValue: clearDepth ? this.clamp01(depth) : 1,
+                depthStoreOp: "store",
+                stencilLoadOp: clearStencil ? "clear" : (depthStencilHasContent ? "load" : "clear"),
+                stencilClearValue: clearStencil ? (stencil >>> 0) : 0,
+                stencilStoreOp: "store",
+            },
+        });
+        pass.end();
+        return true;
+    }
+
+    private mapBlendFactor(factor: number): GPUBlendFactor {
+        switch (factor >>> 0) {
+            case GL_ZERO: return "zero";
+            case GL_ONE: return "one";
+            case GL_SRC_COLOR: return "src";
+            case GL_ONE_MINUS_SRC_COLOR: return "one-minus-src";
+            case GL_DST_COLOR: return "dst";
+            case GL_ONE_MINUS_DST_COLOR: return "one-minus-dst";
+            case GL_SRC_ALPHA: return "src-alpha";
+            case GL_ONE_MINUS_SRC_ALPHA: return "one-minus-src-alpha";
+            case GL_DST_ALPHA: return "dst-alpha";
+            case GL_ONE_MINUS_DST_ALPHA: return "one-minus-dst-alpha";
+            case GL_SRC_ALPHA_SATURATE: return "src-alpha-saturated";
+            default: return "one";
+        }
+    }
+
+    private mapCompareFunc(func: number): GPUCompareFunction {
+        switch (func >>> 0) {
+            case GL_NEVER: return "never";
+            case GL_LESS: return "less";
+            case GL_EQUAL: return "equal";
+            case GL_LEQUAL: return "less-equal";
+            case GL_GREATER: return "greater";
+            case GL_NOTEQUAL: return "not-equal";
+            case GL_GEQUAL: return "greater-equal";
+            case GL_ALWAYS: return "always";
+            default: return "always";
+        }
+    }
+
+    private mapStencilOp(op: number): GPUStencilOperation {
+        switch (op >>> 0) {
+            case GL_ZERO: return "zero";
+            case GL_KEEP: return "keep";
+            case GL_REPLACE: return "replace";
+            case GL_INCR: return "increment-clamp";
+            case GL_DECR: return "decrement-clamp";
+            default: return "keep";
+        }
+    }
+
+    private mapAddressMode(wrap: number): GPUAddressMode {
+        switch (wrap >>> 0) {
+            case GL_REPEAT:
+                return "repeat";
+            case GL_CLAMP:
+            case GL_CLAMP_TO_EDGE:
+                return "clamp-to-edge";
+            default:
+                return "repeat";
+        }
+    }
+
+    private mapMinMagFilter(filter: number): GPUFilterMode {
+        switch (filter >>> 0) {
+            case GL_NEAREST:
+            case GL_NEAREST_MIPMAP_NEAREST:
+            case GL_NEAREST_MIPMAP_LINEAR:
+                return "nearest";
+            default:
+                return "linear";
+        }
+    }
+
+    private mapMipmapFilter(filter: number): GPUFilterMode {
+        switch (filter >>> 0) {
+            case GL_NEAREST_MIPMAP_LINEAR:
+            case GL_LINEAR_MIPMAP_LINEAR:
+                return "linear";
+            case GL_NEAREST_MIPMAP_NEAREST:
+            case GL_LINEAR_MIPMAP_NEAREST:
+                return "nearest";
+            default:
+                return "linear";
+        }
+    }
+
+    private getWeakId<T extends object>(map: WeakMap<T, number>, obj: T): number {
+        const existing = map.get(obj);
+        if (existing !== undefined) return existing;
+        const id = this.nextObjectId++;
+        map.set(obj, id);
+        return id;
+    }
+
+    private nextPow2(value: number): number {
+        let v = Math.max(1, value | 0);
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        return v + 1;
+    }
+
+    private clamp01(v: number): number {
+        if (v <= 0) return 0;
+        if (v >= 1) return 1;
+        return v;
+    }
+
+    private clampInt(v: number, min: number, max: number): number {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v | 0;
+    }
+
+    private buildShaderCode(): string {
+        return `
+struct Uniforms {
+    screen: vec2f,          // 0..8
+    alphaRef: f32,          // 8..12
+    _pad0: f32,             // 12..16
+    alphaFunc: u32,         // 16..20
+    texEnv0: u32,           // 20..24
+    texEnv1: u32,           // 24..28
+    alphaTestEnabled: u32,  // 28..32
+    useTex0: u32,           // 32..36
+    useTex1: u32,           // 36..40
+    fogEnabled: u32,        // 40..44
+    fogMode: u32,           // 44..48
+    fogDensity: f32,        // 48..52
+    fogStart: f32,          // 52..56
+    fogEnd: f32,            // 56..60
+    _pad1: f32,             // 60..64
+    fogColor: vec4f,        // 64..80
+};
+
+struct VertexIn {
+    @location(0) pos: vec4f,
+    @location(1) color: vec4f,
+    @location(2) uv0: vec2f,
+    @location(3) uv1: vec2f,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4f,
+    @location(0) color: vec4f,
+    @location(1) uv0: vec2f,
+    @location(2) uv1: vec2f,
+    @location(3) fogCoord: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var samp0: sampler;
+@group(0) @binding(2) var tex0: texture_2d<f32>;
+@group(0) @binding(3) var samp1: sampler;
+@group(0) @binding(4) var tex1: texture_2d<f32>;
+
+fn applyTexEnv(mode: u32, incoming: vec4f, texel: vec4f) -> vec4f {
+    if (mode == ${GL_REPLACE}u) {
+        return texel;
+    }
+    if (mode == ${GL_DECAL}u) {
+        return vec4f(mix(incoming.rgb, texel.rgb, texel.a), incoming.a);
+    }
+    if (mode == ${GL_ADD}u) {
+        return vec4f(min(incoming.rgb + texel.rgb, vec3f(1.0)), min(incoming.a + texel.a, 1.0));
+    }
+    return incoming * texel; // GL_MODULATE / default
+}
+
+fn alphaTestPass(alpha: f32, refValue: f32, func: u32) -> bool {
+    if (func == ${GL_NEVER}u) { return false; }
+    if (func == ${GL_LESS}u) { return alpha < refValue; }
+    if (func == ${GL_EQUAL}u) { return alpha == refValue; }
+    if (func == ${GL_LEQUAL}u) { return alpha <= refValue; }
+    if (func == ${GL_GREATER}u) { return alpha > refValue; }
+    if (func == ${GL_NOTEQUAL}u) { return alpha != refValue; }
+    if (func == ${GL_GEQUAL}u) { return alpha >= refValue; }
+    return true; // GL_ALWAYS / default
+}
+
+fn computeFogFactor(mode: u32, density: f32, start: f32, end: f32, coord: f32) -> f32 {
+    if (mode == ${GL_EXP}u) {
+        return clamp(exp(-density * coord), 0.0, 1.0);
+    }
+    if (mode == ${GL_EXP2}u) {
+        let d = density * coord;
+        return clamp(exp(-(d * d)), 0.0, 1.0);
+    }
+    if (mode == ${GL_LINEAR}u) {
+        let range = max(end - start, 1e-6);
+        return clamp((end - coord) / range, 0.0, 1.0);
+    }
+    return 1.0;
+}
+
+@vertex
+fn vs_main(input: VertexIn) -> VertexOut {
+    var out: VertexOut;
+    // Pass clip-space coordinates — GPU handles perspective divide, clipping,
+    // and viewport transform. Remap Z from OpenGL [-w,w] to WebGPU [0,w].
+    out.position = vec4f(input.pos.x, input.pos.y, input.pos.z * 0.5 + input.pos.w * 0.5, input.pos.w);
+    out.color = input.color;
+    out.uv0 = input.uv0;
+    out.uv1 = input.uv1;
+    // Approximate fog from clip-space depth (NDC z mapped to [0,1])
+    let w = max(abs(input.pos.w), 0.0001);
+    out.fogCoord = clamp(input.pos.z / w * 0.5 + 0.5, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOut) -> @location(0) vec4f {
+    var color = input.color;
+
+    if (uniforms.useTex0 != 0u) {
+        let t0 = textureSample(tex0, samp0, input.uv0);
+        color = applyTexEnv(uniforms.texEnv0, color, t0);
+    }
+    if (uniforms.useTex1 != 0u) {
+        let t1 = textureSample(tex1, samp1, input.uv1);
+        color = applyTexEnv(uniforms.texEnv1, color, t1);
+    }
+
+    color = vec4f(clamp(color.rgb, vec3f(0.0), vec3f(1.0)), clamp(color.a, 0.0, 1.0));
+
+    if (uniforms.alphaTestEnabled != 0u && !alphaTestPass(color.a, uniforms.alphaRef, uniforms.alphaFunc)) {
+        discard;
+    }
+
+    if (uniforms.fogEnabled != 0u) {
+        let fogF = computeFogFactor(uniforms.fogMode, uniforms.fogDensity, uniforms.fogStart, uniforms.fogEnd, input.fogCoord);
+        color = vec4f(mix(uniforms.fogColor.rgb, color.rgb, fogF), color.a);
+    }
+
+    return color;
+}
+`;
+    }
+}

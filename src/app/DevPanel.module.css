@@ -1,0 +1,26 @@
+/* Developer-tools button strip */
+.emu-dev-panel {
+  padding: 8px 12px;
+  background: var(--ink-800);
+  border-bottom: 1px solid var(--line-1);
+  flex-shrink: 0;
+}
+
+.button-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line-2);
+  margin: 0 4px;
+}
+
+@media (max-width: 720px) {
+  .button-group { gap: 6px; }
+  .divider { display: none; }
+}

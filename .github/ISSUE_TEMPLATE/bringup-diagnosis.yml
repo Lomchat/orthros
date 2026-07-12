@@ -1,0 +1,40 @@
+name: Bring-up diagnosis
+description: A diagnosed generic-layer gap — a named stub or misbehavior with the evidence attached
+title: "[bringup] <module:Function or symptom> — <game that surfaced it>"
+labels: ["bring-up"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is Tier 1 of [contributing with an AI agent](../../docs/contributing-with-ai.md):
+        you (or your agent) drove a game to its point of failure and extracted the *named* gap.
+        A good diagnosis is a ready-to-implement work item.
+  - type: input
+    id: gap
+    attributes:
+      label: The gap
+      description: The unimplemented/incorrect API or behavior, as named by stubs()/report()
+      placeholder: "d3d9:CreateCubeTexture unimplemented → garbage HRESULT → game takes the 'unsupported' branch and exits"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: "report() snapshot at the failure: stubs() entry, module-labelled backtrace, recent WinAPI ring. Paste the POJO."
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: What real Windows does (if known)
+      description: The documented contract we're missing — link Microsoft docs / public SDK headers / Wine behavior if you have it
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Game + the harness verb sequence that reaches the failure
+      render: text
+    validations:
+      required: true

@@ -1,0 +1,348 @@
+{
+  "source": "dinput.h",
+  "generated": "2026-01-19T08:26:10.691Z",
+  "interfaces": [
+    {
+      "interface": "IDirectInputA",
+      "iid": "89521360-aa8a-11cf-bfc7-444553540000",
+      "methods": [
+        {
+          "name": "CreateDevice",
+          "cParams": 3,
+          "vtableIndex": 0,
+          "signature": "IDirectInputA::CreateDevice(REFGUID, LPDIRECTINPUTDEVICEA *lplpDirectInputDevice, LPUNKNOWN)"
+        },
+        {
+          "name": "EnumDevices",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirectInputA::EnumDevices(DWORD, LPDIENUMDEVICESCALLBACKA, LPVOID, DWORD)"
+        },
+        {
+          "name": "GetDeviceStatus",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirectInputA::GetDeviceStatus(REFGUID)"
+        },
+        {
+          "name": "RunControlPanel",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectInputA::RunControlPanel(HWND, DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirectInputA::Initialize(HINSTANCE, DWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectInputDeviceA",
+      "iid": "5944e680-c92e-11cf-bfc7-444553540000",
+      "methods": [
+        {
+          "name": "GetCapabilities",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectInputDeviceA::GetCapabilities(LPDIDEVCAPS)"
+        },
+        {
+          "name": "EnumObjects",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirectInputDeviceA::EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKA, LPVOID, DWORD)"
+        },
+        {
+          "name": "GetProperty",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirectInputDeviceA::GetProperty(REFGUID, LPDIPROPHEADER)"
+        },
+        {
+          "name": "SetProperty",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectInputDeviceA::SetProperty(REFGUID, LPCDIPROPHEADER)"
+        },
+        {
+          "name": "Acquire",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirectInputDeviceA::Acquire()"
+        },
+        {
+          "name": "Unacquire",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirectInputDeviceA::Unacquire()"
+        },
+        {
+          "name": "GetDeviceState",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirectInputDeviceA::GetDeviceState(DWORD, LPVOID)"
+        },
+        {
+          "name": "GetDeviceData",
+          "cParams": 4,
+          "vtableIndex": 7,
+          "signature": "IDirectInputDeviceA::GetDeviceData(DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD)"
+        },
+        {
+          "name": "SetDataFormat",
+          "cParams": 1,
+          "vtableIndex": 8,
+          "signature": "IDirectInputDeviceA::SetDataFormat(LPCDIDATAFORMAT)"
+        },
+        {
+          "name": "SetEventNotification",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirectInputDeviceA::SetEventNotification(HANDLE)"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirectInputDeviceA::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "GetObjectInfo",
+          "cParams": 3,
+          "vtableIndex": 11,
+          "signature": "IDirectInputDeviceA::GetObjectInfo(LPDIDEVICEOBJECTINSTANCEA, DWORD, DWORD)"
+        },
+        {
+          "name": "GetDeviceInfo",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectInputDeviceA::GetDeviceInfo(LPDIDEVICEINSTANCEA)"
+        },
+        {
+          "name": "RunControlPanel",
+          "cParams": 2,
+          "vtableIndex": 13,
+          "signature": "IDirectInputDeviceA::RunControlPanel(HWND, DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 3,
+          "vtableIndex": 14,
+          "signature": "IDirectInputDeviceA::Initialize(HINSTANCE, DWORD, REFGUID)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectInput7A",
+      "iid": "9a4cb684-236d-11d3-8e9d-00c04f6844ae",
+      "methods": [
+        {
+          "name": "CreateDevice",
+          "cParams": 3,
+          "vtableIndex": 0,
+          "signature": "IDirectInput7A::CreateDevice(REFGUID, LPDIRECTINPUTDEVICEA *lplpDirectInputDevice, LPUNKNOWN)"
+        },
+        {
+          "name": "EnumDevices",
+          "cParams": 4,
+          "vtableIndex": 1,
+          "signature": "IDirectInput7A::EnumDevices(DWORD, LPDIENUMDEVICESCALLBACKA, LPVOID, DWORD)"
+        },
+        {
+          "name": "GetDeviceStatus",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirectInput7A::GetDeviceStatus(REFGUID)"
+        },
+        {
+          "name": "RunControlPanel",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectInput7A::RunControlPanel(HWND, DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirectInput7A::Initialize(HINSTANCE, DWORD)"
+        },
+        {
+          "name": "FindDevice",
+          "cParams": 3,
+          "vtableIndex": 5,
+          "signature": "IDirectInput7A::FindDevice(REFGUID, LPCSTR, LPGUID)"
+        },
+        {
+          "name": "CreateDeviceEx",
+          "cParams": 4,
+          "vtableIndex": 6,
+          "signature": "IDirectInput7A::CreateDeviceEx(REFGUID, REFIID, LPVOID *pvOut, LPUNKNOWN)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectInputDevice7A",
+      "iid": "57d7c6bc-2356-11d3-8e9d-00c04f6844ae",
+      "methods": [
+        {
+          "name": "GetCapabilities",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectInputDevice7A::GetCapabilities(LPDIDEVCAPS)"
+        },
+        {
+          "name": "EnumObjects",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirectInputDevice7A::EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKA, LPVOID, DWORD)"
+        },
+        {
+          "name": "GetProperty",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirectInputDevice7A::GetProperty(REFGUID, LPDIPROPHEADER)"
+        },
+        {
+          "name": "SetProperty",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectInputDevice7A::SetProperty(REFGUID, LPCDIPROPHEADER)"
+        },
+        {
+          "name": "Acquire",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirectInputDevice7A::Acquire()"
+        },
+        {
+          "name": "Unacquire",
+          "cParams": 0,
+          "vtableIndex": 5,
+          "signature": "IDirectInputDevice7A::Unacquire()"
+        },
+        {
+          "name": "GetDeviceState",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirectInputDevice7A::GetDeviceState(DWORD, LPVOID)"
+        },
+        {
+          "name": "GetDeviceData",
+          "cParams": 4,
+          "vtableIndex": 7,
+          "signature": "IDirectInputDevice7A::GetDeviceData(DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD)"
+        },
+        {
+          "name": "SetDataFormat",
+          "cParams": 1,
+          "vtableIndex": 8,
+          "signature": "IDirectInputDevice7A::SetDataFormat(LPCDIDATAFORMAT)"
+        },
+        {
+          "name": "SetEventNotification",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirectInputDevice7A::SetEventNotification(HANDLE)"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 10,
+          "signature": "IDirectInputDevice7A::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "GetObjectInfo",
+          "cParams": 3,
+          "vtableIndex": 11,
+          "signature": "IDirectInputDevice7A::GetObjectInfo(LPDIDEVICEOBJECTINSTANCEA, DWORD, DWORD)"
+        },
+        {
+          "name": "GetDeviceInfo",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectInputDevice7A::GetDeviceInfo(LPDIDEVICEINSTANCEA)"
+        },
+        {
+          "name": "RunControlPanel",
+          "cParams": 2,
+          "vtableIndex": 13,
+          "signature": "IDirectInputDevice7A::RunControlPanel(HWND, DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 3,
+          "vtableIndex": 14,
+          "signature": "IDirectInputDevice7A::Initialize(HINSTANCE, DWORD, REFGUID)"
+        },
+        {
+          "name": "CreateEffect",
+          "cParams": 4,
+          "vtableIndex": 15,
+          "signature": "IDirectInputDevice7A::CreateEffect(REFGUID, LPCDIEFFECT, LPDIRECTINPUTEFFECT *ppdeff, LPUNKNOWN)"
+        },
+        {
+          "name": "EnumEffects",
+          "cParams": 3,
+          "vtableIndex": 16,
+          "signature": "IDirectInputDevice7A::EnumEffects(LPDIENUMEFFECTSCALLBACKA, LPVOID, DWORD)"
+        },
+        {
+          "name": "GetEffectInfo",
+          "cParams": 2,
+          "vtableIndex": 17,
+          "signature": "IDirectInputDevice7A::GetEffectInfo(LPDIEFFECTINFOA, REFGUID)"
+        },
+        {
+          "name": "GetForceFeedbackState",
+          "cParams": 1,
+          "vtableIndex": 18,
+          "signature": "IDirectInputDevice7A::GetForceFeedbackState(LPDWORD)"
+        },
+        {
+          "name": "SendForceFeedbackCommand",
+          "cParams": 1,
+          "vtableIndex": 19,
+          "signature": "IDirectInputDevice7A::SendForceFeedbackCommand(DWORD)"
+        },
+        {
+          "name": "EnumCreatedEffectObjects",
+          "cParams": 3,
+          "vtableIndex": 20,
+          "signature": "IDirectInputDevice7A::EnumCreatedEffectObjects(LPDIENUMCREATEDEFFECTOBJECTSCALLBACK, LPVOID, DWORD)"
+        },
+        {
+          "name": "Escape",
+          "cParams": 1,
+          "vtableIndex": 21,
+          "signature": "IDirectInputDevice7A::Escape(LPDIEFFESCAPE)"
+        },
+        {
+          "name": "Poll",
+          "cParams": 0,
+          "vtableIndex": 22,
+          "signature": "IDirectInputDevice7A::Poll()"
+        },
+        {
+          "name": "SendDeviceData",
+          "cParams": 4,
+          "vtableIndex": 23,
+          "signature": "IDirectInputDevice7A::SendDeviceData(DWORD, LPCDIDEVICEOBJECTDATA, LPDWORD, DWORD)"
+        },
+        {
+          "name": "EnumEffectsInFile",
+          "cParams": 4,
+          "vtableIndex": 24,
+          "signature": "IDirectInputDevice7A::EnumEffectsInFile(LPCSTR, LPDIENUMEFFECTSINFILECALLBACK, LPVOID, DWORD)"
+        },
+        {
+          "name": "WriteEffectToFile",
+          "cParams": 4,
+          "vtableIndex": 25,
+          "signature": "IDirectInputDevice7A::WriteEffectToFile(LPCSTR, DWORD, LPDIFILEEFFECT, DWORD)"
+        }
+      ]
+    }
+  ]
+}

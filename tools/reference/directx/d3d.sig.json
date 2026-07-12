@@ -1,0 +1,894 @@
+{
+  "source": "d3d.h",
+  "generated": "2026-01-19T08:26:10.686Z",
+  "interfaces": [
+    {
+      "interface": "IDirect3D7",
+      "iid": "f5049e77-4861-11d2-a407-00a0c90629a8",
+      "methods": [
+        {
+          "name": "EnumDevices",
+          "cParams": 2,
+          "vtableIndex": 0,
+          "signature": "IDirect3D7::EnumDevices(LPD3DENUMDEVICESCALLBACK7, LPVOID)"
+        },
+        {
+          "name": "CreateDevice",
+          "cParams": 3,
+          "vtableIndex": 1,
+          "signature": "IDirect3D7::CreateDevice(REFCLSID, LPDIRECTDRAWSURFACE7, LPDIRECT3DDEVICE7 *lplpD3DDevice)"
+        },
+        {
+          "name": "CreateVertexBuffer",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirect3D7::CreateVertexBuffer(LPD3DVERTEXBUFFERDESC, LPDIRECT3DVERTEXBUFFER7 *lplpD3DVertBuf, DWORD)"
+        },
+        {
+          "name": "EnumZBufferFormats",
+          "cParams": 3,
+          "vtableIndex": 3,
+          "signature": "IDirect3D7::EnumZBufferFormats(REFCLSID, LPD3DENUMPIXELFORMATSCALLBACK, LPVOID)"
+        },
+        {
+          "name": "EvictManagedTextures",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirect3D7::EvictManagedTextures()"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DDevice7",
+      "iid": "f5049e79-4861-11d2-a407-00a0c90629a8",
+      "methods": [
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DDevice7::GetCaps(LPD3DDEVICEDESC7)"
+        },
+        {
+          "name": "EnumTextureFormats",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirect3DDevice7::EnumTextureFormats(LPD3DENUMPIXELFORMATSCALLBACK, LPVOID)"
+        },
+        {
+          "name": "BeginScene",
+          "cParams": 0,
+          "vtableIndex": 2,
+          "signature": "IDirect3DDevice7::BeginScene()"
+        },
+        {
+          "name": "EndScene",
+          "cParams": 0,
+          "vtableIndex": 3,
+          "signature": "IDirect3DDevice7::EndScene()"
+        },
+        {
+          "name": "GetDirect3D",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirect3DDevice7::GetDirect3D(LPDIRECT3D7 *lplpDirect3D3)"
+        },
+        {
+          "name": "SetRenderTarget",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirect3DDevice7::SetRenderTarget(LPDIRECTDRAWSURFACE7, DWORD)"
+        },
+        {
+          "name": "GetRenderTarget",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirect3DDevice7::GetRenderTarget(LPDIRECTDRAWSURFACE7 *lplpRenderTarget)"
+        },
+        {
+          "name": "Clear",
+          "cParams": 6,
+          "vtableIndex": 7,
+          "signature": "IDirect3DDevice7::Clear(DWORD, LPD3DRECT, DWORD, D3DCOLOR, D3DVALUE, DWORD)"
+        },
+        {
+          "name": "SetTransform",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirect3DDevice7::SetTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "GetTransform",
+          "cParams": 2,
+          "vtableIndex": 9,
+          "signature": "IDirect3DDevice7::GetTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "SetViewport",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DDevice7::SetViewport(LPD3DVIEWPORT7)"
+        },
+        {
+          "name": "MultiplyTransform",
+          "cParams": 2,
+          "vtableIndex": 11,
+          "signature": "IDirect3DDevice7::MultiplyTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "GetViewport",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirect3DDevice7::GetViewport(LPD3DVIEWPORT7)"
+        },
+        {
+          "name": "SetMaterial",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirect3DDevice7::SetMaterial(LPD3DMATERIAL7)"
+        },
+        {
+          "name": "GetMaterial",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirect3DDevice7::GetMaterial(LPD3DMATERIAL7)"
+        },
+        {
+          "name": "SetLight",
+          "cParams": 2,
+          "vtableIndex": 15,
+          "signature": "IDirect3DDevice7::SetLight(DWORD, LPD3DLIGHT7)"
+        },
+        {
+          "name": "GetLight",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirect3DDevice7::GetLight(DWORD, LPD3DLIGHT7)"
+        },
+        {
+          "name": "SetRenderState",
+          "cParams": 2,
+          "vtableIndex": 17,
+          "signature": "IDirect3DDevice7::SetRenderState(D3DRENDERSTATETYPE, DWORD)"
+        },
+        {
+          "name": "GetRenderState",
+          "cParams": 2,
+          "vtableIndex": 18,
+          "signature": "IDirect3DDevice7::GetRenderState(D3DRENDERSTATETYPE, LPDWORD)"
+        },
+        {
+          "name": "BeginStateBlock",
+          "cParams": 0,
+          "vtableIndex": 19,
+          "signature": "IDirect3DDevice7::BeginStateBlock()"
+        },
+        {
+          "name": "EndStateBlock",
+          "cParams": 1,
+          "vtableIndex": 20,
+          "signature": "IDirect3DDevice7::EndStateBlock(LPDWORD)"
+        },
+        {
+          "name": "PreLoad",
+          "cParams": 1,
+          "vtableIndex": 21,
+          "signature": "IDirect3DDevice7::PreLoad(LPDIRECTDRAWSURFACE7)"
+        },
+        {
+          "name": "DrawPrimitive",
+          "cParams": 5,
+          "vtableIndex": 22,
+          "signature": "IDirect3DDevice7::DrawPrimitive(D3DPRIMITIVETYPE, DWORD, LPVOID, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitive",
+          "cParams": 7,
+          "vtableIndex": 23,
+          "signature": "IDirect3DDevice7::DrawIndexedPrimitive(D3DPRIMITIVETYPE, DWORD, LPVOID, DWORD, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "SetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 24,
+          "signature": "IDirect3DDevice7::SetClipStatus(LPD3DCLIPSTATUS)"
+        },
+        {
+          "name": "GetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 25,
+          "signature": "IDirect3DDevice7::GetClipStatus(LPD3DCLIPSTATUS)"
+        },
+        {
+          "name": "DrawPrimitiveStrided",
+          "cParams": 5,
+          "vtableIndex": 26,
+          "signature": "IDirect3DDevice7::DrawPrimitiveStrided(D3DPRIMITIVETYPE, DWORD, LPD3DDRAWPRIMITIVESTRIDEDDATA, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitiveStrided",
+          "cParams": 7,
+          "vtableIndex": 27,
+          "signature": "IDirect3DDevice7::DrawIndexedPrimitiveStrided(D3DPRIMITIVETYPE, DWORD, LPD3DDRAWPRIMITIVESTRIDEDDATA, DWORD, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawPrimitiveVB",
+          "cParams": 5,
+          "vtableIndex": 28,
+          "signature": "IDirect3DDevice7::DrawPrimitiveVB(D3DPRIMITIVETYPE, LPDIRECT3DVERTEXBUFFER7, DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitiveVB",
+          "cParams": 7,
+          "vtableIndex": 29,
+          "signature": "IDirect3DDevice7::DrawIndexedPrimitiveVB(D3DPRIMITIVETYPE, LPDIRECT3DVERTEXBUFFER7, DWORD, DWORD, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "ComputeSphereVisibility",
+          "cParams": 5,
+          "vtableIndex": 30,
+          "signature": "IDirect3DDevice7::ComputeSphereVisibility(LPD3DVECTOR, LPD3DVALUE, DWORD, DWORD, LPDWORD)"
+        },
+        {
+          "name": "GetTexture",
+          "cParams": 2,
+          "vtableIndex": 31,
+          "signature": "IDirect3DDevice7::GetTexture(DWORD, LPDIRECTDRAWSURFACE7 *lpTexture)"
+        },
+        {
+          "name": "SetTexture",
+          "cParams": 2,
+          "vtableIndex": 32,
+          "signature": "IDirect3DDevice7::SetTexture(DWORD, LPDIRECTDRAWSURFACE7)"
+        },
+        {
+          "name": "GetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 33,
+          "signature": "IDirect3DDevice7::GetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, LPDWORD)"
+        },
+        {
+          "name": "SetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 34,
+          "signature": "IDirect3DDevice7::SetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, DWORD)"
+        },
+        {
+          "name": "ValidateDevice",
+          "cParams": 1,
+          "vtableIndex": 35,
+          "signature": "IDirect3DDevice7::ValidateDevice(LPDWORD)"
+        },
+        {
+          "name": "ApplyStateBlock",
+          "cParams": 1,
+          "vtableIndex": 36,
+          "signature": "IDirect3DDevice7::ApplyStateBlock(DWORD)"
+        },
+        {
+          "name": "CaptureStateBlock",
+          "cParams": 1,
+          "vtableIndex": 37,
+          "signature": "IDirect3DDevice7::CaptureStateBlock(DWORD)"
+        },
+        {
+          "name": "DeleteStateBlock",
+          "cParams": 1,
+          "vtableIndex": 38,
+          "signature": "IDirect3DDevice7::DeleteStateBlock(DWORD)"
+        },
+        {
+          "name": "CreateStateBlock",
+          "cParams": 2,
+          "vtableIndex": 39,
+          "signature": "IDirect3DDevice7::CreateStateBlock(D3DSTATEBLOCKTYPE, LPDWORD)"
+        },
+        {
+          "name": "Load",
+          "cParams": 5,
+          "vtableIndex": 40,
+          "signature": "IDirect3DDevice7::Load(LPDIRECTDRAWSURFACE7, LPPOINT, LPDIRECTDRAWSURFACE7, LPRECT, DWORD)"
+        },
+        {
+          "name": "LightEnable",
+          "cParams": 2,
+          "vtableIndex": 41,
+          "signature": "IDirect3DDevice7::LightEnable(DWORD, BOOL)"
+        },
+        {
+          "name": "GetLightEnable",
+          "cParams": 2,
+          "vtableIndex": 42,
+          "signature": "IDirect3DDevice7::GetLightEnable(DWORD, BOOL *pbEnable)"
+        },
+        {
+          "name": "SetClipPlane",
+          "cParams": 2,
+          "vtableIndex": 43,
+          "signature": "IDirect3DDevice7::SetClipPlane(DWORD, D3DVALUE *pPlaneEquation)"
+        },
+        {
+          "name": "GetClipPlane",
+          "cParams": 2,
+          "vtableIndex": 44,
+          "signature": "IDirect3DDevice7::GetClipPlane(DWORD, D3DVALUE *pPlaneEquation)"
+        },
+        {
+          "name": "GetInfo",
+          "cParams": 3,
+          "vtableIndex": 45,
+          "signature": "IDirect3DDevice7::GetInfo(DWORD, LPVOID, DWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3D3",
+      "iid": "bb223240-e72b-11d0-a9b4-00aa00c0993e",
+      "methods": [
+        {
+          "name": "EnumDevices",
+          "cParams": 2,
+          "vtableIndex": 0,
+          "signature": "IDirect3D3::EnumDevices(LPD3DENUMDEVICESCALLBACK, LPVOID)"
+        },
+        {
+          "name": "CreateLight",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirect3D3::CreateLight(LPDIRECT3DLIGHT *lplpDirect3DLight, IUnknown *pUnkOuter)"
+        },
+        {
+          "name": "CreateMaterial",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirect3D3::CreateMaterial(LPDIRECT3DMATERIAL3 *lplpDirect3DMaterial3, IUnknown *pUnkOuter)"
+        },
+        {
+          "name": "CreateViewport",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirect3D3::CreateViewport(LPDIRECT3DVIEWPORT3 *lplpD3DViewport3, IUnknown *pUnkOuter)"
+        },
+        {
+          "name": "FindDevice",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirect3D3::FindDevice(LPD3DFINDDEVICESEARCH, LPD3DFINDDEVICERESULT)"
+        },
+        {
+          "name": "CreateDevice",
+          "cParams": 4,
+          "vtableIndex": 5,
+          "signature": "IDirect3D3::CreateDevice(REFCLSID, LPDIRECTDRAWSURFACE4, LPDIRECT3DDEVICE3 *lplpD3DDevice3, LPUNKNOWN)"
+        },
+        {
+          "name": "CreateVertexBuffer",
+          "cParams": 4,
+          "vtableIndex": 6,
+          "signature": "IDirect3D3::CreateVertexBuffer(LPD3DVERTEXBUFFERDESC, LPDIRECT3DVERTEXBUFFER *lplpD3DVertBuf, DWORD, LPUNKNOWN)"
+        },
+        {
+          "name": "EnumZBufferFormats",
+          "cParams": 3,
+          "vtableIndex": 7,
+          "signature": "IDirect3D3::EnumZBufferFormats(REFCLSID, LPD3DENUMPIXELFORMATSCALLBACK, LPVOID)"
+        },
+        {
+          "name": "EvictManagedTextures",
+          "cParams": 0,
+          "vtableIndex": 8,
+          "signature": "IDirect3D3::EvictManagedTextures()"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DDevice3",
+      "iid": "b0ab3b60-33d7-11d1-a981-00c04fd7b174",
+      "methods": [
+        {
+          "name": "GetCaps",
+          "cParams": 2,
+          "vtableIndex": 0,
+          "signature": "IDirect3DDevice3::GetCaps(LPD3DDEVICEDESC, LPD3DDEVICEDESC)"
+        },
+        {
+          "name": "GetStats",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirect3DDevice3::GetStats(LPD3DSTATS)"
+        },
+        {
+          "name": "AddViewport",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirect3DDevice3::AddViewport(LPDIRECT3DVIEWPORT3)"
+        },
+        {
+          "name": "DeleteViewport",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DDevice3::DeleteViewport(LPDIRECT3DVIEWPORT3)"
+        },
+        {
+          "name": "NextViewport",
+          "cParams": 3,
+          "vtableIndex": 4,
+          "signature": "IDirect3DDevice3::NextViewport(LPDIRECT3DVIEWPORT3, LPDIRECT3DVIEWPORT3 *lplpDirect3DViewport3, DWORD)"
+        },
+        {
+          "name": "EnumTextureFormats",
+          "cParams": 2,
+          "vtableIndex": 5,
+          "signature": "IDirect3DDevice3::EnumTextureFormats(LPD3DENUMPIXELFORMATSCALLBACK, LPVOID)"
+        },
+        {
+          "name": "BeginScene",
+          "cParams": 0,
+          "vtableIndex": 6,
+          "signature": "IDirect3DDevice3::BeginScene()"
+        },
+        {
+          "name": "EndScene",
+          "cParams": 0,
+          "vtableIndex": 7,
+          "signature": "IDirect3DDevice3::EndScene()"
+        },
+        {
+          "name": "GetDirect3D",
+          "cParams": 1,
+          "vtableIndex": 8,
+          "signature": "IDirect3DDevice3::GetDirect3D(LPDIRECT3D3 *lplpDirect3D3)"
+        },
+        {
+          "name": "SetCurrentViewport",
+          "cParams": 1,
+          "vtableIndex": 9,
+          "signature": "IDirect3DDevice3::SetCurrentViewport(LPDIRECT3DVIEWPORT3)"
+        },
+        {
+          "name": "GetCurrentViewport",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DDevice3::GetCurrentViewport(LPDIRECT3DVIEWPORT3 *lplpDirect3DViewport3)"
+        },
+        {
+          "name": "SetRenderTarget",
+          "cParams": 2,
+          "vtableIndex": 11,
+          "signature": "IDirect3DDevice3::SetRenderTarget(LPDIRECTDRAWSURFACE4, DWORD)"
+        },
+        {
+          "name": "GetRenderTarget",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirect3DDevice3::GetRenderTarget(LPDIRECTDRAWSURFACE4 *lplpRenderTarget)"
+        },
+        {
+          "name": "Begin",
+          "cParams": 3,
+          "vtableIndex": 13,
+          "signature": "IDirect3DDevice3::Begin(D3DPRIMITIVETYPE, DWORD, DWORD)"
+        },
+        {
+          "name": "BeginIndexed",
+          "cParams": 5,
+          "vtableIndex": 14,
+          "signature": "IDirect3DDevice3::BeginIndexed(D3DPRIMITIVETYPE, DWORD, LPVOID, DWORD, DWORD)"
+        },
+        {
+          "name": "Vertex",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirect3DDevice3::Vertex(LPVOID)"
+        },
+        {
+          "name": "Index",
+          "cParams": 1,
+          "vtableIndex": 16,
+          "signature": "IDirect3DDevice3::Index(WORD)"
+        },
+        {
+          "name": "End",
+          "cParams": 1,
+          "vtableIndex": 17,
+          "signature": "IDirect3DDevice3::End(DWORD)"
+        },
+        {
+          "name": "GetRenderState",
+          "cParams": 2,
+          "vtableIndex": 18,
+          "signature": "IDirect3DDevice3::GetRenderState(D3DRENDERSTATETYPE, LPDWORD)"
+        },
+        {
+          "name": "SetRenderState",
+          "cParams": 2,
+          "vtableIndex": 19,
+          "signature": "IDirect3DDevice3::SetRenderState(D3DRENDERSTATETYPE, DWORD)"
+        },
+        {
+          "name": "GetLightState",
+          "cParams": 2,
+          "vtableIndex": 20,
+          "signature": "IDirect3DDevice3::GetLightState(D3DLIGHTSTATETYPE, LPDWORD)"
+        },
+        {
+          "name": "SetLightState",
+          "cParams": 2,
+          "vtableIndex": 21,
+          "signature": "IDirect3DDevice3::SetLightState(D3DLIGHTSTATETYPE, DWORD)"
+        },
+        {
+          "name": "SetTransform",
+          "cParams": 2,
+          "vtableIndex": 22,
+          "signature": "IDirect3DDevice3::SetTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "GetTransform",
+          "cParams": 2,
+          "vtableIndex": 23,
+          "signature": "IDirect3DDevice3::GetTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "MultiplyTransform",
+          "cParams": 2,
+          "vtableIndex": 24,
+          "signature": "IDirect3DDevice3::MultiplyTransform(D3DTRANSFORMSTATETYPE, LPD3DMATRIX)"
+        },
+        {
+          "name": "DrawPrimitive",
+          "cParams": 5,
+          "vtableIndex": 25,
+          "signature": "IDirect3DDevice3::DrawPrimitive(D3DPRIMITIVETYPE, DWORD, LPVOID, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitive",
+          "cParams": 7,
+          "vtableIndex": 26,
+          "signature": "IDirect3DDevice3::DrawIndexedPrimitive(D3DPRIMITIVETYPE, DWORD, LPVOID, DWORD, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "SetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 27,
+          "signature": "IDirect3DDevice3::SetClipStatus(LPD3DCLIPSTATUS)"
+        },
+        {
+          "name": "GetClipStatus",
+          "cParams": 1,
+          "vtableIndex": 28,
+          "signature": "IDirect3DDevice3::GetClipStatus(LPD3DCLIPSTATUS)"
+        },
+        {
+          "name": "DrawPrimitiveStrided",
+          "cParams": 5,
+          "vtableIndex": 29,
+          "signature": "IDirect3DDevice3::DrawPrimitiveStrided(D3DPRIMITIVETYPE, DWORD, LPD3DDRAWPRIMITIVESTRIDEDDATA, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitiveStrided",
+          "cParams": 7,
+          "vtableIndex": 30,
+          "signature": "IDirect3DDevice3::DrawIndexedPrimitiveStrided(D3DPRIMITIVETYPE, DWORD, LPD3DDRAWPRIMITIVESTRIDEDDATA, DWORD, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawPrimitiveVB",
+          "cParams": 5,
+          "vtableIndex": 31,
+          "signature": "IDirect3DDevice3::DrawPrimitiveVB(D3DPRIMITIVETYPE, LPDIRECT3DVERTEXBUFFER, DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "DrawIndexedPrimitiveVB",
+          "cParams": 5,
+          "vtableIndex": 32,
+          "signature": "IDirect3DDevice3::DrawIndexedPrimitiveVB(D3DPRIMITIVETYPE, LPDIRECT3DVERTEXBUFFER, LPWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "ComputeSphereVisibility",
+          "cParams": 5,
+          "vtableIndex": 33,
+          "signature": "IDirect3DDevice3::ComputeSphereVisibility(LPD3DVECTOR, LPD3DVALUE, DWORD, DWORD, LPDWORD)"
+        },
+        {
+          "name": "GetTexture",
+          "cParams": 2,
+          "vtableIndex": 34,
+          "signature": "IDirect3DDevice3::GetTexture(DWORD, LPDIRECT3DTEXTURE2 *lplpTexture2)"
+        },
+        {
+          "name": "SetTexture",
+          "cParams": 2,
+          "vtableIndex": 35,
+          "signature": "IDirect3DDevice3::SetTexture(DWORD, LPDIRECT3DTEXTURE2)"
+        },
+        {
+          "name": "GetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 36,
+          "signature": "IDirect3DDevice3::GetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, LPDWORD)"
+        },
+        {
+          "name": "SetTextureStageState",
+          "cParams": 3,
+          "vtableIndex": 37,
+          "signature": "IDirect3DDevice3::SetTextureStageState(DWORD, D3DTEXTURESTAGESTATETYPE, DWORD)"
+        },
+        {
+          "name": "ValidateDevice",
+          "cParams": 1,
+          "vtableIndex": 38,
+          "signature": "IDirect3DDevice3::ValidateDevice(LPDWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DViewport3",
+      "iid": "b0ab3b61-33d7-11d1-a981-00c04fd7b174",
+      "methods": [
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DViewport3::Initialize(LPDIRECT3D)"
+        },
+        {
+          "name": "GetViewport",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirect3DViewport3::GetViewport(LPD3DVIEWPORT)"
+        },
+        {
+          "name": "SetViewport",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirect3DViewport3::SetViewport(LPD3DVIEWPORT)"
+        },
+        {
+          "name": "TransformVertices",
+          "cParams": 4,
+          "vtableIndex": 3,
+          "signature": "IDirect3DViewport3::TransformVertices(DWORD, LPD3DTRANSFORMDATA, DWORD, LPDWORD)"
+        },
+        {
+          "name": "LightElements",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirect3DViewport3::LightElements(DWORD, LPD3DLIGHTDATA)"
+        },
+        {
+          "name": "SetBackground",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirect3DViewport3::SetBackground(D3DMATERIALHANDLE)"
+        },
+        {
+          "name": "GetBackground",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirect3DViewport3::GetBackground(LPD3DMATERIALHANDLE, LPBOOL)"
+        },
+        {
+          "name": "SetBackgroundDepth",
+          "cParams": 1,
+          "vtableIndex": 7,
+          "signature": "IDirect3DViewport3::SetBackgroundDepth(LPDIRECTDRAWSURFACE)"
+        },
+        {
+          "name": "GetBackgroundDepth",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirect3DViewport3::GetBackgroundDepth(LPDIRECTDRAWSURFACE *lplpDDSurface, LPBOOL)"
+        },
+        {
+          "name": "Clear",
+          "cParams": 3,
+          "vtableIndex": 9,
+          "signature": "IDirect3DViewport3::Clear(DWORD, LPD3DRECT, DWORD)"
+        },
+        {
+          "name": "AddLight",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DViewport3::AddLight(LPDIRECT3DLIGHT)"
+        },
+        {
+          "name": "DeleteLight",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirect3DViewport3::DeleteLight(LPDIRECT3DLIGHT)"
+        },
+        {
+          "name": "NextLight",
+          "cParams": 3,
+          "vtableIndex": 12,
+          "signature": "IDirect3DViewport3::NextLight(LPDIRECT3DLIGHT, LPDIRECT3DLIGHT *lplpDirect3DLight, DWORD)"
+        },
+        {
+          "name": "GetViewport2",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirect3DViewport3::GetViewport2(LPD3DVIEWPORT2)"
+        },
+        {
+          "name": "SetViewport2",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirect3DViewport3::SetViewport2(LPD3DVIEWPORT2)"
+        },
+        {
+          "name": "SetBackgroundDepth2",
+          "cParams": 1,
+          "vtableIndex": 15,
+          "signature": "IDirect3DViewport3::SetBackgroundDepth2(LPDIRECTDRAWSURFACE4)"
+        },
+        {
+          "name": "GetBackgroundDepth2",
+          "cParams": 2,
+          "vtableIndex": 16,
+          "signature": "IDirect3DViewport3::GetBackgroundDepth2(LPDIRECTDRAWSURFACE4 *lplpDDS, LPBOOL)"
+        },
+        {
+          "name": "Clear2",
+          "cParams": 6,
+          "vtableIndex": 17,
+          "signature": "IDirect3DViewport3::Clear2(DWORD, LPD3DRECT, DWORD, DWORD, D3DVALUE, DWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DViewport2",
+      "iid": "93281500-8cf8-11d0-89ab-00a0c9054129",
+      "methods": [
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirect3DViewport2::Initialize(LPDIRECT3D)"
+        },
+        {
+          "name": "GetViewport",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirect3DViewport2::GetViewport(LPD3DVIEWPORT)"
+        },
+        {
+          "name": "SetViewport",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirect3DViewport2::SetViewport(LPD3DVIEWPORT)"
+        },
+        {
+          "name": "TransformVertices",
+          "cParams": 4,
+          "vtableIndex": 3,
+          "signature": "IDirect3DViewport2::TransformVertices(DWORD, LPD3DTRANSFORMDATA, DWORD, LPDWORD)"
+        },
+        {
+          "name": "LightElements",
+          "cParams": 2,
+          "vtableIndex": 4,
+          "signature": "IDirect3DViewport2::LightElements(DWORD, LPD3DLIGHTDATA)"
+        },
+        {
+          "name": "SetBackground",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirect3DViewport2::SetBackground(D3DMATERIALHANDLE)"
+        },
+        {
+          "name": "GetBackground",
+          "cParams": 2,
+          "vtableIndex": 6,
+          "signature": "IDirect3DViewport2::GetBackground(LPD3DMATERIALHANDLE, LPBOOL)"
+        },
+        {
+          "name": "SetBackgroundDepth",
+          "cParams": 1,
+          "vtableIndex": 7,
+          "signature": "IDirect3DViewport2::SetBackgroundDepth(LPDIRECTDRAWSURFACE)"
+        },
+        {
+          "name": "GetBackgroundDepth",
+          "cParams": 2,
+          "vtableIndex": 8,
+          "signature": "IDirect3DViewport2::GetBackgroundDepth(LPDIRECTDRAWSURFACE *lplpDDSurface, LPBOOL)"
+        },
+        {
+          "name": "Clear",
+          "cParams": 3,
+          "vtableIndex": 9,
+          "signature": "IDirect3DViewport2::Clear(DWORD, LPD3DRECT, DWORD)"
+        },
+        {
+          "name": "AddLight",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirect3DViewport2::AddLight(LPDIRECT3DLIGHT)"
+        },
+        {
+          "name": "DeleteLight",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirect3DViewport2::DeleteLight(LPDIRECT3DLIGHT)"
+        },
+        {
+          "name": "NextLight",
+          "cParams": 3,
+          "vtableIndex": 12,
+          "signature": "IDirect3DViewport2::NextLight(LPDIRECT3DLIGHT, LPDIRECT3DLIGHT *lplpDirect3DLight, DWORD)"
+        },
+        {
+          "name": "GetViewport2",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirect3DViewport2::GetViewport2(LPD3DVIEWPORT2)"
+        },
+        {
+          "name": "SetViewport2",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirect3DViewport2::SetViewport2(LPD3DVIEWPORT2)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DTexture",
+      "iid": "2cdcd9e0-25a0-11cf-a31a-00aa00b93356",
+      "methods": [
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 0,
+          "signature": "IDirect3DTexture::Initialize(LPDIRECT3DDEVICE, LPDIRECTDRAWSURFACE)"
+        },
+        {
+          "name": "GetHandle",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirect3DTexture::GetHandle(LPDIRECT3DDEVICE, LPD3DTEXTUREHANDLE)"
+        },
+        {
+          "name": "PaletteChanged",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirect3DTexture::PaletteChanged(DWORD, DWORD)"
+        },
+        {
+          "name": "Load",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirect3DTexture::Load(LPDIRECT3DTEXTURE)"
+        },
+        {
+          "name": "Unload",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirect3DTexture::Unload()"
+        }
+      ]
+    },
+    {
+      "interface": "IDirect3DTexture2",
+      "iid": "93281502-8cf8-11d0-89ab-00a0c9054129",
+      "methods": [
+        {
+          "name": "GetHandle",
+          "cParams": 2,
+          "vtableIndex": 0,
+          "signature": "IDirect3DTexture2::GetHandle(LPDIRECT3DDEVICE2, LPD3DTEXTUREHANDLE)"
+        },
+        {
+          "name": "PaletteChanged",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirect3DTexture2::PaletteChanged(DWORD, DWORD)"
+        },
+        {
+          "name": "Load",
+          "cParams": 1,
+          "vtableIndex": 2,
+          "signature": "IDirect3DTexture2::Load(LPDIRECT3DTEXTURE2)"
+        }
+      ]
+    }
+  ]
+}

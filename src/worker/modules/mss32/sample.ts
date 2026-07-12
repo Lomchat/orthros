@@ -1,0 +1,850 @@
+import { ThunkImplementation } from "../../core/thunking/thunk-dispatcher";
+import { Logger, LogCategory } from "../../core/logger";
+import { MemoryGuard } from "../../core/memory/mem-guard";
+import { MSSContext, SMP_DONE, SMP_FREE, SMP_PLAYING, SMP_STOPPED } from "./context";
+import { MSSSample } from "./types";
+import {
+    ensureDriverHandle, getBytesPerSecond, getMemory, makeView,
+    setSampleStatus, updateSampleMemory, refreshSampleLenDone,
+    readFilenameArg, isEncodedFormat, MSS_SAMPLE_STRUCT_SIZE,
+    computeSampleVolumes,
+} from "./helpers";
+import { decodeAudioFile } from "./audio-decode";
+import { playSample, updateSamplePlayback, stopRingBuffer, resumeRingBuffer, applySample3D } from "./playback-engine";
+import { System } from "../../core/system";
+import { i32ToFloat } from "../../../audio/audio-ring-buffer";
+import { ensureListener3D, writeListener3D } from "./spatial";
+
+export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplementation> {
+    const exports: Record<string, ThunkImplementation> = {};
+
+    // _AIL_allocate_sample_handle@4
+    // Real MSS32: scans the sample array at driver[0x34] for a slot with status==SMP_FREE,
+    // marks it in-use, returns pointer into the array.  We do the same.
+    exports["_AIL_allocate_sample_handle@4"] = (ctxThunk, mem, args) => {
+        let dig = args[0] || ctx.digitalDriverHandle;
+        if (!dig) {
+            dig = ensureDriverHandle(ctx, mem);
+        }
+
+        if (!ctx.driverSampleArray) {
+            Logger.error(LogCategory.SYSTEM, 'MSS32: _AIL_allocate_sample_handle@4: no sample array!');
+            return 0;
+        }
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const stride = MSS_SAMPLE_STRUCT_SIZE;  // 0x284
+
+        // Find a free slot (status == SMP_FREE at [+0x08]).
+        let handle = 0;
+        for (let i = 0; i < ctx.driverMaxSamples; i++) {
+            const slotBase = ctx.driverSampleArray + i * stride;
+            const status = view.getUint32(slotBase + 0x08, true);
+            if (status === SMP_FREE) {
+                handle = slotBase;
+                break;
+            }
+        }
+        if (!handle) {
+            Logger.warn(LogCategory.SYSTEM, 'MSS32: _AIL_allocate_sample_handle@4: all slots in use');
+            return 0;
+        }
+
+        const sampleId = ctx.nextSampleId++;
+
+        // Full initialization matching real MSS32 FUN_2100f1b0
+        initSampleStruct(view, handle, dig);
+
+        const sample: MSSSample = {
+            id: sampleId,
+            handle: handle,
+            fileData: null,
+            decodedData: null,
+            sampleRate: 22050,
+            channels: 1,
+            bitsPerSample: 16,
+            formatTag: 1,
+            blockAlign: 2,
+            volume: 127,
+            pan: 64,
+            playbackRate: 1.0,
+            playbackRateHz: 22050,
+            loopCount: 1,
+            isPlaying: false,
+            isStopped: false,
+            position: 0,
+            pendingStart: false,
+            fileDataAllocated: false,
+        };
+
+        ctx.samples.set(handle, sample);
+        ctx.samplesById.set(sample.id, sample);
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_allocate_sample_handle@4 -> 0x${handle.toString(16)} (driver=0x${dig.toString(16)}, slot in array)`);
+        return handle;
+    };
+
+    // _AIL_release_sample_handle@4
+    // Real MSS32: resets the slot status to SMP_FREE so it can be reused.
+    // Real MSS32 FUN_21011500: end_sample + set +0x08=SMP_FREE + clear processor
+    exports["_AIL_release_sample_handle@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        const sample = ctx.samples.get(handle);
+        if (sample) {
+            // Stop playback
+            if (sample.isPlaying || sample.isStopped) {
+                if (!stopRingBuffer(sample.id)) {
+                    self.postMessage({ type: "audio_stop", payload: { id: sample.id } });
+                }
+            }
+            ctx.samplesById.delete(sample.id);
+
+            // Mark slot as free — real MSS32 just sets SMP_FREE, doesn't full-zero
+            // +0x00 is type tag, NOT status — don't touch it
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            view.setUint32(handle + 0x08, SMP_FREE, true);   // real MSS32 free marker
+            view.setInt32(handle + 0x110, -1, true);
+        }
+        ctx.samples.delete(handle);
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_release_sample_handle@4: 0x${handle.toString(16)}`);
+        return 0;
+    };
+
+    // _AIL_init_sample@4
+    exports["_AIL_init_sample@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_init_sample@4: handle=0x${handle.toString(16)}`);
+        const sampleObj = ctx.samples.get(handle);
+        if (!sampleObj) {
+            Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_init_sample@4: 0x${handle.toString(16)} (not found)`);
+            return 1;
+        }
+
+        // Stop current playback if active
+        if (sampleObj.isPlaying || sampleObj.isStopped) {
+            if (!stopRingBuffer(sampleObj.id)) {
+                self.postMessage({ type: "audio_stop", payload: { id: sampleObj.id } });
+            }
+        }
+
+        // Reset runtime state to defaults
+        sampleObj.volume = 127;
+        sampleObj.pan = 64;
+        sampleObj.playbackRate = 1.0;
+        sampleObj.playbackRateHz = 22050;
+        sampleObj.loopCount = 1;
+        sampleObj.isPlaying = false;
+        sampleObj.isStopped = false;
+        sampleObj.pendingStart = false;
+        sampleObj.position = 0;
+        sampleObj.startTime = undefined;
+        sampleObj.lastAudioPositionTime = undefined;
+        sampleObj.lastAudioPositionBytes = undefined;
+        sampleObj.lastRingCursorBytes = undefined;
+        sampleObj.lastRingCursorTime = undefined;
+
+        // Full guest struct reinitialization (matching real MSS32)
+        const dig = ctx.digitalDriverHandle;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        initSampleStruct(view, handle, dig);
+
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_init_sample@4: 0x${handle.toString(16)} (reset)`);
+        return 1;
+    };
+
+    // _AIL_start_sample@4
+    exports["_AIL_start_sample@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_start_sample@4: handle=0x${handle.toString(16)}`);
+
+        const sampleObj = ctx.samples.get(handle);
+        if (!sampleObj) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_start_sample@4: Invalid sample`);
+            return 0;
+        }
+
+        if (sampleObj.isStopped) {
+            if (!resumeRingBuffer(sampleObj.id)) {
+                self.postMessage({ type: "audio_resume", payload: { id: sampleObj.id } });
+            }
+            sampleObj.isStopped = false;
+            sampleObj.isPlaying = true;
+            sampleObj.pendingStart = false;
+            const bytesPerSec = getBytesPerSecond(sampleObj) * (sampleObj.playbackRate || 1.0);
+            if (bytesPerSec > 0) {
+                sampleObj.startTime = performance.now() - (sampleObj.position / bytesPerSec) * 1000.0;
+            } else {
+                sampleObj.startTime = performance.now();
+            }
+            setSampleStatus(ctx, sampleObj, SMP_PLAYING);
+            return 1;
+        }
+
+        sampleObj.startTime = performance.now();
+
+        if (sampleObj.fileData && !sampleObj.decodedData && !isEncodedFormat(sampleObj.fileFormat)) {
+            decodeAudioFile(ctx, sampleObj);
+            if (!sampleObj.decodedData && !isEncodedFormat(sampleObj.fileFormat)) {
+                Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_start_sample@4: file data present but unsupported, marking DONE`);
+                sampleObj.pendingStart = false;
+                sampleObj.isPlaying = false;
+                sampleObj.isStopped = false;
+                sampleObj.startTime = undefined;
+                setSampleStatus(ctx, sampleObj, SMP_DONE);
+                return 0;
+            }
+        }
+
+        if (sampleObj.fileData && isEncodedFormat(sampleObj.fileFormat)) {
+            playSample(ctx, sampleObj);
+            return sampleObj.isPlaying ? 1 : 0;
+        }
+
+        if (sampleObj.decodedData && sampleObj.decodedData.length > 0) {
+            playSample(ctx, sampleObj);
+            return sampleObj.isPlaying ? 1 : 0;
+        }
+
+        if (sampleObj.fileData) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_start_sample@4: file data present but no playable data, marking DONE`);
+            sampleObj.pendingStart = false;
+            sampleObj.isPlaying = false;
+            sampleObj.isStopped = false;
+            sampleObj.startTime = undefined;
+            setSampleStatus(ctx, sampleObj, SMP_DONE);
+            return 0;
+        }
+
+        Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_start_sample@4: No data yet, deferring start`);
+        sampleObj.pendingStart = true;
+        sampleObj.isStopped = false;
+        return 1;
+    };
+
+    // _AIL_stop_sample@4
+    exports["_AIL_stop_sample@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_stop_sample@4 called: sample=0x${handle.toString(16)}`);
+
+        const sampleObj = ctx.samples.get(handle);
+        if (sampleObj?.isPlaying) {
+            if (!stopRingBuffer(sampleObj.id)) {
+                self.postMessage({ type: "audio_pause", payload: { id: sampleObj.id } });
+            }
+            sampleObj.isPlaying = false;
+            sampleObj.pendingStart = false;
+            sampleObj.isStopped = true;
+            setSampleStatus(ctx, sampleObj, SMP_STOPPED);
+            return 0;
+        }
+
+        if (sampleObj?.pendingStart) {
+            sampleObj.isPlaying = false;
+            sampleObj.pendingStart = false;
+            sampleObj.isStopped = false;
+            setSampleStatus(ctx, sampleObj, SMP_DONE);
+        }
+        return 0;
+    };
+
+    // _AIL_resume_sample@4
+    exports["_AIL_resume_sample@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_resume_sample@4: handle=0x${handle.toString(16)}`);
+        const sampleObj = ctx.samples.get(handle);
+        if (sampleObj?.isStopped) {
+            if (!resumeRingBuffer(sampleObj.id)) {
+                self.postMessage({ type: "audio_resume", payload: { id: sampleObj.id } });
+            }
+            sampleObj.isStopped = false;
+            sampleObj.isPlaying = true;
+            sampleObj.pendingStart = false;
+            const bytesPerSec = getBytesPerSecond(sampleObj) * (sampleObj.playbackRate || 1.0);
+            if (bytesPerSec > 0) {
+                sampleObj.startTime = performance.now() - (sampleObj.position / bytesPerSec) * 1000.0;
+            } else {
+                sampleObj.startTime = performance.now();
+            }
+            setSampleStatus(ctx, sampleObj, SMP_PLAYING);
+            return 1;
+        }
+        return exports["_AIL_start_sample@4"]!(ctxThunk, mem, [handle]);
+    };
+
+    // _AIL_end_sample@4
+    exports["_AIL_end_sample@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_end_sample@4: handle=0x${handle.toString(16)}`);
+
+        const sampleObj = ctx.samples.get(handle);
+        if (sampleObj) {
+            if (sampleObj.isPlaying || sampleObj.isStopped) {
+                if (!stopRingBuffer(sampleObj.id)) {
+                    self.postMessage({ type: "audio_stop", payload: { id: sampleObj.id } });
+                }
+            }
+            sampleObj.isPlaying = false;
+            sampleObj.isStopped = false;
+            sampleObj.position = 0;
+            sampleObj.pendingStart = false;
+            setSampleStatus(ctx, sampleObj, SMP_DONE);
+        }
+        return 0;
+    };
+
+    // _AIL_sample_status@4
+    exports["_AIL_sample_status@4"] = (ctxThunk, mem, args) => {
+        const handle = args[0];
+        const sampleObj = ctx.samples.get(handle);
+        if (!sampleObj) {
+            Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_sample_status@4: handle=0x${handle.toString(16)} → 0 (not found)`);
+            return 0;
+        }
+        const status = sampleObj.isStopped ? SMP_STOPPED : (sampleObj.isPlaying || sampleObj.pendingStart) ? SMP_PLAYING : SMP_DONE;
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_sample_status@4: handle=0x${handle.toString(16)} → ${status} (${status === SMP_DONE ? 'DONE' : status === SMP_PLAYING ? 'PLAYING' : 'STOPPED'})`);
+        return status;
+    };
+
+    // _AIL_set_sample_volume@8
+    exports["_AIL_set_sample_volume@8"] = (ctxThunk, mem, args) => {
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_volume@8: handle=0x${args[0].toString(16)} vol=${args[1]}`);
+        const sampleObj = ctx.samples.get(args[0]);
+        if (sampleObj) {
+            sampleObj.volume = Math.max(0, Math.min(127, args[1]));
+            const m = getMemory(ctx);
+            const view = new DataView(m.buffer, m.byteOffset, m.byteLength);
+            // Dual-write: legacy +0x38, real MSS32 +0x5C
+            MemoryGuard.writeUint32(m, view, sampleObj.handle + 0x38, sampleObj.volume >>> 0, "MSS32:set_volume:legacy");
+            MemoryGuard.writeUint32(m, view, sampleObj.handle + 0x5C, sampleObj.volume >>> 0, "MSS32:set_volume:real");
+            computeSampleVolumes(view, sampleObj.handle, ctx.digitalDriverHandle);
+            if (sampleObj.isPlaying) updateSamplePlayback(ctx, sampleObj);
+        }
+        return 0;
+    };
+
+    // _AIL_set_sample_pan@8
+    exports["_AIL_set_sample_pan@8"] = (ctxThunk, mem, args) => {
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_pan@8: handle=0x${args[0].toString(16)} pan=${args[1]}`);
+        const s = ctx.samples.get(args[0]);
+        if (!s) return 0;
+        s.pan = Math.max(0, Math.min(127, args[1] | 0));
+        const m = getMemory(ctx);
+        const view = new DataView(m.buffer, m.byteOffset, m.byteLength);
+        // Dual-write: legacy +0x3C, real MSS32 +0x60
+        MemoryGuard.writeUint32(m, view, s.handle + 0x3C, s.pan >>> 0, "MSS32:set_pan:legacy");
+        MemoryGuard.writeUint32(m, view, s.handle + 0x60, s.pan >>> 0, "MSS32:set_pan:real");
+        computeSampleVolumes(view, s.handle, ctx.digitalDriverHandle);
+        if (s.isPlaying) updateSamplePlayback(ctx, s);
+        return 0;
+    };
+
+    // _AIL_set_sample_playback_rate@8
+    exports["_AIL_set_sample_playback_rate@8"] = (ctxThunk, mem, args) => {
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_playback_rate@8: handle=0x${args[0].toString(16)} rate=${args[1]}`);
+        const s = ctx.samples.get(args[0]);
+        if (!s) return 0;
+        const base = Math.max(1, s.sampleRate | 0);
+        const hz = Math.max(1, args[1] | 0);
+        s.playbackRateHz = hz;
+        s.playbackRate = hz / base;
+        const m = getMemory(ctx);
+        const view = new DataView(m.buffer, m.byteOffset, m.byteLength);
+        // Dual-write: legacy +0x34, real MSS32 +0x58
+        MemoryGuard.writeUint32(m, view, s.handle + 0x34, hz >>> 0, "MSS32:set_rate:legacy");
+        MemoryGuard.writeUint32(m, view, s.handle + 0x58, hz >>> 0, "MSS32:set_rate:real");
+        if (s.isPlaying) updateSamplePlayback(ctx, s);
+        return 0;
+    };
+
+    // _AIL_set_sample_loop_count@8
+    exports["_AIL_set_sample_loop_count@8"] = (ctxThunk, mem, args) => {
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_loop_count@8: handle=0x${args[0].toString(16)} count=${args[1]}`);
+        const sampleObj = ctx.samples.get(args[0]);
+        if (sampleObj) {
+            sampleObj.loopCount = args[1];
+            const m = getMemory(ctx);
+            const view = new DataView(m.buffer, m.byteOffset, m.byteLength);
+            // Dual-write: legacy +0x20, real MSS32 +0x28
+            MemoryGuard.writeUint32(m, view, sampleObj.handle + 0x20, args[1] >>> 0, "MSS32:set_loop:legacy");
+            MemoryGuard.writeUint32(m, view, sampleObj.handle + 0x28, args[1] >>> 0, "MSS32:set_loop:real");
+            if (sampleObj.isPlaying) updateSamplePlayback(ctx, sampleObj);
+        }
+        return 0;
+    };
+
+    // _AIL_set_sample_file@12
+    exports["_AIL_set_sample_file@12"] = (ctxThunk, mem, args) => {
+        const sample = args[0];
+        const filePtr = args[1];
+        const block = args[2];
+
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_file@12: sample=0x${sample.toString(16)}, filePtr=0x${filePtr.toString(16)}, block=${block}`);
+
+        const sampleObj = ctx.samples.get(sample);
+        if (!sampleObj) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_file@12: Invalid sample handle`);
+            return 0;
+        }
+        sampleObj.isStopped = false;
+        // Real Miles AIL_set_sample_file auto-inits the sample, resetting loop
+        // state to the one-shot default (loop_count=1). Games rely on this: Re-Volt
+        // (GOG) reuses a fixed pool of 3D voices, doing set_file -> start_sample per
+        // sound and only calling AIL_set_sample_loop_count(0) AFTER set_file for
+        // genuinely looping sounds. Without this reset a stale loop_count from a
+        // prior use of the voice persists, so every reused voice loops forever and
+        // the pool saturates — i.e. every one-shot SFX loops. (mss.h SAMPLE.loop_count
+        // doc: "1=one-shot, 0=indefinite".)
+        resetSampleLoopState(sampleObj);
+
+        if (filePtr) {
+            const memSize = mem.byteLength;
+            let detectedSize = 0;
+            const MAX_SANE_BLOCK = 50 * 1024 * 1024;
+            if (block > 0 && block < MAX_SANE_BLOCK) {
+                detectedSize = Math.min(block, memSize - filePtr);
+            } else if (filePtr + 8 <= memSize && mem[filePtr] === 0x52 && mem[filePtr + 1] === 0x49) {
+                const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+                const riffSize = view.getUint32(filePtr + 4, true);
+                const MAX_REASONABLE_WAV = 50 * 1024 * 1024;
+                if (riffSize > 0 && riffSize < MAX_REASONABLE_WAV) {
+                    detectedSize = Math.min(riffSize + 8, memSize - filePtr);
+                } else {
+                    Logger.warn(LogCategory.SYSTEM, `MSS32: RIFF size ${riffSize} looks suspicious, using 1MB cap`);
+                    detectedSize = Math.min(1024 * 1024, memSize - filePtr);
+                }
+            } else {
+                detectedSize = Math.min(1024 * 1024, memSize - filePtr);
+            }
+
+            if (detectedSize <= 0) {
+                Logger.warn(LogCategory.SYSTEM, `MSS32: Invalid file size detected`);
+                return 0;
+            }
+
+            sampleObj.fileData = mem.slice(filePtr, filePtr + detectedSize);
+            sampleObj.fileDataAllocated = false;
+            sampleObj.fileDataAddress = filePtr;
+            updateSampleMemory(ctx, sampleObj, filePtr, detectedSize);
+            decodeAudioFile(ctx, sampleObj);
+        }
+        return 1;
+    };
+
+    // _AIL_set_named_sample_file@20
+    exports["_AIL_set_named_sample_file@20"] = (ctxThunk, mem, args) => {
+        const sample = args[0];
+        const fileSuffixPtr = args[1]; // MSS32 file_suffix: format hint (".mp3", "frontend.mp3", etc.)
+        const fileNamePtr = args[2];   // file_image: pointer to audio data in guest memory
+        const fileOffsetRaw = args[3] | 0;
+        const fileSizeRaw = args[4] | 0;
+        const fileOffset = Math.max(0, fileOffsetRaw);
+        const fileSize = fileSizeRaw < 0 ? 0 : fileSizeRaw;
+
+        const fileSuffix = fileSuffixPtr ? readFilenameArg(mem, fileSuffixPtr) : null;
+        const fileName = readFilenameArg(mem, fileNamePtr);
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_named_sample_file@20 called: sample=0x${sample.toString(16)}, suffix="${fileSuffix ?? ''}", fileImagePtr=0x${fileNamePtr.toString(16)}, offset=${fileOffset}, size=${fileSize}`);
+
+        const sampleObj = ctx.samples.get(sample);
+        if (!sampleObj) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_set_named_sample_file@20: Invalid sample handle`);
+            return 0;
+        }
+        // Auto-init the sample like real Miles (see _AIL_set_sample_file@12).
+        resetSampleLoopState(sampleObj);
+
+        if (fileName) {
+            Logger.verbose(LogCategory.SYSTEM, `MSS32: Loading sample file: "${fileName}"`);
+            loadSampleFile(ctx, sampleObj, fileName, fileOffset, fileSize, fileSuffix ?? undefined).catch(e => {
+                Logger.error(LogCategory.SYSTEM, `MSS32: Error loading file ${fileName}: ${e}`);
+            });
+        } else {
+            const bufferSize = fileSize > 0 ? fileSize : (fileOffset > 0 ? fileOffset : 0);
+            if (bufferSize > 0 && MemoryGuard.isValidRange(mem, fileNamePtr, bufferSize)) {
+                Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_set_named_sample_file@20: Loading memory image (size=${bufferSize}, format hint="${fileSuffix ?? 'none'}")`);
+                sampleObj.fileData = mem.slice(fileNamePtr, fileNamePtr + bufferSize);
+                sampleObj.fileDataAllocated = false;
+                sampleObj.fileDataAddress = fileNamePtr;
+                updateSampleMemory(ctx, sampleObj, fileNamePtr, bufferSize);
+                decodeAudioFile(ctx, sampleObj, fileSuffix ?? undefined);
+            } else {
+                Logger.warn(LogCategory.SYSTEM, `MSS32: _AIL_set_named_sample_file@20: Invalid file image pointer 0x${fileNamePtr.toString(16)}`);
+            }
+        }
+        return 1;
+    };
+
+    // _AIL_set_sample_address@8
+    exports["_AIL_set_sample_address@8"] = (ctxThunk, mem, args) => {
+        const sample = args[0];
+        const address = args[1];
+        Logger.verbose(LogCategory.SYSTEM, `MSS32: _AIL_set_sample_address@8 called: sample=0x${sample.toString(16)}, address=0x${address.toString(16)}`);
+
+        const sampleObj = ctx.samples.get(sample);
+        if (!sampleObj || !address) return 0;
+
+        sampleObj.fileDataAddress = address;
+        const prevLen = sampleObj.pcmBytes ?? (sampleObj.fileData?.length ?? 0);
+        sampleObj.fileData = null;
+        sampleObj.decodedData = null;
+        sampleObj.fileDataAllocated = false;
+
+        const memRef = getMemory(ctx);
+        if (!MemoryGuard.isValidRange(memRef, address, 12)) return 1;
+
+        const size = prevLen;
+        const safeSize = size > 0 ? size : Math.min(memRef.length - address, 10 * 1024 * 1024);
+        sampleObj.fileData = memRef.slice(address, address + safeSize);
+        decodeAudioFile(ctx, sampleObj);
+
+        const lenForGuest = sampleObj.pcmBytes ?? safeSize;
+        updateSampleMemory(ctx, sampleObj, address, lenForGuest);
+        if (sampleObj.pcmBytes !== undefined) {
+            refreshSampleLenDone(ctx, sampleObj);
+        }
+        return 1;
+    };
+
+    // _AIL_sample_volume@4
+    exports["_AIL_sample_volume@4"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        const vol = sample ? sample.volume : 0;
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_sample_volume@4: handle=0x${args[0].toString(16)} → ${vol}`);
+        return vol;
+    };
+
+    // _AIL_sample_pan@4
+    exports["_AIL_sample_pan@4"] = (ctxThunk, mem, args) => {
+        const s = ctx.samples.get(args[0]);
+        return s ? (s.pan >>> 0) : 64;
+    };
+
+    // _AIL_sample_playback_rate@4
+    exports["_AIL_sample_playback_rate@4"] = (ctxThunk, mem, args) => {
+        const s = ctx.samples.get(args[0]);
+        if (!s) return 22050;
+        return (s.playbackRateHz ?? s.sampleRate) >>> 0;
+    };
+
+    // _AIL_sample_loop_count@4
+    exports["_AIL_sample_loop_count@4"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        return sample ? sample.loopCount : 1;
+    };
+
+    // _AIL_sample_position@4
+    exports["_AIL_sample_position@4"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        return sample ? sample.position : 0;
+    };
+
+    // _AIL_set_sample_user_data@12
+    exports["_AIL_set_sample_user_data@12"] = (ctxThunk, mem, args) => {
+        const sample = args[0];
+        const index = args[1] | 0;
+        const value = args[2] >>> 0;
+        const sampleObj = ctx.samples.get(sample);
+        if (!sampleObj) return 0;
+        if (!sampleObj.userData) sampleObj.userData = [];
+        sampleObj.userData[index] = value;
+
+        const offset = 0x40 + index * 4;
+        if (MemoryGuard.isValidRange(mem, sample + offset, 4)) {
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            view.setUint32(sample + offset, value, true);
+        }
+        return 0;
+    };
+
+    // ==================== Miles 3D positional sample API ====================
+    // 3D samples reuse the 2D sample lifecycle (alloc / file / start / stop / status /
+    // volume / rate / loop) and add spatial state pushed into the ring buffer's
+    // CTRL_3D_* fields, mixed by the audio worklet against the global listener SAB
+    // (see spatial.ts + bottleship-audio-worklet.ts). `obj` handles passed to the
+    // position/velocity/orientation calls may be EITHER a 3D sample OR the listener.
+
+    const isListener = (h: number): boolean => ctx.listener3D !== null && h === ctx.listener3D.handle;
+
+    // _AIL_allocate_3D_sample_handle@4(provider) → 3D sample handle (NULL on failure)
+    exports["_AIL_allocate_3D_sample_handle@4"] = (ctxThunk, mem, args) => {
+        const handle = exports["_AIL_allocate_sample_handle@4"]!(ctxThunk, mem, [ctx.digitalDriverHandle]) as number;
+        const sampleObj = handle ? ctx.samples.get(handle) : undefined;
+        if (sampleObj) {
+            sampleObj.is3D = true;
+            sampleObj.pos3D = { x: 0, y: 0, z: 0 };
+            sampleObj.vel3D = { x: 0, y: 0, z: 0 };
+            sampleObj.minDist3D = 1;
+            sampleObj.maxDist3D = 1e9;
+            sampleObj.mode3D = 0;
+        }
+        Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_allocate_3D_sample_handle@4 prov=0x${args[0].toString(16)} → 0x${handle.toString(16)}`);
+        return handle;
+    };
+
+    exports["_AIL_release_3D_sample_handle@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_release_sample_handle@4"]!(ctxThunk, mem, args);
+
+    // _AIL_set_3D_sample_file@8(S3D, file_image) — WAV in guest memory, parses RIFF size itself
+    exports["_AIL_set_3D_sample_file@8"] = (ctxThunk, mem, args) =>
+        exports["_AIL_set_sample_file@12"]!(ctxThunk, mem, [args[0], args[1], 0]);
+
+    exports["_AIL_start_3D_sample@4"] = (ctxThunk, mem, args) => {
+        const r = exports["_AIL_start_sample@4"]!(ctxThunk, mem, args);
+        const s = ctx.samples.get(args[0]);
+        if (s) applySample3D(s);
+        return r;
+    };
+
+    exports["_AIL_stop_3D_sample@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_stop_sample@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_resume_3D_sample@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_resume_sample@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_end_3D_sample@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_end_sample@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_3D_sample_status@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_sample_status@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_set_3D_sample_volume@8"] = (ctxThunk, mem, args) =>
+        exports["_AIL_set_sample_volume@8"]!(ctxThunk, mem, args);
+
+    exports["_AIL_3D_sample_volume@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_sample_volume@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_set_3D_sample_playback_rate@8"] = (ctxThunk, mem, args) =>
+        exports["_AIL_set_sample_playback_rate@8"]!(ctxThunk, mem, args);
+
+    exports["_AIL_3D_sample_playback_rate@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_sample_playback_rate@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_set_3D_sample_loop_count@8"] = (ctxThunk, mem, args) =>
+        exports["_AIL_set_sample_loop_count@8"]!(ctxThunk, mem, args);
+
+    exports["_AIL_3D_sample_loop_count@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_sample_loop_count@4"]!(ctxThunk, mem, args);
+
+    // Reverb/occlusion strength — no DSP for it yet; accept and ignore.
+    exports["_AIL_set_3D_sample_effects_level@8"] = () => 0;
+
+    // _AIL_set_3D_position@16(obj, X, Y, Z) — floats passed by value (raw bits in args)
+    exports["_AIL_set_3D_position@16"] = (ctxThunk, mem, args) => {
+        const x = i32ToFloat(args[1]), y = i32ToFloat(args[2]), z = i32ToFloat(args[3]);
+        if (isListener(args[0])) {
+            const ls = ctx.listener3D!;
+            ls.posX = x; ls.posY = y; ls.posZ = z;
+            writeListener3D(ctx);
+        } else {
+            const s = ctx.samples.get(args[0]);
+            if (s) { s.pos3D = { x, y, z }; applySample3D(s); }
+        }
+        return 0;
+    };
+
+    // _AIL_set_3D_velocity_vector@16(obj, X, Y, Z) — velocity components (units/sec)
+    exports["_AIL_set_3D_velocity_vector@16"] = (ctxThunk, mem, args) => {
+        const x = i32ToFloat(args[1]), y = i32ToFloat(args[2]), z = i32ToFloat(args[3]);
+        if (isListener(args[0])) {
+            const ls = ctx.listener3D!;
+            ls.velX = x; ls.velY = y; ls.velZ = z;
+            writeListener3D(ctx);
+        } else {
+            const s = ctx.samples.get(args[0]);
+            if (s) { s.vel3D = { x, y, z }; applySample3D(s); }
+        }
+        return 0;
+    };
+
+    // _AIL_set_3D_velocity@20(obj, dX, dY, dZ, magnitude) — direction × speed
+    exports["_AIL_set_3D_velocity@20"] = (ctxThunk, mem, args) => {
+        let x = i32ToFloat(args[1]), y = i32ToFloat(args[2]), z = i32ToFloat(args[3]);
+        const mag = i32ToFloat(args[4]);
+        const len = Math.hypot(x, y, z);
+        if (len > 1e-7) { const s = mag / len; x *= s; y *= s; z *= s; }
+        if (isListener(args[0])) {
+            const ls = ctx.listener3D!;
+            ls.velX = x; ls.velY = y; ls.velZ = z;
+            writeListener3D(ctx);
+        } else {
+            const s = ctx.samples.get(args[0]);
+            if (s) { s.vel3D = { x, y, z }; applySample3D(s); }
+        }
+        return 0;
+    };
+
+    // _AIL_set_3D_orientation@28(obj, X_face, Y_face, Z_face, X_up, Y_up, Z_up)
+    exports["_AIL_set_3D_orientation@28"] = (ctxThunk, mem, args) => {
+        const fx = i32ToFloat(args[1]), fy = i32ToFloat(args[2]), fz = i32ToFloat(args[3]);
+        const ux = i32ToFloat(args[4]), uy = i32ToFloat(args[5]), uz = i32ToFloat(args[6]);
+        if (isListener(args[0])) {
+            const ls = ctx.listener3D!;
+            ls.frontX = fx; ls.frontY = fy; ls.frontZ = fz;
+            ls.topX = ux; ls.topY = uy; ls.topZ = uz;
+            writeListener3D(ctx);
+        } else {
+            const s = ctx.samples.get(args[0]);
+            if (s) {
+                const c = s.cone3D ?? { inner: 360, outer: 360, oriX: 0, oriY: 0, oriZ: 1, outVolCb: 0 };
+                c.oriX = fx; c.oriY = fy; c.oriZ = fz;
+                s.cone3D = c;
+                applySample3D(s);
+            }
+        }
+        return 0;
+    };
+
+    // _AIL_set_3D_sample_distances@12(S3D, max_dist, min_dist) — floats
+    exports["_AIL_set_3D_sample_distances@12"] = (ctxThunk, mem, args) => {
+        const s = ctx.samples.get(args[0]);
+        if (s) {
+            s.maxDist3D = i32ToFloat(args[1]);
+            s.minDist3D = i32ToFloat(args[2]);
+            applySample3D(s);
+        }
+        return 0;
+    };
+
+    // _AIL_set_3D_sample_cone@16(S3D, inner_angle, outer_angle, outer_volume_0_127)
+    exports["_AIL_set_3D_sample_cone@16"] = (ctxThunk, mem, args) => {
+        const s = ctx.samples.get(args[0]);
+        if (s) {
+            const inner = Math.round(i32ToFloat(args[1]));
+            const outer = Math.round(i32ToFloat(args[2]));
+            const outVol127 = Math.max(0, Math.min(127, args[3] | 0));
+            const outVolCb = outVol127 <= 0 ? -10000 : Math.round(2000 * Math.log10(outVol127 / 127));
+            const c = s.cone3D ?? { inner: 360, outer: 360, oriX: 0, oriY: 0, oriZ: 1, outVolCb: 0 };
+            c.inner = inner; c.outer = outer; c.outVolCb = outVolCb;
+            s.cone3D = c;
+            applySample3D(s);
+        }
+        return 0;
+    };
+
+    return exports;
+}
+
+// ==================== Private helpers ====================
+
+/**
+ * Reset a sample's loop state to the one-shot default (loop_count=1), mirroring how
+ * real Miles AIL_set_sample_file auto-inits the sample for the new file. Called from
+ * the set-file handlers so a stale loop_count left on a reused voice (e.g. a prior
+ * looping sound, or a value set once at pool init) can't silently turn a one-shot
+ * into an infinite loop. Genuinely looping sounds re-assert their count by calling
+ * AIL_set_sample_loop_count AFTER set_file, exactly as on real Miles.
+ */
+function resetSampleLoopState(sample: MSSSample): void {
+    sample.loopCount = 1;
+}
+
+/**
+ * Full SAMPLE struct initialization matching real MSS32 FUN_2100f1b0 / FUN_2100e370.
+ * Used by both allocate_sample_handle and init_sample.
+ *
+ * IMPORTANT: +0x00 is the RIB type tag pointer, NOT status.
+ * Status lives only at +0x08. The type tag is preserved (not overwritten here)
+ * because it was already written by initSampleArray or allocate_sample_handle.
+ */
+function initSampleStruct(view: DataView, handle: number, driverHandle: number): void {
+    // Zero data fields +0x0C..+0x24
+    for (let j = 0x0C; j <= 0x24; j += 4) {
+        view.setUint32(handle + j, 0, true);
+    }
+
+    // Driver back-pointer
+    view.setUint32(handle + 0x04, driverHandle, true);
+
+    // Real MSS32 offsets
+    view.setUint32(handle + 0x08, SMP_DONE, true);       // status = SMP_DONE
+    view.setUint32(handle + 0x28, 1, true);               // loopCount = 1
+    view.setInt32(handle + 0x3C, -2, true);                // sentinel 0xFFFFFFFE
+    view.setUint32(handle + 0x40, 1, true);               // userData[0]
+    view.setUint32(handle + 0x44, 1, true);               // userData[1]
+    view.setUint32(handle + 0x48, 0, true);               // userData[2]
+    view.setInt32(handle + 0x4C, -1, true);                // EOS callback = none
+    view.setUint32(handle + 0x58, 22050, true);           // playbackRate = 22050 Hz
+    view.setUint32(handle + 0x5C, 127, true);             // volume = max
+    view.setUint32(handle + 0x60, 64, true);              // pan = center
+    view.setUint32(handle + 0xBC, 0x100, true);
+    view.setInt32(handle + 0x110, -1, true);
+
+    // Constants
+    view.setUint32(handle + 0x274, 0, true);
+    view.setUint32(handle + 0x278, 0x3CF5C28F, true);
+    view.setUint32(handle + 0x27C, 0x3FBF1AA0, true);
+
+    // Legacy dual-write offsets (for our internal readers)
+    // Note: +0x00 is NOT written here — it's the type tag, preserved from init
+    view.setUint32(handle + 0x20, 1, true);               // legacy loopCount
+    view.setUint32(handle + 0x34, 22050, true);           // legacy playbackRate
+    view.setUint32(handle + 0x38, 127, true);             // legacy volume
+    view.setUint32(handle + 0x3C, 64, true);              // legacy pan (overwrites sentinel)
+
+    // Compute volL/volR/eff×16
+    if (driverHandle) {
+        computeSampleVolumes(view, handle, driverHandle);
+    }
+
+    // Zero processor chains (+0x13C, stride 0x68, ×3)
+    for (let p = 0; p < 3; p++) {
+        const chainBase = handle + 0x13C + p * 0x68;
+        for (let k = 0; k < 0x68; k += 4) {
+            view.setUint32(chainBase + k, 0, true);
+        }
+    }
+}
+
+async function loadSampleFile(ctx: MSSContext, sample: MSSSample, fileName: string, offset: number, size: number, formatHint?: string): Promise<void> {
+    const system = System.getInstance();
+    // Derive format hint from filename if not provided externally
+    const hint = formatHint ?? fileName;
+
+    try {
+        const handle = system.fileSystem.openSync(fileName, 0x80000000, 3);
+        if (handle) {
+            if (size > 0) {
+                system.fileSystem.setPosition(handle, offset, 0);
+                const syncData = system.fileSystem.readSync(handle, size);
+                if (syncData) {
+                    sample.fileData = syncData;
+                    sample.fileDataAllocated = false;
+                    sample.fileDataAddress = undefined;
+                    decodeAudioFile(ctx, sample, hint);
+                    return;
+                }
+            } else {
+                const fileSize = system.fileSystem.getFileSize(fileName);
+                const syncData = system.fileSystem.readSync(handle, fileSize);
+                if (syncData) {
+                    sample.fileData = syncData;
+                    sample.fileDataAllocated = false;
+                    sample.fileDataAddress = undefined;
+                    decodeAudioFile(ctx, sample, hint);
+                    return;
+                }
+            }
+        }
+
+        const asyncHandle = await system.fileSystem.open(fileName, 0x80000000, 3);
+        if (!asyncHandle) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: Failed to open file: ${fileName}`);
+            return;
+        }
+
+        if (size > 0) {
+            system.fileSystem.setPosition(asyncHandle, offset, 0);
+            sample.fileData = await system.fileSystem.read(asyncHandle, size);
+        } else {
+            const fileSize = system.fileSystem.getFileSize(fileName);
+            sample.fileData = await system.fileSystem.read(asyncHandle, fileSize);
+        }
+
+        sample.fileDataAllocated = false;
+        sample.fileDataAddress = undefined;
+
+        if (sample.fileData) {
+            decodeAudioFile(ctx, sample, hint);
+        }
+    } catch (e) {
+        Logger.error(LogCategory.SYSTEM, `MSS32: Error loading file ${fileName}: ${e}`);
+    }
+}

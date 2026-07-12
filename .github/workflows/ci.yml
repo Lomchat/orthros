@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: Quality gate (index / signatures / struct-offsets / typecheck / tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vendor/v86 is a file: dependency of package.json — bun install needs
+          # the submodule checked out even though the gate never builds it.
+          submodules: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The canonical quality gate, in its mandatory order (CLAUDE.md §4).
+      - name: Generate module indexes
+        run: bun tools/generate-index.ts
+
+      - name: Validate API signatures
+        run: bun tools/validate-signatures.ts
+
+      - name: Validate struct offsets
+        run: bun tools/validate-struct-offsets.ts
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+  dedup-scan:
+    name: Dedup / dead-export scan (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory only — findings are triage input (release-triage §11.1), not a gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Copy/paste detector (jscpd)
+        run: >
+          bunx jscpd src
+          --min-tokens 120 --min-lines 10
+          --reporters consoleFull
+          --ignore "**/*.generated.ts,**/index.ts"
+          --threshold 100
+
+      - name: Dead exports (ts-prune)
+        run: bunx ts-prune -p tsconfig.json || true

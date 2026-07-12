@@ -1,0 +1,984 @@
+/**
+ * IDirect3D, IDirect3D2, IDirect3D3 and IDirect3D7 interface implementations
+ */
+import { Logger, LogCategory } from "../../../core/logger";
+import { ComObjectFactory } from "../../../core/com/base-com-object";
+import { Marshaler } from "../../../core/memory/marshaler";
+import { DDrawContext } from "../context";
+import { bytesToGuid } from "../helpers";
+import {
+    IID_IDirect3DDevice3,
+    IID_IDirect3DDevice3V5,
+    IID_IDirect3DDevice7,
+    IID_IDirect3DViewport3,
+    IID_IDirect3DLight,
+    IID_IDirect3DMaterial3,
+    IID_IDirect3DVertexBuffer,
+    allocateComObject,
+    COM_OBJECT_SIZE,
+    DDPF_ZBUFFER,
+} from "../constants";
+import { Direct3DDevice3Object, Direct3DDevice7Object, Direct3DVertexBufferObject, Direct3DLightObject, Direct3DMaterial3Object } from "../com-objects";
+import { D3DExports, D3D_OK, D3DERR_INVALIDCALL } from "./types";
+import {
+    fillDeviceDesc,
+    fillDeviceDesc7,
+    zBufferMask,
+    D3DDEVICEDESC7_SIZE,
+    D3D7_HAL_DEVICE_GUID_BYTES,
+    D3D7_RGB_DEVICE_GUID_BYTES,
+    D3D7_TNLHAL_DEVICE_GUID_BYTES,
+    d3d7DeviceKindForGuidBytes,
+} from "./d3d-caps-utils";
+import { computeFvfStride } from "../../../backends/webgpu/ddraw/compute/vertex-converter";
+import { EmulatorConfig } from "../../../core/emulator-config-manager";
+import { initReturnPtr } from "../../../backends/webgpu/shared/dx-com-helpers";
+
+export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => {
+    const exports: D3DExports = {};
+    const resourceProvider = context.resourceProvider;
+
+    // --- IDirect3D (v1) ---
+
+    exports["IDirect3D_QueryInterface"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const riidPtr = args[1];
+        const ppvObject = args[2];
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+        const iidBytes = new Uint8Array(16);
+        for (let i = 0; i < 16; i++) iidBytes[i] = mem[riidPtr + i];
+        const iidStr = bytesToGuid(iidBytes);
+        Logger.log(LogCategory.COM, `IDirect3D_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr}`);
+        if (!obj) return 0x80004002;
+        return obj.queryInterface(iidStr, ppvObject, mem);
+    };
+
+    exports["IDirect3D_AddRef"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.addRef() : 0;
+    };
+
+    exports["IDirect3D_Release"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.release() : 0;
+    };
+
+    exports["IDirect3D_Initialize"] = () => D3D_OK;
+
+    exports["IDirect3D_EnumDevices"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_EnumDevices"]!(ctx, mem, args);
+    };
+
+    exports["IDirect3D_CreateViewport"] = () => D3D_OK;
+    exports["IDirect3D_CreateLight"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_CreateLight"]!(ctx, mem, args);
+    };
+    exports["IDirect3D_CreateMaterial"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_CreateMaterial"]!(ctx, mem, args);
+    };
+    exports["IDirect3D_FindDevice"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_FindDevice"]!(ctx, mem, args);
+    };
+
+    // --- IDirect3D2 ---
+
+    exports["IDirect3D2_QueryInterface"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const riidPtr = args[1];
+        const ppvObject = args[2];
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+        const iidBytes = new Uint8Array(16);
+        for (let i = 0; i < 16; i++) iidBytes[i] = mem[riidPtr + i];
+        const iidStr = bytesToGuid(iidBytes);
+        Logger.log(LogCategory.COM, `IDirect3D2_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr}`);
+        if (!obj) return 0x80004002;
+        return obj.queryInterface(iidStr, ppvObject, mem);
+    };
+
+    exports["IDirect3D2_AddRef"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.addRef() : 0;
+    };
+
+    exports["IDirect3D2_Release"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.release() : 0;
+    };
+
+    exports["IDirect3D2_EnumDevices"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_EnumDevices"]!(ctx, mem, args);
+    };
+
+    exports["IDirect3D2_CreateDevice"] = (ctx, mem, args) => {
+        // IDirect3D2::CreateDevice(this, rclsid, lpDDS, lplpD3DDevice)
+        // MUST use IDirect3DDevice2 vtable — Device2 has SwapTextureHandles at
+        // index 4, which shifts all subsequent methods by 1 vs Device3.
+        // Internally we use a Device3Object for its rich state management, but
+        // present the Device2 vtable layout to the guest.
+        const lpDDS = args[2];
+        const lplpD3DDevice = args[3];
+        if (!lplpD3DDevice) return 0x80004003;
+        initReturnPtr(lplpD3DDevice);
+
+        const vtableAddr = context.vtables.IDirect3DDevice2?.address;
+        if (!vtableAddr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D2_CreateDevice: IDirect3DDevice2 vtable not found!`);
+            return 0x80004002;
+        }
+
+        // Create a Device3Object (has full state: transforms, render states, etc.)
+        // but register it under Device2 IID for COM identity.
+        const obj = ComObjectFactory.create(IID_IDirect3DDevice3, vtableAddr) as Direct3DDevice3Object;
+        if (!obj) return 0x80004005;
+
+        obj.setParentD3(args[0]);
+        obj.setRenderTarget(lpDDS);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpD3DDevice, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.verbose(LogCategory.SYSTEM, `IDirect3D2_CreateDevice -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)}, rt=0x${lpDDS.toString(16)}, vtable=Device2)`);
+        return D3D_OK;
+    };
+
+    exports["IDirect3D2_CreateLight"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_CreateLight"]!(ctx, mem, args);
+    };
+    exports["IDirect3D2_CreateMaterial"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_CreateMaterial"]!(ctx, mem, args);
+    };
+    exports["IDirect3D2_FindDevice"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_FindDevice"]!(ctx, mem, args);
+    };
+    // CreateViewport must create a real COM object — delegate to D3 version
+    // (defined later, patched up after IDirect3D3 exports are created)
+
+    // --- IDirect3D3 ---
+
+    exports["IDirect3D3_QueryInterface"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const riidPtr = args[1];
+        const ppvObject = args[2];
+
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+
+        const iidBytes = new Uint8Array(16);
+        for (let i = 0; i < 16; i++) {
+            iidBytes[i] = mem[riidPtr + i];
+        }
+        const iidStr = bytesToGuid(iidBytes);
+
+        Logger.log(LogCategory.COM, `IDirect3D3_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr} ppvObject=0x${ppvObject.toString(16)} obj=${obj ? obj.constructor.name : 'null'}`);
+
+        if (!obj) {
+            Logger.warn(LogCategory.COM, `IDirect3D3_QueryInterface: Object not found for thisPtr=0x${thisPtr.toString(16)}`);
+            return 0x80004002;
+        }
+
+        const result = obj.queryInterface(iidStr, ppvObject, mem);
+        if (ppvObject) {
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            const returnedAddr = view.getUint32(ppvObject, true);
+            Logger.log(LogCategory.COM, `IDirect3D3_QueryInterface: result=0x${result.toString(16)} returnedAddr=0x${returnedAddr.toString(16)}`);
+        }
+        return result;
+    };
+
+    exports["IDirect3D3_AddRef"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.addRef() : 0;
+    };
+
+    exports["IDirect3D3_Release"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.release() : 0;
+    };
+
+    exports["IDirect3D3_CreateViewport"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const lplpViewport = args[1];
+        Logger.log(LogCategory.SYSTEM, `IDirect3D3_CreateViewport called: this=0x${thisPtr.toString(16)}, out=0x${lplpViewport.toString(16)}`);
+
+        if (!lplpViewport) return 0x80004003;
+        initReturnPtr(lplpViewport);
+
+        const vtableAddr = context.vtables.IDirect3DViewport3?.address;
+        if (!vtableAddr) return 0x80004002;
+
+        const obj = ComObjectFactory.create(IID_IDirect3DViewport3, vtableAddr);
+        if (!obj) return 0x80004005;
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpViewport, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM, `IDirect3D3_CreateViewport -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)})`);
+        return D3D_OK;
+    };
+
+    // Patch IDirect3D2_CreateViewport to delegate to D3 version
+    exports["IDirect3D2_CreateViewport"] = (ctx, mem, args) => {
+        return exports["IDirect3D3_CreateViewport"]!(ctx, mem, args);
+    };
+
+    exports["IDirect3D3_CreateDevice"] = (ctx, mem, args) => {
+        const lpDDS = args[2];
+        const lplpD3DDevice = args[3];
+        if (!lplpD3DDevice) return 0x80004003;
+        initReturnPtr(lplpD3DDevice);
+
+        const vtableAddr = context.vtables.IDirect3DDevice3?.address;
+        if (!vtableAddr) return 0x80004002;
+
+        const obj = ComObjectFactory.create(IID_IDirect3DDevice3, vtableAddr) as Direct3DDevice3Object;
+        if (!obj) return 0x80004005;
+
+        obj.setParentD3(args[0]);
+        obj.setRenderTarget(lpDDS);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpD3DDevice, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM, `IDirect3D3_CreateDevice -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)}, rt=0x${lpDDS.toString(16)})`);
+        return D3D_OK;
+    };
+
+    exports["IDirect3D3_EnumZBufferFormats"] = (ctx, mem, args) => {
+        const lpCallback = args[2];
+        const lpContext = args[3];
+
+        if (!lpCallback) return 0x80004003;
+
+        const pixelFormatSize = 32;
+        const formatAddr = context.process.memory.alloc(pixelFormatSize);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        mem.fill(0, formatAddr, formatAddr + pixelFormatSize);
+        view.setUint32(formatAddr, pixelFormatSize, true);
+        view.setUint32(formatAddr + 4, DDPF_ZBUFFER, true);
+        
+        // RE-VOLT FIX: Offer only 16-bit Z-Buffer
+        // Old games (1999 era) often crash if given 24/32-bit Z-buffer with 16-bit color depth
+        // 16-bit Z-buffer (DDBD_16) is the golden standard for that era
+        const depths = [16];
+        let index = 0;
+
+        const callbackManager = context.process.dispatcher.callbackManager;
+        callbackManager.saveSuspendedThunkContext(ctx, 16);
+        let firstCallbackId: number | null = null;
+
+        const processNext = (): void => {
+            if (index >= depths.length) {
+                context.process.memory.free(formatAddr);
+                return;
+            }
+
+            const depth = depths[index];
+            view.setUint32(formatAddr + 12, depth, true); // dwZBufferBitDepth
+            
+            // Offset 24: dwZBitMask, Offset 28: dwStencilBitMask
+            if (depth === 16) {
+                view.setUint32(formatAddr + 24, 0xFFFF, true);
+                view.setUint32(formatAddr + 28, 0x0000, true);
+            } else if (depth === 24) {
+                view.setUint32(formatAddr + 24, 0xFFFFFF00, true);
+                view.setUint32(formatAddr + 28, 0x00000000, true);
+            } else if (depth === 32) {
+                view.setUint32(formatAddr + 24, 0xFFFFFF00, true);
+                view.setUint32(formatAddr + 28, 0x000000FF, true);
+            }
+            
+            index++;
+
+            const { callbackId } = callbackManager.invokeCallback(
+                lpCallback,
+                [formatAddr, lpContext],
+                0,
+                (callbackReturnValue) => {
+                    if (callbackReturnValue === 0) {
+                        context.process.memory.free(formatAddr);
+                        return D3D_OK;
+                    }
+
+                    if (index >= depths.length) {
+                        context.process.memory.free(formatAddr);
+                        return D3D_OK;
+                    }
+
+                    return null;
+                }
+            );
+
+            if (firstCallbackId === null) {
+                firstCallbackId = callbackId;
+            }
+
+            const invocation = callbackManager.getPendingCallback(callbackId);
+            if (invocation) {
+                invocation.enumerationState = {
+                    continueEnumeration: processNext,
+                    finishEnumeration: () => {
+                        context.process.memory.free(formatAddr);
+                    }
+                };
+            }
+        };
+
+        processNext();
+
+        return {
+            value: 0,
+            suspendedForCallback: true,
+            callbackId: firstCallbackId || 0,
+            stackCleanup: 12
+        };
+    };
+
+    exports["IDirect3D3_EnumDevices"] = (ctx, mem, args) => {
+        const lpCallback = args[1];
+        const lpUserArg = args[2];
+
+        if (!lpCallback) return D3DERR_INVALIDCALL;
+
+        const callbackManager = context.process.dispatcher.callbackManager;
+        if (!callbackManager) return D3D_OK;
+
+        // Two devices: RGB software (index 0), HAL hardware (index 1)
+        const devices = [
+            {
+                guid: [0x60, 0x5C, 0x66, 0xA4, 0x73, 0x26, 0xCF, 0x11, 0xA3, 0x1A, 0x00, 0xAA, 0x00, 0xB9, 0x33, 0x56],
+                name: "RGB Emulation",
+                desc: "Microsoft Direct3D RGB Software Emulation",
+                fillHal: false, // halDesc zeroed for software device
+                fillHel: true,  // helDesc gets full caps
+            },
+            {
+                guid: [0xE0, 0x3D, 0xE6, 0x84, 0xAA, 0x46, 0xCF, 0x11, 0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E],
+                name: "BottleShip Direct3D HAL",
+                desc: "BottleShip Emulator Direct3D Hardware Acceleration",
+                fillHal: true,  // halDesc gets full caps for hardware device
+                fillHel: false, // helDesc zeroed for HAL
+            },
+        ];
+
+        const descSize = 252;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        let index = 0;
+        let firstCallbackId: number | null = null;
+
+        callbackManager.saveSuspendedThunkContext(ctx, 12);
+
+        const processNext = (): void => {
+            if (index >= devices.length) return;
+
+            const dev = devices[index];
+            index++;
+
+            // Allocate per-device memory
+            const halDescAddr = context.process.memory.alloc(descSize);
+            const helDescAddr = context.process.memory.alloc(descSize);
+            const deviceNameAddr = context.process.memory.alloc(64);
+            const deviceDescAddr = context.process.memory.alloc(128);
+            const guidAddr = context.process.memory.alloc(16);
+
+            // Write GUID bytes
+            for (let i = 0; i < 16; i++) mem[guidAddr + i] = dev.guid[i];
+
+            // Write strings
+            Marshaler.writeString(mem, deviceNameAddr, dev.name);
+            Marshaler.writeString(mem, deviceDescAddr, dev.desc);
+
+            // Fill descriptors
+            mem.fill(0, halDescAddr, halDescAddr + descSize);
+            mem.fill(0, helDescAddr, helDescAddr + descSize);
+            view.setUint32(halDescAddr, descSize, true);
+            view.setUint32(helDescAddr, descSize, true);
+            // HEL desc = software rasterizer: HW-only dwDevCaps bits stripped inside.
+            if (dev.fillHal) fillDeviceDesc(view, halDescAddr);
+            if (dev.fillHel) fillDeviceDesc(view, helDescAddr, true);
+
+            // Callback signature: (GUID*, Description, Name, D3DDEVICEDESC halDesc, D3DDEVICEDESC helDesc, void* userArg)
+            const { callbackId } = callbackManager.invokeCallback(
+                lpCallback,
+                [guidAddr, deviceDescAddr, deviceNameAddr, halDescAddr, helDescAddr, lpUserArg],
+                0,
+                (callbackReturnValue) => {
+                    Logger.log(LogCategory.DDRAW,
+                        `IDirect3D3_EnumDevices: callback returned ${callbackReturnValue === 1 ? "DDENUMRET_OK" : "DDENUMRET_CANCEL"} for "${dev.name}"`);
+
+                    // NOTE: do NOT free per-device memory here — same reason as IDirect3D7_EnumDevices:
+                    // games may cache the GUID/name/desc pointers from the callback and
+                    // read them after EnumDevices returns. One-time small leak (~600 bytes/device).
+
+                    // DDENUMRET_CANCEL (0) = stop enumeration
+                    if (callbackReturnValue === 0) return D3D_OK;
+
+                    // No more devices = done
+                    if (index >= devices.length) return D3D_OK;
+
+                    // Continue to next device
+                    return null;
+                }
+            );
+
+            if (firstCallbackId === null) firstCallbackId = callbackId;
+
+            const invocation = callbackManager.getPendingCallback(callbackId);
+            if (invocation) {
+                invocation.enumerationState = {
+                    continueEnumeration: processNext,
+                    finishEnumeration: () => {}
+                };
+            }
+        };
+
+        processNext();
+
+        return {
+            value: 0,
+            suspendedForCallback: true,
+            callbackId: firstCallbackId || 0,
+            stackCleanup: 12
+        };
+    };
+
+    exports["IDirect3D3_EvictManagedTextures"] = () => D3D_OK;
+
+    // IDirect3D3::CreateLight(this, lplpLight, pUnkOuter)
+    exports["IDirect3D3_CreateLight"] = (ctx, mem, args) => {
+        const lplpLight = args[1];
+        if (!lplpLight) return 0x80004003; // E_POINTER
+        initReturnPtr(lplpLight);
+
+        const vtableAddr = context.vtables.IDirect3DLight?.address;
+        if (!vtableAddr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D3_CreateLight: IDirect3DLight vtable not found!`);
+            return 0x80004002;
+        }
+
+        const obj = ComObjectFactory.create(IID_IDirect3DLight, vtableAddr) as Direct3DLightObject;
+        if (!obj) return 0x80004005;
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpLight, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM, `IDirect3D3_CreateLight -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)})`);
+        return D3D_OK;
+    };
+
+    // IDirect3D3::CreateMaterial(this, lplpMaterial, pUnkOuter)
+    exports["IDirect3D3_CreateMaterial"] = (ctx, mem, args) => {
+        const lplpMaterial = args[1];
+        if (!lplpMaterial) return 0x80004003; // E_POINTER
+        initReturnPtr(lplpMaterial);
+
+        const vtableAddr = context.vtables.IDirect3DMaterial3?.address;
+        if (!vtableAddr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D3_CreateMaterial: IDirect3DMaterial3 vtable not found!`);
+            return 0x80004002;
+        }
+
+        const obj = ComObjectFactory.create(IID_IDirect3DMaterial3, vtableAddr) as Direct3DMaterial3Object;
+        if (!obj) return 0x80004005;
+
+        // Assign a material handle (1-based, unique per material)
+        obj.setMaterialHandle(obj.handle);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpMaterial, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM, `IDirect3D3_CreateMaterial -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)})`);
+        return D3D_OK;
+    };
+
+    // IDirect3D3::FindDevice(this, lpD3DFDS, lpD3DFDR)
+    // D3DFINDDEVICESEARCH: dwSize(0), dwFlags(4), bHardware(8), dcmColorModel(12), guid(16..31)
+    // D3DFINDDEVICERESULT: dwSize(0), guid(4..19), ddHwDesc(20..271), ddSwDesc(272..523)
+    exports["IDirect3D3_FindDevice"] = (ctx, mem, args) => {
+        const lpD3DFDS = args[1];
+        const lpD3DFDR = args[2];
+
+        if (!lpD3DFDR) return D3DERR_INVALIDCALL;
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+
+        // Log search criteria
+        if (lpD3DFDS) {
+            const searchFlags = view.getUint32(lpD3DFDS + 4, true);
+            const bHardware = view.getUint32(lpD3DFDS + 8, true);
+            Logger.log(LogCategory.DDRAW,
+                `IDirect3D3_FindDevice: flags=0x${searchFlags.toString(16)} bHardware=${bHardware}`);
+        }
+
+        // Fill result size
+        const resultSize = view.getUint32(lpD3DFDR, true);
+        Logger.log(LogCategory.DDRAW, `IDirect3D3_FindDevice: resultSize=${resultSize}`);
+
+        // Fill HAL GUID at offset 4
+        const halGuid = [0xE0, 0x3D, 0xE6, 0x84, 0xAA, 0x46, 0xCF, 0x11, 0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E];
+        for (let i = 0; i < 16; i++) mem[lpD3DFDR + 4 + i] = halGuid[i];
+
+        // Fill ddHwDesc at offset 20 (D3DDEVICEDESC, 252 bytes)
+        const hwDescAddr = lpD3DFDR + 20;
+        mem.fill(0, hwDescAddr, hwDescAddr + 252);
+        view.setUint32(hwDescAddr, 252, true); // dwSize
+        fillDeviceDesc(view, hwDescAddr);
+
+        // Fill ddSwDesc at offset 272 (D3DDEVICEDESC, 252 bytes) — software desc,
+        // HW-only dwDevCaps bits stripped.
+        const swDescAddr = lpD3DFDR + 272;
+        mem.fill(0, swDescAddr, swDescAddr + 252);
+        view.setUint32(swDescAddr, 252, true); // dwSize
+        fillDeviceDesc(view, swDescAddr, true);
+
+        Logger.log(LogCategory.DDRAW, `IDirect3D3_FindDevice: filled result OK`);
+        return D3D_OK;
+    };
+
+    // IDirect3D3::CreateVertexBuffer(this, lpD3DVertBufDesc, lplpD3DVertBuf, dwFlags, lpUnk)
+    exports["IDirect3D3_CreateVertexBuffer"] = (ctx, mem, args) => {
+        const lpDesc = args[1];
+        const lplpVB = args[2];
+        const dwFlags = args[3];
+
+        if (!lpDesc || !lplpVB) return 0x80004003; // E_POINTER
+        initReturnPtr(lplpVB);
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const dwSize = view.getUint32(lpDesc, true);
+        const dwCaps = view.getUint32(lpDesc + 4, true);
+        const dwFVF = view.getUint32(lpDesc + 8, true);
+        const dwNumVertices = view.getUint32(lpDesc + 12, true);
+
+        const vertexSize = computeFvfStride(dwFVF);
+        const totalBytes = vertexSize * dwNumVertices;
+
+        Logger.log(LogCategory.SYSTEM,
+            `IDirect3D3_CreateVertexBuffer: caps=0x${dwCaps.toString(16)} fvf=0x${dwFVF.toString(16)} ` +
+            `numVerts=${dwNumVertices} vertSize=${vertexSize} total=${totalBytes} flags=0x${dwFlags.toString(16)}`);
+
+        // Allocate guest memory for vertex data
+        const dataPtr = context.process.memory.alloc(totalBytes);
+        if (!dataPtr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D3_CreateVertexBuffer: failed to alloc ${totalBytes} bytes`);
+            return 0x8876017c; // DDERR_OUTOFMEMORY
+        }
+
+        const vtableAddr = context.vtables.IDirect3DVertexBuffer?.address;
+        if (!vtableAddr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D3_CreateVertexBuffer: no vtable for IDirect3DVertexBuffer`);
+            return 0x80004002;
+        }
+
+        const obj = ComObjectFactory.create(IID_IDirect3DVertexBuffer, vtableAddr) as Direct3DVertexBufferObject;
+        if (!obj) return 0x80004005;
+
+        obj.setBufferInfo(dataPtr, dwFVF, dwNumVertices, dwCaps, vertexSize);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        view.setUint32(lplpVB, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM,
+            `IDirect3D3_CreateVertexBuffer -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)}, data=0x${dataPtr.toString(16)})`);
+        return D3D_OK;
+    };
+
+    // --- IDirect3DVertexBuffer ---
+
+    exports["IDirect3DVertexBuffer_QueryInterface"] = (ctx, mem, args) => {
+        return 0x80004002; // E_NOINTERFACE
+    };
+
+    exports["IDirect3DVertexBuffer_AddRef"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+        return obj ? obj.addRef() : 1;
+    };
+
+    exports["IDirect3DVertexBuffer_Release"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+        return obj ? obj.release() : 0;
+    };
+
+    exports["IDirect3DVertexBuffer_Lock"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const dwFlags = args[1];
+        const lplpData = args[2];
+        const lpdwSize = args[3];
+
+        const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DVertexBufferObject | null;
+        if (!obj || !lplpData) return 0x80004003;
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpData, obj.getDataPtr(), true);
+        if (lpdwSize) {
+            view.setUint32(lpdwSize, obj.getNumVertices() * obj.getVertexSize(), true);
+        }
+
+        Logger.verbose(LogCategory.SYSTEM,
+            `IDirect3DVertexBuffer_Lock: this=0x${thisPtr.toString(16)} -> data=0x${obj.getDataPtr().toString(16)}`);
+        return D3D_OK;
+    };
+
+    exports["IDirect3DVertexBuffer_Unlock"] = () => D3D_OK;
+
+    exports["IDirect3DVertexBuffer_ProcessVertices"] = () => D3D_OK;
+
+    exports["IDirect3DVertexBuffer_GetVertexBufferDesc"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const lpDesc = args[1];
+
+        const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DVertexBufferObject | null;
+        if (!obj || !lpDesc) return 0x80004003;
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lpDesc + 0, 16, true);           // dwSize
+        view.setUint32(lpDesc + 4, obj.getCaps(), true); // dwCaps
+        view.setUint32(lpDesc + 8, obj.getFVF(), true);  // dwFVF
+        view.setUint32(lpDesc + 12, obj.getNumVertices(), true); // dwNumVertices
+
+        return D3D_OK;
+    };
+
+    exports["IDirect3DVertexBuffer_Optimize"] = () => D3D_OK;
+
+    // --- IDirect3D7 ---
+
+    exports["IDirect3D7_QueryInterface"] = (ctx, mem, args) => {
+        const thisPtr = args[0];
+        const riidPtr = args[1];
+        const ppvObject = args[2];
+
+        const obj = resourceProvider.getComObjectByAddress(thisPtr);
+
+        const iidBytes = new Uint8Array(16);
+        for (let i = 0; i < 16; i++) {
+            iidBytes[i] = mem[riidPtr + i];
+        }
+        const iidStr = bytesToGuid(iidBytes);
+
+        Logger.log(LogCategory.COM, `IDirect3D7_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr} ppvObject=0x${ppvObject.toString(16)} obj=${obj ? obj.constructor.name : 'null'}`);
+
+        if (!obj) {
+            Logger.warn(LogCategory.COM, `IDirect3D7_QueryInterface: Object not found for thisPtr=0x${thisPtr.toString(16)}`);
+            return 0x80004002;
+        }
+
+        const result = obj.queryInterface(iidStr, ppvObject, mem);
+        if (ppvObject) {
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            const returnedAddr = view.getUint32(ppvObject, true);
+            Logger.log(LogCategory.COM, `IDirect3D7_QueryInterface: result=0x${result.toString(16)} returnedAddr=0x${returnedAddr.toString(16)}`);
+        }
+        return result;
+    };
+
+    exports["IDirect3D7_AddRef"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.addRef() : 0;
+    };
+
+    exports["IDirect3D7_Release"] = (ctx, mem, args) => {
+        const obj = resourceProvider.getComObjectByAddress(args[0]);
+        return obj ? obj.release() : 0;
+    };
+
+    exports["IDirect3D7_CreateDevice"] = (ctx, mem, args) => {
+        const rclsid = args[1];
+        const lpDDS = args[2];
+        const lplpD3DDevice = args[3];
+        if (!lplpD3DDevice) return 0x80004003;
+        initReturnPtr(lplpD3DDevice);
+
+        const vtableAddr = context.vtables.IDirect3DDevice7?.address;
+        if (!vtableAddr) return 0x80004002;
+
+        const obj = ComObjectFactory.create(IID_IDirect3DDevice7, vtableAddr) as Direct3DDevice7Object;
+        if (!obj) return 0x80004005;
+
+        // Remember which enumerated device the game asked for (rgb/hal/tnlhal) —
+        // IDirect3DDevice7::GetCaps must echo that device's GUID + dwDevCaps split.
+        // All three run the same WebGPU path; only the reported identity differs.
+        if (rclsid && rclsid + 16 <= mem.length) {
+            obj.setD3d7DeviceKind(d3d7DeviceKindForGuidBytes(Array.from(mem.subarray(rclsid, rclsid + 16))));
+        }
+
+        obj.setParentD3(args[0]);
+        if (lpDDS) obj.setRenderTarget(lpDDS);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        view.setUint32(lplpD3DDevice, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM, `IDirect3D7_CreateDevice -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)}, rt=0x${(lpDDS || 0).toString(16)}, kind=${obj.getD3d7DeviceKind()})`);
+        return D3D_OK;
+    };
+
+    exports["IDirect3D7_EnumZBufferFormats"] = (ctx, mem, args) => {
+        const lpCallback = args[2];
+        const lpContext = args[3];
+
+        if (!lpCallback) return 0x80004003;
+
+        const pixelFormatSize = 32;
+        const formatAddr = context.process.memory.alloc(pixelFormatSize);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        mem.fill(0, formatAddr, formatAddr + pixelFormatSize);
+        view.setUint32(formatAddr, pixelFormatSize, true);
+        view.setUint32(formatAddr + 4, DDPF_ZBUFFER, true);
+        const depths = [16, 24, 32];
+        let index = 0;
+
+        const callbackManager = context.process.dispatcher.callbackManager;
+        callbackManager.saveSuspendedThunkContext(ctx, 16);
+        let firstCallbackId: number | null = null;
+
+        const processNext = (): void => {
+            if (index >= depths.length) {
+                context.process.memory.free(formatAddr);
+                return;
+            }
+
+            const depth = depths[index];
+            view.setUint32(formatAddr + 12, depth, true); // dwZBufferBitDepth
+            
+            // Offset 24: dwZBitMask, Offset 28: dwStencilBitMask
+            if (depth === 16) {
+                view.setUint32(formatAddr + 24, 0xFFFF, true);
+                view.setUint32(formatAddr + 28, 0x0000, true);
+            } else if (depth === 24) {
+                view.setUint32(formatAddr + 24, 0xFFFFFF00, true);
+                view.setUint32(formatAddr + 28, 0x00000000, true);
+            } else if (depth === 32) {
+                view.setUint32(formatAddr + 24, 0xFFFFFF00, true);
+                view.setUint32(formatAddr + 28, 0x000000FF, true);
+            }
+            
+            index++;
+
+            const { callbackId } = callbackManager.invokeCallback(
+                lpCallback,
+                [formatAddr, lpContext],
+                0,
+                (callbackReturnValue) => {
+                    if (callbackReturnValue === 0) {
+                        context.process.memory.free(formatAddr);
+                        return D3D_OK;
+                    }
+
+                    if (index >= depths.length) {
+                        context.process.memory.free(formatAddr);
+                        return D3D_OK;
+                    }
+
+                    return null;
+                }
+            );
+
+            if (firstCallbackId === null) {
+                firstCallbackId = callbackId;
+            }
+
+            const invocation = callbackManager.getPendingCallback(callbackId);
+            if (invocation) {
+                invocation.enumerationState = {
+                    continueEnumeration: processNext,
+                    finishEnumeration: () => {
+                        context.process.memory.free(formatAddr);
+                    }
+                };
+            }
+        };
+
+        processNext();
+
+        return {
+            value: 0,
+            suspendedForCallback: true,
+            callbackId: firstCallbackId || 0,
+            stackCleanup: 12
+        };
+    };
+
+    exports["IDirect3D7_EnumDevices"] = (ctx, mem, args) => {
+        const lpCallback = args[1];
+        const lpUserArg = args[2];
+
+        if (!lpCallback) return D3DERR_INVALIDCALL;
+
+        const callbackManager = context.process.dispatcher.callbackManager;
+        if (!callbackManager) return D3D_OK;
+
+        // Faithful DX7 enumeration on a T&L-era card: THREE devices — RGB software,
+        // plain HAL (HW raster, runtime T&L), and the T&L HAL (HWTRANSFORMANDLIGHT).
+        // Engines that select HW T&L do it by finding the TnLHal GUID here — without
+        // this third device they fall back to their own guest CPU-transform path.
+        // Per-device dwDevCaps split lives in fillDeviceDesc7 (keyed off the GUID).
+        // Kill switch `__caps7Legacy` restores the old two-device uniform-caps behavior.
+        const devices = [
+            {
+                name: "RGB Emulation",
+                desc: "Microsoft Direct3D RGB Software Emulation",
+                guid: D3D7_RGB_DEVICE_GUID_BYTES,
+            },
+            {
+                name: "BottleShip Direct3D HAL",
+                desc: "BottleShip Emulator Direct3D Hardware Acceleration",
+                guid: D3D7_HAL_DEVICE_GUID_BYTES,
+            },
+            ...((globalThis as Record<string, unknown>).__caps7Legacy === true ? [] : [{
+                name: "BottleShip Direct3D T&L HAL",
+                desc: "BottleShip Emulator Direct3D Transform & Lighting Hardware Acceleration",
+                guid: D3D7_TNLHAL_DEVICE_GUID_BYTES,
+            }]),
+        ];
+
+        // D3DDEVICEDESC7 is 236 bytes in DX7 headers (includes GUID + reserved tail fields).
+        const descSize = D3DDEVICEDESC7_SIZE;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const caps = EmulatorConfig.getInstance().d3dCaps;
+        let index = 0;
+        let firstCallbackId: number | null = null;
+        const readUserArrayState = () => {
+            if (!lpUserArg || lpUserArg < 0x10000 || lpUserArg + 0x410 > mem.length) {
+                return { modeBase: 0, modeEnd: 0, modeCount: 0 };
+            }
+            const modeBase = view.getUint32(lpUserArg + 0x408, true); // userArg[0x102]
+            const modeEnd = view.getUint32(lpUserArg + 0x40c, true);  // userArg[0x103]
+            const modeCount = modeBase && modeEnd >= modeBase ? Math.floor((modeEnd - modeBase) / 0x7c) : 0;
+            return { modeBase, modeEnd, modeCount };
+        };
+
+        callbackManager.saveSuspendedThunkContext(ctx, 12);
+
+        const processNext = (): void => {
+            if (index >= devices.length) return;
+
+            const dev = devices[index];
+            index++;
+
+            const descAddr = context.process.memory.alloc(descSize);
+            const deviceNameAddr = context.process.memory.alloc(64);
+            const deviceDescAddr = context.process.memory.alloc(128);
+
+            Marshaler.writeString(mem, deviceNameAddr, dev.name);
+            Marshaler.writeString(mem, deviceDescAddr, dev.desc);
+
+            mem.fill(0, descAddr, descAddr + descSize);
+            fillDeviceDesc7(view, descAddr, dev.guid);
+
+            const userState = readUserArrayState();
+            if ((globalThis as any).__ddrawVerboseDiag === true) {
+                Logger.verbose(
+                    LogCategory.DDRAW,
+                    `EnumDevices7 pre-callback "${dev.name}": userArg=0x${lpUserArg.toString(16)} ` +
+                    `modeBase=0x${userState.modeBase.toString(16)} modeEnd=0x${userState.modeEnd.toString(16)} modeCount=${userState.modeCount}`
+                );
+            }
+            // D3D7 callback: (Description, Name, D3DDEVICEDESC7, UserArg) — no GUID
+            const { callbackId } = callbackManager.invokeCallback(
+                lpCallback,
+                [deviceDescAddr, deviceNameAddr, descAddr, lpUserArg],
+                0,
+                (callbackReturnValue) => {
+                    Logger.log(LogCategory.DDRAW,
+                        `IDirect3D7_EnumDevices: callback returned ${callbackReturnValue === 1 ? "DDENUMRET_OK" : "DDENUMRET_CANCEL"} for "${dev.name}"`);
+
+                    // NOTE: do NOT free descAddr/deviceNameAddr/deviceDescAddr here.
+                    // Games like THPS2 cache the pointers from the callback and read
+                    // them after EnumDevices returns (device name + D3DDEVICEDESC7).
+                    // Freeing immediately causes use-after-free → all-zero caps and
+                    // empty device name → "TEX too big" and instant ExitProcess.
+                    // These are small one-time allocations (~400 bytes/device).
+
+                    if (callbackReturnValue === 0) return D3D_OK;
+                    if (index >= devices.length) return D3D_OK;
+                    return null;
+                }
+            );
+
+            if (firstCallbackId === null) firstCallbackId = callbackId;
+
+            const invocation = callbackManager.getPendingCallback(callbackId);
+            if (invocation) {
+                invocation.enumerationState = {
+                    continueEnumeration: processNext,
+                    finishEnumeration: () => {}
+                };
+            }
+        };
+
+        processNext();
+
+        return {
+            value: 0,
+            suspendedForCallback: true,
+            callbackId: firstCallbackId || 0,
+            stackCleanup: 12
+        };
+    };
+
+    // IDirect3D7::CreateVertexBuffer(this, lpVBDesc, lplpVB, dwFlags)
+    exports["IDirect3D7_CreateVertexBuffer"] = (ctx, mem, args) => {
+        const lpDesc = args[1];
+        const lplpVB = args[2];
+        const dwFlags = args[3];
+
+        if (!lpDesc || !lplpVB) return 0x80004003; // E_POINTER
+        initReturnPtr(lplpVB);
+
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const dwCaps = view.getUint32(lpDesc + 4, true);
+        const dwFVF = view.getUint32(lpDesc + 8, true);
+        const dwNumVertices = view.getUint32(lpDesc + 12, true);
+
+        const vertexSize = computeFvfStride(dwFVF);
+        const totalBytes = vertexSize * dwNumVertices;
+
+        Logger.log(LogCategory.SYSTEM,
+            `IDirect3D7_CreateVertexBuffer: caps=0x${dwCaps.toString(16)} fvf=0x${dwFVF.toString(16)} ` +
+            `numVerts=${dwNumVertices} vertSize=${vertexSize} total=${totalBytes} flags=0x${dwFlags.toString(16)}`);
+
+        // Allocate guest memory for vertex data
+        const dataPtr = context.process.memory.alloc(totalBytes);
+        if (!dataPtr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D7_CreateVertexBuffer: failed to alloc ${totalBytes} bytes`);
+            return 0x8876017c; // DDERR_OUTOFMEMORY
+        }
+
+        // Reuse the DX6 IDirect3DVertexBuffer vtable — methods are identical
+        const vtableAddr = context.vtables.IDirect3DVertexBuffer?.address;
+        if (!vtableAddr) {
+            Logger.error(LogCategory.SYSTEM, `IDirect3D7_CreateVertexBuffer: no vtable for IDirect3DVertexBuffer`);
+            return 0x80004002;
+        }
+
+        const obj = ComObjectFactory.create(IID_IDirect3DVertexBuffer, vtableAddr) as Direct3DVertexBufferObject;
+        if (!obj) return 0x80004005;
+
+        obj.setBufferInfo(dataPtr, dwFVF, dwNumVertices, dwCaps, vertexSize);
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        view.setUint32(lplpVB, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+
+        Logger.log(LogCategory.SYSTEM,
+            `IDirect3D7_CreateVertexBuffer -> 0x${objAddr.toString(16)} (handle=0x${obj.handle.toString(16)}, data=0x${dataPtr.toString(16)})`);
+        return D3D_OK;
+    };
+
+    exports["IDirect3D7_EvictManagedTextures"] = () => D3D_OK;
+
+    return exports;
+};

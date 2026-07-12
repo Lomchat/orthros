@@ -1,0 +1,379 @@
+{
+  "source": "mmsystem.h",
+  "generated": "2026-01-19T08:18:38.645Z",
+  "module": "winmm",
+  "functions": [
+    {
+      "name": "_timeGetTime@0",
+      "argCount": 0,
+      "signature": "DWORD timeGetTime()",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_timeSetEvent@20",
+      "argCount": 5,
+      "signature": "MMRESULT timeSetEvent(_In_, _In_, _In_, _In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_timeKillEvent@4",
+      "argCount": 1,
+      "signature": "MMRESULT timeKillEvent(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_timeBeginPeriod@4",
+      "argCount": 1,
+      "signature": "MMRESULT timeBeginPeriod(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_timeEndPeriod@4",
+      "argCount": 1,
+      "signature": "MMRESULT timeEndPeriod(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetNumDevs@0",
+      "argCount": 0,
+      "signature": "UINT waveOutGetNumDevs()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_waveOutGetDevCapsA@12",
+      "argCount": 3,
+      "signature": "MMRESULT waveOutGetDevCapsA(_In_, _Out_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetDevCapsW@12",
+      "argCount": 3,
+      "signature": "MMRESULT waveOutGetDevCapsW(_In_, _Out_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetVolume@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutGetVolume(_In_opt_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutSetVolume@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutSetVolume(_In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutOpen@24",
+      "argCount": 6,
+      "signature": "MMRESULT waveOutOpen(_Out_opt_, _In_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutClose@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveOutClose(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutPause@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveOutPause(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutRestart@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveOutRestart(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutReset@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveOutReset(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutBreakLoop@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveOutBreakLoop(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetPitch@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutGetPitch(_In_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutSetPitch@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutSetPitch(_In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetPlaybackRate@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutGetPlaybackRate(_In_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutSetPlaybackRate@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutSetPlaybackRate(_In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutGetID@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveOutGetID(_In_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveOutMessage@16",
+      "argCount": 4,
+      "signature": "MMRESULT waveOutMessage(_In_opt_, _In_, _In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInGetNumDevs@0",
+      "argCount": 0,
+      "signature": "UINT waveInGetNumDevs()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_waveInOpen@24",
+      "argCount": 6,
+      "signature": "MMRESULT waveInOpen(_Out_opt_, _In_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInClose@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveInClose(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInStart@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveInStart(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInStop@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveInStop(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInReset@4",
+      "argCount": 1,
+      "signature": "MMRESULT waveInReset(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInGetID@8",
+      "argCount": 2,
+      "signature": "MMRESULT waveInGetID(_In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_waveInMessage@16",
+      "argCount": 4,
+      "signature": "MMRESULT waveInMessage(_In_opt_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutGetNumDevs@0",
+      "argCount": 0,
+      "signature": "UINT midiOutGetNumDevs()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_midiStreamClose@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiStreamClose(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiStreamPause@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiStreamPause(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiStreamRestart@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiStreamRestart(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiStreamStop@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiStreamStop(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiConnect@12",
+      "argCount": 3,
+      "signature": "MMRESULT midiConnect(_In_, _In_, _In_opt_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiDisconnect@12",
+      "argCount": 3,
+      "signature": "MMRESULT midiDisconnect(_In_, _In_, _In_opt_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutGetVolume@8",
+      "argCount": 2,
+      "signature": "MMRESULT midiOutGetVolume(_In_opt_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutSetVolume@8",
+      "argCount": 2,
+      "signature": "MMRESULT midiOutSetVolume(_In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutOpen@20",
+      "argCount": 5,
+      "signature": "MMRESULT midiOutOpen(_Out_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutClose@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiOutClose(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutShortMsg@8",
+      "argCount": 2,
+      "signature": "MMRESULT midiOutShortMsg(_In_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutReset@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiOutReset(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutGetID@8",
+      "argCount": 2,
+      "signature": "MMRESULT midiOutGetID(_In_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiOutMessage@16",
+      "argCount": 4,
+      "signature": "MMRESULT midiOutMessage(_In_opt_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInGetNumDevs@0",
+      "argCount": 0,
+      "signature": "UINT midiInGetNumDevs()",
+      "returnType": "UINT"
+    },
+    {
+      "name": "_midiInOpen@20",
+      "argCount": 5,
+      "signature": "MMRESULT midiInOpen(_Out_, _In_, _In_opt_, _In_opt_, _In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInClose@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiInClose(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInStart@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiInStart(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInStop@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiInStop(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInReset@4",
+      "argCount": 1,
+      "signature": "MMRESULT midiInReset(_In_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInGetID@8",
+      "argCount": 2,
+      "signature": "MMRESULT midiInGetID(_In_, _Out_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_midiInMessage@16",
+      "argCount": 4,
+      "signature": "MMRESULT midiInMessage(_In_opt_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "MMRESULT"
+    },
+    {
+      "name": "_mciSendCommandA@16",
+      "argCount": 4,
+      "signature": "MCIERROR mciSendCommandA(_In_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "MCIERROR"
+    },
+    {
+      "name": "_mciSendCommandW@16",
+      "argCount": 4,
+      "signature": "MCIERROR mciSendCommandW(_In_, _In_, _In_opt_, _In_opt_)",
+      "returnType": "MCIERROR"
+    },
+    {
+      "name": "_mciGetDeviceIDA@4",
+      "argCount": 1,
+      "signature": "MCIDEVICEID mciGetDeviceIDA(_In_)",
+      "returnType": "MCIDEVICEID"
+    },
+    {
+      "name": "_mciGetDeviceIDW@4",
+      "argCount": 1,
+      "signature": "MCIDEVICEID mciGetDeviceIDW(_In_)",
+      "returnType": "MCIDEVICEID"
+    },
+    {
+      "name": "_mciGetDeviceIDFromElementIDA@8",
+      "argCount": 2,
+      "signature": "MCIDEVICEID mciGetDeviceIDFromElementIDA(_In_, _In_)",
+      "returnType": "MCIDEVICEID"
+    },
+    {
+      "name": "_mciGetDeviceIDFromElementIDW@8",
+      "argCount": 2,
+      "signature": "MCIDEVICEID mciGetDeviceIDFromElementIDW(_In_, _In_)",
+      "returnType": "MCIDEVICEID"
+    },
+    {
+      "name": "_mciSetYieldProc@12",
+      "argCount": 3,
+      "signature": "BOOL mciSetYieldProc(_In_, _In_opt_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_mciGetCreatorTask@4",
+      "argCount": 1,
+      "signature": "HTASK mciGetCreatorTask(_In_)",
+      "returnType": "HTASK"
+    },
+    {
+      "name": "_mciGetYieldProc@8",
+      "argCount": 2,
+      "signature": "YIELDPROC mciGetYieldProc(_In_, _In_)",
+      "returnType": "YIELDPROC"
+    }
+  ]
+}

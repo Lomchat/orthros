@@ -1,0 +1,61 @@
+{
+  "source": "winbase.h",
+  "generated": "2026-01-19T08:18:38.580Z",
+  "module": "advapi32",
+  "functions": [
+    {
+      "name": "_RegisterApplicationRecoveryCallback@16",
+      "argCount": 4,
+      "signature": "HRESULT RegisterApplicationRecoveryCallback(_In_, _In_opt_, _In_, _In_)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_RegisterApplicationRestart@8",
+      "argCount": 2,
+      "signature": "HRESULT RegisterApplicationRestart(_In_opt_, _In_)",
+      "returnType": "HRESULT"
+    },
+    {
+      "name": "_RegisterEventSourceA@8",
+      "argCount": 2,
+      "signature": "HANDLE RegisterEventSourceA(_In_opt_, _In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_RegisterEventSourceW@8",
+      "argCount": 2,
+      "signature": "HANDLE RegisterEventSourceW(_In_opt_, _In_)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_RegisterWaitForSingleObject@24",
+      "argCount": 6,
+      "signature": "BOOL RegisterWaitForSingleObject(_Outptr_, _In_, _In_, _In_opt_, _In_, _In_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_RegisterWaitForSingleObjectEx@20",
+      "argCount": 5,
+      "signature": "HANDLE RegisterWaitForSingleObjectEx(HANDLE, WAITORTIMERCALLBACK, PVOID, ULONG, ULONG)",
+      "returnType": "HANDLE"
+    },
+    {
+      "name": "_LookupPrivilegeValueA@12",
+      "argCount": 3,
+      "signature": "BOOL LookupPrivilegeValueA(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_LookupPrivilegeValueW@12",
+      "argCount": 3,
+      "signature": "BOOL LookupPrivilegeValueW(_In_opt_, _In_, _Out_)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_ConvertFiberToThread@0",
+      "argCount": 0,
+      "signature": "BOOL ConvertFiberToThread()",
+      "returnType": "BOOL"
+    }
+  ]
+}

@@ -1,0 +1,1237 @@
+/**
+ * InputManager - reads browser input from SharedArrayBuffer
+ * and injects Windows messages into the message queue.
+ */
+
+import { WindowManager } from '../windowing/window-manager';
+import type { WindowObject } from '../windowing/window-manager';
+import { Logger, LogCategory } from '../../core/logger';
+import { getCapture, getAbsoluteWindowPosition } from '../../modules/user32/shared-state';
+import { getWindowByHandle } from '../../modules/user32/window';
+import { vkToDik } from '../../modules/dinput/dinput-vk-dik';
+
+// Windows message constants
+const WM_MOUSEMOVE     = 0x0200;
+const WM_LBUTTONDOWN   = 0x0201;
+const WM_LBUTTONUP     = 0x0202;
+const WM_LBUTTONDBLCLK = 0x0203;
+const WM_RBUTTONDOWN   = 0x0204;
+const WM_RBUTTONUP     = 0x0205;
+const WM_RBUTTONDBLCLK = 0x0206;
+const WM_MBUTTONDOWN   = 0x0207;
+const WM_MBUTTONUP     = 0x0208;
+const WM_MBUTTONDBLCLK = 0x0209;
+const WM_MOUSEWHEEL    = 0x020A;
+const WM_MOUSEHOVER    = 0x02A1;
+const WM_MOUSELEAVE    = 0x02A3;
+const WM_KEYDOWN       = 0x0100;
+const WM_KEYUP         = 0x0101;
+
+// TrackMouseEvent flags
+const TME_HOVER  = 0x00000001;
+const TME_LEAVE  = 0x00000002;
+const TME_CANCEL = 0x80000000;
+
+// DirectInput buffered event (GetDeviceData for keyboard, mouse, gamepad)
+export interface DInputBufferedEvent {
+    dwOfs: number;       // DIK offset, DIMOFS_*, or DIJOFS_*
+    dwData: number;      // value (0x80/0x00 for keys/buttons, axis delta/value for axes)
+    dwTimeStamp: number; // ms timestamp
+    dwSequence: number;  // sequence number
+}
+
+/** @deprecated use DInputBufferedEvent */
+export type DInputMouseEvent = DInputBufferedEvent;
+
+// DIJOFS_* within DIJOYSTATE (matches dinput.h / our GetDeviceState layout)
+const DIJOFS_X = 0;
+const DIJOFS_Y = 4;
+const DIJOFS_RX = 12;
+const DIJOFS_RY = 16;
+const DIJOFS_BUTTON0 = 48;
+
+// Input buffer indices (must match App.tsx)
+const INPUT_INDEX = {
+    seq: 0,
+    mouseX: 1,
+    mouseY: 2,
+    buttons: 3,
+    keyCode: 4,       // deprecated (legacy single-event slot)
+    keyState: 5,      // deprecated (legacy single-event slot)
+    gamepadConnected: 6,
+    gamepadButtons: 7,
+    gamepadAxis0: 8,
+    gamepadAxis1: 9,
+    gamepadAxis2: 10,
+    gamepadAxis3: 11,
+    mouseWheel: 12,
+    mouseInside: 13,  // 1 = cursor inside canvas, 0 = outside
+    dinputDX: 14,     // accumulated DInput raw movementX delta
+    dinputDY: 15      // accumulated DInput raw movementY delta
+    // 16..23 reserved for the keyboard bitfield (see KEY_BITFIELD_BASE)
+} as const;
+
+// Keyboard bitfield: 256 virtual keys as 8 x Int32 = 256 bits
+const KEY_BITFIELD_BASE  = 16;
+const KEY_BITFIELD_COUNT = 8;
+
+// Monotonic counter the worker bumps whenever the GUEST reads a joystick/gamepad
+// device (DInput Acquire/GetDeviceState or winmm joyGetPosEx). The host watches it
+// to distinguish "a pad is plugged into the browser" from "the game is actually
+// using it" — drives the input-status overlay next to the canvas. Lives past the
+// key bitfield (16..23) so it never collides.
+const GUEST_GAMEPAD_SEQ_INDEX = 24;
+const KEY_STATE_BYTES = 256;
+
+// Mouse button flags
+const MK_LBUTTON = 0x0001;
+const MK_RBUTTON = 0x0002;
+const MK_MBUTTON = 0x0010;
+
+const VK_CAPITAL = 0x14;
+const VK_NUMLOCK = 0x90;
+const VK_SCROLL  = 0x91;
+
+// VK → OEM hardware scan code mapping (Set 1 / AT keyboard)
+const VK_TO_SCAN: Record<number, number> = {
+    // Letters A-Z (0x41-0x5A) → 0x1E-0x32 handled inline
+    // Digits 0-9 (0x30-0x39) → 0x0B,0x02-0x0A handled inline
+    0x08: 0x0E, // VK_BACK
+    0x09: 0x0F, // VK_TAB
+    0x0D: 0x1C, // VK_RETURN
+    0x10: 0x2A, // VK_SHIFT (left)
+    0x11: 0x1D, // VK_CONTROL (left)
+    0x12: 0x38, // VK_MENU (left alt)
+    0x13: 0x45, // VK_PAUSE
+    0x14: 0x3A, // VK_CAPITAL
+    0x1B: 0x01, // VK_ESCAPE
+    0x20: 0x39, // VK_SPACE
+    0x21: 0x49, // VK_PRIOR (Page Up)
+    0x22: 0x51, // VK_NEXT  (Page Down)
+    0x23: 0x4F, // VK_END
+    0x24: 0x47, // VK_HOME
+    0x25: 0x4B, // VK_LEFT
+    0x26: 0x48, // VK_UP
+    0x27: 0x4D, // VK_RIGHT
+    0x28: 0x50, // VK_DOWN
+    0x2C: 0x37, // VK_SNAPSHOT (PrintScreen)
+    0x2D: 0x52, // VK_INSERT
+    0x2E: 0x53, // VK_DELETE
+    // Numpad
+    0x60: 0x52, // VK_NUMPAD0
+    0x61: 0x4F, // VK_NUMPAD1
+    0x62: 0x50, // VK_NUMPAD2
+    0x63: 0x51, // VK_NUMPAD3
+    0x64: 0x4B, // VK_NUMPAD4
+    0x65: 0x4C, // VK_NUMPAD5
+    0x66: 0x4D, // VK_NUMPAD6
+    0x67: 0x48, // VK_NUMPAD7
+    0x68: 0x49, // VK_NUMPAD8
+    0x69: 0x49, // VK_NUMPAD9 (same physical key as PgUp; numpad distinguished by NO extended bit)
+    0x6A: 0x37, // VK_MULTIPLY
+    0x6B: 0x4E, // VK_ADD
+    0x6D: 0x4A, // VK_SUBTRACT
+    0x6E: 0x53, // VK_DECIMAL
+    0x6F: 0x35, // VK_DIVIDE
+    // F-keys
+    0x70: 0x3B, // F1
+    0x71: 0x3C, // F2
+    0x72: 0x3D, // F3
+    0x73: 0x3E, // F4
+    0x74: 0x3F, // F5
+    0x75: 0x40, // F6
+    0x76: 0x41, // F7
+    0x77: 0x42, // F8
+    0x78: 0x43, // F9
+    0x79: 0x44, // F10
+    0x7A: 0x57, // F11
+    0x7B: 0x58, // F12
+    0x90: 0x45, // VK_NUMLOCK
+    0x91: 0x46, // VK_SCROLL
+    // OEM keys (US layout)
+    0xBA: 0x27, // OEM_1 (;:)
+    0xBB: 0x0D, // OEM_PLUS (=+)
+    0xBC: 0x33, // OEM_COMMA
+    0xBD: 0x0C, // OEM_MINUS
+    0xBE: 0x34, // OEM_PERIOD
+    0xBF: 0x35, // OEM_2 (/?)
+    0xC0: 0x29, // OEM_3 (`~)
+    0xDB: 0x1A, // OEM_4 ([{)
+    0xDC: 0x2B, // OEM_5 (\|)
+    0xDD: 0x1B, // OEM_6 (]})
+    0xDE: 0x28, // OEM_7 ('")
+};
+
+// Extended keys (bit 24 set in lParam) — navigation cluster + right-hand modifiers
+const EXTENDED_VK = new Set([
+    0x21, 0x22, 0x23, 0x24, // PageUp, PageDown, End, Home
+    0x25, 0x26, 0x27, 0x28, // Left, Up, Right, Down
+    0x2D, 0x2E,             // Insert, Delete
+    0x5B, 0x5C,             // LWin, RWin
+    0x6F,                   // Numpad Divide (only numpad key that's extended)
+    0x90,                   // NumLock
+    0x2C,                   // PrintScreen
+]);
+
+// Letter scan codes (VK 0x41='A' .. 0x5A='Z'), set-1 make codes in PHYSICAL QWERTY
+// order — NOT alphabetical. These are identical to the DIK_* codes used by the
+// DirectInput path (VK_TO_DIK_ALPHANUM in dinput-vk-dik.ts); a Win32 OEM scan code
+// and a DirectInput scan code are the same value. Games that identify a key by the
+// lParam scan code (bits 16-23) — e.g. Unreal-engine WinDrv — get the wrong key for
+// every letter except 'A' if this is computed by the naive `vk-0x41+0x1E` formula.
+const LETTER_SCAN: readonly number[] = [
+    0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, // A-M
+    0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C, // N-Z
+];
+
+/** Map VK code to OEM hardware scan code */
+function vkToScanCode(vk: number): number {
+    // Letters A-Z (physical layout, not alphabetical)
+    if (vk >= 0x41 && vk <= 0x5A) return LETTER_SCAN[vk - 0x41];
+    // Digits 0-9: '1'→0x02 .. '9'→0x0A, '0'→0x0B
+    if (vk >= 0x31 && vk <= 0x39) return vk - 0x30 + 1; // '1'=0x02
+    if (vk === 0x30) return 0x0B; // '0'
+    return VK_TO_SCAN[vk] ?? vk;
+}
+
+/** Check if VK code is an extended key (bit 24 in lParam) */
+function isExtendedKey(vk: number): boolean {
+    return EXTENDED_VK.has(vk);
+}
+
+function isToggleKey(vk: number): boolean {
+    return vk === VK_CAPITAL || vk === VK_NUMLOCK || vk === VK_SCROLL;
+}
+
+// Double-click detection thresholds
+const DBLCLK_TIME_MS = 500;
+const DBLCLK_DIST_PX = 4;
+
+// Default WM_MOUSEHOVER delay (matches Windows default HOVER_DEFAULT)
+const HOVER_DEFAULT_MS = 400;
+
+interface TmeHoverEntry {
+    fireAt: number;
+    delayMs: number;
+    x: number;
+    y: number;
+}
+
+export class InputManager {
+    private inputView: Int32Array | null = null;
+    private windowManager: WindowManager;
+    public readonly keyStates = new Uint8Array(256);
+    private readonly toggleStates = new Uint8Array(KEY_STATE_BYTES);
+    private readonly queuedKeyState = new Uint8Array(KEY_STATE_BYTES);
+    private readonly packedKeyStateScratch = new Uint8Array(KEY_STATE_BYTES);
+    private hasQueuedKeyState = false;
+    /** Tracks keys that transitioned 0→pressed since last GetAsyncKeyState query (bit 0). */
+    private keyPressedSinceLastQuery = new Uint8Array(256);
+    private currentMouseX = 0;
+    private currentMouseY = 0;
+    private currentButtons = 0;
+    private gamepadConnected = false;
+    private gamepadButtons = 0;
+    private gamepadAxes: [number, number, number, number] = [0, 0, 0, 0];
+
+    // Previous state for change detection
+    private lastSeq = 0;
+    private lastMouseX = 0;
+    private lastMouseY = 0;
+    private lastButtons = 0;
+    private lastMouseWheel = 0;
+
+    // DirectInput buffered event ring buffers (keyboard, mouse, gamepad)
+    private dinputWheelAccum = 0;
+    private dinputMouseEvents: DInputBufferedEvent[] = [];
+    private dinputMouseBufferSize = 0; // 0 = buffered mode disabled
+    private dinputMouseSeq = 0;
+    private dinputPrevMouseX = 0;
+    private dinputPrevMouseY = 0;
+    private dinputPrevButtons = 0;
+
+    private dinputKeyboardEvents: DInputBufferedEvent[] = [];
+    private dinputKeyboardBufferSize = 0;
+    private dinputKeyboardSeq = 0;
+    private dinputKeyboardPrevVk = new Uint8Array(256);
+
+    private dinputGamepadEvents: DInputBufferedEvent[] = [];
+    private dinputGamepadBufferSize = 0;
+    private dinputGamepadSeq = 0;
+    private dinputGamepadPrevButtons = 0;
+    private dinputGamepadPrevAxes: [number, number, number, number] = [0, 0, 0, 0];
+
+    private prevKeyBitfield = new Int32Array(KEY_BITFIELD_COUNT);
+
+    // Double-click tracking per button [left, right, middle]
+    private lastDownTime = [0, 0, 0];
+    private lastDownX    = [0, 0, 0];
+    private lastDownY    = [0, 0, 0];
+
+    // TrackMouseEvent state
+    private tmeLeaveHwnds = new Set<number>();
+    private tmeHoverMap   = new Map<number, TmeHoverEntry>();
+    private lastMouseInside = true;
+
+    // Keyboard events buffered while enqueue=false
+    private pendingKeyEvents: Array<{ vk: number; pressed: boolean; lParam: number; keyStatePacked: Uint8Array }> = [];
+
+    private pollInterval: number | null = null;
+    private pollIntervalMs = 16;
+    private pollingEnabled = false;
+    private deterministicMode = false;
+    /** When set, WM_* are only enqueued when this returns true (e.g. guest is in GetMessage). State (keyStates, mouse) is always updated. */
+    private shouldEnqueueMessages: (() => boolean) | null = null;
+
+    constructor(windowManager: WindowManager) {
+        this.windowManager = windowManager;
+    }
+
+    setShouldEnqueueMessagesGetter(getter: () => boolean): void {
+        this.shouldEnqueueMessages = getter;
+    }
+
+    /**
+     * Set the input buffer from SharedArrayBuffer
+     */
+    setInputBuffer(buffer: SharedArrayBuffer | null): void {
+        this.inputView = buffer ? new Int32Array(buffer) : null;
+        if (this.inputView) {
+            Logger.log(LogCategory.SYSTEM, 'InputManager: buffer connected');
+        }
+    }
+
+    /**
+     * Start polling for input changes
+     */
+    startPolling(intervalMs: number = 16): void {
+        this.pollIntervalMs = intervalMs;
+        this.pollingEnabled = true;
+        if (this.pollInterval === null && !this.deterministicMode) {
+            this.pollInterval = setInterval(() => this.poll(), intervalMs) as unknown as number;
+            Logger.log(LogCategory.SYSTEM, `InputManager: polling started (${intervalMs}ms)`);
+        }
+    }
+
+    /**
+     * Stop polling
+     */
+    stopPolling(): void {
+        this.pollingEnabled = false;
+        if (this.pollInterval !== null) {
+            clearInterval(this.pollInterval);
+            this.pollInterval = null;
+        }
+    }
+
+    /**
+     * Toggle deterministic driver mode that prohibits timer polling
+     */
+    setDeterministicMode(enabled: boolean): void {
+        this.deterministicMode = enabled;
+        if (enabled) {
+            if (this.pollInterval !== null) {
+                clearInterval(this.pollInterval);
+                this.pollInterval = null;
+            }
+            return;
+        }
+        if (this.pollingEnabled && this.pollInterval === null) {
+            this.pollInterval = setInterval(() => this.poll(), this.pollIntervalMs) as unknown as number;
+            Logger.log(LogCategory.SYSTEM, `InputManager: polling resumed (${this.pollIntervalMs}ms)`);
+        }
+    }
+
+    /**
+     * Register TrackMouseEvent tracking for a window.
+     * Called by the user32 TrackMouseEvent() HLE implementation.
+     */
+    trackMouseEvent(hwnd: number, flags: number, hoverTimeMs: number): void {
+        if (flags & TME_CANCEL) {
+            if (flags & TME_LEAVE) this.tmeLeaveHwnds.delete(hwnd);
+            if (flags & TME_HOVER) this.tmeHoverMap.delete(hwnd);
+            return;
+        }
+        if (flags & TME_LEAVE) {
+            this.tmeLeaveHwnds.add(hwnd);
+        }
+        if (flags & TME_HOVER) {
+            const delayMs = (hoverTimeMs === 0xFFFFFFFF || hoverTimeMs === 0)
+                ? HOVER_DEFAULT_MS
+                : hoverTimeMs;
+            this.tmeHoverMap.set(hwnd, {
+                fireAt: Date.now() + delayMs,
+                delayMs,
+                x: this.currentMouseX,
+                y: this.currentMouseY,
+            });
+        }
+        Logger.verbose(LogCategory.SYSTEM,
+            `TrackMouseEvent hwnd=0x${hwnd.toString(16)} flags=0x${flags.toString(16)} hoverMs=${hoverTimeMs}`);
+    }
+
+    /**
+     * Poll input buffer and generate messages.
+     * @param forceEnqueue - when true (e.g. from waitForMessage), enqueue WM_* even if no waiter yet, so pending input is not lost
+     */
+    poll(forceEnqueue = false): void {
+        if (!this.inputView) return;
+
+        // SAB input seqlock (reader/acquire side; writers = host App.tsx +
+        // the worker injectors below, both bracket payload with begin/end so
+        // seq goes even→odd→even per update). An ODD seq means a writer is
+        // mid-update: skip and catch it on the next poll (state is level-based,
+        // polled frequently — no spin needed). Even+unchanged means nothing new.
+        const seq = Atomics.load(this.inputView, INPUT_INDEX.seq);
+        if (seq & 1) return;
+        if (seq === this.lastSeq) return;
+
+        // Read the whole payload into locals with plain reads, then re-check seq:
+        // if it moved, the snapshot was torn/superseded — bail WITHOUT advancing
+        // lastSeq (the newer record is picked up next poll) and WITHOUT consuming
+        // the destructive wheel delta.
+        const mouseX           = this.inputView[INPUT_INDEX.mouseX];
+        const mouseY           = this.inputView[INPUT_INDEX.mouseY];
+        const buttons          = this.inputView[INPUT_INDEX.buttons];
+        const mouseInside      = this.inputView[INPUT_INDEX.mouseInside] !== 0;
+        const gamepadConnected = this.inputView[INPUT_INDEX.gamepadConnected] === 1;
+        const gamepadButtons   = this.inputView[INPUT_INDEX.gamepadButtons];
+        const gamepadAxis0     = this.inputView[INPUT_INDEX.gamepadAxis0];
+        const gamepadAxis1     = this.inputView[INPUT_INDEX.gamepadAxis1];
+        const gamepadAxis2     = this.inputView[INPUT_INDEX.gamepadAxis2];
+        const gamepadAxis3     = this.inputView[INPUT_INDEX.gamepadAxis3];
+
+        if (Atomics.load(this.inputView, INPUT_INDEX.seq) !== seq) return;
+        this.lastSeq = seq;
+
+        // Commit path only (snapshot validated): consume the wheel DELTA slot
+        // destructively now, so a skipped/torn poll never swallows a notch.
+        // Resetting it in the WM_MOUSEWHEEL branch below is too late — that code
+        // is skipped when there is no keyboard-target window (early return below),
+        // and a stale delta would then be re-fed into the DInput accumulator on
+        // EVERY seq bump (each mouse move) → endless weapon cycling in DInput games.
+        const mouseWheel       = Atomics.exchange(this.inputView, INPUT_INDEX.mouseWheel, 0);
+
+        this.currentMouseX    = mouseX;
+        this.currentMouseY    = mouseY;
+        this.currentButtons   = buttons;
+
+        // DirectInput mouse: accumulate wheel + buffer events.
+        // The SAB slot carries browser PIXEL deltaY (~100px per notch, + = scroll down).
+        // DIMOFS_Z / lZ are WHEEL_DELTA units (±120 per notch, + = scroll UP) — same
+        // conversion as the WM_MOUSEWHEEL branch below. Multiplying by 120 here would
+        // hand games 100 notches per physical notch (Max Payne queued 100 weapon switches).
+        if (mouseWheel !== 0) {
+            this.dinputWheelAccum += Math.round(-mouseWheel * 1.2);
+        }
+        if (this.dinputMouseBufferSize > 0) {
+            this._bufferDInputMouseEvents(mouseX, mouseY, buttons, mouseWheel);
+        }
+
+        this.gamepadConnected = gamepadConnected;
+        this.gamepadButtons   = gamepadButtons;
+        this.gamepadAxes      = [gamepadAxis0, gamepadAxis1, gamepadAxis2, gamepadAxis3];
+        if (this.dinputGamepadBufferSize > 0) {
+            this._bufferDInputGamepadEvents(gamepadButtons, this.gamepadAxes, gamepadConnected);
+        }
+
+        // Update VK_LBUTTON/VK_RBUTTON/VK_MBUTTON in keyStates for GetAsyncKeyState/GetKeyState
+        // Many games (HoMM3, etc.) poll mouse button state via these APIs instead of WM messages
+        const prevLButton = this.keyStates[0x01];
+        const prevRButton = this.keyStates[0x02];
+        const prevMButton = this.keyStates[0x04];
+        this.keyStates[0x01] = (buttons & 1) ? 0x80 : 0x00; // VK_LBUTTON
+        this.keyStates[0x02] = (buttons & 2) ? 0x80 : 0x00; // VK_RBUTTON
+        this.keyStates[0x04] = (buttons & 4) ? 0x80 : 0x00; // VK_MBUTTON
+        // Track 0→pressed transitions for GetAsyncKeyState bit 0
+        if (!prevLButton && this.keyStates[0x01]) this.keyPressedSinceLastQuery[0x01] = 1;
+        if (!prevRButton && this.keyStates[0x02]) this.keyPressedSinceLastQuery[0x02] = 1;
+        if (!prevMButton && this.keyStates[0x04]) this.keyPressedSinceLastQuery[0x04] = 1;
+
+        // Pass 1: Update keyStates[] from bitfield diff (for DInput/GetAsyncKeyState)
+        // This runs BEFORE targetWin check so keyStates are always current
+        let keyboardChanged = false;
+        for (let word = 0; word < KEY_BITFIELD_COUNT; word++) {
+            const curr = this.inputView[KEY_BITFIELD_BASE + word];
+            const prev = this.prevKeyBitfield[word];
+            if (curr !== prev) {
+                keyboardChanged = true;
+                const changed = curr ^ prev;
+                for (let bit = 0; bit < 32; bit++) {
+                    if (changed & (1 << bit)) {
+                        const vk = word * 32 + bit;
+                        const nowPressed = (curr & (1 << bit)) !== 0;
+                        // Track 0→pressed for GetAsyncKeyState bit 0
+                        if (nowPressed && !this.keyStates[vk]) {
+                            this.keyPressedSinceLastQuery[vk] = 1;
+                            if (isToggleKey(vk)) {
+                                this.toggleStates[vk] ^= 0x01;
+                            }
+                        }
+                        this.keyStates[vk] = nowPressed ? 0x80 : 0x00;
+                        // A live hardware transition supersedes any stale SetKeyboardState
+                        // snapshot for THIS key. Win32 GetKeyState reflects the most recent
+                        // input per key, not a table a game pushed once. Without this, a single
+                        // SetKeyboardState() (games often zero the table at init) freezes every
+                        // later GetKeyState()/GetKeyboardState() read forever — e.g. XIII (UE2)
+                        // polls GetKeyState per frame for WASD movement and stays stuck at
+                        // "not pressed", while jump (WM_KEYDOWN edge) still works.
+                        if (this.hasQueuedKeyState) {
+                            this.queuedKeyState[vk] = (nowPressed ? 0x80 : 0x00) | (this.toggleStates[vk] & 0x01);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (this.dinputKeyboardBufferSize > 0 && keyboardChanged) {
+            this._bufferDInputKeyboardEvents();
+        }
+
+        const keyStateSnapshot = this.buildPackedKeyState(this.packedKeyStateScratch);
+
+        // Keyboard target = the FOCUS window (Win32 routes keystrokes to GetFocus(),
+        // which may be a child), falling back to active. Mouse routing is resolved
+        // separately below (capture → WindowFromPoint).
+        const targetWin = this.windowManager.getKeyboardTargetWindow();
+        if (!targetWin) {
+            // Save bitfield state even when no window
+            for (let w = 0; w < KEY_BITFIELD_COUNT; w++) {
+                this.prevKeyBitfield[w] = this.inputView[KEY_BITFIELD_BASE + w];
+            }
+            return;
+        }
+
+        const targetHwnd = targetWin.hwnd;
+
+        // Faithful Win32 mouse routing: capture → WindowFromPoint(cursor).
+        // 1. A window with mouse capture receives every mouse message regardless of the
+        //    cursor position (UE1/UT menus SetCapture during drag).
+        // 2. Otherwise the window under the cursor (Z-order WindowFromPoint, with the
+        //    dialog-overlay router as a fallback, inside getMouseTargetWindow).
+        // 3. Last resort: the keyboard/active target (e.g. before any window is shown).
+        let mouseTargetWin: WindowObject | undefined;
+        const captureHwnd = getCapture();
+        if (captureHwnd) {
+            const capWin = this.windowManager.getWindow(captureHwnd);
+            if (capWin?.visible) mouseTargetWin = capWin;
+        }
+        if (!mouseTargetWin) {
+            mouseTargetWin = this.windowManager.getMouseTargetWindow(mouseX, mouseY) ?? targetWin;
+        }
+        const mouseTargetHwnd = mouseTargetWin.hwnd;
+
+        // Only enqueue WM_* when someone is waiting (e.g. GetMessage), or when forceEnqueue (e.g. about to wait)
+        const enqueue = forceEnqueue || (this.shouldEnqueueMessages?.() ?? true);
+
+        // Flush buffered keyboard events now that we can enqueue
+        if (enqueue && this.pendingKeyEvents.length > 0) {
+            for (const evt of this.pendingKeyEvents) {
+                this.windowManager.postMessage(
+                    targetHwnd,
+                    evt.pressed ? WM_KEYDOWN : WM_KEYUP,
+                    evt.vk,
+                    evt.lParam,
+                    0,
+                    0,
+                    0,
+                    evt.keyStatePacked
+                );
+                Logger.verbose(LogCategory.SYSTEM, `Input: [flushed] ${evt.pressed ? 'KeyDown' : 'KeyUp'} vk=${evt.vk}`);
+            }
+            this.pendingKeyEvents = [];
+        }
+
+        // Screen coordinates (for MSG.pt)
+        const screenX = mouseX;
+        const screenY = mouseY;
+
+        const clampCoord = (v: number) => Math.max(0, Math.min(32767, v));
+
+        // Win32: mouse message lParam uses client coords relative to target hwnd.
+        // HLE coordinate model: client origin == window rect origin. We never render
+        // window decorations (no caption/border pixels exist on the canvas), and
+        // ScreenToClient/ClientToScreen/GetCursorPos all treat client==rect too.
+        // Subtracting clientOffset here put lParam in a DIFFERENT coordinate system
+        // than GetCursorPos — UE1 (HP) reads both and oscillates (mouse tug-of-war,
+        // cursor ~27px off → menu hover/clicks dead). clientOffset stays valid for
+        // SIZE math only (GetClientRect/AdjustWindowRect).
+        // Prefer user32 absolute position (parent chain) over WindowManager.rect so
+        // child dialogs and MoveWindow'd launchers match ScreenToClient/GetCursorPos.
+        const targetInfo = getWindowByHandle(mouseTargetHwnd);
+        const targetAbs = targetInfo
+            ? getAbsoluteWindowPosition(targetInfo)
+            : { x: mouseTargetWin.rect.x, y: mouseTargetWin.rect.y };
+        const clientX = clampCoord(screenX - targetAbs.x);
+        const clientY = clampCoord(screenY - targetAbs.y);
+
+        // LPARAM for mouse button/move messages (client coords)
+        const mouseLParam = ((clientY & 0xFFFF) << 16) | (clientX & 0xFFFF);
+
+        // --- Mouse leave / enter detection ---
+        if (mouseInside !== this.lastMouseInside) {
+            this.lastMouseInside = mouseInside;
+            if (!mouseInside) {
+                // Mouse left canvas — fire WM_MOUSELEAVE for all tracked windows (one-shot)
+                for (const hwnd of this.tmeLeaveHwnds) {
+                    this.windowManager.postMessage(hwnd, WM_MOUSELEAVE, 0, 0, screenX, screenY, 0, keyStateSnapshot);
+                    Logger.verbose(LogCategory.SYSTEM, `Input: WM_MOUSELEAVE hwnd=0x${hwnd.toString(16)}`);
+                }
+                this.tmeLeaveHwnds.clear();
+                this.tmeHoverMap.clear();
+            }
+        }
+
+        // Mouse buttons (browser uses: 1=left, 2=right, 4=middle)
+        const leftDown   = (buttons & 1) !== 0;
+        const rightDown  = (buttons & 2) !== 0;
+        const middleDown = (buttons & 4) !== 0;
+
+        const wasLeftDown   = (this.lastButtons & 1) !== 0;
+        const wasRightDown  = (this.lastButtons & 2) !== 0;
+        const wasMiddleDown = (this.lastButtons & 4) !== 0;
+
+        const buttonChanged = (leftDown !== wasLeftDown) ||
+            (rightDown !== wasRightDown) ||
+            (middleDown !== wasMiddleDown);
+        const wParamButtons = this.buttonsToWParam(buttons);
+
+        // Mouse movement - can be coalesced/skipped when busy.
+        // HLE policy: if button edge is present in this poll snapshot, prioritize the click edge
+        // and defer move delivery to avoid a synthetic move-before-click ordering artifact.
+        if (mouseX !== this.lastMouseX || mouseY !== this.lastMouseY) {
+            if (enqueue && !buttonChanged) {
+                const wParam = this.buttonsToWParam(buttons);
+                this.windowManager.postMessage(mouseTargetHwnd, WM_MOUSEMOVE, wParam, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
+                Logger.verbose(LogCategory.SYSTEM, `Input: MouseMove (${clientX}, ${clientY})`);
+            }
+            // Any movement resets the hover timer for all tracked windows
+            for (const entry of this.tmeHoverMap.values()) {
+                entry.fireAt = Date.now() + entry.delayMs;
+                entry.x = mouseX;
+                entry.y = mouseY;
+            }
+            this.lastMouseX = mouseX;
+            this.lastMouseY = mouseY;
+        }
+
+        // --- WM_MOUSEHOVER timer check (one-shot per TrackMouseEvent call) ---
+        if (this.tmeHoverMap.size > 0) {
+            const now = Date.now();
+            for (const [hwnd, entry] of this.tmeHoverMap) {
+                if (now >= entry.fireAt && mouseX === entry.x && mouseY === entry.y) {
+                    const hoverWParam = this.buttonsToWParam(buttons);
+                    this.windowManager.postMessage(hwnd, WM_MOUSEHOVER, hoverWParam, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
+                    Logger.verbose(LogCategory.SYSTEM, `Input: WM_MOUSEHOVER hwnd=0x${hwnd.toString(16)}`);
+                    this.tmeHoverMap.delete(hwnd); // hover is one-shot; app must re-register
+                }
+            }
+        }
+
+        // Click-activate: pressing a button over a non-active window (live dialog
+        // routing) silently makes it active so keyboard follows the click. No
+        // WM_ACTIVATE synthesis here — dialog activation messages are delivered by
+        // user32 (activation-messages.ts) when the dialog is created/shown.
+        const anyButtonWentDown = (leftDown && !wasLeftDown) || (rightDown && !wasRightDown) || (middleDown && !wasMiddleDown);
+        if (anyButtonWentDown && mouseTargetHwnd !== this.windowManager.getActiveHwnd()) {
+            this.windowManager.setActiveWindow(mouseTargetHwnd);
+        }
+
+        // Button events are ALWAYS enqueued - they must not be lost!
+        // Mouse moves can be skipped/coalesced, but clicks are discrete events.
+        if (leftDown !== wasLeftDown) {
+            let msg = leftDown ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+            if (leftDown) msg = this.checkDblClick(0, clientX, clientY, WM_LBUTTONDOWN, WM_LBUTTONDBLCLK);
+            this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
+        }
+
+        if (rightDown !== wasRightDown) {
+            let msg = rightDown ? WM_RBUTTONDOWN : WM_RBUTTONUP;
+            if (rightDown) msg = this.checkDblClick(1, clientX, clientY, WM_RBUTTONDOWN, WM_RBUTTONDBLCLK);
+            this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
+
+            Logger.verbose(LogCategory.SYSTEM, `Input: ${
+                rightDown
+                    ? (msg === WM_RBUTTONDBLCLK ? 'RButtonDblClk' : 'RButtonDown')
+                    : 'RButtonUp'
+            } at (${clientX},${clientY})`);
+        }
+
+        if (middleDown !== wasMiddleDown) {
+            let msg = middleDown ? WM_MBUTTONDOWN : WM_MBUTTONUP;
+            if (middleDown) msg = this.checkDblClick(2, clientX, clientY, WM_MBUTTONDOWN, WM_MBUTTONDBLCLK);
+            this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
+            Logger.verbose(LogCategory.SYSTEM, `Input: ${
+                middleDown
+                    ? (msg === WM_MBUTTONDBLCLK ? 'MButtonDblClk' : 'MButtonDown')
+                    : 'MButtonUp'
+            } at (${clientX},${clientY})`);
+        }
+
+        this.lastButtons = buttons;
+
+        // Mouse wheel - also always enqueued (discrete event)
+        // NOTE: WM_MOUSEWHEEL lParam uses SCREEN coordinates, not client coords
+        if (mouseWheel !== 0) {
+            const lParamWheel = ((clampCoord(screenY) & 0xFFFF) << 16) | (clampCoord(screenX) & 0xFFFF);
+            const wheelDelta = Math.round(-mouseWheel * 1.2);
+            const wParam = (this.buttonsToWParam(buttons) & 0xFFFF) | ((wheelDelta & 0xFFFF) << 16);
+            this.windowManager.postMessage(mouseTargetHwnd, WM_MOUSEWHEEL, wParam, lParamWheel, screenX, screenY, 0, keyStateSnapshot);
+            Logger.verbose(LogCategory.SYSTEM, `Input: MouseWheel delta=${wheelDelta} at (${clientX},${clientY})`);
+            // Slot already consumed atomically at the top of poll(); a store(0) here
+            // would race a scroll that arrived in between and drop it.
+            this.lastMouseWheel = 0;
+        }
+
+        // Pass 2: Generate WM_KEYDOWN/WM_KEYUP from bitfield diff
+        if (keyboardChanged) {
+            const newKeyEvents: Array<{ vk: number; pressed: boolean; lParam: number }> = [];
+            for (let word = 0; word < KEY_BITFIELD_COUNT; word++) {
+                const curr = this.inputView[KEY_BITFIELD_BASE + word];
+                const prev = this.prevKeyBitfield[word];
+                if (curr === prev) continue;
+                const changed = curr ^ prev;
+                for (let bit = 0; bit < 32; bit++) {
+                    if (!(changed & (1 << bit))) continue;
+                    const vk = word * 32 + bit;
+                    const pressed = (curr & (1 << bit)) !== 0;
+                    const scan = vkToScanCode(vk);
+                    const ext = isExtendedKey(vk) ? 0x01000000 : 0;
+                    const keyLParam = pressed
+                        ? (1 | (scan << 16) | ext)                           // WM_KEYDOWN: bit30=0 (was up), bit31=0 (pressed)
+                        : ((1 | (scan << 16) | ext | 0xC0000000) >>> 0);    // WM_KEYUP:   bit30=1 (was down), bit31=1 (released)
+                    newKeyEvents.push({ vk, pressed, lParam: keyLParam });
+                }
+            }
+            if (newKeyEvents.length > 0) {
+                if (enqueue) {
+                    for (const evt of newKeyEvents) {
+                        this.windowManager.postMessage(
+                            targetHwnd,
+                            evt.pressed ? WM_KEYDOWN : WM_KEYUP,
+                            evt.vk,
+                            evt.lParam,
+                            0,
+                            0,
+                            0,
+                            keyStateSnapshot
+                        );
+                        Logger.verbose(LogCategory.SYSTEM, `Input: ${evt.pressed ? 'KeyDown' : 'KeyUp'} vk=${evt.vk}`);
+                    }
+                } else {
+                    // Buffer for later delivery when game enters GetMessage / enqueue gate opens
+                    const snapshotCopy = keyStateSnapshot.slice();
+                    for (const evt of newKeyEvents) {
+                        this.pendingKeyEvents.push({ ...evt, keyStatePacked: snapshotCopy });
+                    }
+                }
+            }
+        }
+
+        // Update prevKeyBitfield
+        for (let w = 0; w < KEY_BITFIELD_COUNT; w++) {
+            this.prevKeyBitfield[w] = this.inputView[KEY_BITFIELD_BASE + w];
+        }
+
+    }
+
+    /**
+     * Check if a button press qualifies as a double-click.
+     * Returns dblClkMsg if within time/distance threshold; otherwise downMsg (and records timestamp).
+     */
+    private checkDblClick(
+        btn: 0 | 1 | 2,
+        x: number,
+        y: number,
+        downMsg: number,
+        dblClkMsg: number,
+    ): number {
+        // Disable DBLCLK generation — always send DOWN.
+        // Heroes3 WndProc calls SetCapture on LBUTTONDOWN but NOT on DBLCLK.
+        // Some games' window classes may not have CS_DBLCLKS.
+        this.lastDownTime[btn] = 0;
+        return downMsg;
+    }
+
+    /**
+     * Convert browser button flags to Windows MK_* flags
+     */
+    private buttonsToWParam(buttons: number): number {
+        let wParam = 0;
+        if (buttons & 1) wParam |= MK_LBUTTON;  // Left
+        if (buttons & 2) wParam |= MK_RBUTTON;  // Right
+        if (buttons & 4) wParam |= MK_MBUTTON;  // Middle
+        return wParam;
+    }
+
+    private buildPackedKeyState(target: Uint8Array): Uint8Array {
+        for (let i = 0; i < KEY_STATE_BYTES; i++) {
+            target[i] = (this.keyStates[i] & 0x80) | (this.toggleStates[i] & 0x01);
+        }
+        return target;
+    }
+
+    applyQueuedKeyState(packedKeyState?: Uint8Array): void {
+        if (!packedKeyState || packedKeyState.length < KEY_STATE_BYTES) {
+            return;
+        }
+        this.queuedKeyState.set(packedKeyState.subarray(0, KEY_STATE_BYTES));
+        this.hasQueuedKeyState = true;
+    }
+
+    getKeyState(vk: number): number {
+        const index = vk & 0xFF;
+        if (this.hasQueuedKeyState) {
+            const packed = this.queuedKeyState[index];
+            return ((packed & 0x80) ? 0x8000 : 0) | (packed & 0x01);
+        }
+        const asyncPressed = this.readKeyLevelFromSab(index);
+        return (asyncPressed ? 0x8000 : 0) | (this.toggleStates[index] & 0x01);
+    }
+
+    /**
+     * Read a key's CURRENT pressed level straight from the SAB bitfield, with NO
+     * state mutation. Lets the polled-state readers (GetAsyncKeyState/GetKeyState)
+     * return a fresh-at-call level even if poll() hasn't run since the last DOM
+     * event — removing up to one poll interval (~8ms) of staleness, and staying
+     * fresh even when a busy worker delays the input_tick nudge. Mouse buttons come
+     * from the buttons slot (matching poll()'s VK_LBUTTON/RBUTTON/MBUTTON mapping).
+     * Edge bits (pressed-since, toggle) stay poll()-owned — do NOT touch them here,
+     * or poll()'s diff bookkeeping breaks.
+     */
+    readKeyLevelFromSab(vk: number): boolean {
+        const v = this.inputView;
+        const k = vk & 0xFF;
+        if (!v) return (this.keyStates[k] & 0x80) !== 0;
+        if (k === 0x01) return (v[INPUT_INDEX.buttons] & 1) !== 0; // VK_LBUTTON
+        if (k === 0x02) return (v[INPUT_INDEX.buttons] & 2) !== 0; // VK_RBUTTON
+        if (k === 0x04) return (v[INPUT_INDEX.buttons] & 4) !== 0; // VK_MBUTTON
+        const word = k >> 5;
+        if (word >= KEY_BITFIELD_COUNT) return false;
+        return (v[KEY_BITFIELD_BASE + word] & (1 << (k & 31))) !== 0;
+    }
+
+    /**
+     * Reset input manager state - clear all last state values
+     */
+    reset(): void {
+        this.lastSeq = 0;
+        this.lastMouseX = 0;
+        this.lastMouseY = 0;
+        this.lastButtons = 0;
+        this.lastMouseWheel = 0;
+        this.currentMouseX = 0;
+        this.currentMouseY = 0;
+        this.currentButtons = 0;
+        this.dinputWheelAccum = 0;
+        this.dinputMouseEvents.length = 0;
+        this.dinputMouseSeq = 0;
+        this.dinputPrevMouseX = 0;
+        this.dinputPrevMouseY = 0;
+        this.dinputPrevButtons = 0;
+        this.dinputKeyboardEvents.length = 0;
+        this.dinputKeyboardBufferSize = 0;
+        this.dinputKeyboardSeq = 0;
+        this.dinputKeyboardPrevVk.fill(0);
+        this.dinputGamepadEvents.length = 0;
+        this.dinputGamepadBufferSize = 0;
+        this.dinputGamepadSeq = 0;
+        this.dinputGamepadPrevButtons = 0;
+        this.dinputGamepadPrevAxes = [0, 0, 0, 0];
+        this.gamepadConnected = false;
+        this.gamepadButtons = 0;
+        this.gamepadAxes = [0, 0, 0, 0];
+        this.keyStates.fill(0);
+        this.toggleStates.fill(0);
+        this.queuedKeyState.fill(0);
+        this.packedKeyStateScratch.fill(0);
+        this.hasQueuedKeyState = false;
+        this.keyPressedSinceLastQuery.fill(0);
+        this.prevKeyBitfield.fill(0);
+        this.lastDownTime = [0, 0, 0];
+        this.lastDownX    = [0, 0, 0];
+        this.lastDownY    = [0, 0, 0];
+        this.tmeLeaveHwnds.clear();
+        this.tmeHoverMap.clear();
+        this.pendingKeyEvents = [];
+        this.lastMouseInside = true;
+        // Note: Don't stop polling here, it should continue running
+        Logger.log(LogCategory.SYSTEM, 'InputManager reset');
+    }
+
+    /**
+     * Returns and clears the "pressed since last query" flag for a virtual key.
+     * Used by GetAsyncKeyState to return bit 0.
+     */
+    consumeKeyPressedSince(vk: number): boolean {
+        const was = this.keyPressedSinceLastQuery[vk];
+        this.keyPressedSinceLastQuery[vk] = 0;
+        return was !== 0;
+    }
+
+    /** Buffer mouse events for DirectInput GetDeviceData. Called from poll(). */
+    private _bufferDInputMouseEvents(mouseX: number, mouseY: number, buttons: number, mouseWheel: number): void {
+        const ts = performance.now() | 0;
+        const maxBuf = this.dinputMouseBufferSize;
+        const events = this.dinputMouseEvents;
+
+        const pushEvent = (dwOfs: number, dwData: number): void => {
+            if (events.length >= maxBuf) events.shift(); // overflow: drop oldest
+            events.push({ dwOfs, dwData, dwTimeStamp: ts, dwSequence: ++this.dinputMouseSeq });
+        };
+
+        // Movement deltas
+        const dx = mouseX - this.dinputPrevMouseX;
+        const dy = mouseY - this.dinputPrevMouseY;
+        if (dx !== 0) pushEvent(0, dx);  // DIMOFS_X
+        if (dy !== 0) pushEvent(4, dy);  // DIMOFS_Y
+
+        // Wheel — WHEEL_DELTA units, sign flipped (browser + = down, DirectInput + = up);
+        // must stay in lockstep with the poll() accumulator and WM_MOUSEWHEEL conversions.
+        if (mouseWheel !== 0) {
+            pushEvent(8, Math.round(-mouseWheel * 1.2)); // DIMOFS_Z
+        }
+
+        // Button changes (browser bitmask: 1=L, 2=R, 4=M, 8=X1, 16=X2)
+        const changed = buttons ^ this.dinputPrevButtons;
+        // Map browser button bits to DIMOFS_BUTTON offsets
+        // bit0(L)→12, bit1(R)→13, bit2(M)→14, bit3(X1)→15, bit4(X2)→16
+        const buttonMap = [
+            [1, 12], [2, 13], [4, 14], [8, 15], [16, 16]
+        ] as const;
+        for (const [mask, ofs] of buttonMap) {
+            if (changed & mask) {
+                pushEvent(ofs, (buttons & mask) ? 0x80 : 0x00);
+            }
+        }
+
+        this.dinputPrevMouseX = mouseX;
+        this.dinputPrevMouseY = mouseY;
+        this.dinputPrevButtons = buttons;
+    }
+
+    /** Buffer keyboard DIK press/release edges for DirectInput GetDeviceData. */
+    private _bufferDInputKeyboardEvents(): void {
+        const ts = performance.now() | 0;
+        const maxBuf = this.dinputKeyboardBufferSize;
+        const events = this.dinputKeyboardEvents;
+
+        const pushEvent = (dwOfs: number, dwData: number): void => {
+            if (events.length >= maxBuf) events.shift();
+            events.push({ dwOfs, dwData, dwTimeStamp: ts, dwSequence: ++this.dinputKeyboardSeq });
+        };
+
+        for (let vk = 0; vk < 256; vk++) {
+            const now = this.keyStates[vk];
+            const prev = this.dinputKeyboardPrevVk[vk];
+            if (now === prev) continue;
+            this.dinputKeyboardPrevVk[vk] = now;
+            const dik = vkToDik(vk);
+            if (dik === null) continue;
+            pushEvent(dik, now);
+        }
+    }
+
+    /** Buffer gamepad axis/button changes for DirectInput GetDeviceData. */
+    private _bufferDInputGamepadEvents(
+        buttons: number, axes: [number, number, number, number], connected: boolean
+    ): void {
+        const ts = performance.now() | 0;
+        const maxBuf = this.dinputGamepadBufferSize;
+        const events = this.dinputGamepadEvents;
+        const buttonsMask = connected ? buttons : 0;
+
+        const pushEvent = (dwOfs: number, dwData: number): void => {
+            if (events.length >= maxBuf) events.shift();
+            events.push({ dwOfs, dwData, dwTimeStamp: ts, dwSequence: ++this.dinputGamepadSeq });
+        };
+
+        const axisOfs = [DIJOFS_X, DIJOFS_Y, DIJOFS_RX, DIJOFS_RY] as const;
+        for (let i = 0; i < 4; i++) {
+            const val = axes[i];
+            if (val !== this.dinputGamepadPrevAxes[i]) {
+                pushEvent(axisOfs[i], val | 0);
+            }
+        }
+
+        const changed = buttonsMask ^ this.dinputGamepadPrevButtons;
+        for (let i = 0; i < 32; i++) {
+            const mask = 1 << i;
+            if (changed & mask) {
+                pushEvent(DIJOFS_BUTTON0 + i, (buttonsMask & mask) ? 0x80 : 0x00);
+            }
+        }
+
+        this.dinputGamepadPrevButtons = buttonsMask;
+        this.dinputGamepadPrevAxes = [axes[0], axes[1], axes[2], axes[3]];
+    }
+
+    getKeyboardStateVk(target?: Uint8Array): Uint8Array {
+        if (target && target.length >= this.keyStates.length) {
+            target.set(this.keyStates);
+            return target;
+        }
+        return this.keyStates.slice();
+    }
+
+    getMouseState(): { x: number; y: number; buttons: number } {
+        return {
+            x: this.currentMouseX,
+            y: this.currentMouseY,
+            buttons: this.currentButtons
+        };
+    }
+
+    /** Consume accumulated wheel delta for DirectInput GetDeviceState. Resets accumulator. */
+    consumeDInputWheel(): number {
+        const val = this.dinputWheelAccum;
+        this.dinputWheelAccum = 0;
+        return val;
+    }
+
+    /** Read the running signed accumulator for DInput relative movement.
+     *  App.tsx adds movementX/Y * scale to slots 14/15 on every pointer event
+     *  (both pointer-lock and absolute modes).  The worker reads these directly —
+     *  no drain, so no race with poll().  GetDeviceState computes delta as
+     *  (current - lastSeen) | 0, which handles Int32 wrap-around correctly. */
+    getDInputAccum(): { x: number; y: number } {
+        if (!this.inputView) return { x: 0, y: 0 };
+        return {
+            x: this.inputView[INPUT_INDEX.dinputDX],
+            y: this.inputView[INPUT_INDEX.dinputDY],
+        };
+    }
+
+    /** Set DirectInput mouse buffer size (DIPROP_BUFFERSIZE). 0 = unbuffered. */
+    setDInputMouseBufferSize(size: number): void {
+        this.dinputMouseBufferSize = size;
+        this.dinputMouseEvents.length = 0;
+    }
+
+    /** Get DirectInput mouse buffer size. */
+    getDInputMouseBufferSize(): number {
+        return this.dinputMouseBufferSize;
+    }
+
+    /** Drain up to maxItems buffered mouse events for GetDeviceData. Returns consumed events. */
+    drainDInputMouseEvents(maxItems: number): DInputBufferedEvent[] {
+        if (maxItems <= 0 || this.dinputMouseEvents.length === 0) return [];
+        const count = Math.min(maxItems, this.dinputMouseEvents.length);
+        return this.dinputMouseEvents.splice(0, count);
+    }
+
+    /** Number of pending buffered mouse events. */
+    getDInputMouseEventCount(): number {
+        return this.dinputMouseEvents.length;
+    }
+
+    /** Set DirectInput keyboard buffer size (DIPROP_BUFFERSIZE). 0 = unbuffered. */
+    setDInputKeyboardBufferSize(size: number): void {
+        this.dinputKeyboardBufferSize = size;
+        this.dinputKeyboardEvents.length = 0;
+        this.baselineDInputKeyboard();
+    }
+
+    getDInputKeyboardBufferSize(): number {
+        return this.dinputKeyboardBufferSize;
+    }
+
+    /** Snapshot current key state so Acquire/SetProperty does not replay held keys. */
+    baselineDInputKeyboard(): void {
+        this.dinputKeyboardPrevVk.set(this.keyStates);
+    }
+
+    drainDInputKeyboardEvents(maxItems: number): DInputBufferedEvent[] {
+        if (maxItems <= 0 || this.dinputKeyboardEvents.length === 0) return [];
+        const count = Math.min(maxItems, this.dinputKeyboardEvents.length);
+        return this.dinputKeyboardEvents.splice(0, count);
+    }
+
+    getDInputKeyboardEventCount(): number {
+        return this.dinputKeyboardEvents.length;
+    }
+
+    /** Set DirectInput gamepad/joystick buffer size (DIPROP_BUFFERSIZE). 0 = unbuffered. */
+    setDInputGamepadBufferSize(size: number): void {
+        this.dinputGamepadBufferSize = size;
+        this.dinputGamepadEvents.length = 0;
+        this.baselineDInputGamepad();
+    }
+
+    getDInputGamepadBufferSize(): number {
+        return this.dinputGamepadBufferSize;
+    }
+
+    /** Snapshot current gamepad state so Acquire/SetProperty does not replay held inputs. */
+    baselineDInputGamepad(): void {
+        this.dinputGamepadPrevButtons = this.gamepadConnected ? this.gamepadButtons : 0;
+        this.dinputGamepadPrevAxes = [this.gamepadAxes[0], this.gamepadAxes[1], this.gamepadAxes[2], this.gamepadAxes[3]];
+    }
+
+    drainDInputGamepadEvents(maxItems: number): DInputBufferedEvent[] {
+        if (maxItems <= 0 || this.dinputGamepadEvents.length === 0) return [];
+        const count = Math.min(maxItems, this.dinputGamepadEvents.length);
+        return this.dinputGamepadEvents.splice(0, count);
+    }
+
+    getDInputGamepadEventCount(): number {
+        return this.dinputGamepadEvents.length;
+    }
+
+    setMousePosition(x: number, y: number): void {
+        this.currentMouseX = x | 0;
+        this.currentMouseY = y | 0;
+    }
+
+    /**
+     * Instrumentation: synthesize a left-click at screen (canvas) coordinates by writing the
+     * shared input buffer and running the normal poll() routing — byte-for-byte the same path
+     * a real mouse click takes (capture → WindowFromPoint → WM_MOUSEMOVE/LBUTTONDOWN/LBUTTONUP).
+     * Works for JS system controls AND guest-painted launcher hit-zones delivered to the guest
+     * wndProc. Used by dbg.dlgClick() to drive dialogs directly instead of guessing canvas
+     * pixels. Returns false if no input buffer is connected. Clobbers the live cursor position.
+     */
+    // SAB input seqlock (writer side, mirrors App.tsx). Every injector brackets
+    // its payload writes: begin bumps seq even→ODD (writer in progress), end bumps
+    // ODD→even (publish). A bare single +1 would leave seq odd forever, which the
+    // seqlock reader in poll() treats as "writer mid-update" and skips permanently.
+    private beginInputWrite(view: Int32Array): void {
+        Atomics.add(view, INPUT_INDEX.seq, 1);
+    }
+    private endInputWrite(view: Int32Array): void {
+        Atomics.add(view, INPUT_INDEX.seq, 1);
+    }
+
+    injectClickAtScreen(screenX: number, screenY: number): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        const x = screenX | 0;
+        const y = screenY | 0;
+        const step = (buttons: number): void => {
+            this.beginInputWrite(view);
+            view[INPUT_INDEX.mouseX] = x;
+            view[INPUT_INDEX.mouseY] = y;
+            view[INPUT_INDEX.mouseInside] = 1;
+            view[INPUT_INDEX.buttons] = buttons;
+            this.endInputWrite(view);
+            this.poll(true);
+        };
+        step(0); // move onto the control
+        step(1); // left button down
+        step(0); // left button up → WM_LBUTTONUP → WM_COMMAND(BN_CLICKED)
+        return true;
+    }
+
+    /**
+     * Harness input injection. Each helper follows the SAME faithful
+     * path as injectClickAtScreen: write the SAB slots, bump seq atomically, then
+     * poll(true) so routing goes capture→WindowFromPoint→WM_* exactly like a real
+     * event. poll() is seq-gated, so every injected event MUST bump seq.
+     */
+    private mouseMaskFor(button: number): number {
+        // poll() decodes the `buttons` SAB slot as BROWSER flags (left=1, right=2,
+        // middle=4) — NOT Win32 MK_* masks (MK_MBUTTON=0x10 would set bit4, which
+        // poll's `buttons & 4` test never sees → dead middle button). Match poll().
+        return button === 1 ? 2 : button === 2 ? 4 : 1;
+    }
+
+    /** Move the cursor to (screenX,screenY) keeping the current button state. */
+    injectMoveAtScreen(screenX: number, screenY: number): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        this.beginInputWrite(view);
+        view[INPUT_INDEX.mouseX] = screenX | 0;
+        view[INPUT_INDEX.mouseY] = screenY | 0;
+        view[INPUT_INDEX.mouseInside] = 1;
+        this.endInputWrite(view);
+        this.poll(true);
+        return true;
+    }
+
+    /** Press/release a mouse button (0=left,1=right,2=middle) at a screen point. */
+    injectButtonAtScreen(screenX: number, screenY: number, button: number, down: boolean): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        const mask = this.mouseMaskFor(button);
+        this.beginInputWrite(view);
+        view[INPUT_INDEX.mouseX] = screenX | 0;
+        view[INPUT_INDEX.mouseY] = screenY | 0;
+        view[INPUT_INDEX.mouseInside] = 1;
+        view[INPUT_INDEX.buttons] = down ? (view[INPUT_INDEX.buttons] | mask) : (view[INPUT_INDEX.buttons] & ~mask);
+        this.endInputWrite(view);
+        this.poll(true);
+        return true;
+    }
+
+    /** Press at (x0,y0), drag to (x1,y1) with the button held, release. */
+    injectDragAtScreen(x0: number, y0: number, x1: number, y1: number, button = 0): boolean {
+        if (!this.inputView) return false;
+        this.injectMoveAtScreen(x0, y0);
+        this.injectButtonAtScreen(x0, y0, button, true);
+        const steps = 8;
+        for (let i = 1; i <= steps; i++) {
+            const x = Math.round(x0 + ((x1 - x0) * i) / steps);
+            const y = Math.round(y0 + ((y1 - y0) * i) / steps);
+            this.injectMoveAtScreen(x, y);
+        }
+        this.injectButtonAtScreen(x1, y1, button, false);
+        return true;
+    }
+
+    /** Inject a mouse-wheel notch at a screen point (browser pixel delta). */
+    injectWheelAtScreen(screenX: number, screenY: number, delta: number): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        this.beginInputWrite(view);
+        view[INPUT_INDEX.mouseX] = screenX | 0;
+        view[INPUT_INDEX.mouseY] = screenY | 0;
+        view[INPUT_INDEX.mouseInside] = 1;
+        Atomics.store(view, INPUT_INDEX.mouseWheel, delta | 0); // poll() consumes + resets it
+        this.endInputWrite(view);
+        this.poll(true);
+        return true;
+    }
+
+    /** Set/clear a key in the 256-bit keyboard bitfield; poll() emits WM_KEYDOWN/UP
+     *  (with correct scan codes via vkToScanCode). */
+    injectKey(vk: number, down: boolean): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        const v = vk & 0xff;
+        const word = v >> 5;
+        const bit = v & 31;
+        const idx = KEY_BITFIELD_BASE + word;
+        this.beginInputWrite(view);
+        view[idx] = down ? (view[idx] | (1 << bit)) : (view[idx] & ~(1 << bit));
+        this.endInputWrite(view);
+        this.poll(true);
+        return true;
+    }
+
+    /** Tap a key (down then up). */
+    injectKeyTap(vk: number): boolean {
+        if (!this.injectKey(vk, true)) return false;
+        return this.injectKey(vk, false);
+    }
+
+    getGamepadState(): { connected: boolean; buttons: number; axes: [number, number, number, number] } {
+        return {
+            connected: this.gamepadConnected,
+            buttons: this.gamepadButtons,
+            axes: this.gamepadAxes
+        };
+    }
+
+    /**
+     * Signal to the host that guest code just touched the joystick/gamepad API
+     * (DInput Acquire/GetDeviceState on a joystick, or winmm joyGetPosEx). The host
+     * polls this counter to tell "pad plugged in" apart from "game is reading it"
+     * and lights the input-status overlay accordingly. Cheap monotonic bump; a stuck
+     * value naturally decays to "idle" on the host side after a short window.
+     */
+    noteGuestGamepadRead(): void {
+        if (this.inputView) {
+            Atomics.add(this.inputView, GUEST_GAMEPAD_SEQ_INDEX, 1);
+        }
+    }
+}

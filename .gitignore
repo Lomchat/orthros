@@ -1,0 +1,84 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build output
+dist/
+build/
+*.local
+# Rust crate build output (any crate under the repo)
+**/target/
+# Generated from bottleship-audio-worklet.ts by the vite audio-worklet plugin
+src/audio/bottleship-audio-worklet.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ghidra local workspace (projects, DB, user home)
+.ghidra/
+.ghidra-home/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+*.obj
+tmp/
+
+# AI debug session config (local only, written by AI agent)
+debug-config.json
+
+# Claude/Cursor — local-only, except shared skills are tracked
+.claude/*
+!.claude/skills/
+.cursor/
+
+# Vendor: only v86 (submodule) is tracked; everything else is local-only reference material
+vendor/*
+!vendor/v86
+!vendor/v86/**
+# Rust→wasm build output for our owned crates (sources + bindgen glue are tracked)
+tools/build-unpack-buffered/target/
+
+# Build artifacts
+.build-ffmpeg/
+/bottleship-deploy.zip
+/public/_hp-saves.zip
+
+# Python bytecode cache (local tooling/probe scripts)
+**/__pycache__/
+
+# Game ROMs
+public/apps/
+# demo build artifacts
+demos/**/out/
+demos/**/dist/
+demos/**/bundle/
+demos/**/*.exe
+
+# Decompiled proprietary game source — reference only, never publish (release-triage §7 Tier-0)
+/rvsource/
+
+# Reference headers = local-only regeneration inputs, never committed (release-triage §7 Tier-0).
+# ReactOS-sourced headers are re-fetchable via `bun run fetch-reference-headers`; proprietary
+# ones (mss.h) are BYO. Only the derived, fact-only *.sig.json are tracked and shipped.
+tools/reference/**/*.h

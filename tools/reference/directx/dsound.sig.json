@@ -1,0 +1,366 @@
+{
+  "source": "dsound.h",
+  "generated": "2026-01-19T08:26:10.690Z",
+  "interfaces": [
+    {
+      "interface": "IDirectSound",
+      "iid": "279afa83-4981-11ce-a521-0020af0be560",
+      "methods": [
+        {
+          "name": "CreateSoundBuffer",
+          "cParams": 3,
+          "vtableIndex": 0,
+          "signature": "IDirectSound::CreateSoundBuffer(LPCDSBUFFERDESC, LPLPDIRECTSOUNDBUFFER, IUnknown *pUnkOuter)"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirectSound::GetCaps(LPDSCAPS)"
+        },
+        {
+          "name": "DuplicateSoundBuffer",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirectSound::DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER, LPLPDIRECTSOUNDBUFFER)"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectSound::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "Compact",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirectSound::Compact()"
+        },
+        {
+          "name": "GetSpeakerConfig",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirectSound::GetSpeakerConfig(LPDWORD)"
+        },
+        {
+          "name": "SetSpeakerConfig",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirectSound::SetSpeakerConfig(DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 7,
+          "signature": "IDirectSound::Initialize(LPCGUID)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectSoundBuffer",
+      "iid": "279afa85-4981-11ce-a521-0020af0be560",
+      "methods": [
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectSoundBuffer::GetCaps(LPDSBCAPS)"
+        },
+        {
+          "name": "GetCurrentPosition",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirectSoundBuffer::GetCurrentPosition(LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetFormat",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirectSoundBuffer::GetFormat(LPWAVEFORMATEX, DWORD, LPDWORD)"
+        },
+        {
+          "name": "GetVolume",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirectSoundBuffer::GetVolume(LPLONG)"
+        },
+        {
+          "name": "GetPan",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirectSoundBuffer::GetPan(LPLONG)"
+        },
+        {
+          "name": "GetFrequency",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirectSoundBuffer::GetFrequency(LPDWORD)"
+        },
+        {
+          "name": "GetStatus",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirectSoundBuffer::GetStatus(LPDWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 7,
+          "signature": "IDirectSoundBuffer::Initialize(LPDIRECTSOUND, LPCDSBUFFERDESC)"
+        },
+        {
+          "name": "Lock",
+          "cParams": 7,
+          "vtableIndex": 8,
+          "signature": "IDirectSoundBuffer::Lock(DWORD, DWORD, LPVOID *ppvAudioPtr1, LPDWORD, LPVOID *ppvAudioPtr2, LPDWORD, DWORD)"
+        },
+        {
+          "name": "Play",
+          "cParams": 3,
+          "vtableIndex": 9,
+          "signature": "IDirectSoundBuffer::Play(DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "SetCurrentPosition",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirectSoundBuffer::SetCurrentPosition(DWORD)"
+        },
+        {
+          "name": "SetFormat",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectSoundBuffer::SetFormat(LPCWAVEFORMATEX)"
+        },
+        {
+          "name": "SetVolume",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectSoundBuffer::SetVolume(LONG)"
+        },
+        {
+          "name": "SetPan",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirectSoundBuffer::SetPan(LONG)"
+        },
+        {
+          "name": "SetFrequency",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectSoundBuffer::SetFrequency(DWORD)"
+        },
+        {
+          "name": "Stop",
+          "cParams": 0,
+          "vtableIndex": 15,
+          "signature": "IDirectSoundBuffer::Stop()"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 4,
+          "vtableIndex": 16,
+          "signature": "IDirectSoundBuffer::Unlock(LPVOID, DWORD, LPVOID, DWORD)"
+        },
+        {
+          "name": "Restore",
+          "cParams": 0,
+          "vtableIndex": 17,
+          "signature": "IDirectSoundBuffer::Restore()"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectSound8",
+      "iid": "c50a7e93-f395-4834-9ef6-7fa99de50966",
+      "methods": [
+        {
+          "name": "CreateSoundBuffer",
+          "cParams": 3,
+          "vtableIndex": 0,
+          "signature": "IDirectSound8::CreateSoundBuffer(LPCDSBUFFERDESC, LPLPDIRECTSOUNDBUFFER, IUnknown *pUnkOuter)"
+        },
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 1,
+          "signature": "IDirectSound8::GetCaps(LPDSCAPS)"
+        },
+        {
+          "name": "DuplicateSoundBuffer",
+          "cParams": 2,
+          "vtableIndex": 2,
+          "signature": "IDirectSound8::DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER, LPLPDIRECTSOUNDBUFFER)"
+        },
+        {
+          "name": "SetCooperativeLevel",
+          "cParams": 2,
+          "vtableIndex": 3,
+          "signature": "IDirectSound8::SetCooperativeLevel(HWND, DWORD)"
+        },
+        {
+          "name": "Compact",
+          "cParams": 0,
+          "vtableIndex": 4,
+          "signature": "IDirectSound8::Compact()"
+        },
+        {
+          "name": "GetSpeakerConfig",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirectSound8::GetSpeakerConfig(LPDWORD)"
+        },
+        {
+          "name": "SetSpeakerConfig",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirectSound8::SetSpeakerConfig(DWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 1,
+          "vtableIndex": 7,
+          "signature": "IDirectSound8::Initialize(LPCGUID)"
+        },
+        {
+          "name": "VerifyCertification",
+          "cParams": 1,
+          "vtableIndex": 8,
+          "signature": "IDirectSound8::VerifyCertification(LPDWORD)"
+        }
+      ]
+    },
+    {
+      "interface": "IDirectSoundBuffer8",
+      "iid": "6825a449-7524-4d82-920f-50e36ab3ab1e",
+      "methods": [
+        {
+          "name": "GetCaps",
+          "cParams": 1,
+          "vtableIndex": 0,
+          "signature": "IDirectSoundBuffer8::GetCaps(LPDSBCAPS)"
+        },
+        {
+          "name": "GetCurrentPosition",
+          "cParams": 2,
+          "vtableIndex": 1,
+          "signature": "IDirectSoundBuffer8::GetCurrentPosition(LPDWORD, LPDWORD)"
+        },
+        {
+          "name": "GetFormat",
+          "cParams": 3,
+          "vtableIndex": 2,
+          "signature": "IDirectSoundBuffer8::GetFormat(LPWAVEFORMATEX, DWORD, LPDWORD)"
+        },
+        {
+          "name": "GetVolume",
+          "cParams": 1,
+          "vtableIndex": 3,
+          "signature": "IDirectSoundBuffer8::GetVolume(LPLONG)"
+        },
+        {
+          "name": "GetPan",
+          "cParams": 1,
+          "vtableIndex": 4,
+          "signature": "IDirectSoundBuffer8::GetPan(LPLONG)"
+        },
+        {
+          "name": "GetFrequency",
+          "cParams": 1,
+          "vtableIndex": 5,
+          "signature": "IDirectSoundBuffer8::GetFrequency(LPDWORD)"
+        },
+        {
+          "name": "GetStatus",
+          "cParams": 1,
+          "vtableIndex": 6,
+          "signature": "IDirectSoundBuffer8::GetStatus(LPDWORD)"
+        },
+        {
+          "name": "Initialize",
+          "cParams": 2,
+          "vtableIndex": 7,
+          "signature": "IDirectSoundBuffer8::Initialize(LPDIRECTSOUND, LPCDSBUFFERDESC)"
+        },
+        {
+          "name": "Lock",
+          "cParams": 7,
+          "vtableIndex": 8,
+          "signature": "IDirectSoundBuffer8::Lock(DWORD, DWORD, LPVOID *ppvAudioPtr1, LPDWORD, LPVOID *ppvAudioPtr2, LPDWORD, DWORD)"
+        },
+        {
+          "name": "Play",
+          "cParams": 3,
+          "vtableIndex": 9,
+          "signature": "IDirectSoundBuffer8::Play(DWORD, DWORD, DWORD)"
+        },
+        {
+          "name": "SetCurrentPosition",
+          "cParams": 1,
+          "vtableIndex": 10,
+          "signature": "IDirectSoundBuffer8::SetCurrentPosition(DWORD)"
+        },
+        {
+          "name": "SetFormat",
+          "cParams": 1,
+          "vtableIndex": 11,
+          "signature": "IDirectSoundBuffer8::SetFormat(LPCWAVEFORMATEX)"
+        },
+        {
+          "name": "SetVolume",
+          "cParams": 1,
+          "vtableIndex": 12,
+          "signature": "IDirectSoundBuffer8::SetVolume(LONG)"
+        },
+        {
+          "name": "SetPan",
+          "cParams": 1,
+          "vtableIndex": 13,
+          "signature": "IDirectSoundBuffer8::SetPan(LONG)"
+        },
+        {
+          "name": "SetFrequency",
+          "cParams": 1,
+          "vtableIndex": 14,
+          "signature": "IDirectSoundBuffer8::SetFrequency(DWORD)"
+        },
+        {
+          "name": "Stop",
+          "cParams": 0,
+          "vtableIndex": 15,
+          "signature": "IDirectSoundBuffer8::Stop()"
+        },
+        {
+          "name": "Unlock",
+          "cParams": 4,
+          "vtableIndex": 16,
+          "signature": "IDirectSoundBuffer8::Unlock(LPVOID, DWORD, LPVOID, DWORD)"
+        },
+        {
+          "name": "Restore",
+          "cParams": 0,
+          "vtableIndex": 17,
+          "signature": "IDirectSoundBuffer8::Restore()"
+        },
+        {
+          "name": "SetFX",
+          "cParams": 3,
+          "vtableIndex": 18,
+          "signature": "IDirectSoundBuffer8::SetFX(DWORD, LPDSEFFECTDESC, LPDWORD)"
+        },
+        {
+          "name": "AcquireResources",
+          "cParams": 3,
+          "vtableIndex": 19,
+          "signature": "IDirectSoundBuffer8::AcquireResources(DWORD, DWORD, LPDWORD)"
+        },
+        {
+          "name": "GetObjectInPath",
+          "cParams": 4,
+          "vtableIndex": 20,
+          "signature": "IDirectSoundBuffer8::GetObjectInPath(REFGUID, DWORD, REFGUID, LPVOID *ppObject)"
+        }
+      ]
+    }
+  ]
+}

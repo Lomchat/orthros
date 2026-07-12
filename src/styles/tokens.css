@@ -1,0 +1,155 @@
+* {
+  box-sizing: border-box;
+}
+
+/* =========================================================================
+   BottleShip design tokens — "ship in a bottle / abyssal archive"
+   Deep maritime ink, glass containers, one warm sodium-amber CTA against a
+   cool teal/cyan signal, instrument-mono labels. The bottle/container motif
+   doubles as the per-game container concept.
+   ========================================================================= */
+:root {
+  color-scheme: dark;
+
+  /* — Type — */
+  --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Hanken Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", "Monaco", monospace;
+
+  --fs-2xs: 0.68rem;
+  --fs-xs: 0.74rem;
+  --fs-sm: 0.82rem;
+  --fs-base: 0.94rem;
+  --fs-md: 1.05rem;
+  --fs-lg: 1.3rem;
+  --fs-xl: 1.75rem;
+  --fs-2xl: 2.4rem;
+  --fs-display: clamp(2.4rem, 1.5rem + 3vw, 4rem);
+
+  /* — Ink / surfaces (deep → raised) — */
+  --ink-1000: #04070a;
+  --ink-900: #070d11;
+  --ink-800: #0a1318;
+  --surf-1: #0d171d;
+  --surf-2: #122029;
+  --surf-3: #182d38;
+  --surf-glass: rgba(16, 31, 40, 0.62);
+
+  /* — Hairlines / borders — */
+  --line-1: #182a33;
+  --line-2: #23404c;
+  --line-3: #335c6c;
+
+  /* — Foreground — */
+  --fg-1: #e9f4f4;
+  --fg-2: #8eabb4;
+  --fg-3: #5a767f;
+  --fg-4: #3a525a;
+
+  /* — Accents — */
+  --amber: #f6a623;          /* primary CTA — the one warm harbor light */
+  --amber-soft: #ffc46b;
+  --amber-ink: #1a1206;      /* text on amber fills */
+  --cyan: #46c8d8;           /* signal / active / info */
+  --cyan-soft: #8fe6f0;
+  --mint: #4fd6a0;           /* success */
+  --coral: #ff7a7a;          /* danger */
+  --coral-soft: #ffb0b0;
+  --violet: #b6a6f5;         /* local / BYO source */
+  --violet-soft: #d3c8ff;
+
+  /* — Tinted state surfaces — */
+  --surf-amber: rgba(246, 166, 35, 0.12);
+  --surf-cyan: rgba(70, 200, 216, 0.12);
+  --surf-mint: rgba(79, 214, 160, 0.12);
+  --surf-coral: rgba(255, 122, 122, 0.12);
+  --surf-violet: rgba(182, 166, 245, 0.14);
+  --line-coral: #5e2b34;
+
+  /* — Radii — */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+
+  /* — Elevation — */
+  --sh-1: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --sh-2: 0 12px 30px rgba(0, 0, 0, 0.5);
+  --sh-3: 0 28px 64px rgba(0, 0, 0, 0.62);
+  --glow-amber: 0 0 0 1px rgba(246, 166, 35, 0.45), 0 10px 34px rgba(246, 166, 35, 0.22);
+  --glow-cyan: 0 0 0 1px rgba(70, 200, 216, 0.4), 0 10px 30px rgba(70, 200, 216, 0.18);
+
+  /* — Motion — */
+  --t-fast: 0.15s;
+  --t: 0.25s;
+  --t-slow: 0.45s;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  font-size: clamp(14px, 0.8rem + 0.35vw, 18px);
+  font-family: var(--font-body);
+  color: var(--fg-1);
+  /* Layered abyss: a faint sodium glow up top, teal mid-water, ink depths. */
+  background-color: var(--ink-900);
+  background-image:
+    radial-gradient(120% 90% at 78% -10%, rgba(246, 166, 35, 0.07), transparent 55%),
+    radial-gradient(120% 100% at 12% 0%, rgba(70, 200, 216, 0.06), transparent 50%),
+    radial-gradient(140% 120% at 50% 120%, #0a1318, var(--ink-1000) 70%);
+  background-attachment: fixed;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+  font-family: var(--font-body);
+}
+
+/* Fine grain so flat fills read as deep water, not dead pixels. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+  /* The library command-bar backdrop is full-bleed via width: 100vw, which counts the
+     vertical scrollbar → ~8px of phantom horizontal scroll. Clip X (not `hidden`, which
+     would create a scroll container and break the sticky command bar); Y stays visible. */
+  overflow-x: clip;
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--amber-ink);
+}
+
+/* Shared keyframes used by kit + feature modules */
+@keyframes modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-rise {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes bs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bs-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}

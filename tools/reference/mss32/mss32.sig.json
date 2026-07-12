@@ -1,0 +1,147 @@
+{
+  "source": "mss32.api.ts (reference signatures)",
+  "generated": "2026-01-14T00:00:00.000Z",
+  "module": "mss32",
+  "functions": [
+    {
+      "name": "_AIL_startup@0",
+      "argCount": 0,
+      "signature": "AIL_startup(void)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_shutdown@0",
+      "argCount": 0,
+      "signature": "AIL_shutdown(void)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_open_digital_driver@4",
+      "argCount": 1,
+      "signature": "AIL_open_digital_driver(HDIGDRIVER *)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_allocate_sample_handle@4",
+      "argCount": 1,
+      "signature": "AIL_allocate_sample_handle(HDIGDRIVER)",
+      "returnType": "HSAMPLE"
+    },
+    {
+      "name": "_AIL_release_sample_handle@4",
+      "argCount": 1,
+      "signature": "AIL_release_sample_handle(HSAMPLE)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_init_sample@4",
+      "argCount": 1,
+      "signature": "AIL_init_sample(HSAMPLE)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_start_sample@4",
+      "argCount": 1,
+      "signature": "AIL_start_sample(HSAMPLE)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_stop_sample@4",
+      "argCount": 1,
+      "signature": "AIL_stop_sample(HSAMPLE)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_resume_sample@4",
+      "argCount": 1,
+      "signature": "AIL_resume_sample(HSAMPLE)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_end_sample@4",
+      "argCount": 1,
+      "signature": "AIL_end_sample(HSAMPLE)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_sample_status@4",
+      "argCount": 1,
+      "signature": "AIL_sample_status(HSAMPLE)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_set_sample_file@12",
+      "argCount": 3,
+      "signature": "AIL_set_sample_file(HSAMPLE, void const *, S32)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_set_named_sample_file@20",
+      "argCount": 5,
+      "signature": "AIL_set_named_sample_file(HSAMPLE, HDIGDRIVER, char const *, S32, S32)",
+      "returnType": "S32"
+    },
+    {
+      "name": "_AIL_set_sample_volume@8",
+      "argCount": 2,
+      "signature": "AIL_set_sample_volume(HSAMPLE, S32)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_set_sample_pan@8",
+      "argCount": 2,
+      "signature": "AIL_set_sample_pan(HSAMPLE, S32)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_set_sample_playback_rate@8",
+      "argCount": 2,
+      "signature": "AIL_set_sample_playback_rate(HSAMPLE, S32)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_set_sample_loop_count@8",
+      "argCount": 2,
+      "signature": "AIL_set_sample_loop_count(HSAMPLE, S32)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_file_read@8",
+      "argCount": 3,
+      "signature": "AIL_file_read(HFILE, void *, U32)",
+      "returnType": "U32",
+      "note": "Despite @8 decoration, actual signature has 3 args (12 bytes)"
+    },
+    {
+      "name": "_AIL_file_read@12",
+      "argCount": 3,
+      "signature": "AIL_file_read(HFILE, void *, U32)",
+      "returnType": "U32",
+      "note": "Correctly decorated version"
+    },
+    {
+      "name": "_AIL_file_size@4",
+      "argCount": 1,
+      "signature": "AIL_file_size(HFILE)",
+      "returnType": "U32"
+    },
+    {
+      "name": "_AIL_mem_free_lock@4",
+      "argCount": 1,
+      "signature": "AIL_mem_free_lock(void *)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_set_preference@8",
+      "argCount": 2,
+      "signature": "AIL_set_preference(U32, S32)",
+      "returnType": "void"
+    },
+    {
+      "name": "_AIL_waveOutOpen@16",
+      "argCount": 4,
+      "signature": "AIL_waveOutOpen(HDIGDRIVER *, LPHWAVEOUT, int, LPWAVEFORMATEX)",
+      "returnType": "S32"
+    }
+  ]
+}

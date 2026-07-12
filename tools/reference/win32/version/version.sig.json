@@ -1,0 +1,25 @@
+{
+  "source": "winver.h",
+  "generated": "2026-01-28T00:00:00.000Z",
+  "module": "version",
+  "functions": [
+    {
+      "name": "_VerQueryValueA@16",
+      "argCount": 4,
+      "signature": "BOOL VerQueryValueA(LPCVOID pBlock, LPCSTR lpSubBlock, LPVOID *lplpBuffer, PUINT puLen)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileVersionInfoA@16",
+      "argCount": 4,
+      "signature": "BOOL GetFileVersionInfoA(LPCSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetFileVersionInfoSizeA@8",
+      "argCount": 2,
+      "signature": "DWORD GetFileVersionInfoSizeA(LPCSTR lptstrFilename, LPDWORD lpdwHandle)",
+      "returnType": "DWORD"
+    }
+  ]
+}

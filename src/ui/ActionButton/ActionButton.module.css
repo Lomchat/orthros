@@ -1,0 +1,78 @@
+.action-btn {
+  padding: 6px 12px;
+  min-height: 36px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--surf-2);
+  color: var(--fg-1);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.action-btn:hover:not(:disabled) {
+  background: var(--surf-3);
+  border-color: var(--line-3);
+}
+
+.action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary — the one warm harbor-light CTA. Use sparingly. */
+.primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--amber-soft);
+  border-color: var(--amber-soft);
+  box-shadow: var(--glow-amber);
+  transform: translateY(-1px);
+}
+
+.secondary {
+  background: var(--surf-coral);
+  border-color: var(--line-coral);
+  color: var(--coral-soft);
+}
+
+.secondary:hover:not(:disabled) {
+  background: rgba(255, 122, 122, 0.18);
+  border-color: var(--coral);
+}
+
+.secondary.active {
+  background: var(--surf-cyan);
+  border-color: var(--cyan);
+  color: var(--cyan-soft);
+}
+
+.small {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: var(--fs-xs);
+}
+
+.toggled-off {
+  background: var(--ink-800);
+  border-color: var(--line-1);
+  color: var(--fg-3);
+  opacity: 0.8;
+}
+
+.toggled-off:hover:not(:disabled) {
+  background: var(--surf-1);
+  border-color: var(--line-2);
+  color: var(--fg-2);
+}
