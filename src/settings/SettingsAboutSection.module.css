@@ -4,7 +4,8 @@
   margin: 0 auto;
   padding: 10px 0 6px;
 }
-.about__bottle { width: 110px; height: 110px; color: var(--cyan-soft); }
+/* Pixel-art mark (native 41x27), integer-scaled ×3 with nearest-neighbour. */
+.about__bottle { width: 123px; height: 81px; image-rendering: pixelated; }
 .about__title {
   font-family: var(--font-display);
   font-weight: 700;

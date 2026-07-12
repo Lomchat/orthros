@@ -5,8 +5,17 @@ import { transform } from "esbuild";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execSync } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Truthful build id for the About panel: Cloudflare Pages exposes the deployed
+// commit as CF_PAGES_COMMIT_SHA; locally fall back to `git rev-parse`. Baked in
+// via `define` below and read as the __BUILD_SHA__ global.
+const BUILD_SHA = (
+  process.env.CF_PAGES_COMMIT_SHA ||
+  (() => { try { return execSync("git rev-parse --short HEAD").toString().trim(); } catch { return "dev"; } })()
+).slice(0, 7);
 // HTTP is the default (localhost is a secure context, so SharedArrayBuffer /
 // COOP-COEP work over plain HTTP and automation needn't clear a self-signed
 // cert). Opt into a self-signed HTTPS dev/preview server with VITE_SSL=1.
@@ -140,6 +149,9 @@ function copyPublicDirExceptApps(): Plugin {
 }
 
 export default defineConfig({
+  define: {
+    __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+  },
   plugins: [
     audioWorkletPlugin(),
     harnessHealthPlugin(),
