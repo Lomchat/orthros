@@ -24,21 +24,15 @@ BottleShip already runs a range of late-90s / early-2000s titles into gameplay, 
 Re-Volt, Heroes of Might & Magic III, StarCraft / Brood War, Diablo II, Max Payne, The Elder
 Scrolls III: Morrowind, Harry Potter and the Philosopher's Stone, Need for Speed: Porsche
 Unleashed & Underground, Unreal Gold, Command & Conquer: Tiberian Sun, Discworld Noir, Tomb
-Raider II and Tony Hawk's Pro Skater 2.
-
-| Game | Status |
-|------|--------|
-| Re-Volt | Playable |
-| StarCraft / Brood War | Playable |
-| Heroes of Might & Magic III | Playable |
-| Need for Speed: Underground | Playable |
+Raider II and Tony Hawk's Pro Skater 2. See the [full compatibility list](docs/compatibility.md)
+for exact status per title.
 
 Several of these are sold DRM-free on **GOG** (Heroes III, Re-Volt, Morrowind, Unreal Gold,
 Tomb Raider II…) — you can drop the offline installer straight in. Because only **demos and
 freeware** are legally redistributable, the online library lets you play those instantly;
 everything else, you bring your own legally-owned copy.
 
-[Open the game library →](https://bottleship.pages.dev) · [Full compatibility list →](docs/compatibility.md)
+[Open the game library →](https://bottleship.pages.dev)
 
 ## Why
 
