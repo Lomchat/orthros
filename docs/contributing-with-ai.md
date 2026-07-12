@@ -52,11 +52,11 @@ gets (boots / menu / in-game / completable), the bundle parameters that got it t
 
 ### Tier 1 — diagnosis
 
-Let the agent drive the game to the point of failure and extract the *named* gap:
-`stubs()` lists the unimplemented API the game hit; `report()` carries the module-labelled
-guest call stack and the recent WinAPI ring. File a **Bring-up diagnosis** issue. A named
-stub with a call stack is a ready-to-implement work item — the scarcest artifact in any
-bug tracker.
+Let the agent drive the game to the point of failure and extract the *named* gap: a single
+`report()` snapshot carries the unimplemented API the game hit (its `stubs()` registry), the
+module-labelled guest call stack, and the recent WinAPI ring. File a **Bring-up diagnosis**
+issue. A named stub with a call stack is a ready-to-implement work item — the scarcest
+artifact in any bug tracker.
 
 ### Tier 2 — the fix
 
