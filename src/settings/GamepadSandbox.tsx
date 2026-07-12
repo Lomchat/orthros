@@ -1,5 +1,5 @@
 import React from "react";
-import { Gamepad2 } from "lucide-react";
+import { GameController } from "@phosphor-icons/react";
 import {
   getCachedGamepadMeta,
   readLiveGamepad,
@@ -230,7 +230,7 @@ export default function GamepadSandbox({ active }: { active: boolean }): React.R
     <div className={cx(s, "gp-sandbox", pad.connected && "is-live")}>
       <header className={s["gp-sandbox__head"]}>
         <span className={s["gp-sandbox__icon"]} aria-hidden>
-          <Gamepad2 size={17} strokeWidth={1.7} />
+          <GameController size={17} />
         </span>
         <div className={s["gp-sandbox__meta"]}>
           <div className={s["gp-sandbox__title-row"]}>

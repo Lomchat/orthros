@@ -10,33 +10,33 @@ import hm from "../ui/Hint/Hint.module.css";
 import { Spacer } from "../ui/Spacer";
 import {
   X,
-  Upload,
+  UploadSimple,
   Folder,
   FolderOpen,
-  Link2,
-  Pencil,
+  Link,
+  PencilSimple,
   Play,
   HardDrive,
-  ArrowDownToLine,
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
+  ArrowLineDown,
+  CaretLeft,
+  CaretRight,
+  CaretDown,
   File as FileIcon,
   FileText,
-  FileCog,
-  Settings2,
+  GearSix,
+  Sliders,
   FileCode,
   Binary,
   FileImage,
-  FileArchive,
+  FileZip,
   FileAudio,
   FileVideo,
-  Braces,
-  CircleHelp,
-  Loader2,
-  Save,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+  BracketsCurly,
+  Question,
+  CircleNotch,
+  FloppyDisk,
+} from "@phosphor-icons/react";
+import type { Icon } from "@phosphor-icons/react";
 import type {
   BuildSource,
   StagedEntry,
@@ -105,7 +105,7 @@ function TreeRow(props: TreeRowProps): React.ReactElement {
 
   if (node.isDir) {
     const FolderIcon = isOpen ? FolderOpen : Folder;
-    const Chevron = isOpen ? ChevronDown : ChevronRight;
+    const Chevron = isOpen ? CaretDown : CaretRight;
     return (
       <>
         <button
@@ -117,10 +117,10 @@ function TreeRow(props: TreeRowProps): React.ReactElement {
           onClick={() => onToggleFolder(node.path)}
         >
           <span className={s["ic"]}>
-            <Chevron size={13} strokeWidth={1.8} aria-hidden />
+            <Chevron size={13} aria-hidden />
           </span>
           <span className={s["ic"]}>
-            <FolderIcon size={14} strokeWidth={1.6} aria-hidden />
+            <FolderIcon size={14} aria-hidden />
           </span>
           <span className={s["nm"]}>{node.label}/</span>
           <span className={s["row__right"]}>
@@ -183,7 +183,7 @@ function TreeRow(props: TreeRowProps): React.ReactElement {
       onClick={() => (editable ? onOpenFile(node.path) : onCycleFile(node.path))}
     >
       <span className={s["ic"]} style={{ marginLeft: 16 }}>
-        <Icon size={13} strokeWidth={1.6} aria-hidden />
+        <Icon size={13} aria-hidden />
       </span>
       <span className={s["nm"]}>{node.label}</span>
       {pin ? (
@@ -893,7 +893,7 @@ export default function WgbWizardModal({
           <span className={s["modal__sub"]}>{stepSub}</span>
           <Spacer />
           <button className={cb["x"]} onClick={onClose} aria-label="Close">
-            <X size={16} strokeWidth={1.8} aria-hidden />
+            <X size={16} aria-hidden />
           </button>
         </div>
 
@@ -946,7 +946,7 @@ export default function WgbWizardModal({
               }}
             >
               <div className={s["drop__glyph"]}>
-                <Upload size={36} strokeWidth={1.4} aria-hidden />
+                <UploadSimple size={36} aria-hidden />
               </div>
               <div className={s["drop__t"]}>Drop your game here</div>
               <div className={s["drop__h"]}>
@@ -954,7 +954,7 @@ export default function WgbWizardModal({
               </div>
               <div className={s["chrow"]}>
                 <button className={ch["chip"]} disabled={disabled} onClick={() => fileInputRef.current?.click()}>
-                  <FileIcon size={14} strokeWidth={1.6} aria-hidden /> Choose files…
+                  <FileIcon size={14} aria-hidden /> Choose files…
                 </button>
                 <button
                   className={ch["chip"]}
@@ -962,11 +962,11 @@ export default function WgbWizardModal({
                   title={supportsDirPicker ? undefined : "Folder picking needs a Chromium browser"}
                   onClick={pickFolder}
                 >
-                  <Folder size={14} strokeWidth={1.6} aria-hidden /> Pick a folder…
+                  <Folder size={14} aria-hidden /> Pick a folder…
                 </button>
                 {onEditLibrary && (
                   <button className={cx(ch, "chip", "chip--mount")} onClick={onEditLibrary}>
-                    <Pencil size={14} strokeWidth={1.6} aria-hidden /> Edit one in your library →
+                    <PencilSimple size={14} aria-hidden /> Edit one in your library →
                   </button>
                 )}
               </div>
@@ -985,7 +985,7 @@ export default function WgbWizardModal({
                 }}
               />
               <button className={bm["btn"]} disabled={disabled || !urlInput.trim()} onClick={submitUrl}>
-                <Link2 size={15} strokeWidth={1.6} aria-hidden /> From URL
+                <Link size={15} aria-hidden /> From URL
               </button>
             </div>
 
@@ -1020,7 +1020,7 @@ export default function WgbWizardModal({
             {!building && ambiguous && form && (
               <div className={s["qbox"]}>
                 <div className={sh["sect-h"]}>
-                  <CircleHelp size={16} strokeWidth={1.7} aria-hidden /> A couple of questions
+                  <Question size={16} aria-hidden /> A couple of questions
                 </div>
                 <div className={s["field"]}>
                   <label>
@@ -1177,7 +1177,7 @@ export default function WgbWizardModal({
                     <div className={s["wiz-editor"]}>
                       <div className={s["wiz-editor__head"]}>
                         <span className={s["ic"]}>
-                          {React.createElement(fileIcon(openFile), { size: 14, strokeWidth: 1.6 })}
+                          {React.createElement(fileIcon(openFile), { size: 14 })}
                         </span>
                         <span className={s["nm"]} title={stripRom(openFile)}>{stripRom(openFile)}</span>
                         {Object.prototype.hasOwnProperty.call(editedFiles, openFile) && (
@@ -1185,14 +1185,14 @@ export default function WgbWizardModal({
                         )}
                         <Spacer />
                         <button className={cb["x"]} onClick={closeEditor} aria-label="Close editor">
-                          <X size={14} strokeWidth={1.8} aria-hidden />
+                          <X size={14} aria-hidden />
                         </button>
                       </div>
                       {editorError ? (
                         <div className={cx(s, "note", "note--err")}>{editorError}</div>
                       ) : editorLoading ? (
                         <div className={s["wiz-editor__loading"]}>
-                          <Loader2 size={15} strokeWidth={1.8} aria-hidden className={s["wiz-spin"]} /> Reading file…
+                          <CircleNotch size={15} aria-hidden className={s["wiz-spin"]} /> Reading file…
                         </div>
                       ) : (
                         <>
@@ -1207,7 +1207,7 @@ export default function WgbWizardModal({
                             <Spacer />
                             <button className={cx(bm, "btn", "btn--ghost")} onClick={closeEditor}>Cancel</button>
                             <button className={cx(bm, "btn", "btn--primary")} onClick={saveEditor}>
-                              <Save size={14} strokeWidth={1.8} aria-hidden /> Keep edits
+                              <FloppyDisk size={14} aria-hidden /> Keep edits
                             </button>
                           </div>
                         </>
@@ -1242,7 +1242,7 @@ export default function WgbWizardModal({
                 onClick={() => setDestination("play")}
               >
                 <div className={s["dest__ic"]}>
-                  <Play size={28} strokeWidth={1.5} aria-hidden />
+                  <Play size={28} aria-hidden />
                 </div>
                 <div className={s["dest__t"]}>Play now</div>
                 <div className={s["dest__h"]}>Launch it right away. It's added to your library too.</div>
@@ -1254,7 +1254,7 @@ export default function WgbWizardModal({
                 onClick={() => setDestination("library")}
               >
                 <div className={s["dest__ic"]}>
-                  <HardDrive size={28} strokeWidth={1.5} aria-hidden />
+                  <HardDrive size={28} aria-hidden />
                 </div>
                 <div className={s["dest__t"]}>Keep in library</div>
                 <div className={s["dest__h"]}>Stays in the browser, always one click away. Saves isolated per game.</div>
@@ -1266,7 +1266,7 @@ export default function WgbWizardModal({
                 onClick={() => setDestination("download")}
               >
                 <div className={s["dest__ic"]}>
-                  <ArrowDownToLine size={28} strokeWidth={1.5} aria-hidden />
+                  <ArrowLineDown size={28} aria-hidden />
                 </div>
                 <div className={s["dest__t"]}>Download as WGB</div>
                 <div className={s["dest__h"]}>
@@ -1291,29 +1291,29 @@ export default function WgbWizardModal({
           </button>
           <Spacer />
           <button className={bm["btn"]} disabled={step <= 1} onClick={() => goStep((step - 1) as StepId)}>
-            <ChevronLeft size={15} strokeWidth={1.8} aria-hidden /> Back
+            <CaretLeft size={15} aria-hidden /> Back
           </button>
           {step < 4 ? (
             <button className={cx(bm, "btn", "btn--primary")} disabled={!nextEnabled} onClick={onNext}>
-              Next <ChevronRight size={15} strokeWidth={1.8} aria-hidden />
+              Next <CaretRight size={15} aria-hidden />
             </button>
           ) : (
             <button className={cx(bm, "btn", "btn--primary")} disabled={finalizing} onClick={onConfirm}>
               {finalizing ? (
                 <>
-                  <Loader2 size={15} strokeWidth={1.8} aria-hidden className={s["wiz-spin"]} /> Working…
+                  <CircleNotch size={15} aria-hidden className={s["wiz-spin"]} /> Working…
                 </>
               ) : destination === "play" ? (
                 <>
-                  <Play size={15} strokeWidth={1.8} aria-hidden /> Play now
+                  <Play size={15} aria-hidden /> Play now
                 </>
               ) : destination === "download" ? (
                 <>
-                  <ArrowDownToLine size={15} strokeWidth={1.8} aria-hidden /> Download as WGB
+                  <ArrowLineDown size={15} aria-hidden /> Download as WGB
                 </>
               ) : (
                 <>
-                  <FileCog size={15} strokeWidth={1.8} aria-hidden /> Add to library
+                  <GearSix size={15} aria-hidden /> Add to library
                 </>
               )}
             </button>
@@ -1477,15 +1477,15 @@ function isEditable(name: string, size: number): boolean {
 }
 
 /** Pick a lucide icon component for a file by extension. */
-function fileIcon(name: string): LucideIcon {
+function fileIcon(name: string): Icon {
   const ext = extOf(name);
-  if (ext === "json") return Braces;
+  if (ext === "json") return BracketsCurly;
   if (TEXT_EXTS.has(ext)) return FileText;
-  if (CFG_EXTS.has(ext)) return ext === "inf" ? Settings2 : FileCog;
+  if (CFG_EXTS.has(ext)) return ext === "inf" ? Sliders : GearSix;
   if (BINARY_EXTS.has(ext)) return Binary;
   if (CODE_EXTS.has(ext)) return FileCode;
   if (IMAGE_EXTS.has(ext)) return FileImage;
-  if (ARCHIVE_EXTS.has(ext)) return FileArchive;
+  if (ARCHIVE_EXTS.has(ext)) return FileZip;
   if (AUDIO_EXTS.has(ext)) return FileAudio;
   if (VIDEO_EXTS.has(ext)) return FileVideo;
   return FileIcon;

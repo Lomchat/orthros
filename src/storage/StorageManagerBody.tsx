@@ -1,5 +1,5 @@
 import React from "react";
-import { Download, Trash2, Upload } from "lucide-react";
+import { DownloadSimple, Trash, UploadSimple } from "@phosphor-icons/react";
 import {
   type CachedBundleInfo,
   type GameStorageInfo,
@@ -98,7 +98,7 @@ export default function StorageManagerBody({ active }: { active: boolean }): Rea
               <span className={s["glist__sz"]}>{formatBytes(g.totalBytes)}</span>
               <div className={s["glist__actions"]}>
                 <SettingsIconBtn
-                  icon={Download}
+                  icon={DownloadSimple}
                   title="Download saves (.zip)"
                   disabled={busy}
                   onClick={async () => {
@@ -116,7 +116,7 @@ export default function StorageManagerBody({ active }: { active: boolean }): Rea
                   }}
                 />
                 <SettingsIconBtn
-                  icon={Upload}
+                  icon={UploadSimple}
                   title="Import saves (.zip)"
                   disabled={busy}
                   onClick={async () => {
@@ -136,7 +136,7 @@ export default function StorageManagerBody({ active }: { active: boolean }): Rea
                   }}
                 />
                 <SettingsIconBtn
-                  icon={Trash2}
+                  icon={Trash}
                   title="Delete saves & settings"
                   danger
                   disabled={busy}
@@ -168,7 +168,7 @@ export default function StorageManagerBody({ active }: { active: boolean }): Rea
               <span className={s["glist__sz"]}>{formatBytes(b.bytes)}</span>
               <div className={s["glist__actions"]}>
                 <SettingsIconBtn
-                  icon={Download}
+                  icon={DownloadSimple}
                   title="Download .wgb bundle"
                   disabled={busy}
                   onClick={async () => {
@@ -186,7 +186,7 @@ export default function StorageManagerBody({ active }: { active: boolean }): Rea
                   }}
                 />
                 <SettingsIconBtn
-                  icon={Trash2}
+                  icon={Trash}
                   title="Free cached files"
                   danger
                   disabled={busy}

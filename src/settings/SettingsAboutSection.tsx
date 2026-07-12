@@ -1,5 +1,5 @@
 import React from "react";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "@phosphor-icons/react";
 import { SettingsSection } from "./SettingsRow";
 import s from "./SettingsAboutSection.module.css";
 
@@ -41,7 +41,7 @@ export default function SettingsAboutSection(): React.ReactElement {
           <span className={s["tech"]}>OPFS · CoW</span>
         </div>
         <div className={s["about__priv"]}>
-          <ShieldCheck size={14} strokeWidth={1.6} aria-hidden />
+          <ShieldCheck size={14} aria-hidden />
           Local only — your games never leave this machine.
         </div>
         <div className={s["about__ver"]}>v0.9.0 · build feat/per-game-containers-vfs · MIT</div>

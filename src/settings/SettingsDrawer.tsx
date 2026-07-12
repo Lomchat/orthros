@@ -1,14 +1,14 @@
 import React from "react";
 import {
   Monitor,
-  Volume2,
+  SpeakerHigh,
   Keyboard,
   HardDrive,
   Terminal,
   Info,
   X,
-  type LucideIcon,
-} from "lucide-react";
+  type Icon,
+} from "@phosphor-icons/react";
 import { rescanGamepads } from "../gamepad-cache";
 import SettingsAboutSection from "./SettingsAboutSection";
 import SettingsAdvancedSection from "./SettingsAdvancedSection";
@@ -25,9 +25,9 @@ import os from "../ui/Overlay/Overlay.module.css";
 
 export type { SettingsDrawerProps } from "./types";
 
-const SECTIONS: Array<{ id: SettingsSectionId; icon: LucideIcon; label: string }> = [
+const SECTIONS: Array<{ id: SettingsSectionId; icon: Icon; label: string }> = [
   { id: "graphics", icon: Monitor, label: "Display & Graphics" },
-  { id: "audio", icon: Volume2, label: "Audio" },
+  { id: "audio", icon: SpeakerHigh, label: "Audio" },
   { id: "input", icon: Keyboard, label: "Input" },
   { id: "storage", icon: HardDrive, label: "Library & Storage" },
   { id: "advanced", icon: Terminal, label: "Advanced" },
@@ -81,7 +81,7 @@ export default function SettingsDrawer(props: SettingsDrawerProps): React.ReactE
                 role="button"
               >
                 <span className={s["ic"]}>
-                  <Icon size={17} strokeWidth={1.7} aria-hidden />
+                  <Icon size={17} aria-hidden />
                 </span>
                 <span>{sec.label}</span>
               </a>
@@ -94,7 +94,7 @@ export default function SettingsDrawer(props: SettingsDrawerProps): React.ReactE
             <h2>{SECTION_TITLE[section]}</h2>
             <Spacer />
             <CloseButton onClick={onClose} aria-label="Close settings">
-              <X size={16} strokeWidth={2} aria-hidden />
+              <X size={16} aria-hidden />
             </CloseButton>
           </div>
           <div className={s["drawer__body"]}>

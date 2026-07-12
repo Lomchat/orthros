@@ -1,5 +1,5 @@
 import React from "react";
-import { RotateCcw } from "lucide-react";
+import { ArrowCounterClockwise } from "@phosphor-icons/react";
 import type { SettingsDrawerProps } from "./types";
 import { SettingsRow, SettingsSection, Toggle } from "./SettingsRow";
 import { Button } from "../ui";
@@ -39,7 +39,7 @@ export default function SettingsAdvancedSection({
             if (confirm("Reset all settings to their defaults?")) onResetDefaults();
           }}
         >
-          <RotateCcw size={14} strokeWidth={1.8} aria-hidden style={{ marginRight: 6, verticalAlign: "-2px" }} />
+          <ArrowCounterClockwise size={14} aria-hidden style={{ marginRight: 6, verticalAlign: "-2px" }} />
           Reset
         </Button>
       </SettingsRow>

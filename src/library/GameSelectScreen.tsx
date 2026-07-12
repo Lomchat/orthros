@@ -1,19 +1,20 @@
 import React from "react";
 import {
   Plus,
-  Settings,
-  Search,
+  GearSix,
+  MagnifyingGlass,
   Folder,
   FolderPlus,
-  LayoutGrid,
+  GridFour,
   List,
-  ArrowUpDown,
-  ChevronDown,
-  Upload,
+  ArrowsDownUp,
+  CaretDown,
+  UploadSimple,
   Play,
-  Pencil,
+  PencilSimple,
   X,
-} from "lucide-react";
+  GithubLogo,
+} from "@phosphor-icons/react";
 import type { AddedGame } from "../wgb-library";
 import { cx } from "../ui/cx";
 import s from "./GameSelectScreen.module.css";
@@ -157,11 +158,21 @@ export default function GameSelectScreen({
             disabled={disableSelection}
             title="Import a game and package it for BottleShip"
           >
-            <Plus size={16} strokeWidth={2} aria-hidden />
+            <Plus size={16} aria-hidden />
             Add game
           </button>
+          <a
+            className={ib["iconbtn"]}
+            href="https://github.com/jenissimo/bottleship"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View source on GitHub"
+            aria-label="GitHub repository"
+          >
+            <GithubLogo size={18} weight="fill" aria-hidden />
+          </a>
           <button className={ib["iconbtn"]} title="Settings" onClick={() => openSettings()}>
-            <Settings size={19} strokeWidth={1.7} aria-hidden />
+            <GearSix size={19} aria-hidden />
           </button>
         </div>
       </header>
@@ -202,7 +213,7 @@ export default function GameSelectScreen({
 
           <div className={s["filters"]}>
             <label className={s["search"]}>
-              <Search size={15} strokeWidth={1.6} aria-hidden />
+              <MagnifyingGlass size={15} aria-hidden />
               <input
                 ref={searchRef}
                 value={query}
@@ -221,7 +232,7 @@ export default function GameSelectScreen({
                   setSortMenuOpen(false);
                 }}
               >
-                <Folder size={15} strokeWidth={1.5} aria-hidden />
+                <Folder size={15} aria-hidden />
                 {source === "all"
                   ? "All sources"
                   : source === "builtin"
@@ -229,7 +240,7 @@ export default function GameSelectScreen({
                   : source === "gog"
                   ? "GOG"
                   : "Local files"}
-                <ChevronDown className={s["caret"]} size={14} aria-hidden />
+                <CaretDown className={s["caret"]} size={14} aria-hidden />
               </button>
               <div className={cx(s, "menu", srcMenuOpen && "is-open")}>
                 <div
@@ -278,7 +289,7 @@ export default function GameSelectScreen({
                     onManageStorage?.();
                   }}
                 >
-                  <FolderPlus size={14} strokeWidth={1.6} aria-hidden /> Mount a folder…
+                  <FolderPlus size={14} aria-hidden /> Mount a folder…
                 </div>
               </div>
             </div>
@@ -291,14 +302,14 @@ export default function GameSelectScreen({
                 title="Grid"
                 onClick={() => setView("grid")}
               >
-                <LayoutGrid size={15} strokeWidth={1.8} aria-hidden />
+                <GridFour size={15} aria-hidden />
               </button>
               <button
                 className={cx(s, "vt", view === "list" && "is-active")}
                 title="List"
                 onClick={() => setView("list")}
               >
-                <List size={15} strokeWidth={1.8} aria-hidden />
+                <List size={15} aria-hidden />
               </button>
             </div>
 
@@ -311,9 +322,9 @@ export default function GameSelectScreen({
                   setSrcMenuOpen(false);
                 }}
               >
-                <ArrowUpDown size={14} strokeWidth={1.6} aria-hidden />
+                <ArrowsDownUp size={14} aria-hidden />
                 <span className={s["muted"]}>{SORT_LABELS[sort]}</span>
-                <ChevronDown className={s["caret"]} size={14} aria-hidden />
+                <CaretDown className={s["caret"]} size={14} aria-hidden />
               </button>
               <div className={cx(s, "menu", "menu--right", sortMenuOpen && "is-open")}>
                 {(Object.keys(SORT_LABELS) as SortMode[]).map((mode) => (
@@ -345,7 +356,7 @@ export default function GameSelectScreen({
             >
               <div className={s["add-body"]}>
                 <div className={s["add-glyph"]}>
-                  <Upload size={24} strokeWidth={1.6} aria-hidden />
+                  <UploadSimple size={24} aria-hidden />
                 </div>
                 <div className={s["add-title"]}>Add a game</div>
                 <div className={s["add-hint"]}>
@@ -472,7 +483,7 @@ function BuiltinCard({
             <div className={s["card__locked"]}>Unavailable</div>
           ) : (
             <div className={s["play-btn"]}>
-              <Play size={20} fill="currentColor" strokeWidth={0} aria-hidden />
+              <Play size={20} fill="currentColor" aria-hidden />
             </div>
           )}
         </div>
@@ -533,7 +544,7 @@ function AddedCard({
               onEdit();
             }}
           >
-            <Pencil size={13} strokeWidth={1.8} aria-hidden />
+            <PencilSimple size={13} aria-hidden />
           </button>
           <button
             className={cx(s, "tool", "tool--danger")}
@@ -549,7 +560,7 @@ function AddedCard({
               }
             }}
           >
-            <X size={14} strokeWidth={2} aria-hidden />
+            <X size={14} aria-hidden />
           </button>
         </div>
         <div className={s["card__play"]}>
@@ -557,7 +568,7 @@ function AddedCard({
             <div className={s["card__locked"]}>Unavailable</div>
           ) : (
             <div className={s["play-btn"]}>
-              <Play size={20} fill="currentColor" strokeWidth={0} aria-hidden />
+              <Play size={20} fill="currentColor" aria-hidden />
             </div>
           )}
         </div>
