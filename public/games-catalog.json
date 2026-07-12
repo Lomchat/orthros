@@ -8,6 +8,7 @@
     "description": "Radio-controlled toy car racing with physics-based handling and hazard-strewn household tracks.",
     "year": "1999",
     "genre": "Racing",
+    "gogUrl": "https://www.gog.com/en/game/revolt",
     "enabled": true
   },
   {
@@ -19,6 +20,7 @@
     "description": "The legendary turn-based fantasy strategy game. One of the greatest games ever made.",
     "year": "1999",
     "genre": "Strategy",
+    "gogUrl": "https://www.gog.com/en/game/heroes_of_might_and_magic_3_complete_edition",
     "enabled": true
   },
   {

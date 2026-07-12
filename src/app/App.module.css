@@ -401,6 +401,21 @@
   flex-shrink: 0;
 }
 
+.emu-info-gog {
+  color: var(--amber);
+  white-space: nowrap;
+  font-size: var(--fs-2xs);
+  flex-shrink: 0;
+  margin-right: 16px;
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+.emu-info-gog:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 /* Hide info strip in fullscreen */
 .app__panel:fullscreen ~ .emu-info-strip,
 .app__panel:-webkit-full-screen ~ .emu-info-strip {

@@ -2595,6 +2595,16 @@ export default function App() {
           <span className={s["emu-info-desc"]}>
             {displayGame!.id !== "dev" ? displayGame!.description : ""}
           </span>
+          {displayGame!.id !== "dev" && displayGame!.gogUrl && (
+            <a
+              className={s["emu-info-gog"]}
+              href={displayGame!.gogUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Own it? Get it on GOG →
+            </a>
+          )}
           <span className={s["emu-info-hints"]}>F11 · Fullscreen</span>
         </div>
       )}

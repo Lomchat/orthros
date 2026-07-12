@@ -33,6 +33,7 @@ export interface GameEntry {
   os?: string;
   render?: string;
   status?: "ready" | "setup" | "save";
+  gogUrl?: string;
 }
 
 interface GameSelectScreenProps {
