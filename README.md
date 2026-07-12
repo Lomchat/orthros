@@ -127,6 +127,11 @@ covered by reproducible harness tests.
 - Security → [SECURITY.md](SECURITY.md) (private reporting).
 - Anything else, including takedown / legal: **jenissimo+bottleship@gmail.com**.
 
+## Support
+
+BottleShip is free and open source. If it brought a game back to life for you, you can chip in:
+[Ko-fi](https://ko-fi.com/bottleship) · [CloudTips (RU)](https://pay.cloudtips.ru/p/e2362fd1) · [Crypto](https://nowpayments.io/donation/bottleship).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — how the engine fits together

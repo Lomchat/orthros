@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  Plus,
   GearSix,
   MagnifyingGlass,
   Folder,
@@ -14,6 +13,7 @@ import {
   PencilSimple,
   X,
   GithubLogo,
+  HandHeart,
 } from "@phosphor-icons/react";
 import type { AddedGame } from "../wgb-library";
 import { cx } from "../ui/cx";
@@ -61,6 +61,18 @@ const SORT_LABELS: Record<SortMode, string> = {
   year: "Year",
 };
 
+interface SupportLink {
+  label: string;
+  url: string;
+}
+
+// Donation targets shown in the header "Support" menu. Append as more are added.
+const SUPPORT_LINKS: SupportLink[] = [
+  { label: "Ko-fi", url: "https://ko-fi.com/bottleship" },
+  { label: "CloudTips (RU)", url: "https://pay.cloudtips.ru/p/e2362fd1" },
+  { label: "Crypto", url: "https://nowpayments.io/donation/bottleship" },
+];
+
 function isGogAdded(game: AddedGame): boolean {
   const hay = `${game.key} ${game.url}`.toLowerCase();
   return hay.includes("gog");
@@ -86,9 +98,11 @@ export default function GameSelectScreen({
   const [sort, setSort] = React.useState<SortMode>("added");
   const [srcMenuOpen, setSrcMenuOpen] = React.useState(false);
   const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
+  const [supportMenuOpen, setSupportMenuOpen] = React.useState(false);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const srcWrapRef = React.useRef<HTMLDivElement>(null);
   const sortWrapRef = React.useRef<HTMLDivElement>(null);
+  const supportWrapRef = React.useRef<HTMLDivElement>(null);
 
   const openSettings = onOpenSettings ?? onManageStorage ?? (() => {});
   const totalGames = games.length + addedGames.length;
@@ -106,17 +120,18 @@ export default function GameSelectScreen({
   }, []);
 
   React.useEffect(() => {
-    if (!srcMenuOpen && !sortMenuOpen) return;
+    if (!srcMenuOpen && !sortMenuOpen && !supportMenuOpen) return;
     const onClick = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (!srcWrapRef.current?.contains(t) && !sortWrapRef.current?.contains(t)) {
+      if (!srcWrapRef.current?.contains(t) && !sortWrapRef.current?.contains(t) && !supportWrapRef.current?.contains(t)) {
         setSrcMenuOpen(false);
         setSortMenuOpen(false);
+        setSupportMenuOpen(false);
       }
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
-  }, [srcMenuOpen, sortMenuOpen]);
+  }, [srcMenuOpen, sortMenuOpen, supportMenuOpen]);
 
   const q = query.trim().toLowerCase();
   const matches = (name: string) => !q || name.toLowerCase().includes(q);
@@ -152,15 +167,36 @@ export default function GameSelectScreen({
         </div>
         <span className={s["cmd-spacer"]} />
         <div className={s["cmd-actions"]}>
-          <button
-            className={cx(bm, "btn", "btn--primary")}
-            onClick={() => !disableSelection && onAddGame()}
-            disabled={disableSelection}
-            title="Import a game and package it for BottleShip"
-          >
-            <Plus size={16} aria-hidden />
-            Add game
-          </button>
+          <div ref={supportWrapRef} className={s["srcwrap"]}>
+            <button
+              className={cx(bm, "btn", "btn--primary")}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSupportMenuOpen((o) => !o);
+                setSrcMenuOpen(false);
+                setSortMenuOpen(false);
+              }}
+              title="Support BottleShip"
+            >
+              <HandHeart size={16} weight="fill" aria-hidden />
+              Support
+            </button>
+            <div className={cx(s, "menu", "menu--right", supportMenuOpen && "is-open")} style={{ minWidth: 176 }}>
+              <div className={s["menuhead"]}>Support development</div>
+              {SUPPORT_LINKS.map((l) => (
+                <a
+                  key={l.url}
+                  className={s["menuitem"]}
+                  href={l.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setSupportMenuOpen(false)}
+                >
+                  {l.label}
+                </a>
+              ))}
+            </div>
+          </div>
           <a
             className={ib["iconbtn"]}
             href="https://github.com/jenissimo/bottleship"

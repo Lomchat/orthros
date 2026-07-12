@@ -156,6 +156,13 @@
 }
 .menu.is-open { display: block; animation: bs-fade 0.15s; }
 .menu--right { left: auto; right: 0; min-width: 170px; }
+.menuhead {
+  padding: 9px 13px 8px;
+  font-size: var(--fs-2xs);
+  color: var(--fg-4);
+  border-bottom: 1px solid var(--line-1);
+  margin-bottom: 4px;
+}
 .menuitem {
   display: flex;
   align-items: center;
@@ -165,6 +172,7 @@
   color: var(--fg-2);
   font-size: var(--fs-sm);
   cursor: pointer;
+  text-decoration: none;
 }
 .menuitem:hover { background: var(--surf-1); color: var(--fg-1); }
 .menuitem.is-active { color: var(--cyan-soft); }
