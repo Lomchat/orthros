@@ -246,10 +246,11 @@ export interface WgbBundle {
 
 export class WgbLoader {
     /** Build a bundle from any ZipSource (sync OPFS handle, in-memory buffer, blob, or HTTP range). */
-    static async fromSource(source: ZipSource): Promise<WgbBundle> {
+    static async fromSource(source: ZipSource, onStage?: (label: string) => void): Promise<WgbBundle> {
+        onStage?.("Reading index");
         const archive = new ZipArchive(withBlockCache(source));
         await archive.init();
-        return this.loadFromArchive(archive);
+        return this.loadFromArchive(archive, onStage);
     }
 
     static async fromUrl(url: string): Promise<WgbBundle> {
@@ -318,7 +319,7 @@ export class WgbLoader {
         return this.fromSource(new BlobSource(blob));
     }
 
-    private static async loadFromArchive(archive: ZipArchive): Promise<WgbBundle> {
+    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void): Promise<WgbBundle> {
         const manifestEntry = findEntry(archive, "manifest.json");
         if (!manifestEntry) {
             throw new Error("manifest.json not found");
@@ -342,6 +343,7 @@ export class WgbLoader {
             );
         }
 
+        onStage?.(`Loading ${manifest.entrypoint.split(/[\\/]/).pop() ?? "game"}`);
         const entrypointBytes = await readEntrypointBytes(archive, manifest.entrypoint);
 
         let registry: RegistrySeed | RegistrySeed[] | undefined;

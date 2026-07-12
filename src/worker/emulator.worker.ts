@@ -1236,9 +1236,14 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             src = await SyncHttpRangeSource.create(url);
             Logger.log(LogCategory.SYSTEM, `WGB: SAB I/O unavailable (${(sabErr as Error).message}) — streaming via sync-XHR range`);
           }
-          self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Streaming" });
+          // Reflect the actual streaming stages (index read → entrypoint fetch) in the
+          // loading UI instead of a static "Streaming" — the prefetch phase below then
+          // takes over with its determinate "N / M files" bar.
+          const postStreamStage = (label: string) =>
+            self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label });
+          postStreamStage("Streaming");
           try {
-            bundle = await WgbLoader.fromSource(src);
+            bundle = await WgbLoader.fromSource(src, postStreamStage);
           } catch (loadErr) {
             // fromSource failed after the I/O worker spun up — terminate it so the
             // fallthrough to OPFS staging doesn't leak a live worker + its SAB.
