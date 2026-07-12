@@ -120,6 +120,13 @@ covered by reproducible harness tests.
 
 [Contributing guide →](CONTRIBUTING.md) · [Contributing with coding agents →](docs/contributing-with-ai.md)
 
+## Community & contact
+
+- Questions, ideas, or a game you got running → [GitHub Discussions](https://github.com/jenissimo/bottleship/discussions).
+- Bugs & compatibility reports → [Issues](https://github.com/jenissimo/bottleship/issues) (use the templates).
+- Security → [SECURITY.md](SECURITY.md) (private reporting).
+- Anything else, including takedown / legal: **jenissimo+bottleship@gmail.com**.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — how the engine fits together

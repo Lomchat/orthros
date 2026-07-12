@@ -4,8 +4,8 @@
 
 Please report security issues **privately** — do not open a public issue for anything
 exploitable. Use GitHub's [private vulnerability reporting](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
-("Report a vulnerability" under the repository's **Security** tab), or contact the maintainer
-directly.
+("Report a vulnerability" under the repository's **Security** tab), or email
+**jenissimo+bottleship@gmail.com**.
 
 Please include a description, affected version/commit, and a minimal reproduction if you have
 one. We'll acknowledge and work with you on a fix and coordinated disclosure.

@@ -31,6 +31,11 @@ export default function SettingsAboutSection(): React.ReactElement {
           <ShieldCheck size={14} aria-hidden />
           Local only — your games never leave this machine.
         </div>
+        <div className={s["about__legal"]}>
+          The online library hosts only demos, shareware and other redistributable releases.
+          Takedown or contact:{" "}
+          <a href="mailto:jenissimo+bottleship@gmail.com">jenissimo+bottleship@gmail.com</a>.
+        </div>
         <div className={s["about__ver"]}>v0.9.0 · build {__BUILD_SHA__} · Apache-2.0</div>
       </div>
     </SettingsSection>

@@ -45,4 +45,12 @@
   color: var(--mint);
   font-size: var(--fs-xs);
 }
-.about__ver { margin-top: 18px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--fg-4); }
+.about__legal {
+  margin-top: 16px;
+  max-width: 46ch;
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  color: var(--fg-4);
+}
+.about__legal a { color: var(--fg-3); text-decoration: underline; }
+.about__ver { margin-top: 12px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--fg-4); }
