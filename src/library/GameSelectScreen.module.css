@@ -194,9 +194,10 @@
   border: 1px solid var(--line-1);
   cursor: pointer;
   transition: transform var(--t), box-shadow var(--t), border-color var(--t);
-  opacity: 0;
-  transform: translateY(14px);
-  animation: bs-rise 0.55s var(--ease-out) forwards;
+  /* Default to VISIBLE and animate the reveal FROM opacity:0 — never gate visibility
+     on the animation completing. If a blocker's cosmetic filter or prefers-reduced-motion
+     suppresses animations, the card stays at its natural opacity:1 instead of vanishing. */
+  animation: bs-rise 0.55s var(--ease-out);
 }
 .card:hover { transform: translateY(-4px); border-color: var(--line-3); box-shadow: var(--sh-2); }
 .card--disabled { cursor: not-allowed; }
@@ -330,7 +331,7 @@
 .add-title { margin-top: 14px; font-weight: 600; font-size: var(--fs-md); }
 .add-hint { margin-top: 6px; font-size: var(--fs-xs); color: var(--fg-3); line-height: 1.5; }
 
-@keyframes bs-rise { to { opacity: 1; transform: none; } }
+@keyframes bs-rise { from { opacity: 0; transform: translateY(14px); } }
 @keyframes bs-fade { from { opacity: 0; } }
 
 /* Status bar */
