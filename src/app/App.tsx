@@ -2143,9 +2143,20 @@ export default function App() {
   }, [browserSupport.supported, sabAvailable, isolated]);
 
   useEffect(() => {
+    // Keyboard Lock: while fullscreen, capture Escape so it reaches the guest as the
+    // in-game menu key instead of the browser consuming it to exit fullscreen. The UA
+    // still honors a long-press Escape to leave fullscreen, so this is not a trap.
+    const kb = (navigator as Navigator & {
+      keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void };
+    }).keyboard;
+
     const syncFullscreenState = () => {
       const doc = document as Document & { webkitFullscreenElement?: Element | null };
-      setIsFullscreen(Boolean(doc.fullscreenElement || doc.webkitFullscreenElement));
+      const fs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(fs);
+      // Unsupported / not granted → ESC keeps exiting fullscreen, same as before.
+      if (fs) kb?.lock?.(["Escape"]).catch(() => { /* best-effort */ });
+      else kb?.unlock?.();
     };
 
     document.addEventListener("fullscreenchange", syncFullscreenState);
@@ -2155,6 +2166,7 @@ export default function App() {
     return () => {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
       document.removeEventListener("webkitfullscreenchange", syncFullscreenState as EventListener);
+      kb?.unlock?.();
     };
   }, []);
 
