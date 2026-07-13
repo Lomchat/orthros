@@ -20,7 +20,8 @@ import DevPanel from "./DevPanel";
 import ExitOverlay from "./ExitOverlay";
 import MessageBoxModal, { type MessageBoxRequest } from "../debug/MessageBoxModal";
 import type { GuestExitInfo } from "../guest-report";
-import { detectBrowserSupport } from "../browser-support";
+import { detectBrowserSupport, probeWebGPU, type WebGPUProbeResult } from "../browser-support";
+import WebGPUErrorOverlay from "./WebGPUErrorOverlay";
 import WgbWizardModal from "../wizard/WgbWizardModal";
 import ManifestEditorModal from "../wizard/ManifestEditorModal";
 import { listAddedGames, removeAddedGame, type AddedGame } from "../wgb-library";
@@ -380,11 +381,34 @@ export default function App() {
     return `This browser is missing features required to run BottleShip: ${missing}. Detected browser: ${browserSupport.detectedBrowser}. Please use an up-to-date Google Chrome or Safari 26+.`;
   }, [browserSupport]);
 
+  // WebGPU is the whole render backend, but detectBrowserSupport() only checks that the API is
+  // *present*. The adapter can still fail to acquire (hardware accel off, GPU blocklisted, VM/RDP)
+  // — which otherwise degrades into a swallowed D3DERR at CreateDevice and a silent guest exit.
+  // Probe for real once up front and block with an explanatory overlay instead. null = probing.
+  const [webgpuProbe, setWebgpuProbe] = useState<WebGPUProbeResult | null>(null);
+  useEffect(() => {
+    if (!browserSupport.supported) return;
+    let cancelled = false;
+    probeWebGPU().then(
+      (r) => { if (!cancelled) setWebgpuProbe(r); },
+      // Never let the probe itself wedge the app — treat an unexpected throw as "usable".
+      () => { if (!cancelled) setWebgpuProbe({ ok: true, stage: "ok", reason: "", hints: [] }); },
+    );
+    return () => { cancelled = true; };
+  }, [browserSupport.supported]);
+
+  // A failed WebGPU probe blocks launching everywhere. On the library we lock the grid
+  // (disableSelection) and float the same error card as a modal over it, so users learn up front
+  // instead of picking a game and hitting a dead end. (browser-unsupported keeps its own banner.)
+  const webgpuBlocked = webgpuProbe !== null && !webgpuProbe.ok;
+  const launchBlocked = !browserSupport.supported || webgpuBlocked;
+
   // Auto-load game once worker is ready. Registered games load their wgbUrl; dev mode
   // stays manual UNLESS Add-Game handed us a bundle via ?load=<url> (BYO drop / URL).
   const autoLoadDoneRef = useRef(false);
   useEffect(() => {
-    if (!browserSupport.supported || !selectedGame || workerStatus !== "ready" || autoLoadDoneRef.current) return;
+    if (!browserSupport.supported || (webgpuProbe !== null && !webgpuProbe.ok)) return;
+    if (!selectedGame || workerStatus !== "ready" || autoLoadDoneRef.current) return;
     const params = new URLSearchParams(window.location.search);
     const loadParam = params.get("load");
     const ingest = params.get("ingest");
@@ -427,7 +451,7 @@ export default function App() {
     }
 
     (window as any).loadApp?.(selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl);
-  }, [browserSupport.supported, selectedGame, workerStatus]);
+  }, [browserSupport.supported, selectedGame, workerStatus, webgpuProbe]);
 
   // Cover the worker/v86 boot phase too: before the worker posts "ready" there is no
   // load_bundle progress yet, so without this the user stares at a bare canvas while
@@ -2261,10 +2285,10 @@ export default function App() {
           games={gamesCatalog ?? []}
           addedGames={addedGames}
           onSelectGame={(game) => {
-            if (browserSupport.supported) window.location.assign(`?game=${game.id}`);
+            if (!launchBlocked) window.location.assign(`?game=${game.id}`);
           }}
           onPlayAdded={(g) => {
-            if (browserSupport.supported) window.location.assign(`?game=dev&load=${encodeURIComponent(g.url)}`);
+            if (!launchBlocked) window.location.assign(`?game=dev&load=${encodeURIComponent(g.url)}`);
           }}
           onRemoveAdded={(g) => {
             removeAddedGame(g.key).then(refreshAddedGames).catch((err) =>
@@ -2273,14 +2297,14 @@ export default function App() {
           }}
           onEditAdded={(g) => setEditingKey(g.key)}
           onAddGame={() => {
-            if (browserSupport.supported) setAddGameOpen(true);
+            if (!launchBlocked) setAddGameOpen(true);
           }}
           onDevMode={() => {
-            if (browserSupport.supported) window.location.assign("?game=dev");
+            if (!launchBlocked) window.location.assign("?game=dev");
           }}
           onManageStorage={() => setStorageOpen(true)}
           onOpenSettings={() => setMainSettingsOpen(true)}
-          disableSelection={!browserSupport.supported}
+          disableSelection={launchBlocked}
           unsupportedMessage={browserUnsupportedMessage}
         />
         {settingsDrawer}
@@ -2314,6 +2338,9 @@ export default function App() {
           onClose={() => setEditingKey(null)}
           onSaved={refreshAddedGames}
         />
+        {webgpuBlocked && (
+          <WebGPUErrorOverlay probe={webgpuProbe!} detectedBrowser={browserSupport.detectedBrowser} variant="modal" />
+        )}
       </>
     );
   }
@@ -2423,6 +2450,12 @@ export default function App() {
           </button>
         </div>
       </div>
+    );
+  }
+
+  if (webgpuProbe && !webgpuProbe.ok) {
+    return (
+      <WebGPUErrorOverlay probe={webgpuProbe} detectedBrowser={browserSupport.detectedBrowser} variant="page" />
     );
   }
 

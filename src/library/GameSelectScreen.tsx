@@ -49,6 +49,8 @@ interface GameSelectScreenProps {
   onOpenSettings?: () => void;
   disableSelection?: boolean;
   unsupportedMessage?: string | null;
+  /** Banner heading above unsupportedMessage. Defaults to the browser-capability wording. */
+  unsupportedTitle?: string;
 }
 
 type SourceFilter = "all" | "builtin" | "gog" | "local";
@@ -92,6 +94,7 @@ export default function GameSelectScreen({
   onOpenSettings,
   disableSelection = false,
   unsupportedMessage = null,
+  unsupportedTitle = "Unsupported browser",
 }: GameSelectScreenProps) {
   const [query, setQuery] = React.useState("");
   const [view, setView] = React.useState<ViewMode>("grid");
@@ -229,7 +232,7 @@ export default function GameSelectScreen({
           </div>
           {unsupportedMessage && (
             <div className={s["lib__unsupported"]} style={{ marginTop: 28, textAlign: "left" }}>
-              <div className={s["lib__unsupported-title"]}>Unsupported browser</div>
+              <div className={s["lib__unsupported-title"]}>{unsupportedTitle}</div>
               <div>{unsupportedMessage}</div>
             </div>
           )}
@@ -243,7 +246,7 @@ export default function GameSelectScreen({
 
           {unsupportedMessage && (
             <div className={s["lib__unsupported"]}>
-              <div className={s["lib__unsupported-title"]}>Unsupported browser</div>
+              <div className={s["lib__unsupported-title"]}>{unsupportedTitle}</div>
               <div>{unsupportedMessage}</div>
             </div>
           )}

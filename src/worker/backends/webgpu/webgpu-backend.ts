@@ -50,12 +50,12 @@ export class WebGPUBackend implements RenderBackend {
 
     async initialize(canvas: OffscreenCanvas): Promise<void> {
         if (!("gpu" in navigator)) {
-            throw new Error("WebGPU is not available in this environment.");
+            throw new Error("WebGPU unavailable: navigator.gpu is absent — this browser/worker does not expose the WebGPU API.");
         }
 
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) {
-            throw new Error("WebGPU adapter request failed.");
+            throw new Error("WebGPU unavailable: requestAdapter() returned no adapter — no usable GPU (hardware acceleration disabled, GPU blocklisted, or VM/Remote Desktop with no GPU).");
         }
 
         // Request BC (DXT/S3TC) texture compression when the adapter supports it so
@@ -84,7 +84,7 @@ export class WebGPUBackend implements RenderBackend {
 
         this.context = canvas.getContext("webgpu") as GPUCanvasContext | null;
         if (!this.context) {
-            throw new Error("Failed to acquire WebGPU canvas context.");
+            throw new Error("WebGPU unavailable: OffscreenCanvas.getContext('webgpu') returned null despite a valid device.");
         }
 
         this.format = navigator.gpu.getPreferredCanvasFormat();

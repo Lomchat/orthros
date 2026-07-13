@@ -73,3 +73,110 @@ export function detectBrowserSupport(): BrowserSupportInfo {
 
   return { supported: missing.length === 0, detectedBrowser, missing };
 }
+
+/**
+ * Result of the async WebGPU probe. `stage` says how far adapter/device acquisition got;
+ * `reason` is user-facing prose; `hints` are actionable remediation lines. The whole render
+ * backend (ddraw/d3d8/d3d9/glide/opengl/postfx) is WebGPU, so a failure here means NO game can
+ * run — but the outright-absent case is the only one detectBrowserSupport() catches. This probe
+ * closes the gap the sync gate flags in its NOTE: `navigator.gpu` can be present while
+ * requestAdapter() still yields null (hardware acceleration off, GPU blocklisted, VM/RDP with no
+ * GPU) — which otherwise only surfaced deep inside CreateDevice as a swallowed D3DERR_INVALIDCALL
+ * and a silent guest exit ("no crash logs").
+ */
+export type WebGPUProbeStage = "ok" | "no-api" | "no-adapter" | "no-device";
+export type WebGPUProbeResult = {
+  ok: boolean;
+  stage: WebGPUProbeStage;
+  reason: string;
+  hints: string[];
+  /** Adapter identity when we got one — diagnostics only. */
+  adapter?: { vendor?: string; architecture?: string; device?: string; description?: string };
+};
+
+// Remediation for the "present but no usable GPU" family. Backtick-wrapped tokens (`code`) are
+// rendered as inline code spans by the host overlay — reserve them for literal URLs/identifiers
+// the user types or opens, not prose.
+function webgpuAdapterHints(): string[] {
+  return [
+    "Enable hardware acceleration in your browser (Chrome/Edge: Settings → System → \"Use graphics acceleration when available\", then relaunch).",
+    "Open `chrome://gpu` — the \"WebGPU\" row should read \"Hardware accelerated\". If it names a problem, that's the cause.",
+    "Update your graphics driver — an outdated or blocklisted GPU driver is the most common reason no adapter is offered.",
+    "Remote Desktop / a VM / a headless session often has no GPU for WebGPU to bind to — try a local session.",
+  ];
+}
+
+async function readAdapterInfo(adapter: GPUAdapter): Promise<WebGPUProbeResult["adapter"]> {
+  try {
+    // Current spec: adapter.info (sync getter). Older builds: requestAdapterInfo().
+    const info = (adapter as GPUAdapter & { info?: GPUAdapterInfo }).info
+      ?? (await (adapter as GPUAdapter & { requestAdapterInfo?: () => Promise<GPUAdapterInfo> })
+        .requestAdapterInfo?.());
+    if (!info) return undefined;
+    return {
+      vendor: info.vendor || undefined,
+      architecture: info.architecture || undefined,
+      device: info.device || undefined,
+      description: info.description || undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Actually acquire a WebGPU adapter + device (mirrors WebGPUBackend.initialize, which requires no
+ * mandatory features — so this never false-negatives on an adapter the backend would accept).
+ * Returns a precise, user-facing reason on failure instead of letting it degrade into a D3DERR.
+ */
+export async function probeWebGPU(): Promise<WebGPUProbeResult> {
+  if (typeof navigator === "undefined" || !("gpu" in navigator)) {
+    return {
+      ok: false,
+      stage: "no-api",
+      reason: "This browser does not expose the WebGPU API (`navigator.gpu`), which BottleShip's entire graphics backend is built on.",
+      hints: [
+        "Use an up-to-date Google Chrome or Microsoft Edge, or Safari 26+.",
+        "Firefox does not yet enable WebGPU by default.",
+      ],
+    };
+  }
+
+  const gpu = (navigator as Navigator & { gpu: GPU }).gpu;
+  let adapter: GPUAdapter | null = null;
+  try {
+    adapter = await gpu.requestAdapter();
+  } catch (e) {
+    return {
+      ok: false,
+      stage: "no-adapter",
+      reason: `WebGPU is present, but requesting a GPU adapter threw: ${e instanceof Error ? e.message : String(e)}.`,
+      hints: webgpuAdapterHints(),
+    };
+  }
+  if (!adapter) {
+    return {
+      ok: false,
+      stage: "no-adapter",
+      reason: "WebGPU is present, but the browser could not provide a GPU adapter — it found no usable GPU. This is almost always hardware acceleration being disabled, a blocklisted/outdated GPU driver, or running without a real GPU (VM/Remote Desktop).",
+      hints: webgpuAdapterHints(),
+    };
+  }
+
+  const info = await readAdapterInfo(adapter);
+  try {
+    // Mirror the backend: no required features so we test exactly what it would accept.
+    const device = await adapter.requestDevice();
+    device.destroy?.();
+  } catch (e) {
+    return {
+      ok: false,
+      stage: "no-device",
+      reason: `A GPU adapter was found${info?.description ? ` (${info.description})` : ""}, but creating a WebGPU device failed: ${e instanceof Error ? e.message : String(e)}.`,
+      hints: [...webgpuAdapterHints(), "This usually points to a GPU driver problem — update the driver and relaunch the browser."],
+      adapter: info,
+    };
+  }
+
+  return { ok: true, stage: "ok", reason: "WebGPU adapter and device acquired.", hints: [], adapter: info };
+}
