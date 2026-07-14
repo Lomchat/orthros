@@ -148,6 +148,10 @@ export class Scheduler {
     private spinLoopEnd = 0;
     /** Count of times the async-park safety net fired. Non-zero → a thunk path missed markThreadAsyncParked. */
     private spinLoopMissedWaitCount = 0;
+    /** Wall-clock of the last SAFETY_NET warn — throttles the log so a long idle-park (e.g. a modal
+     *  dialog waiting for input, which can spin >1M times) emits one line/sec instead of thousands.
+     *  The unthrottled flood was itself starving the worker's RPC/input pump. */
+    private spinLoopLastWarnMs = 0;
     /** Per-thread count of tick boundaries observed with the thread RUNNING inside the
      *  spin-loop page. Before the park-exit wasm fix each hit ≈ one tick of burned JMP $
      *  execution; with it armed, hits are the expected cheap early-exits. See
@@ -315,6 +319,11 @@ export class Scheduler {
      *  Returns true if a restore was applied (CPU state modified). */
     public onPollAsyncRestores: ((cpu: V86Cpu, source?: string) => boolean) | null = null;
     public onHasPendingAsyncRestores: (() => boolean) | null = null;
+    /** True when the thread owns a live suspended-thunk frame (a JS-driven pump like
+     *  DialogBoxParamA). Lets the spin-loop safety net park such a thread WAITING between
+     *  pump callbacks — the pump's next invokeCallback wakes it via
+     *  wakeCurrentThreadForCallbackDispatch, so the park has a guaranteed wake source. */
+    public onThreadOwnsSuspendedFrame: ((threadId: number) => boolean) | null = null;
     /** Fired once when a thread spins at PF_HALT_TARGET (an unhandled guest access
      *  violation parked at the #PF halt stub). The host turns this into a clean
      *  process crash instead of an infinite scheduler-monopolizing spin. */
@@ -824,14 +833,25 @@ export class Scheduler {
             if (current && current.state === ThreadState.RUNNING) {
                 const eip = cpu.instruction_pointer[0] >>> 0;
                 if (this.spinLoopBase > 0 && eip === this.spinLoopBase) {
-                    this.spinLoopMissedWaitCount++;
-                    if ((this.spinLoopMissedWaitCount & 0xFF) === 1) {
-                        Logger.warn(LogCategory.THREAD,
-                            `SAFETY_NET: T${current.id} at spinLoopAddress but state=RUNNING (count=${this.spinLoopMissedWaitCount}) — async park path missed markThreadAsyncParked`);
+                    // A thread that owns a live suspended-thunk frame (dialog pump) lands
+                    // here after EVERY intermediate callback return — park it WAITING; the
+                    // pump's next invokeCallback / direct-restore is the wake source.
+                    // Without this the thread burns a 1 ms host yield per tick boundary
+                    // for the dialog's whole lifetime (millions of yields per minute).
+                    const ownsFrame = this.onThreadOwnsSuspendedFrame?.(current.id) ?? false;
+                    if (!ownsFrame) {
+                        this.spinLoopMissedWaitCount++;
+                        const nowMs = performance.now();
+                        if (nowMs - this.spinLoopLastWarnMs >= 1000) {
+                            this.spinLoopLastWarnMs = nowMs;
+                            Logger.warn(LogCategory.THREAD,
+                                `SAFETY_NET: T${current.id} at spinLoopAddress but state=RUNNING (count=${this.spinLoopMissedWaitCount}) — async park path missed markThreadAsyncParked`);
+                        }
                     }
-                    if (this.config.asyncHleWaitEnabled && this.onHasPendingAsyncRestores?.()) {
+                    if (this.config.asyncHleWaitEnabled &&
+                        (ownsFrame || this.onHasPendingAsyncRestores?.())) {
                         if (this.markThreadAsyncParked(current.id, cpu)) {
-                            this.yieldToHost(cpu, this.computeYieldMs(4), "spinLoopPark");
+                            this.yieldToHost(cpu, this.computeYieldMs(4), ownsFrame ? "pumpPark" : "spinLoopPark");
                             return;
                         }
                     }
@@ -3067,7 +3087,9 @@ export class Scheduler {
         // RET pops spinLoopAddress off the guest stack, execution will land
         // at spinLoopBase with ESP advanced by 4. Saving this state means a
         // later restoreContext puts the CPU exactly where RET would have.
-        if (this.spinLoopBase > 0) {
+        // Skip when EIP is ALREADY at the spin loop (retro-park from the tick-boundary
+        // safety net) — the RET has executed and ESP is final; +4 would skew it.
+        if (this.spinLoopBase > 0 && (cpu.instruction_pointer[0] >>> 0) !== this.spinLoopBase) {
             context.eip = this.spinLoopBase >>> 0;
             context.esp = (cpu.reg32[4] + 4) >>> 0;
         }
@@ -3096,6 +3118,30 @@ export class Scheduler {
      * without a context restore, preserving the "RUNNING ⇔ context in CPU"
      * invariant.
      */
+    /**
+     * Wake the current thread from a pump park (spin-loop safety net parked it WAITING
+     * while its suspended-thunk frame idled) so a callback can be dispatched onto its
+     * live registers. WAITING(ASYNC_THUNK) → READY → RUNNING with no context restore —
+     * the caller (invokeCallback / direct-restore) overwrites EIP/ESP immediately after.
+     * Also resumes an in-flight idle yield so v86 restarts within a microtask.
+     */
+    wakeCurrentThreadForCallbackDispatch(): boolean {
+        const thread = this.getCurrentThread();
+        if (!thread) return false;
+        if (thread.state === ThreadState.RUNNING) return true;
+        if (thread.state !== ThreadState.WAITING || thread.waitInfo?.reason !== WaitReason.ASYNC_THUNK) {
+            return false;
+        }
+        const toReady = this.transitionTo(thread, ThreadState.READY, null, thread.context);
+        if (!toReady.success) return false;
+        const toRunning = this.transitionTo(thread, ThreadState.RUNNING, null, null);
+        if (!toRunning.success) return false;
+        this.traceAsyncRestore("wakeCurrentThreadForCallbackDispatch", null,
+            `woke T${thread.id} for pump callback dispatch`);
+        this.wakeEarlyFromIdleYield();
+        return true;
+    }
+
     markThreadRunningAfterAsyncWake(threadId: number): boolean {
         const thread = this.threads.get(threadId);
         if (!thread) return false;
@@ -3892,7 +3938,14 @@ export class Scheduler {
         this.pendingYieldSource = "req";
         this.intentionalYield = true;
         const yieldStartMs = performance.now();
-        const v86 = this.process?.v86;
+        // Use the INNER engine, not the V86 starter wrapper: starter.stop() registers a
+        // one-shot "emulator-stopped" bus listener per call, and on the short-yield path
+        // resume()/run() lands before do_tick processes the stop — the event never fires
+        // and the listener leaks. Millions of spin-loop yields → a multi-million listener
+        // list → the first real emulator-stop iterates it with O(n) unregisters (O(n²))
+        // and wedges the worker. engine.stop() just sets the stopping flag.
+        const starter = this.process?.v86;
+        const v86 = starter?.v86 ?? starter;
         if (v86?.stop) v86.stop();
 
         const resume = () => {

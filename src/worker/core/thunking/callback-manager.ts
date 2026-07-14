@@ -730,6 +730,19 @@ export class CallbackManager {
         return -1;
     }
 
+    /** True when `threadId` owns a live suspended-thunk frame (a JS-driven pump such as
+     *  DialogBoxParamA). The scheduler's spin-loop safety net uses this to park the thread
+     *  WAITING between pump callbacks — invokeCallback is the guaranteed wake source. */
+    hasLiveFrameForThread(threadId: number): boolean {
+        const tid = threadId >>> 0;
+        for (let i = 0; i < this.frameStackDepth; i++) {
+            const slot = this.frameStack[i];
+            if (slot < 0 || slot >= SUSPENDED_FRAME_RING_SIZE) continue;
+            if (this.frameActive[slot] === 1 && (this.frameThreadId[slot] >>> 0) === tid) return true;
+        }
+        return false;
+    }
+
     private getTopSuspendedFrameId(): number {
         if (this.frameStackDepth <= 0) return 0;
         const idx = this.frameStack[this.frameStackDepth - 1];
@@ -1051,6 +1064,14 @@ export class CallbackManager {
                 System.getInstance().scheduler.reportCallbackFrameFatal(stub.callbackId >>> 0, threadId);
                 return { callbackId: 0 };
             }
+        }
+
+        // A suspended-frame chain dispatch may target a thread the spin-loop safety net
+        // parked WAITING while the pump idled (see hasLiveFrameForThread). Wake it before
+        // writing CPU state — the scheduler skips WAITING threads, so without this the
+        // callback would never execute.
+        if (completeThunk) {
+            System.getInstance().scheduler.wakeCurrentThreadForCallbackDispatch();
         }
 
         const cpu = this.v86.cpu || (this.v86.v86 && this.v86.v86.cpu);

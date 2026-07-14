@@ -306,6 +306,9 @@ export class System {
         this.scheduler.onHasPendingAsyncRestores = () => {
             return dispatcher.hasPendingAsyncRestores();
         };
+        this.scheduler.onThreadOwnsSuspendedFrame = (threadId) => {
+            return dispatcher.threadOwnsSuspendedFrame(threadId);
+        };
         this.scheduler.onUnhandledGuestFault = (threadId, eip) => {
             // Faithful: an unhandled access violation terminates the PROCESS (not an
             // infinite one-thread spin that freezes the whole emulator). The #PF

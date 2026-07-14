@@ -2425,6 +2425,11 @@ export class ThunkDispatcher {
         return this.pendingAsyncRestores.length > 0;
     }
 
+    /** See CallbackManager.hasLiveFrameForThread — scheduler pump-park gate. */
+    threadOwnsSuspendedFrame(threadId: number): boolean {
+        return this._callbackManager?.hasLiveFrameForThread(threadId) ?? false;
+    }
+
     hasPendingAsyncRestoreForThread(threadId: number | null): boolean {
         if (this.pendingAsyncRestores.length === 0) return false;
         if (threadId === null) return true;

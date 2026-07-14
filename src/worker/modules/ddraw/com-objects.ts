@@ -1521,7 +1521,7 @@ export class Direct3DDevice7Object extends BaseComObject implements FFPLightingS
         } else if (this.renderStates[state] !== value) {
             if (state === 27 || state === 15 || state === 19 || state === 20 || state === 25 || state === 41 || state === 137 || state === 139 || state === 145) {
                 // 137=LIGHTING, 139=AMBIENT, 145=DIFFUSEMATERIALSOURCE (relevant for FFP lighting)
-                Logger.log(LogCategory.DDRAW, `SetRenderState(Dev7): [${state}] ${value} (was ${this.renderStates[state]})`);
+                Logger.verbose(LogCategory.DDRAW, `SetRenderState(Dev7): [${state}] ${value} (was ${this.renderStates[state]})`);
             }
             this.renderStates[state] = value;
         }
