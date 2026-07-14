@@ -258,16 +258,54 @@ Tooling:
     manifest.json + registry.json via JSON.stringify (guarantees correct \\ escaping),
     packs everything in one step. Use this instead of wgb.ts for creating new bundles.
     Usage: bun tools/make-wgb.ts <game-dir> <output.wgb> [flags: name/exe/resolution/bpp/ram/
-           os/registry/args/skip-video/codepages/lcid — see the tool header for the full list].
+           os/registry/args/skip-video/codepages/lcid/create-dirs — see the tool header].
     CRITICAL: Never write registry.json manually with shell heredocs or Write tool —
     backslash escaping is unreliable across editors/linters/hooks. Always use make-wgb
     or JSON.stringify in a script.
+    EMPTY-DIR GOTCHA (a `.wgb` is a store-only ZIP — a ZIP has NO entry for an empty
+    directory): an installer-created empty folder (e.g. `user\rosters`, `user\save\photos`)
+    vanishes on pack, and the game's fopen("wb") into it then fails (Windows fopen does not
+    mkdir parents) → silent, brutal-to-diagnose bugs (game writes nothing / a menu resets in
+    a loop). make-wgb AUTO-DETECTS empty dirs in the source and adds them to
+    `emulator.createDirs`; the worker recreates them at boot (ensureDirTreeSync/mkdir -p). If
+    you pack from a source that already lost the empty dirs, pass `--create-dirs
+    "user\rosters,user\save\photos"` explicitly. The manifest field is the sanctioned
+    fix — it replicates the installer's on-disk layout, NOT a per-game hack.
   - wgb.ts — Unified WGB archive tool (list/cat/extract/replace/manifest/set-manifest/patch-manifest).
     Replaces pack-wgb, repack-wgb, extract-wgb, list-wgb. Store-only ZIP, own parser.
     Usage: bun tools/wgb.ts <command> <archive.wgb> [args...]
     Aliases: ls=list, x=extract, pm=patch-manifest.
   - patch-wgb-vram — VRAM override patcher for existing bundles.
   - build-ffmpeg-decoder/ — separate WASM build; rebuild only when decoder_api.c or build.sh change.
+
+Archive / installer formats — USE OUR OWN READERS, never `apt install` a third-party unpacker.
+  We ship a self-hosted, browser-safe format stack in `packages/formats/src/` (reusable core parsers)
+  with thin Bun CLI wrappers in `tools/`. Reach for these BEFORE 7-Zip/cabextract/unshield/innoextract
+  or a hand-rolled one-off parser — the whole point is that `.wgb` bring-up needs no external native tool
+  and works headless (CI, cron, no root). Coverage:
+    - zip/          — store + deflate ZIP (also the `.wgb` container).
+    - cab/          — Microsoft Cabinet (`MSCF`), incl. one APPENDED to a Win32 SFX stub
+                      ("PackageForTheWeb" self-extractors). CLI: `tools/cab-extract.ts`. NONE + MSZIP.
+    - installshield/— InstallShield Cabinet (`ISc(`, v5 AND v6+) — the `data1.hdr` + `data{N}.cab`
+                      layout behind most 1998–2003 game installers. Handles chunked raw-deflate,
+                      de-obfuscation, LINK_PREV dedup, volume-split files, MD5 verify.
+                      CLI: `tools/unshield-extract.ts <data1.hdr> <out> [--list]`.
+                      (NOT the same as MSCF — 7-Zip/cabextract cannot read `ISc(`.)
+    - inno/         — Inno Setup headers (LZMA1/2 via the Rust WASM backend). CLI: `tools/inno-inspect.ts`;
+                      end-to-end GOG installer → bundle: `tools/gog-to-wgb.ts`.
+    - freearc/      — FreeArc (`.arc`, srep+LZMA) used by some repacks.
+    - iso/          — ISO9660 + BIN/CUE disc images. CLI: `tools/iso-to-wgb.ts`; `tools/bin2iso.ts`.
+    - unpack/       — shared native codec backend (LZMA1/LZMA2/srep) built from the Rust crate
+                      `tools/build-unpack-streaming` → `public/unpack-streaming.wasm`, plus the
+                      dependency-free primitives (RandomAccessSource, Crc32/Md5/Sha1) every reader uses.
+  A WinZip-SFX/PFTW `.exe` is a ZIP/CAB wrapping an InstallShield disk set: unwrap the outer archive
+  (zip/cab), then run `unshield-extract` on the inner `data1.hdr` to get the real game files.
+  New container/compression not covered above? EXTEND this stack (a new `formats/<fmt>` core + a CLI
+  wrapper), don't shell out to a system binary — same discipline as extending the harness: each new
+  invariant we hit becomes a durable, self-hosted capability, not an external dependency or a throwaway.
+  The `/repack` skill (`.claude/skills/repack/`) operationalizes the whole installer→`.wgb` flow
+  (which reader for which container, make-wgb usage, and the empty-directory pitfall) — invoke it when
+  packing/repacking a bundle or diagnosing one that boots but won't save.
 
 v86 core (vendor/v86/ — a git submodule; clone with --recurse-submodules):
   - Use bracket notation (this["prop"]) for all properties accessed from TS code.

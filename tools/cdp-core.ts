@@ -247,6 +247,91 @@ export async function workerEval(session: CdpSession, expr: string, opts: { time
     return res?.result?.value ?? res?.result;
 }
 
+/** Attach to the worker target and return its sessionId (auto-attach + existing-target fallback). */
+async function attachWorkerSession(session: CdpSession): Promise<string> {
+    let workerSession: string | undefined;
+    const got = new Promise<string>((resolve) => {
+        session.on("Target.attachedToTarget", (params) => {
+            if (params?.targetInfo?.type === "worker") {
+                workerSession = params.sessionId;
+                resolve(params.sessionId);
+            }
+        });
+    });
+    await session.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    await session.send("Target.setDiscoverTargets", { discover: true }).catch(() => { /* optional */ });
+    if (!workerSession) {
+        try {
+            const targets = await session.send("Target.getTargets");
+            for (const t of targets.result?.targetInfos ?? []) {
+                if (t.type !== "worker") continue;
+                const attach = await session.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
+                workerSession = attach.result?.sessionId ?? workerSession;
+                if (workerSession) break;
+            }
+        } catch { /* fall through to race */ }
+    }
+    return workerSession ?? (await Promise.race([
+        got,
+        new Promise<string>((_res, rej) => setTimeout(() => rej(new Error("no worker attached in 15s")), 15_000)),
+    ]));
+}
+
+export interface WorkerStackFrame {
+    functionName: string;
+    url: string;
+    line: number;
+    column: number;
+}
+
+/**
+ * Interrupt the WORKER with Debugger.pause and capture its call stack — works even
+ * when the worker's event loop is starved by a synchronous loop (V8 pauses via
+ * interrupt at loop back-edges / wasm). Takes `samples` stacks `intervalMs` apart
+ * so a hot loop shows up as the repeated frame. Resumes the worker after each sample.
+ */
+export async function workerStack(
+    session: CdpSession,
+    opts: { samples?: number; intervalMs?: number; timeoutMs?: number } = {},
+): Promise<WorkerStackFrame[][]> {
+    const samples = opts.samples ?? 3;
+    const intervalMs = opts.intervalMs ?? 250;
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const sessionId = await attachWorkerSession(session);
+    await session.send("Debugger.enable", {}, sessionId);
+    const out: WorkerStackFrame[][] = [];
+    try {
+        for (let i = 0; i < samples; i++) {
+            const paused = new Promise<any>((resolve) => {
+                session.on("Debugger.paused", (params, sid) => {
+                    if (sid === sessionId) resolve(params);
+                });
+            });
+            await session.send("Debugger.pause", {}, sessionId);
+            const p = await Promise.race([
+                paused,
+                Bun.sleep(timeoutMs).then(() => null),
+            ]);
+            if (!p) {
+                out.push([{ functionName: "<pause timed out — worker blocked outside interruptible code>", url: "", line: 0, column: 0 }]);
+                break;
+            }
+            out.push((p.callFrames ?? []).map((f: any) => ({
+                functionName: f.functionName || "<anonymous>",
+                url: f.url || f.location?.scriptId || "",
+                line: (f.location?.lineNumber ?? 0) + 1,
+                column: f.location?.columnNumber ?? 0,
+            })));
+            await session.send("Debugger.resume", {}, sessionId);
+            if (i < samples - 1) await Bun.sleep(intervalMs);
+        }
+    } finally {
+        await session.send("Debugger.resume", {}, sessionId).catch(() => { /* already running */ });
+        await session.send("Debugger.disable", {}, sessionId).catch(() => { /* */ });
+    }
+    return out;
+}
+
 /** Capture a page screenshot (PNG base64). */
 export async function screenshot(session: CdpSession): Promise<string> {
     const r = await session.send("Page.captureScreenshot", { format: "png" });

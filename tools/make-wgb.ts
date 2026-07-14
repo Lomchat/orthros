@@ -32,6 +32,11 @@
  *   --codepage <n>       ANSI code page (default: 1252). Use 1251 for Cyrillic
  *   --oem-codepage <n>   OEM code page (default: 437). Use 866 for Cyrillic OEM
  *   --lcid <hex>         Locale ID in hex (default: 0409). Use 0419 for Russian
+ *   --create-dirs <list> Comma/semicolon-separated dir paths the INSTALLER created but
+ *                        that store-only ZIP drops (a ZIP has no entry for an empty dir).
+ *                        The worker recreates them at boot (mkdir -p) so the game's own
+ *                        fopen("wb") into e.g. user\rosters succeeds. Backslash or forward
+ *                        slash both work. Example: --create-dirs "user\rosters,user\save\photos"
  *
  * Examples:
  *   bun tools/make-wgb.ts C:/Share/THPS2 E:/wgb/thps2-demo.wgb \
@@ -190,12 +195,23 @@ function detectExe(dir: string): string | undefined {
 // Collect game files recursively
 // ---------------------------------------------------------------------------
 
-function collectGameFiles(dir: string, prefix: string, out: Map<string, Buffer>) {
-    for (const entry of readdirSync(dir)) {
+// Walk the game dir into `out` (zip entries) and record any EMPTY directory into
+// `emptyDirs` (path relative to the game dir, backslash form). A store-only ZIP has
+// no entry for an empty dir, so an installer-created folder like `user\rosters` would
+// vanish silently and the game's fopen("wb") into it would fail (Windows fopen doesn't
+// mkdir parents). We surface these so they can be recreated at boot via createDirs.
+function collectGameFiles(dir: string, prefix: string, out: Map<string, Buffer>, emptyDirs: Set<string>, rel = '') {
+    const entries = readdirSync(dir);
+    if (entries.length === 0) {
+        if (rel) emptyDirs.add(rel); // deepest empty dir; mkdir -p at boot covers ancestors
+        return;
+    }
+    for (const entry of entries) {
         const full = join(dir, entry);
         const zipName = prefix + entry;
+        const childRel = rel ? `${rel}\\${entry}` : entry;
         if (statSync(full).isDirectory()) {
-            collectGameFiles(full, zipName + '/', out);
+            collectGameFiles(full, zipName + '/', out, emptyDirs, childRel);
         } else {
             out.set(zipName, readFileSync(full));
         }
@@ -246,6 +262,23 @@ if (!gameId) {
     console.warn(`⚠ no --game-id given; defaulting to "${gameId}". Prefer an explicit stable id (it is the save key).`);
 }
 
+// Scan the game dir up-front: collect rom/ file entries AND auto-detect empty
+// directories the installer left (ZIP drops them). Explicit --create-dirs are
+// merged on top — belt and suspenders for authors who know the paths.
+const romFiles = new Map<string, Buffer>();
+const emptyDirs = new Set<string>();
+collectGameFiles(gameDir, 'rom/', romFiles, emptyDirs);
+
+const explicitCreateDirs = (get('--create-dirs') ?? '')
+    .split(/[,;]/)
+    .map((d) => d.trim().replace(/\//g, '\\').replace(/^\\+|\\+$/g, ''))
+    .filter((d) => d.length > 0);
+
+const createDirs = [...new Set([...explicitCreateDirs, ...emptyDirs])].sort();
+if (emptyDirs.size > 0) {
+    console.log(`  empty dirs: auto-detected ${emptyDirs.size} (added to createDirs): ${[...emptyDirs].sort().join(', ')}`);
+}
+
 const manifest: Record<string, unknown> = {
     formatVersion: 2,
     gameId,
@@ -261,6 +294,7 @@ const manifest: Record<string, unknown> = {
         ...(get('--codepage') ? { codepage: parseInt(get('--codepage')!, 10) } : {}),
         ...(get('--oem-codepage') ? { oemCodepage: parseInt(get('--oem-codepage')!, 10) } : {}),
         ...(get('--lcid') ? { lcid: parseInt(get('--lcid')!, 16) } : {}),
+        ...(createDirs.length > 0 ? { createDirs } : {}),
     },
 };
 if (args) (manifest as any).args = args;
@@ -291,8 +325,8 @@ const files = new Map<string, Buffer>();
 files.set('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
 files.set('registry.json', Buffer.from(JSON.stringify(registry, null, 2), 'utf8'));
 
-// Game files under rom/
-collectGameFiles(gameDir, 'rom/', files);
+// Game files under rom/ — already scanned above (romFiles), reuse to avoid a second walk.
+for (const [zipName, data] of romFiles) files.set(zipName, data);
 
 const zip = buildZip(files);
 writeFileSync(output, zip);

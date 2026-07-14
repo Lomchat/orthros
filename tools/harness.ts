@@ -26,6 +26,7 @@ import {
     connect,
     pageEval,
     workerEval,
+    workerStack,
     screenshot,
     health,
     CdpSession,
@@ -193,6 +194,22 @@ async function cmdWorkerEval(expr: string): Promise<void> {
     console.log(JSON.stringify(await workerEval(session, expr, { timeoutMs: 60_000 }), null, 2));
 }
 
+/** stack [samples] — interrupt the worker and dump its call stack. The go-to probe
+ *  when the worker is WEDGED (RPC dead, frozen frame): Debugger.pause interrupts even
+ *  a synchronous infinite loop; repeated frames across samples = the hot loop. */
+async function cmdStack(samplesArg?: string): Promise<void> {
+    const session = await ensureSession();
+    const stacks = await workerStack(session, { samples: samplesArg ? Number(samplesArg) : 3 });
+    stacks.forEach((frames, i) => {
+        console.log(`--- sample ${i + 1}/${stacks.length}`);
+        for (const f of frames.slice(0, 30)) {
+            const loc = f.url ? ` (${f.url.replace(/^.*\//, "")}:${f.line})` : "";
+            console.log(`  ${f.functionName}${loc}`);
+        }
+        if (frames.length > 30) console.log(`  … ${frames.length - 30} more frames`);
+    });
+}
+
 /** shot [out.png] — page screenshot to a file (replaces cdp-shot). */
 async function cmdShot(out: string): Promise<void> {
     const session = await ensureSession();
@@ -297,6 +314,7 @@ async function main(): Promise<void> {
         case "health": await cmdHealth(); break;
         case "eval": await cmdEval(rest.join(" ")); break;
         case "worker-eval": await cmdWorkerEval(rest.join(" ")); break;
+        case "stack": await cmdStack(rest[0]); break;
         case "shot": await cmdShot(rest[0]); break;
         case "gridShot": case "gridshot": await cmdGridShot(rest[0], rest[1]); break;
         case "reload": await cmdReload(); break;
