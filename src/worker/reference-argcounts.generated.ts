@@ -590,6 +590,21 @@ export const REFERENCE_ARG_COUNTS: ReferenceArgCountMap = {
     "coregisterchannelhook": 2,
     "cogetobject": 4
   },
+  "rpcrt4": {
+    "uuidcreate": 1,
+    "uuidcreatesequential": 1,
+    "uuidcreatenil": 1,
+    "uuidtostringa": 2,
+    "uuidtostringw": 2,
+    "uuidfromstringa": 2,
+    "uuidfromstringw": 2,
+    "uuidcompare": 3,
+    "uuidequal": 3,
+    "uuidhash": 2,
+    "uuidisnil": 2,
+    "rpcstringfreea": 1,
+    "rpcstringfreew": 1
+  },
   "user32": {
     "getkeynametexta": 3,
     "getkeynametextw": 3,

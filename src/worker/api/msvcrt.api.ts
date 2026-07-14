@@ -67,6 +67,7 @@ export const msvcrtModule: ModuleDescriptor = {
         makeFunc("printf", 16),
         makeFunc("sscanf", 16),
         makeFunc("atoi", 1),
+        makeFunc("_atoi64", 1),
         makeFunc("atol", 1),
         makeFunc("_ltoa", 3),
         makeFunc("_ultoa", 3),

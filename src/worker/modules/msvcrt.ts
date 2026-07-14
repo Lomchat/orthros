@@ -293,6 +293,7 @@ export class Msvcrt implements IModule {
         exports["_adjust_fdiv"] = () => 0;
         exports["_initterm"] = (ctx, mem, args) => this.initterm(args[0] ?? 0, args[1] ?? 0);
         exports["_ftol"] = () => this.ftol();
+        exports["_atoi64"] = (ctx, mem, args) => this.atoi64(args[0] ?? 0);
         exports["_CItan"] = () => this.CItan();
         exports["_CIatan2"] = () => this.CIatan2();
         exports["_CIfmod"] = () => this.CIfmod();
@@ -2318,6 +2319,25 @@ export class Msvcrt implements IModule {
             return (v >>> 0) | 0;                               // EAX = low 32
         } catch (e) {
             Logger.log(LogCategory.SYSTEM, `msvcrt._ftol failed: ${e}`);
+            return 0;
+        }
+    }
+
+    /**
+     * _atoi64: parse a decimal string to a signed __int64, returned in EDX:EAX (like _ftol).
+     * BigInt keeps full 64-bit precision; two's-complement masking gives correct sign-extended halves.
+     */
+    private atoi64(strPtr: number): number {
+        try {
+            const s = this.readCString(strPtr >>> 0, 256).trim();
+            const m = s.match(/^[+-]?\d+/);
+            let v = 0n;
+            if (m) { try { v = BigInt(m[0]); } catch { v = 0n; } }
+            const reg = (this.process as any)?.dispatcher?.cachedReg32;
+            if (reg) reg[2] = Number((v >> 32n) & 0xffffffffn) | 0;  // EDX = high 32
+            return Number(v & 0xffffffffn) | 0;                      // EAX = low 32
+        } catch (e) {
+            Logger.log(LogCategory.SYSTEM, `msvcrt._atoi64 failed: ${e}`);
             return 0;
         }
     }

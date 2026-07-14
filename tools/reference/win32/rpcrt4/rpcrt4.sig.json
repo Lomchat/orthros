@@ -1,0 +1,85 @@
+{
+  "source": "rpcdce.h",
+  "module": "rpcrt4",
+  "note": "RPC runtime UUID/string helpers. All __stdcall (RPC_ENTRY); argCounts hand-curated from the Win32 SDK rpcdce.h prototypes. Extend as more RPCRT4 imports appear.",
+  "functions": [
+    {
+      "name": "_UuidCreate@4",
+      "argCount": 1,
+      "signature": "RPC_STATUS UuidCreate(UUID *Uuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidCreateSequential@4",
+      "argCount": 1,
+      "signature": "RPC_STATUS UuidCreateSequential(UUID *Uuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidCreateNil@4",
+      "argCount": 1,
+      "signature": "RPC_STATUS UuidCreateNil(UUID *Nil)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidToStringA@8",
+      "argCount": 2,
+      "signature": "RPC_STATUS UuidToStringA(const UUID *Uuid, RPC_CSTR *StringUuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidToStringW@8",
+      "argCount": 2,
+      "signature": "RPC_STATUS UuidToStringW(const UUID *Uuid, RPC_WSTR *StringUuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidFromStringA@8",
+      "argCount": 2,
+      "signature": "RPC_STATUS UuidFromStringA(RPC_CSTR StringUuid, UUID *Uuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidFromStringW@8",
+      "argCount": 2,
+      "signature": "RPC_STATUS UuidFromStringW(RPC_WSTR StringUuid, UUID *Uuid)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_UuidCompare@12",
+      "argCount": 3,
+      "signature": "signed int UuidCompare(UUID *Uuid1, UUID *Uuid2, RPC_STATUS *Status)",
+      "returnType": "int"
+    },
+    {
+      "name": "_UuidEqual@12",
+      "argCount": 3,
+      "signature": "int UuidEqual(UUID *Uuid1, UUID *Uuid2, RPC_STATUS *Status)",
+      "returnType": "int"
+    },
+    {
+      "name": "_UuidHash@8",
+      "argCount": 2,
+      "signature": "unsigned short UuidHash(UUID *Uuid, RPC_STATUS *Status)",
+      "returnType": "unsigned short"
+    },
+    {
+      "name": "_UuidIsNil@8",
+      "argCount": 2,
+      "signature": "int UuidIsNil(UUID *Uuid, RPC_STATUS *Status)",
+      "returnType": "int"
+    },
+    {
+      "name": "_RpcStringFreeA@4",
+      "argCount": 1,
+      "signature": "RPC_STATUS RpcStringFreeA(RPC_CSTR *String)",
+      "returnType": "RPC_STATUS"
+    },
+    {
+      "name": "_RpcStringFreeW@4",
+      "argCount": 1,
+      "signature": "RPC_STATUS RpcStringFreeW(RPC_WSTR *String)",
+      "returnType": "RPC_STATUS"
+    }
+  ]
+}

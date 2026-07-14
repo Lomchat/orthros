@@ -1,6 +1,7 @@
 import { ModuleDescriptor, calculateStackCleanup } from "../api/types";
 import { setupapiModule } from "../api/setupapi.api";
 import { kernel32VistaSupplement } from "../api/kernel32-vista-supplement";
+import { REFERENCE_ARG_COUNTS } from "../reference-argcounts.generated";
 import { Logger, LogCategory } from "./logger";
 
 /**
@@ -26,7 +27,35 @@ export class APIRegistry {
 
     private constructor() {
         this.loadFromApiFiles();
+        this.seedReferenceArgCounts();
         this.logDuplicateBaseNames();
+    }
+
+    /**
+     * Seed argCount/stackCleanup from the curated win32 reference (reference-argcounts.generated.ts,
+     * built from tools/reference/win32/<mod>/*.sig.json). These are the fallback for stdcall PE imports
+     * from DLLs we don't thunk (e.g. rpcrt4:UuidCreate) so the ThunkGenerator can emit a correct RET N
+     * instead of failing PE load. Real API descriptors registered above win — only fill gaps here.
+     */
+    private seedReferenceArgCounts(): void {
+        let added = 0;
+        for (const dll in REFERENCE_ARG_COUNTS) {
+            const funcs = REFERENCE_ARG_COUNTS[dll];
+            for (const func in funcs) {
+                const key = `${dll}:${func}`;
+                if (this.argCountCache.has(key)) continue; // don't override real descriptors
+                const argCount = funcs[func];
+                this.argCountCache.set(key, argCount);
+                this.stackCleanupCache.set(key, argCount * 4);
+                this.callingConventionCache.set(key, "stdcall");
+                const bkey = `${dll}:${func}`; // reference names are already undecorated (no @N)
+                const list = this.baseNameToKeys.get(bkey);
+                if (list) { if (!list.includes(key)) list.push(key); }
+                else this.baseNameToKeys.set(bkey, [key]);
+                added++;
+            }
+        }
+        Logger.log(LogCategory.SYSTEM, `APIRegistry: seeded ${added} reference argCounts (${Object.keys(REFERENCE_ARG_COUNTS).length} modules)`);
     }
 
     public static getInstance(): APIRegistry {

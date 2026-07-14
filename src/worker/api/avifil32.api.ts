@@ -32,6 +32,7 @@ export const avifil32Module: ModuleDescriptor = {
         // File open/close
         makeFunc("AVIFileOpenA", 4),              // ppfile, szFile, uMode, lpHandler
         makeFunc("AVIFileRelease", 1),            // pfile → ref count
+        makeFunc("AVIFileInfoA", 3),              // pfile, pfi (LPAVIFILEINFOA), lSize
         makeFunc("AVIFileGetStream", 4),          // pfile, ppavi, fccType, lParam
 
         // Stream open/close
