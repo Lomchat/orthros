@@ -121,5 +121,16 @@
     "year": "1999",
     "genre": "FPS",
     "enabled": true
+  },
+  {
+    "id": "airfix-dogfighter",
+    "name": "Airfix Dogfighter",
+    "subtitle": "Demo",
+    "wgbUrl": "/apps/airfix-dogfighter-demo.wgb",
+    "coverUrl": "/covers/airfix-dogfighter-box.jpg",
+    "description": "Toy Airfix warplanes wage a miniature air war through a boy's house — dogfight across the kitchen, garden and bedroom, strafing household hazards.",
+    "year": "2000",
+    "genre": "Arcade Flight",
+    "enabled": true
   }
 ]
