@@ -60,6 +60,11 @@ export interface ShaderConfig {
     stageCount: number;
     /** Bit N set = stage N uses POINT sampling and gets the tiny forward texel bias. */
     pointSampleMask: number;
+    /** D3DRENDERSTATE_SHADEMODE == D3DSHADE_FLAT: flat-shade the diffuse (COLOR0) and specular
+     *  (COLOR1) varyings — the provoking (first) vertex's color is used for the whole primitive,
+     *  matching real D3D. Games (e.g. Airfix Dogfighter's menu) set only the provoking vertex's
+     *  color and leave the rest 0; Gouraud-interpolating that fades every tri to black. */
+    flatShading: boolean;
     /** Whether alpha test is enabled */
     alphaTestEnabled: boolean;
     /** Alpha function for alpha test (D3DCMP_*) */
@@ -413,8 +418,8 @@ export function generateShaderCode(config: ShaderConfig): string {
     const vertexOutput = `
             struct VertexOutput {
                 @builtin(position) position: vec4f,
-                @location(0) color: vec4f,
-                @location(1) specular: vec4f,
+                @location(0) ${config.flatShading ? "@interpolate(flat) " : ""}color: vec4f,
+                @location(1) ${config.flatShading ? "@interpolate(flat) " : ""}specular: vec4f,
                 @location(2) uv: vec2f,
                 @location(3) uv1: vec2f,
                 @location(4) fogFactor: f32,
@@ -732,8 +737,8 @@ export function generateMegaBatchShaderCode(config: ShaderConfig): string {
     const vertexOutput = `
             struct VertexOutput {
                 @builtin(position) position: vec4f,
-                @location(0) color: vec4f,
-                @location(1) specular: vec4f,
+                @location(0) ${config.flatShading ? "@interpolate(flat) " : ""}color: vec4f,
+                @location(1) ${config.flatShading ? "@interpolate(flat) " : ""}specular: vec4f,
                 @location(2) uv: vec2f,
                 @location(3) uv1: vec2f,
                 @location(4) fogFactor: f32,

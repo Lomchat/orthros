@@ -8,6 +8,8 @@ import { System } from "../../../core/system";
 import { isBitmapTexture } from "../../../modules/ddraw/com-objects";
 import {
     D3DRENDERSTATE_CULLMODE,
+    D3DRENDERSTATE_SHADEMODE,
+    D3DSHADE_FLAT,
     D3DRENDERSTATE_ZENABLE,
     D3DRENDERSTATE_ZWRITEENABLE,
     D3DRENDERSTATE_ZFUNC,
@@ -341,6 +343,7 @@ export class PipelineFactory {
             forceCullNone: this.debugFlags.forceCullNone,
             forceDisableZTest: this.debugFlags.forceDisableZTest,
             debugView: this.debugFlags.debugView,
+            flatShading: renderStates[D3DRENDERSTATE_SHADEMODE] === D3DSHADE_FLAT,
         };
 
         // Fast path: same config as last call → return cached pipeline without string alloc
@@ -402,7 +405,8 @@ export class PipelineFactory {
             stencilRef,
             stencilMask,
             stencilWriteMask,
-            needsUVFlip
+            needsUVFlip,
+            keyConfig.flatShading
         );
 
         this.pipelineCache.set(key, pipeline);
@@ -502,6 +506,7 @@ export class PipelineFactory {
             forceCullNone: this.debugFlags.forceCullNone,
             forceDisableZTest: this.debugFlags.forceDisableZTest,
             debugView: this.debugFlags.debugView,
+            flatShading: renderStates[D3DRENDERSTATE_SHADEMODE] === D3DSHADE_FLAT,
         };
 
         // Fast path: same config as last call → return cached pipeline without string alloc
@@ -552,7 +557,8 @@ export class PipelineFactory {
             stencilRef,
             stencilMask,
             stencilWriteMask,
-            needsUVFlip
+            needsUVFlip,
+            keyConfig.flatShading
         );
 
         this.megaBatchPipelineCache.set(key, pipeline);
@@ -588,7 +594,8 @@ export class PipelineFactory {
         stencilRef: number,
         stencilMask: number,
         stencilWriteMask: number,
-        needsUVFlip: boolean
+        needsUVFlip: boolean,
+        flatShading: boolean
     ): GPURenderPipeline {
         const useTexture = (sampledMask & 1) !== 0;
         const isRHWVertex = (vertexType & D3DFVF_XYZRHW) !== 0;
@@ -636,6 +643,7 @@ export class PipelineFactory {
             sampledMask,
             stageCount,
             pointSampleMask,
+            flatShading,
             alphaTestEnabled: this.debugFlags.forceDisableAlphaTest ? false : alphaTest !== 0,
             alphaFunc,
             shouldEnableBlending,
@@ -762,7 +770,8 @@ export class PipelineFactory {
         stencilRef: number,
         stencilMask: number,
         stencilWriteMask: number,
-        needsUVFlip: boolean
+        needsUVFlip: boolean,
+        flatShading: boolean
     ): GPURenderPipeline {
         const useTexture = (sampledMask & 1) !== 0;
         const isRHWVertex = (vertexType & D3DFVF_XYZRHW) !== 0;
@@ -821,6 +830,7 @@ export class PipelineFactory {
             sampledMask,
             stageCount,
             pointSampleMask,
+            flatShading,
             alphaTestEnabled: this.debugFlags.forceDisableAlphaTest ? false : alphaTest !== 0,
             alphaFunc,
             shouldEnableBlending,

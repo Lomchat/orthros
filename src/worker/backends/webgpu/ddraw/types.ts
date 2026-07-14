@@ -289,6 +289,7 @@ export interface PipelineKeyConfig {
     forceCullNone: boolean;
     forceDisableZTest: boolean;
     debugView: "normal" | "uv" | "vertexcolor" | "alpha" | "solid"; // Affects shader: output mode
+    flatShading: boolean; // D3DSHADE_FLAT: flat @interpolate on color/specular varyings (affects shader)
     // NOTE: colorOp, alphaOp, lightingEnabled, fogMode, colorOp1, alphaOp1 are NOT in key
     // because they are handled via uniforms in universal shader, not shader code generation
 }
@@ -327,6 +328,7 @@ export function generatePipelineKey(config: PipelineKeyConfig): string {
         `fcn:${config.forceCullNone ? 1 : 0}`,
         `fzt:${config.forceDisableZTest ? 1 : 0}`,
         `dv:${config.debugView}`,
+        `flat:${config.flatShading ? 1 : 0}`,
     ].join("|");
 }
 
@@ -365,6 +367,7 @@ export function generateMegaBatchPipelineKey(config: PipelineKeyConfig): string 
         `fcn:${config.forceCullNone ? 1 : 0}`,
         `fzt:${config.forceDisableZTest ? 1 : 0}`,
         `dv:${config.debugView}`,
+        `flat:${config.flatShading ? 1 : 0}`,
     ].join("|");
 }
 
@@ -401,7 +404,8 @@ export function pipelineKeyConfigsEqual(a: PipelineKeyConfig, b: PipelineKeyConf
         a.forceZMidpoint === b.forceZMidpoint &&
         a.forceCullNone === b.forceCullNone &&
         a.forceDisableZTest === b.forceDisableZTest &&
-        a.debugView === b.debugView;
+        a.debugView === b.debugView &&
+        a.flatShading === b.flatShading;
 }
 
 /**
@@ -434,7 +438,8 @@ export function megaBatchPipelineKeyConfigsEqual(a: PipelineKeyConfig, b: Pipeli
         a.forceZMidpoint === b.forceZMidpoint &&
         a.forceCullNone === b.forceCullNone &&
         a.forceDisableZTest === b.forceDisableZTest &&
-        a.debugView === b.debugView;
+        a.debugView === b.debugView &&
+        a.flatShading === b.flatShading;
 }
 
 /**
