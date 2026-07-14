@@ -234,23 +234,29 @@ export function isWindowUpdateLocked(hwnd: number): boolean {
 
 /** Sum parent chain offsets — canvas/screen space origin for a window. */
 export function getAbsoluteWindowPosition(win: WindowInfo): { x: number; y: number } {
+    const WS_CHILD = 0x40000000;
     let x = win.x;
     let y = win.y;
-    // Walk up the parent chain to the screen origin. Guard against cycles: a window
-    // tree is a DAG in real Win32, so any cycle (e.g. a window whose parent handle
-    // resolves back to itself — see the desktop-handle collision fixed in
-    // window-manager.ts) is always our bug. Without this guard such a cycle spins the
-    // worker forever (GetWindowRect → here → ∞), hard-pinning emulation with no logs.
+    // Only a WS_CHILD window's (x,y) is relative to its parent's CLIENT area — so accumulate
+    // parent origins while walking up the child chain. A top-level window (WS_POPUP/overlapped,
+    // including a modal #32770 whose `parent` is its OWNER, not a positional parent) already
+    // stores SCREEN coordinates, so stop the instant we reach one. Blindly adding the owner's
+    // origin onto a DS_CENTER-centered popup pushed launcher dialogs off-screen to the
+    // bottom-right (Airfix Dogfighter setup: 372,298 + owner 440,361 = 812,659, clipped).
+    //
+    // Cycle guard: the window tree is a DAG in real Win32, so any cycle (a parent handle that
+    // resolves back into the chain — see the desktop-handle collision fixed in window-manager.ts)
+    // is our bug; without the guard it spins the worker forever (GetWindowRect → here → ∞).
     const visited = new Set<number>([win.handle]);
-    let parentHwnd = win.parent;
-    while (parentHwnd) {
-        if (visited.has(parentHwnd)) break;
-        visited.add(parentHwnd);
-        const parent = windows.get(parentHwnd);
+    let cur: WindowInfo | undefined = win;
+    while (cur && (cur.style & WS_CHILD) !== 0 && cur.parent) {
+        if (visited.has(cur.parent)) break;
+        visited.add(cur.parent);
+        const parent = windows.get(cur.parent);
         if (!parent) break;
         x += parent.x;
         y += parent.y;
-        parentHwnd = parent.parent;
+        cur = parent;
     }
     return { x, y };
 }

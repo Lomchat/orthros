@@ -11,7 +11,7 @@ import { System } from '../../core/system';
 import { WindowInfo, windows, buttonCheckStates, getOrCreateListState, getOrCreateTrackbarState, controlImageHandles } from './shared-state';
 import { handleAnimateMessage } from './animate-control';
 import { paintSystemControl, clampListTopIndex } from './controls';
-import { repaintDialogAfterContentChange } from './dialog-paint';
+import { repaintDialogAfterContentChange, restampOwnedPopupsAbove } from './dialog-paint';
 import { closeOpenComboboxes } from './control-interaction';
 import { getBitmapObjectDimensions, getIconObjectDimensions } from '../gdi32/bitmap-resolve';
 import { encodeAnsi } from '../codepage-utils';
@@ -242,7 +242,12 @@ export function handleSystemControlMessage(
             const hdc = wParam || gdi.createOverlayDC();
             if (hdc) {
                 paintSystemControl(child, hdc, gdi);
-                if (!wParam) gdi.releaseDC(hdc);
+                if (!wParam) {
+                    gdi.releaseDC(hdc);
+                    // Painting a control straight to the flat overlay can bleed over a
+                    // modal its owner sits under; keep the modal on top (no Z-clip).
+                    if (child.parent) restampOwnedPopupsAbove(child.parent);
+                }
             }
             return 0;
         }

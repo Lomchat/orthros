@@ -7,7 +7,7 @@
 import { Logger, LogCategory } from '../../core/logger';
 import { System } from '../../core/system';
 import { WindowInfo, windows, getAbsoluteWindowPosition, ensureHostCursorForDialog, getChildrenInPaintOrder } from './shared-state';
-import { paintChildControls, repaintChildControls, paintDialogClientMessage } from './controls';
+import { paintChildControls, repaintChildControls, paintDialogClientMessage, registerOwnedPopupRestamper } from './controls';
 import { registerFullDialogRepainter, registerOverlayRepairRepainter } from './control-interaction';
 import { getWindowVisualBounds } from './dialog-overlay';
 import type { GDIContext } from '../gdi32/context';
@@ -16,6 +16,36 @@ import type { GDIContext } from '../gdi32/context';
 const COLOR_DLGFACE = 0x00C8D0D4;
 
 const WM_PAINT = 0x000F;
+const WS_CHILD = 0x40000000;
+const WS_POPUP = 0x80000000;
+
+/**
+ * Owned popup dialogs (a #32770 whose owner is `hwnd` or one of its descendants)
+ * sit ABOVE `hwnd` in Win32 Z-order — an owned window is always above its owner.
+ * The GDI overlay is a single flat canvas with no per-window clip region, so a
+ * repaint of the lower owner (its background, its own controls, a WM_PAINT burst)
+ * bleeds over those popups. Windows avoids this by clipping the owner's DC to
+ * exclude windows above it; we instead re-stamp the popups on top after the owner
+ * paints. Returned bottom→top (owner-chain / creation order) so nested modal
+ * stacks re-composite in the right order.
+ */
+function collectOwnedPopupsAbove(hwnd: number): number[] {
+    const out: number[] = [];
+    const visit = (h: number): void => {
+        const w = windows.get(h);
+        if (!w) return;
+        for (const childHwnd of w.children) {
+            const c = windows.get(childHwnd);
+            if (!c) continue;
+            if (c.visible && (c.style & WS_CHILD) === 0 && (c.style & WS_POPUP) !== 0) {
+                out.push(childHwnd);
+            }
+            visit(childHwnd);
+        }
+    };
+    visit(hwnd);
+    return out;
+}
 
 /**
  * Paint a dialog and all its children directly to the GDI overlay canvas.
@@ -138,9 +168,33 @@ export function paintDialogToOverlay(dialogHwnd: number, mode: 'full' | 'control
     ensureHostCursorForDialog();
     paintWindowSubtreeToOverlay(dialogHwnd, hdc, new Set<number>(), mode);
 
+    // Restore Z-order on the flat overlay: re-stamp any owned popup dialogs that
+    // float above this window so an owner repaint never bleeds over its modal.
+    for (const popup of collectOwnedPopupsAbove(dialogHwnd)) {
+        paintWindowSubtreeToOverlay(popup, hdc, new Set<number>(), 'full');
+    }
+
     gdi.releaseDC(hdc);
     Logger.log(LogCategory.USER32,
         `paintDialogToOverlay: painted dialog 0x${dialogHwnd.toString(16)} to overlay (${mode})`);
+}
+
+/**
+ * Re-stamp owned popup dialogs above `hwnd` on top of the overlay. For repaint
+ * paths that draw only a lower window's controls (repaintChildControls) rather
+ * than routing through paintDialogToOverlay — without this, a control-only
+ * repaint of an owner would leave its modal partially overpainted.
+ */
+export function restampOwnedPopupsAbove(hwnd: number): void {
+    const popups = collectOwnedPopupsAbove(hwnd);
+    if (popups.length === 0) return;
+    const gdi = System.getInstance().gdiContext;
+    const hdc = gdi.createOverlayDC();
+    if (!hdc) return;
+    for (const popup of popups) {
+        paintWindowSubtreeToOverlay(popup, hdc, new Set<number>(), 'full');
+    }
+    gdi.releaseDC(hdc);
 }
 
 /** Repaint a visible dialog after DDraw SetDisplayMode / overlay resize wiped the canvas. */
@@ -164,6 +218,7 @@ function repaintOverlayWindowAfterErase(dialogHwnd: number): void {
 // avoid a dialog.ts <-> control-interaction.ts import cycle at module load.
 registerFullDialogRepainter(repaintDialogOverlayIfVisible);
 registerOverlayRepairRepainter(repaintOverlayWindowAfterErase);
+registerOwnedPopupRestamper(restampOwnedPopupsAbove);
 
 /**
  * Repaint after a control's content changed. For a standard dialog composited

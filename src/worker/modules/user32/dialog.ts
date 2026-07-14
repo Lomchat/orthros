@@ -881,10 +881,6 @@ function runModalDialog(
         return IDCANCEL;
     }
 
-    const pumpStartTime = performance.now();
-    const PUMP_TIMEOUT_MS = 60_000;
-    let timeoutForced = false;
-
     const completeClosedDialog = (reason: string): number | null => {
         const dialog = activeDialogs.get(dialogHwnd);
         const result = dialog?.result ?? IDOK;
@@ -994,17 +990,6 @@ function runModalDialog(
                 restoreOwnerActivation();
             }
             return;
-        }
-
-        // Safety timeout: force IDCANCEL once after 60 s without user action.
-        if (!timeoutForced && performance.now() - pumpStartTime > PUMP_TIMEOUT_MS) {
-            timeoutForced = true;
-            Logger.warn(
-                LogCategory.USER32,
-                `${label}: Dialog 0x${dialogHwnd.toString(16)} timed out - forcing IDCANCEL`,
-            );
-            system.windowManager.postMessage(dialogHwnd, WM_COMMAND, IDCANCEL, 0);
-            system.scheduler.wakeMessageWaiters();
         }
 
         system.inputManager.poll(true);

@@ -7,7 +7,7 @@
  */
 
 import { System } from '../../core/system';
-import { windows, buttonCheckStates, listControlStates, controlImageHandles, getOrCreateTrackbarState, getChildrenInPaintOrder } from './shared-state';
+import { windows, buttonCheckStates, listControlStates, controlImageHandles, getOrCreateTrackbarState, getChildrenInPaintOrder, getAbsoluteWindowPosition } from './shared-state';
 import type { GDIContext } from '../gdi32/context';
 import type { WindowInfo } from './shared-state';
 import { resolveBitmapRgba, resolveIconRgba, layoutStaticControlImage, blitStaticControlImage } from '../gdi32/bitmap-resolve';
@@ -221,29 +221,18 @@ export function isGroupBoxSystemControl(win: WindowInfo | undefined): boolean {
 }
 
 /** Walk up the parent chain summing x offsets (canvas space). */
+// getChainX/Y/Abs must match getAbsoluteWindowPosition exactly: only a WS_CHILD window's
+// (x,y) is parent-client-relative, so the walk stops at the first top-level (WS_POPUP)
+// ancestor whose position is already screen-absolute. Delegating keeps that one rule in one
+// place — a private copy that blindly summed every ancestor pushed a centered #32770's child
+// CONTROLS to the owner's origin while the dialog frame sat centered (Airfix launcher split).
 function getChainX(win: WindowInfo): number {
-    let x = win.x;
-    let cur: WindowInfo | undefined = win;
-    while (cur.parent) {
-        const p = windows.get(cur.parent);
-        if (!p) break;
-        x += p.x;
-        cur = p;
-    }
-    return x;
+    return getAbsoluteWindowPosition(win).x;
 }
 
 /** Walk up the parent chain summing y offsets (canvas space). */
 function getChainY(win: WindowInfo): number {
-    let y = win.y;
-    let cur: WindowInfo | undefined = win;
-    while (cur.parent) {
-        const p = windows.get(cur.parent);
-        if (!p) break;
-        y += p.y;
-        cur = p;
-    }
-    return y;
+    return getAbsoluteWindowPosition(win).y;
 }
 
 function normalizeSystemControlClass(controlClass: string | undefined): string {
@@ -615,6 +604,33 @@ function drawStaticShape(
     }
 }
 
+/** Word-wrap one line to maxWidth px. Measures with the mnemonic '&' collapsed (so it
+ *  isn't counted as a glyph), matching fillTextWithMnemonic's drawn width. */
+function wrapStaticLine(
+    ctx: OffscreenCanvasRenderingContext2D,
+    line: string,
+    maxWidth: number,
+    processPrefix: boolean,
+): string[] {
+    const measure = (s: string): number =>
+        ctx.measureText(processPrefix ? s.replace(/&(.?)/g, '$1') : s).width;
+    if (line === '' || measure(line) <= maxWidth) return [line];
+    const words = line.split(' ');
+    const out: string[] = [];
+    let cur = '';
+    for (const word of words) {
+        const test = cur ? `${cur} ${word}` : word;
+        if (cur && measure(test) > maxWidth) {
+            out.push(cur);
+            cur = word;
+        } else {
+            cur = test;
+        }
+    }
+    if (cur) out.push(cur);
+    return out.length ? out : [line];
+}
+
 function paintStaticBitmap(
     ctx: OffscreenCanvasRenderingContext2D,
     child: WindowInfo,
@@ -693,12 +709,22 @@ function paintStatic(
 
     const processPrefix = (child.style & SS_NOPREFIX) === 0;
     const lineHeight = 14;
-    const lines = text.split(/\r\n|\n|\r/g);
     const disabled = isControlDisabled(child);
 
     ctx.font = getWindowFont(child);
     ctx.fillStyle = disabled ? COLOR_GRAYTEXT : COLOR_WINDOWTEXT;
     ctx.textBaseline = 'top';
+
+    // SS_LEFT/SS_CENTER/SS_RIGHT word-wrap to the control width (real Win32); only
+    // SS_LEFTNOWORDWRAP and SS_SIMPLE render single-line. Without wrapping, a long
+    // label (Airfix launcher's "Press Advanced to see advanced settings…") overflows
+    // its box and stamps over the neighbouring Advanced button.
+    const wordWraps = styleType === SS_LEFT || styleType === SS_CENTER || styleType === SS_RIGHT;
+    let lines = text.split(/\r\n|\n|\r/g);
+    if (wordWraps) {
+        const maxW = Math.max(1, w - 4);
+        lines = lines.flatMap((l) => wrapStaticLine(ctx, l, maxW, processPrefix));
+    }
 
     let textY = y + 2;
     if ((child.style & SS_CENTERIMAGE) !== 0) {
@@ -1248,6 +1274,14 @@ export function paintDialogClientMessage(hdc: number, gdi: GDIContext, win: Wind
     ctx.textAlign = 'left';
 }
 
+// Owned-popup restamp hook — dialog-paint.ts registers the Z-order restore that
+// re-stamps modal popups floating above this window (cross-module hook avoids a
+// controls.ts <-> dialog-paint.ts import cycle).
+let ownedPopupRestamper: ((hwnd: number) => void) | null = null;
+export function registerOwnedPopupRestamper(fn: (hwnd: number) => void): void {
+    ownedPopupRestamper = fn;
+}
+
 export function repaintChildControls(parentHwnd: number): void {
     const gdi = System.getInstance().gdiContext;
     const hdc = gdi.createOverlayDC();
@@ -1255,6 +1289,9 @@ export function repaintChildControls(parentHwnd: number): void {
 
     paintChildControls(parentHwnd, hdc, gdi);
     gdi.releaseDC(hdc);
+    // A controls-only repaint of a lower window would overpaint a modal it owns;
+    // the flat overlay has no Z-clip, so re-stamp any owned popup back on top.
+    ownedPopupRestamper?.(parentHwnd);
 }
 
 /** Hit-test system controls under a parent using parent-client coordinates. */
@@ -1273,17 +1310,7 @@ export function hitTestSystemControlAtClient(
 }
 
 function getChainAbs(win: WindowInfo): { x: number; y: number } {
-    let x = win.x;
-    let y = win.y;
-    let p = win.parent;
-    while (p) {
-        const pw = windows.get(p);
-        if (!pw) break;
-        x += pw.x;
-        y += pw.y;
-        p = pw.parent;
-    }
-    return { x, y };
+    return getAbsoluteWindowPosition(win);
 }
 
 function hitTestSystemControlAtScreen(

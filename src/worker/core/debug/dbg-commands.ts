@@ -35,6 +35,7 @@ import { d3d9WasmArena, isWasmPathEnabled, setWasmPathEnabled, setArenaVerifyDra
 import { windows, getAbsoluteWindowPosition, controlImageHandles, WindowInfo } from '../../modules/user32/shared-state';
 import { resolveBitmapRgba } from '../../modules/gdi32/bitmap-resolve';
 import { dialogNeedsPointMouseRouting } from '../../modules/user32/dialog-overlay';
+import { repaintDialogOverlayIfVisible } from '../../modules/user32/dialog';
 import { isGdiSurfaceHidden } from '../../modules/ddraw/gdi-visibility';
 import { hpFreezeWatchdog } from './hp-freeze-watchdog';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
@@ -892,6 +893,15 @@ export const dbg = {
             const ts = TimeService.getInstance();
             console.log(`[dbg] gtime virtual=${ts.nowMs().toFixed(1)} wall=${performance.now().toFixed(1)} vtActive=${ts.isVirtualTimeActive()}`);
         } catch (e) { console.warn('[dbg] gtime err', e); }
+    },
+    /** Force an overlay repaint of a window (hwnd) — drives paintDialogToOverlay so
+     *  you can observe Z-order compositing (e.g. an owner repaint under a live modal)
+     *  without waiting for a WM_PAINT burst. Handy to verify owned-popup restamp. */
+    repaint(hwnd: number): void {
+        try {
+            repaintDialogOverlayIfVisible(hwnd >>> 0);
+            console.log(`[dbg][repaint] 0x${(hwnd >>> 0).toString(16)}`);
+        } catch (e) { console.warn('[dbg] repaint err', e); }
     },
     /** Dump user32 WindowInfo map: class names, visibility, dialog routing flags, children.
      *  Use to find stale visible #32770 or invisible windows stealing mouse routing. */
