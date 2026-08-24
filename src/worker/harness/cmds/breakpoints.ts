@@ -144,15 +144,27 @@ export function registerBreakpointCommands(svc: HarnessService): void {
         const p: any = proc();
         const cpu: any = p?.v86?.cpu ?? p?.v86?.v86?.cpu;
         if (!cpu) throw new HarnessError("no cpu", HarnessErrorCode.BAD_ARGS);
-        const dv: DataView = new DataView(cpu.mem8.buffer);
+        const cpuMem: Uint8Array = cpu.mem8;
+        const dv: DataView = new DataView(cpuMem.buffer, cpuMem.byteOffset, cpuMem.byteLength);
         const physVal = dv.getUint32(va, true) >>> 0;
         let pa = -1, paVal = -1, err: string | null = null;
         try { pa = cpu.translate_address_system_read(va) >>> 0; paVal = dv.getUint32(pa, true) >>> 0; }
         catch (e) { err = String(e); }
+        let cpuVal: number | null = null;
+        let cpuReadError: string | null = null;
+        try {
+            // read32s is the same paged/TLB-aware primitive used by interpreted
+            // guest instructions. It can disagree with the raw physical view if a
+            // stale or corrupt TLB entry is steering the CPU at another page.
+            cpuVal = (cpu.read32s(va) >>> 0);
+        } catch (e) {
+            cpuReadError = String(e);
+        }
         const cr0 = (cpu.cr?.[0] ?? 0) >>> 0, cr3 = (cpu.cr?.[3] ?? 0) >>> 0;
         const h = (n: number) => "0x" + (n >>> 0).toString(16);
         return {
             va: h(va), physVal: h(physVal), pa: pa < 0 ? null : h(pa), paVal: paVal < 0 ? null : h(paVal),
+            cpuVal: cpuVal == null ? null : h(cpuVal), cpuReadError,
             identity: pa === va, viewMismatch: pa >= 0 && paVal !== physVal,
             cr0: h(cr0), cr3: h(cr3), paging: !!(cr0 & 0x80000000), err,
         };

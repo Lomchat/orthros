@@ -317,7 +317,7 @@ export class ThunkDispatcher {
      *  device `this`). Allocated lazily on first shadowed registration; seeded via setShadowOwner. */
     private shadowOwnerGlobal = 0;
     /** Per-(dll:func) shadow trampoline handles, for the registering module to seed/invalidate/A-B. */
-    private shadowHandles = new Map<string, { trampAddr: number; shadowBase: number; slotCount: number; sentinel: number; skipCounterAddr: number }>();
+    private shadowHandles = new Map<string, { trampAddr: number; shadowBase: number; slotCount: number; sentinel: number; skipCounterAddr: number; countsSkips: boolean }>();
 
     // Virtual time compensation: credit wall-clock time spent in sync thunk handlers.
     // Without this, sync thunks (which replaced async spin-loop thunks) create a virtual
@@ -1018,6 +1018,17 @@ export class ThunkDispatcher {
         }
     }
 
+    /**
+     * Bring the deferred guest write ring to a coherent observation point before
+     * a diagnostic compares guest-side shadows with the authoritative backend
+     * state. Normal execution drains at the next OUT trap; without this explicit
+     * flush, a worker RPC can sample the few instructions between a shadow update
+     * and that ordinary drain and report a harmless false mismatch.
+     */
+    flushWriteBufferForDiagnostics(): void {
+        this.drainWriteBuffer();
+    }
+
     /** Reset the guest ring head to 0 — but ONLY when fully drained and no preempted
      *  thread is parked inside a WBUF trampoline (it holds the pre-reset head in EDX;
      *  resetting under it orphans its entry and desyncs head — the historical source
@@ -1552,7 +1563,16 @@ export class ThunkDispatcher {
         if (!impl) {
             this._slowPathMissingImplementation(functionId, cpu, thunkName);
             if (profileThunk) profiler.endAsync(thunkName);
-            this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, 0);
+            // The guest stub still executes its real RET N after the OUT hypercall.
+            // A context switch at this boundary must therefore save/restore using
+            // that same cleanup. Passing zero here shifts the resumed peer's stack
+            // whenever an unimplemented stdcall/COM method is the switch point.
+            const missingCleanup = this.resolveThunkCleanup(
+                functionId,
+                this.thunkGenerator.getStubById(functionId)?.argCount ?? 0,
+                `missing:${thunkName}`,
+            );
+            this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, missingCleanup);
             if (sampleProfiler) profiler.end("thunk_dispatch");
             return;
         }
@@ -3211,7 +3231,7 @@ export class ThunkDispatcher {
 
         this.shadowHandles.set(key, {
             trampAddr: h.trampAddr, shadowBase: h.shadowBase, slotCount: h.slotCount,
-            sentinel: h.sentinel, skipCounterAddr: h.skipCounterAddr,
+            sentinel: h.sentinel, skipCounterAddr: h.skipCounterAddr, countsSkips: h.countsSkips,
         });
         Logger.log(LogCategory.THUNK,
             `[WBUF] Shadowed ${dllName}:${funcName} → tramp 0x${h.trampAddr.toString(16)} ` +
@@ -3336,14 +3356,16 @@ export class ThunkDispatcher {
         return stub ? { functionId: stub.functionId, address: stub.address } : null;
     }
 
-    /** Guest-side skip counters per shadowed setter (the only direct A/B signal of the win). */
-    getShadowStats(): Record<string, number> {
+    /** Guest-side skip counters when a trampoline was explicitly built in diagnostic mode. */
+    getShadowStats(): Record<string, number> | null {
         const out: Record<string, number> = {};
-        if (!this.getMemory) return out;
+        if (!this.getMemory) return null;
         const mem = this.getMemory();
         const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-        for (const [key, h] of this.shadowHandles) out[key] = dv.getUint32(h.skipCounterAddr, true);
-        return out;
+        for (const [key, h] of this.shadowHandles) {
+            if (h.countsSkips) out[key] = dv.getUint32(h.skipCounterAddr, true);
+        }
+        return Object.keys(out).length > 0 ? out : null;
     }
 
     /**
@@ -4862,6 +4884,8 @@ export class ThunkDispatcher {
             kind: "unhandled",
             regs: { ecx: r[1] >>> 0, ebx: r[3] >>> 0, esp: r[4] >>> 0, ebp: r[5] >>> 0, esi: r[6] >>> 0, edi: r[7] >>> 0 },
             recentCalls: this.winApiRing?.getCrashTraceLines?.(48) ?? [],
+            recentCallDetails: this.getLastWinApiCallsRich(64),
+            schedulerTrace: System.getInstance().scheduler?.getAsyncRestoreTrace?.().slice(-64) ?? [],
             gameEsp: faultGameEsp,
             stackDump: faultStackDump,
         });

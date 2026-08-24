@@ -32,7 +32,7 @@ export function setBootOverlayActive(on: boolean): void {
  * Only ROM-sourced (game-content) opens are surfaced — overlay-sourced opens are
  * saves/config/temp writes, not "loading".
  */
-export function noteBootFileActivity(path: string, source: string): void {
+export function noteBootFileActivity(path: string, source: string, assetBytes?: number): void {
     if (!active) return;
     if (source !== "rom") return;
 
@@ -44,5 +44,10 @@ export function noteBootFileActivity(path: string, source: string): void {
     lastPostTs = now;
     lastName = base;
 
-    self.postMessage({ type: "loading_progress", phase: "booting", label: base });
+    self.postMessage({
+        type: "loading_progress",
+        phase: "booting",
+        label: base,
+        assetBytes: Number.isFinite(assetBytes) && assetBytes! > 0 ? assetBytes : undefined,
+    });
 }

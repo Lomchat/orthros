@@ -164,6 +164,13 @@ export const HANDLER_EAGL_TOKEN_DISPATCH = 132;
 // Batch boundaries (same cfg block, version 3):
 export const HANDLER_EAGL_COMMIT_CLUSTER = 133; // FUN_005d02d7 → FUN_005cf304 dirty-list walk
 export const HANDLER_EAGL_PASS_DRIVER = 134;    // FUN_005d01ec pass-commit element loop
+/** BFME 1.03 case-insensitive resource/path hash (hash*33 + folded signed byte). */
+export const HANDLER_BFME_FOLD33_HASH = 135;
+/** BFME 1.03 stringbase<char>::tolower unique-buffer branch. */
+export const HANDLER_BFME_STRING_LOWER = 136;
+export const HANDLER_BFME_STRING_RELEASE = 137;
+export const HANDLER_BFME_STRING_COPY = 138;
+export const HANDLER_BFME_STRING_ASSIGN = 139;
 
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;

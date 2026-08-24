@@ -9,6 +9,7 @@ import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import {
     makeWsaStartup,
     WsaSocketTable,
+    getSharedWsaSocketTable,
     makeSocketExports,
     inetAddr,
     createDnsStubs,
@@ -25,9 +26,10 @@ const SOCKET_ERROR = -1;
 export class Wsock32 implements IModule {
     name = "wsock32";
     exports: Record<string, ThunkImplementation> = {};
-    private socketTable = new WsaSocketTable();
+    private socketTable!: WsaSocketTable;
 
     initialize(process: Process): void {
+        this.socketTable = getSharedWsaSocketTable(process);
         let wsaLastError = 0;
 
         const ok = () => 0;
@@ -54,7 +56,7 @@ export class Wsock32 implements IModule {
         };
         const startup = makeWsaStartup(setError, WSAEFAULT, SOCKET_ERROR);
         const socketExports = makeSocketExports(this.socketTable, setError);
-        const dns = createDnsStubs(process, setError);
+        const dns = createDnsStubs(process, setError, this.socketTable.getIdentity());
         const protoServ = createProtoServStubs(process, setError);
         const asyncLookup = createAsyncLookupStubs(setError);
         const selectImpl = makeSelect(this.socketTable, setError);

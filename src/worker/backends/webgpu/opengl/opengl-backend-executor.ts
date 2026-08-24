@@ -67,7 +67,6 @@ import {
 } from "../../../modules/opengl32/constants";
 import { Logger, LogCategory } from "../../../core/logger";
 import { WebGPUBackend } from "../webgpu-backend";
-import { statsOverlay } from "../../../core/stats-overlay";
 
 type OpenGLTopology = "triangle-list" | "line-list" | "line-strip" | "point-list";
 
@@ -355,7 +354,6 @@ export class OpenGLBackendExecutor {
                     screenH,
                     { r: 0, g: 0, b: 0, a: 1 },
                 );
-                this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
                 queue.submit([encoder.finish()]);
                 this.offscreenInitialized = false;
                 const cmdSummary = input.commands.map(c => {
@@ -393,7 +391,6 @@ export class OpenGLBackendExecutor {
 
         const targetView = context.getCurrentTexture().createView();
         this.blitOffscreenToCanvas(targetView, encoder, screenW, screenH);
-        this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
         queue.submit([encoder.finish()]);
 
         Logger.verbose(
@@ -420,7 +417,6 @@ export class OpenGLBackendExecutor {
         const encoder = device.createCommandEncoder();
         const targetView = context.getCurrentTexture().createView();
         this.blitOffscreenToCanvas(targetView, encoder, screenW, screenH);
-        this.compositeStatsOverlay(targetView, encoder, screenW, screenH);
         queue.submit([encoder.finish()]);
     }
 
@@ -445,22 +441,6 @@ export class OpenGLBackendExecutor {
             { r: 0, g: 0, b: 0, a: 1 },
             upscale,
         );
-    }
-
-    private compositeStatsOverlay(
-        targetView: GPUTextureView,
-        encoder: GPUCommandEncoder,
-        width: number,
-        height: number,
-    ): void {
-        if (!statsOverlay.isEnabled()) return;
-        const statsCanvas = statsOverlay.getCanvas();
-        if (!statsCanvas) return;
-        if (statsOverlay.isDirty()) {
-            this.backend.updateStatsTexture(statsCanvas);
-            statsOverlay.clearDirty();
-        }
-        this.backend.renderStatsOverlay(targetView, encoder, width, height);
     }
 
     destroy(): void {

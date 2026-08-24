@@ -50,6 +50,11 @@ export class Imm32 implements IModule {
             return TRUE;
         };
 
+        this.exports["ImmCreateContext"] = () => DEFAULT_HIMC;
+        this.exports["ImmDestroyContext"] = () => TRUE;
+        // No installed IME: report no capabilities for the requested layout.
+        this.exports["ImmGetProperty"] = () => 0;
+
         // BOOL ImmGetOpenStatus(HIMC hIMC)
         this.exports["ImmGetOpenStatus"] = (ctx, mem, args) => {
             const hIMC = args[0] >>> 0;
@@ -96,6 +101,7 @@ export class Imm32 implements IModule {
             Logger.verbose(LogCategory.SYSTEM, `imm32:ImmGetCandidateListCountA(hIMC=0x${hIMC.toString(16)}, out=0x${lpdwListCount.toString(16)}) -> 0`);
             return 0;
         };
+        this.exports["ImmGetCandidateListCountW"] = this.exports["ImmGetCandidateListCountA"];
 
         // BOOL ImmGetConversionStatus(HIMC hIMC, LPDWORD lpfdwConversion, LPDWORD lpfdwSentence)
         this.exports["ImmGetConversionStatus"] = (ctx, mem, args) => {

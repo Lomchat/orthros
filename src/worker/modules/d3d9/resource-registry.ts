@@ -50,6 +50,12 @@ export const vertexBufferMeta: Map<number, BufferMeta> = new Map();
 export const indexBufferMeta: Map<number, BufferMeta> = new Map();
 /** Per-device bound depth/stencil surface COM pointer (0 = none). */
 export const deviceBoundDepthStencil: Map<number, number> = new Map();
+/** Per-device implicit swap-chain backbuffer surface COM pointer. */
+export const deviceImplicitBackBuffer: Map<number, number> = new Map();
+/** Per-device render-target slot -> currently bound surface COM pointer. */
+export const deviceBoundRenderTargets: Map<number, Map<number, number>> = new Map();
+/** D3D9 mixed/hardware/software vertex-processing mode requested by the guest. */
+export const deviceSoftwareVertexProcessing: Map<number, boolean> = new Map();
 
 /** 2D texture COM ptr -> mip level -> stable IDirect3DSurface9 COM ptr. */
 export const textureLevelSurfaces: Map<number, Map<number, number>> = new Map();
@@ -178,6 +184,9 @@ export function clearResourceRegistry(): void {
     vertexBufferMeta.clear();
     indexBufferMeta.clear();
     deviceBoundDepthStencil.clear();
+    deviceImplicitBackBuffer.clear();
+    deviceBoundRenderTargets.clear();
+    deviceSoftwareVertexProcessing.clear();
     textureLevelSurfaces.clear();
     cubeFaceSurfaces.clear();
 }

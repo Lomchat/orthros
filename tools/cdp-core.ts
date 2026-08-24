@@ -12,16 +12,22 @@
  * Bun script (top-level await, Bun.spawnSync, global fetch/WebSocket).
  */
 
-export const DEFAULT_CDP_PORT = 9333;
-export const DEFAULT_DEV_URL = "http://localhost:5174/?game=dev";
-export const GAME_DEV_FILTER = "game=dev";
+export const DEFAULT_CDP_PORT = Number(process.env.BS_CDP_PORT || 9333);
+export const DEFAULT_DEV_URL = process.env.BS_DEV_URL || "http://localhost:5174/?game=dev";
+// Keep the historical game=dev default, while allowing tools to attach to a
+// player-facing catalog URL (for example BS_URL_FILTER=game=bfme).
+export const GAME_DEV_FILTER = process.env.BS_URL_FILTER || "game=dev";
 const IS_MAC = process.platform === "darwin";
-const CHROME_PATH = IS_MAC
+const IS_LINUX = process.platform === "linux";
+const CHROME_PATH = process.env.BS_CHROME_PATH ?? (IS_MAC
     ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    : "C:/Program Files/Google/Chrome/Application/chrome.exe";
+    : IS_LINUX
+        ? (Bun.which("google-chrome") ?? Bun.which("chromium") ?? Bun.which("chromium-browser")
+            ?? "/root/.cache/puppeteer/chrome/linux-150.0.7871.24/chrome-linux64/chrome")
+        : "C:/Program Files/Google/Chrome/Application/chrome.exe");
 const DEFAULT_PROFILE = IS_MAC
-    ? `${process.env.HOME}/.bottleship-cdp-profile`
-    : `${process.cwd()}/tmp/cdp-profile`;
+    ? (process.env.BS_CDP_PROFILE || `${process.env.HOME}/.bottleship-cdp-profile`)
+    : (process.env.BS_CDP_PROFILE || `${process.cwd()}/tmp/cdp-profile`);
 
 export interface CdpTarget {
     id: string;
@@ -61,6 +67,24 @@ export async function launchOrAttachChrome(opts: { port?: number; profile?: stri
         // Detach so Chrome outlives this bun process. `open -na` launches a fresh
         // instance with our args even if Chrome is already running under another profile.
         Bun.spawn(["open", "-na", "Google Chrome", "--args", ...args], {
+            stdout: "ignore",
+            stderr: "ignore",
+        }).unref();
+    } else if (IS_LINUX) {
+        // CI/VPS environments generally have no display server. Chrome's
+        // headless mode still exposes WebGPU/WebGL through ANGLE/SwiftShader,
+        // which is sufficient for deterministic bring-up and frame captures.
+        // `setsid -f` creates a separate session and forks once, so the browser
+        // survives the short-lived `harness up` Bun process.
+        Bun.spawn(["setsid", "-f", CHROME_PATH,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--enable-unsafe-webgpu",
+            "--use-angle=swiftshader",
+            "--ozone-platform=headless",
+            ...args,
+        ], {
             stdout: "ignore",
             stderr: "ignore",
         }).unref();
@@ -204,12 +228,21 @@ export async function pageEval(session: CdpSession, expr: string, opts: { timeou
     return res?.result?.value ?? res?.result;
 }
 
-/** Evaluate an expression in the WORKER context via the flattened auto-attach dance. */
+/** BottleShip also creates I/O/worklet workers. Diagnostics must attach to the
+ * emulator worker specifically or a pause stack can misleadingly point at WGB
+ * prefetch code while the PE loader is blocked elsewhere. */
+function isEmulatorWorkerTarget(targetInfo: any): boolean {
+    if (targetInfo?.type !== "worker") return false;
+    const identity = `${targetInfo.url ?? ""} ${targetInfo.title ?? ""}`;
+    return identity.includes("emulator.worker");
+}
+
+/** Evaluate an expression in the emulator WORKER context via the flattened auto-attach dance. */
 export async function workerEval(session: CdpSession, expr: string, opts: { timeoutMs?: number } = {}): Promise<any> {
     let workerSession: string | undefined;
     const got = new Promise<string>((resolve) => {
         session.on("Target.attachedToTarget", (params) => {
-            if (params?.targetInfo?.type === "worker") {
+            if (isEmulatorWorkerTarget(params?.targetInfo)) {
                 workerSession = params.sessionId;
                 resolve(params.sessionId);
             }
@@ -223,7 +256,7 @@ export async function workerEval(session: CdpSession, expr: string, opts: { time
         try {
             const targets = await session.send("Target.getTargets");
             for (const t of targets.result?.targetInfos ?? []) {
-                if (t.type !== "worker") continue;
+                if (!isEmulatorWorkerTarget(t)) continue;
                 const attach = await session.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
                 workerSession = attach.result?.sessionId ?? workerSession;
                 if (workerSession) break;
@@ -247,12 +280,12 @@ export async function workerEval(session: CdpSession, expr: string, opts: { time
     return res?.result?.value ?? res?.result;
 }
 
-/** Attach to the worker target and return its sessionId (auto-attach + existing-target fallback). */
+/** Attach to the emulator worker target and return its sessionId. */
 async function attachWorkerSession(session: CdpSession): Promise<string> {
     let workerSession: string | undefined;
     const got = new Promise<string>((resolve) => {
         session.on("Target.attachedToTarget", (params) => {
-            if (params?.targetInfo?.type === "worker") {
+            if (isEmulatorWorkerTarget(params?.targetInfo)) {
                 workerSession = params.sessionId;
                 resolve(params.sessionId);
             }
@@ -264,7 +297,7 @@ async function attachWorkerSession(session: CdpSession): Promise<string> {
         try {
             const targets = await session.send("Target.getTargets");
             for (const t of targets.result?.targetInfos ?? []) {
-                if (t.type !== "worker") continue;
+                if (!isEmulatorWorkerTarget(t)) continue;
                 const attach = await session.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
                 workerSession = attach.result?.sessionId ?? workerSession;
                 if (workerSession) break;
@@ -298,6 +331,12 @@ export async function workerStack(
     const intervalMs = opts.intervalMs ?? 250;
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const sessionId = await attachWorkerSession(session);
+    const scriptUrls = new Map<string, string>();
+    session.on("Debugger.scriptParsed", (params, sid) => {
+        if (sid === sessionId && params?.scriptId) {
+            scriptUrls.set(params.scriptId, params.url ?? "");
+        }
+    });
     await session.send("Debugger.enable", {}, sessionId);
     const out: WorkerStackFrame[][] = [];
     try {
@@ -318,7 +357,7 @@ export async function workerStack(
             }
             out.push((p.callFrames ?? []).map((f: any) => ({
                 functionName: f.functionName || "<anonymous>",
-                url: f.url || f.location?.scriptId || "",
+                url: f.url || scriptUrls.get(f.location?.scriptId) || f.location?.scriptId || "",
                 line: (f.location?.lineNumber ?? 0) + 1,
                 column: f.location?.columnNumber ?? 0,
             })));

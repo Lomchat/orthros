@@ -28,12 +28,13 @@
  */
 
 import { Logger, LogCategory } from '../../core/logger';
-import { devices, stateBlocks } from './shared-state';
+import { devices, resourceToDevice, stateBlocks } from './shared-state';
 import {
     resolveVertexShaderComPtr,
     resolvePixelShaderComPtr,
     resolveVertexDeclComPtr,
 } from '../../backends/webgpu/d3d9/d3d9-com-objects';
+import { surfaceMeta } from './resource-registry';
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
@@ -41,6 +42,7 @@ const D3DMATRIX_SIZE = 16 * 4;
 const D3DMATERIAL9_SIZE = 68;
 const D3DLIGHT9_SIZE = 104;
 const D3DCLIPPLANE_SIZE = 4 * 4;
+const D3DSURFACE_DESC_SIZE = 8 * 4;
 
 function validGuestRange(mem: Uint8Array, ptr: number, size: number): boolean {
     return ptr !== 0 && size >= 0 && ptr <= mem.length - size;
@@ -81,6 +83,18 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             matrix[i] = view.getFloat32(pMatrix + i * 4, true);
         }
         return device.setTransform(view.getUint32(esp + 8, true), matrix);
+    }, { trivial: true });
+
+    // IDirect3DDevice9_GetTransform(thisPtr, State, pMatrix)
+    dispatcher.registerFastPath('d3d9', 'IDirect3DDevice9_GetTransform', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const device = devices.get(view.getUint32(esp + 4, true));
+        const pMatrix = view.getUint32(esp + 12, true);
+        if (!device || !validGuestRange(mem, pMatrix, D3DMATRIX_SIZE)) return null;
+        const matrix = device.getTransform(view.getUint32(esp + 8, true));
+        if (!matrix || matrix.length < 16) return null;
+        for (let i = 0; i < 16; i++) view.setFloat32(pMatrix + i * 4, matrix[i]!, true);
+        return D3D_OK;
     }, { trivial: true });
 
     // IDirect3DDevice9_SetFVF(thisPtr, FVF)
@@ -309,7 +323,78 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
         dispatcher.registerFastPath('d3d9', `${prefix}_Release`, releaseFn, { trivial: true });
     }
 
-    Logger.log(LogCategory.D3D9, 'Registered FastPath for hot D3D9 state setters, shader constants, draw calls, and resource AddRef/Release');
+    // Dynamic geometry in BFME locks and unlocks vertex buffers several thousand
+    // times per second. These four calls are synchronous and need only the COM
+    // pointer plus guest stack arguments, so the generic slow thunk ladder adds no
+    // safety. Return null on exceptional input to retain its diagnostics verbatim.
+    dispatcher.registerFastPath('d3d9', 'IDirect3DVertexBuffer9_Lock', (cpu: any, _mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const bufferPtr = view.getUint32(esp + 4, true);
+        const device = resourceToDevice.get(bufferPtr);
+        if (!device) return null;
+        const dataPtr = device.lockVertexBuffer(
+            bufferPtr,
+            view.getUint32(esp + 8, true),
+            view.getUint32(esp + 12, true),
+        );
+        if (!dataPtr) return null;
+        const ppbData = view.getUint32(esp + 16, true);
+        if (ppbData) view.setUint32(ppbData, dataPtr, true);
+        return D3D_OK;
+    }, { trivial: true });
+
+    dispatcher.registerFastPath('d3d9', 'IDirect3DVertexBuffer9_Unlock', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const bufferPtr = view.getUint32(esp + 4, true);
+        const device = resourceToDevice.get(bufferPtr);
+        if (!device) return null;
+        device.unlockVertexBuffer(bufferPtr, mem);
+        return D3D_OK;
+    }, { trivial: true });
+
+    dispatcher.registerFastPath('d3d9', 'IDirect3DIndexBuffer9_Lock', (cpu: any, _mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const bufferPtr = view.getUint32(esp + 4, true);
+        const device = resourceToDevice.get(bufferPtr);
+        if (!device) return null;
+        const dataPtr = device.lockIndexBuffer(
+            bufferPtr,
+            view.getUint32(esp + 8, true),
+            view.getUint32(esp + 12, true),
+        );
+        if (!dataPtr) return null;
+        const ppbData = view.getUint32(esp + 16, true);
+        if (ppbData) view.setUint32(ppbData, dataPtr, true);
+        return D3D_OK;
+    }, { trivial: true });
+
+    dispatcher.registerFastPath('d3d9', 'IDirect3DIndexBuffer9_Unlock', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const bufferPtr = view.getUint32(esp + 4, true);
+        const device = resourceToDevice.get(bufferPtr);
+        if (!device) return null;
+        device.unlockIndexBuffer(bufferPtr, mem);
+        return D3D_OK;
+    }, { trivial: true });
+
+    // Surface descriptions are immutable metadata after COM-object creation.
+    // BFME asks for them more than 500 times/s on the menu, so avoid rebuilding a
+    // generic thunk context for eight scalar writes.
+    dispatcher.registerFastPath('d3d9', 'IDirect3DSurface9_GetDesc', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+        const esp = cpu.reg32[4];
+        const surfacePtr = view.getUint32(esp + 4, true);
+        const pDesc = view.getUint32(esp + 8, true);
+        if (!pDesc) return D3D_OK;
+        if (!validGuestRange(mem, pDesc, D3DSURFACE_DESC_SIZE)) return null;
+        const meta = surfaceMeta.get(surfacePtr);
+        const values = meta
+            ? [meta.format, meta.type, meta.usage, meta.pool, meta.multiSampleType, meta.multiSampleQuality, meta.width, meta.height]
+            : [21, 1, 0, 0, 0, 0, 1024, 768];
+        for (let i = 0; i < values.length; i++) view.setUint32(pDesc + i * 4, values[i]! >>> 0, true);
+        return D3D_OK;
+    }, { trivial: true });
+
+    Logger.log(LogCategory.D3D9, 'Registered FastPath for hot D3D9 state setters, shader constants, draws, and resource calls');
 
     // ========================================================================
     // Tier-0 Write-Buffer registrations (the no-trap hot path).
@@ -321,7 +406,8 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
     // SetRenderState (3 args) — guest-side value shadow: ~97% of these re-set the same value
     // (measured, NFSU in-race). Slot = State (this=arg0, State=arg1, Value=arg2). The handler
     // below runs only on a genuine change (or when the device isn't the bound shadow owner).
-    // Guest-side setter shadow: short-circuit redundant SetRenderState/SetSamplerState (~97% are
+    // Guest-side setter shadow: short-circuit redundant SetRenderState/SetSamplerState and
+    // SetTextureStageState calls in guest code (~90–97% are measured redundant) —
     // measured redundant) in guest code — no ring entry, no JS drain. Coherence is held by the
     // device mirroring every real change back into the shadow (d3d9-device.syncSetterShadow), so it
     // stays a faithful tracker mirror even for paths that bypass the trampoline (notably state-block
@@ -360,19 +446,38 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             }, true, 0x7);
     }
 
-    // SetFVF (2 args)
-    dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetFVF', 2,
-        (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
-            const device = devices.get(mem32[ptr >> 2]);
-            if (device) device.setFVF(mem32[(ptr + 4) >> 2]);
-        }, true, 0x1);
+    // SetFVF (2 args) — one implicit scalar state slot.
+    if (regShadowed) {
+        dispatcher.registerShadowedWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetFVF', 2,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setFVF(mem32[(ptr + 4) >> 2]);
+            }, 0x1,
+            { argCount: 2, valueArgIndex: 1, slotCount: 1, keyParts: [] });
+    } else {
+        dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetFVF', 2,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setFVF(mem32[(ptr + 4) >> 2]);
+            }, true, 0x1);
+    }
 
-    // SetTexture (3 args)
-    dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTexture', 3,
-        (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
-            const device = devices.get(mem32[ptr >> 2]);
-            if (device) device.setTexture(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2]);
-        }, true, 0x3);
+    // SetTexture (3 args) — raw COM pointer is the value, Stage is the slot.
+    // BFME repeats roughly 65% of these binds; reject them before the ring.
+    if (regShadowed) {
+        dispatcher.registerShadowedWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTexture', 3,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setTexture(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2]);
+            }, 0x3,
+            { argCount: 3, valueArgIndex: 2, slotCount: 16, keyParts: [{ argIndex: 1, shift: 0, max: 16 }] });
+    } else {
+        dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTexture', 3,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setTexture(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2]);
+            }, true, 0x3);
+    }
 
     // SetStreamSource (5 args)
     dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetStreamSource', 5,
@@ -410,12 +515,23 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             if (meta) device.setPixelShader(meta.internalHandle, pShader);
         }, true, 0x1);
 
-    // SetTextureStageState (4 args) — scalar FFP setter, same shape as SetSamplerState.
-    dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTextureStageState', 4,
-        (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
-            const device = devices.get(mem32[ptr >> 2]);
-            if (device) device.setTextureStageState(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2], mem32[(ptr + 12) >> 2]);
-        }, true, 0x7);
+    // SetTextureStageState (4 args) — the highest-volume redundant BFME setter.
+    // Slot = (Stage<<6)|Type: D3D9 exposes 8 fixed-function stages and Type reaches
+    // D3DTSS_CONSTANT (32), so six low bits are required for a collision-free key.
+    if (regShadowed) {
+        dispatcher.registerShadowedWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTextureStageState', 4,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setTextureStageState(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2], mem32[(ptr + 12) >> 2]);
+            }, 0x7,
+            { argCount: 4, valueArgIndex: 3, slotCount: 512, keyParts: [{ argIndex: 1, shift: 6, max: 8 }, { argIndex: 2, shift: 0, max: 64 }] });
+    } else {
+        dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTextureStageState', 4,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const device = devices.get(mem32[ptr >> 2]);
+                if (device) device.setTextureStageState(mem32[(ptr + 4) >> 2], mem32[(ptr + 8) >> 2], mem32[(ptr + 12) >> 2]);
+            }, true, 0x7);
+    }
 
     // LightEnable (3 args)
     dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_LightEnable', 3,

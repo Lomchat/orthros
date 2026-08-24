@@ -373,6 +373,27 @@ export class Avifil32 implements IModule {
         this.exports["AVIFileOpenA"] = async (_ctx, mem, args) => {
             return this.openAviFileFromPath(mem, args[0], args[1], "AVIFileOpenA");
         };
+        this.exports["AVIFileOpen"] = this.exports["AVIFileOpenA"];
+
+        // BFME imports the AVI writing surface although normal gameplay only
+        // reads movies. Keep the ABI faithful and report the read-only backend.
+        this.exports["AVIFileCreateStreamA"] = (_ctx, mem, args) => {
+            if (args[1]) this.writeU32(mem, args[1], 0);
+            return 0x8004406f;
+        };
+        this.exports["AVIFileReadData"] = (_ctx, mem, args) => {
+            if (args[3]) this.writeU32(mem, args[3], 0);
+            return 0x8004406e;
+        };
+        this.exports["AVIMakeCompressedStream"] = (_ctx, mem, args) => {
+            if (args[0]) this.writeU32(mem, args[0], 0);
+            return 0x80044065;
+        };
+        this.exports["AVIStreamWrite"] = (_ctx, mem, args) => {
+            if (args[6]) this.writeU32(mem, args[6], 0);
+            if (args[7]) this.writeU32(mem, args[7], 0);
+            return 0x8004406f;
+        };
 
         // ── AVIFileRelease(pfile) → ref count (0 = closed) ───────────────────
         this.exports["AVIFileRelease"] = (_ctx, _mem, args) => {

@@ -1322,6 +1322,12 @@ export const exports: Record<string, ThunkImplementation> = {
     },
 };
 
+// Some older Windows binaries import the ANSI entry points without the "A"
+// suffix. Windows exports those aliases, so keep the same behavior here.
+exports['lstrcpy'] = exports['lstrcpyA'];
+exports['lstrcmpi'] = exports['lstrcmpiA'];
+exports['lstrcpyn'] = exports['lstrcpynA'];
+
 // ============================================================================
 // Pre-built fast-path caches (built once at module load time)
 // ============================================================================

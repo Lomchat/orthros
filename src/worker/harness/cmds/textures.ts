@@ -70,7 +70,33 @@ export function registerTextureCommands(svc: HarnessService): void {
         return { saved: `logs/debug/${name}.png`, ptr: "0x" + ptr.toString(16), w: r.w, h: r.h, source: r.source };
     };
     svc.register("dumpSurface", dump);
-    svc.register("dumpTexture", dump);
+    /** dumpTexture("index:N", {save?}) — D3D9 TextureStore slot -> PNG.
+     *  Other selectors retain the historical DDraw-surface behaviour above. */
+    svc.register("dumpTexture", async (args) => {
+        const sel = args[0];
+        const match = typeof sel === "string" ? /^index:(\d+)$/i.exec(sel) : null;
+        if (!match) return dump(args);
+        const index = Number(match[1]);
+        for (const [devicePtr, dev] of d3d9Devices) {
+            const pixels = (dev as any).getTextureDebugPixels?.(index);
+            if (!pixels) continue;
+            const opts = (args[1] ?? {}) as { save?: string };
+            const name = (opts.save ?? `d3d9_tex_${index}_${pixels.width}x${pixels.height}`).replace(/\.png$/i, "");
+            const base64 = await encodePngBase64(pixels.rgba, pixels.width, pixels.height);
+            (self as unknown as Worker).postMessage({ type: "debug_png_dump", name, base64 });
+            return {
+                saved: `logs/debug/${name}.png`,
+                index,
+                handle: "0x" + (pixels.handle >>> 0).toString(16),
+                device: "0x" + (devicePtr >>> 0).toString(16),
+                w: pixels.width,
+                h: pixels.height,
+                format: pixels.format,
+                source: "d3d9-cpu-store",
+            };
+        }
+        throw new HarnessError(`D3D9 texture slot ${index} not found or not CPU-readable`, HarnessErrorCode.NOT_FOUND);
+    });
 
     /** expectSurfaceNonBlack(sel?, minPct?) — assertion (throws if black). */
     svc.register("expectSurfaceNonBlack", async (args) => {
@@ -99,7 +125,7 @@ export function registerTextureCommands(svc: HarnessService): void {
      *  agnostic now: DDraw/D3D7 (full FFP), D3D8 (full FFP via the shared executor),
      *  D3D9 (backend-tagged minimal draws). Resolves at the next present (onFrameEnd). */
     svc.register("captureFrame", async (args, ctx: HarnessCtx) => {
-        const opts = (args[0] ?? {}) as { timeoutMs?: number };
+        const opts = (args[0] ?? {}) as { timeoutMs?: number; summary?: boolean };
         const timeoutMs = opts.timeoutMs ?? 5000;
         const frame = await Promise.race([
             frameCaptureStart(),
@@ -108,6 +134,39 @@ export function registerTextureCommands(svc: HarnessService): void {
                 ctx.signal.addEventListener("abort", () => { clearTimeout(t); rej(ctx.signal.reason ?? new HarnessError("aborted", HarnessErrorCode.CANCELLED)); }, { once: true });
             }),
         ]);
-        return frame;
+        if (!opts.summary) return frame;
+        const groups = new Map<string, { count: number; sample: any }>();
+        for (const draw of ((frame as any).drawCalls ?? [])) {
+            const tex = Array.isArray(draw.warnings)
+                ? (draw.warnings.find((w: string) => w.startsWith("tex0 ")) ?? "no-tex")
+                : "no-tex";
+            const key = [
+                `fvf=${draw.vertexType ?? 0}`,
+                `stride=${draw.srcStride ?? 0}`,
+                `light=${draw.lightingEnabled ?? 0}`,
+                `blend=${draw.alphaBlendEnabled ?? 0}:${draw.srcBlend ?? 0}:${draw.dstBlend ?? 0}`,
+                `z=${draw.zEnable ?? 0}:${draw.zWrite ?? 0}`,
+                tex,
+            ].join("|");
+            const cur = groups.get(key);
+            if (cur) cur.count++;
+            else groups.set(key, {
+                count: 1,
+                sample: {
+                    index: draw.index,
+                    primitiveType: draw.primitiveType,
+                    vertices: draw.vertexCount,
+                    firstVertices: draw.firstVertices,
+                    mvp: draw.mvp,
+                    warnings: draw.warnings,
+                },
+            });
+        }
+        return {
+            frameId: (frame as any).frameId,
+            drawCount: ((frame as any).drawCalls ?? []).length,
+            groups: [...groups.entries()].map(([key, value]) => ({ key, ...value }))
+                .sort((a, b) => b.count - a.count),
+        };
     });
 }

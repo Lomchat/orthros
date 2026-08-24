@@ -107,6 +107,12 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0x64 && b1 === 0xA1) { i += 6; continue; }
         // xor r32, r32 (33 /r reg-reg)
         if (b === 0x33 && b1 !== undefined && (b1 & 0xC0) === 0xC0) { i += 2; continue; }
+        // BFME stringbase prologues. These exact register/absolute-memory forms
+        // position-independent two-byte forms; keep the whitelist exact.
+        if (b === 0x8B && b1 === 0xD9) { i += 2; continue; }
+        if (b === 0x8B && b1 === 0x03) { i += 2; continue; }
+        if (b === 0x8B && b1 === 0xF1) { i += 2; continue; } // mov esi,ecx
+        if (b === 0x8A && b1 === 0x0D) { i += 6; continue; } // mov cl,[abs32]
         return `unsupported prologue byte 0x${b.toString(16)} at +${i} — extend validatePrologueBytes if this is a real, position-independent instruction`;
     }
     if (i !== bytes.length) return `prologueLen ${bytes.length} splits an instruction (decoder landed at +${i})`;

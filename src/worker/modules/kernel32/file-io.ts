@@ -32,6 +32,7 @@ import { namedObjects } from './named-objects';
 import { LARGE_IO_TRACE_ENABLED, traceLargeRead } from '../../core/diagnostics/large-io-trace';
 import { ioTraceRing } from '../../core/debug/io-trace-ring';
 import { hypercallDataManager } from '../../core/cpu/hypercall-data';
+import { noteBfmeVp6Open } from '../d3d9/bfme-vp6-bridge';
 
 const readFileFirstLogged = new Set<number>();
 
@@ -81,7 +82,7 @@ class FileHandleWrapper {
         this.vfs = vfs;
         // Surface "loading <asset>" to the host overlay during the boot window
         // (no-op outside it). Single chokepoint for every guest file open.
-        noteBootFileActivity(handle.path, handle.source);
+        noteBootFileActivity(handle.path, handle.source, vfs.getFileSize(handle.path));
     }
 
     get vfsHandle(): VfsFileHandle {
@@ -513,6 +514,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                 Logger.verbose(LogCategory.KERNEL32, `Slow CreateFileA sync: ${totalTime.toFixed(2)}ms, file="${filename}"`);
             }
             Logger.log(LogCategory.KERNEL32, `CreateFileA: OK "${filename}" handle=0x${handleId.toString(16)} (sync, source=${syncHandle.source}) size=${vfs.getFileSize(filename)}`);
+            noteBfmeVp6Open(filename);
             if (isCapsDatPath(filename)) {
                 Logger.log(LogCategory.KERNEL32,
                     `CAPS.DAT: opened from ${syncHandle.source} (${vfs.getFileSize(filename)} bytes) — ` +
@@ -605,6 +607,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                     Logger.verbose(LogCategory.KERNEL32, `Slow CreateFileA: total=${totalTime.toFixed(2)}ms, vfs.open=${vfsTime.toFixed(2)}ms, file="${filename}"`);
                 }
                 Logger.log(LogCategory.KERNEL32, `CreateFileA: OK "${filename}" handle=0x${handleId.toString(16)} source=${vfsHandle.source} size=${vfs.getFileSize(filename)}`);
+                noteBfmeVp6Open(filename);
                 return handleId;
             } catch (error) {
                 Logger.error(LogCategory.KERNEL32, `CreateFileA async failed: ${error}`);

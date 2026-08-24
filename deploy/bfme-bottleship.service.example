@@ -1,0 +1,22 @@
+[Unit]
+Description=BottleShip BFME browser runtime and virtual-LAN relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/bfme/app/bottleship
+Environment=PORT=5173
+Environment=BOTTLESHIP_HOST=127.0.0.1
+Environment=BFME_WGB_PATH=/srv/bfme/data/bfme-1.03-fr.wgb
+ExecStart=/opt/bun/bin/bun deploy/server.ts
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/bfme/app/bottleship
+
+[Install]
+WantedBy=multi-user.target

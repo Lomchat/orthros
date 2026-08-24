@@ -1667,6 +1667,17 @@ export class Advapi32 implements IModule {
             return { value: 1, stackCleanup: 12 }; // TRUE
         };
 
+        // BOOL OpenThreadToken(HANDLE, DWORD, BOOL, PHANDLE)
+        this.exports["OpenThreadToken"] = (ctx, mem, args) => {
+            const pTokenHandle = args[3] >>> 0;
+            if (!pTokenHandle || pTokenHandle + 4 > mem.length) {
+                return { value: 0, stackCleanup: 16 };
+            }
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            view.setUint32(pTokenHandle, 0x1acd, true);
+            return { value: 1, stackCleanup: 16 };
+        };
+
         // GetTokenInformation - retrieve information about an access token
         // BOOL GetTokenInformation(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD)
         this.exports["GetTokenInformation"] = (ctx, mem, args) => {

@@ -67,6 +67,9 @@ export class SabIoSource implements ZipSource {
                 if (msg?.type === "ready") { clearTimeout(timer); resolve(msg.size as number); }
                 else if (msg?.type === "error") { clearTimeout(timer); reject(new Error(String(msg.message))); }
                 else if (msg?.type === "log") { Logger.log(LogCategory.SYSTEM, `[io-worker] ${msg.msg}`); }
+                else if (msg?.type === "cache_progress") {
+                    self.postMessage({ ...msg, type: "local_cache_progress" });
+                }
             };
             worker.onerror = (e: ErrorEvent) => { clearTimeout(timer); reject(new Error(`io-worker error: ${e.message}`)); };
             // Dev-only I/O tuning knob (prefetch window / concurrency / cache MB).
@@ -77,6 +80,9 @@ export class SabIoSource implements ZipSource {
         // Keep forwarding I/O-worker logs after init.
         worker.onmessage = (e: MessageEvent) => {
             if (e.data?.type === "log") Logger.log(LogCategory.SYSTEM, `[io-worker] ${e.data.msg}`);
+            else if (e.data?.type === "cache_progress") {
+                self.postMessage({ ...e.data, type: "local_cache_progress" });
+            }
         };
 
         return new SabIoSource(worker, sab, size);
@@ -160,7 +166,19 @@ export class SabIoSource implements ZipSource {
         };
     }
 
+    /** Fill every still-missing range in the resumable OPFS cache at low concurrency. */
+    startBackgroundCache(): void {
+        this.worker.postMessage({ type: "start_background_cache" });
+    }
+
     close(): void {
-        try { this.worker.terminate(); } catch { /* best-effort */ }
+        try {
+            this.worker.postMessage({ type: "close" });
+            setTimeout(() => {
+                try { this.worker.terminate(); } catch { /* best-effort */ }
+            }, 500);
+        } catch {
+            try { this.worker.terminate(); } catch { /* best-effort */ }
+        }
     }
 }

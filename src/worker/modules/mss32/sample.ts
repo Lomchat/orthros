@@ -9,7 +9,14 @@ import {
     readFilenameArg, isEncodedFormat, MSS_SAMPLE_STRUCT_SIZE,
     computeSampleVolumes,
 } from "./helpers";
-import { decodeAudioFile } from "./audio-decode";
+import {
+    convertToFloat,
+    decodeAudioFile,
+    DIG_F_16BITS_MASK,
+    DIG_F_ADPCM_MASK,
+    DIG_F_STEREO_MASK,
+    readAilSoundInfo,
+} from "./audio-decode";
 import { playSample, updateSamplePlayback, stopRingBuffer, resumeRingBuffer, applySample3D } from "./playback-engine";
 import { System } from "../../core/system";
 import { i32ToFloat } from "../../../audio/audio-ring-buffer";
@@ -554,6 +561,9 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
         return 0;
     };
 
+    // 3D handles share the same backing sample objects and user-data slots.
+    exports["_AIL_set_3D_user_data@12"] = exports["_AIL_set_sample_user_data@12"];
+
     // ==================== Miles 3D positional sample API ====================
     // 3D samples reuse the 2D sample lifecycle (alloc / file / start / stop / status /
     // volume / rate / loop) and add spatial state pushed into the ring buffer's
@@ -585,6 +595,63 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
     // _AIL_set_3D_sample_file@8(S3D, file_image) — WAV in guest memory, parses RIFF size itself
     exports["_AIL_set_3D_sample_file@8"] = (ctxThunk, mem, args) =>
         exports["_AIL_set_sample_file@12"]!(ctxThunk, mem, [args[0], args[1], 0]);
+
+    // AILSOUNDINFO points at an already-parsed audio data block (frequently the
+    // result of AIL_WAV_info). BFME uses this path for most positional effects.
+    exports["_AIL_set_3D_sample_info@8"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        const info = readAilSoundInfo(mem, args[1]);
+        if (!sample || !info || !info.dataPtr || info.dataLen === 0 ||
+            !MemoryGuard.isValidRange(mem, info.dataPtr, info.dataLen)) return 0;
+
+        resetSampleLoopState(sample);
+        const channels = Math.max(1, info.channels || ((info.format & DIG_F_STEREO_MASK) ? 2 : 1));
+        const bits = Math.max(8, info.bits || ((info.format & DIG_F_16BITS_MASK) ? 16 : 8));
+        const blockAlign = Math.max(1, info.blockSize || channels * Math.max(1, bits >> 3));
+        const formatTag = (info.format & DIG_F_ADPCM_MASK)
+            ? (ctx.wavFormatByDataPtr.get(info.dataPtr) ?? 17)
+            : 1;
+        const raw = mem.slice(info.dataPtr, info.dataPtr + info.dataLen);
+
+        sample.fileData = raw;
+        sample.fileDataAddress = info.dataPtr;
+        sample.fileDataAllocated = false;
+        sample.sampleRate = Math.max(1, info.rate || 22050);
+        sample.playbackRateHz = sample.sampleRate;
+        sample.channels = channels;
+        sample.bitsPerSample = bits;
+        sample.formatTag = formatTag;
+        sample.blockAlign = blockAlign;
+        sample.pcmBytes = info.dataLen;
+        sample.fileFormat = "wav";
+        try {
+            sample.decodedData = convertToFloat(raw, channels, bits, formatTag, blockAlign);
+        } catch (error) {
+            Logger.warn(LogCategory.SYSTEM, `MSS32: AILSOUNDINFO decode failed: ${error}`);
+            sample.decodedData = null;
+            return 0;
+        }
+        updateSampleMemory(ctx, sample, info.dataPtr, info.dataLen);
+        refreshSampleLenDone(ctx, sample);
+        return sample.decodedData.length > 0 ? 1 : 0;
+    };
+
+    exports["_AIL_register_3D_EOS_callback@8"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        if (!sample || sample.handle + 0x50 > mem.length) return 0;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const previous = view.getUint32(sample.handle + 0x4C, true);
+        view.setUint32(sample.handle + 0x4C, args[1] >>> 0, true);
+        return previous === 0xFFFFFFFF ? 0 : previous;
+    };
+
+    // Occlusion/reverb DSP is not implemented yet; store the value so future
+    // mixer upgrades and queries retain the application's state.
+    exports["_AIL_set_3D_sample_occlusion@8"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        if (sample) (sample as any).occlusion = i32ToFloat(args[1]);
+        return 0;
+    };
 
     exports["_AIL_start_3D_sample@4"] = (ctxThunk, mem, args) => {
         const r = exports["_AIL_start_sample@4"]!(ctxThunk, mem, args);

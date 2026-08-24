@@ -35,7 +35,6 @@ import { Mem } from "../../../core/memory/mem-accessor";
 import { sanitizeViewport } from "../ddraw/types";
 import { frameProfiler } from "../../../core/frame-profiler";
 import { framePacer } from "../../../core/frame-pacer";
-import { statsOverlay } from "../../../core/stats-overlay";
 import {
     compileVertexShader, compilePixelShader, linkProgram, computeCubeMask,
     CompiledVs, CompiledPs, RawVertexElement, PROG_BIND,
@@ -48,6 +47,7 @@ import {
     emitFfpComputeLighting,
     FFP_UNIFORM_FLOATS,
     FFP_MAX_LIGHTS,
+    FFP_MAX_TEXTURE_STAGES,
     packFfpUniforms,
     type FfpLightInput,
     type FfpMaterial,
@@ -84,10 +84,26 @@ const D3DRS_ALPHAFUNC = 25;
 const D3DRS_ALPHATESTENABLE = 15;
 const D3DCMP_ALWAYS = 8;
 
+// Stencil render states and operations (canonical d3d9types.h ordinals).
+const D3DRS_STENCILENABLE = 52;
+const D3DRS_STENCILFAIL = 53;
+const D3DRS_STENCILZFAIL = 54;
+const D3DRS_STENCILPASS = 55;
+const D3DRS_STENCILFUNC = 56;
+const D3DRS_STENCILREF = 57;
+const D3DRS_STENCILMASK = 58;
+const D3DRS_STENCILWRITEMASK = 59;
+const D3DRS_TWOSIDEDSTENCILMODE = 185;
+const D3DRS_CCW_STENCILFAIL = 186;
+const D3DRS_CCW_STENCILZFAIL = 187;
+const D3DRS_CCW_STENCILPASS = 188;
+const D3DRS_CCW_STENCILFUNC = 189;
+
 // D3DTSS_TEXTURETRANSFORMFLAGS: low bits are the coordinate count (D3DTTFF_COUNT1..4);
 // the D3DTTFF_PROJECTED bit requests a projective divide by the last coordinate component
 // in the pixel pipeline (projected spotlights, planar reflections).
 const D3DTSS_TEXTURETRANSFORMFLAGS = 24;
+const D3DTSS_TEXCOORDINDEX = 11;
 const D3DTTFF_PROJECTED = 0x100;
 
 const D3DFVF_XYZ = 0x0002;
@@ -125,6 +141,7 @@ const D3DRS_CLIPPLANEENABLE = 152;
 const D3DTS_WORLD = 0x100;
 const D3DTS_VIEW = 2;
 const D3DTS_PROJECTION = 3;
+const D3DTS_TEXTURE0 = 16;
 const D3DMATERIAL9_SIZE = 68;
 const D3DLIGHT9_SIZE = 104;
 
@@ -139,7 +156,6 @@ export class D3D9Device {
 
     private frameCount: number = 0;
     private lastOverlayClearFrame: number = -1;
-    private prevPresentTime: number = 0;
 
     private backend: WebGPUBackend;
     private memory: Uint8Array;
@@ -226,6 +242,9 @@ export class D3D9Device {
     // [diag] dedup'd recent SetRenderTarget resolutions + RT texture creations (harness rtDebug verb).
     private rtResolveLog: string[] = [];
     private rtCreateLog: string[] = [];
+    private drawRsTransitions: Array<Record<string, number>> = [];
+    private lastDrawRsTransitions: Array<Record<string, number>> = [];
+    private lastDrawRsSignature = "";
     /** Record a SetRenderTarget surface→texture resolution (dedup'd) for diagnostics. */
     noteRtResolve(surfacePtr: number, metaHit: boolean, texturePtr: number): void {
         const idx = texturePtr ? this.textures.getIndex(texturePtr) : null;
@@ -239,6 +258,61 @@ export class D3D9Device {
     /** HARNESS rtDebug verb: what SetRenderTarget saw + which textures were created as RTs. */
     getRtDebug(): { resolves: string[]; creates: string[]; currentRtIndex: number | null } {
         return { resolves: [...this.rtResolveLog], creates: [...this.rtCreateLog], currentRtIndex: this.currentRtIndex };
+    }
+
+    /** Harness-only D3D9 pipeline/stencil diagnostics. */
+    getGpuDebug(): unknown {
+        const rs = (n: number) => this.stateTracker.getRenderState(n) >>> 0;
+        return {
+            pipelines: this.pipelineCache.size,
+            programmablePipelines: this.progPipelineCache.size,
+            arenaPipelines: this.arenaPipelineCache.size,
+            metrics: this.backendExecutor.getMetrics(),
+            gpuOps: this.backendExecutor.getGpuOpHistory(),
+            stencil: {
+                enabled: rs(D3DRS_STENCILENABLE), fail: rs(D3DRS_STENCILFAIL),
+                zFail: rs(D3DRS_STENCILZFAIL), pass: rs(D3DRS_STENCILPASS),
+                func: rs(D3DRS_STENCILFUNC), ref: rs(D3DRS_STENCILREF),
+                mask: rs(D3DRS_STENCILMASK), writeMask: rs(D3DRS_STENCILWRITEMASK),
+                twoSided: rs(D3DRS_TWOSIDEDSTENCILMODE),
+                ccwFail: rs(D3DRS_CCW_STENCILFAIL), ccwZFail: rs(D3DRS_CCW_STENCILZFAIL),
+                ccwPass: rs(D3DRS_CCW_STENCILPASS), ccwFunc: rs(D3DRS_CCW_STENCILFUNC),
+            },
+            drawStateTransitions: this.lastDrawRsTransitions,
+        };
+    }
+
+    private traceDrawRenderState(): boolean {
+        const row = {
+            colorWrite: this.getRenderState(168) >>> 0,
+            alphaBlend: this.getRenderState(27) >>> 0,
+            srcBlend: this.getRenderState(19) >>> 0,
+            dstBlend: this.getRenderState(20) >>> 0,
+            zEnable: this.getRenderState(7) >>> 0,
+            zWrite: this.getRenderState(14) >>> 0,
+            stencil: this.getRS(D3DRS_STENCILENABLE) >>> 0,
+            stencilFunc: this.getRS(D3DRS_STENCILFUNC) >>> 0,
+            stencilRef: this.getRS(D3DRS_STENCILREF) >>> 0,
+            stencilFail: this.getRS(D3DRS_STENCILFAIL) >>> 0,
+            stencilZFail: this.getRS(D3DRS_STENCILZFAIL) >>> 0,
+            stencilPass: this.getRS(D3DRS_STENCILPASS) >>> 0,
+            twoSided: this.getRS(D3DRS_TWOSIDEDSTENCILMODE) >>> 0,
+            ccwZFail: this.getRS(D3DRS_CCW_STENCILZFAIL) >>> 0,
+            ccwPass: this.getRS(D3DRS_CCW_STENCILPASS) >>> 0,
+        };
+        const signature = Object.values(row).join(",");
+        if (signature !== this.lastDrawRsSignature && this.drawRsTransitions.length < 128) {
+            this.drawRsTransitions.push(row);
+            this.lastDrawRsSignature = signature;
+        }
+        const dbg = globalThis as any;
+        if (row.stencil !== 0 && dbg.__d3d9SkipStencilDraws === true) return true;
+        const textureIndex = this.stateTracker.getTexture(0);
+        const skip = dbg.__d3d9SkipTextureIndex;
+        if (textureIndex === null && dbg.__d3d9SkipNoTextureDraws === true) return true;
+        const fvfSkip = dbg.__d3d9SkipFvf;
+        if (fvfSkip === this.stateTracker.getFVF() || (Array.isArray(fvfSkip) && fvfSkip.includes(this.stateTracker.getFVF()))) return true;
+        return textureIndex !== null && (skip === textureIndex || (Array.isArray(skip) && skip.includes(textureIndex)));
     }
 
     /** HARNESS: last `n` per-present summaries (newest last). See frameLog verb. */
@@ -301,7 +375,7 @@ export class D3D9Device {
             const dev = this.backend.getDevice()!;
             const tex = dev.createTexture({
                 size: { width, height, depthOrArrayLayers: 1 },
-                format: "depth24plus",
+                format: "depth24plus-stencil8",
                 usage: GPUTextureUsage.RENDER_ATTACHMENT,
             });
             view = tex.createView();
@@ -396,6 +470,16 @@ export class D3D9Device {
     private boundTexturePtrs = new Array<number>(8).fill(0);
     private suppressStateBlockRecording = false;
     private viewport = { x: 0, y: 0, width: 800, height: 600, minZ: 0, maxZ: 1 };
+    /**
+     * Logical D3D9 backbuffer dimensions.  Do not derive these from the host
+     * canvas: the canvas resize is asynchronous and may temporarily be 1x1 (or
+     * be CSS/device-pixel scaled).  Likewise, the current viewport is not a
+     * render-target bound -- games legitimately use tiny viewports and restore
+     * the full viewport afterwards.  Using the previous viewport as the clamp
+     * bound made that restore impossible (1x1 became sticky in BFME).
+     */
+    private backBufferWidth = 800;
+    private backBufferHeight = 600;
 
     constructor(backend: WebGPUBackend, memory: Uint8Array) {
         this.backend = backend;
@@ -427,6 +511,8 @@ export class D3D9Device {
      */
     setBackBufferSize(width: number, height: number): void {
         if (width > 0 && height > 0) {
+            this.backBufferWidth = width;
+            this.backBufferHeight = height;
             System.getInstance().requestHostResize(width, height);
             this.viewport = { x: 0, y: 0, width, height, minZ: 0, maxZ: 1 };
         }
@@ -481,9 +567,11 @@ export class D3D9Device {
         d3d9PerfInc("setFVF");
         if (this.recordingStateBlock) {
             this.recordStateBlock({ op: "fvf", value: fvf });
+            this.syncSetterShadow('IDirect3DDevice9_SetFVF', 0, this.stateTracker.getFVF());
             return 0;
         }
         if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setFvf(fvf);
+        this.syncSetterShadow('IDirect3DDevice9_SetFVF', 0, fvf);
         if (!this.stateTracker.setFVF(fvf)) {
             d3d9PerfSkip("setFVF");
             return 0;
@@ -1414,11 +1502,18 @@ export class D3D9Device {
         if (stage < 0 || stage >= PROG_BIND.MAX_TEX) return 0;
         if (this.recordingStateBlock) {
             this.recordStateBlock({ op: "texture", stage, texPtr });
+            // Undo the trampoline's optimistic write: BeginStateBlock records
+            // without changing the live binding.
+            if (stage < 16) {
+                this.syncSetterShadow('IDirect3DDevice9_SetTexture', stage, this.boundTexturePtrs[stage] ?? 0);
+            }
             return 0;
         }
         if (stage < this.boundTexturePtrs.length) {
             this.boundTexturePtrs[stage] = texPtr;
         }
+        // Covers direct state-block Apply as well as the ordinary trampoline path.
+        if (stage < 16) this.syncSetterShadow('IDirect3DDevice9_SetTexture', stage, texPtr);
         if (texPtr === 0) {
             if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setTexture(stage, 0);
             if (!this.stateTracker.setTexture(stage, null)) {
@@ -1518,7 +1613,8 @@ export class D3D9Device {
     setTransform(state: number, matrix: Float32Array): number {
         d3d9PerfInc("setTransform");
         if (this.recordingStateBlock) {
-            if (state === D3DTS_WORLD || state === D3DTS_VIEW || state === D3DTS_PROJECTION) {
+            if (state === D3DTS_WORLD || state === D3DTS_VIEW || state === D3DTS_PROJECTION ||
+                (state >= D3DTS_TEXTURE0 && state < D3DTS_TEXTURE0 + 8)) {
                 this.recordStateBlock({ op: "transform", state, matrix: new Float32Array(matrix) });
             }
             return 0;
@@ -1534,6 +1630,9 @@ export class D3D9Device {
         if (state === D3DTS_WORLD) return this.stateTracker.getWorldMatrix();
         if (state === D3DTS_VIEW) return this.stateTracker.getViewMatrix();
         if (state === D3DTS_PROJECTION) return this.stateTracker.getProjectionMatrix();
+        if (state >= D3DTS_TEXTURE0 && state < D3DTS_TEXTURE0 + 8) {
+            return this.stateTracker.getTextureMatrix(state - D3DTS_TEXTURE0);
+        }
         return null;
     }
 
@@ -1547,6 +1646,11 @@ export class D3D9Device {
         const v = value >>> 0;
         if (this.recordingStateBlock) {
             this.recordStateBlock({ op: "textureStageState", stage, type, value: v });
+            // The trampoline writes optimistically before the state-block recorder
+            // decides not to apply. Restore the authoritative live value.
+            if (stage >= 0 && stage < 8 && type >= 0 && type < 64) {
+                this.syncSetterShadow('IDirect3DDevice9_SetTextureStageState', (stage << 6) | type, this.textureStageStates.get(key) ?? 0);
+            }
             return 0;
         }
         if (this.textureStageStates.get(key) === v) {
@@ -1554,6 +1658,11 @@ export class D3D9Device {
             return 0;
         }
         this.textureStageStates.set(key, v);
+        // Keep the guest shadow coherent for state-block Apply and all other
+        // paths that call the device directly rather than through its trampoline.
+        if (stage >= 0 && stage < 8 && type >= 0 && type < 64) {
+            this.syncSetterShadow('IDirect3DDevice9_SetTextureStageState', (stage << 6) | type, v);
+        }
         // Diagnostic: remember if the title ever requests projective texturing (D3DTTFF_PROJECTED).
         // A per-draw flag toggled on/off is invisible to a between-frames stage-state snapshot, so a
         // sticky counter + flag-union is the reliable "does this game project at all" signal.
@@ -1758,6 +1867,47 @@ export class D3D9Device {
         }
 
         const ambientVal = rs(D3DRS_AMBIENT) >>> 0;
+        const textureFactorVal = rs(60) >>> 0; // D3DRS_TEXTUREFACTOR
+        let material = this.parseMaterial();
+        let emissiveSrc = this.effectiveColorSource(rs(D3DRS_EMISSIVEMATERIALSOURCE), colorVertex, hasColor, hasSpecular);
+        if ((globalThis as any).__d3d9ForceFullbright === true) {
+            material = { ...material, emissive: { r: 1, g: 1, b: 1, a: 1 } };
+            emissiveSrc = D3DMCS_MATERIAL;
+        }
+        const stages: FfpUniformParams["stages"] = [];
+        let cascadeActive = true;
+        for (let stage = 0; stage < FFP_MAX_TEXTURE_STAGES; stage++) {
+            const rawColorOp = this.getTextureStageState(stage, 1);
+            const rawAlphaOp = this.getTextureStageState(stage, 4);
+            // Defaults from D3D9: stage 0 modulates texture × diffuse; subsequent
+            // stages are disabled until the game explicitly enables them.
+            let colorOp = rawColorOp || (stage === 0 ? 4 : 1);
+            const alphaOp = rawAlphaOp || (stage === 0 ? 2 : 1);
+            const bound = this.stateTracker.getTexture(stage);
+            const hasTexture = bound !== null && !this.isTextureConflictingWithActiveRt(bound) &&
+                !this.textures.isCubeMap(bound);
+            const colorArg1 = this.getTextureStageState(stage, 2) || 2;
+            const colorArg2 = this.getTextureStageState(stage, 3) || (stage === 0 ? 0 : 1);
+            const alphaArg1 = this.getTextureStageState(stage, 5) || 2;
+            const alphaArg2 = this.getTextureStageState(stage, 6) || (stage === 0 ? 0 : 1);
+            const needsTexture = (colorArg1 & 15) === 2 || (colorArg2 & 15) === 2 ||
+                (alphaOp !== 1 && ((alphaArg1 & 15) === 2 || (alphaArg2 & 15) === 2));
+            if (!cascadeActive || (stage > 0 && needsTexture && !hasTexture)) colorOp = 1;
+            cascadeActive = colorOp !== 1;
+            stages.push({
+                colorOp,
+                alphaOp,
+                colorArg1,
+                colorArg2,
+                alphaArg1,
+                alphaArg2,
+                texCoordIndex: this.getTextureStageState(stage, D3DTSS_TEXCOORDINDEX) >>> 0,
+                hasTexture,
+                transformFlags: this.getTextureStageState(stage, D3DTSS_TEXTURETRANSFORMFLAGS),
+                textureMatrix: this.stateTracker.getTextureMatrix(stage),
+            });
+        }
+
         const params: FfpUniformParams = {
             viewportW: vpW,
             viewportH: vpH,
@@ -1767,20 +1917,27 @@ export class D3D9Device {
             world: this.stateTracker.getWorldMatrix(),
             clipPlanes: this.ffpClipPlanesScratch,
             clipPlaneEnable,
-            material: this.parseMaterial(),
+            stages,
+            textureFactor: {
+                r: ((textureFactorVal >> 16) & 0xff) / 255,
+                g: ((textureFactorVal >> 8) & 0xff) / 255,
+                b: (textureFactorVal & 0xff) / 255,
+                a: ((textureFactorVal >> 24) & 0xff) / 255,
+            },
+            material,
             globalAmbient: {
                 r: ((ambientVal >> 16) & 0xff) / 255,
                 g: ((ambientVal >> 8) & 0xff) / 255,
                 b: (ambientVal & 0xff) / 255,
                 a: ((ambientVal >> 24) & 0xff) / 255,
             },
-            lightingEnabled: rs(D3DRS_LIGHTING) !== 0,
+            lightingEnabled: rs(D3DRS_LIGHTING) !== 0 && (globalThis as any).__d3d9ForceUnlit !== true,
             specularEnable: rs(D3DRS_SPECULARENABLE) !== 0,
             localViewer: rs(D3DRS_LOCALVIEWER) !== 0,
             diffuseSrc: this.effectiveColorSource(rs(D3DRS_DIFFUSEMATERIALSOURCE), colorVertex, hasColor, hasSpecular),
             ambientSrc: this.effectiveColorSource(rs(D3DRS_AMBIENTMATERIALSOURCE), colorVertex, hasColor, hasSpecular),
             specularSrc: this.effectiveColorSource(rs(D3DRS_SPECULARMATERIALSOURCE), colorVertex, hasColor, hasSpecular),
-            emissiveSrc: this.effectiveColorSource(rs(D3DRS_EMISSIVEMATERIALSOURCE), colorVertex, hasColor, hasSpecular),
+            emissiveSrc,
             hasNormal,
             lights,
         };
@@ -1791,7 +1948,7 @@ export class D3D9Device {
     clear(flags: number, color: number, z: number, stencil: number): number {
         d3d9PerfInc("clear");
         const clearColor = d3dColorToGpu(color);
-        this.commandRecorder.setClear(clearColor, z, flags);
+        this.commandRecorder.setClear(clearColor, z, stencil, flags);
 
         // Update frame snapshot counter
         if (this.frameSnapshot.frameCounters) {
@@ -1838,6 +1995,8 @@ export class D3D9Device {
         );
 
         System.getInstance().requestHostResize(width, height);
+        this.backBufferWidth = width;
+        this.backBufferHeight = height;
         this.viewport = { x: 0, y: 0, width, height, minZ: 0, maxZ: 1 };
         this.endScene();
         return 0; // D3D_OK
@@ -1846,8 +2005,9 @@ export class D3D9Device {
     setViewport(pViewport: number, mem: Uint8Array): number {
         if (!pViewport || !isValidAddress(mem, pViewport, 24)) return 0x8876086c;
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-        const targetW = this.viewport.width || 800;
-        const targetH = this.viewport.height || 600;
+        // Clamp against the actual render target, never against the previous
+        // viewport.  A legal 1x1 viewport must not prevent a later 800x600 one.
+        const { w: targetW, h: targetH } = this.getCurrentTargetSize();
         this.viewport = sanitizeViewport({
             x: view.getUint32(pViewport + 0, true),
             y: view.getUint32(pViewport + 4, true),
@@ -1867,17 +2027,114 @@ export class D3D9Device {
      *  no FFP render-state arrays, so it records a backend-tagged minimal draw
      *  (primitive/counts/textured/programmable) into the one schema. Placed before
      *  the trilist guard so non-trilist draws are still counted. Gated → zero cost. */
-    private captureDrawIfArmed(primitiveType: number, primitiveCount: number): void {
+    private captureDrawIfArmed(primitiveType: number, primitiveCount: number, startVertex: number = 0): void {
         if (!frameCapture.isCapturing()) return;
         const stage0 = this.stateTracker.getTexture(0);
+        const fvf = this.stateTracker.getFVF() >>> 0;
+        const stream = this.stateTracker.getStreamSource();
+        const captureMaterial = this.parseMaterial();
+        const captureLights = [...this.lightEnables.entries()]
+            .filter(([, enabled]) => enabled !== 0)
+            .sort(([a], [b]) => a - b)
+            .map(([index]) => {
+                const raw = this.lights.get(index);
+                return raw ? { index, light: this.parseLight(raw) } : null;
+            })
+            .filter((entry): entry is { index: number; light: FfpLightInput } => entry !== null);
+        const posType = fvf & 0x00e;
+        const isRHW = posType === 0x004;
+        const firstVertices: Array<{
+            x: number; y: number; z: number; w?: number;
+            nx?: number; ny?: number; nz?: number;
+            diffuse?: number;
+            u?: number; v?: number;
+        }> = [];
+        if (stream) {
+            const bytes = this.vertexBuffers.getData(stream.index);
+            if (bytes && stream.stride >= 12) {
+                const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                for (let i = 0; i < Math.min(4, primitiveCount * 3); i++) {
+                    const off = stream.offset + (startVertex + i) * stream.stride;
+                    if (off < 0 || off + (isRHW ? 16 : 12) > bytes.byteLength) break;
+                    const vertex: {
+                        x: number; y: number; z: number; w?: number;
+                        nx?: number; ny?: number; nz?: number;
+                        diffuse?: number;
+                        u?: number; v?: number;
+                    } = {
+                        x: view.getFloat32(off, true),
+                        y: view.getFloat32(off + 4, true),
+                        z: view.getFloat32(off + 8, true),
+                    };
+                    if (isRHW) vertex.w = view.getFloat32(off + 12, true);
+                    // Include the common BFME FFP fields in captures. This is deliberately
+                    // derived from the active FVF instead of assuming one hard-coded layout.
+                    // It makes lighting/texture failures diagnosable without copying an entire VB.
+                    const layout = parseFvf(fvf);
+                    if (layout.hasNormal && off + layout.normalOff + 12 <= bytes.byteLength) {
+                        vertex.nx = view.getFloat32(off + layout.normalOff, true);
+                        vertex.ny = view.getFloat32(off + layout.normalOff + 4, true);
+                        vertex.nz = view.getFloat32(off + layout.normalOff + 8, true);
+                    }
+                    if (layout.hasColor && off + layout.colorOff + 4 <= bytes.byteLength) {
+                        vertex.diffuse = view.getUint32(off + layout.colorOff, true);
+                    }
+                    if (layout.hasTex && off + layout.texOff + 8 <= bytes.byteLength) {
+                        vertex.u = view.getFloat32(off + layout.texOff, true);
+                        vertex.v = view.getFloat32(off + layout.texOff + 4, true);
+                    }
+                    firstVertices.push(vertex);
+                }
+            }
+        }
         frameCapture.recordRawDraw({
             backend: "d3d9",
             primitiveType,
             primitiveTypeName: `D3DPT(${primitiveType})`,
+            vertexType: fvf,
             vertexCount: primitiveCount * 3,
+            isRHW,
+            srcStride: stream?.stride ?? 0,
+            firstVertices,
             programmable: (this as any).isProgrammable?.() ?? false,
             derivedUseTexture: stage0 != null,
-            warnings: stage0 != null ? [`tex0 store-index=${stage0}`] : [],
+            alphaBlendEnabled: this.getRenderState(27),
+            srcBlend: this.getRenderState(19),
+            dstBlend: this.getRenderState(20),
+            alphaTestEnabled: this.getRenderState(15),
+            alphaFunc: this.getRenderState(25),
+            alphaRef: this.getRenderState(24),
+            zEnable: this.getRenderState(7),
+            zWrite: this.getRenderState(14),
+            cullMode: this.getRenderState(22),
+            lightingEnabled: this.getRenderState(137),
+            fogEnabled: this.getRenderState(28),
+            colorOp: this.getTextureStageState(0, 1),
+            colorArg1: this.getTextureStageState(0, 2),
+            colorArg2: this.getTextureStageState(0, 3),
+            alphaOp: this.getTextureStageState(0, 4),
+            alphaArg1: this.getTextureStageState(0, 5),
+            alphaArg2: this.getTextureStageState(0, 6),
+            stage0SamplerState: {
+                addressU: this.getSamplerState(0, 1),
+                addressV: this.getSamplerState(0, 2),
+                magFilter: this.getSamplerState(0, 5),
+                minFilter: this.getSamplerState(0, 6),
+                mipFilter: this.getSamplerState(0, 7),
+                maxAnisotropy: this.getSamplerState(0, 10),
+            },
+            mvp: Array.from(this.stateTracker.getMVP()),
+            viewport: { ...this.viewport },
+            warnings: [
+                ...(stage0 != null ? [`tex0 store-index=${stage0}`] : []),
+                ...(stream ? [`vb store-index=${stream.index} offset=${stream.offset}`] : ["no stream source"]),
+                `colorWrite=0x${(this.getRenderState(168) >>> 0).toString(16)}`,
+                `stencil=${this.getRenderState(D3DRS_STENCILENABLE)} func=${this.getRenderState(D3DRS_STENCILFUNC)} ref=${this.getRenderState(D3DRS_STENCILREF)} fail/zfail/pass=${this.getRenderState(D3DRS_STENCILFAIL)}/${this.getRenderState(D3DRS_STENCILZFAIL)}/${this.getRenderState(D3DRS_STENCILPASS)} mask=0x${(this.getRenderState(D3DRS_STENCILMASK) >>> 0).toString(16)} write=0x${(this.getRenderState(D3DRS_STENCILWRITEMASK) >>> 0).toString(16)} two=${this.getRenderState(D3DRS_TWOSIDEDSTENCILMODE)}`,
+                `lighting colorVertex=${this.getRenderState(D3DRS_COLORVERTEX)} sources=${this.getRenderState(D3DRS_DIFFUSEMATERIALSOURCE)}/${this.getRenderState(D3DRS_AMBIENTMATERIALSOURCE)}/${this.getRenderState(D3DRS_SPECULARMATERIALSOURCE)}/${this.getRenderState(D3DRS_EMISSIVEMATERIALSOURCE)} ambient=0x${(this.getRenderState(D3DRS_AMBIENT) >>> 0).toString(16)} lights=${[...this.lightEnables.values()].filter(Boolean).length}`,
+                `material diffuse=${JSON.stringify(captureMaterial.diffuse)} ambient=${JSON.stringify(captureMaterial.ambient)} emissive=${JSON.stringify(captureMaterial.emissive)} power=${captureMaterial.power}`,
+                ...captureLights.map(({ index, light }) => `light${index} type=${light.type} diffuse=${JSON.stringify(light.diffuse)} ambient=${JSON.stringify(light.ambient)} pos=${light.position.join(",")} dir=${light.direction.join(",")} range=${light.range} att=${light.att0},${light.att1},${light.att2}`),
+                `stage0 op=${this.getTextureStageState(0, 1)}/${this.getTextureStageState(0, 4)} args=${this.getTextureStageState(0, 2)}/${this.getTextureStageState(0, 3)}/${this.getTextureStageState(0, 5)}/${this.getTextureStageState(0, 6)} tci=${this.getTextureStageState(0, D3DTSS_TEXCOORDINDEX)}`,
+            ],
         });
     }
 
@@ -1894,8 +2151,7 @@ export class D3D9Device {
     private getCurrentTargetSize(): { w: number; h: number } {
         const rt = this.currentRtIndex;
         if (rt !== null) return { w: this.textures.getWidth(rt), h: this.textures.getHeight(rt) };
-        const s = this.backendExecutor.getCanvasSize();
-        return { w: s.width, h: s.height };
+        return { w: this.backBufferWidth, h: this.backBufferHeight };
     }
 
     /**
@@ -2037,9 +2293,11 @@ export class D3D9Device {
         device.queue.writeBuffer(gpuBuffer, 0, view);
 
         const pipelineId = this.getPointSpritePipelineId(outFvf);
+        const fixedStateIndex = this.captureFixedFunctionDrawState();
+        this.commandRecorder.setStencilReference(this.getRS(D3DRS_STENCILREF));
         this.commandRecorder.recordDraw({
             pipelineId, gpuBuffer, bufferOffset: 0, bufferSize: outBytes,
-            vertexCount: outVerts, startVertex: 0,
+            vertexCount: outVerts, startVertex: 0, fixedStateIndex,
         });
         this.commandRecorder.registerPooledBuffer(gpuBuffer);
         this.drawCount += 1;
@@ -2047,9 +2305,31 @@ export class D3D9Device {
         return true;
     }
 
+    /** Snapshot only the byte range touched by Lock/Unlock since the previous draw.
+     *  Expanding to four-byte boundaries satisfies WebGPU copy alignment while the
+     *  logical D3D buffer remains byte-exact. */
+    private queueDirtyVertexBuffer(index: number, gpuBuffer: GPUBuffer, data: Uint8Array): number {
+        const start = this.vertexBuffers.getDirtyStart(index) & ~3;
+        const end = Math.min(data.byteLength, (this.vertexBuffers.getDirtyEnd(index) + 3) & ~3);
+        if (end <= start) return 0;
+        this.commandRecorder.queueUpload(gpuBuffer, data.subarray(start, end), start);
+        this.vertexBuffers.setDirty(index, false);
+        return end - start;
+    }
+
+    private queueDirtyIndexBuffer(index: number, gpuBuffer: GPUBuffer, data: Uint8Array): number {
+        const start = this.indexBuffers.getDirtyStart(index) & ~3;
+        const end = Math.min(data.byteLength, (this.indexBuffers.getDirtyEnd(index) + 3) & ~3);
+        if (end <= start) return 0;
+        this.commandRecorder.queueUpload(gpuBuffer, data.subarray(start, end), start);
+        this.indexBuffers.setDirty(index, false);
+        return end - start;
+    }
+
     drawPrimitive(primitiveType: number, startVertex: number, primitiveCount: number): number {
         d3d9PerfInc("drawPrimitive");
-        this.captureDrawIfArmed(primitiveType, primitiveCount);
+        if (this.traceDrawRenderState()) return 0;
+        this.captureDrawIfArmed(primitiveType, primitiveCount, startVertex);
         if (primitiveType === D3DPT_POINTLIST) {
             const ss = this.stateTracker.getStreamSource();
             const vb = ss ? this.vertexBuffers.getData(ss.index) : null;
@@ -2071,19 +2351,18 @@ export class D3D9Device {
         let gpuBuffer = this.vertexBuffers.getGpuBuffer(vbIndex);
         if (!gpuBuffer) {
             gpuBuffer = device.createBuffer({
-                size: this.vertexBuffers.getSize(vbIndex),
+                size: (this.vertexBuffers.getSize(vbIndex) + 3) & ~3,
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             });
             this.vertexBuffers.setGpuBuffer(vbIndex, gpuBuffer);
         }
 
         if (this.vertexBuffers.isDirty(vbIndex)) {
-            this.commandRecorder.queueUpload(gpuBuffer, vbData);
-            this.vertexBuffers.setDirty(vbIndex, false);
+            const uploadedBytes = this.queueDirtyVertexBuffer(vbIndex, gpuBuffer, vbData);
             
             if (this.frameSnapshot.frameCounters) {
                 this.frameSnapshot.frameCounters.uploads++;
-                this.frameSnapshot.frameCounters.vertexBytes += vbData.byteLength;
+                this.frameSnapshot.frameCounters.vertexBytes += uploadedBytes;
             }
         }
 
@@ -2099,13 +2378,16 @@ export class D3D9Device {
 
         let pipelineId: number;
         let bindStateIndex: number | undefined;
+        let fixedStateIndex: number | undefined;
         if (this.isProgrammable()) {
             pipelineId = this.resolveProgrammablePipeline("triangle-list", false, undefined, arenaKey);
             if (pipelineId < 0) return 0;
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineId();
+            fixedStateIndex = this.captureFixedFunctionDrawState();
         }
+        this.commandRecorder.setStencilReference(this.getRS(D3DRS_STENCILREF));
         this.commandRecorder.recordDraw({
             pipelineId,
             gpuBuffer,
@@ -2114,6 +2396,7 @@ export class D3D9Device {
             vertexCount: primitiveCount * 3,
             startVertex,
             bindStateIndex,
+            fixedStateIndex,
         });
         this.drawCount += 1;
 
@@ -2143,6 +2426,7 @@ export class D3D9Device {
 
     drawPrimitiveUP(primitiveType: number, primitiveCount: number, vertexDataPtr: number, stride: number): number {
         d3d9PerfInc("drawPrimitiveUP");
+        if (this.traceDrawRenderState()) return 0;
         if (primitiveCount <= 0) return 0;
         this.captureDrawIfArmed(primitiveType, primitiveCount); // harness capture (UP renders non-trilist too)
 
@@ -2260,14 +2544,17 @@ export class D3D9Device {
         // Force cull none for UP draws - D3D9 and WebGPU have different winding conventions
         let pipelineId: number;
         let bindStateIndex: number | undefined;
+        let fixedStateIndex: number | undefined;
         if (this.isProgrammable()) {
             pipelineId = this.resolveProgrammablePipeline(topology, true, stride, arenaKey);
             if (pipelineId < 0) { this.commandRecorder.registerPooledBuffer(gpuBuffer); return 0; }
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineIdForTopology(topology, true);
+            fixedStateIndex = this.captureFixedFunctionDrawState();
         }
 
+        this.commandRecorder.setStencilReference(this.getRS(D3DRS_STENCILREF));
         this.commandRecorder.recordDraw({
             pipelineId,
             gpuBuffer,
@@ -2276,6 +2563,7 @@ export class D3D9Device {
             vertexCount: finalVertexCount,
             startVertex: 0,
             bindStateIndex,
+            fixedStateIndex,
         });
 
         this.commandRecorder.registerPooledBuffer(gpuBuffer);
@@ -2310,7 +2598,8 @@ export class D3D9Device {
         primitiveCount: number
     ): number {
         d3d9PerfInc("drawIndexedPrimitive");
-        this.captureDrawIfArmed(primitiveType, primitiveCount);
+        if (this.traceDrawRenderState()) return 0;
+        this.captureDrawIfArmed(primitiveType, primitiveCount, baseVertexIndex + minVertexIndex);
         if (primitiveType !== D3DPT_TRIANGLELIST) return 0;
         const streamSource = this.stateTracker.getStreamSource();
         if (!streamSource) return 0;
@@ -2327,7 +2616,7 @@ export class D3D9Device {
         let vbBuffer = this.vertexBuffers.getGpuBuffer(vbIndex);
         if (!vbBuffer) {
             vbBuffer = device.createBuffer({
-                size: this.vertexBuffers.getSize(vbIndex),
+                size: (this.vertexBuffers.getSize(vbIndex) + 3) & ~3,
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             });
             this.vertexBuffers.setGpuBuffer(vbIndex, vbBuffer);
@@ -2336,29 +2625,27 @@ export class D3D9Device {
         let ibBuffer = this.indexBuffers.getGpuBuffer(ibIndex);
         if (!ibBuffer) {
             ibBuffer = device.createBuffer({
-                size: this.indexBuffers.getSize(ibIndex),
+                size: (this.indexBuffers.getSize(ibIndex) + 3) & ~3,
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
             });
             this.indexBuffers.setGpuBuffer(ibIndex, ibBuffer);
         }
 
         if (this.vertexBuffers.isDirty(vbIndex)) {
-            this.commandRecorder.queueUpload(vbBuffer, vbData);
-            this.vertexBuffers.setDirty(vbIndex, false);
+            const uploadedBytes = this.queueDirtyVertexBuffer(vbIndex, vbBuffer, vbData);
             
             if (this.frameSnapshot.frameCounters) {
                 this.frameSnapshot.frameCounters.uploads++;
-                this.frameSnapshot.frameCounters.vertexBytes += vbData.byteLength;
+                this.frameSnapshot.frameCounters.vertexBytes += uploadedBytes;
             }
         }
         if (this.indexBuffers.isDirty(ibIndex)) {
-            this.commandRecorder.queueUpload(ibBuffer, ibData);
-            this.indexBuffers.setDirty(ibIndex, false);
+            const uploadedBytes = this.queueDirtyIndexBuffer(ibIndex, ibBuffer, ibData);
             
             if (this.frameSnapshot.frameCounters) {
                 this.frameSnapshot.frameCounters.uploads++;
                 // vertexBytes used for all geometry data
-                this.frameSnapshot.frameCounters.vertexBytes += ibData.byteLength;
+                this.frameSnapshot.frameCounters.vertexBytes += uploadedBytes;
             }
         }
 
@@ -2373,13 +2660,16 @@ export class D3D9Device {
 
         let pipelineId: number;
         let bindStateIndex: number | undefined;
+        let fixedStateIndex: number | undefined;
         if (this.isProgrammable()) {
             pipelineId = this.resolveProgrammablePipeline("triangle-list", false, undefined, arenaKey);
             if (pipelineId < 0) return 0;
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineId();
+            fixedStateIndex = this.captureFixedFunctionDrawState();
         }
+        this.commandRecorder.setStencilReference(this.getRS(D3DRS_STENCILREF));
         this.commandRecorder.recordDrawIndexed({
             pipelineId,
             vbGpuBuffer: vbBuffer,
@@ -2391,6 +2681,7 @@ export class D3D9Device {
             startIndex,
             baseVertex: baseVertexIndex,
             bindStateIndex,
+            fixedStateIndex,
         });
         this.drawCount += 1;
 
@@ -2466,13 +2757,6 @@ export class D3D9Device {
         frameProfiler.endTimer("present", presentStart);
         frameProfiler.markFrame("d3d9");
 
-        // Feed frame time to stats overlay
-        const now = performance.now();
-        if (this.prevPresentTime > 0) {
-            statsOverlay.updateMetrics(now - this.prevPresentTime);
-        }
-        this.prevPresentTime = now;
-
         // Release frame slot for FramePacer
         framePacer.releaseFrameSlot();
 
@@ -2528,8 +2812,22 @@ export class D3D9Device {
 
     /** HARNESS: per-texture metadata for the texture gallery. The
      *  TextureStore is private; this is the read-only enumeration accessor. */
-    getTexturesDebugInfo(): Array<{ handle: number; width: number; height: number; levels: number; format: number; isDirty: boolean; isLocked: boolean; hasGpuTexture: boolean }> {
+    getTexturesDebugInfo(): Array<{ index: number; handle: number; width: number; height: number; levels: number; format: number; isDirty: boolean; isLocked: boolean; hasGpuTexture: boolean }> {
         return this.textures.getAllDebugInfo();
+    }
+
+    /** HARNESS: decode one texture-store slot without touching its live GPU object. */
+    getTextureDebugPixels(index: number): { rgba: Uint8Array; width: number; height: number; format: number; handle: number } | null {
+        const info = this.textures.getAllDebugInfo().find((entry) => entry.index === (index | 0));
+        if (!info || this.textures.isRenderTarget(info.index) || this.textures.isCubeMap(info.index)) return null;
+        const data = this.textures.getData(info.index);
+        if (!data) return null;
+        const rgba = new Uint8Array(info.width * info.height * 4);
+        decodeD3DTextureToRgba8(data, 0, info.width, info.height, info.format, {
+            pitch: this.textures.getPitch(info.index),
+            out: rgba,
+        });
+        return { rgba, width: info.width, height: info.height, format: info.format, handle: info.handle };
     }
 
     /**
@@ -2582,25 +2880,83 @@ export class D3D9Device {
         return at ? `a${at.func}.${at.ref}` : "a0";
     }
 
+    private stencilCompare(value: number): GPUCompareFunction {
+        switch (value) {
+            case 1: return "never";
+            case 2: return "less";
+            case 3: return "equal";
+            case 4: return "less-equal";
+            case 5: return "greater";
+            case 6: return "not-equal";
+            case 7: return "greater-equal";
+            default: return "always";
+        }
+    }
+
+    private stencilOperation(value: number): GPUStencilOperation {
+        switch (value) {
+            case 2: return "zero";
+            case 3: return "replace";
+            case 4: return "increment-clamp";
+            case 5: return "decrement-clamp";
+            case 6: return "invert";
+            case 7: return "increment-wrap";
+            case 8: return "decrement-wrap";
+            default: return "keep";
+        }
+    }
+
+    /** WebGPU depth/stencil pipeline state corresponding to the current D3D9 states. */
+    private buildDepthStencilState(zEnable: boolean, zWrite: boolean): GPUDepthStencilState {
+        const stencilEnabled = this.getRS(D3DRS_STENCILENABLE) !== 0;
+        const front: GPUStencilFaceState = stencilEnabled ? {
+            compare: this.stencilCompare(this.getRS(D3DRS_STENCILFUNC)),
+            failOp: this.stencilOperation(this.getRS(D3DRS_STENCILFAIL)),
+            depthFailOp: this.stencilOperation(this.getRS(D3DRS_STENCILZFAIL)),
+            passOp: this.stencilOperation(this.getRS(D3DRS_STENCILPASS)),
+        } : { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" };
+        const twoSided = stencilEnabled && this.getRS(D3DRS_TWOSIDEDSTENCILMODE) !== 0;
+        const back: GPUStencilFaceState = twoSided ? {
+            compare: this.stencilCompare(this.getRS(D3DRS_CCW_STENCILFUNC)),
+            failOp: this.stencilOperation(this.getRS(D3DRS_CCW_STENCILFAIL)),
+            depthFailOp: this.stencilOperation(this.getRS(D3DRS_CCW_STENCILZFAIL)),
+            passOp: this.stencilOperation(this.getRS(D3DRS_CCW_STENCILPASS)),
+        } : front;
+        return {
+            format: "depth24plus-stencil8",
+            depthWriteEnabled: zWrite,
+            depthCompare: zEnable ? "less-equal" : "always",
+            stencilFront: front,
+            stencilBack: back,
+            stencilReadMask: stencilEnabled ? (this.getRS(D3DRS_STENCILMASK) & 0xff) : 0xff,
+            stencilWriteMask: stencilEnabled ? (this.getRS(D3DRS_STENCILWRITEMASK) & 0xff) : 0,
+        };
+    }
+
+    /** Pipeline identity fragment for every stencil state baked by WebGPU. REF is dynamic. */
+    private stencilKey(): string {
+        if (this.getRS(D3DRS_STENCILENABLE) === 0) return "|s0";
+        return `|s1:${this.getRS(D3DRS_STENCILFAIL)},${this.getRS(D3DRS_STENCILZFAIL)},${this.getRS(D3DRS_STENCILPASS)},${this.getRS(D3DRS_STENCILFUNC)},${this.getRS(D3DRS_STENCILMASK) & 0xff},${this.getRS(D3DRS_STENCILWRITEMASK) & 0xff},${this.getRS(D3DRS_TWOSIDEDSTENCILMODE)},${this.getRS(D3DRS_CCW_STENCILFAIL)},${this.getRS(D3DRS_CCW_STENCILZFAIL)},${this.getRS(D3DRS_CCW_STENCILPASS)},${this.getRS(D3DRS_CCW_STENCILFUNC)}`;
+    }
+
     /** Pipeline cache key = numeric state/decl/VS key + current blend + alpha test. */
     private blendCacheKey(numericKey: number): string {
-        return `${numericKey}|${computeBlendKey(this.getRS)}|${this.alphaTestKey()}`;
+        return `${numericKey}|${computeBlendKey(this.getRS)}|${this.alphaTestKey()}${this.stencilKey()}`;
     }
 
     private getPipelineId(): number {
         const key = this.buildPipelineKey();
-        const cacheKey = this.blendCacheKey(key);
+        const forceCullNone = (globalThis as any).__d3d9ForceCullNone === true;
+        const cacheKey = `${forceCullNone ? "fc1" : "fc0"}|${this.blendCacheKey(key)}`;
         if (this.currentPipelineKey !== cacheKey || this.currentPipelineId === null) {
             this.currentPipelineKey = cacheKey;
-            this.currentPipelineId = this.resolvePipelineId(key, "triangle-list", false);
+            this.currentPipelineId = this.resolvePipelineId(key, "triangle-list", forceCullNone);
         }
         return this.currentPipelineId ?? 0;
     }
 
     private getPipelineIdForTopology(topology: "triangle-list" | "line-list", forceCullNone: boolean = false): number {
-        const topologyOffset = topology === "line-list" ? 0x1000000 : 0;
-        const cullOffset = forceCullNone ? 0x2000000 : 0;
-        const key = this.buildPipelineKey(topologyOffset, cullOffset);
+        const key = this.buildPipelineKey();
         return this.resolvePipelineId(key, topology, forceCullNone);
     }
 
@@ -2611,7 +2967,7 @@ export class D3D9Device {
      * never back-face-culls points).
      */
     private getPointSpritePipelineId(syntheticFvf: number): number {
-        const key = this.buildPipelineKey(0, 0x2000000);
+        const key = this.buildPipelineKey();
         return this.resolvePipelineId(key, "triangle-list", true, syntheticFvf);
     }
 
@@ -2623,7 +2979,12 @@ export class D3D9Device {
     ): number {
         // Synthetic-FVF pipelines (point sprites) get their own cache namespace so they never
         // alias the game's decl/FVF pipelines that hash to the same numeric key.
-        const cacheKey = fvfOverride !== undefined ? `ps${fvfOverride}|${this.blendCacheKey(key)}` : this.blendCacheKey(key);
+        // Topology/cull are cache namespace, not numeric key offsets: bits 24-26
+        // already encode lighting/Z states and arithmetic offsets silently corrupt them.
+        const namespace = `${topology}|fc${forceCullNone ? 1 : 0}|`;
+        const cacheKey = fvfOverride !== undefined
+            ? `${namespace}ps${fvfOverride}|${this.blendCacheKey(key)}`
+            : `${namespace}${this.blendCacheKey(key)}`;
         const cachedId = this.pipelineCache.get(cacheKey);
         if (cachedId !== undefined) {
             d3d9PerfBackendInc("pipelineCacheHits");
@@ -2672,7 +3033,13 @@ export class D3D9Device {
             const fvf = this.stateTracker.getFVF();
             const layout = buildVertexLayout(fvf);
             shaderModule = gpuDevice.createShaderModule({ code: buildShader(fvf, alphaTest, lit) });
-            vertexBufferLayout = { arrayStride: layout.arrayStride, attributes: layout.attributes };
+            // SetStreamSource.Stride is authoritative. Applications may pad a
+            // perfectly ordinary FVF vertex (BFME uses a 24-byte
+            // XYZ|DIFFUSE|TEX1 declaration in a 32-byte stream). Advancing by the
+            // packed FVF size reads every vertex after the first at the wrong byte
+            // offset and produces screen-spanning triangles.
+            const stride = streamSource?.stride ?? layout.arrayStride;
+            vertexBufferLayout = { arrayStride: stride || layout.arrayStride, attributes: layout.attributes };
             hasTexture = layout.hasTexture;
         }
 
@@ -2703,11 +3070,7 @@ export class D3D9Device {
                 frontFace: "cw",
                 cullMode,
             },
-            depthStencil: {
-                format: "depth24plus",
-                depthWriteEnabled: zWrite !== 0,
-                depthCompare: zEnable !== 0 ? "less-equal" : "always",
-            },
+            depthStencil: this.buildDepthStencilState(zEnable !== 0, zWrite !== 0),
         });
 
         const pipelineId = this.backendExecutor.registerPipeline(pipeline, hasTexture);
@@ -2745,7 +3108,7 @@ export class D3D9Device {
         // Per-stage D3DTTFF_PROJECTED key — part of the pipeline identity: the same ps_1_x shader
         // compiles to a projective-divide sample vs a plain sample depending on the stage flag.
         const projKey = this.projectedStageKey();
-        const blendKey = computeBlendKey(this.getRS);
+        const blendKey = computeBlendKey(this.getRS) + this.stencilKey();
         const alphaKey = this.alphaTestKey();
 
         // Fast path: identical pipeline identity as the previous draw → return without building the
@@ -2847,11 +3210,7 @@ export class D3D9Device {
                 },
                 fragment: { module, entryPoint: "fs_main", targets: [buildColorTargetState(format, this.getRS)] },
                 primitive: { topology, frontFace: "cw", cullMode },
-                depthStencil: {
-                    format: "depth24plus",
-                    depthWriteEnabled: zWrite !== 0,
-                    depthCompare: zEnable !== 0 ? "less-equal" : "always",
-                },
+                depthStencil: this.buildDepthStencilState(zEnable !== 0, zWrite !== 0),
             });
             return this.backendExecutor.registerPipeline(pipeline, link.hasTexture, true);
         } catch (e) {
@@ -3032,6 +3391,9 @@ export class D3D9Device {
             if (this.frameLogRing.length > 240) this.frameLogRing.shift();
             this.rtSetsThisFrame = 0;
             this.rtNonBackThisFrame = 0;
+            this.lastDrawRsTransitions = this.drawRsTransitions;
+            this.drawRsTransitions = [];
+            this.lastDrawRsSignature = "";
         }
         const size = this.backendExecutor.getCanvasSize();
         // When a render target is active, the pass renders into that texture (its own size +
@@ -3162,8 +3524,8 @@ export class D3D9Device {
         return this.currentRtIndex !== null && textureIndex === this.currentRtIndex;
     }
 
-    private resolveCurrentTexture(): GPUTextureView | null {
-        const textureIndex = this.stateTracker.getTexture(0);
+    private resolveStageTexture(stage: number): GPUTextureView | null {
+        const textureIndex = this.stateTracker.getTexture(stage);
         if (textureIndex === null) {
             return null;
         }
@@ -3174,6 +3536,28 @@ export class D3D9Device {
         if (this.textures.isCubeMap(textureIndex)) return null;
         this.ensureTexture(textureIndex);
         return this.textures.getView(textureIndex);
+    }
+
+    private resolveCurrentTexture(): GPUTextureView | null {
+        return this.resolveStageTexture(0);
+    }
+
+    /** Snapshot all fixed-function state consumed by a draw. A single frame-wide
+     * snapshot is incorrect: games change textures/transforms/materials between
+     * virtually every UI or world batch before Present. */
+    private captureFixedFunctionDrawState(): number {
+        const frame = this.commandRecorder.getCurrentFrame();
+        const index = frame.fixedStateCount;
+        const { w, h } = this.getCurrentTargetSize();
+        const block = this.buildFfpUniformBlock(w, h);
+        const state = frame.nextFixedState(block.length);
+        state.uniforms.set(block);
+        const forceWhite = (globalThis as any).__d3d9ForceWhiteTexture === true;
+        for (let stage = 0; stage < FFP_MAX_TEXTURE_STAGES; stage++) {
+            state.textures[stage] = forceWhite ? null : this.resolveStageTexture(stage);
+            state.samplers[stage] = this.resolveStageSampler(stage);
+        }
+        return index;
     }
 
     private ensureTexture(index: number): void {
@@ -3285,13 +3669,15 @@ export class D3D9Device {
     private ensureDxtTexture(index: number, device: GPUDevice, data: Uint8Array, format: number): void {
         const width = this.textures.getWidth(index);
         const height = this.textures.getHeight(index);
-        const useBc = canUploadNativeBC(format, width, height, this.backend.supportsBC());
+        const useBc = (globalThis as any).__d3d9ForceCpuBC !== true &&
+            canUploadNativeBC(format, width, height, this.backend.supportsBC());
+        const gpuFormat: GPUTextureFormat = useBc ? getNativeBCTextureFormat(format)! : "rgba8unorm";
 
         let gpuTexture = this.textures.getGpuTexture(index);
-        if (!gpuTexture) {
+        if (!gpuTexture || gpuTexture.format !== gpuFormat) {
             gpuTexture = device.createTexture({
                 size: { width, height, depthOrArrayLayers: 1 },
-                format: useBc ? getNativeBCTextureFormat(format)! : "rgba8unorm",
+                format: gpuFormat,
                 usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
             });
             const view = gpuTexture.createView();
@@ -3625,7 +4011,8 @@ export class D3D9Device {
 
     getAllTransforms(): Array<{ state: number; matrix: Float32Array }> {
         const out: Array<{ state: number; matrix: Float32Array }> = [];
-        for (const state of [D3DTS_WORLD, D3DTS_VIEW, D3DTS_PROJECTION]) {
+        for (const state of [D3DTS_WORLD, D3DTS_VIEW, D3DTS_PROJECTION,
+            ...Array.from({ length: 8 }, (_, i) => D3DTS_TEXTURE0 + i)]) {
             const matrix = this.getTransform(state);
             if (matrix) {
                 out.push({ state, matrix });
@@ -3722,11 +4109,13 @@ interface FvfLayout {
     hasColor: boolean;
     hasSpecular: boolean;
     hasTex: boolean;
+    texCount: number;
     posLoc: number; posOff: number;
     normalLoc: number; normalOff: number;
     colorLoc: number; colorOff: number;
     specularLoc: number; specularOff: number;
     texLoc: number; texOff: number;
+    texLocs: number[]; texOffs: number[];
     stride: number;
 }
 
@@ -3736,7 +4125,11 @@ function parseFvf(fvf: number): FvfLayout {
     const hasNormal = !hasRhw && (fvf & D3DFVF_NORMAL) !== 0;
     const hasColor = (fvf & D3DFVF_DIFFUSE) !== 0;
     const hasSpecular = (fvf & D3DFVF_SPECULAR) !== 0;
-    const hasTex = (fvf & D3DFVF_TEX1) !== 0;
+    // Bits 8..11 encode a COUNT, not independent flags. BFME uses TEX2
+    // (0x200): testing only the TEX1 value (0x100) classified that layout as
+    // untextured and also under-counted its packed size by 16 bytes.
+    const texCount = (fvf >>> 8) & 0x0f;
+    const hasTex = texCount > 0;
 
     let loc = 0, off = 0;
     const posLoc = loc++; const posOff = off; off += hasRhw ? 16 : 12;
@@ -3747,12 +4140,22 @@ function parseFvf(fvf: number): FvfLayout {
     let specularLoc = -1, specularOff = 0;
     if (hasSpecular) { specularLoc = loc++; specularOff = off; off += 4; }
     let texLoc = -1, texOff = 0;
-    if (hasTex) { texLoc = loc++; texOff = off; off += 8; }
+    const texLocs: number[] = [];
+    const texOffs: number[] = [];
+    if (hasTex) {
+        texLoc = loc;
+        texOff = off;
+        for (let i = 0; i < texCount; i++) {
+            texLocs.push(loc++);
+            texOffs.push(off);
+            off += 8;
+        }
+    }
 
     return {
-        hasRhw, hasNormal, hasColor, hasSpecular, hasTex,
+        hasRhw, hasNormal, hasColor, hasSpecular, hasTex, texCount,
         posLoc, posOff, normalLoc, normalOff, colorLoc, colorOff,
-        specularLoc, specularOff, texLoc, texOff, stride: off,
+        specularLoc, specularOff, texLoc, texOff, texLocs, texOffs, stride: off,
     };
 }
 
@@ -3763,6 +4166,120 @@ fn unpackColor(color: u32) -> vec4<f32> {
     let g = f32((color >> 8u) & 0xffu) / 255.0;
     let b = f32(color & 0xffu) / 255.0;
     return vec4<f32>(r, g, b, a);
+}`;
+
+// D3D9 fixed-function texture cascade. BFME's terrain binds a base texture at stage 0,
+// a detail/blend texture at stage 1, and sometimes performs a texture-free arithmetic
+// stage afterwards. All stage state remains runtime-driven to avoid material permutations.
+const FFP_STAGES_WGSL = `
+fn ffpStageArg(codeIn: f32, texel: vec4<f32>, diffuse: vec4<f32>, current: vec4<f32>,
+               specular: vec4<f32>, factor: vec4<f32>) -> vec4<f32> {
+    let code = u32(codeIn);
+    let base = code & 15u;
+    var value = diffuse;                 // D3DTA_DIFFUSE = 0
+    if (base == 1u) { value = current; } // D3DTA_CURRENT
+    if (base == 2u) { value = texel; }   // D3DTA_TEXTURE
+    if (base == 3u) { value = factor; }  // D3DTA_TFACTOR
+    if (base == 4u) { value = specular; }// D3DTA_SPECULAR
+    if ((code & 32u) != 0u) { value = vec4<f32>(value.a); } // D3DTA_ALPHAREPLICATE
+    if ((code & 16u) != 0u) { value = vec4<f32>(1.0) - value; } // D3DTA_COMPLEMENT
+    return value;
+}
+
+fn ffpColorOp(op: u32, a: vec3<f32>, b: vec3<f32>, arg1A: f32, diffuseA: f32,
+              textureA: f32, factorA: f32, currentA: f32, current: vec3<f32>) -> vec3<f32> {
+    if (op == 1u) { return current; } // DISABLE
+    if (op == 2u) { return a; }
+    if (op == 3u) { return b; }
+    if (op == 4u) { return a * b; }
+    if (op == 5u) { return clamp(a * b * 2.0, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 6u) { return clamp(a * b * 4.0, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 7u) { return clamp(a + b, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 8u) { return clamp(a + b - vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 9u) { return clamp((a + b - vec3<f32>(0.5)) * 2.0, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 10u) { return clamp(a - b, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 11u) { return clamp(a + b * (vec3<f32>(1.0) - a), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 12u) { return mix(b, a, diffuseA); }
+    if (op == 13u) { return mix(b, a, textureA); }
+    if (op == 14u) { return mix(b, a, factorA); }
+    if (op == 15u) { return clamp(a + b * (1.0 - textureA), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 16u) { return mix(b, a, currentA); }
+    if (op == 18u) { return clamp(a + b * arg1A, vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 19u) { return clamp(a * b + vec3<f32>(arg1A), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 20u) { return clamp(a + b * (1.0 - arg1A), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 21u) { return clamp((vec3<f32>(1.0) - a) * b + vec3<f32>(arg1A), vec3<f32>(0.0), vec3<f32>(1.0)); }
+    if (op == 24u) {
+        let d = clamp(dot(a * 2.0 - vec3<f32>(1.0), b * 2.0 - vec3<f32>(1.0)), 0.0, 1.0);
+        return vec3<f32>(d);
+    }
+    return a * b;
+}
+
+fn ffpAlphaOp(op: u32, a: f32, b: f32, diffuseA: f32, textureA: f32,
+              factorA: f32, current: f32) -> f32 {
+    if (op == 1u) { return current; }
+    if (op == 2u) { return a; }
+    if (op == 3u) { return b; }
+    if (op == 4u) { return a * b; }
+    if (op == 5u) { return clamp(a * b * 2.0, 0.0, 1.0); }
+    if (op == 6u) { return clamp(a * b * 4.0, 0.0, 1.0); }
+    if (op == 7u) { return clamp(a + b, 0.0, 1.0); }
+    if (op == 8u) { return clamp(a + b - 0.5, 0.0, 1.0); }
+    if (op == 9u) { return clamp((a + b - 0.5) * 2.0, 0.0, 1.0); }
+    if (op == 10u) { return clamp(a - b, 0.0, 1.0); }
+    if (op == 11u) { return clamp(a + b * (1.0 - a), 0.0, 1.0); }
+    if (op == 12u) { return mix(b, a, diffuseA); }
+    if (op == 13u) { return mix(b, a, textureA); }
+    if (op == 14u) { return mix(b, a, factorA); }
+    if (op == 15u) { return clamp(a + b * (1.0 - textureA), 0.0, 1.0); }
+    if (op == 16u) { return mix(b, a, current); }
+    return a * b;
+}
+
+fn ffpApplyStage(current: vec4<f32>, texel: vec4<f32>, diffuse: vec4<f32>,
+                 specular: vec4<f32>, factor: vec4<f32>, ops: vec4<f32>,
+                 alphaArgs: vec4<f32>) -> vec4<f32> {
+    if (u32(ops.x) == 1u) { return current; }
+    let ca1 = ffpStageArg(ops.z, texel, diffuse, current, specular, factor);
+    let ca2 = ffpStageArg(ops.w, texel, diffuse, current, specular, factor);
+    let aa1 = ffpStageArg(alphaArgs.x, texel, diffuse, current, specular, factor);
+    let aa2 = ffpStageArg(alphaArgs.y, texel, diffuse, current, specular, factor);
+    return vec4<f32>(
+        ffpColorOp(u32(ops.x), ca1.rgb, ca2.rgb, ca1.a, diffuse.a, texel.a, factor.a, current.a, current.rgb),
+        ffpAlphaOp(u32(ops.y), aa1.a, aa2.a, diffuse.a, texel.a, factor.a, current.a));
+}
+
+fn ffpSafeNormalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let len2 = dot(v, v);
+    return select(fallback, v * inverseSqrt(len2), len2 > 1e-12);
+}
+
+fn ffpResolveTexCoord(tciIn: f32, raw0: vec2<f32>, raw1: vec2<f32>, raw2: vec2<f32>,
+                      raw3: vec2<f32>, ecPos: vec3<f32>, ecNormal: vec3<f32>,
+                      texMatrix: mat4x4<f32>, packedFlagsIn: f32) -> vec2<f32> {
+    let tci = u32(tciIn);
+    let mode = tci >> 16u;
+    let index = tci & 0xffffu;
+    var raw = raw0;
+    if (index == 1u) { raw = raw1; }
+    if (index == 2u) { raw = raw2; }
+    if (index == 3u) { raw = raw3; }
+    let n = ffpSafeNormalize(ecNormal, vec3<f32>(0.0, 0.0, 1.0));
+    var source = vec4<f32>(raw, 0.0, 1.0);
+    if (mode == 1u) { source = vec4<f32>(n, 1.0); } // D3DTSS_TCI_CAMERASPACENORMAL
+    if (mode == 2u) { source = vec4<f32>(ecPos, 1.0); } // D3DTSS_TCI_CAMERASPACEPOSITION
+    if (mode == 3u) { // D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR
+        source = vec4<f32>(reflect(ffpSafeNormalize(ecPos, vec3<f32>(0.0, 0.0, 1.0)), n), 1.0);
+    }
+    let flags = u32(packedFlagsIn) & 0x1ffu;
+    if ((flags & 0xffu) == 0u) { return source.xy; }
+    let transformed = texMatrix * source;
+    if ((flags & 0x100u) != 0u) {
+        let count = flags & 0xffu;
+        let divisor = select(transformed.z, transformed.w, count >= 4u);
+        return transformed.xy / max(abs(divisor), 1e-8) * sign(divisor);
+    }
+    return transformed.xy;
 }`;
 
 /**
@@ -3783,6 +4300,8 @@ function emitFfpShader(d: {
     colorExpr: string;
     specularExpr: string;
     normalExpr: string;
+    /** Four raw coordinate expressions, padded with a valid fallback by the caller. */
+    uvExprs: string[];
     alphaTest: AlphaTest | null;
 }): string {
     const posBody = d.hasRhw
@@ -3841,7 +4360,14 @@ function emitFfpShader(d: {
     return `
 ${FFP_UNIFORM_STRUCT_WGSL}
 @group(0) @binding(0) var<uniform> u: Uniforms;
-${d.hasTex ? "@group(0) @binding(1) var texSampler: sampler;\n@group(0) @binding(2) var tex: texture_2d<f32>;" : ""}
+${d.hasTex ? `@group(0) @binding(1) var texSampler0: sampler;
+@group(0) @binding(2) var tex0: texture_2d<f32>;
+@group(0) @binding(3) var texSampler1: sampler;
+@group(0) @binding(4) var tex1: texture_2d<f32>;
+@group(0) @binding(5) var texSampler2: sampler;
+@group(0) @binding(6) var tex2: texture_2d<f32>;
+@group(0) @binding(7) var texSampler3: sampler;
+@group(0) @binding(8) var tex3: texture_2d<f32>;` : ""}
 
 struct VertexInput {
     ${d.inputFields.join(",\n    ")}
@@ -3850,22 +4376,31 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    ${d.hasTex ? "@location(1) uv: vec2<f32>," : ""}
-    ${d.lit ? "@location(2) specular: vec3<f32>," : ""}
+    ${d.hasTex ? `@location(1) uv0: vec2<f32>,
+    @location(2) uv1: vec2<f32>,
+    @location(3) uv2: vec2<f32>,
+    @location(4) uv3: vec2<f32>,` : ""}
+    ${d.lit ? "@location(5) specular: vec3<f32>," : ""}
     // FFP user clip-plane signed distances (planes 0..3 in clipA, 4..5 in clipB), interpolated
     // for the per-pixel discard in fs_main. Constant 1.0 (no clip) unless clipping is enabled.
-    @location(3) clipA: vec4<f32>,
-    @location(4) clipB: vec2<f32>,
+    @location(6) clipA: vec4<f32>,
+    @location(7) clipB: vec2<f32>,
 }
 ${FFP_UNPACK_COLOR_WGSL}
 ${d.lit ? FFP_SELECT_COLOR_WGSL + "\n" + emitFfpComputeLighting("u.lights") : ""}
+${d.hasTex ? FFP_STAGES_WGSL : ""}
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     ${posBody}
     ${colorBody}
-    ${d.hasTex ? "out.uv = input.uv;" : ""}
+    ${d.hasTex ? `let _ecPosTex = ${d.hasRhw ? "input.pos.xyz" : "(u.worldView * vec4<f32>(input.pos, 1.0)).xyz"};
+    let _ecNormalTex = ${d.hasRhw ? "vec3<f32>(0.0, 0.0, 1.0)" : `(u.worldView * vec4<f32>(${d.normalExpr}, 0.0)).xyz`};
+    out.uv0 = ffpResolveTexCoord(u.stageArgs[0].z, ${d.uvExprs.join(", ")}, _ecPosTex, _ecNormalTex, u.textureMatrices[0], u.stageArgs[0].w);
+    out.uv1 = ffpResolveTexCoord(u.stageArgs[1].z, ${d.uvExprs.join(", ")}, _ecPosTex, _ecNormalTex, u.textureMatrices[1], u.stageArgs[1].w);
+    out.uv2 = ffpResolveTexCoord(u.stageArgs[2].z, ${d.uvExprs.join(", ")}, _ecPosTex, _ecNormalTex, u.textureMatrices[2], u.stageArgs[2].w);
+    out.uv3 = ffpResolveTexCoord(u.stageArgs[3].z, ${d.uvExprs.join(", ")}, _ecPosTex, _ecNormalTex, u.textureMatrices[3], u.stageArgs[3].w);` : ""}
     ${clipVsBody}
     return out;
 }
@@ -3873,7 +4408,16 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     ${clipFsBody}
-    var _c = ${d.hasTex ? "textureSample(tex, texSampler, input.uv) * input.color" : "input.color"};
+    ${d.hasTex ? `let _texel0 = select(vec4<f32>(1.0), textureSample(tex0, texSampler0, input.uv0), u.stageArgs[0].w >= 512.0);
+    let _texel1 = select(vec4<f32>(1.0), textureSample(tex1, texSampler1, input.uv1), u.stageArgs[1].w >= 512.0);
+    let _texel2 = select(vec4<f32>(1.0), textureSample(tex2, texSampler2, input.uv2), u.stageArgs[2].w >= 512.0);
+    let _texel3 = select(vec4<f32>(1.0), textureSample(tex3, texSampler3, input.uv3), u.stageArgs[3].w >= 512.0);
+    let _specArg = ${d.lit ? "vec4<f32>(input.specular, 1.0)" : "vec4<f32>(0.0, 0.0, 0.0, 1.0)"};
+    var _c = ffpApplyStage(input.color, _texel0, input.color, _specArg, u.textureFactor, u.stageOps[0], u.stageArgs[0]);
+    _c = ffpApplyStage(_c, _texel1, input.color, _specArg, u.textureFactor, u.stageOps[1], u.stageArgs[1]);
+    _c = ffpApplyStage(_c, _texel2, input.color, _specArg, u.textureFactor, u.stageOps[2], u.stageArgs[2]);
+    _c = ffpApplyStage(_c, _texel3, input.color, _specArg, u.textureFactor, u.stageOps[3], u.stageArgs[3]);`
+        : "var _c = input.color;"}
     ${d.lit ? "_c = vec4<f32>(clamp(_c.rgb + input.specular, vec3<f32>(0.0), vec3<f32>(1.0)), _c.a);" : ""}
     ${alphaTestSnippet(d.alphaTest, "_c.a")}
     return _c;
@@ -3889,7 +4433,14 @@ function buildShader(fvf: number, alphaTest: AlphaTest | null = null, litRequest
     if (f.hasNormal) inputFields.push(`@location(${f.normalLoc}) normal: vec3<f32>`);
     if (f.hasColor) inputFields.push(`@location(${f.colorLoc}) color: u32`);
     if (f.hasSpecular) inputFields.push(`@location(${f.specularLoc}) specColor: u32`);
-    if (f.hasTex) inputFields.push(`@location(${f.texLoc}) uv: vec2<f32>`);
+    for (let i = 0; i < f.texCount; i++) {
+        inputFields.push(`@location(${f.texLocs[i]}) uv${i}: vec2<f32>`);
+    }
+
+    const uvExprs: string[] = [];
+    for (let i = 0; i < FFP_MAX_TEXTURE_STAGES; i++) {
+        uvExprs.push(i < f.texCount ? `input.uv${i}` : "input.uv0");
+    }
 
     return emitFfpShader({
         inputFields,
@@ -3899,6 +4450,7 @@ function buildShader(fvf: number, alphaTest: AlphaTest | null = null, litRequest
         colorExpr: f.hasColor ? "unpackColor(input.color)" : "vec4<f32>(1.0, 1.0, 1.0, 1.0)",
         specularExpr: f.hasSpecular ? "unpackColor(input.specColor)" : "vec4<f32>(0.0, 0.0, 0.0, 0.0)",
         normalExpr: f.hasNormal ? "input.normal" : "vec3<f32>(0.0, 0.0, 1.0)",
+        uvExprs,
         alphaTest,
     });
 }
@@ -3915,7 +4467,9 @@ function buildVertexLayout(fvf: number): {
     if (f.hasNormal) attributes.push({ shaderLocation: f.normalLoc, offset: f.normalOff, format: "float32x3" });
     if (f.hasColor) attributes.push({ shaderLocation: f.colorLoc, offset: f.colorOff, format: "uint32" });
     if (f.hasSpecular) attributes.push({ shaderLocation: f.specularLoc, offset: f.specularOff, format: "uint32" });
-    if (f.hasTex) attributes.push({ shaderLocation: f.texLoc, offset: f.texOff, format: "float32x2" });
+    for (let i = 0; i < f.texCount; i++) {
+        attributes.push({ shaderLocation: f.texLocs[i], offset: f.texOffs[i], format: "float32x2" });
+    }
 
     return { arrayStride: f.stride, attributes, hasTexture: f.hasTex };
 }
@@ -3982,7 +4536,9 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
     // Find the key semantic elements we care about.
     const posElem = s0.find(e => e.usage === DECLUSAGE_POSITION_FFP || e.usage === DECLUSAGE_POSITIONT_FFP) ?? null;
     const normElem = s0.find(e => e.usage === DECLUSAGE_NORMAL_FFP   && e.usageIndex === 0) ?? null;
-    const texElem = s0.find(e => e.usage === DECLUSAGE_TEXCOORD_FFP && e.usageIndex === 0) ?? null;
+    const texElems = s0.filter(e => e.usage === DECLUSAGE_TEXCOORD_FFP)
+        .sort((a, b) => a.usageIndex - b.usageIndex)
+        .slice(0, FFP_MAX_TEXTURE_STAGES);
     const colElem = s0.find(e => e.usage === DECLUSAGE_COLOR_FFP    && e.usageIndex === 0) ?? null;
     const specElem = s0.find(e => e.usage === DECLUSAGE_COLOR_FFP   && e.usageIndex === 1) ?? null;
 
@@ -4003,7 +4559,7 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
     const hasNormal = !isRHW && normElem !== null;
     const hasColor = colElem !== null;
     const hasSpecular = specElem !== null;
-    const hasTex   = texElem !== null;
+    const hasTex   = texElems.length > 0;
     const lit = litRequested && !isRHW;
 
     // Assign contiguous shader locations in declaration order: pos, [normal], [color], [specular], [uv].
@@ -4012,7 +4568,7 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
     const normLoc = hasNormal ? loc++ : -1;
     const colLoc = hasColor ? loc++ : -1;
     const specLoc = hasSpecular ? loc++ : -1;
-    const texLoc = hasTex  ? loc++ : -1;
+    const texLocs = texElems.map(() => loc++);
 
     // Build GPUVertexAttribute list.
     const attributes: GPUVertexAttribute[] = [];
@@ -4032,9 +4588,9 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
         const { gpuFormat } = d3dDeclTypeToGpu(specElem.type);
         attributes.push({ shaderLocation: specLoc, offset: specElem.offset, format: gpuFormat });
     }
-    if (hasTex && texElem) {
-        const { gpuFormat } = d3dDeclTypeToGpu(texElem.type);
-        attributes.push({ shaderLocation: texLoc, offset: texElem.offset, format: gpuFormat });
+    for (let i = 0; i < texElems.length; i++) {
+        const { gpuFormat } = d3dDeclTypeToGpu(texElems[i].type);
+        attributes.push({ shaderLocation: texLocs[i], offset: texElems[i].offset, format: gpuFormat });
     }
 
     const arrayStride = computeDeclStride(s0.length > 0 ? s0 : elements) || 12;
@@ -4046,7 +4602,9 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
     if (hasNormal) inputFields.push(`@location(${normLoc}) normal: vec3<f32>`);
     if (hasColor) inputFields.push(`@location(${colLoc}) color: vec4<f32>`);
     if (hasSpecular) inputFields.push(`@location(${specLoc}) specColor: vec4<f32>`);
-    if (hasTex)   inputFields.push(`@location(${texLoc}) uv: vec2<f32>`);
+    for (let i = 0; i < texElems.length; i++) {
+        inputFields.push(`@location(${texLocs[i]}) uv${i}: vec2<f32>`);
+    }
 
     const declColorExpr = (elem: typeof colElem, field: string): string => {
         if (!elem) return "vec4<f32>(1.0, 1.0, 1.0, 1.0)";
@@ -4065,6 +4623,8 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
         colorExpr,
         specularExpr,
         normalExpr: hasNormal ? "input.normal" : "vec3<f32>(0.0, 0.0, 1.0)",
+        uvExprs: Array.from({ length: FFP_MAX_TEXTURE_STAGES }, (_, i) =>
+            i < texElems.length ? `input.uv${i}` : "input.uv0"),
         alphaTest,
     });
 

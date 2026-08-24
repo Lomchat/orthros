@@ -26,7 +26,7 @@ export default function SettingsAdvancedSection({
           Open ›
         </Button>
       </SettingsRow>
-      <SettingsRow title="FPS / stats overlay" hint="Draw the live frame-rate and timing overlay on the canvas.">
+      <SettingsRow title="FPS / stats overlay" hint="Show the real present rate in a lightweight browser overlay (no GPU texture upload).">
         <Toggle checked={statsOverlay} onChange={onToggleStatsOverlay} />
       </SettingsRow>
       <SettingsRow title="Worker log streaming" hint="Stream worker logs to the dev log server (:3001). Off by default.">

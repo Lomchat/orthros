@@ -149,6 +149,10 @@ export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text
         }
     }
 
+    // CreateDIBSection exposes its pixels directly to the guest. Text rendered
+    // through a memory DC must therefore be committed before ExtTextOut returns.
+    gdi.syncSelectedDibBits(hdc);
+
     return true;
 }
 
@@ -274,6 +278,8 @@ export function drawText(gdi: GDIContext, hdc: number, text: string, rect?: { le
             bitmapCtx.textBaseline = 'top';
         }
     }
+
+    gdi.syncSelectedDibBits(hdc);
 
     return true;
 }

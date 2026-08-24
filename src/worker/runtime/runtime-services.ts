@@ -1,6 +1,7 @@
 import { TimeService } from "./time";
 import { Logger, LogCategory } from "../core/logger";
 import { harnessBus } from "../harness/event-bus";
+import { statsOverlay } from "../core/stats-overlay";
 
 export interface RenderBackend {
     readonly kind: string;
@@ -126,24 +127,28 @@ export class RenderService {
             this.firstPresentFired = true;
             try { this.firstPresentCb?.(); } catch { /* host bridge must never break the present path */ }
         }
-        this.recordFlipCadence();
+        const frameMs = this.recordFlipCadence();
+        if (frameMs !== null) statsOverlay.updateMetrics(frameMs);
         this.emitFlipTraceMark();
         // Harness frameRendered event — gated so the perf-critical present path
         // stays zero-cost until a script opts in (watchFrames).
         if (harnessBus.frameEvents) harnessBus.emit("frameRendered", { presenterKind, serial: this.presentSerial });
     }
 
-    private recordFlipCadence(): void {
+    private recordFlipCadence(): number | null {
         const t = performance.now();
+        let recordedInterval: number | null = null;
         if (this.flipLastMs > 0) {
             const dt = t - this.flipLastMs;
             // Ignore absurd gaps (tab backgrounded, pause, first frame after a stall).
             if (dt > 0 && dt < 2000) {
                 this.flipIntervals.push(dt);
                 if (this.flipIntervals.length > RenderService.FLIP_CADENCE_CAP) this.flipIntervals.shift();
+                recordedInterval = dt;
             }
         }
         this.flipLastMs = t;
+        return recordedInterval;
     }
 
     /**

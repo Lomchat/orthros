@@ -164,6 +164,11 @@ export function recordRawDraw(partial: Partial<CapturedDrawCall> & { backend: st
 
 export function onFrameEnd(): void {
     if (!captureActive) return;
+    // A capture request can arrive while an async Present that belongs to the
+    // preceding frame is already in flight. Ending on that Present produces an
+    // empty, misleading capture. Keep the request armed until at least one draw
+    // or clear from a subsequently recorded frame has been observed.
+    if (captureBuffer.length === 0 && clearBuffer.length === 0) return;
     captureActive = false;
     const frame: CapturedFrame = {
         frameId: ++captureFrameId,

@@ -314,22 +314,22 @@ const gdiPresentLoop = () => {
     const gdiDirty = gdi.isOverlayDirty();
 
     // When a hardware 3D renderer owns exclusive fullscreen, GDI/video overlays are
-    // not visible — do not composite them over the 3D frame. Re-present the last 3D
-    // frame at display rate so the canvas does not go black between low-fps presents.
+    // not visible — do not composite them over the 3D frame. The WebGPU canvas keeps
+    // its last submitted image until the renderer presents again. Do NOT acquire a
+    // second currentTexture from this independent rAF loop: doing so one browser
+    // frame after D3D9::Present invalidates Chromium's external canvas instance and
+    // destroys the GPUDevice (BFME hit this exactly 16 ms after its first Present).
     const ddrawCtx = (system.process?.getModule("ddraw") as any)?.context;
     const screen3DOwned = shouldSuppress3DGdiOverlay(renderActive, ddrawCtx);
 
     if (screen3DOwned) {
       // Drop stale dirty flags so they don't accumulate and so a later composite
-      // (e.g. after returning to the launcher) starts clean. Then re-present the last
-      // 3D frame so the canvas keeps showing it at the display rate (the renderer
-      // presents at ~8-12fps and the WebGPU canvas otherwise goes black between
-      // presents). Nothing overlays the 3D frame in this mode — EXCEPT live native
+      // (e.g. after returning to the launcher) starts clean. Nothing overlays the
+      // 3D frame in this mode — EXCEPT live native
       // dialogs shown while the flip chain owns the screen (dialog-overlay.ts):
       // their rects composite on top, exactly like the DDraw presenter path.
       if (gdiDirty) gdi.clearOverlayDirty();
       if (videoOverlay.isDirty()) videoOverlay.consumeDirty();
-      (renderActive as { repaintLastFrame?(): void }).repaintLastFrame?.();
       if (backend.compositeRects && hasLiveDialogOverlay()) {
         const overlayCanvas = gdi.getOverlayCanvas();
         const rects = overlayCanvas ? getLiveDialogOverlayRects() : [];
@@ -1155,6 +1155,9 @@ const prepareFullGameSwitch = async (): Promise<void> => {
   }
   _prefetchController?.abort();
   _prefetchController = null;
+  const activeSabIo = (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo;
+  activeSabIo?.close();
+  (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo = undefined;
   WgbCache.releaseMountedSource();
   setBootOverlayActive(false);
 
@@ -1211,6 +1214,28 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // load of this game would use (one copy per game, not two).
       const url = payload.url;
 
+      // A complete browser-local copy always wins. The previous order attempted
+      // HTTP range streaming first, making even a fully cached game depend on the
+      // VPS and causing hard reloads to fetch its boot working set again.
+      const cachedSource = await WgbCache.openSyncSourceForUrl(url);
+      if (cachedSource) {
+        try {
+          bundle = await WgbLoader.fromSource(cachedSource);
+          self.postMessage({
+            type: "local_cache_progress",
+            state: "complete",
+            loadedBytes: cachedSource.size,
+            totalBytes: cachedSource.size,
+          });
+          self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Local copy" });
+          Logger.log(LogCategory.SYSTEM, `WGB: browser-local OPFS copy (${(cachedSource.size / 1048576).toFixed(1)} MB)`);
+        } catch (e) {
+          Logger.warn(LogCategory.SYSTEM, `WGB: local copy unusable (${e}) — discarding and using network`);
+          await WgbCache.evict(url);
+          bundle = undefined;
+        }
+      }
+
       // Stream the bundle on demand instead of a full OPFS download — instant start,
       // NO blocking multi-GB copy (a 1.6 GB game boots after fetching just what the
       // boot path reads). Needs cross-origin isolation for the SAB I/O worker (prod
@@ -1218,7 +1243,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // Pages Function serves 206). create() probes both, so any failure throws and we
       // fall through to the OPFS-download/staging path below, unchanged.
       const streamCapable = (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
-      if (streamCapable) {
+      if (!bundle && streamCapable) {
         try {
           // Preferred: serve the guest's synchronous reads from a dedicated I/O
           // worker over a SharedArrayBuffer. The I/O worker owns the network,
@@ -1231,7 +1256,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           try {
             sabIo = await SabIoSource.create(url);
             src = sabIo;
-            (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = src;
+            (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo = sabIo;
             Logger.log(LogCategory.SYSTEM, `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`);
           } catch (sabErr) {
             src = await SyncHttpRangeSource.create(url);
@@ -1249,7 +1274,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             // fromSource failed after the I/O worker spun up — terminate it so the
             // fallthrough to OPFS staging doesn't leak a live worker + its SAB.
             sabIo?.close();
-            (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = undefined;
+            (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo = undefined;
             throw loadErr;
           }
         } catch (e) {
@@ -1909,6 +1934,9 @@ const initV86 = async (canvas: OffscreenCanvas) => {
             bootMark("first-present");
             setBootOverlayActive(false);
             self.postMessage({ type: "first_present" });
+            // Gameplay is visible now: use two low-priority range lanes to fill
+            // every still-missing block in the resumable browser-local copy.
+            (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo?.startBackgroundCache();
           });
           // Start GDI presentation loop
           requestAnimationFrame(gdiPresentLoop);
@@ -2541,6 +2569,14 @@ function resumeEmulator(): void {
 
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
+
+  if (message?.type === "network_config") {
+    const sanitized = String(message.room || "public")
+      .replace(/[^a-zA-Z0-9_.-]/g, "")
+      .slice(0, 64);
+    (globalThis as any).__bfmeRoom = sanitized || "public";
+    return;
+  }
 
   if (message?.type === "dbg") {
     // Guest debugger bridge: window.dbg.<cmd>(...args) on the page -> here.

@@ -5,7 +5,7 @@
  */
 
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
-import { Logger, LogCategory } from '../../core/logger';
+import { Logger, LogCategory, LogLevel } from '../../core/logger';
 import { System } from '../../core/system';
 import { Mem } from '../../core/memory/mem-accessor';
 import { devices, getVTables, createComObject, resourceToDevice } from './shared-state';
@@ -28,6 +28,7 @@ import {
     normalizePalettizedTexturePool,
 } from '../../backends/webgpu/shared/dx-com-helpers';
 import { isDxExclusiveFormat } from '../../backends/webgpu/shared/dx-format-support';
+import { injectBfmeVp6Frame } from './bfme-vp6-bridge';
 
 const D3DERR_NOTAVAILABLE = 0x8876086a;
 const D3DFMT_A8R8G8B8 = 21;
@@ -37,6 +38,7 @@ const D3DRTYPE_TEXTURE = 3;
 const D3DRTYPE_CUBETEXTURE = 5;
 const D3DPOOL_DEFAULT = 0;
 const D3DMULTISAMPLE_NONE = 0;
+const D3DUSAGE_RENDERTARGET = 0x00000001;
 const D3DUSAGE_DEPTHSTENCIL = 0x00000002;
 
 function writeSurfaceDesc(pDesc: number, meta: SurfaceMeta): boolean {
@@ -75,6 +77,67 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
 
     const D3D_OK = 0;
     const D3DERR_INVALIDCALL = 0x8876086c;
+
+    /**
+     * Surface-only D3D9 resources still need actual backing storage for LockRect,
+     * ColorFill and render-target use. Model that storage as an internal one-level
+     * texture, while exposing only its stable IDirect3DSurface9 to the guest.
+     */
+    const createStandaloneSurface = (
+        pDevice: number,
+        widthArg: number,
+        heightArg: number,
+        format: number,
+        pool: number,
+        usage: number,
+        multiSampleType: number,
+        multiSampleQuality: number,
+        ppSurface: number,
+    ): number => {
+        if (!ppSurface) return D3DERR_INVALIDCALL;
+        initReturnPtr(ppSurface);
+        if (format === D3DFMT_UNKNOWN || isDxExclusiveFormat(format, 9)) return D3DERR_INVALIDCALL;
+
+        const device = devices.get(pDevice);
+        if (!device) return D3DERR_INVALIDCALL;
+        const vtables = getVTables();
+        const textureVtable = vtables['IDirect3DTexture9']?.address;
+        const surfaceVtable = vtables['IDirect3DSurface9']?.address;
+        if (!textureVtable || !surfaceVtable) return D3DERR_INVALIDCALL;
+
+        const width = Math.max(1, widthArg >>> 0);
+        const height = Math.max(1, heightArg >>> 0);
+        const normalizedPool = normalizePalettizedTexturePool(format, pool);
+        const texturePtr = createComObject(textureVtable);
+        if (!device.createTexture(texturePtr, width, height, 1, format, usage >>> 0)) {
+            return D3DERR_INVALIDCALL;
+        }
+        resourceToDevice.set(texturePtr, device);
+        textureMeta.set(texturePtr, {
+            width,
+            height,
+            levels: 1,
+            usage: usage >>> 0,
+            pool: normalizedPool,
+            format,
+        });
+
+        const surfacePtr = createComObject(surfaceVtable);
+        resourceToDevice.set(surfacePtr, device);
+        surfaceMeta.set(surfacePtr, {
+            format,
+            type: D3DRTYPE_SURFACE,
+            usage: usage >>> 0,
+            pool: normalizedPool,
+            multiSampleType,
+            multiSampleQuality,
+            width,
+            height,
+            texturePtr,
+            level: 0,
+        });
+        return Mem.writeUint32(ppSurface, surfacePtr) ? D3D_OK : D3DERR_INVALIDCALL;
+    };
 
     exports['IDirect3DDevice9_CreateVertexBuffer'] = (ctx, mem, args) => {
         const pDevice = args[0];
@@ -285,6 +348,28 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         return D3D_OK;
     };
 
+    exports['IDirect3DDevice9_CreateRenderTarget'] = (_ctx, _mem, args) => {
+        const hr = createStandaloneSurface(
+            args[0], args[1], args[2], args[3] >>> 0, D3DPOOL_DEFAULT,
+            D3DUSAGE_RENDERTARGET, args[4] >>> 0, args[5] >>> 0, args[7],
+        );
+        if (hr === D3D_OK) {
+            Logger.log(LogCategory.D3D9, `CreateRenderTarget(${args[1]}x${args[2]}, Format=${args[3] >>> 0})`);
+        }
+        return hr;
+    };
+
+    exports['IDirect3DDevice9_CreateOffscreenPlainSurface'] = (_ctx, _mem, args) => {
+        const hr = createStandaloneSurface(
+            args[0], args[1], args[2], args[3] >>> 0, args[4] >>> 0,
+            0, D3DMULTISAMPLE_NONE, 0, args[5],
+        );
+        if (hr === D3D_OK) {
+            Logger.log(LogCategory.D3D9, `CreateOffscreenPlainSurface(${args[1]}x${args[2]}, Format=${args[3] >>> 0}, Pool=${args[4] >>> 0})`);
+        }
+        return hr;
+    };
+
     exports['IDirect3DDevice9_CreateDepthStencilSurface'] = (_ctx, mem, args) => {
         const pDevice = args[0];
         const width = args[1] >>> 0;
@@ -334,6 +419,88 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         return Mem.writeUint32(ppSurface, surfacePtr) ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
+    exports['IDirect3DDevice9_UpdateSurface'] = (_ctx, _mem, args) => {
+        const srcSurfacePtr = args[1] >>> 0;
+        const srcRectPtr = args[2] >>> 0;
+        const dstSurfacePtr = args[3] >>> 0;
+        const dstPointPtr = args[4] >>> 0;
+        const src = surfaceMeta.get(srcSurfacePtr);
+        const dst = surfaceMeta.get(dstSurfacePtr);
+        const srcDevice = resourceToDevice.get(srcSurfacePtr);
+        const dstDevice = resourceToDevice.get(dstSurfacePtr);
+
+        if (
+            !src || !dst || !src.texturePtr || !dst.texturePtr ||
+            !srcDevice || srcDevice !== dstDevice || src.face !== undefined || dst.face !== undefined ||
+            src.format !== dst.format
+        ) {
+            return D3DERR_INVALIDCALL;
+        }
+
+        let left = srcRectPtr ? (Mem.readInt32(srcRectPtr) ?? 0) : 0;
+        let top = srcRectPtr ? (Mem.readInt32(srcRectPtr + 4) ?? 0) : 0;
+        let right = srcRectPtr ? (Mem.readInt32(srcRectPtr + 8) ?? src.width) : src.width;
+        let bottom = srcRectPtr ? (Mem.readInt32(srcRectPtr + 12) ?? src.height) : src.height;
+        let dstX = dstPointPtr ? (Mem.readInt32(dstPointPtr) ?? 0) : 0;
+        let dstY = dstPointPtr ? (Mem.readInt32(dstPointPtr + 4) ?? 0) : 0;
+
+        // Clip defensively. Native D3D rejects invalid rectangles, but clipping here
+        // keeps old games from turning a harmless edge rectangle into a guest-memory
+        // overrun while preserving the pixels that are inside both surfaces.
+        if (left < 0) { dstX -= left; left = 0; }
+        if (top < 0) { dstY -= top; top = 0; }
+        right = Math.min(src.width, right);
+        bottom = Math.min(src.height, bottom);
+        if (dstX < 0) { left -= dstX; dstX = 0; }
+        if (dstY < 0) { top -= dstY; dstY = 0; }
+        const width = Math.min(right - left, dst.width - dstX);
+        const height = Math.min(bottom - top, dst.height - dstY);
+        if (width <= 0 || height <= 0) return D3D_OK;
+
+        const srcLevel = src.level ?? 0;
+        const dstLevel = dst.level ?? 0;
+        const srcPixels = srcDevice.getTextureLevelPixels(src.texturePtr, srcLevel);
+        const dstPixels = dstDevice.getTextureLevelPixels(dst.texturePtr, dstLevel);
+        if (!srcPixels || !dstPixels) return D3DERR_INVALIDCALL;
+
+        const srcLayout = getD3DTextureLayout(src.format, src.width, src.height);
+        const dstLayout = getD3DTextureLayout(dst.format, dst.width, dst.height);
+        if (srcLayout.compressed !== dstLayout.compressed) return D3DERR_INVALIDCALL;
+
+        if (srcLayout.compressed) {
+            if (srcLayout.blockBytes !== dstLayout.blockBytes) return D3DERR_INVALIDCALL;
+            const blockBytes = srcLayout.blockBytes;
+            const srcBlockX = left >> 2;
+            const srcBlockY = top >> 2;
+            const dstBlockX = dstX >> 2;
+            const dstBlockY = dstY >> 2;
+            const blockRows = (height + 3) >> 2;
+            const rowBytes = ((width + 3) >> 2) * blockBytes;
+            for (let row = 0; row < blockRows; row++) {
+                const srcOffset = (srcBlockY + row) * srcPixels.pitch + srcBlockX * blockBytes;
+                const dstOffset = (dstBlockY + row) * dstPixels.pitch + dstBlockX * blockBytes;
+                const copy = srcPixels.data.slice(srcOffset, srcOffset + rowBytes);
+                dstPixels.data.set(copy, dstOffset);
+            }
+        } else {
+            const bytesPerPixel = Math.max(1, Math.floor(srcLayout.pitch / Math.max(1, src.width)));
+            const rowBytes = width * bytesPerPixel;
+            for (let row = 0; row < height; row++) {
+                const srcOffset = (top + row) * srcPixels.pitch + left * bytesPerPixel;
+                const dstOffset = (dstY + row) * dstPixels.pitch + dstX * bytesPerPixel;
+                const copy = srcPixels.data.slice(srcOffset, srcOffset + rowBytes);
+                dstPixels.data.set(copy, dstOffset);
+            }
+        }
+
+        return dstDevice.setTextureLevelPixels(
+            dst.texturePtr,
+            dstLevel,
+            dstPixels.data,
+            dstPixels.pitch,
+        ) ? D3D_OK : D3DERR_INVALIDCALL;
+    };
+
     exports['IDirect3DDevice9_CreateQuery'] = (_ctx, _mem, args) => {
         const pDevice = args[0];
         const _type = args[1];
@@ -362,7 +529,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
 
-        Logger.verbose(LogCategory.D3D9, `VertexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
+        if (Logger.isEnabled(LogCategory.D3D9, LogLevel.VERBOSE)) {
+            Logger.verbose(LogCategory.D3D9, `VertexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
+        }
 
         const dataPtr = device.lockVertexBuffer(pVertexBuffer, OffsetToLock, SizeToLock);
         if (dataPtr === 0) {
@@ -370,7 +539,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             if (ppbData) Mem.writeUint32(ppbData, 0);
             return D3DERR_INVALIDCALL;
         }
-        Logger.log(LogCategory.D3D9, `VertexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`);
+        if (Logger.isEnabled(LogCategory.D3D9, LogLevel.NORMAL)) {
+            Logger.log(LogCategory.D3D9, `VertexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`);
+        }
 
         if (ppbData) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -407,7 +578,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
 
-        Logger.verbose(LogCategory.D3D9, `IndexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
+        if (Logger.isEnabled(LogCategory.D3D9, LogLevel.VERBOSE)) {
+            Logger.verbose(LogCategory.D3D9, `IndexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
+        }
 
         const dataPtr = device.lockIndexBuffer(pIndexBuffer, OffsetToLock, SizeToLock);
         if (dataPtr === 0) {
@@ -415,7 +588,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             if (ppbData) Mem.writeUint32(ppbData, 0);
             return D3DERR_INVALIDCALL;
         }
-        Logger.log(LogCategory.D3D9, `IndexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`);
+        if (Logger.isEnabled(LogCategory.D3D9, LogLevel.NORMAL)) {
+            Logger.log(LogCategory.D3D9, `IndexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`);
+        }
 
         if (ppbData) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -456,7 +631,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
 
-        Logger.verbose(LogCategory.D3D9, `Texture::LockRect(Level=${Level})`);
+        if (Logger.isEnabled(LogCategory.D3D9, LogLevel.VERBOSE)) {
+            Logger.verbose(LogCategory.D3D9, `Texture::LockRect(Level=${Level})`);
+        }
 
         const lockInfo = device.lockTexture(pTexture, Level);
         if (!lockInfo) {
@@ -718,6 +895,17 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         }
 
         const level = meta.level ?? 0;
+        const lockInfo = device.lockTexture(meta.texturePtr, level);
+        if (lockInfo && level === 0) {
+            injectBfmeVp6Frame(
+                mem,
+                lockInfo.ptr,
+                lockInfo.pitch,
+                meta.width,
+                meta.height,
+                meta.format,
+            );
+        }
         device.unlockTexture(meta.texturePtr, level, mem);
         return D3D_OK;
     };

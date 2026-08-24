@@ -14,6 +14,7 @@
 
 import { HttpRangeSource } from "@bottleship/formats/zip";
 import type { ZipSource } from "@bottleship/formats/zip";
+import { PersistentRangeStore } from "./persistent-range-store";
 import {
     CTL_STATE, CTL_RESP_LEN, CTL_ERRNO, CTL_WORDS,
     CTL_IO_NET_FETCHES, CTL_IO_PREFETCHES, CTL_IO_CACHE_SERVES, CTL_REQS,
@@ -47,6 +48,9 @@ let ctl: Int32Array | null = null;
 let meta: Float64Array | null = null;
 let data: Uint8Array | null = null;
 let source: ZipSource | null = null;
+let persistent: PersistentRangeStore | null = null;
+let backgroundFillRunning = false;
+let lastProgressPost = 0;
 
 const chunks = new Map<number, Uint8Array>();
 const inflight = new Map<number, Promise<Uint8Array>>();
@@ -57,6 +61,47 @@ let netFetches = 0;   // cold, on the guest's critical path
 let prefetches = 0;   // speculative, ahead of the cursor
 let cacheServes = 0;  // requests answered with zero cold fetch
 let requests = 0;
+
+function postCacheProgress(state: "checking" | "downloading" | "complete" | "unavailable" | "retrying", force = false): void {
+    const now = performance.now();
+    if (!force && now - lastProgressPost < 200) return;
+    lastProgressPost = now;
+    const p = persistent?.progress() ?? { loadedBytes: 0, totalBytes: source?.size ?? 0, complete: false };
+    (self as unknown as Worker).postMessage({
+        type: "cache_progress",
+        state: p.complete ? "complete" : state,
+        loadedBytes: p.loadedBytes,
+        totalBytes: p.totalBytes,
+    });
+}
+
+const RETRY_DELAYS_MS = [500, 2_000, 5_000] as const;
+
+async function readNetworkWithRetry(start: number, end: number): Promise<Uint8Array> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+        try {
+            const bytes = await source!.readRange(start, end);
+            if (attempt > 0) postCacheProgress("downloading", true);
+            return bytes;
+        } catch (err) {
+            lastError = err;
+            if (attempt === RETRY_DELAYS_MS.length) break;
+            const delayMs = RETRY_DELAYS_MS[attempt]!;
+            const p = persistent?.progress() ?? { loadedBytes: 0, totalBytes: source?.size ?? 0 };
+            (self as unknown as Worker).postMessage({
+                type: "cache_progress",
+                state: "retrying",
+                loadedBytes: p.loadedBytes,
+                totalBytes: p.totalBytes,
+                attempt: attempt + 1,
+                delayMs,
+            });
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+    throw lastError;
+}
 
 function touch(ci: number): void {
     const i = lru.indexOf(ci);
@@ -79,12 +124,34 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
     const pending = inflight.get(ci);
     if (pending) return pending;
 
+    const stored = persistent?.readChunk(ci);
+    if (stored) {
+        chunks.set(ci, stored);
+        lru.push(ci);
+        residentBytes += stored.byteLength;
+        touch(ci);
+        evictIfNeeded();
+        cacheServes++;
+        return Promise.resolve(stored);
+    }
+
     const src = source!;
     const start = ci * CHUNK;
     const end = Math.min(src.size, start + CHUNK);
     if (prefetch) prefetches++; else netFetches++;
-    const p = src.readRange(start, end)
-        .then((buf) => {
+    const p = readNetworkWithRetry(start, end)
+        .then(async (buf) => {
+            if (persistent) {
+                try {
+                    await persistent.writeChunk(ci, buf);
+                    postCacheProgress(backgroundFillRunning ? "downloading" : "checking");
+                } catch (err) {
+                    try { persistent.close(); } catch {}
+                    persistent = null;
+                    postCacheProgress("unavailable", true);
+                    (self as unknown as Worker).postMessage({ type: "log", msg: `persistent range cache disabled: ${err}` });
+                }
+            }
             if (!chunks.has(ci)) {
                 chunks.set(ci, buf);
                 lru.push(ci);
@@ -99,6 +166,38 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
         .catch((err) => { inflight.delete(ci); throw err; });
     inflight.set(ci, p);
     return p;
+}
+
+async function fillPersistentCache(): Promise<void> {
+    if (!persistent || backgroundFillRunning || persistent.progress().complete) {
+        if (persistent?.progress().complete) postCacheProgress("complete", true);
+        return;
+    }
+    backgroundFillRunning = true;
+    postCacheProgress("downloading", true);
+    const count = Math.ceil(source!.size / CHUNK);
+    let cursor = 0;
+    const fillLane = async () => {
+        for (;;) {
+            const ci = cursor++;
+            if (ci >= count || !persistent) return;
+            if (persistent.hasChunk(ci)) continue;
+            try {
+                await getChunk(ci, true);
+            } catch (err) {
+                (self as unknown as Worker).postMessage({ type: "log", msg: `background local-cache fill paused at chunk ${ci}: ${err}` });
+                return;
+            }
+            // Yield between chunks so foreground guest reads and input messages win.
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+    };
+    try {
+        await Promise.all([fillLane(), fillLane()]);
+        if (persistent?.progress().complete) postCacheProgress("complete", true);
+    } finally {
+        backgroundFillRunning = false;
+    }
 }
 
 /** Assemble [off, off+len) from covering chunks, fetching missing ones in PARALLEL. */
@@ -188,8 +287,10 @@ self.onmessage = (e: MessageEvent) => {
             if (typeof tune.cacheMB === "number") MAX_CACHE_BYTES = Math.max(16, tune.cacheMB | 0) * 1024 * 1024;
         }
         HttpRangeSource.create(msg.url)
-            .then((s) => {
+            .then(async (s) => {
                 source = s;
+                persistent = await PersistentRangeStore.open(msg.url, s.size, CHUNK);
+                postCacheProgress(persistent ? "checking" : "unavailable", true);
                 (self as unknown as Worker).postMessage({ type: "ready", size: s.size });
             })
             .catch((err) => {
@@ -203,5 +304,14 @@ self.onmessage = (e: MessageEvent) => {
         // guest can never hang on a missed wakeup.
         void handleRequest();
         return;
+    }
+    if (msg?.type === "start_background_cache") {
+        void fillPersistentCache();
+        return;
+    }
+    if (msg?.type === "close") {
+        try { persistent?.close(); } catch {}
+        persistent = null;
+        close();
     }
 };

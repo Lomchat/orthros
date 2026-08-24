@@ -856,6 +856,8 @@ const syncModule = (() => {
         if (name) {
             namedObjects.register('mutex', name, handle);
         }
+        Logger.log(LogCategory.KERNEL32,
+            `CreateMutexA(initialOwner=${bInitialOwner ? 1 : 0}, name=${JSON.stringify(name)}) -> 0x${handle.toString(16)}`);
         return handle;
     };
 
@@ -1656,14 +1658,24 @@ const syncModule = (() => {
             return 0;
         }
 
-        // Check LockSemaphore BEFORE releasing — if event exists, waiters may be
-        // present. Fall to slow path for SetEvent + proper ownership transfer.
-        const lockSem = mem32[ptr32 + 4]; // offset 16: LockSemaphore
+        // A LockSemaphore survives after the contention which created it. Its mere
+        // presence therefore does not mean the CS is still contended: BFME keeps
+        // releasing such waiter-free sections thousands of times per frame. Consult
+        // the scheduler and reserve the slow path only for an actual waiter, where it
+        // must perform SetEvent + atomic ownership transfer. Normalize a stale handle
+        // exactly like the ordinary LeaveCriticalSection implementation below.
+        let lockSem = mem32[ptr32 + 4] >>> 0; // offset 16: LockSemaphore
         if (lockSem !== 0) {
-            return null; // Slow path handles release + SetEvent
+            if (!isValidSyncHandle(lockSem)) {
+                mem32[ptr32 + 4] = 0;
+                lockSem = 0;
+            } else if (sched.hasWaitersForHandle(lockSem)) {
+                return null;
+            }
         }
 
-        // Release fully (no waiters — LockSemaphore == 0)
+        // Release fully (scheduler confirms no current waiters; the semaphore
+        // handle itself may legitimately persist after earlier contention).
         mem32[ptr32 + 1] = 0xffffffff; // offset 4: LockCount = -1
         mem32[ptr32 + 2] = 0;          // offset 8: RecursionCount = 0
         mem32[ptr32 + 3] = 0;          // offset 12: OwningThread = 0

@@ -3,12 +3,10 @@ import { OpenGLContext } from "./context";
 import { System } from "../../core/system";
 import { Logger, LogCategory } from "../../core/logger";
 import { frameProfiler } from "../../core/frame-profiler";
-import { statsOverlay } from "../../core/stats-overlay";
 
 export class OpenGLPresenter implements RenderActive {
     readonly suppressGdiOverlay = true;
     private ctx: OpenGLContext;
-    private prevPresentTime = 0;
 
     constructor(ctx: OpenGLContext) {
         this.ctx = ctx;
@@ -51,13 +49,8 @@ export class OpenGLPresenter implements RenderActive {
         const system = System.getInstance();
         system.services.render.notifyPresent("opengl");
 
-        // Frame profiler & stats overlay
+        // Frame profiler. Present-rate measurement is centralized in RenderService.
         frameProfiler.markFrame("opengl");
-        const now = performance.now();
-        if (this.prevPresentTime > 0) {
-            statsOverlay.updateMetrics(now - this.prevPresentTime);
-        }
-        this.prevPresentTime = now;
 
         // Reset per-frame counters
         ctx.frameSnapshot.drawCalls = 0;

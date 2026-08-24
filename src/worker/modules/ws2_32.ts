@@ -13,6 +13,7 @@ import {
     SOCKET_ERROR,
     WSAEFAULT,
     WsaSocketTable,
+    getSharedWsaSocketTable,
     makeSocketExports,
     makeWsaStartup,
     inetAddr,
@@ -33,10 +34,11 @@ const WSA_WAIT_FAILED = 0xffffffff;
 export class Ws2_32 implements IModule {
     name = "ws2_32";
     exports: Record<string, ThunkImplementation> = {};
-    private socketTable = new WsaSocketTable();
+    private socketTable!: WsaSocketTable;
     private wsaStarted = false;
 
     initialize(process: Process): void {
+        this.socketTable = getSharedWsaSocketTable(process);
         let wsaLastError = 0;
 
         const ok = () => 0;
@@ -63,7 +65,7 @@ export class Ws2_32 implements IModule {
         };
         const startup = makeWsaStartup(setError, WSAEFAULT, SOCKET_ERROR);
         const socketExports = makeSocketExports(this.socketTable, setError);
-        const dns = createDnsStubs(process, setError);
+        const dns = createDnsStubs(process, setError, this.socketTable.getIdentity());
         const protoServ = createProtoServStubs(process, setError);
         const asyncLookup = createAsyncLookupStubs(setError);
         const selectImpl = makeSelect(this.socketTable, setError);

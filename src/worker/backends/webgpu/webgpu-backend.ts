@@ -11,6 +11,9 @@ export class WebGPUBackend implements RenderBackend {
     private context: GPUCanvasContext | null = null;
     private format: GPUTextureFormat | null = null;
     private bcSupported = false;
+    /** Sticky device-loss provenance for black-frame diagnostics/recovery. */
+    private deviceLossInfo: { at: number; reason: string; message: string; destroyStack?: string } | null = null;
+    private gpuErrorHistory: Array<{ at: number; name: string; message: string }> = [];
 
     // Compositing resources
     private overlayPipeline: GPURenderPipeline | null = null;
@@ -18,6 +21,14 @@ export class WebGPUBackend implements RenderBackend {
     private overlayPipelineFormat: GPUTextureFormat | null = null;
     private overlayTexture: GPUTexture | null = null;
     private overlayTextureView: GPUTextureView | null = null;
+    /**
+     * Textures superseded by an overlay resize.  copyExternalImageToTexture and
+     * the following render pass are queued asynchronously; destroying the old
+     * texture synchronously races those commands on Chromium and can destroy the
+     * WebGPU device during a game resolution switch.  Such switches are rare,
+     * so retaining these few textures is safer and negligible beside game VRAM.
+     */
+    private retiredOverlayTextures: GPUTexture[] = [];
     private overlaySampler: GPUSampler | null = null;
     private overlayNearestSampler: GPUSampler | null = null;
     private overlayVertexBuffer: GPUBuffer | null = null;
@@ -28,12 +39,6 @@ export class WebGPUBackend implements RenderBackend {
     // Growable vertex buffer for blitRects (N sub-rect quads per call)
     private rectsVertexBuffer: GPUBuffer | null = null;
     private rectsVertexBufferCapacity = 0;
-
-    // Stats overlay resources (positioned quad at bottom-left)
-    private statsTexture: GPUTexture | null = null;
-    private statsTextureView: GPUTextureView | null = null;
-    private statsBindGroup: GPUBindGroup | null = null;
-    private statsVertexBuffer: GPUBuffer | null = null;
 
     // BindGroup cache for drawTexture to avoid per-frame allocations
     private bindGroupCache = new WeakMap<GPUTextureView, GPUBindGroup>();
@@ -70,14 +75,43 @@ export class WebGPUBackend implements RenderBackend {
         this.bcSupported = this.device.features.has("texture-compression-bc");
         this.queue = this.device.queue;
 
+        // GPUDevice.lost reports reason="destroyed" both for an intentional
+        // destroy() and for some Chromium external-resource failures. Wrap the
+        // instance method so diagnostics can distinguish the two conclusively.
+        const rawDestroy = this.device.destroy.bind(this.device);
+        try {
+            (this.device as GPUDevice & { destroy: () => void }).destroy = () => {
+                this.deviceLossInfo = {
+                    at: performance.now(),
+                    reason: "destroy-called",
+                    message: "GPUDevice.destroy() was called by JavaScript",
+                    destroyStack: new Error("GPUDevice.destroy caller").stack,
+                };
+                rawDestroy();
+            };
+        } catch { /* native method may be non-writable; lost telemetry still works */ }
+
         // Monitor device loss — after this fires, all GPU ops are no-ops (black screen)
         this.device.lost.then((info) => {
+            const prior = this.deviceLossInfo;
+            this.deviceLossInfo = {
+                at: prior?.at ?? performance.now(),
+                reason: info.reason,
+                message: info.message,
+                destroyStack: prior?.destroyStack,
+            };
             Logger.error(LogCategory.SYSTEM,
                 `[WEBGPU] Device LOST! reason=${info.reason} message="${info.message}"`);
         });
 
         // DIAGNOSTIC: Catch WebGPU validation errors that silently drop draw calls
         this.device.onuncapturederror = (event: GPUUncapturedErrorEvent) => {
+            this.gpuErrorHistory.push({
+                at: performance.now(),
+                name: event.error.constructor?.name ?? "GPUError",
+                message: event.error.message,
+            });
+            if (this.gpuErrorHistory.length > 32) this.gpuErrorHistory.shift();
             Logger.error(LogCategory.DDRAW,
                 `[WEBGPU] Uncaptured error: ${event.error.message}`);
         };
@@ -122,6 +156,16 @@ export class WebGPUBackend implements RenderBackend {
 
     getDevice(): GPUDevice | null {
         return this.device;
+    }
+
+    getDeviceLossInfo(): ({
+        at: number;
+        reason: string;
+        message: string;
+        destroyStack?: string;
+        gpuErrors: Array<{ at: number; name: string; message: string }>;
+    }) | null {
+        return this.deviceLossInfo ? { ...this.deviceLossInfo, gpuErrors: this.gpuErrorHistory.slice() } : null;
     }
 
     getQueue(): GPUQueue | null {
@@ -429,7 +473,7 @@ export class WebGPUBackend implements RenderBackend {
         if (!this.overlayTexture ||
             this.overlayTexture.width !== width ||
             this.overlayTexture.height !== height) {
-            if (this.overlayTexture) this.overlayTexture.destroy();
+            if (this.overlayTexture) this.retiredOverlayTextures.push(this.overlayTexture);
             this.overlayTexture = this.device.createTexture({
                 size: [width, height],
                 format: "rgba8unorm",
@@ -580,109 +624,6 @@ export class WebGPUBackend implements RenderBackend {
         renderPass.setPipeline(activePipeline);
         renderPass.setBindGroup(0, bindGroup);
         renderPass.setVertexBuffer(0, this.getVertexBuffer());
-        renderPass.draw(6, 1, 0, 0);
-        renderPass.end();
-    }
-
-    /**
-     * Update the stats overlay texture from an OffscreenCanvas.
-     */
-    updateStatsTexture(source: OffscreenCanvas): void {
-        if (!this.device || !this.queue) return;
-        const width = source.width;
-        const height = source.height;
-        if (width === 0 || height === 0) return;
-
-        if (!this.statsTexture ||
-            this.statsTexture.width !== width ||
-            this.statsTexture.height !== height) {
-            if (this.statsTexture) this.statsTexture.destroy();
-            this.statsTexture = this.device.createTexture({
-                size: [width, height],
-                format: "rgba8unorm",
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-            });
-            this.statsTextureView = this.statsTexture.createView();
-            this.statsBindGroup = null;
-        }
-
-        this.queue.copyExternalImageToTexture(
-            { source, flipY: false },
-            { texture: this.statsTexture!, premultipliedAlpha: true, colorSpace: "srgb" },
-            { width, height }
-        );
-    }
-
-    /**
-     * Render the stats overlay at the top-right corner of the target.
-     */
-    renderStatsOverlay(
-        target: GPUTextureView,
-        encoder: GPUCommandEncoder,
-        canvasWidth: number,
-        canvasHeight: number
-    ): void {
-        if (!this.device || !this.statsTextureView || !canvasWidth || !canvasHeight) return;
-
-        if (!this.overlayPipeline || this.overlayPipelineFormat !== this.format) {
-            this.createOverlayPipeline();
-            this.overlayPipelineFormat = this.format;
-            this.statsBindGroup = null;
-        }
-
-        // Compute NDC coordinates for a 160×90 quad at top-right with 8px margin
-        const overlayW = 160;
-        const overlayH = 90;
-        const marginX = 8;
-        const marginY = 8;
-
-        // NDC: x=-1 is left, x=+1 is right, y=-1 is bottom, y=+1 is top
-        const x1 = 1 - (marginX / canvasWidth) * 2;             // right edge
-        const x0 = 1 - ((marginX + overlayW) / canvasWidth) * 2; // left edge
-        const y1 = 1 - (marginY / canvasHeight) * 2;             // top edge
-        const y0 = 1 - ((marginY + overlayH) / canvasHeight) * 2; // bottom edge
-
-        // Recreate vertex buffer if canvas size changed (NDC positions depend on it)
-        // We always recreate since canvas size may change (fullscreen toggle etc.)
-        const vertices = new Float32Array([
-            // pos (x,y), uv (u,v)
-            x0, y0, 0, 1,   // bottom-left
-            x1, y0, 1, 1,   // bottom-right
-            x1, y1, 1, 0,   // top-right
-            x0, y0, 0, 1,   // bottom-left
-            x1, y1, 1, 0,   // top-right
-            x0, y1, 0, 0,   // top-left
-        ]);
-
-        if (!this.statsVertexBuffer) {
-            this.statsVertexBuffer = this.device.createBuffer({
-                size: vertices.byteLength,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
-        }
-        this.queue!.writeBuffer(this.statsVertexBuffer, 0, vertices);
-
-        if (!this.statsBindGroup) {
-            this.statsBindGroup = this.device.createBindGroup({
-                layout: this.overlayPipeline!.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: this.getSampler() },
-                    { binding: 1, resource: this.statsTextureView },
-                ],
-            });
-        }
-
-        const renderPass = encoder.beginRenderPass({
-            colorAttachments: [{
-                view: target,
-                loadOp: "load",
-                storeOp: "store",
-            }],
-        });
-
-        renderPass.setPipeline(this.overlayPipeline!);
-        renderPass.setBindGroup(0, this.statsBindGroup);
-        renderPass.setVertexBuffer(0, this.statsVertexBuffer);
         renderPass.draw(6, 1, 0, 0);
         renderPass.end();
     }

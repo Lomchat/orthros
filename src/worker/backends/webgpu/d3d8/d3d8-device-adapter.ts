@@ -21,7 +21,6 @@ import { System } from '../../../core/system';
 import { framePacer } from '../../../core/frame-pacer';
 import { frameProfiler } from '../../../core/frame-profiler';
 import { profiler } from '../../../core/profiler';
-import { statsOverlay } from '../../../core/stats-overlay';
 import { WebGPUBackend } from '../webgpu-backend';
 import { EmulatorConfig } from '../../../core/emulator-config-manager';
 import { shouldSuppress3DGdiOverlay } from '../../../modules/ddraw/gdi-visibility';
@@ -199,7 +198,6 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
     private rtOverride: RenderSurface | null = null;
 
     // Profiling
-    private prevPresentTime: number = 0;
     private presentCount: number = 0;
 
     // Debug GPU panel frame snapshot (same shape as the D3D9 device's).
@@ -2022,18 +2020,6 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
                 videoOverlayService.consumeDirty();
             }
 
-            // Composite stats overlay (worker-side FPS display)
-            if (statsOverlay.isEnabled()) {
-                const statsCanvas = statsOverlay.getCanvas();
-                if (statsCanvas) {
-                    if (statsOverlay.isDirty()) {
-                        webgpu.updateStatsTexture(statsCanvas);
-                        statsOverlay.clearDirty();
-                    }
-                    webgpu.renderStatsOverlay(targetView, encoder, this.renderTarget.width, this.renderTarget.height);
-                }
-            }
-
             this.renderer.ringBufferManager.flushUniforms();
             this.renderer.ringBufferManager.flushStorageBuffer();
 
@@ -2078,12 +2064,6 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
             this.frameSnapshot.drawCalls = 0;
             system.services.render.notifyPresent("d3d8");
             frameCapture.onFrameEnd(); // harness CaptureBus frame boundary (D3D8)
-
-            const now = performance.now();
-            if (this.prevPresentTime > 0) {
-                statsOverlay.updateMetrics(now - this.prevPresentTime);
-            }
-            this.prevPresentTime = now;
 
             return 0;
         } finally {

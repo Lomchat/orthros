@@ -23,6 +23,7 @@ export const gdiplusModule: ModuleDescriptor = {
         makeFunc("GdipAlloc", 1),
         makeFunc("GdipFree", 1),
         makeFunc("GdipCreateBitmapFromFile", 2),
+        makeFunc("GdipCreateBitmapFromFileICM", 2),
         makeFunc("GdipCloneImage", 2),
         makeFunc("GdipDisposeImage", 1),
         makeFunc("GdipGetImageWidth", 2),

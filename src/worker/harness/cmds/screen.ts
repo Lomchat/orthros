@@ -56,4 +56,10 @@ export function registerScreenCommands(svc: HarnessService): void {
         if (!active?.getRtDebug) throw new HarnessError("active presenter has no rtDebug (not D3D9)", HarnessErrorCode.UNSUPPORTED);
         return active.getRtDebug();
     });
+
+    svc.register("gpuDebug", () => {
+        const active: any = sys().services?.render?.getActive?.();
+        if (!active?.getGpuDebug) throw new HarnessError("active presenter has no gpuDebug (not D3D9)", HarnessErrorCode.UNSUPPORTED);
+        return active.getGpuDebug();
+    });
 }

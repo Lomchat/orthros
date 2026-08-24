@@ -33,6 +33,10 @@ export interface FaultRecord {
     regs: { ecx: number; ebx: number; esp: number; ebp: number; esi: number; edi: number };
     /** Tail of the WinAPI call ring leading up to the fault (newest last). */
     recentCalls: string[];
+    /** Raw thunk entry ESP/return-address pairs, frozen at the fault. */
+    recentCallDetails?: Array<{ id: number; name: string; esp: number; retAddrBefore: number; stackHash: number }>;
+    /** Scheduler save/restore trace frozen at the fault, before an error UI can overwrite it. */
+    schedulerTrace?: string[];
     /** Guest ESP at the fault (above the #PF interrupt frame). */
     gameEsp: number;
     /** 32 stack words from gameEsp (return-address chain + locals/args). */

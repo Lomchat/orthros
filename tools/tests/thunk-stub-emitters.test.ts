@@ -13,6 +13,8 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { writeHeapSlabStubs } from '../../src/worker/modules/kernel32/heap-slab-stubs';
+import { writeCriticalSectionInlineStubs } from '../../src/worker/modules/kernel32/critical-section-inline-stubs';
+import { writeTimeInlineStub } from '../../src/worker/modules/kernel32/time-inline-stubs';
 import { writeCrtSlabStubs, writeGetcStub, writeCaseFoldStubs } from '../../src/worker/modules/crt-slab-stubs';
 import {
     writeShadowTrampoline,
@@ -70,13 +72,31 @@ const OWNER_GLOBAL = 0x20400;
 
 /** SetSamplerState-shaped spec: two range-guarded key parts folded into one slot. */
 const SAMPLER_SPEC: ShadowTrampolineSpec = {
-    argCount: 3,
-    valueArgIndex: 2,
+    argCount: 4,
+    valueArgIndex: 3,
     slotCount: 256,
     keyParts: [
         { argIndex: 1, shift: 4, max: 16 },
         { argIndex: 2, shift: 0, max: 16 },
     ],
+};
+
+/** BFME SetTextureStageState: 8 stages × 64 type slots (Type reaches 32). */
+const TEXTURE_STAGE_SPEC: ShadowTrampolineSpec = {
+    argCount: 4,
+    valueArgIndex: 3,
+    slotCount: 512,
+    keyParts: [
+        { argIndex: 1, shift: 6, max: 8 },
+        { argIndex: 2, shift: 0, max: 64 },
+    ],
+};
+
+const FVF_SPEC: ShadowTrampolineSpec = {
+    argCount: 2,
+    valueArgIndex: 1,
+    slotCount: 1,
+    keyParts: [],
 };
 
 /** SetRenderState-shaped spec: single key part with max > 0x7F (imm32 cmp form). */
@@ -90,6 +110,14 @@ const RENDERSTATE_SPEC: ShadowTrampolineSpec = {
 const cases: Record<string, (ctx: Ctx) => Snapshot> = {
     heapSlabStubs: (ctx) => {
         const r = writeHeapSlabStubs(ctx.allocator, ctx.getMemory, SLAB_CTL, LUT, TRAP_A, TRAP_B);
+        return { result: r, hashes: { region: sha(ctx.mem, r.regionBase, r.regionEnd) } };
+    },
+    criticalSectionInlineStubs: (ctx) => {
+        const r = writeCriticalSectionInlineStubs(ctx.allocator, ctx.getMemory, TRAP_A, TRAP_B);
+        return { result: r, hashes: { region: sha(ctx.mem, r.regionBase, r.regionEnd) } };
+    },
+    timeInlineStub: (ctx) => {
+        const r = writeTimeInlineStub(ctx.allocator, ctx.getMemory, 0x12345678);
         return { result: r, hashes: { region: sha(ctx.mem, r.regionBase, r.regionEnd) } };
     },
     crtSlabStubs: (ctx) => {
@@ -128,6 +156,28 @@ const cases: Record<string, (ctx: Ctx) => Snapshot> = {
             },
         };
     },
+    shadowTrampolineTextureStage: (ctx) => {
+        const r = writeShadowTrampoline(
+            ctx.allocator, ctx.getMemory, RING_CTRL, RING_DATA, RING_CAP, OWNER_GLOBAL, TEXTURE_STAGE_SPEC);
+        return {
+            result: r,
+            hashes: {
+                code: sha(ctx.mem, r.codeRegionBase, r.codeRegionEnd),
+                data: sha(ctx.mem, r.dataRegionBase, r.dataRegionEnd),
+            },
+        };
+    },
+    shadowTrampolineFvf: (ctx) => {
+        const r = writeShadowTrampoline(
+            ctx.allocator, ctx.getMemory, RING_CTRL, RING_DATA, RING_CAP, OWNER_GLOBAL, FVF_SPEC);
+        return {
+            result: r,
+            hashes: {
+                code: sha(ctx.mem, r.codeRegionBase, r.codeRegionEnd),
+                data: sha(ctx.mem, r.dataRegionBase, r.dataRegionEnd),
+            },
+        };
+    },
     ownerDisarmScalarTrampoline: (ctx) => {
         const r = writeOwnerDisarmScalarTrampoline(
             ctx.allocator, ctx.getMemory, RING_CTRL, RING_DATA, RING_CAP, 1, OWNER_GLOBAL);
@@ -149,11 +199,15 @@ const cases: Record<string, (ctx: Ctx) => Snapshot> = {
 // Frozen snapshots (generated on the pre-move code; MUST NOT change across the move).
 const EXPECTED: Record<string, Snapshot> = {
     heapSlabStubs: {"result":{"heapAllocStub":4096,"heapFreeStub":4253,"regionBase":4096,"regionEnd":4608},"hashes":{"region":"2e61fc6d4a8d3740e739a1e0fca6d4c05725b6053c969c64a593e6a43f6574a5"}},
+    criticalSectionInlineStubs: {"result":{"enterStub":4096,"leaveStub":4198,"regionBase":4096,"regionEnd":4352},"hashes":{"region":"ce8f37d53a59e5a4093ca7140ce464bfff7c66dd0e064db215f8f8b5b90dca0e"}},
+    timeInlineStub: {"result":{"timeStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"af70f0b2174adb7f822961f1f9f65aed98c609e46107e4a2b7fece88b113ca30"}},
     crtSlabStubs: {"result":{"mallocStub":4096,"freeStub":4235,"regionBase":4096,"regionEnd":4608},"hashes":{"region":"de7b6017ea9cffbcc44163c6080690d0a9d212f9cc38f796c5936b412579fbaa"}},
     getcStub: {"result":{"getcStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"7164114dee4b9bf1cf713e04d53500a1cf0aa472b1aa6cdc1b8a3dfad854f2c0"}},
-    caseFoldStubs: {"result":{"tolowerStub":4096,"toupperStub":4108,"regionBase":4096,"regionEnd":4128},"hashes":{"region":"361bd870014fab9f407fc15d3cfe66b4e9468a933f6d6ca6aae0640e20fb0946"}},
-    shadowTrampolineSampler: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"741930ffcf73a40db8441fb9bb641dfbccba2b2c42557dcd7a699f5a89bd1b49","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
-    shadowTrampolineRenderStateNoOwner: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"7a68f74852f7dd022d3f1da86a9ff701adc75aecd71a88664f10eb1a70b42d49","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
+    caseFoldStubs: {"result":{"tolowerStub":4096,"toupperStub":4114,"regionBase":4096,"regionEnd":4144},"hashes":{"region":"e3cfb5c16960fdac25b61283e7fb4403301403877b83a09f5dc6d01ea6b9d52b"}},
+    shadowTrampolineSampler: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"7abd74e2bdce1e4254437e50bc14f0fa791f70d8ae2d8debc1b85af266681278","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
+    shadowTrampolineRenderStateNoOwner: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"3c61427b912fc18da4260c8d4507eca4eef7157cb3f3ffd9f83b0d8aa63c2b1a","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
+    shadowTrampolineTextureStage: {"result":{"trampAddr":6160,"shadowBase":4100,"slotCount":512,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":6148,"codeRegionBase":6160,"codeRegionEnd":6416},"hashes":{"code":"9377c3c3aa7c19570ec7b3410eb7acb79d6cbe457d52801ff144d19b198ba85a","data":"37eacff5ffe6bcf80368235a5b0dc7d0bdb59b35a47dd72c5052578d57fae54b"}},
+    shadowTrampolineFvf: {"result":{"trampAddr":4112,"shadowBase":4100,"slotCount":1,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":4104,"codeRegionBase":4112,"codeRegionEnd":4368},"hashes":{"code":"d6b053e237e400891e8ddb3191b98eb7f28bbfcc0e5ea00c907d33855d776201","data":"e6ad6c9a3a3b7658c35bacf6553fcb8ffe34387534a648fe18f875b8f7a86ddb"}},
     ownerDisarmScalarTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4224},"hashes":{"code":"3872c71deed97fde2196b52379f1d1aa7abdf8847b81c6ffa488340c96ccc8c6"}},
     structCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4320},"hashes":{"code":"5ce49653ab8f3fa8c1218565df2c2234c05169a2d00d54a57c64d1602f2fbbed"}},
     upDrawCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4480},"hashes":{"code":"b4d6979e6cae69666eaacb40eb06265e73b17a766266b692442734350baf3642"}},
@@ -170,4 +224,25 @@ describe('thunk stub emitters — byte-identity snapshots', () => {
             expect(actual).toEqual(EXPECTED[name]);
         });
     }
+});
+
+describe('inline time conversion', () => {
+    it('matches floor(TSC * 1000 / 2^32) across both 32-bit words', () => {
+        const values = [
+            0n,
+            1n,
+            0xffff_ffffn,
+            0x1_0000_0000n,
+            0x1234_5678_9abc_def0n,
+            0xffff_ffff_ffff_ffffn,
+        ];
+        for (const tsc of values) {
+            const low = Number(tsc & 0xffff_ffffn) >>> 0;
+            const high = Number(tsc >> 32n) >>> 0;
+            const lowProductHigh = Math.floor((low * 1000) / 0x1_0000_0000);
+            const emittedFormula = (Math.imul(high, 1000) + lowProductHigh) >>> 0;
+            const exact = Number((tsc * 1000n >> 32n) & 0xffff_ffffn) >>> 0;
+            expect(emittedFormula).toBe(exact);
+        }
+    });
 });

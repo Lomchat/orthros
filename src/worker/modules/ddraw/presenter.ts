@@ -25,7 +25,6 @@ import { getOverlayCompositePlan } from "../user32/dialog-overlay";
 import { markGpuSyncedFromCpu, surfaceSyncManager } from "./surface-sync";
 import { EmulatorConfig } from "../../core/emulator-config-manager";
 import { onFrameEnd as frameCaptureOnFrameEnd } from "./frame-capture";
-import { statsOverlay } from "../../core/stats-overlay";
 
 export class DDrawPresenter implements RenderActive {
     private process: Process;
@@ -35,7 +34,6 @@ export class DDrawPresenter implements RenderActive {
     private lastPresentLog = 0;
     private presentCallCount = 0;
     private presentEarlyReturns = 0;
-    private lastPresentTime = 0;
     private pendingSurface: DirectDrawSurfaceState | null = null;
     private pendingMem: Uint8Array | null = null;
     private pendingOptions: { throttle?: boolean } | null = null;
@@ -91,7 +89,6 @@ export class DDrawPresenter implements RenderActive {
         this.lastPresentLog = 0;
         this.presentCallCount = 0;
         this.presentEarlyReturns = 0;
-        this.lastPresentTime = 0;
 
         const pendingResolvers = this.pendingResolvers.splice(0);
         for (const resolver of pendingResolvers) {
@@ -190,8 +187,6 @@ export class DDrawPresenter implements RenderActive {
         let _pdFlushAll = 0, _pdFlush = 0, _pdGetTex = 0, _pdDrawSubmit = 0;
         try {
             const now = performance.now();
-            const prevPresentTime = this.lastPresentTime;
-            this.lastPresentTime = now;
 
             // Check for early returns (no throttle – we're not presenting)
             if (!surface.surfacePtr || surface.width <= 0 || surface.height <= 0) {
@@ -420,11 +415,6 @@ export class DDrawPresenter implements RenderActive {
                     system.services.render.notifyPresent("ddraw");
                     didPresent = true;
 
-                    // Feed frame time to stats overlay
-                    if (prevPresentTime > 0) {
-                        statsOverlay.updateMetrics(now - prevPresentTime);
-                    }
-
                     // Frame capture: finalize captured draw calls
                     frameCaptureOnFrameEnd();
 
@@ -581,17 +571,6 @@ export class DDrawPresenter implements RenderActive {
             }
         }
 
-        // 3. Stats overlay (worker-side FPS display).
-        if (statsOverlay.isEnabled()) {
-            const statsCanvas = statsOverlay.getCanvas();
-            if (statsCanvas) {
-                if (statsOverlay.isDirty()) {
-                    webgpu.updateStatsTexture(statsCanvas);
-                    statsOverlay.clearDirty();
-                }
-                webgpu.renderStatsOverlay(targetView, encoder, width, height);
-            }
-        }
     }
 
     /**

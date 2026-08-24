@@ -27,6 +27,12 @@ export interface ShadowTrampolineSpec {
      *      SetSamplerState: [{argIndex:1, shift:4, max:16}, {argIndex:2, shift:0, max:16}].
      */
     keyParts: Array<{ argIndex: number; shift: number; max: number }>;
+    /**
+     * Opt-in diagnostic counter for redundant calls. Disabled in production:
+     * an atomic-looking guest `inc [memory]` on every skipped setter dirties a
+     * page and is disproportionately expensive in the hottest render path.
+     */
+    countSkipsForDiagnostics?: boolean;
 }
 
 /**
@@ -69,6 +75,7 @@ export function writeShadowTrampoline(
 ): {
     trampAddr: number; shadowBase: number; slotCount: number; sentinel: number;
     skipCounterAddr: number;
+    countsSkips: boolean;
     dataRegionBase: number; dataRegionEnd: number;
     codeRegionBase: number; codeRegionEnd: number;
 } {
@@ -76,8 +83,9 @@ export function writeShadowTrampoline(
     const { argCount, valueArgIndex, slotCount, keyParts } = spec;
 
     // --- shadow table in guest RAM (THUNK_DATA, rw): [+0]=u32 skip counter, [+4..]=slots ---
-    // The skip is invisible to JS by design (the trampoline RETs in guest code), so the
-    // trampoline bumps this counter on each skip — the only direct A/B signal of the win.
+    // The counter remains allocated for ABI/config compatibility with the EAGL
+    // token hook, but the normal setter trampoline leaves it untouched unless
+    // explicitly built in diagnostic mode.
     const DATA_SIZE = 4 + slotCount * 4;
     const dataRegionBase = allocator.alloc(DATA_SIZE, 'THUNK_DATA', 'rw');
     const skipCounterAddr = dataRegionBase;
@@ -103,24 +111,26 @@ export function writeShadowTrampoline(
     const capacityLimit = capacity - 36;
     const stride = (argCount + 1) * 4;
     const retPop = argCount * 4;
-    // After 4 pushes (flags/edx/ebx/ecx) + retAddr, stdcall args are at [ESP+20 + i*4].
-    const argDisp = (i: number) => 20 + i * 4;
+    // Use only caller-clobbered EAX/ECX/EDX. In particular, addressing the
+    // shadow as [EDX*4+disp32] avoids borrowing EBX and therefore removes a
+    // push/pop pair from every setter call. EAX keeps funcId until the ring
+    // entry tag is written; ECX is scratch/value/data pointer; EDX is slot/offset.
+    const argDisp = (i: number) => 4 + i * 4;
     const valueDisp = argDisp(valueArgIndex);
 
     const trampStart = off;
     const ringPatch: number[] = []; // rel32 sites → .ringwrite (owner mismatch / out-of-range)
 
-    // pushfd; push edx; push ebx; push ecx
-    w8(0x9C); w8(0x52); w8(0x53); w8(0x51);
-
-    // Owner gate: mov ebx,[esp+20] (arg0); cmp ebx,[lastOwnerGlobal]; jne .ringwrite
+    // Owner gate: mov ecx,[esp+4] (arg0); cmp ecx,[lastOwnerGlobal]; jne .ringwrite
     if (lastOwnerGlobal !== 0) {
-        w8(0x8B); w8(0x5C); w8(0x24); w8(argDisp(0));
-        w8(0x3B); w8(0x1D); w32(lastOwnerGlobal);
+        w8(0x8B); w8(0x4C); w8(0x24); w8(argDisp(0));
+        w8(0x3B); w8(0x0D); w32(lastOwnerGlobal);
         w8(0x0F); w8(0x85); ringPatch.push(off); w32(0);
     }
 
     // Compute shadow slot into EDX = OR over keyParts of (arg[part] range-guarded) << shift.
+    // No key parts means a scalar setter with one implicit slot (e.g. SetFVF).
+    if (keyParts.length === 0) { w8(0x31); w8(0xD2); } // xor edx,edx
     for (let pi = 0; pi < keyParts.length; pi++) {
         const part = keyParts[pi];
         if (pi === 0) {
@@ -141,47 +151,46 @@ export function writeShadowTrampoline(
         }
     }
 
-    // mov ecx,[esp+valueDisp]; mov ebx,shadowBase; cmp [ebx+edx*4],ecx; je .skip; mov [ebx+edx*4],ecx
+    // mov ecx,[esp+valueDisp]; cmp [edx*4+shadowBase],ecx; je .skip;
+    // mov [edx*4+shadowBase],ecx. Absolute indexed addressing avoids EBX.
     w8(0x8B); w8(0x4C); w8(0x24); w8(valueDisp);
-    w8(0xBB); w32(shadowBase);
-    w8(0x39); w8(0x0C); w8(0x93);
+    w8(0x39); w8(0x0C); w8(0x95); w32(shadowBase);
     w8(0x0F); w8(0x84); const skipPatch = off; w32(0);
-    w8(0x89); w8(0x0C); w8(0x93);
+    w8(0x89); w8(0x0C); w8(0x95); w32(shadowBase);
 
     // .ringwrite: (identical to the generic scalar trampoline; EAX still = funcId)
     const ringAddr = off;
     w8(0x8B); w8(0x15); w32(ctrlAddr);                 // mov edx, [ctrlAddr]
     w8(0x81); w8(0xFA); w32(capacityLimit);            // cmp edx, capacityLimit
     w8(0x0F); w8(0x8D); const ovfPatch = off; w32(0);  // jge .overflow
-    w8(0xBB); w32(dataBase);                           // mov ebx, dataBase
-    w8(0x03); w8(0xDA);                                // add ebx, edx
-    w8(0x89); w8(0x03);                                // mov [ebx], eax (funcId)
+    w8(0xB9); w32(dataBase);                           // mov ecx, dataBase
+    w8(0x03); w8(0xCA);                                // add ecx, edx
+    w8(0x89); w8(0x01);                                // mov [ecx], eax (funcId)
     for (let i = 0; i < argCount; i++) {
-        w8(0x8B); w8(0x44); w8(0x24); w8(argDisp(i));  // mov eax, [esp+20+i*4]
-        w8(0x89); w8(0x43); w8((i + 1) * 4);           // mov [ebx+(i+1)*4], eax
+        w8(0x8B); w8(0x44); w8(0x24); w8(argDisp(i));  // mov eax, [esp+4+i*4]
+        w8(0x89); w8(0x41); w8((i + 1) * 4);           // mov [ecx+(i+1)*4], eax
     }
     w8(0x83); w8(0x05); w32(ctrlAddr); w8(stride);     // add dword [ctrlAddr], stride
 
-    // .tail: pop ecx; pop ebx; pop edx; mov edx,0xB077; xor eax,eax; popfd; ret retPop
-    w8(0x59); w8(0x5B); w8(0x5A);
-    w8(0xBA); w32(0xB077);
+    // .tail: return D3D_OK. No OUT occurs on this path, so loading
+    // the hypercall port into volatile EDX is unnecessary.
+    const tailAddr = off;
     w8(0x31); w8(0xC0);
-    w8(0x9D);
     w8(0xC2); w8(retPop & 0xFF); w8((retPop >> 8) & 0xFF);
 
-    // .skip: inc [skipCounter]; pop ecx; pop ebx; pop edx; xor eax,eax; popfd; ret retPop
-    // (inc dirties EFLAGS, but the following popfd restores the caller's flags.)
-    const skipAddr = off;
-    w8(0xFF); w8(0x05); w32(skipCounterAddr);  // inc dword [skipCounterAddr]
-    w8(0x59); w8(0x5B); w8(0x5A);
-    w8(0x31); w8(0xC0);
-    w8(0x9D);
-    w8(0xC2); w8(retPop & 0xFF); w8((retPop >> 8) & 0xFF);
+    // Production skip jumps straight to the shared tail: no guest-memory RMW,
+    // and one fewer tiny basic block. Exact skip counting stays opt-in for a
+    // focused diagnostic build.
+    let skipAddr = tailAddr;
+    if (spec.countSkipsForDiagnostics === true) {
+        skipAddr = off;
+        w8(0xFF); w8(0x05); w32(skipCounterAddr);  // inc dword [skipCounterAddr]
+        w8(0x31); w8(0xC0);
+        w8(0xC2); w8(retPop & 0xFF); w8((retPop >> 8) & 0xFF);
+    }
 
-    // .overflow: pop ecx; pop ebx; pop edx; popfd; mov edx,0xB077; out dx,eax; ret retPop
+    // .overflow: fall back to the ordinary OUT trap.
     const ovfAddr = off;
-    w8(0x59); w8(0x5B); w8(0x5A);
-    w8(0x9D);
     w8(0xBA); w32(0xB077);
     w8(0xEF);
     w8(0xC2); w8(retPop & 0xFF); w8((retPop >> 8) & 0xFF);
@@ -196,7 +205,7 @@ export function writeShadowTrampoline(
 
     return {
         trampAddr: trampStart, shadowBase, slotCount, sentinel: SENTINEL,
-        skipCounterAddr,
+        skipCounterAddr, countsSkips: spec.countSkipsForDiagnostics === true,
         dataRegionBase, dataRegionEnd: dataRegionBase + DATA_SIZE,
         codeRegionBase, codeRegionEnd: codeRegionBase + CODE_SIZE,
     };

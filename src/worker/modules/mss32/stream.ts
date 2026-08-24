@@ -11,6 +11,7 @@ import {
 } from "./helpers";
 import { playStream, updateStreamPlayback, stopRingBuffer, resumeRingBuffer } from "./playback-engine";
 import { decodeStreamFile } from "./audio-decode";
+import { readAudioFromBigArchives } from "./big-archive";
 
 export function createStreamExports(ctx: MSSContext): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
@@ -159,18 +160,38 @@ export function createStreamExports(ctx: MSSContext): Record<string, ThunkImplem
         const stream = ctx.streams.get(streamHandle);
         if (!stream) return 0;
 
-        if (pause && stream.isPlaying && !stream.isPaused) {
-            if (!stopRingBuffer(stream.id)) {
-                self.postMessage({ type: "audio_pause", payload: { id: stream.id } });
+        if (pause) {
+            if (stream.isPlaying && !stream.isPaused) {
+                if (!stopRingBuffer(stream.id)) {
+                    self.postMessage({ type: "audio_pause", payload: { id: stream.id } });
+                }
+                stream.isPaused = true;
+                Logger.log(LogCategory.SYSTEM, `MSS32: Stream paused (id=${stream.id})`);
+            } else if (!stream.isPlaying) {
+                // Miles remembers an explicit paused state even before the first
+                // start; a later pause_stream(stream, 0) must then start it.
+                stream.isPaused = true;
             }
-            stream.isPaused = true;
-            Logger.log(LogCategory.SYSTEM, `MSS32: Stream paused (id=${stream.id})`);
-        } else if (!pause && stream.isPaused) {
+        } else if (stream.isPlaying && stream.isPaused) {
             if (!resumeRingBuffer(stream.id)) {
                 self.postMessage({ type: "audio_resume", payload: { id: stream.id } });
             }
             stream.isPaused = false;
             Logger.log(LogCategory.SYSTEM, `MSS32: Stream resumed (id=${stream.id})`);
+        } else if (!stream.isPlaying) {
+            // AIL_pause_stream(stream, 0) is also Miles' normal initial-start
+            // path. BFME uses this instead of AIL_start_stream for every music
+            // transition. Preserve the request while an async BIG range read is
+            // still in flight, then decodeStreamFile() kicks playback.
+            stream.isPaused = false;
+            stream.startTime = performance.now();
+            if (stream.decodedData || (stream.fileData && isEncodedFormat(stream.fileFormat))) {
+                playStream(ctx, stream);
+            } else {
+                stream.pendingStart = true;
+                setStreamStatus(ctx, stream, SMP_PLAYING);
+            }
+            Logger.log(LogCategory.SYSTEM, `MSS32: Stream start requested via pause(0) (id=${stream.id})`);
         }
         return 0;
     };
@@ -295,6 +316,54 @@ export function createStreamExports(ctx: MSSContext): Record<string, ThunkImplem
         return 0;
     };
 
+    // Combined setters/getters used by newer Miles builds.
+    exports["_AIL_set_stream_volume_pan@12"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        if (!stream) return 0;
+        stream.volume = Math.max(0, Math.min(127, args[1] | 0));
+        stream.pan = Math.max(0, Math.min(127, args[2] | 0));
+        writeStreamVolume(ctx, stream, stream.volume);
+        writeStreamPan(ctx, stream, stream.pan);
+        if (stream.isPlaying) updateStreamPlayback(ctx, stream);
+        return 0;
+    };
+
+    exports["_AIL_stream_volume_pan@12"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        if (!stream) return 0;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        if (args[1] && args[1] + 4 <= mem.length) view.setInt32(args[1], stream.volume, true);
+        if (args[2] && args[2] + 4 <= mem.length) view.setInt32(args[2], stream.pan, true);
+        return 1;
+    };
+
+    exports["_AIL_register_stream_callback@8"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        if (!stream) return 0;
+        const previous = (stream as any).callback ?? 0;
+        (stream as any).callback = args[1] >>> 0;
+        return previous;
+    };
+
+    // Reverb is not yet synthesized by the worklet, but retaining the requested
+    // levels gives correct API round-tripping and must not disable playback.
+    exports["_AIL_set_stream_reverb_levels@12"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        if (stream) {
+            (stream as any).reverbDry = args[1] >>> 0;
+            (stream as any).reverbWet = args[2] >>> 0;
+        }
+        return 0;
+    };
+
+    exports["_AIL_set_stream_ms_position@8"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        if (!stream) return 0;
+        const bytesPerSec = getBytesPerSecond(stream);
+        const position = Math.max(0, Math.floor((args[1] >>> 0) * bytesPerSec / 1000));
+        return exports["_AIL_set_stream_position@8"]!(ctxThunk, mem, [args[0], position]) as number;
+    };
+
     // _AIL_set_stream_loop_count@8
     exports["_AIL_set_stream_loop_count@8"] = (ctxThunk, mem, args) => {
         const streamHandle = args[0];
@@ -404,6 +473,15 @@ async function loadStreamFile(ctx: MSSContext, stream: MSSStream): Promise<void>
                 } else {
                     Logger.error(LogCategory.SYSTEM,
                         `MSS32: Directory appears empty or does not exist`);
+                }
+                // BFME exposes files inside Music.big/Audio.big through Miles'
+                // custom file callbacks. BottleShip implements the equivalent
+                // directly over the range-backed VFS so the game never needs a
+                // browser-side unpack or a multi-hundred-MB download.
+                const archived = await readAudioFromBigArchives(system.fileSystem, stream.filename);
+                if (archived) {
+                    stream.fileData = archived;
+                    decodeStreamFile(ctx, stream);
                 }
                 return;
             }

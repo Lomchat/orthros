@@ -7,7 +7,6 @@ import { GlidePipelineFactory } from "./glide-pipeline-factory";
 import { GlideExecutorMetrics, GlideFrameInput, GlideGpuTexture, GlidePipelineConfig } from "./glide-types";
 import { uploadToGPUTexture } from "../../../modules/ddraw/gpu-texture-utils";
 import { Logger, LogCategory } from "../../../core/logger";
-import { statsOverlay } from "../../../core/stats-overlay";
 
 function unpackColorU32(color: number): { r: number; g: number; b: number; a: number } {
     const c = color >>> 0;
@@ -331,18 +330,6 @@ export class GlideBackendExecutor extends Legacy3DExecutor {
 
         if (input.gdiOverlayCanvas) {
             this.backend.blit(input.gdiOverlayCanvas, targetView, encoder);
-        }
-
-        // Stats overlay
-        if (statsOverlay.isEnabled()) {
-            const statsCanvas = statsOverlay.getCanvas();
-            if (statsCanvas) {
-                if (statsOverlay.isDirty()) {
-                    this.backend.updateStatsTexture(statsCanvas);
-                    statsOverlay.clearDirty();
-                }
-                this.backend.renderStatsOverlay(targetView, encoder, input.width, input.height);
-            }
         }
 
         queue.submit([encoder.finish()]);

@@ -244,10 +244,9 @@ class LoggerImpl {
     // Global kill switch - when false, all console output is suppressed
     private globalEnabled = true;
 
-    /**
-     * Global enable/disable for all console output.
-     * When disabled, logs still go to ring buffer but not to console.
-     */
+    /** Global enable/disable for normal diagnostic logging. Warnings and errors
+     *  remain captured. Normal entries are still recorded while a stream or a
+     *  harness tap explicitly consumes them. */
     setGlobalEnabled(enabled: boolean): void {
         this.globalEnabled = enabled;
     }
@@ -303,12 +302,16 @@ class LoggerImpl {
      * Includes verbose storage/streaming for VERBOSE level.
      */
     isEnabled(category: LogCategory, level: LogLevel): boolean {
+        const hasConsumer = this.streamCallback !== null || this.taps.length > 0;
         if (level === LogLevel.VERBOSE) {
             return (
-                this.getCategoryLevel(category) >= LogLevel.VERBOSE ||
+                (this.globalEnabled && this.getCategoryLevel(category) >= LogLevel.VERBOSE) ||
                 this.verboseStore.isEnabled() ||
-                this.streamCallback !== null
+                hasConsumer
             );
+        }
+        if (level === LogLevel.NORMAL) {
+            return (this.globalEnabled && this.getCategoryLevel(category) >= level) || hasConsumer;
         }
         return this.getCategoryLevel(category) >= level;
     }
@@ -361,8 +364,8 @@ class LoggerImpl {
      * Use this when message construction is expensive.
      */
     logLazy(category: LogCategory, messageFn: () => string): void {
-        if (!this.globalEnabled && !this.streamCallback) return;
-        if (this.getCategoryLevel(category) < LogLevel.NORMAL && !this.streamCallback) return;
+        const hasConsumer = this.streamCallback !== null || this.taps.length > 0;
+        if ((!this.globalEnabled || this.getCategoryLevel(category) < LogLevel.NORMAL) && !hasConsumer) return;
 
         this.log(category, messageFn());
     }
@@ -401,6 +404,8 @@ class LoggerImpl {
      * Log a normal message (shown in NORMAL+ mode)
      */
     log(category: LogCategory, message: string): void {
+        const hasConsumer = this.streamCallback !== null || this.taps.length > 0;
+        if ((!this.globalEnabled || this.getCategoryLevel(category) < LogLevel.NORMAL) && !hasConsumer) return;
         const t0 = this.profilingEnabled ? performance.now() : 0;
         this.addToBuffer(category, LogLevel.NORMAL, message);
         if (this.globalEnabled &&

@@ -223,8 +223,10 @@ export function serializeModules(): unknown {
 
 export function serializeAudio(): unknown {
     const ds: any = getModule("dsound");
+    const mss: any = getModule("mss32");
     return {
         dsound: ds?.getAudioDebugState?.() ?? null,
+        mss: mss?.getAudioDebugState?.() ?? null,
     };
 }
 

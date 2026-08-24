@@ -366,16 +366,20 @@ export function writeCaseFoldStubs(
     lowerTableAddr: number,
     upperTableAddr: number,
 ): { tolowerStub: number; toupperStub: number; regionBase: number; regionEnd: number } {
-    const REGION_SIZE = 32; // 2 × 10-byte stubs + slack
+    const REGION_SIZE = 48; // 2 × 18-byte stubs + alignment slack
     const base = allocator.alloc(REGION_SIZE, 'THUNK_CODE', 'rx');
     const mem = getMemory();
     const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     let off = base;
     const emit = (tableAddr: number): number => {
         const stub = off;
-        mem[off++] = 0x0F; mem[off++] = 0xB6; mem[off++] = 0x44; mem[off++] = 0x24; mem[off++] = 0x04; // movzx eax,[esp+4]
-        mem[off++] = 0x8A; mem[off++] = 0x80; dv.setUint32(off, tableAddr >>> 0, true); off += 4;      // mov al,[eax+disp32]
-        mem[off++] = 0xC3;                                                                              // ret
+        // CRT accepts EOF/negative and out-of-byte-range ints too. Preserve
+        // those values exactly; index the 256-byte LUT only for 0..255.
+        mem[off++] = 0x8B; mem[off++] = 0x44; mem[off++] = 0x24; mem[off++] = 0x04; // mov eax,[esp+4]
+        mem[off++] = 0x3D; dv.setUint32(off, 0xFF, true); off += 4;                  // cmp eax,255
+        mem[off++] = 0x77; mem[off++] = 0x06;                                      // ja .ret
+        mem[off++] = 0x8A; mem[off++] = 0x80; dv.setUint32(off, tableAddr >>> 0, true); off += 4; // mov al,[eax+disp32]
+        mem[off++] = 0xC3;                                                          // .ret
         return stub;
     };
     const tolowerStub = emit(lowerTableAddr);

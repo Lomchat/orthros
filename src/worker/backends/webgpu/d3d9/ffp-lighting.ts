@@ -28,6 +28,9 @@ export const D3DMCS_COLOR1 = 1; // vertex diffuse
 export const D3DMCS_COLOR2 = 2; // vertex specular
 
 export const FFP_MAX_LIGHTS = 8;
+/** D3D9 exposes eight fixed-function stages. Four sampled stages cover BFME's
+ * terrain/material pipeline while keeping the WebGPU bind group comfortably small. */
+export const FFP_MAX_TEXTURE_STAGES = 4;
 
 // ── Uniform block layout (floats) ─────────────────────────────────────────────
 // Header = 17 vec4 (68 floats); then array<FfpLight, 8>, each 7 vec4 (28 floats); then the
@@ -40,8 +43,15 @@ const TAIL_START = HEADER_FLOATS + LIGHT_FLOATS * FFP_MAX_LIGHTS; // 292
 const OFF_WORLD = TAIL_START;      // mat4x4 — WORLD only (D3DTS_WORLD), for world-space clipping
 const OFF_CLIP_PLANES = OFF_WORLD + 16; // 308: array<vec4, 6> = 24 floats (raw plane equations)
 const CLIP_PLANE_COUNT = 6;
-export const FFP_UNIFORM_FLOATS = OFF_CLIP_PLANES + CLIP_PLANE_COUNT * 4; // 332
-export const FFP_UNIFORM_BYTES = FFP_UNIFORM_FLOATS * 4; // 1328
+const OFF_STAGE_OPS = OFF_CLIP_PLANES + CLIP_PLANE_COUNT * 4;
+// Per stage: colorOp, alphaOp, colorArg1, colorArg2.
+const OFF_STAGE_ARGS = OFF_STAGE_OPS + FFP_MAX_TEXTURE_STAGES * 4;
+// Per stage: alphaArg1, alphaArg2, full D3DTSS_TEXCOORDINDEX,
+// D3DTSS_TEXTURETRANSFORMFLAGS + 512 when a real texture is bound.
+const OFF_TEXTURE_MATRICES = OFF_STAGE_ARGS + FFP_MAX_TEXTURE_STAGES * 4;
+const OFF_TEXTURE_FACTOR = OFF_TEXTURE_MATRICES + FFP_MAX_TEXTURE_STAGES * 16;
+export const FFP_UNIFORM_FLOATS = OFF_TEXTURE_FACTOR + 4; // 432
+export const FFP_UNIFORM_BYTES = FFP_UNIFORM_FLOATS * 4; // 1728
 
 const OFF_VIEWPORT = 0;        // vec4: w, h, 0, 0
 const OFF_MVP = 4;             // mat4x4
@@ -110,6 +120,20 @@ export interface FfpUniformParams {
     clipPlanes: Float32Array;
     /** D3DRS_CLIPPLANEENABLE bitmask (bit N enables user clip plane N). 0 → clipping inert. */
     clipPlaneEnable: number;
+    stages: Array<{
+        colorOp: number;
+        alphaOp: number;
+        colorArg1: number;
+        colorArg2: number;
+        alphaArg1: number;
+        alphaArg2: number;
+        /** Full D3DTSS_TEXCOORDINDEX, including camera-space generation flags. */
+        texCoordIndex: number;
+        hasTexture: boolean;
+        transformFlags: number;
+        textureMatrix: Float32Array;
+    }>;
+    textureFactor: FfpColor;
     material: FfpMaterial;
     globalAmbient: FfpColor;
     lightingEnabled: boolean;
@@ -176,8 +200,9 @@ export function packFfpUniforms(out: Float32Array, p: FfpUniformParams): void {
     const count = Math.min(p.lights.length, FFP_MAX_LIGHTS);
     out[OFF_CTRL2] = count;
     out[OFF_CTRL2 + 1] = p.hasNormal ? 1 : 0;
-    // clipPlaneEnable rides ctrl2.z (a formerly-spare word) so no vec4 is added for it.
+    // These ride the two formerly-spare ctrl2 words so no vec4 is added.
     out[OFF_CTRL2 + 2] = p.clipPlaneEnable >>> 0;
+    out[OFF_CTRL2 + 3] = p.stages[0]?.texCoordIndex ?? 0;
 
     for (let i = 0; i < count; i++) {
         writeLightInto(out, OFF_LIGHTS + i * LIGHT_FLOATS, p.lights[i], p.view);
@@ -187,6 +212,22 @@ export function packFfpUniforms(out: Float32Array, p: FfpUniformParams): void {
     // shader reads them only when clipPlaneEnable != 0, so an all-zero default stays inert.
     out.set(p.world.subarray(0, 16), OFF_WORLD);
     out.set(p.clipPlanes.subarray(0, CLIP_PLANE_COUNT * 4), OFF_CLIP_PLANES);
+    for (let stage = 0; stage < FFP_MAX_TEXTURE_STAGES; stage++) {
+        const s = p.stages[stage];
+        if (!s) continue;
+        const ops = OFF_STAGE_OPS + stage * 4;
+        const args = OFF_STAGE_ARGS + stage * 4;
+        out[ops] = s.colorOp;
+        out[ops + 1] = s.alphaOp;
+        out[ops + 2] = s.colorArg1;
+        out[ops + 3] = s.colorArg2;
+        out[args] = s.alphaArg1;
+        out[args + 1] = s.alphaArg2;
+        out[args + 2] = s.texCoordIndex >>> 0;
+        out[args + 3] = (s.transformFlags & 0x1ff) + (s.hasTexture ? 512 : 0);
+        out.set(s.textureMatrix.subarray(0, 16), OFF_TEXTURE_MATRICES + stage * 16);
+    }
+    writeColor(out, OFF_TEXTURE_FACTOR, p.textureFactor);
 }
 
 const IDENTITY4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -288,11 +329,15 @@ struct Uniforms {
     globalAmbient: vec4<f32>,
     ctrl0: vec4<f32>,      // power, lightingEnabled, specularEnable, localViewer
     ctrl1: vec4<f32>,      // diffuseSrc, ambientSrc, specularSrc, emissiveSrc
-    ctrl2: vec4<f32>,      // numLights, hasNormal, clipPlaneEnable, 0
+    ctrl2: vec4<f32>,      // numLights, hasNormal, clipPlaneEnable, stage0TexCoordIndex
     lights: array<FfpLight, ${FFP_MAX_LIGHTS}>,
     // Tail block (appended after the light array so light offsets never shift):
     world: mat4x4<f32>,                 // WORLD only — FFP clip planes evaluate in world space
     clipPlanes: array<vec4<f32>, ${CLIP_PLANE_COUNT}>, // raw world-space plane equations
+    stageOps: array<vec4<f32>, ${FFP_MAX_TEXTURE_STAGES}>,
+    stageArgs: array<vec4<f32>, ${FFP_MAX_TEXTURE_STAGES}>,
+    textureMatrices: array<mat4x4<f32>, ${FFP_MAX_TEXTURE_STAGES}>,
+    textureFactor: vec4<f32>,
 }
 `;
 

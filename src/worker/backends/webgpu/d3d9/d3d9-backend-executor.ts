@@ -6,9 +6,8 @@
  */
 
 import { WebGPUBackend } from "../webgpu-backend";
-import { RenderFrame, RenderCommandType, ProgrammableDrawState } from "../render-frame";
+import { RenderFrame, RenderCommandType, ProgrammableDrawState, FixedFunctionDrawState } from "../render-frame";
 import { frameProfiler } from "../../../core/frame-profiler";
-import { statsOverlay } from "../../../core/stats-overlay";
 import { PROG_BIND } from "./shader";
 import { d3d9WasmArena, ArenaCommandType } from "./d3d9-wasm-arena";
 
@@ -21,6 +20,11 @@ export interface PipelineInfo {
 
 const UNIFORM_ALIGN = 256;
 function alignUp(n: number, a: number): number { return Math.ceil(n / a) * a; }
+function nextPowerOfTwo(n: number): number {
+    let value = 256;
+    while (value < n) value *= 2;
+    return value;
+}
 
 // Fixed binding window for the dynamic-offset programmable uniform bindings.
 // Sized to the worst case (VS: 256 vec4, PS: 224 vec4). A draw's actual block is
@@ -86,12 +90,22 @@ export interface UniformData {
 
 export class D3D9BackendExecutor {
     private backend: WebGPUBackend;
+    private gpuOpHistory: Array<{ at: number; op: string }> = [];
+    private gpuScopedFrames = 0;
     private pipelines: GPURenderPipeline[] = [];
     private pipelineInfo: PipelineInfo[] = [];
 
     // Optimization caches
     private currentPipelineId: number | null = null;
     private bindGroupCache: Map<string, { bindGroup: GPUBindGroup; textureView: GPUTextureView | null }> = new Map();
+    private fixedStateResources = new WeakMap<FixedFunctionDrawState, {
+        buffer: GPUBuffer;
+        size: number;
+        pipelineId: number;
+        textures: (GPUTextureView | null)[];
+        samplers: GPUSampler[];
+        bindGroup: GPUBindGroup;
+    }>();
     private uniformBuffer: GPUBuffer | null = null;
     private uniformBufferSize = 0;
     private uniformData: Float32Array = new Float32Array(20);
@@ -103,6 +117,25 @@ export class D3D9BackendExecutor {
     private depthTexture: GPUTexture | null = null;
     private depthView: GPUTextureView | null = null;
     private offscreenSize: { width: number; height: number } | null = null;
+    /**
+     * D3DSWAPEFFECT_DISCARD invalidates the swap-chain contents after Present. The
+     * stable WebGPU attachments otherwise retain old pixels/depth. Clear once on
+     * the first swap-chain pass of the next game frame; subsequent partial
+     * submissions in that same frame must continue to load the new contents.
+     *
+     * The depth side of this contract matters just as much as colour: BFME clears
+     * only stencil during gameplay and expects the disposable auto depth-stencil
+     * surface to start the next frame undefined. Retaining its previous depth while
+     * clearing colour makes the new model passes fail Z and leaves black silhouettes.
+     */
+    private discardBackbufferColor = true;
+    // Chromium's Linux/headless WebGPU canvas swapchain can destroy the entire
+    // GPUDevice on the first D3D9 present. Keep the game's rendering on ordinary
+    // GPU textures and bridge completed frames to the page as ImageBitmaps. Only
+    // one readback may be in flight: dropping presentation frames is preferable
+    // to stalling the guest or building an unbounded queue.
+    private cpuPresentInFlight = false;
+    private cpuPresentSequence = 0;
     // Snapshot of the last COMPLETE presented frame. The offscreen is rendered incrementally
     // across a game frame's multiple submitFrame() passes (a backbuffer clear flushes to it
     // before the scene is redrawn — e.g. when render-to-texture passes sit between the clear and
@@ -133,6 +166,18 @@ export class D3D9BackendExecutor {
 
     constructor(backend: WebGPUBackend) {
         this.backend = backend;
+        backend.getDevice()?.addEventListener("uncapturederror", (event: GPUUncapturedErrorEvent) => {
+            this.traceGpu(`uncaptured: ${event.error.message}`);
+        });
+    }
+
+    private traceGpu(op: string): void {
+        this.gpuOpHistory.push({ at: performance.now(), op });
+        if (this.gpuOpHistory.length > 128) this.gpuOpHistory.shift();
+    }
+
+    getGpuOpHistory(): Array<{ at: number; op: string }> {
+        return this.gpuOpHistory.slice();
     }
 
     /**
@@ -183,6 +228,15 @@ export class D3D9BackendExecutor {
     private lastBoundBindGroup: GPUBindGroup | null = null;
     private lastBindOffset0 = -1;
     private lastBindOffset1 = -1;
+    /** Persistent COPY_SRC arenas. queue.writeBuffer is ordered on the GPU queue,
+     * so one arena upload can feed every copy in a frame without per-draw calls or
+     * per-frame mapped-buffer creation/destruction (which destabilises Chromium). */
+    private geometryStagingBuffer: GPUBuffer | null = null;
+    private geometryStagingSize = 0;
+    private geometryStagingData = new Uint8Array(0);
+    private fixedStagingBuffer: GPUBuffer | null = null;
+    private fixedStagingSize = 0;
+    private fixedStagingData = new Uint8Array(0);
 
     /**
      * Shared, explicit bind-group/pipeline layout for programmable pipelines, parameterised by
@@ -368,6 +422,13 @@ export class D3D9BackendExecutor {
     ): void {
         const device = this.backend.getDevice()!;
         const queue = this.backend.getQueue()!;
+        const scoped = this.gpuScopedFrames++ < 64;
+        if (scoped) {
+            device.pushErrorScope("internal");
+            device.pushErrorScope("out-of-memory");
+            device.pushErrorScope("validation");
+        }
+        this.traceGpu(`execute begin present=${present ? 1 : 0} target=${target ? 1 : 0} cmds=${frame.commandTypes.length} draws=${frame.drawStateCount}`);
 
         // Reset state tracking for the new frame/renderPass
         this.currentPipelineId = null;
@@ -375,10 +436,11 @@ export class D3D9BackendExecutor {
         this.resetRenderPassBindCache();
 
         try {
-            // Upload queued data
-            for (let i = 0; i < frame.uploadBuffers.length; i++) {
-                queue.writeBuffer(frame.uploadBuffers[i], 0, frame.uploadData[i] as any);
-            }
+            // Create the encoder early: both transient geometry and fixed-function
+            // constants are staged with GPU copies instead of hundreds of individual
+            // queue.writeBuffer calls.
+            const encoder = device.createCommandEncoder();
+            this.stageQueuedUploads(device, encoder, frame);
 
             // Pre-size the programmable per-draw uniform arenas for this frame.
             if (frame.drawStateCount > 0) {
@@ -407,25 +469,43 @@ export class D3D9BackendExecutor {
 
             // Ensure offscreen target (swap-chain path only; RT passes bring their own views).
             if (!target) this.ensureOffscreenTarget();
+            this.traceGpu(`target ready ${target ? "rt" : `${this.offscreenTexture?.width}x${this.offscreenTexture?.height}`}`);
 
-            // Create command encoder
-            const encoder = device.createCommandEncoder();
+            // Fixed-function draws each carry their own transform/material/light block.
+            // Sending those blocks with one queue.writeBuffer call per draw is extremely
+            // expensive in Chromium (BFME: ~147 calls / frame, roughly 35 ms). Populate one
+            // mapped staging buffer and record GPU copies before opening the render pass.
+            // The destination buffers remain stable, so their cached bind groups stay valid.
+            this.stageFixedFunctionUniforms(device, encoder, frame);
 
             const clearTarget = (frame.clear.flags & 1) !== 0; // D3DCLEAR_TARGET
             const clearZ = (frame.clear.flags & 2) !== 0; // D3DCLEAR_ZBUFFER
+            const clearStencil = (frame.clear.flags & 4) !== 0; // D3DCLEAR_STENCIL
 
+            const discardColor = !target && this.discardBackbufferColor;
+            if (discardColor) this.discardBackbufferColor = false;
+            // The swap-chain discard boundary also invalidates the implicit depth
+            // contents. WebGPU has no "undefined" attachment load operation, so a
+            // depth clear to the conventional far value is the deterministic match.
+            // Do this only on the first backbuffer submission after Present, exactly
+            // like the colour discard; RT passes and later partial submits keep depth.
+            const discardDepth = discardColor;
+            const explicitColorClear = frame.hasClear && clearTarget;
             const colorAttachments: GPURenderPassColorAttachment[] = [{
                 view: target ? target.colorView : this.offscreenView!,
-                clearValue: frame.clear.color,
-                loadOp: (frame.hasClear && clearTarget) ? "clear" : "load",
+                clearValue: explicitColorClear ? frame.clear.color : { r: 0, g: 0, b: 0, a: 1 },
+                loadOp: (explicitColorClear || discardColor) ? "clear" : "load",
                 storeOp: "store",
             }];
 
             const depthStencilAttachment: GPURenderPassDepthStencilAttachment = target?.depthStencil ?? {
                 view: target ? target.depthView! : this.depthView!,
-                depthClearValue: frame.clear.depth,
-                depthLoadOp: (frame.hasClear && clearZ) ? "clear" : "load",
+                depthClearValue: (frame.hasClear && clearZ) ? frame.clear.depth : 1,
+                depthLoadOp: ((frame.hasClear && clearZ) || discardDepth) ? "clear" : "load",
                 depthStoreOp: "store",
+                stencilClearValue: frame.clear.stencil,
+                stencilLoadOp: (frame.hasClear && clearStencil) ? "clear" : "load",
+                stencilStoreOp: "store",
             };
 
             const renderPass = encoder.beginRenderPass({
@@ -456,6 +536,18 @@ export class D3D9BackendExecutor {
                     case RenderCommandType.BindProgrammable: {
                         const ds = frame.drawStates[frame.commandA[i]];
                         if (ds) this.bindProgrammable(renderPass, queue, ds);
+                        break;
+                    }
+
+                    case RenderCommandType.BindFixedFunction: {
+                        const ds = frame.fixedStates[frame.commandA[i]];
+                        if (ds && this.currentPipelineId !== null) {
+                            this.bindFixedFunction(renderPass, queue, this.currentPipelineId, ds);
+                        }
+                        break;
+                    }
+                    case RenderCommandType.SetStencilReference: {
+                        renderPass.setStencilReference(frame.commandA[i] >>> 0);
                         break;
                     }
 
@@ -496,6 +588,7 @@ export class D3D9BackendExecutor {
             }
 
             renderPass.end();
+            this.traceGpu("renderPass end");
 
             // Composite overlays on top of the main scene: video plane first, then GDI.
             // (Swap-chain path only — RT passes never composite overlays or present.)
@@ -513,63 +606,150 @@ export class D3D9BackendExecutor {
                 }
             }
 
-            // Copy to canvas if presenting
-            if (present && !target) {
+            let cpuReadback: {
+                buffer: GPUBuffer;
+                width: number;
+                height: number;
+                paddedBytesPerRow: number;
+                sequence: number;
+            } | null = null;
+
+            // The CPU/ImageBitmap bridge is the safe default. Direct canvas
+            // presentation remains available for browsers with a reliable WebGPU
+            // swapchain by setting __d3d9DirectPresent=true.
+            if (present && !target && !(globalThis as any).__d3d9OffscreenOnly &&
+                !(globalThis as any).__d3d9DirectPresent) {
+                cpuReadback = this.encodeCpuPresentation(encoder);
+                this.hasPresented = false;
+                this.traceGpu(cpuReadback ? "cpu presentation encoded" : "cpu presentation dropped (in flight)");
+            // Copy to canvas if direct presentation was explicitly requested.
+            } else if (present && !target && !(globalThis as any).__d3d9OffscreenOnly) {
                 const context = this.backend.getContext()!;
                 const currentTexture = context.getCurrentTexture();
+                this.traceGpu(`currentTexture ${currentTexture.width}x${currentTexture.height}`);
                 const size = this.getCanvasSize();
 
-                // Stats overlay — composite onto the OFFSCREEN texture (before the canvas copy),
-                // exactly like the video/GDI overlays above. The GDI present loop re-presents the
-                // offscreen via repaintLastFrame() between actual presents; if we drew the overlay
-                // straight onto the canvas it would only appear on real presents and vanish on every
-                // repaint → visible flicker. Baking it into the offscreen makes it persist on both.
-                if (statsOverlay.isEnabled()) {
-                    const statsCanvas = statsOverlay.getCanvas();
-                    if (statsCanvas) {
-                        if (statsOverlay.isDirty()) {
-                            this.backend.updateStatsTexture(statsCanvas);
-                            statsOverlay.clearDirty();
-                        }
-                        this.backend.renderStatsOverlay(this.offscreenView!, encoder, size.width, size.height);
-                    }
-                }
-
-                // The canvas can be resized (async from the main thread) AFTER
-                // ensureOffscreenTarget sized the offscreen this frame, so copy at most
-                // what both textures hold — else copyTextureToTexture throws "touches
-                // outside" and the present (and guest) dies on a resolution change.
+                // Present through a render pass, like the proven D3D8/OpenGL/Glide
+                // paths. Chromium's OffscreenCanvas swap texture is an external
+                // instance: using it as COPY_DST caused the GPUDevice to be destroyed
+                // immediately after BFME's first Present, despite COPY_DST being
+                // advertised by configure(). Sampling the offscreen texture into a
+                // RENDER_ATTACHMENT is portable and also routes final gamma/post-FX.
                 const off = this.offscreenTexture!;
-                encoder.copyTextureToTexture(
-                    { texture: off },
-                    { texture: currentTexture },
-                    {
-                        width: Math.min(off.width, currentTexture.width),
-                        height: Math.min(off.height, currentTexture.height),
-                        depthOrArrayLayers: 1,
-                    }
+                this.backend.drawTexture(
+                    this.offscreenView!,
+                    currentTexture.createView(),
+                    encoder,
+                    true,
+                    undefined,
+                    undefined,
+                    { r: 0, g: 0, b: 0, a: 1 },
+                    false,
+                    { srcW: off.width, srcH: off.height, outW: size.width, outH: size.height },
                 );
-                // Snapshot this COMPLETE frame so repaintLastFrame re-presents it (not the
-                // work-in-progress offscreen, which is transiently black mid-frame).
-                if (this.presentedTexture) {
-                    encoder.copyTextureToTexture(
-                        { texture: off },
-                        { texture: this.presentedTexture },
-                        {
-                            width: Math.min(off.width, this.presentedTexture.width),
-                            height: Math.min(off.height, this.presentedTexture.height),
-                            depthOrArrayLayers: 1,
-                        }
-                    );
-                    this.hasPresented = true;
-                }
+                // The host no longer re-acquires the swap texture between game
+                // presents, so a second "presentedTexture" snapshot is unnecessary.
+                // Keeping this extra copy in the first BFME submit was the last
+                // operation correlated with Chromium destroying the GPU device.
+                // captureFrame safely reads the offscreen while the guest is paused.
+                this.hasPresented = false;
+            } else if (present && !target) {
+                this.traceGpu("canvas present skipped (__d3d9OffscreenOnly)");
             }
 
             const submitStart = frameProfiler.startTimer();
+            this.traceGpu("queue submit begin");
             queue.submit([encoder.finish()]);
+            this.traceGpu("queue submit end");
+            if (present && !target) this.discardBackbufferColor = true;
             frameProfiler.endTimer("gpu", submitStart);
+            if (cpuReadback) void this.publishCpuPresentation(cpuReadback);
+            if (scoped) {
+                const validation = device.popErrorScope();
+                const oom = device.popErrorScope();
+                const internal = device.popErrorScope();
+                void Promise.allSettled([validation, oom, internal]).then((results) => {
+                    const labels = ["validation", "out-of-memory", "internal"];
+                    for (let i = 0; i < results.length; i++) {
+                        const r = results[i];
+                        if (r.status === "fulfilled" && r.value) this.traceGpu(`scope ${labels[i]}: ${r.value.message}`);
+                        else if (r.status === "rejected") this.traceGpu(`scope ${labels[i]} rejected: ${String(r.reason)}`);
+                    }
+                });
+            }
         } finally {
             frame.releaseTemporaryBuffers();
+        }
+    }
+
+    private encodeCpuPresentation(encoder: GPUCommandEncoder): {
+        buffer: GPUBuffer;
+        width: number;
+        height: number;
+        paddedBytesPerRow: number;
+        sequence: number;
+    } | null {
+        if (this.cpuPresentInFlight || !this.offscreenTexture) return null;
+        const device = this.backend.getDevice();
+        if (!device) return null;
+        const { width, height } = this.getCanvasSize();
+        const paddedBytesPerRow = alignUp(width * 4, 256);
+        const buffer = device.createBuffer({
+            label: "d3d9-cpu-present-readback",
+            size: paddedBytesPerRow * height,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        encoder.copyTextureToBuffer(
+            { texture: this.offscreenTexture },
+            { buffer, bytesPerRow: paddedBytesPerRow },
+            { width, height, depthOrArrayLayers: 1 },
+        );
+        this.cpuPresentInFlight = true;
+        return { buffer, width, height, paddedBytesPerRow, sequence: ++this.cpuPresentSequence };
+    }
+
+    private async publishCpuPresentation(readback: {
+        buffer: GPUBuffer;
+        width: number;
+        height: number;
+        paddedBytesPerRow: number;
+        sequence: number;
+    }): Promise<void> {
+        try {
+            await readback.buffer.mapAsync(GPUMapMode.READ);
+            const mapped = new Uint8Array(readback.buffer.getMappedRange());
+            const pixels = new Uint8ClampedArray(readback.width * readback.height * 4);
+            const rowBytes = readback.width * 4;
+            for (let y = 0; y < readback.height; y++) {
+                pixels.set(
+                    mapped.subarray(y * readback.paddedBytesPerRow, y * readback.paddedBytesPerRow + rowBytes),
+                    y * rowBytes,
+                );
+            }
+            readback.buffer.unmap();
+
+            // navigator.gpu.getPreferredCanvasFormat() is BGRA on Chromium. ImageData
+            // is RGBA, so exchange red/blue before creating the transferable bitmap.
+            if (this.backend.getFormat()?.startsWith("bgra")) {
+                for (let i = 0; i < pixels.length; i += 4) {
+                    const red = pixels[i];
+                    pixels[i] = pixels[i + 2];
+                    pixels[i + 2] = red;
+                }
+            }
+            const bitmap = await createImageBitmap(new ImageData(pixels, readback.width, readback.height));
+            self.postMessage({
+                type: "d3d9_cpu_frame",
+                bitmap,
+                width: readback.width,
+                height: readback.height,
+                sequence: readback.sequence,
+            }, { transfer: [bitmap] });
+        } catch (error) {
+            this.traceGpu(`cpu presentation failed: ${String(error)}`);
+        } finally {
+            try { readback.buffer.destroy(); } catch { /* device may have been lost */ }
+            this.cpuPresentInFlight = false;
         }
     }
 
@@ -703,10 +883,11 @@ export class D3D9BackendExecutor {
             usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
         });
         this.hasPresented = false;
+        this.discardBackbufferColor = true;
 
         this.depthTexture = device.createTexture({
             size: { width: size.width, height: size.height, depthOrArrayLayers: 1 },
-            format: "depth24plus",
+            format: "depth24plus-stencil8",
             usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         this.depthView = this.depthTexture.createView();
@@ -817,8 +998,10 @@ export class D3D9BackendExecutor {
 
             if (info?.hasTexture) {
                 const texture = textureView ?? this.getFallbackTextureView();
-                entries.push({ binding: 1, resource: this.getSampler() });
-                entries.push({ binding: 2, resource: texture });
+                for (let stage = 0; stage < 4; stage++) {
+                    entries.push({ binding: 1 + stage * 2, resource: this.getSampler() });
+                    entries.push({ binding: 2 + stage * 2, resource: stage === 0 ? texture : this.getFallbackTextureView() });
+                }
             }
 
             bindGroup = device.createBindGroup({ layout, entries });
@@ -847,6 +1030,185 @@ export class D3D9BackendExecutor {
         const bindGroup = this.acquireProgBindGroup(sampler, ds.textures, ds.cubeMask);
 
         this.setBindGroup0(renderPass, bindGroup, vsOff, psOff);
+    }
+
+    private bindFixedFunction(
+        renderPass: GPURenderPassEncoder,
+        _queue: GPUQueue,
+        pipelineId: number,
+        state: FixedFunctionDrawState,
+    ): void {
+        const device = this.backend.getDevice()!;
+        const resource = this.ensureFixedStateResource(device, state);
+
+        const info = this.pipelineInfo[pipelineId];
+        const samplers = state.samplers.map(s => s ?? this.getSampler());
+        const resourcesMatch = resource.textures.every((texture, i) => texture === state.textures[i]) &&
+            resource.samplers.every((sampler, i) => sampler === samplers[i]);
+        if (!resource.bindGroup || resource.pipelineId !== pipelineId ||
+            !resourcesMatch) {
+            const entries: GPUBindGroupEntry[] = [
+                { binding: 0, resource: { buffer: resource.buffer } },
+            ];
+            if (info?.hasTexture) {
+                for (let stage = 0; stage < 4; stage++) {
+                    entries.push({ binding: 1 + stage * 2, resource: samplers[stage] });
+                    entries.push({ binding: 2 + stage * 2, resource: state.textures[stage] ?? this.getFallbackTextureView() });
+                }
+            }
+            resource.bindGroup = device.createBindGroup({
+                layout: this.pipelines[pipelineId].getBindGroupLayout(0),
+                entries,
+            });
+            resource.pipelineId = pipelineId;
+            for (let stage = 0; stage < 4; stage++) {
+                resource.textures[stage] = state.textures[stage];
+                resource.samplers[stage] = samplers[stage];
+            }
+        } else {
+            this.metrics.bindGroupCacheHits++;
+        }
+        this.setBindGroup0(renderPass, resource.bindGroup);
+    }
+
+    /** Ensure the persistent destination buffer + bind-group cache record for one pooled
+     * fixed-function draw-state slot. RenderFrame reuses these state objects every frame,
+     * so the resource reaches a true allocation-free steady state. */
+    private ensureFixedStateResource(device: GPUDevice, state: FixedFunctionDrawState) {
+        const byteSize = Math.max(16, state.uniformLen * 4);
+        let resource = this.fixedStateResources.get(state);
+        if (!resource || resource.size < byteSize) {
+            resource?.buffer.destroy();
+            const buffer = device.createBuffer({
+                label: "d3d9-ffp-draw-uniforms",
+                size: byteSize,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            resource = {
+                buffer,
+                size: byteSize,
+                pipelineId: -1,
+                textures: [null, null, null, null],
+                samplers: [this.getSampler(), this.getSampler(), this.getSampler(), this.getSampler()],
+                bindGroup: null as unknown as GPUBindGroup,
+            };
+            this.fixedStateResources.set(state, resource);
+        }
+        return resource;
+    }
+
+    /** Upload every fixed-function uniform block through one mapped staging allocation.
+     * copyBufferToBuffer requires 4-byte-aligned offsets/sizes, naturally satisfied by the
+     * Float32 blocks. The staging buffer is destroyed after queue.submit via the frame's
+     * existing temporary-buffer lifetime. */
+    private stageFixedFunctionUniforms(
+        device: GPUDevice,
+        encoder: GPUCommandEncoder,
+        frame: RenderFrame,
+    ): void {
+        const count = frame.fixedStateCount;
+        if (count <= 0) return;
+
+        let totalBytes = 0;
+        for (let i = 0; i < count; i++) {
+            totalBytes += Math.max(16, frame.fixedStates[i].uniformLen * 4);
+        }
+        if (totalBytes <= 0) return;
+
+        const required = alignUp(totalBytes, 4);
+        if (!this.fixedStagingBuffer || this.fixedStagingSize < required) {
+            this.fixedStagingBuffer?.destroy();
+            this.fixedStagingSize = nextPowerOfTwo(required);
+            this.fixedStagingBuffer = device.createBuffer({
+                label: "d3d9-ffp-frame-staging",
+                size: this.fixedStagingSize,
+                usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            });
+            this.fixedStagingData = new Uint8Array(this.fixedStagingSize);
+        }
+        const mapped = this.fixedStagingData;
+        let offset = 0;
+        for (let i = 0; i < count; i++) {
+            const state = frame.fixedStates[i];
+            const byteSize = Math.max(16, state.uniformLen * 4);
+            const source = new Uint8Array(
+                state.uniforms.buffer,
+                state.uniforms.byteOffset,
+                state.uniformLen * 4,
+            );
+            mapped.set(source, offset);
+            // The remaining bytes (only possible for an empty block) stay zero-initialized.
+            offset += byteSize;
+        }
+        this.backend.getQueue()!.writeBuffer(this.fixedStagingBuffer, 0, mapped.buffer, 0, required);
+
+        offset = 0;
+        for (let i = 0; i < count; i++) {
+            const state = frame.fixedStates[i];
+            const byteSize = Math.max(16, state.uniformLen * 4);
+            const resource = this.ensureFixedStateResource(device, state);
+            encoder.copyBufferToBuffer(this.fixedStagingBuffer, offset, resource.buffer, 0, byteSize);
+            offset += byteSize;
+        }
+    }
+
+    /** Upload all deferred vertex/index data through one mapped staging buffer.
+     *
+     * BFME records roughly one dynamic geometry upload for every draw. Chromium's
+     * queue.writeBuffer path serialises each call and was costing another ~35 ms per
+     * frame. A single mapped allocation followed by encoder copies preserves the
+     * original ordering (including repeated writes to the same destination) while
+     * reducing the JavaScript/WebGPU crossing to one operation per submission. */
+    private stageQueuedUploads(
+        device: GPUDevice,
+        encoder: GPUCommandEncoder,
+        frame: RenderFrame,
+    ): void {
+        const count = frame.uploadBuffers.length;
+        if (count <= 0) return;
+
+        let totalBytes = 0;
+        for (let i = 0; i < count; i++) {
+            totalBytes += alignUp(frame.uploadData[i].byteLength, 4);
+        }
+        if (totalBytes <= 0) return;
+
+        if (!this.geometryStagingBuffer || this.geometryStagingSize < totalBytes) {
+            this.geometryStagingBuffer?.destroy();
+            this.geometryStagingSize = nextPowerOfTwo(totalBytes);
+            this.geometryStagingBuffer = device.createBuffer({
+                label: "d3d9-geometry-frame-staging",
+                size: this.geometryStagingSize,
+                usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            });
+            this.geometryStagingData = new Uint8Array(this.geometryStagingSize);
+        }
+        const mapped = this.geometryStagingData;
+        let offset = 0;
+        for (let i = 0; i < count; i++) {
+            const data = frame.uploadData[i];
+            mapped.set(data, offset);
+            offset += alignUp(data.byteLength, 4);
+        }
+        this.backend.getQueue()!.writeBuffer(this.geometryStagingBuffer, 0, mapped.buffer, 0, totalBytes);
+
+        offset = 0;
+        for (let i = 0; i < count; i++) {
+            const byteLength = frame.uploadData[i].byteLength;
+            if (byteLength > 0) {
+                // WebGPU requires copy sizes to be multiples of four. D3D vertex and
+                // index uploads are naturally aligned, but round defensively and rely
+                // on the zero-filled staging padding for the final bytes.
+                encoder.copyBufferToBuffer(
+                    this.geometryStagingBuffer,
+                    offset,
+                    frame.uploadBuffers[i],
+                    frame.uploadOffsets[i] ?? 0,
+                    alignUp(byteLength, 4),
+                );
+            }
+            offset += alignUp(byteLength, 4);
+        }
     }
 
     private resetRenderPassBindCache(): void {

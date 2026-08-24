@@ -66,6 +66,7 @@ export const advapi32Module: ModuleDescriptor = {
         makeFunc("AddAccessAllowedAce", 4),
         makeFunc("AddAccessDeniedAce", 4),
         makeFunc("OpenProcessToken", 3),
+        makeFunc("OpenThreadToken", 4),
         makeFunc("GetTokenInformation", 5),
         makeFunc("RegEnumKeyA", 4),
         makeFunc("RegQueryValueA", 4),

@@ -14,6 +14,7 @@ const D3DCULL_NONE = 1;
 const D3DTS_WORLD = 0x100;
 const D3DTS_VIEW = 2;
 const D3DTS_PROJECTION = 3;
+const D3DTS_TEXTURE0 = 16;
 
 export interface StreamSource {
     index: number;
@@ -37,6 +38,7 @@ export class D3D9StateTracker {
     private worldMatrix: Float32Array;
     private viewMatrix: Float32Array;
     private projMatrix: Float32Array;
+    private textureMatrices: Float32Array[];
 
     // FVF and stream bindings
     private fvf: number = 0;
@@ -72,6 +74,7 @@ export class D3D9StateTracker {
         this.worldMatrix = identityMatrix();
         this.viewMatrix = identityMatrix();
         this.projMatrix = identityMatrix();
+        this.textureMatrices = Array.from({ length: 8 }, () => identityMatrix());
         this.seedRenderStateDefaults();
     }
 
@@ -96,6 +99,16 @@ export class D3D9StateTracker {
         this.renderStates[190] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE1
         this.renderStates[191] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE2
         this.renderStates[192] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE3
+        this.renderStates[53] = 1;          // D3DRS_STENCILFAIL = KEEP
+        this.renderStates[54] = 1;          // D3DRS_STENCILZFAIL = KEEP
+        this.renderStates[55] = 1;          // D3DRS_STENCILPASS = KEEP
+        this.renderStates[56] = 8;          // D3DRS_STENCILFUNC = ALWAYS
+        this.renderStates[58] = 0xffffffff; // D3DRS_STENCILMASK
+        this.renderStates[59] = 0xffffffff; // D3DRS_STENCILWRITEMASK
+        this.renderStates[186] = 1;         // D3DRS_CCW_STENCILFAIL = KEEP
+        this.renderStates[187] = 1;         // D3DRS_CCW_STENCILZFAIL = KEEP
+        this.renderStates[188] = 1;         // D3DRS_CCW_STENCILPASS = KEEP
+        this.renderStates[189] = 8;         // D3DRS_CCW_STENCILFUNC = ALWAYS
         // FFP lighting defaults (D3DMCS_*: MATERIAL=0, COLOR1=1, COLOR2=2). These let
         // unset values reflect the real D3D defaults so an explicit MATERIAL (0) is
         // distinguishable from "never set".
@@ -136,6 +149,8 @@ export class D3D9StateTracker {
             target = this.viewMatrix;
         } else if (type === D3DTS_PROJECTION) {
             target = this.projMatrix;
+        } else if (type >= D3DTS_TEXTURE0 && type < D3DTS_TEXTURE0 + 8) {
+            target = this.textureMatrices[type - D3DTS_TEXTURE0];
         } else {
             return false;
         }
@@ -152,6 +167,9 @@ export class D3D9StateTracker {
     getWorldMatrix(): Float32Array { return this.worldMatrix; }
     getViewMatrix(): Float32Array { return this.viewMatrix; }
     getProjectionMatrix(): Float32Array { return this.projMatrix; }
+    getTextureMatrix(stage: number): Float32Array {
+        return this.textureMatrices[stage] ?? this.textureMatrices[0];
+    }
 
     getMVP(): Float32Array {
         return multiplyMatrices(

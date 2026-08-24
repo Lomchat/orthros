@@ -111,9 +111,35 @@ export class AudioEngine {
   private pausedEncodedSources: Set<number> = new Set();
   private nextDecodeToken = 1;
   private sampleMeta: Map<number, SampleMeta> = new Map();
+  private debugEvents: Array<{ at: number; event: string; id?: number; detail?: string }> = [];
   onEnded: ((id: number) => void) | null = null;
   onStatusChange: ((id: number, status: "started" | "error", error?: string) => void) | null = null;
   onPosition: ((id: number, positionFrames: number) => void) | null = null;
+
+  private debug(event: string, id?: number, detail?: string): void {
+    this.debugEvents.push({ at: Math.round(performance.now()), event, id, detail });
+    if (this.debugEvents.length > 64) this.debugEvents.splice(0, this.debugEvents.length - 64);
+  }
+
+  /** Bounded, serializable host-audio state for automated validation. */
+  getDebugState(): unknown {
+    return {
+      contextState: this.context?.state ?? "not-created",
+      workletReady: !!this.node,
+      pendingDecodes: Array.from(this.pendingDecodes.keys()),
+      encodedSources: Array.from(this.encodedSources.entries()).map(([id, source]) => ({
+        id,
+        paused: source.element.paused,
+        ended: source.element.ended,
+        currentTime: source.element.currentTime,
+        duration: source.element.duration,
+        readyState: source.element.readyState,
+        networkState: source.element.networkState,
+        mediaError: source.element.error?.message ?? null,
+      })),
+      events: this.debugEvents.slice(),
+    };
+  }
 
   private ensureContext(): AudioContext {
     if (!this.context) {
@@ -261,6 +287,7 @@ export class AudioEngine {
   }
 
   async playEncoded(payload: AudioPlayEncodedPayload): Promise<void> {
+    this.debug("encoded-request", payload.id, `${payload.data.byteLength} bytes ${payload.mimeType ?? ""}`);
     await this.ensureReady();
     if (!this.context) {
       const error = "AudioContext not initialized";
@@ -280,12 +307,14 @@ export class AudioEngine {
       });
       try {
         await this.playEncodedStreaming(payload);
+        this.debug("encoded-started", payload.id, "media-element");
         console.log("BottleShip: Audio stream started", { id: payload.id });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "started");
         }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
+        this.debug("encoded-error", payload.id, error);
         console.error("BottleShip: Audio stream failed", { id: payload.id, error });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "error", error);
@@ -372,12 +401,14 @@ export class AudioEngine {
         loopCount: payload.loopCount,
       });
       console.log("BottleShip: Audio decode finished (from decode)", { id: payload.id });
+      this.debug("encoded-started", payload.id, "decoded-worklet");
       if (this.onStatusChange) {
         this.onStatusChange(payload.id, "started");
       }
     } catch (err) {
       this.pendingDecodes.delete(payload.id);
       const error = err instanceof Error ? err.message : String(err);
+      this.debug("encoded-error", payload.id, error);
       console.error("BottleShip: Audio decode failed", { id: payload.id, error, err });
       if (this.onStatusChange) {
         this.onStatusChange(payload.id, "error", error);

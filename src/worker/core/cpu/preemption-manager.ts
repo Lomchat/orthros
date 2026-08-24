@@ -69,6 +69,9 @@ export class PreemptionManager {
      *  caveat (not correctness): chained edges bypass cycle_internal, so heavily
      *  chained modules accumulate re-entries slower and promote late. */
     private tier2Threshold = 300_000;           // config idx 15 (0 = tier-2 OFF)
+    /** Total guest pages that may retain a tier-2 marking. Runtime-tunable for
+     *  A/B, but 512 showed no measurable frame gain over the bounded 256 default. */
+    private tier2PageSetCap = 256;               // config idx 20 (1..4096)
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -244,7 +247,8 @@ export class PreemptionManager {
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the
             // promotion invalidation bug crashes Discworld Noir with "null function").
             this.wasmExports.set_jit_config(15, this.tier2Threshold);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"}`);
+            this.wasmExports.set_jit_config(20, this.tier2PageSetCap);
+            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

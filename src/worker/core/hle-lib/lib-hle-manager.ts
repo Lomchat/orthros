@@ -223,6 +223,11 @@ class LibHleManager {
                         if (h && h.functionId >= 0) hypercallDataManager.unregisterRawHandler(h.functionId);
                     },
                 );
+                // Pure byte-exact hooks intentionally skip the trampoline
+                // differential phase and are production-active immediately.
+                // Keep diagnostics honest instead of reporting a permanent
+                // `shadowing 0/N` state while the raw WASM handler serves them.
+                if (!needsTrampoline) runtime.state = 'active';
                 handler = this.buildShadowHandler(runtime, decl, descriptor.id, fm.name);
             }
             if (!handler) {

@@ -166,16 +166,55 @@ export function getObject(gdi: GDIContext, hgdiobj: number, cbBuffer: number, lp
         // bmType, bmWidth, bmHeight, bmWidthBytes, bmPlanes, bmBitsPixel, bmBits
         const width = obj.data?.width || 0;
         const height = obj.data?.height || 0;
-        const widthBytes = width * 4; // RGBA = 4 bytes per pixel
+        // A DIB section is special: GetObject must expose the same guest-visible
+        // storage returned through CreateDIBSection's ppvBits.  Returning NULL here
+        // turns a perfectly valid DIBSECTION into a device-dependent bitmap and
+        // callers such as BFME immediately memcpy decoded pixels to address zero.
+        const bitsPtr = (obj.data?.bitsPtr ?? 0) >>> 0;
+        const bitsPixel = (obj.data?.dibBpp ?? 32) >>> 0;
+        const widthBytes = (obj.data?.dibStride ?? Math.floor((width * bitsPixel + 31) / 32) * 4) >>> 0;
         view.setUint32(lpvObject, 0, true); // bmType = 0
         view.setUint32(lpvObject + 4, width, true); // bmWidth
         view.setUint32(lpvObject + 8, height, true); // bmHeight
         view.setUint32(lpvObject + 12, widthBytes, true); // bmWidthBytes
         view.setUint16(lpvObject + 16, 1, true); // bmPlanes
-        view.setUint16(lpvObject + 18, 32, true); // bmBitsPixel
-        view.setUint32(lpvObject + 20, 0, true); // bmBits (pointer)
-        Logger.verbose(LogCategory.GDI32, `getObject BITMAP: ${width}x${height}, widthBytes=${widthBytes}, hasPixels=${!!obj.data?.pixels}, loading=${!!obj.data?.loading}`);
-        return 24;
+        view.setUint16(lpvObject + 18, bitsPixel & 0xffff, true); // bmBitsPixel
+        view.setUint32(lpvObject + 20, bitsPtr, true); // bmBits (DIBSECTION storage; NULL for DDBs)
+        // GetObject(DIBSECTION) has a deliberately observable distinction from a
+        // device-dependent bitmap: when the caller provides sizeof(DIBSECTION)
+        // (84 bytes on Win32), Windows fills and returns all 84 bytes.  A number
+        // of native image wrappers (including BFME's) use that exact return value
+        // to decide whether bmBits is usable, even though they subsequently only
+        // consume fields from the embedded BITMAP.  Returning 24 here therefore
+        // leaves their destination pointer uninitialised.
+        const isDibSection = bitsPtr !== 0;
+        if (isDibSection && cbBuffer >= 84) {
+            const topDown = !!obj.data?.dibTopDown;
+            const compression = (obj.data?.dibCompression ?? 0) >>> 0;
+            const imageSize = (obj.data?.bitsSize ?? (widthBytes * height)) >>> 0;
+
+            // BITMAPINFOHEADER dsBmih at +24.
+            view.setUint32(lpvObject + 24, 40, true); // biSize
+            view.setInt32(lpvObject + 28, width, true); // biWidth
+            view.setInt32(lpvObject + 32, topDown ? -height : height, true); // biHeight
+            view.setUint16(lpvObject + 36, 1, true); // biPlanes
+            view.setUint16(lpvObject + 38, bitsPixel & 0xffff, true); // biBitCount
+            view.setUint32(lpvObject + 40, compression, true); // biCompression
+            view.setUint32(lpvObject + 44, imageSize, true); // biSizeImage
+            view.setInt32(lpvObject + 48, obj.data?.dibXPelsPerMeter ?? 0, true);
+            view.setInt32(lpvObject + 52, obj.data?.dibYPelsPerMeter ?? 0, true);
+            view.setUint32(lpvObject + 56, obj.data?.dibClrUsed ?? 0, true);
+            view.setUint32(lpvObject + 60, obj.data?.dibClrImportant ?? 0, true);
+            // dsBitfields[3], dshSection and dsOffset. CreateDIBSection currently
+            // supports anonymous memory only, so the latter two are zero.
+            view.setUint32(lpvObject + 64, obj.data?.dibRedMask ?? 0, true);
+            view.setUint32(lpvObject + 68, obj.data?.dibGreenMask ?? 0, true);
+            view.setUint32(lpvObject + 72, obj.data?.dibBlueMask ?? 0, true);
+            view.setUint32(lpvObject + 76, obj.data?.dibSection ?? 0, true);
+            view.setUint32(lpvObject + 80, obj.data?.dibOffset ?? 0, true);
+        }
+        Logger.verbose(LogCategory.GDI32, `getObject BITMAP: ${width}x${height}, widthBytes=${widthBytes}, bitsPixel=${bitsPixel}, bits=0x${bitsPtr.toString(16)}, dibSection=${isDibSection}, hasPixels=${!!obj.data?.pixels}, loading=${!!obj.data?.loading}`);
+        return isDibSection && cbBuffer >= 84 ? 84 : 24;
     } else if (obj.type === 'FONT') {
         // LOGFONTA = 60 bytes (CHAR lfFaceName[32]), LOGFONTW = 92 bytes (WCHAR lfFaceName[32]).
         // First 28 bytes are identical between A and W; only the trailing face-name array differs.

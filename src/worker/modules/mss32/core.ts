@@ -6,10 +6,12 @@ import { MSSContext, SMP_PLAYING } from "./context";
 import { ensureDriverHandle, stopHeartbeat, freeDriverResources } from "./helpers";
 import { updateEmulatorState, stopRingBuffer } from "./playback-engine";
 import { processPendingTimerCallbacks, processPendingEOSCallbacks } from "./callbacks";
-import { ensureListener3D } from "./spatial";
+import { ensureListener3D, writeListener3D } from "./spatial";
+import { i32ToFloat } from "../../../audio/audio-ring-buffer";
 
 /** Fake 3D provider handle — games null-check but never dereference internals */
 const FAKE_3D_PROVIDER_HANDLE = 0xDEAD3D01;
+const FAKE_FILTER_PROVIDER_HANDLE = 0xDEADF117;
 
 export function createCoreExports(ctx: MSSContext): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
@@ -211,6 +213,14 @@ export function createCoreExports(ctx: MSSContext): Record<string, ThunkImplemen
             enumState = view.getUint32(nextPtr, true);
         }
 
+        // Bring-up switch used to validate a title's native 2D fallback without
+        // rebuilding the runtime. Kept opt-in and off by default so it cannot
+        // change existing games; the BFME harness may toggle it before audio init.
+        if ((globalThis as any).__mssDisable3dProviders === true) {
+            Logger.log(LogCategory.SYSTEM, "MSS32: 3D provider enumeration disabled by runtime compatibility switch");
+            return 0;
+        }
+
         if (enumState === 0) {
             // First call: return one fake provider
             if (!ctx.provider3DNamePtr) {
@@ -242,6 +252,31 @@ export function createCoreExports(ctx: MSSContext): Record<string, ThunkImplemen
         return 0;
     };
 
+    // BFME explicitly looks up this stock Miles filter during each audio update.
+    // Returning success without populating the three outputs makes it walk stale
+    // stack data; returning no filters makes it retry forever. Expose one stable
+    // no-op provider with the exact name the game requests.
+    exports["_AIL_enumerate_filters@12"] = (ctxThunk, mem, args) => {
+        const [nextPtr, destPtr, namePtr] = args;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const state = nextPtr && MemoryGuard.isValidRange(mem, nextPtr, 4)
+            ? view.getUint32(nextPtr, true)
+            : 0;
+        if (state !== 0) return 0;
+
+        if (!ctx.filterNamePtr) {
+            const name = "Mono Delay Filter";
+            ctx.filterNamePtr = ctx.process.memory.alloc(name.length + 1);
+            for (let i = 0; i < name.length; i++) mem[ctx.filterNamePtr + i] = name.charCodeAt(i);
+            mem[ctx.filterNamePtr + name.length] = 0;
+        }
+        if (nextPtr && MemoryGuard.isValidRange(mem, nextPtr, 4)) view.setUint32(nextPtr, 1, true);
+        if (destPtr && MemoryGuard.isValidRange(mem, destPtr, 4)) view.setUint32(destPtr, FAKE_FILTER_PROVIDER_HANDLE, true);
+        if (namePtr && MemoryGuard.isValidRange(mem, namePtr, 4)) view.setUint32(namePtr, ctx.filterNamePtr, true);
+        Logger.log(LogCategory.SYSTEM, "MSS32: _AIL_enumerate_filters@12 -> Mono Delay Filter");
+        return 1;
+    };
+
     // _AIL_set_redist_directory@4
     exports["_AIL_set_redist_directory@4"] = (ctxThunk, mem, args) => {
         const dirPtr = args[0];
@@ -265,6 +300,23 @@ export function createCoreExports(ctx: MSSContext): Record<string, ThunkImplemen
     // M3DRESULT: 0=M3D_NOERR (success), 1=M3D_NOT_ENABLED, 8=M3D_NOT_INIT.
     // Returning 0 is REQUIRED by titles with no 2D fallback (Blade of Darkness treats
     // a non-zero open as a fatal "Sound System Init Error" and quits).
+    //
+    // AIL_get_DirectSound_info is a void function with two output pointers. Leaving
+    // either output untouched is unsafe: callers commonly use uninitialised stack
+    // locals and will treat the stale value as a COM interface. BFME then dispatches
+    // through that bogus vtable, which also shifts ESP before the enclosing method
+    // returns. Browser audio has no native DirectSound object, so report both as NULL.
+    exports["_AIL_get_DirectSound_info@12"] = (ctxThunk, mem, args) => {
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        for (const outPtr of [args[1], args[2]]) {
+            if (outPtr && MemoryGuard.isValidRange(mem, outPtr, 4)) {
+                view.setUint32(outPtr, 0, true);
+            }
+        }
+        Logger.log(LogCategory.SYSTEM, "MSS32: _AIL_get_DirectSound_info@12 -> DirectSound=NULL, primaryBuffer=NULL");
+        return 0;
+    };
+
     exports["_AIL_open_3D_provider@4"] = (ctxThunk, mem, args) => {
         Logger.log(LogCategory.SYSTEM, `MSS32: _AIL_open_3D_provider@4 prov=0x${args[0].toString(16)} → 0 (M3D_NOERR)`);
         return 0; // M3D_NOERR — provider opened; 3D samples play via the worklet 3D mixer
@@ -350,12 +402,37 @@ export function createCoreExports(ctx: MSSContext): Record<string, ThunkImplemen
         return 0;
     };
 
+    exports["_AIL_set_digital_master_room_type@8"] = (ctxThunk, mem, args) => {
+        ctx.roomType3D = args[1] | 0;
+        return 0;
+    };
+
+    exports["_AIL_set_3D_rolloff_factor@8"] = (ctxThunk, mem, args) => {
+        const listener = ctx.listener3D;
+        if (listener) {
+            listener.rolloffFactor = i32ToFloat(args[1]);
+            writeListener3D(ctx);
+        }
+        return 0;
+    };
+
     // _AIL_3D_speaker_type@4(prov) → current speaker configuration.
     exports["_AIL_3D_speaker_type@4"] = (ctxThunk, mem, args) => ctx.speakerType3D;
 
     // _AIL_set_3D_speaker_type@8(prov, speaker_type) — store (AIL_3D_2_SPEAKER etc.).
     exports["_AIL_set_3D_speaker_type@8"] = (ctxThunk, mem, args) => {
         ctx.speakerType3D = args[1] | 0;
+        // One-shot bring-up breadcrumb: preserve the caller's complete nested
+        // stack frame before the thunk returns. The normal log ring is quickly
+        // overwritten by BFME's exception reporter, while this plain snapshot
+        // remains readable through CDP after a wild return.
+        const esp = ctxThunk.esp >>> 0;
+        const stack: number[] = [];
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        if (esp + 0x80 <= mem.byteLength) {
+            for (let off = 0; off < 0x80; off += 4) stack.push(view.getUint32(esp + off, true) >>> 0);
+        }
+        (globalThis as any).__mssSpeakerDiag = { esp, stack };
         return 0;
     };
 

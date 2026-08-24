@@ -7,11 +7,14 @@ export const enum RenderCommandType {
     SetIndexBuffer = 4,
     DrawIndexed = 5,
     BindProgrammable = 6,
+    BindFixedFunction = 7,
+    SetStencilReference = 9,
 }
 
 export type RenderClear = {
     color: GPUColor;
     depth: number;
+    stencil: number;
     flags: number;
 };
 
@@ -44,9 +47,19 @@ export interface ProgrammableDrawState {
     cubeMask: number;
 }
 
+/** Per-draw fixed-function snapshot. D3D9 applications routinely change their
+ * texture, sampler, matrices and lighting between draws in one BeginScene/Present.
+ * Keeping these frame-wide makes every draw replay with the final state. */
+export interface FixedFunctionDrawState {
+    uniforms: Float32Array;
+    uniformLen: number;
+    textures: (GPUTextureView | null)[];
+    samplers: (GPUSampler | null)[];
+}
+
 export class RenderFrame {
     hasClear = false;
-    clear: RenderClear = { color: { r: 0, g: 0, b: 0, a: 1 }, depth: 1.0, flags: 0 };
+    clear: RenderClear = { color: { r: 0, g: 0, b: 0, a: 1 }, depth: 1.0, stencil: 0, flags: 0 };
 
     commandTypes: number[] = [];
     commandA: number[] = [];
@@ -58,6 +71,8 @@ export class RenderFrame {
     bufferRefs: GPUBuffer[] = [];
     uploadBuffers: GPUBuffer[] = [];
     uploadData: Uint8Array[] = [];
+    /** Destination byte offset paired with each deferred buffer upload. */
+    uploadOffsets: number[] = [];
     temporaryBuffers: GPUBuffer[] = [];
     /** Buffers acquired from a reuse pool (DrawPrimitiveUP vertex data). Unlike
      *  temporaryBuffers, these are NOT destroyed at frame end — the owner returns
@@ -68,6 +83,8 @@ export class RenderFrame {
      *  so steady-state capture allocates nothing (see nextDrawState). */
     drawStates: ProgrammableDrawState[] = [];
     drawStateCount = 0;
+    fixedStates: FixedFunctionDrawState[] = [];
+    fixedStateCount = 0;
 
     reset(): void {
         this.hasClear = false;
@@ -79,19 +96,30 @@ export class RenderFrame {
         this.bufferRefs.length = 0;
         this.uploadBuffers.length = 0;
         this.uploadData.length = 0;
+        this.uploadOffsets.length = 0;
         this.temporaryBuffers.length = 0;
         this.pooledBuffers.length = 0;
         // Rewind the draw-state pool without dropping the slots (keeps their
         // constant scratch + texture arrays for reuse). Stale texture refs in
         // slots beyond drawStateCount are overwritten on reuse by nextDrawState's filler.
         this.drawStateCount = 0;
+        this.fixedStateCount = 0;
     }
 
-    setClear(color: GPUColor, depth: number, flags: number): void {
+    setClear(color: GPUColor, depth: number, stencil: number, flags: number): void {
         this.clear.color = color;
         this.clear.depth = depth;
+        this.clear.stencil = stencil;
         this.clear.flags = flags;
         this.hasClear = true;
+    }
+
+    pushSetStencilReference(reference: number): void {
+        this.commandTypes.push(RenderCommandType.SetStencilReference);
+        this.commandA.push(reference >>> 0);
+        this.commandB.push(0);
+        this.commandC.push(0);
+        this.commandD.push(0);
     }
 
     pushSetPipeline(pipelineId: number): void {
@@ -197,8 +225,35 @@ export class RenderFrame {
         this.commandD.push(0);
     }
 
-    queueUpload(buffer: GPUBuffer, data: Uint8Array): void {
+    nextFixedState(uniformLen: number): FixedFunctionDrawState {
+        let s = this.fixedStates[this.fixedStateCount];
+        if (!s) {
+            s = {
+                uniforms: new Float32Array(uniformLen),
+                uniformLen,
+                textures: [null, null, null, null],
+                samplers: [null, null, null, null],
+            };
+            this.fixedStates[this.fixedStateCount] = s;
+        } else if (s.uniforms.length < uniformLen) {
+            s.uniforms = new Float32Array(uniformLen);
+        }
+        s.uniformLen = uniformLen;
+        this.fixedStateCount++;
+        return s;
+    }
+
+    pushBindFixedFunction(stateIndex: number): void {
+        this.commandTypes.push(RenderCommandType.BindFixedFunction);
+        this.commandA.push(stateIndex);
+        this.commandB.push(0);
+        this.commandC.push(0);
+        this.commandD.push(0);
+    }
+
+    queueUpload(buffer: GPUBuffer, data: Uint8Array, destinationOffset = 0): void {
         this.uploadBuffers.push(buffer);
+        this.uploadOffsets.push(destinationOffset >>> 0);
         // IMPORTANT: Make a copy! The source data may be a view into a shared
         // conversion buffer that gets overwritten by subsequent DrawPrimitiveUP calls.
         this.uploadData.push(new Uint8Array(data));

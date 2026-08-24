@@ -5,9 +5,14 @@
  * - SPA fallback: unknown paths → index.html
  */
 import path from "path";
+import { bfmeRelayStats, bfmeRelayWebSocket, upgradeBfmeRelay } from "./bfme-net-relay";
 
 const DIST = path.resolve(import.meta.dir, "..", "dist");
 const PORT = parseInt(process.env.PORT ?? "5173");
+const BOTTLESHIP_HOST = process.env.BOTTLESHIP_HOST ?? "0.0.0.0";
+const BFME_WGB_PATH = path.resolve(
+    process.env.BFME_WGB_PATH ?? path.resolve(import.meta.dir, "..", "..", "..", "data", "bfme-1.03-fr.wgb"),
+);
 
 const MIME: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
@@ -30,20 +35,25 @@ const COOP_COEP = {
     "Cross-Origin-Embedder-Policy": "require-corp",
 };
 
-Bun.serve({
+const server = Bun.serve({
     port: PORT,
-    hostname: "0.0.0.0",
-    async fetch(req) {
+    hostname: BOTTLESHIP_HOST,
+    async fetch(req, bunServer) {
         const url = new URL(req.url);
+        if (url.pathname === "/bfme-net/health") {
+            return Response.json({ ok: true, ...bfmeRelayStats() }, { headers: COOP_COEP });
+        }
+        if (upgradeBfmeRelay(req, bunServer as any)) return undefined;
         let pathname = decodeURIComponent(url.pathname);
 
         // SPA fallback for extensionless paths
         if (!path.extname(pathname)) pathname = "/index.html";
 
-        const filePath = path.join(DIST, pathname);
+        const isBfmeBundle = pathname === "/apps/bfme.wgb";
+        const filePath = isBfmeBundle ? BFME_WGB_PATH : path.join(DIST, pathname);
 
         // Prevent path traversal
-        if (!filePath.startsWith(DIST + path.sep) && filePath !== DIST) {
+        if (!isBfmeBundle && !filePath.startsWith(DIST + path.sep) && filePath !== DIST) {
             return new Response("Forbidden", { status: 403 });
         }
 
@@ -96,6 +106,17 @@ Bun.serve({
             });
         }
 
+        if (req.method === "HEAD") {
+            return new Response(null, {
+                headers: {
+                    "Content-Type": contentType,
+                    "Content-Length": String(fileSize),
+                    "Accept-Ranges": "bytes",
+                    ...COOP_COEP,
+                },
+            });
+        }
+
         return new Response(file, {
             headers: {
                 "Content-Type": contentType,
@@ -105,6 +126,7 @@ Bun.serve({
             },
         });
     },
+    websocket: bfmeRelayWebSocket as any,
 });
 
-console.log(`Serving /app/dist on http://0.0.0.0:${PORT}`);
+console.log(`Serving BottleShip + BFME relay on http://${BOTTLESHIP_HOST}:${server.port}`);

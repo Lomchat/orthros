@@ -150,6 +150,31 @@ export const dbg = {
         console.log(`[QUALITY] ${JSON.stringify(c.quality)}`);
         return c.quality;
     },
+    /** Current guest display configuration, useful when validating a WGB
+     *  resolution independently from the host canvas scaling. */
+    resolution(): unknown {
+        const c = EmulatorConfig.getInstance();
+        const out = {
+            screen: { ...c.screenResolution },
+            supported: c.supportedResolutions.map((mode) => ({ ...mode })),
+        };
+        console.log(`[dbg][resolution][JSON] ${JSON.stringify(out)}`);
+        return out;
+    },
+    /** Scheduler async-restore history is intentionally opt-in: recording it
+     *  formats thread/CPU snapshots on a very hot path. Enable only around a
+     *  scheduler investigation, then disable to restore production performance. */
+    asyncRestoreTrace(on?: boolean): unknown {
+        const scheduler = System.getInstance().scheduler;
+        if (!scheduler) return { enabled: false, entries: [] };
+        if (typeof on === "boolean") scheduler.setAsyncRestoreTraceEnabled(on);
+        const out = {
+            enabled: scheduler.isAsyncRestoreTraceEnabled(),
+            entries: scheduler.getAsyncRestoreTrace(),
+        };
+        console.log(`[dbg][asyncRestoreTrace][JSON] ${JSON.stringify(out)}`);
+        return out;
+    },
     /** Add a breakpoint at a guest linear EIP (number or hex string). */
     bp(eip: number | string): void {
         const a = toAddr(eip);
@@ -280,7 +305,9 @@ export const dbg = {
      *  7=JIT_INDIRECT_REGION_MIN_SHARE(%) 8=JIT_INDIRECT_REGION_MAX_PAGES
      *  9=JIT_FASTMEM_READS 10=JIT_X87_LOCALS 11=JIT_PUSH_RUN_COALESCING
      *  12=JIT_RET_CHAINING 13=JIT_RET_SPECULATION 14=JIT_RET_SPEC_MAX_INSTR
-     *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR.
+     *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR
+     *  17=JIT_TIER2_MAX_PAGES 18=JIT_FASTMEM_READ_SPLIT
+     *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -321,32 +348,34 @@ export const dbg = {
      *  the PreemptionManager when it exposes setTier2Threshold so the choice survives a
      *  game reload. Pure runtime knob: changing it needs NO cache clear (promotion
      *  happens organically as modules cross the threshold). */
-    jitTier2(threshold = 300000, specBudget = 0, maxPages = 0): void {
+    jitTier2(threshold = 300000, specBudget = 0, maxPages = 0, pageSetCap = 0): void {
         const w = wasm(); if (!w?.set_jit_config) return;
         if (specBudget > 0) w.set_jit_config(16, specBudget >>> 0);
         if (maxPages > 0) w.set_jit_config(17, maxPages >>> 0); // tier-2 module page budget (idx 17)
+        if (pageSetCap > 0) w.set_jit_config(20, pageSetCap >>> 0); // retained hot-page capacity
         const pm = (globalThis as any).preemption;
         if (pm?.setTier2Threshold) pm.setTier2Threshold(threshold);
         else w.set_jit_config(15, threshold >>> 0);
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] JIT_TIER2_THRESHOLD=${g(15)} tier2SpecBudget=${g(16)} tier2MaxPages=${g(17)} (runtime knob, no cache clear)`);
+        console.log(`[dbg] JIT_TIER2_THRESHOLD=${g(15)} tier2SpecBudget=${g(16)} tier2MaxPages=${g(17)} pageSetCap=${g(20)} (runtime knob, no cache clear)`);
     },
     /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
-     *  and promotions REFUSED because the page-set cap (256) was full. blockedByCap > 0
+     *  and promotions REFUSED because the page-set cap was full. blockedByCap > 0
      *  with a saturated pageCount means the hot set outgrew the cap — the exact failure
      *  mode that makes threshold changes read as "no effect" (see the in-race NFSU A/B). */
-    tier2Stats(): { pageCount: number; promotions: number; blockedByCap: number; threshold: number } | null {
+    tier2Stats(): { pageCount: number; pageSetCap: number; promotions: number; blockedByCap: number; threshold: number } | null {
         const w = wasm(); if (!w?.jit_get_tier2_page_count) {
             console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
         }
         const s = {
             pageCount: w.jit_get_tier2_page_count() >>> 0,
+            pageSetCap: w.get_jit_config ? (w.get_jit_config(20) >>> 0) : 256,
             promotions: w.jit_get_tier2_promotions() >>> 0,
             blockedByCap: w.jit_get_tier2_blocked_by_cap() >>> 0,
             threshold: w.get_jit_config ? (w.get_jit_config(15) >>> 0) : -1,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/256 promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold}`);
+        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageSetCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold}`);
         return s;
     },
     /** Fastmem read speculation. Default ON; clears JIT cache so blocks recompile. */
@@ -437,6 +466,26 @@ export const dbg = {
         else { w.set_jit_config(21, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
         const g = w.get_jit_config ? (w.get_jit_config(21) >>> 0) : -1;
         console.log(`[dbg][flaglocals] enabled=${g} (authoritative - survives reload) + cache cleared`);
+    },
+    /** Attribute HeapAlloc calls that escaped the inline x86/WASM slab. Keep this
+     *  opt-in so the caller histogram itself never taxes normal gameplay. */
+    heapAllocDiag(on = true, reset = true): any {
+        const fn = (globalThis as any).setHeapAllocFallbackDiagnostics;
+        const result = typeof fn === 'function' ? fn(!!on, !!reset) : null;
+        console.log(`[dbg][heap] fallback diagnostics ${on ? 'enabled' : 'disabled'}${reset ? ' + reset' : ''}`);
+        return result;
+    },
+    heapAllocDiagReport(): any {
+        const fn = (globalThis as any).getHeapAllocFallbackDiagnostics;
+        const result = typeof fn === 'function' ? fn() : null;
+        console.log(`[dbg][heap][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    heapSlabReport(): any {
+        const fn = (globalThis as any).getSlabReport;
+        const result = typeof fn === 'function' ? fn() : null;
+        console.log(`[dbg][heap-slab][JSON] ${JSON.stringify(result)}`);
+        return result;
     },
     /** Fastmem counters: generation, compiled raw-load sites, lazy deopts, source bump counts. */
     fastmemStats(): any {
@@ -1117,6 +1166,32 @@ export const dbg = {
             console.log(`[dbg][tsc][JSON] ${JSON.stringify({ wallMs: +(t1 - t0).toFixed(2), tscDelta: d, ratePerSec: +(d / wall).toExponential(3), healthyRate: 4.295e9 })}`);
         }, gapMs);
     },
+    /** Compare the exact millisecond value produced by the inline
+     * GetTickCount/timeGetTime x86 formula against the authoritative virtual
+     * clock over a short interval. Deltas (not epochs) must agree. */
+    async timeInlineAudit(gapMs = 250): Promise<unknown> {
+        const w = wasm();
+        if (!w?.read_tsc) return { err: 'no read_tsc export' };
+        const sample = () => {
+            const tsc = BigInt(w.read_tsc());
+            const inlineMs = Number((tsc * 1000n >> 32n) & 0xffff_ffffn) >>> 0;
+            return {
+                wallMs: performance.now(),
+                virtualMs: TimeService.getInstance().nowMs(),
+                inlineMs,
+            };
+        };
+        const before = sample();
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.max(1, gapMs | 0)));
+        const after = sample();
+        const out = {
+            wallDeltaMs: +(after.wallMs - before.wallMs).toFixed(2),
+            virtualDeltaMs: +(after.virtualMs - before.virtualMs).toFixed(2),
+            inlineDeltaMs: (after.inlineMs - before.inlineMs) >>> 0,
+        };
+        console.log(`[dbg][timeInlineAudit][JSON] ${JSON.stringify(out)}`);
+        return out;
+    },
     /** Dump the HypercallDataManager state + the HYPERCALL_PAGE time fields. Diagnoses why the
      *  unified clock / RDTSC is broken: if initialized=false or hasView=false, the manager never
      *  set up; if page.mips==0 / page.perf_lo==0, updateTimeData never populated the time base so
@@ -1256,7 +1331,7 @@ export const dbg = {
             snap.devices = devices.size;
             const d = System.getInstance().process?.dispatcher as {
                 getWbufStats?: () => { hits: number; outTrapHits: number; coalescedSkips: number; registered: number };
-                getShadowStats?: () => Record<string, number>;
+                getShadowStats?: () => Record<string, number> | null;
             } | undefined;
             snap.wbuf = d?.getWbufStats?.() ?? null;
             // Guest-side setter-shadow skip counters (redundant SetRenderState/SetSamplerState
@@ -1441,8 +1516,8 @@ export const dbg = {
         })}`);
     },
     /** Dump the hottest recorded basic blocks (exec counts + static CFG edges). */
-    trace2Blocks(top = 40): void {
-        const w = wasm(); if (!w?.trace2_block_snapshot) return;
+    trace2Blocks(top = 40): unknown {
+        const w = wasm(); if (!w?.trace2_block_snapshot) return null;
         const n = Math.min(w.trace2_block_snapshot() >>> 0, top);
         const kinds = ['normal', 'cond', 'indirect', 'exit'];
         const rows: any[] = [];
@@ -1458,6 +1533,7 @@ export const dbg = {
             });
         }
         console.log(`[dbg][trace2Blocks][JSON] ${JSON.stringify(rows)}`);
+        return rows;
     },
     /** Per-page block-length histogram from the trace2 recorder — the superblock gate:
      *  short avg blocks
@@ -1492,8 +1568,8 @@ export const dbg = {
         return rows;
     },
     /** Dump the recorded indirect-branch target histogram (monomorphism check). */
-    trace2Indirects(top = 40): void {
-        const w = wasm(); if (!w?.trace2_indirect_snapshot) return;
+    trace2Indirects(top = 40): unknown {
+        const w = wasm(); if (!w?.trace2_indirect_snapshot) return null;
         const n = Math.min(w.trace2_indirect_snapshot() >>> 0, top);
         const rows: any[] = [];
         for (let i = 0; i < n; i++) {
@@ -1504,6 +1580,7 @@ export const dbg = {
             });
         }
         console.log(`[dbg][trace2Indirects][JSON] ${JSON.stringify(rows)}`);
+        return rows;
     },
     /** Descriptor builder (print-only): greedy hot-spine traces from the hottest
      *  recorded blocks, following edges whose derived bias ≥ minBias. Stops at indirects,
@@ -1582,21 +1659,34 @@ export const dbg = {
      *  state-of-record (stateTracker.renderStates). Any mismatch (shadow != tracker, excluding the
      *  never-set SENTINEL) is a wrong-skip desync — the shadow would skip a SetRenderState the
      *  tracker has NOT got, leaving stale GPU state. Run with `__setterShadow=true` after repro. */
-    shadowDiff(): void {
+    shadowDiff(): unknown {
         try {
             const disp = System.getInstance().process?.dispatcher as {
+                flushWriteBufferForDiagnostics?: () => void;
                 dumpShadowValues?: (dll: string, fn: string) => number[] | null;
-                getShadowStats?: () => Record<string, number>;
+                getShadowStats?: () => Record<string, number> | null;
                 shadowOwnerGlobal?: number;
             } | undefined;
+            // Setter trampolines update their shadow when they enqueue the ring
+            // entry, while the tracker changes at the next OUT-triggered drain.
+            // Flush first so the diagnostic never mistakes that safe lead for a
+            // stale-shadow divergence.
+            disp?.flushWriteBufferForDiagnostics?.();
             const rsShadow = disp?.dumpShadowValues?.('d3d9', 'IDirect3DDevice9_SetRenderState') ?? null;
             const ssShadow = disp?.dumpShadowValues?.('d3d9', 'IDirect3DDevice9_SetSamplerState') ?? null;
+            const tssShadow = disp?.dumpShadowValues?.('d3d9', 'IDirect3DDevice9_SetTextureStageState') ?? null;
+            const texShadow = disp?.dumpShadowValues?.('d3d9', 'IDirect3DDevice9_SetTexture') ?? null;
+            const fvfShadow = disp?.dumpShadowValues?.('d3d9', 'IDirect3DDevice9_SetFVF') ?? null;
             const dev = [...devices.values()][0] as unknown as {
-                stateTracker?: { renderStates?: Int32Array };
+                stateTracker?: { renderStates?: Int32Array; getFVF?: () => number };
                 samplerStates?: Map<number, number>;
+                textureStageStates?: Map<number, number>;
+                boundTexturePtrs?: Uint32Array | number[];
             } | undefined;
             const trackerRS = dev?.stateTracker?.renderStates;
             const samplerStates = dev?.samplerStates;
+            const textureStageStates = dev?.textureStageStates;
+            const boundTexturePtrs = dev?.boundTexturePtrs;
             const SENT = -2147483648; // 0x80000000
             const mism: Array<{ state: number; shadow: number; tracker: number }> = [];
             if (rsShadow && trackerRS) {
@@ -1621,14 +1711,48 @@ export const dbg = {
                     }
                 }
             }
+            // TSS: shadow slot = (stage<<6)|type; tracker key remains (stage<<16)|type.
+            const tssMism: Array<{ stage: number; type: number; shadow: number; tracker: number | null }> = [];
+            if (tssShadow && textureStageStates) {
+                for (let idx = 0; idx < 512; idx++) {
+                    const shadowV = tssShadow[idx] | 0;
+                    if (shadowV === SENT) continue;
+                    const stage = idx >> 6, type = idx & 0x3f;
+                    const tv = textureStageStates.get(((stage & 0xffff) << 16) | (type & 0xffff));
+                    if (tv === undefined || (tv | 0) !== shadowV) {
+                        tssMism.push({ stage, type, shadow: shadowV >>> 0, tracker: tv === undefined ? null : (tv >>> 0) });
+                    }
+                }
+            }
+            const texMism: Array<{ stage: number; shadow: number; tracker: number }> = [];
+            if (texShadow && boundTexturePtrs) {
+                for (let stage = 0; stage < Math.min(16, boundTexturePtrs.length); stage++) {
+                    const shadowV = texShadow[stage] | 0;
+                    if (shadowV === SENT) continue;
+                    const trackerV = (boundTexturePtrs[stage] ?? 0) | 0;
+                    if (shadowV !== trackerV) texMism.push({ stage, shadow: shadowV >>> 0, tracker: trackerV >>> 0 });
+                }
+            }
+            const fvfTracker = dev?.stateTracker?.getFVF?.();
+            const fvfMismatch = !!fvfShadow && fvfTracker !== undefined && (fvfShadow[0] | 0) !== SENT
+                && (fvfShadow[0] | 0) !== (fvfTracker | 0);
             const out = {
                 ownerGlobal: disp?.shadowOwnerGlobal, skips: disp?.getShadowStats?.() ?? null,
-                hasShadow: !!rsShadow, hasTracker: !!trackerRS,
+                hasShadow: { renderState: !!rsShadow, samplerState: !!ssShadow, textureStageState: !!tssShadow, texture: !!texShadow, fvf: !!fvfShadow },
+                hasTracker: { renderState: !!trackerRS, samplerState: !!samplerStates, textureStageState: !!textureStageStates, texture: !!boundTexturePtrs, fvf: fvfTracker !== undefined },
                 rsMismatchCount: mism.length, rsMismatches: mism,
                 ssMismatchCount: ssMism.length, ssMismatches: ssMism.slice(0, 40),
+                tssMismatchCount: tssMism.length, tssMismatches: tssMism.slice(0, 40),
+                textureMismatchCount: texMism.length, textureMismatches: texMism,
+                fvfMismatchCount: fvfMismatch ? 1 : 0,
+                fvfMismatch: fvfMismatch ? { shadow: fvfShadow![0] >>> 0, tracker: fvfTracker! >>> 0 } : null,
             };
             console.log(`[dbg][shadowDiff][JSON] ${JSON.stringify(out)}`);
-        } catch (e) { console.warn('[dbg] shadowDiff err', e); }
+            return out;
+        } catch (e) {
+            console.warn('[dbg] shadowDiff err', e);
+            return null;
+        }
     },
     /** Dump dsound playback state (per-buffer isPlaying/cursors/notifications) +
      *  the PostThreadMessage counters. Tests the "splash waits on audio" theory:

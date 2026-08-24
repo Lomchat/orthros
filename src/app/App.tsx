@@ -230,8 +230,55 @@ function loadPhaseStatus(phase: string, gameName: string): string {
   }
 }
 
+function formatLoadingElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes} min ${seconds.toString().padStart(2, "0")} s` : `${seconds} s`;
+}
+
+function formatLoadingBytes(bytes?: number): string | null {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return null;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+function loadingPatienceHint(phase: string, elapsedSeconds: number, label?: string): string {
+  if (phase === "booting") {
+    if (label?.toLowerCase().includes("audio.big")) {
+      return "Large voice archive — reading it in chunks can take a moment on the first launch.";
+    }
+    const hints = [
+      "The game is starting locally in your browser.",
+      "First launch is the longest; browser caching makes later launches faster.",
+      "Keep this tab visible while the game prepares its graphics and assets.",
+    ];
+    return hints[Math.floor(elapsedSeconds / 9) % hints.length]!;
+  }
+  if (phase === "downloading" || phase === "caching" || phase === "prefetch") {
+    return "Downloaded game data stays on this computer for faster future launches.";
+  }
+  return "Preparing the browser runtime for the game.";
+}
+
+type LocalCacheProgress = {
+  state: "checking" | "downloading" | "complete" | "unavailable" | "retrying";
+  loadedBytes: number;
+  totalBytes: number;
+};
+
+type StatsOverlaySnapshot = {
+  fps: number;
+  frameMs: number;
+  sampleCount: number;
+  windowMs: number;
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cpuCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cpuBitmapContextRef = useRef<ImageBitmapRenderingContext | null>(null);
+  const [cpuFrameActive, setCpuFrameActive] = useState(false);
   const panelRef = useRef<HTMLElement | null>(null);
   const [inputStatus, setInputStatus] = useState<InputStatus>({
     padConnected: false,
@@ -276,12 +323,16 @@ export default function App() {
   // `indeterminate` drives a shimmer bar when there is no measurable percent (boot phases).
   // `fadingOut` triggers the crossfade-out once the guest composites its first frame.
   const [loadingProgress, setLoadingProgress] = useState<{
-    phase: string; percent: number; label?: string; indeterminate?: boolean; fadingOut?: boolean;
+    phase: string; percent: number; label?: string; assetBytes?: number; indeterminate?: boolean; fadingOut?: boolean;
   } | null>(null);
   /** Display name from the loaded WGB manifest (title || name). Used so ?game=dev&load=…
    *  doesn't keep saying "Dev" / "Starting Dev" once the bundle is known. */
   const [bundleDisplayName, setBundleDisplayName] = useState<string | null>(null);
   const loadingFadeTimerRef = useRef<number | null>(null);
+  const loadingStartedAtRef = useRef<number | null>(null);
+  const [loadingElapsedSeconds, setLoadingElapsedSeconds] = useState(0);
+  const [localCacheProgress, setLocalCacheProgress] = useState<LocalCacheProgress | null>(null);
+  const [canvasOverlayAnchor, setCanvasOverlayAnchor] = useState({ top: 8, right: 8 });
   const [addGameOpen, setAddGameOpen] = useState(false);
   const [addedGames, setAddedGames] = useState<AddedGame[]>([]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -294,7 +345,10 @@ export default function App() {
   const [profilerOpen, setProfilerOpen] = useState(false);
   const [debugGpuOpen, setDebugGpuOpen] = useState(false);
   const [frameAnalysisOpen, setFrameAnalysisOpen] = useState(false);
+  // Opt-in live FPS HUD. Its measurement is produced from real presents in the
+  // worker and rendered as DOM, never copied into the game's WebGPU surface.
   const [statsOverlayEnabled, setStatsOverlayEnabled] = useState(false);
+  const [statsOverlayStats, setStatsOverlayStats] = useState<StatsOverlaySnapshot | null>(null);
   const [fpuStrictEnabled, setFpuStrictEnabled] = useState(false);
   const [messageBox, setMessageBox] = useState<MessageBoxRequest | null>(null);
   const [isPaused, setIsPaused] = useState(false);
@@ -344,6 +398,10 @@ export default function App() {
     () => new URLSearchParams(window.location.search).get("game"),
     [],
   );
+  // BFME is an absolute-pointer RTS. It hides the Win32 system cursor because the
+  // native renderer normally draws its own sprite, but that sprite is not reliable in
+  // the browser backend yet. Keep the host arrow visible and never enter FPS pointer-lock.
+  const forceHostCursor = gameIdFromUrl === "bfme";
   const selectedGame = useMemo<GameEntry | null>(() => {
     if (!gameIdFromUrl) return null;
     if (gameIdFromUrl === "dev") {
@@ -472,6 +530,39 @@ export default function App() {
     if (loadingFadeTimerRef.current !== null) window.clearTimeout(loadingFadeTimerRef.current);
   }, []);
 
+  // A small timer reassures the player that the page is alive during long cold starts.
+  // It also drives a deliberately-labelled estimate for the opaque guest boot window:
+  // there is no byte total once Windows code is executing, so never present it as exact.
+  useEffect(() => {
+    if (!loadingProgress) {
+      loadingStartedAtRef.current = null;
+      setLoadingElapsedSeconds(0);
+      return;
+    }
+    if (loadingStartedAtRef.current === null) loadingStartedAtRef.current = performance.now();
+    const updateElapsed = () => {
+      if (loadingStartedAtRef.current === null) return;
+      setLoadingElapsedSeconds(Math.floor((performance.now() - loadingStartedAtRef.current) / 1000));
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [loadingProgress !== null]);
+
+  useEffect(() => {
+    if (loadingProgress?.phase !== "booting" || loadingProgress.fadingOut) return;
+    const timer = window.setInterval(() => {
+      setLoadingProgress((prev) => {
+        if (!prev || prev.phase !== "booting" || prev.fadingOut) return prev;
+        // Smooth asymptotic estimate: visibly advances, slows near completion and
+        // never reaches 100% until first_present provides the real completion signal.
+        const increment = Math.max(0.12, (96 - prev.percent) * 0.025);
+        return { ...prev, percent: Math.min(96, prev.percent + increment) };
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loadingProgress?.phase, loadingProgress?.fadingOut]);
+
   // BYO bundles the user added live in OPFS wgb-cache/ — surface them in the library.
   // Exclude cached copies of built-in games so they don't show twice.
   const refreshAddedGames = useCallback(() => {
@@ -509,7 +600,9 @@ export default function App() {
   // only attempt an opportunistic acquire (succeeds inside a gesture, otherwise armed for the
   // next click via handlePointerDown). Releasing happens immediately when intent drops.
   const updatePointerLockIntent = () => {
-    const wants = !cursorVisibleRef.current || cursorClippedRef.current || mouseCapturedRef.current;
+    const wants = !forceHostCursor && (
+      !cursorVisibleRef.current || cursorClippedRef.current || mouseCapturedRef.current
+    );
     wantsPointerLockRef.current = wants;
     if (wants) {
       const c = canvasRef.current;
@@ -578,8 +671,18 @@ export default function App() {
   // Settings-window handlers (shared by the library + in-game drawers).
   const handleToggleStatsOverlay = useCallback((enabled: boolean) => {
     setStatsOverlayEnabled(enabled);
+    setStatsOverlayStats(null);
     globalWorker?.postMessage({ type: "toggle_stats_overlay", enabled });
   }, []);
+
+  // Re-send after worker creation; setting React state can happen before globalWorker exists.
+  useEffect(() => {
+    if (workerStatus !== "ready") return;
+    globalWorker?.postMessage({
+      type: "toggle_stats_overlay",
+      enabled: statsOverlayEnabled,
+    });
+  }, [workerStatus, statsOverlayEnabled]);
   const handleToggleLogStreaming = useCallback((enabled: boolean) => {
     setLoggingEnabled(enabled);
     try {
@@ -655,7 +758,11 @@ export default function App() {
 
     const updateCanvasCursor = (forceHovered?: boolean) => {
       const hovered = forceHovered ?? isCanvasHoveredRef.current;
-      if (!cursorVisibleRef.current && hovered) {
+      if (forceHostCursor) {
+        // BFME's in-game cursor sprite is currently absent in the WebGPU translation.
+        // A normal host pointer keeps every menu and battlefield interaction usable.
+        canvas.style.cursor = "default";
+      } else if (!cursorVisibleRef.current && hovered) {
         canvas.style.cursor = "none";
       } else {
         canvas.style.cursor = "";
@@ -665,9 +772,17 @@ export default function App() {
     // 1. Initialize Worker (only once)
     if (!globalWorker) {
       globalWorker = new Worker(
+        // Keep new URL(...) directly inside new Worker(...): Vite relies on this
+        // exact static shape to compile and bundle the TypeScript worker.
         new URL("../worker/emulator.worker.ts", import.meta.url),
         { type: "module" }
       );
+      // A room is transport configuration, not a native-game setting. Send it
+      // before any bundle can load so the Winsock module sees it at init time.
+      globalWorker.postMessage({
+        type: "network_config",
+        room: new URLSearchParams(window.location.search).get("room") || "public",
+      });
 
       // Expose worker to console for debugging
       (window as any).worker = globalWorker;
@@ -819,6 +934,7 @@ export default function App() {
       audioEngine.setMasterVolume(uiSettingsRef.current.masterVolume);
       audioEngine.setMuted(uiSettingsRef.current.muted);
     }
+    ((window as any).__BS__ ??= {}).audioEngine = audioEngine;
     // Resume the AudioContext on the first user gesture anywhere on the page (and
     // auto-recover from later browser suspensions). Without this the context stays
     // SUSPENDED under the autoplay policy → frozen AudioWorklet/SAB play cursor →
@@ -851,7 +967,15 @@ export default function App() {
 
       // Update ref for event calculations (cannot set canvas.width/height anymore)
       resolutionRef.current = { width: renderWidth, height: renderHeight };
-      canvasRectRef.current = canvas.getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      canvasRectRef.current = canvasRect;
+      const panelRect = panelRef.current?.getBoundingClientRect();
+      if (panelRect) {
+        setCanvasOverlayAnchor({
+          top: Math.max(8, canvasRect.top - panelRect.top + 44),
+          right: Math.max(8, panelRect.right - canvasRect.right + 8),
+        });
+      }
 
       const useGuestCoords = mouseCoordinateModeRef.current === "guest";
       const target = useGuestCoords
@@ -864,6 +988,28 @@ export default function App() {
     // 3. Setup Worker Message Handling
     worker.onmessage = (event: MessageEvent) => {
       //console.log('BottleShip: Worker message received:', event.data?.type);
+
+      if (event.data?.type === "d3d9_cpu_frame") {
+        const bitmap = event.data.bitmap as ImageBitmap | undefined;
+        const output = cpuCanvasRef.current;
+        if (bitmap && output) {
+          const width = Math.max(1, event.data.width | 0);
+          const height = Math.max(1, event.data.height | 0);
+          if (output.width !== width) output.width = width;
+          if (output.height !== height) output.height = height;
+          let context = cpuBitmapContextRef.current;
+          if (!context) {
+            context = output.getContext("bitmaprenderer") as ImageBitmapRenderingContext | null;
+            cpuBitmapContextRef.current = context;
+          }
+          context?.transferFromImageBitmap(bitmap);
+          if (!context) bitmap.close();
+          setCpuFrameActive(true);
+        } else {
+          bitmap?.close();
+        }
+        return;
+      }
       
       // Forward logs to server (if enabled)
       if (event.data?.type === "log_stream_entry") {
@@ -951,17 +1097,34 @@ export default function App() {
         const name = typeof event.data.name === "string" ? event.data.name.trim() : "";
         if (name) setBundleDisplayName(name);
       }
+      if (event.data?.type === "local_cache_progress") {
+        const state = String(event.data.state || "checking") as LocalCacheProgress["state"];
+        const loadedBytes = Math.max(0, Number(event.data.loadedBytes) || 0);
+        const totalBytes = Math.max(0, Number(event.data.totalBytes) || 0);
+        setLocalCacheProgress({ state, loadedBytes, totalBytes });
+      }
+      if (event.data?.type === "stats_overlay_update") {
+        const fps = Number(event.data.fps);
+        const frameMs = Number(event.data.frameMs);
+        const sampleCount = Number(event.data.sampleCount);
+        const windowMs = Number(event.data.windowMs);
+        if ([fps, frameMs, sampleCount, windowMs].every(Number.isFinite)) {
+          setStatsOverlayStats({ fps, frameMs, sampleCount, windowMs });
+        }
+      }
       if (event.data?.type === "loading_progress") {
-        const { phase, percent, label } = event.data;
+        const { phase, percent, label, assetBytes } = event.data;
+        if (phase !== "done") setCpuFrameActive(false);
         // A fresh load clears any prior "game exited" state.
         setExitInfo(null);
         if (phase === "done") {
           // PE is loaded but the guest hasn't drawn yet. DON'T hide the overlay here —
           // switch it to an indeterminate "booting" state and keep it up until the worker
           // signals `first_present` (the real first flip). Hiding now exposes a black canvas
-          // through CRT/DirectX/asset init.
+          // through CRT/DirectX/asset init. This phase has no byte total, so start a visibly
+          // labelled estimate that is capped below 100 until that real completion signal.
           setIsLoadingApp(false);
-          setLoadingProgress({ phase: "booting", percent: 100, indeterminate: true });
+          setLoadingProgress({ phase: "booting", percent: 12, indeterminate: false });
           // Present mode resets with the presenter on each load — re-apply the saved preference.
           if (presentModeRef.current !== "off") {
             globalWorker?.postMessage({ type: "set_present_mode", mode: presentModeRef.current });
@@ -971,15 +1134,24 @@ export default function App() {
           globalWorker?.postMessage({ type: "set_quality", quality: qualityRef.current });
         } else {
           // Byte-counted phases (downloading/caching/installing) show a real bar; the rest
-          // (loading/starting) have no measurable progress → indeterminate shimmer.
+          // (loading/starting) have no measurable progress → indeterminate shimmer. Boot file
+          // events preserve and gently advance the estimate instead of resetting the bar.
           const determinate = phase === "downloading" || phase === "caching" || phase === "installing" || phase === "prefetch";
-          setLoadingProgress({ phase, percent: percent ?? 0, label, indeterminate: !determinate });
+          if (phase === "booting") {
+            setLoadingProgress((prev) => {
+              const current = prev?.phase === "booting" ? prev.percent : 12;
+              const next = Math.min(96, current + (prev?.label === label ? 0 : 0.8));
+              return { phase, percent: next, label, assetBytes, indeterminate: false };
+            });
+          } else {
+            setLoadingProgress({ phase, percent: percent ?? 0, label, indeterminate: !determinate });
+          }
         }
       }
       if (event.data?.type === "first_present") {
         // The guest composited its first real frame — crossfade the launch overlay out.
         setIsLoadingApp(false);
-        setLoadingProgress((prev) => (prev ? { ...prev, fadingOut: true } : null));
+        setLoadingProgress((prev) => (prev ? { ...prev, percent: 100, indeterminate: false, fadingOut: true } : null));
         if (loadingFadeTimerRef.current !== null) window.clearTimeout(loadingFadeTimerRef.current);
         loadingFadeTimerRef.current = window.setTimeout(() => {
           // Only clear if still fading — a fresh load may have replaced the overlay.
@@ -1210,7 +1382,19 @@ export default function App() {
           // left/top offset → absolute mouse coords get shifted (e.g. menu at top-left
           // maps to clamped 0,0). Re-capture after layout settles (double rAF = after paint).
           requestAnimationFrame(() => requestAnimationFrame(() => {
-            if (canvasRef.current) canvasRectRef.current = canvasRef.current.getBoundingClientRect();
+            const liveCanvas = canvasRef.current;
+            const livePanel = panelRef.current;
+            if (liveCanvas) {
+              const rect = liveCanvas.getBoundingClientRect();
+              canvasRectRef.current = rect;
+              const panelRect = livePanel?.getBoundingClientRect();
+              if (panelRect) {
+                setCanvasOverlayAnchor({
+                  top: Math.max(8, rect.top - panelRect.top + 44),
+                  right: Math.max(8, panelRect.right - rect.right + 8),
+                });
+              }
+            }
           }));
         }
       }
@@ -2570,12 +2754,85 @@ export default function App() {
           ref={canvasRef}
           tabIndex={-1}
           className={cx(s, "app__canvas", uiSettings.canvasFiltering === "pixelated" && "app__canvas--pixelated")}
+          style={{
+            aspectRatio: `${guestResolution.width} / ${guestResolution.height}`,
+            cursor: forceHostCursor ? "default" : undefined,
+          }}
+        />
+        <canvas
+          ref={cpuCanvasRef}
+          aria-hidden
+          className={cx(
+            s,
+            "app__canvas",
+            "app__canvas--cpu-output",
+            cpuFrameActive && "is-active",
+            uiSettings.canvasFiltering === "pixelated" && "app__canvas--pixelated",
+          )}
           style={{ aspectRatio: `${guestResolution.width} / ${guestResolution.height}` }}
         />
+        {statsOverlayEnabled && workerStatus === "ready" && (
+          <div
+            className={cx(
+              s,
+              "stats-hud",
+              statsOverlayStats && (
+                statsOverlayStats.fps >= 29 ? "is-good" :
+                  statsOverlayStats.fps >= 20 ? "is-warn" : "is-bad"
+              ),
+            )}
+            style={{ top: canvasOverlayAnchor.top, right: canvasOverlayAnchor.right }}
+            title={statsOverlayStats
+              ? `${statsOverlayStats.sampleCount} présentations sur ${(statsOverlayStats.windowMs / 1000).toFixed(2)} s`
+              : "Mesure des présentations en cours…"}
+            aria-label={statsOverlayStats ? `${statsOverlayStats.fps.toFixed(1)} images par seconde` : "Mesure FPS en cours"}
+          >
+            <span>FPS</span>
+            <strong>{statsOverlayStats ? statsOverlayStats.fps.toFixed(1) : "—"}</strong>
+            <small>{statsOverlayStats ? `${statsOverlayStats.frameMs.toFixed(1)} ms` : "mesure…"}</small>
+          </div>
+        )}
+        {forceHostCursor && localCacheProgress && !loadingProgress && (
+          <div
+            className={cx(s, "local-cache-badge", `is-${localCacheProgress.state}`)}
+            style={{ top: canvasOverlayAnchor.top + (statsOverlayEnabled ? 42 : 0), right: canvasOverlayAnchor.right }}
+            role="status"
+            aria-live="polite"
+          >
+            <div className={s["local-cache-badge__row"]}>
+              <span>
+                {localCacheProgress.state === "complete" ? "Jeu local" :
+                  localCacheProgress.state === "retrying" ? "Reconnexion…" :
+                  localCacheProgress.state === "unavailable" ? "Cache indisponible" :
+                  "Copie locale"}
+              </span>
+              <strong>
+                {localCacheProgress.state === "complete" ? "✓" :
+                  localCacheProgress.state === "unavailable" ? "!" :
+                  localCacheProgress.totalBytes > 0
+                    ? `${Math.min(100, Math.round(localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100))}%`
+                    : "…"}
+              </strong>
+            </div>
+            {localCacheProgress.state !== "complete" && localCacheProgress.state !== "unavailable" && (
+              <div className={s["local-cache-badge__bar"]}>
+                <span style={{
+                  width: localCacheProgress.totalBytes > 0
+                    ? `${Math.min(100, localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100)}%`
+                    : "4%",
+                }} />
+              </div>
+            )}
+          </div>
+        )}
         {workerStatus === "ready" && <InputStatusOverlay status={inputStatus} />}
         {loadingProgress && !errorMessage && !exitInfo && (() => {
           const activeStage = loadPhaseStageIndex(loadingProgress.phase);
           const status = loadPhaseStatus(loadingProgress.phase, gameDisplayName);
+          const bootEstimate = loadingProgress.phase === "booting";
+          const roundedPercent = Math.round(loadingProgress.percent);
+          const assetSize = formatLoadingBytes(loadingProgress.assetBytes);
+          const patienceHint = loadingPatienceHint(loadingProgress.phase, loadingElapsedSeconds, loadingProgress.label);
           return (
             <div className={cx(s, "loading-overlay", loadingProgress.fadingOut && "loading-overlay--done")}>
               {displayGame!.coverUrl && (
@@ -2596,17 +2853,42 @@ export default function App() {
                   ))}
                 </ol>
 
-                <div className={cx(s, "loading-overlay__bar-wrap", loadingProgress.indeterminate && "is-indeterminate")}>
+                <div className={s["loading-overlay__progress-head"]}>
+                  <span>{bootEstimate ? "Estimated progress" : "Progress"}</span>
+                  <span className={s["loading-overlay__percent"]}>
+                    {loadingProgress.indeterminate ? "…" : `${bootEstimate ? "≈ " : ""}${roundedPercent}%`}
+                  </span>
+                </div>
+
+                <div
+                  className={cx(s, "loading-overlay__bar-wrap", loadingProgress.indeterminate && "is-indeterminate")}
+                  role="progressbar"
+                  aria-label={bootEstimate ? "Estimated startup progress" : "Loading progress"}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={loadingProgress.indeterminate ? undefined : roundedPercent}
+                >
                   <div
                     className={s["loading-overlay__bar"]}
                     style={loadingProgress.indeterminate ? undefined : { width: `${loadingProgress.percent}%` }}
                   />
                 </div>
 
-                <div className={s["loading-overlay__label"]}>
-                  {status}
-                  {loadingProgress.label ? ` · ${loadingProgress.label}` : ""}
+                <div className={s["loading-overlay__status"]}>
+                  <span className={s["loading-overlay__activity"]} aria-hidden />
+                  <div className={s["loading-overlay__status-copy"]}>
+                    <div className={s["loading-overlay__label"]}>{status}</div>
+                    {loadingProgress.label && (
+                      <div className={s["loading-overlay__asset"]} title={loadingProgress.label}>
+                        <span>{loadingProgress.label}</span>
+                        {assetSize && <span className={s["loading-overlay__asset-size"]}>{assetSize}</span>}
+                      </div>
+                    )}
+                  </div>
+                  <time className={s["loading-overlay__elapsed"]}>{formatLoadingElapsed(loadingElapsedSeconds)}</time>
                 </div>
+
+                <div className={s["loading-overlay__hint"]}>{patienceHint}</div>
               </div>
             </div>
           );

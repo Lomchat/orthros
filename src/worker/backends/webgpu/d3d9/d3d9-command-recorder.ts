@@ -24,6 +24,8 @@ export interface DrawCommand {
     startVertex: number;
     /** Programmable (VS/PS) per-draw state index, or undefined for FFP. */
     bindStateIndex?: number;
+    /** Fixed-function per-draw state index, or undefined for programmable draws. */
+    fixedStateIndex?: number;
     /** Streams beyond 0 — bound with setVertexBuffer(slot, …) before the draw. */
     extraStreams?: StreamVertexBinding[];
 }
@@ -39,6 +41,7 @@ export interface DrawIndexedCommand {
     startIndex: number;
     baseVertex: number;
     bindStateIndex?: number;
+    fixedStateIndex?: number;
     /** Streams beyond 0 — bound with setVertexBuffer(slot, …) before the draw. */
     extraStreams?: StreamVertexBinding[];
 }
@@ -51,6 +54,8 @@ export class D3D9CommandRecorder {
      *  redundant re-bind command is skipped. Reset on pipeline change (bind-group layout may
      *  differ per pipeline) and at finalize (executor bind caches reset per pass/frame). */
     private currentBindStateIndex: number | null = null;
+    private currentFixedStateIndex: number | null = null;
+    private currentStencilReference: number | null = null;
     private drawCount = 0;
 
     constructor(private framePool: RenderFramePool) {
@@ -60,15 +65,22 @@ export class D3D9CommandRecorder {
     /**
      * Set clear color for the frame
      */
-    setClear(color: GPUColor, depth: number, flags: number): void {
-        this.frame.setClear(color, depth, flags);
+    setClear(color: GPUColor, depth: number, stencil: number, flags: number): void {
+        this.frame.setClear(color, depth, stencil, flags);
+    }
+
+    setStencilReference(reference: number): void {
+        reference >>>= 0;
+        if (reference === this.currentStencilReference) return;
+        this.frame.pushSetStencilReference(reference);
+        this.currentStencilReference = reference;
     }
 
     /**
      * Queue a buffer upload for the current frame
      */
-    queueUpload(buffer: GPUBuffer, data: Uint8Array): void {
-        this.frame.queueUpload(buffer, data);
+    queueUpload(buffer: GPUBuffer, data: Uint8Array, destinationOffset = 0): void {
+        this.frame.queueUpload(buffer, data, destinationOffset);
     }
 
     /**
@@ -79,11 +91,16 @@ export class D3D9CommandRecorder {
             this.frame.pushSetPipeline(cmd.pipelineId);
             this.currentPipelineId = cmd.pipelineId;
             this.currentBindStateIndex = null;
+            this.currentFixedStateIndex = null;
         }
 
         if (cmd.bindStateIndex !== undefined && cmd.bindStateIndex !== this.currentBindStateIndex) {
             this.frame.pushBindProgrammable(cmd.bindStateIndex);
             this.currentBindStateIndex = cmd.bindStateIndex;
+        }
+        if (cmd.fixedStateIndex !== undefined && cmd.fixedStateIndex !== this.currentFixedStateIndex) {
+            this.frame.pushBindFixedFunction(cmd.fixedStateIndex);
+            this.currentFixedStateIndex = cmd.fixedStateIndex;
         }
         this.frame.pushSetVertexBuffer(cmd.gpuBuffer, cmd.bufferOffset, cmd.bufferSize);
         if (cmd.extraStreams) {
@@ -103,11 +120,16 @@ export class D3D9CommandRecorder {
             this.frame.pushSetPipeline(cmd.pipelineId);
             this.currentPipelineId = cmd.pipelineId;
             this.currentBindStateIndex = null;
+            this.currentFixedStateIndex = null;
         }
 
         if (cmd.bindStateIndex !== undefined && cmd.bindStateIndex !== this.currentBindStateIndex) {
             this.frame.pushBindProgrammable(cmd.bindStateIndex);
             this.currentBindStateIndex = cmd.bindStateIndex;
+        }
+        if (cmd.fixedStateIndex !== undefined && cmd.fixedStateIndex !== this.currentFixedStateIndex) {
+            this.frame.pushBindFixedFunction(cmd.fixedStateIndex);
+            this.currentFixedStateIndex = cmd.fixedStateIndex;
         }
         this.frame.pushSetVertexBuffer(cmd.vbGpuBuffer, cmd.vbOffset, cmd.vbSize);
         if (cmd.extraStreams) {
@@ -128,6 +150,8 @@ export class D3D9CommandRecorder {
         this.frame = this.framePool.acquire();
         this.currentPipelineId = null;
         this.currentBindStateIndex = null;
+        this.currentFixedStateIndex = null;
+        this.currentStencilReference = null;
         return completedFrame;
     }
 

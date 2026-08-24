@@ -2,6 +2,7 @@ import { Logger, LogCategory } from "../../core/logger";
 import { SyncAccessHandleSource } from "@bottleship/formats/zip";
 import { asWriteChunk } from "../../../dom-buffer";
 import type { SyncAccessHandleLike } from "@bottleship/formats/zip";
+import { wgbCacheKeyForUrl } from "./wgb-cache-key";
 
 const CACHE_DIR = "wgb-cache";
 
@@ -15,13 +16,6 @@ const LRU_META_FILE = "_cache-lru.json";
 /** Free-space headroom targeted when staging a bundle into wgb-cache, so a stage
  *  never fills the origin to the brim (saves/overlay writes must keep working). */
 const STAGE_QUOTA_MARGIN = 256 * 1024 * 1024;
-
-function urlToCacheKey(url: string): string {
-    // "/apps/re-volt.wgb?v=2" → "re-volt.wgb"
-    const path = url.split("?")[0];
-    const parts = path.split("/");
-    return parts[parts.length - 1] || "game.wgb";
-}
 
 /**
  * Simple OPFS-backed cache for WGB files.
@@ -196,7 +190,7 @@ export class WgbCache {
 
     /** Returns the cached WGB as a buffer, or null if not cached. */
     static async get(url: string): Promise<Uint8Array | null> {
-        return this.getByKey(urlToCacheKey(url));
+        return this.getByKey(wgbCacheKeyForUrl(url));
     }
 
     /** Returns cached buffer by explicit OPFS filename key. */
@@ -224,10 +218,10 @@ export class WgbCache {
         const dir = await this.getCacheDir();
         if (!dir) return null;
         try {
-            const fileHandle = await dir.getFileHandle(urlToCacheKey(url));
+            const fileHandle = await dir.getFileHandle(wgbCacheKeyForUrl(url));
             const file = await fileHandle.getFile();
             Logger.log(LogCategory.SYSTEM,
-                `WgbCache: hit "${urlToCacheKey(url)}" (${(file.size / 1024 / 1024).toFixed(1)} MB, disk-backed)`);
+                `WgbCache: hit "${wgbCacheKeyForUrl(url)}" (${(file.size / 1024 / 1024).toFixed(1)} MB, disk-backed)`);
             return file;
         } catch {
             return null;
@@ -257,7 +251,7 @@ export class WgbCache {
         url: string,
         onProgress: (loaded: number, total: number) => void,
     ): Promise<Uint8Array> {
-        const key = urlToCacheKey(url);
+        const key = wgbCacheKeyForUrl(url);
 
         Logger.log(LogCategory.SYSTEM, `WgbCache: downloading "${key}"`);
         const resp = await fetch(url);
@@ -324,7 +318,7 @@ export class WgbCache {
     ): Promise<SyncAccessHandleSource | null> {
         const dir = await this.getCacheDir();
         if (!dir) return null;
-        const key = urlToCacheKey(url);
+        const key = wgbCacheKeyForUrl(url);
 
         // SAH and any prior reader on this file are mutually exclusive (one SAH per file).
         this.releaseMountedSource();
@@ -400,7 +394,7 @@ export class WgbCache {
     static async stageInBackground(url: string): Promise<boolean> {
         const dir = await this.getCacheDir();
         if (!dir) return false;
-        const key = urlToCacheKey(url);
+        const key = wgbCacheKeyForUrl(url);
         try { await dir.getFileHandle(key); return true; } catch { /* not cached yet */ }
 
         const partKey = `${key}.part`;
@@ -469,7 +463,7 @@ export class WgbCache {
      * cached or sync-access handles are unavailable (caller falls back to BufferSource).
      */
     static async openSyncSourceForUrl(url: string): Promise<SyncAccessHandleSource | null> {
-        return this.openSyncSourceByKey(urlToCacheKey(url));
+        return this.openSyncSourceByKey(wgbCacheKeyForUrl(url));
     }
 
     private static async openSyncSourceByKey(key: string): Promise<SyncAccessHandleSource | null> {
@@ -527,7 +521,7 @@ export class WgbCache {
         this.releaseMountedSource();
 
         const name = (blob as File).name;
-        const key = (typeof name === "string" && name) ? urlToCacheKey(name) : BLOB_MOUNT_KEY;
+        const key = (typeof name === "string" && name) ? wgbCacheKeyForUrl(name) : BLOB_MOUNT_KEY;
 
         try {
             const fileHandle = await dir.getFileHandle(key, { create: true });
@@ -595,7 +589,7 @@ export class WgbCache {
 
     /** OPFS cache key (filename) for a bundle URL — exposed so callers can look up overrides. */
     static keyForUrl(url: string): string {
-        return urlToCacheKey(url);
+        return wgbCacheKeyForUrl(url);
     }
 
     /**
@@ -620,7 +614,7 @@ export class WgbCache {
     static async evict(url: string): Promise<void> {
         const dir = await this.getCacheDir();
         if (!dir) return;
-        const key = urlToCacheKey(url);
+        const key = wgbCacheKeyForUrl(url);
         try {
             await dir.removeEntry(key);
             Logger.log(LogCategory.SYSTEM, `WgbCache: evicted "${key}"`);

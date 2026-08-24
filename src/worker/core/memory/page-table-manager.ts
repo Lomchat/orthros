@@ -12,14 +12,18 @@
  * beyond the configured size (e.g., reading uninitialized pointers). Without full
  * mapping, these accesses would #PF — but before paging they silently succeeded.
  *
- * Guest memory layout (in the 15MB gap between LOW_MEM and HEAP):
- *   Page Directory: 0x00B00000 (4KB, 1024 PDEs)
- *   Page Tables:    0x00B01000 (~4MB for 1024 PTs covering full 4GB)
- *   Total:          ~4.004MB (0x00B00000 - 0x00F01000)
+ * Guest memory layout (inside the runtime's 16MB RESERVED guard band):
+ *   Page Directory: 0x23B00000 (4KB, 1024 PDEs)
+ *   Page Tables:    0x23B01000 (~4MB for 1024 PTs covering full 4GB)
+ *   Total:          ~4.004MB (0x23B00000 - 0x23F01000)
  *
- * Must NOT overlap with PE image region (0x00400000 + sizeOfImage).
- * The old location (0x00100000) overlapped with typical PE loads at 0x00400000,
- * causing page table initialization to overwrite game code/data → #GP on startup.
+ * This must never live in the conventional low-image range. Large Win32 executables
+ * can extend well past 11MB: BFME, for example, occupies 0x00400000-0x01416000.
+ * The previous 0x00B00000 location silently overwrote 4MB of its .text section when
+ * paging was initialized, including the executable entry point.  The runtime already
+ * reserves 0x23000000-0x24000000 between THUNK_DATA and MODULES; keeping the paging
+ * structures in that band makes them inaccessible to normal guest allocators while
+ * remaining backed by physical guest RAM for the x86 page walker.
  */
 
 import { Logger, LogCategory } from '../logger';
@@ -27,9 +31,8 @@ import { setWriteMapBase } from './address-space';
 import { MEM_THUNK_CODE_BASE, MEM_THUNK_CODE_SIZE } from '../cpu/emulator-config';
 
 // Page table constants
-// Placed at 11MB (still below HEAP at 16MB) to avoid overlap with larger PE images.
-const PAGE_DIR_ADDR = 0x00B00000;
-const PAGE_TABLES_ADDR = 0x00B01000;
+const PAGE_DIR_ADDR = 0x23B00000;
+const PAGE_TABLES_ADDR = 0x23B01000;
 const PAGE_SIZE = 0x1000; // 4KB
 const ENTRIES_PER_TABLE = 1024;
 const PAGES_PER_TABLE = 1024; // Each PT covers 4MB

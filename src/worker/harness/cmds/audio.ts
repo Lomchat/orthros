@@ -120,4 +120,11 @@ export function registerAudioCommands(svc: HarnessService): void {
         const ds: any = getModule("dsound");
         return ds?.getAudioDebugState?.() ?? { error: "no dsound module" };
     });
+
+    /** mssAudio() — Miles Sound System samples/streams plus evidence that the
+     *  browser AudioWorklet is advancing their authoritative play cursors. */
+    svc.register("mssAudio", async () => {
+        const mss: any = getModule("mss32");
+        return mss?.getAudioDebugState?.() ?? { error: "no mss32 module" };
+    });
 }

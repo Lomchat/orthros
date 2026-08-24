@@ -3,7 +3,6 @@ import { Mem } from "../../core/memory/mem-accessor";
 import { Logger, LogCategory } from "../../core/logger";
 import { System } from "../../core/system";
 import { frameProfiler } from "../../core/frame-profiler";
-import { statsOverlay } from "../../core/stats-overlay";
 import {
     bytesPerPixelForLfbWriteMode,
     GR_BUFFER_BACKBUFFER,
@@ -187,7 +186,6 @@ export class GlidePresenter implements RenderActive {
         presents: 0,
     };
 
-    private prevPresentTime = 0;
 
     constructor(private readonly context: GlideContext) {}
 
@@ -349,10 +347,5 @@ export class GlidePresenter implements RenderActive {
 
     private markFrameMetrics(): void {
         frameProfiler.markFrame("glide");
-        const now = performance.now();
-        if (this.prevPresentTime > 0) {
-            statsOverlay.updateMetrics(now - this.prevPresentTime);
-        }
-        this.prevPresentTime = now;
     }
 }

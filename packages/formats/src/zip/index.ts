@@ -142,13 +142,23 @@ export class HttpRangeSource implements ZipSource {
 
     async readRange(start: number, end: number): Promise<Uint8Array> {
         const range = `bytes=${start}-${end - 1}`;
-        const resp = await fetch(this.url, { headers: { Range: range } });
-        if (resp.status !== 206) {
-            try { await resp.body?.cancel(); } catch {}
-            throw new Error(`Range request failed (${resp.status}) for ${this.url}`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5_000);
+        try {
+            const resp = await fetch(this.url, { headers: { Range: range }, signal: controller.signal });
+            if (resp.status !== 206) {
+                try { await resp.body?.cancel(); } catch {}
+                throw new Error(`Range request failed (${resp.status}) for ${this.url}`);
+            }
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            const expected = Math.max(0, end - start);
+            if (bytes.byteLength !== expected) {
+                throw new Error(`Range request short read (${bytes.byteLength}/${expected}) for ${this.url}`);
+            }
+            return bytes;
+        } finally {
+            clearTimeout(timeout);
         }
-        const buf = await resp.arrayBuffer();
-        return new Uint8Array(buf);
     }
 }
 

@@ -133,6 +133,13 @@ export class GDIContext {
     // Separate overlay canvas for GDI compositing over WebGPU
     private overlayCanvas: OffscreenCanvas | null = null;
     overlayCtx: OffscreenCanvasRenderingContext2D | null = null;
+    // Chromium may retain a GPU external-image handle to an OffscreenCanvas
+    // after copyExternalImageToTexture returns. Keep replaced canvases alive so
+    // GC cannot invalidate that handle and destroy the shared WebGPU device.
+    // Resolution switches are rare, so the retained memory is bounded in normal
+    // use and much smaller than the game's texture set.
+    private retiredOverlayCanvases: OffscreenCanvas[] = [];
+    private retiredOverlayContexts: OffscreenCanvasRenderingContext2D[] = [];
     private overlayDirty: boolean = false;
     private overlayHasContent: boolean = false; // True if overlay has any content to composite
     private overlayClearRepairFn: ((x: number, y: number, w: number, h: number, excludeHwnd: number) => void) | null = null;
@@ -305,31 +312,31 @@ export class GDIContext {
         const oldH = this.overlayCanvas.height;
         if (oldW === width && oldH === height) return;
 
-        // Canvas dimension change clears pixels — preserve existing overlay art.
-        let snapshot: OffscreenCanvas | null = null;
-        if (this.overlayHasContent && this.overlayCtx && oldW > 0 && oldH > 0) {
-            snapshot = new OffscreenCanvas(oldW, oldH);
-            const snapCtx = snapshot.getContext('2d');
-            if (snapCtx) {
-                snapCtx.drawImage(this.overlayCanvas, 0, 0);
-            } else {
-                snapshot = null;
-            }
-        }
-
-        this.overlayCanvas.width = width;
-        this.overlayCanvas.height = height;
+        // Never resize an OffscreenCanvas in place after WebGPU has consumed it as
+        // an external-image source.  Chromium invalidates the imported external
+        // instance and, on some builds, destroys the *whole GPUDevice*.  This was
+        // why every game-side resolution change left a live D3D9 command stream
+        // attached to a dead device.  Allocate a fresh overlay and copy from the
+        // old canvas instead; the backend naturally refreshes its upload texture.
+        const oldCanvas = this.overlayCanvas;
+        const oldContext = this.overlayCtx;
+        this.overlayCanvas = new OffscreenCanvas(width, height);
         this.overlayCtx = this.overlayCanvas.getContext('2d', { alpha: true, willReadFrequently: true });
+        this.retiredOverlayCanvases.push(oldCanvas);
+        if (oldContext) this.retiredOverlayContexts.push(oldContext);
         this.initOverlayContext();
 
-        if (snapshot && this.overlayCtx) {
-            this.overlayCtx.drawImage(snapshot, 0, 0, oldW, oldH, 0, 0, width, height);
-            this.overlayHasContent = true;
-            this.overlayDirty = true;
-        } else {
-            this.overlayHasContent = false;
-            this.overlayDirty = true;
-        }
+        // Do not drawImage(oldCanvas) here. Once oldCanvas has served as a WebGPU
+        // external-image source, Chromium can destroy the GPUDevice when that
+        // same canvas is consumed by a second graphics context. Windows sends
+        // WM_PAINT after a display change, so discarding the stale overlay is also
+        // the correct observable behaviour: visible GDI windows repaint freshly.
+        this.overlayHasContent = false;
+        // A blank freshly-sized overlay needs no present. Presenting it eagerly
+        // makes Chromium import the just-replaced external canvas during the
+        // resize transition and destroys the WebGPU device. The first actual GDI
+        // paint marks it dirty through the normal path.
+        this.overlayDirty = false;
     }
 
     private initOverlayContext(): void {
@@ -1394,6 +1401,71 @@ export class GDIContext {
 
     textOut(hdc: number, x: number, y: number, text: string): boolean {
         return textOutImpl(this, hdc, x, y, text);
+    }
+
+    /**
+     * Copy a memory DC's canvas back into the guest-visible storage belonging to
+     * its selected CreateDIBSection bitmap.  Applications are allowed to read
+     * the pointer returned through ppvBits immediately after a GDI operation;
+     * keeping only the canvas shadow up to date is therefore not sufficient.
+     */
+    syncSelectedDibBits(hdc: number): boolean {
+        const ctx = this.contexts.get(hdc);
+        const state = this.hdcStates.get(hdc);
+        if (!ctx || !state) return false;
+
+        const hbitmap = ((ctx.canvas as any).__linkedBitmap as number | undefined)
+            ?? state.hBitmap;
+        if (!hbitmap || hbitmap === GDIContext.DEFAULT_BITMAP_HANDLE) return false;
+
+        const bitmap = SystemResourceProvider.getInstance().getUserObject(hbitmap) as any;
+        const bitsPtr = (bitmap?.bitsPtr ?? 0) >>> 0;
+        const stride = (bitmap?.dibStride ?? 0) | 0;
+        const bpp = (bitmap?.dibBpp ?? 0) | 0;
+        const width = Math.min((bitmap?.width ?? 0) | 0, ctx.canvas.width | 0);
+        const height = Math.min((bitmap?.height ?? 0) | 0, ctx.canvas.height | 0);
+        if (!bitsPtr || stride <= 0 || width <= 0 || height <= 0 || (bpp !== 24 && bpp !== 32)) {
+            return false;
+        }
+
+        const mem = System.getInstance().process?.v86?.mem8
+            ?? System.getInstance().process?.v86?.v86?.cpu?.mem8;
+        if (!mem || bitsPtr + stride * height > mem.length) return false;
+
+        let image: ImageData;
+        try {
+            image = ctx.getImageData(0, 0, width, height);
+        } catch (error) {
+            Logger.warn(LogCategory.GDI32, `syncSelectedDibBits: canvas readback failed: ${error}`);
+            return false;
+        }
+
+        const rgba = image.data;
+        const bytesPerPixel = bpp >>> 3;
+        const topDown = !!bitmap.dibTopDown;
+        for (let y = 0; y < height; y++) {
+            const dstY = topDown ? y : height - 1 - y;
+            let src = y * width * 4;
+            let dst = bitsPtr + dstY * stride;
+            for (let x = 0; x < width; x++) {
+                mem[dst] = rgba[src + 2];
+                mem[dst + 1] = rgba[src + 1];
+                mem[dst + 2] = rgba[src];
+                if (bpp === 32) mem[dst + 3] = rgba[src + 3];
+                src += 4;
+                dst += bytesPerPixel;
+            }
+            // Windows DIB rows are DWORD aligned. Keep padding deterministic.
+            const rowEnd = bitsPtr + dstY * stride + stride;
+            while (dst < rowEnd) mem[dst++] = 0;
+        }
+
+        // The canvas now is the current shadow for this bitmap. Avoid later
+        // re-seeding it from the just-written guest buffer unnecessarily.
+        bitmap.pixels = new Uint8Array(rgba);
+        bitmap.pixelsValid = true;
+        this.bitmapVersions.set(hbitmap, (this.bitmapVersions.get(hbitmap) ?? 0) + 1);
+        return true;
     }
 
     drawText(hdc: number, text: string, rect?: { left: number; top: number; right: number; bottom: number }, format?: number): boolean {

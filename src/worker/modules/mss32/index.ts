@@ -62,6 +62,24 @@ export class MSS32 implements IModule {
         Object.assign(this.exports, createSequenceExports(this.ctx));
         Object.assign(this.exports, createMidiDriverExports(this.ctx));
 
+        // Miles exposes these as a global serialization pair around internal
+        // mixer state. JavaScript execution in this worker already is serialized;
+        // accepting them explicitly avoids treating thousands of valid calls as
+        // unimplemented while preserving the required nesting semantics.
+        this.exports["_AIL_lock_mutex@0"] = () => 0;
+        this.exports["_AIL_unlock_mutex@0"] = () => 0;
+
+        // BFME installs custom Miles file callbacks, but all of its audio images
+        // already arrive through the VFS-backed APIs implemented by this module.
+        // Store the pointers for diagnostics and report success.
+        this.exports["_AIL_set_file_callbacks@16"] = (_ctx, _mem, args) => {
+            (this.ctx as any).fileOpenCallback = args[0] >>> 0;
+            (this.ctx as any).fileCloseCallback = args[1] >>> 0;
+            (this.ctx as any).fileSeekCallback = args[2] >>> 0;
+            (this.ctx as any).fileReadCallback = args[3] >>> 0;
+            return 1;
+        };
+
         // SmartHeap/MSS compatibility probes used by some games during startup.
         this.exports["_MemSetPatching@4"] = () => 0;
         this.exports["MemPoolInit"] = () => 1;
@@ -246,6 +264,58 @@ export class MSS32 implements IModule {
             if (sample.isPlaying) count++;
         }
         return count;
+    }
+
+    /** Plain, bounded playback snapshot for the harness and production diagnostics. */
+    getAudioDebugState(): unknown {
+        const now = performance.now();
+        const sample = (s: any) => ({
+            id: s.id,
+            handle: s.handle >>> 0,
+            format: s.fileFormat ?? "unknown",
+            sampleRate: s.sampleRate,
+            channels: s.channels,
+            is3D: !!s.is3D,
+            isPlaying: !!s.isPlaying,
+            pendingStart: !!s.pendingStart,
+            position: s.position ?? 0,
+            dataBytes: s.decodedData?.byteLength ?? s.fileData?.byteLength ?? 0,
+            hostPositionAgeMs: s.lastAudioPositionTime === undefined
+                ? null
+                : Math.max(0, Math.round(now - s.lastAudioPositionTime)),
+            hostPositionBytes: s.lastAudioPositionBytes ?? null,
+        });
+        const stream = (s: any) => ({
+            id: s.id,
+            handle: s.handle >>> 0,
+            filename: s.filename,
+            format: s.fileFormat ?? "unknown",
+            sampleRate: s.sampleRate,
+            channels: s.channels,
+            isPlaying: !!s.isPlaying,
+            isPaused: !!s.isPaused,
+            pendingStart: !!s.pendingStart,
+            position: s.position ?? 0,
+            dataBytes: s.decodedData?.byteLength ?? s.fileData?.byteLength ?? 0,
+            hostPositionAgeMs: s.lastAudioPositionTime === undefined
+                ? null
+                : Math.max(0, Math.round(now - s.lastAudioPositionTime)),
+            hostPositionBytes: s.lastAudioPositionBytes ?? null,
+        });
+        const samples = Array.from(this.ctx.samples.values(), sample);
+        const streams = Array.from(this.ctx.streams.values(), stream);
+        return {
+            initialized: this.ctx.initialized,
+            digitalDriverHandle: this.ctx.digitalDriverHandle >>> 0,
+            outputRate: this.ctx.driverOutputRate,
+            listener3D: this.ctx.listener3D ? { ...this.ctx.listener3D } : null,
+            sampleCount: samples.length,
+            playingSamples: samples.filter((s) => s.isPlaying).length,
+            streamCount: streams.length,
+            playingStreams: streams.filter((s) => s.isPlaying).length,
+            samples: samples.slice(0, 64),
+            streams: streams.slice(0, 16),
+        };
     }
 
     reset(): void {

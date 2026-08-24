@@ -135,6 +135,117 @@ let totalSlabBytes = 0;
 let nextSlabSize = HEAP_SLAB_INITIAL_SIZE;
 let slabGrowLastAttempt = 0; // performance.now() of last grow attempt (throttle)
 
+type HeapAllocFallbackCaller = {
+    ret: string;
+    count: number;
+    bytes: number;
+    maxBytes: number;
+};
+
+type HeapAllocFallbackDiagnostics = {
+    enabled: boolean;
+    total: number;
+    bytes: number;
+    byReason: Record<string, number>;
+    bySize: Record<string, number>;
+    byFlags: Record<string, number>;
+    callers: HeapAllocFallbackCaller[];
+};
+
+let heapAllocFallbackDiagEnabled = false;
+let heapAllocFallbackTotal = 0;
+let heapAllocFallbackBytes = 0;
+const heapAllocFallbackReasons = new Map<string, number>();
+const heapAllocFallbackSizes = new Map<string, number>();
+const heapAllocFallbackFlags = new Map<string, number>();
+const heapAllocFallbackCallers = new Map<number, Omit<HeapAllocFallbackCaller, 'ret'>>();
+
+function resetHeapAllocFallbackDiagnostics(): void {
+    heapAllocFallbackTotal = 0;
+    heapAllocFallbackBytes = 0;
+    heapAllocFallbackReasons.clear();
+    heapAllocFallbackSizes.clear();
+    heapAllocFallbackFlags.clear();
+    heapAllocFallbackCallers.clear();
+}
+
+function heapAllocSizeBucket(bytes: number): string {
+    if (bytes === 0) return '0';
+    if (bytes <= 16) return '1-16';
+    if (bytes <= 64) return '17-64';
+    if (bytes <= 256) return '65-256';
+    if (bytes <= 1024) return '257-1024';
+    if (bytes <= HEAP_SMALL_ALLOC_MAX) return '1025-4096';
+    if (bytes <= 16 * 1024) return '4097-16384';
+    if (bytes <= 64 * 1024) return '16385-65536';
+    if (bytes <= 1024 * 1024) return '65537-1048576';
+    return '>1048576';
+}
+
+function incrementDiag(map: Map<string, number>, key: string): void {
+    map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+/** Record only HeapAlloc calls that reached the JS thunk. The inline x86/WASM slab
+ *  path never executes this function, so this is exactly the population implicated
+ *  by the profiler's hot `kernel32:HeapAlloc` row. Disabled by default: callers can
+ *  arm it for a short in-game window through dbg.heapAllocDiag(true). */
+function recordHeapAllocFallback(ctx: any, mem: Uint8Array, flags: number, bytes: number): void {
+    if (!heapAllocFallbackDiagEnabled) return;
+    const live = hypercallDataManager.getSlabStats();
+    const reason = bytes === 0
+        ? 'zero-size'
+        : bytes > HEAP_SMALL_ALLOC_MAX
+            ? 'larger-than-slab'
+            : slabRanges.length === 0 || live.capacity === 0
+                ? 'slab-not-ready'
+                : live.used >= live.capacity
+                    ? 'slab-exhausted'
+                    : (flags & HEAP_ZERO_MEMORY_FLAG) !== 0
+                        ? 'zeroed-small-fell-through'
+                        : 'small-other';
+    heapAllocFallbackTotal++;
+    heapAllocFallbackBytes += bytes;
+    incrementDiag(heapAllocFallbackReasons, reason);
+    incrementDiag(heapAllocFallbackSizes, heapAllocSizeBucket(bytes));
+    incrementDiag(heapAllocFallbackFlags, `0x${(flags >>> 0).toString(16)}`);
+
+    const esp = ctx?.esp >>> 0;
+    let ret = 0;
+    if (esp + 4 <= mem.length) {
+        ret = new DataView(mem.buffer, mem.byteOffset, mem.byteLength).getUint32(esp, true) >>> 0;
+    }
+    const caller = heapAllocFallbackCallers.get(ret) ?? { count: 0, bytes: 0, maxBytes: 0 };
+    caller.count++;
+    caller.bytes += bytes;
+    caller.maxBytes = Math.max(caller.maxBytes, bytes);
+    heapAllocFallbackCallers.set(ret, caller);
+}
+
+export function setHeapAllocFallbackDiagnostics(on: boolean, reset = true): HeapAllocFallbackDiagnostics {
+    if (reset) resetHeapAllocFallbackDiagnostics();
+    heapAllocFallbackDiagEnabled = on;
+    return getHeapAllocFallbackDiagnostics();
+}
+
+export function getHeapAllocFallbackDiagnostics(): HeapAllocFallbackDiagnostics {
+    const record = (m: Map<string, number>) => Object.fromEntries(
+        [...m.entries()].sort((a, b) => b[1] - a[1]),
+    );
+    return {
+        enabled: heapAllocFallbackDiagEnabled,
+        total: heapAllocFallbackTotal,
+        bytes: heapAllocFallbackBytes,
+        byReason: record(heapAllocFallbackReasons),
+        bySize: record(heapAllocFallbackSizes),
+        byFlags: record(heapAllocFallbackFlags),
+        callers: [...heapAllocFallbackCallers.entries()]
+            .map(([ret, value]) => ({ ret: `0x${ret.toString(16)}`, ...value }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 24),
+    };
+}
+
 /** Low-level: allocate one slab of `size` bytes and install it as the active one. */
 function installNewSlab(size: number): boolean {
     const process = System.getInstance().process;
@@ -300,6 +411,7 @@ export function resetHeapSlab(): void {
     nextCreatedHeapHandle = HEAP_CREATE_HANDLE_BASE;
     heapWalkState = null;
     heapManagerOwnerProcess = null;
+    resetHeapAllocFallbackDiagnostics();
 }
 
 /**
@@ -462,6 +574,8 @@ export function resetHeapSlab(): void {
         nextSlabSizeKB: nextSlabSize / 1024,
     };
 };
+(globalThis as any).setHeapAllocFallbackDiagnostics = setHeapAllocFallbackDiagnostics;
+(globalThis as any).getHeapAllocFallbackDiagnostics = getHeapAllocFallbackDiagnostics;
 
 /** If ptr is within a slab, return its size class. Used by HeapSize/HeapReAlloc. */
 export function getSlabSizeForPtr(ptr: number): number | undefined {
@@ -1279,6 +1393,8 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         const hHeap = args[0];
         const dwFlags = args[1];
         const dwBytes = args[2] >>> 0;
+
+        recordHeapAllocFallback(ctx, mem, dwFlags, dwBytes);
 
         Logger.verboseLazy(LogCategory.KERNEL32,
             () => `HeapAlloc(0x${hHeap.toString(16)}, 0x${dwFlags.toString(16)}, ${dwBytes})`);
@@ -2628,6 +2744,14 @@ export function registerFastPathHeapFunctions(dispatcher: any): void {
         const process = system.process;
         if (!process) return null;
 
+        // This fast-path is the dispatcher's final JS handler after the inline x86
+        // stub and Rust hypercall both decline an allocation. Keep it in the SAME
+        // slab lifecycle as exports.HeapAlloc: otherwise a full initial slab never
+        // grows because this handler returns directly and the normal thunk body is
+        // never reached. BFME exposed the failure mode with a 4 MiB slab stuck at
+        // 100% and >300k fallbacks during one skirmish.
+        recordHeapAllocFallback({ esp }, mem8, dwFlags, dwBytes);
+
         if (dwBytes === 0) {
             system.scheduler.setLastError(HEAP_OOM_ERROR);
             return 0;
@@ -2638,6 +2762,10 @@ export function registerFastPathHeapFunctions(dispatcher: any): void {
         if (dwBytes > memSize || dwBytes > HEAP_FAST_PATH_MAX_ALLOC) {
             system.scheduler.setLastError(HEAP_OOM_ERROR);
             return 0;
+        }
+
+        if (dwBytes <= HEAP_SMALL_ALLOC_MAX) {
+            maybeGrowHeapSlab();
         }
 
         try {
@@ -2671,4 +2799,3 @@ export function registerFastPathHeapFunctions(dispatcher: any): void {
     dispatcher.registerFastPath('kernel32', 'HeapFree', heapFreeFastPath, { trivial: true });
     Logger.log(LogCategory.KERNEL32, 'Registered fast path for heap functions');
 }
-

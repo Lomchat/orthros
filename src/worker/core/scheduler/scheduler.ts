@@ -449,6 +449,14 @@ export class Scheduler {
     private sehDeniedRestoreCount = 0;
     private sehUnbalancedExitCount = 0;
     private readonly asyncRestoreTrace: string[] = [];
+    /**
+     * The async-restore trace formats full CPU/thread snapshots on every context
+     * switch. That is invaluable while diagnosing scheduler corruption, but it is
+     * also a hot-path tax in healthy games (BFME switches several threads around
+     * every Present). Keep the recorder explicitly opt-in; fatal guards still emit
+     * their complete current-state dump through dumpSchedulerAsyncState().
+     */
+    private asyncRestoreTraceEnabled = false;
 
     constructor(config: Partial<SchedulerConfig> = {}) {
         this.config = { ...DEFAULT_SCHEDULER_CONFIG, ...config };
@@ -3486,6 +3494,7 @@ export class Scheduler {
     }
 
     traceAsyncRestore(source: string, cpu?: V86Cpu | null, detail: string = ''): void {
+        if (!this.asyncRestoreTraceEnabled) return;
         const current = this.getCurrentThread();
         const live = cpu
             ? `liveEip=${hx(cpu.instruction_pointer[0])},liveEsp=${hx(cpu.reg32[4])}`
@@ -3498,6 +3507,16 @@ export class Scheduler {
 
     getAsyncRestoreTrace(): string[] {
         return this.asyncRestoreTrace.slice();
+    }
+
+    setAsyncRestoreTraceEnabled(enabled: boolean): boolean {
+        this.asyncRestoreTraceEnabled = enabled;
+        if (!enabled) this.asyncRestoreTrace.length = 0;
+        return this.asyncRestoreTraceEnabled;
+    }
+
+    isAsyncRestoreTraceEnabled(): boolean {
+        return this.asyncRestoreTraceEnabled;
     }
 
     private dumpSchedulerAsyncState(source: string, cpu: V86Cpu | null, kind?: ThunkBoundaryKind, detail: string = '', level: 'warn' | 'error' = 'error'): void {

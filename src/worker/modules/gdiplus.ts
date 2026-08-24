@@ -297,6 +297,9 @@ export class GdiPlus implements IModule {
                 return GenericError;
             }
         };
+        // ICM differs only by applying the embedded color profile. The browser
+        // decoder already performs its color conversion, so share the loader.
+        this.exports["GdipCreateBitmapFromFileICM"] = this.exports["GdipCreateBitmapFromFile"];
 
         // ---------------------------------------------------------------
         // GdipCloneImage

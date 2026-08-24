@@ -1588,6 +1588,9 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
 
         const biSize = view.getUint32(pbmi, true);
         const biClrUsed = view.getUint32(pbmi + 32, true);
+        const biXPelsPerMeter = view.getInt32(pbmi + 24, true);
+        const biYPelsPerMeter = view.getInt32(pbmi + 28, true);
+        const biClrImportant = view.getUint32(pbmi + 36, true);
 
         // Guest-visible DIB memory backing (what app writes through *ppvBits).
         const bpp = biBitCount > 0 ? biBitCount : 32;
@@ -1631,6 +1634,13 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
             dibBpp: bpp,
             dibStride: rowStride,
             dibTopDown: biHeight < 0,
+            dibCompression: biCompression,
+            dibXPelsPerMeter: biXPelsPerMeter,
+            dibYPelsPerMeter: biYPelsPerMeter,
+            dibClrUsed: biClrUsed,
+            dibClrImportant: biClrImportant,
+            dibSection: hSection >>> 0,
+            dibOffset: offset >>> 0,
             dibPalette,
         } as any);
 
@@ -1843,6 +1853,79 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
         } else {
             gdi.textOut(hdc, x, y, text);
         }
+        return 1;
+    };
+
+    exports['ExtTextOutW'] = (ctx, mem, args): number => {
+        const hdc = args[0];
+        const x = args[1] | 0;
+        const y = args[2] | 0;
+        const options = args[3] >>> 0;
+        const lprect = args[4] >>> 0;
+        const lpString = args[5] >>> 0;
+        const requestedCount = args[6] >>> 0;
+        const lpDx = args[7] >>> 0;
+        const maxCount = lpString < mem.length ? Math.floor((mem.length - lpString) / 2) : 0;
+        const count = Math.min(requestedCount, maxCount, 0x100000);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const codes = new Uint16Array(count);
+        for (let i = 0; i < count; i++) codes[i] = view.getUint16(lpString + i * 2, true);
+
+        // Avoid Function.apply/argument-count limits for long strings while
+        // preserving UTF-16 code units (including surrogate pairs).
+        let text = '';
+        for (let i = 0; i < count; i += 0x2000) {
+            text += String.fromCharCode(...codes.subarray(i, Math.min(count, i + 0x2000)));
+        }
+        Logger.verbose(LogCategory.GDI32, `ExtTextOutW: '${text}' at (${x},${y}) options=0x${options.toString(16)} lpDx=0x${lpDx.toString(16)}`);
+
+        const gdi = System.getInstance().gdiContext;
+        const dc = gdi.contexts.get(hdc);
+        const ETO_OPAQUE = 0x0002;
+        const ETO_CLIPPED = 0x0004;
+        const ETO_PDY = 0x2000;
+        let rect: { left: number; top: number; right: number; bottom: number } | undefined;
+        if (lprect && lprect + 16 <= mem.length) {
+            rect = {
+                left: view.getInt32(lprect, true),
+                top: view.getInt32(lprect + 4, true),
+                right: view.getInt32(lprect + 8, true),
+                bottom: view.getInt32(lprect + 12, true),
+            };
+        }
+
+        if (dc && rect && (options & ETO_CLIPPED)) {
+            dc.save();
+            dc.beginPath();
+            dc.rect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+            dc.clip();
+        }
+        if (dc && rect && (options & ETO_OPAQUE)) {
+            const state = gdi.hdcStates.get(hdc);
+            const previousFill = dc.fillStyle;
+            dc.fillStyle = state?.bkColor ?? '#FFFFFF';
+            dc.fillRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+            dc.fillStyle = previousFill;
+        }
+
+        if (lpDx && count > 0) {
+            const dxEntries = (options & ETO_PDY) ? 2 : 1;
+            const maxDxCount = Math.max(0, Math.floor((mem.length - lpDx) / (4 * dxEntries)));
+            const drawCount = Math.min(count, maxDxCount);
+            let curX = x;
+            let curY = y;
+            for (let i = 0; i < drawCount; i++) {
+                gdi.textOut(hdc, curX, curY, text[i] ?? '');
+                curX += view.getInt32(lpDx + i * dxEntries * 4, true);
+                if (dxEntries === 2) curY += view.getInt32(lpDx + i * 8 + 4, true);
+            }
+        } else {
+            gdi.textOut(hdc, x, y, text);
+        }
+
+        if (dc && rect && (options & ETO_CLIPPED)) dc.restore();
+        // Covers ETO_OPAQUE with an empty text string as well.
+        gdi.syncSelectedDibBits(hdc);
         return 1;
     };
 
@@ -2193,6 +2276,73 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
     };
 
     exports['GetCharABCWidthsW'] = exports['GetCharABCWidthsA'];
+
+    // BOOL GetGlyphIndicesW(HDC, LPCWSTR, int, LPWORD, DWORD)
+    // Canvas does not expose platform glyph IDs. Use the UTF-16 code unit as a
+    // stable pseudo glyph ID; the matching *I metric entry points below decode
+    // the same value, preserving Wine/Win32 call-pair semantics for applications
+    // that shape text with GDI before asking for glyph metrics.
+    exports['GetGlyphIndicesW'] = (ctx, mem, args): number => {
+        const lpString = args[1] >>> 0;
+        let count = args[2] | 0;
+        const lpGlyphs = args[3] >>> 0;
+        if (!lpString || !lpGlyphs) return 0xffffffff;
+        if (count < 0) {
+            count = 0;
+            while (lpString + count * 2 + 1 < mem.length &&
+                (mem[lpString + count * 2] || mem[lpString + count * 2 + 1])) count++;
+        }
+        if (count < 0 || lpString + count * 2 > mem.length || lpGlyphs + count * 2 > mem.length) {
+            return 0xffffffff;
+        }
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        for (let i = 0; i < count; i++) {
+            view.setUint16(lpGlyphs + i * 2, view.getUint16(lpString + i * 2, true), true);
+        }
+        return count >>> 0;
+    };
+
+    // BOOL GetTextExtentPointI(HDC, LPWORD, int, LPSIZE)
+    exports['GetTextExtentPointI'] = (ctx, mem, args): number => {
+        const hdc = args[0] >>> 0;
+        const lpGlyphs = args[1] >>> 0;
+        const count = args[2] | 0;
+        const lpSize = args[3] >>> 0;
+        if (count < 0 || (count > 0 && (!lpGlyphs || lpGlyphs + count * 2 > mem.length)) ||
+            !lpSize || lpSize + 8 > mem.length) return 0;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        let text = '';
+        for (let i = 0; i < count; i++) text += String.fromCharCode(view.getUint16(lpGlyphs + i * 2, true));
+        measureTextExtent(hdc, text, lpSize, mem);
+        return 1;
+    };
+
+    // BOOL GetCharABCWidthsI(HDC, UINT, UINT, LPWORD, LPABC)
+    exports['GetCharABCWidthsI'] = (ctx, mem, args): number => {
+        const hdc = args[0] >>> 0;
+        const first = args[1] >>> 0;
+        const count = args[2] >>> 0;
+        const lpGlyphs = args[3] >>> 0;
+        const lpABC = args[4] >>> 0;
+        if (!lpABC || lpABC + count * 12 > mem.length ||
+            (lpGlyphs && lpGlyphs + count * 2 > mem.length)) return 0;
+        const gdi = System.getInstance().gdiContext;
+        const dcCtx = gdi.getMeasureContext(hdc);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        for (let i = 0; i < count; i++) {
+            const glyph = lpGlyphs ? view.getUint16(lpGlyphs + i * 2, true) : ((first + i) & 0xffff);
+            let width = 8;
+            if (dcCtx) {
+                try { width = Math.max(1, Math.round(dcCtx.measureText(String.fromCharCode(glyph)).width)); }
+                catch (_) { /* deterministic fallback */ }
+            }
+            const offset = lpABC + i * 12;
+            view.setInt32(offset, 0, true);
+            view.setInt32(offset + 4, width, true);
+            view.setInt32(offset + 8, 0, true);
+        }
+        return 1;
+    };
 
     return exports;
 }

@@ -130,9 +130,12 @@ export const mss32Module: ModuleDescriptor = {
         makeFunc("_AIL_redbook_position@4", 1),
         // 3D provider enumeration
         makeFunc("_AIL_enumerate_3D_providers@12", 3),
+        makeFunc("_AIL_enumerate_filters@12", 3),
         // 3D audio provider stubs
+        makeFunc("_AIL_get_DirectSound_info@12", 3),
         makeFunc("_AIL_open_3D_provider@4", 1),
         makeFunc("_AIL_close_3D_provider@4", 1),
+        makeFunc("_AIL_3D_provider_attribute@12", 3),
         makeFunc("_AIL_allocate_3D_sample_handle@4", 1),
         makeFunc("_AIL_release_3D_sample_handle@4", 1),
         makeFunc("_AIL_set_3D_sample_file@8", 2),
@@ -149,6 +152,7 @@ export const mss32Module: ModuleDescriptor = {
         makeFunc("_AIL_set_3D_sample_playback_rate@8", 2),
         makeFunc("_AIL_3D_sample_playback_rate@4", 1),
         makeFunc("_AIL_set_3D_sample_loop_count@8", 2),
+        makeFunc("_AIL_set_3D_user_data@12", 3),
         makeFunc("_AIL_3D_sample_loop_count@4", 1),
         makeFunc("_AIL_3D_sample_volume@4", 1),
         makeFunc("_AIL_3D_sample_status@4", 1),
@@ -162,6 +166,7 @@ export const mss32Module: ModuleDescriptor = {
         makeFunc("_AIL_3D_speaker_type@4", 1),
         makeFunc("_AIL_set_3D_speaker_type@8", 2),
         makeFunc("_AIL_set_3D_provider_preference@12", 3),
+        makeFunc("_AIL_set_3D_rolloff_factor@8", 2),
         makeFunc("_AIL_quick_handles@12", 3),
         // Redist directory
         makeFunc("_AIL_set_redist_directory@4", 1),

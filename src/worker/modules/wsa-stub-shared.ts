@@ -167,9 +167,15 @@ export interface DnsStubs {
  * (no real network in this stub), so callers never dereference NULL. Shared by wsock32
  * and ws2_32 so both DLLs answer identically instead of drifting.
  */
-export function createDnsStubs(process: Process, setLastError: (code: number) => void): DnsStubs {
+export function createDnsStubs(
+    process: Process,
+    setLastError: (code: number) => void,
+    identity?: { hostname: string; addressBytes: Uint8Array },
+): DnsStubs {
     let hostentAddr = 0;
     let inetNtoaBufAddr = 0;
+    const hostName = identity?.hostname || LOOPBACK_HOST_NAME;
+    const addressBytes = identity?.addressBytes || LOOPBACK_ADDR_BYTES;
 
     const ensureLoopbackHostent = (): number => {
         if (hostentAddr) return hostentAddr;
@@ -180,7 +186,7 @@ export function createDnsStubs(process: Process, setLastError: (code: number) =>
         //  +8 h_addrtype  (short)
         // +10 h_length    (short)
         // +12 h_addr_list (char**)
-        const hNameAddr = process.memory.alloc(LOOPBACK_HOST_NAME.length + 1, "THUNK_DATA", "rw");
+        const hNameAddr = process.memory.alloc(hostName.length + 1, "THUNK_DATA", "rw");
         const hAliasesAddr = process.memory.alloc(4, "THUNK_DATA", "rw");   // [NULL]
         const hAddrBytesAddr = process.memory.alloc(4, "THUNK_DATA", "rw"); // 127.0.0.1
         const hAddrListAddr = process.memory.alloc(8, "THUNK_DATA", "rw");  // [ptr, NULL]
@@ -190,10 +196,10 @@ export function createDnsStubs(process: Process, setLastError: (code: number) =>
             return 0;
         }
 
-        const nameBytes = new TextEncoder().encode(`${LOOPBACK_HOST_NAME}\0`);
+        const nameBytes = new TextEncoder().encode(`${hostName}\0`);
         if (Mem.writeBytes(hNameAddr, nameBytes) !== nameBytes.length) { setLastError(WSAENETDOWN); return 0; }
         if (!Mem.writeUint32(hAliasesAddr, 0)) { setLastError(WSAENETDOWN); return 0; }
-        if (Mem.writeBytes(hAddrBytesAddr, LOOPBACK_ADDR_BYTES) !== LOOPBACK_ADDR_BYTES.length) {
+        if (Mem.writeBytes(hAddrBytesAddr, addressBytes) !== addressBytes.length) {
             setLastError(WSAENETDOWN);
             return 0;
         }
@@ -227,7 +233,7 @@ export function createDnsStubs(process: Process, setLastError: (code: number) =>
         if (!namePtr || len <= 0) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
 
         const maxWrite = Math.max(0, len - 1);
-        const hostBytes = new TextEncoder().encode(LOOPBACK_HOST_NAME);
+        const hostBytes = new TextEncoder().encode(hostName);
         const toCopy = hostBytes.subarray(0, Math.min(hostBytes.length, maxWrite));
         if (toCopy.length > 0 && Mem.writeBytes(namePtr, toCopy) !== toCopy.length) {
             setLastError(WSAEFAULT);
@@ -483,9 +489,10 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
             }
         }
 
-        const readyWrite = writeSockets.filter((s) => table.isConnected(s));
+        const readyRead = readSockets.filter((s) => table.hasPendingData(s));
+        const readyWrite = writeSockets.filter((s) => table.isWriteReady(s));
 
-        if (!writeFdSetSockets(mem, readfdsPtr, []) ||
+        if (!writeFdSetSockets(mem, readfdsPtr, readyRead) ||
             !writeFdSetSockets(mem, writefdsPtr, readyWrite) ||
             !writeFdSetSockets(mem, exceptfdsPtr, [])) {
             setLastError(WSAEFAULT);
@@ -493,7 +500,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         }
 
         setLastError(0);
-        return readyWrite.length;
+        return readyRead.length + readyWrite.length;
     };
 }
 
@@ -771,24 +778,119 @@ export const WSAEWOULDBLOCK = 10035;
 export const WSAEFAULT = 10014;
 export const WSAENOBUFS = 10055;
 
-interface StubSocket {
-    connected: boolean;
-    nonBlocking: boolean;
+interface SocketAddress {
+    ip: number;
+    port: number;
 }
 
-/** Deterministic offline socket table — connect succeeds, I/O is no-network safe. */
+interface QueuedDatagram {
+    data: Uint8Array;
+    from: SocketAddress;
+}
+
+interface StubSocket {
+    family: number;
+    type: number;
+    protocol: number;
+    connected: boolean;
+    nonBlocking: boolean;
+    bound: SocketAddress | null;
+    peer: SocketAddress | null;
+    receiveQueue: QueuedDatagram[];
+}
+
+function ipv4(a: number, b: number, c: number, d: number): number {
+    return (((a & 0xff) << 24) | ((b & 0xff) << 16) | ((c & 0xff) << 8) | (d & 0xff)) >>> 0;
+}
+
+function ipv4Bytes(ip: number): Uint8Array {
+    return new Uint8Array([(ip >>> 24) & 0xff, (ip >>> 16) & 0xff, (ip >>> 8) & 0xff, ip & 0xff]);
+}
+
+function readSockaddrIn(mem: Uint8Array, addr: number): SocketAddress | null {
+    if (!addr || addr + SOCKADDR_IN_SIZE > mem.length) return null;
+    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    if (view.getUint16(addr, true) !== AF_INET) return null;
+    return {
+        port: view.getUint16(addr + 2, false),
+        ip: ipv4(mem[addr + 4], mem[addr + 5], mem[addr + 6], mem[addr + 7]),
+    };
+}
+
+function writeSockaddrIn(addr: number, value: SocketAddress, mem: Uint8Array): boolean {
+    if (!addr || addr + SOCKADDR_IN_SIZE > mem.length) return false;
+    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    view.setUint16(addr, AF_INET, true);
+    view.setUint16(addr + 2, value.port & 0xffff, false);
+    mem.set(ipv4Bytes(value.ip), addr + 4);
+    mem.fill(0, addr + 8, addr + 16);
+    return true;
+}
+
+/**
+ * Browser Winsock provider. Datagram payloads remain byte-for-byte native BFME
+ * packets; only the unavailable browser UDP transport is replaced with one
+ * WebSocket connection to the BottleShip virtual-LAN relay.
+ */
 export class WsaSocketTable {
     private nextId = 1;
     private sockets = new Map<number, StubSocket>();
+    private relay: WebSocket | null = null;
+    private relayReady = false;
+    private relayReconnect: ReturnType<typeof setTimeout> | null = null;
+    private pendingRelayFrames: ArrayBuffer[] = [];
+    private readonly virtualIp: number;
+    private readonly clientId: string;
+    private readonly hostName: string;
+
+    constructor() {
+        let random = 0;
+        try {
+            const values = new Uint32Array(1);
+            globalThis.crypto?.getRandomValues(values);
+            random = values[0] >>> 0;
+        } catch {
+            random = ((Math.random() * 0xffffffff) >>> 0);
+        }
+        // Reserve .0/.1/.255 and use a /16-sized virtual LAN. The complete IP is
+        // supplied to the relay, so all in-packet BFME addresses stay stable.
+        const third = ((random >>> 8) & 0xff) || 1;
+        const fourthRaw = random & 0xff;
+        const fourth = fourthRaw < 2 || fourthRaw === 255 ? 2 + (fourthRaw % 252) : fourthRaw;
+        this.virtualIp = ipv4(10, 42, third, fourth);
+        this.clientId = `${random.toString(16).padStart(8, "0")}-${Date.now().toString(36)}`;
+        this.hostName = `bfme-${random.toString(16).slice(-6).padStart(6, "0")}`;
+    }
+
+    getIdentity(): { hostname: string; addressBytes: Uint8Array; ip: number } {
+        return { hostname: this.hostName, addressBytes: ipv4Bytes(this.virtualIp), ip: this.virtualIp };
+    }
 
     reset(): void {
         this.nextId = 1;
         this.sockets.clear();
+        this.pendingRelayFrames.length = 0;
+        this.relayReady = false;
+        if (this.relayReconnect) clearTimeout(this.relayReconnect);
+        this.relayReconnect = null;
+        const relay = this.relay;
+        this.relay = null;
+        try { relay?.close(); } catch { /* best effort */ }
     }
 
-    socket(): number {
+    socket(family = AF_INET, type = 1, protocol = 0): number {
         const id = this.nextId++;
-        this.sockets.set(id, { connected: false, nonBlocking: true });
+        this.sockets.set(id, {
+            family,
+            type,
+            protocol,
+            connected: false,
+            nonBlocking: true,
+            bound: null,
+            peer: null,
+            receiveQueue: [],
+        });
+        this.ensureRelay();
         return id;
     }
 
@@ -797,14 +899,23 @@ export class WsaSocketTable {
         return 0;
     }
 
-    connect(s: number): number {
+    connect(s: number, peer?: SocketAddress): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
         sock.connected = true;
+        sock.peer = peer ?? { ip: ipv4(127, 0, 0, 1), port: 0 };
+        if (!sock.bound) sock.bound = { ip: this.virtualIp, port: this.allocateEphemeralPort() };
         return 0;
     }
 
-    bind(_s: number): number {
+    bind(s: number, address?: SocketAddress): number {
+        const sock = this.sockets.get(s >>> 0);
+        if (!sock) return SOCKET_ERROR;
+        const requested = address ?? { ip: 0, port: 0 };
+        sock.bound = {
+            ip: requested.ip,
+            port: requested.port || this.allocateEphemeralPort(),
+        };
         return 0;
     }
 
@@ -813,30 +924,36 @@ export class WsaSocketTable {
     }
 
     accept(_s: number): number {
-        return this.socket();
+        return INVALID_SOCKET;
     }
 
-    send(s: number, len: number): number {
+    send(s: number, len: number, data?: Uint8Array): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
-        if (!sock.connected) return SOCKET_ERROR;
+        if (!sock.connected || !sock.peer) return SOCKET_ERROR;
+        if (data) this.routeDatagram(sock, sock.peer, data.subarray(0, len));
         return Math.max(0, len | 0);
     }
 
-    recv(s: number): number {
+    recv(s: number, mem?: Uint8Array, buffer = 0, len = 0): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
-        if (!sock.connected) return SOCKET_ERROR;
-        return SOCKET_ERROR;
+        if (!sock.connected && sock.type === 1) return SOCKET_ERROR;
+        return this.dequeueDatagram(sock, mem, buffer, len, 0, 0);
     }
 
-    recvfrom(s: number): number {
-        return this.recv(s);
-    }
-
-    sendto(s: number, len: number): number {
+    recvfrom(s: number, mem?: Uint8Array, buffer = 0, len = 0, from = 0, fromLenPtr = 0): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
+        return this.dequeueDatagram(sock, mem, buffer, len, from, fromLenPtr);
+    }
+
+    sendto(s: number, len: number, data?: Uint8Array, destination?: SocketAddress): number {
+        const sock = this.sockets.get(s >>> 0);
+        if (!sock) return SOCKET_ERROR;
+        if (!destination) return SOCKET_ERROR;
+        if (!sock.bound) sock.bound = { ip: this.virtualIp, port: this.allocateEphemeralPort() };
+        if (data) this.routeDatagram(sock, destination, data.subarray(0, len));
         return Math.max(0, len | 0);
     }
 
@@ -860,6 +977,31 @@ export class WsaSocketTable {
         return this.sockets.get(s >>> 0)?.connected ?? false;
     }
 
+    isWriteReady(s: number): boolean {
+        const sock = this.sockets.get(s >>> 0);
+        return !!sock && (sock.type === 2 || sock.connected);
+    }
+
+    hasPendingData(s: number): boolean {
+        return (this.sockets.get(s >>> 0)?.receiveQueue.length ?? 0) > 0;
+    }
+
+    pendingBytes(s: number): number {
+        return this.sockets.get(s >>> 0)?.receiveQueue[0]?.data.byteLength ?? 0;
+    }
+
+    getSockName(s: number): SocketAddress | null {
+        const sock = this.sockets.get(s >>> 0);
+        if (!sock) return null;
+        if (!sock.bound) sock.bound = { ip: this.virtualIp, port: this.allocateEphemeralPort() };
+        const ip = sock.bound.ip === 0 ? this.virtualIp : sock.bound.ip;
+        return { ip, port: sock.bound.port };
+    }
+
+    getPeerName(s: number): SocketAddress | null {
+        return this.sockets.get(s >>> 0)?.peer ?? null;
+    }
+
     ioctl(s: number, cmd: number, argp: number, mem: Uint8Array | null): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
@@ -880,6 +1022,170 @@ export class WsaSocketTable {
         }
         return 0;
     }
+
+    private allocateEphemeralPort(): number {
+        for (let port = 49152; port <= 65535; port++) {
+            let used = false;
+            for (const socket of this.sockets.values()) {
+                if (socket.bound?.port === port) { used = true; break; }
+            }
+            if (!used) return port;
+        }
+        return 49152;
+    }
+
+    private dequeueDatagram(
+        sock: StubSocket,
+        mem: Uint8Array | undefined,
+        buffer: number,
+        len: number,
+        from: number,
+        fromLenPtr: number,
+    ): number {
+        const packet = sock.receiveQueue.shift();
+        if (!packet || !mem || !buffer || len <= 0) return SOCKET_ERROR;
+        const amount = Math.min(len, packet.data.byteLength);
+        if (buffer + amount > mem.length) return SOCKET_ERROR;
+        mem.set(packet.data.subarray(0, amount), buffer);
+        if (from && fromLenPtr) {
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            if (fromLenPtr + 4 > mem.length || view.getInt32(fromLenPtr, true) < SOCKADDR_IN_SIZE ||
+                !writeSockaddrIn(from, packet.from, mem)) return SOCKET_ERROR;
+            view.setInt32(fromLenPtr, SOCKADDR_IN_SIZE, true);
+        }
+        return amount;
+    }
+
+    private routeDatagram(sock: StubSocket, destination: SocketAddress, bytes: Uint8Array): void {
+        const source = sock.bound ?? { ip: this.virtualIp, port: this.allocateEphemeralPort() };
+        if (!sock.bound) sock.bound = source;
+        const payload = new Uint8Array(bytes);
+        const frame = new ArrayBuffer(13 + payload.byteLength);
+        const out = new Uint8Array(frame);
+        const view = new DataView(frame);
+        out[0] = 1;
+        out.set(ipv4Bytes(this.virtualIp), 1);
+        view.setUint16(5, source.port, false);
+        out.set(ipv4Bytes(destination.ip), 7);
+        view.setUint16(11, destination.port, false);
+        out.set(payload, 13);
+        this.sendRelayFrame(frame);
+    }
+
+    private receiveRelayFrame(frame: ArrayBuffer): void {
+        const bytes = new Uint8Array(frame);
+        if (bytes.byteLength < 13 || bytes[0] !== 1) return;
+        const view = new DataView(frame);
+        const sourceIp = ipv4(bytes[1], bytes[2], bytes[3], bytes[4]);
+        const sourcePort = view.getUint16(5, false);
+        const destinationIp = ipv4(bytes[7], bytes[8], bytes[9], bytes[10]);
+        const destinationPort = view.getUint16(11, false);
+        const packet = bytes.slice(13);
+
+        // Prefer an exact bind; otherwise INADDR_ANY owns remote traffic. This
+        // mirrors the pair BFME creates (0.0.0.0 listener + address-bound sender)
+        // without delivering every datagram twice.
+        let target: StubSocket | undefined;
+        for (const socket of this.sockets.values()) {
+            if (socket.bound?.port === destinationPort && socket.bound.ip === destinationIp) {
+                target = socket;
+                break;
+            }
+        }
+        if (!target) {
+            for (const socket of this.sockets.values()) {
+                if (socket.bound?.port === destinationPort && socket.bound.ip === 0) {
+                    target = socket;
+                    break;
+                }
+            }
+        }
+        if (!target) return;
+        target.receiveQueue.push({ data: packet, from: { ip: sourceIp, port: sourcePort } });
+        if (target.receiveQueue.length > 512) target.receiveQueue.shift();
+    }
+
+    private sendRelayFrame(frame: ArrayBuffer): void {
+        this.ensureRelay();
+        if (this.relayReady && this.relay?.readyState === WebSocket.OPEN) {
+            this.relay.send(frame);
+            return;
+        }
+        this.pendingRelayFrames.push(frame);
+        if (this.pendingRelayFrames.length > 512) this.pendingRelayFrames.shift();
+    }
+
+    private ensureRelay(): void {
+        if (this.relay || typeof WebSocket === "undefined" || typeof location === "undefined") return;
+        const scope = globalThis as any;
+        const isWorker = typeof scope.document === "undefined" && typeof scope.postMessage === "function";
+        if (!isWorker) return;
+
+        const workerUrl = new URL(location.href);
+        const room = String(scope.__bfmeRoom || workerUrl.searchParams.get("bfmeRoom") || "public").slice(0, 64);
+        const protocol = workerUrl.protocol === "https:" ? "wss:" : "ws:";
+        const dev = workerUrl.hostname === "localhost" || workerUrl.hostname === "127.0.0.1";
+        const relayHost = dev ? `${workerUrl.hostname}:3002` : workerUrl.host;
+        const url = new URL(`${protocol}//${relayHost}/bfme-net`);
+        url.searchParams.set("room", room);
+        url.searchParams.set("client", this.clientId);
+        url.searchParams.set("ip", Array.from(ipv4Bytes(this.virtualIp)).join("."));
+
+        try {
+            const relay = new WebSocket(url);
+            relay.binaryType = "arraybuffer";
+            this.relay = relay;
+            relay.onopen = () => {
+                if (this.relay !== relay) return;
+                relay.send(JSON.stringify({ type: "hello", room, client: this.clientId }));
+            };
+            relay.onmessage = (event) => {
+                if (typeof event.data === "string") {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message?.type === "welcome") {
+                            this.relayReady = true;
+                            const pending = this.pendingRelayFrames.splice(0);
+                            for (const pendingFrame of pending) relay.send(pendingFrame);
+                        }
+                    } catch { /* malformed control packet */ }
+                    return;
+                }
+                if (event.data instanceof ArrayBuffer) this.receiveRelayFrame(event.data);
+            };
+            relay.onclose = () => this.handleRelayClose(relay);
+            relay.onerror = () => { /* onclose schedules the retry */ };
+        } catch {
+            this.scheduleRelayReconnect();
+        }
+    }
+
+    private handleRelayClose(relay: WebSocket): void {
+        if (this.relay !== relay) return;
+        this.relay = null;
+        this.relayReady = false;
+        this.scheduleRelayReconnect();
+    }
+
+    private scheduleRelayReconnect(): void {
+        if (this.relayReconnect || this.sockets.size === 0) return;
+        this.relayReconnect = setTimeout(() => {
+            this.relayReconnect = null;
+            this.ensureRelay();
+        }, 1000);
+    }
+}
+
+const sharedSocketTables = new WeakMap<Process, WsaSocketTable>();
+
+/** WSOCK32 and WS2_32 are two DLL views over one Windows provider. */
+export function getSharedWsaSocketTable(process: Process): WsaSocketTable {
+    let table = sharedSocketTables.get(process);
+    if (!table) {
+        table = new WsaSocketTable();
+        sharedSocketTables.set(process, table);
+    }
+    return table;
 }
 
 export function makeSocketExports(
@@ -895,8 +1201,8 @@ export function makeSocketExports(
     };
 
     return {
-        socket: () => {
-            const id = table.socket();
+        socket: (_ctx, _mem, args) => {
+            const id = table.socket((args[0] ?? AF_INET) | 0, (args[1] ?? 1) | 0, (args[2] ?? 0) | 0);
             setLastError(0);
             return id;
         },
@@ -906,18 +1212,22 @@ export function makeSocketExports(
             setLastError(ret === 0 ? 0 : WSAENOTSOCK);
             return ret;
         },
-        connect: (_ctx, _mem, args) => {
+        connect: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.connect(s);
+            const peer = readSockaddrIn(mem, args[1] >>> 0);
+            if (!peer) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const ret = table.connect(s, peer);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        bind: (_ctx, _mem, args) => {
+        bind: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const address = readSockaddrIn(mem, args[1] >>> 0);
+            if (!address) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
             setLastError(0);
-            return table.bind(s);
+            return table.bind(s, address);
         },
         listen: (_ctx, _mem, args) => {
             const s = args[0] >>> 0;
@@ -931,33 +1241,46 @@ export function makeSocketExports(
             setLastError(0);
             return table.accept(s);
         },
-        send: (_ctx, _mem, args) => {
+        send: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
+            const buffer = args[1] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.send(s, len);
+            if (!buffer || buffer + len > mem.length) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const ret = table.send(s, len, mem.subarray(buffer, buffer + len));
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        recv: (_ctx, _mem, args) => {
+        recv: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.recv(s);
+            const ret = table.recv(s, mem, args[1] >>> 0, args[2] >>> 0);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        recvfrom: (_ctx, _mem, args) => {
+        recvfrom: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.recvfrom(s);
+            const ret = table.recvfrom(
+                s,
+                mem,
+                args[1] >>> 0,
+                args[2] >>> 0,
+                args[4] >>> 0,
+                args[5] >>> 0,
+            );
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        sendto: (_ctx, _mem, args) => {
+        sendto: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
+            const buffer = args[1] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.sendto(s, len);
+            if (!buffer || buffer + len > mem.length) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const destination = readSockaddrIn(mem, args[4] >>> 0);
+            if (!destination) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const ret = table.sendto(s, len, mem.subarray(buffer, buffer + len), destination);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
@@ -991,7 +1314,8 @@ export function makeSocketExports(
             const name = args[1] >>> 0;
             const namelenPtr = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            if (!table.isConnected(s)) {
+            const peer = table.getPeerName(s);
+            if (!peer) {
                 setLastError(WSAENOTCONN);
                 return SOCKET_ERROR;
             }
@@ -1006,7 +1330,7 @@ export function makeSocketExports(
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
-            if (!writeSockaddrInLoopback(name, 0, mem)) {
+            if (!writeSockaddrIn(name, peer, mem)) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
@@ -1035,7 +1359,8 @@ export function makeSocketExports(
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
-            if (!writeSockaddrInLoopback(name, 0, mem)) {
+            const local = table.getSockName(s);
+            if (!local || !writeSockaddrIn(name, local, mem)) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
@@ -1064,7 +1389,7 @@ export function makeSocketExports(
             if (code === FIONBIO && inBuf) {
                 table.ioctl(s, FIONBIO, inBuf, mem);
             } else if (code === FIONREAD && outBuf && outLen >= 4) {
-                if (!writeU32(mem, outBuf, 0)) {
+                if (!writeU32(mem, outBuf, table.pendingBytes(s))) {
                     setLastError(WSAEFAULT);
                     return SOCKET_ERROR;
                 }
@@ -1092,8 +1417,8 @@ export function makeSocketExports(
             setLastError(0);
             return 0;
         },
-        WSASocketA: () => {
-            const id = table.socket();
+        WSASocketA: (_ctx, _mem, args) => {
+            const id = table.socket((args[0] ?? AF_INET) | 0, (args[1] ?? 1) | 0, (args[2] ?? 0) | 0);
             setLastError(0);
             return id;
         },

@@ -15,7 +15,10 @@ import { Galaxy } from '../modules/galaxy';
 import { normalizeDllBaseName, resolveThunkedDllAlias } from './dll-aliases';
 import { installCw3220Stdio } from '../modules/cw3220/cw3220-stdio';
 import { writeHeapSlabStubs } from '../modules/kernel32/heap-slab-stubs';
+import { writeCriticalSectionInlineStubs } from '../modules/kernel32/critical-section-inline-stubs';
+import { writeTimeInlineStub } from '../modules/kernel32/time-inline-stubs';
 import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs';
+import { TimeService } from '../runtime/time';
 
 function isD3dx9VersionedDll(dllNameLower: string): boolean {
     return resolveThunkedDllAlias(normalizeDllBaseName(dllNameLower)) === 'd3dx9';
@@ -175,6 +178,8 @@ export class PELoader {
      * subsequent PE that imports these functions. See kernel32/heap-slab-stubs writeHeapSlabStubs.
      */
     private heapInlineStubs: { heapAllocStub: number; heapFreeStub: number; regionBase: number; regionEnd: number } | null = null;
+    private criticalSectionInlineStubs: { enterStub: number; leaveStub: number; regionBase: number; regionEnd: number } | null = null;
+    private timeInlineStub: { timeStub: number; regionBase: number; regionEnd: number } | null = null;
 
     /**
      * Cached addresses of inline x86 stubs for the msvcrt cdecl CRT allocator pair
@@ -184,6 +189,33 @@ export class PELoader {
      */
     private crtInlineStubs: { mallocStub: number; freeStub: number; regionBase: number; regionEnd: number } | null = null;
     private caseFoldInlineStubs: { tolowerStub: number; toupperStub: number; regionBase: number; regionEnd: number } | null = null;
+
+    /** Materialize the trap-free case-fold leaves for both thunked and real
+     * versioned CRT imports. BFME keeps MSVCR71 native for ABI compatibility,
+     * but its imported `tolower` alone retired over one million guest blocks in
+     * a ten-second player trace. The leaves use msvcrt's live code-page tables,
+     * so their result stays coherent without mixing CRT heap ownership. */
+    private ensureCaseFoldInlineStubs(dllName: string): void {
+        if (this.caseFoldInlineStubs || !PELoader.CRT_SLAB_MODULES.has(dllName)
+            || (globalThis as any).__noCaseFoldStub) return;
+        try {
+            const sys = System.getInstance();
+            const tmm = sys.process?.thunkMemoryManager;
+            const msvcrt = sys.process?.getModule?.('msvcrt') as
+                { getCaseTableAddrs?: () => { lower: number; upper: number } } | undefined;
+            const tbl = msvcrt?.getCaseTableAddrs?.();
+            if (tmm && tbl && tbl.lower && tbl.upper) {
+                this.caseFoldInlineStubs = writeCaseFoldStubs(
+                    tmm.stubAllocator, this.getMemory, tbl.lower, tbl.upper);
+            } else {
+                Logger.warn(LogCategory.SYSTEM,
+                    `[PE] case-fold stubs skipped for ${dllName}: tmm=${!!tmm} msvcrt=${!!msvcrt} ` +
+                    `getCaseTableAddrs=${typeof msvcrt?.getCaseTableAddrs} tbl=${JSON.stringify(tbl)}`);
+            }
+        } catch (e) {
+            Logger.warn(LogCategory.SYSTEM, `[PE] Inline case-fold stubs unavailable: ${e}`);
+        }
+    }
 
     /** Dynamically-linked C runtime modules that export the cdecl malloc/free pair
      *  and the MSVC operator new/delete aliases — all share one slab fast path. */
@@ -222,6 +254,8 @@ export class PELoader {
      *  memory addresses. Called from Process.reset() before thunk memory is regenerated. */
     resetCaches(): void {
         this.heapInlineStubs = null;
+        this.criticalSectionInlineStubs = null;
+        this.timeInlineStub = null;
         this.crtInlineStubs = null;
         this.caseFoldInlineStubs = null;
     }
@@ -1082,6 +1116,9 @@ export class PELoader {
             const iatRVA = this.view.getUint32(descriptorAddr + 16, true); // Import Address Table
 
             const functions = this.parseImportTable(baseAddress, iltRVA || iatRVA);
+            (globalThis as any).__peImportStage = {
+                dllName, stage: 'descriptor', imports: functions.length, at: performance.now()
+            };
 
             // Check if this DLL is thunked (has API registry entries).
             // Video DLLs are excluded when native loading is enabled — they fall through to VFS.
@@ -1108,8 +1145,17 @@ export class PELoader {
                 const unknownFunctions = new Set<string>();
 
                 const stubInfos: { name: string, argCount?: number, stackCleanupBytes?: number, callingConvention?: string }[] = [];
-                for (const f of functions) {
+                (globalThis as any).__peImportStage = {
+                    dllName, stage: 'metadata-start', imports: functions.length, at: performance.now()
+                };
+                Logger.log(LogCategory.SYSTEM,
+                    `[PE] Resolving thunk metadata for ${dllName} (${functions.length} imports)`);
+                for (let importIndex = 0; importIndex < functions.length; importIndex++) {
+                    const f = functions[importIndex];
                     const name = f.name || `ord_${f.ordinal}`;
+                    (globalThis as any).__peImportStage = {
+                        dllName, stage: 'metadata-entry', importIndex, name, at: performance.now()
+                    };
                     let argCount: number | undefined;
                     let stackCleanupBytes: number | undefined;
                     let callingConvention: string | undefined;
@@ -1136,7 +1182,37 @@ export class PELoader {
                     stubInfos.push({ name, argCount, stackCleanupBytes, callingConvention });
                 }
 
+                Logger.log(LogCategory.SYSTEM,
+                    `[PE] Thunk metadata ready for ${dllName}: ${stubInfos.length} known, ${unknownFunctions.size} trapped`);
                 const stubDll = this.thunkGenerator.generateStubDll(dllName, stubInfos);
+                Logger.log(LogCategory.SYSTEM,
+                    `[PE] Thunk generation complete for ${dllName}: ${stubDll.exportTable.size} exports, ${stubDll.stubCode.length} bytes`);
+                (globalThis as any).__peImportStage = { dllName, stage: 'generated', at: performance.now() };
+
+                // GetTickCount/timeGetTime share a trap-free RDTSC leaf. The
+                // unified virtual TSC has an exact 2^32-Hz scale, so the guest
+                // can convert it to milliseconds without an OUT/JIT boundary.
+                if ((dllName === 'kernel32' || dllName === 'winmm') && !this.timeInlineStub
+                    && (globalThis as any).__inlineTimeEnabled === true) {
+                    try {
+                        const tmm = System.getInstance().process?.thunkMemoryManager;
+                        const readTsc = (globalThis as any).preemption?.getWasmExports?.()?.read_tsc;
+                        if (tmm && typeof readTsc === 'function') {
+                            const tsc = BigInt(readTsc());
+                            const tscMs = Number((tsc * 1000n >> 32n) & 0xffff_ffffn) >>> 0;
+                            const win32Ms = Math.floor(TimeService.getInstance().nowMs()) >>> 0;
+                            // v86 resets the architectural TSC to zero after its
+                            // virtual clock is already live. Preserve the Win32
+                            // boot-time epoch so GetTickCount/timeGetTime remain
+                            // comparable with QPC and scheduler timestamps.
+                            const epochOffsetMs = (win32Ms - tscMs) >>> 0;
+                            this.timeInlineStub = writeTimeInlineStub(
+                                tmm.stubAllocator, this.getMemory, epochOffsetMs);
+                        }
+                    } catch (e) {
+                        Logger.warn(LogCategory.SYSTEM, `[PE] Inline time stub unavailable: ${e}`);
+                    }
+                }
 
                 // One-time inline x86 stub generation for kernel32!HeapAlloc/HeapFree.
                 // Happens on first kernel32 import; cached for later DLLs' IAT patching.
@@ -1182,6 +1258,32 @@ export class PELoader {
                     }
                 }
 
+                // Trap-free uncontended Enter/LeaveCriticalSection. The stubs
+                // read the current TID from fs:[0x24] (the guest TEB), preserve
+                // all callee-saved registers, and tail-jump to the ordinary
+                // thunk for contention, waiters or malformed state.
+                if (dllName === 'kernel32' && !this.criticalSectionInlineStubs
+                    && (globalThis as any).__criticalSectionInlineEnabled === true) {
+                    const enterTrap = stubDll.exportTable.get('entercriticalsection');
+                    const leaveTrap = stubDll.exportTable.get('leavecriticalsection');
+                    if (enterTrap && leaveTrap) {
+                        try {
+                            const sys = System.getInstance();
+                            const tmm = sys.process?.thunkMemoryManager;
+                            if (tmm) {
+                                this.criticalSectionInlineStubs = writeCriticalSectionInlineStubs(
+                                    tmm.stubAllocator, this.getMemory, enterTrap, leaveTrap);
+                                sys.scheduler?.registerNonPreemptibleRange(
+                                    this.criticalSectionInlineStubs.regionBase,
+                                    this.criticalSectionInlineStubs.regionEnd);
+                            }
+                        } catch (e) {
+                            Logger.warn(LogCategory.SYSTEM,
+                                `[PE] Inline critical-section stubs unavailable: ${e}`);
+                        }
+                    }
+                }
+
                 // One-time inline x86 stub generation for the msvcrt cdecl CRT
                 // allocator pair (malloc/operator new + free/operator delete). Rides
                 // the same WASM slab arena as the kernel32 heap stubs. Generated on the
@@ -1216,25 +1318,12 @@ export class PELoader {
                 // on the first CRT-module import; the LUTs live in msvcrt and track the codepage.
                 if (PELoader.CRT_SLAB_MODULES.has(dllName) && !this.caseFoldInlineStubs
                     && !(globalThis as any).__noCaseFoldStub) {
-                    try {
-                        const sys = System.getInstance();
-                        const tmm = sys.process?.thunkMemoryManager;
-                        const msvcrt = sys.process?.getModule?.('msvcrt') as
-                            { getCaseTableAddrs?: () => { lower: number; upper: number } } | undefined;
-                        const tbl = msvcrt?.getCaseTableAddrs?.();
-                        if (tmm && tbl && tbl.lower && tbl.upper) {
-                            this.caseFoldInlineStubs = writeCaseFoldStubs(tmm.stubAllocator, this.getMemory, tbl.lower, tbl.upper);
-                        } else {
-                            Logger.warn(LogCategory.SYSTEM,
-                                `[PE] case-fold stubs skipped for ${dllName}: tmm=${!!tmm} msvcrt=${!!msvcrt} ` +
-                                `getCaseTableAddrs=${typeof msvcrt?.getCaseTableAddrs} tbl=${JSON.stringify(tbl)}`);
-                        }
-                    } catch (e) {
-                        Logger.warn(LogCategory.SYSTEM, `[PE] Inline case-fold stubs unavailable: ${e}`);
-                    }
+                    this.ensureCaseFoldInlineStubs(dllName);
                 }
 
                 // Patch IAT with stub addresses
+                (globalThis as any).__peImportStage = { dllName, stage: 'iat-start', at: performance.now() };
+                Logger.log(LogCategory.SYSTEM, `[PE] Patching ${functions.length} IAT entries for ${dllName}`);
                 for (const func of functions) {
                     const funcKey = (func.name || `ord_${func.ordinal}`).toLowerCase();
                     if (unknownFunctions.has(funcKey)) {
@@ -1266,6 +1355,19 @@ export class PELoader {
                             if (funcKey === 'tolower') stubAddress = this.caseFoldInlineStubs.tolowerStub;
                             else if (funcKey === 'toupper') stubAddress = this.caseFoldInlineStubs.toupperStub;
                         }
+                        if (dllName === 'kernel32' && this.criticalSectionInlineStubs) {
+                            if (funcKey === 'entercriticalsection') {
+                                stubAddress = this.criticalSectionInlineStubs.enterStub;
+                            } else if (funcKey === 'leavecriticalsection') {
+                                stubAddress = this.criticalSectionInlineStubs.leaveStub;
+                            }
+                        }
+                        if (this.timeInlineStub) {
+                            if ((dllName === 'kernel32' && funcKey === 'gettickcount')
+                                || (dllName === 'winmm' && funcKey === 'timegettime')) {
+                                stubAddress = this.timeInlineStub.timeStub;
+                            }
+                        }
                         if (stubAddress) {
                             this.view.setUint32(iatAddr, stubAddress, true);
                         } else {
@@ -1274,18 +1376,30 @@ export class PELoader {
                     }
                     iatAddr += 4;
                 }
+                (globalThis as any).__peImportStage = { dllName, stage: 'iat-complete', at: performance.now() };
+                Logger.log(LogCategory.SYSTEM, `[PE] IAT patch complete for ${dllName}`);
 
                 // Load stub code into memory (skip if all stubs were reused)
+                (globalThis as any).__peImportStage = {
+                    dllName, stage: 'materialize-check', bytes: stubDll.stubCode.length, at: performance.now()
+                };
                 if (stubDll.stubCode.length > 0) {
+                    (globalThis as any).__peImportStage = { dllName, stage: 'materialize-start', at: performance.now() };
+                    Logger.log(LogCategory.SYSTEM,
+                        `[PE] Materializing ${dllName} stubs at 0x${stubDll.baseAddress.toString(16)}`);
                     try {
                         const system = System.getInstance();
                         if (system.process?.memory) {
+                            (globalThis as any).__peImportStage = { dllName, stage: 'alloc-at', at: performance.now() };
                             system.process.memory.allocAt(stubDll.baseAddress, stubDll.stubCode.length);
                         }
                     } catch (e) {
                         // If already reserved, that's fine
                     }
+                    (globalThis as any).__peImportStage = { dllName, stage: 'write-start', at: performance.now() };
+                    Logger.log(LogCategory.SYSTEM, `[PE] Writing ${dllName} stub bytes`);
                     this.memory.set(stubDll.stubCode, stubDll.baseAddress);
+                    (globalThis as any).__peImportStage = { dllName, stage: 'write-complete', at: performance.now() };
                     Logger.log(LogCategory.SYSTEM, `[PE] Stub DLL for ${dllName} written at 0x${stubDll.baseAddress.toString(16)}, size: ${stubDll.stubCode.length}`);
                 } else {
                     Logger.verbose(LogCategory.SYSTEM, `[PE] All stubs for ${dllName} reused from existing (no new code written)`);
@@ -1347,6 +1461,8 @@ export class PELoader {
                 if (dllModule) {
                     isRealDll = true;
 
+                    this.ensureCaseFoldInlineStubs(dllName);
+
                     // Partial HLE: this real DLL ships a broken CRT (Borland cw3220's stdio
                     // does no file I/O in HLE). Route those exports to VFS-backed thunks while
                     // keeping the rest of the DLL native. Stub addresses override the real
@@ -1364,6 +1480,20 @@ export class PELoader {
                     // Patch IAT with real export addresses
                     for (const func of functions) {
                         const funcName = func.name?.toLowerCase() || `ord_${func.ordinal}`;
+                        if (this.caseFoldInlineStubs && PELoader.CRT_SLAB_MODULES.has(dllName)) {
+                            const caseFoldAddr = funcName === 'tolower'
+                                ? this.caseFoldInlineStubs.tolowerStub
+                                : funcName === 'toupper'
+                                    ? this.caseFoldInlineStubs.toupperStub
+                                    : 0;
+                            if (caseFoldAddr !== 0) {
+                                this.view.setUint32(iatAddr, caseFoldAddr, true);
+                                Logger.verbose(LogCategory.SYSTEM,
+                                    `[PE] real-CRT case fold: ${dllName}:${funcName} -> inline 0x${caseFoldAddr.toString(16)}`);
+                                iatAddr += 4;
+                                continue;
+                            }
+                        }
                         if (overrideStubs) {
                             const stubAddr = overrideStubs.get(funcName);
                             if (stubAddr !== undefined) {

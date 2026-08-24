@@ -150,6 +150,37 @@ export function assignPendingClientMessage(win: WindowInfo): void {
 export const windows: Map<number, WindowInfo> = new Map();
 export let nextWindowId = 1;
 
+/** Keep the Win32 hit-test/client geometry coherent with an exclusive D3D
+ *  backbuffer. Real Direct3D owns the full-screen device window; in the browser
+ *  the host canvas was resized independently, which could leave an 800x600
+ *  WindowObject in front of a 1024x768 image and make its bottom/right UI
+ *  unreachable. Both user32 stores are authoritative consumers, so update them
+ *  together. */
+export function syncExclusiveDisplayWindow(hwnd: number, width: number, height: number): boolean {
+    const handle = hwnd >>> 0;
+    const w = width >>> 0;
+    const h = height >>> 0;
+    if (!handle || !w || !h) return false;
+
+    const win = windows.get(handle);
+    const wmWin = System.getInstance().windowManager.getWindow(handle);
+    if (!win && !wmWin) return false;
+
+    if (win) {
+        win.x = 0;
+        win.y = 0;
+        win.width = w;
+        win.height = h;
+    }
+    if (wmWin) {
+        wmWin.rect.x = 0;
+        wmWin.rect.y = 0;
+        wmWin.rect.w = w;
+        wmWin.rect.h = h;
+    }
+    return true;
+}
+
 /** HWND_TOP / HWND_BOTTOM sentinels for child Z-order (unsigned as guest passes them). */
 const HWND_TOP = 0;
 const HWND_BOTTOM = 1;

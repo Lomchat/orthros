@@ -400,6 +400,12 @@ export function registerStateCommands(svc: HarnessService): void {
                 ebp: hx(f.regs.ebp), esi: hx(f.regs.esi), edi: hx(f.regs.edi),
             },
             recentCalls: f.recentCalls,
+            recentCallDetails: (f.recentCallDetails ?? []).map((c) => ({
+                ...c,
+                esp: hx(c.esp),
+                retAddrBefore: hx(c.retAddrBefore),
+            })),
+            schedulerTrace: f.schedulerTrace ?? [],
             gameEsp: hx(f.gameEsp),
             stackDump: f.stackDump.map((w, i) => `[+0x${(i * 4).toString(16)}] ${hx(w)}`),
         }));

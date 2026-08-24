@@ -29,6 +29,9 @@ export const imm32Module: ModuleDescriptor = {
         makeFunc("ImmSetOpenStatus", 2),
         makeFunc("ImmGetContext", 1),
         makeFunc("ImmReleaseContext", 2),
+        makeFunc("ImmCreateContext", 0),
+        makeFunc("ImmDestroyContext", 1),
+        makeFunc("ImmGetProperty", 2),
 
         makeFunc("ImmGetCompositionStringA", 4),
         makeFunc("ImmGetCompositionStringW", 4),
@@ -38,6 +41,7 @@ export const imm32Module: ModuleDescriptor = {
         makeFunc("ImmGetCandidateListA", 4),
         makeFunc("ImmGetCandidateListW", 4),
         makeFunc("ImmGetCandidateListCountA", 2),
+        makeFunc("ImmGetCandidateListCountW", 2),
 
         makeFunc("ImmGetConversionStatus", 3),
         makeFunc("ImmSetConversionStatus", 3),

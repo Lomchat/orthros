@@ -78,6 +78,8 @@ function harnessHealthPlugin(): Plugin {
 // loader (SyncHttpRangeSource) works — a server that ignores Range is exactly what breaks it.
 function serveWgbFromDisk(): Plugin {
   const ROUTE = "/__wgb/";
+  const BFME_ROUTE = "/apps/bfme.wgb";
+  const defaultBfmePath = path.resolve(__dirname, "..", "..", "data", "bfme-1.03-fr.wgb");
   return {
     name: "serve-wgb-from-disk",
     apply: "serve",
@@ -85,11 +87,17 @@ function serveWgbFromDisk(): Plugin {
       // Registered in the body (not a returned post-hook) so it runs BEFORE Vite's
       // internal static/SPA-fallback middlewares and reliably intercepts the route.
       server.middlewares.use((req, res, next) => {
-        if (!req.url || !req.url.startsWith(ROUTE)) return next();
+        if (!req.url) return next();
+        const requestPath = req.url.split("?", 1)[0];
+        const isBfme = requestPath === BFME_ROUTE;
+        if (!isBfme && !req.url.startsWith(ROUTE)) return next();
         for (const [k, v] of Object.entries(coopCoepHeaders)) res.setHeader(k, v);
-        // Caller supplies the absolute disk path via ?path= (URLSearchParams decodes it).
+        // BFME has a stable, player-facing URL. Development defaults to the repository
+        // data bundle; deployments can override it with BFME_WGB_PATH.
         const qi = req.url.indexOf("?");
-        const abs = qi >= 0 ? new URLSearchParams(req.url.slice(qi + 1)).get("path") : null;
+        const abs = isBfme
+          ? (process.env.BFME_WGB_PATH || defaultBfmePath)
+          : (qi >= 0 ? new URLSearchParams(req.url.slice(qi + 1)).get("path") : null);
         if (!abs) { res.statusCode = 400; res.end("missing ?path=<absolute .wgb path>"); return; }
         const file = path.resolve(abs);
         if (!file.toLowerCase().endsWith(".wgb")) { res.statusCode = 403; res.end("only .wgb files"); return; }

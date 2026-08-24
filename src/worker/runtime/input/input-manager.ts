@@ -1102,6 +1102,21 @@ export class InputManager {
         Atomics.add(view, INPUT_INDEX.seq, 1);
     }
 
+    /** Update the absolute cursor and the raw DirectInput accumulators together.
+     *  Browser pointer events maintain both views of the same physical motion;
+     *  harness injection must do the same or games that draw/hit-test their own
+     *  cursor from DIMOUSESTATE see a stationary pointer while Win32 sees it move. */
+    private writeInjectedMousePosition(view: Int32Array, x: number, y: number): void {
+        const nextX = x | 0;
+        const nextY = y | 0;
+        const dx = (nextX - view[INPUT_INDEX.mouseX]) | 0;
+        const dy = (nextY - view[INPUT_INDEX.mouseY]) | 0;
+        view[INPUT_INDEX.mouseX] = nextX;
+        view[INPUT_INDEX.mouseY] = nextY;
+        if (dx !== 0) Atomics.add(view, INPUT_INDEX.dinputDX, dx);
+        if (dy !== 0) Atomics.add(view, INPUT_INDEX.dinputDY, dy);
+    }
+
     injectClickAtScreen(screenX: number, screenY: number): boolean {
         const view = this.inputView;
         if (!view) return false;
@@ -1109,8 +1124,7 @@ export class InputManager {
         const y = screenY | 0;
         const step = (buttons: number): void => {
             this.beginInputWrite(view);
-            view[INPUT_INDEX.mouseX] = x;
-            view[INPUT_INDEX.mouseY] = y;
+            this.writeInjectedMousePosition(view, x, y);
             view[INPUT_INDEX.mouseInside] = 1;
             view[INPUT_INDEX.buttons] = buttons;
             this.endInputWrite(view);
@@ -1140,8 +1154,7 @@ export class InputManager {
         const view = this.inputView;
         if (!view) return false;
         this.beginInputWrite(view);
-        view[INPUT_INDEX.mouseX] = screenX | 0;
-        view[INPUT_INDEX.mouseY] = screenY | 0;
+        this.writeInjectedMousePosition(view, screenX, screenY);
         view[INPUT_INDEX.mouseInside] = 1;
         this.endInputWrite(view);
         this.poll(true);
@@ -1154,8 +1167,7 @@ export class InputManager {
         if (!view) return false;
         const mask = this.mouseMaskFor(button);
         this.beginInputWrite(view);
-        view[INPUT_INDEX.mouseX] = screenX | 0;
-        view[INPUT_INDEX.mouseY] = screenY | 0;
+        this.writeInjectedMousePosition(view, screenX, screenY);
         view[INPUT_INDEX.mouseInside] = 1;
         view[INPUT_INDEX.buttons] = down ? (view[INPUT_INDEX.buttons] | mask) : (view[INPUT_INDEX.buttons] & ~mask);
         this.endInputWrite(view);
@@ -1183,8 +1195,7 @@ export class InputManager {
         const view = this.inputView;
         if (!view) return false;
         this.beginInputWrite(view);
-        view[INPUT_INDEX.mouseX] = screenX | 0;
-        view[INPUT_INDEX.mouseY] = screenY | 0;
+        this.writeInjectedMousePosition(view, screenX, screenY);
         view[INPUT_INDEX.mouseInside] = 1;
         Atomics.store(view, INPUT_INDEX.mouseWheel, delta | 0); // poll() consumes + resets it
         this.endInputWrite(view);
