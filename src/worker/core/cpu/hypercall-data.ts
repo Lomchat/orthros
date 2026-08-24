@@ -81,7 +81,7 @@ const HANDLER_SCREEN_TO_CLIENT = 14;
 const HANDLER_GET_CURSOR_POS = 15;
 const HANDLER_PEEK_MESSAGE = 16;
 // Math/FPU hypercalls (Tier 2)
-const HANDLER_FTOL = 17;
+export const HANDLER_FTOL = 17;
 const HANDLER_CI_SIN = 18;
 const HANDLER_CI_COS = 19;
 const HANDLER_CI_TAN = 20;
@@ -171,6 +171,16 @@ export const HANDLER_BFME_STRING_LOWER = 136;
 export const HANDLER_BFME_STRING_RELEASE = 137;
 export const HANDLER_BFME_STRING_COPY = 138;
 export const HANDLER_BFME_STRING_ASSIGN = 139;
+/** BFME 1.03 stringbase-key lookup through the node+0x60 chain. */
+export const HANDLER_BFME_STRING_FIND = 140;
+export const HANDLER_BFME_MATRIX_PUSH = 141;
+export const HANDLER_BFME_MATRIX_POP = 142;
+/** BFME 1.03 2D affine-matrix composition leaf. */
+export const HANDLER_BFME_MATRIX_MULTIPLY = 143;
+/** BFME 1.03 24-byte transform-state stack push. */
+export const HANDLER_BFME_TRANSFORM_PUSH = 144;
+export const HANDLER_BFME_TRANSFORM_POP = 145;
+export const HANDLER_BFME_MATRIX_ADJUST = 146;
 
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;

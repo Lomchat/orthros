@@ -101,6 +101,12 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0x8B && b1 !== undefined && (b1 & 0xC7) === 0x44 && bytes[i + 2] === 0x24) {
             i += 4; continue;
         }
+        // BFME transform pop: mov edx,[ecx+disp32]. The displacement is data,
+        // not a code-relative address, so relocating this exact form is safe.
+        if (b === 0x8B && b1 === 0x91) { i += 6; continue; }
+        // BFME matrix adjust: fld dword [eax]. Exact register-indirect x87 load,
+        // likewise independent of the instruction's address.
+        if (b === 0xD9 && b1 === 0x00) { i += 2; continue; }
         // mov eax, moffs32 (absolute — position-independent)
         if (b === 0xA1) { i += 5; continue; }
         // SEH prologue: mov eax, fs:[imm32]

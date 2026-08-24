@@ -291,9 +291,29 @@ matched and no memory fault was recorded.
 An uncontended-lock hook at `0x00c2c760` was rejected after a hot in-game A/B:
 49.04 ms/frame with the hook versus 41.03 ms/frame immediately after unpatching
 it. It is not in production. The remaining profile is led by the static x87
-helper at `0x00df6e38` and v86 execution; any future `_ftol2_sse` replacement
-must preserve F80 edge cases under differential validation before it can be
-considered safe.
+helper at `0x00df6e38` and v86 execution.
+
+That residual profile now drives eight additional exact-signature BFME hooks.
+The `stringbase<char>` node search at `0x008a0270` walks its chain directly in
+WASM. `_ftol2_sse` at `0x00df6e38` uses the corrected generic x87 handler: it
+truncates and pops ST(0), returns EDX:EAX, and produces the x87 indefinite
+`0x8000000000000000` for NaN/overflow. Standalone Rust tests cover rounding
+modes and invalid values, while the TypeScript fallback tests pin both return
+halves.
+
+Matrix leaves at `0x00cd2b50`, `0x00cd2b80`, `0x00cd2d10`, `0x00cd2c80`,
+`0x00cd2cc0`, and `0x00cd2bb0` now handle the 32-byte matrix push/pop,
+six-float affine composition, 24-byte transform push/pop, and component-wise
+matrix adjustment in WASM. They snapshot inputs before writing so aliased output
+keeps the original semantics. For the pop/adjust leaves that invoke an update
+callback, a short guest wrapper calls WASM first and then preserves the exact
+callback and return convention.
+
+In the final ten-second trace all six hot entries execute one guest instruction
+for roughly 31,600 calls each, and page `0xcd2` falls to 3.0 weighted guest
+instructions per block. All thirteen BFME hooks are active (`confidence: 156`,
+none missing). A clean final title window measures 33.00 ms/frame (30.3 FPS),
+including 32.11 ms v86, 0.82 ms thunks, and 0.24 ms Present, with no guest fault.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is

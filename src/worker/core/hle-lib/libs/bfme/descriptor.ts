@@ -3,8 +3,16 @@ import {
     HANDLER_BFME_FOLD33_HASH,
     HANDLER_BFME_STRING_ASSIGN,
     HANDLER_BFME_STRING_COPY,
+    HANDLER_BFME_STRING_FIND,
     HANDLER_BFME_STRING_LOWER,
     HANDLER_BFME_STRING_RELEASE,
+    HANDLER_BFME_MATRIX_POP,
+    HANDLER_BFME_MATRIX_PUSH,
+    HANDLER_BFME_MATRIX_MULTIPLY,
+    HANDLER_BFME_TRANSFORM_PUSH,
+    HANDLER_BFME_TRANSFORM_POP,
+    HANDLER_BFME_MATRIX_ADJUST,
+    HANDLER_FTOL,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -19,6 +27,16 @@ import {
     bfmeStringCopyHandler,
     bfmeStringReleaseHandler,
 } from './string-ref';
+import { bfmeStringFindHandler } from './string-find';
+import { bfmeFtol2SseHandler } from './ftol2';
+import {
+    bfmeMatrixPopHandler,
+    bfmeMatrixPushHandler,
+    bfmeTransformPopHandler,
+    bfmeTransformPushHandler,
+} from './matrix-stack';
+import { bfmeMatrixAdjustHandler, bfmeMatrixMultiplyHandler } from './matrix-multiply';
+import { buildMatrixAdjustWrapper, buildTransformPopWrapper } from './matrix-callback-wrappers';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -68,6 +86,80 @@ const STRING_ASSIGN_PATTERN = hexBytes(
     '3301ff25748e3501c20400',
 );
 
+// lotrbfme.exe 1.03 FR @ 0x008a0270. This thiscall leaf searches the
+// container root at +0x2c and follows the node+0x60 chain until the
+// stringbase<char> key at node+0x0c matches its sole argument.
+const STRING_FIND_PATTERN = hexBytes(
+    '8b412c 85c0 53 55 56 57 746a 8b4c2414 8b39 897c2414 eb09 ' +
+    '8b7c2414 eb03 8d4900 85ff 7409 0fb76f04 83c708 eb07 33ed ' +
+    'bf8b380701 8b480c 85c9 7406 0fb75904 eb02 33db 85c9 8d7108 ' +
+    '7505 be8b380701 3bdd 8bcb 7c02 8bcd 33d2 f3a6 7405 1bd2 ' +
+    '83daff 85d2 7508 2bdd 8bd3 85d2 7409 8b4060 85c0 75a2 ' +
+    '33c0 5f 5e 5d 5b c20400',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00df6e38 — MSVC `_ftol2_sse`. Despite its
+// historical name this build consumes ST(0), truncates it toward zero to a
+// signed 64-bit integer, pops the x87 value and returns EDX:EAX. The exact
+// whole-function signature prevents this title-specific hook from matching a
+// CRT variant with different exceptional-value semantics.
+const FTOL2_SSE_PATTERN = hexBytes(
+    '55 8bec 83ec20 83e4f0 d9c0 d9542418 df7c2410 df6c2410 ' +
+    '8b542418 8b442410 85c0 743c dee9 85d2 791e d91c24 8b0c24 ' +
+    '81f100000080 81c1ffffff7f 83d000 8b542414 83d200 eb2c ' +
+    'd91c24 8b0c24 81c1ffffff7f 83d800 8b542414 83da00 eb14 ' +
+    '8b542414 f7c2ffffff7f 75b8 d95c2418 d95c2418 c9 c3',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00cd2b50 / 0x00cd2b80. These leaves push and
+// pop the current 32-byte matrix state from the object's inline stack. Their
+// REP MOVSD instructions force JIT exits even though ECX is always eight.
+const MATRIX_PUSH_PATTERN = hexBytes(
+    '8bc1 8b88b8030000 56 c1e105 57 8d7c0138 b908000000 8bf0 f3a5 ' +
+    '8b88b8030000 41 5f 8988b8030000 5e c3',
+);
+const MATRIX_POP_PATTERN = hexBytes(
+    '56 57 8bf9 8bb7b8030000 4e 8bc6 89b7b8030000 c1e005 ' +
+    '8d743838 b908000000 f3a5 5f 5e c3',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00cd2d10. This 2D affine-matrix composition
+// snapshots two six-float inputs, computes six x87 results and writes a third
+// six-float matrix. It was the hottest remaining long block after push/pop HLE.
+const MATRIX_MULTIPLY_PATTERN = hexBytes(
+    '83ec30 8b442434 8b08 8b5004 890c24 8b4808 89542404 8b500c ' +
+    '894c2408 d9442408 8b4810 8954240c 8b5014 8b442438 894c2410 ' +
+    '8b08 89542414 8b5004 8954241c d84c241c d90424 894c2418 ' +
+    'd84c2418 8b4808 8b500c 894c2420 8b4810 dec1 89542424 ' +
+    '8b5014 8b44243c d918 8954242c d944240c 894c2428 d84c241c ' +
+    'd9442404 d84c2418 dec1 d95804 d9442424 d84c2408 d9442420 ' +
+    'd80c24 dec1 d95808 d9442424 d84c240c d9442420 d84c2404 ' +
+    'dec1 d9580c d944242c d84c2408 d9442428 d80c24 dec1 ' +
+    'd8442410 d95810 d944242c d84c240c d9442428 d84c2404 ' +
+    'dec1 d8442414 d95814 83c430 c3',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00cd2c80. Save the current six-float transform
+// from object+0x20 into the 24-byte inline stack and increment its depth.
+const TRANSFORM_PUSH_PATTERN = hexBytes(
+    '8b81bc030000 8d0440 56 8d84c138020000 8d5120 ' +
+    '8b32 8930 8b7204 897004 8b7208 897008 8b720c 89700c ' +
+    '8b7210 897010 8b5214 895014 ff81bc030000 5e c3',
+);
+const TRANSFORM_POP_PATTERN = hexBytes(
+    '8b91bc030000 4a 8991bc030000 8bc2 8d5120 8d0440 ' +
+    '8d8cc138020000 56 8b31 8bc2 8930 8b7104 897004 ' +
+    '8b7108 897008 8b710c 89700c 8b7110 897010 8b4914 ' +
+    '52 894814 ff15a0783301 83c404 5e c3',
+);
+const MATRIX_ADJUST_PATTERN = hexBytes(
+    '8b442404 d900 51 d809 d919 d94004 d84904 d95904 ' +
+    'd94008 d84908 d95908 d9400c d8490c d9590c ' +
+    'd94010 d84110 d95910 d94014 d84114 d95914 ' +
+    'd94018 d84118 d95918 d9401c d8411c d9591c ' +
+    'ff15a4783301 59 c20400',
+);
+
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
     displayName: 'BFME 1.03 hot inner loops',
@@ -98,6 +190,38 @@ export const bfmeDescriptor: LibDescriptor = {
         string_assign: {
             kind: 'bytes', pattern: STRING_ASSIGN_PATTERN,
             mask: 'x'.repeat(STRING_ASSIGN_PATTERN.length), section: '.text', weight: 12,
+        },
+        string_find: {
+            kind: 'bytes', pattern: STRING_FIND_PATTERN,
+            mask: 'x'.repeat(STRING_FIND_PATTERN.length), section: '.text', weight: 12,
+        },
+        ftol2_sse: {
+            kind: 'bytes', pattern: FTOL2_SSE_PATTERN,
+            mask: 'x'.repeat(FTOL2_SSE_PATTERN.length), section: '.text', weight: 12,
+        },
+        matrix_push: {
+            kind: 'bytes', pattern: MATRIX_PUSH_PATTERN,
+            mask: 'x'.repeat(MATRIX_PUSH_PATTERN.length), section: '.text', weight: 12,
+        },
+        matrix_pop: {
+            kind: 'bytes', pattern: MATRIX_POP_PATTERN,
+            mask: 'x'.repeat(MATRIX_POP_PATTERN.length), section: '.text', weight: 12,
+        },
+        matrix_multiply: {
+            kind: 'bytes', pattern: MATRIX_MULTIPLY_PATTERN,
+            mask: 'x'.repeat(MATRIX_MULTIPLY_PATTERN.length), section: '.text', weight: 12,
+        },
+        transform_push: {
+            kind: 'bytes', pattern: TRANSFORM_PUSH_PATTERN,
+            mask: 'x'.repeat(TRANSFORM_PUSH_PATTERN.length), section: '.text', weight: 12,
+        },
+        transform_pop: {
+            kind: 'bytes', pattern: TRANSFORM_POP_PATTERN,
+            mask: 'x'.repeat(TRANSFORM_POP_PATTERN.length), section: '.text', weight: 12,
+        },
+        matrix_adjust: {
+            kind: 'bytes', pattern: MATRIX_ADJUST_PATTERN,
+            mask: 'x'.repeat(MATRIX_ADJUST_PATTERN.length), section: '.text', weight: 12,
         },
     },
     functions: {
@@ -183,11 +307,103 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_STRING_ASSIGN,
             entryFilter: buildBfmeStringAssignFilter,
         },
+        string_find: {
+            name: 'string_find',
+            entryProbe: {
+                kind: 'prologue', pattern: STRING_FIND_PATTERN,
+                mask: 'x'.repeat(STRING_FIND_PATTERN.length), section: '.text',
+            },
+            // __thiscall with one callee-cleaned stringbase object pointer.
+            // ECX is the container and survives the generated OUT stub.
+            callingConvention: 'stdcall',
+            argCount: 1,
+            required: true,
+            hypercallHandlerId: HANDLER_BFME_STRING_FIND,
+        },
+        ftol2_sse: {
+            name: 'ftol2_sse',
+            entryProbe: {
+                kind: 'prologue', pattern: FTOL2_SSE_PATTERN,
+                mask: 'x'.repeat(FTOL2_SSE_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl',
+            argCount: 0,
+            required: true,
+            hypercallHandlerId: HANDLER_FTOL,
+        },
+        matrix_push: {
+            name: 'matrix_push',
+            entryProbe: {
+                kind: 'prologue', pattern: MATRIX_PUSH_PATTERN,
+                mask: 'x'.repeat(MATRIX_PUSH_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            hypercallHandlerId: HANDLER_BFME_MATRIX_PUSH,
+        },
+        matrix_pop: {
+            name: 'matrix_pop',
+            entryProbe: {
+                kind: 'prologue', pattern: MATRIX_POP_PATTERN,
+                mask: 'x'.repeat(MATRIX_POP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            hypercallHandlerId: HANDLER_BFME_MATRIX_POP,
+        },
+        matrix_multiply: {
+            name: 'matrix_multiply',
+            entryProbe: {
+                kind: 'prologue', pattern: MATRIX_MULTIPLY_PATTERN,
+                mask: 'x'.repeat(MATRIX_MULTIPLY_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: true,
+            hypercallHandlerId: HANDLER_BFME_MATRIX_MULTIPLY,
+        },
+        transform_push: {
+            name: 'transform_push',
+            entryProbe: {
+                kind: 'prologue', pattern: TRANSFORM_PUSH_PATTERN,
+                mask: 'x'.repeat(TRANSFORM_PUSH_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            hypercallHandlerId: HANDLER_BFME_TRANSFORM_PUSH,
+        },
+        transform_pop: {
+            name: 'transform_pop',
+            entryProbe: {
+                kind: 'prologue', pattern: TRANSFORM_POP_PATTERN,
+                mask: 'x'.repeat(TRANSFORM_POP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_TRANSFORM_POP,
+            entryFilter: buildTransformPopWrapper,
+        },
+        matrix_adjust: {
+            name: 'matrix_adjust',
+            entryProbe: {
+                kind: 'prologue', pattern: MATRIX_ADJUST_PATTERN,
+                mask: 'x'.repeat(MATRIX_ADJUST_PATTERN.length), section: '.text',
+            },
+            // The wrapper copies the sole original argument for a cdecl stub,
+            // retains the update callback, then performs the original RET 4.
+            callingConvention: 'cdecl', argCount: 1, required: true,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_MATRIX_ADJUST,
+            entryFilter: buildMatrixAdjustWrapper,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
         string_release: bfmeStringReleaseHandler,
         string_copy: bfmeStringCopyHandler,
         string_assign: bfmeStringAssignHandler,
+        string_find: bfmeStringFindHandler,
+        ftol2_sse: bfmeFtol2SseHandler,
+        matrix_push: bfmeMatrixPushHandler,
+        matrix_pop: bfmeMatrixPopHandler,
+        matrix_multiply: bfmeMatrixMultiplyHandler,
+        transform_push: bfmeTransformPushHandler,
+        transform_pop: bfmeTransformPopHandler,
+        matrix_adjust: bfmeMatrixAdjustHandler,
     },
 };
