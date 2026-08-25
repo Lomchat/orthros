@@ -467,6 +467,27 @@ makes the 4.3% total frame-time change a non-strict cross-boot comparison, but
 the 0.73 ms thunk reduction and vanished buckets directly attribute the retained
 gain. Shadows remained exact and the guest-fault list stayed empty.
 
+The retained source was then rebuilt and deployed as
+`emulator.worker-Cxnvj1l4.js`. A fresh Chrome profile traversed the menu, full
+loading sequence, and a new skirmish with an AI player on that exact worker.
+Warm 120-frame windows initially measured 33.63–34.08 ms/frame (29.3–29.7 FPS),
+with a recent frame at 32.96 ms / 30.3 FPS. The hot trace was dominated by the
+engine clock wait at `0x00505750`, but four of 120 frames still reached as high
+as 44.02 ms almost entirely in v86. As the populated simulation evolved, a later
+window reached 36.77 ms / 27.2 FPS. The clean deployment therefore reaches the
+30 FPS engine ceiling on ordinary warm frames, but does not yet prove a stable
+30 FPS throughout an evolving populated match.
+
+Two more reversible guest-code candidates were rejected during that run. The
+constant `_level%d` call site at `0x00cc5016` executed only 462 times in ten
+seconds and then became cold, so specializing it could not affect steady-state
+FPS. The AABB transform at `0x00cd71c0` ran about 4,000 times/s and was temporarily
+replaced by a 622-byte SSE2 implementation in an unused code cave. Its first
+frame was fast, but the hot window regressed to 38.81 ms / 25.8 FPS. The original
+eight entry bytes were restored, the JIT cache was rebuilt, and no guest fault
+was observed. Neither experiment is present in the retained source or deployed
+bundle.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
 one fresh worker boot followed by a stable capture from the same real player
