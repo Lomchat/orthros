@@ -3,7 +3,6 @@ import {
     HANDLER_BFME_FOLD33_HASH,
     HANDLER_BFME_STRING_ASSIGN,
     HANDLER_BFME_STRING_COPY,
-    HANDLER_BFME_STRING_FIND,
     HANDLER_BFME_STRING_LOWER,
     HANDLER_BFME_STRING_RELEASE,
     HANDLER_BFME_MATRIX_POP,
@@ -12,7 +11,6 @@ import {
     HANDLER_BFME_TRANSFORM_PUSH,
     HANDLER_BFME_TRANSFORM_POP,
     HANDLER_BFME_MATRIX_ADJUST,
-    HANDLER_FTOL,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -27,8 +25,6 @@ import {
     bfmeStringCopyHandler,
     bfmeStringReleaseHandler,
 } from './string-ref';
-import { bfmeStringFindHandler } from './string-find';
-import { bfmeFtol2SseHandler } from './ftol2';
 import {
     bfmeMatrixPopHandler,
     bfmeMatrixPushHandler,
@@ -37,6 +33,11 @@ import {
 } from './matrix-stack';
 import { bfmeMatrixAdjustHandler, bfmeMatrixMultiplyHandler } from './matrix-multiply';
 import { buildMatrixAdjustWrapper, buildTransformPopWrapper } from './matrix-callback-wrappers';
+import {
+    bfmeSmallPoolUnreachableHandler,
+    buildBfmeSmallPoolAllocInline,
+    buildBfmeSmallPoolFreeInline,
+} from './small-pool-inline';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -86,29 +87,21 @@ const STRING_ASSIGN_PATTERN = hexBytes(
     '3301ff25748e3501c20400',
 );
 
-// lotrbfme.exe 1.03 FR @ 0x008a0270. This thiscall leaf searches the
-// container root at +0x2c and follows the node+0x60 chain until the
-// stringbase<char> key at node+0x0c matches its sole argument.
-const STRING_FIND_PATTERN = hexBytes(
-    '8b412c 85c0 53 55 56 57 746a 8b4c2414 8b39 897c2414 eb09 ' +
-    '8b7c2414 eb03 8d4900 85ff 7409 0fb76f04 83c708 eb07 33ed ' +
-    'bf8b380701 8b480c 85c9 7406 0fb75904 eb02 33db 85c9 8d7108 ' +
-    '7505 be8b380701 3bdd 8bcb 7c02 8bcd 33d2 f3a6 7405 1bd2 ' +
-    '83daff 85d2 7508 2bdd 8bd3 85d2 7409 8b4060 85c0 75a2 ' +
-    '33c0 5f 5e 5d 5b c20400',
+// STLPort's hot eight-byte-class pool at 0x00c2e540/0x00c2e5f0. The original
+// wraps every freelist pop/push in a generic spin lock and SEH frame. The
+// generated guest-native wrappers preserve the lock word and fall back to the
+// exact original allocator when a class is empty or temporarily busy.
+const SMALL_POOL_ALLOC_PATTERN = hexBytes(
+    '558bec6aff687849050164a100000000506489250000000083ec148b450883e801' +
+    'c1e8038d0c85c0b13001894df0ba0100000085d2740ab954b23001e88ff4ffff' +
+    'c745fc000000008b45f08b08894dec837dec00740c8b55f08b45ec8b08890aeb0f' +
+    '8b550852e875e3ffff83c4048945ec8b45ec8945e4c745fcffffffffb901000000' +
+    '85c9740ab954b23001e87fc7ffff8b45e48b4df464890d000000008be55dc3',
 );
-
-// lotrbfme.exe 1.03 FR @ 0x00df6e38 — MSVC `_ftol2_sse`. Despite its
-// historical name this build consumes ST(0), truncates it toward zero to a
-// signed 64-bit integer, pops the x87 value and returns EDX:EAX. The exact
-// whole-function signature prevents this title-specific hook from matching a
-// CRT variant with different exceptional-value semantics.
-const FTOL2_SSE_PATTERN = hexBytes(
-    '55 8bec 83ec20 83e4f0 d9c0 d9542418 df7c2410 df6c2410 ' +
-    '8b542418 8b442410 85c0 743c dee9 85d2 791e d91c24 8b0c24 ' +
-    '81f100000080 81c1ffffff7f 83d000 8b542414 83d200 eb2c ' +
-    'd91c24 8b0c24 81c1ffffff7f 83d800 8b542414 83da00 eb14 ' +
-    '8b542414 f7c2ffffff7f 75b8 d95c2418 d95c2418 c9 c3',
+const SMALL_POOL_FREE_PATTERN = hexBytes(
+    '558bec83ec0c8b450c83e801c1e8038d0c85c0b13001894dfcba0100000085d2' +
+    '740ab954b23001e8f4f3ffff8b45088b4dfc8b1189108b45fc8b4d088908ba01' +
+    '00000085d2740ab954b23001e80fc7ffff8be55dc3',
 );
 
 // lotrbfme.exe 1.03 FR @ 0x00cd2b50 / 0x00cd2b80. These leaves push and
@@ -191,13 +184,13 @@ export const bfmeDescriptor: LibDescriptor = {
             kind: 'bytes', pattern: STRING_ASSIGN_PATTERN,
             mask: 'x'.repeat(STRING_ASSIGN_PATTERN.length), section: '.text', weight: 12,
         },
-        string_find: {
-            kind: 'bytes', pattern: STRING_FIND_PATTERN,
-            mask: 'x'.repeat(STRING_FIND_PATTERN.length), section: '.text', weight: 12,
+        small_pool_alloc: {
+            kind: 'bytes', pattern: SMALL_POOL_ALLOC_PATTERN,
+            mask: 'x'.repeat(SMALL_POOL_ALLOC_PATTERN.length), section: '.text', weight: 12,
         },
-        ftol2_sse: {
-            kind: 'bytes', pattern: FTOL2_SSE_PATTERN,
-            mask: 'x'.repeat(FTOL2_SSE_PATTERN.length), section: '.text', weight: 12,
+        small_pool_free: {
+            kind: 'bytes', pattern: SMALL_POOL_FREE_PATTERN,
+            mask: 'x'.repeat(SMALL_POOL_FREE_PATTERN.length), section: '.text', weight: 12,
         },
         matrix_push: {
             kind: 'bytes', pattern: MATRIX_PUSH_PATTERN,
@@ -307,29 +300,27 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_STRING_ASSIGN,
             entryFilter: buildBfmeStringAssignFilter,
         },
-        string_find: {
-            name: 'string_find',
+        small_pool_alloc: {
+            name: 'small_pool_alloc',
             entryProbe: {
-                kind: 'prologue', pattern: STRING_FIND_PATTERN,
-                mask: 'x'.repeat(STRING_FIND_PATTERN.length), section: '.text',
+                kind: 'prologue', pattern: SMALL_POOL_ALLOC_PATTERN,
+                mask: 'x'.repeat(SMALL_POOL_ALLOC_PATTERN.length), section: '.text',
             },
-            // __thiscall with one callee-cleaned stringbase object pointer.
-            // ECX is the container and survives the generated OUT stub.
-            callingConvention: 'stdcall',
-            argCount: 1,
-            required: true,
-            hypercallHandlerId: HANDLER_BFME_STRING_FIND,
+            callingConvention: 'cdecl', argCount: 1, required: true,
+            // push ebp; mov ebp,esp; push -1; push SEH-handler
+            prologueLen: 10,
+            entryFilter: buildBfmeSmallPoolAllocInline,
         },
-        ftol2_sse: {
-            name: 'ftol2_sse',
+        small_pool_free: {
+            name: 'small_pool_free',
             entryProbe: {
-                kind: 'prologue', pattern: FTOL2_SSE_PATTERN,
-                mask: 'x'.repeat(FTOL2_SSE_PATTERN.length), section: '.text',
+                kind: 'prologue', pattern: SMALL_POOL_FREE_PATTERN,
+                mask: 'x'.repeat(SMALL_POOL_FREE_PATTERN.length), section: '.text',
             },
-            callingConvention: 'cdecl',
-            argCount: 0,
-            required: true,
-            hypercallHandlerId: HANDLER_FTOL,
+            callingConvention: 'cdecl', argCount: 2, required: true,
+            // push ebp; mov ebp,esp; sub esp,0xc
+            prologueLen: 6,
+            entryFilter: buildBfmeSmallPoolFreeInline,
         },
         matrix_push: {
             name: 'matrix_push',
@@ -397,8 +388,8 @@ export const bfmeDescriptor: LibDescriptor = {
         string_release: bfmeStringReleaseHandler,
         string_copy: bfmeStringCopyHandler,
         string_assign: bfmeStringAssignHandler,
-        string_find: bfmeStringFindHandler,
-        ftol2_sse: bfmeFtol2SseHandler,
+        small_pool_alloc: bfmeSmallPoolUnreachableHandler,
+        small_pool_free: bfmeSmallPoolUnreachableHandler,
         matrix_push: bfmeMatrixPushHandler,
         matrix_pop: bfmeMatrixPopHandler,
         matrix_multiply: bfmeMatrixMultiplyHandler,

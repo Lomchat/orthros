@@ -1102,10 +1102,9 @@ export class InputManager {
         Atomics.add(view, INPUT_INDEX.seq, 1);
     }
 
-    /** Update the absolute cursor and the raw DirectInput accumulators together.
-     *  Browser pointer events maintain both views of the same physical motion;
-     *  harness injection must do the same or games that draw/hit-test their own
-     *  cursor from DIMOUSESTATE see a stationary pointer while Win32 sees it move. */
+    /** Keep the absolute Win32 cursor and raw DirectInput motion coherent for
+     * harness teleports, matching the two views updated by browser pointer
+     * events. Calibrated relative-only motion is available separately below. */
     private writeInjectedMousePosition(view: Int32Array, x: number, y: number): void {
         const nextX = x | 0;
         const nextY = y | 0;
@@ -1157,6 +1156,19 @@ export class InputManager {
         this.writeInjectedMousePosition(view, screenX, screenY);
         view[INPUT_INDEX.mouseInside] = 1;
         this.endInputWrite(view);
+        this.poll(true);
+        return true;
+    }
+
+    /** Inject raw relative mouse motion for games that consume DirectInput axes.
+     *  This deliberately leaves the Win32 absolute cursor untouched: callers can
+     *  calibrate a guest-drawn cursor without inventing a relationship between
+     *  its private position and our screen-coordinate snapshot. */
+    injectRelativeMouseMove(dx: number, dy: number): boolean {
+        const view = this.inputView;
+        if (!view) return false;
+        Atomics.add(view, INPUT_INDEX.dinputDX, dx | 0);
+        Atomics.add(view, INPUT_INDEX.dinputDY, dy | 0);
         this.poll(true);
         return true;
     }

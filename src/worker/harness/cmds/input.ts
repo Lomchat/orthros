@@ -74,7 +74,7 @@ function input() {
 
 /** Input commands that mutate guest state — recorded by the present-serial
  *  recorder and replayable. (dialogs/findControl are read-only queries, excluded.) */
-export const RECORDABLE_INPUT = new Set(["click", "clickAt", "move", "drag", "wheel", "key", "type"]);
+export const RECORDABLE_INPUT = new Set(["click", "clickAt", "move", "moveRelative", "drag", "wheel", "key", "type"]);
 
 /**
  * Apply one input command — the single implementation shared by the registered
@@ -113,6 +113,10 @@ export function applyInput(cmd: string, args: unknown[]): any {
         case "move": {
             const x = Number(args[0]) | 0, y = Number(args[1]) | 0;
             return { ok: im.injectMoveAtScreen(x, y), x, y };
+        }
+        case "moveRelative": {
+            const dx = Number(args[0]) | 0, dy = Number(args[1]) | 0;
+            return { ok: im.injectRelativeMouseMove(dx, dy), dx, dy };
         }
         case "drag": {
             const [x0, y0, x1, y1, button] = args.map((a, i) => (i < 4 ? Number(a) | 0 : Number(a ?? 0) | 0));
@@ -191,13 +195,22 @@ export function registerInputCommands(svc: HarnessService): void {
             entries: any[];
             originals: Record<string, (...a: unknown[]) => unknown>;
             lastButtons: number;
+            lastMouseX: number;
+            lastMouseY: number;
+            lastAccumX: number;
+            lastAccumY: number;
             lastVkSig: string;
         };
         let probe: Probe | undefined = im.__inputTraceProbe;
 
         if (action === "start") {
             if (probe) return { ok: true, already: true, entries: probe.entries.length };
-            probe = { entries: [], originals: {}, lastButtons: -1, lastVkSig: "" };
+            probe = {
+                entries: [], originals: {}, lastButtons: -1,
+                lastMouseX: 0x7fffffff, lastMouseY: 0x7fffffff,
+                lastAccumX: 0x7fffffff, lastAccumY: 0x7fffffff,
+                lastVkSig: "",
+            };
             im.__inputTraceProbe = probe;
             const push = (e: Record<string, unknown>): void => {
                 if (probe!.entries.length >= MAX) probe!.entries.shift();
@@ -222,10 +235,22 @@ export function registerInputCommands(svc: HarnessService): void {
             };
             probe.originals.getMouseState = im.getMouseState.bind(im);
             im.getMouseState = () => {
-                const s = probe!.originals.getMouseState() as { buttons: number };
-                if (s.buttons !== probe!.lastButtons) {
+                const s = probe!.originals.getMouseState() as { x: number; y: number; buttons: number };
+                if (s.buttons !== probe!.lastButtons || s.x !== probe!.lastMouseX || s.y !== probe!.lastMouseY) {
                     probe!.lastButtons = s.buttons;
-                    push({ k: "buttons", buttons: s.buttons });
+                    probe!.lastMouseX = s.x;
+                    probe!.lastMouseY = s.y;
+                    push({ k: "mouseState", x: s.x, y: s.y, buttons: s.buttons });
+                }
+                return s;
+            };
+            probe.originals.getDInputAccum = im.getDInputAccum.bind(im);
+            im.getDInputAccum = () => {
+                const s = probe!.originals.getDInputAccum() as { x: number; y: number };
+                if (s.x !== probe!.lastAccumX || s.y !== probe!.lastAccumY) {
+                    probe!.lastAccumX = s.x;
+                    probe!.lastAccumY = s.y;
+                    push({ k: "dinputAccum", x: s.x, y: s.y });
                 }
                 return s;
             };

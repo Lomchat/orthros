@@ -1098,19 +1098,21 @@ export const dbg = {
     },
     /** Resolve a THUNK_CODE stub address to its functionId + dll:function name
      *  (reads the MOV EAX,imm32 at the stub head + dispatcher.namesTable). */
-    stub(a: number | string): void {
+    stub(a: number | string): unknown {
         try {
             const addr = toAddr(a);
             const sys = System.getInstance();
             const mem = sys.process?.getCurrentMemory?.();
             const d = sys.process?.dispatcher as any;
-            if (!mem || !d) { console.log('[dbg][stub][JSON] {"err":"no mem/dispatcher"}'); return; }
+            if (!mem || !d) { const report = { err: 'no mem/dispatcher' }; console.log(`[dbg][stub][JSON] ${JSON.stringify(report)}`); return report; }
             const op = mem[addr];
             const id = (mem[addr + 1] | (mem[addr + 2] << 8) | (mem[addr + 3] << 16) | (mem[addr + 4] << 24)) >>> 0;
             const name = op === 0xb8 ? (d.namesTable?.[id] ?? null) : null;
             const bytes = Array.from(mem.subarray(addr, addr + 16)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
-            console.log(`[dbg][stub][JSON] ${JSON.stringify({ addr: `0x${addr.toString(16)}`, opcode: `0x${op.toString(16)}`, functionId: op === 0xb8 ? id : null, name, bytes })}`);
-        } catch (e) { console.warn('[dbg] stub err', e); }
+            const report = { addr: `0x${addr.toString(16)}`, opcode: `0x${op.toString(16)}`, functionId: op === 0xb8 ? id : null, name, bytes };
+            console.log(`[dbg][stub][JSON] ${JSON.stringify(report)}`);
+            return report;
+        } catch (e) { console.warn('[dbg] stub err', e); return { err: String(e) }; }
     },
     /** Disable all WASM hypercall dispatch entries for one handler id (e.g. 17 = _ftol)
      *  so those calls fall through to the JS fallback — which dbg.fastpath() can see and

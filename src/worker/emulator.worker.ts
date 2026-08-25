@@ -2746,6 +2746,7 @@ self.onmessage = (event: MessageEvent) => {
       enable: boolean;
       logOnly: boolean;
       galaxy?: { enable?: boolean; hleAudio?: boolean; hleMixer?: boolean };
+      bfme?: { enable?: boolean; disabledFunctions?: string[] };
     };
     // Galaxy full-module HLE is PARKED. The SAB-bypass needs proper glxSample reverse-
     // engineering (some UE1 titles store raw PCM with a non-obvious USound layout; the decoded
@@ -2754,6 +2755,19 @@ self.onmessage = (event: MessageEvent) => {
     // makes Galaxy.dll load + register its UClass natively, so UE1 audio works on the
     // native path. Flip enable back on when the glxSample bring-up is done.
     cfg.galaxy = { enable: false, hleAudio: false, hleMixer: false };
+    if (message.hleDisable === true) {
+      cfg.enable = false;
+      cfg.logOnly = false;
+      Logger.log(LogCategory.SYSTEM, `[HLE-lib] disabled via load_bundle diagnostic flag`);
+    }
+    if (Array.isArray(message.hleSkip)) {
+      const disabledFunctions = message.hleSkip
+        .map((name: unknown) => String(name).trim())
+        .filter(Boolean);
+      cfg.bfme = { ...((cfg.bfme as Record<string, unknown> | undefined) ?? {}), disabledFunctions };
+      Logger.log(LogCategory.SYSTEM,
+        `[HLE-lib] BFME hook skip list: ${disabledFunctions.join(', ') || '(none)'}`);
+    }
     if (message.galaxyHle === true) {
       Logger.log(LogCategory.SYSTEM, `[Galaxy] HLE module parked — native audio path (galaxyHle ignored)`);
     }

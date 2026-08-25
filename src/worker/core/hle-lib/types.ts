@@ -169,6 +169,10 @@ export interface EntryFilterInfo {
     trampolineAddress: number;
     /** Allocate `size` bytes of RX THUNK_CODE for the filter body. */
     allocCode: (size: number) => number;
+    /** Mark generated code whose guest-memory read/modify/write sequence must
+     * complete without a scheduler thread switch. No-op when the scheduler is
+     * not available yet; callers should only use this for short bounded code. */
+    markNonPreemptible: (base: number, end: number) => void;
 }
 
 // ─── Guarded Inner-Loop HLE: shadow validation ──────────────────────────────

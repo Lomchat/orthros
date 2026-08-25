@@ -134,7 +134,10 @@ class LibHleManager {
 
         for (const desc of descriptors) {
             // Per-library opt-out.
-            const libCfg = (cfg as any)[desc.id] as { enable?: boolean } | undefined;
+            const libCfg = (cfg as any)[desc.id] as {
+                enable?: boolean;
+                disabledFunctions?: string[];
+            } | undefined;
             if (libCfg && libCfg.enable === false) continue;
 
             const threshold = cfg.minConfidence ?? desc.minConfidence;
@@ -166,11 +169,11 @@ class LibHleManager {
                 continue;
             }
 
-            this.applyMatch(match);
+            this.applyMatch(match, new Set(libCfg?.disabledFunctions ?? []));
         }
     }
 
-    private applyMatch(match: LibMatch): void {
+    private applyMatch(match: LibMatch, disabledFunctions = new Set<string>()): void {
         if (!this.init) return;
         const { descriptor, module, functionMatches } = match;
 
@@ -179,12 +182,19 @@ class LibHleManager {
             thunkGenerator: this.init.thunkGenerator,
             cpu: this.init.getCpu(),
             getMemory: this.init.getMemory,
+            markNonPreemptible: (base, end) => {
+                System.getInstance().scheduler?.registerNonPreemptibleRange(base, end);
+            },
         };
 
         if (!this.patches.has(descriptor.id)) this.patches.set(descriptor.id, new Map());
         const libPatches = this.patches.get(descriptor.id)!;
 
         for (const fm of functionMatches) {
+            if (disabledFunctions.has(fm.name)) {
+                console.log(`[HLE-lib] Skipping ${descriptor.id}:${fm.name} via diagnostic opt-out`);
+                continue;
+            }
             const decl = descriptor.functions[fm.name];
 
             // Guarded Inner-Loop HLE: shadow-enabled hooks derive their handler

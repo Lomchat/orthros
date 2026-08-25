@@ -1932,7 +1932,16 @@ export default function App() {
       const lower = path.toLowerCase();
       if (lower.endsWith(".wgb")) {
         setLoadingProgress({ phase: "loading", percent: 0, label: "" });
-        globalWorker.postMessage({ type: "load_bundle", url: path });
+        // Diagnostic/safety lever: start a fresh game without static-library HLE.
+        // This must be carried by load_bundle (rather than sent after it), because
+        // PE detection and patching happen synchronously during the load.
+        const params = new URLSearchParams(window.location.search);
+        const hleDisable = params.get("hle") === "0";
+        const hleSkip = (params.get("hleSkip") ?? "")
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean);
+        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip });
         return;
       }
       try {

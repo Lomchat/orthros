@@ -293,13 +293,12 @@ An uncontended-lock hook at `0x00c2c760` was rejected after a hot in-game A/B:
 it. It is not in production. The remaining profile is led by the static x87
 helper at `0x00df6e38` and v86 execution.
 
-That residual profile now drives eight additional exact-signature BFME hooks.
-The `stringbase<char>` node search at `0x008a0270` walks its chain directly in
-WASM. `_ftol2_sse` at `0x00df6e38` uses the corrected generic x87 handler: it
-truncates and pops ST(0), returns EDX:EAX, and produces the x87 indefinite
-`0x8000000000000000` for NaN/overflow. Standalone Rust tests cover rounding
-modes and invalid values, while the TypeScript fallback tests pin both return
-halves.
+Two other residual-profile candidates were evaluated and removed from the
+retained build. The `stringbase<char>` node lookup at `0x008a0270` and the
+`_ftol2_sse` replacement at `0x00df6e38` did not provide enough repeatable gain
+to justify their risk. Simplified x87/SSE flag handling was neutral in the
+controlled window, while removing the targeted `FWAIT` broke menu navigation.
+The original x87 path therefore remains active.
 
 Matrix leaves at `0x00cd2b50`, `0x00cd2b80`, `0x00cd2d10`, `0x00cd2c80`,
 `0x00cd2cc0`, and `0x00cd2bb0` now handle the 32-byte matrix push/pop,
@@ -311,9 +310,33 @@ callback and return convention.
 
 In the final ten-second trace all six hot entries execute one guest instruction
 for roughly 31,600 calls each, and page `0xcd2` falls to 3.0 weighted guest
-instructions per block. All thirteen BFME hooks are active (`confidence: 156`,
-none missing). A clean final title window measures 33.00 ms/frame (30.3 FPS),
-including 32.11 ms v86, 0.82 ms thunks, and 0.24 ms Present, with no guest fault.
+instructions per block.
+
+The two STLPort eight-byte-class pool helpers at `0x00c2e540` and `0x00c2e5f0`
+now pop and push their freelists directly in guest x86. A busy lock or empty
+class falls back to the exact original allocator. The scheduler treats this
+read/modify/write sequence as a short non-preemptible range; page `0xc2e`, which
+previously accounted for 577,969 blocks in the player capture, no longer appears
+among the hot Tier-2 pages after activation.
+
+The accepted `stringbase<char>` reference branches are also fully guest-native
+now. Shared release, copy, and shared assignment complete in the generated x86
+wrapper without `OUT`, JavaScript thunking, or a diagnostic counter write;
+unique values that need a real free still run the original function. On clean
+boots of the same headless title scene, disabling these three hooks measured
+55.44 ms/frame (18.0 FPS: 49.65 ms v86 and 5.21 ms thunks), while the direct
+wrappers measured 33.04 ms/frame (30.3 FPS: 32.11 ms v86 and 0.86 ms thunks).
+The latest optimized frame was 33.94 ms / 29.5 FPS and the guest fault list was
+empty.
+
+The thirteen retained BFME hooks are the fold-33 hash, lowercase helper, three
+string-reference operations, two small-pool operations, and six matrix/transform
+leaves (`confidence: 156`, none missing). The animated title reaches the nominal
+cadence. Synthetic BFME menu clicks remain intermittent on new headless boots,
+so the direct wrappers have not yet been measured in a fresh skirmish. The last
+in-match proof remains the earlier 42.37–43.36 ms/frame (23.1–23.6 FPS) window
+with the WASM string handlers; a same-skirmish or player-PC capture is still
+required before claiming stable 30 FPS gameplay.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is

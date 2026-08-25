@@ -30,6 +30,9 @@ export interface PatchContext {
     /** Fresh `cpu` handle (from `process.v86`) for `jit_dirty_cache`; may be null early. */
     cpu: any;
     getMemory: () => Uint8Array | null;
+    /** Register a short generated guest-code range whose RMW must be atomic
+     * with respect to cooperative guest thread switches. */
+    markNonPreemptible?: (base: number, end: number) => void;
 }
 
 export interface PatchRequest {
@@ -236,6 +239,9 @@ export function applyPatch(ctx: PatchContext, req: PatchRequest): PatchHandle | 
                 stubAddress,
                 trampolineAddress,
                 allocCode: (size: number) => ctx.thunkGenerator.allocateRawCodeArea(size),
+                markNonPreemptible: (base: number, end: number) => {
+                    ctx.markNonPreemptible?.(base, end);
+                },
             });
         } catch (e) {
             console.error(`[HLE-lib] applyPatch: entryFilter threw for ${req.libId}:${req.functionName}: ${e}`);

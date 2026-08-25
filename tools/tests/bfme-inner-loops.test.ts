@@ -7,7 +7,10 @@ import {
     copyStringbaseRef,
     releaseSharedStringbase,
 } from '../../src/worker/core/hle-lib/libs/bfme/string-ref';
-import { assembleBfmeStringRefFilter } from '../../src/worker/core/hle-lib/libs/bfme/string-ref-filter';
+import {
+    assembleBfmeStringRefFilter,
+    buildBfmeStringReleaseFilter,
+} from '../../src/worker/core/hle-lib/libs/bfme/string-ref-filter';
 import { findBfmeStringNode } from '../../src/worker/core/hle-lib/libs/bfme/string-find';
 import { ftol2SseHalves } from '../../src/worker/core/hle-lib/libs/bfme/ftol2';
 import {
@@ -21,6 +24,12 @@ import {
     assembleMatrixAdjustWrapper,
     assembleTransformPopWrapper,
 } from '../../src/worker/core/hle-lib/libs/bfme/matrix-callback-wrappers';
+import {
+    assembleBfmeSmallPoolInline,
+    buildBfmeSmallPoolAllocInline,
+    popBfmeSmallPool,
+    pushBfmeSmallPool,
+} from '../../src/worker/core/hle-lib/libs/bfme/small-pool-inline';
 import { validatePrologueBytes } from '../../src/worker/core/hle-lib/lib-patcher';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -168,7 +177,7 @@ describe('BFME stringbase reference fast paths', () => {
         expect(assignSharedStringbase(memory, 32, 16)).toBeNull();
     });
 
-    test('all filters retain both a native fast path and exact original decline path', () => {
+    test('all filters complete accepted operations inline and retain the exact original decline path', () => {
         for (const kind of ['release', 'copy', 'assign'] as const) {
             const base = 0x1000, stub = 0x2400, trampoline = 0x3500;
             const code = assembleBfmeStringRefFilter(kind, base, stub, trampoline);
@@ -184,10 +193,89 @@ describe('BFME stringbase reference fast paths', () => {
                     i += 5;
                 } else i++;
             }
-            expect(destinations).toContain(stub);
+            expect(destinations).not.toContain(stub);
             expect(destinations).toContain(trampoline);
         }
         expect(validatePrologueBytes(Uint8Array.from([0x56, 0x8b, 0xf1, 0x8a, 0x0d, 0x2c, 0x6e, 0x33, 0x01]))).toBeNull();
+    });
+
+    test('registers the generated refcount transaction as scheduler non-preemptible', () => {
+        const memory = new Uint8Array(0x5000);
+        const ranges: Array<[number, number]> = [];
+        const address = buildBfmeStringReleaseFilter({
+            mem: memory,
+            targetAddress: 0x500,
+            stubAddress: 0x2400,
+            trampolineAddress: 0x3500,
+            allocCode: () => 0x1000,
+            markNonPreemptible: (base, end) => ranges.push([base, end]),
+        });
+        expect(address).toBe(0x1000);
+        expect(ranges).toEqual([[0x1000, 0x1000 + assembleBfmeStringRefFilter('release', 0x1000, 0x2400, 0x3500).length]]);
+    });
+});
+
+describe('BFME STLPort small-pool inline fast paths', () => {
+    test('pops and pushes the exact eight-byte size class while restoring the lock', () => {
+        const memory = new Uint8Array(512);
+        const view = new DataView(memory.buffer);
+        const pool = 64;
+        const lock = 32;
+        const size = 17; // (17-1)>>3 = class 2
+        const headAddress = pool + 2 * 4;
+        view.setUint32(headAddress, 160, true);
+        view.setUint32(160, 224, true);
+        view.setUint32(224, 0, true);
+
+        expect(popBfmeSmallPool(memory, size, pool, lock)).toBe(160);
+        expect(view.getUint32(headAddress, true)).toBe(224);
+        expect(view.getUint32(lock, true)).toBe(0);
+        expect(pushBfmeSmallPool(memory, 160, size, pool, lock)).toBe(true);
+        expect(view.getUint32(160, true)).toBe(224);
+        expect(view.getUint32(headAddress, true)).toBe(160);
+        expect(view.getUint32(lock, true)).toBe(0);
+    });
+
+    test('declines busy/empty pools without modifying guest memory', () => {
+        const memory = new Uint8Array(256);
+        const view = new DataView(memory.buffer);
+        const pool = 64;
+        const lock = 32;
+        const before = memory.slice();
+        expect(popBfmeSmallPool(memory, 8, pool, lock)).toBeNull();
+        expect(memory).toEqual(before);
+        view.setUint32(lock, 1, true);
+        const busy = memory.slice();
+        expect(pushBfmeSmallPool(memory, 128, 8, pool, lock)).toBe(false);
+        expect(memory).toEqual(busy);
+    });
+
+    test('emits direct RET fast paths and relocates every decline to the original', () => {
+        const base = 0x1000;
+        const trampoline = 0x5000;
+        for (const op of ['alloc', 'free'] as const) {
+            const code = assembleBfmeSmallPoolInline(op, base, trampoline);
+            expect([...code].filter((byte) => byte === 0xc3).length).toBe(1);
+            expect(code.includes(0xee)).toBe(false); // no OUT/host transition
+            expect(code[code.length - 5]).toBe(0xe9);
+            const rel = new DataView(code.buffer, code.byteOffset + code.length - 4, 4).getInt32(0, true);
+            expect((base + code.length + rel) >>> 0).toBe(trampoline);
+        }
+    });
+
+    test('registers the allocator RMW wrapper as scheduler non-preemptible', () => {
+        const memory = new Uint8Array(0x6000);
+        const ranges: Array<[number, number]> = [];
+        const address = buildBfmeSmallPoolAllocInline({
+            mem: memory,
+            targetAddress: 0x500,
+            stubAddress: 0x2400,
+            trampolineAddress: 0x5000,
+            allocCode: () => 0x1000,
+            markNonPreemptible: (base, end) => ranges.push([base, end]),
+        });
+        expect(address).toBe(0x1000);
+        expect(ranges).toEqual([[0x1000, 0x1000 + assembleBfmeSmallPoolInline('alloc', 0x1000, 0x5000).length]]);
     });
 });
 
