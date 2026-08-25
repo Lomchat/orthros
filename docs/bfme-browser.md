@@ -455,6 +455,18 @@ all five D3D9 shadows matched, and the guest-fault list was empty. This is the
 best clean headless skirmish validation so far, but it is still about 2.6
 ms/frame short of a stable 30 FPS average.
 
+The remaining `IDirect3DSurface9::LockRect/UnlockRect` calls now use synchronous
+FastPaths backed by the exact same implementation as the ordinary thunk, so the
+VP6 movie-frame injection on unlock is preserved. A unit test covers pitch,
+partial-rectangle offset, and the memory passed to unlock. A new Chrome process
+and skirmish measured 34.35 ms/frame (29.1 FPS): 33.27 ms v86, 1.04 ms thunks,
+and 0.56 ms Present; its latest frame reached 32.8 FPS. The previous clean boot
+spent 1.77 ms in thunks, and the two Surface buckets that had accumulated about
+1.05 ms/frame disappeared from the global hot list. The evolving simulation
+makes the 4.3% total frame-time change a non-strict cross-boot comparison, but
+the 0.73 ms thunk reduction and vanished buckets directly attribute the retained
+gain. Shadows remained exact and the guest-fault list stayed empty.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
 one fresh worker boot followed by a stable capture from the same real player

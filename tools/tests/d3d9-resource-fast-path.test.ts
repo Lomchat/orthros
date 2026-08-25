@@ -101,4 +101,43 @@ describe('D3D9 dynamic-buffer fast paths', () => {
         )).toBe(0);
         expect(deviceSoftwareVertexProcessing.get(devicePtr)).toBe(false);
     });
+
+    test('surface lock and unlock share the exact texture-backed fast path', () => {
+        const handlers = collectHandlers();
+        const surfacePtr = 0x700;
+        const texturePtr = 0x710;
+        const lockedRect = 0x300;
+        const rect = 0x340;
+        let unlockedWith: Uint8Array | null = null;
+        const device = {
+            lockTexture: (ptr: number, level: number) => {
+                expect([ptr, level]).toEqual([texturePtr, 0]);
+                return { ptr: 0x800, pitch: 256 };
+            },
+            unlockTexture: (ptr: number, level: number, mem: Uint8Array) => {
+                expect([ptr, level]).toEqual([texturePtr, 0]);
+                unlockedWith = mem;
+            },
+        };
+        surfaceMeta.set(surfacePtr, {
+            texturePtr, level: 0, format: 21, type: 1, usage: 0, pool: 0,
+            multiSampleType: 0, multiSampleQuality: 0, width: 64, height: 64,
+        });
+        resourceToDevice.set(surfacePtr, device as any);
+
+        const lock = stackFor([surfacePtr, lockedRect, rect, 0]);
+        lock.view.setInt32(rect, 2, true);
+        lock.view.setInt32(rect + 4, 3, true);
+        expect(handlers.get('IDirect3DSurface9_LockRect')!(
+            lock.cpu, lock.mem, new Uint32Array(lock.mem.buffer), lock.view,
+        )).toBe(0);
+        expect(lock.view.getUint32(lockedRect, true)).toBe(256);
+        expect(lock.view.getUint32(lockedRect + 4, true)).toBe(0x800 + 3 * 256 + 2 * 4);
+
+        const unlock = stackFor([surfacePtr]);
+        expect(handlers.get('IDirect3DSurface9_UnlockRect')!(
+            unlock.cpu, unlock.mem, new Uint32Array(unlock.mem.buffer), unlock.view,
+        )).toBe(0);
+        expect(unlockedWith).toBe(unlock.mem);
+    });
 });

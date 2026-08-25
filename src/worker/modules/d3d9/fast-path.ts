@@ -35,6 +35,7 @@ import {
     resolveVertexDeclComPtr,
 } from '../../backends/webgpu/d3d9/d3d9-com-objects';
 import { deviceSoftwareVertexProcessing, surfaceMeta } from './resource-registry';
+import { lockSurfaceRectDirect, unlockSurfaceRectDirect } from './resources';
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
@@ -388,6 +389,25 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
         if (!device) return null;
         device.unlockIndexBuffer(bufferPtr, mem);
         return D3D_OK;
+    }, { trivial: true });
+
+    // BFME locks roughly 60–70 texture-level surfaces per frame. These calls are
+    // synchronous and the shared implementation preserves the movie-injection
+    // behavior, so bypass the generic thunk context without duplicating semantics.
+    dispatcher.registerFastPath('d3d9', 'IDirect3DSurface9_LockRect', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number => {
+        const esp = cpu.reg32[4];
+        return lockSurfaceRectDirect(
+            mem,
+            view,
+            view.getUint32(esp + 4, true),
+            view.getUint32(esp + 8, true),
+            view.getUint32(esp + 12, true),
+        );
+    }, { trivial: true });
+
+    dispatcher.registerFastPath('d3d9', 'IDirect3DSurface9_UnlockRect', (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number => {
+        const esp = cpu.reg32[4];
+        return unlockSurfaceRectDirect(mem, view.getUint32(esp + 4, true));
     }, { trivial: true });
 
     // Surface descriptions are immutable metadata after COM-object creation.

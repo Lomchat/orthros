@@ -40,6 +40,8 @@ const D3DPOOL_DEFAULT = 0;
 const D3DMULTISAMPLE_NONE = 0;
 const D3DUSAGE_RENDERTARGET = 0x00000001;
 const D3DUSAGE_DEPTHSTENCIL = 0x00000002;
+const D3D_OK = 0;
+const D3DERR_INVALIDCALL = 0x8876086c;
 
 function writeSurfaceDesc(pDesc: number, meta: SurfaceMeta): boolean {
     return (
@@ -72,11 +74,54 @@ function computeLockRectOffset(format: number, width: number, height: number, pi
     return (top * pitch + left * bytesPerPixel) >>> 0;
 }
 
+/** Shared Surface9 LockRect body used by both the ordinary thunk and its direct
+ * FastPath. Keeping one implementation matters here: BFME calls this dozens of
+ * times per frame, while movie surfaces still need the exact VP6-aware unlock. */
+export function lockSurfaceRectDirect(
+    mem: Uint8Array,
+    view: DataView,
+    pSurface: number,
+    pLockedRect: number,
+    pRect: number,
+): number {
+    const meta = surfaceMeta.get(pSurface);
+    const device = resourceToDevice.get(pSurface);
+    if (!meta || !device || !meta.texturePtr || !pLockedRect || pLockedRect > mem.length - 8) {
+        return D3DERR_INVALIDCALL;
+    }
+
+    const level = meta.level ?? 0;
+    const lockInfo = device.lockTexture(meta.texturePtr, level);
+    if (!lockInfo) return D3DERR_INVALIDCALL;
+
+    let pBits = lockInfo.ptr >>> 0;
+    if (pRect) {
+        const left = pRect <= mem.length - 4 ? view.getInt32(pRect, true) : 0;
+        const top = pRect <= mem.length - 8 ? view.getInt32(pRect + 4, true) : 0;
+        pBits = (pBits + computeLockRectOffset(meta.format, meta.width, meta.height, lockInfo.pitch, left, top)) >>> 0;
+    }
+
+    view.setUint32(pLockedRect, lockInfo.pitch >>> 0, true);
+    view.setUint32(pLockedRect + 4, pBits, true);
+    return D3D_OK;
+}
+
+export function unlockSurfaceRectDirect(mem: Uint8Array, pSurface: number): number {
+    const meta = surfaceMeta.get(pSurface);
+    const device = resourceToDevice.get(pSurface);
+    if (!meta || !device || !meta.texturePtr) return D3DERR_INVALIDCALL;
+
+    const level = meta.level ?? 0;
+    const lockInfo = device.lockTexture(meta.texturePtr, level);
+    if (lockInfo && level === 0) {
+        injectBfmeVp6Frame(mem, lockInfo.ptr, lockInfo.pitch, meta.width, meta.height, meta.format);
+    }
+    device.unlockTexture(meta.texturePtr, level, mem);
+    return D3D_OK;
+}
+
 export function createResourcesExports(): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
-
-    const D3D_OK = 0;
-    const D3DERR_INVALIDCALL = 0x8876086c;
 
     /**
      * Surface-only D3D9 resources still need actual backing storage for LockRect,
@@ -851,63 +896,12 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
     exports['IDirect3DCubeTexture9_AddDirtyRect'] = () => D3D_OK;
 
     exports['IDirect3DSurface9_LockRect'] = (_ctx, mem, args) => {
-        const pSurface = args[0];
-        const pLockedRect = args[1];
-        const pRect = args[2];
-        const _flags = args[3];
-
-        const meta = surfaceMeta.get(pSurface);
-        const device = resourceToDevice.get(pSurface);
-        if (!meta || !device || !meta.texturePtr || !pLockedRect) {
-            return D3DERR_INVALIDCALL;
-        }
-
-        const level = meta.level ?? 0;
-        const lockInfo = device.lockTexture(meta.texturePtr, level);
-        if (!lockInfo) {
-            return D3DERR_INVALIDCALL;
-        }
-
-        let pBits = lockInfo.ptr >>> 0;
-        if (pRect) {
-            const left = Mem.readInt32(pRect) ?? 0;
-            const top = Mem.readInt32(pRect + 4) ?? 0;
-            pBits = (pBits + computeLockRectOffset(meta.format, meta.width, meta.height, lockInfo.pitch, left, top)) >>> 0;
-        }
-
-        const wrotePitch = Mem.writeUint32(pLockedRect + 0, lockInfo.pitch >>> 0);
-        const wroteBits = Mem.writeUint32(pLockedRect + 4, pBits);
-        if (!wrotePitch || !wroteBits) {
-            device.unlockTexture(meta.texturePtr, level, mem);
-            return D3DERR_INVALIDCALL;
-        }
-
-        return D3D_OK;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        return lockSurfaceRectDirect(mem, view, args[0], args[1], args[2]);
     };
 
     exports['IDirect3DSurface9_UnlockRect'] = (_ctx, mem, args) => {
-        const pSurface = args[0];
-
-        const meta = surfaceMeta.get(pSurface);
-        const device = resourceToDevice.get(pSurface);
-        if (!meta || !device || !meta.texturePtr) {
-            return D3DERR_INVALIDCALL;
-        }
-
-        const level = meta.level ?? 0;
-        const lockInfo = device.lockTexture(meta.texturePtr, level);
-        if (lockInfo && level === 0) {
-            injectBfmeVp6Frame(
-                mem,
-                lockInfo.ptr,
-                lockInfo.pitch,
-                meta.width,
-                meta.height,
-                meta.format,
-            );
-        }
-        device.unlockTexture(meta.texturePtr, level, mem);
-        return D3D_OK;
+        return unlockSurfaceRectDirect(mem, args[0]);
     };
 
     exports['IDirect3DSurface9_GetDesc'] = (ctx, mem, args) => {
