@@ -54,6 +54,12 @@ export class PreemptionManager {
      *  dbg.flagLocals(false). Toggle clears the JIT cache (shape baked into modules). */
     private flagLocalsEnabled = false;          // config idx 21
 
+    /** Current-module AbsoluteEip lookup emitted directly into generated wasm
+     *  (config idx 22). Default ON after the deterministic CALL/RET benchmark
+     *  measured about 29% more throughput with exact hit and miss behaviour. The
+     *  generated shape is baked into modules, so toggles clear the JIT cache. */
+    private inlineIntraModuleDispatchEnabled = true; // config idx 22
+
     /** Dynamic RET dispatch experiments. Default OFF: a BFME skirmish measured only
      *  11.5% ret-chain hits, so failed probes made chaining ~3.3% slower; local target
      *  speculation was neutral to slightly slower. Both remain runtime-tunable through
@@ -139,6 +145,16 @@ export class PreemptionManager {
         if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
     }
     isFlagLocalsEnabled(): boolean { return this.flagLocalsEnabled; }
+
+    /** Inline current-module RET/indirect resolver (idx 22). Authoritative and
+     *  persistent across game reloads; clears the JIT cache on live changes. */
+    setInlineIntraModuleDispatch(on: boolean): void {
+        this.inlineIntraModuleDispatchEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(22, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isInlineIntraModuleDispatchEnabled(): boolean { return this.inlineIntraModuleDispatchEnabled; }
 
     setX87Locals(on: boolean): void {
         this.x87LocalsEnabled = on;
@@ -235,7 +251,10 @@ export class PreemptionManager {
             // Flag-locals idx 21 — re-applied per init (wasm default OFF). Applied at
             // boot = cold cache, recompile free.
             this.wasmExports.set_jit_config(21, this.flagLocalsEnabled ? 1 : 0);
-            console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"}`);
+            // Inline AbsoluteEip resolver idx 22 — default ON. Applied at boot while
+            // the cache is cold; live diagnostics route through the setter below.
+            this.wasmExports.set_jit_config(22, this.inlineIntraModuleDispatchEnabled ? 1 : 0);
+            console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"} inlineDispatch=${this.inlineIntraModuleDispatchEnabled ? "on" : "off"}`);
 
             // Dynamic RET dispatch (idx 12/13) — default OFF after BFME A/B, re-applied
             // per init. Applied at boot = cold cache, so diagnostics that opt in do not

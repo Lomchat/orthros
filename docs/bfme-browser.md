@@ -488,10 +488,35 @@ eight entry bytes were restored, the JIT cache was rebuilt, and no guest fault
 was observed. Neither experiment is present in the retained source or deployed
 bundle.
 
+The current-module `AbsoluteEip` resolver used by every RET and indirect branch
+is now emitted directly into generated wasm. It reads the shared
+`DISPATCH_META`/`DISPATCH_SLABS` SoA tables instead of crossing back into the
+base Rust/WASM module for two loads and comparisons. The inline shape checks the
+state flags and table slot together and preserves `u16::MAX` as the unpublished
+entry sentinel. Config index 22 remains a live kill switch, exposed as
+`dbg.jitInlineDispatch(false)` and kept authoritative across v86 reloads by the
+PreemptionManager; production enables it by default.
+
+A deterministic eight-million CALL/RET benchmark checks the arithmetic result,
+a cold same-page target absent from the compiled CFG, and a cross-page miss with
+the module budget forced to one page. The retained run improved from a 122.10 ms
+median to 94.35 ms (+29.4% throughput), while the cross-page case also completed
+correctly at 119.81 versus 76.99 ms. The existing one-, two-, and three-page JIT
+regression test still passes. A hot-cache BFME configuration screen remained at
+the engine's 30.3 FPS ceiling for fifteen seconds after enabling the option and
+recompiling, with no guest fault and zero mismatches in all five D3D9 shadows.
+That capped screen is a stability check, not a populated-skirmish performance
+claim: this fresh headless profile did not progress past setup, while the
+SwiftShader CPU readback remained black. A same-skirmish or desktop A/B is still
+required to quantify the BFME frame-time gain. The retained build is deployed as
+`emulator.worker-CgeHd2Zf.js`; after a complete reload, a fresh Worker reported
+the TypeScript authority enabled, `get_jit_config(22) == 1`, and 11,010 emitted
+inline sites before any manual diagnostic toggle.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
-one fresh worker boot followed by a stable capture from the same real player
-skirmish.
+one fresh worker boot with inline dispatch enabled followed by a stable capture
+from the same real player skirmish.
 
 ## Operational notes
 

@@ -307,14 +307,28 @@ export const dbg = {
      *  12=JIT_RET_CHAINING 13=JIT_RET_SPECULATION 14=JIT_RET_SPEC_MAX_INSTR
      *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR
      *  17=JIT_TIER2_MAX_PAGES 18=JIT_FASTMEM_READ_SPLIT
-     *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS.
+     *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS
+     *  22=JIT_INLINE_INTRA_MODULE_DISPATCH.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
         if (w.set_jit_config) w.set_jit_config(index >>> 0, value >>> 0);
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)}`);
+        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)}`);
+    },
+    /** Current-module RET/indirect lookup emitted directly into generated wasm
+     *  (set_jit_config idx 22). Default ON; OFF keeps the historical call into the
+     *  base Rust/WASM module for controlled A/B. Routed through PreemptionManager
+     *  so the selection survives a game reload. */
+    jitInlineDispatch(on = true): void {
+        const w = wasm(); if (!w?.set_jit_config) return;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setInlineIntraModuleDispatch) pm.setInlineIntraModuleDispatch(on);
+        else { w.set_jit_config(22, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const enabled = w.get_jit_config ? (w.get_jit_config(22) >>> 0) : -1;
+        const sites = w.jit_inline_dispatch_sites_compiled ? (w.jit_inline_dispatch_sites_compiled() >>> 0) : -1;
+        console.log(`[dbg][jit] inlineDispatch=${enabled} compiledSites=${sites} (authoritative - survives reload) + cache cleared`);
     },
     /** RET/AbsoluteEip dynamic chaining (set_jit_config idx 12). Default OFF — routed through
      *  PreemptionManager so the choice survives a game reload. Clears the JIT cache so
