@@ -495,7 +495,9 @@ base Rust/WASM module for two loads and comparisons. The inline shape checks the
 state flags and table slot together and preserves `u16::MAX` as the unpublished
 entry sentinel. Config index 22 remains a live kill switch, exposed as
 `dbg.jitInlineDispatch(false)` and kept authoritative across v86 reloads by the
-PreemptionManager; production enables it by default.
+PreemptionManager. Both the v86 fork and BottleShip production enable it by
+default, so future consumers of the runtime do not require BottleShip's
+TypeScript manager to receive the optimization.
 
 A deterministic eight-million CALL/RET benchmark checks the arithmetic result,
 a cold same-page target absent from the compiled CFG, and a cross-page miss with
