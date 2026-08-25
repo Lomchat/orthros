@@ -316,7 +316,7 @@ export const dbg = {
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
         console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)}`);
     },
-    /** RET/AbsoluteEip dynamic chaining (set_jit_config idx 12). Default ON — routed through
+    /** RET/AbsoluteEip dynamic chaining (set_jit_config idx 12). Default OFF — routed through
      *  PreemptionManager so the choice survives a game reload. Clears the JIT cache so
      *  blocks recompile with/without the chain attempt. Read hit/miss via
      *  dbg.dispatchStats() (retChainHit/retChainMiss, needs dispatchStatsEnable). */
@@ -329,7 +329,7 @@ export const dbg = {
         console.log(`[dbg] JIT_RET_CHAINING=${g} (authoritative — survives reload) + cache cleared`);
     },
     /** RET-target speculation / superblock lite (set_jit_config idx 13,
-     *  budget idx 14 = max leaf instructions). Default ON — routed through PreemptionManager.
+     *  budget idx 14 = max leaf instructions). Default OFF — routed through PreemptionManager.
      *  Effect shows as a drop in dispatchStats().abseipDispatch. Clears the JIT cache. */
     jitRetSpec(on = true, maxInstr = 0): void {
         const w = wasm(); if (!w?.set_jit_config) return;

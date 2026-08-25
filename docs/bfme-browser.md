@@ -432,6 +432,29 @@ blocks but added 43,306 thunks in the measured window and regressed the same mat
 from 41.41 to 43.06 ms/frame (24.1 to 23.2 FPS). That route was removed completely;
 `sprintf` remains native until a cheaper guest or WASM path exists.
 
+Dynamic `RET` chaining and local return-target speculation were then isolated on
+the same live skirmish. A six-window ABBA measured a 38.40 ms/frame median with
+chaining versus 37.15 ms without it, a 3.3% frame-time recovery when disabled.
+Only 3,106,849 chain probes hit while 24,005,553 missed (11.5% hit rate), so the
+failed lookup dominates its benefit for BFME. With chaining off, speculation was
+neutral to slightly slower (36.79 ms active versus 36.47 ms inactive). Both now
+default off and remain opt-in diagnostic controls; every measured window had an
+empty guest-fault list.
+
+A follow-up prototype moved guest-register writeback after a successful chain
+probe, removing the duplicate writeback on the 88.5% miss path. It compiled and
+ran correctly, but another six-window ABBA produced the same 34.67 ms/frame
+median with chaining on and off, with greater variance while enabled. The
+prototype was removed and the original v86 WASM rebuilt.
+
+On a subsequent completely fresh Worker, the live WASM exports reported both
+controls at zero. The browser traversed the menu, loading screen, and a new live
+skirmish. Its clean 120-frame window measured 35.89 ms/frame (27.9 FPS): 34.00 ms
+v86, 1.77 ms thunks, and 0.62 ms Present. All fourteen BFME hooks were present,
+all five D3D9 shadows matched, and the guest-fault list was empty. This is the
+best clean headless skirmish validation so far, but it is still about 2.6
+ms/frame short of a stable 30 FPS average.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
 one fresh worker boot followed by a stable capture from the same real player

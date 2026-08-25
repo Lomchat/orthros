@@ -54,11 +54,12 @@ export class PreemptionManager {
      *  dbg.flagLocals(false). Toggle clears the JIT cache (shape baked into modules). */
     private flagLocalsEnabled = false;          // config idx 21
 
-    /** Dynamic dispatch wave, default ON. Both paths respect the
-     *  budget/in_hlt guard so async-park is honored. Kill-switches:
-     *  setRetChaining/setRetSpeculation(false) or dbg.jitRetChain/jitRetSpec(false). */
-    private retChainingEnabled = true;          // config idx 12
-    private retSpeculationEnabled = true;       // config idx 13
+    /** Dynamic RET dispatch experiments. Default OFF: a BFME skirmish measured only
+     *  11.5% ret-chain hits, so failed probes made chaining ~3.3% slower; local target
+     *  speculation was neutral to slightly slower. Both remain runtime-tunable through
+     *  setRetChaining/setRetSpeculation or dbg.jitRetChain/jitRetSpec. */
+    private retChainingEnabled = false;         // config idx 12
+    private retSpeculationEnabled = false;      // config idx 13
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
@@ -236,9 +237,9 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(21, this.flagLocalsEnabled ? 1 : 0);
             console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"}`);
 
-            // Dynamic-dispatch wave (idx 12/13) — default ON, re-applied per init (wasm
-            // codegen defaults are OFF). Applied at boot = cold cache, so the implied
-            // recompile is free (no mid-run cache clear).
+            // Dynamic RET dispatch (idx 12/13) — default OFF after BFME A/B, re-applied
+            // per init. Applied at boot = cold cache, so diagnostics that opt in do not
+            // inherit stale Rust defaults from a previous v86 instance.
             this.wasmExports.set_jit_config(12, this.retChainingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(13, this.retSpeculationEnabled ? 1 : 0);
             console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"}`);
