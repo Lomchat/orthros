@@ -400,11 +400,15 @@ not yet been measured on the player's real GPU and is not itself proof of stable
 30 FPS in a populated skirmish.
 
 The next trace found roughly 1.58 million calls to the generic
-`winmm:timeGetTime` stub in ten seconds. BFME now enables the already-audited
-trap-free RDTSC time leaf by default; `__noInlineTime=true` remains a diagnostic
-kill switch and other executables remain opt-in. A 250 ms audit measured 250.44
-ms wall time, 250.74 ms virtual time and 250 ms from the inline leaf. A same-match
-hot A/B improved from 37.18 to 36.45 ms/frame, about 2%.
+`winmm:timeGetTime` stub in ten seconds. A hot patch of the already-audited
+trap-free RDTSC leaf measured 250.44 ms wall time, 250.74 ms virtual time and 250
+ms from the leaf; its same-match A/B improved from 37.18 to 36.45 ms/frame, about
+2%. Import resolution originally skipped the leaf when the v86 execution exports
+were not published yet. Bootstrap now correctly uses the architectural TSC's
+initial zero in that case. A clean boot no longer executes the generic stub at
+`0x210484a0`; a second audit measured 260.82 ms wall time, 260.18 ms virtual time
+and 260 ms from the leaf. The optimization is now active for `lotrbfme.exe`, with
+`__noInlineTime=true` as its diagnostic kill switch.
 
 After removing that dispatch traffic, `lotrbfme.exe`'s STL tree-successor helper
 at `0x00c2b870` became the hottest page: about 32,000 calls/s and 1.43 million
@@ -420,6 +424,13 @@ reduction. The active window comprised 40.28 ms v86, 1.30 ms thunks and 0.78 ms
 Present, with no guest faults and zero mismatches in all five D3D9 shadows. Its
 latest frame reached 25.1 FPS; this SwiftShader skirmish is therefore still below
 a stable 30 FPS and does not replace validation on the player's desktop.
+
+The residual native MSVCR71 `sprintf` path was also evaluated. It receives about
+2,100 calls/s and its shared `_output` parser generated 4.21 million x86 blocks
+per ten seconds. A temporary route through the JavaScript formatter removed those
+blocks but added 43,306 thunks in the measured window and regressed the same match
+from 41.41 to 43.06 ms/frame (24.1 to 23.2 FPS). That route was removed completely;
+`sprintf` remains native until a cheaper guest or WASM path exists.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is

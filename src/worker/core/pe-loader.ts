@@ -1200,8 +1200,12 @@ export class PELoader {
                     try {
                         const tmm = System.getInstance().process?.thunkMemoryManager;
                         const readTsc = (globalThis as any).preemption?.getWasmExports?.()?.read_tsc;
-                        if (tmm && typeof readTsc === 'function') {
-                            const tsc = BigInt(readTsc());
+                        if (tmm) {
+                            // PE imports are resolved before the v86 execution exports are
+                            // necessarily published. At that point the architectural TSC
+                            // will start from zero, so use zero as its boot sample instead
+                            // of silently skipping the leaf for the entire process.
+                            const tsc = typeof readTsc === 'function' ? BigInt(readTsc()) : 0n;
                             const tscMs = Number((tsc * 1000n >> 32n) & 0xffff_ffffn) >>> 0;
                             const win32Ms = Math.floor(TimeService.getInstance().nowMs()) >>> 0;
                             // v86 resets the architectural TSC to zero after its
