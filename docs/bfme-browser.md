@@ -331,12 +331,44 @@ empty.
 
 The thirteen retained BFME hooks are the fold-33 hash, lowercase helper, three
 string-reference operations, two small-pool operations, and six matrix/transform
-leaves (`confidence: 156`, none missing). The animated title reaches the nominal
-cadence. Synthetic BFME menu clicks remain intermittent on new headless boots,
-so the direct wrappers have not yet been measured in a fresh skirmish. The last
-in-match proof remains the earlier 42.37–43.36 ms/frame (23.1–23.6 FPS) window
-with the WASM string handlers; a same-skirmish or player-PC capture is still
-required before claiming stable 30 FPS gameplay.
+leaves (`confidence: 156`, none missing). Headless navigation is deterministic
+when each mouse move precedes `clickHold` by roughly 1.2 seconds. Fresh skirmish
+runs with all three guest-native string wrappers measured 42.27–43.32 ms/frame
+(23.1–23.7 FPS) before the synchronization changes below.
+
+The hot internal MSVCR71 x87 control-word helper at `0x13035c77` was evaluated
+and removed: its WASM replacement measured 41.07 ms/frame versus 39.69 and 40.15
+ms after hot-unpatching it. The OUT/WASM transition cost more than the native x87
+work it replaced.
+
+The retained WASM `LeaveCriticalSection` path now performs a final release when
+the persistent semaphore has a valid event mirror with no waiter. Invalid or
+stale handles and real contention still fall back to JS. A 360-frame skirmish
+window measured 38.71 ms/frame (25.8 FPS), including 36.09 ms v86 and 2.41 ms
+thunks; the latest frame reached 31.7 FPS, `LeaveCriticalSection` disappeared from
+the leading buckets, and no guest fault was recorded.
+
+The next investigation found a concrete mutex-mirror addressing bug. The mirror
+is allocated at a guest address, but its JS writer indexed the raw
+`WebAssembly.Memory` buffer without the guest RAM view's byte offset (66 MiB in
+the measured process). The table v86 actually read therefore remained all zero
+while the JS shadow held 25–36 mutexes. Mirror reads and writes now use
+`Process.getCurrentMemory()`, and memory growth no longer restores stale JS
+shadow ownership over live WASM/guest mutations. A unit test reproduces a
+non-zero guest-memory offset and verifies both the physical write location and
+decoded state.
+
+With the corrected mirror, a clean skirmish exposed 35 live mutex entries. Across
+360 frames, instrumented `WaitForSingleObject` transitions fell from 32,090 to
+5,761 and `ReleaseMutex` from 25,989 to 363 compared with the immediately prior
+window. Frame time moved from 41.15 ms / 24.3 FPS to 38.53 ms / 26.0 FPS, with a
+latest frame at 28 FPS and no faults. Guest x86 mutex stubs were also tested and
+rejected: a same-match hot A/B measured 37.62 ms / 26.6 FPS through the existing
+WASM handlers versus 40.68 ms / 24.6 FPS through the longer guest stubs. The
+retained design is therefore the fixed mirror plus WASM handlers. Residual time
+is still dominated by v86 (35.70 ms in the WASM A/B), real/non-mutex waits,
+`Sleep`, and surface LockRect/UnlockRect traffic. Stable 30 FPS on the player's
+desktop skirmish remains unproven.
 
 Presentation telemetry now separates guest `Present` calls from frames actually
 published by the browser. It exposed a blind spot in the headless fallback: that

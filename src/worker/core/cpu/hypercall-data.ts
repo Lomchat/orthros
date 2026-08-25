@@ -524,7 +524,10 @@ export class HypercallDataManager {
         // Mutex mirror table pointer — same contract as slab: guest table survives, page pointer does not.
         if (this.mutexMirrorAddr !== 0) {
             this.view.setUint32(this.hpBase + OFF_HC_MUTEX_MIRROR_PTR, this.mutexMirrorAddr, true);
-            this.writeMutexMirrorState();
+            // Do not rewrite the table from mutexMirrorShadow here. WASM and the
+            // guest inline stubs mutate the live guest table without touching the
+            // JS shadow; WebAssembly.Memory growth preserves guest RAM, so copying
+            // the stale shadow would resurrect old owners/recursion counts.
         }
 
         // EAGL token-dispatch config pointer — same contract (guest block survives).
@@ -639,24 +642,29 @@ export class HypercallDataManager {
     }
 
     private writeMutexMirrorState(): void {
-        if (!this.mutexMirrorAddr || !this.wasmMemory) return;
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (!this.mutexMirrorAddr || !mem) return;
         const base = this.mutexMirrorAddr;
-        const u32 = new Uint32Array(this.wasmMemory);
+        // mutexMirrorAddr is a GUEST address. v86 guest RAM is a view at a
+        // non-zero offset inside WebAssembly.Memory, so indexing the raw WASM
+        // buffer with this address writes an unrelated Rust-static region.
+        const u32 = new Uint32Array(mem.buffer, mem.byteOffset, mem.byteLength >>> 2);
         for (let slot = 0; slot < EVENT_TABLE_SLOTS; slot++) {
             u32[(base >>> 2) + slot] = this.mutexMirrorShadow[slot]!;
         }
     }
 
     private writeMutexMirrorSlot(slot: number): void {
-        if (!this.mutexMirrorAddr || !this.wasmMemory) return;
-        const u32 = new Uint32Array(this.wasmMemory);
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (!this.mutexMirrorAddr || !mem) return;
+        const u32 = new Uint32Array(mem.buffer, mem.byteOffset, mem.byteLength >>> 2);
         u32[(this.mutexMirrorAddr >>> 2) + slot] = this.mutexMirrorShadow[slot]!;
     }
 
     private liveMutexWord(slot: number): number {
-        this.refreshViews();
-        if (this.mutexMirrorAddr && this.wasmMemory) {
-            const u32 = new Uint32Array(this.wasmMemory);
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (this.mutexMirrorAddr && mem) {
+            const u32 = new Uint32Array(mem.buffer, mem.byteOffset, mem.byteLength >>> 2);
             return u32[(this.mutexMirrorAddr >>> 2) + slot]!;
         }
         return this.mutexMirrorShadow[slot] ?? 0;
