@@ -515,6 +515,47 @@ required to quantify the BFME frame-time gain. The retained build is deployed as
 the TypeScript authority enabled, `get_jit_config(22) == 1`, and 11,010 emitted
 inline sites before any manual diagnostic toggle.
 
+A separate direct `JMP`/`Jcc` cross-module chaining experiment is now retained
+as an opt-in v86 facility, not as a BFME default. Config index 4 first tried the
+page-local DOD owner and missed about 92% of BFME's candidate exits. The retained
+resolver therefore keeps an exact `(virtual EIP, state flags)` open-addressed
+index with table-generation invalidation, plus one positive or negative memo per
+generated exit site. Positive memos use the global target invalidation epoch;
+negative memos retry only when a new exact target is published. The scheduler
+guard uses the cycle limit cached at `do_many_cycles_native` entry. Browsers must
+support WebAssembly `return_call_indirect`; BottleShip probes that opcode before
+allowing `dbg.jitBlockChain(true)`. Toggling clears the JIT cache. While disabled,
+exact entries are not published, so the normal BFME path does not touch the
+large side index.
+
+The deterministic two-page benchmark still gains 73.7% throughput (208.67 to
+120.12 ms median for four million iterations), with correct registers, quantum
+exits and no exact-index or memo overflow. The populated BFME result is different:
+after excluding one obvious AI stall, three OFF windows averaged 33.87 ms/frame
+and four ON windows averaged 33.85 ms/frame, only 0.07% in favor of chaining and
+therefore pure noise. Instrumentation nevertheless proved the mechanism active:
+26.59 million edges chained in fifteen seconds, 3.17 million fell back on a
+missing target and only 496 yielded for the scheduler budget. The five D3D9
+shadows stayed exact and the guest-fault list remained empty.
+
+Passing all eight x86 registers directly through an expanded JIT-module ABI was
+also implemented and tested, then removed. It raised the synthetic gain as high
+as 132%, but cross-instance calls with eleven WebAssembly parameters made BFME
+2.6% slower (33.92 to 34.80 ms/frame) once the cumulative instruction counter
+and budget were carried too. Naive region enlargement was rejected as well:
+six pages brought no gain, twelve pages regressed to 37.16–41.46 ms/frame, and
+raising the extra-block budget from 250 to 500 or 1,000 was neutral after a
+same-match return to 250 (34.08 versus 34.06 ms/frame at the end). Production
+therefore keeps three pages, 250 extra blocks and direct chaining disabled. The
+next version of this architectural idea would need profile-guided linking of hot
+regions into one generated WebAssembly module, rather than more cross-instance
+tail calls or a blind increase of existing module budgets.
+
+The final source without the rejected ABI was rebuilt and deployed as
+`emulator.worker-DP3jv--R.js`. A fresh Chromium process loaded that worker,
+rendered the BFME menu and reported direct chaining disabled, tail calls
+supported, zero exact-index publications on the disabled path and no guest fault.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
 one fresh worker boot with inline dispatch enabled followed by a stable capture

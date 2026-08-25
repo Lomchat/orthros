@@ -330,6 +330,32 @@ export const dbg = {
         const sites = w.jit_inline_dispatch_sites_compiled ? (w.jit_inline_dispatch_sites_compiled() >>> 0) : -1;
         console.log(`[dbg][jit] inlineDispatch=${enabled} compiledSites=${sites} (authoritative - survives reload) + cache cleared`);
     },
+    /** Direct JMP/Jcc cross-module tail chaining (set_jit_config idx 4).
+     *  The PreemptionManager applies the browser tail-call feature gate and keeps
+     *  the selection across a game reload. Default OFF during BFME evaluation. */
+    jitBlockChain(on = true): {
+        enabled: number; supported: boolean; compiledSites: number;
+        exactInserts: number; exactHits: number; exactMisses: number; exactOverflows: number;
+        memoHighWater: number; memoOverflows: number;
+    } | void {
+        const w = wasm(); if (!w?.set_jit_config) return;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDirectBlockChaining) pm.setDirectBlockChaining(on);
+        else { w.set_jit_config(4, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(4) >>> 0) : -1,
+            supported: pm?.isDirectBlockChainingSupported?.() ?? true,
+            compiledSites: w.jit_block_chain_sites_compiled ? (w.jit_block_chain_sites_compiled() >>> 0) : -1,
+            exactInserts: w.jit_exact_dispatch_inserts ? (w.jit_exact_dispatch_inserts() >>> 0) : -1,
+            exactHits: w.jit_exact_dispatch_hits ? (w.jit_exact_dispatch_hits() >>> 0) : -1,
+            exactMisses: w.jit_exact_dispatch_misses ? (w.jit_exact_dispatch_misses() >>> 0) : -1,
+            exactOverflows: w.jit_exact_dispatch_overflows ? (w.jit_exact_dispatch_overflows() >>> 0) : -1,
+            memoHighWater: w.jit_chain_memo_high_water ? (w.jit_chain_memo_high_water() >>> 0) : -1,
+            memoOverflows: w.jit_chain_memo_overflows ? (w.jit_chain_memo_overflows() >>> 0) : -1,
+        };
+        console.log(`[dbg][jit] blockChain=${report.enabled} supported=${report.supported ? 1 : 0} compiledSites=${report.compiledSites} exact=${report.exactHits}/${report.exactMisses} inserts=${report.exactInserts} overflows=${report.exactOverflows} memos=${report.memoHighWater}/${report.memoOverflows} (authoritative - survives reload) + cache cleared`);
+        return report;
+    },
     /** RET/AbsoluteEip dynamic chaining (set_jit_config idx 12). Default OFF — routed through
      *  PreemptionManager so the choice survives a game reload. Clears the JIT cache so
      *  blocks recompile with/without the chain attempt. Read hit/miss via

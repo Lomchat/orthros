@@ -60,6 +60,13 @@ export class PreemptionManager {
      *  generated shape is baked into modules, so toggles clear the JIT cache. */
     private inlineIntraModuleDispatchEnabled = true; // config idx 22
 
+    /** Direct JMP/Jcc cross-module tail chaining (config idx 4). The target
+     *  lookup and scheduler guard are emitted inline, but the wasm tail-call
+     *  opcode must be supported by the browser. Default OFF until the BFME A/B
+     *  gate passes; the synthetic two-page chain alone is not enough. */
+    private directBlockChainingEnabled = false;      // config idx 4
+    private directBlockChainingSupported = false;
+
     /** Dynamic RET dispatch experiments. Default OFF: a BFME skirmish measured only
      *  11.5% ret-chain hits, so failed probes made chaining ~3.3% slower; local target
      *  speculation was neutral to slightly slower. Both remain runtime-tunable through
@@ -156,6 +163,17 @@ export class PreemptionManager {
     }
     isInlineIntraModuleDispatchEnabled(): boolean { return this.inlineIntraModuleDispatchEnabled; }
 
+    /** Inline-guarded direct block chaining (idx 4). Authoritative across game
+     *  reloads and constrained by v86's WebAssembly tail-call feature probe. */
+    setDirectBlockChaining(on: boolean): void {
+        this.directBlockChainingEnabled = on && this.directBlockChainingSupported;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(4, this.directBlockChainingEnabled ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isDirectBlockChainingEnabled(): boolean { return this.directBlockChainingEnabled; }
+    isDirectBlockChainingSupported(): boolean { return this.directBlockChainingSupported; }
+
     setX87Locals(on: boolean): void {
         this.x87LocalsEnabled = on;
         const ex = this.wasmExports;
@@ -212,6 +230,8 @@ export class PreemptionManager {
         }
         this.hpBase = this.wasmExports.get_hypercall_page_ptr();
         this.refreshViews(cpu);
+        this.directBlockChainingSupported = cpu.jit_block_chaining_supported === true;
+        if (!this.directBlockChainingSupported) this.directBlockChainingEnabled = false;
         this.setCycleLimit(PreemptionManager.SINGLE_THREAD_LIMIT);
 
         // Relaxed FPU — inline x87 path matches helpers (see vendor/v86/tests/fpu-relaxed-diff.mjs).
@@ -234,8 +254,13 @@ export class PreemptionManager {
         }
 
         if (this.wasmExports.set_jit_config) {
+            // Direct cross-module block chaining idx 4. The CPU constructor keeps
+            // this disabled by default; this authority enables it only after the
+            // browser feature probe and preserves a diagnostic selection on reload.
+            this.wasmExports.set_jit_config(4, this.directBlockChainingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(5, this.deadFlagElisionEnabled ? 1 : 0);
             console.log(`[PERF] JIT dead-flag elision ${this.deadFlagElisionEnabled ? "enabled" : "DISABLED"}`);
+            console.log(`[PERF] JIT direct block chaining ${this.directBlockChainingEnabled ? "enabled" : "DISABLED"} (tail-call ${this.directBlockChainingSupported ? "supported" : "unsupported"})`);
 
             // Fastmem-wave (idx 9/10/11) — default ON, re-applied per init because v86
             // resets the wasm flags to their codegen default (OFF) on every game load.
