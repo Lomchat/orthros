@@ -8,6 +8,7 @@
 import { WebGPUBackend } from "../webgpu-backend";
 import { RenderFrame, RenderCommandType, ProgrammableDrawState, FixedFunctionDrawState } from "../render-frame";
 import { frameProfiler } from "../../../core/frame-profiler";
+import { shouldUseDirectD3D9Presentation } from "./presentation-policy";
 import { PROG_BIND } from "./shader";
 import { d3d9WasmArena, ArenaCommandType } from "./d3d9-wasm-arena";
 
@@ -130,12 +131,19 @@ export class D3D9BackendExecutor {
      */
     private discardBackbufferColor = true;
     // Chromium's Linux/headless WebGPU canvas swapchain can destroy the entire
-    // GPUDevice on the first D3D9 present. Keep the game's rendering on ordinary
-    // GPU textures and bridge completed frames to the page as ImageBitmaps. Only
-    // one readback may be in flight: dropping presentation frames is preferable
+    // GPUDevice on the first D3D9 present. That environment keeps the game's
+    // rendering on ordinary GPU textures and bridges completed frames to the page
+    // as ImageBitmaps; normal desktop browsers use the direct swapchain. Only one
+    // fallback readback may be in flight: dropping presentation frames is preferable
     // to stalling the guest or building an unbounded queue.
     private cpuPresentInFlight = false;
     private cpuPresentSequence = 0;
+    private cpuPresentStartedAt = 0;
+    private cpuPresentPhase = 0; // 0 idle, 1 GPU map, 2 ImageBitmap conversion
+    private readonly defaultDirectPresentation = shouldUseDirectD3D9Presentation(
+        undefined,
+        typeof navigator === "undefined" ? "" : navigator.userAgent,
+    );
     // Snapshot of the last COMPLETE presented frame. The offscreen is rendered incrementally
     // across a game frame's multiple submitFrame() passes (a backbuffer clear flushes to it
     // before the scene is redrawn — e.g. when render-to-texture passes sit between the clear and
@@ -162,6 +170,18 @@ export class D3D9BackendExecutor {
         clearCalls: 0,
         progConstWrites: 0,
         progConstReuseHits: 0,
+        // The CPU/ImageBitmap presentation bridge is asynchronous and deliberately
+        // keeps at most one readback in flight. These counters make its real output
+        // cadence observable: guest Presents can stay fast while visible frames are
+        // dropped here, outside the synchronous Present profiler category.
+        cpuPresentEncoded: 0,
+        cpuPresentDropped: 0,
+        cpuPresentPublished: 0,
+        cpuPresentFailed: 0,
+        cpuPresentTimeouts: 0,
+        cpuPresentMapMs: 0,
+        cpuPresentBitmapMs: 0,
+        directPresentFrames: 0,
     };
 
     constructor(backend: WebGPUBackend) {
@@ -285,8 +305,19 @@ export class D3D9BackendExecutor {
     /**
      * Get performance metrics
      */
-    getMetrics(): typeof this.metrics {
-        return { ...this.metrics };
+    getMetrics(): typeof this.metrics & {
+        cpuPresentInFlight: number;
+        cpuPresentPhase: number;
+        cpuPresentAgeMs: number;
+    } {
+        return {
+            ...this.metrics,
+            cpuPresentInFlight: this.cpuPresentInFlight ? 1 : 0,
+            cpuPresentPhase: this.cpuPresentPhase,
+            cpuPresentAgeMs: this.cpuPresentInFlight
+                ? Math.max(0, performance.now() - this.cpuPresentStartedAt)
+                : 0,
+        };
     }
 
     /**
@@ -301,6 +332,14 @@ export class D3D9BackendExecutor {
         this.metrics.clearCalls = 0;
         this.metrics.progConstWrites = 0;
         this.metrics.progConstReuseHits = 0;
+        this.metrics.cpuPresentEncoded = 0;
+        this.metrics.cpuPresentDropped = 0;
+        this.metrics.cpuPresentPublished = 0;
+        this.metrics.cpuPresentFailed = 0;
+        this.metrics.cpuPresentTimeouts = 0;
+        this.metrics.cpuPresentMapMs = 0;
+        this.metrics.cpuPresentBitmapMs = 0;
+        this.metrics.directPresentFrames = 0;
     }
 
     // ── WASM arena verify-only drain (dual-run scope cut) ────────────────────
@@ -614,16 +653,20 @@ export class D3D9BackendExecutor {
                 sequence: number;
             } | null = null;
 
-            // The CPU/ImageBitmap bridge is the safe default. Direct canvas
-            // presentation remains available for browsers with a reliable WebGPU
-            // swapchain by setting __d3d9DirectPresent=true.
+            // Real desktop browsers present straight into their WebGPU swapchain:
+            // the CPU/ImageBitmap bridge costs a full GPU readback and can lag or
+            // freeze while guest Presents continue. HeadlessChrome/SwiftShader keeps
+            // the bridge because its external swap texture destroys the GPUDevice.
+            // __d3d9DirectPresent remains a hot boolean diagnostic override.
+            const directPresentation = this.useDirectPresentation();
             if (present && !target && !(globalThis as any).__d3d9OffscreenOnly &&
-                !(globalThis as any).__d3d9DirectPresent) {
+                !directPresentation) {
                 cpuReadback = this.encodeCpuPresentation(encoder);
                 this.hasPresented = false;
                 this.traceGpu(cpuReadback ? "cpu presentation encoded" : "cpu presentation dropped (in flight)");
-            // Copy to canvas if direct presentation was explicitly requested.
+            // Copy to the canvas when direct presentation was selected.
             } else if (present && !target && !(globalThis as any).__d3d9OffscreenOnly) {
+                this.metrics.directPresentFrames++;
                 const context = this.backend.getContext()!;
                 const currentTexture = context.getCurrentTexture();
                 this.traceGpu(`currentTexture ${currentTexture.width}x${currentTexture.height}`);
@@ -689,7 +732,10 @@ export class D3D9BackendExecutor {
         paddedBytesPerRow: number;
         sequence: number;
     } | null {
-        if (this.cpuPresentInFlight || !this.offscreenTexture) return null;
+        if (this.cpuPresentInFlight || !this.offscreenTexture) {
+            this.metrics.cpuPresentDropped++;
+            return null;
+        }
         const device = this.backend.getDevice();
         if (!device) return null;
         const { width, height } = this.getCanvasSize();
@@ -705,7 +751,15 @@ export class D3D9BackendExecutor {
             { width, height, depthOrArrayLayers: 1 },
         );
         this.cpuPresentInFlight = true;
+        this.cpuPresentStartedAt = performance.now();
+        this.cpuPresentPhase = 1;
+        this.metrics.cpuPresentEncoded++;
         return { buffer, width, height, paddedBytesPerRow, sequence: ++this.cpuPresentSequence };
+    }
+
+    private useDirectPresentation(): boolean {
+        const override = (globalThis as any).__d3d9DirectPresent;
+        return typeof override === "boolean" ? override : this.defaultDirectPresentation;
     }
 
     private async publishCpuPresentation(readback: {
@@ -716,28 +770,60 @@ export class D3D9BackendExecutor {
         sequence: number;
     }): Promise<void> {
         try {
-            await readback.buffer.mapAsync(GPUMapMode.READ);
+            const mapStartedAt = performance.now();
+            await this.cpuPresentWithTimeout(
+                readback.buffer.mapAsync(GPUMapMode.READ),
+                1_000,
+                "GPU readback map",
+            );
+            this.metrics.cpuPresentMapMs += performance.now() - mapStartedAt;
             const mapped = new Uint8Array(readback.buffer.getMappedRange());
             const pixels = new Uint8ClampedArray(readback.width * readback.height * 4);
             const rowBytes = readback.width * 4;
-            for (let y = 0; y < readback.height; y++) {
-                pixels.set(
-                    mapped.subarray(y * readback.paddedBytesPerRow, y * readback.paddedBytesPerRow + rowBytes),
-                    y * rowBytes,
-                );
+            // navigator.gpu.getPreferredCanvasFormat() is BGRA on Chromium. ImageData
+            // is RGBA. Compact padded rows and exchange red/blue in one 32-bit pass,
+            // avoiding the previous full-frame byte copy followed by a second pass.
+            if (this.backend.getFormat()?.startsWith("bgra")) {
+                const dst = new Uint32Array(pixels.buffer);
+                const srcBuffer = mapped.buffer;
+                const srcBase = mapped.byteOffset;
+                for (let y = 0; y < readback.height; y++) {
+                    const src = new Uint32Array(
+                        srcBuffer,
+                        srcBase + y * readback.paddedBytesPerRow,
+                        readback.width,
+                    );
+                    const dstRow = y * readback.width;
+                    for (let x = 0; x < readback.width; x++) {
+                        const value = src[x];
+                        dst[dstRow + x] = (value & 0xff00ff00) |
+                            ((value & 0x000000ff) << 16) |
+                            ((value >>> 16) & 0x000000ff);
+                    }
+                }
+            } else {
+                for (let y = 0; y < readback.height; y++) {
+                    pixels.set(
+                        mapped.subarray(y * readback.paddedBytesPerRow, y * readback.paddedBytesPerRow + rowBytes),
+                        y * rowBytes,
+                    );
+                }
             }
             readback.buffer.unmap();
 
-            // navigator.gpu.getPreferredCanvasFormat() is BGRA on Chromium. ImageData
-            // is RGBA, so exchange red/blue before creating the transferable bitmap.
-            if (this.backend.getFormat()?.startsWith("bgra")) {
-                for (let i = 0; i < pixels.length; i += 4) {
-                    const red = pixels[i];
-                    pixels[i] = pixels[i + 2];
-                    pixels[i + 2] = red;
-                }
+            this.cpuPresentPhase = 2;
+            const bitmapStartedAt = performance.now();
+            const bitmapPromise = createImageBitmap(new ImageData(pixels, readback.width, readback.height));
+            let bitmap: ImageBitmap;
+            try {
+                bitmap = await this.cpuPresentWithTimeout(bitmapPromise, 1_000, "ImageBitmap conversion");
+            } catch (error) {
+                // A timed-out conversion may still resolve later. Close that orphan
+                // immediately so recovery cannot leak one full framebuffer.
+                void bitmapPromise.then((lateBitmap) => lateBitmap.close(), () => {});
+                throw error;
             }
-            const bitmap = await createImageBitmap(new ImageData(pixels, readback.width, readback.height));
+            this.metrics.cpuPresentBitmapMs += performance.now() - bitmapStartedAt;
             self.postMessage({
                 type: "d3d9_cpu_frame",
                 bitmap,
@@ -745,12 +831,29 @@ export class D3D9BackendExecutor {
                 height: readback.height,
                 sequence: readback.sequence,
             }, { transfer: [bitmap] });
+            this.metrics.cpuPresentPublished++;
         } catch (error) {
+            this.metrics.cpuPresentFailed++;
             this.traceGpu(`cpu presentation failed: ${String(error)}`);
         } finally {
             try { readback.buffer.destroy(); } catch { /* device may have been lost */ }
             this.cpuPresentInFlight = false;
+            this.cpuPresentStartedAt = 0;
+            this.cpuPresentPhase = 0;
         }
+    }
+
+    private cpuPresentWithTimeout<T>(promise: Promise<T>, timeoutMs: number, phase: string): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+                this.metrics.cpuPresentTimeouts++;
+                reject(new Error(`${phase} timed out after ${timeoutMs} ms`));
+            }, timeoutMs);
+        });
+        return Promise.race([promise, timeout]).finally(() => {
+            if (timer !== undefined) clearTimeout(timer);
+        });
     }
 
     /**

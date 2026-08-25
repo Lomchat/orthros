@@ -338,6 +338,34 @@ in-match proof remains the earlier 42.37–43.36 ms/frame (23.1–23.6 FPS) wind
 with the WASM string handlers; a same-skirmish or player-PC capture is still
 required before claiming stable 30 FPS gameplay.
 
+Presentation telemetry now separates guest `Present` calls from frames actually
+published by the browser. It exposed a blind spot in the headless fallback: that
+path copied every WebGPU framebuffer back to the CPU, removed row padding,
+swizzled BGRA to RGBA, and created an asynchronous `ImageBitmap`. A ten-second
+window recorded 304 guest Presents but no published frame because one GPU map
+remained pending; the FPS badge therefore measured simulation cadence, not this
+fallback's visible cadence.
+
+Normal desktop browsers now present directly to the WebGPU swapchain, removing
+the full GPU-to-CPU readback from the player path. `HeadlessChrome` automatically
+keeps the CPU bridge because forcing direct presentation on SwiftShader stalled
+presentation and saturated its renderer. The bridge now has one-second map and
+bitmap timeouts, recovers instead of remaining permanently locked, and combines
+row compaction with BGRA/RGBA conversion in one 32-bit pass. `d3d9Perf` reports
+encoded, dropped, published, failed and timed-out CPU frames, map/bitmap timing,
+the current in-flight phase, and direct-presented frames.
+The Worker boolean `__d3d9DirectPresent` can still force either path for an A/B;
+it is a diagnostic override, not a player-facing compatibility setting.
+
+A clean headless boot confirmed the automatic fallback (`directPresentFrames:
+0`). SwiftShader published only 2 of 255 cumulative guest Presents, with 11 GPU
+map timeouts; `ImageBitmap` conversion consumed just 4.75 ms total, identifying
+the GPU readback as the blocked stage. Guest execution nevertheless retained
+33.00 ms/frame over 120 frames (30.3 FPS: 31.96 ms v86, 0.96 ms thunks, 0.23 ms
+Present). Direct desktop presentation removes that hidden bottleneck, but it has
+not yet been measured on the player's real GPU and is not itself proof of stable
+30 FPS in a populated skirmish.
+
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
 one fresh worker boot followed by a stable capture from the same real player
