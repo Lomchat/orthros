@@ -63,6 +63,8 @@ flowchart LR
 - Game files, saves and registry live in an OPFS virtual filesystem (read-only ROM plus a
   copy-on-write overlay).
 - Hot guest/host calls stay entirely inside WASM for speed.
+- A bounded profile-guided Tier-2 JIT coalesces genuinely hot cross-module paths
+  into one WASM compilation unit instead of blindly growing cold control flow.
 
 [Read the architecture guide →](docs/architecture.md)
 

@@ -86,6 +86,10 @@ export class PreemptionManager {
     /** Total guest pages that may retain a tier-2 marking. Runtime-tunable for
      *  A/B, but 512 showed no measurable frame gain over the bounded 256 default. */
     private tier2PageSetCap = 256;               // config idx 20 (1..4096)
+    /** Profile-guided Tier-2 module coalescing (idx 23). Kept separately
+     *  switchable for controlled A/Bs; enabling starts with a clean Tier-2
+     *  profile/cache so old page-only promotions cannot bias the comparison. */
+    private tier2RegionsEnabled = true;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -215,6 +219,15 @@ export class PreemptionManager {
     }
     getTier2Threshold(): number { return this.tier2Threshold; }
 
+    setTier2Regions(on: boolean): void {
+        this.tier2RegionsEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(23, on ? 1 : 0);
+        if (ex?.jit_reset_tier2_state) ex.jit_reset_tier2_state();
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isTier2RegionsEnabled(): boolean { return this.tier2RegionsEnabled; }
+
     /** 5× original LOOP_COUNTER — reduces postMessage round-trips from ~1K/s to ~200/s.
      *  Each do_many_cycles_native() runs ~5ms instead of ~1ms, matching TIME_PER_FRAME=1ms
      *  (inner loop exits immediately after first iteration since 5ms > 1ms threshold).
@@ -293,7 +306,8 @@ export class PreemptionManager {
             // promotion invalidation bug crashes Discworld Noir with "null function").
             this.wasmExports.set_jit_config(15, this.tier2Threshold);
             this.wasmExports.set_jit_config(20, this.tier2PageSetCap);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap}`);
+            this.wasmExports.set_jit_config(23, this.tier2RegionsEnabled ? 1 : 0);
+            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

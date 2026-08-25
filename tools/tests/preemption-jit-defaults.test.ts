@@ -23,11 +23,13 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isRetChainingEnabled()).toBe(false);
         expect(manager.isRetSpeculationEnabled()).toBe(false);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
+        expect(manager.isTier2RegionsEnabled()).toBe(true);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
         expect(configs.get(4)).toBe(0);
         expect(configs.get(12)).toBe(0);
         expect(configs.get(13)).toBe(0);
         expect(configs.get(22)).toBe(1);
+        expect(configs.get(23)).toBe(1);
     });
 
     test("gates direct block chaining on wasm tail-call support and preserves it on reload", () => {

@@ -551,15 +551,51 @@ next version of this architectural idea would need profile-guided linking of hot
 regions into one generated WebAssembly module, rather than more cross-instance
 tail calls or a blind increase of existing module budgets.
 
-The final source without the rejected ABI was rebuilt and deployed as
-`emulator.worker-DP3jv--R.js`. A fresh Chromium process loaded that worker,
-rendered the BFME menu and reported direct chaining disabled, tail calls
-supported, zero exact-index publications on the disabled path and no guest fault.
+That profile-guided Tier-2 version is now implemented generically. Modules in
+the final quarter of their warm-up reuse the existing 1/256 Tier-2 hotness
+sample; only a selected execution records its runtime successor. Each WASM slot
+keeps at most eight Misra-Gries candidates and 4,096 samples. At promotion, only
+already-compiled targets with matching CPU state and at least 5% share may join
+the source module. The union is capped at the existing eight-page Tier-2 budget,
+thunk/callback pages are excluded, and edges outside the selected union remain
+normal side exits. Slot reuse and self-modifying-code invalidation both discard
+stale profiles.
+
+Two more expensive versions were rejected. Recording every eligible exit
+produced 1,260,674,954 events during BFME. Sampling at exit still added 11.1%
+to a deliberately pathological tiny-module loop. Folding the decision into the
+existing hotness sample reduced the incremental armed cost to 0.26%, while a
+complete BFME boot/skirmish now records 89,115–198,947 bounded samples instead.
+
+The deterministic generic benchmark alternates between two hot modules while
+ten statically reachable cold pages compete for the wider compile budget. The
+legacy Tier-2 median is 193.43 ms for four million iterations; the selected
+region is 115.00 ms, a 68.2% throughput gain. It is also 57.7% faster than the
+181.31 ms no-Tier-2 median, retains exact architectural results, and forms the
+region from roughly 723–784 sampled exits. Run it with
+`node vendor/v86/tests/jit-tier2-regions-repro.mjs`.
+
+A fresh full BFME skirmish reached 32.98 ms/frame / 30.3 FPS (32.42 ms v86,
+0.53 ms thunks, 0.27 ms Present), with 49 regions and 85 seeds, no guest fault,
+and zero mismatch across all five D3D9 shadows. A hot same-match A/B measured
+32.99 ms / 30.3 FPS with legacy Tier-2 and 33.06 ms / 30.2 FPS after regions
+were re-enabled. The 0.2% difference is noise at BFME's engine-clock ceiling:
+this is a validated general multi-module win, not extra BFME FPS once the game
+already waits for its next 30 Hz frame.
+
+Config index 23 and `dbg.jitTier2Regions(false)` provide an authoritative kill
+switch; toggling resets the Tier-2 profile and JIT cache. Regions are enabled by
+default in v86 and BottleShip. Direct tail-call block chaining remains disabled.
+
+The current source was rebuilt and deployed as
+`emulator.worker-DHJNUrwY.js`. A fresh Chromium process loaded that worker,
+completed a BFME skirmish and reported direct chaining disabled, Tier-2 regions
+active, zero D3D9 mismatch and no guest fault.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is
-one fresh worker boot with inline dispatch enabled followed by a stable capture
-from the same real player skirmish.
+one fresh desktop-player boot on this worker followed by a stable capture from
+the same real skirmish.
 
 ## Operational notes
 
