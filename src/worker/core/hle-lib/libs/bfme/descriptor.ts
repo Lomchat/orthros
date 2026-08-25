@@ -11,6 +11,7 @@ import {
     HANDLER_BFME_TRANSFORM_PUSH,
     HANDLER_BFME_TRANSFORM_POP,
     HANDLER_BFME_MATRIX_ADJUST,
+    HANDLER_BFME_TREE_SUCCESSOR,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -38,6 +39,7 @@ import {
     buildBfmeSmallPoolAllocInline,
     buildBfmeSmallPoolFreeInline,
 } from './small-pool-inline';
+import { bfmeTreeSuccessorHandler } from './tree-successor';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -152,6 +154,17 @@ const MATRIX_ADJUST_PATTERN = hexBytes(
     'd94018 d84118 d95918 d9401c d8411c d9591c ' +
     'ff15a4783301 59 c20400',
 );
+// lotrbfme.exe 1.03 FR @ 0x00c2b870. STL tree iterator successor:
+// descend to the leftmost node of the right subtree, otherwise ascend parents.
+// A five-second escarmouche trace measured ~32K calls/s and 1.43M tiny JIT
+// blocks on this page.
+const TREE_SUCCESSOR_PATTERN = hexBytes(
+    '558bec51 8b4508 83780c00 741f 8b4d08 8b510c 895508 ' +
+    '8b4508 83780800 740b 8b4d08 8b5108 895508 ebec eb36 ' +
+    '8b4508 8b4804 894dfc 8b55fc 8b4508 3b420c 7511 ' +
+    '8b4dfc 894d08 8b55fc 8b4204 8945fc ebe4 8b4d08 ' +
+    '8b510c 3b55fc 7406 8b45fc 894508 8b4508 8be5 5d c3',
+);
 
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
@@ -215,6 +228,10 @@ export const bfmeDescriptor: LibDescriptor = {
         matrix_adjust: {
             kind: 'bytes', pattern: MATRIX_ADJUST_PATTERN,
             mask: 'x'.repeat(MATRIX_ADJUST_PATTERN.length), section: '.text', weight: 12,
+        },
+        tree_successor: {
+            kind: 'bytes', pattern: TREE_SUCCESSOR_PATTERN,
+            mask: 'x'.repeat(TREE_SUCCESSOR_PATTERN.length), section: '.text', weight: 12,
         },
     },
     functions: {
@@ -382,6 +399,15 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_MATRIX_ADJUST,
             entryFilter: buildMatrixAdjustWrapper,
         },
+        tree_successor: {
+            name: 'tree_successor',
+            entryProbe: {
+                kind: 'prologue', pattern: TREE_SUCCESSOR_PATTERN,
+                mask: 'x'.repeat(TREE_SUCCESSOR_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 1, required: true,
+            hypercallHandlerId: HANDLER_BFME_TREE_SUCCESSOR,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
@@ -396,5 +422,6 @@ export const bfmeDescriptor: LibDescriptor = {
         transform_push: bfmeTransformPushHandler,
         transform_pop: bfmeTransformPopHandler,
         matrix_adjust: bfmeMatrixAdjustHandler,
+        tree_successor: bfmeTreeSuccessorHandler,
     },
 };

@@ -329,9 +329,10 @@ wrappers measured 33.04 ms/frame (30.3 FPS: 32.11 ms v86 and 0.86 ms thunks).
 The latest optimized frame was 33.94 ms / 29.5 FPS and the guest fault list was
 empty.
 
-The thirteen retained BFME hooks are the fold-33 hash, lowercase helper, three
+The fourteen retained BFME hooks are the fold-33 hash, lowercase helper, three
 string-reference operations, two small-pool operations, and six matrix/transform
-leaves (`confidence: 156`, none missing). Headless navigation is deterministic
+leaves, plus the STL tree successor described below (`confidence: 168`, none
+missing). Headless navigation is deterministic
 when each mouse move precedes `clickHold` by roughly 1.2 seconds. Fresh skirmish
 runs with all three guest-native string wrappers measured 42.27–43.32 ms/frame
 (23.1–23.7 FPS) before the synchronization changes below.
@@ -397,6 +398,28 @@ the GPU readback as the blocked stage. Guest execution nevertheless retained
 Present). Direct desktop presentation removes that hidden bottleneck, but it has
 not yet been measured on the player's real GPU and is not itself proof of stable
 30 FPS in a populated skirmish.
+
+The next trace found roughly 1.58 million calls to the generic
+`winmm:timeGetTime` stub in ten seconds. BFME now enables the already-audited
+trap-free RDTSC time leaf by default; `__noInlineTime=true` remains a diagnostic
+kill switch and other executables remain opt-in. A 250 ms audit measured 250.44
+ms wall time, 250.74 ms virtual time and 250 ms from the inline leaf. A same-match
+hot A/B improved from 37.18 to 36.45 ms/frame, about 2%.
+
+After removing that dispatch traffic, `lotrbfme.exe`'s STL tree-successor helper
+at `0x00c2b870` became the hottest page: about 32,000 calls/s and 1.43 million
+tiny blocks in five seconds. An exact 105-byte signature now routes its
+parent/left/right traversal through WASM handler 147, with bounded traversal and
+safe fallback for invalid memory or cycles. The same build sends
+`SetSoftwareVertexProcessing`—ten calls per rendered frame—through a shadowed
+D3D9 write-buffer slot; it no longer appears in profiler buckets.
+
+A same-skirmish hot A/B measured 43.04 ms/frame (23.2 FPS) after unpatching only
+the tree hook and 41.67 ms/frame (24.0 FPS) with it active, a 3.2% frame-time
+reduction. The active window comprised 40.28 ms v86, 1.30 ms thunks and 0.78 ms
+Present, with no guest faults and zero mismatches in all five D3D9 shadows. Its
+latest frame reached 25.1 FPS; this SwiftShader skirmish is therefore still below
+a stable 30 FPS and does not replace validation on the player's desktop.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is

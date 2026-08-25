@@ -1192,8 +1192,11 @@ export class PELoader {
                 // GetTickCount/timeGetTime share a trap-free RDTSC leaf. The
                 // unified virtual TSC has an exact 2^32-Hz scale, so the guest
                 // can convert it to milliseconds without an OUT/JIT boundary.
+                const inlineTimeEnabled = (globalThis as any).__inlineTimeEnabled === true
+                    || (System.getInstance().executableName.toLowerCase() === 'lotrbfme.exe'
+                        && (globalThis as any).__noInlineTime !== true);
                 if ((dllName === 'kernel32' || dllName === 'winmm') && !this.timeInlineStub
-                    && (globalThis as any).__inlineTimeEnabled === true) {
+                    && inlineTimeEnabled) {
                     try {
                         const tmm = System.getInstance().process?.thunkMemoryManager;
                         const readTsc = (globalThis as any).preemption?.getWasmExports?.()?.read_tsc;

@@ -181,6 +181,8 @@ export const HANDLER_BFME_MATRIX_MULTIPLY = 143;
 export const HANDLER_BFME_TRANSFORM_PUSH = 144;
 export const HANDLER_BFME_TRANSFORM_POP = 145;
 export const HANDLER_BFME_MATRIX_ADJUST = 146;
+/** BFME 1.03 STL tree iterator successor at lotrbfme.exe+0x82b870. */
+export const HANDLER_BFME_TREE_SUCCESSOR = 147;
 
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;

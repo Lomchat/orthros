@@ -266,6 +266,7 @@ export function createDeviceExports(): Record<string, ThunkImplementation> {
                 disp?.resetShadow?.('d3d9', 'IDirect3DDevice9_SetTextureStageState');
                 disp?.resetShadow?.('d3d9', 'IDirect3DDevice9_SetTexture');
                 disp?.resetShadow?.('d3d9', 'IDirect3DDevice9_SetFVF');
+                disp?.resetShadow?.('d3d9', 'IDirect3DDevice9_SetSoftwareVertexProcessing');
             } catch { /* non-fatal */ }
 
             // Return device interface pointer

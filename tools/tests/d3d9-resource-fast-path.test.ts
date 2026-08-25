@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { registerFastPathD3D9Functions } from '../../src/worker/modules/d3d9/fast-path';
 import { devices, resourceToDevice } from '../../src/worker/modules/d3d9/shared-state';
-import { surfaceMeta } from '../../src/worker/modules/d3d9/resource-registry';
+import { deviceSoftwareVertexProcessing, surfaceMeta } from '../../src/worker/modules/d3d9/resource-registry';
 
 type FastHandler = (cpu: any, mem: Uint8Array, mem32: Uint32Array, view: DataView) => number | null;
 
@@ -27,6 +27,7 @@ afterEach(() => {
     devices.clear();
     resourceToDevice.clear();
     surfaceMeta.clear();
+    deviceSoftwareVertexProcessing.clear();
 });
 
 describe('D3D9 dynamic-buffer fast paths', () => {
@@ -81,5 +82,23 @@ describe('D3D9 dynamic-buffer fast paths', () => {
         expect(handlers.get('IDirect3DSurface9_GetDesc')!(desc.cpu, desc.mem, new Uint32Array(desc.mem.buffer), desc.view)).toBe(0);
         expect(Array.from({ length: 8 }, (_, i) => desc.view.getUint32(0x500 + i * 4, true)))
             .toEqual([21, 1, 2, 3, 4, 5, 1280, 720]);
+    });
+
+    test('software vertex-processing mode is handled without the generic thunk', () => {
+        const handlers = collectHandlers();
+        const devicePtr = 0x600;
+        devices.set(devicePtr, {} as any);
+
+        const enabled = stackFor([devicePtr, 1]);
+        expect(handlers.get('IDirect3DDevice9_SetSoftwareVertexProcessing')!(
+            enabled.cpu, enabled.mem, new Uint32Array(enabled.mem.buffer), enabled.view,
+        )).toBe(0);
+        expect(deviceSoftwareVertexProcessing.get(devicePtr)).toBe(true);
+
+        const disabled = stackFor([devicePtr, 0]);
+        expect(handlers.get('IDirect3DDevice9_SetSoftwareVertexProcessing')!(
+            disabled.cpu, disabled.mem, new Uint32Array(disabled.mem.buffer), disabled.view,
+        )).toBe(0);
+        expect(deviceSoftwareVertexProcessing.get(devicePtr)).toBe(false);
     });
 });

@@ -34,7 +34,7 @@ import {
     resolvePixelShaderComPtr,
     resolveVertexDeclComPtr,
 } from '../../backends/webgpu/d3d9/d3d9-com-objects';
-import { surfaceMeta } from './resource-registry';
+import { deviceSoftwareVertexProcessing, surfaceMeta } from './resource-registry';
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
@@ -103,6 +103,19 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
         const device = devices.get(view.getUint32(esp + 4, true));
         if (!device) return D3DERR_INVALIDCALL;
         return device.setFVF(view.getUint32(esp + 8, true));
+    }, { trivial: true });
+
+    // IDirect3DDevice9_SetSoftwareVertexProcessing(thisPtr, Software)
+    // BFME calls this around ten times per rendered frame. It is a scalar state
+    // setter, so there is no reason to pay the generic OUT/JS thunk on every
+    // transition; the write-buffer registration below handles the usual path
+    // and this FastPath remains the overflow fallback.
+    dispatcher.registerFastPath('d3d9', 'IDirect3DDevice9_SetSoftwareVertexProcessing', (cpu: any, _mem: Uint8Array, _mem32: Uint32Array, view: DataView): number => {
+        const esp = cpu.reg32[4];
+        const pDevice = view.getUint32(esp + 4, true);
+        if (!devices.has(pDevice)) return D3DERR_INVALIDCALL;
+        deviceSoftwareVertexProcessing.set(pDevice, view.getUint32(esp + 8, true) !== 0);
+        return D3D_OK;
     }, { trivial: true });
 
     // IDirect3DDevice9_SetSamplerState(thisPtr, Sampler, Type, Value)
@@ -459,6 +472,28 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
                 const device = devices.get(mem32[ptr >> 2]);
                 if (device) device.setFVF(mem32[(ptr + 4) >> 2]);
+            }, true, 0x1);
+    }
+
+    // SetSoftwareVertexProcessing (2 args) — one boolean state slot. In
+    // addition to batching genuine transitions, the shadow rejects consecutive
+    // repeats without entering the ring or JavaScript.
+    if (regShadowed) {
+        dispatcher.registerShadowedWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetSoftwareVertexProcessing', 2,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const pDevice = mem32[ptr >> 2];
+                if (devices.has(pDevice)) {
+                    deviceSoftwareVertexProcessing.set(pDevice, mem32[(ptr + 4) >> 2] !== 0);
+                }
+            }, 0x1,
+            { argCount: 2, valueArgIndex: 1, slotCount: 1, keyParts: [] });
+    } else {
+        dispatcher.registerWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetSoftwareVertexProcessing', 2,
+            (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
+                const pDevice = mem32[ptr >> 2];
+                if (devices.has(pDevice)) {
+                    deviceSoftwareVertexProcessing.set(pDevice, mem32[(ptr + 4) >> 2] !== 0);
+                }
             }, true, 0x1);
     }
 
