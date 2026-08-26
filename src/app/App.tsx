@@ -23,9 +23,6 @@ import MessageBoxModal, { type MessageBoxRequest } from "../debug/MessageBoxModa
 import type { GuestExitInfo } from "../guest-report";
 import { detectBrowserSupport, probeWebGPU, type WebGPUProbeResult } from "../browser-support";
 import WebGPUErrorOverlay from "./WebGPUErrorOverlay";
-import WgbWizardModal from "../wizard/WgbWizardModal";
-import ManifestEditorModal from "../wizard/ManifestEditorModal";
-import { listAddedGames, removeAddedGame, type AddedGame } from "../wgb-library";
 import { ensurePersistentStorageRequested } from "../storage-manager";
 import { loadGamesCatalog } from "../games-catalog";
 import { currentGameId, gameHref } from "./route";
@@ -41,42 +38,6 @@ import type {
   PresentMode,
   UiSettings,
 } from "../ui-settings";
-
-async function writeOpfsFile(dir: FileSystemDirectoryHandle, name: string, blob: Blob): Promise<void> {
-  const handle = await dir.getFileHandle(name, { create: true });
-  const writable = await handle.createWritable();
-  await writable.write(blob);
-  await writable.close();
-}
-
-/**
- * Stage dropped/picked bundle(s) or installer parts into OPFS, then open the bare
- * workspace to launch them — the bridge a File can't otherwise survive a `location.assign`.
- *
- * - single .wgb → staged into wgb-cache/<name>, launched via ?load=<url>. The worker's
- *   load_bundle{url} path checks WgbCache.openSyncSourceForUrl (keyed by filename) before
- *   any fetch, so it reads our staged copy straight off disk (no RAM copy).
- * - installer(s) (single-file GOG .exe, or setup.exe + setup-*.bin slices) → staged into a
- *   fresh _ingest/ dir, launched via ?ingest=1. The dev handler reads them back and feeds
- *   the worker's load_bundle blob/blobs sniff path (PE → inno unpack → wgb).
- */
-async function stageFilesAndLaunch(files: File[]): Promise<void> {
-  const root = await navigator.storage.getDirectory();
-  const orthros = await root.getDirectoryHandle(ORTHROS_ROOT, { create: true });
-
-  if (files.length === 1 && files[0]!.name.toLowerCase().endsWith(".wgb")) {
-    const f = files[0]!;
-    const cacheDir = await orthros.getDirectoryHandle("wgb-cache", { create: true });
-    await writeOpfsFile(cacheDir, f.name, f);
-    window.location.assign(`/?game=dev&load=${encodeURIComponent(`/apps/byo/${f.name}`)}`);
-    return;
-  }
-
-  try { await orthros.removeEntry("_ingest", { recursive: true }); } catch { /* none yet */ }
-  const ingestDir = await orthros.getDirectoryHandle("_ingest", { create: true });
-  for (const f of files) await writeOpfsFile(ingestDir, f.name, f);
-  window.location.assign(`/?game=dev&ingest=1`);
-}
 
 const INPUT_BUFFER_SIZE = 1024;
 const INPUT_INDEX = {
@@ -287,22 +248,6 @@ export default function App() {
     padLabel: null,
     guestActive: false,
   });
-  const handleDroppedFiles = useCallback((fileList: FileList | File[]) => {
-    const files = Array.from(fileList);
-    if (files.length === 0 || !globalWorker) return;
-    ensurePersistentStorageRequested();
-    canvasRef.current?.focus();
-    setIsLoadingApp(true);
-    setErrorMessage(null);
-    setBundleDisplayName(null);
-    setLoadingProgress({ phase: "loading", percent: 0, label: "" });
-    // One file → blob sniff path; several (setup.exe + setup-*.bin) → multi-part install.
-    globalWorker.postMessage(
-      files.length === 1
-        ? { type: "load_bundle", blob: files[0] }
-        : { type: "load_bundle", blobs: files },
-    );
-  }, []);
   const canvasRectRef = useRef<DOMRect | null>(null);
   const cursorVisibleRef = useRef(true);
   const isCanvasHoveredRef = useRef(false);
@@ -335,9 +280,6 @@ export default function App() {
   const [loadingElapsedSeconds, setLoadingElapsedSeconds] = useState(0);
   const [localCacheProgress, setLocalCacheProgress] = useState<LocalCacheProgress | null>(null);
   const [canvasOverlayAnchor, setCanvasOverlayAnchor] = useState({ top: 8, right: 8 });
-  const [addGameOpen, setAddGameOpen] = useState(false);
-  const [addedGames, setAddedGames] = useState<AddedGame[]>([]);
-  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [opfsToolOpen, setOpfsToolOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
@@ -477,39 +419,6 @@ export default function App() {
     if (selectedGame.id !== "dev" && !selectedGame.wgbUrl) return;
     autoLoadDoneRef.current = true;
 
-    if (selectedGame.id === "dev" && ingest) {
-      // BYO installer(s) staged to OPFS _ingest/ by the Add-Game flow — read them back and
-      // feed the worker's blob sniff path (one file → {blob}; multi-part → {blobs}).
-      (async () => {
-        try {
-          const root = await navigator.storage.getDirectory();
-          const orthros = await root.getDirectoryHandle(ORTHROS_ROOT);
-          const ingestDir = await orthros.getDirectoryHandle("_ingest");
-          const files: File[] = [];
-          for await (const [, handle] of (ingestDir as any).entries()) {
-            if (handle.kind === "file") files.push(await (handle as FileSystemFileHandle).getFile());
-          }
-          if (files.length === 0) throw new Error("no staged files found");
-          ensurePersistentStorageRequested();
-          canvasRef.current?.focus();
-          setIsLoadingApp(true);
-          setErrorMessage(null);
-          setBundleDisplayName(null);
-          setLoadingProgress({ phase: "loading", percent: 0, label: "" });
-          globalWorker?.postMessage(
-            files.length === 1
-              ? { type: "load_bundle", blob: files[0] }
-              : { type: "load_bundle", blobs: files },
-          );
-        } catch (err) {
-          setErrorMessage(`Failed to load staged files: ${err instanceof Error ? err.message : String(err)}`);
-          setIsLoadingApp(false);
-          setLoadingProgress(null);
-        }
-      })();
-      return;
-    }
-
     (window as any).loadApp?.(selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl);
   }, [browserSupport.supported, selectedGame, workerStatus, webgpuProbe]);
 
@@ -564,16 +473,6 @@ export default function App() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [loadingProgress?.phase, loadingProgress?.fadingOut]);
-
-  // BYO bundles the user added live in OPFS wgb-cache/ — surface them in the library.
-  // Exclude cached copies of built-in games so they don't show twice.
-  const refreshAddedGames = useCallback(() => {
-    const exclude = new Set((gamesCatalog ?? []).map((g) => (g.wgbUrl.split("/").pop() ?? "").toLowerCase()));
-    listAddedGames(exclude).then(setAddedGames).catch(() => setAddedGames([]));
-  }, [gamesCatalog]);
-  useEffect(() => {
-    if (!gameIdFromUrl) refreshAddedGames();
-  }, [gameIdFromUrl, refreshAddedGames]);
 
   // Pointer lock state for FPS-style relative mouse input
   const pointerLockedRef   = useRef(false);
@@ -2490,21 +2389,8 @@ export default function App() {
       <>
         <GameSelectScreen
           games={gamesCatalog ?? []}
-          addedGames={addedGames}
           onSelectGame={(game) => {
             if (!launchBlocked) window.location.assign(gameHref(game.id));
-          }}
-          onPlayAdded={(g) => {
-            if (!launchBlocked) window.location.assign(`/?game=dev&load=${encodeURIComponent(g.url)}`);
-          }}
-          onRemoveAdded={(g) => {
-            removeAddedGame(g.key).then(refreshAddedGames).catch((err) =>
-              setErrorMessage(`Failed to remove: ${err instanceof Error ? err.message : String(err)}`),
-            );
-          }}
-          onEditAdded={(g) => setEditingKey(g.key)}
-          onAddGame={() => {
-            if (!launchBlocked) setAddGameOpen(true);
           }}
           onDevMode={() => {
             if (!launchBlocked) window.location.assign("/?game=dev");
@@ -2516,35 +2402,6 @@ export default function App() {
         />
         {settingsDrawer}
         <StorageManagerModal isOpen={storageOpen} onClose={() => setStorageOpen(false)} />
-        <WgbWizardModal
-          isOpen={addGameOpen}
-          onClose={() => setAddGameOpen(false)}
-          disabled={!browserSupport.supported}
-          onPlay={({ files, url }) => {
-            // "Play now" can't boot inside the wizard's build-only worker, so route the
-            // source through App's existing launch flow (stage to OPFS + navigate, or
-            // load-by-url) — the path that already boots a game.
-            if (url) {
-              window.location.assign(`/?game=dev&load=${encodeURIComponent(url)}`);
-              return;
-            }
-            if (files && files.length > 0) {
-              stageFilesAndLaunch(files).catch((err) =>
-                setErrorMessage(`Failed to stage files: ${err instanceof Error ? err.message : String(err)}`),
-              );
-            }
-          }}
-          onEditLibrary={() => {
-            setAddGameOpen(false);
-            setStorageOpen(true);
-          }}
-          onPersisted={refreshAddedGames}
-        />
-        <ManifestEditorModal
-          gameKey={editingKey}
-          onClose={() => setEditingKey(null)}
-          onSaved={refreshAddedGames}
-        />
         {webgpuBlocked && (
           <WebGPUErrorOverlay probe={webgpuProbe!} detectedBrowser={browserSupport.detectedBrowser} variant="modal" />
         )}
@@ -2677,12 +2534,6 @@ export default function App() {
           ["--fullscreen-integer-h" as string]: `${integerScaleSize.height}px`,
         } as React.CSSProperties
       }
-      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.dataTransfer.files.length > 0) handleDroppedFiles(e.dataTransfer.files);
-      }}
     >
       {/* Top bar */}
       <header className={s["emu-topbar"]}>

@@ -7,7 +7,7 @@ Orthros runs the original 32-bit Windows executable on the player's computer. Th
 Use a private room name and send the exact same URL to every player:
 
 ```text
-https://games.chalco.website/bfme?room=changez-moi-par-un-secret
+https://orthros.chalco.website/bfme?room=changez-moi-par-un-secret
 ```
 
 There is no installer, file picker, Wine client, remote desktop or native helper. Chrome downloads game regions on demand and stores writable files (options and saves) in browser storage. A first cold boot on the VPS test hardware took about 105–130 seconds; later access benefits from browser caching.
@@ -73,10 +73,10 @@ sudo systemctl reload caddy
 Smoke checks:
 
 ```bash
-curl -fsS https://games.chalco.website/bfme-net/health
-curl -fsSI https://games.chalco.website/apps/bfme.wgb
+curl -fsS https://orthros.chalco.website/bfme-net/health
+curl -fsSI https://orthros.chalco.website/apps/bfme.wgb
 curl -fsS -H 'Range: bytes=0-31' \
-  https://games.chalco.website/apps/bfme.wgb | wc -c
+  https://orthros.chalco.website/apps/bfme.wgb | wc -c
 ```
 
 The last command must print `32`; the response itself must be HTTP `206`.
