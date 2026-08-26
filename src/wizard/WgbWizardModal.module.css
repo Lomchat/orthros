@@ -285,7 +285,7 @@
 
 /* Processing view */
 .proc { text-align: center; padding: 30px 10px; }
-.proc__bottle { width: 96px; height: 96px; margin: 0 auto 18px; color: var(--cyan); }
+.proc__logo { width: 96px; height: 96px; margin: 0 auto 18px; color: var(--cyan); }
 .proc__label { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--cyan-soft); letter-spacing: 0.04em; }
 .bar {
   height: 8px;

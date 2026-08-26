@@ -1,4 +1,4 @@
-/* Main shell — "shelf of bottles". Masthead + library + status bar. */
+/* Main shell — library shelf. Masthead + library + status bar. */
 .shell {
   position: relative;
   z-index: 1;
@@ -34,7 +34,7 @@
 .brand { display: flex; flex-direction: column; gap: 10px; flex: 0 0 auto; }
 .brand__mark { display: flex; align-items: center; gap: 16px; }
 /* Pixel-art mark (native 41x27) — integer-scaled ×2 with nearest-neighbour so it stays crisp. */
-.brand__bottle { width: 82px; height: 54px; opacity: 0.95; image-rendering: pixelated; }
+.brand__logo { width: 82px; height: 54px; opacity: 0.95; image-rendering: pixelated; }
 .wordmark {
   font-family: var(--font-display);
   font-weight: 600;
@@ -366,7 +366,7 @@
   animation: bs-fade 0.3s;
 }
 /* Same pixel-art mark, integer-scaled ×3 for the hero. */
-.hero__bottle { width: 123px; height: 81px; margin-bottom: 14px; image-rendering: pixelated; }
+.hero__logo { width: 123px; height: 81px; margin-bottom: 14px; image-rendering: pixelated; }
 .hero__t {
   font-family: var(--font-display);
   font-weight: 700;

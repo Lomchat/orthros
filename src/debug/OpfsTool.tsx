@@ -1,3 +1,4 @@
+import { ORTHROS_ROOT } from "../worker/runtime/filesystem/container-store";
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   type StorageEstimate,
@@ -136,7 +137,7 @@ const CATEGORY_HINT: Record<EntryCategory, string> = {
 
 async function getOrthrosDir(create: boolean): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
-  return root.getDirectoryHandle('bottleship', { create });
+  return root.getDirectoryHandle(ORTHROS_ROOT, { create });
 }
 
 async function scanOpfsFiles(
@@ -393,11 +394,11 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
       try {
         const root = await navigator.storage.getDirectory();
         try {
-          await root.removeEntry('bottleship', { recursive: true });
+          await root.removeEntry(ORTHROS_ROOT, { recursive: true });
         } catch (err: any) {
           if (err?.name !== 'NotFoundError') throw err;
         }
-        await root.getDirectoryHandle('bottleship', { create: true });
+        await root.getDirectoryHandle(ORTHROS_ROOT, { create: true });
         setSelectedFile(null);
         setFileContent('');
         await loadFiles();

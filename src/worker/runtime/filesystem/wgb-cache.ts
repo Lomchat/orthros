@@ -1,3 +1,4 @@
+import { ORTHROS_ROOT } from "./container-store";
 import { Logger, LogCategory } from "../../core/logger";
 import { SyncAccessHandleSource } from "@orthros/formats/zip";
 import { asWriteChunk } from "../../../dom-buffer";
@@ -91,7 +92,7 @@ export class WgbCache {
         if (this.cacheDir) return this.cacheDir;
         try {
             const opfsRoot = await navigator.storage.getDirectory();
-            const orthros = await opfsRoot.getDirectoryHandle("bottleship", { create: true });
+            const orthros = await opfsRoot.getDirectoryHandle(ORTHROS_ROOT, { create: true });
             this.cacheDir = await orthros.getDirectoryHandle(CACHE_DIR, { create: true });
             return this.cacheDir;
         } catch (e) {
@@ -600,7 +601,7 @@ export class WgbCache {
     static async getManifestOverride(key: string): Promise<Record<string, unknown> | null> {
         try {
             const root = await navigator.storage.getDirectory();
-            const orthros = await root.getDirectoryHandle("bottleship");
+            const orthros = await root.getDirectoryHandle(ORTHROS_ROOT);
             const fh = await orthros.getFileHandle("_manifest-overrides.json");
             const db = JSON.parse(await (await fh.getFile()).text());
             const ov = db?.[key];

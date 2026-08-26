@@ -1,3 +1,4 @@
+import { ORTHROS_ROOT } from "./worker/runtime/filesystem/container-store";
 import { ZipArchive, BlobSource } from "@orthros/formats/zip";
 import { asBlobPart } from "./dom-buffer";
 
@@ -80,7 +81,7 @@ async function readCardMeta(
 
 async function orthrosDir(create = false): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
-  return root.getDirectoryHandle("bottleship", { create });
+  return root.getDirectoryHandle(ORTHROS_ROOT, { create });
 }
 
 async function cachedFile(key: string): Promise<File | null> {
@@ -181,7 +182,7 @@ export async function listAddedGames(excludeKeys: Set<string> = new Set()): Prom
 
 export async function removeAddedGame(key: string): Promise<void> {
   const root = await navigator.storage.getDirectory();
-  const orthros = await root.getDirectoryHandle("bottleship");
+  const orthros = await root.getDirectoryHandle(ORTHROS_ROOT);
   const cacheDir = await orthros.getDirectoryHandle("wgb-cache");
   await cacheDir.removeEntry(key);
 }

@@ -1,3 +1,4 @@
+import { ORTHROS_ROOT } from "./container-store";
 import type { SyncAccessHandleLike } from "@orthros/formats/zip";
 import { wgbCacheKeyForUrl } from "./wgb-cache-key";
 
@@ -102,7 +103,7 @@ export class PersistentRangeStore {
         try {
             if (!(totalSize > 0) || !(chunkSize > 0)) return null;
             const root = await navigator.storage.getDirectory();
-            const orthros = await root.getDirectoryHandle("bottleship", { create: true });
+            const orthros = await root.getDirectoryHandle(ORTHROS_ROOT, { create: true });
             const dir = await orthros.getDirectoryHandle(CACHE_DIR, { create: true });
             const finalKey = wgbCacheKeyForUrl(url);
             const partName = `${finalKey}.part`;

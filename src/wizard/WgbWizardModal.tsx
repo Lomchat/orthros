@@ -60,8 +60,8 @@ import { isSaveFilePickerSupported, pickSaveWgbFile, writeBytesToFileHandle, WGB
  * navigate+stage launch flow — the one path that already boots a game. See TODO(stage2-worker).
  */
 
-// --- the bottle mark (only inline SVG kept; copied from GameSelectScreen.tsx) -------
-function BottleMark({ className }: { className?: string }): React.ReactElement {
+// --- the Orthros mark (only inline SVG kept; copied from GameSelectScreen.tsx) -------
+function OrthrosMark({ className }: { className?: string }): React.ReactElement {
   return (
     <svg className={className} viewBox="0 0 64 64" aria-hidden>
       <g fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinejoin="round">
@@ -1005,7 +1005,7 @@ export default function WgbWizardModal({
           {/* STEP 2 — Process */}
           <section className={cx(s, "wpane", step === 2 && "is-active")}>
             <div className={s["proc"]}>
-              <BottleMark className={s["proc__bottle"]} />
+              <OrthrosMark className={s["proc__logo"]} />
               <div className={s["proc__label"]}>
                 {building ? progress.label || phaseLabel(progress.phase) : stagedPath ? "Done" : phaseLabel(progress.phase)}
               </div>
@@ -1224,7 +1224,7 @@ export default function WgbWizardModal({
             <div className={sh["sect-h"]}>Almost done — what now?</div>
             {finalizing && finalizeProgress ? (
               <div className={s["proc"]} style={{ marginBottom: 18 }}>
-                <BottleMark className={s["proc__bottle"]} />
+                <OrthrosMark className={s["proc__logo"]} />
                 <div className={s["proc__label"]}>{finalizeProgress.label}</div>
                 <div className={s["bar"]}>
                   <div

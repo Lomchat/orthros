@@ -1,3 +1,4 @@
+import { ORTHROS_ROOT } from "../worker/runtime/filesystem/container-store";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../ui/cx";
 import s from "./App.module.css";
@@ -60,7 +61,7 @@ async function writeOpfsFile(dir: FileSystemDirectoryHandle, name: string, blob:
  */
 async function stageFilesAndLaunch(files: File[]): Promise<void> {
   const root = await navigator.storage.getDirectory();
-  const orthros = await root.getDirectoryHandle("bottleship", { create: true });
+  const orthros = await root.getDirectoryHandle(ORTHROS_ROOT, { create: true });
 
   if (files.length === 1 && files[0]!.name.toLowerCase().endsWith(".wgb")) {
     const f = files[0]!;
@@ -137,8 +138,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 // so it can be loaded/validated through the worker's mergeQuality() (single source of truth
 // for ranges/snapping). Treated as a GLOBAL user pref: posted on change + re-sent after each
 // game load (the worker re-applies per-game quality from the manifest on top of this).
-// Pre-rename key, kept so the stored pref survives the rename.
-const QUALITY_STORAGE_KEY = "bottleship.quality";
+const QUALITY_STORAGE_KEY = "orthros.quality";
 
 function loadQuality(): QualityConfig {
   if (typeof window === "undefined") return { ...DEFAULT_QUALITY };
@@ -482,7 +482,7 @@ export default function App() {
       (async () => {
         try {
           const root = await navigator.storage.getDirectory();
-          const orthros = await root.getDirectoryHandle("bottleship");
+          const orthros = await root.getDirectoryHandle(ORTHROS_ROOT);
           const ingestDir = await orthros.getDirectoryHandle("_ingest");
           const files: File[] = [];
           for await (const [, handle] of (ingestDir as any).entries()) {

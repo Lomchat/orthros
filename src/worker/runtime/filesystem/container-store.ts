@@ -15,10 +15,7 @@
  */
 import { gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
 
-// Keeps the pre-rename name on purpose: this is the on-disk OPFS root holding every
-// installed game. Renaming it orphans existing installs. Same for the other persisted
-// keys (handle-store DB, UI settings, quality) — the brand changed, the storage keys can't.
-export const ORTHROS_ROOT = "bottleship";
+export const ORTHROS_ROOT = "orthros";
 export const GAMES_DIR = "games";
 
 /** Open (optionally create) the `orthros/` OPFS root. Returns null if OPFS is unavailable. */

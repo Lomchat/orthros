@@ -162,7 +162,7 @@ export default function GameSelectScreen({
       <header className={s["cmdbar"]}>
         <div className={s["brand"]}>
           <div className={s["brand__mark"]}>
-            <img src="/orthros_logo.png" className={s["brand__bottle"]} alt="Orthros" />
+            <img src="/orthros_logo.png" className={s["brand__logo"]} alt="Orthros" />
             <span className={s["wordmark"]}>
               Orth<b>ros</b>
             </span>
@@ -219,7 +219,7 @@ export default function GameSelectScreen({
 
       {isFirstRun ? (
         <section className={s["hero"]}>
-          <img src="/orthros_logo.png" className={s["hero__bottle"]} alt="Orthros" />
+          <img src="/orthros_logo.png" className={s["hero__logo"]} alt="Orthros" />
           <div className={s["hero__t"]}>Turn classic Windows games into browser-playable packages.</div>
           <div className={s["hero__h"]}>
             Drop a GOG installer, a folder, a ZIP, or a .wgb file. Orthros runs it locally with
