@@ -422,11 +422,41 @@ export const dbg = {
         else w.set_jit_config(24, on ? 1 : 0);
         console.log(`[dbg] JIT_TIER2_ADAPTIVE=${w.get_jit_config?.(24) ?? -1} (live, bounded)`);
     },
+    /** Maximum asynchronous wasm compilations in flight (idx 25, 1..8).
+     *  Live and reversible; 1 is the historical globally serialized path. */
+    jitPendingCompiles(maxPending = 2): number {
+        const w = wasm(); if (!w?.set_jit_config) return -1;
+        const bounded = Math.max(1, Math.min(8, maxPending >>> 0));
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitMaxPendingCompiles) pm.setJitMaxPendingCompiles(bounded);
+        else w.set_jit_config(25, bounded);
+        const effective = w.get_jit_config?.(25) ?? bounded;
+        console.log(`[dbg] JIT_MAX_PENDING_COMPILES=${effective} (live; 1=historical)`);
+        return effective >>> 0;
+    },
+    /** Cold/warm JIT compilation observability. Times include browser compile
+     *  latency and event-loop scheduling until the module is published. */
+    jitCompileStats(reset = false): Record<string, number> | null {
+        const w = wasm(); if (!w?.jit_get_compile_started) return null;
+        if (reset) w.jit_reset_compile_stats?.();
+        const s = {
+            maxPending: w.get_jit_config?.(25) ?? 1,
+            started: w.jit_get_compile_started() >>> 0,
+            completed: w.jit_get_compile_completed?.() >>> 0,
+            pending: w.jit_get_compile_pending?.() >>> 0,
+            pendingHighWater: w.jit_get_compile_pending_high_water?.() >>> 0,
+            capSkips: w.jit_get_compile_cap_skips?.() >>> 0,
+            totalMs: (w.jit_get_compile_total_us?.() ?? 0) / 1000,
+            maxMs: (w.jit_get_compile_max_us?.() ?? 0) / 1000,
+        };
+        console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
+        return s;
+    },
     /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
      *  and promotions REFUSED because the page-set cap was full. blockedByCap > 0
      *  with a saturated pageCount means the hot set outgrew the cap — the exact failure
      *  mode that makes threshold changes read as "no effect" (see the in-race NFSU A/B). */
-    tier2Stats(): { pageCount: number; pageSetCap: number; promotions: number; blockedByCap: number; threshold: number; regions: number; adaptive: number; maintenanceSamples: number; pageEvictions: number; profiledExits: number; regionPromotions: number; regionSeeds: number } | null {
+    tier2Stats(): { pageCount: number; pageSetCap: number; promotions: number; blockedByCap: number; threshold: number; regions: number; adaptive: number; maintenanceSamples: number; pageEvictions: number; profiledExits: number; regionPromotions: number; regionSeeds: number; regionCandidates: number; regionRejectedTarget: number; regionRejectedBudget: number } | null {
         const w = wasm(); if (!w?.jit_get_tier2_page_count) {
             console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
@@ -444,8 +474,11 @@ export const dbg = {
             profiledExits: w.jit_get_tier2_profiled_exits?.() ?? 0,
             regionPromotions: w.jit_get_tier2_region_promotions?.() ?? 0,
             regionSeeds: w.jit_get_tier2_region_seeds?.() ?? 0,
+            regionCandidates: w.jit_get_tier2_region_candidates?.() ?? 0,
+            regionRejectedTarget: w.jit_get_tier2_region_rejected_target?.() ?? 0,
+            regionRejectedBudget: w.jit_get_tier2_region_rejected_budget?.() ?? 0,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageSetCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold} regions=${s.regions} adaptive=${s.adaptive} maintenance=${s.maintenanceSamples} evictions=${s.pageEvictions} profiledExits=${s.profiledExits} regionPromotions=${s.regionPromotions} regionSeeds=${s.regionSeeds}`);
+        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageSetCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold} regions=${s.regions} adaptive=${s.adaptive} maintenance=${s.maintenanceSamples} evictions=${s.pageEvictions} profiledExits=${s.profiledExits} regionPromotions=${s.regionPromotions} regionSeeds=${s.regionSeeds} candidates=${s.regionCandidates} rejectedTarget=${s.regionRejectedTarget} rejectedBudget=${s.regionRejectedBudget}`);
         return s;
     },
     /** Fastmem read speculation. Default ON; clears JIT cache so blocks recompile. */

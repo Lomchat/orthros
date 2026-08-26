@@ -65,6 +65,9 @@ flowchart LR
 - Hot guest/host calls stay entirely inside WASM for speed.
 - A bounded profile-guided Tier-2 JIT coalesces genuinely hot cross-module paths
   into one WASM compilation unit instead of blindly growing cold control flow.
+- Saturated Tier-2 sets keep sparse successor profiles across phase changes, and
+  cold WebAssembly compilation uses a bounded two-module window instead of one
+  globally serialized Promise.
 
 [Read the architecture guide →](docs/architecture.md)
 

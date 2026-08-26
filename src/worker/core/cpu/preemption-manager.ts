@@ -95,6 +95,11 @@ export class PreemptionManager {
      *  newly hot gameplay pages without raising the 256-page bound. */
     private tier2AdaptiveEnabled = true;
 
+    /** Bounded asynchronous wasm compilation window (idx 25). Two pending
+     *  modules remove most of the historical global one-Promise serialization
+     *  while limiting compiler contention during interactive frames. */
+    private jitMaxPendingCompiles = 2;
+
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
      *  blocks recompile. on=false → strict F80 (diagnostic A/B). */
@@ -239,6 +244,13 @@ export class PreemptionManager {
     }
     isTier2AdaptiveEnabled(): boolean { return this.tier2AdaptiveEnabled; }
 
+    setJitMaxPendingCompiles(maxPending: number): void {
+        this.jitMaxPendingCompiles = Math.max(1, Math.min(8, maxPending >>> 0));
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(25, this.jitMaxPendingCompiles);
+    }
+    getJitMaxPendingCompiles(): number { return this.jitMaxPendingCompiles; }
+
     /** 5× original LOOP_COUNTER — reduces postMessage round-trips from ~1K/s to ~200/s.
      *  Each do_many_cycles_native() runs ~5ms instead of ~1ms, matching TIME_PER_FRAME=1ms
      *  (inner loop exits immediately after first iteration since 5ms > 1ms threshold).
@@ -319,7 +331,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(20, this.tier2PageSetCap);
             this.wasmExports.set_jit_config(23, this.tier2RegionsEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(24, this.tier2AdaptiveEnabled ? 1 : 0);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(25, this.jitMaxPendingCompiles);
+            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"} pendingCompiles=${this.jitMaxPendingCompiles}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

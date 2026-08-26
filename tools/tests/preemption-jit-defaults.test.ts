@@ -25,6 +25,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(true);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
+        expect(manager.getJitMaxPendingCompiles()).toBe(2);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
         expect(configs.get(4)).toBe(0);
         expect(configs.get(12)).toBe(0);
@@ -32,6 +33,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(1);
         expect(configs.get(24)).toBe(1);
+        expect(configs.get(25)).toBe(2);
     });
 
     test("gates direct block chaining on wasm tail-call support and preserves it on reload", () => {
@@ -128,5 +130,31 @@ describe("PreemptionManager JIT defaults", () => {
         manager.setTier2Adaptive(true);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
         expect(configs.get(24)).toBe(1);
+    });
+
+    test("bounds and preserves the asynchronous JIT compile window", () => {
+        const configs = new Map<number, number>();
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setJitMaxPendingCompiles(99);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                },
+            },
+        });
+
+        expect(manager.getJitMaxPendingCompiles()).toBe(8);
+        expect(configs.get(25)).toBe(8);
+
+        manager.setJitMaxPendingCompiles(0);
+        expect(manager.getJitMaxPendingCompiles()).toBe(1);
+        expect(configs.get(25)).toBe(1);
     });
 });
