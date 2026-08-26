@@ -1847,12 +1847,15 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
             const dxView = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             let curX = x;
             for (let i = 0; i < c; i++) {
-                gdi.textOut(hdc, curX, y, text[i]);
+                gdi.textOut(hdc, curX, y, text[i], false);
                 curX += dxView.getInt32(lpDx + i * 4, true);
             }
         } else {
-            gdi.textOut(hdc, x, y, text);
+            gdi.textOut(hdc, x, y, text, false);
         }
+        // The guest may inspect CreateDIBSection bits as soon as ExtTextOutA
+        // returns, but it cannot observe intermediate per-glyph states.
+        gdi.syncSelectedDibBits(hdc);
         return 1;
     };
 
@@ -1915,12 +1918,12 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
             let curX = x;
             let curY = y;
             for (let i = 0; i < drawCount; i++) {
-                gdi.textOut(hdc, curX, curY, text[i] ?? '');
+                gdi.textOut(hdc, curX, curY, text[i] ?? '', false);
                 curX += view.getInt32(lpDx + i * dxEntries * 4, true);
                 if (dxEntries === 2) curY += view.getInt32(lpDx + i * 8 + 4, true);
             }
         } else {
-            gdi.textOut(hdc, x, y, text);
+            gdi.textOut(hdc, x, y, text, false);
         }
 
         if (dc && rect && (options & ETO_CLIPPED)) dc.restore();

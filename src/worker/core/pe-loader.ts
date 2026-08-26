@@ -17,6 +17,7 @@ import { installCw3220Stdio } from '../modules/cw3220/cw3220-stdio';
 import { writeHeapSlabStubs } from '../modules/kernel32/heap-slab-stubs';
 import { writeCriticalSectionInlineStubs } from '../modules/kernel32/critical-section-inline-stubs';
 import { writeTimeInlineStub } from '../modules/kernel32/time-inline-stubs';
+import { patchLastErrorInlineStubs } from '../modules/kernel32/last-error-inline-stubs';
 import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs';
 import { TimeService } from '../runtime/time';
 
@@ -1188,6 +1189,25 @@ export class PELoader {
                 Logger.log(LogCategory.SYSTEM,
                     `[PE] Thunk generation complete for ${dllName}: ${stubDll.exportTable.size} exports, ${stubDll.stubCode.length} bytes`);
                 (globalThis as any).__peImportStage = { dllName, stage: 'generated', at: performance.now() };
+
+                // GetLastError/SetLastError are pure per-thread slot accesses. Their normal
+                // generated stubs cross an OUT boundary even though the authoritative slot
+                // is already guest-addressable. Patch only stubs newly emitted in this
+                // materialization batch; reused stubs were patched when first generated.
+                if (dllName === 'kernel32' && !(globalThis as any).__noInlineLastError) {
+                    const patched = patchLastErrorInlineStubs(
+                        stubDll.stubCode,
+                        stubDll.baseAddress,
+                        stubDll.exportTable.get('getlasterror'),
+                        stubDll.exportTable.get('setlasterror'),
+                        hypercallDataManager.getHpBase(),
+                    );
+                    if (patched.getLastError || patched.setLastError) {
+                        Logger.log(LogCategory.SYSTEM,
+                            `[PE] Inline last-error stubs patched: get=${patched.getLastError ? 1 : 0} ` +
+                            `set=${patched.setLastError ? 1 : 0}`);
+                    }
+                }
 
                 // GetTickCount/timeGetTime share a trap-free RDTSC leaf. The
                 // unified virtual TSC has an exact 2^32-Hz scale, so the guest

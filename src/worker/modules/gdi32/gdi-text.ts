@@ -9,7 +9,14 @@ import { Logger, LogCategory } from "../../core/logger";
 import { drawTextPrefixOptions, fillTextWithMnemonic } from "../win32-text";
 import type { GDIContext } from './context';
 
-export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text: string): boolean {
+export function textOut(
+    gdi: GDIContext,
+    hdc: number,
+    x: number,
+    y: number,
+    text: string,
+    syncDib = true,
+): boolean {
     if (!text) return false;
     const ctx = gdi.contexts.get(hdc);
     const state = gdi.hdcStates.get(hdc);
@@ -151,7 +158,12 @@ export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text
 
     // CreateDIBSection exposes its pixels directly to the guest. Text rendered
     // through a memory DC must therefore be committed before ExtTextOut returns.
-    gdi.syncSelectedDibBits(hdc);
+    // ExtTextOut may draw one glyph at a time when lpDx is supplied. Its public
+    // API boundary batches those draws and commits the DIB once; doing a full
+    // canvas readback after every glyph turns font-atlas construction into a
+    // multi-hundred-millisecond stall. Direct TextOut callers keep the faithful
+    // immediate commit by default.
+    if (syncDib) gdi.syncSelectedDibBits(hdc);
 
     return true;
 }

@@ -1399,8 +1399,8 @@ export class GDIContext {
         return previous;
     }
 
-    textOut(hdc: number, x: number, y: number, text: string): boolean {
-        return textOutImpl(this, hdc, x, y, text);
+    textOut(hdc: number, x: number, y: number, text: string, syncDib = true): boolean {
+        return textOutImpl(this, hdc, x, y, text, syncDib);
     }
 
     /**

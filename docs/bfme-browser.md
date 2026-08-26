@@ -676,6 +676,46 @@ populated desktop skirmish now sustains 30 FPS. The next meaningful validation i
 one fresh desktop-player boot on this worker followed by a stable capture from
 the same real skirmish.
 
+### Solo → Skirmish transition profile
+
+The menu-transition stall is now covered by
+`tools/examples/bfme-menu-transition-profile.harness.ts`. D3D9 exclusive mode
+uses a real 800×600 Win32 desktop, so the deterministic input points are Solo at
+`(90,575)` and Skirmish at `(320,575)`. Older centered-window coordinates could
+leave the harness on the previous screen and incorrectly report a flat 30 FPS.
+
+On a fresh Chromium/SwiftShader process, the main menu and the first 1.5 seconds
+after the Skirmish click remain at 30.3 FPS. The 1.5–4 second construction window
+then measured 139.69 ms/frame (7.2 FPS), including one 1.19-second frame, before
+the completed screen returned to 30.3 FPS. Presentation stayed around 0.7–1 ms,
+so this transient is CPU/resource construction rather than WebGPU presentation.
+
+`ExtTextOutA/W` used to synchronize a selected CreateDIBSection after every
+individually spaced glyph and then again at the API boundary. It now renders the
+same glyph sequence and performs one guest-visible DIB commit per public call.
+The measured `ExtTextOutW` average fell from 9.53 to about 4.99 ms and the
+reference transition improved from 7.2 to 8.2 FPS. Later cold runs varied from
+7.8 to 8.3 FPS because BFME's file/resource work is not frame-deterministic; the
+retained claim is the halved per-call GDI cost, not a stable 8.2-FPS promise.
+
+A targeted Tier-2 trace also exposed roughly one million basic-block executions
+inside `kernel32!GetLastError` and `SetLastError` stubs in 2.5 seconds. Newly
+generated 16-byte stubs now load/store the existing authoritative hypercall-page
+slot directly. This preserves the scheduler's per-thread swap and JS-thunk
+updates while avoiding `OUT`; `__noInlineLastError` is the boot-time kill switch.
+The transition A/B (8.3 versus 8.2 FPS) did not show a measurable frame-rate gain,
+so this is retained as a generic boundary removal rather than advertised as the
+menu-stall fix.
+
+Partial-rectangle canvas readback and a dword/reused-buffer copy variant were
+tested and removed: `ExtTextOutW` remained at 4.83–4.86 ms and the transition at
+7.8–8.2 FPS. The remaining architectural target is eliminating or safely
+deferring the roughly 113 synchronous canvas readbacks during cold font/resource
+construction. The deployed worker is `emulator.worker-_JxQHLuq.js`; validation
+finished with 884 tests and zero failures. The final browser run reported no
+guest fault; earlier clean runs of the same retained D3D9 path had no shadow
+divergence.
+
 ## Operational notes
 
 - Relay state is intentionally ephemeral. Restarting the service drops active matches but does not affect saves.
