@@ -59,6 +59,13 @@ upstream projects referenced here.
 - **License:** SIL Open Font License 1.1.
   Source: <https://github.com/liberationfonts/liberation-fonts>.
 
+## Cover art
+
+### Game cover images (`public/covers/*.jpg`)
+- Box art shown in the library to identify each title. Each image remains the
+  property of its respective publisher and is used for identification only; it is
+  not covered by this project's licence.
+
 ## Bundled JavaScript dependencies (production bundle)
 
 | Package | License |
