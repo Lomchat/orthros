@@ -6,7 +6,7 @@ import {
     UNPACK_LZMA2,
     UNPACK_STORE,
     UnpackDecoder,
-} from "@bottleship/formats/unpack";
+} from "@orthros/formats/unpack";
 
 const WASM_PATH = join(import.meta.dir, "../../public/unpack-streaming.wasm");
 const FIXTURE_DIR = join(import.meta.dir, "fixtures/inno/lzma");

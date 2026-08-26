@@ -31,7 +31,7 @@ import {
     extractInstallShield,
     parseInstallShieldHeader,
     detectInstallShieldStem,
-} from "@bottleship/formats/installshield/index.ts";
+} from "@orthros/formats/installshield/index.ts";
 
 const nodeInflate = (chunk: Uint8Array) => new Uint8Array(inflateRawSync(Buffer.from(chunk)));
 

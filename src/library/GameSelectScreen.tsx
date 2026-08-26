@@ -71,9 +71,9 @@ interface SupportLink {
 
 // Donation targets shown in the header "Support" menu. Append as more are added.
 const SUPPORT_LINKS: SupportLink[] = [
-  { label: "Ko-fi", url: "https://ko-fi.com/bottleship" },
+  { label: "Ko-fi", url: "https://ko-fi.com/orthros" },
   { label: "CloudTips (RU)", url: "https://pay.cloudtips.ru/p/e2362fd1" },
-  { label: "Crypto", url: "https://nowpayments.io/donation/bottleship" },
+  { label: "Crypto", url: "https://nowpayments.io/donation/orthros" },
 ];
 
 function isGogAdded(game: AddedGame): boolean {
@@ -162,9 +162,9 @@ export default function GameSelectScreen({
       <header className={s["cmdbar"]}>
         <div className={s["brand"]}>
           <div className={s["brand__mark"]}>
-            <img src="/bottleship_logo.png" className={s["brand__bottle"]} alt="BottleShip" />
+            <img src="/orthros_logo.png" className={s["brand__bottle"]} alt="Orthros" />
             <span className={s["wordmark"]}>
-              Bottle<b>Ship</b>
+              Orth<b>ros</b>
             </span>
           </div>
           <span className={s["brand__tag"]}>Run classic Windows games in your browser.</span>
@@ -180,7 +180,7 @@ export default function GameSelectScreen({
                 setSrcMenuOpen(false);
                 setSortMenuOpen(false);
               }}
-              title="Support BottleShip"
+              title="Support Orthros"
             >
               <HandHeart size={16} weight="fill" aria-hidden />
               Support
@@ -203,7 +203,7 @@ export default function GameSelectScreen({
           </div>
           <a
             className={ib["iconbtn"]}
-            href="https://github.com/jenissimo/bottleship"
+            href="https://github.com/Lomchat/orthros"
             target="_blank"
             rel="noopener noreferrer"
             title="View source on GitHub"
@@ -219,10 +219,10 @@ export default function GameSelectScreen({
 
       {isFirstRun ? (
         <section className={s["hero"]}>
-          <img src="/bottleship_logo.png" className={s["hero__bottle"]} alt="BottleShip" />
+          <img src="/orthros_logo.png" className={s["hero__bottle"]} alt="Orthros" />
           <div className={s["hero__t"]}>Turn classic Windows games into browser-playable packages.</div>
           <div className={s["hero__h"]}>
-            Drop a GOG installer, a folder, a ZIP, or a .wgb file. BottleShip runs it locally with
+            Drop a GOG installer, a folder, a ZIP, or a .wgb file. Orthros runs it locally with
             WebAssembly + WebGPU — nothing is uploaded.
           </div>
           <div className={s["hero__cta"]}>

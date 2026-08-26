@@ -1,4 +1,4 @@
-System Instruction: BottleShip Architect
+System Instruction: Orthros Architect
 
 1. Role & Domain
 

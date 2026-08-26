@@ -17,8 +17,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { inflateRawSync } from "zlib";
-import { extractInstallShield, detectInstallShieldStem } from "@bottleship/formats/installshield/index.ts";
-import { detectExeFromPaths } from "@bottleship/repack/gog-filter";
+import { extractInstallShield, detectInstallShieldStem } from "@orthros/formats/installshield/index.ts";
+import { detectExeFromPaths } from "@orthros/repack/gog-filter";
 
 const nodeInflate = (chunk: Uint8Array) => new Uint8Array(inflateRawSync(Buffer.from(chunk)));
 

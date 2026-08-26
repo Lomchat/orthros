@@ -353,14 +353,14 @@ export function registerFileIoVolumeExports(exports: Record<string, ThunkImpleme
             return 0; // FALSE
         }
 
-        let volumeName = "BOTTLESHIP";
+        let volumeName = "ORTHROS";
         let fileSystemName = "FAT32";
         let maxComponentLength = 255;
         let fileSystemFlags = FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_SUPPORTS_LONG_NAMES;
         let volumeSerial = 0x4A62_6840; // Stable per-emulator serial
 
         if (driveLetter === "D") {
-            volumeName = "BOTTLESHIP_CD";
+            volumeName = "ORTHROS_CD";
             fileSystemName = "CDFS";
             maxComponentLength = 110;
             fileSystemFlags = FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_READ_ONLY_VOLUME;
@@ -432,14 +432,14 @@ export function registerFileIoVolumeExports(exports: Record<string, ThunkImpleme
         const driveMatch = rootPath.match(/^([a-zA-Z])(?::(?:\\.*)?)?$/);
         const driveLetter = driveMatch ? driveMatch[1]!.toUpperCase() : "C";
 
-        let volumeName = "BOTTLESHIP";
+        let volumeName = "ORTHROS";
         let fileSystemName = "FAT32";
         let maxComponentLength = 255;
         let fileSystemFlags = FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_SUPPORTS_LONG_NAMES;
         let volumeSerial = 0x4A62_6840;
 
         if (driveLetter === "D") {
-            volumeName = "BOTTLESHIP_CD";
+            volumeName = "ORTHROS_CD";
             fileSystemName = "CDFS";
             maxComponentLength = 110;
             fileSystemFlags = FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_READ_ONLY_VOLUME;

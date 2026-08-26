@@ -1,7 +1,7 @@
-import { ZipArchive, BlobSource } from "@bottleship/formats/zip";
+import { ZipArchive, BlobSource } from "@orthros/formats/zip";
 import { asBlobPart } from "./dom-buffer";
 
-/** A bring-your-own bundle the user has added — lives in OPFS bottleship/wgb-cache/. */
+/** A bring-your-own bundle the user has added — lives in OPFS orthros/wgb-cache/. */
 export interface AddedGame {
   /** OPFS cache filename / key (e.g. "morrowind.wgb"). */
   key: string;
@@ -78,14 +78,14 @@ async function readCardMeta(
   }
 }
 
-async function bottleshipDir(create = false): Promise<FileSystemDirectoryHandle> {
+async function orthrosDir(create = false): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
   return root.getDirectoryHandle("bottleship", { create });
 }
 
 async function cachedFile(key: string): Promise<File | null> {
   try {
-    const cacheDir = await (await bottleshipDir()).getDirectoryHandle("wgb-cache");
+    const cacheDir = await (await orthrosDir()).getDirectoryHandle("wgb-cache");
     return await (await cacheDir.getFileHandle(key)).getFile();
   } catch {
     return null;
@@ -95,7 +95,7 @@ async function cachedFile(key: string): Promise<File | null> {
 /** Load the full per-bundle override DB ({ "<key>": {…} }). */
 export async function loadOverrides(): Promise<Record<string, ManifestOverride>> {
   try {
-    const fh = await (await bottleshipDir()).getFileHandle(OVERRIDES_FILE);
+    const fh = await (await orthrosDir()).getFileHandle(OVERRIDES_FILE);
     const db = JSON.parse(await (await fh.getFile()).text());
     return db && typeof db === "object" ? db : {};
   } catch {
@@ -108,7 +108,7 @@ export async function saveOverride(key: string, patch: ManifestOverride | null):
   const db = await loadOverrides();
   if (patch && Object.keys(patch).length) db[key] = patch;
   else delete db[key];
-  const dir = await bottleshipDir(true);
+  const dir = await orthrosDir(true);
   const fh = await dir.getFileHandle(OVERRIDES_FILE, { create: true });
   const w = await fh.createWritable();
   await w.write(new TextEncoder().encode(JSON.stringify(db, null, 2)));
@@ -150,7 +150,7 @@ function prettifyKey(key: string): string {
  */
 export async function listAddedGames(excludeKeys: Set<string> = new Set()): Promise<AddedGame[]> {
   try {
-    const cacheDir = await (await bottleshipDir()).getDirectoryHandle("wgb-cache");
+    const cacheDir = await (await orthrosDir()).getDirectoryHandle("wgb-cache");
     const overrides = await loadOverrides();
     const out: AddedGame[] = [];
     for await (const [name, handle] of (cacheDir as any).entries()) {
@@ -181,7 +181,7 @@ export async function listAddedGames(excludeKeys: Set<string> = new Set()): Prom
 
 export async function removeAddedGame(key: string): Promise<void> {
   const root = await navigator.storage.getDirectory();
-  const bottleship = await root.getDirectoryHandle("bottleship");
-  const cacheDir = await bottleship.getDirectoryHandle("wgb-cache");
+  const orthros = await root.getDirectoryHandle("bottleship");
+  const cacheDir = await orthros.getDirectoryHandle("wgb-cache");
   await cacheDir.removeEntry(key);
 }

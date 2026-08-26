@@ -7,16 +7,16 @@ export default function SettingsAboutSection(): React.ReactElement {
   return (
     <SettingsSection>
       <div className={s["about"]}>
-        <img src="/bottleship_logo.png" className={s["about__bottle"]} alt="BottleShip" />
+        <img src="/orthros_logo.png" className={s["about__bottle"]} alt="Orthros" />
         <div className={s["about__title"]}>
-          Bottle<b>Ship</b>
+          Orth<b>ros</b>
         </div>
         <div className={s["about__lede"]}>
           Run native Windows games of 1996–2004 in your browser — no install, no VM, no upload.
         </div>
         <p className={s["about__story"]}>
-          Like a ship sealed in glass, BottleShip keeps each game whole — its files, its registry,
-          its Windows — in a self-contained <b>.wgb</b>. The x86 runs under HLE in a Web Worker,
+          Orthros keeps each game whole — its files, its registry, its Windows — in a
+          self-contained <b>.wgb</b>. The x86 runs under HLE in a Web Worker,
           legacy DirectDraw/Direct3D is translated live to WebGPU, and a copy-on-write OPFS
           filesystem keeps the original untouched.
         </p>
@@ -34,7 +34,7 @@ export default function SettingsAboutSection(): React.ReactElement {
         <div className={s["about__legal"]}>
           The online library hosts only demos, shareware and other redistributable releases.
           Takedown or contact:{" "}
-          <a href="mailto:jenissimo+bottleship@gmail.com">jenissimo+bottleship@gmail.com</a>.
+          <a href="https://github.com/Lomchat/orthros/issues">github.com/Lomchat/orthros/issues</a>.
         </div>
         <div className={s["about__ver"]}>v0.9.0 · build {__BUILD_SHA__} · Apache-2.0</div>
       </div>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * Bottleship Chrome Trace Analyzer
+ * Orthros Chrome Trace Analyzer
  *
  * Analyzes Chrome DevTools performance traces from the emulator worker.
  * Correctly merges ProfileChunk events, computes self/total time,
@@ -144,7 +144,7 @@ const V86_ANNOTATIONS: Array<[string, string]> = [
 // output of worker-side dumpHotJitBlocks() (an array of { wasm_fn, phys_addr,
 // module } rows). Used to annotate `wasm-function[N]` with its guest address.
 let JIT_BLOCK_MAP: Map<number, string> | null = null;
-// Exact-EIP ranking carried in the same bottleship.hotblocks mark (set by
+// Exact-EIP ranking carried in the same orthros.hotblocks mark (set by
 // extractEmbeddedHotBlocks). Pinpoints the hot instruction within a JIT-block page.
 let EMBEDDED_TOP_EIPS: any[] | null = null;
 
@@ -223,7 +223,7 @@ function extractEmbeddedHotBlocks(events: any[]): any[] | null {
   let best: any[] | null = null;
 
   for (const ev of events) {
-    if ((ev as any)?.name !== "bottleship.hotblocks") continue;
+    if ((ev as any)?.name !== "orthros.hotblocks") continue;
 
     const args = (ev as any).args || {};
     let parsed: any = args?.data?.detail ?? args?.data ?? args?.detail;
@@ -242,7 +242,7 @@ function extractEmbeddedHotBlocks(events: any[]): any[] | null {
         EMBEDDED_TOP_EIPS = Array.isArray(parsed?.topEips) ? parsed.topEips : null;
       }
     } else {
-      console.warn(`[analyze-trace] bottleship.hotblocks mark did not contain rows; args=${summarizeTraceArgs(args)}`);
+      console.warn(`[analyze-trace] orthros.hotblocks mark did not contain rows; args=${summarizeTraceArgs(args)}`);
     }
   }
 
@@ -417,7 +417,7 @@ function computeRenderFrameStats(intervals: RenderFrameInterval[]): RenderFrameS
 
 function extractRenderFrameAnalysis(events: TraceEvent[]): RenderFrameAnalysis | null {
   const marks = events
-    .filter(ev => (ev as any)?.name === "bottleship.flip" && Number.isFinite((ev as any).ts))
+    .filter(ev => (ev as any)?.name === "orthros.flip" && Number.isFinite((ev as any).ts))
     .map(ev => (ev as any).ts as number)
     .sort((a, b) => a - b);
 
@@ -887,7 +887,7 @@ function sumSelfUsMatching(
 
 /**
  * Per-thread pathology detection with thresholds drawn from
- * observed BottleShip pain points. Returns a flat list of warnings.
+ * observed Orthros pain points. Returns a flat list of warnings.
  */
 function diagnoseThread(analysis: ThreadAnalysis): Warning[] {
   const warnings: Warning[] = [];
@@ -1061,7 +1061,7 @@ function reportRenderFrames(renderFrames: RenderFrameAnalysis | null): string | 
   lines.push(`\n${sep("═")}`);
   lines.push(`RENDER FRAME TIMING`);
   lines.push(sep("═"));
-  lines.push(`Source: bottleship.flip UserTiming marks (app-level present cadence)`);
+  lines.push(`Source: orthros.flip UserTiming marks (app-level present cadence)`);
   lines.push(`Marks: ${num(renderFrames.markCount)}  Intervals: ${num(s.count)}`);
   lines.push(
     `Avg: ${fmtFrameMs(s.avgMs)} (${s.fps.toFixed(1)} FPS)  ` +
@@ -1072,7 +1072,7 @@ function reportRenderFrames(renderFrames: RenderFrameAnalysis | null): string | 
   return lines.join("\n");
 }
 
-// Primary guest-code attribution: the EIP sampler embedded in the bottleship.hotblocks
+// Primary guest-code attribution: the EIP sampler embedded in the orthros.hotblocks
 // mark counts samples per guest PAGE. This is trustworthy, unlike the idx↔wasm-function[N]
 // join (v86 wasm-table indices don't match Chrome's wasm-function[N] numbering, and table
 // slots are reused), so we rank hot guest pages directly here.
@@ -1102,7 +1102,7 @@ function reportHotGuestPages(rows: any[] | null): string | null {
   lines.push(`\n${sep("═")}`);
   lines.push(`HOT GUEST PAGES (embedded EIP sampler — guest-code attribution)`);
   lines.push(sep("═"));
-  lines.push(`Source: bottleship.hotblocks mark · ${num(rows.length)} blocks · ranked by ${hasSamples ? "EIP samples" : "capture order (samples-desc)"}`);
+  lines.push(`Source: orthros.hotblocks mark · ${num(rows.length)} blocks · ranked by ${hasSamples ? "EIP samples" : "capture order (samples-desc)"}`);
   if (!hasSamples) {
     lines.push(`(per-page magnitudes unavailable — recapture with updated worker for sample counts)`);
   }
@@ -1117,7 +1117,7 @@ function reportHotGuestPages(rows: any[] | null): string | null {
   return lines.join("\n");
 }
 
-// Exact-instruction attribution: the bottleship.hotblocks mark also carries a top-EIP
+// Exact-instruction attribution: the orthros.hotblocks mark also carries a top-EIP
 // histogram (unmasked). This pins the hot instruction inside a JIT-block page, which the
 // page-level HOT GUEST PAGES table cannot (a 4KB page packs many guest functions).
 function reportHotGuestInstructions(eips: any[] | null): string | null {
@@ -1126,7 +1126,7 @@ function reportHotGuestInstructions(eips: any[] | null): string | null {
   lines.push(`\n${sep("═")}`);
   lines.push(`HOT GUEST INSTRUCTIONS (exact EIP — pinpoints the hot function within a page)`);
   lines.push(sep("═"));
-  lines.push(`Source: bottleship.hotblocks mark · ${num(eips.length)} sampled EIPs (already samples-desc)`);
+  lines.push(`Source: orthros.hotblocks mark · ${num(eips.length)} sampled EIPs (already samples-desc)`);
   lines.push(` #   ${pad("samples", 8, true)} ${pad("%hot", 6, true)}  ${pad("eip", 12)}  module+rva`);
   lines.push(` ${"-".repeat(72)}`);
   for (let i = 0; i < Math.min(25, eips.length); i++) {
@@ -1487,8 +1487,8 @@ async function main() {
     console.log("");
     console.log("--range accepts: A-Bs (seconds) or Ams-Bms (milliseconds). Times are relative to profile start.");
     console.log("--map expects JSON produced by worker-side dumpHotJitBlocks() (array of {wasm_fn, phys_addr, module}).");
-    console.log("Traces with embedded bottleship.hotblocks marks are annotated automatically without --map.");
-    console.log("Traces with bottleship.flip marks report FPS and inter-frame p95/p99 automatically.");
+    console.log("Traces with embedded orthros.hotblocks marks are annotated automatically without --map.");
+    console.log("Traces with orthros.flip marks report FPS and inter-frame p95/p99 automatically.");
     console.log("Without --map or embedded hot-blocks, the analyzer auto-discovers hot-block sidecars next to the trace.");
     process.exit(0);
   }
@@ -1628,7 +1628,7 @@ async function main() {
   // ── Header ──
   const lines: string[] = [];
   lines.push(sep());
-  lines.push(`BOTTLESHIP TRACE ANALYZER`);
+  lines.push(`ORTHROS TRACE ANALYZER`);
   lines.push(sep());
 
   const isGzip = rawSize !== gzipSize;

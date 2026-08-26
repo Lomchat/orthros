@@ -60,7 +60,7 @@ bun test                             # unit + smoke tests
 ## Repository layout
 
 ```
-bottleship/
+orthros/
 ├── src/
 │   ├── app/                     # React host UI
 │   ├── harness/                 # main-thread half of the automation harness

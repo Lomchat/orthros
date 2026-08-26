@@ -2,11 +2,11 @@
  * Manifest + registry synthesis from Inno header + extracted goggame metadata.
  */
 
-import type { IconEntry } from "@bottleship/formats/inno/entries/icon";
-import type { RegistryEntry } from "@bottleship/formats/inno/entries/registry";
-import type { InnoParseResult } from "@bottleship/formats/inno";
+import type { IconEntry } from "@orthros/formats/inno/entries/icon";
+import type { RegistryEntry } from "@orthros/formats/inno/entries/registry";
+import type { InnoParseResult } from "@orthros/formats/inno";
 import { detectExeFromPaths } from "./gog-filter";
-import { deriveGameId } from "@bottleship/formats/wgb/container-id";
+import { deriveGameId } from "@orthros/formats/wgb/container-id";
 import type { GogOverrideEntry } from "./overrides";
 import { mergeRegistrySeeds, synthesizeRegistryFromGogScripts } from "./gog-script";
 

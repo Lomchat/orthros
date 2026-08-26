@@ -358,8 +358,8 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
             },
             {
                 guid: [0xE0, 0x3D, 0xE6, 0x84, 0xAA, 0x46, 0xCF, 0x11, 0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E],
-                name: "BottleShip Direct3D HAL",
-                desc: "BottleShip Emulator Direct3D Hardware Acceleration",
+                name: "Orthros Direct3D HAL",
+                desc: "Orthros Emulator Direct3D Hardware Acceleration",
                 fillHal: true,  // halDesc gets full caps for hardware device
                 fillHel: false, // helDesc zeroed for HAL
             },
@@ -833,13 +833,13 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
                 guid: D3D7_RGB_DEVICE_GUID_BYTES,
             },
             {
-                name: "BottleShip Direct3D HAL",
-                desc: "BottleShip Emulator Direct3D Hardware Acceleration",
+                name: "Orthros Direct3D HAL",
+                desc: "Orthros Emulator Direct3D Hardware Acceleration",
                 guid: D3D7_HAL_DEVICE_GUID_BYTES,
             },
             ...((globalThis as Record<string, unknown>).__caps7Legacy === true ? [] : [{
-                name: "BottleShip Direct3D T&L HAL",
-                desc: "BottleShip Emulator Direct3D Transform & Lighting Hardware Acceleration",
+                name: "Orthros Direct3D T&L HAL",
+                desc: "Orthros Emulator Direct3D Transform & Lighting Hardware Acceleration",
                 guid: D3D7_TNLHAL_DEVICE_GUID_BYTES,
             }]),
         ];

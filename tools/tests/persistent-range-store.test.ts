@@ -101,7 +101,7 @@ describe("PersistentRangeStore", () => {
         await resumed!.writeChunk(2, new Uint8Array([9, 10]));
         expect(resumed!.progress()).toEqual({ loadedBytes: 10, totalBytes: 10, complete: true });
 
-        const cache = await (await root.getDirectoryHandle("bottleship")).getDirectoryHandle("wgb-cache");
+        const cache = await (await root.getDirectoryHandle("orthros")).getDirectoryHandle("wgb-cache");
         expect(cache.files.has("test.wgb")).toBe(true);
         expect(cache.files.has("test.wgb.part")).toBe(false);
         expect(cache.files.has("test.wgb.part.map")).toBe(false);

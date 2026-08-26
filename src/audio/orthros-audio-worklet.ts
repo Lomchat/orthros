@@ -141,7 +141,7 @@ type RingBufferSource = {
   mutedPastFrontier: boolean;
 };
 
-class BottleShipAudioProcessor extends AudioWorkletProcessor {
+class OrthrosAudioProcessor extends AudioWorkletProcessor {
   private static readonly POSITION_REPORT_FRAMES = 1024;
   private static readonly POSITION_REPORT_SECONDS = 0.05;
 
@@ -372,8 +372,8 @@ class BottleShipAudioProcessor extends AudioWorkletProcessor {
     const currentFrame = Math.floor(source.position);
     if (currentFrame === source.lastReportedFrame) return;
     if (
-      now - source.lastReportedTime < BottleShipAudioProcessor.POSITION_REPORT_SECONDS &&
-      Math.abs(currentFrame - source.lastReportedFrame) < BottleShipAudioProcessor.POSITION_REPORT_FRAMES
+      now - source.lastReportedTime < OrthrosAudioProcessor.POSITION_REPORT_SECONDS &&
+      Math.abs(currentFrame - source.lastReportedFrame) < OrthrosAudioProcessor.POSITION_REPORT_FRAMES
     ) {
       return;
     }
@@ -977,4 +977,4 @@ class BottleShipAudioProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor("bottleship-audio", BottleShipAudioProcessor);
+registerProcessor("orthros-audio", OrthrosAudioProcessor);

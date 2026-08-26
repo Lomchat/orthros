@@ -26,7 +26,7 @@ import {
 
     assertSupportedVersion,
 
-} from "@bottleship/formats/inno";
+} from "@orthros/formats/inno";
 
 
 

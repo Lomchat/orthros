@@ -1,5 +1,5 @@
 name: Compatibility report
-description: Report how far a game gets in BottleShip (works great or breaks — both are data)
+description: Report how far a game gets in Orthros (works great or breaks — both are data)
 title: "[compat] <Game title> (<year>)"
 labels: ["compat-report"]
 body:

@@ -41,10 +41,10 @@ const SYSTEM_CLASS_GUID = {
     d4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18] as const,
 };
 
-const VIRTUAL_DEVICE_ID = "ROOT\\LEGACY_BOTTLESHIP\\0000";
-const VIRTUAL_HARDWARE_ID = "ROOT\\LEGACY_BOTTLESHIP\\0000";
-const VIRTUAL_DEVICE_DESC = "BottleShip Virtual Device";
-const VIRTUAL_MFG = "BottleShip";
+const VIRTUAL_DEVICE_ID = "ROOT\\LEGACY_ORTHROS\\0000";
+const VIRTUAL_HARDWARE_ID = "ROOT\\LEGACY_ORTHROS\\0000";
+const VIRTUAL_DEVICE_DESC = "Orthros Virtual Device";
+const VIRTUAL_MFG = "Orthros";
 
 const SPDRP_DEVICEDESC = 0x00000000;
 const SPDRP_HARDWAREID = 0x00000001;

@@ -4,7 +4,7 @@ import { Logger, LogCategory } from '../../core/logger';
 import type { StubAllocator } from '../../core/thunking/thunk-memory-manager';
 
 /**
- * The BottleShip virtual TSC advances at exactly 2^32 ticks per second. Thus:
+ * The Orthros virtual TSC advances at exactly 2^32 ticks per second. Thus:
  *
  *   milliseconds = floor(TSC * 1000 / 2^32)
  *

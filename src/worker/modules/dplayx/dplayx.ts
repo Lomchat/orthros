@@ -286,7 +286,7 @@ export class DPlayX implements IModule {
             // DPLAPPINFOA: dwSize(4), dwFlags(4), guidApplication(16), lpszAppNameA(4)
             const DPLAPPINFOA_SIZE = 28;
             const appInfoAddr = this.process.memory.alloc(DPLAPPINFOA_SIZE);
-            const appName = "BottleShip";
+            const appName = "Orthros";
             const appNameBytes = new TextEncoder().encode(`${appName}\0`);
             const appNameAddr = this.process.memory.alloc(appNameBytes.length);
 

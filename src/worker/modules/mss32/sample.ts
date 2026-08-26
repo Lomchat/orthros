@@ -568,7 +568,7 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
     // 3D samples reuse the 2D sample lifecycle (alloc / file / start / stop / status /
     // volume / rate / loop) and add spatial state pushed into the ring buffer's
     // CTRL_3D_* fields, mixed by the audio worklet against the global listener SAB
-    // (see spatial.ts + bottleship-audio-worklet.ts). `obj` handles passed to the
+    // (see spatial.ts + orthros-audio-worklet.ts). `obj` handles passed to the
     // position/velocity/orientation calls may be EITHER a 3D sample OR the listener.
 
     const isListener = (h: number): boolean => ctx.listener3D !== null && h === ctx.listener3D.handle;

@@ -27,8 +27,8 @@ const coopCoepHeaders = {
 };
 
 function audioWorkletPlugin(): Plugin {
-  const src = path.resolve(__dirname, "src/audio/bottleship-audio-worklet.ts");
-  const out = path.resolve(__dirname, "src/audio/bottleship-audio-worklet.js");
+  const src = path.resolve(__dirname, "src/audio/orthros-audio-worklet.ts");
+  const out = path.resolve(__dirname, "src/audio/orthros-audio-worklet.js");
 
   async function compile() {
     const code = fs.readFileSync(src, "utf-8");
@@ -45,7 +45,7 @@ function audioWorkletPlugin(): Plugin {
       server.watcher.on("change", async (file) => {
         if (path.normalize(file) === path.normalize(src)) {
           await compile();
-          console.log("[audio-worklet] Recompiled bottleship-audio-worklet.js");
+          console.log("[audio-worklet] Recompiled orthros-audio-worklet.js");
         }
       });
     },
@@ -200,8 +200,8 @@ export default defineConfig({
       react: path.resolve(__dirname, "./node_modules/react"),
       "react-dom": path.resolve(__dirname, "./node_modules/react-dom"),
       v86: path.resolve(__dirname, "./vendor/v86/build/libv86.mjs"),
-      "@bottleship/formats": path.resolve(__dirname, "./packages/formats/src"),
-      "@bottleship/repack": path.resolve(__dirname, "./packages/repack/src")
+      "@orthros/formats": path.resolve(__dirname, "./packages/formats/src"),
+      "@orthros/repack": path.resolve(__dirname, "./packages/repack/src")
     }
   },
   build: {

@@ -11,12 +11,12 @@ import {
     type InnoParseResult,
     type RandomAccessSource,
     type SliceSource,
-} from "@bottleship/formats/inno";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
+} from "@orthros/formats/inno";
+import { UnpackDecoder } from "@orthros/formats/unpack";
 import { isGogJunk } from "./gog-filter";
 import { loadOverrides, getOverride } from "./overrides";
 import { guessCacheKey, parseGogGameInfo, synthesizeManifest, type SynthOptions } from "./manifest-synth";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
 
 export interface InstallProgress {
     phase: "reading" | "installing" | "packing" | "starting";

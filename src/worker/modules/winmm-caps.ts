@@ -29,7 +29,7 @@ function writeMidiInCaps(mem: Uint8Array, pmic: number, isWide: boolean): void {
     view.setUint16(pmic + 2, 0x0001, true); // wPid
     view.setUint32(pmic + 4, 0x0100, true); // vDriverVersion
 
-    const name = "BottleShip MIDI In";
+    const name = "Orthros MIDI In";
     if (isWide) {
         for (let i = 0; i < 32; i++) {
             const code = i < name.length ? name.charCodeAt(i) : 0;
@@ -87,7 +87,7 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
             view.setUint16(pwic + 0, 0xFFFF, true);
             view.setUint16(pwic + 2, 0x0001, true);
             view.setUint32(pwic + 4, 0x0100, true);
-            const name = "BottleShip Audio In\0";
+            const name = "Orthros Audio In\0";
             for (let i = 0; i < 32; i++) {
                 mem[pwic + 8 + i] = i < name.length ? name.charCodeAt(i) : 0;
             }
@@ -106,7 +106,7 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
             view.setUint16(pwic + 0, 0xFFFF, true);
             view.setUint16(pwic + 2, 0x0001, true);
             view.setUint32(pwic + 4, 0x0100, true);
-            const name = "BottleShip Audio In";
+            const name = "Orthros Audio In";
             for (let i = 0; i < 32; i++) {
                 const ch = i < name.length ? name.charCodeAt(i) : 0;
                 view.setUint16(pwic + 8 + i * 2, ch, true);
@@ -168,7 +168,7 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
         if (pmc) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             view.setUint16(pmc + 0, 0xFFFF, true);
-            const name = "BottleShip Mixer\0";
+            const name = "Orthros Mixer\0";
             for (let i = 0; i < 32; i++) {
                 mem[pmc + 4 + i] = i < name.length ? name.charCodeAt(i) : 0;
             }

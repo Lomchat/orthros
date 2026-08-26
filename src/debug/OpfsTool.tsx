@@ -13,10 +13,10 @@ import { ActionButton } from '../ui/ActionButton';
 /**
  * OPFS Raw Browser — dev-only, file-level escape hatch.
  *
- * The whole emulator lives under one OPFS root: `navigator.storage / "bottleship"`.
+ * The whole emulator lives under one OPFS root: `navigator.storage / "orthros"`.
  * Two very different kinds of data share it:
  *
- *   bottleship/
+ *   orthros/
  *     wgb-cache/<name>.wgb   ← BUNDLE copies. Big (Discworld Noir ≈ 1.5GB), but
  *                              re-derivable: re-downloaded from URL or re-mounted from
  *                              the user's local file. Safe to evict to reclaim space.
@@ -41,7 +41,7 @@ const MAX_TEXT_VIEW_BYTES = 2 * 1024 * 1024;
 type EntryCategory = 'bundle' | 'userdata' | 'ephemeral';
 
 interface OpfsFileInfo {
-  /** OPFS-relative path segments under `bottleship/` (used to navigate handles). */
+  /** OPFS-relative path segments under `orthros/` (used to navigate handles). */
   segments: string[];
   /** Human-readable path for display. */
   displayPath: string;
@@ -80,7 +80,7 @@ function normalizePath(path: string): string {
   return `${drive}:\\${stack.join('\\')}`;
 }
 
-/** Render OPFS-relative segments under `bottleship/` as a human path. */
+/** Render OPFS-relative segments under `orthros/` as a human path. */
 function describeSegments(segments: string[]): { displayPath: string; category: EntryCategory } {
   if (segments.length === 0) return { displayPath: '\\', category: 'userdata' };
 
@@ -131,10 +131,10 @@ const CATEGORY_HINT: Record<EntryCategory, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// OPFS access (main-thread; mirrors the worker's `bottleship` root layout)
+// OPFS access (main-thread; mirrors the worker's `orthros` root layout)
 // ---------------------------------------------------------------------------
 
-async function getBottleshipDir(create: boolean): Promise<FileSystemDirectoryHandle> {
+async function getOrthrosDir(create: boolean): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
   return root.getDirectoryHandle('bottleship', { create });
 }
@@ -249,7 +249,7 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
     setLoading(true);
     setError('');
     try {
-      const dir = await getBottleshipDir(true);
+      const dir = await getOrthrosDir(true);
       const [scanned, st] = await Promise.all([scanOpfsFiles(dir, []), getStorageEstimate()]);
       setFiles(scanned);
       setStats(st);
@@ -316,7 +316,7 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
     setFileContent('');
     setError('');
     try {
-      const dir = await getBottleshipDir(false);
+      const dir = await getOrthrosDir(false);
       setFileContent(await readOpfsFileText(dir, file.segments));
       setSelectedFile(file);
     } catch (err: any) {
@@ -329,7 +329,7 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
   const handleDownloadFile = (file: OpfsFileInfo) =>
     withBusy(async () => {
       try {
-        const dir = await getBottleshipDir(false);
+        const dir = await getOrthrosDir(false);
         await downloadOpfsFile(dir, file.segments);
       } catch (err: any) {
         setError(`Failed to download file: ${explainOpfsError(err)}`);
@@ -344,7 +344,7 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
     if (!confirm(warn)) return;
     return withBusy(async () => {
       try {
-        const dir = await getBottleshipDir(false);
+        const dir = await getOrthrosDir(false);
         await deleteOpfsEntry(dir, file.segments);
         if (selectedFile?.displayPath === file.displayPath) {
           setSelectedFile(null);
@@ -368,7 +368,7 @@ const OpfsTool: React.FC<OpfsToolProps> = ({ isOpen, onClose }) => {
         : `Clean all ${items.length} ephemeral file(s)? Frees ${reclaim}. Saves are kept.`;
     if (!confirm(label)) return;
     return withBusy(async () => {
-      const dir = await getBottleshipDir(false);
+      const dir = await getOrthrosDir(false);
       const failures: string[] = [];
       for (const f of items) {
         try {

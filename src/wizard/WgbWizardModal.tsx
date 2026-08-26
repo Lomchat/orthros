@@ -43,7 +43,7 @@ import type {
   SourceDetection,
   FinalizeDestination,
 } from "../worker/runtime/filesystem/wgb-build";
-import { manifestToWgbFilename } from "@bottleship/formats/wgb/container-id";
+import { manifestToWgbFilename } from "@orthros/formats/wgb/container-id";
 import { downloadBlob } from "../settings/SettingsIconBtn";
 import { isSaveFilePickerSupported, pickSaveWgbFile, writeBytesToFileHandle, WGB_SAVE_PACK_PERCENT } from "../save-as";
 

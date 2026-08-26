@@ -1,6 +1,6 @@
 # BFME 1.03 FR in the browser
 
-BottleShip runs the original 32-bit Windows executable on the player's computer. The VPS only serves static/range-addressable game data and relays opaque UDP datagrams used by the virtual LAN; it never renders or simulates the game.
+Orthros runs the original 32-bit Windows executable on the player's computer. The VPS only serves static/range-addressable game data and relays opaque UDP datagrams used by the virtual LAN; it never renders or simulates the game.
 
 ## Player URL
 
@@ -39,14 +39,14 @@ Chrome B ── Windows/x86 + D3D9→WebGPU + Miles audio ──┘   static WGB
 ## Build and run
 
 ```bash
-cd /srv/bfme/app/bottleship
+cd /srv/bfme/app/orthros
 bun install
 bun run typecheck
 bun test
 bun run build
 
 BFME_WGB_PATH=/srv/bfme/data/bfme-1.03-fr.wgb \
-BOTTLESHIP_HOST=127.0.0.1 PORT=5173 \
+ORTHROS_HOST=127.0.0.1 PORT=5173 \
 bun deploy/server.ts
 ```
 
@@ -61,11 +61,11 @@ It also emits `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedd
 
 ## Caddy and systemd
 
-The checked-in examples are [bfme-bottleship.service](../deploy/bfme-bottleship.service.example) and [Caddyfile](../deploy/Caddyfile.bfme.example). Copy the service to `/etc/systemd/system/bfme-bottleship.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
+The checked-in examples are [bfme-orthros.service](../deploy/bfme-orthros.service.example) and [Caddyfile](../deploy/Caddyfile.bfme.example). Copy the service to `/etc/systemd/system/bfme-orthros.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now bfme-bottleship
+sudo systemctl enable --now bfme-orthros
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
@@ -495,8 +495,8 @@ base Rust/WASM module for two loads and comparisons. The inline shape checks the
 state flags and table slot together and preserves `u16::MAX` as the unpublished
 entry sentinel. Config index 22 remains a live kill switch, exposed as
 `dbg.jitInlineDispatch(false)` and kept authoritative across v86 reloads by the
-PreemptionManager. Both the v86 fork and BottleShip production enable it by
-default, so future consumers of the runtime do not require BottleShip's
+PreemptionManager. Both the v86 fork and Orthros production enable it by
+default, so future consumers of the runtime do not require Orthros's
 TypeScript manager to receive the optimization.
 
 A deterministic eight-million CALL/RET benchmark checks the arithmetic result,
@@ -523,7 +523,7 @@ index with table-generation invalidation, plus one positive or negative memo per
 generated exit site. Positive memos use the global target invalidation epoch;
 negative memos retry only when a new exact target is published. The scheduler
 guard uses the cycle limit cached at `do_many_cycles_native` entry. Browsers must
-support WebAssembly `return_call_indirect`; BottleShip probes that opcode before
+support WebAssembly `return_call_indirect`; Orthros probes that opcode before
 allowing `dbg.jitBlockChain(true)`. Toggling clears the JIT cache. While disabled,
 exact entries are not published, so the normal BFME path does not touch the
 large side index.
@@ -585,7 +585,7 @@ already waits for its next 30 Hz frame.
 
 Config index 23 and `dbg.jitTier2Regions(false)` provide an authoritative kill
 switch; toggling resets the Tier-2 profile and JIT cache. Regions are enabled by
-default in v86 and BottleShip. Direct tail-call block chaining remains disabled.
+default in v86 and Orthros. Direct tail-call block chaining remains disabled.
 
 The current source was rebuilt and deployed as
 `emulator.worker-DHJNUrwY.js`. A fresh Chromium process loaded that worker,

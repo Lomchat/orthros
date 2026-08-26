@@ -1,4 +1,4 @@
-import { ZipArchive, ZipEntry } from "@bottleship/formats/zip";
+import { ZipArchive, ZipEntry } from "@orthros/formats/zip";
 import { LruCache } from "../../core/collections/lru-cache";
 import { Logger, LogCategory } from "../../core/logger";
 import { harnessBus } from "../../harness/event-bus";
@@ -88,7 +88,7 @@ export class VirtualFileSystem {
     private cdRedirect: string | null = null;
 
     /**
-     * Open the writable overlay for a game's container (bottleship/games/<containerDir>/overlay/).
+     * Open the writable overlay for a game's container (orthros/games/<containerDir>/overlay/).
      * On a game switch (different gameId) the previous overlay is closed and re-rooted, so game B
      * never sees game A's written files (per-game isolation). gameId is the namespaced container key.
      */
@@ -157,7 +157,7 @@ export class VirtualFileSystem {
                 `Invalid WGB archive: found ${compressedEntries} compressed ZIP entr` +
                 `${compressedEntries === 1 ? "y" : "ies"} ` +
                 `(first="${firstCompressedName ?? "n/a"}", method=${firstCompressedMethod ?? -1}). ` +
-                `BottleShip expects WGB as ZIP STORED-only (method=0). ` +
+                `Orthros expects WGB as ZIP STORED-only (method=0). ` +
                 `Compressed entries force full decompression and break deterministic range reads. ` +
                 `Repack archive with STORE-only entries and retry.`;
             Logger.error(LogCategory.SYSTEM, `VFS: ${message}`);
@@ -1728,7 +1728,7 @@ class OpfsOverlay {
         return buf.slice(offset, Math.min(buf.length, offset + length));
     }
 
-    /** Root this overlay at the game's container: bottleship/games/<containerDir>/overlay/. */
+    /** Root this overlay at the game's container: orthros/games/<containerDir>/overlay/. */
     async initialize(gameId: string): Promise<void> {
         const container = await getContainerDir(gameId, true);
         if (!container) throw new Error("OPFS unavailable: cannot open game container");

@@ -191,10 +191,10 @@ export class AudioEngine {
     if (this.ready) return this.ready;
     const context = this.ensureContext();
     this.ready = (async () => {
-      const moduleUrl = new URL("./bottleship-audio-worklet.js", import.meta.url);
+      const moduleUrl = new URL("./orthros-audio-worklet.js", import.meta.url);
       moduleUrl.searchParams.set("v", "5");
       await context.audioWorklet.addModule(moduleUrl);
-      this.node = new AudioWorkletNode(context, "bottleship-audio", {
+      this.node = new AudioWorkletNode(context, "orthros-audio", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2],
@@ -291,7 +291,7 @@ export class AudioEngine {
     await this.ensureReady();
     if (!this.context) {
       const error = "AudioContext not initialized";
-      console.error(`BottleShip: ${error}`, { id: payload.id });
+      console.error(`Orthros: ${error}`, { id: payload.id });
       if (this.onStatusChange) {
         this.onStatusChange(payload.id, "error", error);
       }
@@ -299,7 +299,7 @@ export class AudioEngine {
     }
     
     if (this.shouldStreamEncoded(payload)) {
-      console.log("BottleShip: Audio stream requested (MP3)", {
+      console.log("Orthros: Audio stream requested (MP3)", {
         id: payload.id,
         bytes: payload.data.byteLength,
         mimeType: payload.mimeType ?? "application/octet-stream",
@@ -308,14 +308,14 @@ export class AudioEngine {
       try {
         await this.playEncodedStreaming(payload);
         this.debug("encoded-started", payload.id, "media-element");
-        console.log("BottleShip: Audio stream started", { id: payload.id });
+        console.log("Orthros: Audio stream started", { id: payload.id });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "started");
         }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         this.debug("encoded-error", payload.id, error);
-        console.error("BottleShip: Audio stream failed", { id: payload.id, error });
+        console.error("Orthros: Audio stream failed", { id: payload.id, error });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "error", error);
         }
@@ -323,7 +323,7 @@ export class AudioEngine {
       return;
     }
 
-    console.log("BottleShip: Audio decode started", {
+    console.log("Orthros: Audio decode started", {
       id: payload.id,
       bytes: payload.data.byteLength,
       mimeType: payload.mimeType ?? "application/octet-stream",
@@ -335,7 +335,7 @@ export class AudioEngine {
     const key = this.buildDecodeKey(payload);
     const cached = this.decodeCache.get(key);
     if (cached) {
-      console.log("BottleShip: Audio decode cache hit", {
+      console.log("Orthros: Audio decode cache hit", {
         id: payload.id,
         channels: cached.channels,
         sampleRate: cached.sampleRate,
@@ -343,7 +343,7 @@ export class AudioEngine {
         contextState: this.context?.state
       });
       if (this.pendingDecodes.get(payload.id) !== token) {
-        console.log("BottleShip: Audio decode cache hit ignored (stale token)", { id: payload.id });
+        console.log("Orthros: Audio decode cache hit ignored (stale token)", { id: payload.id });
         return;
       }
       this.pendingDecodes.delete(payload.id);
@@ -359,13 +359,13 @@ export class AudioEngine {
           pan: payload.pan,
           loopCount: payload.loopCount,
         });
-        console.log("BottleShip: Audio decode finished (from cache)", { id: payload.id });
+        console.log("Orthros: Audio decode finished (from cache)", { id: payload.id });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "started");
         }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
-        console.error("BottleShip: Audio play failed (from cache)", { id: payload.id, error });
+        console.error("Orthros: Audio play failed (from cache)", { id: payload.id, error });
         if (this.onStatusChange) {
           this.onStatusChange(payload.id, "error", error);
         }
@@ -376,7 +376,7 @@ export class AudioEngine {
     const arrayBuffer = this.cloneArrayBuffer(payload.data);
     try {
       const decoded = await this.decodeWithCache(key, arrayBuffer);
-      console.log("BottleShip: Audio decoded successfully", {
+      console.log("Orthros: Audio decoded successfully", {
         id: payload.id,
         channels: decoded.channels,
         sampleRate: decoded.sampleRate,
@@ -384,7 +384,7 @@ export class AudioEngine {
         contextState: this.context?.state
       });
       if (this.pendingDecodes.get(payload.id) !== token) {
-        console.log("BottleShip: Audio decode result ignored (stale token)", { id: payload.id });
+        console.log("Orthros: Audio decode result ignored (stale token)", { id: payload.id });
         return;
       }
       this.pendingDecodes.delete(payload.id);
@@ -400,7 +400,7 @@ export class AudioEngine {
         pan: payload.pan,
         loopCount: payload.loopCount,
       });
-      console.log("BottleShip: Audio decode finished (from decode)", { id: payload.id });
+      console.log("Orthros: Audio decode finished (from decode)", { id: payload.id });
       this.debug("encoded-started", payload.id, "decoded-worklet");
       if (this.onStatusChange) {
         this.onStatusChange(payload.id, "started");
@@ -409,7 +409,7 @@ export class AudioEngine {
       this.pendingDecodes.delete(payload.id);
       const error = err instanceof Error ? err.message : String(err);
       this.debug("encoded-error", payload.id, error);
-      console.error("BottleShip: Audio decode failed", { id: payload.id, error, err });
+      console.error("Orthros: Audio decode failed", { id: payload.id, error, err });
       if (this.onStatusChange) {
         this.onStatusChange(payload.id, "error", error);
       }
@@ -532,9 +532,9 @@ export class AudioEngine {
     this.pausePromise = (async () => {
       if (this.context && this.context.state === "running") {
         await this.context.suspend();
-        console.log("BottleShip: AudioContext suspended", { state: this.context.state });
+        console.log("Orthros: AudioContext suspended", { state: this.context.state });
       } else if (this.context) {
-        console.log("BottleShip: AudioContext not running, current state:", this.context.state);
+        console.log("Orthros: AudioContext not running, current state:", this.context.state);
       }
 
       // Also pause all encoded sources (HTMLAudioElement) - they won't resume automatically
@@ -548,7 +548,7 @@ export class AudioEngine {
         }
       }
       if (pausedCount > 0) {
-        console.log("BottleShip: Paused encoded sources", { count: pausedCount, ids: Array.from(this.pausedEncodedSources) });
+        console.log("Orthros: Paused encoded sources", { count: pausedCount, ids: Array.from(this.pausedEncodedSources) });
       }
     })();
 
@@ -574,10 +574,10 @@ export class AudioEngine {
       if (context.state === "suspended") {
         try {
           await context.resume();
-          console.log("BottleShip: AudioContext resumed", { state: context.state });
+          console.log("Orthros: AudioContext resumed", { state: context.state });
         } catch (err) {
           // Gesture-gated failure: keep pending audio; next user gesture can resume successfully.
-          console.warn("BottleShip: AudioContext resume blocked", {
+          console.warn("Orthros: AudioContext resume blocked", {
             state: context.state,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -603,10 +603,10 @@ export class AudioEngine {
         }
         try {
           await source.element.play();
-          console.log("BottleShip: Encoded source resumed", { id });
+          console.log("Orthros: Encoded source resumed", { id });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
-          console.error("BottleShip: Failed to resume encoded source", { id, error });
+          console.error("Orthros: Failed to resume encoded source", { id, error });
           // Source might have been stopped/removed, which is fine
         }
       }
@@ -739,7 +739,7 @@ export class AudioEngine {
       // Note: onStatusChange will be called from playEncoded wrapper
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      console.error("BottleShip: Audio element play failed", { id: payload.id, error, err });
+      console.error("Orthros: Audio element play failed", { id: payload.id, error, err });
       // Cleanup on error
       this.cleanupEncodedSource(payload.id);
       // onStatusChange will be called from playEncoded wrapper
@@ -794,7 +794,7 @@ export class AudioEngine {
     if (!inflight) {
       inflight = (async () => {
         try {
-          console.log("BottleShip: Starting decodeAudioData", { key, bytes: data.byteLength });
+          console.log("Orthros: Starting decodeAudioData", { key, bytes: data.byteLength });
           const decoded = await this.context!.decodeAudioData(data);
           const interleaved = this.interleave(decoded);
           const value = {
@@ -802,7 +802,7 @@ export class AudioEngine {
             channels: decoded.numberOfChannels,
             sampleRate: decoded.sampleRate
           };
-          console.log("BottleShip: decodeAudioData finished", {
+          console.log("Orthros: decodeAudioData finished", {
             key,
             channels: value.channels,
             sampleRate: value.sampleRate,
@@ -811,7 +811,7 @@ export class AudioEngine {
           if (interleaved.byteLength <= MAX_CACHE_BYTES) {
             this.decodeCache.set(key, value);
           } else {
-            console.log("BottleShip: Audio decode cache skipped (too large)", {
+            console.log("Orthros: Audio decode cache skipped (too large)", {
               bytes: interleaved.byteLength,
               channels: value.channels,
               sampleRate: value.sampleRate
@@ -819,7 +819,7 @@ export class AudioEngine {
           }
           return value;
         } catch (err) {
-          console.error("BottleShip: decodeAudioData failed", { key, bytes: data.byteLength, err });
+          console.error("Orthros: decodeAudioData failed", { key, bytes: data.byteLength, err });
           throw err;
         }
       })();

@@ -9,8 +9,8 @@
  *
  * The ROM (the .wgb) is deliberately NOT included — saves travel, game files don't.
  */
-import { buildZip, crc32 } from "@bottleship/formats/wgb/zip-build";
-import { ZipArchive, BufferSource } from "@bottleship/formats/zip";
+import { buildZip, crc32 } from "@orthros/formats/wgb/zip-build";
+import { ZipArchive, BufferSource } from "@orthros/formats/zip";
 import { getContainerDir } from "./container-store";
 import { Logger, LogCategory } from "../../core/logger";
 import { asWriteChunk } from "../../../dom-buffer";

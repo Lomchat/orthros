@@ -1,6 +1,6 @@
 # Architecture
 
-BottleShip is a high-level-emulation (HLE) engine: it runs a real x86 Windows executable and
+Orthros is a high-level-emulation (HLE) engine: it runs a real x86 Windows executable and
 re-implements the Windows API on top of web platform APIs, rather than emulating a full PC and
 booting Windows. This document explains how the pieces fit together.
 
@@ -35,7 +35,7 @@ the guest stack.
 
 ## The WASM hypercall layer
 
-Marshalling into JS for *every* WinAPI call is too slow for hot paths. BottleShip adds a tiered
+Marshalling into JS for *every* WinAPI call is too slow for hot paths. Orthros adds a tiered
 **hypercall** layer inside the WASM CPU: a compact `OUT`-based dispatch that services the
 hottest, simplest APIs — time and tick counters, critical-section enter/leave and other sync
 primitives, FPU/math helpers, and string/memory operations — without ever entering JS. If a

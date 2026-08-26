@@ -1,4 +1,4 @@
-//! unpack-buffered — BottleShip's owned archive/codec decompression library.
+//! unpack-buffered — Orthros's owned archive/codec decompression library.
 //!
 //! Consolidates the decompression primitives the game-ingestion pipeline needs
 //! into one maintained Rust→wasm crate (replacing a scatter of hand-ports).

@@ -101,7 +101,7 @@ export function formatGuestReport(f: CrashFault, gameName: string, crashed: bool
     return "0x" + (v >>> 0).toString(16);
   };
   const lines: string[] = [
-    crashed ? `BottleShip crash report` : `BottleShip exit report`,
+    crashed ? `Orthros crash report` : `Orthros exit report`,
     `game: ${gameName}`,
   ];
   if (crashed) {

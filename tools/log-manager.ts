@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 /**
- * Log Manager Tool for BottleShip
+ * Log Manager Tool for Orthros
  *
  * Senior developer utilities for managing logs efficiently.
  * Handles log cleanup, analysis, and optimization.
@@ -154,7 +154,7 @@ class LogManager {
   }
 
   async archiveAndCompress(targetPath?: string): Promise<string> {
-    const archivePath = targetPath || `bottleship-logs-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.tar.gz`;
+    const archivePath = targetPath || `orthros-logs-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.tar.gz`;
 
     // Ensure directory exists
     await mkdir(dirname(archivePath), { recursive: true });
@@ -163,7 +163,7 @@ class LogManager {
     const files = existsSync(LOG_DIR) ?
       (await readdir(LOG_DIR)).filter(f => f.endsWith('.log') || f.endsWith('.jsonl') || f.endsWith('.md')) : [];
 
-    let archiveContent = `BottleShip Log Archive - ${new Date().toISOString()}\n`;
+    let archiveContent = `Orthros Log Archive - ${new Date().toISOString()}\n`;
     archiveContent += `Files archived: ${files.length}\n\n`;
 
     for (const file of files) {
@@ -232,7 +232,7 @@ async function main() {
       break;
 
     case 'archive':
-      const archivePath = args[1] || `bottleship-logs-emergency-${Date.now()}.txt`;
+      const archivePath = args[1] || `orthros-logs-emergency-${Date.now()}.txt`;
       console.log(`📦 Archiving logs to ${archivePath}...`);
       await manager.archiveAndCompress(archivePath);
       console.log('   Archive created successfully');

@@ -1,9 +1,9 @@
 {
-  "name": "@bottleship/formats",
+  "name": "@orthros/formats",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Binary format parsers for BottleShip — Inno Setup, ISO9660+CUE, InstallShield, FreeArc, unpack-WASM bindings. No emulator/DOM dependencies.",
+  "description": "Binary format parsers for Orthros — Inno Setup, ISO9660+CUE, InstallShield, FreeArc, unpack-WASM bindings. No emulator/DOM dependencies.",
   "exports": {
     "./*": "./src/*/index.ts",
     "./inno/entries/*": "./src/inno/entries/*.ts",

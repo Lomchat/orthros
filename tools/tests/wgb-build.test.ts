@@ -15,8 +15,8 @@ import {
     unzipStored,
     type BuildSource,
 } from "../../src/worker/runtime/filesystem/wgb-build";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
-import { ZipArchive, BufferSource } from "@bottleship/formats/zip";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
+import { ZipArchive, BufferSource } from "@orthros/formats/zip";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 

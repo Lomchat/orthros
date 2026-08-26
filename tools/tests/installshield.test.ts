@@ -19,7 +19,7 @@ import {
     extractInstallShield,
     detectInstallShieldStem,
     FILE_COMPRESSED,
-} from "@bottleship/formats/installshield";
+} from "@orthros/formats/installshield";
 
 const CAB_SIGNATURE = 0x28635349;
 const COMMON_HEADER_SIZE = 20;

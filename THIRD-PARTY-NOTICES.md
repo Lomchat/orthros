@@ -1,16 +1,16 @@
 # Third-Party Notices
 
-BottleShip redistributes the third-party components listed below. Each component
+Orthros redistributes the third-party components listed below. Each component
 remains under its own license; the corresponding license texts live in the
 upstream projects referenced here.
 
-> The license for BottleShip's own code is recorded in `LICENSE`. This file covers
+> The license for Orthros's own code is recorded in `LICENSE`. This file covers
 > only third-party material.
 
 ## Emulation core
 
 ### v86 (`vendor/v86`, ships as `public/v86.wasm` + `libv86.mjs`)
-- x86 CPU/system emulator. Git submodule of the BottleShip fork of
+- x86 CPU/system emulator. Git submodule of the Orthros fork of
   [copy/v86](https://github.com/copy/v86).
 - **License:** BSD-2-Clause (see `vendor/v86/LICENSE`). Portions of the floppy
   code derive from QEMU and are MIT-licensed (`vendor/v86/LICENSE.MIT`).
@@ -39,7 +39,7 @@ upstream projects referenced here.
   and `decoder_api.c` in this repository.
 
 ### unpack-buffered (`tools/build-unpack-buffered`, ships as `public/unpack-buffered.wasm`)
-- First-party BottleShip Rust crate (7z/deflate/LZMA decode for game ingestion).
+- First-party Orthros Rust crate (7z/deflate/LZMA decode for game ingestion).
   Statically links the following Rust crates:
   - `sevenz-rust2` — Apache-2.0
   - `miniz_oxide` — MIT OR Zlib OR Apache-2.0
@@ -47,7 +47,7 @@ upstream projects referenced here.
   - `wasm-bindgen`, `js-sys` — MIT OR Apache-2.0
 
 ### unpack-streaming (`tools/build-unpack-streaming`, ships as `public/unpack-streaming.wasm`)
-- First-party BottleShip Rust crate (Inno Setup LZMA1/LZMA2, FreeArc srep).
+- First-party Orthros Rust crate (Inno Setup LZMA1/LZMA2, FreeArc srep).
   Statically links:
   - `lzma-rust2` — Apache-2.0
 
@@ -72,7 +72,7 @@ redistributed and are therefore not listed here.
 
 ## Reference material (consulted, **not** redistributed)
 
-BottleShip is an independent clean-room recreation of the Win32/COM/DirectX and
+Orthros is an independent clean-room recreation of the Win32/COM/DirectX and
 3D-graphics interfaces it targets. It ships **none** of the third-party source
 below; the material was used only to confirm the public interface contracts
 (function signatures, ABI struct layouts, enumerant values) that any conforming

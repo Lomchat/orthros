@@ -1,9 +1,9 @@
 ---
 name: bringup
-description: Drive and observe the BottleShip emulator to bring up a game, using the AI-agent harness (window.__BS__.harness + bun tools/harness.ts). Use when loading a game, making it reach a menu/level, diagnosing why it crashes/hangs/renders black, or writing a repeatable bring-up/regression script. Operationalizes CLAUDE.md's debugging workflow on top of the harness verbs. Use the project's CDP harness, not a browser MCP (chrome-devtools MCP is disabled for this project).
+description: Drive and observe the Orthros emulator to bring up a game, using the AI-agent harness (window.__BS__.harness + bun tools/harness.ts). Use when loading a game, making it reach a menu/level, diagnosing why it crashes/hangs/renders black, or writing a repeatable bring-up/regression script. Operationalizes CLAUDE.md's debugging workflow on top of the harness verbs. Use the project's CDP harness, not a browser MCP (chrome-devtools MCP is disabled for this project).
 ---
 
-# BottleShip Bring-up
+# Orthros Bring-up
 
 The harness turns bring-up from "poke `dbg.*` by hand, grep logs, guess from
 screenshots" into fluent, self-judging automation. It is **headless** (CLI/CDP)

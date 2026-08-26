@@ -50,7 +50,7 @@
 
 import { writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, relative, basename, extname, resolve } from 'path';
-import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from '@bottleship/formats/wgb/container-id';
+import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from '@orthros/formats/wgb/container-id';
 
 // ---------------------------------------------------------------------------
 // ZIP (Store-only) writer — same algorithm as pack-wgb.ts

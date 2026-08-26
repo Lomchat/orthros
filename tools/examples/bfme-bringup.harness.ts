@@ -13,7 +13,7 @@ const result = await harness()
   .perfSpikes({ top: 20, minMs: 10 })
   .stubs()
   .report()
-  .shot({ save: "/srv/bfme/archive/evaluation-2026-08/bottleship-results/bfme-after-30s.png" })
+  .shot({ save: "/srv/bfme/archive/evaluation-2026-08/orthros-results/bfme-after-30s.png" })
   .run();
 
 console.log(JSON.stringify(result, null, 2));

@@ -1,6 +1,6 @@
-# Contributing to BottleShip
+# Contributing to Orthros
 
-Thanks for your interest! BottleShip is a low-level systems project — an x86 HLE engine that
+Thanks for your interest! Orthros is a low-level systems project — an x86 HLE engine that
 re-implements the Windows API on web platform APIs. This guide covers how to build it, the
 conventions we hold to, and how to get a change merged.
 
@@ -34,7 +34,7 @@ and back the faithfulness claim with a public citation.
 
 ```bash
 git clone --recurse-submodules <repo-url>   # vendor/v86 is a submodule
-cd bottleship
+cd orthros
 bun install
 bun run dev                                  # http://localhost:5174
 ```
@@ -99,7 +99,7 @@ fallback, never remove it.
 
 ## Debugging
 
-BottleShip ships an automation harness that wraps "load a game, drive it, see what happened"
+Orthros ships an automation harness that wraps "load a game, drive it, see what happened"
 into fluent, self-judging verbs (`bun tools/harness.ts …`, `window.__BS__.harness`). See
 [`docs/harness.md`](docs/harness.md). When something behaves oddly, pull a `report()` first —
 it's one structured snapshot with CPU regs, the module-labelled call stack, the recent WinAPI

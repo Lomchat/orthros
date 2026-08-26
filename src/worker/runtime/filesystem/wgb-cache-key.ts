@@ -9,7 +9,7 @@
  */
 export function wgbCacheKeyForUrl(url: string): string {
     try {
-        const parsed = new URL(url, "http://bottleship.invalid");
+        const parsed = new URL(url, "http://orthros.invalid");
         if (parsed.pathname.replace(/\/+$/, "") === "/__wgb") {
             const diskPath = parsed.searchParams.get("path");
             if (diskPath) {

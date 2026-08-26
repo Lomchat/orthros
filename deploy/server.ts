@@ -9,7 +9,7 @@ import { bfmeRelayStats, bfmeRelayWebSocket, upgradeBfmeRelay } from "./bfme-net
 
 const DIST = path.resolve(import.meta.dir, "..", "dist");
 const PORT = parseInt(process.env.PORT ?? "5173");
-const BOTTLESHIP_HOST = process.env.BOTTLESHIP_HOST ?? "0.0.0.0";
+const ORTHROS_HOST = process.env.ORTHROS_HOST ?? "0.0.0.0";
 const BFME_WGB_PATH = path.resolve(
     process.env.BFME_WGB_PATH ?? path.resolve(import.meta.dir, "..", "..", "..", "data", "bfme-1.03-fr.wgb"),
 );
@@ -37,7 +37,7 @@ const COOP_COEP = {
 
 const server = Bun.serve({
     port: PORT,
-    hostname: BOTTLESHIP_HOST,
+    hostname: ORTHROS_HOST,
     async fetch(req, bunServer) {
         const url = new URL(req.url);
         if (url.pathname === "/bfme-net/health") {
@@ -129,4 +129,4 @@ const server = Bun.serve({
     websocket: bfmeRelayWebSocket as any,
 });
 
-console.log(`Serving BottleShip + BFME relay on http://${BOTTLESHIP_HOST}:${server.port}`);
+console.log(`Serving Orthros + BFME relay on http://${ORTHROS_HOST}:${server.port}`);

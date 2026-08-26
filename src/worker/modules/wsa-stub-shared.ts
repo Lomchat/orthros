@@ -119,7 +119,7 @@ export function writeWsaData(lpWSAData: number, wVersionRequested: number, mem: 
     }
 
     const desc = new Uint8Array(257);
-    desc.set(new TextEncoder().encode("BottleShip Winsock stub\0").subarray(0, 256));
+    desc.set(new TextEncoder().encode("Orthros Winsock stub\0").subarray(0, 256));
     const status = new Uint8Array(129);
     status.set(new TextEncoder().encode("Running\0").subarray(0, 128));
 
@@ -830,7 +830,7 @@ function writeSockaddrIn(addr: number, value: SocketAddress, mem: Uint8Array): b
 /**
  * Browser Winsock provider. Datagram payloads remain byte-for-byte native BFME
  * packets; only the unavailable browser UDP transport is replaced with one
- * WebSocket connection to the BottleShip virtual-LAN relay.
+ * WebSocket connection to the Orthros virtual-LAN relay.
  */
 export class WsaSocketTable {
     private nextId = 1;

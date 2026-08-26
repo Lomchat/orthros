@@ -1,5 +1,5 @@
 {
-  "name": "bottleship",
+  "name": "orthros",
   "private": true,
   "type": "module",
   "workspaces": ["packages/*"],
@@ -40,8 +40,8 @@
     "gen:inno-fixtures": "cargo run --bin gen-fixtures --manifest-path tools/build-unpack-streaming/Cargo.toml"
   },
   "dependencies": {
-    "@bottleship/formats": "workspace:*",
-    "@bottleship/repack": "workspace:*",
+    "@orthros/formats": "workspace:*",
+    "@orthros/repack": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
     "lucide-react": "^1.24.0",
     "pako": "^3.0.1",

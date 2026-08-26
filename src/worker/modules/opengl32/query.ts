@@ -77,8 +77,8 @@ export function createQueryExports(ctx: OpenGLContext): Record<string, ThunkImpl
 
         let str: string;
         switch (name) {
-            case GL_VENDOR: str = "BottleShip"; break;
-            case GL_RENDERER: str = "BottleShip WebGPU"; break;
+            case GL_VENDOR: str = "Orthros"; break;
+            case GL_RENDERER: str = "Orthros WebGPU"; break;
             case GL_VERSION: str = "1.3.0"; break;
             case GL_EXTENSIONS:
                 str = "GL_ARB_multitexture GL_EXT_compiled_vertex_array GL_ARB_texture_env_combine GL_ARB_texture_compression GL_EXT_texture_compression_s3tc GL_ARB_texture_compression_rgtc GL_EXT_texture_compression_latc";

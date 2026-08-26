@@ -134,7 +134,7 @@ export function registerDirectDraw2Exports(
         for (let i = 0; i < driverLen; i++) mem[lpdddi + i] = driverBytes[i];
 
         // szDescription at offset 512
-        const descBytes = new TextEncoder().encode("BottleShip Display Driver");
+        const descBytes = new TextEncoder().encode("Orthros Display Driver");
         const descLen = Math.min(descBytes.length, DDDEVICEIDENTIFIER2_STRING_SIZE - 1);
         for (let i = 0; i < descLen; i++) mem[lpdddi + 512 + i] = descBytes[i];
 

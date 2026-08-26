@@ -1609,7 +1609,7 @@ export class WinMM implements IModule {
                 view.setUint16(pwoc + 0, 0xFFFF, true);
                 view.setUint16(pwoc + 2, 0x0001, true);
                 view.setUint32(pwoc + 4, 0x0100, true);
-                const name = "BottleShip Audio Out\0";
+                const name = "Orthros Audio Out\0";
                 for (let i = 0; i < 32; i++) {
                     mem[pwoc + 8 + i] = i < name.length ? name.charCodeAt(i) : 0;
                 }
@@ -1628,7 +1628,7 @@ export class WinMM implements IModule {
                 view.setUint16(pwoc + 0, 0xFFFF, true);
                 view.setUint16(pwoc + 2, 0x0001, true);
                 view.setUint32(pwoc + 4, 0x0100, true);
-                const name = "BottleShip Audio Out";
+                const name = "Orthros Audio Out";
                 for (let i = 0; i < 32; i++) {
                     const ch = i < name.length ? name.charCodeAt(i) : 0;
                     view.setUint16(pwoc + 8 + i * 2, ch, true);

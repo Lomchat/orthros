@@ -687,7 +687,7 @@ export class Process {
         this.environment.set("WINDIR", "C:\\WINDOWS");
         this.environment.set("TEMP", "C:\\TEMP");
         this.environment.set("TMP", "C:\\TEMP");
-        this.environment.set("USERNAME", "BottleShip");
+        this.environment.set("USERNAME", "Orthros");
         this.environment.set("COMPUTERNAME", "BS-EMULATOR");
 
         // Initialize callback manager for x86 callback invocation (WndProc, etc.)
@@ -827,7 +827,7 @@ export class Process {
         this.environment.set("WINDIR", "C:\\WINDOWS");
         this.environment.set("TEMP", "C:\\TEMP");
         this.environment.set("TMP", "C:\\TEMP");
-        this.environment.set("USERNAME", "BottleShip");
+        this.environment.set("USERNAME", "Orthros");
         this.environment.set("COMPUTERNAME", "BS-EMULATOR");
 
         this.lastError = 0;

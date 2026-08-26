@@ -1447,7 +1447,7 @@ export const exports: Record<string, ThunkImplementation> = {
         const lpBuffer = args[0];
         const lpnSize = args[1];
 
-        const name = 'BOTTLESHIP';
+        const name = 'ORTHROS';
 
         if (!lpBuffer || !lpnSize) {
             return 0; // FALSE
@@ -1475,7 +1475,7 @@ export const exports: Record<string, ThunkImplementation> = {
         const lpBuffer = args[0];
         const lpnSize = args[1];
 
-        const name = 'BOTTLESHIP';
+        const name = 'ORTHROS';
 
         if (!lpBuffer || !lpnSize) {
             return 0; // FALSE

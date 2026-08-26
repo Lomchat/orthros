@@ -58,7 +58,7 @@ class LogManager {
   private rotate(game?: string) {
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19).replace(/-(\d\d)-(\d\d)$/, "-$1$2");
     const suffix = game ? "-" + game.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) : "";
-    this.currentPath = join(CONFIG.LOG_DIR, `bottleship-${stamp}${suffix}.log`);
+    this.currentPath = join(CONFIG.LOG_DIR, `orthros-${stamp}${suffix}.log`);
     this.currentSize = 0;
   }
 
@@ -111,7 +111,7 @@ class LogManager {
   async cleanup() {
     try {
       const files = (await readdir(CONFIG.LOG_DIR))
-        .filter(f => f.startsWith("bottleship-"))
+        .filter(f => f.startsWith("orthros-"))
         .map(f => join(CONFIG.LOG_DIR, f));
 
       const stats = await Promise.all(files.map(async path => ({ path, s: await stat(path) })));
@@ -134,7 +134,7 @@ const server = Bun.serve({
   port: CONFIG.PORT,
   fetch(req, server) {
     if (server.upgrade(req)) return;
-    return new Response(req.url.endsWith("/health") ? "OK" : "BottleShip Log Server");
+    return new Response(req.url.endsWith("/health") ? "OK" : "Orthros Log Server");
   },
   websocket: {
     open(ws) {

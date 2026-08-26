@@ -3,7 +3,7 @@
  *
  * `loadBundle` (emulator.worker.ts) still owns the boot path; this module owns the
  * non-booting half: classify a dropped payload, extract/synthesize into a staged `.wgb`
- * under OPFS `bottleship/_wizard/<id>.wgb`, inspect an existing `.wgb`, and finalize a
+ * under OPFS `orthros/_wizard/<id>.wgb`, inspect an existing `.wgb`, and finalize a
  * (possibly edited) staged bundle to one of three destinations (play / library / download).
  *
  * It deliberately reuses the existing browser-callable building blocks rather than
@@ -22,25 +22,25 @@ import {
     parseSliceFile,
     type InnoParseResult,
     type SliceData,
-} from "@bottleship/formats/inno";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
-import { detectFormat, sniffBlobHead, type DetectedFormat } from "@bottleship/repack/detect";
-import { installerToWgb } from "@bottleship/repack/installer-to-wgb";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
+} from "@orthros/formats/inno";
+import { UnpackDecoder } from "@orthros/formats/unpack";
+import { detectFormat, sniffBlobHead, type DetectedFormat } from "@orthros/repack/detect";
+import { installerToWgb } from "@orthros/repack/installer-to-wgb";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
 import {
     guessCacheKey,
     parseGogGameInfo,
     synthesizeManifest,
     type SynthOptions,
-} from "@bottleship/repack/manifest-synth";
-import { loadOverrides, getOverride, type GogOverridesDb } from "@bottleship/repack/overrides";
-import { isGogJunk, detectExeFromPaths } from "@bottleship/repack/gog-filter";
-import { detectInstallShield, extractInstallerFromFiles } from "@bottleship/repack/container-extract";
-import { IsoImage, detectSectorLayout, extractIsoToMap } from "@bottleship/formats/iso";
+} from "@orthros/repack/manifest-synth";
+import { loadOverrides, getOverride, type GogOverridesDb } from "@orthros/repack/overrides";
+import { isGogJunk, detectExeFromPaths } from "@orthros/repack/gog-filter";
+import { detectInstallShield, extractInstallerFromFiles } from "@orthros/repack/container-extract";
+import { IsoImage, detectSectorLayout, extractIsoToMap } from "@orthros/formats/iso";
 import { extract7z } from "../archive/unpack-buffered";
-import { ZipArchive, BufferSource as ZipBufferSource, unzipToMap, type ZipEntry } from "@bottleship/formats/zip";
-import { resolveGameId, gameIdToContainerDir, manifestToWgbFilename } from "@bottleship/formats/wgb/container-id";
-import { getBottleshipRoot } from "./container-store";
+import { ZipArchive, BufferSource as ZipBufferSource, unzipToMap, type ZipEntry } from "@orthros/formats/zip";
+import { resolveGameId, gameIdToContainerDir, manifestToWgbFilename } from "@orthros/formats/wgb/container-id";
+import { getOrthrosRoot } from "./container-store";
 import { WgbCache } from "./wgb-cache";
 import { Logger, LogCategory } from "../../core/logger";
 import { asWriteChunk } from "../../../dom-buffer";
@@ -93,7 +93,7 @@ export interface StagedEntry {
 }
 
 export interface BuildResult {
-    /** OPFS path of the staged bundle, `bottleship/_wizard/<id>.wgb`. */
+    /** OPFS path of the staged bundle, `orthros/_wizard/<id>.wgb`. */
     stagedPath: string;
     manifest: Record<string, unknown>;
     entries: StagedEntry[];
@@ -192,7 +192,7 @@ export function mergeManifest(
 }
 
 // `detectInstallShield` + the installer extraction recursion now live in
-// `@bottleship/repack/container-extract` (shared with the headless `iso-to-wgb` CLI).
+// `@orthros/repack/container-extract` (shared with the headless `iso-to-wgb` CLI).
 // Re-exported here for callers/tests that import it from the build service.
 export { detectInstallShield };
 
@@ -502,9 +502,9 @@ function synthFromFiles(
     return { manifest: synth.manifest, registry: synth.registry, gameId: synth.gameId };
 }
 
-/** Write a staged `.wgb` to OPFS `bottleship/_wizard/<id>.wgb` and return its path. */
+/** Write a staged `.wgb` to OPFS `orthros/_wizard/<id>.wgb` and return its path. */
 async function writeStaged(id: string, bytes: Uint8Array): Promise<string> {
-    const bs = await getBottleshipRoot(true);
+    const bs = await getOrthrosRoot(true);
     if (!bs) throw new Error("OPFS unavailable — cannot stage bundle");
     const wizard = await bs.getDirectoryHandle(WIZARD_DIR, { create: true });
     const key = `${gameIdToContainerDir(id)}.wgb`;
@@ -534,7 +534,7 @@ async function writeStaged(id: string, bytes: Uint8Array): Promise<string> {
 
 /**
  * Build a staged (un-booted) `.wgb`: extract → synthesize manifest+registry → buildZip →
- * write to OPFS `bottleship/_wizard/<id>.wgb`. Posts progress via `onProgress`.
+ * write to OPFS `orthros/_wizard/<id>.wgb`. Posts progress via `onProgress`.
  */
 export async function buildStagedBundle(source: BuildSource, onProgress?: ProgressFn): Promise<BuildResult> {
     onProgress?.("detecting", 0, "Inspecting source");
@@ -773,7 +773,7 @@ async function readSourceBytes(source: BuildSource): Promise<Uint8Array> {
 }
 
 async function readStaged(stagedPath: string): Promise<Uint8Array> {
-    const bs = await getBottleshipRoot(false);
+    const bs = await getOrthrosRoot(false);
     if (!bs) throw new Error("OPFS unavailable — cannot read staged bundle");
     // stagedPath is "<WIZARD_DIR>/<key>".
     const slash = stagedPath.indexOf("/");

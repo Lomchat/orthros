@@ -4,7 +4,7 @@ A self-contained module for reading the container, installer, and archive format
 ships in, and extracting the real game files. Used by the WGB build pipeline
 (`worker/runtime/gog-import/container-extract.ts` + the headless `tools/iso-to-wgb.ts`,
 `tools/gog-to-wgb.ts`) but written so the whole `packages/formats/src/*` tree could be lifted into a
-standalone package (`@bottleship/unpack`) with no edits to its internals.
+standalone package (`@orthros/unpack`) with no edits to its internals.
 
 ## Layout (dependency DAG)
 

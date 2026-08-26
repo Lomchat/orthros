@@ -358,7 +358,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
 
     // BOOL CancelIo(HANDLE hFile)
     // Cancels all pending async I/O operations issued by the calling thread for hFile.
-    // BottleShip completes all file I/O synchronously, so there is never anything to
+    // Orthros completes all file I/O synchronously, so there is never anything to
     // cancel. We validate the handle enough to catch bogus pointers and succeed quietly.
     exports['CancelIo'] = (ctx, mem, args) => {
         const hFile = args[0] >>> 0;
@@ -1291,7 +1291,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                         `txd.img short read: wanted=${nNumberOfBytesToRead} got=${bytesReadSync} ` +
                         `pos=${vfsHandle.position - bytesReadSync} (corrupt cache / partial overlay?)`);
                 }
-                // BottleShip diag: any short sync read on a package/code file — a short read of a .u/.unr
+                // Orthros diag: any short sync read on a package/code file — a short read of a .u/.unr
                 // truncates the linker's export load (→ a class resolves NULL → "Empty class"). XIII dies
                 // on `engine.InteractionMaster`; this catches whether reading engine.u (etc.) short-reads.
                 if (vfsHandle && bytesReadSync < nNumberOfBytesToRead && /\.(u|unr|uax|utx|usx|ukx)$/i.test(vfsHandle.path)) {

@@ -1,7 +1,7 @@
 import { Logger, LogCategory } from "../../core/logger";
-import { SyncAccessHandleSource } from "@bottleship/formats/zip";
+import { SyncAccessHandleSource } from "@orthros/formats/zip";
 import { asWriteChunk } from "../../../dom-buffer";
-import type { SyncAccessHandleLike } from "@bottleship/formats/zip";
+import type { SyncAccessHandleLike } from "@orthros/formats/zip";
 import { wgbCacheKeyForUrl } from "./wgb-cache-key";
 
 const CACHE_DIR = "wgb-cache";
@@ -20,7 +20,7 @@ const STAGE_QUOTA_MARGIN = 256 * 1024 * 1024;
 /**
  * Simple OPFS-backed cache for WGB files.
  *
- * Layout: navigator.storage / "bottleship" / "wgb-cache" / "{filename}.wgb"
+ * Layout: navigator.storage / "orthros" / "wgb-cache" / "{filename}.wgb"
  *
  * Usage pattern:
  *   1. `get(url)` on startup — returns cached buffer or null.
@@ -91,8 +91,8 @@ export class WgbCache {
         if (this.cacheDir) return this.cacheDir;
         try {
             const opfsRoot = await navigator.storage.getDirectory();
-            const bottleship = await opfsRoot.getDirectoryHandle("bottleship", { create: true });
-            this.cacheDir = await bottleship.getDirectoryHandle(CACHE_DIR, { create: true });
+            const orthros = await opfsRoot.getDirectoryHandle("bottleship", { create: true });
+            this.cacheDir = await orthros.getDirectoryHandle(CACHE_DIR, { create: true });
             return this.cacheDir;
         } catch (e) {
             Logger.warn(LogCategory.SYSTEM, `WgbCache: OPFS unavailable: ${e}`);
@@ -594,14 +594,14 @@ export class WgbCache {
 
     /**
      * Per-bundle manifest override authored in the UI (manifest editor), stored as
-     * bottleship/_manifest-overrides.json keyed by cache filename. Returns the partial
+     * orthros/_manifest-overrides.json keyed by cache filename. Returns the partial
      * override for `key` (deep-merged onto the bundle manifest at load) or null.
      */
     static async getManifestOverride(key: string): Promise<Record<string, unknown> | null> {
         try {
             const root = await navigator.storage.getDirectory();
-            const bottleship = await root.getDirectoryHandle("bottleship");
-            const fh = await bottleship.getFileHandle("_manifest-overrides.json");
+            const orthros = await root.getDirectoryHandle("bottleship");
+            const fh = await orthros.getFileHandle("_manifest-overrides.json");
             const db = JSON.parse(await (await fh.getFile()).text());
             const ov = db?.[key];
             return ov && typeof ov === "object" ? ov as Record<string, unknown> : null;

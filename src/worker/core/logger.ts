@@ -1,5 +1,5 @@
 /**
- * Ring buffer logger for BottleShip
+ * Ring buffer logger for Orthros
  *
  * Only outputs to console on errors/unimplemented calls,
  * showing the last N calls as context.
@@ -44,7 +44,7 @@ type VerboseStoreConfig = {
 
 class IndexedDbVerboseStore {
     private enabled = false;
-    private dbName = "bottleship-logs";
+    private dbName = "orthros-logs";
     private storeName = "verbose";
     private dbPromise: Promise<IDBDatabase> | null = null;
     private pending: LogEntry[] = [];
@@ -521,7 +521,7 @@ class LoggerImpl {
     }
 
     private flushContext(triggerMessage: string): void {
-        console.error(`🚨 BottleShip: ${triggerMessage}`);
+        console.error(`🚨 Orthros: ${triggerMessage}`);
     }
 
     /**

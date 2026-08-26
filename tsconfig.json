@@ -10,8 +10,8 @@
     "noEmit": true,
     "types": ["vite/client"],
     "paths": {
-      "@bottleship/formats/*": ["./packages/formats/src/*"],
-      "@bottleship/repack/*": ["./packages/repack/src/*"]
+      "@orthros/formats/*": ["./packages/formats/src/*"],
+      "@orthros/repack/*": ["./packages/repack/src/*"]
     }
   },
   "include": ["src", "packages"],

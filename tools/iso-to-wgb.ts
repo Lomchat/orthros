@@ -33,12 +33,12 @@
 import { openSync, readSync, writeSync, closeSync, statSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { inflateRawSync } from "zlib";
-import type { RandomAccessSource } from "@bottleship/formats/unpack/source";
-import { BufferSource } from "@bottleship/formats/unpack/source";
-import { IsoImage, parseIso9660, parseCue, type IsoFileEntry } from "@bottleship/formats/iso";
-import { detectExeFromPaths } from "@bottleship/repack/gog-filter";
-import { detectInstallShield, extractInstallerFromFiles } from "@bottleship/repack/container-extract";
-import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from "@bottleship/formats/wgb/container-id";
+import type { RandomAccessSource } from "@orthros/formats/unpack/source";
+import { BufferSource } from "@orthros/formats/unpack/source";
+import { IsoImage, parseIso9660, parseCue, type IsoFileEntry } from "@orthros/formats/iso";
+import { detectExeFromPaths } from "@orthros/repack/gog-filter";
+import { detectInstallShield, extractInstallerFromFiles } from "@orthros/repack/container-extract";
+import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from "@orthros/formats/wgb/container-id";
 
 // ---------------------------------------------------------------------------
 // File-backed random-access source (no full-file load)

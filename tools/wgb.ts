@@ -470,7 +470,7 @@ function cmdPatchManifest(wgbPath: string, jsonPath: string, valueStr: string) {
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-const USAGE = `WGB archive tool — uncompressed ZIP bundles for BottleShip (large-bundle safe, ZIP64)
+const USAGE = `WGB archive tool — uncompressed ZIP bundles for Orthros (large-bundle safe, ZIP64)
 
 Usage:
   bun tools/wgb.ts list          <archive.wgb>

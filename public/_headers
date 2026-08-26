@@ -1,5 +1,5 @@
 # Cloudflare Pages headers.
-# Cross-origin isolation is REQUIRED: BottleShip uses SharedArrayBuffer (the
+# Cross-origin isolation is REQUIRED: Orthros uses SharedArrayBuffer (the
 # guest worker, the SAB audio ring, the SAB I/O worker). Without COOP/COEP the
 # page is not cross-origin isolated, SharedArrayBuffer is unavailable, and the
 # emulator will not start. Range requests (WGB streaming) are served by

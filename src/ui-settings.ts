@@ -29,6 +29,7 @@ export type UiSettings = {
   muted: boolean;
 };
 
+// Pre-rename key, kept: renaming it silently resets everyone's UI settings.
 export const UI_SETTINGS_STORAGE_KEY = "bottleship_ui_settings_v1";
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {

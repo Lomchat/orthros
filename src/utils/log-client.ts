@@ -1,5 +1,5 @@
 /**
- * Log Client for BottleShip
+ * Log Client for Orthros
  *
  * WebSocket client that connects to the log server and forwards logs.
  * Only active in dev mode, gracefully degrades if server is unavailable.

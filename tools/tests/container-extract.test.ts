@@ -11,8 +11,8 @@ import { describe, expect, test } from "bun:test";
 import {
     detectInstallShield,
     extractInstallerFromFiles,
-} from "@bottleship/repack/container-extract";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
+} from "@orthros/repack/container-extract";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const mz = (extra = "") => enc("MZ" + extra);

@@ -3,10 +3,10 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "bottleship",
+      "name": "orthros",
       "dependencies": {
-        "@bottleship/formats": "workspace:*",
-        "@bottleship/repack": "workspace:*",
+        "@orthros/formats": "workspace:*",
+        "@orthros/repack": "workspace:*",
         "@phosphor-icons/react": "^2.1.10",
         "lucide-react": "^1.24.0",
         "pako": "^3.0.1",
@@ -45,17 +45,17 @@
       },
     },
     "packages/formats": {
-      "name": "@bottleship/formats",
+      "name": "@orthros/formats",
       "version": "0.1.0",
       "dependencies": {
         "pako": "^2.1.0",
       },
     },
     "packages/repack": {
-      "name": "@bottleship/repack",
+      "name": "@orthros/repack",
       "version": "0.1.0",
       "dependencies": {
-        "@bottleship/formats": "workspace:*",
+        "@orthros/formats": "workspace:*",
       },
     },
   },
@@ -94,9 +94,9 @@
 
     "@babel/types": ["@babel/types@7.28.5", "", { "dependencies": { "@babel/helper-string-parser": "^7.27.1", "@babel/helper-validator-identifier": "^7.28.5" } }, "sha512-qQ5m48eI/MFLQ5PxQj4PFaprjyCTLI37ElWMmNs0K8Lk3dVeOdNpB3ks8jc7yM5CDmVC73eMVk/trk3fgmrUpA=="],
 
-    "@bottleship/formats": ["@bottleship/formats@workspace:packages/formats"],
+    "@orthros/formats": ["@orthros/formats@workspace:packages/formats"],
 
-    "@bottleship/repack": ["@bottleship/repack@workspace:packages/repack"],
+    "@orthros/repack": ["@orthros/repack@workspace:packages/repack"],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 
@@ -874,7 +874,7 @@
 
     "@babel/helper-compilation-targets/browserslist": ["browserslist@4.28.1", "", { "dependencies": { "baseline-browser-mapping": "^2.9.0", "caniuse-lite": "^1.0.30001759", "electron-to-chromium": "^1.5.263", "node-releases": "^2.0.27", "update-browserslist-db": "^1.2.0" }, "bin": { "browserslist": "cli.js" } }, "sha512-ZC5Bd0LgJXgwGqUknZY/vkUQ04r8NXnJZ3yYi4vDmSiZmC/pdSN0NbNRPxZpbtO4uAfDUAFffO8IZoM3Gj8IkA=="],
 
-    "@bottleship/formats/pako": ["pako@2.1.0", "", {}, "sha512-w+eufiZ1WuJYgPXbV/PO3NCMEc3xqylkKHzp8bxp1uW4qaSNQUkwmLLEc3kKsfz8lpV1F8Ht3U1Cm+9Srog2ug=="],
+    "@orthros/formats/pako": ["pako@2.1.0", "", {}, "sha512-w+eufiZ1WuJYgPXbV/PO3NCMEc3xqylkKHzp8bxp1uW4qaSNQUkwmLLEc3kKsfz8lpV1F8Ht3U1Cm+9Srog2ug=="],
 
     "@eslint-community/eslint-utils/eslint-visitor-keys": ["eslint-visitor-keys@3.4.3", "", {}, "sha512-wpc+LXeiyiisxPlEkUzU6svyS1frIO3Mgxj1fdy7Pm8Ygzguax2N3Fa/D/ag1WqbOprdI+uY6wMUl8/a2G+iag=="],
 

@@ -1,6 +1,6 @@
 # Game bundles (`.wgb`)
 
-BottleShip runs a game from a **`.wgb`** bundle — a *store-only* (uncompressed) ZIP that
+Orthros runs a game from a **`.wgb`** bundle — a *store-only* (uncompressed) ZIP that
 packages a game together with the metadata the engine needs to boot it. This document covers
 the format and the tools for creating and inspecting bundles, plus how to bring your own games.
 
@@ -63,10 +63,10 @@ bun tools/wgb.ts patch-manifest game.wgb …  # (alias: pm)
 
 ## Bringing your own game
 
-BottleShip is the engine; you supply games you legally own. Three ways to get a game in:
+Orthros is the engine; you supply games you legally own. Three ways to get a game in:
 
 1. **Load File…** in the UI — drop a `.wgb`, a raw game folder, or an installer.
-2. **GOG installer → ROM.** Drag in a GOG Inno Setup installer; BottleShip parses it
+2. **GOG installer → ROM.** Drag in a GOG Inno Setup installer; Orthros parses it
    in-browser (a built-in Inno reader plus a WASM LZMA decoder) and builds a bundle. GOG's
    DRM-free installers make this a clean path — buy the game, drop the installer, play. See
    [`docs/gog-import.md`](gog-import.md).
@@ -75,5 +75,5 @@ BottleShip is the engine; you supply games you legally own. Three ways to get a 
 ## A note on distribution
 
 The bundled/showcase set is limited to content that is legal to redistribute (freeware,
-shareware, demo episodes). Commercial games are **bring-your-own** — BottleShip does not ship
+shareware, demo episodes). Commercial games are **bring-your-own** — Orthros does not ship
 their files. Keep your own bundles out of the repository.

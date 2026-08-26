@@ -1,10 +1,10 @@
 # GOG Installer Import
 
-BottleShip can load GOG offline installers (`setup_*.exe`) directly — no manual WGB authoring required.
+Orthros can load GOG offline installers (`setup_*.exe`) directly — no manual WGB authoring required.
 
 ## Browser
 
-1. Open BottleShip (`?game=dev` or any game page).
+1. Open Orthros (`?game=dev` or any game page).
 2. Drag a GOG `setup_*.exe` onto the page, or use **Load File…** in the dev panel.
 3. First launch extracts the game in-browser and builds a WGB bundle (progress overlay).
 4. The synthesized bundle is cached in OPFS; reloading or re-dropping the same installer skips extraction.
@@ -30,7 +30,7 @@ bun tools/gog-to-wgb.ts --native setup_game.exe game.wgb
 bun tools/gog-to-wgb.ts --native --extract-only setup_game.exe ./out-dir
 
 # Compare native vs innoextract (set fixture path)
-set BOTTLESHIP_INNO_FIXTURE=C:\path\to\setup.exe
+set ORTHROS_INNO_FIXTURE=C:\path\to\setup.exe
 bun tools/internal/test-inno-vs-innoextract.ts
 ```
 

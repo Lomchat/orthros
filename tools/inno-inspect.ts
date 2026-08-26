@@ -9,8 +9,8 @@ import { resolve } from "path";
 import {
     BufferSource,
     parseInnoHeader,
-} from "@bottleship/formats/inno";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
+} from "@orthros/formats/inno";
+import { UnpackDecoder } from "@orthros/formats/unpack";
 
 async function main(): Promise<void> {
     const args = process.argv.slice(2);

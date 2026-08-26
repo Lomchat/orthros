@@ -12,8 +12,8 @@
 // network fetch is a big, few-round-trip transfer, and a guest readahead run is
 // satisfied by fetching its covering chunks IN PARALLEL (Promise.all).
 
-import { HttpRangeSource } from "@bottleship/formats/zip";
-import type { ZipSource } from "@bottleship/formats/zip";
+import { HttpRangeSource } from "@orthros/formats/zip";
+import type { ZipSource } from "@orthros/formats/zip";
 import { PersistentRangeStore } from "./persistent-range-store";
 import {
     CTL_STATE, CTL_RESP_LEN, CTL_ERRNO, CTL_WORDS,

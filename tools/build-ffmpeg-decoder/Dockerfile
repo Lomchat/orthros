@@ -2,13 +2,13 @@
 # Optional: use this if you prefer a containerised build instead of WSL2/native.
 #
 # Build:
-#   docker build -t bottleship-ffmpeg-builder tools/build-ffmpeg-decoder/
+#   docker build -t orthros-ffmpeg-builder tools/build-ffmpeg-decoder/
 #
 # Run (from project root):
 #   docker run --rm \
 #     -v "$(pwd):/project" \
 #     -w /project \
-#     bottleship-ffmpeg-builder \
+#     orthros-ffmpeg-builder \
 #     bash tools/build-ffmpeg-decoder/build.sh
 
 FROM emscripten/emsdk:3.1.64

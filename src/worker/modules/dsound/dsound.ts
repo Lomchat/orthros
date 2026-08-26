@@ -2538,7 +2538,7 @@ export class DSound implements IModule {
             // `write`. Write-cursor-driven mixers (UE1/Galaxy) splice at
             // [myPos, write + latency) — placing write BEHIND play collapses their
             // lead to ~0 and produces 20 ms-periodic crackle (see worklet note in
-            // bottleship-audio-worklet.ts). Natalie Brooks ignores the write cursor
+            // orthros-audio-worklet.ts). Natalie Brooks ignores the write cursor
             // entirely: its refill pump (NatalieBrooksSTH.exe sub_4aecd0) sizes the
             // Lock from the PLAY-cursor delta (`edi = play - lastPlayPos`) — the
             // write out-param of GetCurrentPosition is fetched and discarded — so

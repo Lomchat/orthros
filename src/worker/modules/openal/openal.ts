@@ -697,7 +697,7 @@ export class OpenAL implements IModule {
             case ALC_DEFAULT_DEVICE_SPECIFIER:
             case ALC_DEVICE_SPECIFIER:
             case ALC_ALL_DEVICES_SPECIFIER:
-                return this.getOrAllocString(param, "BottleShip OpenAL");
+                return this.getOrAllocString(param, "Orthros OpenAL");
             case ALC_EXTENSIONS:
                 return this.getOrAllocString(param, "");
             default:
@@ -707,9 +707,9 @@ export class OpenAL implements IModule {
 
     private getAlString(param: number): number {
         switch (param) {
-            case AL_VENDOR:     return this.getOrAllocString(param, "BottleShip");
+            case AL_VENDOR:     return this.getOrAllocString(param, "Orthros");
             case AL_VERSION:    return this.getOrAllocString(param, "1.1");
-            case AL_RENDERER:   return this.getOrAllocString(param, "BottleShip WebAudio");
+            case AL_RENDERER:   return this.getOrAllocString(param, "Orthros WebAudio");
             case AL_EXTENSIONS: return this.getOrAllocString(param, "");
             default:            return this.getOrAllocString(0xFE00 | param, "");
         }

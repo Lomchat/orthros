@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Compare a PE's static imports with the live BottleShip API registry.
+/** Compare a PE's static imports with the live Orthros API registry.
  *
  * Usage: bun tools/audit-pe-imports.ts /path/to/program.exe
  * Requires the normal harness page/worker to be running.

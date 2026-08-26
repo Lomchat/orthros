@@ -533,7 +533,7 @@ export class Avifil32 implements IModule {
             this.writeU32(mem, psi + 56, 0);
             this.writeU32(mem, psi + 60, s.width);
             this.writeU32(mem, psi + 64, s.height);
-            const name = "BottleShip AVI";
+            const name = "Orthros AVI";
             const nameBytes = encodeAnsi(name);
             const nameLen = Math.min(nameBytes.length, 63);
             mem.set(nameBytes.subarray(0, nameLen), psi + 76);

@@ -24,7 +24,7 @@
  * Anything else (a custom installer, or already-extracted game files) passes through
  * unchanged — the caller packages the container contents as-is.
  *
- * Environment-agnostic: depends only on `packages/formats/src/*`, the dependency-free `@bottleship/formats/zip`
+ * Environment-agnostic: depends only on `packages/formats/src/*`, the dependency-free `@orthros/formats/zip`
  * reader (raw-inflate via the platform `DecompressionStream`), and `gog-filter`. Formats that
  * need a WASM codec (Inno/FreeArc LZMA) receive it via the caller-supplied `ContainerExtractOptions`.
  */
@@ -34,12 +34,12 @@ import {
     extractInnoToMap,
     parseInnoHeader,
     type InnoParseResult,
-} from "@bottleship/formats/inno";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
-import { extractInstallShield, detectInstallShieldStem } from "@bottleship/formats/installshield";
-import { findCabinet, parseCabHeader, extractCabToMap, type CabInflateBlock } from "@bottleship/formats/cab";
-import { detectFreeArc, extractFreeArcToMap, FreeArcUnsupportedError } from "@bottleship/formats/freearc";
-import { unzipToMap } from "@bottleship/formats/zip";
+} from "@orthros/formats/inno";
+import { UnpackDecoder } from "@orthros/formats/unpack";
+import { extractInstallShield, detectInstallShieldStem } from "@orthros/formats/installshield";
+import { findCabinet, parseCabHeader, extractCabToMap, type CabInflateBlock } from "@orthros/formats/cab";
+import { detectFreeArc, extractFreeArcToMap, FreeArcUnsupportedError } from "@orthros/formats/freearc";
+import { unzipToMap } from "@orthros/formats/zip";
 import { isGogJunk } from "./gog-filter";
 
 export type InstallerVia = "ea-winzip" | "installshield" | "inno" | "freearc" | "pftw" | "none";

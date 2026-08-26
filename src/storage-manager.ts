@@ -10,9 +10,9 @@
  *
  * The container layout is owned by container-store.ts (worker), imported here for one source of truth.
  */
-import { BOTTLESHIP_ROOT, GAMES_DIR } from "./worker/runtime/filesystem/container-store";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
-import { ZipArchive, BufferSource } from "@bottleship/formats/zip";
+import { ORTHROS_ROOT, GAMES_DIR } from "./worker/runtime/filesystem/container-store";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
+import { ZipArchive, BufferSource } from "@orthros/formats/zip";
 import { asWriteChunk } from "./dom-buffer";
 
 const WGB_CACHE_DIR = "wgb-cache";
@@ -39,10 +39,10 @@ export interface CachedBundleInfo {
     bytes: number;
 }
 
-async function opfsBottleship(create = false): Promise<FileSystemDirectoryHandle | null> {
+async function opfsOrthros(create = false): Promise<FileSystemDirectoryHandle | null> {
     try {
         const root = await navigator.storage.getDirectory();
-        return await root.getDirectoryHandle(BOTTLESHIP_ROOT, { create });
+        return await root.getDirectoryHandle(ORTHROS_ROOT, { create });
     } catch { return null; }
 }
 
@@ -87,14 +87,14 @@ export function ensurePersistentStorageRequested(): void {
         try {
             if (await navigator.storage?.persisted?.()) return;
             const granted = await navigator.storage?.persist?.();
-            console.log(`BottleShip: persistent storage ${granted ? "granted" : "not granted (best-effort eviction stays possible)"}`);
+            console.log(`Orthros: persistent storage ${granted ? "granted" : "not granted (best-effort eviction stays possible)"}`);
         } catch { /* unsupported */ }
     })();
 }
 
 /** Per-game container sizes (saves + registry), sorted largest first. */
 export async function listGameStorage(): Promise<GameStorageInfo[]> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return [];
     let games: FileSystemDirectoryHandle;
     try { games = await bs.getDirectoryHandle(GAMES_DIR); } catch { return []; }
@@ -116,7 +116,7 @@ export async function listGameStorage(): Promise<GameStorageInfo[]> {
 
 /** Sizes of cached ROM bundles (the shared wgb-cache), sorted largest first. */
 export async function listCachedBundles(): Promise<CachedBundleInfo[]> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return [];
     let cache: FileSystemDirectoryHandle;
     try { cache = await bs.getDirectoryHandle(WGB_CACHE_DIR); } catch { return []; }
@@ -130,7 +130,7 @@ export async function listCachedBundles(): Promise<CachedBundleInfo[]> {
 
 /** Delete a game's container (its saves + registry). The ROM bundle in wgb-cache is separate. */
 export async function evictGameContainer(containerDir: string): Promise<void> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return;
     try {
         const games = await bs.getDirectoryHandle(GAMES_DIR);
@@ -140,7 +140,7 @@ export async function evictGameContainer(containerDir: string): Promise<void> {
 
 /** Delete a cached ROM bundle copy from wgb-cache. */
 export async function evictCachedBundle(key: string): Promise<void> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return;
     try {
         const cache = await bs.getDirectoryHandle(WGB_CACHE_DIR);
@@ -170,7 +170,7 @@ async function collectDir(dir: FileSystemDirectoryHandle, prefix: string, out: M
  * directly so the library page can export without a running worker.
  */
 export async function exportGameContainer(containerDir: string): Promise<Uint8Array | null> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return null;
     let container: FileSystemDirectoryHandle;
     try {
@@ -209,7 +209,7 @@ async function writeContainerFile(container: FileSystemDirectoryHandle, rel: str
  * Returns the number of files written.
  */
 export async function importGameContainer(containerDir: string, zipBytes: Uint8Array): Promise<number> {
-    const bs = await opfsBottleship(true);
+    const bs = await opfsOrthros(true);
     if (!bs) throw new Error("OPFS unavailable: cannot open container for import");
     const games = await bs.getDirectoryHandle(GAMES_DIR, { create: true });
     const container = await games.getDirectoryHandle(containerDir, { create: true });
@@ -228,7 +228,7 @@ export async function importGameContainer(containerDir: string, zipBytes: Uint8A
 
 /** Fetch a cached ROM bundle (the stored .wgb) as a File for download, or null if absent. */
 export async function getCachedBundleFile(key: string): Promise<File | null> {
-    const bs = await opfsBottleship(false);
+    const bs = await opfsOrthros(false);
     if (!bs) return null;
     try {
         const cache = await bs.getDirectoryHandle(WGB_CACHE_DIR);

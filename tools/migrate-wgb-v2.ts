@@ -19,7 +19,7 @@
 import { openSync, readSync, writeSync, closeSync, fstatSync, statSync, readdirSync, renameSync, copyFileSync, existsSync, unlinkSync } from "fs";
 import { join, basename } from "path";
 import { inflateRawSync } from "zlib";
-import { isValidGameId, slugify } from "@bottleship/formats/wgb/container-id";
+import { isValidGameId, slugify } from "@orthros/formats/wgb/container-id";
 
 /**
  * Migration gameId = `app:<slug(filename)>`. The bundle FILENAME is the reliable distinct identity:

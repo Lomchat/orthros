@@ -12,7 +12,7 @@ import {
     checkAllowsLanguage,
     detectInstallerLanguages,
     defaultLanguage,
-} from "@bottleship/formats/inno/check-lang";
+} from "@orthros/formats/inno/check-lang";
 
 const EN = "check_if_install('en-US#','32#64#','')";
 const IT = "check_if_install('it-IT#','32#64#','')";

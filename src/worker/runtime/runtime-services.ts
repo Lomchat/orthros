@@ -59,7 +59,7 @@ export class RenderService {
     private active: RenderActive | null = null;
     private presentSerial = 0;
     private lastPresenterKind: PresenterKind | null = null;
-    private static readonly FLIP_TRACE_MARK = "bottleship.flip";
+    private static readonly FLIP_TRACE_MARK = "orthros.flip";
 
     // One-shot "first real frame" hook. The host keeps its loading screen up from
     // worker-init through guest boot and only tears it down when the guest actually

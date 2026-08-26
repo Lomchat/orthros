@@ -1,5 +1,5 @@
-import { BlobSource, BufferSource, HttpRangeSource, SyncHttpRangeSource, ZipArchive, ZipEntry } from "@bottleship/formats/zip";
-import type { ZipSource } from "@bottleship/formats/zip";
+import { BlobSource, BufferSource, HttpRangeSource, SyncHttpRangeSource, ZipArchive, ZipEntry } from "@orthros/formats/zip";
+import type { ZipSource } from "@orthros/formats/zip";
 import { CachedSource, computeAdaptiveMaxBytes } from "./cached-source";
 import { SabIoSource } from "./sab-io-source";
 import { Logger, LogCategory } from "../../core/logger";

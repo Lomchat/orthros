@@ -475,7 +475,7 @@ async function loadStreamFile(ctx: MSSContext, stream: MSSStream): Promise<void>
                         `MSS32: Directory appears empty or does not exist`);
                 }
                 // BFME exposes files inside Music.big/Audio.big through Miles'
-                // custom file callbacks. BottleShip implements the equivalent
+                // custom file callbacks. Orthros implements the equivalent
                 // directly over the range-backed VFS so the game never needs a
                 // browser-side unpack or a multi-hundred-MB download.
                 const archived = await readAudioFromBigArchives(system.fileSystem, stream.filename);

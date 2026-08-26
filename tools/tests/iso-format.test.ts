@@ -5,7 +5,7 @@
 // parse covering single-bin multi-track data+audio.
 
 import { describe, it, expect } from "bun:test";
-import { BufferSource } from "@bottleship/formats/unpack/source";
+import { BufferSource } from "@orthros/formats/unpack/source";
 import {
     IsoImage,
     detectSectorLayout,
@@ -14,7 +14,7 @@ import {
     parseCue,
     LAYOUT_ISO,
     LAYOUT_MODE1_2352,
-} from "@bottleship/formats/iso";
+} from "@orthros/formats/iso";
 
 const SECTOR = 2048;
 const enc = new TextEncoder();

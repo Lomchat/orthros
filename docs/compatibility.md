@@ -1,6 +1,6 @@
 # Compatibility
 
-BottleShip targets native Win32 games of roughly **1997–2004** — the DirectDraw / Direct3D
+Orthros targets native Win32 games of roughly **1997–2004** — the DirectDraw / Direct3D
 3–9 era. This is a living list of titles that have been brought up and observed running; it is
 not exhaustive, and "runs" means different things at different stages (boots to menu vs. fully
 playable). Your mileage will vary with the exact build/version you own.
@@ -10,7 +10,7 @@ playable). Your mileage will vary with the exact build/version you own.
 - **Status** — `playable` (reaches gameplay and is enjoyable), `boots` (reaches menu / early
   gameplay, rough edges), `in progress` (actively being brought up).
 - **GOG ✓** — the title is sold DRM-free on GOG; its offline installer can be dropped
-  straight into BottleShip (see [`docs/gog-import.md`](gog-import.md)). Everything else:
+  straight into Orthros (see [`docs/gog-import.md`](gog-import.md)). Everything else:
   bring your own legally-owned copy.
 
 ## Working

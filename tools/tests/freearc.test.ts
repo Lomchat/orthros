@@ -14,7 +14,7 @@ import {
     parseFreeArcSize,
     lzmaPropsByte,
     lzmaPropsFor,
-} from "@bottleship/formats/freearc";
+} from "@orthros/formats/freearc";
 
 describe("detectFreeArc", () => {
     test("matches the ArC\\x01 magic", () => {

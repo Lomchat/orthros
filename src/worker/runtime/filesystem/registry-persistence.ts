@@ -27,7 +27,7 @@ export interface RegistryAccessLogEntry {
  * Registry persistence manager - handles OPFS storage for registry state and access logs
  */
 export class RegistryPersistence {
-    /** registry.json + its access log live INSIDE the game's container (bottleship/games/<cid>/). */
+    /** registry.json + its access log live INSIDE the game's container (orthros/games/<cid>/). */
     private static readonly STATE_FILE = "registry.json";
     private static readonly ACCESS_LOG_FILE = "registry-access.log";
 

@@ -13,13 +13,13 @@
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { basename } from "path";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
 import {
     mergeRegistrySeeds,
     parseGogScriptRegistry,
     synthesizeRegistryFromGogScripts,
     type RegistrySeed,
-} from "@bottleship/repack/gog-script";
+} from "@orthros/repack/gog-script";
 
 interface ZipEntry {
     name: string;
@@ -128,8 +128,8 @@ function patchWgb(wgbPath: string, dryRun: boolean, externalScripts: Map<string,
 }
 
 async function loadScriptsFromInstaller(installerPath: string): Promise<Map<string, Uint8Array>> {
-    const { BufferSource, extractInnoToMap, parseInnoHeader } = await import("@bottleship/formats/inno");
-    const { UnpackDecoder } = await import("@bottleship/formats/unpack");
+    const { BufferSource, extractInnoToMap, parseInnoHeader } = await import("@orthros/formats/inno");
+    const { UnpackDecoder } = await import("@orthros/formats/unpack");
     const wasmPath = new URL("../public/unpack-streaming.wasm", import.meta.url);
     const wasmBytes = readFileSync(wasmPath);
     const lzma = new UnpackDecoder();

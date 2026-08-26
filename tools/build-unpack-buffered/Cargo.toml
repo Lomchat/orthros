@@ -2,7 +2,7 @@
 name = "unpack-buffered"
 version = "0.1.0"
 edition = "2021"
-description = "BottleShip archive/codec decompression for game ingestion (7z/deflate/LZMA1) → wasm"
+description = "Orthros archive/codec decompression for game ingestion (7z/deflate/LZMA1) → wasm"
 
 [lib]
 crate-type = ["cdylib"]

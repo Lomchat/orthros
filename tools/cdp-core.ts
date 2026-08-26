@@ -1,5 +1,5 @@
 /**
- * cdp-core.ts — the shared Chrome DevTools Protocol transport for BottleShip
+ * cdp-core.ts — the shared Chrome DevTools Protocol transport for Orthros
  * tooling. Until now ~35 `cdp-*.ts` scripts each copy-pasted the same
  * ~30 lines: target discovery via http://localhost:9333/json/list (filter
  * url.includes("game=dev")), a WebSocket to webSocketDebuggerUrl, an id/pending
@@ -26,7 +26,7 @@ const CHROME_PATH = process.env.BS_CHROME_PATH ?? (IS_MAC
             ?? "/root/.cache/puppeteer/chrome/linux-150.0.7871.24/chrome-linux64/chrome")
         : "C:/Program Files/Google/Chrome/Application/chrome.exe");
 const DEFAULT_PROFILE = IS_MAC
-    ? (process.env.BS_CDP_PROFILE || `${process.env.HOME}/.bottleship-cdp-profile`)
+    ? (process.env.BS_CDP_PROFILE || `${process.env.HOME}/.orthros-cdp-profile`)
     : (process.env.BS_CDP_PROFILE || `${process.cwd()}/tmp/cdp-profile`);
 
 export interface CdpTarget {
@@ -228,7 +228,7 @@ export async function pageEval(session: CdpSession, expr: string, opts: { timeou
     return res?.result?.value ?? res?.result;
 }
 
-/** BottleShip also creates I/O/worklet workers. Diagnostics must attach to the
+/** Orthros also creates I/O/worklet workers. Diagnostics must attach to the
  * emulator worker specifically or a pause stack can misleadingly point at WGB
  * prefetch code while the PE loader is blocked elsewhere. */
 function isEmulatorWorkerTarget(targetInfo: any): boolean {

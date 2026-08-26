@@ -1973,7 +1973,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         // 0: cb, 4: DeviceName[32], 36: DeviceString[128], 164: StateFlags,
         // 168: DeviceID[128], 296: DeviceKey[128]
         Marshaler.writeString(mem, lpDisplayDevice + 4, "\\\\.\\DISPLAY1", 32);
-        Marshaler.writeString(mem, lpDisplayDevice + 36, "BottleShip Display Adapter", 128);
+        Marshaler.writeString(mem, lpDisplayDevice + 36, "Orthros Display Adapter", 128);
         view.setUint32(
             lpDisplayDevice + 164,
             DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE,
@@ -1986,7 +1986,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
             Marshaler.writeString(
                 mem,
                 lpDisplayDevice + 296,
-                "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\{BOTTLESHIP}\\0000",
+                "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\{ORTHROS}\\0000",
                 128
             );
         }
@@ -2018,7 +2018,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         // 0: cb, 4: DeviceName[32], 68: DeviceString[128], 324: StateFlags,
         // 328: DeviceID[128], 584: DeviceKey[128]
         Marshaler.writeWideString(mem, lpDisplayDevice + 4, "\\\\.\\DISPLAY1", 32);
-        Marshaler.writeWideString(mem, lpDisplayDevice + 68, "BottleShip Display Adapter", 128);
+        Marshaler.writeWideString(mem, lpDisplayDevice + 68, "Orthros Display Adapter", 128);
         view.setUint32(
             lpDisplayDevice + 324,
             DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE,
@@ -2031,7 +2031,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
             Marshaler.writeWideString(
                 mem,
                 lpDisplayDevice + 584,
-                "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\{BOTTLESHIP}\\0000",
+                "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\{ORTHROS}\\0000",
                 128
             );
         }

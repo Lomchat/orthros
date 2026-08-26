@@ -2,7 +2,7 @@
 name = "unpack-streaming"
 version = "0.1.0"
 edition = "2021"
-description = "Installer/archive unpack codecs for BottleShip — LZMA1/LZMA2 (Inno), srep (FreeArc); wasm32 callback I/O"
+description = "Installer/archive unpack codecs for Orthros — LZMA1/LZMA2 (Inno), srep (FreeArc); wasm32 callback I/O"
 
 [lib]
 crate-type = ["cdylib"]

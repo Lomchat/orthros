@@ -191,7 +191,7 @@ export function registerFileIoConsoleExports(exports: Record<string, ThunkImplem
 
     // BOOL AttachConsole(DWORD dwProcessId)
     // Connects the calling process to an existing console owned by another process.
-    // In BottleShip, console I/O is log-backed and our pseudo-handles are always valid,
+    // In Orthros, console I/O is log-backed and our pseudo-handles are always valid,
     // so we have nothing real to attach to. Games and installers call this either to
     // inherit the parent's console or as a compatibility probe before WriteConsole /
     // WriteFile(stderr). Returning TRUE (no error) is more compatible than failing with

@@ -8,8 +8,8 @@ build/
 *.local
 # Rust crate build output (any crate under the repo)
 **/target/
-# Generated from bottleship-audio-worklet.ts by the vite audio-worklet plugin
-src/audio/bottleship-audio-worklet.js
+# Generated from orthros-audio-worklet.ts by the vite audio-worklet plugin
+src/audio/orthros-audio-worklet.js
 
 # IDE
 .vscode/
@@ -61,7 +61,7 @@ tools/build-unpack-buffered/target/
 
 # Build artifacts
 .build-ffmpeg/
-/bottleship-deploy.zip
+/orthros-deploy.zip
 /public/_hp-saves.zip
 
 # Python bytecode cache (local tooling/probe scripts)

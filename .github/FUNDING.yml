@@ -1,6 +1,0 @@
-# Adds the "Sponsor" button to the repo. ko_fi takes the username; everything
-# else GitHub doesn't have a native field for goes under custom (arbitrary URLs).
-ko_fi: bottleship
-custom:
-  - https://pay.cloudtips.ru/p/e2362fd1
-  - https://nowpayments.io/donation/bottleship

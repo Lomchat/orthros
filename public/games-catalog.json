@@ -4,7 +4,7 @@
     "name": "La Bataille pour la Terre du Milieu",
     "subtitle": "Vanilla 1.03 FR · Multijoueur navigateur",
     "wgbUrl": "/apps/bfme.wgb",
-    "coverUrl": "/bottleship_logo.png",
+    "coverUrl": "/orthros_logo.png",
     "description": "Le jeu complet exécuté localement dans le navigateur, avec sauvegardes persistantes et réseau privé relayé par le VPS.",
     "year": "2004",
     "genre": "RTS",

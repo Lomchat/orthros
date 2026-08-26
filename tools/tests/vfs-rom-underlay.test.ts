@@ -8,7 +8,7 @@
  */
 import { describe, expect, test, beforeEach } from "bun:test";
 import { VirtualFileSystem } from "../../src/worker/runtime/filesystem/vfs";
-import type { ZipArchive, ZipEntry } from "@bottleship/formats/zip";
+import type { ZipArchive, ZipEntry } from "@orthros/formats/zip";
 
 function romFile(name: string, size: number): [string, ZipEntry] {
     return [

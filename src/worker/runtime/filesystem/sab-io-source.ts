@@ -12,7 +12,7 @@
 // as an "expensive sync" source), so the guest's hot reads are served from a
 // local RAM block cache and only cold misses cross to the I/O worker.
 
-import type { ZipSource } from "@bottleship/formats/zip";
+import type { ZipSource } from "@orthros/formats/zip";
 import { Logger, LogCategory } from "../../core/logger";
 import {
     SAB_TOTAL_BYTES, CTL_WORDS, CTL_STATE, CTL_RESP_LEN, CTL_ERRNO,

@@ -3,7 +3,7 @@
  *
  * BFME 1 decodes its long-form VP6 movies in guest code and uploads the result
  * through a 1024x512 X8R8G8B8 lockable surface.  The legacy decoder currently
- * produces an almost-black frame under the x86 runtime.  BottleShip already
+ * produces an almost-black frame under the x86 runtime.  Orthros already
  * ships a local FFmpeg/WASM decoder for Bink/Smacker; use the same decoder for
  * these large VP6 assets and replace the bad guest pixels immediately before
  * UnlockRect snapshots them into the D3D9 texture store.

@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { inflateRawSync } from "zlib";
 import { dirname, resolve, sep } from "path";
-import { findCabinet, parseCabHeader, extractCabToMap, type CabInflateBlock } from "@bottleship/formats/cab";
+import { findCabinet, parseCabHeader, extractCabToMap, type CabInflateBlock } from "@orthros/formats/cab";
 
 const args = process.argv.slice(2);
 if (args.length < 2) {

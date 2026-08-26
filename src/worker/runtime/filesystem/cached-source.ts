@@ -25,7 +25,7 @@
 // coalesced) calls to the inner source. No worker/DOM dependencies — unit
 // testable in isolation.
 
-import type { ZipSource } from "@bottleship/formats/zip";
+import type { ZipSource } from "@orthros/formats/zip";
 
 /** Default block granularity. Matches the msvcrt getc refill chunk (256 KiB),
  *  which is a good amortization point for async fault-ins. */

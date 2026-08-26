@@ -1,7 +1,7 @@
 # Contributing with an AI agent
 
 Most open-source projects treat AI-generated contributions as a risk to be filtered out.
-BottleShip is built the other way around: **the AI-assisted bring-up loop is the intended
+Orthros is built the other way around: **the AI-assisted bring-up loop is the intended
 contribution path**, and the repository ships the infrastructure that makes it verifiable.
 
 Two things make that safe here where it isn't elsewhere:
@@ -33,7 +33,7 @@ Point your agent at the repo, tell it which game you're bringing up, and it has 
 it needs.
 
 ```bash
-git clone --recurse-submodules <repo-url> && cd bottleship && bun install
+git clone --recurse-submodules <repo-url> && cd orthros && bun install
 bun tools/harness.ts up        # cold start: dev server + log server + browser
 # then, in your agent or by hand:
 #   harness().openWgb('/apps/external-wgb/mygame.wgb')

@@ -1,4 +1,4 @@
-# Export a Windows registry subtree into BottleShip registry.json format.
+# Export a Windows registry subtree into Orthros registry.json format.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tools\export-registry.ps1 `

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { copyrightYear, synthesizeManifest } from "@bottleship/repack/manifest-synth";
-import type { InnoParseResult } from "@bottleship/formats/inno";
+import { copyrightYear, synthesizeManifest } from "@orthros/repack/manifest-synth";
+import type { InnoParseResult } from "@orthros/formats/inno";
 
 describe("gog-import/copyrightYear", () => {
     test("plain single year", () => {

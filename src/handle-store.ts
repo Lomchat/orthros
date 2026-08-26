@@ -12,6 +12,7 @@
  * OPFS-copy path on other browsers.
  */
 
+// Pre-rename name, kept: renaming the IndexedDB drops every stored directory handle.
 const DB_NAME = "bottleship-handles";
 const STORE = "handles";
 const DB_VERSION = 1;

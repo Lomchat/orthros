@@ -5,7 +5,7 @@ export interface RandomAccessSource {
     readRangeSync(start: number, end: number): Uint8Array;
 }
 
-/** In-memory source — mirrors @bottleship/formats/zip BufferSource. */
+/** In-memory source — mirrors @orthros/formats/zip BufferSource. */
 export class BufferSource implements RandomAccessSource {
     readonly size: number;
 

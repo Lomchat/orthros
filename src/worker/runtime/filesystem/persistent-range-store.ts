@@ -1,8 +1,8 @@
-import type { SyncAccessHandleLike } from "@bottleship/formats/zip";
+import type { SyncAccessHandleLike } from "@orthros/formats/zip";
 import { wgbCacheKeyForUrl } from "./wgb-cache-key";
 
 const CACHE_DIR = "wgb-cache";
-const META_MAGIC = 0x42535243; // "BSRC" — BottleShip range cache
+const META_MAGIC = 0x42535243; // "BSRC" — Orthros range cache
 const META_VERSION = 1;
 const META_HEADER_BYTES = 32;
 const QUOTA_MARGIN_BYTES = 256 * 1024 * 1024;
@@ -102,8 +102,8 @@ export class PersistentRangeStore {
         try {
             if (!(totalSize > 0) || !(chunkSize > 0)) return null;
             const root = await navigator.storage.getDirectory();
-            const bottleship = await root.getDirectoryHandle("bottleship", { create: true });
-            const dir = await bottleship.getDirectoryHandle(CACHE_DIR, { create: true });
+            const orthros = await root.getDirectoryHandle("bottleship", { create: true });
+            const dir = await orthros.getDirectoryHandle(CACHE_DIR, { create: true });
             const finalKey = wgbCacheKeyForUrl(url);
             const partName = `${finalKey}.part`;
             const metaName = `${partName}.map`;

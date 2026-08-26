@@ -1,7 +1,7 @@
 # The automation harness
 
 Bringing up a game — load it, make it reach a menu or level, and figure out why it froze or
-rendered black — is the core debugging loop. BottleShip wraps that loop in an **automation
+rendered black — is the core debugging loop. Orthros wraps that loop in an **automation
 harness**: fluent, self-judging verbs you can drive from the command line or the browser
 console, plus structured introspection that survives the multi-megabyte-per-second log
 firehose.

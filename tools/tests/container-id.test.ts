@@ -14,7 +14,7 @@ import {
     parseGameId,
     resolveGameId,
     slugify,
-} from "@bottleship/formats/wgb/container-id";
+} from "@orthros/formats/wgb/container-id";
 
 describe("parseGameId", () => {
     test("accepts known schemes", () => {

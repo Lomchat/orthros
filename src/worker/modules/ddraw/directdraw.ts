@@ -2286,7 +2286,7 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
 
         // Write device info
         writeString(DDDEVICEIDENTIFIER2_OFFSETS.szDriver, "display", DDDEVICEIDENTIFIER2_STRING_SIZE);
-        writeString(DDDEVICEIDENTIFIER2_OFFSETS.szDescription, "BottleShip Display Driver", DDDEVICEIDENTIFIER2_STRING_SIZE);
+        writeString(DDDEVICEIDENTIFIER2_OFFSETS.szDescription, "Orthros Display Driver", DDDEVICEIDENTIFIER2_STRING_SIZE);
 
         // Set some reasonable GUID values
         // liDriverVersion (LARGE_INTEGER = 8 bytes)

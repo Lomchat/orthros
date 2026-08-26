@@ -134,7 +134,7 @@ export async function probeWebGPU(): Promise<WebGPUProbeResult> {
     return {
       ok: false,
       stage: "no-api",
-      reason: "This browser does not expose the WebGPU API (`navigator.gpu`), which BottleShip's entire graphics backend is built on.",
+      reason: "This browser does not expose the WebGPU API (`navigator.gpu`), which Orthros's entire graphics backend is built on.",
       hints: [
         "Use an up-to-date Google Chrome or Microsoft Edge, or Safari 26+.",
         "Firefox does not yet enable WebGPU by default.",

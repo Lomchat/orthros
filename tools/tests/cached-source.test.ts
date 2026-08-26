@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { CachedSource, computeAdaptiveMaxBytes, MAX_CACHE_BYTES, MIN_CACHE_BYTES } from "../../src/worker/runtime/filesystem/cached-source";
-import type { ZipSource } from "@bottleship/formats/zip";
+import type { ZipSource } from "@orthros/formats/zip";
 
 /** Deterministic 0..255 ramp so any range's bytes are predictable. */
 function ramp(n: number): Uint8Array {

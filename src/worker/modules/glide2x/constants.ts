@@ -1,7 +1,7 @@
 export const FXTRUE = 1;
 export const FXFALSE = 0;
 
-export const GLIDE_VERSION_STRING = "2.46 BottleShip WebGPU";
+export const GLIDE_VERSION_STRING = "2.46 Orthros WebGPU";
 
 export const GLIDE_DEFAULT_WIDTH = 640;
 export const GLIDE_DEFAULT_HEIGHT = 480;

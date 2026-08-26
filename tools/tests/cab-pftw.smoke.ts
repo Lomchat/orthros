@@ -6,7 +6,7 @@
  * self-extractor: MSCF cabinet (appended to `stub32i.exe`) → InstallShield disk
  * images → real game files. Ground truth: a local Max Payne Demo installer.
  *
- * Stage 1 (the new `@bottleship/formats/cab` core): find + unwrap the appended
+ * Stage 1 (the new `@orthros/formats/cab` core): find + unwrap the appended
  * MSZIP cabinet and assert it yields the 9 InstallShield disk-image files
  * (data1.hdr + data1.cab + data2.cab + Setup.exe + setup.inx …).
  *
@@ -14,7 +14,7 @@
  * chain resolves `via === "pftw"` and produces the game tree (MaxPayneDemo.exe +
  * x_demodatas.ras + x_demolevels.ras).
  *
- * Run:  BOTTLESHIP_PFTW_EXE=/path/to/MaxPayneDemo.exe bun tools/tests/cab-pftw.smoke.ts
+ * Run:  ORTHROS_PFTW_EXE=/path/to/MaxPayneDemo.exe bun tools/tests/cab-pftw.smoke.ts
  *
  * Bun lacks a dictionary-capable DecompressionStream, so we inject node
  * zlib.inflateRawSync (with the MSZIP preset dictionary) via the hooks — exactly
@@ -22,10 +22,10 @@
  */
 import { readFileSync } from "fs";
 import { inflateRawSync } from "zlib";
-import { findCabinet, parseCabHeader, extractCabToMap } from "@bottleship/formats/cab/index.ts";
-import { extractInstallerFromFiles } from "@bottleship/repack/container-extract";
+import { findCabinet, parseCabHeader, extractCabToMap } from "@orthros/formats/cab/index.ts";
+import { extractInstallerFromFiles } from "@orthros/repack/container-extract";
 
-const EXE = process.env.BOTTLESHIP_PFTW_EXE ?? "G:/Games/MaxPayneDemo.exe";
+const EXE = process.env.ORTHROS_PFTW_EXE ?? "G:/Games/MaxPayneDemo.exe";
 const buf = new Uint8Array(readFileSync(EXE));
 console.log(`Read ${EXE} (${buf.length} bytes)`);
 

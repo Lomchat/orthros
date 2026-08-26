@@ -60,18 +60,18 @@ async function writeOpfsFile(dir: FileSystemDirectoryHandle, name: string, blob:
  */
 async function stageFilesAndLaunch(files: File[]): Promise<void> {
   const root = await navigator.storage.getDirectory();
-  const bottleship = await root.getDirectoryHandle("bottleship", { create: true });
+  const orthros = await root.getDirectoryHandle("bottleship", { create: true });
 
   if (files.length === 1 && files[0]!.name.toLowerCase().endsWith(".wgb")) {
     const f = files[0]!;
-    const cacheDir = await bottleship.getDirectoryHandle("wgb-cache", { create: true });
+    const cacheDir = await orthros.getDirectoryHandle("wgb-cache", { create: true });
     await writeOpfsFile(cacheDir, f.name, f);
     window.location.assign(`?game=dev&load=${encodeURIComponent(`/apps/byo/${f.name}`)}`);
     return;
   }
 
-  try { await bottleship.removeEntry("_ingest", { recursive: true }); } catch { /* none yet */ }
-  const ingestDir = await bottleship.getDirectoryHandle("_ingest", { create: true });
+  try { await orthros.removeEntry("_ingest", { recursive: true }); } catch { /* none yet */ }
+  const ingestDir = await orthros.getDirectoryHandle("_ingest", { create: true });
   for (const f of files) await writeOpfsFile(ingestDir, f.name, f);
   window.location.assign(`?game=dev&ingest=1`);
 }
@@ -137,6 +137,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 // so it can be loaded/validated through the worker's mergeQuality() (single source of truth
 // for ranges/snapping). Treated as a GLOBAL user pref: posted on change + re-sent after each
 // game load (the worker re-applies per-game quality from the manifest on top of this).
+// Pre-rename key, kept so the stored pref survives the rename.
 const QUALITY_STORAGE_KEY = "bottleship.quality";
 
 function loadQuality(): QualityConfig {
@@ -362,17 +363,17 @@ export default function App() {
     height: typeof window !== "undefined" ? Math.max(1, window.innerHeight) : 1,
   }));
   const [loggingEnabled, setLoggingEnabled] = useState(() => {
-    const saved = localStorage.getItem('bottleship_logging_enabled');
+    const saved = localStorage.getItem('orthros_logging_enabled');
     return saved !== null ? saved === 'true' : false; // Default: disabled
   });
   const [devPanelOpen, setDevPanelOpen] = useState(() => {
     if (new URLSearchParams(window.location.search).get('game') === 'dev') return true;
-    try { return localStorage.getItem('bottleship_dev_panel') === 'true'; } catch { return false; }
+    try { return localStorage.getItem('orthros_dev_panel') === 'true'; } catch { return false; }
   });
   const toggleDevPanel = useCallback(() => {
     setDevPanelOpen(prev => {
       const next = !prev;
-      try { localStorage.setItem('bottleship_dev_panel', String(next)); } catch {}
+      try { localStorage.setItem('orthros_dev_panel', String(next)); } catch {}
       return next;
     });
   }, []);
@@ -436,7 +437,7 @@ export default function App() {
   const browserUnsupportedMessage = useMemo(() => {
     if (browserSupport.supported) return null;
     const missing = browserSupport.missing.join(", ");
-    return `This browser is missing features required to run BottleShip: ${missing}. Detected browser: ${browserSupport.detectedBrowser}. Please use an up-to-date Google Chrome or Safari 26+.`;
+    return `This browser is missing features required to run Orthros: ${missing}. Detected browser: ${browserSupport.detectedBrowser}. Please use an up-to-date Google Chrome or Safari 26+.`;
   }, [browserSupport]);
 
   // WebGPU is the whole render backend, but detectBrowserSupport() only checks that the API is
@@ -481,8 +482,8 @@ export default function App() {
       (async () => {
         try {
           const root = await navigator.storage.getDirectory();
-          const bottleship = await root.getDirectoryHandle("bottleship");
-          const ingestDir = await bottleship.getDirectoryHandle("_ingest");
+          const orthros = await root.getDirectoryHandle("bottleship");
+          const ingestDir = await orthros.getDirectoryHandle("_ingest");
           const files: File[] = [];
           for await (const [, handle] of (ingestDir as any).entries()) {
             if (handle.kind === "file") files.push(await (handle as FileSystemFileHandle).getFile());
@@ -686,7 +687,7 @@ export default function App() {
   const handleToggleLogStreaming = useCallback((enabled: boolean) => {
     setLoggingEnabled(enabled);
     try {
-      localStorage.setItem("bottleship_logging_enabled", String(enabled));
+      localStorage.setItem("orthros_logging_enabled", String(enabled));
     } catch {
       // ignore localStorage errors in restricted contexts
     }
@@ -921,7 +922,7 @@ export default function App() {
 
     // 2. Initialize SharedArrayBuffer (only once)
     if (!globalSab) {
-      console.log('BottleShip: Initializing SharedArrayBuffer');
+      console.log('Orthros: Initializing SharedArrayBuffer');
       globalSab = new SharedArrayBuffer(INPUT_BUFFER_SIZE);
       globalInputView = new Int32Array(globalSab);
       setIsBufferInitialized(true);
@@ -987,7 +988,7 @@ export default function App() {
 
     // 3. Setup Worker Message Handling
     worker.onmessage = (event: MessageEvent) => {
-      //console.log('BottleShip: Worker message received:', event.data?.type);
+      //console.log('Orthros: Worker message received:', event.data?.type);
 
       if (event.data?.type === "d3d9_cpu_frame") {
         const bitmap = event.data.bitmap as ImageBitmap | undefined;
@@ -1046,9 +1047,9 @@ export default function App() {
           const manifestOk = writeDebugFile(`${base}.json`, JSON.stringify(manifest, null, 2));
           const dumpOk = writeDebugFileBase64(`${base}.bin`, bytesToBase64(new Uint8Array(bytes)));
           if (manifestOk && dumpOk) {
-            console.log(`BottleShip: SEH runtime dump saved -> logs/${base}.{json,bin}`);
+            console.log(`Orthros: SEH runtime dump saved -> logs/${base}.{json,bin}`);
           } else {
-            console.warn(`BottleShip: SEH runtime dump not persisted (log server disconnected?) -> ${base}`);
+            console.warn(`Orthros: SEH runtime dump not persisted (log server disconnected?) -> ${base}`);
           }
         }
       } else if (event.data?.type === "debug_png_dump") {
@@ -1057,7 +1058,7 @@ export default function App() {
         const base64 = typeof event.data?.base64 === "string" ? event.data.base64 : "";
         if (base64) {
           const ok = writeDebugFileBase64(`debug/${name}.png`, base64);
-          console.log(`BottleShip: debug PNG ${ok ? "saved" : "NOT saved (log server?)"} -> logs/debug/${name}.png`);
+          console.log(`Orthros: debug PNG ${ok ? "saved" : "NOT saved (log server?)"} -> logs/debug/${name}.png`);
         }
       }
 
@@ -1202,17 +1203,17 @@ export default function App() {
       if (event.data?.type === "msg_timer_diag" || event.data?.type === "h3_timer_diag") {
         const label = event.data.type;
         if (event.data?.ok) {
-          console.log(`BottleShip: ${label}`, event.data?.config ?? null);
+          console.log(`Orthros: ${label}`, event.data?.config ?? null);
         } else {
-          console.warn(`BottleShip: ${label} error`, event.data?.error ?? "unknown");
+          console.warn(`Orthros: ${label} error`, event.data?.error ?? "unknown");
         }
       }
       if (event.data?.type === "ui_gate_diag" || event.data?.type === "h3_gate_diag") {
         const label = event.data.type;
         if (event.data?.ok) {
-          console.log(`BottleShip: ${label}`, event.data?.config ?? null);
+          console.log(`Orthros: ${label}`, event.data?.config ?? null);
         } else {
-          console.warn(`BottleShip: ${label} error`, event.data?.error ?? "unknown");
+          console.warn(`Orthros: ${label} error`, event.data?.error ?? "unknown");
         }
       }
       if (event.data?.type === "log_verbose_export") {
@@ -1226,9 +1227,9 @@ export default function App() {
       }
       if (event.data?.type === "log_verbose_clear") {
         if (event.data?.ok) {
-          console.log("BottleShip: Verbose logs cleared");
+          console.log("Orthros: Verbose logs cleared");
         } else {
-          console.error("BottleShip: Failed to clear verbose logs:", event.data?.error);
+          console.error("Orthros: Failed to clear verbose logs:", event.data?.error);
         }
       }
       if (event.data?.type === "diag_download") {
@@ -1400,7 +1401,7 @@ export default function App() {
       }
       if (event.data?.type === "window_title") {
         const title = String(event.data.title || "");
-        document.title = title ? `${title} — BottleShip` : "BottleShip";
+        document.title = title ? `${title} — Orthros` : "Orthros";
       }
       if (event.data?.type === "window_icon") {
         const buffer = event.data.data as ArrayBuffer | undefined;
@@ -1437,7 +1438,7 @@ export default function App() {
 
       try {
         globalOffscreen = canvas.transferControlToOffscreen();
-        console.log('BottleShip: Sending init to worker (new canvas)');
+        console.log('Orthros: Sending init to worker (new canvas)');
         worker.postMessage(
           {
             type: "init",
@@ -1449,11 +1450,11 @@ export default function App() {
           [globalOffscreen]
         );
       } catch (err) {
-        console.warn('BottleShip: Failed to transfer control (maybe already transferred), signaling worker anyway');
+        console.warn('Orthros: Failed to transfer control (maybe already transferred), signaling worker anyway');
         worker.postMessage({ type: "init" });
       }
     } else {
-      console.log('BottleShip: Already have offscreen canvas, signaling worker');
+      console.log('Orthros: Already have offscreen canvas, signaling worker');
       const { width, height } = resolutionRef.current;
       worker.postMessage({
         type: "init",
@@ -1895,8 +1896,8 @@ export default function App() {
     // Automation Hook
     // Automation: HLE must be enabled before PE load (galaxy.dll hooks).
     (window as any).enableHleAndLoad = async (path: string, logOnly = false, galaxyHleMixer = true) => {
-      if (!globalWorker) { console.error("BottleShip: Worker not initialized"); return; }
-      console.log(`BottleShip: enableHleAndLoad logOnly=${logOnly} mixer=${galaxyHleMixer} → ${path}`);
+      if (!globalWorker) { console.error("Orthros: Worker not initialized"); return; }
+      console.log(`Orthros: enableHleAndLoad logOnly=${logOnly} mixer=${galaxyHleMixer} → ${path}`);
       rotateLogFile((path.split(/[\\/]/).pop()?.replace(/\.wgb$/i, "") || "game") + "-hle");
       setIsLoadingApp(true);
       setErrorMessage(null);
@@ -1915,7 +1916,7 @@ export default function App() {
     };
 
     (window as any).loadApp = async (path: string) => {
-      console.log(`BottleShip: Loading App from ${path}`);
+      console.log(`Orthros: Loading App from ${path}`);
       rotateLogFile(path.split(/[\\/]/).pop()?.replace(/\.wgb$/i, "") || "game");
       ensurePersistentStorageRequested();
       setIsLoadingApp(true);
@@ -1924,7 +1925,7 @@ export default function App() {
       setBundleDisplayName(null);
       audioEngine?.stopAll(); // Silence stale ring buffers from the previous game
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         setIsLoadingApp(false);
         return;
       }
@@ -1957,7 +1958,7 @@ export default function App() {
         setIsLoadingApp(false);
       } catch (e) {
         const errorMessage = `Failed to load app from ${path}: ${e instanceof Error ? e.message : String(e)}`;
-        console.error("BottleShip:", errorMessage);
+        console.error("Orthros:", errorMessage);
         setErrorMessage(errorMessage);
         setIsLoadingApp(false);
         setLoadingProgress(null);
@@ -1988,22 +1989,22 @@ export default function App() {
       recordedInputs = [];
       recordStart = performance.now();
       isRecording = true;
-      console.log("BottleShip: Recording started");
+      console.log("Orthros: Recording started");
     };
 
     (window as any).stopRecording = () => {
       isRecording = false;
-      console.log(`BottleShip: Recording stopped (${recordedInputs.length} samples)`);
+      console.log(`Orthros: Recording stopped (${recordedInputs.length} samples)`);
       return recordedInputs.slice();
     };
 
     (window as any).playRecording = (recording: InputSample[], options?: { deterministic?: boolean }) => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       if (!recording || recording.length === 0) {
-        console.warn("BottleShip: No recording provided");
+        console.warn("Orthros: No recording provided");
         return;
       }
 
@@ -2057,11 +2058,11 @@ export default function App() {
 
     (window as any).captureFrame = async () => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       if (capturePending) {
-        console.warn("BottleShip: Capture already in progress");
+        console.warn("Orthros: Capture already in progress");
         return;
       }
       const capturePromise = new Promise<Blob>((resolve, reject) => {
@@ -2077,17 +2078,17 @@ export default function App() {
         link.click();
         URL.revokeObjectURL(url);
       } catch (err) {
-        console.error("BottleShip: Capture failed", err);
+        console.error("Orthros: Capture failed", err);
       }
     };
 
     (window as any).renderStats = async () => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       if (statsPending) {
-        console.warn("BottleShip: Stats request already in progress");
+        console.warn("Orthros: Stats request already in progress");
         return;
       }
       const statsPromise = new Promise<Record<string, number>>((resolve, reject) => {
@@ -2096,22 +2097,22 @@ export default function App() {
       globalWorker.postMessage({ type: "render_stats" });
       try {
         const stats = await statsPromise;
-        console.log("BottleShip: Render stats", stats);
+        console.log("Orthros: Render stats", stats);
       } catch (err) {
-        console.error("BottleShip: Stats failed", err);
+        console.error("Orthros: Stats failed", err);
       }
     };
 
     const postMsgTimerDiag = (payload: Record<string, unknown>, legacy = false) => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       globalWorker.postMessage({ type: legacy ? "h3_timer_diag" : "msg_timer_diag", ...payload });
     };
     const postUiGateDiag = (payload: Record<string, unknown>, legacy = false) => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       globalWorker.postMessage({ type: legacy ? "h3_gate_diag" : "ui_gate_diag", ...payload });
@@ -2159,7 +2160,7 @@ export default function App() {
 
     (window as any).enableVerboseLogCapture = (enabled: boolean = true) => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       globalWorker.postMessage({ type: "log_verbose_enable", enabled });
@@ -2186,11 +2187,11 @@ export default function App() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = "bottleship-verbose.log";
+        link.download = "orthros-verbose.log";
         link.click();
         URL.revokeObjectURL(url);
       } catch (err) {
-        console.error("BottleShip: Log export failed", err);
+        console.error("Orthros: Log export failed", err);
       }
     };
 
@@ -2198,7 +2199,7 @@ export default function App() {
 
     const clearVerboseLog = () => {
       if (!globalWorker) {
-        console.error("BottleShip: Worker not initialized");
+        console.error("Orthros: Worker not initialized");
         return;
       }
       globalWorker.postMessage({ type: "log_verbose_clear" });
@@ -2379,13 +2380,13 @@ export default function App() {
   const toggleLogging = useCallback(() => {
     const newState = !loggingEnabled;
     setLoggingEnabled(newState);
-    localStorage.setItem('bottleship_logging_enabled', String(newState));
+    localStorage.setItem('orthros_logging_enabled', String(newState));
   }, [loggingEnabled]);
 
   // Pause/Resume handler
   const togglePause = useCallback(async () => {
     if (!globalWorker) {
-      console.error("BottleShip: Worker not initialized");
+      console.error("Orthros: Worker not initialized");
       return;
     }
     const newPausedState = !isPaused;

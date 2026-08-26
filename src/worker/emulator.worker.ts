@@ -77,15 +77,15 @@ import {
 } from "./core/cpu/emulator-config";
 import { WgbLoader, buildRomIndex, readEntrypointBytes, type WgbWriteFileSpec } from "./runtime/filesystem/wgb-loader";
 import { WgbCache } from "./runtime/filesystem/wgb-cache";
-import { detectFormat, sniffBlobHead } from "@bottleship/repack/detect";
-import { installerBytesToWgb } from "@bottleship/repack/installer-to-wgb";
-import { guessCacheKey } from "@bottleship/repack/manifest-synth";
-import { BufferSource, InnoFormatError, parseInnoHeader, MultiSliceReader, parseSliceFile, type SliceData } from "@bottleship/formats/inno";
-import { SyncHttpRangeSource } from "@bottleship/formats/zip";
+import { detectFormat, sniffBlobHead } from "@orthros/repack/detect";
+import { installerBytesToWgb } from "@orthros/repack/installer-to-wgb";
+import { guessCacheKey } from "@orthros/repack/manifest-synth";
+import { BufferSource, InnoFormatError, parseInnoHeader, MultiSliceReader, parseSliceFile, type SliceData } from "@orthros/formats/inno";
+import { SyncHttpRangeSource } from "@orthros/formats/zip";
 import { SabIoSource } from "./runtime/filesystem/sab-io-source";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
+import { UnpackDecoder } from "@orthros/formats/unpack";
 import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
-import { resolveGameId, gameIdToContainerDir } from "@bottleship/formats/wgb/container-id";
+import { resolveGameId, gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
 import { PathPolicy } from "./runtime/filesystem/path-policy";
 import { detectUe1, detectUe2PcPackages, pinUeEngineIni, UE1_RENDER_DEVICE as UE1_RENDER_DEVICE_NAME } from "./runtime/filesystem/ue1-firstrun";
 import { buildStagedBundle, inspectBundle, finalizeBundle, readStagedEntry, type BuildSource, type FinalizeDestination } from "./runtime/filesystem/wgb-build";
@@ -1251,7 +1251,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           // cold read parks the guest for ~a SAB round-trip instead of a network
           // one — no serial, latency-bound sync-XHR grind. Needs cross-origin
           // isolation (SAB); falls back to the blocking sync-XHR range source.
-          let src: import("@bottleship/formats/zip").ZipSource;
+          let src: import("@orthros/formats/zip").ZipSource;
           let sabIo: SabIoSource | null = null;
           try {
             sabIo = await SabIoSource.create(url);
@@ -1500,7 +1500,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     }
 
     // Resolve the per-game container key (WGB v2 gameId, namespaced) and open this game's writable
-    // overlay (bottleship/games/<containerDir>/overlay/). On a game switch the previous overlay is
+    // overlay (orthros/games/<containerDir>/overlay/). On a game switch the previous overlay is
     // closed and re-rooted so game B never sees game A's files (#5 isolation). Registry persistence
     // (below) keys by this same gameId.
     const gameId = resolveGameId(bundle.manifest);

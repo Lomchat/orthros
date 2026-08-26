@@ -1,9 +1,9 @@
 ---
 name: repack
-description: Turn a game installer/archive/disc (InstallShield, PackageForTheWeb/WinZip-SFX, Inno/GOG, ISO/BIN-CUE, CAB, FreeArc, plain ZIP) into a .wgb bundle using BottleShip's OWN self-hosted format readers — NEVER apt/7-Zip/cabextract/unshield/innoextract. Use when packing a new game, repacking an existing .wgb, or diagnosing a bundle that boots but writes nothing / loops a menu (the empty-directory pitfall). Covers make-wgb, wgb.ts, and the formats/ stack.
+description: Turn a game installer/archive/disc (InstallShield, PackageForTheWeb/WinZip-SFX, Inno/GOG, ISO/BIN-CUE, CAB, FreeArc, plain ZIP) into a .wgb bundle using Orthros's OWN self-hosted format readers — NEVER apt/7-Zip/cabextract/unshield/innoextract. Use when packing a new game, repacking an existing .wgb, or diagnosing a bundle that boots but writes nothing / loops a menu (the empty-directory pitfall). Covers make-wgb, wgb.ts, and the formats/ stack.
 ---
 
-# BottleShip Repack
+# Orthros Repack
 
 Everything to get a game from a distributed installer/archive/disc into a bootable
 `.wgb` is **self-hosted in this repo**. Do NOT install or shell out to a system unpacker

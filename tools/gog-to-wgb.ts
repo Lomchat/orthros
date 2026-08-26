@@ -28,13 +28,13 @@ import {
     parseSliceFile,
     MultiSliceReader,
     type SliceData,
-} from "@bottleship/formats/inno";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
-import { isGogJunk, SKIP_DIRS, detectExeFromPaths } from "@bottleship/repack/gog-filter";
-import { buildZip } from "@bottleship/formats/wgb/zip-build";
-import { OS_PRESETS } from "@bottleship/repack/manifest-synth";
-import { installerBytesToWgb } from "@bottleship/repack/installer-to-wgb";
-import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from "@bottleship/formats/wgb/container-id";
+} from "@orthros/formats/inno";
+import { UnpackDecoder } from "@orthros/formats/unpack";
+import { isGogJunk, SKIP_DIRS, detectExeFromPaths } from "@orthros/repack/gog-filter";
+import { buildZip } from "@orthros/formats/wgb/zip-build";
+import { OS_PRESETS } from "@orthros/repack/manifest-synth";
+import { installerBytesToWgb } from "@orthros/repack/installer-to-wgb";
+import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from "@orthros/formats/wgb/container-id";
 
 const isTTY = process.stdout.isTTY;
 

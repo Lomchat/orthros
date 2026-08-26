@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseGogScriptRegistry, mergeRegistrySeeds } from "@bottleship/repack/gog-script";
+import { parseGogScriptRegistry, mergeRegistrySeeds } from "@orthros/repack/gog-script";
 
 const SW_RACER_SCRIPT = {
     actions: [

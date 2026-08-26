@@ -17,7 +17,7 @@ const wasm = require("../../tools/build-unpack-buffered/pkg-node/unpack_buffered
     extract_7z: (bytes: Uint8Array) => Array<{ name: string; data: Uint8Array }>;
 };
 
-const ARCHIVE = process.env.BOTTLESHIP_HP1_7Z ?? "tmp/hp1_demo.7z";
+const ARCHIVE = process.env.ORTHROS_HP1_7Z ?? "tmp/hp1_demo.7z";
 
 const EXPECTED: Record<string, number> = {
     "data1.cab": 1304995,

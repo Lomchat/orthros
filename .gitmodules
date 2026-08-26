@@ -1,4 +1,4 @@
 [submodule "vendor/v86"]
 	path = vendor/v86
-	url = https://github.com/jenissimo/v86.git
-	branch = bottleship
+	url = https://github.com/Lomchat/v86.git
+	branch = orthros

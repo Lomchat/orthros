@@ -1246,8 +1246,8 @@ Logger.log(LogCategory.SYSTEM, '[eipSample] Console API: eipSample(durationMs=30
     }
 
     const topEips = Array.isArray((rows as any).topEips) ? (rows as any).topEips : undefined;
-    const payload = { v: 1, source: 'bottleship', kind: 'hot-blocks', rows: compact, topEips };
-    performance.mark('bottleship.hotblocks', { detail: JSON.stringify(payload) });
+    const payload = { v: 1, source: 'orthros', kind: 'hot-blocks', rows: compact, topEips };
+    performance.mark('orthros.hotblocks', { detail: JSON.stringify(payload) });
     console.log(`[captureHotBlocksMark] emitted performance.mark with ${compact.length} blocks${topEips ? `, ${topEips.length} exact EIPs` : ''} (must be inside an active trace recording)`);
     return compact.length;
 };

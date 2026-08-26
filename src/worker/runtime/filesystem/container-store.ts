@@ -1,7 +1,7 @@
 /**
  * Per-game container store — the OPFS layout that gives each game its own isolated namespace.
  *
- *   bottleship/
+ *   orthros/
  *     games/<containerDir>/      ← one container per gameId (see container-id.ts)
  *       overlay/                 ← writable CoW save layer (OpfsOverlay roots here)
  *       registry.json            ← persisted registry (RegistryPersistence)
@@ -13,16 +13,19 @@
  * All consumers (overlay, registry, future storage UI) resolve a game's storage through here so the
  * layout stays in one place.
  */
-import { gameIdToContainerDir } from "@bottleship/formats/wgb/container-id";
+import { gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
 
-export const BOTTLESHIP_ROOT = "bottleship";
+// Keeps the pre-rename name on purpose: this is the on-disk OPFS root holding every
+// installed game. Renaming it orphans existing installs. Same for the other persisted
+// keys (handle-store DB, UI settings, quality) — the brand changed, the storage keys can't.
+export const ORTHROS_ROOT = "bottleship";
 export const GAMES_DIR = "games";
 
-/** Open (optionally create) the `bottleship/` OPFS root. Returns null if OPFS is unavailable. */
-export async function getBottleshipRoot(create: boolean): Promise<FileSystemDirectoryHandle | null> {
+/** Open (optionally create) the `orthros/` OPFS root. Returns null if OPFS is unavailable. */
+export async function getOrthrosRoot(create: boolean): Promise<FileSystemDirectoryHandle | null> {
     try {
         const root = await navigator.storage.getDirectory();
-        return await root.getDirectoryHandle(BOTTLESHIP_ROOT, { create });
+        return await root.getDirectoryHandle(ORTHROS_ROOT, { create });
     } catch (e: any) {
         if (e?.name === "NotFoundError") return null;
         return null;
@@ -30,7 +33,7 @@ export async function getBottleshipRoot(create: boolean): Promise<FileSystemDire
 }
 
 /**
- * Open (optionally create) a game's container dir `bottleship/games/<containerDir(gameId)>`.
+ * Open (optionally create) a game's container dir `orthros/games/<containerDir(gameId)>`.
  * Returns null if OPFS is unavailable or (when create=false) the container doesn't exist yet.
  */
 export async function getContainerDir(
@@ -38,7 +41,7 @@ export async function getContainerDir(
     create: boolean,
 ): Promise<FileSystemDirectoryHandle | null> {
     try {
-        const bs = await getBottleshipRoot(create);
+        const bs = await getOrthrosRoot(create);
         if (!bs) return null;
         const games = await bs.getDirectoryHandle(GAMES_DIR, { create });
         return await games.getDirectoryHandle(gameIdToContainerDir(gameId), { create });
@@ -48,9 +51,9 @@ export async function getContainerDir(
     }
 }
 
-/** List the container dir names present under `bottleship/games/`. */
+/** List the container dir names present under `orthros/games/`. */
 export async function listContainerDirs(): Promise<string[]> {
-    const bs = await getBottleshipRoot(false);
+    const bs = await getOrthrosRoot(false);
     if (!bs) return [];
     try {
         const games = await bs.getDirectoryHandle(GAMES_DIR);
@@ -67,7 +70,7 @@ export async function listContainerDirs(): Promise<string[]> {
 
 /** Remove a game's entire container (overlay + registry + meta + ephemeral). */
 export async function removeContainer(gameId: string): Promise<void> {
-    const bs = await getBottleshipRoot(false);
+    const bs = await getOrthrosRoot(false);
     if (!bs) return;
     try {
         const games = await bs.getDirectoryHandle(GAMES_DIR);

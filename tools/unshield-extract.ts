@@ -37,7 +37,7 @@ import {
   FILE_INVALID,
   LINK_PREV,
   type InstallShieldFile,
-} from '@bottleship/formats/installshield/index.ts';
+} from '@orthros/formats/installshield/index.ts';
 
 const COMMON_HEADER_SIZE = 20;
 
