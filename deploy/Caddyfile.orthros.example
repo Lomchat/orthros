@@ -4,7 +4,7 @@
 #                turns any extension-less path into index.html
 # The same proxy carries range-served .wgb bundles and the BFME virtual-LAN WebSocket,
 # hence the long timeouts.
-orthros.example.com {
+games.example.com, orthros.example.com {
     encode zstd gzip
 
     reverse_proxy 127.0.0.1:5173 {

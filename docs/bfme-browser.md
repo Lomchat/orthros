@@ -61,7 +61,7 @@ It also emits `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedd
 
 ## Caddy and systemd
 
-The checked-in examples are [bfme-orthros.service](../deploy/bfme-orthros.service.example) and [Caddyfile](../deploy/Caddyfile.bfme.example). Copy the service to `/etc/systemd/system/bfme-orthros.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
+The checked-in examples are [bfme-orthros.service](../deploy/bfme-orthros.service.example) and [Caddyfile](../deploy/Caddyfile.orthros.example). Copy the service to `/etc/systemd/system/bfme-orthros.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
 
 ```bash
 sudo systemctl daemon-reload
