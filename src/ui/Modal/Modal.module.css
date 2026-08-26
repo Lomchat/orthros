@@ -16,7 +16,7 @@
 
 .modal-content {
   background:
-    linear-gradient(180deg, rgba(70, 200, 216, 0.04), transparent 120px),
+    linear-gradient(180deg, rgba(110, 168, 216, 0.04), transparent 120px),
     var(--surf-1);
   border: 1px solid var(--line-2);
   border-radius: var(--r-lg);

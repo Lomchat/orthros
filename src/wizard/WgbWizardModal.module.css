@@ -4,7 +4,7 @@
   flex-direction: column;
   width: min(880px, 96vw);
   max-height: 90vh;
-  background: linear-gradient(180deg, rgba(70, 200, 216, 0.04), transparent 30%), var(--surf-1);
+  background: linear-gradient(180deg, rgba(110, 168, 216, 0.04), transparent 30%), var(--surf-1);
   border: 1px solid var(--line-2);
   border-radius: var(--r-xl);
   box-shadow: var(--sh-3);
@@ -78,7 +78,7 @@
 }
 .step__t { font-size: var(--fs-sm); color: var(--fg-3); }
 .step__bar { flex: 1; height: 1px; background: var(--line-1); margin: 0 12px; }
-.step.is-done .step__dot { background: var(--surf-cyan); border-color: rgba(70, 200, 216, 0.4); color: var(--cyan-soft); }
+.step.is-done .step__dot { background: var(--surf-cyan); border-color: rgba(110, 168, 216, 0.4); color: var(--cyan-soft); }
 .step.is-active .step__dot { background: var(--amber); border-color: transparent; color: var(--amber-ink); box-shadow: var(--glow-amber); }
 .step.is-active .step__t, .step.is-active .step__k { color: var(--fg-1); }
 .step.is-done .step__t { color: var(--fg-2); }
@@ -274,7 +274,7 @@
   padding: 12px 14px;
   border-radius: var(--r-md);
   background: var(--surf-cyan);
-  border: 1px solid rgba(70, 200, 216, 0.25);
+  border: 1px solid rgba(110, 168, 216, 0.25);
   font-size: var(--fs-xs);
   color: var(--cyan-soft);
   line-height: 1.5;
@@ -285,7 +285,7 @@
 
 /* Processing view */
 .proc { text-align: center; padding: 30px 10px; }
-.proc__logo { width: 96px; height: 96px; margin: 0 auto 18px; color: var(--cyan); }
+.proc__logo { width: 70px; height: 72px; margin: 0 auto 18px; image-rendering: pixelated; }
 .proc__label { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--cyan-soft); letter-spacing: 0.04em; }
 .bar {
   height: 8px;
@@ -300,7 +300,7 @@
   height: 100%;
   border-radius: var(--r-pill);
   background: linear-gradient(90deg, var(--cyan), var(--cyan-soft));
-  box-shadow: 0 0 14px rgba(70, 200, 216, 0.5);
+  box-shadow: 0 0 14px rgba(110, 168, 216, 0.5);
   transition: width var(--t) var(--ease-out);
 }
 .proc__pct { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--fg-3); }

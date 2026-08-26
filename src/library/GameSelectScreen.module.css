@@ -28,13 +28,14 @@
   z-index: -1;
   pointer-events: none;
   backdrop-filter: blur(10px);
-  background: linear-gradient(180deg, rgba(7, 13, 17, 0.94) 35%, rgba(7, 13, 17, 0.55) 80%, transparent);
+  background: linear-gradient(180deg, rgba(7, 10, 20, 0.94) 35%, rgba(7, 10, 20, 0.55) 80%, transparent);
 }
 
 .brand { display: flex; flex-direction: column; gap: 10px; flex: 0 0 auto; }
 .brand__mark { display: flex; align-items: center; gap: 16px; }
-/* Pixel-art mark (native 41x27) — integer-scaled ×2 with nearest-neighbour so it stays crisp. */
-.brand__logo { width: 82px; height: 54px; opacity: 0.95; image-rendering: pixelated; }
+/* Pixel-art mark (native 140x143) — halved with nearest-neighbour so it stays crisp. */
+/* Dark coat on a dark page: a faint ember halo separates the silhouette. */
+.brand__logo { width: 70px; height: 72px; image-rendering: pixelated; filter: drop-shadow(0 0 12px rgba(248, 144, 31, 0.22)); }
 .wordmark {
   font-family: var(--font-display);
   font-weight: 600;
@@ -48,6 +49,18 @@
   color: var(--fg-2);
   letter-spacing: 0.01em;
 }
+.brand__fork {
+  font-size: var(--fs-sm);
+  color: var(--fg-3);
+  letter-spacing: 0.01em;
+  margin-top: -4px;
+}
+.brand__fork a {
+  color: var(--fg-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-2);
+}
+.brand__fork a:hover { color: var(--cyan-soft); border-bottom-color: var(--cyan-soft); }
 
 .cmd-spacer { flex: 1; }
 .cmd-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
@@ -209,7 +222,7 @@
   display: grid;
   place-items: center;
   background:
-    radial-gradient(120% 120% at 30% 10%, rgba(70, 200, 216, 0.18), transparent 60%),
+    radial-gradient(120% 120% at 30% 10%, rgba(110, 168, 216, 0.18), transparent 60%),
     linear-gradient(160deg, var(--surf-3), var(--ink-800));
 }
 .card__glyph { font-family: var(--font-display); font-weight: 700; font-size: 3.4rem; color: var(--fg-3); }
@@ -226,15 +239,15 @@
   font-size: var(--fs-2xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  background: rgba(7, 13, 17, 0.74);
+  background: rgba(7, 10, 20, 0.74);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(4px);
   z-index: 1;
 }
-.badge--builtin { color: var(--cyan-soft); border-color: rgba(70, 200, 216, 0.35); }
+.badge--builtin { color: var(--cyan-soft); border-color: rgba(110, 168, 216, 0.35); }
 .badge--gog { color: var(--amber-soft); border-color: rgba(246, 166, 35, 0.35); }
 .badge--local { color: var(--violet-soft); border-color: rgba(182, 166, 245, 0.35); }
-.badge--sub { left: auto; right: 10px; color: var(--fg-2); background: rgba(7, 13, 17, 0.72); border-color: var(--line-2); }
+.badge--sub { left: auto; right: 10px; color: var(--fg-2); background: rgba(7, 10, 20, 0.72); border-color: var(--line-2); }
 
 .card__play {
   position: absolute;
@@ -242,7 +255,7 @@
   display: grid;
   place-items: center;
   opacity: 0;
-  background: linear-gradient(0deg, rgba(7, 13, 17, 0.72), transparent 55%);
+  background: linear-gradient(0deg, rgba(7, 10, 20, 0.72), transparent 55%);
   transition: opacity var(--t);
 }
 .card:hover .card__play { opacity: 1; }
@@ -282,7 +295,7 @@
   border-radius: var(--r-sm);
   display: grid;
   place-items: center;
-  background: rgba(7, 13, 17, 0.78);
+  background: rgba(7, 10, 20, 0.78);
   border: 1px solid var(--line-2);
   color: var(--fg-2);
   font-size: 13px;
@@ -366,7 +379,7 @@
   animation: bs-fade 0.3s;
 }
 /* Same pixel-art mark, integer-scaled ×3 for the hero. */
-.hero__logo { width: 123px; height: 81px; margin-bottom: 14px; image-rendering: pixelated; }
+.hero__logo { width: 140px; height: 143px; margin-bottom: 14px; image-rendering: pixelated; filter: drop-shadow(0 0 20px rgba(248, 144, 31, 0.2)); }
 .hero__t {
   font-family: var(--font-display);
   font-weight: 700;

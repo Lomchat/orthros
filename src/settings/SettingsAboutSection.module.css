@@ -5,7 +5,7 @@
   padding: 10px 0 6px;
 }
 /* Pixel-art mark (native 41x27), integer-scaled ×3 with nearest-neighbour. */
-.about__logo { width: 123px; height: 81px; image-rendering: pixelated; }
+.about__logo { width: 140px; height: 143px; image-rendering: pixelated; filter: drop-shadow(0 0 20px rgba(248, 144, 31, 0.2)); }
 .about__title {
   font-family: var(--font-display);
   font-weight: 700;

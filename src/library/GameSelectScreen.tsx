@@ -152,6 +152,13 @@ export default function GameSelectScreen({
             </span>
           </div>
           <span className={s["brand__tag"]}>Run classic Windows games in your browser.</span>
+          <span className={s["brand__fork"]}>
+            Inspired by and forked from{" "}
+            <a href="https://bottleship.pages.dev/" target="_blank" rel="noopener noreferrer">
+              BottleShip
+            </a>
+            .
+          </span>
         </div>
         <span className={s["cmd-spacer"]} />
         <div className={s["cmd-actions"]}>

@@ -60,18 +60,9 @@ import { isSaveFilePickerSupported, pickSaveWgbFile, writeBytesToFileHandle, WGB
  * navigate+stage launch flow — the one path that already boots a game. See TODO(stage2-worker).
  */
 
-// --- the Orthros mark (only inline SVG kept; copied from GameSelectScreen.tsx) -------
+// --- the Orthros mark, shared with the library masthead -----------------------------
 function OrthrosMark({ className }: { className?: string }): React.ReactElement {
-  return (
-    <svg className={className} viewBox="0 0 64 64" aria-hidden>
-      <g fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinejoin="round">
-        <path d="M26 6h12v8l4 4v6H22v-6l4-4z" />
-        <rect x="14" y="24" width="36" height="34" rx="9" />
-        <path d="M20 46c6-3 8-10 14-10s9 6 14 4" strokeOpacity=".5" />
-      </g>
-      <path d="M30 32l8 5-8 5z" fill="var(--amber)" stroke="none" />
-    </svg>
-  );
+  return <img src="/orthros_logo.png" className={className} alt="" aria-hidden />;
 }
 
 // --- content tree row (recursive) --------------------------------------------------

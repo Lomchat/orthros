@@ -20,7 +20,7 @@
   background: var(--fg-3);
   transition: all var(--t);
 }
-.on { background: var(--surf-cyan); border-color: rgba(70, 200, 216, 0.4); }
+.on { background: var(--surf-cyan); border-color: rgba(110, 168, 216, 0.4); }
 .on::after { left: 20px; background: var(--cyan-soft); }
 
 @media (prefers-reduced-motion: reduce) {

@@ -118,7 +118,7 @@
 }
 
 .local-cache-badge__row strong {
-  color: #8fe6f0;
+  color: var(--cyan-soft);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }

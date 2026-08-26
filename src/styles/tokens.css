@@ -3,10 +3,10 @@
 }
 
 /* =========================================================================
-   Orthros design tokens — "abyssal archive"
-   Deep maritime ink, glass containers, one warm sodium-amber CTA against a
-   cool teal/cyan signal, instrument-mono labels. The glass-container motif
-   doubles as the per-game container concept.
+   Orthros design tokens — slate and ember
+   Keyed to the two-headed hound: navy-slate ink from its coat, one ember CTA
+   from its eyes, a cool steel signal to keep the page calm, instrument-mono
+   labels. Warm is reserved for what the user should act on.
    ========================================================================= */
 :root {
   color-scheme: dark;
@@ -27,31 +27,31 @@
   --fs-display: clamp(2.4rem, 1.5rem + 3vw, 4rem);
 
   /* — Ink / surfaces (deep → raised) — */
-  --ink-1000: #04070a;
-  --ink-900: #070d11;
-  --ink-800: #0a1318;
-  --surf-1: #0d171d;
-  --surf-2: #122029;
-  --surf-3: #182d38;
-  --surf-glass: rgba(16, 31, 40, 0.62);
+  --ink-1000: #03050c;
+  --ink-900: #070a14;
+  --ink-800: #0b101c;
+  --surf-1: #0e1424;
+  --surf-2: #141b2e;         /* the hound's coat */
+  --surf-3: #1e2740;
+  --surf-glass: rgba(17, 23, 40, 0.62);
 
   /* — Hairlines / borders — */
-  --line-1: #182a33;
-  --line-2: #23404c;
-  --line-3: #335c6c;
+  --line-1: #1b2338;
+  --line-2: #2b3347;         /* coat highlight */
+  --line-3: #3d4861;
 
   /* — Foreground — */
-  --fg-1: #e9f4f4;
-  --fg-2: #8eabb4;
-  --fg-3: #5a767f;
-  --fg-4: #3a525a;
+  --fg-1: #eceef5;
+  --fg-2: #9aa3bd;
+  --fg-3: #6a7290;
+  --fg-4: #4a5170;
 
   /* — Accents — */
-  --amber: #f6a623;          /* primary CTA — the one warm harbor light */
-  --amber-soft: #ffc46b;
-  --amber-ink: #1a1206;      /* text on amber fills */
-  --cyan: #46c8d8;           /* signal / active / info */
-  --cyan-soft: #8fe6f0;
+  --amber: #f8901f;          /* primary CTA — the ember in its eyes */
+  --amber-soft: #ffb56b;
+  --amber-ink: #1a0f05;      /* text on amber fills */
+  --cyan: #6ea8d8;           /* signal / active / info — steel, not teal */
+  --cyan-soft: #a9cdea;
   --mint: #4fd6a0;           /* success */
   --coral: #ff7a7a;          /* danger */
   --coral-soft: #ffb0b0;
@@ -59,8 +59,8 @@
   --violet-soft: #d3c8ff;
 
   /* — Tinted state surfaces — */
-  --surf-amber: rgba(246, 166, 35, 0.12);
-  --surf-cyan: rgba(70, 200, 216, 0.12);
+  --surf-amber: rgba(248, 144, 31, 0.12);
+  --surf-cyan: rgba(110, 168, 216, 0.12);
   --surf-mint: rgba(79, 214, 160, 0.12);
   --surf-coral: rgba(255, 122, 122, 0.12);
   --surf-violet: rgba(182, 166, 245, 0.14);
@@ -77,8 +77,8 @@
   --sh-1: 0 2px 8px rgba(0, 0, 0, 0.4);
   --sh-2: 0 12px 30px rgba(0, 0, 0, 0.5);
   --sh-3: 0 28px 64px rgba(0, 0, 0, 0.62);
-  --glow-amber: 0 0 0 1px rgba(246, 166, 35, 0.45), 0 10px 34px rgba(246, 166, 35, 0.22);
-  --glow-cyan: 0 0 0 1px rgba(70, 200, 216, 0.4), 0 10px 30px rgba(70, 200, 216, 0.18);
+  --glow-amber: 0 0 0 1px rgba(248, 144, 31, 0.45), 0 10px 34px rgba(248, 144, 31, 0.22);
+  --glow-cyan: 0 0 0 1px rgba(110, 168, 216, 0.4), 0 10px 30px rgba(110, 168, 216, 0.18);
 
   /* — Motion — */
   --t-fast: 0.15s;
@@ -90,12 +90,12 @@
   font-size: clamp(14px, 0.8rem + 0.35vw, 18px);
   font-family: var(--font-body);
   color: var(--fg-1);
-  /* Layered abyss: a faint sodium glow up top, teal mid-water, ink depths. */
+  /* Layered depth: a faint ember glow up top, cold steel opposite, ink below. */
   background-color: var(--ink-900);
   background-image:
-    radial-gradient(120% 90% at 78% -10%, rgba(246, 166, 35, 0.07), transparent 55%),
-    radial-gradient(120% 100% at 12% 0%, rgba(70, 200, 216, 0.06), transparent 50%),
-    radial-gradient(140% 120% at 50% 120%, #0a1318, var(--ink-1000) 70%);
+    radial-gradient(120% 90% at 78% -10%, rgba(248, 144, 31, 0.07), transparent 55%),
+    radial-gradient(120% 100% at 12% 0%, rgba(110, 168, 216, 0.05), transparent 50%),
+    radial-gradient(140% 120% at 50% 120%, #0b101c, var(--ink-1000) 70%);
   background-attachment: fixed;
 }
 
@@ -107,7 +107,7 @@ body {
   font-family: var(--font-body);
 }
 
-/* Fine grain so flat fills read as deep water, not dead pixels. */
+/* Fine grain so flat fills read as material, not dead pixels. */
 body::before {
   content: "";
   position: fixed;

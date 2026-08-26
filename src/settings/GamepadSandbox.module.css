@@ -4,7 +4,7 @@
   border: 1px solid var(--line-2);
   border-radius: var(--r-md);
   background:
-    radial-gradient(ellipse 120% 80% at 50% 0%, rgba(70, 200, 216, 0.06), transparent 55%),
+    radial-gradient(ellipse 120% 80% at 50% 0%, rgba(110, 168, 216, 0.06), transparent 55%),
     var(--ink-900);
   overflow: hidden;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -23,7 +23,7 @@
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--line-1);
-  background: rgba(7, 13, 17, 0.55);
+  background: rgba(7, 10, 20, 0.55);
 }
 .gp-sandbox__icon {
   display: grid;
@@ -133,7 +133,7 @@
   max-width: 320px;
   border-radius: 42px 42px 28px 28px;
   border: 1px dashed var(--line-2);
-  background: linear-gradient(180deg, rgba(18, 32, 41, 0.35), rgba(7, 13, 17, 0.2));
+  background: linear-gradient(180deg, rgba(20, 27, 46, 0.35), rgba(7, 10, 20, 0.2));
   opacity: 0.55;
 }
 .gp-ghost__bump {
@@ -317,7 +317,7 @@
   color: var(--ink-900);
   background: linear-gradient(180deg, var(--cyan-soft), var(--cyan));
   border-color: rgba(143, 230, 240, 0.7);
-  box-shadow: 0 0 14px rgba(70, 200, 216, 0.45);
+  box-shadow: 0 0 14px rgba(110, 168, 216, 0.45);
   transform: translateY(1px);
 }
 .gp-face__a.is-pressed {
