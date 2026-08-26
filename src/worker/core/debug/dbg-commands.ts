@@ -308,7 +308,8 @@ export const dbg = {
      *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR
      *  17=JIT_TIER2_MAX_PAGES 18=JIT_FASTMEM_READ_SPLIT
      *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS
-     *  22=JIT_INLINE_INTRA_MODULE_DISPATCH.
+     *  22=JIT_INLINE_INTRA_MODULE_DISPATCH 23=JIT_TIER2_REGIONS
+     *  24=JIT_TIER2_ADAPTIVE.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -412,11 +413,20 @@ export const dbg = {
         }
         console.log(`[dbg] JIT_TIER2_REGIONS=${w.get_jit_config?.(23) ?? -1} + tier2/profile/cache reset`);
     },
+    /** Adaptive bounded Tier-2 hot-set replacement (idx 24). Existing compiled
+     *  code stays valid and the retained-page capacity does not change. */
+    jitTier2Adaptive(on = true): void {
+        const w = wasm(); if (!w?.set_jit_config) return;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setTier2Adaptive) pm.setTier2Adaptive(on);
+        else w.set_jit_config(24, on ? 1 : 0);
+        console.log(`[dbg] JIT_TIER2_ADAPTIVE=${w.get_jit_config?.(24) ?? -1} (live, bounded)`);
+    },
     /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
      *  and promotions REFUSED because the page-set cap was full. blockedByCap > 0
      *  with a saturated pageCount means the hot set outgrew the cap — the exact failure
      *  mode that makes threshold changes read as "no effect" (see the in-race NFSU A/B). */
-    tier2Stats(): { pageCount: number; pageSetCap: number; promotions: number; blockedByCap: number; threshold: number; regions: number; profiledExits: number; regionPromotions: number; regionSeeds: number } | null {
+    tier2Stats(): { pageCount: number; pageSetCap: number; promotions: number; blockedByCap: number; threshold: number; regions: number; adaptive: number; maintenanceSamples: number; pageEvictions: number; profiledExits: number; regionPromotions: number; regionSeeds: number } | null {
         const w = wasm(); if (!w?.jit_get_tier2_page_count) {
             console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
@@ -428,11 +438,14 @@ export const dbg = {
             blockedByCap: w.jit_get_tier2_blocked_by_cap() >>> 0,
             threshold: w.get_jit_config ? (w.get_jit_config(15) >>> 0) : -1,
             regions: w.get_jit_config ? (w.get_jit_config(23) >>> 0) : 0,
+            adaptive: w.get_jit_config ? (w.get_jit_config(24) >>> 0) : 0,
+            maintenanceSamples: w.jit_get_tier2_maintenance_samples?.() ?? 0,
+            pageEvictions: w.jit_get_tier2_page_evictions?.() ?? 0,
             profiledExits: w.jit_get_tier2_profiled_exits?.() ?? 0,
             regionPromotions: w.jit_get_tier2_region_promotions?.() ?? 0,
             regionSeeds: w.jit_get_tier2_region_seeds?.() ?? 0,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageSetCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold} regions=${s.regions} profiledExits=${s.profiledExits} regionPromotions=${s.regionPromotions} regionSeeds=${s.regionSeeds}`);
+        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageSetCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold} regions=${s.regions} adaptive=${s.adaptive} maintenance=${s.maintenanceSamples} evictions=${s.pageEvictions} profiledExits=${s.profiledExits} regionPromotions=${s.regionPromotions} regionSeeds=${s.regionSeeds}`);
         return s;
     },
     /** Fastmem read speculation. Default ON; clears JIT cache so blocks recompile. */

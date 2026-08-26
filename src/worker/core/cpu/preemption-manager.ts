@@ -90,6 +90,10 @@ export class PreemptionManager {
      *  switchable for controlled A/Bs; enabling starts with a clean Tier-2
      *  profile/cache so old page-only promotions cannot bias the comparison. */
     private tier2RegionsEnabled = true;
+    /** Adaptive bounded hot-set replacement (idx 24). Once the page set fills,
+     *  sparse maintenance samples may replace cold startup/loading markings with
+     *  newly hot gameplay pages without raising the 256-page bound. */
+    private tier2AdaptiveEnabled = true;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -228,6 +232,13 @@ export class PreemptionManager {
     }
     isTier2RegionsEnabled(): boolean { return this.tier2RegionsEnabled; }
 
+    setTier2Adaptive(on: boolean): void {
+        this.tier2AdaptiveEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(24, on ? 1 : 0);
+    }
+    isTier2AdaptiveEnabled(): boolean { return this.tier2AdaptiveEnabled; }
+
     /** 5× original LOOP_COUNTER — reduces postMessage round-trips from ~1K/s to ~200/s.
      *  Each do_many_cycles_native() runs ~5ms instead of ~1ms, matching TIME_PER_FRAME=1ms
      *  (inner loop exits immediately after first iteration since 5ms > 1ms threshold).
@@ -307,7 +318,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(15, this.tier2Threshold);
             this.wasmExports.set_jit_config(20, this.tier2PageSetCap);
             this.wasmExports.set_jit_config(23, this.tier2RegionsEnabled ? 1 : 0);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(24, this.tier2AdaptiveEnabled ? 1 : 0);
+            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

@@ -7,7 +7,7 @@ Orthros runs the original 32-bit Windows executable on the player's computer. Th
 Use a private room name and send the exact same URL to every player:
 
 ```text
-https://orthros.chalco.website/bfme?room=changez-moi-par-un-secret
+https://games.chalco.website/bfme?room=changez-moi-par-un-secret
 ```
 
 There is no installer, file picker, Wine client, remote desktop or native helper. Chrome downloads game regions on demand and stores writable files (options and saves) in browser storage. A first cold boot on the VPS test hardware took about 105–130 seconds; later access benefits from browser caching.
@@ -73,10 +73,10 @@ sudo systemctl reload caddy
 Smoke checks:
 
 ```bash
-curl -fsS https://orthros.chalco.website/bfme-net/health
-curl -fsSI https://orthros.chalco.website/apps/bfme.wgb
+curl -fsS https://games.chalco.website/bfme-net/health
+curl -fsSI https://games.chalco.website/apps/bfme.wgb
 curl -fsS -H 'Range: bytes=0-31' \
-  https://orthros.chalco.website/apps/bfme.wgb | wc -c
+  https://games.chalco.website/apps/bfme.wgb | wc -c
 ```
 
 The last command must print `32`; the response itself must be HTTP `206`.
@@ -600,10 +600,45 @@ Config index 23 and `dbg.jitTier2Regions(false)` provide an authoritative kill
 switch; toggling resets the Tier-2 profile and JIT cache. Regions are enabled by
 default in v86 and Orthros. Direct tail-call block chaining remains disabled.
 
-The current source was rebuilt and deployed as
-`emulator.worker-DHJNUrwY.js`. A fresh Chromium process loaded that worker,
-completed a BFME skirmish and reported direct chaining disabled, Tier-2 regions
-active, zero D3D9 mismatch and no guest fault.
+The first source with profile-guided regions was rebuilt and deployed as
+`emulator.worker-DHJNUrwY.js`; the later D3D9 presentation correction was
+deployed as `emulator.worker-CEw5d4yf.js`. A fresh Chromium process loaded the
+latter, completed a BFME skirmish and reported direct chaining disabled, Tier-2
+regions active, zero D3D9 mismatch and no guest fault.
+
+The first complete run of that build on the player's actual PC exposed a phase
+problem hidden by the final headless rate: the skirmish spent several minutes at
+about 2 FPS and then stabilized around only 15 FPS. A fresh old-policy headless
+run subsequently showed the 256-page Tier-2 set already full before gameplay;
+one later promotion was refused, so startup and menu pages could remain selected
+for the entire process even after execution moved into simulation code.
+
+Tier-2 now maintains a bounded adaptive hot set. Once the existing 256-page cap
+is full, one sparse maintenance opportunity is armed every 4,000,003 guest
+instructions at the outer scheduler boundary. A newly hot module can evict the
+least recently sampled retained marking; the cap never grows, existing compiled
+modules remain valid, and stale region plans touching an evicted page are
+discarded. This is generic v86 phase adaptation and contains no BFME address.
+Config index 24 and `dbg.jitTier2Adaptive(false)` provide a live kill switch.
+`dbg.tier2Stats()` exposes maintenance samples and page evictions.
+
+The deterministic four-page phase-change benchmark fills a two-page set with
+phase A, then permanently transfers execution to two different pages. Seven
+independent pairs measured a 1,001.99 ms legacy median against 969.83 ms adaptive
+median, a 3.3% throughput improvement, with identical architectural results and
+the same hard cap. A deliberately pathological two-instruction cross-module
+steady loop bounded the possible sampling cost at about 1.0% in that series;
+normal modules do more work per entry. Run the correctness gate with
+`node vendor/v86/tests/jit-tier2-adaptive-repro.mjs`.
+
+The complete candidate BFME run then retained the same 30.3 FPS hot average as
+the old policy (33.03 versus 33.01 ms/frame) while completing 112 promotions and
+77 bounded page evictions with no promotion blocked. The old policy completed
+87 promotions, refused one at the full cap and could never replace a retained
+page. Both runs had zero guest faults and zero mismatch across the five D3D9
+shadows. This validates phase replacement and absence of a hot-FPS regression on
+the VPS; the cold-to-warm improvement and populated 15 FPS desktop scene still
+require one fresh player-machine run after deployment.
 
 These are headless SwiftShader menu and skirmish results, not proof that a
 populated desktop skirmish now sustains 30 FPS. The next meaningful validation is

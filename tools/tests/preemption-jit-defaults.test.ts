@@ -24,12 +24,14 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isRetSpeculationEnabled()).toBe(false);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(true);
+        expect(manager.isTier2AdaptiveEnabled()).toBe(true);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
         expect(configs.get(4)).toBe(0);
         expect(configs.get(12)).toBe(0);
         expect(configs.get(13)).toBe(0);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(1);
+        expect(configs.get(24)).toBe(1);
     });
 
     test("gates direct block chaining on wasm tail-call support and preserves it on reload", () => {
@@ -100,5 +102,31 @@ describe("PreemptionManager JIT defaults", () => {
         manager.setInlineIntraModuleDispatch(true);
         expect(configs.get(22)).toBe(1);
         expect(cacheClears).toBe(1);
+    });
+
+    test("keeps the adaptive Tier-2 kill-switch across a fresh v86 init", () => {
+        const configs = new Map<number, number>();
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setTier2Adaptive(false);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                },
+            },
+        });
+
+        expect(manager.isTier2AdaptiveEnabled()).toBe(false);
+        expect(configs.get(24)).toBe(0);
+
+        manager.setTier2Adaptive(true);
+        expect(manager.isTier2AdaptiveEnabled()).toBe(true);
+        expect(configs.get(24)).toBe(1);
     });
 });
