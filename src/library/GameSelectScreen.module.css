@@ -305,6 +305,8 @@
 .st--setup::before { background: var(--amber-soft); }
 .st--save { color: var(--cyan-soft); }
 .st--save::before { background: var(--cyan-soft); }
+.st--off { color: var(--fg-4); }
+.st--off::before { background: var(--fg-4); }
 .card__year { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--fg-4); }
 
 /* Add/drop card */

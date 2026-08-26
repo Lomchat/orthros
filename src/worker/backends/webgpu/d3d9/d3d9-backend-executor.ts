@@ -8,7 +8,10 @@
 import { WebGPUBackend } from "../webgpu-backend";
 import { RenderFrame, RenderCommandType, ProgrammableDrawState, FixedFunctionDrawState } from "../render-frame";
 import { frameProfiler } from "../../../core/frame-profiler";
-import { shouldUseDirectD3D9Presentation } from "./presentation-policy";
+import {
+    d3d9PresentSourceTextureUsage,
+    shouldUseDirectD3D9Presentation,
+} from "./presentation-policy";
 import { PROG_BIND } from "./shader";
 import { d3d9WasmArena, ArenaCommandType } from "./d3d9-wasm-arena";
 
@@ -974,7 +977,7 @@ export class D3D9BackendExecutor {
         this.offscreenTexture = device.createTexture({
             size: { width: size.width, height: size.height, depthOrArrayLayers: 1 },
             format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+            usage: d3d9PresentSourceTextureUsage(GPUTextureUsage),
         });
         this.offscreenView = this.offscreenTexture.createView();
 

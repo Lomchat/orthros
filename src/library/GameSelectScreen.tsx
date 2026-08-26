@@ -34,6 +34,8 @@ export interface GameEntry {
   render?: string;
   status?: "ready" | "setup" | "save";
   gogUrl?: string;
+  /** False when the deployment carries no bundle for it: listed, but not launchable. */
+  available?: boolean;
 }
 
 interface GameSelectScreenProps {
@@ -110,6 +112,8 @@ export default function GameSelectScreen({
 
   const openSettings = onOpenSettings ?? onManageStorage ?? (() => {});
   const totalGames = games.length + addedGames.length;
+  const playableGames =
+    games.filter((g) => g.available !== false).length + addedGames.length;
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -140,8 +144,13 @@ export default function GameSelectScreen({
   const q = query.trim().toLowerCase();
   const matches = (name: string) => !q || name.toLowerCase().includes(q);
 
+  // Playable titles lead the grid; unavailable ones keep catalog order behind them.
   const visibleBuiltin =
-    source === "all" || source === "builtin" ? games.filter((g) => matches(g.name)) : [];
+    source === "all" || source === "builtin"
+      ? games
+          .filter((g) => matches(g.name))
+          .sort((a, b) => Number(a.available === false) - Number(b.available === false))
+      : [];
   const visibleAdded =
     source === "all" || source === "local" || source === "gog"
       ? addedGames.filter((g) => {
@@ -241,7 +250,11 @@ export default function GameSelectScreen({
         <div>
           <div className={s["libhead"]}>
             <h2>Library</h2>
-            <span className={s["sub"]}>{totalGames} games · on this machine</span>
+            <span className={s["sub"]}>
+              {playableGames === totalGames
+                ? `${countLabel(totalGames)} · on this machine`
+                : `${playableGames} playable of ${totalGames} · on this machine`}
+            </span>
           </div>
 
           {unsupportedMessage && (
@@ -413,7 +426,7 @@ export default function GameSelectScreen({
                 game={game}
                 index={i + 1}
                 onPlay={() => onSelectGame(game)}
-                disabled={disableSelection}
+                disabled={disableSelection || game.available === false}
               />
             ))}
 
@@ -435,7 +448,7 @@ export default function GameSelectScreen({
             <span className={s["sep"]}>·</span>
             <span>x86 HLE · WASM</span>
             <span className={s["sep"]}>·</span>
-            <span>{totalGames} games</span>
+            <span>{playableGames} playable</span>
             <span className={s["spacer"]} />
             <span className={s["priv"]}>Local only — your games never leave this machine</span>
             <span className={s["sep"]}>·</span>
@@ -449,11 +462,16 @@ export default function GameSelectScreen({
   );
 }
 
+function countLabel(n: number): string {
+  return `${n} ${n === 1 ? "game" : "games"}`;
+}
+
 function specLine(parts: Array<string | undefined>): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-function StatusPill({ status }: { status?: "ready" | "setup" | "save" }): React.ReactElement | null {
+function StatusPill({ status }: { status?: "ready" | "setup" | "save" | "unavailable" }): React.ReactElement | null {
+  if (status === "unavailable") return <span className={cx(s, "st", "st--off")}>Not installed here</span>;
   if (status === "setup") return <span className={cx(s, "st", "st--setup")}>Needs setup</span>;
   if (status === "save") return <span className={cx(s, "st", "st--save")}>Save available</span>;
   return <span className={cx(s, "st", "st--ready")}>Ready</span>;
@@ -532,7 +550,7 @@ function BuiltinCard({
         <div className={s["card__name"]}>{game.name}</div>
         <div className={s["card__spec"]}>{specLine([game.genre, game.os, game.render])}</div>
         <div className={s["card__foot"]}>
-          <StatusPill status={game.status} />
+          <StatusPill status={game.available === false ? "unavailable" : game.status} />
           <span className={s["card__year"]}>{game.year}</span>
         </div>
       </div>

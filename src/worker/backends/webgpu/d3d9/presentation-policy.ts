@@ -10,3 +10,16 @@ export function shouldUseDirectD3D9Presentation(
     if (typeof override === "boolean") return override;
     return !/HeadlessChrome/i.test(userAgent);
 }
+
+/**
+ * Usage contract for the D3D9 offscreen framebuffer. Both presentation paths
+ * consume the same texture: the headless bridge copies from it, while desktop
+ * presentation samples it through WebGPUBackend.drawTexture into the swapchain.
+ */
+export function d3d9PresentSourceTextureUsage(usage: {
+    readonly COPY_SRC: GPUTextureUsageFlags;
+    readonly RENDER_ATTACHMENT: GPUTextureUsageFlags;
+    readonly TEXTURE_BINDING: GPUTextureUsageFlags;
+}): GPUTextureUsageFlags {
+    return usage.COPY_SRC | usage.RENDER_ATTACHMENT | usage.TEXTURE_BINDING;
+}

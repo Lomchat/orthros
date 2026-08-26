@@ -1,0 +1,16 @@
+# Orthros game library behind Caddy.
+#   /          → the library (games-catalog.json drives what is listed)
+#   /<game-id> → boots that game (e.g. /bfme); the SPA fallback in deploy/server.ts
+#                turns any extension-less path into index.html
+# The same proxy carries range-served .wgb bundles and the BFME virtual-LAN WebSocket,
+# hence the long timeouts.
+games.example.com {
+    encode zstd gzip
+
+    reverse_proxy 127.0.0.1:5173 {
+        stream_close_delay 5m
+        transport http {
+            response_header_timeout 600s
+        }
+    }
+}

@@ -7,7 +7,7 @@ Orthros runs the original 32-bit Windows executable on the player's computer. Th
 Use a private room name and send the exact same URL to every player:
 
 ```text
-https://bfme.chalco.website/?game=bfme&room=changez-moi-par-un-secret
+https://games.chalco.website/bfme?room=changez-moi-par-un-secret
 ```
 
 There is no installer, file picker, Wine client, remote desktop or native helper. Chrome downloads game regions on demand and stores writable files (options and saves) in browser storage. A first cold boot on the VPS test hardware took about 105–130 seconds; later access benefits from browser caching.
@@ -73,10 +73,10 @@ sudo systemctl reload caddy
 Smoke checks:
 
 ```bash
-curl -fsS https://bfme.chalco.website/bfme-net/health
-curl -fsSI https://bfme.chalco.website/apps/bfme.wgb
+curl -fsS https://games.chalco.website/bfme-net/health
+curl -fsSI https://games.chalco.website/apps/bfme.wgb
 curl -fsS -H 'Range: bytes=0-31' \
-  https://bfme.chalco.website/apps/bfme.wgb | wc -c
+  https://games.chalco.website/apps/bfme.wgb | wc -c
 ```
 
 The last command must print `32`; the response itself must be HTTP `206`.
@@ -389,6 +389,19 @@ encoded, dropped, published, failed and timed-out CPU frames, map/bitmap timing,
 the current in-flight phase, and direct-presented frames.
 The Worker boolean `__d3d9DirectPresent` can still force either path for an A/B;
 it is a diagnostic override, not a player-facing compatibility setting.
+
+The direct D3D9 present source is sampled by the post-processing blit and must
+therefore be created with `TEXTURE_BINDING` in addition to `COPY_SRC` and
+`RENDER_ATTACHMENT`. A regression briefly omitted that usage bit: desktop WebGPU
+rejected the bind group and every following command buffer, while headless tests
+remained green because their CPU bridge only copied the texture. The usage mask
+now comes from a unit-tested presentation-policy helper. Build
+`emulator.worker-CEw5d4yf.js` sustained 8,817 direct presents in a normal-UA
+Chromium/Xvfb run with zero CPU fallback frames, faults, shadow mismatches or
+captured WebGPU validation errors. Its frames contained 34 draws. SwiftShader's
+external X11 swapchain remained white and forced readbacks failed, so this run is
+a validation/liveness gate for the direct WebGPU path, not a visual substitute
+for the player's hardware-GPU retest.
 
 A clean headless boot confirmed the automatic fallback (`directPresentFrames:
 0`). SwiftShader published only 2 of 255 cumulative guest Presents, with 11 GPU

@@ -28,6 +28,7 @@ import ManifestEditorModal from "../wizard/ManifestEditorModal";
 import { listAddedGames, removeAddedGame, type AddedGame } from "../wgb-library";
 import { ensurePersistentStorageRequested } from "../storage-manager";
 import { loadGamesCatalog } from "../games-catalog";
+import { currentGameId, gameHref } from "./route";
 import { DEFAULT_QUALITY, mergeQuality } from "../worker/core/quality-config";
 import type { QualityConfig } from "../worker/core/quality-config";
 import {
@@ -67,14 +68,14 @@ async function stageFilesAndLaunch(files: File[]): Promise<void> {
     const f = files[0]!;
     const cacheDir = await orthros.getDirectoryHandle("wgb-cache", { create: true });
     await writeOpfsFile(cacheDir, f.name, f);
-    window.location.assign(`?game=dev&load=${encodeURIComponent(`/apps/byo/${f.name}`)}`);
+    window.location.assign(`/?game=dev&load=${encodeURIComponent(`/apps/byo/${f.name}`)}`);
     return;
   }
 
   try { await orthros.removeEntry("_ingest", { recursive: true }); } catch { /* none yet */ }
   const ingestDir = await orthros.getDirectoryHandle("_ingest", { create: true });
   for (const f of files) await writeOpfsFile(ingestDir, f.name, f);
-  window.location.assign(`?game=dev&ingest=1`);
+  window.location.assign(`/?game=dev&ingest=1`);
 }
 
 const INPUT_BUFFER_SIZE = 1024;
@@ -367,7 +368,7 @@ export default function App() {
     return saved !== null ? saved === 'true' : false; // Default: disabled
   });
   const [devPanelOpen, setDevPanelOpen] = useState(() => {
-    if (new URLSearchParams(window.location.search).get('game') === 'dev') return true;
+    if (currentGameId() === 'dev') return true;
     try { return localStorage.getItem('orthros_dev_panel') === 'true'; } catch { return false; }
   });
   const toggleDevPanel = useCallback(() => {
@@ -394,9 +395,9 @@ export default function App() {
     setUiSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  // Game selection via URL param: ?game=revolt  (special: ?game=dev → bare emulator)
+  // Game selection from the URL: /revolt, or ?game=revolt (special: dev → bare emulator).
   const gameIdFromUrl = useMemo(
-    () => new URLSearchParams(window.location.search).get("game"),
+    () => currentGameId(),
     [],
   );
   // BFME is an absolute-pointer RTS. It hides the Win32 system cursor because the
@@ -1341,7 +1342,7 @@ export default function App() {
       if (event.data?.type === "show_message_box") {
         const { id, text, caption, uType } = event.data;
         const targetWorker = event.target as Worker;
-        const isDevMode = new URLSearchParams(window.location.search).get("game") === "dev";
+        const isDevMode = currentGameId() === "dev";
         const typeMask = (Number(uType) || 0) & 0xf;
         // Harness auto-modal: consult the single resolver. If it returns a
         // button id, answer immediately and render nothing (no stale overlay); null =
@@ -2479,7 +2480,7 @@ export default function App() {
       guestResolution={guestResolution}
       integerScale={integerScaleSize.scale}
       onOpenDevConsole={() => {
-        if (browserSupport.supported) window.location.assign("?game=dev");
+        if (browserSupport.supported) window.location.assign("/?game=dev");
       }}
     />
   );
@@ -2491,10 +2492,10 @@ export default function App() {
           games={gamesCatalog ?? []}
           addedGames={addedGames}
           onSelectGame={(game) => {
-            if (!launchBlocked) window.location.assign(`?game=${game.id}`);
+            if (!launchBlocked) window.location.assign(gameHref(game.id));
           }}
           onPlayAdded={(g) => {
-            if (!launchBlocked) window.location.assign(`?game=dev&load=${encodeURIComponent(g.url)}`);
+            if (!launchBlocked) window.location.assign(`/?game=dev&load=${encodeURIComponent(g.url)}`);
           }}
           onRemoveAdded={(g) => {
             removeAddedGame(g.key).then(refreshAddedGames).catch((err) =>
@@ -2506,7 +2507,7 @@ export default function App() {
             if (!launchBlocked) setAddGameOpen(true);
           }}
           onDevMode={() => {
-            if (!launchBlocked) window.location.assign("?game=dev");
+            if (!launchBlocked) window.location.assign("/?game=dev");
           }}
           onManageStorage={() => setStorageOpen(true)}
           onOpenSettings={() => setMainSettingsOpen(true)}
@@ -2524,7 +2525,7 @@ export default function App() {
             // source through App's existing launch flow (stage to OPFS + navigate, or
             // load-by-url) — the path that already boots a game.
             if (url) {
-              window.location.assign(`?game=dev&load=${encodeURIComponent(url)}`);
+              window.location.assign(`/?game=dev&load=${encodeURIComponent(url)}`);
               return;
             }
             if (files && files.length > 0) {

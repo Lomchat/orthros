@@ -2,7 +2,7 @@
   {
     "id": "bfme",
     "name": "La Bataille pour la Terre du Milieu",
-    "subtitle": "Vanilla 1.03 FR · Multijoueur navigateur",
+    "subtitle": "1.03 FR",
     "wgbUrl": "/apps/bfme.wgb",
     "coverUrl": "/orthros_logo.png",
     "description": "Le jeu complet exécuté localement dans le navigateur, avec sauvegardes persistantes et réseau privé relayé par le VPS.",
@@ -20,7 +20,8 @@
     "year": "1999",
     "genre": "Racing",
     "gogUrl": "https://www.gog.com/en/game/revolt",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "homm3",
@@ -32,7 +33,8 @@
     "year": "1999",
     "genre": "Strategy",
     "gogUrl": "https://www.gog.com/en/game/heroes_of_might_and_magic_3_complete_edition",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "starcraft",
@@ -43,7 +45,8 @@
     "description": "Blizzard's iconic real-time strategy. Three races, one galaxy.",
     "year": "1998",
     "genre": "RTS",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "diablo2",
@@ -54,7 +57,8 @@
     "description": "The iconic action RPG that defined a genre. Fight your way through the darkness.",
     "year": "2000",
     "genre": "Action RPG",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "hp-demo",
@@ -65,7 +69,8 @@
     "description": "KnowWonder's Unreal-Engine action-adventure. Explore Hogwarts, learn spells, play Quidditch.",
     "year": "2001",
     "genre": "Action-Adventure",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "porsche-demo",
@@ -76,7 +81,8 @@
     "description": "EA's love letter to Porsche: drive 80 years of models across the Evolution and Factory Driver modes.",
     "year": "2000",
     "genre": "Racing",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "nfsu-demo",
@@ -87,7 +93,8 @@
     "description": "EA Black Box's import-tuner racer: street races, drift and drag events through the neon-lit city at night.",
     "year": "2003",
     "genre": "Racing",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "max-payne-demo",
@@ -98,7 +105,8 @@
     "description": "Remedy's noir third-person shooter with cinematic bullet-time gunfights and a graphic-novel story.",
     "year": "2001",
     "genre": "Third-Person Shooter",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "thps2-demo",
@@ -109,7 +117,8 @@
     "description": "Neversoft's genre-defining skateboarding game: combos, grinds, manuals and the addictive Career mode.",
     "year": "2000",
     "genre": "Sports",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "tiberian-sun",
@@ -120,7 +129,8 @@
     "description": "Westwood's sci-fi real-time strategy: GDI versus the Brotherhood of Nod in the war over Tiberium.",
     "year": "1999",
     "genre": "RTS",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "ut-demo",
@@ -131,7 +141,8 @@
     "description": "Epic's fast, competitive arena shooter on the Unreal Engine: deathmatch, CTF and Domination.",
     "year": "1999",
     "genre": "FPS",
-    "enabled": true
+    "enabled": true,
+    "available": false
   },
   {
     "id": "airfix-dogfighter",
@@ -142,6 +153,7 @@
     "description": "Toy Airfix warplanes wage a miniature air war through a boy's house — dogfight across the kitchen, garden and bedroom, strafing household hazards.",
     "year": "2000",
     "genre": "Arcade Flight",
-    "enabled": true
+    "enabled": true,
+    "available": false
   }
 ]

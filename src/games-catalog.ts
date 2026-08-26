@@ -1,7 +1,11 @@
 /**
  * Game library catalog — fetched from public/games-catalog.json instead of being
- * baked into the JS bundle, so ops can add/hide a game (flip "enabled") by editing
- * a file on the server, no rebuild required. Fetch failure/missing file = empty catalog.
+ * baked into the JS bundle, so ops can edit a file on the server with no rebuild.
+ * Fetch failure/missing file = empty catalog.
+ *
+ * Two per-entry switches: "enabled": false drops it from the catalog entirely,
+ * while "available": false keeps it listed but unlaunchable — for a deployment
+ * that ships no bundle for it.
  */
 import type { GameEntry } from "./library/GameSelectScreen";
 
