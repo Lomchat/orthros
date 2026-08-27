@@ -79,6 +79,10 @@ export class PreemptionManager {
      *  CALL/RET stack operations. Enabled after a same-skirmish A/B/A measured
      *  37.77 ms against 41.21/40.21 ms with zero guest faults. */
     private leafCallFusionEnabled = true;        // config idx 27
+    /** Fused C3 leaves keep their popped EIP in a wasm local on the guarded hot
+     *  path (config idx 28). Same-skirmish A/B/A/B reduced median frame time by
+     *  about 7.1%; the mismatch path still materializes the authoritative EIP. */
+    private leafReturnLocalEnabled = true;        // config idx 28
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
@@ -95,7 +99,7 @@ export class PreemptionManager {
     /** Profile-guided Tier-2 module coalescing (idx 23). Kept separately
      *  switchable for controlled A/Bs; enabling starts with a clean Tier-2
      *  profile/cache so old page-only promotions cannot bias the comparison. */
-    private tier2RegionsEnabled = true;
+    private tier2RegionsEnabled = false;
     /** Adaptive bounded hot-set replacement (idx 24). Once the page set fills,
      *  sparse maintenance samples may replace cold startup/loading markings with
      *  newly hot gameplay pages without raising the 256-page bound. */
@@ -238,6 +242,14 @@ export class PreemptionManager {
     }
     isLeafCallFusionEnabled(): boolean { return this.leafCallFusionEnabled; }
 
+    setLeafReturnLocal(on: boolean): void {
+        this.leafReturnLocalEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(28, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isLeafReturnLocalEnabled(): boolean { return this.leafReturnLocalEnabled; }
+
     /** Hotness-tiering authoritative toggle (survives game reload). Pure runtime knob —
      *  promotion happens organically past the threshold, so no cache clear needed. */
     setTier2Threshold(threshold: number): void {
@@ -350,7 +362,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(12, this.retChainingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(13, this.retSpeculationEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(27, this.leafCallFusionEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(28, this.leafReturnLocalEnabled ? 1 : 0);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the

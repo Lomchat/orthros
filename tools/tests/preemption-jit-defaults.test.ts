@@ -23,8 +23,9 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isRetChainingEnabled()).toBe(true);
         expect(manager.isRetSpeculationEnabled()).toBe(false);
         expect(manager.isLeafCallFusionEnabled()).toBe(true);
+        expect(manager.isLeafReturnLocalEnabled()).toBe(true);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
-        expect(manager.isTier2RegionsEnabled()).toBe(true);
+        expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
         expect(manager.getJitMaxPendingCompiles()).toBe(2);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
@@ -32,8 +33,9 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(12)).toBe(1);
         expect(configs.get(13)).toBe(0);
         expect(configs.get(27)).toBe(1);
+        expect(configs.get(28)).toBe(1);
         expect(configs.get(22)).toBe(1);
-        expect(configs.get(23)).toBe(1);
+        expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
         expect(configs.get(25)).toBe(2);
     });
@@ -64,6 +66,35 @@ describe("PreemptionManager JIT defaults", () => {
 
         manager.setLeafCallFusion(true);
         expect(configs.get(27)).toBe(1);
+        expect(cacheClears).toBe(1);
+    });
+
+    test("keeps the fused-leaf local-return kill-switch across a fresh v86 init", () => {
+        const configs = new Map<number, number>();
+        let cacheClears = 0;
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setLeafReturnLocal(false);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                    jit_clear_cache_js: () => { cacheClears++; },
+                },
+            },
+        });
+
+        expect(manager.isLeafReturnLocalEnabled()).toBe(false);
+        expect(configs.get(28)).toBe(0);
+        expect(cacheClears).toBe(0);
+
+        manager.setLeafReturnLocal(true);
+        expect(configs.get(28)).toBe(1);
         expect(cacheClears).toBe(1);
     });
 

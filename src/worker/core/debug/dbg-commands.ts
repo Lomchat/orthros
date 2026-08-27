@@ -417,6 +417,20 @@ export const dbg = {
         console.log(`[dbg][jit] tier2LeafFusion=${report.enabled} sitesCompiled=${report.sitesCompiled} + cache cleared`);
         return report;
     },
+    /** Keep a fused C3 leaf's architectural return EIP in a wasm local until
+     *  its guarded continuation succeeds (idx 28). The mismatch path restores
+     *  instruction_pointer before using the legacy resolver. */
+    jitLeafReturnLocal(on = true): { enabled: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setLeafReturnLocal) pm.setLeafReturnLocal(on);
+        else { w.set_jit_config(28, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(28) >>> 0) : -1,
+        };
+        console.log(`[dbg][jit] leafReturnLocal=${report.enabled} + cache cleared`);
+        return report;
+    },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
      *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
      *  (300K) via the Rust static — the promotion invalidation bug (ret-memo/dispatch
