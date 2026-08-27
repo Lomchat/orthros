@@ -323,6 +323,7 @@ export const dbg = {
      *  7=JIT_INDIRECT_REGION_MIN_SHARE(%) 8=JIT_INDIRECT_REGION_MAX_PAGES
      *  9=JIT_FASTMEM_READS 10=JIT_X87_LOCALS 11=JIT_PUSH_RUN_COALESCING
      *  12=JIT_RET_CHAINING 13=JIT_RET_SPECULATION 14=JIT_RET_SPEC_MAX_INSTR
+     *  30=JIT_DYNAMIC_CHAIN_SITE_PIC
      *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR
      *  17=JIT_TIER2_MAX_PAGES 18=JIT_FASTMEM_READ_SPLIT
      *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS
@@ -387,6 +388,23 @@ export const dbg = {
         else { w.set_jit_config(12, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
         const g = w.get_jit_config ? (w.get_jit_config(12) >>> 0) : -1;
         console.log(`[dbg] JIT_RET_CHAINING=${g} (authoritative — survives reload) + cache cleared`);
+    },
+    /** Monomorphic inline cache per generated AbsoluteEip site (config idx 30,
+     *  production default ON). Only affects dynamic chaining after an in-module
+     *  dispatch miss. */
+    jitDynamicChainSitePic(on = true): { enabled: number; compiledSites: number; highWater: number; overflows: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDynamicChainSitePic) pm.setDynamicChainSitePic(on);
+        else { w.set_jit_config(30, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(30) >>> 0) : -1,
+            compiledSites: w.jit_dynamic_chain_site_pic_compiled?.() >>> 0,
+            highWater: w.jit_dynamic_chain_site_pic_high_water?.() >>> 0,
+            overflows: w.jit_dynamic_chain_site_pic_overflows?.() >>> 0,
+        };
+        console.log(`[dbg][jit] dynamicChainSitePic=${report.enabled} compiledSites=${report.compiledSites} memos=${report.highWater}/${report.overflows} + cache cleared`);
+        return report;
     },
     /** RET-target speculation / superblock lite (set_jit_config idx 13,
      *  budget idx 14 = max leaf instructions). Default OFF — routed through PreemptionManager.
