@@ -41,6 +41,7 @@ import { hpFreezeWatchdog } from './hp-freeze-watchdog';
 import { ioTraceRing } from './io-trace-ring';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
+import { getBfmeDxtEncodeCacheFallbacks } from '../hle-lib/libs/bfme/dxt-encode-cache';
 
 interface DbgConfig {
     enabled: boolean;
@@ -326,7 +327,8 @@ export const dbg = {
      *  17=JIT_TIER2_MAX_PAGES 18=JIT_FASTMEM_READ_SPLIT
      *  19=JIT_FASTMEM_WRITES 20=JIT_TIER2_PAGE_SET_CAP 21=JIT_FLAG_LOCALS
      *  22=JIT_INLINE_INTRA_MODULE_DISPATCH 23=JIT_TIER2_REGIONS
-     *  24=JIT_TIER2_ADAPTIVE.
+     *  24=JIT_TIER2_ADAPTIVE 25=JIT_MAX_PENDING_COMPILES
+     *  26=JIT_THRESHOLD 27=JIT_TIER2_LEAF_CALL_FUSION.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -397,6 +399,23 @@ export const dbg = {
         else { w.set_jit_config(13, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
         console.log(`[dbg] JIT_RET_SPECULATION=${g(13)} maxInstr=${g(14)} (authoritative — survives reload) + cache cleared`);
+    },
+    /** Tier-2 tiny direct-CALL leaf fusion (set_jit_config idx 27). The exact E8
+     *  call and C3 leaf execute with normal stack semantics; only the guarded RET
+     *  dispatch is shortened. Routed through PreemptionManager to survive reload. */
+    jitLeafCallFusion(on = true): { enabled: number; sitesCompiled: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setLeafCallFusion) pm.setLeafCallFusion(on);
+        else { w.set_jit_config(27, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(27) >>> 0) : -1,
+            sitesCompiled: w.jit_leaf_call_fusion_sites_compiled
+                ? (w.jit_leaf_call_fusion_sites_compiled() >>> 0)
+                : -1,
+        };
+        console.log(`[dbg][jit] tier2LeafFusion=${report.enabled} sitesCompiled=${report.sitesCompiled} + cache cleared`);
+        return report;
     },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
      *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
@@ -620,6 +639,36 @@ export const dbg = {
         const fn = (globalThis as any).getSlabReport;
         const result = typeof fn === 'function' ? fn() : null;
         console.log(`[dbg][heap-slab][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    /** Toggle the byte-exact BFME DXT encoder memoization path. This is hot-
+     * switchable so the same cold transition can be profiled with the cache
+     * disabled; disabling it makes every lookup execute the original encoder. */
+    dxtCache(on = true): any {
+        const w = wasm();
+        if (!w?.bfme_dxt_cache_set_enabled) return null;
+        w.bfme_dxt_cache_set_enabled(on ? 1 : 0);
+        const result = !!(w.bfme_dxt_cache_get_enabled?.() >>> 0);
+        console.log(`[dbg][dxt-cache] enabled=${result ? 1 : 0}`);
+        return result;
+    },
+    dxtCacheReport(reset = false): any {
+        const w = wasm();
+        if (!w?.bfme_dxt_cache_get_stat) return null;
+        const lookups = w.bfme_dxt_cache_get_stat(0) >>> 0;
+        const hits = w.bfme_dxt_cache_get_stat(1) >>> 0;
+        const result = {
+            enabled: !!(w.bfme_dxt_cache_get_enabled?.() >>> 0),
+            lookups,
+            hits,
+            hitPct: lookups ? Math.round((hits * 10_000) / lookups) / 100 : 0,
+            inserts: w.bfme_dxt_cache_get_stat(2) >>> 0,
+            replacements: w.bfme_dxt_cache_get_stat(3) >>> 0,
+            bypasses: w.bfme_dxt_cache_get_stat(4) >>> 0,
+            fallbacks: getBfmeDxtEncodeCacheFallbacks(reset),
+        };
+        if (reset) w.bfme_dxt_cache_reset_stats?.();
+        console.log(`[dbg][dxt-cache][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Attribute opt-in GDI canvas readbacks without taxing normal gameplay. */

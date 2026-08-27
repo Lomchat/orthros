@@ -17,6 +17,7 @@ import {
     HANDLER_BFME_PIXEL_ALPHA_BLEND,
     HANDLER_BFME_MEMORY_STREAM_READ1,
     HANDLER_BFME_BC1_COLOR_BLOCK,
+    HANDLER_BFME_DXT_ENCODE_CACHE,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -54,6 +55,7 @@ import {
     buildBfmeMemoryStreamRead1Filter,
 } from './memory-stream-read';
 import { bfmeBc1ColorBlockShadow } from './bc1-color-block';
+import { bfmeDxtEncodeCacheFallback, buildBfmeDxtEncodeCacheWrapper } from './dxt-encode-cache';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -234,6 +236,14 @@ const BC1_COLOR_BLOCK_PATTERN = hexBytes(
     'e861ecffff 33ff 668b7b02 8d45b8 8bcf e851ecffff 663bf7',
 );
 
+// lotrbfme.exe 1.03 FR @ 0x00e67124. High-quality DXT colour fitting over
+// sixteen RGBA-float texels. EAX supplies the source; the three stdcall stack
+// arguments are output, colour-mode and encoder option respectively.
+const DXT_ENCODE_PATTERN = hexBytes(
+    '55 8d6c2494 81ecdc020000 53 56 33f6 397578 57 8bd8 7446 ' +
+    '6a10 33d2 8d4b0c 5f d901 d81d3c530701',
+);
+
 
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
@@ -325,6 +335,10 @@ export const bfmeDescriptor: LibDescriptor = {
         bc1_color_block: {
             kind: 'bytes', pattern: BC1_COLOR_BLOCK_PATTERN,
             mask: 'x'.repeat(BC1_COLOR_BLOCK_PATTERN.length), section: '.text', weight: 12,
+        },
+        dxt_encode_cache: {
+            kind: 'bytes', pattern: DXT_ENCODE_PATTERN,
+            mask: 'x'.repeat(DXT_ENCODE_PATTERN.length), section: '.text', weight: 12,
         },
     },
     functions: {
@@ -568,6 +582,21 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_BC1_COLOR_BLOCK,
             shadow: bfmeBc1ColorBlockShadow,
         },
+        dxt_encode_cache: {
+            name: 'dxt_encode_cache',
+            entryProbe: {
+                kind: 'prologue',
+                pattern: DXT_ENCODE_PATTERN,
+                mask: 'x'.repeat(DXT_ENCODE_PATTERN.length),
+                section: '.text',
+            },
+            // The wrapper exposes implicit EAX as arg0 and adds a phase arg.
+            callingConvention: 'stdcall', argCount: 5, required: true,
+            // push ebp; lea ebp,[esp-0x6c]; sub esp,0x2dc
+            prologueLen: 11,
+            hypercallHandlerId: HANDLER_BFME_DXT_ENCODE_CACHE,
+            entryFilter: buildBfmeDxtEncodeCacheWrapper,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
@@ -586,5 +615,6 @@ export const bfmeDescriptor: LibDescriptor = {
         vertex_blend: bfmeVertexBlendFallbackHandler,
         vector_ctor_iter: bfmeVectorCtorUnreachableHandler,
         memory_stream_read1: bfmeMemoryStreamRead1Fallback,
+        dxt_encode_cache: bfmeDxtEncodeCacheFallback,
     },
 };

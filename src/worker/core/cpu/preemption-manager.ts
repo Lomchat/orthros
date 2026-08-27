@@ -74,6 +74,11 @@ export class PreemptionManager {
      *  Local target speculation remains neutral/slower and stays diagnostic-only. */
     private retChainingEnabled = true;          // config idx 12
     private retSpeculationEnabled = false;      // config idx 13
+    /** Tier-2 tiny direct-CALL leaf fusion (config idx 27). A guarded direct
+     *  continuation removes the dynamic RET dispatch while preserving the real
+     *  CALL/RET stack operations. Enabled after a same-skirmish A/B/A measured
+     *  37.77 ms against 41.21/40.21 ms with zero guest faults. */
+    private leafCallFusionEnabled = true;        // config idx 27
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
@@ -225,6 +230,14 @@ export class PreemptionManager {
     }
     isRetSpeculationEnabled(): boolean { return this.retSpeculationEnabled; }
 
+    setLeafCallFusion(on: boolean): void {
+        this.leafCallFusionEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(27, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isLeafCallFusionEnabled(): boolean { return this.leafCallFusionEnabled; }
+
     /** Hotness-tiering authoritative toggle (survives game reload). Pure runtime knob —
      *  promotion happens organically past the threshold, so no cache clear needed. */
     setTier2Threshold(threshold: number): void {
@@ -336,7 +349,8 @@ export class PreemptionManager {
             // both per init so a new v86 instance cannot inherit stale Rust defaults.
             this.wasmExports.set_jit_config(12, this.retChainingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(13, this.retSpeculationEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(27, this.leafCallFusionEnabled ? 1 : 0);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the

@@ -95,6 +95,9 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0x81 && b1 === 0xEC) { i += 6; continue; }
         // and esp, imm8 (stack align)
         if (b === 0x83 && b1 === 0xE4) { i += 3; continue; }
+        // BFME DXT encoder's large-frame setup: lea ebp,[esp+disp8]. The SIB
+        // and displacement are stack-relative and remain valid when relocated.
+        if (b === 0x8D && b1 === 0x6C && bytes[i + 2] === 0x24) { i += 4; continue; }
         // push imm8 / imm32
         if (b === 0x6A) { i += 2; continue; }
         if (b === 0x68) { i += 5; continue; }

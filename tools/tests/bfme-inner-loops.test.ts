@@ -42,6 +42,7 @@ import {
     readBfmeMemoryStream1,
 } from '../../src/worker/core/hle-lib/libs/bfme/memory-stream-read';
 import { decodeBfmeBc1ColorBlock } from '../../src/worker/core/hle-lib/libs/bfme/bc1-color-block';
+import { assembleBfmeDxtEncodeCacheWrapper } from '../../src/worker/core/hle-lib/libs/bfme/dxt-encode-cache';
 import { validatePrologueBytes } from '../../src/worker/core/hle-lib/lib-patcher';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -724,5 +725,41 @@ describe('BFME BC1 colour-block HLE', () => {
         } as ShadowView;
         decodeBfmeBc1ColorBlock(view, [0x100, 0x20]);
         expect([...memory.slice(0x100, 0x200)].every(value => value === 0)).toBe(true);
+    });
+});
+
+describe('BFME DXT encode exact cache wrapper', () => {
+    test('preserves the implicit source and calls lookup, original, then record', () => {
+        const base = 0x1000;
+        const stub = 0x2800;
+        const trampoline = 0x3400;
+        const code = assembleBfmeDxtEncodeCacheWrapper(base, stub, trampoline);
+        const data = new DataView(code.buffer, code.byteOffset, code.byteLength);
+
+        expect([...code.slice(0, 17)]).toEqual([
+            0x53, 0x56, 0x57, 0x89, 0xc6,
+            0x8b, 0x7c, 0x24, 0x10,
+            0x8b, 0x5c, 0x24, 0x14,
+            0xff, 0x74, 0x24, 0x18,
+        ]);
+        expect(code[26]).toBe(0xe8);
+        expect(code[42]).toBe(0xe8);
+        expect(code[56]).toBe(0xe8);
+        expect((base + 31 + data.getInt32(27, true)) >>> 0).toBe(stub);
+        expect((base + 47 + data.getInt32(43, true)) >>> 0).toBe(trampoline);
+        expect((base + 61 + data.getInt32(57, true)) >>> 0).toBe(stub);
+        expect([...code.slice(31, 35)]).toEqual([0x85, 0xc0, 0x75, 0x1a]);
+        expect([...code.slice(-11)]).toEqual([
+            0x83, 0xc4, 0x04, 0x5f, 0x5e, 0x5b, 0x31, 0xc0, 0xc2, 0x0c, 0x00,
+        ]);
+        expect(validatePrologueBytes(Uint8Array.from([
+            0x55, 0x8d, 0x6c, 0x24, 0x94, 0x81, 0xec, 0xdc, 0x02, 0x00, 0x00,
+        ]))).toBeNull();
+    });
+
+    test('routes the cache handler through the BFME WASM handler band', async () => {
+        const source = await Bun.file(new URL('../../vendor/v86/src/rust/cpu/hypercall.rs', import.meta.url)).text();
+        expect(source).toContain('135..=155 => super::hypercall_bfme::dispatch_inner_loop(handler_id)');
+        expect(source).toContain('156..=255 => false');
     });
 });
