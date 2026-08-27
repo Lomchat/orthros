@@ -969,6 +969,31 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     Logger.log(LogCategory.SYSTEM, `Starting bootloader execution at CS:IP = 0:0x${startAddress.toString(16)}`);
 
     resumeEmulator();
+    // A stop/start race in v86's MessageChannel yield can lose the single tick
+    // scheduled by run() while the wrapper still reports itself as running. A
+    // second explicit run always revives it, but waiting for the heartbeat makes
+    // startup appear frozen forever at 0x7c00. Re-arm only while the exact first
+    // bootloader instruction has not retired; once EIP moves, this becomes inert.
+    // The retry is bounded and tied to this v86 instance so a later game switch
+    // cannot kick a replacement process.
+    const bootV86 = system.process.v86;
+    let bootKickAttempts = 0;
+    const ensureBootTick = () => {
+      setTimeout(() => {
+        if (System.getInstance().process?.v86 !== bootV86 || isPaused) return;
+        const liveCpu = bootV86.cpu || bootV86.v86?.cpu;
+        const liveEip = (liveCpu?.instruction_pointer?.[0] ?? 0) >>> 0;
+        if (liveEip !== (startAddress >>> 0)) return;
+        bootKickAttempts++;
+        if (bootKickAttempts === 1) {
+          Logger.warn(LogCategory.SYSTEM,
+            `[BOOT] first tick did not retire at 0x${liveEip.toString(16)}; re-arming v86`);
+        }
+        bootV86.run();
+        if (bootKickAttempts < 20) ensureBootTick();
+      }, 50);
+    };
+    ensureBootTick();
     framePacer.start();
     gameSessionActive = true;
   } catch (err) {
@@ -2566,7 +2591,14 @@ function resumeEmulator(): void {
   TimeService.getInstance().notifyPauseResume();
   hypercallDataManager.resetInsnBaseline();
   const v86 = system.process.v86;
-  if (!(v86.is_running?.() ?? false)) { v86.run(); Logger.log(LogCategory.SYSTEM, "[RESUME] Emulator resumed"); }
+  // Always re-arm next_tick. The public `is_running()` flag describes the
+  // wrapper state, not the liveness of the scheduled tick callback: after a
+  // stop/start race it can remain true while the CPU is still parked at the
+  // bootloader entry (observed as EIP 0x7c00 forever, before any guest thread
+  // exists). v86.run() is intentionally idempotent and invalidates the stale
+  // callback through tick_counter before scheduling a fresh one.
+  v86.run();
+  Logger.log(LogCategory.SYSTEM, "[RESUME] Emulator resumed");
 }
 // Harness hooks (cmds/time.ts park, cmds/breakpoints.ts pause/resume, eip-breaks).
 (globalThis as any).__harnessPause = pauseEmulator;

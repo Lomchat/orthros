@@ -5,6 +5,7 @@ import {
 } from '../../../cpu/hypercall-data';
 import {
     buildMsvcr71AddCarryInline,
+    buildMsvcr71Add96Inline,
     buildMsvcr71Shift96Inline,
     msvcr71ArithmeticUnreachableHandler,
 } from './arithmetic-inline';
@@ -24,6 +25,15 @@ function hexBytes(hex: string): Uint8Array {
 const ADD_CARRY_PATTERN = hexBytes(
     '8b542404 56 8b74240c 8d0c32 33c0 3bca 7204 3bce 7303 ' +
     '33c0 40 8b542410 890a 5e c3',
+);
+
+// Adjacent internal leaf at RVA 0x32f56. It adds two little-endian 96-bit
+// integers in place by calling the 32-bit carry helper three times.
+const ADD96_PATTERN = hexBytes(
+    '56 8b742408 57 8b7c2410 56 ff37 ff36 e8cbffffff 83c40c 85c0 7417 ' +
+    '8d4604 50 6a01 ff30 e8b7ffffff 83c40c 85c0 7403 ff4608 ' +
+    '8d4604 50 ff7704 ff30 e89fffffff 83c40c 85c0 7403 ff4608 ' +
+    '8d4608 50 ff7708 ff30 e887ffffff 83c40c 5f 5e c3',
 );
 
 // Adjacent internal leaf at RVA 0x32fb4. It shifts a three-dword integer left
@@ -63,6 +73,10 @@ export const msvcr71Descriptor: LibDescriptor = {
             kind: 'bytes', pattern: ADD_CARRY_PATTERN,
             mask: 'x'.repeat(ADD_CARRY_PATTERN.length), section: '.text', weight: 8,
         },
+        add96: {
+            kind: 'bytes', pattern: ADD96_PATTERN,
+            mask: 'x'.repeat(ADD96_PATTERN.length), section: '.text', weight: 8,
+        },
         shift96: {
             kind: 'bytes', pattern: SHIFT96_PATTERN,
             mask: 'x'.repeat(SHIFT96_PATTERN.length), section: '.text', weight: 8,
@@ -87,6 +101,17 @@ export const msvcr71Descriptor: LibDescriptor = {
             // mov edx,[esp+4]; push esi
             prologueLen: 5,
             entryFilter: buildMsvcr71AddCarryInline,
+        },
+        add96: {
+            name: 'add96',
+            entryProbe: {
+                kind: 'prologue', pattern: ADD96_PATTERN,
+                mask: 'x'.repeat(ADD96_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: true,
+            // push esi; mov esi,[esp+8]
+            prologueLen: 5,
+            entryFilter: buildMsvcr71Add96Inline,
         },
         shift96: {
             name: 'shift96',
@@ -126,6 +151,7 @@ export const msvcr71Descriptor: LibDescriptor = {
     },
     handlers: {
         add_carry: msvcr71ArithmeticUnreachableHandler,
+        add96: msvcr71ArithmeticUnreachableHandler,
         shift96: msvcr71ArithmeticUnreachableHandler,
         sscanf_scalar: msvcr71SscanfScalarFallback,
     },

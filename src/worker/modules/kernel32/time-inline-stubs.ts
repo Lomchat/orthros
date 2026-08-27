@@ -10,7 +10,11 @@ import type { StubAllocator } from '../../core/thunking/thunk-memory-manager';
  *
  * The emitted leaf computes the low 32 bits of that expression using one RDTSC
  * and two 32-bit multiplies. It follows the Win32 ABI (EAX result; ECX/EDX and
- * flags volatile) and contains no OUT trap or memory access.
+ * flags volatile) and contains no OUT trap or memory access. The high-word
+ * product is formed directly in ECX and the two partial products share one LEA;
+ * the epoch remains a real ADD so the leaf preserves the original final EFLAGS.
+ * This matters for games that poll the clock hundreds of thousands of times per
+ * second, while some old binaries are observably sensitive to those volatile flags.
  */
 export function writeTimeInlineStub(
     allocator: StubAllocator,
@@ -27,13 +31,11 @@ export function writeTimeInlineStub(
 
     const timeStub = off;
     w8(0x0f); w8(0x31);                   // rdtsc                 EDX:EAX = ticks
-    w8(0x89); w8(0xd1);                   // mov ecx,edx           save high word
+    w8(0x69); w8(0xca); w32(1000);        // imul ecx,edx,1000     low(high*1000)
     w8(0xba); w32(1000);                  // mov edx,1000
     w8(0xf7); w8(0xe2);                   // mul edx               high(EAX*1000) -> EDX
-    w8(0x69); w8(0xc9); w32(1000);        // imul ecx,ecx,1000     low(high*1000)
-    w8(0x01); w8(0xca);                   // add edx,ecx
-    w8(0x89); w8(0xd0);                   // mov eax,edx
-    w8(0x05); w32(epochOffsetMs);         // add eax,epochOffsetMs  (Win32 boot epoch)
+    w8(0x8d); w8(0x04); w8(0x0a);         // lea eax,[edx+ecx]
+    w8(0x05); w32(epochOffsetMs);          // add eax,epochOffsetMs  (also final EFLAGS)
     w8(0xc3);                             // ret
 
     Logger.log(LogCategory.SYSTEM,

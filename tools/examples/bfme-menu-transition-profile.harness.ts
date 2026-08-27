@@ -10,8 +10,20 @@ const hot = process.env.BFME_HOT === "1";
 const hotThread = Number(process.env.BFME_HOT_THREAD ?? 0);
 const blockChain = process.env.BFME_BLOCK_CHAIN === "1";
 const baseThreshold = Number(process.env.BFME_JIT_BASE_THRESHOLD ?? 0);
+const compact = process.env.BFME_COMPACT === "1";
 
 function print(phase: string, result: unknown): void {
+    if (compact && result && typeof result === "object") {
+        const run = result as { ok?: boolean; steps?: Array<{ cmd: string; result?: unknown }> };
+        const step = (cmd: string) => run.steps?.find((entry) => entry.cmd === cmd)?.result ?? null;
+        console.log(JSON.stringify({
+            phase,
+            ok: run.ok ?? null,
+            perf: step("perfStats"),
+            faults: step("faults"),
+        }));
+        return;
+    }
     console.log(JSON.stringify({ phase, result }, null, 2));
 }
 
@@ -57,6 +69,16 @@ if (!skipBoot) {
     if (!settled?.steps.find((step: any) => step.cmd === "waitForEvent")?.result) {
         console.error("No BFME frame after 550 seconds");
         process.exit(1);
+    }
+    // The first D3D9 presentation can belong to the short intro, followed by
+    // several minutes of CPU-only startup. Require 240 *new* presentations in
+    // separate RPCs before sending menu input. Splitting the batches keeps each
+    // CDP evaluation below its five-minute timeout even when the first batch
+    // spans the remainder of cold startup.
+    for (let batch = 0; batch < 4; batch++) {
+        const frames = await harness().tickFrames(60).run();
+        print(`main-menu-frames-${batch + 1}`, frames);
+        if (!frames.ok) process.exit(1);
     }
     const menuWarm = await harness().sleep(5_000).run();
     print("main-menu-settled", menuWarm);

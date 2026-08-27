@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import {
     assembleMsvcr71AddCarryInline,
+    assembleMsvcr71Add96Inline,
     assembleMsvcr71Shift96Inline,
     buildMsvcr71AddCarryInline,
+    buildMsvcr71Add96Inline,
     buildMsvcr71Shift96Inline,
     msvcr71AddCarry,
+    msvcr71Add96,
     msvcr71Shift96,
 } from '../../src/worker/core/hle-lib/libs/msvcr71/arithmetic-inline';
 import { msvcr71Descriptor } from '../../src/worker/core/hle-lib/libs/msvcr71/descriptor';
@@ -40,6 +43,17 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
             .toEqual([0x2468acf0, 0x13579bde, 0x80000001]);
     });
 
+    test('matches 96-bit addition and final carry edge cases', () => {
+        expect(msvcr71Add96([0, 0, 0], [0, 0, 0]))
+            .toEqual({ limbs: [0, 0, 0], carry: 0 });
+        expect(msvcr71Add96([0xffffffff, 0xffffffff, 0], [1, 0, 0]))
+            .toEqual({ limbs: [0, 0, 1], carry: 0 });
+        expect(msvcr71Add96([0xffffffff, 0xffffffff, 0xffffffff], [1, 0, 0]))
+            .toEqual({ limbs: [0, 0, 0], carry: 1 });
+        expect(msvcr71Add96([0x12345678, 0x89abcdef, 0xf0000000], [0x11111111, 0x87654321, 0x20000000]))
+            .toEqual({ limbs: [0x23456789, 0x11111110, 0x10000001], carry: 1 });
+    });
+
     test('emits complete cdecl leaves with no OUT or host transition', () => {
         const add = assembleMsvcr71AddCarryInline();
         expect(add[add.length - 1]).toBe(0xc3);
@@ -58,6 +72,16 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
             0xc3,
         ]);
         expect(shift.includes(0xee)).toBe(false);
+        const add96 = assembleMsvcr71Add96Inline();
+        expect([...add96]).toEqual([
+            0x8b, 0x54, 0x24, 0x04, 0x8b, 0x44, 0x24, 0x08,
+            0x8b, 0x08, 0x01, 0x0a, 0x83, 0x52, 0x04, 0x00,
+            0x83, 0x52, 0x08, 0x00, 0x8b, 0x48, 0x04, 0x01,
+            0x4a, 0x04, 0x83, 0x52, 0x08, 0x00, 0x8b, 0x48,
+            0x08, 0x01, 0x4a, 0x08, 0x0f, 0x92, 0xc0, 0x0f,
+            0xb6, 0xc0, 0xc3,
+        ]);
+        expect(add96.includes(0xee)).toBe(false);
     });
 
     test('allocates and writes the exact generated wrapper', () => {
@@ -85,13 +109,26 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
         const expectedShift = assembleMsvcr71Shift96Inline();
         expect(shiftAddress).toBe(0x1100);
         expect(memory.slice(0x1100, 0x1100 + expectedShift.length)).toEqual(expectedShift);
+
+        const add96Address = buildMsvcr71Add96Inline({
+            mem: memory,
+            targetAddress: 0x350,
+            stubAddress: 0x550,
+            trampolineAddress: 0x750,
+            allocCode: () => 0x1200,
+            markNonPreemptible: () => {},
+        });
+        const expectedAdd96 = assembleMsvcr71Add96Inline();
+        expect(add96Address).toBe(0x1200);
+        expect(memory.slice(0x1200, 0x1200 + expectedAdd96.length)).toEqual(expectedAdd96);
     });
 
     test('requires both exact helper signatures before detection', () => {
         expect(msvcr71Descriptor.minConfidence).toBe(16);
-        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8]);
-        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'shift96', 'stricmp', 'sscanf_scalar']);
+        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8]);
+        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar']);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
+        expect(msvcr71Descriptor.functions.add96.required).toBe(true);
         expect(msvcr71Descriptor.functions.shift96.required).toBe(true);
         expect(msvcr71Descriptor.functions.stricmp.required).toBe(true);
         expect(msvcr71Descriptor.functions.sscanf_scalar.required).toBe(true);

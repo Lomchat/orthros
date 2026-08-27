@@ -200,7 +200,7 @@ const cases: Record<string, (ctx: Ctx) => Snapshot> = {
 const EXPECTED: Record<string, Snapshot> = {
     heapSlabStubs: {"result":{"heapAllocStub":4096,"heapFreeStub":4253,"regionBase":4096,"regionEnd":4608},"hashes":{"region":"2e61fc6d4a8d3740e739a1e0fca6d4c05725b6053c969c64a593e6a43f6574a5"}},
     criticalSectionInlineStubs: {"result":{"enterStub":4096,"leaveStub":4198,"regionBase":4096,"regionEnd":4352},"hashes":{"region":"ce8f37d53a59e5a4093ca7140ce464bfff7c66dd0e064db215f8f8b5b90dca0e"}},
-    timeInlineStub: {"result":{"timeStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"af70f0b2174adb7f822961f1f9f65aed98c609e46107e4a2b7fece88b113ca30"}},
+    timeInlineStub: {"result":{"timeStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"eb726f318c4048fce0b95fa6c440c556441cd068f5654aef6c8d06cf259178d9"}},
     crtSlabStubs: {"result":{"mallocStub":4096,"freeStub":4235,"regionBase":4096,"regionEnd":4608},"hashes":{"region":"de7b6017ea9cffbcc44163c6080690d0a9d212f9cc38f796c5936b412579fbaa"}},
     getcStub: {"result":{"getcStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"7164114dee4b9bf1cf713e04d53500a1cf0aa472b1aa6cdc1b8a3dfad854f2c0"}},
     caseFoldStubs: {"result":{"tolowerStub":4096,"toupperStub":4114,"regionBase":4096,"regionEnd":4144},"hashes":{"region":"e3cfb5c16960fdac25b61283e7fb4403301403877b83a09f5dc6d01ea6b9d52b"}},
