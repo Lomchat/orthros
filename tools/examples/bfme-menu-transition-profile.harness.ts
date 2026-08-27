@@ -10,6 +10,8 @@ const hot = process.env.BFME_HOT === "1";
 const hotThread = Number(process.env.BFME_HOT_THREAD ?? 0);
 const blockChain = process.env.BFME_BLOCK_CHAIN === "1";
 const baseThreshold = Number(process.env.BFME_JIT_BASE_THRESHOLD ?? 0);
+const pendingCompiles = Number(process.env.BFME_JIT_PENDING ?? 0);
+const fastmemWrites = process.env.BFME_FASTMEM_WRITES;
 const compact = process.env.BFME_COMPACT === "1";
 
 function print(phase: string, result: unknown): void {
@@ -20,6 +22,11 @@ function print(phase: string, result: unknown): void {
             phase,
             ok: run.ok ?? null,
             perf: step("perfStats"),
+            jit: run.steps
+                ?.filter((entry) => entry.cmd === "dbgCall")
+                .map((entry) => entry.result)
+                .filter((value) => value && typeof value === "object" && "started" in value && "completed" in value)
+                .at(-1) ?? null,
             faults: step("faults"),
         }));
         return;
@@ -42,6 +49,22 @@ if (!skipBoot) {
             .call("dbgCall", "jitBaseThreshold", baseThreshold)
             .run();
         print("jit-base-threshold", configured);
+        if (!configured.ok) process.exit(1);
+    }
+
+    if (Number.isFinite(pendingCompiles) && pendingCompiles > 0) {
+        const configured = await harness()
+            .call("dbgCall", "jitPendingCompiles", pendingCompiles)
+            .run();
+        print("jit-pending-compiles", configured);
+        if (!configured.ok) process.exit(1);
+    }
+
+    if (fastmemWrites === "0" || fastmemWrites === "1") {
+        const configured = await harness()
+            .call("dbgCall", "fastmemWrites", fastmemWrites === "1")
+            .run();
+        print("fastmem-writes", configured);
         if (!configured.ok) process.exit(1);
     }
 

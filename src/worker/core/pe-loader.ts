@@ -189,7 +189,7 @@ export class PELoader {
      * the same WASM slab arena as the kernel32 heap stubs. See crt-slab-stubs writeCrtSlabStubs.
      */
     private crtInlineStubs: { mallocStub: number; freeStub: number; regionBase: number; regionEnd: number } | null = null;
-    private caseFoldInlineStubs: { tolowerStub: number; toupperStub: number; regionBase: number; regionEnd: number } | null = null;
+    private caseFoldInlineStubs: { tolowerStub: number; toupperStub: number; isspaceStub: number; regionBase: number; regionEnd: number } | null = null;
 
     /** Materialize the trap-free case-fold leaves for both thunked and real
      * versioned CRT imports. BFME keeps MSVCR71 native for ABI compatibility,
@@ -203,11 +203,11 @@ export class PELoader {
             const sys = System.getInstance();
             const tmm = sys.process?.thunkMemoryManager;
             const msvcrt = sys.process?.getModule?.('msvcrt') as
-                { getCaseTableAddrs?: () => { lower: number; upper: number } } | undefined;
+                { getCaseTableAddrs?: () => { lower: number; upper: number; ctype: number } } | undefined;
             const tbl = msvcrt?.getCaseTableAddrs?.();
-            if (tmm && tbl && tbl.lower && tbl.upper) {
+            if (tmm && tbl && tbl.lower && tbl.upper && tbl.ctype) {
                 this.caseFoldInlineStubs = writeCaseFoldStubs(
-                    tmm.stubAllocator, this.getMemory, tbl.lower, tbl.upper);
+                    tmm.stubAllocator, this.getMemory, tbl.lower, tbl.upper, tbl.ctype);
             } else {
                 Logger.warn(LogCategory.SYSTEM,
                     `[PE] case-fold stubs skipped for ${dllName}: tmm=${!!tmm} msvcrt=${!!msvcrt} ` +
@@ -1381,6 +1381,7 @@ export class PELoader {
                         if (this.caseFoldInlineStubs && PELoader.CRT_SLAB_MODULES.has(dllName)) {
                             if (funcKey === 'tolower') stubAddress = this.caseFoldInlineStubs.tolowerStub;
                             else if (funcKey === 'toupper') stubAddress = this.caseFoldInlineStubs.toupperStub;
+                            else if (funcKey === 'isspace') stubAddress = this.caseFoldInlineStubs.isspaceStub;
                         }
                         if (dllName === 'kernel32' && this.criticalSectionInlineStubs) {
                             if (funcKey === 'entercriticalsection') {
@@ -1512,6 +1513,8 @@ export class PELoader {
                                 ? this.caseFoldInlineStubs.tolowerStub
                                 : funcName === 'toupper'
                                     ? this.caseFoldInlineStubs.toupperStub
+                                    : funcName === 'isspace'
+                                        ? this.caseFoldInlineStubs.isspaceStub
                                     : 0;
                             if (caseFoldAddr !== 0) {
                                 this.view.setUint32(iatAddr, caseFoldAddr, true);

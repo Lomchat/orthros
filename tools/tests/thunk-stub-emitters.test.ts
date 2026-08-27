@@ -130,7 +130,7 @@ const cases: Record<string, (ctx: Ctx) => Snapshot> = {
         return { result: r, hashes: { region: sha(ctx.mem, r.regionBase, r.regionEnd) } };
     },
     caseFoldStubs: (ctx) => {
-        const r = writeCaseFoldStubs(ctx.allocator, ctx.getMemory, LUT, LUT + 0x100);
+        const r = writeCaseFoldStubs(ctx.allocator, ctx.getMemory, LUT, LUT + 0x100, LUT + 0x200);
         return { result: r, hashes: { region: sha(ctx.mem, r.regionBase, r.regionEnd) } };
     },
     shadowTrampolineSampler: (ctx) => {
@@ -203,7 +203,7 @@ const EXPECTED: Record<string, Snapshot> = {
     timeInlineStub: {"result":{"timeStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"eb726f318c4048fce0b95fa6c440c556441cd068f5654aef6c8d06cf259178d9"}},
     crtSlabStubs: {"result":{"mallocStub":4096,"freeStub":4235,"regionBase":4096,"regionEnd":4608},"hashes":{"region":"de7b6017ea9cffbcc44163c6080690d0a9d212f9cc38f796c5936b412579fbaa"}},
     getcStub: {"result":{"getcStub":4096,"regionBase":4096,"regionEnd":4160},"hashes":{"region":"7164114dee4b9bf1cf713e04d53500a1cf0aa472b1aa6cdc1b8a3dfad854f2c0"}},
-    caseFoldStubs: {"result":{"tolowerStub":4096,"toupperStub":4114,"regionBase":4096,"regionEnd":4144},"hashes":{"region":"e3cfb5c16960fdac25b61283e7fb4403301403877b83a09f5dc6d01ea6b9d52b"}},
+    caseFoldStubs: {"result":{"tolowerStub":4096,"toupperStub":4114,"isspaceStub":4132,"regionBase":4096,"regionEnd":4176},"hashes":{"region":"fdd80069f5ff319252bfe6fb61a65a8b75814b1798ac7d687437e988208f9dcf"}},
     shadowTrampolineSampler: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"7abd74e2bdce1e4254437e50bc14f0fa791f70d8ae2d8debc1b85af266681278","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
     shadowTrampolineRenderStateNoOwner: {"result":{"trampAddr":5136,"shadowBase":4100,"slotCount":256,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":5124,"codeRegionBase":5136,"codeRegionEnd":5392},"hashes":{"code":"3c61427b912fc18da4260c8d4507eca4eef7157cb3f3ffd9f83b0d8aa63c2b1a","data":"496f0eda84c76c10945e95128f4f8b16a640633720f19ab135d044da70da04fc"}},
     shadowTrampolineTextureStage: {"result":{"trampAddr":6160,"shadowBase":4100,"slotCount":512,"sentinel":2147483648,"skipCounterAddr":4096,"countsSkips":false,"dataRegionBase":4096,"dataRegionEnd":6148,"codeRegionBase":6160,"codeRegionEnd":6416},"hashes":{"code":"9377c3c3aa7c19570ec7b3410eb7acb79d6cbe457d52801ff144d19b198ba85a","data":"37eacff5ffe6bcf80368235a5b0dc7d0bdb59b35a47dd72c5052578d57fae54b"}},

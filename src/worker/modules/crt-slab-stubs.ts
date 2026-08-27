@@ -1,6 +1,6 @@
 // Inline x86 stub emitters for CRT fast paths: cdecl slab allocator pair
 // (malloc/free on the kernel32 heap slab), Borland/Watcom buffered getc, and
-// tolower/toupper case-fold LUT stubs. Codegen pinned by
+// tolower/toupper case-fold and ctype LUT stubs. Codegen pinned by
 // tools/tests/thunk-stub-emitters.test.ts.
 // Callers: pe-loader (CRT-module import) and cw3220-stdio, via
 // ThunkMemoryManager.stubAllocator.
@@ -365,8 +365,9 @@ export function writeCaseFoldStubs(
     getMemory: () => Uint8Array,
     lowerTableAddr: number,
     upperTableAddr: number,
-): { tolowerStub: number; toupperStub: number; regionBase: number; regionEnd: number } {
-    const REGION_SIZE = 48; // 2 × 18-byte stubs + alignment slack
+    ctypeTableAddr: number,
+): { tolowerStub: number; toupperStub: number; isspaceStub: number; regionBase: number; regionEnd: number } {
+    const REGION_SIZE = 80; // 2 × 18-byte case stubs + 25-byte ctype leaf + alignment slack
     const base = allocator.alloc(REGION_SIZE, 'THUNK_CODE', 'rx');
     const mem = getMemory();
     const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -385,10 +386,24 @@ export function writeCaseFoldStubs(
     const tolowerStub = emit(lowerTableAddr);
     const toupperStub = emit(upperTableAddr);
 
+    // int isspace(int c): mirror msvcrt.ischartype's unsigned-byte classification
+    // and canonical 0/1 result. The 16-bit table uses Microsoft's _SPACE bit 0x0008.
+    // Keeping this as a guest leaf eliminates a native/OUT-thunk round trip in parser
+    // loops while retaining the live table as the single source of truth.
+    const isspaceStub = off;
+    mem[off++] = 0x0F; mem[off++] = 0xB6; mem[off++] = 0x44; mem[off++] = 0x24; mem[off++] = 0x04; // movzx eax,byte [esp+4]
+    mem[off++] = 0x0F; mem[off++] = 0xB7; mem[off++] = 0x04; mem[off++] = 0x45;                    // movzx eax,word [eax*2+disp32]
+    dv.setUint32(off, ctypeTableAddr >>> 0, true); off += 4;
+    mem[off++] = 0xA9; dv.setUint32(off, 0x0008, true); off += 4;                                  // test eax,_SPACE
+    mem[off++] = 0x0F; mem[off++] = 0x95; mem[off++] = 0xC0;                                     // setne al
+    mem[off++] = 0x0F; mem[off++] = 0xB6; mem[off++] = 0xC0;                                     // movzx eax,al
+    mem[off++] = 0xC3;                                                                            // ret
+
     Logger.log(LogCategory.SYSTEM,
         `Inline case-fold stubs emitted: tolower=0x${tolowerStub.toString(16)} ` +
         `toupper=0x${toupperStub.toString(16)} (LUTs lower=0x${lowerTableAddr.toString(16)} ` +
-        `upper=0x${upperTableAddr.toString(16)})`);
+        `upper=0x${upperTableAddr.toString(16)} isspace=0x${isspaceStub.toString(16)} ` +
+        `ctype=0x${ctypeTableAddr.toString(16)})`);
 
-    return { tolowerStub, toupperStub, regionBase: base, regionEnd: base + REGION_SIZE };
+    return { tolowerStub, toupperStub, isspaceStub, regionBase: base, regionEnd: base + REGION_SIZE };
 }

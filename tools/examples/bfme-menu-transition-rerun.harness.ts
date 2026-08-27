@@ -1,5 +1,10 @@
 import { harness } from "../harness";
 
+const trace = process.env.BFME_TRACE !== "0";
+const hot = process.env.BFME_HOT === "1";
+const traceAddr = process.env.BFME_TRACE_ADDR;
+const fastmemWrites = process.env.BFME_FASTMEM_WRITES;
+
 function resultFor(run: any, cmd: string, occurrence = 0): any {
     return run.steps.filter((step: any) => step.cmd === cmd)[occurrence]?.result ?? null;
 }
@@ -8,6 +13,13 @@ const retSpec = process.env.BFME_RET_SPEC;
 if (retSpec === "0" || retSpec === "1") {
     await harness()
         .call("dbgCall", "jitRetSpec", retSpec === "1", 128)
+        .sleep(8_000)
+        .run();
+}
+
+if (fastmemWrites === "0" || fastmemWrites === "1") {
+    await harness()
+        .call("dbgCall", "fastmemWrites", fastmemWrites === "1")
         .sleep(8_000)
         .run();
 }
@@ -43,28 +55,44 @@ console.log(JSON.stringify({
 }, null, 2));
 
 const middle = await harness()
-    .call("dbgCall", "trace2Reset")
-    .call("dbgCall", "trace2WatchTier2", 64)
     .perfProfile({ enable: true, reset: true })
-    .sleep(2_500)
-    .call("dbgCall", "trace2UnwatchAll")
+    .call("dbgCall", "jitCompileStats", true);
+if (trace) {
+    middle
+        .call("dbgCall", "trace2Reset");
+    if (traceAddr) middle.call("dbgCall", "trace2Watch", traceAddr);
+    else middle.call("dbgCall", "trace2WatchTier2", 64);
+}
+if (hot) middle.call("dbgCall", "hotJit", 2_500, 2, 80, 1);
+else middle.sleep(2_500);
+if (trace) middle.call("dbgCall", "trace2UnwatchAll");
+middle
     .perfStats()
     .perfSpikes({ top: 8, minMs: 35 })
     .profilerStats({ top: 20, sort: "total" })
+    .call("dbgCall", "jitCompileStats")
     .call("dbgCall", "gdiDibSyncDiag", false, false)
-    .call("dbgCall", "gdiDibSyncReport")
-    .call("dbgCall", "trace2PageHistogram")
-    .call("dbgCall", "trace2Blocks", 50)
+    .call("dbgCall", "gdiDibSyncReport");
+if (trace) {
+    middle
+        .call("dbgCall", "trace2PageHistogram")
+        .call("dbgCall", "trace2Blocks", 50);
+}
+middle
+    .call("dbgCall", "fastmemWriteAudit")
     .faults(10)
-    .run();
-const dbgResults = middle.steps.filter((step: any) => step.cmd === "dbgCall").map((step: any) => step.result);
+const middleRun = await middle.run();
+const dbgResults = middleRun.steps.filter((step: any) => step.cmd === "dbgCall").map((step: any) => step.result);
 console.log(JSON.stringify({
     phase: "skirmish-2-4.5s",
-    perf: resultFor(middle, "perfStats"),
-    spikes: resultFor(middle, "perfSpikes"),
-    profiler: resultFor(middle, "profilerStats"),
-    gdi: dbgResults[dbgResults.length - 3],
-    pages: dbgResults[dbgResults.length - 2],
-    blocks: dbgResults[dbgResults.length - 1],
-    faults: resultFor(middle, "faults"),
+    fastmemWrites: fastmemWrites ?? null,
+    perf: resultFor(middleRun, "perfStats"),
+    jit: dbgResults.find((value: any) => value && typeof value === "object" && "started" in value),
+    hot: dbgResults.find((value: any) => value && typeof value === "object" && Array.isArray(value.rows)),
+    audit: dbgResults.find((value: any) => value && typeof value === "object" && "danger" in value),
+    tracePages: dbgResults.find((value: any) => Array.isArray(value) && value.some((row: any) => row && "page" in row)),
+    traceBlocks: dbgResults.find((value: any) => Array.isArray(value) && value.some((row: any) => row && "addr" in row && "exec" in row)),
+    spikes: resultFor(middleRun, "perfSpikes"),
+    profiler: resultFor(middleRun, "profilerStats"),
+    faults: resultFor(middleRun, "faults"),
 }, null, 2));

@@ -848,9 +848,9 @@ export class Msvcrt implements IModule {
      * Guest addresses of the 256-byte lower/upper case LUTs (ensures they're allocated+built).
      * pe-loader reads these to emit the trap-free inline tolower/toupper stubs.
      */
-    getCaseTableAddrs(): { lower: number; upper: number } {
-        if (this.caseLowerTableAddr === 0) this.ensureRuntimeStorage();
-        return { lower: this.caseLowerTableAddr, upper: this.caseUpperTableAddr };
+    getCaseTableAddrs(): { lower: number; upper: number; ctype: number } {
+        if (this.caseLowerTableAddr === 0 || this.pctypeTableAddr === 0) this.ensureRuntimeStorage();
+        return { lower: this.caseLowerTableAddr, upper: this.caseUpperTableAddr, ctype: this.pctypeTableAddr };
     }
 
     /**
