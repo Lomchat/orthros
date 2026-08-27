@@ -13,6 +13,7 @@ const baseThreshold = Number(process.env.BFME_JIT_BASE_THRESHOLD ?? 0);
 const pendingCompiles = Number(process.env.BFME_JIT_PENDING ?? 0);
 const fastmemWrites = process.env.BFME_FASTMEM_WRITES;
 const compact = process.env.BFME_COMPACT === "1";
+const unpatchMemoryStream = process.env.BFME_UNPATCH_MEMORY_STREAM === "1";
 
 function print(phase: string, result: unknown): void {
     if (compact && result && typeof result === "object") {
@@ -106,6 +107,14 @@ if (!skipBoot) {
     const menuWarm = await harness().sleep(5_000).run();
     print("main-menu-settled", menuWarm);
     if (!menuWarm.ok) process.exit(1);
+}
+
+if (unpatchMemoryStream) {
+    const unpatched = await harness()
+        .call("dbgCall", "hleUnpatch", "bfme", "memory_stream_read1")
+        .run();
+    print("memory-stream-unpatched", unpatched);
+    if (!unpatched.ok) process.exit(1);
 }
 
 const baseline = await harness()

@@ -787,6 +787,32 @@ recoverable, skips stale overlay composition, and retries on the next dirty
 paint, with warning output capped. A unit test forces the Chromium exception and
 the subsequent clean cold browser run reached the BFME menus without a fault.
 
+The next retained cold-path work targets BFME's in-memory parser and software
+DXT codec. An exact entry filter routes only one-byte reads at `0x00dd1a70` to a
+raw WASM handler; larger reads still execute the relocated original. Two
+comparable central windows improved from about 82.66 to 53.63/53.24 ms/frame.
+Guest-inline and whole-parser variants regressed to 82.22 and 100.58 ms/frame and
+were removed.
+
+An exact BC1 colour-block hook at `0x00e679a5` then removed the hottest inner
+decoder loop. Its 64-call live shadow validation completed with zero mismatch
+using a one-ULP float tolerance for x87 intermediate precision. On the same
+instrumented cold harness, the central transition improved from 164.59 to 90.28
+ms/frame (6.1 to 11.1 FPS, roughly 45% lower frame time); a repeated warm
+transition measured 33.80 ms/frame and the settled screen returned to 30.2 FPS.
+The remaining first-run stall is still real: the DXT encoder at `0x00e67124`
+accounts for roughly 4,558 calls and the residual page still executes about 2.67
+million JIT blocks in the captured window.
+
+A full BC3 decoder was byte/float equivalent over 64 live blocks but regressed a
+same-process warm transition from 33.09 to 41.47 ms/frame and was removed. A
+fused BFME `timeGetTime` wrapper (34.80 versus 32.97 ms/frame) and a narrowly
+allowlisted Tier-2 region for its monomorphic RDTSC leaf (33.03 versus 32.99
+ms/frame) were likewise removed. Only the memory reader and BC1 decoder remain.
+Warm screens reach the engine's nominal 30 FPS ceiling; the first cold
+construction window does not, so native-equivalent smoothness is not yet a
+validated claim.
+
 ## Operational notes
 
 - Relay state is intentionally ephemeral. Restarting the service drops active matches but does not affect saves.

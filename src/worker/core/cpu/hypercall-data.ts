@@ -193,6 +193,10 @@ export const HANDLER_BFME_PIXEL_ALPHA_BLEND = 150;
 export const HANDLER_MSVCR71_SSCANF_SCALAR = 151;
 /** MSVCR71 7.10 byte-exact ASCII case-insensitive string comparison. */
 export const HANDLER_MSVCR71_STRICMP = 152;
+/** BFME 1.03 one-byte parser read from its in-memory stream. */
+export const HANDLER_BFME_MEMORY_STREAM_READ1 = 153;
+/** BFME 1.03 BC1/DXT colour-block expansion to sixteen RGBA-float texels. */
+export const HANDLER_BFME_BC1_COLOR_BLOCK = 154;
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
 export const OFF_HC_SLAB_END = 0x1404;

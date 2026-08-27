@@ -15,6 +15,8 @@ import {
     HANDLER_BFME_VERTEX_BLEND,
     HANDLER_BFME_JPEG_IDCT_ISLOW,
     HANDLER_BFME_PIXEL_ALPHA_BLEND,
+    HANDLER_BFME_MEMORY_STREAM_READ1,
+    HANDLER_BFME_BC1_COLOR_BLOCK,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -47,6 +49,11 @@ import { buildBfmeVertexBlendWrapper, bfmeVertexBlendFallbackHandler } from './v
 import { bfmeJpegIdctShadow } from './jpeg-idct-islow';
 import { buildBfmeVectorCtorFilter, bfmeVectorCtorUnreachableHandler } from './vector-ctor-filter';
 import { bfmePixelAlphaBlendShadow } from './pixel-alpha-blend';
+import {
+    bfmeMemoryStreamRead1Fallback,
+    buildBfmeMemoryStreamRead1Filter,
+} from './memory-stream-read';
+import { bfmeBc1ColorBlockShadow } from './bc1-color-block';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -210,6 +217,23 @@ const PIXEL_ALPHA_BLEND_PATTERN = hexBytes(
     '8b45fc488945fc0f8568ffffff5f5e5b8be55dc3',
 );
 
+// lotrbfme.exe 1.03 FR @ 0x00dd1a70. The parser invokes this virtual memory
+// stream reader once per character. The entry filter admits only size==1;
+// larger reads continue through the byte-exact original function.
+const MEMORY_STREAM_READ_PATTERN = hexBytes(
+    '8bd1 53 8b5a14 85db 7507 83c8ff 5b c20800 ' +
+    '8b4a1c 8b44240c 56 8b7218 2bce 3bc1 7e02 8bc1 85c0 7e1c ' +
+    '57 8b7c2410 85ff 7412 03f3 8bc8 8bd9 c1e902 f3a5 ' +
+    '8bcb 83e103 f3a4 5f 8b4a18 03c8 5e 894a18 5b c20800',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00e679a5. BC1 endpoint expansion and selector
+// setup; the fixed CALL displacement makes this signature title-exact.
+const BC1_COLOR_BLOCK_PATTERN = hexBytes(
+    '55 8bec 83ec58 53 8b5d0c 56 33f6 668b33 57 8d45a8 8bce ' +
+    'e861ecffff 33ff 668b7b02 8d45b8 8bcf e851ecffff 663bf7',
+);
+
 
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
@@ -293,6 +317,14 @@ export const bfmeDescriptor: LibDescriptor = {
         pixel_alpha_blend: {
             kind: 'bytes', pattern: PIXEL_ALPHA_BLEND_PATTERN,
             mask: 'x'.repeat(PIXEL_ALPHA_BLEND_PATTERN.length), section: '.text', weight: 12,
+        },
+        memory_stream_read1: {
+            kind: 'bytes', pattern: MEMORY_STREAM_READ_PATTERN,
+            mask: 'x'.repeat(MEMORY_STREAM_READ_PATTERN.length), section: '.text', weight: 12,
+        },
+        bc1_color_block: {
+            kind: 'bytes', pattern: BC1_COLOR_BLOCK_PATTERN,
+            mask: 'x'.repeat(BC1_COLOR_BLOCK_PATTERN.length), section: '.text', weight: 12,
         },
     },
     functions: {
@@ -514,6 +546,28 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_PIXEL_ALPHA_BLEND,
             shadow: bfmePixelAlphaBlendShadow,
         },
+        memory_stream_read1: {
+            name: 'memory_stream_read1',
+            entryProbe: {
+                kind: 'prologue', pattern: MEMORY_STREAM_READ_PATTERN,
+                mask: 'x'.repeat(MEMORY_STREAM_READ_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'stdcall', argCount: 3, required: true,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_MEMORY_STREAM_READ1,
+            entryFilter: buildBfmeMemoryStreamRead1Filter,
+        },
+        bc1_color_block: {
+            name: 'bc1_color_block',
+            entryProbe: {
+                kind: 'prologue', pattern: BC1_COLOR_BLOCK_PATTERN,
+                mask: 'x'.repeat(BC1_COLOR_BLOCK_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'stdcall', argCount: 2, required: true,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_BC1_COLOR_BLOCK,
+            shadow: bfmeBc1ColorBlockShadow,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
@@ -531,5 +585,6 @@ export const bfmeDescriptor: LibDescriptor = {
         tree_successor: bfmeTreeSuccessorHandler,
         vertex_blend: bfmeVertexBlendFallbackHandler,
         vector_ctor_iter: bfmeVectorCtorUnreachableHandler,
+        memory_stream_read1: bfmeMemoryStreamRead1Fallback,
     },
 };

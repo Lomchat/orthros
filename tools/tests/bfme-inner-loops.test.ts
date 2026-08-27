@@ -37,6 +37,11 @@ import {
     BFME_NOOP_VECTOR_CTORS,
 } from '../../src/worker/core/hle-lib/libs/bfme/vector-ctor-filter';
 import { blendBfmePixels, bfmePixelAlphaBlendShadow } from '../../src/worker/core/hle-lib/libs/bfme/pixel-alpha-blend';
+import {
+    assembleBfmeMemoryStreamRead1Filter,
+    readBfmeMemoryStream1,
+} from '../../src/worker/core/hle-lib/libs/bfme/memory-stream-read';
+import { decodeBfmeBc1ColorBlock } from '../../src/worker/core/hle-lib/libs/bfme/bc1-color-block';
 import { validatePrologueBytes } from '../../src/worker/core/hle-lib/lib-patcher';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -635,5 +640,89 @@ describe('BFME bulk pixel alpha blend HLE', () => {
         data.setUint32(0x180, 0x00000080, true);
         blendBfmePixels(makeView(memory), [0x100, 0x100, 0x180, 1]);
         expect(data.getUint32(0x100, true)).toBe(0x7f113355);
+    });
+});
+
+describe('BFME one-byte memory-stream read HLE', () => {
+    test('copies one byte, advances the cursor, and preserves EOF/null behavior', () => {
+        const memory = new Uint8Array(0x1000);
+        const view = new DataView(memory.buffer);
+        const object = 0x100;
+        view.setUint32(object + 0x14, 0x400, true);
+        view.setInt32(object + 0x18, 3, true);
+        view.setInt32(object + 0x1c, 8, true);
+        memory[0x403] = 0xa7;
+
+        expect(readBfmeMemoryStream1(memory, [object, 0x600, 1])).toBe(1);
+        expect(memory[0x600]).toBe(0xa7);
+        expect(view.getInt32(object + 0x18, true)).toBe(4);
+
+        view.setInt32(object + 0x18, 8, true);
+        expect(readBfmeMemoryStream1(memory, [object, 0x601, 1])).toBe(0);
+        expect(view.getInt32(object + 0x18, true)).toBe(8);
+
+        view.setUint32(object + 0x14, 0, true);
+        expect(readBfmeMemoryStream1(memory, [object, 0x601, 1])).toBe(-1);
+    });
+
+    test('routes one-byte reads through the guarded WASM stub and other sizes to original', () => {
+        const base = 0x1000;
+        const stub = 0x2000;
+        const trampoline = 0x3000;
+        const code = assembleBfmeMemoryStreamRead1Filter(base, stub, trampoline);
+        const data = new DataView(code.buffer, code.byteOffset, code.byteLength);
+
+        expect([...code.slice(0, 5)]).toEqual([0x83, 0x7c, 0x24, 0x08, 0x01]);
+        const originalAt = 28;
+        const originalFromJne = (base + 11 + data.getInt32(7, true)) >>> 0;
+        expect(originalFromJne).toBe(base + originalAt);
+        expect((base + originalAt + 5 + data.getInt32(originalAt + 1, true)) >>> 0).toBe(trampoline);
+        expect((base + 25 + data.getInt32(21, true)) >>> 0).toBe(stub);
+        expect([...code.slice(11, 21)]).toEqual([
+            0xff, 0x74, 0x24, 0x08, 0xff, 0x74, 0x24, 0x08, 0x51, 0xe8,
+        ]);
+        expect([...code.slice(25, 28)]).toEqual([0xc2, 0x08, 0x00]);
+        expect(validatePrologueBytes(Uint8Array.from([0x8b, 0xd1, 0x53, 0x8b, 0x5a, 0x14]))).toBeNull();
+    });
+});
+
+describe('BFME BC1 colour-block HLE', () => {
+    test('expands four-colour blocks to the exact sixteen RGBA-float texels', () => {
+        const memory = new Uint8Array(0x1000);
+        const data = new DataView(memory.buffer);
+        const input = 0x100;
+        const output = 0x200;
+        data.setUint16(input, 0xf800, true); // red
+        data.setUint16(input + 2, 0x001f, true); // blue; color0 > color1
+        data.setUint32(input + 4, 0xe4e4e4e4, true); // selectors 0,1,2,3 repeated
+        const view = {
+            readU8: (a: number) => data.getUint8(a), readU16: (a: number) => data.getUint16(a, true),
+            readU32: (a: number) => data.getUint32(a, true), readI32: (a: number) => data.getInt32(a, true),
+            readF32: (a: number) => data.getFloat32(a, true), readF64: (a: number) => data.getFloat64(a, true),
+            writeU8: (a: number, v: number) => data.setUint8(a, v), writeU16: (a: number, v: number) => data.setUint16(a, v, true),
+            writeU32: (a: number, v: number) => data.setUint32(a, v, true), writeI32: (a: number, v: number) => data.setInt32(a, v, true),
+            writeF32: (a: number, v: number) => data.setFloat32(a, v, true), writeF64: (a: number, v: number) => data.setFloat64(a, v, true),
+        } as ShadowView;
+        expect(decodeBfmeBc1ColorBlock(view, [output, input])).toBe(0);
+        expect([0, 1, 2, 3].map(pixel => [0, 1, 2, 3].map(lane => data.getUint32(output + pixel * 16 + lane * 4, true)))).toEqual([
+            [0x3f800000, 0, 0, 0x3f800000],
+            [0, 0, 0x3f800000, 0x3f800000],
+            [0x3f2aaaaa, 0, 0x3eaaaaab, 0x3f800000],
+            [0x3eaaaaaa, 0, 0x3f2aaaab, 0x3f800000],
+        ]);
+    });
+
+    test('uses BC1 transparent black when color0 is not greater than color1', () => {
+        const memory = new Uint8Array(0x400);
+        const data = new DataView(memory.buffer);
+        data.setUint16(0x20, 0, true);
+        data.setUint16(0x22, 0xffff, true);
+        data.setUint32(0x24, 0xffff_ffff, true); // selector 3 everywhere
+        const view = {
+            readU16: (a: number) => data.getUint16(a, true), readU32: (a: number) => data.getUint32(a, true),
+            writeF32: (a: number, v: number) => data.setFloat32(a, v, true),
+        } as ShadowView;
+        decodeBfmeBc1ColorBlock(view, [0x100, 0x20]);
+        expect([...memory.slice(0x100, 0x200)].every(value => value === 0)).toBe(true);
     });
 });

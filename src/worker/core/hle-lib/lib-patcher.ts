@@ -127,6 +127,9 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0x8B && b1 === 0xD9) { i += 2; continue; }
         if (b === 0x8B && b1 === 0x03) { i += 2; continue; }
         if (b === 0x8B && b1 === 0xF1) { i += 2; continue; } // mov esi,ecx
+        // BFME memory stream read: mov edx,ecx; mov ebx,[edx+0x14].
+        if (b === 0x8B && b1 === 0xD1) { i += 2; continue; }
+        if (b === 0x8B && b1 === 0x5A && bytes[i + 2] === 0x14) { i += 3; continue; }
         // BFME's hot row-copy loop starts with register-only setup before REP.
         if (b === 0x8B && (b1 === 0xCB || b1 === 0xE9)) { i += 2; continue; }
         if (b === 0xC1 && b1 === 0xE9 && bytes[i + 2] === 0x02) { i += 3; continue; }
