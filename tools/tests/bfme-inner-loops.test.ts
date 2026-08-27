@@ -30,6 +30,13 @@ import {
     popBfmeSmallPool,
     pushBfmeSmallPool,
 } from '../../src/worker/core/hle-lib/libs/bfme/small-pool-inline';
+import { assembleBfmeVertexBlendWrapper } from '../../src/worker/core/hle-lib/libs/bfme/vertex-blend';
+import { bfmeJpegIdctIslow, bfmeJpegIdctShadow } from '../../src/worker/core/hle-lib/libs/bfme/jpeg-idct-islow';
+import {
+    assembleBfmeVectorCtorFilter,
+    BFME_NOOP_VECTOR_CTORS,
+} from '../../src/worker/core/hle-lib/libs/bfme/vector-ctor-filter';
+import { blendBfmePixels, bfmePixelAlphaBlendShadow } from '../../src/worker/core/hle-lib/libs/bfme/pixel-alpha-blend';
 import { validatePrologueBytes } from '../../src/worker/core/hle-lib/lib-patcher';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -488,5 +495,145 @@ describe('BFME affine-matrix multiply inner-loop HLE', () => {
         expect([...adjust]).toContain(0xa4); // IAT 0x013378a4
         expect(validatePrologueBytes(Uint8Array.from([0x8b, 0x91, 0xbc, 0x03, 0x00, 0x00]))).toBeNull();
         expect(validatePrologueBytes(Uint8Array.from([0x8b, 0x44, 0x24, 0x04, 0xd9, 0x00]))).toBeNull();
+        expect(validatePrologueBytes(Uint8Array.from([
+            0x8b, 0x45, 0xf0,
+            0xd9, 0x05, 0x6c, 0x3b, 0x08, 0x01,
+        ]))).toBeNull();
+    });
+});
+
+describe('BFME cold-load float4 blend loop HLE', () => {
+    test('calls the WASM bulk stub, restores ESI and resumes after the x87 loop', () => {
+        const base = 0x1800;
+        const stub = 0x2400;
+        const continuation = 0x3200;
+        const code = assembleBfmeVertexBlendWrapper(base, stub, continuation);
+        const view = new DataView(code.buffer, code.byteOffset, code.byteLength);
+        expect(code.length).toBe(13);
+        expect(code[0]).toBe(0xe8);
+        expect((base + 5 + view.getInt32(1, true)) >>> 0).toBe(stub);
+        expect([...code.slice(5, 8)]).toEqual([0x8b, 0x75, 0xfc]);
+        expect(code[8]).toBe(0xe9);
+        expect((base + 13 + view.getInt32(9, true)) >>> 0).toBe(continuation);
+    });
+});
+
+describe('BFME IJG jpeg_idct_islow HLE', () => {
+    function makeFixture(): { memory: Uint8Array; view: ShadowView; args: number[] } {
+        const memory = new Uint8Array(0x4000);
+        const data = new DataView(memory.buffer);
+        const cinfo = 0x100;
+        const component = 0x300;
+        const coefficients = 0x500;
+        const quantization = 0x600;
+        const outputRows = 0x800;
+        const rangeBase = 0x2000;
+        data.setUint32(cinfo + 0x148, rangeBase, true);
+        data.setUint32(component + 0x50, quantization, true);
+        for (let i = 0; i < 64; i++) data.setInt16(quantization + i * 2, 1, true);
+        for (let i = 0; i < 1024; i++) memory[rangeBase + 0x80 + i] = i & 0xff;
+        for (let row = 0; row < 8; row++) data.setUint32(outputRows + row * 4, 0x1000 + row * 16, true);
+        const view: ShadowView = {
+            readU8: (addr) => data.getUint8(addr),
+            readU16: (addr) => data.getUint16(addr, true),
+            readU32: (addr) => data.getUint32(addr, true),
+            readF32: (addr) => data.getFloat32(addr, true),
+            readF64: (addr) => data.getFloat64(addr, true),
+            readBytes: (addr, len) => memory.slice(addr, addr + len),
+            writeU8: (addr, value) => data.setUint8(addr, value),
+            writeU16: (addr, value) => data.setUint16(addr, value, true),
+            writeU32: (addr, value) => data.setUint32(addr, value, true),
+            writeF32: (addr, value) => data.setFloat32(addr, value, true),
+            writeF64: (addr, value) => data.setFloat64(addr, value, true),
+            writeBytes: (addr, value) => memory.set(value, addr),
+        };
+        return { memory, view, args: [cinfo, component, coefficients, outputRows, 3] };
+    }
+
+    test('takes the exact DC-only shortcut and writes eight independent rows', () => {
+        const { memory, view, args } = makeFixture();
+        new DataView(memory.buffer).setInt16(args[2], 8, true);
+        expect(bfmeJpegIdctIslow(view, args)).toBe(0);
+        for (let row = 0; row < 8; row++) {
+            expect([...memory.slice(0x1000 + row * 16 + 3, 0x1000 + row * 16 + 11)])
+                .toEqual(new Array(8).fill(1));
+        }
+    });
+
+    test('declares only the 64 output bytes for differential validation', () => {
+        const { view, args } = makeFixture();
+        expect(bfmeJpegIdctShadow.guard?.(args, view)).toBe(true);
+        expect(bfmeJpegIdctShadow.ranges(args, view)).toEqual(
+            Array.from({ length: 8 }, (_, row) => ({ addr: 0x1003 + row * 16, len: 8 })),
+        );
+    });
+});
+
+describe('BFME MSVC vector-constructor filter', () => {
+    test('returns directly for every proven no-op target and declines otherwise', () => {
+        const base = 0x1000;
+        const trampoline = 0x3000;
+        const code = assembleBfmeVectorCtorFilter(base, trampoline);
+        expect(code.length).toBe(BFME_NOOP_VECTOR_CTORS.length * 10 + 8);
+        for (let i = 0; i < BFME_NOOP_VECTOR_CTORS.length; i++) {
+            const offset = i * 10;
+            expect([...code.slice(offset, offset + 4)]).toEqual([0x81, 0x7c, 0x24, 0x10]);
+            expect(new DataView(code.buffer, code.byteOffset).getUint32(offset + 4, true))
+                .toBe(BFME_NOOP_VECTOR_CTORS[i]);
+            const fast = offset + 10 + new DataView(code.buffer, code.byteOffset).getInt8(offset + 9);
+            expect([...code.slice(fast, fast + 3)]).toEqual([0xc2, 0x10, 0x00]);
+        }
+        const decline = BFME_NOOP_VECTOR_CTORS.length * 10;
+        expect(code[decline]).toBe(0xe9);
+        expect((base + decline + 5 + new DataView(code.buffer, code.byteOffset).getInt32(decline + 1, true)) >>> 0)
+            .toBe(trampoline);
+        expect(validatePrologueBytes(Uint8Array.from([0x8b, 0x44, 0x24, 0x0c, 0x48]))).toBeNull();
+    });
+});
+
+describe('BFME bulk pixel alpha blend HLE', () => {
+    function makeView(memory: Uint8Array): ShadowView {
+        const data = new DataView(memory.buffer);
+        return {
+            readU8: (addr) => data.getUint8(addr),
+            readU16: (addr) => data.getUint16(addr, true),
+            readU32: (addr) => data.getUint32(addr, true),
+            readF32: (addr) => data.getFloat32(addr, true),
+            readF64: (addr) => data.getFloat64(addr, true),
+            readBytes: (addr, len) => memory.slice(addr, addr + len),
+            writeU8: (addr, value) => data.setUint8(addr, value),
+            writeU16: (addr, value) => data.setUint16(addr, value, true),
+            writeU32: (addr, value) => data.setUint32(addr, value, true),
+            writeF32: (addr, value) => data.setFloat32(addr, value, true),
+            writeF64: (addr, value) => data.setFloat64(addr, value, true),
+            writeBytes: (addr, value) => memory.set(value, addr),
+        };
+    }
+
+    test('matches the three-channel integer blend and preserves destination alpha', () => {
+        const memory = new Uint8Array(0x400);
+        const data = new DataView(memory.buffer);
+        data.setUint32(0x100, 0x80402010, true);
+        data.setUint32(0x104, 0xffabcdef, true);
+        data.setUint32(0x180, 0x7fc08040, true);
+        data.setUint32(0x184, 0x12345678, true);
+        data.setUint32(0x200, 0x00000000, true);
+        data.setUint32(0x204, 0x000000ff, true);
+        const view = makeView(memory);
+
+        expect(blendBfmePixels(view, [0x100, 0x180, 0x200, 2])).toBe(0);
+        expect(data.getUint32(0x180, true)).toBe(0x7fbf7f3f);
+        expect(data.getUint32(0x184, true)).toBe(0x12aaccee);
+        expect(bfmePixelAlphaBlendShadow.ranges([0x100, 0x180, 0x200, 2], view))
+            .toEqual([{ addr: 0x180, len: 8 }]);
+    });
+
+    test('retains streaming semantics when source aliases destination', () => {
+        const memory = new Uint8Array(0x400);
+        const data = new DataView(memory.buffer);
+        data.setUint32(0x100, 0x7f123456, true);
+        data.setUint32(0x180, 0x00000080, true);
+        blendBfmePixels(makeView(memory), [0x100, 0x100, 0x180, 1]);
+        expect(data.getUint32(0x100, true)).toBe(0x7f113355);
     });
 });

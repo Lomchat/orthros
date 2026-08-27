@@ -30,6 +30,7 @@ import {
 } from './gdi-objects';
 import { textOut as textOutImpl, drawText as drawTextImpl } from './gdi-text';
 import { bitBlt as bitBltImpl, stretchBlt as stretchBltImpl } from './gdi-blit';
+import { copyCanvasRgbaToDib } from './dib-sync';
 
 export interface GDIObject {
     handle: number;
@@ -50,6 +51,22 @@ export interface ClearOverlayRectOptions {
     excludeRepairHwnd?: number;
     /** Caller handles overlap repair manually. */
     skipRepair?: boolean;
+}
+
+interface DibSyncDiagnosticRow {
+    reason: string;
+    hdc: number;
+    hbitmap: number;
+    bitsPtr: number;
+    width: number;
+    height: number;
+    stride: number;
+    bpp: number;
+    calls: number;
+    pixels: number;
+    getImageDataMs: number;
+    copyMs: number;
+    totalMs: number;
 }
 
 export class GDIContext {
@@ -113,6 +130,12 @@ export class GDIContext {
     private bitmapVersions: Map<number, number> = new Map();
     // Maps hdc -> {hbitmap, lastSyncVersion} for tracking when DC was last synced with bitmap
     private dcBitmapSyncState: Map<number, { hbitmap: number; version: number }> = new Map();
+
+    // Opt-in only: attributing canvas->DIB readbacks requires high-resolution
+    // timers and map updates, neither of which belongs in normal gameplay.
+    private dibSyncDiagnosticsEnabled = false;
+    private dibSyncDiagnosticStartedAt = 0;
+    private dibSyncDiagnosticRows = new Map<string, DibSyncDiagnosticRow>();
 
     // Color cache to avoid string allocations in hot path
     colorCache: Map<number, string> = new Map();
@@ -1409,7 +1432,7 @@ export class GDIContext {
      * the pointer returned through ppvBits immediately after a GDI operation;
      * keeping only the canvas shadow up to date is therefore not sufficient.
      */
-    syncSelectedDibBits(hdc: number): boolean {
+    syncSelectedDibBits(hdc: number, reason = 'other'): boolean {
         const ctx = this.contexts.get(hdc);
         const state = this.hdcStates.get(hdc);
         if (!ctx || !state) return false;
@@ -1432,6 +1455,9 @@ export class GDIContext {
             ?? System.getInstance().process?.v86?.v86?.cpu?.mem8;
         if (!mem || bitsPtr + stride * height > mem.length) return false;
 
+        const diagnostic = this.dibSyncDiagnosticsEnabled;
+        const startedAt = diagnostic ? performance.now() : 0;
+        let readbackStartedAt = startedAt;
         let image: ImageData;
         try {
             image = ctx.getImageData(0, 0, width, height);
@@ -1439,33 +1465,82 @@ export class GDIContext {
             Logger.warn(LogCategory.GDI32, `syncSelectedDibBits: canvas readback failed: ${error}`);
             return false;
         }
+        const readbackEndedAt = diagnostic ? performance.now() : 0;
 
         const rgba = image.data;
-        const bytesPerPixel = bpp >>> 3;
-        const topDown = !!bitmap.dibTopDown;
-        for (let y = 0; y < height; y++) {
-            const dstY = topDown ? y : height - 1 - y;
-            let src = y * width * 4;
-            let dst = bitsPtr + dstY * stride;
-            for (let x = 0; x < width; x++) {
-                mem[dst] = rgba[src + 2];
-                mem[dst + 1] = rgba[src + 1];
-                mem[dst + 2] = rgba[src];
-                if (bpp === 32) mem[dst + 3] = rgba[src + 3];
-                src += 4;
-                dst += bytesPerPixel;
-            }
-            // Windows DIB rows are DWORD aligned. Keep padding deterministic.
-            const rowEnd = bitsPtr + dstY * stride + stride;
-            while (dst < rowEnd) mem[dst++] = 0;
+        // Preserve the authoritative RGBA shadow before the 24-bit converter
+        // reuses ImageData as compact BGR scratch. Reuse its allocation across
+        // atlas updates to avoid a burst of short-lived 16 KiB objects.
+        let rgbaShadow = bitmap.pixels as Uint8Array | undefined;
+        if (!rgbaShadow || rgbaShadow.length !== rgba.length) {
+            rgbaShadow = new Uint8Array(rgba.length);
         }
+        rgbaShadow.set(rgba);
+        const topDown = !!bitmap.dibTopDown;
+        copyCanvasRgbaToDib(mem, bitsPtr, rgba, width, height, stride, bpp, topDown);
 
         // The canvas now is the current shadow for this bitmap. Avoid later
         // re-seeding it from the just-written guest buffer unnecessarily.
-        bitmap.pixels = new Uint8Array(rgba);
+        bitmap.pixels = rgbaShadow;
         bitmap.pixelsValid = true;
         this.bitmapVersions.set(hbitmap, (this.bitmapVersions.get(hbitmap) ?? 0) + 1);
+        if (diagnostic) {
+            const endedAt = performance.now();
+            const key = `${reason}:${hdc >>> 0}:${hbitmap >>> 0}`;
+            let row = this.dibSyncDiagnosticRows.get(key);
+            if (!row) {
+                row = {
+                    reason,
+                    hdc: hdc >>> 0,
+                    hbitmap: hbitmap >>> 0,
+                    bitsPtr,
+                    width,
+                    height,
+                    stride,
+                    bpp,
+                    calls: 0,
+                    pixels: 0,
+                    getImageDataMs: 0,
+                    copyMs: 0,
+                    totalMs: 0,
+                };
+                this.dibSyncDiagnosticRows.set(key, row);
+            }
+            row.calls++;
+            row.pixels += width * height;
+            row.getImageDataMs += readbackEndedAt - readbackStartedAt;
+            row.copyMs += endedAt - readbackEndedAt;
+            row.totalMs += endedAt - startedAt;
+        }
         return true;
+    }
+
+    setDibSyncDiagnostics(enabled: boolean, reset = true): ReturnType<GDIContext['getDibSyncDiagnostics']> {
+        if (reset) {
+            this.dibSyncDiagnosticRows.clear();
+            this.dibSyncDiagnosticStartedAt = performance.now();
+        }
+        this.dibSyncDiagnosticsEnabled = enabled;
+        return this.getDibSyncDiagnostics();
+    }
+
+    getDibSyncDiagnostics(): {
+        enabled: boolean;
+        elapsedMs: number;
+        calls: number;
+        totalMs: number;
+        rows: DibSyncDiagnosticRow[];
+    } {
+        const rows = [...this.dibSyncDiagnosticRows.values()]
+            .map(row => ({ ...row }))
+            .sort((a, b) => b.totalMs - a.totalMs);
+        return {
+            enabled: this.dibSyncDiagnosticsEnabled,
+            elapsedMs: this.dibSyncDiagnosticStartedAt ? performance.now() - this.dibSyncDiagnosticStartedAt : 0,
+            calls: rows.reduce((sum, row) => sum + row.calls, 0),
+            totalMs: rows.reduce((sum, row) => sum + row.totalMs, 0),
+            rows,
+        };
     }
 
     drawText(hdc: number, text: string, rect?: { left: number; top: number; right: number; bottom: number }, format?: number): boolean {

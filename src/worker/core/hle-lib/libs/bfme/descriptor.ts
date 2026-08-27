@@ -12,6 +12,9 @@ import {
     HANDLER_BFME_TRANSFORM_POP,
     HANDLER_BFME_MATRIX_ADJUST,
     HANDLER_BFME_TREE_SUCCESSOR,
+    HANDLER_BFME_VERTEX_BLEND,
+    HANDLER_BFME_JPEG_IDCT_ISLOW,
+    HANDLER_BFME_PIXEL_ALPHA_BLEND,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -40,6 +43,10 @@ import {
     buildBfmeSmallPoolFreeInline,
 } from './small-pool-inline';
 import { bfmeTreeSuccessorHandler } from './tree-successor';
+import { buildBfmeVertexBlendWrapper, bfmeVertexBlendFallbackHandler } from './vertex-blend';
+import { bfmeJpegIdctShadow } from './jpeg-idct-islow';
+import { buildBfmeVectorCtorFilter, bfmeVectorCtorUnreachableHandler } from './vector-ctor-filter';
+import { bfmePixelAlphaBlendShadow } from './pixel-alpha-blend';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -166,6 +173,44 @@ const TREE_SUCCESSOR_PATTERN = hexBytes(
     '8b510c 3b55fc 7406 8b45fc 894508 8b4508 8be5 5d c3',
 );
 
+// lotrbfme.exe 1.03 FR @ 0x00e2dc30. This is an inner loop rather than a
+// callable leaf: it adds four float4 streams, applies one scalar weight and
+// writes the output. During cold Dunharrow construction it executed 850,432
+// iterations in twelve seconds and dominated 2.25-second v86 frames.
+const VERTEX_BLEND_PATTERN = hexBytes(
+    '8b45f0 d9056c3b0801 8945ec 8b45e8 8b4dfc 8d3412 c1e604 03c6 ' +
+    'd900 03ce d801 8b7dec d94004 8345ec10 d84104 d94008 d84108',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00ed1aa0. This is IJG's integer 8x8
+// jpeg_idct_islow, statically linked into the executable. Cold map loading
+// decodes tens of thousands of blocks through this 3.2 KiB x86 function.
+const JPEG_IDCT_ISLOW_PATTERN = hexBytes(
+    '81ec3c010000 8b842440010000 8b942444010000 8b8848010000 53 ' +
+    '8b5a50 55 8bac2450010000 56 57 81c180000000 896c2434',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x0045c600: MSVC vector-constructor iterator.
+// During cold map construction, almost all calls target one of seven exact
+// no-op constructors; the guest filter returns immediately only for those.
+const VECTOR_CTOR_ITER_PATTERN = hexBytes(
+    '8b44240c 48 7826 53 8b5c2414 55 8b6c2410 56 8b742410 57 ' +
+    '8d7801 8d9b00000000 8bce ffd3 03f5 4f 75f7 5f5e5d5b c21000',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00b47940. Integer software alpha blend over a
+// contiguous BGRA span. A cold-load trace measured 754,816 pixel iterations
+// and more than three million JIT block executions in ten seconds.
+const PIXEL_ALPHA_BLEND_PATTERN = hexBytes(
+    '558bec515356578b451485c00f8e9b0000008945fc8b45088b088b45100fb630' +
+    'bfff0000002bfe83c0048945108b450c8b1033c08ac10fafc6c1f80833db8ada' +
+    '0fafdfc1fb0803c38ad0c1ca08c1c90833c08ac10fafc6c1f80833db8ada0faf' +
+    'dfc1fb0803c38ad0c1ca08c1c90833c08ac10fafc6c1f80833db8ada0fafdfc1' +
+    'fb0803c38ad0c1ca10c1c9108b450c891083c00489450c8b450883c004894508' +
+    '8b45fc488945fc0f8568ffffff5f5e5b8be55dc3',
+);
+
+
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
     displayName: 'BFME 1.03 hot inner loops',
@@ -232,6 +277,22 @@ export const bfmeDescriptor: LibDescriptor = {
         tree_successor: {
             kind: 'bytes', pattern: TREE_SUCCESSOR_PATTERN,
             mask: 'x'.repeat(TREE_SUCCESSOR_PATTERN.length), section: '.text', weight: 12,
+        },
+        vertex_blend: {
+            kind: 'bytes', pattern: VERTEX_BLEND_PATTERN,
+            mask: 'x'.repeat(VERTEX_BLEND_PATTERN.length), section: '.text', weight: 12,
+        },
+        jpeg_idct_islow: {
+            kind: 'bytes', pattern: JPEG_IDCT_ISLOW_PATTERN,
+            mask: 'x'.repeat(JPEG_IDCT_ISLOW_PATTERN.length), section: '.text', weight: 12,
+        },
+        vector_ctor_iter: {
+            kind: 'bytes', pattern: VECTOR_CTOR_ITER_PATTERN,
+            mask: 'x'.repeat(VECTOR_CTOR_ITER_PATTERN.length), section: '.text', weight: 12,
+        },
+        pixel_alpha_blend: {
+            kind: 'bytes', pattern: PIXEL_ALPHA_BLEND_PATTERN,
+            mask: 'x'.repeat(PIXEL_ALPHA_BLEND_PATTERN.length), section: '.text', weight: 12,
         },
     },
     functions: {
@@ -408,6 +469,51 @@ export const bfmeDescriptor: LibDescriptor = {
             callingConvention: 'cdecl', argCount: 1, required: true,
             hypercallHandlerId: HANDLER_BFME_TREE_SUCCESSOR,
         },
+        vertex_blend: {
+            name: 'vertex_blend',
+            entryProbe: {
+                kind: 'prologue', pattern: VERTEX_BLEND_PATTERN,
+                mask: 'x'.repeat(VERTEX_BLEND_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            // mov eax,[ebp-0x10]; fld dword [0x01083b6c]
+            prologueLen: 9,
+            hypercallHandlerId: HANDLER_BFME_VERTEX_BLEND,
+            entryFilter: buildBfmeVertexBlendWrapper,
+        },
+        jpeg_idct_islow: {
+            name: 'jpeg_idct_islow',
+            entryProbe: {
+                kind: 'prologue', pattern: JPEG_IDCT_ISLOW_PATTERN,
+                mask: 'x'.repeat(JPEG_IDCT_ISLOW_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'stdcall', argCount: 5, required: true,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_JPEG_IDCT_ISLOW,
+            shadow: bfmeJpegIdctShadow,
+        },
+        vector_ctor_iter: {
+            name: 'vector_ctor_iter',
+            entryProbe: {
+                kind: 'prologue', pattern: VECTOR_CTOR_ITER_PATTERN,
+                mask: 'x'.repeat(VECTOR_CTOR_ITER_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'stdcall', argCount: 4, required: true,
+            prologueLen: 5,
+            entryFilter: buildBfmeVectorCtorFilter,
+        },
+        pixel_alpha_blend: {
+            name: 'pixel_alpha_blend',
+            entryProbe: {
+                kind: 'prologue', pattern: PIXEL_ALPHA_BLEND_PATTERN,
+                mask: 'x'.repeat(PIXEL_ALPHA_BLEND_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 4, required: true,
+            // push ebp; mov ebp,esp; push ecx; push ebx; push esi
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_PIXEL_ALPHA_BLEND,
+            shadow: bfmePixelAlphaBlendShadow,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
@@ -423,5 +529,7 @@ export const bfmeDescriptor: LibDescriptor = {
         transform_pop: bfmeTransformPopHandler,
         matrix_adjust: bfmeMatrixAdjustHandler,
         tree_successor: bfmeTreeSuccessorHandler,
+        vertex_blend: bfmeVertexBlendFallbackHandler,
+        vector_ctor_iter: bfmeVectorCtorUnreachableHandler,
     },
 };

@@ -183,7 +183,16 @@ export const HANDLER_BFME_TRANSFORM_POP = 145;
 export const HANDLER_BFME_MATRIX_ADJUST = 146;
 /** BFME 1.03 STL tree iterator successor at lotrbfme.exe+0x82b870. */
 export const HANDLER_BFME_TREE_SUCCESSOR = 147;
-
+/** BFME 1.03 cold-load four-source float4 blend loop. */
+export const HANDLER_BFME_VERTEX_BLEND = 148;
+/** BFME's statically linked IJG jpeg_idct_islow 8x8 integer kernel. */
+export const HANDLER_BFME_JPEG_IDCT_ISLOW = 149;
+/** BFME 1.03 bulk software BGRA alpha blend used during map construction. */
+export const HANDLER_BFME_PIXEL_ALPHA_BLEND = 150;
+/** MSVCR71 bounded scalar-conversion sscanf subset. */
+export const HANDLER_MSVCR71_SSCANF_SCALAR = 151;
+/** MSVCR71 7.10 byte-exact ASCII case-insensitive string comparison. */
+export const HANDLER_MSVCR71_STRICMP = 152;
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
 export const OFF_HC_SLAB_END = 0x1404;
@@ -464,6 +473,13 @@ export class HypercallDataManager {
         // Start disabled — enable after functions are registered
         this.view.setUint32(this.hpBase + OFF_HC_ENABLED, 0, true);
 
+        // PE loading may prepare guest-resident fast-path state before the v86
+        // HYPERCALL_PAGE is available. Publish everything accumulated during that
+        // phase now; otherwise the first clean boot keeps valid handlers and slab
+        // pointers only in JS until an unrelated WebAssembly.Memory buffer change
+        // happens to call rewriteState().
+        this.publishConfiguredState();
+
         this.initialized = true;
         Logger.log(LogCategory.SYSTEM,
             `[HYPERCALL] Initialized, page base=0x${hpBase.toString(16)}`);
@@ -512,30 +528,7 @@ export class HypercallDataManager {
         this.view.setUint32(this.hpBase + OFF_HC_PERF_FREQ_LO, PERF_FREQ & 0xFFFFFFFF, true);
         this.view.setUint32(this.hpBase + OFF_HC_PERF_FREQ_HI, 0, true);
 
-        // Dispatch table entries
-        for (const [functionId, handlerId] of this.registeredEntries) {
-            this.view.setUint8(this.hpBase + OFF_HC_DISPATCH_TABLE + functionId, handlerId);
-        }
-
-        // Slab control-block pointer (the slab control fields themselves live in guest RAM,
-        // which survives buffer changes; only this page-resident pointer must be re-published).
-        if (this.slabControlAddr !== 0) {
-            this.view.setUint32(this.hpBase + OFF_HC_SLAB_CTL_PTR, this.slabControlAddr, true);
-        }
-
-        // Mutex mirror table pointer — same contract as slab: guest table survives, page pointer does not.
-        if (this.mutexMirrorAddr !== 0) {
-            this.view.setUint32(this.hpBase + OFF_HC_MUTEX_MIRROR_PTR, this.mutexMirrorAddr, true);
-            // Do not rewrite the table from mutexMirrorShadow here. WASM and the
-            // guest inline stubs mutate the live guest table without touching the
-            // JS shadow; WebAssembly.Memory growth preserves guest RAM, so copying
-            // the stale shadow would resurrect old owners/recursion counts.
-        }
-
-        // EAGL token-dispatch config pointer — same contract (guest block survives).
-        if (this.eaglTokenCfgAddr !== 0) {
-            this.view.setUint32(this.hpBase + OFF_HC_EAGL_TOKEN_CFG_PTR, this.eaglTokenCfgAddr, true);
-        }
+        this.publishConfiguredState();
 
         this.writeFlsSharedState();
         this.writeEventMirrorState(true); // preserve WASM-set signal bits across buffer-change resync
@@ -549,6 +542,29 @@ export class HypercallDataManager {
             Logger.log(LogCategory.SYSTEM,
                 `[HYPERCALL] Re-synced state after buffer change ` +
                 `(${this.registeredEntries.size} handlers, enabled=true)`);
+        }
+    }
+
+    /** Publish state that is allowed to be configured before initialize(). */
+    private publishConfiguredState(): void {
+        if (!this.view || this.hpBase === 0) return;
+
+        for (const [functionId, handlerId] of this.registeredEntries) {
+            this.view.setUint8(this.hpBase + OFF_HC_DISPATCH_TABLE + functionId, handlerId);
+        }
+
+        // These control structures live in guest RAM and survive WASM-memory
+        // growth/rebinding. Only their page-resident pointers need publishing.
+        if (this.slabControlAddr !== 0) {
+            this.view.setUint32(this.hpBase + OFF_HC_SLAB_CTL_PTR, this.slabControlAddr, true);
+        }
+        if (this.mutexMirrorAddr !== 0) {
+            this.view.setUint32(this.hpBase + OFF_HC_MUTEX_MIRROR_PTR, this.mutexMirrorAddr, true);
+            // Do not rewrite the live mutex table from mutexMirrorShadow here:
+            // WASM and guest inline stubs mutate it without updating that shadow.
+        }
+        if (this.eaglTokenCfgAddr !== 0) {
+            this.view.setUint32(this.hpBase + OFF_HC_EAGL_TOKEN_CFG_PTR, this.eaglTokenCfgAddr, true);
         }
     }
 

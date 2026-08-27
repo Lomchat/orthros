@@ -173,6 +173,19 @@ export class VirtualFileSystem {
         await this.overlay.loadIndex();
     }
 
+    /** Warm bounded, complete small overlay files before the guest starts. This
+     * turns the first Win32 ReadFile for saves/configs into a synchronous memory
+     * hit instead of an async OPFS handle-open stall. Sparse CoW patches over a
+     * ROM file are deliberately excluded because their untouched tail must still
+     * fall through to the ROM underlay. */
+    async warmOverlaySmallFiles(): Promise<{ files: number; bytes: number }> {
+        if (!this.overlay) return { files: 0, bytes: 0 };
+        return this.overlay.warmSmallFiles((path) => {
+            const rel = this.relRomPath(path).toLowerCase();
+            return !rel || !this.romIndex.has(rel) || this.overlay!.isShadowed(path);
+        });
+    }
+
     /** Install the per-game persist/ephemeral policy on the active overlay. */
     setPathPolicy(policy: PathPolicy): void {
         if (this.overlay) this.overlay.setPolicy(policy);
@@ -1392,6 +1405,20 @@ export class VirtualFileSystem {
         return this.romCache.has(rel.toLowerCase());
     }
 
+    romCacheStats(): { entries: number; bytes: number; maxBytes: number; pinnedEntries: number; pinnedBytes: number; pendingLoads: number; overlayEntries: number; overlayBytes: number } {
+        const overlay = this.overlay?.contentCacheStats() ?? { entries: 0, bytes: 0 };
+        return {
+            entries: this.romCache.size,
+            bytes: this.romCache.byteSize,
+            maxBytes: this.ROM_CACHE_MAX_BYTES,
+            pinnedEntries: this.romPinned.size,
+            pinnedBytes: this.romPinnedBytes,
+            pendingLoads: this.romLoadPromises.size,
+            overlayEntries: overlay.entries,
+            overlayBytes: overlay.bytes,
+        };
+    }
+
     /**
      * Prefetch a single ROM entry into romCache with deduplication via romLoadPromises.
      * Skips files > MAX_CACHE_ENTRY_SIZE (served via range reads on demand).
@@ -1831,6 +1858,53 @@ class OpfsOverlay {
         if (!this.root) return;
         this.entries.clear();
         await this.scanDirectory(this.root, []);
+    }
+
+    /** Load complete small persisted files into the authoritative session cache.
+     * The caller excludes sparse CoW overlays whose tail still belongs to ROM. */
+    async warmSmallFiles(
+        canCache: (path: string) => boolean,
+        maxTotalBytes = 32 * 1024 * 1024,
+        maxFileBytes = 1024 * 1024,
+        concurrency = 4,
+    ): Promise<{ files: number; bytes: number }> {
+        const selected: Array<{ key: string; path: string; size: number }> = [];
+        let reserved = 0;
+        const candidates = Array.from(this.entries.entries())
+            .filter(([, e]) => e.kind === 'file' && e.size <= maxFileBytes && canCache(e.path))
+            .sort((a, b) => a[1].size - b[1].size);
+        for (const [key, entry] of candidates) {
+            if (this.contentCache.has(key)) continue;
+            if (reserved + entry.size > maxTotalBytes) continue;
+            selected.push({ key, path: entry.path, size: entry.size });
+            reserved += entry.size;
+        }
+
+        let files = 0;
+        let bytes = 0;
+        const queue = [...selected];
+        const workers = Array.from({ length: Math.min(concurrency, queue.length || 1) }, async () => {
+            while (queue.length > 0) {
+                const item = queue.shift()!;
+                try {
+                    const handle = await this.getFileHandle(item.path, false);
+                    const file = await handle.getFile();
+                    if (file.size !== item.size || file.size > maxFileBytes) continue;
+                    const data = new Uint8Array(await file.arrayBuffer());
+                    this.contentCache.set(item.key, data);
+                    files++;
+                    bytes += data.byteLength;
+                } catch { /* best-effort: an OPFS race stays on the normal path */ }
+            }
+        });
+        await Promise.all(workers);
+        return { files, bytes };
+    }
+
+    contentCacheStats(): { entries: number; bytes: number } {
+        let bytes = 0;
+        for (const data of this.contentCache.values()) bytes += data.byteLength;
+        return { entries: this.contentCache.size, bytes };
     }
 
     hasFile(path: string): boolean {

@@ -173,8 +173,9 @@ export function compareShadowOutputs(
     kernelEax: number,
     guestEax: number,
     f32UlpTolerance?: number,
+    compareEax = true,
 ): ShadowMismatch | null {
-    if ((kernelEax >>> 0) !== (guestEax >>> 0)) {
+    if (compareEax && (kernelEax >>> 0) !== (guestEax >>> 0)) {
         return {
             kind: 'eax',
             detail: `EAX kernel=0x${(kernelEax >>> 0).toString(16)} guest=0x${(guestEax >>> 0).toString(16)}`,

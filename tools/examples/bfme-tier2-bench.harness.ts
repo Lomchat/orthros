@@ -5,9 +5,9 @@ const mode = (process.env.BFME_TIER2_MODE ?? "legacy") === "profiled" ? "profile
 const playerPage = process.env.BFME_PLAYER === "1";
 const skipBoot = process.env.BFME_SKIP_BOOT === "1";
 
-// Input coordinates are the 1400x900 virtual Win32 desktop. The 800x600 BFME
-// window is centred at (300,155). BFME polls DirectInput at menu-frame cadence,
-// so every click is preceded by a settled hover and held across several polls.
+// D3D9 exclusive mode synchronizes the Win32 desktop and DirectInput coordinates
+// to the 800x600 game surface. BFME polls DirectInput at menu-frame cadence, so
+// every click is preceded by a settled hover and held across several polls.
 const bootChain = harness();
 if (!skipBoot) {
     if (playerPage) bootChain.reload().sleep(5_000);
@@ -15,6 +15,7 @@ if (!skipBoot) {
 }
 
 const opened = await bootChain
+    .call("stopLogs")
     .audioGesture()
     .watchFrames(true)
     .call("dbgCall", "jitTier2Regions", mode === "profiled")
@@ -26,15 +27,29 @@ if (!opened.ok) process.exit(1);
 // SwiftShader a nominal 240 s page timer can be delayed enough that combining it
 // with all menu input makes an otherwise healthy run expire at the transport.
 if (!skipBoot) {
-    const settled = await harness().sleep(240_000).run();
-    console.log(JSON.stringify({ mode, phase: "settled", result: settled }, null, 2));
-    if (!settled.ok) process.exit(1);
+    let sawFrame = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const settled = await harness()
+            .waitForEvent("frameRendered", { timeoutMs: 55_000 })
+            .run();
+        console.log(JSON.stringify({ mode, phase: `settled-${attempt + 1}`, result: settled }, null, 2));
+        if (!settled.ok) process.exit(1);
+        sawFrame = !!settled.steps.find((step: any) => step.cmd === "waitForEvent")?.result;
+        if (sawFrame) break;
+    }
+    if (!sawFrame) {
+        console.error("No BFME frame after 550 seconds");
+        process.exit(1);
+    }
+    const warmed = await harness().sleep(5_000).run();
+    console.log(JSON.stringify({ mode, phase: "settled", result: warmed }, null, 2));
+    if (!warmed.ok) process.exit(1);
 }
 
 const boot = await harness()
-    .move(390, 730).sleep(1_200).call("clickHold", 390, 730, 700).sleep(6_000) // Solo
-    .move(620, 730).sleep(1_200).call("clickHold", 620, 730, 700).sleep(8_000) // Escarmouche
-    .move(640, 730).sleep(1_200).call("clickHold", 640, 730, 700)              // Commencer
+    .move(90, 575).sleep(1_200).call("clickHold", 90, 575, 700).sleep(6_000)   // Solo
+    .move(320, 575).sleep(1_200).call("clickHold", 320, 575, 700).sleep(8_000) // Escarmouche
+    .move(340, 575).sleep(1_200).call("clickHold", 340, 575, 700)              // Commencer
     .run();
 
 console.log(JSON.stringify({ mode, phase: "boot", result: boot }, null, 2));

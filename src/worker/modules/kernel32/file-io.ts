@@ -669,7 +669,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         return exports['OpenFile']!(ctx, mem, [lpPathName, 0, iReadWrite]);
     };
 
-    exports['CreateFileW'] = async (ctx, mem, args) => {
+    exports['CreateFileW'] = (ctx, mem, args) => {
         const lpFileName = args[0];
         const dwDesiredAccess = args[1];
         const dwShareMode = args[2];
@@ -697,31 +697,63 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             return handleId;
         }
 
-        try {
-            const vfs = System.getInstance().fileSystem;
-            let vfsHandle = await vfs.open(filename, dwDesiredAccess, dwCreationDisposition);
-
-            // Generic UE1 first-run: OPEN_EXISTING read-miss on Detected.ini / a
-            // config-ini → materialize/seed into the overlay, then retry (gated on ue1).
-            if (!vfsHandle && await tryUe1FirstRunMaterialize(filename, dwDesiredAccess, dwCreationDisposition)) {
-                vfsHandle = await vfs.open(filename, dwDesiredAccess, dwCreationDisposition);
-            }
-
-            if (!vfsHandle) {
-                Logger.verbose(LogCategory.KERNEL32, `CreateFileW: file not found or cannot be opened`);
-                System.getInstance().scheduler.setLastError(ERROR_FILE_NOT_FOUND);
-                return INVALID_HANDLE_VALUE;
-            }
-
+        const vfs = System.getInstance().fileSystem;
+        const finishOpen = (vfsHandle: VfsFileHandle): number => {
             const handle = new FileHandleWrapper(vfsHandle, vfs);
             const resourceProvider = System.getInstance().resourceProvider;
             const handleId = resourceProvider.registerFileHandle(handle);
             Logger.verbose(LogCategory.KERNEL32, `CreateFileW: opened file handle 0x${handleId.toString(16)}`);
+            System.getInstance().scheduler.setLastError(0);
             return handleId;
-        } catch (error) {
-            Logger.error(LogCategory.KERNEL32, `CreateFileW failed: ${error}`);
+        };
+
+        // vfs.open() is async even when it resolves a ROM or indexed overlay entry
+        // synchronously. Returning its already-resolved Promise still parks the guest
+        // thread until the worker reaches a microtask checkpoint; during a CPU-heavy
+        // UI transition that can turn a sub-millisecond open into a visible 50–1000ms
+        // frame stall. Match CreateFileA and keep all ordinary dispositions in-guest.
+        const syncHandle = vfs.openSync(filename, dwDesiredAccess, dwCreationDisposition);
+        if (syncHandle !== null) return finishOpen(syncHandle);
+
+        const disp = dwCreationDisposition >>> 0;
+        const openFailure = vfs.classifyOpenFailure(filename, disp);
+
+        // UE1 may intentionally materialize a missing config file. This is the only
+        // OPEN_EXISTING case that still needs asynchronous work.
+        if (disp === 3 && EmulatorConfig.getInstance().ue1 && (dwDesiredAccess & GENERIC_READ) !== 0) {
+            return (async (): Promise<number> => {
+                try {
+                    if (await tryUe1FirstRunMaterialize(filename, dwDesiredAccess, disp)) {
+                        const materialized = await vfs.open(filename, dwDesiredAccess, disp);
+                        if (materialized) return finishOpen(materialized);
+                    }
+                } catch (error) {
+                    Logger.error(LogCategory.KERNEL32, `CreateFileW materialization failed: ${error}`);
+                }
+                System.getInstance().scheduler.setLastError(openFailure);
+                return INVALID_HANDLE_VALUE;
+            })();
+        }
+
+        // All supported create dispositions are handled by openSync. A null result is
+        // therefore an ordinary Win32 failure, not a reason to suspend the guest.
+        if (disp >= 1 && disp <= 5) {
+            Logger.verbose(LogCategory.KERNEL32, `CreateFileW: file not found or cannot be opened`);
+            System.getInstance().scheduler.setLastError(openFailure);
             return INVALID_HANDLE_VALUE;
         }
+
+        // Preserve the old generic fallback for unknown dispositions.
+        return (async (): Promise<number> => {
+            try {
+                const vfsHandle = await vfs.open(filename, dwDesiredAccess, dwCreationDisposition);
+                if (vfsHandle) return finishOpen(vfsHandle);
+            } catch (error) {
+                Logger.error(LogCategory.KERNEL32, `CreateFileW failed: ${error}`);
+            }
+            System.getInstance().scheduler.setLastError(openFailure);
+            return INVALID_HANDLE_VALUE;
+        })();
     };
 
     const copyFileImpl = async (srcPath: string, dstPath: string, bFailIfExists: boolean): Promise<number> => {
@@ -1267,6 +1299,9 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                     view.setUint32(lpNumberOfBytesRead, bytesReadSync, true);
                 }
                 const vfsHandle = (fileHandle as FileHandleWrapper).vfsHandle;
+                if (vfsHandle && ioTraceRing.isEnabled()) {
+                    ioTraceRing.record('read', hFile, vfsHandle.path, vfsHandle.position - bytesReadSync, nNumberOfBytesToRead, bytesReadSync);
+                }
                 if (vfsHandle?.path.toLowerCase().endsWith("casa.mmp")) {
                     Logger.log(LogCategory.KERNEL32, 
                         `ReadFile casa.mmp: h=0x${hFile.toString(16)} buf=0x${lpBuffer.toString(16)} ` +
@@ -1335,6 +1370,9 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             }
             {
                 const vfsHandle = (fileHandle as FileHandleWrapper).vfsHandle;
+                if (ioTraceRing.isEnabled()) {
+                    ioTraceRing.record('read', hFile, vfsHandle.path, vfsHandle.position - writeLen, nNumberOfBytesToRead, writeLen);
+                }
                 if (LARGE_IO_TRACE_ENABLED) traceLargeRead(
                     'ReadFile',
                     vfsHandle.path,
@@ -1369,6 +1407,9 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                 const bytesRead = await fh.readInto(freshMem, lpBuffer, nNumberOfBytesToRead);
 
                 const vfsHandle = (fileHandle as FileHandleWrapper).vfsHandle;
+                if (ioTraceRing.isEnabled()) {
+                    ioTraceRing.record('read-async', hFile, vfsHandle.path, vfsHandle.position - bytesRead, nNumberOfBytesToRead, bytesRead);
+                }
                 if (LARGE_IO_TRACE_ENABLED) traceLargeRead(
                     'ReadFile',
                     vfsHandle.path,

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PreemptionManager } from "../../src/worker/core/cpu/preemption-manager";
 
 describe("PreemptionManager JIT defaults", () => {
-    test("keeps measured-negative RET dispatch experiments disabled at boot", () => {
+    test("enables validated RET chaining but keeps target speculation disabled at boot", () => {
         const configs = new Map<number, number>();
         const memory = { buffer: new ArrayBuffer(4096) };
         const manager = new PreemptionManager();
@@ -20,7 +20,7 @@ describe("PreemptionManager JIT defaults", () => {
 
         manager.initialize(cpu);
 
-        expect(manager.isRetChainingEnabled()).toBe(false);
+        expect(manager.isRetChainingEnabled()).toBe(true);
         expect(manager.isRetSpeculationEnabled()).toBe(false);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(true);
@@ -28,7 +28,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.getJitMaxPendingCompiles()).toBe(2);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
         expect(configs.get(4)).toBe(0);
-        expect(configs.get(12)).toBe(0);
+        expect(configs.get(12)).toBe(1);
         expect(configs.get(13)).toBe(0);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(1);

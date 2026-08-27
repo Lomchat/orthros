@@ -29,6 +29,7 @@ export class WebGPUBackend implements RenderBackend {
      * so retaining these few textures is safer and negligible beside game VRAM.
      */
     private retiredOverlayTextures: GPUTexture[] = [];
+    private overlayExternalCopyFailures = 0;
     private overlaySampler: GPUSampler | null = null;
     private overlayNearestSampler: GPUSampler | null = null;
     private overlayVertexBuffer: GPUBuffer | null = null;
@@ -274,7 +275,7 @@ export class WebGPUBackend implements RenderBackend {
         if (!this.device || !this.context || !this.queue || screenW <= 0 || screenH <= 0) return;
 
         // Upload overlay to texture
-        this.updateOverlayTexture(overlay);
+        if (!this.updateOverlayTexture(overlay)) return;
         if (!this.overlayTextureView) return;
 
         // Ensure pipeline exists
@@ -371,7 +372,7 @@ export class WebGPUBackend implements RenderBackend {
         const screenH = overlay.height;
         if (screenW <= 0 || screenH <= 0) return;
 
-        this.updateOverlayTexture(overlay);
+        if (!this.updateOverlayTexture(overlay)) return;
         if (!this.overlayTextureView) return;
 
         if (!this.overlayPipeline || this.overlayPipelineFormat !== this.format) {
@@ -462,12 +463,12 @@ export class WebGPUBackend implements RenderBackend {
      * WebGPU guarantees command ordering in the queue, so the copy will complete
      * before any subsequent render commands that use this texture.
      */
-    updateOverlayTexture(source: OffscreenCanvas): void {
-        if (!this.device || !this.queue) return;
+    updateOverlayTexture(source: OffscreenCanvas): boolean {
+        if (!this.device || !this.queue) return false;
 
         const width = source.width;
         const height = source.height;
-        if (width === 0 || height === 0) return;
+        if (width === 0 || height === 0) return false;
 
         // Recreate texture if size changed
         if (!this.overlayTexture ||
@@ -487,11 +488,26 @@ export class WebGPUBackend implements RenderBackend {
         // Copy canvas to texture.
         // Canvas 2D uses premultiplied alpha, so we preserve it as-is.
         // Use sRGB color space (default, but explicit for clarity).
-        this.queue.copyExternalImageToTexture(
-            { source, flipY: false },
-            { texture: this.overlayTexture!, premultipliedAlpha: true, colorSpace: "srgb" },
-            { width, height }
-        );
+        try {
+            this.queue.copyExternalImageToTexture(
+                { source, flipY: false },
+                { texture: this.overlayTexture!, premultipliedAlpha: true, colorSpace: "srgb" },
+                { width, height }
+            );
+            return true;
+        } catch (error) {
+            // Chromium can transiently reject an OffscreenCanvas external image
+            // while a game-side resolution switch replaces its 2D backing store.
+            // A missing GDI overlay update is recoverable; aborting the game is not.
+            // The next dirty paint retries with the current canvas.
+            this.overlayExternalCopyFailures++;
+            if (this.overlayExternalCopyFailures <= 3) {
+                Logger.warn(LogCategory.SYSTEM,
+                    `WebGPUBackend: skipped invalid overlay external image ` +
+                    `(${width}x${height}, failure ${this.overlayExternalCopyFailures}): ${error}`);
+            }
+            return false;
+        }
     }
 
     /**
@@ -540,7 +556,7 @@ export class WebGPUBackend implements RenderBackend {
      * Blit an external canvas onto a target texture view (Combined operation)
      */
     blit(source: OffscreenCanvas, target: GPUTextureView, encoder: GPUCommandEncoder): void {
-        this.updateOverlayTexture(source);
+        if (!this.updateOverlayTexture(source)) return;
         this.renderOverlay(target, encoder);
     }
 

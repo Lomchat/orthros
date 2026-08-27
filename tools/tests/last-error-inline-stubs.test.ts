@@ -17,17 +17,26 @@ describe('kernel32 last-error inline stubs', () => {
 
         expect(patched).toEqual({ getLastError: true, setLastError: true });
         expect(Array.from(code.subarray(0, 16))).toEqual([
-            0xa1, 0x24, 0x20, 0x00, 0x22, 0xc3,
-            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x64, 0xa1, 0x34, 0x00, 0x00, 0x00, 0xc3,
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
         ]);
         expect(Array.from(code.subarray(16, 32))).toEqual([
             0x8b, 0x44, 0x24, 0x04,
-            0xa3, 0x24, 0x20, 0x00, 0x22,
+            0x64, 0xa3, 0x34, 0x00, 0x00, 0x00,
             0x31, 0xc0,
             0xc2, 0x04, 0x00,
-            0x90, 0x90,
+            0x90,
         ]);
         expect(Array.from(code.subarray(32))).toEqual(new Array(16).fill(0xcc));
+    });
+
+    it('patches before HYPERCALL_PAGE exists because the TEB is guest-native', () => {
+        const code = new Uint8Array(16).fill(0xcc);
+        expect(patchLastErrorInlineStubs(code, 0x2000, 0x2000, undefined, 0))
+            .toEqual({ getLastError: true, setLastError: false });
+        expect(Array.from(code.subarray(0, 7))).toEqual([
+            0x64, 0xa1, 0x34, 0x00, 0x00, 0x00, 0xc3,
+        ]);
     });
 
     it('does not touch reused or unavailable stubs outside the current batch', () => {

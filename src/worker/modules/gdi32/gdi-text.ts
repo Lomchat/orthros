@@ -163,7 +163,7 @@ export function textOut(
     // canvas readback after every glyph turns font-atlas construction into a
     // multi-hundred-millisecond stall. Direct TextOut callers keep the faithful
     // immediate commit by default.
-    if (syncDib) gdi.syncSelectedDibBits(hdc);
+    if (syncDib) gdi.syncSelectedDibBits(hdc, 'TextOut');
 
     return true;
 }
@@ -291,7 +291,7 @@ export function drawText(gdi: GDIContext, hdc: number, text: string, rect?: { le
         }
     }
 
-    gdi.syncSelectedDibBits(hdc);
+    gdi.syncSelectedDibBits(hdc, 'DrawText');
 
     return true;
 }

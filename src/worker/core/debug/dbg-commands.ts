@@ -38,6 +38,7 @@ import { dialogNeedsPointMouseRouting } from '../../modules/user32/dialog-overla
 import { repaintDialogOverlayIfVisible } from '../../modules/user32/dialog';
 import { isGdiSurfaceHidden } from '../../modules/ddraw/gdi-visibility';
 import { hpFreezeWatchdog } from './hp-freeze-watchdog';
+import { ioTraceRing } from './io-trace-ring';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 
@@ -101,6 +102,22 @@ export function applyDbgConfig(w: any): void {
 }
 
 export const dbg = {
+    /** Opt-in path/offset trace for Win32 reads and seeks. Disabled by default. */
+    ioTrace(on = true, cap = 1024): { enabled: boolean; cap: number } {
+        const bounded = Math.max(16, Math.min(16_384, Math.floor(cap)));
+        if (on) ioTraceRing.enable(bounded);
+        else ioTraceRing.disable();
+        return { enabled: on, cap: bounded };
+    },
+    /** Return the current I/O ring and optionally disable it after the snapshot. */
+    ioTraceReport(disable = true): ReturnType<typeof ioTraceRing.snapshot> {
+        const rows = ioTraceRing.snapshot();
+        if (disable) ioTraceRing.disable();
+        return rows;
+    },
+    romCacheStats(): ReturnType<ReturnType<typeof System.getInstance>['fileSystem']['romCacheStats']> {
+        return System.getInstance().fileSystem.romCacheStats();
+    },
     /** Enable the debugger. Turns JIT OFF (required) and clears the JIT cache. */
     enable(): void {
         cfg.enabled = true;
@@ -434,6 +451,21 @@ export const dbg = {
         console.log(`[dbg] JIT_MAX_PENDING_COMPILES=${effective} (live; 1=historical)`);
         return effective >>> 0;
     },
+    /** Tier-1 page hotness before compilation (idx 26). Clears generated code
+     *  because existing modules otherwise bias cold-start comparisons. */
+    jitBaseThreshold(threshold = 200_000): number {
+        const w = wasm(); if (!w?.set_jit_config) return -1;
+        const bounded = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitBaseThreshold) pm.setJitBaseThreshold(bounded);
+        else {
+            w.set_jit_config(26, bounded);
+            w.jit_clear_cache_js?.();
+        }
+        const effective = w.get_jit_config?.(26) ?? bounded;
+        console.log(`[dbg] JIT_BASE_THRESHOLD=${effective} + cache cleared`);
+        return effective >>> 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
@@ -588,6 +620,18 @@ export const dbg = {
         const fn = (globalThis as any).getSlabReport;
         const result = typeof fn === 'function' ? fn() : null;
         console.log(`[dbg][heap-slab][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    /** Attribute opt-in GDI canvas readbacks without taxing normal gameplay. */
+    gdiDibSyncDiag(on = true, reset = true): any {
+        const gdi = System.getInstance().gdiContext;
+        const result = gdi?.setDibSyncDiagnostics?.(!!on, !!reset) ?? null;
+        console.log(`[dbg][gdi-dib-sync] diagnostics ${on ? 'enabled' : 'disabled'}${reset ? ' + reset' : ''}`);
+        return result;
+    },
+    gdiDibSyncReport(): any {
+        const result = System.getInstance().gdiContext?.getDibSyncDiagnostics?.() ?? null;
+        console.log(`[dbg][gdi-dib-sync][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Fastmem counters: generation, compiled raw-load sites, lazy deopts, source bump counts. */
@@ -834,6 +878,31 @@ export const dbg = {
         }
         return out;
     },
+    /** Per-window scheduler attribution. Unlike boundary EIP sampling this
+     *  measures wall time charged to each guest thread, so parked-thread return
+     *  addresses cannot masquerade as CPU hotspots. */
+    schedulerPerf(reset = false): unknown {
+        const sched = (System.getInstance() as any).scheduler;
+        if (!sched) return null;
+        const out = {
+            threadCpuMs: sched.getThreadCpuMs?.() ?? {},
+            roundTrips: { ...(sched.roundTripStats ?? {}) },
+            sleepPaths: { ...(sched.sleepPathStats ?? {}) },
+            threadSummary: sched.getThreadSummary?.() ?? null,
+        };
+        if (reset) {
+            sched.resetThreadCpuMs?.();
+            const s = sched.roundTripStats;
+            if (s) {
+                s.ticks = 0; s.urgentTicks = 0; s.urgentNoReady = 0;
+                s.selfReschedule = 0; s.realSwitch = 0; s.noRunnable = 0;
+            }
+            const p = sched.sleepPathStats;
+            if (p) { p.soleRunnableYield = 0; p.blockedWait = 0; }
+        }
+        console.log(`[dbg][schedulerPerf] ${JSON.stringify(out)}`);
+        return out;
+    },
     /** Toggle the guest-memory stale-view guard. When ON, every guest-memory view
      *  handed out at a dispatch/accessor boundary (thunk `mem`, Mem.*, AddressSpace)
      *  is wrapped in a Proxy that THROWS on access if its ArrayBuffer was detached by
@@ -913,8 +982,17 @@ export const dbg = {
     },
     /** Correlate the hot JIT blocks to guest addr + module:rva (delegates to the
      *  diagnostics global). Reveals exactly which compiled block is spinning. */
-    hotJit(durationMs = 2000, intervalMs = 5, top = 20): void {
-        (globalThis as any).dumpHotJitBlocks?.(durationMs, intervalMs, top);
+    async hotJit(durationMs = 2000, intervalMs = 5, top = 20, threadId = 0): Promise<unknown> {
+        // Return the promise so harness/dbgCall can await the sampling window and
+        // receive the address table. Fire-and-forget made automated cold-transition
+        // profiles race the report and lose the only reliable JIT→guest mapping.
+        const rows = await (globalThis as any).dumpHotJitBlocks?.(durationMs, intervalMs, top, threadId);
+        if (!Array.isArray(rows)) return null;
+        return {
+            threadId: threadId >>> 0,
+            rows: rows.slice(0, Math.max(1, top | 0)),
+            topEips: Array.isArray((rows as any).topEips) ? (rows as any).topEips : [],
+        };
     },
     /** Emit hot-blocks INTO the active trace as a UserTiming mark (Level-3 self-symbolizing trace). */
     hotMark(durationMs = 3000, intervalMs = 5): void {

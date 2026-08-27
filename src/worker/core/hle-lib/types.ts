@@ -235,6 +235,10 @@ export interface ShadowSpec {
      * pass bit-exact (relaxed-FPU already runs the guest x87 as f64).
      */
     f32UlpTolerance?: number;
+    /** Ignore EAX for a C `void` function whose compiler leaves an
+     * unspecified temporary there. Declared output ranges still compare
+     * byte-for-byte. Default false. */
+    ignoreEax?: boolean;
     /**
      * When true, the hook validates in-game by invoking the ORIGINAL guest
      * function through the trampoline and comparing.

@@ -281,6 +281,10 @@ export class Scheduler {
         for (const [id, ms] of this.threadCpuMs) out[id] = Math.round(ms * 100) / 100;
         return out;
     }
+    public resetThreadCpuMs(): void {
+        this.threadCpuMs.clear();
+        this.threadCpuMarkMs = performance.now();
+    }
     public fpuSwitchStats = {
         saves: 0,
         savesSkippedClean: 0,
@@ -1383,8 +1387,12 @@ export class Scheduler {
 
         // Save current thread context if RUNNING
         if (current && current.state === ThreadState.RUNNING) {
-            // Sync lastError from WASM hypercall page
-            if (hypercallDataManager.isInitialized()) {
+            // TEB.LastErrorValue is guest-native and follows the active thread
+            // through FS. It is the authoritative switch-out source so inline
+            // Get/SetLastError leaves need no host or HYPERCALL_PAGE transition.
+            if (current.tebAddress > 0) {
+                current.lastError = this.tebManager.readLastError(current.id);
+            } else if (hypercallDataManager.isInitialized()) {
                 current.lastError = hypercallDataManager.readLastError();
             }
 
@@ -1406,7 +1414,9 @@ export class Scheduler {
             // Without this the thread re-enters the run queue with no context and
             // performSwitch spins "T<id> has no context". (WAITING/async-park threads manage
             // their own resume via the async-restore path, so they're intentionally excluded.)
-            if (hypercallDataManager.isInitialized()) {
+            if (current.tebAddress > 0) {
+                current.lastError = this.tebManager.readLastError(current.id);
+            } else if (hypercallDataManager.isInitialized()) {
                 current.lastError = hypercallDataManager.readLastError();
             }
             const context = this.saveContext(cpu, kind, cleanup);
@@ -1494,6 +1504,7 @@ export class Scheduler {
         // Update FS segment for new thread's TEB
         if (next.tebAddress > 0 && cpu.segment_offsets) {
             cpu.segment_offsets[4] = next.tebAddress;
+            this.tebManager.syncLastError(next.id, next.lastError);
         }
 
         // Sync thread data to WASM hypercall page

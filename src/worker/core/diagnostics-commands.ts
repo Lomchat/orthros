@@ -1089,7 +1089,12 @@ if (typeof globalThis !== 'undefined') {
     // Requires the jit_snapshot_* exports from vendor/v86/src/rust/jit.rs.
     // If those are missing, the function bails with a warning (v86 needs a
     // rebuild first: bun vendor/v86/build-wasm.sh).
-    (globalThis as any).dumpHotJitBlocks = async (durationMs = 2000, intervalMs = 5, top = 20) => {
+    (globalThis as any).dumpHotJitBlocks = async (
+        durationMs = 2000,
+        intervalMs = 5,
+        top = 20,
+        threadId = 0,
+    ) => {
         const v86 = getV86();
         const cpu = v86?.cpu || v86?.v86?.cpu;
         if (!cpu) { console.warn("[dumpHotJitBlocks] v86 CPU not available"); return; }
@@ -1111,14 +1116,25 @@ if (typeof globalThis !== 'undefined') {
         const eipRunning = new Map<number, number>();
         let runningSamples = 0;
         const start = performance.now();
-        console.log(`[dumpHotJitBlocks] sampling ${durationMs}ms @ ${intervalMs}ms interval ...`);
+        console.log(`[dumpHotJitBlocks] sampling ${durationMs}ms @ ${intervalMs}ms interval${threadId > 0 ? ` for T${threadId}` : ""} ...`);
 
         await new Promise<void>(resolve => {
             const id = setInterval(() => {
                 const stopped = !!(scheduler?.intentionalYield) || v86?.running === false;
                 if (stopped) return;
-                runningSamples++;
                 const eip = ipView[0] >>> 0;
+                // The CPU register view can retain the return EIP of a thread that has
+                // just parked while another scheduler task is pending. Counting that
+                // stale address made async import returns look like dominant guest CPU
+                // loops. Only sample when the scheduler confirms that this exact EIP
+                // belongs to its current RUNNING guest thread.
+                if (typeof scheduler?.hasRunningThread === 'function' && !scheduler.hasRunningThread(eip)) return;
+                // A scheduler-wide wall profile is biased toward import-return EIPs:
+                // the JS timer gets to run exactly when a guest quantum yields. A
+                // thread filter lets cold-start diagnostics isolate the actual main
+                // game thread without adding instrumentation to every x86 block.
+                if (threadId > 0 && scheduler?.getCurrentThreadId?.() !== (threadId >>> 0)) return;
+                runningSamples++;
                 eipRunning.set(eip, (eipRunning.get(eip) ?? 0) + 1);
                 const page = eip & ~0xFFF;
                 pagesRunning.set(page, (pagesRunning.get(page) ?? 0) + 1);
@@ -1194,7 +1210,7 @@ if (typeof globalThis !== 'undefined') {
 
         console.log(`[dumpHotJitBlocks] ${count} JIT blocks, ${runningSamples} EIP samples in ${elapsed.toFixed(0)}ms, ${pagesRunning.size} unique hot pages, ${eipRunning.size} unique EIPs`);
         console.log(`Top ${Math.min(top, rows.length)} JIT blocks (by EIP samples):`);
-        console.log('[dumpHotJitBlocks][JSON] ' + JSON.stringify({ count, runningSamples, hotPages: pagesRunning.size, rows: rows.slice(0, top) }));
+        console.log('[dumpHotJitBlocks][JSON] ' + JSON.stringify({ count, runningSamples, threadId: threadId >>> 0, hotPages: pagesRunning.size, rows: rows.slice(0, top) }));
         console.table(rows.slice(0, top));
         // Return the full table so callers can post-process or save it.
         return rows;

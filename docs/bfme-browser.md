@@ -709,12 +709,83 @@ menu-stall fix.
 
 Partial-rectangle canvas readback and a dword/reused-buffer copy variant were
 tested and removed: `ExtTextOutW` remained at 4.83–4.86 ms and the transition at
-7.8–8.2 FPS. The remaining architectural target is eliminating or safely
-deferring the roughly 113 synchronous canvas readbacks during cold font/resource
-construction. The deployed worker is `emulator.worker-_JxQHLuq.js`; validation
-finished with 884 tests and zero failures. The final browser run reported no
-guest fault; earlier clean runs of the same retained D3D9 path had no shadow
-divergence.
+7.8–8.2 FPS. Eliminating or safely deferring the roughly 113 synchronous canvas
+readbacks during cold font/resource construction remains a possible secondary
+target, but the later CPU trace below found a larger cost in MSVCR71.
+
+A later CPU trace localized the dominant residual below GDI. In 2.5 seconds the
+MSVCR71 scanner page executed about two million basic blocks across 23,727
+`sscanf` calls: roughly 16,416 exact `%d` conversions and 3,786 exact `%f`
+conversions, plus complex multi-field formats. A byte-exact MSVCR71 7.10 hook now
+admits only the one-output `%d`, `%u`, and `%f` forms into a bounded WASM parser;
+all complex formats remain in the original CRT. On a clean transition this cut
+the central window from 117.55 ms/frame (8.5 FPS) to 58.27 ms/frame (17.2 FPS),
+and the late window reached 40.92 ms/frame (24.4 FPS).
+
+Two adjacent decimal-formatting helpers are guest-native leaves: unsigned
+32-bit add-with-carry and a one-bit shift of a 96-bit integer. `_stricmp` uses a
+bounded ASCII WASM leaf. The 96-bit leaf alone moved the central transition from
+about 125.8 to 117.55 ms/frame before `sscanf` was specialized. All four hooks
+require byte-exact signatures from MSVCR71 7.10.
+
+The scope restriction is a correctness boundary, not merely conservative
+documentation. A prototype that also parsed literal-separated, multi-output
+formats reached 54.77 ms/frame in one short window but later terminated a full
+boot with a fault at MSVCR71 `0x13009f65`; it was removed from both classifier
+and handler. A generic `strtok` replacement also terminated startup and was
+fully removed. Neither experiment is part of production.
+
+With the newer guest-native leaves in place, seven alternating construction
+windows measured dynamic RET chaining at a 16.15 FPS median versus 10.5 FPS when
+disabled, with no guest fault. This supersedes the older 11.5%-hit skirmish
+profile above: RET chaining is enabled by default again, target speculation
+remains disabled, and `dbg.jitRetChain(false)` is the diagnostic kill switch.
+
+Use `bfme-menu-transition-measure.harness.ts` for compact early/middle/late
+numbers and `bfme-menu-transition-concise.harness.ts` when a short Tier-2 trace
+is needed. Always call `stopLogs` first; streaming Worker diagnostics materially
+distorts this cold CPU benchmark.
+
+A clean end-to-end run of the retained scalar version loaded Dunharrow and
+measured 36.44 ms/frame (27.4 FPS) over the first 120 hot frames, with a recent
+frame at 30.81 ms (32.5 FPS). v86 accounted for 35.14 ms, versus 1.25 ms in
+thunks and 0.71 ms in Present. All 18 BFME hooks and four MSVCR71 hooks were
+present, all five D3D9 shadows matched, and the guest fault list was empty. After
+a global-selection/attack-move input and two further minutes of simulation, the
+next window reached 33.01 ms/frame (30.3 FPS), with no frame above 40 ms and no
+fault. The harness did not visually prove that opposing units actually engaged,
+so this is an evolved-simulation stability check rather than definitive combat
+evidence.
+
+The cold menu-transition harness no longer assumes that a fixed four-minute VPS
+delay means BFME has rendered. It waits in bounded CDP windows for a real
+`frameRendered` event before injecting any input; the full Tier-2 benchmark uses
+the same gate. This avoids silently measuring clicks sent to Orthros' loading
+screen when SwiftShader startup is unusually slow.
+
+A final clean transition run on 27 August measured Main -> Solo at 49.28 ms/frame
+(20.3 FPS), including one isolated 652.97 ms cold frame, and the settled Solo
+screen at 33.83 ms/frame (29.6 FPS). The Solo -> Skirmish click itself held
+32.96 ms/frame (30.3 FPS). The central construction window averaged 47.65
+ms/frame (21.0 FPS) but ended at 32.74 ms (30.5 FPS); the settled setup screen
+then measured 37.94 ms/frame (26.4 FPS). The comparable earlier main-thread
+profile was 127.87 ms/frame (7.8 FPS) with an 867.77 ms worst frame. v86 still
+dominates the remaining central window at 45.72 ms, versus 1.88 ms in thunks and
+0.45 ms in Present. All five D3D9 shadows matched and no guest fault was recorded.
+
+An attempted exact hook of BFME's ARGB4444 glyph/image loop at `0x00d4159d` was
+rejected and removed completely. Once genuinely armed as raw WASM handler 153,
+it left startup without a first presentation for more than eight minutes and
+recorded a guest fault at `0x00d415a0` reading address `0x9`. No constant,
+signature, wrapper, trampoline extension or handler from that experiment remains.
+
+Those cold reruns also exposed a separate Chromium failure: an
+`OffscreenCanvas` replaced during a resolution transition can be rejected by
+`GPUQueue.copyExternalImageToTexture`. The exception previously aborted the
+entire game load around 96%. Orthros now treats that single GDI overlay upload as
+recoverable, skips stale overlay composition, and retries on the next dirty
+paint, with warning output capped. A unit test forces the Chromium exception and
+the subsequent clean cold browser run reached the BFME menus without a fault.
 
 ## Operational notes
 

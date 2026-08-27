@@ -67,11 +67,12 @@ export class PreemptionManager {
     private directBlockChainingEnabled = false;      // config idx 4
     private directBlockChainingSupported = false;
 
-    /** Dynamic RET dispatch experiments. Default OFF: a BFME skirmish measured only
-     *  11.5% ret-chain hits, so failed probes made chaining ~3.3% slower; local target
-     *  speculation was neutral to slightly slower. Both remain runtime-tunable through
-     *  setRetChaining/setRetSpeculation or dbg.jitRetChain/jitRetSpec. */
-    private retChainingEnabled = false;         // config idx 12
+    /** Dynamic RET dispatch. Ret chaining is ON after the menu-construction A/B with
+     *  guest-native Win32 leaves measured a 16.15 FPS median versus 10.5 OFF across
+     *  seven alternating windows, with zero guest faults. The older 11.5%-hit BFME
+     *  result predates those leaves and no longer represents this dispatch shape.
+     *  Local target speculation remains neutral/slower and stays diagnostic-only. */
+    private retChainingEnabled = true;          // config idx 12
     private retSpeculationEnabled = false;      // config idx 13
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
@@ -99,6 +100,11 @@ export class PreemptionManager {
      *  modules remove most of the historical global one-Promise serialization
      *  while limiting compiler contention during interactive frames. */
     private jitMaxPendingCompiles = 2;
+
+    /** Tier-1 compilation hotness (idx 26). Lower values compile cold pages
+     *  sooner but can increase compiler contention and code memory. The stock
+     *  200k remains authoritative until cross-workload A/B data says otherwise. */
+    private jitBaseThreshold = 200_000;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -251,6 +257,14 @@ export class PreemptionManager {
     }
     getJitMaxPendingCompiles(): number { return this.jitMaxPendingCompiles; }
 
+    setJitBaseThreshold(threshold: number): void {
+        this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(26, this.jitBaseThreshold);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    getJitBaseThreshold(): number { return this.jitBaseThreshold; }
+
     /** 5× original LOOP_COUNTER — reduces postMessage round-trips from ~1K/s to ~200/s.
      *  Each do_many_cycles_native() runs ~5ms instead of ~1ms, matching TIME_PER_FRAME=1ms
      *  (inner loop exits immediately after first iteration since 5ms > 1ms threshold).
@@ -317,9 +331,9 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(22, this.inlineIntraModuleDispatchEnabled ? 1 : 0);
             console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"} inlineDispatch=${this.inlineIntraModuleDispatchEnabled ? "on" : "off"}`);
 
-            // Dynamic RET dispatch (idx 12/13) — default OFF after BFME A/B, re-applied
-            // per init. Applied at boot = cold cache, so diagnostics that opt in do not
-            // inherit stale Rust defaults from a previous v86 instance.
+            // Dynamic RET dispatch (idx 12/13) — RET chaining is retained by the
+            // current BFME A/B; local target speculation remains disabled. Re-apply
+            // both per init so a new v86 instance cannot inherit stale Rust defaults.
             this.wasmExports.set_jit_config(12, this.retChainingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(13, this.retSpeculationEnabled ? 1 : 0);
             console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"}`);
@@ -332,7 +346,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(23, this.tier2RegionsEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(24, this.tier2AdaptiveEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(25, this.jitMaxPendingCompiles);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"} pendingCompiles=${this.jitMaxPendingCompiles}`);
+            this.wasmExports.set_jit_config(26, this.jitBaseThreshold);
+            console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

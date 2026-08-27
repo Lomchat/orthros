@@ -1528,6 +1528,11 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     const romRoot = bundle.manifest.rom ?? "assets";
     const romIndex = buildRomIndex(bundle.archive, romRoot);
     system.fileSystem.mountRom(bundle.archive, romRoot, romIndex);
+    const warmedOverlay = await system.fileSystem.warmOverlaySmallFiles();
+    if (warmedOverlay.files > 0) {
+      Logger.log(LogCategory.SYSTEM,
+        `VFS: warmed ${warmedOverlay.files} small overlay files (${(warmedOverlay.bytes / 1024) | 0} KiB)`);
+    }
     // Always set the CD redirect (null clears a prior game's redirect — no cross-game leak).
     const cdPath = bundle.manifest.emulator?.cdPath ?? null;
     system.fileSystem.setCdRedirect(cdPath);
@@ -2747,6 +2752,7 @@ self.onmessage = (event: MessageEvent) => {
       logOnly: boolean;
       galaxy?: { enable?: boolean; hleAudio?: boolean; hleMixer?: boolean };
       bfme?: { enable?: boolean; disabledFunctions?: string[] };
+      [libId: string]: unknown;
     };
     // Galaxy full-module HLE is PARKED. The SAB-bypass needs proper glxSample reverse-
     // engineering (some UE1 titles store raw PCM with a non-obvious USound layout; the decoded
@@ -2761,12 +2767,26 @@ self.onmessage = (event: MessageEvent) => {
       Logger.log(LogCategory.SYSTEM, `[HLE-lib] disabled via load_bundle diagnostic flag`);
     }
     if (Array.isArray(message.hleSkip)) {
-      const disabledFunctions = message.hleSkip
+      const requested = message.hleSkip
         .map((name: unknown) => String(name).trim())
         .filter(Boolean);
-      cfg.bfme = { ...((cfg.bfme as Record<string, unknown> | undefined) ?? {}), disabledFunctions };
-      Logger.log(LogCategory.SYSTEM,
-        `[HLE-lib] BFME hook skip list: ${disabledFunctions.join(', ') || '(none)'}`);
+      const byLib = new Map<string, string[]>();
+      for (const token of requested) {
+        const colon = token.indexOf(':');
+        // Backward-compatible bare names still target the BFME descriptor.
+        const libId = colon > 0 ? token.slice(0, colon).trim() : 'bfme';
+        const functionName = colon > 0 ? token.slice(colon + 1).trim() : token;
+        if (!libId || !functionName) continue;
+        const functions = byLib.get(libId) ?? [];
+        functions.push(functionName);
+        byLib.set(libId, functions);
+      }
+      for (const [libId, disabledFunctions] of byLib) {
+        const previous = cfg[libId] as Record<string, unknown> | undefined;
+        cfg[libId] = { ...(previous ?? {}), disabledFunctions };
+        Logger.log(LogCategory.SYSTEM,
+          `[HLE-lib] ${libId} hook skip list: ${disabledFunctions.join(', ') || '(none)'}`);
+      }
     }
     if (message.galaxyHle === true) {
       Logger.log(LogCategory.SYSTEM, `[Galaxy] HLE module parked — native audio path (galaxyHle ignored)`);

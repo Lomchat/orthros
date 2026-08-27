@@ -95,6 +95,13 @@ describe('compareShadowOutputs', () => {
         const m = compareShadowOutputs(mem, ranges, scratch, 7, 8);
         expect(m?.kind).toBe('eax');
     });
+    test('void functions may ignore EAX without ignoring output bytes', () => {
+        const mem = mkMem();
+        const scratch = [mem.slice(0x2000, 0x2008)];
+        expect(compareShadowOutputs(mem, ranges, scratch, 7, 8, undefined, false)).toBeNull();
+        scratch[0][3] ^= 0xff;
+        expect(compareShadowOutputs(mem, ranges, scratch, 7, 8, undefined, false)?.kind).toBe('bytes');
+    });
     test('byte mismatch names the first diff', () => {
         const mem = mkMem();
         const scratch = [mem.slice(0x2000, 0x2008)];

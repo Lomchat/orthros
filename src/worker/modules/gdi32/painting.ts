@@ -1855,7 +1855,7 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
         }
         // The guest may inspect CreateDIBSection bits as soon as ExtTextOutA
         // returns, but it cannot observe intermediate per-glyph states.
-        gdi.syncSelectedDibBits(hdc);
+        gdi.syncSelectedDibBits(hdc, 'ExtTextOutA');
         return 1;
     };
 
@@ -1928,7 +1928,7 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
 
         if (dc && rect && (options & ETO_CLIPPED)) dc.restore();
         // Covers ETO_OPAQUE with an empty text string as well.
-        gdi.syncSelectedDibBits(hdc);
+        gdi.syncSelectedDibBits(hdc, 'ExtTextOutW');
         return 1;
     };
 

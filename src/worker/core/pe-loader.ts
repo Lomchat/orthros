@@ -1246,14 +1246,15 @@ export class PELoader {
                 if (dllName === 'kernel32' && !this.heapInlineStubs) {
                     const heapAllocTrap = stubDll.exportTable.get('heapalloc');
                     const heapFreeTrap = stubDll.exportTable.get('heapfree');
-                    const hpBase = hypercallDataManager.getHpBase();
-                    if (heapAllocTrap && heapFreeTrap && hpBase !== 0) {
+                    if (heapAllocTrap && heapFreeTrap) {
                         try {
                             // The inline HeapAlloc stub routes HEAP_ZERO_MEMORY to the
                             // original OUT-trap so Rust handle_heap_alloc can use
-                            // zero_block on the shared slab. Register those trap IDs
-                            // immediately; dynamic DLL loads can execute import stubs
-                            // before the next broad applyPendingRegistrations() pass.
+                            // zero_block on the shared slab. The guest control block and
+                            // wrappers do not depend on HYPERCALL_PAGE being initialized:
+                            // setSlabControlAddr() retains the pointer and publishes it as
+                            // soon as v86 exposes that page. This ordering matters on a
+                            // clean boot, where PE imports are resolved first.
                             const heapAllocTrapStub = this.thunkGenerator.getStubByAddress(heapAllocTrap);
                             const heapFreeTrapStub = this.thunkGenerator.getStubByAddress(heapFreeTrap);
                             if (heapAllocTrapStub) {
@@ -1320,8 +1321,7 @@ export class PELoader {
                         .map(k => stubDll.exportTable.get(k)).find(a => a !== undefined);
                     const freeTrap = PELoader.CRT_FREE_KEYS
                         .map(k => stubDll.exportTable.get(k)).find(a => a !== undefined);
-                    const hpBase = hypercallDataManager.getHpBase();
-                    if (mallocTrap && freeTrap && hpBase !== 0) {
+                    if (mallocTrap && freeTrap) {
                         try {
                             const sys = System.getInstance();
                             const tmm = sys.process?.thunkMemoryManager;

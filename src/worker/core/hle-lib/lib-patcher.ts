@@ -85,6 +85,8 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         const b1 = bytes[i + 1];
         // push ebp / push r32
         if (b === 0x55 || (b >= 0x50 && b <= 0x57)) { i += 1; continue; }
+        // inc/dec r32 one-byte forms are position-independent.
+        if (b >= 0x40 && b <= 0x4f) { i += 1; continue; }
         // mov ebp, esp (both encodings)
         if (b === 0x8B && b1 === 0xEC) { i += 2; continue; }
         if (b === 0x89 && b1 === 0xE5) { i += 2; continue; }
@@ -110,6 +112,10 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         // BFME matrix adjust: fld dword [eax]. Exact register-indirect x87 load,
         // likewise independent of the instruction's address.
         if (b === 0xD9 && b1 === 0x00) { i += 2; continue; }
+        // BFME cold-map vertex blend: fld dword [abs32]. The encoded operand is
+        // an absolute guest address (not EIP-relative in 32-bit mode), so the
+        // instruction remains identical when copied into a trampoline.
+        if (b === 0xD9 && b1 === 0x05) { i += 6; continue; }
         // mov eax, moffs32 (absolute — position-independent)
         if (b === 0xA1) { i += 5; continue; }
         // SEH prologue: mov eax, fs:[imm32]
@@ -121,6 +127,13 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0x8B && b1 === 0xD9) { i += 2; continue; }
         if (b === 0x8B && b1 === 0x03) { i += 2; continue; }
         if (b === 0x8B && b1 === 0xF1) { i += 2; continue; } // mov esi,ecx
+        // BFME's hot row-copy loop starts with register-only setup before REP.
+        if (b === 0x8B && (b1 === 0xCB || b1 === 0xE9)) { i += 2; continue; }
+        if (b === 0xC1 && b1 === 0xE9 && bytes[i + 2] === 0x02) { i += 3; continue; }
+        // BFME sparse-float4 block: add eax,4; cmp eax,[ebp-0x28]. Both are
+        // exact register/base-relative forms and remain valid when relocated.
+        if (b === 0x83 && b1 === 0xC0 && bytes[i + 2] === 0x04) { i += 3; continue; }
+        if (b === 0x3B && b1 === 0x45 && bytes[i + 2] === 0xD8) { i += 3; continue; }
         if (b === 0x8A && b1 === 0x0D) { i += 6; continue; } // mov cl,[abs32]
         return `unsupported prologue byte 0x${b.toString(16)} at +${i} — extend validatePrologueBytes if this is a real, position-independent instruction`;
     }
