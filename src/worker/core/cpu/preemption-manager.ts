@@ -73,10 +73,17 @@ export class PreemptionManager {
      *  result predates those leaves and no longer represents this dispatch shape.
      *  Local target speculation remains neutral/slower and stays diagnostic-only. */
     private retChainingEnabled = true;          // config idx 12
-    /** Per-AbsoluteEip monomorphic cache in front of dynamic RET chaining
+    /** Per-AbsoluteEip primary cache in front of dynamic RET chaining
      *  (config idx 30). Its generated hit path avoids the shared Rust resolver;
      *  the guarded miss path remains authoritative. */
     private dynamicChainSitePicEnabled = true;  // config idx 30
+    /** A second per-site target is checked only from the primary cache's miss
+     *  arm (config idx 32), leaving the primary hit code unchanged. */
+    private dynamicChainSitePicSecondWayEnabled = true; // config idx 32
+    /** Third and fourth positive targets are nested behind earlier misses
+     *  (config idx 33). Enabled after the generic four-caller benchmark gained
+     *  37.9% and the same-skirmish BFME median frame time fell by 5.4%. */
+    private dynamicChainSitePicFourWayEnabled = true; // config idx 33
     private retSpeculationEnabled = false;      // config idx 13
     /** Tier-2 tiny direct-CALL leaf fusion (config idx 27). A guarded direct
      *  continuation removes the dynamic RET dispatch while preserving the real
@@ -238,6 +245,20 @@ export class PreemptionManager {
     }
     isDynamicChainSitePicEnabled(): boolean { return this.dynamicChainSitePicEnabled; }
 
+    setDynamicChainSitePicSecondWay(on: boolean): void {
+        this.dynamicChainSitePicSecondWayEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(32, on ? 1 : 0);
+    }
+    isDynamicChainSitePicSecondWayEnabled(): boolean { return this.dynamicChainSitePicSecondWayEnabled; }
+
+    setDynamicChainSitePicFourWay(on: boolean): void {
+        this.dynamicChainSitePicFourWayEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(33, on ? 1 : 0);
+    }
+    isDynamicChainSitePicFourWayEnabled(): boolean { return this.dynamicChainSitePicFourWayEnabled; }
+
     setRetSpeculation(on: boolean): void {
         this.retSpeculationEnabled = on;
         const ex = this.wasmExports;
@@ -376,7 +397,9 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(27, this.leafCallFusionEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(28, this.leafReturnLocalEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(30, this.dynamicChainSitePicEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(32, this.dynamicChainSitePicSecondWayEnabled ? 1 : 0);
+            this.wasmExports.set_jit_config(33, this.dynamicChainSitePicFourWayEnabled ? 1 : 0);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the

@@ -813,6 +813,56 @@ Warm screens reach the engine's nominal 30 FPS ceiling; the first cold
 construction window does not, so native-equivalent smoothness is not yet a
 validated claim.
 
+### Dynamic dispatch site cache
+
+A later populated-skirmish trace counted roughly 140 million cross-module
+`AbsoluteEip` dispatches in twenty seconds. The shared RET memo missed about 66%
+of them, even though many individual generated sites repeatedly selected a small
+set of targets. The v86 JIT now gives every such site a guarded primary cache
+plus three bounded positive alternatives. Stable primary hits remain inside
+generated WASM; later ways are nested behind preceding misses. A changed target,
+invalidation epoch, scheduler boundary or halted CPU still uses the complete
+historical resolver.
+
+The cache is generic and enabled by default. `jitDynamicChainSitePic(false)` is
+its persistent diagnostic kill switch and the same command reports allocated
+sites and overflow. Slots are never reused during one WASM lifetime, including
+after a JIT clear, so a late asynchronous compilation cannot alias a newer
+module. Exhaustion safely disables the shortcut for later sites.
+
+The deterministic cross-page CALL/RET benchmark improved by 9.6–20.3% across
+runs, with 11.6% in the final validation. Six uncapped BFME windows improved median
+frame time from 37.67 to 34.86 ms (-7.5%) and median v86 time from 34.71 to
+33.10 ms (-4.6%). A complete new-Worker Dunharrow run then measured 34.46 ms/frame
+(29.0 FPS), versus 36.81 ms (27.2 FPS) on the preceding same-browser reference,
+with no guest fault or D3D9 shadow mismatch. This establishes the gain for the
+generic dispatch mechanism; the later four-way action benchmark below covers the
+burst-oriented automated workload.
+
+The site cache now retains four positive targets. The original primary-hit
+instruction stream is unchanged; second, third, and fourth probes are nested
+only inside the preceding miss arms, and all use the same invalidation epoch and
+scheduler guard. Config indexes 32 and 33 are enabled by default and exposed as
+`jitDynamicChainSitePicSecondWay()` and `jitDynamicChainSitePicFourWay()`.
+
+An opt-in helper-only diagnostic measured 57,399,820 calls during BFME. After
+the inline second way had already absorbed its matches, a third target predicted
+13,484,223 additional hits and a fourth 9,401,834. The deterministic four-caller
+x86 benchmark improved from 238.86 to 173.22 ms (+37.9% throughput); the stable
+one-target case measured 160.73 versus 160.65 ms, with identical registers.
+
+Six uncapped same-skirmish ABBA windows reduced median frame time from 37.67 to
+35.62 ms (-5.4%) and median v86 time from 34.75 to 33.51 ms (-3.6%). All three
+four-way windows stayed between 35.49 and 35.83 ms. A subsequent capped 60-second
+action sequence averaged 34.43 ms / 29.0 FPS, ended at 32.74 ms / 30.5 FPS, and
+recorded no frame above the 40 ms spike threshold. Faults remained empty and all
+five D3D9 shadows matched.
+
+A publication-epoch negative cache was also tested and removed. Its BFME median
+was only 36.27 versus 36.11 ms (noise), while median v86 time slightly regressed
+from 33.73 to 34.14 ms. No negative-cache code or configuration remains in the
+retained build.
+
 ## Operational notes
 
 - Relay state is intentionally ephemeral. Restarting the service drops active matches but does not affect saves.

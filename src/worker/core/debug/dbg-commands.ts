@@ -406,6 +406,61 @@ export const dbg = {
         console.log(`[dbg][jit] dynamicChainSitePic=${report.enabled} compiledSites=${report.compiledSites} memos=${report.highWater}/${report.overflows} + cache cleared`);
         return report;
     },
+    /** Classify only existing site-PIC misses and simulate a shadow second way.
+     *  This does not clear or rebuild JIT code and adds no work to generated hits. */
+    jitDynamicChainSitePicDiag(on = true, reset = true): {
+        enabled: number; calls: number; targetMisses: number; secondWayHits: number;
+        thirdWayHits: number; fourthWayHits: number;
+        epochMisses: number; guardMisses: number; resolverHits: number;
+    } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        if (reset && w.jit_dynamic_chain_site_pic_diag_reset) {
+            w.jit_dynamic_chain_site_pic_diag_reset();
+        }
+        w.set_jit_config(31, on ? 1 : 0);
+        const numeric = (value: unknown): number =>
+            typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(31) >>> 0) : -1,
+            calls: numeric(w.jit_dynamic_chain_site_pic_diag_calls?.()),
+            targetMisses: numeric(w.jit_dynamic_chain_site_pic_diag_target_misses?.()),
+            secondWayHits: numeric(w.jit_dynamic_chain_site_pic_diag_second_way_hits?.()),
+            thirdWayHits: numeric(w.jit_dynamic_chain_site_pic_diag_third_way_hits?.()),
+            fourthWayHits: numeric(w.jit_dynamic_chain_site_pic_diag_fourth_way_hits?.()),
+            epochMisses: numeric(w.jit_dynamic_chain_site_pic_diag_epoch_misses?.()),
+            guardMisses: numeric(w.jit_dynamic_chain_site_pic_diag_guard_misses?.()),
+            resolverHits: numeric(w.jit_dynamic_chain_site_pic_diag_resolver_hits?.()),
+        };
+        console.log(`[dbg][jit] sitePicDiag=${report.enabled} calls=${report.calls} targetMisses=${report.targetMisses} ways=${report.secondWayHits}/${report.thirdWayHits}/${report.fourthWayHits} epochMisses=${report.epochMisses} guardMisses=${report.guardMisses} resolverHits=${report.resolverHits}`);
+        return report;
+    },
+    /** Second positive target checked only after a primary miss (config idx 32).
+     *  Enabled by default; this command remains the persistent A/B kill switch. */
+    jitDynamicChainSitePicSecondWay(on = true): { enabled: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDynamicChainSitePicSecondWay) pm.setDynamicChainSitePicSecondWay(on);
+        else w.set_jit_config(32, on ? 1 : 0);
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(32) >>> 0) : -1,
+        };
+        console.log(`[dbg][jit] sitePicSecondWay=${report.enabled} (authoritative; no cache clear)`);
+        return report;
+    },
+    /** Third/fourth miss-arm targets (config idx 33). Primary and secondary
+     *  generated hits are unchanged. Enabled by default after generic and BFME
+     *  A/B validation; this command remains the persistent kill switch. */
+    jitDynamicChainSitePicFourWay(on = true): { enabled: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDynamicChainSitePicFourWay) pm.setDynamicChainSitePicFourWay(on);
+        else w.set_jit_config(33, on ? 1 : 0);
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(33) >>> 0) : -1,
+        };
+        console.log(`[dbg][jit] sitePicFourWay=${report.enabled} (authoritative; no cache clear)`);
+        return report;
+    },
     /** RET-target speculation / superblock lite (set_jit_config idx 13,
      *  budget idx 14 = max leaf instructions). Default OFF — routed through PreemptionManager.
      *  Effect shows as a drop in dispatchStats().abseipDispatch. Clears the JIT cache. */
