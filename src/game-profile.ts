@@ -31,6 +31,8 @@ export interface GameLanguage {
     coverUrl?: string;
     /** Own container key — omit to share the entry's default container. */
     gameId?: string;
+    /** Optional executable override for editions that need their native launcher. */
+    entrypoint?: string;
     /** Seeded after the bundle's registry defaults, so the choice wins. */
     registry?: RegistryPatch | RegistryPatch[];
 }
@@ -106,6 +108,7 @@ export function buildLaunchProfile(
 
     if (language?.gameId) manifest["gameId"] = language.gameId;
     if (language?.name) manifest["name"] = language.name;
+    if (language?.entrypoint) manifest["entrypoint"] = language.entrypoint;
     if (profile.width && profile.height) {
         emulator["screenResolution"] = { width: profile.width, height: profile.height };
     }

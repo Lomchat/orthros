@@ -71,6 +71,7 @@
         "flag": "fr",
         "name": "La Bataille pour la Terre du Milieu II",
         "gameId": "byo:bfme2-109-fr",
+        "entrypoint": "rom/lotrbfme2.exe",
         "registry": {
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
@@ -104,6 +105,7 @@
         "flag": "gb",
         "name": "The Battle for Middle-earth II",
         "gameId": "byo:bfme2-109-en",
+        "entrypoint": "rom/lotrbfme2.exe",
         "registry": {
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
@@ -152,6 +154,7 @@
         "flag": "fr",
         "name": "L'Avènement du Roi-Sorcier",
         "gameId": "byo:rotwk-202-fr",
+        "entrypoint": "rom/lotrbfme2ep1.exe",
         "registry": {
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",
@@ -170,6 +173,7 @@
         "flag": "gb",
         "name": "The Rise of the Witch-king",
         "gameId": "byo:rotwk-202-en",
+        "entrypoint": "rom/lotrbfme2ep1.exe",
         "registry": {
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",

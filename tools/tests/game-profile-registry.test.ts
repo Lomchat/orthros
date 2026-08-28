@@ -15,8 +15,15 @@ describe("launch-profile registry metadata", () => {
         values: [{ name: "InstallPath", type: "REG_SZ", data: "C:\\" }],
       },
     ];
-    const language: GameLanguage = { code: "fr", label: "Français", flag: "fr", registry };
+    const language: GameLanguage = {
+      code: "fr",
+      label: "Français",
+      flag: "fr",
+      entrypoint: "rom/native-launcher.exe",
+      registry,
+    };
 
     expect(buildLaunchProfile({}, language)?.registry).toEqual(registry);
+    expect(buildLaunchProfile({}, language)?.manifest?.entrypoint).toBe("rom/native-launcher.exe");
   });
 });

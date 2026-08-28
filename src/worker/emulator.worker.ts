@@ -1554,8 +1554,14 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // both the bundle manifest and a stored manifest-editor override. Overriding gameId here
     // is what gives each language its own container, saves and cloud snapshots.
     if (pendingLaunchProfile?.manifest) {
+      const prevEntrypoint = bundle.manifest.entrypoint;
       deepMergeInto(bundle.manifest as unknown as Record<string, unknown>, pendingLaunchProfile.manifest);
       Logger.log(LogCategory.SYSTEM, `WGB: launch profile ${JSON.stringify(pendingLaunchProfile.manifest)}`);
+      if (bundle.manifest.entrypoint && bundle.manifest.entrypoint !== prevEntrypoint) {
+        bundle.entrypointBytes = await readEntrypointBytes(bundle.archive, bundle.manifest.entrypoint);
+        Logger.log(LogCategory.SYSTEM,
+          `WGB: profile entrypoint "${prevEntrypoint}" -> "${bundle.manifest.entrypoint}" (${bundle.entrypointBytes.length} bytes)`);
+      }
     }
 
     // Resolve the per-game container key (WGB v2 gameId, namespaced) and open this game's writable
