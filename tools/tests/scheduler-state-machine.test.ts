@@ -1018,6 +1018,78 @@ describe("scheduler/thread-exit liveness — survivor switched in after a siblin
         expect((s as any).currentThreadId).toBe(1);
         expect(cpu.instruction_pointer[0] >>> 0).toBe(0x00402000);
     });
+
+    test("RUNNING async owner at wasm park EIP cannot starve READY peers", () => {
+        const s = mkProcSched();
+        (s as any).spinLoopBase = 0x21040000;
+        (s as any).spinLoopEnd = 0x21041000;
+        s.onThreadHasActiveAsyncThunk = (threadId) => threadId === 1;
+
+        const parked = inject(s, mkThread(1, ThreadState.RUNNING), { current: true });
+        (parked as any).tebAddress = 0x00050000;
+        const peer = mkThread(2, ThreadState.READY);
+        (peer as any).tebAddress = 0x00051000;
+        peer.context = createInitialContext(0x00402000, 0x00290000);
+        inject(s, peer, { runnable: true });
+
+        // The wasm park exit does not advance the retired-instruction quantum.
+        const cpu = fakeCpu({ eip: 0x21040000, esp: 0x0028ff00, insn: 0 });
+        expect((s as any).quantumExpired(parked, cpu)).toBe(false);
+
+        (s as any).preemptAtTickBoundary(cpu);
+
+        expect(parked.state).toBe(ThreadState.WAITING);
+        expect(parked.waitInfo?.reason).toBe(WaitReason.ASYNC_THUNK);
+        expect(peer.state).toBe(ThreadState.RUNNING);
+        expect((s as any).currentThreadId).toBe(2);
+        expect(cpu.instruction_pointer[0] >>> 0).toBe(0x00402000);
+    });
+
+    test("park-EIP safety yields, but does not park, a thread without its own wake source", () => {
+        const s = mkProcSched();
+        (s as any).spinLoopBase = 0x21040000;
+        (s as any).spinLoopEnd = 0x21041000;
+        s.onThreadHasActiveAsyncThunk = () => false;
+
+        const current = inject(s, mkThread(1, ThreadState.RUNNING), { current: true });
+        const peer = mkThread(2, ThreadState.READY);
+        peer.context = createInitialContext(0x00402000, 0x00290000);
+        inject(s, peer, { runnable: true });
+
+        const cpu = fakeCpu({ eip: 0x21040000, esp: 0x0028ff00, insn: 0 });
+        (s as any).preemptAtTickBoundary(cpu);
+
+        expect(current.state).toBe(ThreadState.READY);
+        expect(current.waitInfo).toBeNull();
+        expect(peer.state).toBe(ThreadState.RUNNING);
+        expect((s as any).currentThreadId).toBe(2);
+        expect(cpu.instruction_pointer[0] >>> 0).toBe(0x00402000);
+    });
+
+    test("all runnable peers parked at the wasm park EIP yield to the host", () => {
+        const s = mkProcSched();
+        (s as any).spinLoopBase = 0x21040000;
+        (s as any).spinLoopEnd = 0x21041000;
+        s.onThreadHasActiveAsyncThunk = (threadId) => threadId === 1;
+        let yieldedReason = "";
+        (s as any).yieldToHost = (_cpu: V86Cpu, _ms: number, reason: string) => {
+            yieldedReason = reason;
+        };
+
+        const current = inject(s, mkThread(1, ThreadState.RUNNING), { current: true });
+        const inertPeer = mkThread(2, ThreadState.READY);
+        inertPeer.context = createInitialContext(0x21040000, 0x00290000);
+        inject(s, inertPeer, { runnable: true });
+
+        const cpu = fakeCpu({ eip: 0x21040000, esp: 0x0028ff00, insn: 0 });
+        (s as any).preemptAtTickBoundary(cpu);
+
+        expect(current.state).toBe(ThreadState.WAITING);
+        expect(current.waitInfo?.reason).toBe(WaitReason.ASYNC_THUNK);
+        expect(inertPeer.state).toBe(ThreadState.READY);
+        expect((s as any).currentThreadId).toBe(1);
+        expect(yieldedReason).toBe("allRunnableParked");
+    });
 });
 
 // ─── 9. stackBasedRestore — the RET-trick restore path also carries FPU + SSE ──

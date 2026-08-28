@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./app/App";
+import { CloudSaveProvider } from "./cloud/CloudSaveProvider";
 import "./styles/tokens.css";
 
 const root = document.getElementById("root");
@@ -11,6 +12,8 @@ if (!root) {
 
 createRoot(root).render(
   <React.StrictMode>
-    <App />
+    <CloudSaveProvider>
+      <App />
+    </CloudSaveProvider>
   </React.StrictMode>
 );

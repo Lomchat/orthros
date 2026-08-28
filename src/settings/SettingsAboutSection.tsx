@@ -29,7 +29,7 @@ export default function SettingsAboutSection(): React.ReactElement {
         </div>
         <div className={s["about__priv"]}>
           <ShieldCheck size={14} aria-hidden />
-          Local only — your games never leave this machine.
+          Games run locally. Only save data is uploaded when cloud sync is enabled by signing in.
         </div>
         <div className={s["about__legal"]}>
           The online library hosts only demos, shareware and other redistributable releases.

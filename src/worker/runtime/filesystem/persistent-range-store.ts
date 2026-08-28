@@ -1,11 +1,18 @@
 import { ORTHROS_ROOT } from "./container-store";
 import type { SyncAccessHandleLike } from "@orthros/formats/zip";
 import { wgbCacheKeyForUrl } from "./wgb-cache-key";
+import {
+    sha256Hex,
+    verifiedMarkerName,
+    type WgbIntegrityManifest,
+} from "./wgb-integrity";
 
 const CACHE_DIR = "wgb-cache";
 const META_MAGIC = 0x42535243; // "BSRC" — Orthros range cache
 const META_VERSION = 1;
 const META_HEADER_BYTES = 32;
+const INTEGRITY_META_VERSION = 2;
+const INTEGRITY_META_HEADER_BYTES = 64;
 const QUOTA_MARGIN_BYTES = 256 * 1024 * 1024;
 
 type SyncFileHandle = FileSystemFileHandle & {
@@ -18,6 +25,29 @@ export type PersistentRangeProgress = {
     totalBytes: number;
     complete: boolean;
 };
+
+export class RangeChunkIntegrityError extends Error {
+    constructor(
+        readonly index: number,
+        readonly expected: string,
+        readonly actual: string,
+    ) {
+        super(`range chunk ${index} failed SHA-256 (${actual} != ${expected})`);
+        this.name = "RangeChunkIntegrityError";
+    }
+}
+
+function hexToBytes(hex: string): Uint8Array {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return out;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
 
 function bitIsSet(bits: Uint8Array, index: number): boolean {
     return (bits[index >>> 3]! & (1 << (index & 7))) !== 0;
@@ -72,6 +102,7 @@ export class PersistentRangeStore {
     private readonly totalSize: number;
     private readonly chunkCount: number;
     private readonly bits: Uint8Array;
+    private readonly integrity: WgbIntegrityManifest | null;
     private completedChunks: number;
     private promoted = false;
 
@@ -85,6 +116,7 @@ export class PersistentRangeStore {
         chunkSize: number;
         totalSize: number;
         bits: Uint8Array;
+        integrity: WgbIntegrityManifest | null;
     }) {
         this.data = args.data;
         this.meta = args.meta;
@@ -96,12 +128,19 @@ export class PersistentRangeStore {
         this.totalSize = args.totalSize;
         this.chunkCount = Math.ceil(args.totalSize / args.chunkSize);
         this.bits = args.bits;
+        this.integrity = args.integrity;
         this.completedChunks = countBits(args.bits, this.chunkCount);
     }
 
-    static async open(url: string, totalSize: number, chunkSize: number): Promise<PersistentRangeStore | null> {
+    static async open(
+        url: string,
+        totalSize: number,
+        chunkSize: number,
+        integrity: WgbIntegrityManifest | null = null,
+    ): Promise<PersistentRangeStore | null> {
         try {
             if (!(totalSize > 0) || !(chunkSize > 0)) return null;
+            if (integrity && (integrity.size !== totalSize || integrity.chunkSize !== chunkSize)) return null;
             const root = await navigator.storage.getDirectory();
             const orthros = await root.getDirectoryHandle(ORTHROS_ROOT, { create: true });
             const dir = await orthros.getDirectoryHandle(CACHE_DIR, { create: true });
@@ -110,6 +149,8 @@ export class PersistentRangeStore {
             const metaName = `${partName}.map`;
             const chunkCount = Math.ceil(totalSize / chunkSize);
             const bitBytes = Math.ceil(chunkCount / 8);
+            const metaVersion = integrity ? INTEGRITY_META_VERSION : META_VERSION;
+            const headerBytes = integrity ? INTEGRITY_META_HEADER_BYTES : META_HEADER_BYTES;
 
             const dataFile = await dir.getFileHandle(partName, { create: true }) as SyncFileHandle;
             const metaFile = await dir.getFileHandle(metaName, { create: true }) as SyncFileHandle;
@@ -119,38 +160,78 @@ export class PersistentRangeStore {
 
             const data = await dataFile.createSyncAccessHandle();
             const meta = await metaFile.createSyncAccessHandle();
-            const metaBytes = new Uint8Array(META_HEADER_BYTES + bitBytes);
+            const metaBytes = new Uint8Array(headerBytes + bitBytes);
             const existingMetaSize = meta.getSize();
             let valid = false;
+            let reusableBits: Uint8Array | null = null;
             if (existingMetaSize === metaBytes.byteLength && readAll(meta, metaBytes, 0) === metaBytes.byteLength) {
                 const view = new DataView(metaBytes.buffer);
                 valid = view.getUint32(0, true) === META_MAGIC &&
-                    view.getUint32(4, true) === META_VERSION &&
+                    view.getUint32(4, true) === metaVersion &&
                     view.getFloat64(8, true) === totalSize &&
                     view.getUint32(16, true) === chunkSize &&
                     view.getUint32(20, true) === chunkCount &&
                     data.getSize() === totalSize;
+                if (valid && integrity) {
+                    valid = bytesEqual(metaBytes.subarray(32, 64), hexToBytes(integrity.sha256));
+                }
+            }
+
+            // Upgrade an old bitmap, or salvage unchanged chunks after a bundle
+            // identity change. No legacy bit is trusted directly: every marked
+            // chunk is re-hashed against the new descriptor before it survives.
+            if (!valid && integrity && data.getSize() === totalSize) {
+                const oldBytes = new Uint8Array(existingMetaSize);
+                if (existingMetaSize >= META_HEADER_BYTES && readAll(meta, oldBytes, 0) === oldBytes.byteLength) {
+                    const oldView = new DataView(oldBytes.buffer);
+                    const oldVersion = oldView.getUint32(4, true);
+                    const oldHeader = oldVersion === META_VERSION ? META_HEADER_BYTES :
+                        oldVersion === INTEGRITY_META_VERSION ? INTEGRITY_META_HEADER_BYTES : 0;
+                    const compatible = oldHeader > 0 && existingMetaSize === oldHeader + bitBytes &&
+                        oldView.getUint32(0, true) === META_MAGIC &&
+                        oldView.getFloat64(8, true) === totalSize &&
+                        oldView.getUint32(16, true) === chunkSize &&
+                        oldView.getUint32(20, true) === chunkCount;
+                    if (compatible) {
+                        const oldBits = oldBytes.subarray(oldHeader);
+                        reusableBits = new Uint8Array(bitBytes);
+                        for (let index = 0; index < chunkCount; index++) {
+                            if (!bitIsSet(oldBits, index)) continue;
+                            const start = index * chunkSize;
+                            const length = Math.min(chunkSize, totalSize - start);
+                            const bytes = new Uint8Array(length);
+                            if (readAll(data, bytes, start) === length &&
+                                await sha256Hex(bytes) === integrity.chunks[index]) {
+                                setBit(reusableBits, index);
+                            }
+                        }
+                    }
+                }
             }
 
             if (!valid) {
-                const estimate = await navigator.storage.estimate();
-                const free = Math.max(0, (estimate.quota ?? 0) - (estimate.usage ?? 0));
-                // Creating the sparse target at full logical size consumes origin quota.
-                // Leave room for saves and temporary browser bookkeeping.
-                if (free > 0 && free < totalSize + QUOTA_MARGIN_BYTES) {
-                    try { data.close(); } catch {}
-                    try { meta.close(); } catch {}
-                    try { await dir.removeEntry(partName); } catch {}
-                    try { await dir.removeEntry(metaName); } catch {}
-                    return null;
+                if (data.getSize() !== totalSize) {
+                    const estimate = await navigator.storage.estimate();
+                    const free = Math.max(0, (estimate.quota ?? 0) - (estimate.usage ?? 0));
+                    // Creating the sparse target at full logical size consumes origin quota.
+                    // Leave room for saves and temporary browser bookkeeping.
+                    if (free > 0 && free < totalSize + QUOTA_MARGIN_BYTES) {
+                        try { data.close(); } catch {}
+                        try { meta.close(); } catch {}
+                        try { await dir.removeEntry(partName); } catch {}
+                        try { await dir.removeEntry(metaName); } catch {}
+                        return null;
+                    }
                 }
                 metaBytes.fill(0);
                 const view = new DataView(metaBytes.buffer);
                 view.setUint32(0, META_MAGIC, true);
-                view.setUint32(4, META_VERSION, true);
+                view.setUint32(4, metaVersion, true);
                 view.setFloat64(8, totalSize, true);
                 view.setUint32(16, chunkSize, true);
                 view.setUint32(20, chunkCount, true);
+                if (integrity) metaBytes.set(hexToBytes(integrity.sha256), 32);
+                if (reusableBits) metaBytes.set(reusableBits, headerBytes);
                 data.truncate(totalSize);
                 data.flush();
                 meta.truncate(metaBytes.byteLength);
@@ -158,10 +239,10 @@ export class PersistentRangeStore {
                 meta.flush();
             }
 
-            const bits = metaBytes.slice(META_HEADER_BYTES);
+            const bits = metaBytes.slice(headerBytes);
             return new PersistentRangeStore({
                 data, meta, dataFile, metaName, cacheDir: dir, finalKey,
-                chunkSize, totalSize, bits,
+                chunkSize, totalSize, bits, integrity,
             });
         } catch {
             return null;
@@ -186,6 +267,17 @@ export class PersistentRangeStore {
         const expected = Math.min(this.chunkSize, this.totalSize - start);
         if (bytes.byteLength !== expected) throw new Error(`range chunk ${index} has ${bytes.byteLength} bytes, expected ${expected}`);
 
+        if (this.integrity) {
+            const expectedHash = this.integrity.chunks[index]!;
+            const actualHash = await sha256Hex(bytes);
+            if (actualHash !== expectedHash) throw new RangeChunkIntegrityError(index, expectedHash, actualHash);
+        }
+
+        // SHA-256 yields to the worker event loop. A foreground miss and a large
+        // background extent can therefore finish the same chunk concurrently;
+        // re-check after hashing so the bitmap/count advances exactly once.
+        if (this.promoted || this.hasChunk(index)) return;
+
         writeAll(this.data, bytes, start);
         this.data.flush();
 
@@ -193,7 +285,8 @@ export class PersistentRangeStore {
         this.completedChunks++;
         const byteIndex = index >>> 3;
         if (this.meta) {
-            writeAll(this.meta, this.bits.subarray(byteIndex, byteIndex + 1), META_HEADER_BYTES + byteIndex);
+            const headerBytes = this.integrity ? INTEGRITY_META_HEADER_BYTES : META_HEADER_BYTES;
+            writeAll(this.meta, this.bits.subarray(byteIndex, byteIndex + 1), headerBytes + byteIndex);
             this.meta.flush();
         }
 
@@ -214,6 +307,11 @@ export class PersistentRangeStore {
         this.meta = null;
         try { await this.cacheDir.removeEntry(this.metaName); } catch {}
         await this.dataFile.move!(this.finalKey);
+        if (this.integrity) {
+            // The marker is keyed by the raw-file SHA-256. Its existence means every
+            // persisted 2 MiB chunk matched the signed descriptor before promotion.
+            await this.cacheDir.getFileHandle(verifiedMarkerName(this.finalKey, this.integrity), { create: true });
+        }
         // Keep serving the current game from the newly-promoted local file.
         this.data = await this.dataFile.createSyncAccessHandle!();
         this.promoted = true;

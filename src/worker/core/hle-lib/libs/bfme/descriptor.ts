@@ -18,6 +18,8 @@ import {
     HANDLER_BFME_MEMORY_STREAM_READ1,
     HANDLER_BFME_BC1_COLOR_BLOCK,
     HANDLER_BFME_DXT_ENCODE_CACHE,
+    HANDLER_BFME_RGB24_EXPAND,
+    HANDLER_BFME_SPARSE_FLOAT4,
 } from '../../../cpu/hypercall-data';
 import { bfmeFold33HashKernel } from './hash';
 import { buildBfmeStringLowerFilter } from './string-lower-filter';
@@ -56,6 +58,8 @@ import {
 } from './memory-stream-read';
 import { bfmeBc1ColorBlockShadow } from './bc1-color-block';
 import { bfmeDxtEncodeCacheFallback, buildBfmeDxtEncodeCacheWrapper } from './dxt-encode-cache';
+import { bfmeRgb24ExpandFallback, buildBfmeRgb24ExpandWrapper } from './rgb24-expand';
+import { bfmeSparseFloat4Fallback, buildBfmeSparseFloat4Wrapper } from './sparse-float4';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -244,6 +248,23 @@ const DXT_ENCODE_PATTERN = hexBytes(
     '6a10 33d2 8d4b0c 5f d901 d81d3c530701',
 );
 
+// lotrbfme.exe 1.03 FR @ 0x00e29092. Expand packed RGB triples to XRGB32.
+// This complete counted-loop signature is patched in place; the handler uses
+// EAX/ESI/ECX exactly as the original loop does and resumes at XOR EBX,EBX.
+const RGB24_EXPAND_PATTERN = hexBytes(
+    '0fb65802 33d2 8a30 83c003 8a50fe c1e208 0bd3 8916 ' +
+    '83c604 3bf1 72e4',
+);
+
+// lotrbfme.exe 1.03 FR @ 0x00e2f4f0. For every sparse {index,weight}
+// entry, accumulate weight*sourceFloat4 into destination[index].
+const SPARSE_FLOAT4_PATTERN = hexBytes(
+    'd94004 8b75fc d84e04 8b30 c1e604 03f1 d9c0 d84af8 d806 d91e ' +
+    '8b30 c1e604 d9c0 8d740e04 d84afc d806 d91e ' +
+    '8b30 c1e604 d9c0 8d740e08 d80a d806 d91e ' +
+    '8b30 c1e604 d84a04 8d740e0c 83c008 d806 d91e 3bc7 72ad',
+);
+
 
 export const bfmeDescriptor: LibDescriptor = {
     id: 'bfme',
@@ -340,6 +361,14 @@ export const bfmeDescriptor: LibDescriptor = {
             kind: 'bytes', pattern: DXT_ENCODE_PATTERN,
             mask: 'x'.repeat(DXT_ENCODE_PATTERN.length), section: '.text', weight: 12,
         },
+        rgb24_expand: {
+            kind: 'bytes', pattern: RGB24_EXPAND_PATTERN,
+            mask: 'x'.repeat(RGB24_EXPAND_PATTERN.length), section: '.text', weight: 12,
+        },
+        sparse_float4: {
+            kind: 'bytes', pattern: SPARSE_FLOAT4_PATTERN,
+            mask: 'x'.repeat(SPARSE_FLOAT4_PATTERN.length), section: '.text', weight: 12,
+        },
     },
     functions: {
         fold33_hash: {
@@ -402,7 +431,9 @@ export const bfmeDescriptor: LibDescriptor = {
         string_release: {
             name: 'string_release',
             entryProbe: { kind: 'prologue', pattern: STRING_RELEASE_PATTERN, mask: 'x'.repeat(STRING_RELEASE_PATTERN.length), section: '.text' },
-            callingConvention: 'cdecl', argCount: 0, required: true,
+            // The wrapper materializes volatile EAX plus ESI/ECX as three
+            // cdecl arguments before entering the raw WASM handler.
+            callingConvention: 'cdecl', argCount: 3, required: true,
             // push esi; mov esi,ecx; mov cl,[0x01336e2c]
             prologueLen: 9,
             hypercallHandlerId: HANDLER_BFME_STRING_RELEASE,
@@ -597,6 +628,32 @@ export const bfmeDescriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_BFME_DXT_ENCODE_CACHE,
             entryFilter: buildBfmeDxtEncodeCacheWrapper,
         },
+        rgb24_expand: {
+            name: 'rgb24_expand',
+            entryProbe: {
+                kind: 'prologue',
+                pattern: RGB24_EXPAND_PATTERN,
+                mask: 'x'.repeat(RGB24_EXPAND_PATTERN.length),
+                section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: true,
+            // movzx ebx,[eax+2]; xor edx,edx
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_RGB24_EXPAND,
+            entryFilter: buildBfmeRgb24ExpandWrapper,
+        },
+        sparse_float4: {
+            name: 'sparse_float4',
+            entryProbe: {
+                kind: 'prologue', pattern: SPARSE_FLOAT4_PATTERN,
+                mask: 'x'.repeat(SPARSE_FLOAT4_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 5, required: true,
+            // fld dword [eax+4]; mov esi,[ebp-4]
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_BFME_SPARSE_FLOAT4,
+            entryFilter: buildBfmeSparseFloat4Wrapper,
+        },
     },
     handlers: {
         string_lower: bfmeStringLowerHandler,
@@ -616,5 +673,7 @@ export const bfmeDescriptor: LibDescriptor = {
         vector_ctor_iter: bfmeVectorCtorUnreachableHandler,
         memory_stream_read1: bfmeMemoryStreamRead1Fallback,
         dxt_encode_cache: bfmeDxtEncodeCacheFallback,
+        rgb24_expand: bfmeRgb24ExpandFallback,
+        sparse_float4: bfmeSparseFloat4Fallback,
     },
 };

@@ -4,6 +4,7 @@ import { CachedSource, computeAdaptiveMaxBytes } from "./cached-source";
 import { SabIoSource } from "./sab-io-source";
 import { Logger, LogCategory } from "../../core/logger";
 import { WgbCache } from "./wgb-cache";
+import { integrityEtag, loadWgbIntegrity } from "./wgb-integrity";
 
 /**
  * Wrap a source in an LRU block-cache where that makes the guest's SYNCHRONOUS
@@ -254,13 +255,14 @@ export class WgbLoader {
     }
 
     static async fromUrl(url: string): Promise<WgbBundle> {
+        const integrity = await loadWgbIntegrity(url);
         // DEV: stream on-demand straight from the dev server via synchronous XHR range
         // reads — instant start, NO blocking OPFS full-copy (the slow part of opening a
         // fresh multi-GB bundle). Gated on the server honoring Range: create() probes
         // for 206, so a server that ignores Range throws and we fall through to staging.
         if (import.meta.env?.DEV) {
             // A prior background stage makes repeat dev launches OPFS-fast.
-            const staged = await WgbCache.openSyncSourceForUrl(url);
+            const staged = await WgbCache.openSyncSourceForUrl(url, integrity);
             if (staged) {
                 Logger.log(LogCategory.SYSTEM, `WGB: dev cache hit for "${url}" — OPFS sync handle`);
                 return this.fromSource(staged);
@@ -275,7 +277,7 @@ export class WgbLoader {
         }
 
         // Fastest path: a cached bundle read SYNCHRONOUSLY off disk (no RAM copy).
-        const syncSource = await WgbCache.openSyncSourceForUrl(url);
+        const syncSource = await WgbCache.openSyncSourceForUrl(url, integrity);
         if (syncSource) return this.fromSource(syncSource);
 
         // Fallback: cached but no sync-access handle → in-memory buffer.
@@ -284,7 +286,7 @@ export class WgbLoader {
 
         // Cache miss: start immediately via HTTP range requests, then cache full file in background.
         Logger.log(LogCategory.SYSTEM, `WGB: range-loading "${url}" (first run, caching in background)`);
-        return this.fromSource(await HttpRangeSource.create(url));
+        return this.fromSource(await HttpRangeSource.create(url, integrity ? integrityEtag(integrity) : undefined));
     }
 
     static async fromBuffer(data: Uint8Array): Promise<WgbBundle> {

@@ -66,6 +66,10 @@ import {
     type StateBlockEntry,
 } from "./d3d9-state-block";
 import { d3d9WasmArena, isWasmPathEnabled, isArenaVerifyDrainEnabled } from "./d3d9-wasm-arena";
+import {
+    computeD3D9CursorBlitRect,
+    premultiplyD3D9CursorRgba,
+} from "./d3d9-cursor";
 
 const D3DPT_POINTLIST = 1;
 const D3DPT_LINELIST = 2;
@@ -168,6 +172,19 @@ export class D3D9Device {
     private indexBuffers = new IndexBufferStore();
     private textures = new TextureStore();
     readonly texturePalettes = new TexturePaletteStore();
+
+    // IDirect3DDevice9 hardware cursor. SetCursorProperties snapshots the guest
+    // surface into this dedicated texture, so the app may release or rewrite its
+    // source immediately just like it can with a native D3D9 driver.
+    private cursorTexture: GPUTexture | null = null;
+    private cursorTextureView: GPUTextureView | null = null;
+    private cursorWidth = 0;
+    private cursorHeight = 0;
+    private cursorHotspotX = 0;
+    private cursorHotspotY = 0;
+    private cursorX = 0;
+    private cursorY = 0;
+    private cursorVisible = false;
 
     private pipelineCache: LruCache<string, number>;
     private pipelineCacheMaxSize = 128;
@@ -1191,6 +1208,77 @@ export class D3D9Device {
 
     getCurrentTexturePalette(): number {
         return this.texturePalettes.getCurrentTexturePalette();
+    }
+
+    /** Snapshot a D3DFMT_A8R8G8B8 surface as the device's hardware cursor. */
+    setCursorProperties(hotspotX: number, hotspotY: number, texturePtr: number, level: number, format: number): boolean {
+        // D3D9 requires an A8R8G8B8, non-multisampled surface for a hardware cursor.
+        const D3DFMT_A8R8G8B8 = 21;
+        if (format !== D3DFMT_A8R8G8B8) return false;
+
+        const source = this.getTextureLevelPixels(texturePtr, level);
+        const device = this.backend.getDevice();
+        const queue = this.backend.getQueue();
+        if (!source || !device || !queue || hotspotX < 0 || hotspotY < 0 ||
+            hotspotX >= source.width || hotspotY >= source.height) return false;
+
+        const rgba = new Uint8Array(source.width * source.height * 4);
+        decodeD3DTextureToRgba8(source.data, 0, source.width, source.height, format, {
+            pitch: source.pitch,
+            out: rgba,
+        });
+        premultiplyD3D9CursorRgba(rgba);
+
+        const next = device.createTexture({
+            label: "d3d9-hardware-cursor",
+            size: { width: source.width, height: source.height, depthOrArrayLayers: 1 },
+            format: "rgba8unorm",
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        queue.writeTexture(
+            { texture: next },
+            rgba as any,
+            { bytesPerRow: source.width * 4 },
+            { width: source.width, height: source.height, depthOrArrayLayers: 1 },
+        );
+
+        const retired = this.cursorTexture;
+        this.cursorTexture = next;
+        this.cursorTextureView = next.createView();
+        this.cursorWidth = source.width;
+        this.cursorHeight = source.height;
+        this.cursorHotspotX = hotspotX;
+        this.cursorHotspotY = hotspotY;
+        // Do not invalidate commands that may still sample the previous cursor.
+        if (retired) void queue.onSubmittedWorkDone().then(() => retired.destroy()).catch(() => {});
+        return true;
+    }
+
+    setCursorPosition(x: number, y: number): void {
+        this.cursorX = x | 0;
+        this.cursorY = y | 0;
+    }
+
+    /** D3D9 returns the previous cursor visibility. */
+    showCursor(show: boolean): boolean {
+        const previous = this.cursorVisible;
+        this.cursorVisible = show;
+        return previous;
+    }
+
+    private getCursorOverlay(targetWidth: number, targetHeight: number): {
+        textureView: GPUTextureView;
+        x: number; y: number; width: number; height: number;
+        u0: number; v0: number; u1: number; v1: number;
+    } | null {
+        if (!this.cursorVisible || !this.cursorTextureView) return null;
+        const rect = computeD3D9CursorBlitRect(
+            this.cursorX, this.cursorY,
+            this.cursorWidth, this.cursorHeight,
+            this.cursorHotspotX, this.cursorHotspotY,
+            targetWidth, targetHeight,
+        );
+        return rect ? { textureView: this.cursorTextureView, ...rect } : null;
     }
 
     createTexture(texPtr: number, width: number, height: number, levels: number, format: number, usage: number = 0): number {
@@ -3460,6 +3548,7 @@ export class D3D9Device {
             videoOverlayCanvas,
             gdiOverlayCanvas,
             gdiOverlayRects,
+            cursor: composit ? this.getCursorOverlay(size.width, size.height) : null,
         }, target);
 
         // Return DrawPrimitiveUP vertex buffers to the reuse pool. execute() has already

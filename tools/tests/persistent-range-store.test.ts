@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { PersistentRangeStore } from "../../src/worker/runtime/filesystem/persistent-range-store";
+import { createHash } from "node:crypto";
+import {
+    PersistentRangeStore,
+    RangeChunkIntegrityError,
+} from "../../src/worker/runtime/filesystem/persistent-range-store";
+import type { WgbIntegrityManifest } from "../../src/worker/runtime/filesystem/wgb-integrity";
 
 class FakeFile {
     bytes = new Uint8Array(0);
@@ -77,6 +82,23 @@ function installFakeOpfs(): FakeDirectory {
     return root;
 }
 
+function hash(bytes: number[]): string {
+    return createHash("sha256").update(Uint8Array.from(bytes)).digest("hex");
+}
+
+function integrity(): WgbIntegrityManifest {
+    return {
+        version: 1,
+        algorithm: "sha256",
+        size: 10,
+        sha256: hash([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+        chunkSize: 4,
+        chunks: [hash([1, 2, 3, 4]), hash([5, 6, 7, 8]), hash([9, 10])],
+        segmentSize: 8,
+        segments: [hash([1, 2, 3, 4, 5, 6, 7, 8]), hash([9, 10])],
+    };
+}
+
 afterEach(() => {
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: originalNavigator });
 });
@@ -120,5 +142,56 @@ describe("PersistentRangeStore", () => {
             },
         });
         expect(await PersistentRangeStore.open("/apps/huge.wgb", 3 * 1024 ** 3, 2 * 1024 ** 2)).toBeNull();
+    });
+
+    test("marks only SHA-256 verified chunks and promotes with a global-identity marker", async () => {
+        const root = installFakeOpfs();
+        const descriptor = integrity();
+        const store = await PersistentRangeStore.open("/apps/test.wgb", 10, 4, descriptor);
+        expect(store).not.toBeNull();
+
+        await expect(store!.writeChunk(0, new Uint8Array([1, 2, 3, 99])))
+            .rejects.toBeInstanceOf(RangeChunkIntegrityError);
+        expect(store!.hasChunk(0)).toBe(false);
+        expect(store!.progress().loadedBytes).toBe(0);
+
+        await store!.writeChunk(0, new Uint8Array([1, 2, 3, 4]));
+        await store!.writeChunk(1, new Uint8Array([5, 6, 7, 8]));
+        await store!.writeChunk(2, new Uint8Array([9, 10]));
+
+        const cache = await (await root.getDirectoryHandle("orthros")).getDirectoryHandle("wgb-cache");
+        expect(cache.files.has(`test.wgb.verified-${descriptor.sha256}`)).toBe(true);
+        expect(store!.progress().complete).toBe(true);
+    });
+
+    test("counts a foreground/background race for the same verified chunk once", async () => {
+        installFakeOpfs();
+        const store = await PersistentRangeStore.open("/apps/test.wgb", 10, 4, integrity());
+        await Promise.all([
+            store!.writeChunk(0, new Uint8Array([1, 2, 3, 4])),
+            store!.writeChunk(0, new Uint8Array([1, 2, 3, 4])),
+        ]);
+        expect(store!.progress()).toEqual({ loadedBytes: 4, totalBytes: 10, complete: false });
+    });
+
+    test("re-hashes old partial chunks before reusing them under another global identity", async () => {
+        installFakeOpfs();
+        const firstIntegrity = integrity();
+        const first = await PersistentRangeStore.open("/apps/test.wgb", 10, 4, firstIntegrity);
+        await first!.writeChunk(0, new Uint8Array([1, 2, 3, 4]));
+        first!.close();
+
+        const changed = { ...firstIntegrity, sha256: "f".repeat(64) };
+        const reopened = await PersistentRangeStore.open("/apps/test.wgb", 10, 4, changed);
+        expect(reopened!.hasChunk(0)).toBe(true);
+        reopened!.close();
+
+        const incompatible = {
+            ...changed,
+            sha256: "e".repeat(64),
+            chunks: [hash([9, 9, 9, 9]), ...changed.chunks.slice(1)],
+        };
+        const rejected = await PersistentRangeStore.open("/apps/test.wgb", 10, 4, incompatible);
+        expect(rejected!.hasChunk(0)).toBe(false);
     });
 });

@@ -186,6 +186,34 @@ export function createDeviceExports(): Record<string, ThunkImplementation> {
         return devices.has(pDevice) && deviceSoftwareVertexProcessing.get(pDevice) ? 1 : 0;
     };
 
+    exports['IDirect3DDevice9_SetCursorProperties'] = (_ctx, _mem, args) => {
+        const pDevice = args[0] >>> 0;
+        const hotspotX = args[1] | 0;
+        const hotspotY = args[2] | 0;
+        const surfacePtr = args[3] >>> 0;
+        const device = devices.get(pDevice);
+        const meta = surfaceMeta.get(surfacePtr);
+        if (!device || !meta || !meta.texturePtr || (meta.level ?? 0) !== 0 ||
+            meta.multiSampleType !== 0 || resourceToDevice.get(surfacePtr) !== device) {
+            return D3DERR_INVALIDCALL;
+        }
+        return device.setCursorProperties(
+            hotspotX, hotspotY, meta.texturePtr, meta.level ?? 0, meta.format,
+        ) ? D3D_OK : D3DERR_INVALIDCALL;
+    };
+
+    exports['IDirect3DDevice9_SetCursorPosition'] = (_ctx, _mem, args) => {
+        const device = devices.get(args[0] >>> 0);
+        if (device) device.setCursorPosition(args[1] | 0, args[2] | 0);
+        // Native signature is void; the generated COM thunk ignores this value.
+        return 0;
+    };
+
+    exports['IDirect3DDevice9_ShowCursor'] = (_ctx, _mem, args) => {
+        const device = devices.get(args[0] >>> 0);
+        return device?.showCursor(args[1] !== 0) ? 1 : 0;
+    };
+
     exports['IDirect3D9_CreateDevice'] = async (ctx, mem, args) => {
         const pD3D9 = args[0];
         const Adapter = args[1];

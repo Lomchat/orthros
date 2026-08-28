@@ -99,20 +99,26 @@ export class BlobSource implements ZipSource {
 export class HttpRangeSource implements ZipSource {
     size: number;
     private url: string;
+    private etag: string | null;
 
-    private constructor(url: string, size: number) {
+    private constructor(url: string, size: number, etag: string | null) {
         this.url = url;
         this.size = size;
+        this.etag = etag;
     }
 
-    static async create(url: string): Promise<HttpRangeSource> {
+    static async create(url: string, expectedEtag?: string): Promise<HttpRangeSource> {
         // Preferred path: HEAD + content-length.
         try {
             const head = await fetch(url, { method: "HEAD" });
             if (head.ok) {
                 const length = head.headers.get("content-length");
                 if (length) {
-                    return new HttpRangeSource(url, Number(length));
+                    const etag = head.headers.get("etag");
+                    if (expectedEtag && etag !== expectedEtag) {
+                        throw new Error(`WGB identity mismatch (${etag ?? "no ETag"} != ${expectedEtag}) for ${url}`);
+                    }
+                    return new HttpRangeSource(url, Number(length), etag);
                 }
             }
         } catch {
@@ -137,21 +143,41 @@ export class HttpRangeSource implements ZipSource {
             throw new Error(`Invalid Content-Range "${contentRange}" for ${url}`);
         }
         try { await probe.body?.cancel(); } catch {}
-        return new HttpRangeSource(url, Number(match[1]));
+        const etag = probe.headers.get("etag");
+        if (expectedEtag && etag !== expectedEtag) {
+            throw new Error(`WGB identity mismatch (${etag ?? "no ETag"} != ${expectedEtag}) for ${url}`);
+        }
+        return new HttpRangeSource(url, Number(match[1]), etag);
     }
 
     async readRange(start: number, end: number): Promise<Uint8Array> {
         const range = `bytes=${start}-${end - 1}`;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5_000);
+        const expected = Math.max(0, end - start);
+        // Foreground reads stay responsive, while 32–64 MiB background extents
+        // get enough time even on a modest connection (~128 KiB/s floor).
+        const timeoutMs = Math.max(5_000, Math.min(120_000, Math.ceil(expected / (128 * 1024) * 1000)));
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const resp = await fetch(this.url, { headers: { Range: range }, signal: controller.signal });
+            const headers: Record<string, string> = { Range: range };
+            if (this.etag) headers["If-Range"] = this.etag;
+            const resp = await fetch(this.url, { headers, signal: controller.signal });
             if (resp.status !== 206) {
                 try { await resp.body?.cancel(); } catch {}
                 throw new Error(`Range request failed (${resp.status}) for ${this.url}`);
             }
+            const contentRange = resp.headers.get("content-range");
+            const match = contentRange?.match(/^bytes\s+(\d+)-(\d+)\/(\d+)$/i);
+            if (!match || Number(match[1]) !== start || Number(match[2]) !== end - 1 || Number(match[3]) !== this.size) {
+                try { await resp.body?.cancel(); } catch {}
+                throw new Error(`Range response mismatch (${contentRange ?? "missing Content-Range"}) for ${this.url}`);
+            }
+            const responseEtag = resp.headers.get("etag");
+            if (this.etag && responseEtag !== this.etag) {
+                try { await resp.body?.cancel(); } catch {}
+                throw new Error(`Range ETag changed (${responseEtag ?? "missing"} != ${this.etag}) for ${this.url}`);
+            }
             const bytes = new Uint8Array(await resp.arrayBuffer());
-            const expected = Math.max(0, end - start);
             if (bytes.byteLength !== expected) {
                 throw new Error(`Range request short read (${bytes.byteLength}/${expected}) for ${this.url}`);
             }

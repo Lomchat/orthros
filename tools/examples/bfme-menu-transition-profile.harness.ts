@@ -14,6 +14,7 @@ const pendingCompiles = Number(process.env.BFME_JIT_PENDING ?? 0);
 const fastmemWrites = process.env.BFME_FASTMEM_WRITES;
 const compact = process.env.BFME_COMPACT === "1";
 const unpatchMemoryStream = process.env.BFME_UNPATCH_MEMORY_STREAM === "1";
+const fastDxt = process.env.BFME_DXT_FAST === "1";
 
 function print(phase: string, result: unknown): void {
     if (compact && result && typeof result === "object") {
@@ -115,6 +116,12 @@ if (unpatchMemoryStream) {
         .run();
     print("memory-stream-unpatched", unpatched);
     if (!unpatched.ok) process.exit(1);
+}
+
+if (fastDxt) {
+    const configured = await harness().call("dbgCall", "dxtFast", true).run();
+    print("dxt-fast", configured);
+    if (!configured.ok) process.exit(1);
 }
 
 const baseline = await harness()

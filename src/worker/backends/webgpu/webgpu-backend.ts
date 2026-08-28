@@ -446,6 +446,81 @@ export class WebGPUBackend implements RenderBackend {
         renderPass.end();
     }
 
+    /**
+     * Alpha-blit an existing GPU texture into one destination rectangle.
+     * Unlike canvas overlays this performs no external-image upload, making it
+     * suitable for a hardware cursor that moves every frame while its pixels
+     * change only when the guest calls SetCursorProperties.
+     */
+    blitTextureRect(
+        textureView: GPUTextureView,
+        target: GPUTextureView,
+        encoder: GPUCommandEncoder,
+        rect: {
+            x: number; y: number; width: number; height: number;
+            u0?: number; v0?: number; u1?: number; v1?: number;
+        },
+        screenWidth: number,
+        screenHeight: number,
+        nearest = true,
+    ): void {
+        if (!this.device || !this.queue || screenWidth <= 0 || screenHeight <= 0 ||
+            rect.width <= 0 || rect.height <= 0) return;
+
+        if (!this.overlayPipeline || this.overlayPipelineFormat !== this.format) {
+            this.createOverlayPipeline();
+            this.overlayPipelineFormat = this.format;
+        }
+
+        const x0 = (rect.x / screenWidth) * 2 - 1;
+        const x1 = ((rect.x + rect.width) / screenWidth) * 2 - 1;
+        const y1 = 1 - (rect.y / screenHeight) * 2;
+        const y0 = 1 - ((rect.y + rect.height) / screenHeight) * 2;
+        const u0 = rect.u0 ?? 0;
+        const v0 = rect.v0 ?? 0;
+        const u1 = rect.u1 ?? 1;
+        const v1 = rect.v1 ?? 1;
+        const vertices = new Float32Array([
+            x0, y0, u0, v1,
+            x1, y0, u1, v1,
+            x1, y1, u1, v0,
+            x0, y0, u0, v1,
+            x1, y1, u1, v0,
+            x0, y1, u0, v0,
+        ]);
+
+        if (!this.rectVertexBuffer) {
+            this.rectVertexBuffer = this.device.createBuffer({
+                size: vertices.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            });
+        }
+        this.queue.writeBuffer(this.rectVertexBuffer, 0, vertices);
+
+        const sampler = nearest ? this.getNearestSampler() : this.getSampler();
+        const cache = nearest ? this.nearestBindGroupCache : this.bindGroupCache;
+        let bindGroup = cache.get(textureView);
+        if (!bindGroup) {
+            bindGroup = this.device.createBindGroup({
+                layout: this.overlayPipeline!.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: sampler },
+                    { binding: 1, resource: textureView },
+                ],
+            });
+            cache.set(textureView, bindGroup);
+        }
+
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [{ view: target, loadOp: "load", storeOp: "store" }],
+        });
+        pass.setPipeline(this.overlayPipeline!);
+        pass.setBindGroup(0, bindGroup);
+        pass.setVertexBuffer(0, this.rectVertexBuffer);
+        pass.draw(6, 1, 0, 0);
+        pass.end();
+    }
+
     /** blitRects with its own encoder + submit (GDI present loop path). */
     compositeRects(
         overlay: OffscreenCanvas,

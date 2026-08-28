@@ -15,6 +15,9 @@
 import { HttpRangeSource } from "@orthros/formats/zip";
 import type { ZipSource } from "@orthros/formats/zip";
 import { PersistentRangeStore } from "./persistent-range-store";
+import { RangeChunkIntegrityError } from "./persistent-range-store";
+import { integrityEtag, parseWgbIntegrity, sha256Hex, type WgbIntegrityManifest } from "./wgb-integrity";
+import { planBackgroundSpans } from "./background-range-plan";
 import {
     CTL_STATE, CTL_RESP_LEN, CTL_ERRNO, CTL_WORDS,
     CTL_IO_NET_FETCHES, CTL_IO_PREFETCHES, CTL_IO_CACHE_SERVES, CTL_REQS,
@@ -43,12 +46,16 @@ let PREFETCH_AHEAD_CHUNKS = 4;
  *  browser's per-origin connection cap so a cold guest request is never queued
  *  behind a wall of prefetches. Tunable via init. */
 let MAX_INFLIGHT = 6;
+/** Background transport unit. Persistence and repair stay at CHUNK granularity,
+ *  but one HTTP response carries up to 32 verified 2 MiB chunks. */
+const BACKGROUND_TRANSFER_BYTES = 64 * 1024 * 1024;
 
 let ctl: Int32Array | null = null;
 let meta: Float64Array | null = null;
 let data: Uint8Array | null = null;
 let source: ZipSource | null = null;
 let persistent: PersistentRangeStore | null = null;
+let integrity: WgbIntegrityManifest | null = null;
 let backgroundFillRunning = false;
 let lastProgressPost = 0;
 
@@ -139,33 +146,87 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
     const start = ci * CHUNK;
     const end = Math.min(src.size, start + CHUNK);
     if (prefetch) prefetches++; else netFetches++;
-    const p = readNetworkWithRetry(start, end)
-        .then(async (buf) => {
-            if (persistent) {
-                try {
-                    await persistent.writeChunk(ci, buf);
-                    postCacheProgress(backgroundFillRunning ? "downloading" : "checking");
-                } catch (err) {
-                    try { persistent.close(); } catch {}
-                    persistent = null;
-                    postCacheProgress("unavailable", true);
-                    (self as unknown as Worker).postMessage({ type: "log", msg: `persistent range cache disabled: ${err}` });
-                }
+    const p = (async () => {
+        let buf: Uint8Array | null = null;
+        for (let integrityAttempt = 0; integrityAttempt < 3; integrityAttempt++) {
+            buf = await readNetworkWithRetry(start, end);
+            if (!persistent) break;
+            try {
+                await persistent.writeChunk(ci, buf);
+                postCacheProgress(backgroundFillRunning ? "downloading" : "checking");
+                break;
+            } catch (err) {
+                if (!(err instanceof RangeChunkIntegrityError) || integrityAttempt === 2) throw err;
+                (self as unknown as Worker).postMessage({
+                    type: "log",
+                    msg: `chunk ${ci} integrity mismatch; retrying (${integrityAttempt + 1}/3)`,
+                });
             }
-            if (!chunks.has(ci)) {
-                chunks.set(ci, buf);
-                lru.push(ci);
-                residentBytes += buf.byteLength;
-                evictIfNeeded();
-            } else {
-                touch(ci);
-            }
-            inflight.delete(ci);
-            return chunks.get(ci)!;
-        })
-        .catch((err) => { inflight.delete(ci); throw err; });
+        }
+        if (!buf) throw new Error(`empty range result for chunk ${ci}`);
+        if (!chunks.has(ci)) {
+            chunks.set(ci, buf);
+            lru.push(ci);
+            residentBytes += buf.byteLength;
+            evictIfNeeded();
+        } else {
+            touch(ci);
+        }
+        inflight.delete(ci);
+        return chunks.get(ci)!;
+    })().catch((err) => {
+        inflight.delete(ci);
+        if (err instanceof RangeChunkIntegrityError) {
+            postCacheProgress("retrying", true);
+        }
+        throw err;
+    });
     inflight.set(ci, p);
     return p;
+}
+
+async function fillBackgroundRun(firstChunk: number, endChunk: number): Promise<void> {
+    if (!persistent) return;
+    // Use one large extent when a run is mostly absent. When only a few holes
+    // remain, fetch the holes separately to avoid redownloading verified bytes.
+    const spans = planBackgroundSpans(firstChunk, endChunk, (index) => persistent!.hasChunk(index));
+
+    for (const [spanStart, spanEnd] of spans) {
+        if (!persistent) return;
+        prefetches++;
+        const byteStart = spanStart * CHUNK;
+        const byteEnd = Math.min(source!.size, spanEnd * CHUNK);
+        let bytes: Uint8Array | null = null;
+        for (let integrityAttempt = 0; integrityAttempt < 3; integrityAttempt++) {
+            bytes = await readNetworkWithRetry(byteStart, byteEnd);
+            try {
+                if (integrity &&
+                    byteStart % integrity.segmentSize === 0 &&
+                    byteEnd - byteStart === Math.min(integrity.segmentSize, integrity.size - byteStart)) {
+                    const segmentIndex = Math.floor(byteStart / integrity.segmentSize);
+                    const actual = await sha256Hex(bytes);
+                    const expected = integrity.segments[segmentIndex]!;
+                    if (actual !== expected) {
+                        throw new RangeChunkIntegrityError(spanStart, expected, actual);
+                    }
+                }
+                for (let ci = spanStart; ci < spanEnd; ci++) {
+                    if (persistent.hasChunk(ci)) continue;
+                    const chunkStart = ci * CHUNK - byteStart;
+                    const chunkLength = Math.min(CHUNK, source!.size - ci * CHUNK);
+                    await persistent.writeChunk(ci, bytes.subarray(chunkStart, chunkStart + chunkLength));
+                }
+                break;
+            } catch (err) {
+                if (!(err instanceof RangeChunkIntegrityError) || integrityAttempt === 2) throw err;
+                (self as unknown as Worker).postMessage({
+                    type: "log",
+                    msg: `background extent ${spanStart}-${spanEnd - 1} failed integrity; retrying`,
+                });
+            }
+        }
+        postCacheProgress("downloading");
+    }
 }
 
 async function fillPersistentCache(): Promise<void> {
@@ -176,19 +237,20 @@ async function fillPersistentCache(): Promise<void> {
     backgroundFillRunning = true;
     postCacheProgress("downloading", true);
     const count = Math.ceil(source!.size / CHUNK);
+    const chunksPerRun = Math.max(1, Math.floor(BACKGROUND_TRANSFER_BYTES / CHUNK));
     let cursor = 0;
     const fillLane = async () => {
         for (;;) {
-            const ci = cursor++;
-            if (ci >= count || !persistent) return;
-            if (persistent.hasChunk(ci)) continue;
+            const first = cursor;
+            cursor += chunksPerRun;
+            if (first >= count || !persistent) return;
             try {
-                await getChunk(ci, true);
+                await fillBackgroundRun(first, Math.min(count, first + chunksPerRun));
             } catch (err) {
-                (self as unknown as Worker).postMessage({ type: "log", msg: `background local-cache fill paused at chunk ${ci}: ${err}` });
+                (self as unknown as Worker).postMessage({ type: "log", msg: `background local-cache fill paused at chunk ${first}: ${err}` });
                 return;
             }
-            // Yield between chunks so foreground guest reads and input messages win.
+            // Yield between large extents so foreground guest reads and input win.
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
     };
@@ -286,10 +348,15 @@ self.onmessage = (e: MessageEvent) => {
             if (typeof tune.maxInflight === "number") MAX_INFLIGHT = Math.max(1, tune.maxInflight | 0);
             if (typeof tune.cacheMB === "number") MAX_CACHE_BYTES = Math.max(16, tune.cacheMB | 0) * 1024 * 1024;
         }
-        HttpRangeSource.create(msg.url)
+        try { integrity = msg.integrity ? parseWgbIntegrity(msg.integrity) : null; }
+        catch (err) {
+            (self as unknown as Worker).postMessage({ type: "error", message: String(err) });
+            return;
+        }
+        HttpRangeSource.create(msg.url, integrity ? integrityEtag(integrity) : undefined)
             .then(async (s) => {
                 source = s;
-                persistent = await PersistentRangeStore.open(msg.url, s.size, CHUNK);
+                persistent = await PersistentRangeStore.open(msg.url, s.size, CHUNK, integrity);
                 postCacheProgress(persistent ? "checking" : "unavailable", true);
                 (self as unknown as Worker).postMessage({ type: "ready", size: s.size });
             })

@@ -10,6 +10,8 @@ export interface AddedGame {
   name: string;
   /** URL whose basename is the cache key → worker's load_bundle{url} hits the cached copy. */
   url: string;
+  /** Exact package size reported by the cached OPFS File. */
+  sizeBytes: number;
   /** From manifest.meta (WgbMeta), when the bundle carries it. */
   developer?: string;
   year?: number;
@@ -168,6 +170,7 @@ export async function listAddedGames(excludeKeys: Set<string> = new Set()): Prom
         key: name,
         name: display,
         url: `/apps/byo/${name}`,
+        sizeBytes: file.size,
         ...(typeof meta.developer === "string" ? { developer: meta.developer } : {}),
         ...(typeof meta.year === "number" ? { year: meta.year } : {}),
         ...(coverUrl ? { coverUrl } : {}),

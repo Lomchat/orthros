@@ -9,7 +9,7 @@
  * darwin/linux/win.
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO = join(import.meta.dir, "..", "..");
@@ -46,7 +46,12 @@ function isValidGhidra(dir: string): boolean {
 }
 
 function isValidJavaHome(home: string): boolean {
-    return !!home && javaMajor(join(home, "bin", IS_WIN ? "java.exe" : "java")) >= 21;
+    const java = join(home, "bin", IS_WIN ? "java.exe" : "java");
+    const javac = join(home, "bin", IS_WIN ? "javac.exe" : "javac");
+    // Ghidra requires a complete JDK. Some distributions expose a `java`
+    // runtime with compiler modules but no javac executable; LaunchSupport
+    // rejects that tree as an unsupported JAVA_HOME.
+    return !!home && existsSync(javac) && javaMajor(java) >= 21;
 }
 
 /** First child of `parent` whose name matches `re` (returns absolute path or null). */
@@ -99,7 +104,13 @@ async function ensureJdk(): Promise<string> {
         try {
             const r = Bun.spawnSync([IS_WIN ? "where" : "which", "java"], { stdout: "pipe" });
             const bin = new TextDecoder().decode(r.stdout).trim().split(/\r?\n/)[0];
-            if (bin) return join(bin, "..", ".."); // <home>/bin/java
+            // `which java` commonly returns /usr/bin/java, a symlink managed by
+            // alternatives.  Walking up from the unresolved link produces /usr,
+            // which is not a valid JAVA_HOME even though /usr/bin/java executes.
+            if (bin) {
+                const home = join(realpathSync(bin), "..", "..");
+                if (isValidJavaHome(home)) return home;
+            }
         } catch { /* fall through to repo-local */ }
     }
 

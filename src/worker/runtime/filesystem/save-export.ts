@@ -54,7 +54,8 @@ export async function exportContainer(gameId: string): Promise<Uint8Array | null
 
     if (files.size === 0) return null;
     Logger.log(LogCategory.SYSTEM, `save-export: "${gameId}" → ${files.size} files`);
-    return buildZip(files);
+    // Stable ordering gives identical persistent content an identical cloud hash.
+    return buildZip(new Map([...files].sort(([a], [b]) => a.localeCompare(b))));
 }
 
 /** Write one file (posix relpath) into the container, creating parent dirs. */

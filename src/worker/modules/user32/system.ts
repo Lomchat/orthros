@@ -16,6 +16,7 @@ import { encodeAnsi, getCodePageDecoder, decodeAnsiString, writeAnsiToGuest, enc
 import { findResourceInPE } from '../kernel32/resource';
 import { loadBitmapFromPeResource } from '../kernel32/bitmap-extractor';
 import { loadIconFromPeResource } from '../kernel32/icon-extractor';
+import { decodeWindowsCursor } from './cursor-file';
 import {
     clipboardDataByFormat,
     isClipboardOpen,
@@ -51,6 +52,49 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     let nextDeviceNotification = 0x00021000;
     const registeredClipboardFormats = new Map<string, number>();
     let nextRegisteredClipboardFormat = 0xC000;
+    let currentCursorHandle = 0;
+
+    const selectHostCursor = (handle: number): void => {
+        self.postMessage({ type: "game_cursor_select", handle: handle >>> 0 });
+    };
+
+    const loadCursorFromFile = async (mem: Uint8Array, name: number, isWide: boolean): Promise<number> => {
+        if (!name) return 0;
+        const filename = isWide ? Marshaler.readWideString(mem, name) : Marshaler.readString(mem, name);
+        const normalized = filename.replace(/\\/g, '/');
+        const system = System.getInstance();
+        try {
+            const fileHandle = await system.fileSystem.open(normalized, 0x80000000, 3);
+            if (!fileHandle) return 0;
+            const size = system.fileSystem.getFileSize(normalized);
+            if (size <= 0 || size > 4 * 1024 * 1024) return 0;
+            const data = await system.fileSystem.read(fileHandle, size);
+            const animation = decodeWindowsCursor(data);
+            if (!animation) {
+                Logger.warn(LogCategory.USER32, `LoadCursorFromFile${isWide ? 'W' : 'A'}: unsupported cursor "${normalized}"`);
+                return 0;
+            }
+            const handle = system.resourceProvider.registerUserObject({
+                type: 'CURSOR',
+                name: normalized,
+                animation,
+                width: animation.frames[0]?.width ?? 0,
+                height: animation.frames[0]?.height ?? 0,
+                pixels: animation.frames[0]?.pixels ?? null,
+                loading: false,
+            });
+            // Frames are immutable: define each handle once, then SetCursor only
+            // sends a tiny handle selection when gameplay changes context.
+            self.postMessage({ type: "game_cursor_define", handle, cursor: animation });
+            Logger.log(LogCategory.USER32,
+                `LoadCursorFromFile${isWide ? 'W' : 'A'}("${normalized}") -> 0x${handle.toString(16)} (${animation.frames.length} frames)`);
+            return handle;
+        } catch (error) {
+            Logger.warn(LogCategory.USER32,
+                `LoadCursorFromFile${isWide ? 'W' : 'A'}("${normalized}") failed: ${String(error)}`);
+            return 0;
+        }
+    };
 
     // System metrics constants
     const SM_CXSCREEN = 0;       // Width of screen
@@ -1199,15 +1243,21 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     // LoadImageW - load image, cursor, or icon (wide)
     exports["LoadImageW"] = async (ctx, mem, args) => loadImageCommon(ctx, mem, args, true);
 
+    exports['LoadCursorFromFileA'] = async (_ctx, mem, args) => loadCursorFromFile(mem, args[0] >>> 0, false);
+    exports['LoadCursorFromFileW'] = async (_ctx, mem, args) => loadCursorFromFile(mem, args[0] >>> 0, true);
+
     // SetCursor - set cursor shape
     exports['SetCursor'] = (ctx, mem, args) => {
-        const hCursor = args[0];
+        const hCursor = args[0] >>> 0;
+        const previous = currentCursorHandle;
 
         Logger.verbose(LogCategory.USER32, `SetCursor(0x${hCursor.toString(16)})`);
-
-        // For now, just return the cursor handle
-        // In a full implementation, we would change the actual cursor shape
-        return hCursor;
+        if (hCursor !== currentCursorHandle) {
+            currentCursorHandle = hCursor;
+            const cursor = hCursor ? System.getInstance().resourceProvider.getUserObject(hCursor) : null;
+            selectHostCursor(cursor?.type === 'CURSOR' ? hCursor : 0);
+        }
+        return previous;
     };
 
     // SystemParametersInfo - retrieves or sets system-wide parameters
@@ -2217,7 +2267,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
             const mouseState = System.getInstance().inputManager.getMouseState();
             view.setUint32(pci + 0, 20, true); // cbSize
             view.setUint32(pci + 4, 1, true); // flags (CURSOR_SHOWING)
-            view.setUint32(pci + 8, 0x100, true); // hCursor
+            view.setUint32(pci + 8, currentCursorHandle, true); // hCursor
             view.setInt32(pci + 12, mouseState.x, true);
             view.setInt32(pci + 16, mouseState.y, true);
         }
@@ -2225,8 +2275,17 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     };
 
     exports['CreateCursor'] = () => 0x100;
-    exports['GetCursor'] = () => 0x100;
-    exports['DestroyCursor'] = () => 1;
+    exports['GetCursor'] = () => currentCursorHandle;
+    exports['DestroyCursor'] = (_ctx, _mem, args) => {
+        const handle = args[0] >>> 0;
+        if (handle === currentCursorHandle) {
+            currentCursorHandle = 0;
+            selectHostCursor(0);
+        }
+        const destroyed = System.getInstance().resourceProvider.unregisterUserObject(handle);
+        if (destroyed) self.postMessage({ type: "game_cursor_forget", handle });
+        return destroyed ? 1 : 0;
+    };
     exports['DestroyIcon'] = () => 1;
 
     exports['GetClipCursor'] = (ctx, mem, args) => {

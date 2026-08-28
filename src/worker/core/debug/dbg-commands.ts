@@ -739,6 +739,16 @@ export const dbg = {
         console.log(`[dbg][dxt-cache] enabled=${result ? 1 : 0}`);
         return result;
     },
+    /** Toggle the native-WASM BC1 fit used for cache misses during BFME's
+     * cold texture load. Kept independent from memoization for controlled A/B. */
+    dxtFast(on = true): any {
+        const w = wasm();
+        if (!w?.bfme_dxt_fast_set_enabled) return null;
+        w.bfme_dxt_fast_set_enabled(on ? 1 : 0);
+        const result = !!(w.bfme_dxt_fast_get_enabled?.() >>> 0);
+        console.log(`[dbg][dxt-fast] enabled=${result ? 1 : 0}`);
+        return result;
+    },
     dxtCacheReport(reset = false): any {
         const w = wasm();
         if (!w?.bfme_dxt_cache_get_stat) return null;
@@ -752,10 +762,60 @@ export const dbg = {
             inserts: w.bfme_dxt_cache_get_stat(2) >>> 0,
             replacements: w.bfme_dxt_cache_get_stat(3) >>> 0,
             bypasses: w.bfme_dxt_cache_get_stat(4) >>> 0,
+            fastEnabled: !!(w.bfme_dxt_fast_get_enabled?.() >>> 0),
+            fastEncodes: w.bfme_dxt_cache_get_stat(5) >>> 0,
             fallbacks: getBfmeDxtEncodeCacheFallbacks(reset),
         };
         if (reset) w.bfme_dxt_cache_reset_stats?.();
         console.log(`[dbg][dxt-cache][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    rgb24Report(reset = false): any {
+        const w = wasm();
+        if (!w?.bfme_rgb24_stat) return null;
+        const result = {
+            enabled: !!(w.bfme_rgb24_get_enabled?.() >>> 0),
+            calls: w.bfme_rgb24_stat(0) >>> 0,
+            pixels: w.bfme_rgb24_stat(1) >>> 0,
+            attempts: w.bfme_rgb24_stat(2) >>> 0,
+            lastSource: `0x${(w.bfme_rgb24_stat(3) >>> 0).toString(16)}`,
+            lastDestination: `0x${(w.bfme_rgb24_stat(4) >>> 0).toString(16)}`,
+            lastEnd: `0x${(w.bfme_rgb24_stat(5) >>> 0).toString(16)}`,
+            lastCount: w.bfme_rgb24_stat(6) >>> 0,
+            lastFailure: w.bfme_rgb24_stat(7) >>> 0,
+        };
+        if (reset) w.bfme_rgb24_stat_reset?.();
+        console.log(`[dbg][rgb24][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    rgb24Fast(on = true): any {
+        const w = wasm();
+        if (!w?.bfme_rgb24_set_enabled) return null;
+        w.bfme_rgb24_set_enabled(on ? 1 : 0);
+        const result = !!(w.bfme_rgb24_get_enabled?.() >>> 0);
+        console.log(`[dbg][rgb24] enabled=${result ? 1 : 0}`);
+        return result;
+    },
+    sparseFloat4Fast(on = true): any {
+        const w = wasm();
+        if (!w?.bfme_sparse_float4_set_enabled) return null;
+        w.bfme_sparse_float4_set_enabled(on ? 1 : 0);
+        const result = !!(w.bfme_sparse_float4_get_enabled?.() >>> 0);
+        console.log(`[dbg][sparse-float4] enabled=${result ? 1 : 0}`);
+        return result;
+    },
+    sparseFloat4Report(reset = false): any {
+        const w = wasm();
+        if (!w?.bfme_sparse_float4_stat) return null;
+        const result = {
+            enabled: !!(w.bfme_sparse_float4_get_enabled?.() >>> 0),
+            attempts: w.bfme_sparse_float4_stat(0) >>> 0,
+            calls: w.bfme_sparse_float4_stat(1) >>> 0,
+            items: w.bfme_sparse_float4_stat(2) >>> 0,
+            lastFailure: w.bfme_sparse_float4_stat(3) >>> 0,
+        };
+        if (reset) w.bfme_sparse_float4_stat_reset?.();
+        console.log(`[dbg][sparse-float4][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Attribute opt-in GDI canvas readbacks without taxing normal gameplay. */

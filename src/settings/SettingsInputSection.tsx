@@ -27,7 +27,9 @@ export default function SettingsInputSection({
         </select>
       </SettingsRow>
       <Hint style={{ marginTop: 4, marginBottom: 8 }}>
-        Relative-look games capture the pointer when you click the canvas; press <code>Esc</code> to release.
+        Relative-look games capture the pointer when you click the canvas. In fullscreen,
+        BFME sends the first <code>Esc</code> to the game and a quick second press releases
+        the pointer; outside fullscreen, the browser releases it on the first press.
       </Hint>
 
       <SectionHeading style={{ marginTop: 12 }}>

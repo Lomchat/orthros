@@ -5,6 +5,7 @@ describe("wgbCacheKeyForUrl", () => {
     test("keeps the bundle basename for normal app URLs", () => {
         expect(wgbCacheKeyForUrl("/apps/bfme.wgb?v=2")).toBe("bfme.wgb");
         expect(wgbCacheKeyForUrl("https://example.test/games/demo.wgb?token=x")).toBe("demo.wgb");
+        expect(wgbCacheKeyForUrl(`/apps/bfme-${"a".repeat(64)}.wgb`)).toBe("bfme.wgb");
     });
 
     test("uses the mounted disk basename for the shared dev route", () => {

@@ -323,6 +323,10 @@ export class Scheduler {
      *  Returns true if a restore was applied (CPU state modified). */
     public onPollAsyncRestores: ((cpu: V86Cpu, source?: string) => boolean) | null = null;
     public onHasPendingAsyncRestores: (() => boolean) | null = null;
+    /** True when `threadId` owns an unresolved async thunk or a completion waiting
+     *  to be restored. This must stay thread-local: a parked thread cannot borrow
+     *  another thread's unrelated wake source. */
+    public onThreadHasActiveAsyncThunk: ((threadId: number) => boolean) | null = null;
     /** True when the thread owns a live suspended-thunk frame (a JS-driven pump like
      *  DialogBoxParamA). Lets the spin-loop safety net park such a thread WAITING between
      *  pump callbacks — the pump's next invokeCallback wakes it via
@@ -804,6 +808,45 @@ export class Scheduler {
         // 4. Deadlock detection
         this.detectDeadlock();
 
+        // A RET from an async thunk lands on the shared spin-loop address. Usually
+        // the owner is marked WAITING before that happens, but suspended-frame pumps
+        // and a few late async paths can reach this boundary while still RUNNING.
+        // Once the wasm park-exit is armed this loop retires no useful instructions,
+        // so the ordinary quantum below never expires and READY peers are starved.
+        // Park only when this exact thread has a guaranteed wake source, then switch
+        // immediately. The exact address excludes the neighbouring SEH stubs.
+        if (this.runQueue.length > 0) {
+            const current = this.getCurrentThread();
+            const eip = cpu.instruction_pointer[0] >>> 0;
+            if (current?.state === ThreadState.RUNNING &&
+                this.spinLoopBase > 0 && eip === this.spinLoopBase) {
+                const ownsFrame = this.onThreadOwnsSuspendedFrame?.(current.id) ?? false;
+                const ownsAsync = this.onThreadHasActiveAsyncThunk?.(current.id) ?? false;
+                const usefulPeerReady = this.runQueue.some((threadId) => {
+                    const peer = this.threads.get(threadId);
+                    return peer?.state === ThreadState.READY &&
+                        !!peer.context && (peer.context.eip >>> 0) !== this.spinLoopBase;
+                });
+                const parked = this.config.asyncHleWaitEnabled && (ownsFrame || ownsAsync) &&
+                    this.markThreadAsyncParked(current.id, cpu);
+                if (usefulPeerReady) {
+                    this.switchRequested = false;
+                    this.performSwitch(cpu, ThunkBoundaryKind.GUEST_CODE, 0);
+                    this.tryDispatchTimerThreadCallbacks(cpu);
+                    return;
+                }
+
+                // Every queued peer is itself saved at the inert park address. Cycling
+                // between them creates millions of context switches and starves the JS
+                // task that must resolve the real async owner. Keep an owner parked when
+                // it has a wake source; otherwise preserve its RUNNING state, but always
+                // yield to the host until a completion makes useful guest work runnable.
+                if (!parked) this.spinLoopMissedWaitCount++;
+                this.yieldToHost(cpu, this.computeYieldMs(4), "allRunnableParked");
+                return;
+            }
+        }
+
         // 5. Handle yield-to-host
         if (this.yieldToHostMs > 0) {
             const ms = this.yieldToHostMs;
@@ -860,8 +903,8 @@ export class Scheduler {
                                 `SAFETY_NET: T${current.id} at spinLoopAddress but state=RUNNING (count=${this.spinLoopMissedWaitCount}) — async park path missed markThreadAsyncParked`);
                         }
                     }
-                    if (this.config.asyncHleWaitEnabled &&
-                        (ownsFrame || this.onHasPendingAsyncRestores?.())) {
+                    const ownsAsync = this.onThreadHasActiveAsyncThunk?.(current.id) ?? false;
+                    if (this.config.asyncHleWaitEnabled && (ownsFrame || ownsAsync)) {
                         if (this.markThreadAsyncParked(current.id, cpu)) {
                             this.yieldToHost(cpu, this.computeYieldMs(4), ownsFrame ? "pumpPark" : "spinLoopPark");
                             return;

@@ -1,7 +1,7 @@
 [Unit]
 Description=Orthros BFME browser runtime and virtual-LAN relay
-After=network-online.target
-Wants=network-online.target
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
 
 [Service]
 Type=simple
@@ -10,13 +10,16 @@ WorkingDirectory=/srv/bfme/app/orthros
 Environment=PORT=5173
 Environment=ORTHROS_HOST=127.0.0.1
 Environment=BFME_WGB_PATH=/srv/bfme/data/bfme-1.03-fr.wgb
+Environment=BFME_WGB_INTEGRITY_PATH=/srv/bfme/data/bfme-1.03-fr.wgb.integrity.json
+EnvironmentFile=-/etc/orthros/auth.env
 ExecStart=/opt/bun/bin/bun deploy/server.ts
+ExecStartPre=/opt/bun/bin/bun deploy/migrate.ts
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/srv/bfme/app/orthros
+ReadWritePaths=/srv/bfme/app/orthros /srv/bfme/data/cloud-saves
 
 [Install]
 WantedBy=multi-user.target

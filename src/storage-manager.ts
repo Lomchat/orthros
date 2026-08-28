@@ -14,6 +14,13 @@ import { ORTHROS_ROOT, GAMES_DIR } from "./worker/runtime/filesystem/container-s
 import { buildZip } from "@orthros/formats/wgb/zip-build";
 import { ZipArchive, BufferSource } from "@orthros/formats/zip";
 import { asWriteChunk } from "./dom-buffer";
+import {
+    buildStorageBreakdown,
+    type StorageBreakdown,
+    type StorageFileSize,
+} from "./storage-breakdown";
+
+export type { StorageBreakdown } from "./storage-breakdown";
 
 const WGB_CACHE_DIR = "wgb-cache";
 
@@ -37,6 +44,12 @@ export interface GameStorageInfo {
 export interface CachedBundleInfo {
     key: string;
     bytes: number;
+}
+
+export interface StorageCleanupResult {
+    removedFiles: number;
+    freedBytes: number;
+    failedFiles: number;
 }
 
 async function opfsOrthros(create = false): Promise<FileSystemDirectoryHandle | null> {
@@ -64,6 +77,44 @@ export async function getStorageEstimate(): Promise<StorageEstimate> {
     let persisted = false;
     try { persisted = (await navigator.storage?.persisted?.()) ?? false; } catch { /* unsupported */ }
     return { usageBytes: est.usage ?? 0, quotaBytes: est.quota ?? 0, persisted };
+}
+
+async function collectOpfsFileSizes(
+    dir: FileSystemDirectoryHandle,
+    prefix: string,
+    files: StorageFileSize[],
+): Promise<number> {
+    let unreadable = 0;
+    for await (const [name, handle] of (dir as any).entries()) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if (handle.kind === "file") {
+            try {
+                files.push({ path, bytes: (await (handle as FileSystemFileHandle).getFile()).size });
+            } catch {
+                unreadable++;
+            }
+        } else {
+            unreadable += await collectOpfsFileSizes(handle as FileSystemDirectoryHandle, path, files);
+        }
+    }
+    return unreadable;
+}
+
+/**
+ * Attribute the browser-reported origin usage to readable OPFS files. The remainder
+ * covers browser-managed data outside OPFS (Cache Storage, IndexedDB and accounting
+ * overhead). Reading File.size does not read multi-gigabyte bundle contents.
+ */
+export async function getStorageBreakdown(browserUsageBytes: number): Promise<StorageBreakdown> {
+    const files: StorageFileSize[] = [];
+    let unreadableFiles = 0;
+    try {
+        const root = await navigator.storage.getDirectory();
+        unreadableFiles = await collectOpfsFileSizes(root, "", files);
+    } catch {
+        unreadableFiles++;
+    }
+    return buildStorageBreakdown(files, browserUsageBytes, unreadableFiles);
 }
 
 /** Ask the browser to make storage persistent (exempt from automatic eviction). Needs a gesture. */
@@ -122,7 +173,7 @@ export async function listCachedBundles(): Promise<CachedBundleInfo[]> {
     try { cache = await bs.getDirectoryHandle(WGB_CACHE_DIR); } catch { return []; }
     const out: CachedBundleInfo[] = [];
     for await (const [name, handle] of (cache as any).entries()) {
-        if (handle.kind !== "file" || name === "_cache-lru.json") continue;
+        if (handle.kind !== "file" || !name.toLowerCase().endsWith(".wgb")) continue;
         try { out.push({ key: name, bytes: (await (handle as FileSystemFileHandle).getFile()).size }); } catch { /* locked */ }
     }
     return out.sort((a, b) => b.bytes - a.bytes);
@@ -145,7 +196,45 @@ export async function evictCachedBundle(key: string): Promise<void> {
     try {
         const cache = await bs.getDirectoryHandle(WGB_CACHE_DIR);
         await cache.removeEntry(key);
+        for (const suffix of [".part", ".part.map"]) {
+            try { await cache.removeEntry(`${key}${suffix}`); } catch { /* absent */ }
+        }
+        for await (const [name, handle] of (cache as any).entries()) {
+            if (handle.kind === "file" && name.startsWith(`${key}.verified-`)) {
+                try { await cache.removeEntry(name); } catch { /* racing */ }
+            }
+        }
     } catch (e: any) { if (e?.name !== "NotFoundError") throw e; }
+}
+
+/** Delete only resumable WGB download artifacts; complete bundles and saves are untouched. */
+export async function evictPartialDownloads(): Promise<StorageCleanupResult> {
+    const result: StorageCleanupResult = { removedFiles: 0, freedBytes: 0, failedFiles: 0 };
+    const bs = await opfsOrthros(false);
+    if (!bs) return result;
+    try {
+        const cache = await bs.getDirectoryHandle(WGB_CACHE_DIR);
+        const candidates: Array<{ name: string; bytes: number }> = [];
+        for await (const [name, handle] of (cache as any).entries()) {
+            const lower = name.toLowerCase();
+            if (handle.kind !== "file" || !(lower.endsWith(".wgb.part") || lower.endsWith(".wgb.part.map"))) continue;
+            let bytes = 0;
+            try { bytes = (await (handle as FileSystemFileHandle).getFile()).size; } catch { /* locked */ }
+            candidates.push({ name, bytes });
+        }
+        for (const candidate of candidates) {
+            try {
+                await cache.removeEntry(candidate.name);
+                result.removedFiles++;
+                result.freedBytes += candidate.bytes;
+            } catch {
+                result.failedFiles++;
+            }
+        }
+    } catch (e: any) {
+        if (e?.name !== "NotFoundError") throw e;
+    }
+    return result;
 }
 
 /** Recursively collect every file under a dir into `out`, keyed by posix relpath (locked files skipped). */
@@ -188,7 +277,9 @@ export async function exportGameContainer(containerDir: string): Promise<Uint8Ar
     try { await collectDir(await container.getDirectoryHandle("overlay"), "overlay", files); } catch { /* none */ }
 
     if (files.size === 0) return null;
-    return buildZip(files);
+    // OPFS directory iteration order is not guaranteed. Canonical ordering makes the
+    // archive hash a stable content identity for cloud sync instead of a traversal artifact.
+    return buildZip(new Map([...files].sort(([a], [b]) => a.localeCompare(b))));
 }
 
 /** Write one file (posix relpath) into a container dir, creating parent dirs. */
@@ -208,7 +299,11 @@ async function writeContainerFile(container: FileSystemDirectoryHandle, rel: str
  * Import a previously-exported save ZIP into a container, overwriting its persistent layer.
  * Returns the number of files written.
  */
-export async function importGameContainer(containerDir: string, zipBytes: Uint8Array): Promise<number> {
+export async function importGameContainer(
+    containerDir: string,
+    zipBytes: Uint8Array,
+    options: { replace?: boolean } = {},
+): Promise<number> {
     const bs = await opfsOrthros(true);
     if (!bs) throw new Error("OPFS unavailable: cannot open container for import");
     const games = await bs.getDirectoryHandle(GAMES_DIR, { create: true });
@@ -216,14 +311,25 @@ export async function importGameContainer(containerDir: string, zipBytes: Uint8A
 
     const archive = new ZipArchive(new BufferSource(zipBytes));
     await archive.init();
-    let written = 0;
+    const files = new Map<string, Uint8Array>();
     for (const entry of archive.listEntries()) {
         if (entry.isDirectory) continue;
+        const rel = entry.name.replace(/\\/g, "/");
+        if (!(ROOT_PERSIST_FILES.includes(rel) || rel.startsWith("overlay/")) ||
+            rel.split("/").some((part) => !part || part === "." || part === "..")) {
+            throw new Error(`Invalid save archive path: ${entry.name}`);
+        }
         const data = await archive.readEntry(entry);
-        await writeContainerFile(container, entry.name.replace(/\\/g, "/"), data);
-        written++;
+        files.set(rel, data);
     }
-    return written;
+    if (options.replace) {
+        try { await container.removeEntry("overlay", { recursive: true }); } catch { /* absent */ }
+        for (const name of ROOT_PERSIST_FILES) {
+            try { await container.removeEntry(name); } catch { /* absent */ }
+        }
+    }
+    for (const [rel, data] of files) await writeContainerFile(container, rel, data);
+    return files.size;
 }
 
 /** Fetch a cached ROM bundle (the stored .wgb) as a File for download, or null if absent. */

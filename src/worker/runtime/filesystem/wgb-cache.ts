@@ -4,6 +4,11 @@ import { SyncAccessHandleSource } from "@orthros/formats/zip";
 import { asWriteChunk } from "../../../dom-buffer";
 import type { SyncAccessHandleLike } from "@orthros/formats/zip";
 import { wgbCacheKeyForUrl } from "./wgb-cache-key";
+import {
+    sha256Hex,
+    verifiedMarkerName,
+    type WgbIntegrityManifest,
+} from "./wgb-integrity";
 
 const CACHE_DIR = "wgb-cache";
 
@@ -13,6 +18,7 @@ const BLOB_MOUNT_KEY = "_blob-mount.wgb";
 
 /** Sidecar in wgb-cache mapping key → last-used ms; drives LRU eviction order. */
 const LRU_META_FILE = "_cache-lru.json";
+const VERIFIED_MARKER_TOKEN = ".verified-";
 
 /** Free-space headroom targeted when staging a bundle into wgb-cache, so a stage
  *  never fills the origin to the brim (saves/overlay writes must keep working). */
@@ -316,6 +322,7 @@ export class WgbCache {
     static async downloadToSyncSource(
         url: string,
         onProgress: (loaded: number, total: number) => void,
+        integrity: WgbIntegrityManifest | null = null,
     ): Promise<SyncAccessHandleSource | null> {
         const dir = await this.getCacheDir();
         if (!dir) return null;
@@ -376,6 +383,12 @@ export class WgbCache {
             try { await dir.removeEntry(key); } catch { /* best-effort */ }
             Logger.warn(LogCategory.SYSTEM, `WgbCache: streamed "${key}" too small (${size} bytes < EOCD) — discarding`);
             return null;
+        }
+        if (integrity) {
+            // Reopen through the integrity gate. This validates an older or full-GET
+            // cache once, writes the SHA-keyed marker, and rejects mixed/corrupt data.
+            try { sah.close(); } catch { /* best-effort */ }
+            return this.openSyncSourceForUrl(url, integrity);
         }
         const source = new SyncAccessHandleSource(sah, size);
         this.currentSource = source;
@@ -463,11 +476,83 @@ export class WgbCache {
      * NOT held in worker RAM as a 1.5GB BufferSource. Returns null if the file isn't
      * cached or sync-access handles are unavailable (caller falls back to BufferSource).
      */
-    static async openSyncSourceForUrl(url: string): Promise<SyncAccessHandleSource | null> {
-        return this.openSyncSourceByKey(wgbCacheKeyForUrl(url));
+    static async openSyncSourceForUrl(
+        url: string,
+        integrity: WgbIntegrityManifest | null = null,
+    ): Promise<SyncAccessHandleSource | null> {
+        return this.openSyncSourceByKey(wgbCacheKeyForUrl(url), integrity);
     }
 
-    private static async openSyncSourceByKey(key: string): Promise<SyncAccessHandleSource | null> {
+    private static async removeVerifiedMarkers(dir: FileSystemDirectoryHandle, key: string): Promise<void> {
+        const prefix = `${key}${VERIFIED_MARKER_TOKEN}`;
+        try {
+            for await (const [name, handle] of (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
+                if (handle.kind === "file" && name.startsWith(prefix)) {
+                    try { await dir.removeEntry(name); } catch { /* best-effort */ }
+                }
+            }
+        } catch { /* entries() unavailable */ }
+    }
+
+    /** A verified final bundle supersedes every resumable artifact for the same key. */
+    private static async removeSupersededPartialFiles(
+        dir: FileSystemDirectoryHandle,
+        key: string,
+    ): Promise<void> {
+        let removed = 0;
+        for (const suffix of [".part", ".part.map"]) {
+            try {
+                await dir.removeEntry(`${key}${suffix}`);
+                removed++;
+            } catch { /* absent, locked by another tab, or racing */ }
+        }
+        if (removed > 0) {
+            Logger.log(LogCategory.SYSTEM,
+                `WgbCache: removed ${removed} superseded partial artifact${removed === 1 ? "" : "s"} for "${key}"`);
+        }
+    }
+
+    private static async validateCachedHandle(
+        sah: SyncAccessHandleLike,
+        integrity: WgbIntegrityManifest,
+    ): Promise<boolean> {
+        const chunkCount = integrity.chunks.length;
+        const started = performance.now();
+        (globalThis as unknown as { postMessage?: (message: unknown) => void }).postMessage?.({
+            type: "local_cache_progress",
+            state: "verifying",
+            loadedBytes: 0,
+            totalBytes: integrity.size,
+        });
+        for (let index = 0; index < chunkCount; index++) {
+            const start = index * integrity.chunkSize;
+            const length = Math.min(integrity.chunkSize, integrity.size - start);
+            const bytes = new Uint8Array(length);
+            let read = 0;
+            while (read < length) {
+                const n = sah.read(bytes.subarray(read), { at: start + read });
+                if (n <= 0) return false;
+                read += n;
+            }
+            if (await sha256Hex(bytes) !== integrity.chunks[index]) return false;
+            if (index === chunkCount - 1 || (index & 15) === 15) {
+                (globalThis as unknown as { postMessage?: (message: unknown) => void }).postMessage?.({
+                    type: "local_cache_progress",
+                    state: "verifying",
+                    loadedBytes: Math.min(integrity.size, start + length),
+                    totalBytes: integrity.size,
+                });
+            }
+        }
+        Logger.log(LogCategory.SYSTEM,
+            `WgbCache: verified ${chunkCount} SHA-256 chunks (${(performance.now() - started).toFixed(0)}ms)`);
+        return true;
+    }
+
+    private static async openSyncSourceByKey(
+        key: string,
+        integrity: WgbIntegrityManifest | null = null,
+    ): Promise<SyncAccessHandleSource | null> {
         const dir = await this.getCacheDir();
         if (!dir) return null;
         // Release any prior source (exclusive: one SAH per file).
@@ -488,6 +573,28 @@ export class WgbCache {
                 Logger.warn(LogCategory.SYSTEM, `WgbCache: discarded corrupt cache entry "${key}" (${size} bytes < EOCD) — will re-download`);
                 return null;
             }
+            if (integrity) {
+                const marker = verifiedMarkerName(key, integrity);
+                let alreadyVerified = false;
+                try { await dir.getFileHandle(marker); alreadyVerified = true; } catch { /* first validation */ }
+                if (size !== integrity.size || (!alreadyVerified && !(await this.validateCachedHandle(sah, integrity)))) {
+                    try { sah.close(); } catch { /* best-effort */ }
+                    try { await dir.removeEntry(key); } catch { /* best-effort */ }
+                    await this.removeVerifiedMarkers(dir, key);
+                    Logger.warn(LogCategory.SYSTEM,
+                        `WgbCache: discarded integrity-mismatched cache entry "${key}" (${size}/${integrity.size} bytes)`);
+                    return null;
+                }
+                if (!alreadyVerified) {
+                    await dir.getFileHandle(marker, { create: true });
+                    await this.removeVerifiedMarkersExcept(dir, key, marker);
+                }
+                // The complete, size-checked bundle has either just passed every
+                // chunk hash or already carries the matching SHA marker. A stale
+                // resumable copy can no longer contribute anything and may double
+                // the origin's disk usage after an interrupted promotion.
+                await this.removeSupersededPartialFiles(dir, key);
+            }
             const source = new SyncAccessHandleSource(sah, size);
             this.currentSource = source;
             this.currentSourceKey = key;
@@ -497,6 +604,21 @@ export class WgbCache {
         } catch {
             return null; // not cached / SAH unavailable
         }
+    }
+
+    private static async removeVerifiedMarkersExcept(
+        dir: FileSystemDirectoryHandle,
+        key: string,
+        keep: string,
+    ): Promise<void> {
+        const prefix = `${key}${VERIFIED_MARKER_TOKEN}`;
+        try {
+            for await (const [name, handle] of (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
+                if (handle.kind === "file" && name.startsWith(prefix) && name !== keep) {
+                    try { await dir.removeEntry(name); } catch { /* best-effort */ }
+                }
+            }
+        } catch { /* entries() unavailable */ }
     }
 
     /**
@@ -620,5 +742,9 @@ export class WgbCache {
             await dir.removeEntry(key);
             Logger.log(LogCategory.SYSTEM, `WgbCache: evicted "${key}"`);
         } catch { /* not cached, ignore */ }
+        for (const suffix of [".part", ".part.map"]) {
+            try { await dir.removeEntry(`${key}${suffix}`); } catch { /* not cached */ }
+        }
+        await this.removeVerifiedMarkers(dir, key);
     }
 }

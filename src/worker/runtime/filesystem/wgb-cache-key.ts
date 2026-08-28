@@ -17,7 +17,12 @@ export function wgbCacheKeyForUrl(url: string): string {
                 if (name) return name;
             }
         }
-        return parsed.pathname.split("/").pop() || "game.wgb";
+        const basename = parsed.pathname.split("/").pop() || "game.wgb";
+        // The public BFME URL is content-addressed, but the local cache retains
+        // its historical key so an existing 3.27 GB copy can be verified and
+        // adopted instead of downloaded a second time.
+        if (/^bfme-[0-9a-f]{64}\.wgb$/i.test(basename)) return "bfme.wgb";
+        return basename;
     } catch {
         const path = url.split("?")[0]!.replace(/\\/g, "/");
         return path.split("/").pop() || "game.wgb";

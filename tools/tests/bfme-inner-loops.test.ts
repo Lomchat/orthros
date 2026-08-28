@@ -43,6 +43,8 @@ import {
 } from '../../src/worker/core/hle-lib/libs/bfme/memory-stream-read';
 import { decodeBfmeBc1ColorBlock } from '../../src/worker/core/hle-lib/libs/bfme/bc1-color-block';
 import { assembleBfmeDxtEncodeCacheWrapper } from '../../src/worker/core/hle-lib/libs/bfme/dxt-encode-cache';
+import { assembleBfmeRgb24ExpandWrapper } from '../../src/worker/core/hle-lib/libs/bfme/rgb24-expand';
+import { assembleBfmeSparseFloat4Wrapper } from '../../src/worker/core/hle-lib/libs/bfme/sparse-float4';
 import { validatePrologueBytes } from '../../src/worker/core/hle-lib/lib-patcher';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -759,7 +761,46 @@ describe('BFME DXT encode exact cache wrapper', () => {
 
     test('routes the cache handler through the BFME WASM handler band', async () => {
         const source = await Bun.file(new URL('../../vendor/v86/src/rust/cpu/hypercall.rs', import.meta.url)).text();
-        expect(source).toContain('135..=155 => super::hypercall_bfme::dispatch_inner_loop(handler_id)');
-        expect(source).toContain('156..=255 => false');
+        expect(source).toContain('135..=157 => super::hypercall_bfme::dispatch_inner_loop(handler_id)');
+        expect(source).toContain('158..=255 => false');
+    });
+});
+
+describe('BFME sparse float4 accumulation wrapper', () => {
+    test('materializes five live inputs and guards the continuation', () => {
+        const base = 0x1000, stub = 0x2400, trampoline = 0x3000, continuation = 0x3600;
+        const code = assembleBfmeSparseFloat4Wrapper(base, stub, trampoline, continuation);
+        const data = new DataView(code.buffer, code.byteOffset, code.byteLength);
+        expect([...code.slice(0, 6)]).toEqual([0x55, 0x52, 0x51, 0x57, 0x50, 0xe8]);
+        expect([...code.slice(10, 18)]).toEqual([0x85, 0xf6, 0x0f, 0x85, 0x0a, 0x00, 0x00, 0x00]);
+        expect([...code.slice(18, 23)]).toEqual([0x58, 0x5f, 0x59, 0x5a, 0x5d]);
+        expect([...code.slice(28, 35)]).toEqual([0x8b, 0x54, 0x24, 0x0c, 0x83, 0xc4, 0x14]);
+        expect((base + 10 + data.getInt32(6, true)) >>> 0).toBe(stub);
+        expect((base + 18 + data.getInt32(14, true)) >>> 0).toBe(base + 28);
+        expect((base + 28 + data.getInt32(24, true)) >>> 0).toBe(trampoline);
+        expect((base + 40 + data.getInt32(36, true)) >>> 0).toBe(continuation);
+        expect(validatePrologueBytes(Uint8Array.from([
+            0xd9, 0x40, 0x04, 0x8b, 0x75, 0xfc,
+        ]))).toBeNull();
+    });
+});
+
+describe('BFME RGB24 expansion wrapper', () => {
+    test('calls the WASM kernel and resumes after the complete counted loop', () => {
+        const base = 0x1000, stub = 0x2400, trampoline = 0x3000, continuation = 0x3600;
+        const code = assembleBfmeRgb24ExpandWrapper(base, stub, trampoline, continuation);
+        const data = new DataView(code.buffer, code.byteOffset, code.byteLength);
+        expect([...code.slice(0, 4)]).toEqual([0x51, 0x56, 0x50, 0xe8]);
+        expect([...code.slice(8, 16)]).toEqual([0x85, 0xdb, 0x0f, 0x85, 0x08, 0x00, 0x00, 0x00]);
+        expect([...code.slice(16, 19)]).toEqual([0x58, 0x5e, 0x59]);
+        expect(code[19]).toBe(0xe9);
+        expect([...code.slice(24, 27)]).toEqual([0x83, 0xc4, 0x0c]);
+        expect((base + 8 + data.getInt32(4, true)) >>> 0).toBe(stub);
+        expect((base + 16 + data.getInt32(12, true)) >>> 0).toBe(base + 24);
+        expect((base + 24 + data.getInt32(20, true)) >>> 0).toBe(trampoline);
+        expect((base + 32 + data.getInt32(28, true)) >>> 0).toBe(continuation);
+        expect(validatePrologueBytes(Uint8Array.from([
+            0x0f, 0xb6, 0x58, 0x02, 0x33, 0xd2,
+        ]))).toBeNull();
     });
 });

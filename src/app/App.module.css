@@ -54,103 +54,13 @@
   opacity: 1;
 }
 
-.stats-hud {
+.game-cursor-overlay {
   position: absolute;
-  z-index: 6;
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: baseline;
-  column-gap: 8px;
-  min-width: 92px;
-  padding: 5px 8px 4px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 6px;
-  background: rgba(3, 7, 12, 0.88);
-  color: rgba(226, 232, 240, 0.75);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
+  z-index: 7;
+  display: none;
   pointer-events: none;
+  image-rendering: auto;
   contain: layout paint style;
-}
-
-.stats-hud strong {
-  justify-self: end;
-  color: #e2e8f0;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-}
-
-.stats-hud small {
-  grid-column: 1 / -1;
-  justify-self: end;
-  margin-top: 2px;
-  color: rgba(226, 232, 240, 0.55);
-  font-size: 9px;
-  font-variant-numeric: tabular-nums;
-}
-
-.stats-hud.is-good strong { color: #86efac; }
-.stats-hud.is-warn strong { color: #fde047; }
-.stats-hud.is-bad strong { color: #fca5a5; }
-
-.local-cache-badge {
-  position: absolute;
-  z-index: 5;
-  width: 132px;
-  padding: 7px 9px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  border-radius: 7px;
-  background: rgba(3, 7, 12, 0.52);
-  color: rgba(226, 232, 240, 0.78);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  pointer-events: none;
-  backdrop-filter: blur(5px);
-}
-
-.local-cache-badge__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  line-height: 1;
-}
-
-.local-cache-badge__row strong {
-  color: var(--cyan-soft);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.local-cache-badge__bar {
-  height: 2px;
-  margin-top: 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(143, 230, 240, 0.14);
-}
-
-.local-cache-badge__bar > span {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #4cc9dc, #f6a623);
-  transition: width 0.2s ease-out;
-}
-
-.local-cache-badge.is-complete .local-cache-badge__row strong {
-  color: #86efac;
-}
-
-.local-cache-badge.is-retrying {
-  border-color: rgba(246, 166, 35, 0.34);
-}
-
-.local-cache-badge.is-retrying .local-cache-badge__row strong,
-.local-cache-badge.is-unavailable .local-cache-badge__row strong {
-  color: #f6a623;
 }
 
 .app__warning {
@@ -258,6 +168,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.emu-topbar-fps {
+  height: 28px;
+  margin-right: 4px;
 }
 
 .emu-topbar-btn {
@@ -599,6 +514,93 @@
   padding: 0 24px;
 }
 
+.emu-info-statuses {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.emu-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--r-pill);
+  background: rgba(15, 23, 34, 0.82);
+  color: var(--fg-2);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.emu-status-pill strong {
+  color: var(--cyan-soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.emu-status-pill small {
+  color: var(--fg-4);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.emu-status-pill__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 7px rgba(76, 201, 220, 0.55);
+}
+
+.emu-status-pill__progress {
+  width: 36px;
+  height: 2px;
+  flex: none;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: rgba(143, 230, 240, 0.14);
+}
+
+.emu-status-pill__progress > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--amber));
+  transition: width 0.2s ease-out;
+}
+
+.emu-status-pill--cache.is-complete strong,
+.emu-status-pill--fps.is-good strong {
+  color: #86efac;
+}
+
+.emu-status-pill--cache.is-complete .emu-status-pill__dot {
+  background: #86efac;
+  box-shadow: 0 0 7px rgba(134, 239, 172, 0.5);
+}
+
+.emu-status-pill--cache.is-retrying,
+.emu-status-pill--cache.is-unavailable {
+  border-color: rgba(246, 166, 35, 0.34);
+}
+
+.emu-status-pill--cache.is-retrying strong,
+.emu-status-pill--cache.is-unavailable strong,
+.emu-status-pill--fps.is-warn strong {
+  color: #fde047;
+}
+
+.emu-status-pill--fps.is-bad strong {
+  color: #fca5a5;
+}
+
 .emu-info-hints {
   color: var(--fg-4);
   white-space: nowrap;
@@ -659,6 +661,29 @@
   .app__canvas {
     height: 52dvh;
     min-height: 220px;
+  }
+
+  .emu-info-name,
+  .emu-info-hints {
+    display: none;
+  }
+
+  .emu-info-desc {
+    padding: 0;
+  }
+
+  .emu-info-statuses {
+    gap: 4px;
+  }
+
+  .emu-status-pill {
+    gap: 4px;
+    padding: 0 6px;
+  }
+
+  .emu-status-pill__progress,
+  .emu-status-pill--fps small {
+    display: none;
   }
 }
 

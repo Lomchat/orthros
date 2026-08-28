@@ -199,6 +199,10 @@ export const HANDLER_BFME_MEMORY_STREAM_READ1 = 153;
 export const HANDLER_BFME_BC1_COLOR_BLOCK = 154;
 /** Exact memoization around BFME's cold-load DXT colour encoder. */
 export const HANDLER_BFME_DXT_ENCODE_CACHE = 155;
+/** Exact bulk expansion of packed RGB24 rows to zero-alpha XRGB32 pixels. */
+export const HANDLER_BFME_RGB24_EXPAND = 156;
+/** Exact sparse weighted-float4 accumulation used while building map assets. */
+export const HANDLER_BFME_SPARSE_FLOAT4 = 157;
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
 export const OFF_HC_SLAB_END = 0x1404;

@@ -22,6 +22,7 @@ import {
     ST_IDLE, ST_REQ, ST_DONE, ST_ERR, WAIT_TIMEOUT_MS,
 } from "./sab-io-protocol";
 import type { IoWorkerStats } from "./sab-io-protocol";
+import type { WgbIntegrityManifest } from "./wgb-integrity";
 
 export class SabIoSource implements ZipSource {
     readonly size: number;
@@ -50,7 +51,7 @@ export class SabIoSource implements ZipSource {
      * available (page not cross-origin isolated) or the worker fails to init —
      * the caller then falls back to SyncHttpRangeSource / OPFS staging.
      */
-    static async create(url: string): Promise<SabIoSource> {
+    static async create(url: string, integrity: WgbIntegrityManifest | null = null): Promise<SabIoSource> {
         if ((globalThis as unknown as { __wgbForceNoSab?: boolean }).__wgbForceNoSab) {
             throw new Error("SAB I/O disabled (__wgbForceNoSab)"); // dev A/B knob
         }
@@ -74,7 +75,7 @@ export class SabIoSource implements ZipSource {
             worker.onerror = (e: ErrorEvent) => { clearTimeout(timer); reject(new Error(`io-worker error: ${e.message}`)); };
             // Dev-only I/O tuning knob (prefetch window / concurrency / cache MB).
             const tune = (globalThis as unknown as { __wgbIoTune?: unknown }).__wgbIoTune;
-            worker.postMessage({ type: "init", sab, url, tune });
+            worker.postMessage({ type: "init", sab, url, tune, integrity });
         });
 
         // Keep forwarding I/O-worker logs after init.

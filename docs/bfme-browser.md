@@ -19,6 +19,21 @@ Requirements:
 - enough free browser storage for cached game data and saves;
 - the legal right to use and distribute the supplied game files.
 
+Mouse controls:
+
+- click inside the game to capture the mouse;
+- while captured, the Windows arrow is replaced by BFME's own animated and
+  context-sensitive cursor, and relative browser motion advances one clamped
+  absolute position in guest pixels;
+- in ordinary windowed mode, **Escape** is forwarded to BFME and then releases
+  the mouse, because browsers reserve it as the mandatory Pointer Lock exit;
+- in app fullscreen, when Chrome grants Keyboard Lock, the first **Escape** is
+  sent only to BFME and keeps the mouse captured. Press **Escape** again within
+  1.2 seconds to restore the Windows cursor. Holding Escape remains Chrome's
+  emergency exit;
+- click the game again to recapture it. Browsers without Keyboard Lock retain
+  the safe one-Escape windowed behavior.
+
 The `room` value is the multiplayer boundary. Use a long unguessable value for a private match. BFME's in-game path remains **Multijoueur → Réseau local**; one player creates the game and the others join it.
 
 ## Architecture
@@ -33,7 +48,34 @@ Chrome B ── Windows/x86 + D3D9→WebGPU + Miles audio ──┘   static WGB
 - Graphics: the D3D9 fixed-function path is translated to WebGPU. Geometry and uniforms are staged in persistent arenas to reduce queue submissions.
 - Audio: Miles samples are mixed by an AudioWorklet. Music is located inside EA `BIG4` archives and fetched by exact range, rather than unpacking the archives.
 - Video: BFME's large VP6 tutorial/campaign movies are decoded locally by the bundled FFmpeg/WASM bridge and copied into the game's own D3D9 movie surface; small alpha/menu loops remain on the native game path.
-- Storage: the read-only WGB is streamed by HTTP Range into a resumable 2 MiB-chunk OPFS cache; the writable overlay is also persisted in OPFS.
+- Input: BFME uses click-to-capture pointer lock. Its Win32 `.cur` and RIFF/ACON
+  `.ani` files are decoded locally (hotspots, sequence and frame timing included)
+  and drawn in a DOM canvas over either the direct WebGPU or CPU fallback output.
+  App fullscreen requests Keyboard Lock for Escape: a first physical press is a
+  guest menu key and a second short press releases Pointer Lock. Auto-repeat is
+  ignored by this double-press policy so Chrome's long-hold escape remains usable.
+  The generic D3D9 hardware-cursor APIs are also implemented for games using
+  `SetCursorProperties`, `SetCursorPosition` and `ShowCursor`.
+- Storage: foreground reads fetch only the 2 MiB regions BFME needs immediately.
+  After the first rendered frame, two background lanes transfer up to 64 MiB per
+  HTTP response while committing verified 2 MiB chunks into a resumable OPFS
+  cache. The writable overlay is persisted separately in OPFS. **Settings →
+  Library & Storage** reconciles the browser-reported origin usage with a
+  read-only scan of OPFS file metadata. Its breakdown separates complete WGB
+  copies, resumable `.part` downloads, saves/settings, Orthros support files,
+  other OPFS files and a final non-attributed remainder (browser caches,
+  IndexedDB, locked files or storage overhead). It reports locked files and
+  sparse-file accounting explicitly; it never reads the contents of a
+  multi-gigabyte bundle to display this view. Once a complete bundle has the
+  matching integrity marker (or has just passed full chunk verification), the
+  cache automatically removes same-key `.part` and `.part.map` artifacts left
+  by an interrupted promotion. The partial-download row also has a dedicated
+  delete action: it removes only resumable artifacts and preserves complete
+  WGB files, verification markers, saves and settings. Locked active downloads
+  are reported instead of being treated as successfully deleted.
+- Library: every game card shows the `.wgb` package size. Built-in entries take
+  the exact byte count from `games-catalog.json`; locally added packages use the
+  cached OPFS `File.size`, so displaying it does not scan or unpack the bundle.
 - Network: `WSOCK32` and `WS2_32` share one socket table. BFME UDP is wrapped in binary WebSocket frames, routed by room and virtual `10.42.x.y` addresses, then restored to the guest socket queues.
 
 ## Build and run
@@ -46,26 +88,51 @@ bun test
 bun run build
 
 BFME_WGB_PATH=/srv/bfme/data/bfme-1.03-fr.wgb \
+BFME_WGB_INTEGRITY_PATH=/srv/bfme/data/bfme-1.03-fr.wgb.integrity.json \
 ORTHROS_HOST=127.0.0.1 PORT=5173 \
 bun deploy/server.ts
 ```
 
+Regenerate the integrity descriptor whenever the raw WGB changes:
+
+```bash
+bun tools/generate-wgb-integrity.ts \
+  /srv/bfme/data/bfme-1.03-fr.wgb
+```
+
+The production descriptor records the raw-file SHA-256
+`615dc3e22879174f389cf97838200a6f14c9025f365c3617c6eb05c3d5687ab9`,
+1,562 hashes at the durable 2 MiB chunk boundary and 49 hashes at the 64 MiB
+transport boundary. The global hash identifies the whole bundle; the smaller
+hashes make a partial cache repairable without rereading or downloading 3.27 GB.
+The production server recomputes the raw global hash before it starts listening,
+so a same-size bundle cannot accidentally be served under a stale identity.
+An old unverified full copy is checked locally once, then receives a
+SHA-addressed verification marker. A partial cache keeps only chunks whose hashes
+still match the current descriptor.
+
 The production server handles all of the following on one origin:
 
 - `/` and built frontend assets;
-- `/apps/bfme.wgb` with `HEAD`, byte ranges and `Accept-Ranges`;
+- `/apps/bfme-<sha256>.wgb` as the immutable catalog URL, with strong `ETag`,
+  `If-Range`, byte ranges and `Accept-Ranges`;
+- `/apps/bfme-<sha256>.wgb.integrity.json` for the no-cache integrity descriptor;
+- `/apps/bfme.wgb` and its sidecar as backward-compatible aliases;
 - `/bfme-net` WebSocket upgrades;
-- `/bfme-net/health` relay counters.
+- `/bfme-net/health` relay counters;
+- `/api/auth/*` for email/password sessions;
+- `/api/saves` and `/api/saves/<container-id>` for authenticated cloud-save metadata,
+  upload and restore.
 
 It also emits `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`, which must not be removed by the reverse proxy.
 
 ## Caddy and systemd
 
-The checked-in examples are [bfme-orthros.service](../deploy/bfme-orthros.service.example) and [Caddyfile](../deploy/Caddyfile.orthros.example). Copy the service to `/etc/systemd/system/bfme-orthros.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
+The checked-in examples are [orthros.service](../deploy/orthros.service.example) and [Caddyfile](../deploy/Caddyfile.orthros.example). Copy the service to `/etc/systemd/system/orthros.service`, adapt paths if necessary, and add the Caddy site block to the active Caddyfile.
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now bfme-orthros
+sudo systemctl enable --now orthros
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
@@ -74,12 +141,55 @@ Smoke checks:
 
 ```bash
 curl -fsS https://games.chalco.website/bfme-net/health
-curl -fsSI https://games.chalco.website/apps/bfme.wgb
+curl -fsSI \
+  https://games.chalco.website/apps/bfme-615dc3e22879174f389cf97838200a6f14c9025f365c3617c6eb05c3d5687ab9.wgb
 curl -fsS -H 'Range: bytes=0-31' \
-  https://games.chalco.website/apps/bfme.wgb | wc -c
+  https://games.chalco.website/apps/bfme-615dc3e22879174f389cf97838200a6f14c9025f365c3617c6eb05c3d5687ab9.wgb | wc -c
 ```
 
 The last command must print `32`; the response itself must be HTTP `206`.
+
+## Accounts and cloud saves
+
+Accounts are optional. A signed-out player keeps the exact previous behavior: BFME writes
+profiles, `Options.ini`, registry state and saves into its per-game OPFS container. Signing in
+does not make the server authoritative; it adds a versioned backup of that writable container.
+The WGB is never included in a save upload.
+
+The production account stack is Better Auth on the existing Bun origin with PostgreSQL. Public
+email/password registration is enabled with a ten-character minimum password. Sessions use
+same-origin HTTP-only cookies. No social-login provider is configured.
+
+Cloud snapshots are store-only ZIP files under `/srv/bfme/data/cloud-saves`, while PostgreSQL
+stores users, sessions, heads and snapshot metadata. The client creates a canonical ZIP, computes
+SHA-256, and uploads only when its content changed. The active emulator briefly parks x86 and
+flushes every OPFS writer before exporting, so a snapshot cannot omit a still-buffered save.
+Snapshots run on initial sign-in/load, every five minutes while playing, when the tab becomes
+hidden after a quiet minute, and when the guest exits. The server accepts at most 32 MiB per
+snapshot and retains the current head plus nineteen historical versions.
+
+Every upload names the hash of the remote parent it observed. A stale parent receives HTTP 409;
+the UI then keeps both histories and asks the player to keep this device or restore the cloud
+copy. No last-writer-wins overwrite is performed silently.
+
+Provision a fresh host once, then restart the service:
+
+```bash
+cd /srv/bfme/app/orthros
+sudo bash deploy/provision-auth.sh
+sudo systemctl restart orthros
+```
+
+The script creates the dedicated `bfme` database and `bfme_app` role, generates secrets in
+`/etc/orthros/auth.env` (mode 0600), creates the private snapshot directory and installs
+`orthros.service`, which waits for PostgreSQL and runs migrations before each start. Do not
+commit that environment file. Better Auth currently logs a harmless `lastRequest ... int8` type warning
+while inspecting its rate-limit table: PostgreSQL reports its required `bigint` column using the
+equivalent internal name `int8`; do not narrow it to `integer`.
+
+Email verification and password-reset mail are not enabled until an SMTP/email provider is
+configured. Back up PostgreSQL and `/srv/bfme/data/cloud-saves` together; neither replaces the
+other, and deleting one side alone leaves an incomplete backup set.
 
 ## Validation performed
 
@@ -92,6 +202,14 @@ The last command must print `32`; the response itself must be HTTP `206`.
 - a 51.8 MB, 640×480 VP6 combat-school movie was decoded and displayed inside BFME; captures eight seconds apart confirmed advancing video frames;
 - `Options.ini` was read from the writable OPFS overlay after a full page reload and `TimesInGame` advanced from 1 to 2;
 - relay broadcast retarget and payload preservation verified with two raw WebSocket clients.
+- all 78 cursor files shipped with BFME decoded successfully (380 source frames,
+  including 48 animated cursors); on the player-facing `?game=bfme` route, a
+  trusted canvas click acquired pointer lock, hid the Windows arrow and displayed
+  the 32×32 BFME cursor, movement kept the overlay aligned, windowed Escape
+  released it, and the next click reacquired it. A headed Chromium/Xvfb control
+  with Keyboard Lock granted kept Pointer Lock after the first physical Escape,
+  then released only Pointer Lock after two presses 350 ms apart while remaining
+  fullscreen. Separate pixel hashes confirmed live ANI frame changes.
 
 On this VPS, two simultaneous headless Chromium instances using SwiftShader measured roughly 3.8–4.4 FPS each; one menu instance measured roughly 25 FPS. Those numbers measure software rendering under VPS CPU contention, not a player's hardware WebGPU performance.
 
@@ -103,22 +221,29 @@ also exposed a diagnostic-induced bottleneck: BFME's old compact FPS overlay
 copied its canvas into a WebGPU texture on every dirty frame. Under SwiftShader,
 the same warm scene measured 1.9 FPS with the overlay and 15.8 FPS without it,
 while `Present` fell from roughly 412 ms to 0.65 ms. That GPU path and its
-resources have now been removed from every renderer. The opt-in replacement
+resources have now been removed from every renderer. The toggleable replacement
 counts real presents centrally, performs an O(1) interval accumulation, and
-posts one summary per second for an ordinary DOM badge showing FPS and average
-frame time. It creates no canvas, texture upload, render pass or queue sync; the
+posts one summary per second for a compact header indicator showing FPS and
+average frame time. It creates no canvas, texture upload, render pass or queue sync; the
 first interval after activation is discarded so the displayed window contains
 only frames measured while enabled. A Chromium run confirmed live reports in
-the badge, and unit tests cover disabled inertia, exact rate calculation and
-toggle reset. It remains disabled by default; the normal player path then keeps
-only one call and boolean check per present, negligible but not literally zero.
+the indicator, and unit tests cover disabled inertia, exact rate calculation and
+toggle reset. It is enabled by default and can still be hidden from Settings or
+the developer toolbar. Its measured cost is negligible but not literally zero.
+
+The BFME catalog description has been removed completely, so the footer center
+stays empty until it has a local-copy state to show (`Jeu local`, verification,
+retry or copy percentage). The default-on FPS/average-frame-time indicator lives
+in the top-right header between the game title and Pause. Neither indicator is
+rendered over the game canvas, and the loading card does not duplicate the
+local-copy status.
 
 A subsequent full Dunharrow skirmish against one easy AI at 1024×768 alternated
 the replacement overlay on the same warm simulation. Across seven raw 6–10
-second windows per mode, the median was 17.14 FPS with the overlay off and 17.18
+second windows per mode, the median was 17.14 FPS with the indicator off and 17.18
 FPS with it visible (+0.2%, within run noise). ABBA and BAAB subsets changed
 sign as AI load and simulation stalls evolved, so this run shows no measurable
-overlay penalty. The badge continued to receive its one-second reports and the
+indicator penalty. The header continued to receive its one-second reports and the
 guest fault list stayed empty.
 
 Profiling was then performed separately with the overlay off. A 120-frame window
@@ -376,7 +501,7 @@ published by the browser. It exposed a blind spot in the headless fallback: that
 path copied every WebGPU framebuffer back to the CPU, removed row padding,
 swizzled BGRA to RGBA, and created an asynchronous `ImageBitmap`. A ten-second
 window recorded 304 guest Presents but no published frame because one GPU map
-remained pending; the FPS badge therefore measured simulation cadence, not this
+remained pending; the FPS indicator therefore measured simulation cadence, not this
 fallback's visible cadence.
 
 Normal desktop browsers now present directly to the WebGPU swapchain, removing
@@ -722,11 +847,12 @@ all complex formats remain in the original CRT. On a clean transition this cut
 the central window from 117.55 ms/frame (8.5 FPS) to 58.27 ms/frame (17.2 FPS),
 and the late window reached 40.92 ms/frame (24.4 FPS).
 
-Two adjacent decimal-formatting helpers are guest-native leaves: unsigned
-32-bit add-with-carry and a one-bit shift of a 96-bit integer. `_stricmp` uses a
-bounded ASCII WASM leaf. The 96-bit leaf alone moved the central transition from
-about 125.8 to 117.55 ms/frame before `sscanf` was specialized. All four hooks
-require byte-exact signatures from MSVCR71 7.10.
+Three adjacent decimal-formatting helpers are guest-native leaves: unsigned
+32-bit add-with-carry, a one-bit shift and a full addition of 96-bit integers.
+`_stricmp` uses a bounded ASCII WASM leaf. The complete 96-bit adder lowered two
+comparable cold central windows from 144.18 to 114.84 ms/frame and from 150.51
+to 121.95 ms/frame; its former internal carry blocks disappear from the trace.
+All five hooks require byte-exact signatures from MSVCR71 7.10.
 
 The scope restriction is a correctness boundary, not merely conservative
 documentation. A prototype that also parsed literal-separated, multi-output
@@ -749,7 +875,7 @@ distorts this cold CPU benchmark.
 A clean end-to-end run of the retained scalar version loaded Dunharrow and
 measured 36.44 ms/frame (27.4 FPS) over the first 120 hot frames, with a recent
 frame at 30.81 ms (32.5 FPS). v86 accounted for 35.14 ms, versus 1.25 ms in
-thunks and 0.71 ms in Present. All 18 BFME hooks and four MSVCR71 hooks were
+thunks and 0.71 ms in Present. All 18 BFME hooks and five MSVCR71 hooks were
 present, all five D3D9 shadows matched, and the guest fault list was empty. After
 a global-selection/attack-move input and two further minutes of simulation, the
 next window reached 33.01 ms/frame (30.3 FPS), with no frame above 40 ms and no
@@ -762,6 +888,24 @@ delay means BFME has rendered. It waits in bounded CDP windows for a real
 `frameRendered` event before injecting any input; the full Tier-2 benchmark uses
 the same gate. This avoids silently measuring clicks sent to Orthros' loading
 screen when SwiftShader startup is unusually slow.
+
+The gate now also consumes 240 presentations in four bounded batches after the
+first one, because that first frame may belong to the intro rather than the main
+menu. `BFME_COMPACT=1` keeps automated runs to one metrics line per phase.
+
+Cold testing exposed a separate v86 start race: the wrapper could report itself
+running while its MessageChannel tick was lost, leaving EIP at the first
+bootloader instruction (`0x7c00`) with no guest thread or fault. Resume now
+unconditionally re-arms the idempotent v86 run loop, and boot retries at 50 ms
+intervals only while EIP remains exactly at `0x7c00` (20 attempts maximum, tied
+to the current instance). A fresh Worker subsequently reached MSVCR71 code with
+two active threads in under three seconds.
+
+The trap-free `GetTickCount/timeGetTime` leaf was also reduced from nine to seven
+guest instructions. It retains the final arithmetic `ADD` and therefore the
+original EFLAGS; a six-instruction `LEA` variant was rejected after a full-boot
+fault despite returning the same EAX. The retained clock audit measured 257 ms
+inline versus 257.01 ms virtual over 255.25 ms wall time, with no guest fault.
 
 A final clean transition run on 27 August measured Main -> Solo at 49.28 ms/frame
 (20.3 FPS), including one isolated 652.97 ms cold frame, and the settled Solo
@@ -865,8 +1009,10 @@ retained build.
 
 ## Operational notes
 
-- Relay state is intentionally ephemeral. Restarting the service drops active matches but does not affect saves.
+- Relay state is intentionally ephemeral. Restarting the service drops active matches but does not affect local or cloud saves.
 - The relay accepts at most eight peers per room and rejects virtual-IP collisions.
 - Rooms are isolated but not authenticated accounts. A secret room URL is the access token.
 - Do not put the WGB inside `dist/`; keep it mounted externally and set `BFME_WGB_PATH`.
-- Back up the WGB and application source. Player saves live in each browser profile, not on the VPS.
+- Back up the WGB and application source. Signed-out saves live only in each browser profile;
+  signed-in snapshots additionally live on the VPS and require both PostgreSQL and the
+  `cloud-saves` directory for disaster recovery.

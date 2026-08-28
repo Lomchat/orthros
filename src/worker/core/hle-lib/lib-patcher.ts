@@ -115,6 +115,9 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         // BFME matrix adjust: fld dword [eax]. Exact register-indirect x87 load,
         // likewise independent of the instruction's address.
         if (b === 0xD9 && b1 === 0x00) { i += 2; continue; }
+        // BFME sparse float4 loop: fld dword [eax+4].
+        if (b === 0xD9 && b1 === 0x40 && bytes[i + 2] === 0x04) { i += 3; continue; }
+        if (b === 0x8B && b1 === 0x75 && bytes[i + 2] === 0xFC) { i += 3; continue; }
         // BFME cold-map vertex blend: fld dword [abs32]. The encoded operand is
         // an absolute guest address (not EIP-relative in 32-bit mode), so the
         // instruction remains identical when copied into a trampoline.
@@ -140,6 +143,10 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         // exact register/base-relative forms and remain valid when relocated.
         if (b === 0x83 && b1 === 0xC0 && bytes[i + 2] === 0x04) { i += 3; continue; }
         if (b === 0x3B && b1 === 0x45 && bytes[i + 2] === 0xD8) { i += 3; continue; }
+        // BFME's RGB24 expansion loop starts with movzx ebx,byte [eax+2],
+        // followed by xor edx,edx. Both are register/base-relative and safe
+        // to relocate for the wrapper's defensive trampoline.
+        if (b === 0x0F && b1 === 0xB6 && bytes[i + 2] === 0x58 && bytes[i + 3] === 0x02) { i += 4; continue; }
         if (b === 0x8A && b1 === 0x0D) { i += 6; continue; } // mov cl,[abs32]
         return `unsupported prologue byte 0x${b.toString(16)} at +${i} — extend validatePrologueBytes if this is a real, position-independent instruction`;
     }

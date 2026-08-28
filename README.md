@@ -15,6 +15,7 @@ and OPFS.
 - DirectDraw & Direct3D 3–9 → WebGPU
 - DirectSound & `waveOut` → WebAudio
 - Runs entirely on the client — no game streaming, no server-side execution
+- Optional accounts keep local saves as the primary copy and add versioned cloud backup
 
 > ⚠️ Early and actively developed — expect rough edges.
 
@@ -32,7 +33,9 @@ Tomb Raider II…) — you can drop the offline installer straight in. Because o
 freeware** are legally redistributable, the online library lets you play those instantly;
 everything else, you bring your own legally-owned copy.
 
-Orthros has no public deployment yet — see [Run locally](#run-locally).
+The general Orthros demo library has not launched publicly yet. A project-specific
+[BFME browser deployment](docs/bfme-browser.md) is online for its authorized users;
+see [Run locally](#run-locally) for self-hosting.
 
 ## Why
 
@@ -62,6 +65,8 @@ flowchart LR
 - DirectSound and `waveOut` mix in an AudioWorklet over a SharedArrayBuffer ring.
 - Game files, saves and registry live in an OPFS virtual filesystem (read-only ROM plus a
   copy-on-write overlay).
+- Signed-in deployments can synchronize only the writable save container; game data and
+  execution remain local to the browser.
 - Hot guest/host calls stay entirely inside WASM for speed.
 - A bounded profile-guided Tier-2 JIT coalesces genuinely hot cross-module paths
   into one WASM compilation unit instead of blindly growing cold control flow.
@@ -144,10 +149,12 @@ Smirnov (jenissimo), used under the Apache License 2.0.** The files in this repo
 been modified from the upstream project. Notable changes so far:
 
 - a browser runtime and performance track targeting *The Battle for Middle-earth*;
-- v86 JIT work — inline current-module indirect dispatch (on by default) and guarded direct
-  block chaining;
+- v86 JIT work — inline current-module dispatch, guarded cross-module RET chaining and
+  per-generated-site target caches;
 - Direct3D 9 fast paths — direct present on desktop GPUs, fast surface-texture locks;
-- a trap-free game clock and hot guest loops offloaded to WASM.
+- native Win32 `.cur`/`.ani` game cursors with hotspot-accurate pointer capture;
+- a trap-free game clock and validated hot guest loops offloaded to WASM,
+  including BFME parser reads and BC1 colour-block expansion.
 
 See the git history for the complete list.
 

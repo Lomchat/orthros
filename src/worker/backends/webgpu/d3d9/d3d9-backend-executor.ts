@@ -451,6 +451,17 @@ export class D3D9BackendExecutor {
             // a rect list = 3D renderer owns the screen, composite only these live-dialog rects
             // ([] → nothing, so an occluded loading splash cannot cover the frame).
             gdiOverlayRects?: Array<{ x: number; y: number; w: number; h: number }>;
+            cursor?: {
+                textureView: GPUTextureView;
+                x: number;
+                y: number;
+                width: number;
+                height: number;
+                u0: number;
+                v0: number;
+                u1: number;
+                v1: number;
+            } | null;
         },
         /** Render-to-texture target. When set, the pass renders into these views instead of the
          *  swap-chain offscreen and the canvas-copy / overlay compositing is skipped (RT passes
@@ -646,6 +657,22 @@ export class D3D9BackendExecutor {
                 } else {
                     this.backend.blit(overlays.gdiOverlayCanvas, this.offscreenView!, encoder);
                 }
+            }
+            // D3D9's hardware cursor is the final guest-owned plane. It is a
+            // persistent GPU texture, so moving it records only this tiny quad;
+            // there is no canvas upload or CPU readback on the hot path.
+            if (present && !target && overlays?.cursor) {
+                const cursor = overlays.cursor;
+                const size = this.getCanvasSize();
+                this.backend.blitTextureRect(
+                    cursor.textureView,
+                    this.offscreenView!,
+                    encoder,
+                    cursor,
+                    size.width,
+                    size.height,
+                    true,
+                );
             }
 
             let cpuReadback: {
