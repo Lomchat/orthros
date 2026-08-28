@@ -3,7 +3,8 @@
  */
 
 import { Mem } from '../../core/memory/mem-accessor';
-import { resolveSurfaceInfo, resolveTextureInfo, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
+import { resolveSurfaceInfo, resolveTextureInfo, surfaceMeta, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
+import { decodeD3DTextureToRgba8, d3dFormatBpp } from '../../backends/webgpu/shared/texture-formats';
 
 const D3DX_FILTER_LINEAR = 3;
 
@@ -145,6 +146,137 @@ export function d3dxLoadSurfaceFromSurface(
     dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
     src.device.unlockTexture(src.texturePtr, src.level, mem);
     return D3D_OK;
+}
+
+function writeEncodedPixel(
+    mem: Uint8Array,
+    ptr: number,
+    format: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+): boolean {
+    switch (format >>> 0) {
+        case 21: // D3DFMT_A8R8G8B8
+        case 22: // D3DFMT_X8R8G8B8
+            mem[ptr] = b;
+            mem[ptr + 1] = g;
+            mem[ptr + 2] = r;
+            mem[ptr + 3] = format === 22 ? 0xff : a;
+            return true;
+        case 23: { // D3DFMT_R5G6B5
+            const value = ((r >>> 3) << 11) | ((g >>> 2) << 5) | (b >>> 3);
+            mem[ptr] = value & 0xff;
+            mem[ptr + 1] = value >>> 8;
+            return true;
+        }
+        case 24: // D3DFMT_X1R5G5B5
+        case 25: { // D3DFMT_A1R5G5B5
+            const alpha = format === 24 || a >= 128 ? 0x8000 : 0;
+            const value = alpha | ((r >>> 3) << 10) | ((g >>> 3) << 5) | (b >>> 3);
+            mem[ptr] = value & 0xff;
+            mem[ptr + 1] = value >>> 8;
+            return true;
+        }
+        case 26: // D3DFMT_A4R4G4B4
+        case 27: { // D3DFMT_X4R4G4B4
+            const alpha = format === 27 ? 0xf : a >>> 4;
+            const value = (alpha << 12) | ((r >>> 4) << 8) | ((g >>> 4) << 4) | (b >>> 4);
+            mem[ptr] = value & 0xff;
+            mem[ptr + 1] = value >>> 8;
+            return true;
+        }
+        case 28: // D3DFMT_A8
+            mem[ptr] = a;
+            return true;
+        case 50: // D3DFMT_L8
+            mem[ptr] = Math.round((r * 77 + g * 150 + b * 29) / 256);
+            return true;
+        default:
+            return false;
+    }
+}
+
+/** D3DXLoadSurfaceFromMemory for the uncompressed D3D formats used by legacy engines. */
+export function d3dxLoadSurfaceFromMemory(
+    mem: Uint8Array,
+    destSurface: number,
+    destRectPtr: number,
+    srcMemory: number,
+    srcFormat: number,
+    srcPitch: number,
+    srcRectPtr: number,
+    filter: number,
+    colorKey: number,
+): number {
+    const dest = resolveSurfaceInfo(destSurface);
+    const destMeta = surfaceMeta.get(destSurface);
+    if (!dest || !destMeta || !srcMemory || !srcPitch) return D3DERR_INVALIDCALL;
+
+    const destRect = readRect(destRectPtr, dest.width, dest.height);
+    const srcRect = readRect(srcRectPtr, rectWidth(destRect), rectHeight(destRect));
+    const dw = rectWidth(destRect);
+    const dh = rectHeight(destRect);
+    const sw = rectWidth(srcRect);
+    const sh = rectHeight(srcRect);
+    if (!dw || !dh || !sw || !sh) return D3D_OK;
+
+    const srcBpp = d3dFormatBpp(srcFormat);
+    const destBpp = d3dFormatBpp(destMeta.format);
+    if (!srcBpp || !destBpp || (srcBpp & 7) !== 0 || (destBpp & 7) !== 0) return D3DERR_INVALIDCALL;
+    const srcBase = srcMemory + srcRect.top * srcPitch + srcRect.left * (srcBpp >>> 3);
+    const rgba = new Uint8Array(sw * sh * 4);
+    try {
+        decodeD3DTextureToRgba8(mem, srcBase, sw, sh, srcFormat, { pitch: srcPitch, out: rgba });
+    } catch {
+        return D3DERR_INVALIDCALL;
+    }
+
+    const destLock = dest.device.lockTexture(dest.texturePtr, dest.level);
+    if (!destLock) return D3DERR_INVALIDCALL;
+    const destBytes = destBpp >>> 3;
+    const useLinear = filter === D3DX_FILTER_LINEAR;
+    const sample = (x: number, y: number): [number, number, number, number] => {
+        const fx = Math.max(0, Math.min(sw - 1, x));
+        const fy = Math.max(0, Math.min(sh - 1, y));
+        const x0 = Math.floor(fx);
+        const y0 = Math.floor(fy);
+        if (!useLinear) {
+            const off = (Math.round(fy) * sw + Math.round(fx)) * 4;
+            return [rgba[off], rgba[off + 1], rgba[off + 2], rgba[off + 3]];
+        }
+        const x1 = Math.min(sw - 1, x0 + 1);
+        const y1 = Math.min(sh - 1, y0 + 1);
+        const tx = fx - x0;
+        const ty = fy - y0;
+        const channel = (c: number) => {
+            const p00 = rgba[(y0 * sw + x0) * 4 + c];
+            const p10 = rgba[(y0 * sw + x1) * 4 + c];
+            const p01 = rgba[(y1 * sw + x0) * 4 + c];
+            const p11 = rgba[(y1 * sw + x1) * 4 + c];
+            return Math.round((p00 + (p10 - p00) * tx) * (1 - ty) + (p01 + (p11 - p01) * tx) * ty);
+        };
+        return [channel(0), channel(1), channel(2), channel(3)];
+    };
+
+    let ok = true;
+    for (let y = 0; y < dh && ok; y++) {
+        for (let x = 0; x < dw; x++) {
+            const sx = dw === sw ? x : (x * (sw - 1)) / Math.max(1, dw - 1);
+            const sy = dh === sh ? y : (y * (sh - 1)) / Math.max(1, dh - 1);
+            const [r, g, b, a] = sample(sx, sy);
+            const packedBgra = (a << 24) | (r << 16) | (g << 8) | b;
+            if (colorKeyMatch(packedBgra, colorKey)) continue;
+            const ptr = destLock.ptr + (destRect.top + y) * destLock.pitch + (destRect.left + x) * destBytes;
+            if (!writeEncodedPixel(mem, ptr, destMeta.format, r, g, b, a)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    return ok ? D3D_OK : D3DERR_INVALIDCALL;
 }
 
 function downsampleBox2x(

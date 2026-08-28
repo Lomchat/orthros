@@ -42,6 +42,7 @@ import { ioTraceRing } from './io-trace-ring';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getBfmeDxtEncodeCacheFallbacks } from '../hle-lib/libs/bfme/dxt-encode-cache';
+import { getD3dxAssembleShaderSamples } from '../../modules/d3dx9';
 
 interface DbgConfig {
     enabled: boolean;
@@ -1679,6 +1680,12 @@ export const dbg = {
             };
             console.log(`[dbg][timers][JSON] ${JSON.stringify(out)}`);
         } catch (e) { console.warn('[dbg] timers err', e); }
+    },
+    /** Captured source passed to the still-unimplemented legacy D3DX assembler. */
+    d3dxAssembleSamples(): readonly string[] {
+        const samples = getD3dxAssembleShaderSamples();
+        console.log(`[dbg][d3dxAssembleSamples][JSON] ${JSON.stringify(samples)}`);
+        return samples;
     },
     /** D3D9 API call-mix, redundant-setter skips, pipeline cache + executor counters.
      *  dbg.d3d9Perf(1) resets global + per-device subsystem counters first. Logs JSON. */

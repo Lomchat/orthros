@@ -71,6 +71,24 @@ async function createTextureFromDecoded(
 export function createTextureExports(): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
 
+    exports['D3DXCreateTexture'] = (_ctx, _mem, args) => {
+        return createGuestTexture(
+            args[0] >>> 0,
+            args[1] >>> 0,
+            args[2] >>> 0,
+            args[3] >>> 0,
+            args[4] >>> 0,
+            args[5] >>> 0,
+            args[6] >>> 0,
+            args[7] >>> 0,
+        );
+    };
+
+    // D3DX normally clamps these in/out values to device caps. Orthros exposes
+    // the same formats and dimensions through its D3D9 caps, so no adjustment
+    // is needed for values the game obtained from that device.
+    exports['D3DXCheckTextureRequirements'] = () => D3D_OK;
+
     exports['D3DXFilterTexture'] = (_ctx, _mem, args) => {
         return d3dxFilterTexture(args[0] >>> 0, args[2] >>> 0, args[3] >>> 0);
     };
@@ -93,6 +111,17 @@ export function createTextureExports(): Record<string, ThunkImplementation> {
         const decoded = await loadImageFromVfs(path);
         if (!decoded) return D3DERR_INVALIDCALL;
         return writeImageInfo(pInfo, decoded.width, decoded.height, decoded.mipLevels) ? D3D_OK : D3DERR_INVALIDCALL;
+    };
+
+    exports['D3DXGetImageInfoFromFileInMemory'] = async (_ctx, mem, args) => {
+        const pSrc = args[0] >>> 0;
+        const srcLen = args[1] >>> 0;
+        const pInfo = args[2] >>> 0;
+        if (!pSrc || !srcLen || !pInfo) return D3DERR_INVALIDCALL;
+        const decoded = await decodeImageBytes(mem.subarray(pSrc, pSrc + srcLen));
+        if (!decoded) return D3DERR_INVALIDCALL;
+        return writeImageInfo(pInfo, decoded.width, decoded.height, decoded.mipLevels)
+            ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
     exports['D3DXCreateTextureFromFileA'] = async (_ctx, mem, args) => {

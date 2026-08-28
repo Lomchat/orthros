@@ -11,11 +11,18 @@ import { createMathExports } from './math';
 import { createSurfaceExports } from './surfaces';
 import { createTextureExports } from './textures';
 import { createEffectExports, resetEffectState } from './effects';
+import { computeFvfStride } from '../../backends/webgpu/ddraw/compute/vertex-converter';
+import { Marshaler } from '../../core/memory/marshaler';
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
 
 const warnedStubs = new Set<string>();
+const assembleShaderSamples: string[] = [];
+
+export function getD3dxAssembleShaderSamples(): readonly string[] {
+    return assembleShaderSamples;
+}
 
 function warnOnce(name: string, detail: string): void {
     if (warnedStubs.has(name)) return;
@@ -37,6 +44,22 @@ export class D3dx9 implements IModule {
         this.exports['DebugSetMute'] = debugMute;
         this.exports['D3DXDebugMute'] = debugMute;
         this.exports['D3DXCheckVersion'] = () => 1;
+        this.exports['D3DXGetFVFVertexSize'] = (_ctx, _mem, args) => {
+            try {
+                return computeFvfStride(args[0] >>> 0) >>> 0;
+            } catch {
+                return 0;
+            }
+        };
+        this.exports['D3DXAssembleShader'] = (_ctx, mem, args) => {
+            const sourcePtr = args[0] >>> 0;
+            const sourceLength = args[1] >>> 0;
+            if (sourcePtr && sourceLength && assembleShaderSamples.length < 16) {
+                const source = Marshaler.readString(mem, sourcePtr).slice(0, sourceLength);
+                if (!assembleShaderSamples.includes(source)) assembleShaderSamples.push(source);
+            }
+            return invalidCall('D3DXAssembleShader');
+        };
 
         Object.assign(this.exports, createMathExports());
         Object.assign(this.exports, createSurfaceExports());
@@ -66,6 +89,7 @@ export class D3dx9 implements IModule {
 
     reset(): void {
         warnedStubs.clear();
+        assembleShaderSamples.length = 0;
         resetEffectState();
     }
 }

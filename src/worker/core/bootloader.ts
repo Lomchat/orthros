@@ -215,22 +215,22 @@ export function createBootloader(
 
     // Write handlers
     finalBuffer.set(
-        createHaltHandlerBytes(0xdead00ee, true),
+        createHaltHandlerBytes(0xdead00ee, true, 0xB079),
         hGenericOff
     );
-    finalBuffer.set(createHaltHandlerBytes(0xdead0006, true), hUdOff); // #UD
-    finalBuffer.set(createHaltHandlerBytes(0xdead000d, true), hGpOff); // #GP
+    finalBuffer.set(createHaltHandlerBytes(0xdead0006, true, 0xB07A), hUdOff); // #UD
+    finalBuffer.set(createHaltHandlerBytes(0xdead000d, true, 0xB07B), hGpOff); // #GP
     finalBuffer.set(createRecoverablePfHandler(), hPfOff); // #PF - recoverable via IRET
     finalBuffer.set(
-        createHaltHandlerBytes(0xdead02ee, false),
+        createHaltHandlerBytes(0xdead02ee, false, 0xB07D),
         hInt2eOff
     );
     finalBuffer.set(
-        createHaltHandlerBytes(0xdead0080, false),
+        createHaltHandlerBytes(0xdead0080, false, 0xB07E),
         hInt80Off
     );
     finalBuffer.set(
-        createRecoverableHandlerBytes(0xdead0000),
+        createRecoverableHandlerBytes(0xdead0000, 0xB07C),
         hDeOff
     ); // #DE - recoverable via IRET
 
@@ -255,7 +255,8 @@ export function createBootloader(
 
 function createHaltHandlerBytes(
     thunkId: number,
-    dumpEip: boolean = false
+    dumpEip: boolean = false,
+    port: number = 0xB077,
 ): Uint8Array {
     // Basic handler:
     // MOV EAX, thunkId
@@ -269,10 +270,10 @@ function createHaltHandlerBytes(
         (thunkId >> 16) & 0xff,
         (thunkId >> 24) & 0xff,
         0xba,
-        0x77,
-        0xb0,
-        0x00,
-        0x00,
+        port & 0xff,
+        (port >> 8) & 0xff,
+        (port >> 16) & 0xff,
+        (port >> 24) & 0xff,
         0xef,
     ];
 
@@ -303,14 +304,18 @@ function createHaltHandlerBytes(
  *
  * Handler: MOV EAX, thunkId; MOV EDX, 0xB077; OUT DX, EAX; IRET (12 bytes)
  */
-function createRecoverableHandlerBytes(thunkId: number): Uint8Array {
+function createRecoverableHandlerBytes(thunkId: number, port: number = 0xB077): Uint8Array {
     return new Uint8Array([
         0xb8,                           // MOV EAX, imm32
         thunkId & 0xff,
         (thunkId >> 8) & 0xff,
         (thunkId >> 16) & 0xff,
         (thunkId >> 24) & 0xff,
-        0xba, 0x77, 0xb0, 0x00, 0x00,  // MOV EDX, 0xB077
+        0xba,                           // MOV EDX, port
+        port & 0xff,
+        (port >> 8) & 0xff,
+        (port >> 16) & 0xff,
+        (port >> 24) & 0xff,
         0xef,                           // OUT DX, EAX
         0xcf,                           // IRET
     ]);
@@ -365,6 +370,8 @@ function createRecoverablePfHandler(): Uint8Array {
 export const PF_HALT_TARGET = (0x7E00 + 32 + 256 * 8) + 3 * 25 + 19;
 export const PF_HANDLER_START = PF_HALT_TARGET - 19;
 export const PF_HANDLER_END = PF_HANDLER_START + 23;
+export const EXCEPTION_HANDLER_START = 0x7E00 + 32 + 256 * 8;
+export const EXCEPTION_HANDLER_END = EXCEPTION_HANDLER_START + 7 * 25;
 
 function setIDTEntry(
     view: DataView,

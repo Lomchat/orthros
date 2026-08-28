@@ -24,7 +24,11 @@ import { ERROR_NOT_SUPPORTED } from './thunk-errors';
 import { thunkChecksumManager } from '../memory/thunk-checksum';
 import { hypercallDataManager } from '../cpu/hypercall-data';
 import { preemptionManager } from '../cpu/preemption-manager';
-import { PF_HALT_TARGET, PF_HANDLER_END, PF_HANDLER_START } from '../bootloader';
+import {
+    EXCEPTION_HANDLER_END,
+    EXCEPTION_HANDLER_START,
+    PF_HALT_TARGET,
+} from '../bootloader';
 import { faultRecorder } from '../memory/fault-recorder';
 import { stubRegistry } from '../diagnostics/stub-registry';
 import { apiCensus } from '../diagnostics/api-census';
@@ -1101,9 +1105,9 @@ export class ThunkDispatcher {
                 // state and stack are already the exception frame. Dispatching
                 // it as Win32 would validate that frame as an API stack and kill
                 // the process. Drop only that stale callback; the handler's
-                // dedicated 0xB078 callback below reports the actual page fault.
+                // dedicated exception callbacks below report the actual fault.
                 const eip = (this.cachedIpRaw?.[0] ?? 0) >>> 0;
-                if (eip >= PF_HANDLER_START && eip < PF_HANDLER_END) return;
+                if (eip >= EXCEPTION_HANDLER_START && eip < EXCEPTION_HANDLER_END) return;
                 this.handlePortWrite(value >>> 0);
             },
             write16: (value: number) => {
@@ -1134,17 +1138,49 @@ export class ThunkDispatcher {
             read8: () => 0
         };
 
+        const exceptionDevice = (marker: number) => ({
+            // The first OUT at an exception boundary can expose stale pre-fault
+            // EAX, so the port selects the marker. Fatal handlers issue a second
+            // OUT with the faulting EIP; once the marker arms that capture, pass
+            // the actual value through for the existing forensic path.
+            write32: (value: number) => {
+                this.handlePortWrite(this.isWaitingForEipDump ? value >>> 0 : marker);
+            },
+            write16: (value: number) => {
+                this.handlePortWrite(this.isWaitingForEipDump ? value >>> 0 : marker);
+            },
+            write8: (value: number) => {
+                this.handlePortWrite(this.isWaitingForEipDump ? value >>> 0 : marker);
+            },
+            read32: () => 0,
+            read16: () => 0,
+            read8: () => 0,
+        });
+        const exceptionDevices = new Map<number, ReturnType<typeof exceptionDevice>>([
+            [0xB079, exceptionDevice(0xdead00ee)],
+            [0xB07A, exceptionDevice(0xdead0006)],
+            [0xB07B, exceptionDevice(0xdead000d)],
+            [0xB07C, exceptionDevice(0xdead0000)],
+            [0xB07D, exceptionDevice(0xdead02ee)],
+            [0xB07E, exceptionDevice(0xdead0080)],
+        ]);
+
         if (ioBus.ports && Array.isArray(ioBus.ports)) {
             ioBus.ports[0xB077] = thunkDevice;
             ioBus.ports[0xB078] = pageFaultDevice;
+            for (const [port, device] of exceptionDevices) ioBus.ports[port] = device;
             Logger.log(LogCategory.SYSTEM, 'I/O hook installed on port 0xB077');
             Logger.log(LogCategory.SYSTEM, 'Page-fault hook installed on port 0xB078');
+            Logger.log(LogCategory.SYSTEM, 'Exception hooks installed on ports 0xB079-0xB07E');
         } else {
             Logger.error(LogCategory.SYSTEM, 'ioBus.ports is missing or not an array!');
 
             if (typeof ioBus.register_write === 'function') {
                 ioBus.register_write(0xB077, thunkDevice, undefined, undefined, 4);
                 ioBus.register_write(0xB078, pageFaultDevice, undefined, undefined, 4);
+                for (const [port, device] of exceptionDevices) {
+                    ioBus.register_write(port, device, undefined, undefined, 4);
+                }
             }
         }
     }

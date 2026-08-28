@@ -710,4 +710,17 @@ export function dumpExceptionContext(d: any, marker: number, cpu: any): void {
         } else {
             Logger.error(LogCategory.SYSTEM, "Recent WinAPI calls empty - enable debug mode so fast-path thunks are recorded for stack-corruption diagnosis.");
         }
+
+        // #DE and #PF are handled before reaching this dumper. Every remaining
+        // IDT marker is fatal: report the CPU-pushed guest EIP immediately while
+        // its interrupt frame is intact. Previously the handler waited for a
+        // second OUT and the scheduler could fire on the handler's CLI/HLT,
+        // replacing the useful #UD/#GP with a misleading low-EIP guard 0x4100.
+        reportFatalExecutionEscape(
+            d,
+            regs,
+            esp,
+            faultingEipEarly ?? eip,
+            `${msg} at 0x${(faultingEipEarly ?? eip).toString(16)}`,
+        );
 }
