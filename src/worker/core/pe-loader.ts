@@ -1291,7 +1291,7 @@ export class PELoader {
                 // all callee-saved registers, and tail-jump to the ordinary
                 // thunk for contention, waiters or malformed state.
                 if (dllName === 'kernel32' && !this.criticalSectionInlineStubs
-                    && !(globalThis as any).__noCriticalSectionInline) {
+                    && (globalThis as any).__criticalSectionInlineEnabled === true) {
                     const enterTrap = stubDll.exportTable.get('entercriticalsection');
                     const leaveTrap = stubDll.exportTable.get('leavecriticalsection');
                     if (enterTrap && leaveTrap) {
