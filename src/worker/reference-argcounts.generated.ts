@@ -720,6 +720,14 @@ export const REFERENCE_ARG_COUNTS: ReferenceArgCountMap = {
     "sleep": 1,
     "systemtimetofiletime": 2
   },
+  "psapi": {
+    "enumprocesses": 3,
+    "enumprocessmodules": 4,
+    "getmoduleinformation": 4,
+    "getmodulefilenameexa": 4,
+    "getmodulefilenameexw": 4,
+    "getmodulebasenamea": 4
+  },
   "version": {
     "verqueryvaluea": 4,
     "getfileversioninfoa": 4,

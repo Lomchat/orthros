@@ -72,7 +72,7 @@
         "name": "La Bataille pour la Terre du Milieu II",
         "gameId": "byo:bfme2-109-fr",
         "entrypoint": "rom/lotrbfme2.exe",
-        "registry": {
+        "registry": [{
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
@@ -97,7 +97,14 @@
               "data": "My Battle for Middle-earth II Files"
             }
           ]
-        }
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
+          "values": [
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+          ]
+        }]
       },
       {
         "code": "en",
@@ -106,7 +113,7 @@
         "name": "The Battle for Middle-earth II",
         "gameId": "byo:bfme2-109-en",
         "entrypoint": "rom/lotrbfme2.exe",
-        "registry": {
+        "registry": [{
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
@@ -131,7 +138,14 @@
               "data": "My Battle for Middle-earth II Files"
             }
           ]
-        }
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
+          "values": [
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+          ]
+        }]
       }
     ]
   },
@@ -155,17 +169,35 @@
         "name": "L'Avènement du Roi-Sorcier",
         "gameId": "byo:rotwk-202-fr",
         "entrypoint": "rom/lotrbfme2ep1.exe",
-        "registry": {
+        "registry": [{
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",
           "values": [
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
             {
               "name": "Language",
               "type": "REG_SZ",
               "data": "French"
-            }
+            },
+            { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My The Lord of the Rings, The Rise of the Witch-king Files" }
           ]
-        }
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
+          "values": [
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "Language", "type": "REG_SZ", "data": "French" },
+            { "name": "Version", "type": "REG_DWORD", "data": 65539 },
+            { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My Battle for Middle-earth II Files" }
+          ]
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
+          "values": [
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+          ]
+        }]
       },
       {
         "code": "en",
@@ -174,17 +206,35 @@
         "name": "The Rise of the Witch-king",
         "gameId": "byo:rotwk-202-en",
         "entrypoint": "rom/lotrbfme2ep1.exe",
-        "registry": {
+        "registry": [{
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",
           "values": [
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
             {
               "name": "Language",
               "type": "REG_SZ",
               "data": "English"
-            }
+            },
+            { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My The Lord of the Rings, The Rise of the Witch-king Files" }
           ]
-        }
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
+          "values": [
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "Language", "type": "REG_SZ", "data": "English" },
+            { "name": "Version", "type": "REG_DWORD", "data": 65539 },
+            { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My Battle for Middle-earth II Files" }
+          ]
+        }, {
+          "root": "HKLM",
+          "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
+          "values": [
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+          ]
+        }]
       }
     ]
   },

@@ -10,6 +10,50 @@ export class Psapi implements IModule {
     exports: Record<string, ThunkImplementation> = {};
 
     initialize(process: Process): void {
+        // BOOL EnumProcesses(DWORD *lpidProcess, DWORD cb, DWORD *lpcbNeeded)
+        // There is one emulated Win32 process in a worker.
+        this.exports["EnumProcesses"] = (ctx, mem, args) => {
+            const out = args[0] >>> 0;
+            const cb = args[1] >>> 0;
+            const needed = args[2] >>> 0;
+            if (!needed || needed + 4 > mem.length) {
+                return { value: 0, stackCleanup: 12 };
+            }
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            const wrote = out !== 0 && cb >= 4 && out + 4 <= mem.length;
+            if (wrote) view.setUint32(out, 1, true);
+            view.setUint32(needed, wrote ? 4 : 0, true);
+            return { value: 1, stackCleanup: 12 };
+        };
+
+        // BOOL EnumProcessModules(HANDLE hProcess, HMODULE *lphModule,
+        //                         DWORD cb, LPDWORD lpcbNeeded)
+        // Orthros exposes the main image plus loaded PE modules. The first entry
+        // is sufficient for callers such as the EA crash/debug bootstrap, but
+        // report the complete byte count so a caller can retry with a larger
+        // buffer without receiving fabricated handles.
+        this.exports["EnumProcessModules"] = (ctx, mem, args) => {
+            const lphModule = args[1] >>> 0;
+            const cb = args[2] >>> 0;
+            const lpcbNeeded = args[3] >>> 0;
+            if (!lpcbNeeded || lpcbNeeded + 4 > mem.length) {
+                return { value: 0, stackCleanup: 16 };
+            }
+
+            const modules = [...process.moduleRegistry.getAllModules()]
+                .map((module: any) => module.baseAddress >>> 0)
+                .filter((base: number) => base !== 0);
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            view.setUint32(lpcbNeeded, modules.length * 4, true);
+            if (lphModule && lphModule < mem.length) {
+                const count = Math.min(modules.length, cb >>> 2, (mem.length - lphModule) >>> 2);
+                for (let i = 0; i < count; i++) {
+                    view.setUint32(lphModule + i * 4, modules[i]!, true);
+                }
+            }
+            return { value: 1, stackCleanup: 16 };
+        };
+
         // BOOL GetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO lpmodinfo, DWORD cb)
         // MODULEINFO = { LPVOID lpBaseOfDll; DWORD SizeOfImage; LPVOID EntryPoint; } (12 bytes)
         this.exports["GetModuleInformation"] = (ctx, mem, args) => {
@@ -61,6 +105,25 @@ export class Psapi implements IModule {
             }
             view.setUint16(lpFilename + toWrite * 2, 0, true);
             return { value: toWrite, stackCleanup: 16 };
+        };
+
+        // DWORD GetModuleBaseNameA(HANDLE, HMODULE, LPSTR, DWORD)
+        this.exports["GetModuleBaseNameA"] = (ctx, mem, args) => {
+            const hModule = args[1] >>> 0;
+            const out = args[2] >>> 0;
+            const capacity = args[3] >>> 0;
+            if (!out || capacity === 0 || out >= mem.length) {
+                return { value: 0, stackCleanup: 16 };
+            }
+            const module = hModule
+                ? process.moduleRegistry.getByBase(hModule)
+                : process.moduleRegistry.getExecutableModule();
+            const name = module?.name || "program.exe";
+            const bytes = encodeAnsi(name);
+            const count = Math.min(bytes.length, capacity - 1, mem.length - out - 1);
+            mem.set(bytes.subarray(0, count), out);
+            mem[out + count] = 0;
+            return { value: count, stackCleanup: 16 };
         };
     }
 }

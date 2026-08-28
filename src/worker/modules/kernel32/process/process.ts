@@ -1026,6 +1026,19 @@ export const exports: Record<string, ThunkImplementation> = {
         return 0; // No debugger
     },
 
+    'CheckRemoteDebuggerPresent': (_ctx, _mem, args) => {
+        const processHandle = args[0] >>> 0;
+        const debuggerPresent = args[1] >>> 0;
+        if (!debuggerPresent || !Mem.writeUint32(debuggerPresent, 0)) {
+            System.getInstance().scheduler.setLastError(ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        Logger.verbose(LogCategory.KERNEL32,
+            `CheckRemoteDebuggerPresent(hProcess=0x${processHandle.toString(16)}) -> TRUE, debugger=FALSE`);
+        System.getInstance().scheduler.setLastError(0);
+        return 1;
+    },
+
     'GetVersion': (ctx, mem, args) => {
         const emulatorConfig = EmulatorConfig.getInstance();
         const versionValue = emulatorConfig.getVersionValue();

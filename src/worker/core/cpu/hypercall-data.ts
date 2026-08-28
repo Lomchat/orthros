@@ -1031,19 +1031,56 @@ export class HypercallDataManager {
         return this.enabled;
     }
 
-    /** Reset dispatch table and registration state. Call on system reset. */
-    resetDispatchTable(): void {
+    /**
+     * Reset every process-owned hypercall binding and guest-memory pointer.
+     *
+     * Function IDs are allocated from the freshly generated thunk table, so an
+     * ID from a launcher may name a completely different function in its child
+     * executable. Keeping the old byte in the WASM dispatch table would then run
+     * the wrong handler without ever reaching the JS dispatcher. Guest-RAM
+     * pointers are equally process-local: Process.reset() releases their address
+     * space, even though this manager itself survives the hand-off.
+     */
+    resetProcessState(): void {
         this.refreshViews();
         if (this.view && this.hpBase !== 0) {
             for (let i = 0; i < 4096; i++) {
                 this.view.setUint8(this.hpBase + OFF_HC_DISPATCH_TABLE + i, 0);
             }
             this.view.setUint32(this.hpBase + OFF_HC_ENABLED, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_SLAB_CTL_PTR, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_MUTEX_MIRROR_PTR, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_EAGL_TOKEN_CFG_PTR, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_MSG_QUEUE_FLAG, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_HAS_RUNNABLE_PEERS, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_LAST_ERROR, 0, true);
+            this.view.setUint32(this.hpBase + OFF_HC_CURRENT_THREAD_ID, 0, true);
         }
+
         this.registeredEntries.clear();
         this.enabled = false;
         this.enablePending = false;
-        this.clearFlsSlots();
+        this.lastInsnSnapshot = 0;
+        this.lastWallSnapshot = 0;
+
+        this.slabControlAddr = 0;
+        this.mutexMirrorAddr = 0;
+        this.eaglTokenCfgAddr = 0;
+        this.flsAllocatedShadow.fill(0);
+        this.flsValuesShadow.fill(0);
+        this.eventMirrorShadow.fill(0);
+        this.mutexMirrorShadow.fill(0);
+
+        if (this.view && this.hpBase !== 0) {
+            this.writeFlsSharedState();
+            this.writeEventMirrorState();
+            this.view.setUint32(this.hpBase + OFF_HC_EVENT_STARVATION_COUNTER, 0, true);
+        }
+    }
+
+    /** @deprecated Use resetProcessState(); retained for older diagnostics. */
+    resetDispatchTable(): void {
+        this.resetProcessState();
     }
 
     /** Reset instruction baseline after pause/resume to prevent stale delta. */

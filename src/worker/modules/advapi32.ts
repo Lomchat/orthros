@@ -214,8 +214,10 @@ export class Advapi32 implements IModule {
             const subKey = Marshaler.readWideString(mem, lpSubKey);
             const fullKey = openKey(root, subKey);
             if (!fullKey) {
+                Logger.log(LogCategory.SYSTEM, `RegOpenKeyExW(${root}\\"${subKey}") -> NOT FOUND`);
                 return { value: 2, stackCleanup: 20 };
             }
+            Logger.log(LogCategory.SYSTEM, `RegOpenKeyExW(${root}\\"${subKey}") -> OK`);
             if (phkResult && !isValidAddress(mem, phkResult, 4, "rw")) {
                 return { value: 87, stackCleanup: 20 }; // ERROR_INVALID_PARAMETER
             }

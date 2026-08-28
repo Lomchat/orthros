@@ -1,0 +1,43 @@
+{
+  "source": "psapi.h",
+  "generated": "2026-08-28T00:00:00.000Z",
+  "module": "psapi",
+  "functions": [
+    {
+      "name": "_EnumProcesses@12",
+      "argCount": 3,
+      "signature": "BOOL EnumProcesses(DWORD *lpidProcess, DWORD cb, DWORD *lpcbNeeded)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_EnumProcessModules@16",
+      "argCount": 4,
+      "signature": "BOOL EnumProcessModules(HANDLE hProcess, HMODULE *lphModule, DWORD cb, LPDWORD lpcbNeeded)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetModuleInformation@16",
+      "argCount": 4,
+      "signature": "BOOL GetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO lpmodinfo, DWORD cb)",
+      "returnType": "BOOL"
+    },
+    {
+      "name": "_GetModuleFileNameExA@16",
+      "argCount": 4,
+      "signature": "DWORD GetModuleFileNameExA(HANDLE hProcess, HMODULE hModule, LPSTR lpFilename, DWORD nSize)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetModuleFileNameExW@16",
+      "argCount": 4,
+      "signature": "DWORD GetModuleFileNameExW(HANDLE hProcess, HMODULE hModule, LPWSTR lpFilename, DWORD nSize)",
+      "returnType": "DWORD"
+    },
+    {
+      "name": "_GetModuleBaseNameA@16",
+      "argCount": 4,
+      "signature": "DWORD GetModuleBaseNameA(HANDLE hProcess, HMODULE hModule, LPSTR lpBaseName, DWORD nSize)",
+      "returnType": "DWORD"
+    }
+  ]
+}

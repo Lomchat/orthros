@@ -24,7 +24,7 @@ import { ERROR_NOT_SUPPORTED } from './thunk-errors';
 import { thunkChecksumManager } from '../memory/thunk-checksum';
 import { hypercallDataManager } from '../cpu/hypercall-data';
 import { preemptionManager } from '../cpu/preemption-manager';
-import { PF_HALT_TARGET } from '../bootloader';
+import { PF_HALT_TARGET, PF_HANDLER_END, PF_HANDLER_START } from '../bootloader';
 import { faultRecorder } from '../memory/fault-recorder';
 import { stubRegistry } from '../diagnostics/stub-registry';
 import { apiCensus } from '../diagnostics/api-census';
@@ -1095,6 +1095,15 @@ export class ThunkDispatcher {
 
         const thunkDevice = {
             write32: (value: number) => {
+                // v86 can defer a normal OUT callback until after the following
+                // RET has faulted and entered our #PF handler. In that case the
+                // callback still carries the old thunk ID, but the live CPU
+                // state and stack are already the exception frame. Dispatching
+                // it as Win32 would validate that frame as an API stack and kill
+                // the process. Drop only that stale callback; the handler's
+                // dedicated 0xB078 callback below reports the actual page fault.
+                const eip = (this.cachedIpRaw?.[0] ?? 0) >>> 0;
+                if (eip >= PF_HANDLER_START && eip < PF_HANDLER_END) return;
                 this.handlePortWrite(value >>> 0);
             },
             write16: (value: number) => {
@@ -1108,14 +1117,34 @@ export class ThunkDispatcher {
             read8: () => 0
         };
 
+        const pageFaultDevice = {
+            // Deliberately ignore the written EAX value. See the dedicated
+            // 0xB078 port in createRecoverablePfHandler().
+            write32: (_value: number) => {
+                this.handlePortWrite(0xdead000e);
+            },
+            write16: (_value: number) => {
+                this.handlePortWrite(0xdead000e);
+            },
+            write8: (_value: number) => {
+                this.handlePortWrite(0xdead000e);
+            },
+            read32: () => 0,
+            read16: () => 0,
+            read8: () => 0
+        };
+
         if (ioBus.ports && Array.isArray(ioBus.ports)) {
             ioBus.ports[0xB077] = thunkDevice;
+            ioBus.ports[0xB078] = pageFaultDevice;
             Logger.log(LogCategory.SYSTEM, 'I/O hook installed on port 0xB077');
+            Logger.log(LogCategory.SYSTEM, 'Page-fault hook installed on port 0xB078');
         } else {
             Logger.error(LogCategory.SYSTEM, 'ioBus.ports is missing or not an array!');
 
             if (typeof ioBus.register_write === 'function') {
                 ioBus.register_write(0xB077, thunkDevice, undefined, undefined, 4);
+                ioBus.register_write(0xB078, pageFaultDevice, undefined, undefined, 4);
             }
         }
     }

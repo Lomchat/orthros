@@ -338,7 +338,12 @@ function createRecoverablePfHandler(): Uint8Array {
         0x50,                           // PUSH EAX     (save — clobbered by MOV below)
         0x52,                           // PUSH EDX     (save — clobbered by MOV below)
         0xb8, 0x0e, 0x00, 0xad, 0xde,  // MOV EAX, 0xDEAD000E
-        0xba, 0x77, 0xb0, 0x00, 0x00,  // MOV EDX, 0xB077
+        // Page faults use a dedicated port. At a JIT exception boundary v86 can
+        // expose the pre-fault EAX value to the I/O callback even though the
+        // handler's MOV EAX has executed. Sharing 0xB077 with Win32 thunks then
+        // mislabels the fault as an arbitrary API call. The dedicated port lets
+        // the dispatcher identify #PF from the port itself, independently of EAX.
+        0xba, 0x78, 0xb0, 0x00, 0x00,  // MOV EDX, 0xB078
         0xef,                           // OUT DX, EAX  (JS handler runs synchronously)
         0x5a,                           // POP EDX      (restore)
         0x58,                           // POP EAX      (restore)
@@ -358,6 +363,8 @@ function createRecoverablePfHandler(): Uint8Array {
  * Layout: handlersAddress(0x8620) + 3*handlerSize(75) + haltOffset(19) = 0x867E
  */
 export const PF_HALT_TARGET = (0x7E00 + 32 + 256 * 8) + 3 * 25 + 19;
+export const PF_HANDLER_START = PF_HALT_TARGET - 19;
+export const PF_HANDLER_END = PF_HANDLER_START + 23;
 
 function setIDTEntry(
     view: DataView,

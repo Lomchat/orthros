@@ -31,6 +31,7 @@ import { resetSehDispatchState } from "./seh-dispatch";
 import { namedObjects } from "../modules/kernel32/named-objects";
 import { resetGuestMessageBoxes } from "./diagnostics/message-box-recorder";
 import { resetMissingFiles } from "./diagnostics/missing-file-recorder";
+import { hypercallDataManager } from "./cpu/hypercall-data";
 
 /**
  * The crash payload posted to the host (`process_exit{crashed:true, fault}`) and
@@ -586,6 +587,12 @@ export class System {
                 Logger.warn(LogCategory.SYSTEM, `Failed to restart v86: ${e}`);
             }
         }
+
+        // The manager survives Process.reset(), but thunk IDs and guest-RAM
+        // allocations do not. Clear launcher bindings before the child PE
+        // regenerates its stubs, otherwise an identical numeric ID can silently
+        // dispatch to the launcher's unrelated WASM handler.
+        hypercallDataManager.resetProcessState();
 
         // Reset all modules if they have a reset method
         if (this.process) {
