@@ -34,6 +34,7 @@ export const user32Module: ModuleDescriptor = {
         makeFunc("DispatchMessageA", 1),
         makeFunc("DispatchMessageW", 1),
         makeFunc("PostQuitMessage", 1),
+        makeFunc("ExitWindowsEx", 2),
         makeFunc("DefWindowProcA", 4),
         makeFunc("DefWindowProcW", 4),
         makeFunc("LoadCursorA", 2),

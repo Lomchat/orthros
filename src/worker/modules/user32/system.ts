@@ -2259,6 +2259,13 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     exports['EnumWindows'] = () => 1;
     exports['WindowFromDC'] = () => 0;
     exports['DisableProcessWindowsGhosting'] = () => 0;
+    // A browser cannot terminate the host OS. Report the Windows request as
+    // accepted so installers/launchers can finish their own control flow.
+    exports['ExitWindowsEx'] = (ctx, mem, args) => {
+        Logger.warn(LogCategory.USER32,
+            `ExitWindowsEx(flags=0x${(args[0] >>> 0).toString(16)}, reason=0x${(args[1] >>> 0).toString(16)}) ignored by browser host`);
+        return 1;
+    };
 
     exports['GetCursorInfo'] = (ctx, mem, args) => {
         const pci = args[0] >>> 0;
