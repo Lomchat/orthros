@@ -30,6 +30,7 @@ import { hookRegistry } from "./hooks";
 import { resetSehDispatchState } from "./seh-dispatch";
 import { namedObjects } from "../modules/kernel32/named-objects";
 import { resetGuestMessageBoxes } from "./diagnostics/message-box-recorder";
+import { resetMissingFiles } from "./diagnostics/missing-file-recorder";
 
 /**
  * The crash payload posted to the host (`process_exit{crashed:true, fault}`) and
@@ -64,6 +65,7 @@ export interface CrashFaultPayload {
      *  `unhandled` entry is the usual root of an MSVC/UE "Runtime Error! terminate". */
     cxxExceptions?: HarnessReport["cxxExceptions"];
     messageBoxes?: HarnessReport["messageBoxes"];
+    missingFiles?: HarnessReport["missingFiles"];
     /** @deprecated Use faults — same data, kept for older host builds. */
     recentFaults?: Array<{ eip: number; faultAddr: number; lastThunk: string; threadId: number | null; kind: string }>;
     threads?: HarnessReport["threads"];
@@ -441,6 +443,7 @@ export class System {
             fault.faults = report.faults;
             fault.cxxExceptions = report.cxxExceptions;
             fault.messageBoxes = report.messageBoxes;
+            fault.missingFiles = report.missingFiles;
             fault.threads = report.threads;
             fault.stackGuardViolations = report.stackGuardViolations;
             fault.sehDispatchTrace = report.sehDispatchTrace;
@@ -603,6 +606,7 @@ export class System {
         this._releaseCount = 0;
         this._crashReported = false; // fresh game → allow a new crash report
         resetGuestMessageBoxes();
+        resetMissingFiles();
 
         // Reset all subsystems
         this.windowManager.reset();

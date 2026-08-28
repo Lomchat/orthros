@@ -33,6 +33,7 @@ import { LARGE_IO_TRACE_ENABLED, traceLargeRead } from '../../core/diagnostics/l
 import { ioTraceRing } from '../../core/debug/io-trace-ring';
 import { hypercallDataManager } from '../../core/cpu/hypercall-data';
 import { noteBfmeVp6Open } from '../d3d9/bfme-vp6-bridge';
+import { recordMissingFile } from '../../core/diagnostics/missing-file-recorder';
 
 const readFileFirstLogged = new Set<number>();
 
@@ -575,6 +576,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             try { resolved = vfs.resolvePath(filename); } catch { /* ignore */ }
             Logger.log(LogCategory.KERNEL32,
                 `CreateFileA: FAILED "${filename}" resolved="${resolved}" disposition=${dwCreationDisposition} err=${openFailure}`);
+            recordMissingFile('CreateFileA', filename, openFailure, ctx.eip ?? 0);
             System.getInstance().scheduler.setLastError(openFailure);
             return INVALID_HANDLE_VALUE;
         }
@@ -595,6 +597,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                     const err = vfs.classifyOpenFailure(filename, dwCreationDisposition);
                     Logger.log(LogCategory.KERNEL32,
                         `CreateFileA: NOT FOUND "${filename}" resolved="${resolved}" currentDir="${vfs.currentDir}" err=${err}`);
+                    recordMissingFile('CreateFileA', filename, err, ctx.eip ?? 0);
                     System.getInstance().scheduler.setLastError(err);
                     return INVALID_HANDLE_VALUE;
                 }
@@ -739,6 +742,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         // therefore an ordinary Win32 failure, not a reason to suspend the guest.
         if (disp >= 1 && disp <= 5) {
             Logger.verbose(LogCategory.KERNEL32, `CreateFileW: file not found or cannot be opened`);
+            recordMissingFile('CreateFileW', filename, openFailure, ctx.eip ?? 0);
             System.getInstance().scheduler.setLastError(openFailure);
             return INVALID_HANDLE_VALUE;
         }
@@ -1823,6 +1827,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         }
 
         Logger.verbose(LogCategory.KERNEL32, `GetFileAttributesA: file not found "${filename}"`);
+        recordMissingFile('GetFileAttributesA', filename, ERROR_FILE_NOT_FOUND, ctx.eip ?? 0);
         System.getInstance().scheduler.setLastError(ERROR_FILE_NOT_FOUND);
         return INVALID_FILE_ATTRIBUTES;
     };
@@ -1857,6 +1862,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         }
 
         Logger.verbose(LogCategory.KERNEL32, `GetFileAttributesW: file not found "${filename}"`);
+        recordMissingFile('GetFileAttributesW', filename, ERROR_FILE_NOT_FOUND, ctx.eip ?? 0);
         System.getInstance().scheduler.setLastError(ERROR_FILE_NOT_FOUND);
         return INVALID_FILE_ATTRIBUTES;
     };

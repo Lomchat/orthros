@@ -12,6 +12,7 @@ import { getCxxExceptionRing, getSehDispatchTrace } from "../core/seh-dispatch";
 import { getStackGuardViolations } from "../core/memory/stack-write-guard";
 import { hypercallDataManager } from "../core/cpu/hypercall-data";
 import { getGuestMessageBoxes } from "../core/diagnostics/message-box-recorder";
+import { getMissingFiles } from "../core/diagnostics/missing-file-recorder";
 
 const hx = (v: number) => "0x" + (v >>> 0).toString(16);
 
@@ -70,6 +71,8 @@ export interface HarnessReport {
     sehDispatchTrace: string[];
     /** Recent guest dialogs, often the explanation for a deliberate ExitProcess(1). */
     messageBoxes: ReturnType<typeof getGuestMessageBoxes>;
+    /** Recent failed CreateFile/GetFileAttributes probes, oldest to newest. */
+    missingFiles: ReturnType<typeof getMissingFiles>;
 }
 
 function readStackWords(esp: number, count = 4): string[] {
@@ -187,5 +190,6 @@ export function buildHarnessReport(esp?: number): HarnessReport {
         stackGuardViolations: getStackGuardViolations(),
         sehDispatchTrace: getSehDispatchTrace(),
         messageBoxes: getGuestMessageBoxes(),
+        missingFiles: getMissingFiles(),
     };
 }

@@ -42,6 +42,7 @@ export interface CrashFault {
   faults?: Array<{ eip: string; faultAddr: string; lastThunk: string; threadId: number | null }>;
   cxxExceptions?: Array<{ seq: number; threadId: number; type: string; thrown: string; throwModule: string; rethrow: boolean; outcome: string; caughtBy: string }>;
   messageBoxes?: Array<{ kind: string; caption: string; text: string; style: number; eip: number }>;
+  missingFiles?: Array<{ op: string; path: string; error: number; eip: number }>;
   recentFaults?: Array<{ eip: number; faultAddr: number; lastThunk: string; threadId: number | null; kind: string }>;
   threads?: {
     currentThreadId?: number | null;
@@ -162,6 +163,11 @@ export function formatGuestReport(f: CrashFault, gameName: string, crashed: bool
     lines.push(``, `recent guest dialogs (newest last):`,
       ...f.messageBoxes.map((m) =>
         `  ${m.kind} @${hx(m.eip)} style=${hx(m.style)} "${m.caption}" — "${m.text}"`));
+  }
+  if (f.missingFiles?.length) {
+    lines.push(``, `recent failed file probes (oldest to newest):`,
+      ...f.missingFiles.map((m) =>
+        `  ${m.op} @${hx(m.eip)} error=${m.error} "${m.path}"`));
   }
   if (f.stackDump?.length) {
     lines.push(``, `stack dump (32 words from ${hx(f.gameEsp)}):`,
