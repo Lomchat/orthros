@@ -139,7 +139,7 @@ const HANDLER_SET_EVENT = 72;
 // Tier 1/3 additions
 const HANDLER_GET_CURRENT_THREAD_ID = 73;
 const HANDLER_STRNICMP = 74;
-const HANDLER_STRSTR = 75;
+export const HANDLER_STRSTR = 75;
 const HANDLER_ATOI = 76;
 const HANDLER_RT_DYNAMIC_CAST = 77;
 // Page-probe pointer validation (hypercall.rs handle_is_bad_ptr; one probe serves both ids)
@@ -203,6 +203,16 @@ export const HANDLER_BFME_DXT_ENCODE_CACHE = 155;
 export const HANDLER_BFME_RGB24_EXPAND = 156;
 /** Exact sparse weighted-float4 accumulation used while building map assets. */
 export const HANDLER_BFME_SPARSE_FLOAT4 = 157;
+/** MSVCR71 7.10 byte-exact normalized memory comparison. */
+export const HANDLER_MSVCR71_MEMCMP = 158;
+/** MSVCR71 7.10 byte-string length scan. */
+export const HANDLER_MSVCR71_STRLEN = 159;
+/** MSVCR71 7.10 bounded copy with zero padding. */
+export const HANDLER_MSVCR71_STRNCPY = 160;
+/** MSVCR71 7.10 byte-exact ASCII case-insensitive bounded comparison. */
+export const HANDLER_MSVCR71_STRNICMP = 161;
+/** MSVCR71 7.10 byte-exact normalized string comparison. */
+export const HANDLER_MSVCR71_STRCMP = 162;
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
 export const OFF_HC_SLAB_END = 0x1404;

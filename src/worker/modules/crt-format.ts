@@ -8,7 +8,12 @@ import { encodeAnsiString } from "../core/emulator-config-manager";
 import { EmulatorConfig } from "../core/emulator-config-manager";
 
 /** Lazy reader for va_list — reads uint32 values on demand from guest memory */
-export class VaListReader {
+export interface VaArgReader {
+    nextUint32(): number;
+    nextDouble(): number;
+}
+
+export class VaListReader implements VaArgReader {
     private offset = 0;
     constructor(private baseAddr: number) {}
     /** Read next uint32 from va_list and advance pointer */
@@ -34,7 +39,7 @@ export class VaListReader {
  * VaListReader that reads from a pre-extracted args array (for sprintf/printf/snprintf).
  * Consumes uint32 values sequentially; doubles consume two consecutive slots.
  */
-export class ArrayVaListReader {
+export class ArrayVaListReader implements VaArgReader {
     private offset: number;
     constructor(private args: number[], startIndex: number) {
         this.offset = startIndex;
@@ -89,7 +94,7 @@ export interface FormatCLazyOptions {
  */
 export function formatCLazy(
     format: string,
-    reader: VaListReader | ArrayVaListReader,
+    reader: VaArgReader,
     readCString: (addr: number, maxLen: number) => string,
     opts?: FormatCLazyOptions
 ): string {

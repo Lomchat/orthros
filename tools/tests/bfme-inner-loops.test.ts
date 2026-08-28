@@ -761,8 +761,7 @@ describe('BFME DXT encode exact cache wrapper', () => {
 
     test('routes the cache handler through the BFME WASM handler band', async () => {
         const source = await Bun.file(new URL('../../vendor/v86/src/rust/cpu/hypercall.rs', import.meta.url)).text();
-        expect(source).toContain('135..=157 => super::hypercall_bfme::dispatch_inner_loop(handler_id)');
-        expect(source).toContain('158..=255 => false');
+        expect(source).toContain('135..=255 => super::hypercall_bfme::dispatch_inner_loop(handler_id)');
     });
 });
 

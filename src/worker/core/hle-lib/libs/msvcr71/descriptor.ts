@@ -2,6 +2,12 @@ import type { LibDescriptor } from '../../types';
 import {
     HANDLER_MSVCR71_SSCANF_SCALAR,
     HANDLER_MSVCR71_STRICMP,
+    HANDLER_MSVCR71_MEMCMP,
+    HANDLER_MSVCR71_STRLEN,
+    HANDLER_MSVCR71_STRNCPY,
+    HANDLER_MSVCR71_STRNICMP,
+    HANDLER_MSVCR71_STRCMP,
+    HANDLER_STRSTR,
 } from '../../../cpu/hypercall-data';
 import {
     buildMsvcr71AddCarryInline,
@@ -10,7 +16,16 @@ import {
     msvcr71ArithmeticUnreachableHandler,
 } from './arithmetic-inline';
 import { msvcr71StricmpShadow } from './string-compare';
+import {
+    msvcr71MemcmpShadow,
+    msvcr71StrlenShadow,
+    msvcr71StrncpyShadow,
+    msvcr71StrnicmpShadow,
+    msvcr71StrcmpShadow,
+    msvcr71StrstrShadow,
+} from './string-memory';
 import { buildMsvcr71SscanfScalarFilter, msvcr71SscanfScalarFallback } from './scanf-scalar';
+import { msvcr71VsnprintfFallback, msvcr71VsnprintfShadow } from './vsnprintf';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -61,6 +76,56 @@ const SSCANF_PATTERN = hexBytes(
     '83c410 c9 c3',
 );
 
+// Exported `_vsnprintf`, RVA 0x2a9bb. This complete byte-exact body is shared
+// by the VC71 runtime bundled with BFME 1, BFME II and Roi-Sorcier.
+const VSNPRINTF_PATTERN = hexBytes(
+    '558bec83ec20 8b450c 56 8b7508 57 ff7514 8945e4 ff7510 8d45e0 50 ' +
+    'c745ec42000000 8975e8 8975e0 e8ca4ffeff 83c40c 85f6 8bf8 741a ' +
+    'ff4de4 7808 8b45e0 c60000 eb0d 8d45e0 50 6a00 e86b58feff 59 59 ' +
+    '8bc7 5f 5e c9 c3',
+);
+
+// Exported `memcmp`, RVA 0x3234. The native implementation returns a
+// normalized -1/0/+1 and its small-block dispatch dominates C++ string-key
+// comparisons during SAGE data loading.
+const MEMCMP_PATTERN = hexBytes(
+    '8b44240c85c0744a8b54240456578bf28b7c24100bd783e2037438a90100000074' +
+    '118a0e3a0f755883c60183c70183e801741d8a0e8a173aca75458a4e018a57',
+);
+
+// Exported `strlen`, RVA 0x17d5. Match through the aligned dword loop so the
+// hook cannot attach to a short compiler-generated lookalike.
+const STRLEN_PATTERN = hexBytes(
+    '8b4c2404f7c103000000741a8a0183c10184c074e1f7c10300000075ef83c000' +
+    '8d24248d24248b01bafffefe7e03d083f0ff33c283c104a90001018174e88b41',
+);
+
+const STRNCPY_PATTERN = hexBytes(
+    '8b4c240c5785c90f849200000056538bd98b742414f7c6030000008b7c2410750b' +
+    'c1e9020f8585000000eb278a0683c601880783c70183e901742b84c0742ff7',
+);
+
+// Locale-independent ASCII body used by the exported `_strnicmp` wrapper in
+// the C locale. Hooking this internal leaf preserves the wrapper's locale gate.
+const STRNICMP_PATTERN = hexBytes(
+    '558bec5756538b4d100bc974448b75088b7d0cb741b35ab6208d098a2683c6018a' +
+    '0783c7013ae074183ae772063ae3770202e63ac772063ac3770202c63ae075',
+);
+
+// Exported `strcmp`, RVA 0x2cc0. This VC71 build normalizes ordering to
+// -1/+1, unlike the raw byte difference permitted by the C standard.
+const STRCMP_PATTERN = hexBytes(
+    '8b5424048b4c2408f7c203000000753b8b023a01752d0ac074263a610175240ae4' +
+    '741dc1e8103a410275180ac074113a6103750f83c10483c2040ae475d28bff33c0',
+);
+
+// Exported `strstr`, RVA 0x28cf. Its optimized two-byte search accounted for
+// most of the remaining VC71 page after memcmp/strlen were removed.
+const STRSTR_PATTERN = hexBytes(
+    '8b4c24085753568a118b7c241084d2746f8a710184f674558bf78b4c24148a0783' +
+    'c6013ac2741784c0740d8a0683c6013ac2740a84c075f35e5b5f33c0c38a0683',
+);
+
 
 export const msvcr71Descriptor: LibDescriptor = {
     id: 'msvcr71',
@@ -88,6 +153,34 @@ export const msvcr71Descriptor: LibDescriptor = {
         sscanf_scalar: {
             kind: 'bytes', pattern: SSCANF_PATTERN,
             mask: 'x'.repeat(SSCANF_PATTERN.length), section: '.text', weight: 8,
+        },
+        vsnprintf: {
+            kind: 'bytes', pattern: VSNPRINTF_PATTERN,
+            mask: 'x'.repeat(VSNPRINTF_PATTERN.length), section: '.text', weight: 8,
+        },
+        memcmp: {
+            kind: 'bytes', pattern: MEMCMP_PATTERN,
+            mask: 'x'.repeat(MEMCMP_PATTERN.length), section: '.text', weight: 8,
+        },
+        strlen: {
+            kind: 'bytes', pattern: STRLEN_PATTERN,
+            mask: 'x'.repeat(STRLEN_PATTERN.length), section: '.text', weight: 8,
+        },
+        strncpy: {
+            kind: 'bytes', pattern: STRNCPY_PATTERN,
+            mask: 'x'.repeat(STRNCPY_PATTERN.length), section: '.text', weight: 8,
+        },
+        strnicmp_ascii: {
+            kind: 'bytes', pattern: STRNICMP_PATTERN,
+            mask: 'x'.repeat(STRNICMP_PATTERN.length), section: '.text', weight: 8,
+        },
+        strcmp: {
+            kind: 'bytes', pattern: STRCMP_PATTERN,
+            mask: 'x'.repeat(STRCMP_PATTERN.length), section: '.text', weight: 8,
+        },
+        strstr: {
+            kind: 'bytes', pattern: STRSTR_PATTERN,
+            mask: 'x'.repeat(STRSTR_PATTERN.length), section: '.text', weight: 8,
         },
     },
     functions: {
@@ -148,11 +241,88 @@ export const msvcr71Descriptor: LibDescriptor = {
             entryFilter: buildMsvcr71SscanfScalarFilter,
             hypercallHandlerId: HANDLER_MSVCR71_SSCANF_SCALAR,
         },
+        vsnprintf: {
+            name: 'vsnprintf',
+            entryProbe: {
+                kind: 'prologue', pattern: VSNPRINTF_PATTERN,
+                mask: 'x'.repeat(VSNPRINTF_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 4, required: false,
+            prologueLen: 6,
+            shadow: msvcr71VsnprintfShadow,
+        },
+        memcmp: {
+            name: 'memcmp',
+            entryProbe: {
+                kind: 'prologue', pattern: MEMCMP_PATTERN,
+                mask: 'x'.repeat(MEMCMP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_MSVCR71_MEMCMP,
+            shadow: msvcr71MemcmpShadow,
+        },
+        strlen: {
+            name: 'strlen',
+            entryProbe: {
+                kind: 'prologue', pattern: STRLEN_PATTERN,
+                mask: 'x'.repeat(STRLEN_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 1, required: false,
+            prologueLen: 10,
+            hypercallHandlerId: HANDLER_MSVCR71_STRLEN,
+            shadow: msvcr71StrlenShadow,
+        },
+        strncpy: {
+            name: 'strncpy',
+            entryProbe: {
+                kind: 'prologue', pattern: STRNCPY_PATTERN,
+                mask: 'x'.repeat(STRNCPY_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 5,
+            hypercallHandlerId: HANDLER_MSVCR71_STRNCPY,
+            shadow: msvcr71StrncpyShadow,
+        },
+        strnicmp_ascii: {
+            name: 'strnicmp_ascii',
+            entryProbe: {
+                kind: 'prologue', pattern: STRNICMP_PATTERN,
+                mask: 'x'.repeat(STRNICMP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_MSVCR71_STRNICMP,
+            shadow: msvcr71StrnicmpShadow,
+        },
+        strcmp: {
+            name: 'strcmp',
+            entryProbe: {
+                kind: 'prologue', pattern: STRCMP_PATTERN,
+                mask: 'x'.repeat(STRCMP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            prologueLen: 8,
+            hypercallHandlerId: HANDLER_MSVCR71_STRCMP,
+            shadow: msvcr71StrcmpShadow,
+        },
+        strstr: {
+            name: 'strstr',
+            entryProbe: {
+                kind: 'prologue', pattern: STRSTR_PATTERN,
+                mask: 'x'.repeat(STRSTR_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            prologueLen: 6,
+            hypercallHandlerId: HANDLER_STRSTR,
+            shadow: msvcr71StrstrShadow,
+        },
     },
     handlers: {
         add_carry: msvcr71ArithmeticUnreachableHandler,
         add96: msvcr71ArithmeticUnreachableHandler,
         shift96: msvcr71ArithmeticUnreachableHandler,
         sscanf_scalar: msvcr71SscanfScalarFallback,
+        vsnprintf: msvcr71VsnprintfFallback,
     },
 };

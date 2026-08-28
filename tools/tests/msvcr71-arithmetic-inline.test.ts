@@ -12,16 +12,33 @@ import {
 } from '../../src/worker/core/hle-lib/libs/msvcr71/arithmetic-inline';
 import { msvcr71Descriptor } from '../../src/worker/core/hle-lib/libs/msvcr71/descriptor';
 import { msvcr71StricmpKernel } from '../../src/worker/core/hle-lib/libs/msvcr71/string-compare';
+import {
+    msvcr71MemcmpKernel,
+    msvcr71StrlenKernel,
+    msvcr71StrncpyKernel,
+    msvcr71StrnicmpKernel,
+    msvcr71StrcmpKernel,
+    msvcr71StrstrKernel,
+} from '../../src/worker/core/hle-lib/libs/msvcr71/string-memory';
 import { assembleMsvcr71SscanfScalarFilter } from '../../src/worker/core/hle-lib/libs/msvcr71/scanf-scalar';
+import { msvcr71VsnprintfKernel, msvcr71VsnprintfShadow } from '../../src/worker/core/hle-lib/libs/msvcr71/vsnprintf';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
 function stringView(memory: Uint8Array): ShadowView {
+    const data = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
     return {
         readU8: (addr) => memory[addr] ?? 0,
-        readU16: () => 0, readU32: () => 0, readF32: () => 0, readF64: () => 0,
+        readU16: (addr) => data.getUint16(addr, true),
+        readU32: (addr) => data.getUint32(addr, true),
+        readF32: (addr) => data.getFloat32(addr, true),
+        readF64: (addr) => data.getFloat64(addr, true),
         readBytes: (addr, len) => memory.slice(addr, addr + len),
-        writeU8: () => {}, writeU16: () => {}, writeU32: () => {},
-        writeF32: () => {}, writeF64: () => {}, writeBytes: () => {},
+        writeU8: (addr, value) => { memory[addr] = value; },
+        writeU16: (addr, value) => data.setUint16(addr, value, true),
+        writeU32: (addr, value) => data.setUint32(addr, value, true),
+        writeF32: (addr, value) => data.setFloat32(addr, value, true),
+        writeF64: (addr, value) => data.setFloat64(addr, value, true),
+        writeBytes: (addr, bytes) => memory.set(bytes, addr),
     };
 }
 
@@ -125,14 +142,16 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
 
     test('requires both exact helper signatures before detection', () => {
         expect(msvcr71Descriptor.minConfidence).toBe(16);
-        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8]);
-        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar']);
+        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]);
+        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar', 'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii', 'strcmp', 'strstr']);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
         expect(msvcr71Descriptor.functions.add96.required).toBe(true);
         expect(msvcr71Descriptor.functions.shift96.required).toBe(true);
         expect(msvcr71Descriptor.functions.stricmp.required).toBe(true);
         expect(msvcr71Descriptor.functions.sscanf_scalar.required).toBe(true);
         expect(msvcr71Descriptor.functions.sscanf_scalar.argCount).toBe(3);
+        expect(msvcr71Descriptor.functions.vsnprintf.required).toBe(false);
+        expect(msvcr71Descriptor.functions.vsnprintf.argCount).toBe(4);
     });
 
     test('emits a bounded scalar sscanf classifier with both exact exits', () => {
@@ -148,6 +167,72 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
             '8b44240485c0742e8b54240885d274260fb70a81f9256400007410' +
             '81f925750000740881f925660000750b807a02007505e9ca110000e9c5220000',
         );
+    });
+});
+
+describe('MSVCR71 hot memory/string leaves', () => {
+    test('preserves normalized memcmp ordering and bounded strlen', () => {
+        const memory = new Uint8Array(0x100);
+        memory.set([1, 2, 3, 4], 0x10);
+        memory.set([1, 2, 9, 4], 0x20);
+        memory.set(Buffer.from('Roi-Sorcier\0'), 0x40);
+        const view = stringView(memory);
+
+        expect(msvcr71MemcmpKernel(view, [0x10, 0x20, 2])).toBe(0);
+        expect(msvcr71MemcmpKernel(view, [0x10, 0x20, 4])).toBe(-1);
+        expect(msvcr71MemcmpKernel(view, [0x20, 0x10, 4])).toBe(1);
+        expect(msvcr71StrlenKernel(view, [0x40])).toBe(11);
+
+        memory.set(Buffer.from('AbCd\0'), 0x60);
+        memory.set(Buffer.from('aBcE\0'), 0x70);
+        expect(msvcr71StrnicmpKernel(view, [0x60, 0x70, 3])).toBe(0);
+        expect(msvcr71StrnicmpKernel(view, [0x60, 0x70, 5])).toBe(-1);
+
+        memory.fill(0xaa, 0x80, 0x88);
+        memory.set(Buffer.from('xy\0'), 0x90);
+        expect(msvcr71StrncpyKernel(view, [0x80, 0x90, 8])).toBe(0x80);
+        expect([...memory.subarray(0x80, 0x88)]).toEqual([0x78, 0x79, 0, 0, 0, 0, 0, 0]);
+
+        memory.set(Buffer.from('Upgrade_AngmarFaction\0'), 0xa0);
+        memory.set(Buffer.from('Upgrade_AngmarFactions\0'), 0xc0);
+        memory.set(Buffer.from('Angmar\0'), 0xe0);
+        memory.set(Buffer.from('missing\0'), 0xf0);
+        expect(msvcr71StrcmpKernel(view, [0xa0, 0xa0])).toBe(0);
+        expect(msvcr71StrcmpKernel(view, [0xa0, 0xc0])).toBe(-1);
+        expect(msvcr71StrcmpKernel(view, [0xc0, 0xa0])).toBe(1);
+        expect(msvcr71StrstrKernel(view, [0xa0, 0xe0])).toBe(0xa8);
+        expect(msvcr71StrstrKernel(view, [0xa0, 0xf0])).toBe(0);
+    });
+});
+
+describe('MSVCR71 bounded _vsnprintf', () => {
+    test('formats guest va_list values and preserves VC71 truncation semantics', () => {
+        const memory = new Uint8Array(0x400);
+        const dv = new DataView(memory.buffer);
+        memory.set(Buffer.from('value=%d/%s\0'), 0x20);
+        memory.set(Buffer.from('map\0'), 0x60);
+        dv.setUint32(0x80, 42, true);
+        dv.setUint32(0x84, 0x60, true);
+        const view: ShadowView = {
+            readU8: (addr) => memory[addr] ?? 0,
+            readU16: (addr) => dv.getUint16(addr, true),
+            readU32: (addr) => dv.getUint32(addr, true),
+            readF32: (addr) => dv.getFloat32(addr, true),
+            readF64: (addr) => dv.getFloat64(addr, true),
+            readBytes: (addr, len) => memory.slice(addr, addr + len),
+            writeU8: (addr, value) => { memory[addr] = value; },
+            writeU16: (addr, value) => dv.setUint16(addr, value, true),
+            writeU32: (addr, value) => dv.setUint32(addr, value, true),
+            writeF32: (addr, value) => dv.setFloat32(addr, value, true),
+            writeF64: (addr, value) => dv.setFloat64(addr, value, true),
+            writeBytes: (addr, bytes) => memory.set(bytes, addr),
+        };
+
+        expect(msvcr71VsnprintfKernel(view, [0x100, 32, 0x20, 0x80])).toBe(12);
+        expect(Buffer.from(memory.subarray(0x100, 0x10d)).toString()).toBe('value=42/map\0');
+        expect(msvcr71VsnprintfKernel(view, [0x140, 5, 0x20, 0x80])).toBe(-1);
+        expect(Buffer.from(memory.subarray(0x140, 0x145)).toString()).toBe('value');
+        expect(msvcr71VsnprintfShadow.guard?.([0x180, 32, 0x20, 0x80], view)).toBe(true);
     });
 });
 
