@@ -626,6 +626,26 @@ export class Ole32 implements IModule {
         };
     }
 
+    reset(): void {
+        comInitialized.clear();
+        memoryStreams.clear();
+        this.iunknownStubs = null;
+        this.memoryStreamVtableAddr = 0;
+        this.blowfishVtableAddr = 0;
+        this.blowfishInstances.clear();
+        this.classRegistrations.clear();
+        this.nextClassRegistration = 0x1000;
+        this.messageFilter = 0;
+        this.objectAddressMap.clear();
+    }
+
+    recreateVTables(): void {
+        if (!this.process) return;
+        ensureMemoryStreamOwner(this.process);
+        this.createIUnknownStubs();
+        this.createMemoryStreamVtable();
+    }
+
     private createMemoryStreamVtable(): void {
         const process = this.process;
         const handlers: Record<string, ThunkImplementation> = {};

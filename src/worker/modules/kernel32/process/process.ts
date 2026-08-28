@@ -19,6 +19,14 @@ import { applyShellExecFake, hasShellExecFakeMatch } from '../../shell32';
 import { getVirtualProcessManager, VIRTUAL_CURRENT_PROCESS_ID } from './virtual-process-manager';
 import { createActCtxExports } from './actctx';
 import { versionVerifyExports } from './version-verify';
+import {
+    canDispatchGuestProcessHandoff,
+    clearGuestProcessHandoff,
+    dispatchGuestProcessHandoff,
+    parseGuestProcessLaunch,
+    queueGuestProcessHandoff,
+    takeGuestProcessHandoff,
+} from '../../../core/guest-process-handoff';
 
 const ERROR_INVALID_HANDLE = 6;
 const ERROR_INVALID_PARAMETER = 87;
@@ -281,9 +289,14 @@ const shutdownProcess = (exitCode: number): ThunkResult => {
     }
 
     // Flush all pending VFS writes to OPFS before stopping
-    system.fileSystem.flushAll().catch(e => {
+    const flushPromise = system.fileSystem.flushAll().catch(e => {
         Logger.warn(LogCategory.KERNEL32, `ShutdownProcess: flushAll failed: ${e}`);
     });
+
+    const handoff = exitCode === 0 && canDispatchGuestProcessHandoff()
+        ? takeGuestProcessHandoff()
+        : null;
+    if (!handoff) clearGuestProcessHandoff();
 
     system.isExiting = true;
 
@@ -304,15 +317,33 @@ const shutdownProcess = (exitCode: number): ThunkResult => {
     // the `terminated: true` return below still unwinds the calling thunk.
     system.scheduler.terminateAllThreads(exitCode);
 
-    // Notify the host so the UI can present a clean "game exited" state instead
-    // of a stale, frozen canvas (the game's window is gone, nothing repaints it).
-    try {
-        (self as unknown as { postMessage: (m: unknown) => void }).postMessage({
-            type: "process_exit",
-            exitCode: exitCode >>> 0,
-            fault: exitFault,
+    if (handoff) {
+        Logger.log(LogCategory.KERNEL32,
+            `Process handoff armed: "${handoff.executablePath}" args="${handoff.arguments}"`);
+        try {
+            (self as unknown as { postMessage: (m: unknown) => void }).postMessage({
+                type: "loading_progress",
+                phase: "loading",
+                percent: 100,
+                label: `Launching ${handoff.executablePath.split(/[\\/]/).pop() ?? "game"}`,
+            });
+        } catch { /* tests */ }
+        void flushPromise.then(() => {
+            if (!dispatchGuestProcessHandoff(handoff)) {
+                Logger.error(LogCategory.KERNEL32, "Process handoff handler disappeared before dispatch");
+            }
         });
-    } catch { /* not in a worker context (tests) — ignore */ }
+    } else {
+        // Notify the host so the UI can present a clean "game exited" state instead
+        // of a stale, frozen canvas (the game's window is gone, nothing repaints it).
+        try {
+            (self as unknown as { postMessage: (m: unknown) => void }).postMessage({
+                type: "process_exit",
+                exitCode: exitCode >>> 0,
+                fault: exitFault,
+            });
+        } catch { /* not in a worker context (tests) — ignore */ }
+    }
 
     return { value: 0, terminated: true };
 };
@@ -515,7 +546,66 @@ const createVirtualProcess = (memory: Uint8Array, args: number[], isWide: boolea
     const hasFakeRule = hasShellExecFakeMatch(probeCommand);
     const noOpProbe = !hasFakeRule && isUnrealBrowserProbe(applicationName, commandLine);
     if (!hasFakeRule && !noOpProbe) {
-        return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+        const launch = parseGuestProcessLaunch(applicationName, commandLine);
+        if (!launch) {
+            return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+        }
+
+        const system = System.getInstance();
+        const vfs = system.fileSystem;
+        const currentExe = system.executablePath.replace(/\//g, "\\");
+        const defaultDirectory = currentExe.includes("\\")
+            ? currentExe.slice(0, currentExe.lastIndexOf("\\") + 1)
+            : "C:\\";
+        const baseDirectory = currentDirectory.trim() || defaultDirectory;
+        const rawTarget = /^[A-Za-z]:|^[\\/]/.test(launch.executableToken)
+            ? launch.executableToken
+            : `${baseDirectory.replace(/[\\/]+$/, "")}\\${launch.executableToken}`;
+        const candidates = /\.[^\\/.]+$/.test(rawTarget) ? [rawTarget] : [rawTarget, `${rawTarget}.exe`];
+        const executablePath = candidates
+            .map(candidate => vfs.resolvePath(candidate))
+            .find(candidate => vfs.fileExists(candidate));
+
+        if (!executablePath || executablePath.toLowerCase() === vfs.resolvePath(currentExe).toLowerCase()) {
+            return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+        }
+
+        const file = vfs.openSync(executablePath, 0x80000000, 3);
+        if (!file) {
+            return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+        }
+        const mz = new Uint8Array(2);
+        const acceptHandoff = (read: number): ThunkResult => {
+            if (read !== 2 || mz[0] !== 0x4d || mz[1] !== 0x5a) {
+                return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+            }
+            const queued = queueGuestProcessHandoff({
+                ...launch,
+                executablePath,
+                applicationName,
+                commandLine,
+                currentDirectory,
+                creationFlags: dwCreationFlags,
+            });
+            if (!queued) {
+                Logger.warn(LogCategory.KERNEL32,
+                    `CreateProcess${isWide ? 'W' : 'A'}: another guest executable handoff is already pending`);
+                return failVirtualProcess(lpProcessInformation, applicationName, commandLine, currentDirectory, isWide);
+            }
+            return finishVirtualProcess(
+                lpProcessInformation,
+                applicationName,
+                commandLine,
+                currentDirectory,
+                dwCreationFlags,
+                isWide,
+                false
+            );
+        };
+
+        const syncRead = vfs.readIntoSync(file, mz, 0, 2);
+        if (syncRead !== null) return acceptHandoff(syncRead);
+        return vfs.readInto(file, mz, 0, 2).then(acceptHandoff);
     }
 
     // Keep the common no-match/no-op probe path synchronous. The async thunk
@@ -2022,4 +2112,3 @@ export function registerFastPathProcessFunctions(dispatcher: any): void {
         return prev === null ? null : (prev >>> 0);
     }, { trivial: true });
 }
-

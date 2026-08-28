@@ -103,6 +103,12 @@ import { EmulatorConfig } from "./core/emulator-config-manager";
 import { videoEngine } from "../video/video-engine";
 import { preemptionManager } from "./core/cpu/preemption-manager";
 import { statsOverlay } from "./core/stats-overlay";
+import {
+  clearGuestProcessHandoff,
+  guestExecutableToBundleEntrypoint,
+  setGuestProcessHandoffHandler,
+  type GuestProcessHandoffRequest,
+} from "./core/guest-process-handoff";
 import { hypercallDataManager } from "./core/cpu/hypercall-data";
 import { d3d9WasmArena } from "./backends/webgpu/d3d9/d3d9-wasm-arena";
 import { bootMark, dumpBootTimeline } from "./core/boot-timer";
@@ -241,7 +247,10 @@ const state: WorkerState = {
 
 let placeholderActive = true;
 let pendingPeData: Uint8Array | null = null;
-let pendingBundle: { data?: Uint8Array; url?: string; blob?: Blob } | null = null;
+type BundlePayload = { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] };
+let pendingBundle: BundlePayload | null = null;
+let activeBundlePayload: BundlePayload | null = null;
+let pendingChildLaunch: GuestProcessHandoffRequest | null = null;
 let heartbeatInterval: number | null = null;
 let schedulerInterval: number | null = null;
 let registryFlushInterval: number | null = null;
@@ -1235,13 +1244,15 @@ const prepareFullGameSwitch = async (): Promise<void> => {
   bootMark("system-reset-done");
 };
 
-const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] }) => {
+const loadBundleImpl = async (payload: BundlePayload) => {
   const system = System.getInstance();
   if (!system.process) {
     pendingBundle = payload;
     return;
   }
 
+  const childLaunch = pendingChildLaunch;
+  pendingChildLaunch = null;
   bootMark("load-bundle-start");
 
   await prepareFullGameSwitch();
@@ -1564,6 +1575,25 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       }
     }
 
+    // A launcher-created child wins over the catalog profile's launcher entrypoint,
+    // but keeps the same bundle identity, registry and writable container.
+    if (childLaunch) {
+      const childEntrypoint = guestExecutableToBundleEntrypoint(
+        childLaunch.executablePath,
+        bundle.manifest.rom ?? "assets",
+      );
+      if (!childEntrypoint) {
+        throw new Error(`unsupported child executable path: ${childLaunch.executablePath}`);
+      }
+      const previousEntrypoint = bundle.manifest.entrypoint;
+      bundle.entrypointBytes = await readEntrypointBytes(bundle.archive, childEntrypoint);
+      bundle.manifest.entrypoint = childEntrypoint;
+      bundle.manifest.args = childLaunch.arguments;
+      Logger.log(LogCategory.SYSTEM,
+        `WGB: process handoff "${previousEntrypoint}" -> "${childEntrypoint}" ` +
+        `args="${childLaunch.arguments}" (${bundle.entrypointBytes.length} bytes)`);
+    }
+
     // Resolve the per-game container key (WGB v2 gameId, namespaced) and open this game's writable
     // overlay (orthros/games/<containerDir>/overlay/). On a game switch the previous overlay is
     // closed and re-rooted so game B never sees game A's files (#5 isolation). Registry persistence
@@ -1814,6 +1844,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     Logger.log(LogCategory.SYSTEM, `Executable: name="${exeName}", path="${executablePath}", args="${system.executableArgs}"`);
 
     await loadPeData(bundle.entrypointBytes, true);
+    activeBundlePayload = { ...payload };
     bootMark("pe-loaded");
 
     // Signal host that loading is done and the game is starting
@@ -1841,12 +1872,24 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
   }
 };
 
-const loadBundle = (payload: { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] }) => {
+const loadBundle = (payload: BundlePayload) => {
   loadBundleChain = loadBundleChain
     .then(() => loadBundleImpl(payload))
     .catch(err => Logger.error(LogCategory.SYSTEM, `load_bundle failed: ${err}`));
   return loadBundleChain;
 };
+
+setGuestProcessHandoffHandler((request) => {
+  const payload = activeBundlePayload;
+  if (!payload) {
+    Logger.error(LogCategory.SYSTEM,
+      `Cannot hand off to "${request.executablePath}": no active WGB payload`);
+    self.postMessage({ type: "error", message: "process handoff failed: active bundle unavailable" });
+    return;
+  }
+  pendingChildLaunch = request;
+  void loadBundle({ ...payload });
+});
 
 const initV86 = async (canvas: OffscreenCanvas) => {
   // Try to apply RAM configuration from pending bundle if available
@@ -2930,6 +2973,8 @@ self.onmessage = (event: MessageEvent) => {
       cfg.logOnly = !!message.hleLogOnly;
       Logger.log(LogCategory.SYSTEM, `[HLE-lib] enabled via load_bundle (logOnly=${cfg.logOnly})`);
     }
+    clearGuestProcessHandoff();
+    pendingChildLaunch = null;
     pendingLaunchProfile = (message.profile ?? null) as typeof pendingLaunchProfile;
     loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs });
   }
