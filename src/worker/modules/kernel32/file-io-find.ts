@@ -67,10 +67,10 @@ const splitFindPattern = (rawPattern: string): { searchPath: string; searchMask:
     return { searchPath, searchMask };
 };
 
-const fillFindDataA = (mem: Uint8Array, addr: number, entry: any) => {
+const fillFindDataA = (mem: Uint8Array, addr: number, entry: any, existingView?: DataView) => {
     // Keep ABI-compatible layout and avoid leaking stale heap bytes.
     mem.fill(0, addr, Math.min(addr + WIN32_FIND_DATAA_SIZE, mem.length));
-    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    const view = existingView ?? new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     view.setUint32(addr, entry.kind === 'dir' ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE, true);
     // Times (stubs)
     view.setBigUint64(addr + 4, 0n, true);
@@ -85,10 +85,10 @@ const fillFindDataA = (mem: Uint8Array, addr: number, entry: any) => {
     mem.set(nameBytes, addr + 44);
 };
 
-const fillFindDataW = (mem: Uint8Array, addr: number, entry: any) => {
+const fillFindDataW = (mem: Uint8Array, addr: number, entry: any, existingView?: DataView) => {
     // Keep ABI-compatible layout and avoid leaking stale heap bytes.
     mem.fill(0, addr, Math.min(addr + WIN32_FIND_DATAW_SIZE, mem.length));
-    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    const view = existingView ?? new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     view.setUint32(addr, entry.kind === 'dir' ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE, true);
     // Times (stubs)
     view.setBigUint64(addr + 4, 0n, true);
@@ -281,4 +281,54 @@ export function registerFileIoFindExports(exports: Record<string, ThunkImplement
         System.getInstance().resourceProvider.unregisterKernelObject(hFindFile);
         return 1; // TRUE
     };
+}
+
+/** Direct synchronous dispatch for the hot half of Win32 directory walks.
+ * FindFirst still performs path resolution and wildcard filtering in the full
+ * handler; every subsequent item can avoid context materialization, argument
+ * arrays and a new DataView while preserving the same handle state. */
+export function registerFastPathFileIoFindFunctions(dispatcher: any): void {
+    if (!dispatcher?.registerFastPath) return;
+
+    const registerNext = (name: 'FindNextFileA' | 'FindNextFileW', wide: boolean): void => {
+        dispatcher.registerFastPath('kernel32', name,
+            (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+                const esp = cpu.reg32[4] >>> 0;
+                if (esp + 12 > mem.length) return null;
+                const handle = view.getUint32(esp + 4, true);
+                const output = view.getUint32(esp + 8, true);
+                const outputSize = wide ? WIN32_FIND_DATAW_SIZE : WIN32_FIND_DATAA_SIZE;
+                if (output === 0 || output + outputSize > mem.length) return null;
+
+                const system = System.getInstance();
+                const find = system.resourceProvider.getKernelObject(handle);
+                if (!find || find.kind !== 'find') {
+                    system.scheduler.setLastError(ERROR_INVALID_HANDLE);
+                    return 0;
+                }
+                if (find.index >= find.entries.length) {
+                    system.scheduler.setLastError(ERROR_NO_MORE_FILES);
+                    return 0;
+                }
+
+                const entry = find.entries[find.index++];
+                if (wide) fillFindDataW(mem, output, entry, view);
+                else fillFindDataA(mem, output, entry, view);
+                return 1;
+            });
+    };
+
+    registerNext('FindNextFileA', false);
+    registerNext('FindNextFileW', true);
+    dispatcher.registerFastPath('kernel32', 'FindClose',
+        (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView): number | null => {
+            const esp = cpu.reg32[4] >>> 0;
+            if (esp + 8 > mem.length) return null;
+            const handle = view.getUint32(esp + 4, true);
+            const resources = System.getInstance().resourceProvider;
+            const find = resources.getKernelObject(handle);
+            if (!find || find.kind !== 'find') return null;
+            resources.unregisterKernelObject(handle);
+            return 1;
+        });
 }

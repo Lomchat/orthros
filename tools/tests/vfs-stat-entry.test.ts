@@ -77,4 +77,20 @@ describe("VFS statEntry / directoryExists fast path", () => {
         expect(vfs.directoryExists("C:\\Morrowind.exe")).toBe(false);
         expect(vfs.directoryExists("C:\\Data Files\\Bloodmoon.esm")).toBe(false);
     });
+
+    test("wildcard directory listing uses the mount-time child index", () => {
+        expect(vfs.listDirectory("C:\\Data Files").map((entry) => entry.name).sort())
+            .toEqual(["Bloodmoon.esm", "Morrowind.esm", "Music"]);
+
+        // Prove the lookup no longer iterates the global ROM map. Exact file
+        // access still owns that map; directory enumeration owns its child index.
+        const original = (vfs as any).romIndex as Map<string, ZipEntry>;
+        (vfs as any).romIndex = {
+            get: original.get.bind(original),
+            has: original.has.bind(original),
+            entries: () => { throw new Error("global ROM scan"); },
+        };
+        expect(vfs.listDirectory("C:\\Data Files\\Music").map((entry) => entry.name))
+            .toEqual(["title.mp3"]);
+    });
 });

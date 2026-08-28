@@ -8,7 +8,7 @@ import { ThunkImplementation, ThunkResult, DeferredWrite } from '../../core/thun
 import { Logger, LogCategory } from '../../core/logger';
 import { registerFileIoCommExports } from './file-io-comm';
 import { registerFileIoConsoleExports, ConsoleDeviceHandle, isConsoleDeviceHandle, isWindowsDevice } from './file-io-console';
-import { registerFileIoFindExports } from './file-io-find';
+import { registerFileIoFindExports, registerFastPathFileIoFindFunctions } from './file-io-find';
 import { registerFileIoVolumeExports } from './file-io-volume';
 import { registerFileIoPathExports } from './file-io-path';
 import { readStringA, readStringW } from './file-io-strings';
@@ -2291,6 +2291,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
  */
 export function registerFastPathFileIOFunctions(dispatcher: any): void {
     if (!dispatcher || typeof dispatcher.registerFastPath !== 'function') return;
+    registerFastPathFileIoFindFunctions(dispatcher);
 
     // =========================================================================
     // SetFilePointer fast path — 44K calls, 169ms

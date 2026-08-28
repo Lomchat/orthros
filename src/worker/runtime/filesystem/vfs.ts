@@ -62,6 +62,9 @@ export class VirtualFileSystem {
      * the hot path for GetFileAttributes / _access existence probes.
      */
     private romDirs: Set<string> = new Set();
+    /** Immediate ROM children by lowercased directory path. Built once at
+     * mount so wildcard FindFirstFile does not rescan every file in the WGB. */
+    private romDirectoryIndex: Map<string, VfsEntry[]> = new Map();
     private romCache = new LruCache<string, Uint8Array>({
         maxBytes: this.ROM_CACHE_MAX_BYTES,
         sizeOf: (value) => value.byteLength,
@@ -117,6 +120,7 @@ export class VirtualFileSystem {
         this.romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
         this.romEntryLayers.clear();
         this.romDirs.clear();
+        this.romDirectoryIndex.clear();
         this.romCache.clear();
         this.romWhiteouts.clear();
         this.romLoadPromises.clear();
@@ -144,6 +148,7 @@ export class VirtualFileSystem {
         // Build case-insensitive index
         this.romIndex.clear();
         this.romDirs.clear();
+        this.romDirectoryIndex.clear();
         this.romWhiteouts.clear();
         this.romPinned.clear();
         this.romPinnedBytes = 0;
@@ -180,6 +185,7 @@ export class VirtualFileSystem {
                 }
             }
         }
+        this.rebuildRomDirectoryIndex();
 
         if (compressedEntries > 0) {
             const message =
@@ -288,6 +294,7 @@ export class VirtualFileSystem {
                 const parent = dir.lastIndexOf("/");
                 dir = parent < 0 ? "" : dir.slice(0, parent);
             }
+            this.rebuildRomDirectoryIndex();
             Logger.log(LogCategory.SYSTEM,
                 `VFS: materialized nested BIG entry "${nestedName}" (${nestedSize} bytes) from layer ${layer + 1}/${containers.length}`);
             return true;
@@ -1354,21 +1361,15 @@ export class VirtualFileSystem {
             };
         }
 
-        // ROM directory. O(1) existence check first (keeps not-found probes cheap);
-        // only when it really is a dir do we scan for a child to recover the
-        // original-case segment (rare path — exact dir queries only).
+        // ROM directory. Recover its original-case segment from the prebuilt
+        // immediate-child index rather than scanning every file in the WGB.
         if (!this.romDirs.has(rel)) return null;
-        const dirPrefix = `${rel}/`;
-        const depth = rel.split("/").length - 1;
-        for (const [key, entry] of this.romIndex.entries()) {
-            if (!key.startsWith(dirPrefix)) continue;
-            if (this.romWhiteouts.has(key)) continue;
-            const originalRel = this.romEntryOriginalRel(entry, key);
-            const name = originalRel.split("/")[depth] ?? basename(full);
-            return { path: this.romPathFromRel(rel), name, kind: "dir", size: 0, source: "rom" };
-        }
-
-        return null;
+        const slash = rel.lastIndexOf("/");
+        const parent = slash < 0 ? "" : rel.slice(0, slash);
+        const nameKey = slash < 0 ? rel : rel.slice(slash + 1);
+        const indexed = this.romDirectoryIndex.get(parent)?.find((entry) =>
+            entry.name.toLowerCase() === nameKey && entry.kind === "dir");
+        return indexed ?? { path: this.romPathFromRel(rel), name: basename(full), kind: "dir", size: 0, source: "rom" };
     }
 
     directoryExists(path: string): boolean {
@@ -1406,43 +1407,52 @@ export class VirtualFileSystem {
         }
 
         const rel = this.relRomPath(path).toLowerCase();
-        const prefix = rel ? `${rel}/` : "";
-        const dirEntries: Map<string, VfsEntry> = new Map();
+        const indexed = this.romDirectoryIndex.get(rel) ?? [];
+        if (this.romWhiteouts.size === 0) return indexed.slice();
+        return indexed.filter((entry) => entry.kind === "dir"
+            || !this.romWhiteouts.has(this.relRomPath(entry.path).toLowerCase()));
+    }
 
-        for (const [relPath, entry] of this.romIndex.entries()) {
-            if (prefix && !relPath.startsWith(prefix)) continue;
-            if (this.romWhiteouts.has(relPath)) continue;
-            // Derive names from the archive's original path, not the lowercased index
-            // key. Guests can be case-sensitive about returned names: Python 1.5's
-            // import check_case compares FindFirstFile's cFileName via strncmp, so a
-            // lowercased "bladex.dll" makes Blade of Darkness `import Bladex` fail.
-            const originalRel = this.romEntryOriginalRel(entry, relPath);
-            const remainder = originalRel.slice(prefix.length);
-            const parts = remainder.split("/");
-            const name = parts[0];
-            if (!name) continue;
-            if (parts.length === 1) {
-                dirEntries.set(name.toLowerCase(), {
-                    path: this.romPathFromRel(originalRel),
+    /** Build every directory's immediate children in O(total files) once. The
+     * previous listRomDirectory performed this same scan on every wildcard
+     * FindFirstFile call, which made installer/game startup quadratic. */
+    private rebuildRomDirectoryIndex(): void {
+        const buckets = new Map<string, Map<string, VfsEntry>>();
+        const bucket = (dir: string): Map<string, VfsEntry> => {
+            let value = buckets.get(dir);
+            if (!value) { value = new Map(); buckets.set(dir, value); }
+            return value;
+        };
+
+        for (const [lowerRelRaw, entry] of this.romIndex.entries()) {
+            const lowerRel = lowerRelRaw.replace(/\/+$/, "");
+            if (!lowerRel) continue;
+            const lowerParts = lowerRel.split("/");
+            const originalRel = this.romEntryOriginalRel(entry, lowerRel)
+                .replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            const originalParts = originalRel.split("/");
+            for (let depth = 0; depth < lowerParts.length; depth++) {
+                const parent = lowerParts.slice(0, depth).join("/");
+                const name = originalParts[depth] || lowerParts[depth]!;
+                const nameKey = lowerParts[depth]!;
+                const isFile = depth === lowerParts.length - 1 && !entry.isDirectory;
+                const children = bucket(parent);
+                // A real file wins over an implicit directory in the impossible
+                // file/directory collision case; directories otherwise coalesce.
+                if (!isFile && children.has(nameKey)) continue;
+                children.set(nameKey, {
+                    path: this.romPathFromRel(originalParts.slice(0, depth + 1).join("/")),
                     name,
-                    kind: "file",
-                    size: entry.uncompressedSize,
+                    kind: isFile ? "file" : "dir",
+                    size: isFile ? entry.uncompressedSize : 0,
                     source: "rom",
                 });
-            } else {
-                if (!dirEntries.has(name.toLowerCase())) {
-                    dirEntries.set(name.toLowerCase(), {
-                        path: this.romPathFromRel(`${prefix}${name}`.replace(/\/+$/, "")),
-                        name,
-                        kind: "dir",
-                        size: 0,
-                        source: "rom",
-                    });
-                }
             }
         }
 
-        return Array.from(dirEntries.values());
+        this.romDirectoryIndex = new Map(
+            [...buckets].map(([dir, children]) => [dir, [...children.values()]]),
+        );
     }
 
     /**
