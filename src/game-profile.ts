@@ -105,6 +105,8 @@ export interface RomLayerSpec {
     url: string;
     /** Optional case-insensitive glob allowlist relative to the layer's ROM root. */
     include?: string[];
+    /** Optional directory below C:\\ where this independent installation is mounted. */
+    mountPrefix?: string;
 }
 
 export function buildLaunchProfile(
@@ -130,6 +132,7 @@ export function buildLaunchProfile(
     if (romLayers.length > 0) launch.romLayers = romLayers.map((layer) => ({
         ...layer,
         include: layer.include ? [...layer.include] : undefined,
+        mountPrefix: layer.mountPrefix,
     }));
     return Object.keys(launch).length > 0 ? launch : undefined;
 }

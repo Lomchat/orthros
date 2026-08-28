@@ -269,7 +269,7 @@ let loadBundleChain: Promise<void> = Promise.resolve();
 let pendingLaunchProfile: {
   manifest?: Record<string, unknown>;
   registry?: unknown;
-  romLayers?: Array<{ url: string; include?: string[] }>;
+  romLayers?: Array<{ url: string; include?: string[]; mountPrefix?: string }>;
 } | null = null;
 
 /** True once a PE has been booted in this worker session (loadApp / load_bundle without page reload). */
@@ -1645,16 +1645,24 @@ const loadBundleImpl = async (payload: BundlePayload) => {
       const layerBundle = await WgbLoader.fromUrl(layerSpec.url);
       const layerRoot = layerBundle.manifest.rom ?? "assets";
       const fullLayerIndex = buildRomIndex(layerBundle.archive, layerRoot);
-      const layerIndex = layerSpec.include?.length
+      const filteredLayerIndex = layerSpec.include?.length
         ? new Map([...fullLayerIndex].filter(([rel]) =>
             layerSpec.include!.some((pattern) => romLayerGlobMatches(rel, pattern))))
         : fullLayerIndex;
+      const mountPrefix = (layerSpec.mountPrefix ?? "")
+        .replace(/^[a-z]:[\\/]+/i, "")
+        .replace(/^[\\/]+|[\\/]+$/g, "")
+        .replace(/\\/g, "/");
+      const layerIndex = mountPrefix
+        ? new Map([...filteredLayerIndex].map(([rel, entry]) => [`${mountPrefix}/${rel}`, entry]))
+        : filteredLayerIndex;
       mountedRomLayers.push({
         archive: layerBundle.archive,
         index: layerIndex,
       });
       Logger.log(LogCategory.SYSTEM,
-        `WGB: mounted ROM underlay "${layerSpec.url}" (${layerIndex.size}/${fullLayerIndex.size} entries)`);
+        `WGB: mounted ROM underlay "${layerSpec.url}" at "${mountPrefix || "."}" ` +
+        `(${layerIndex.size}/${fullLayerIndex.size} entries)`);
     }
     mountedRomLayers.push({ archive: bundle.archive, index: primaryRomIndex });
 

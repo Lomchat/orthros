@@ -157,7 +157,8 @@
     "romDependencies": [
       {
         "url": "/apps/bfme2-109-multi.wgb",
-        "include": ["lotrbfme2.exe", "lotrbfme2.lcf", "window.big"]
+        "include": ["lotrbfme2.exe", "lotrbfme2.lcf", "game.dat", "eauninstall.exe", "filelist.txt", "window.big"],
+        "mountPrefix": "BFME2"
       }
     ],
     "sizeBytes": 4679541842,
@@ -191,7 +192,7 @@
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
-            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\BFME2\\" },
             { "name": "Language", "type": "REG_SZ", "data": "French" },
             { "name": "Version", "type": "REG_DWORD", "data": 65539 },
             { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My Battle for Middle-earth II Files" }
@@ -200,8 +201,8 @@
           "root": "HKLM",
           "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
           "values": [
-            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
-            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\BFME2\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\BFME2\\lotrbfme2.exe" }
           ]
         }]
       },
@@ -228,7 +229,7 @@
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
-            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\" },
+            { "name": "InstallPath", "type": "REG_SZ", "data": "C:\\BFME2\\" },
             { "name": "Language", "type": "REG_SZ", "data": "English" },
             { "name": "Version", "type": "REG_DWORD", "data": 65539 },
             { "name": "UserDataLeafName", "type": "REG_SZ", "data": "My Battle for Middle-earth II Files" }
@@ -237,8 +238,8 @@
           "root": "HKLM",
           "path": "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe",
           "values": [
-            { "name": "Path", "type": "REG_SZ", "data": "C:\\" },
-            { "name": "", "type": "REG_SZ", "data": "C:\\lotrbfme2.exe" }
+            { "name": "Path", "type": "REG_SZ", "data": "C:\\BFME2\\" },
+            { "name": "", "type": "REG_SZ", "data": "C:\\BFME2\\lotrbfme2.exe" }
           ]
         }]
       }

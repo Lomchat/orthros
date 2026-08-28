@@ -29,11 +29,11 @@ describe("launch-profile registry metadata", () => {
 
   test("preserves read-only WGB underlays without requiring manifest overrides", () => {
     expect(buildLaunchProfile({}, null, [
-      { url: "/apps/base.wgb", include: ["base.exe"] },
+      { url: "/apps/base.wgb", include: ["base.exe"], mountPrefix: "BaseGame" },
       { url: "/apps/shared.wgb" },
     ])).toEqual({ romLayers: [
-      { url: "/apps/base.wgb", include: ["base.exe"] },
-      { url: "/apps/shared.wgb", include: undefined },
+      { url: "/apps/base.wgb", include: ["base.exe"], mountPrefix: "BaseGame" },
+      { url: "/apps/shared.wgb", include: undefined, mountPrefix: undefined },
     ] });
   });
 });

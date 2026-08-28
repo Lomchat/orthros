@@ -7,6 +7,24 @@ export const SMP_DONE = 2;
 export const SMP_PLAYING = 4;
 export const SMP_STOPPED = 8;
 
+/**
+ * Miles Sound System 6.x preference defaults, indexed by the public
+ * AIL_PREFERENCE enum. Keep all N_PREFS entries: games legitimately query the
+ * later DirectSound preferences during startup (for example index 34,
+ * DIG_DS_FRAGMENT_SIZE).
+ */
+export const MILES_PREFERENCE_DEFAULTS = Object.freeze([
+    131, 64, 127, 120, 8, 127, 1, 0, 2, 0,
+    1536, 49152, 5, 16, 8192, 0, 32768, 44100, 0, 4096,
+    120, 24, 0, 1, 0, 1, 0, 1, 1, 0,
+    0, 1, 2048, 0, 8, 96, 0, 0, 0, 32768,
+    0, 250, 8, 1, 1, 100,
+]);
+
+export function createMilesPreferences(): number[] {
+    return Array.from(MILES_PREFERENCE_DEFAULTS);
+}
+
 export interface MSSContext {
     process: Process;
     memory: Uint8Array;
@@ -116,7 +134,7 @@ export function createMSSContext(process: Process, memory: Uint8Array): MSSConte
         driverNoopStub: 0,
         driverNoopTable: 0,
         driverSampleArray: 0,
-        driverMaxSamples: 16,
+        driverMaxSamples: MILES_PREFERENCE_DEFAULTS[1],
         driverOutputRate: 44100,
         driverTypeTag: 0,
         sampleTypeTag: 0,
@@ -131,22 +149,7 @@ export function createMSSContext(process: Process, memory: Uint8Array): MSSConte
         listenerSab: null,
         speakerType3D: 0,
         roomType3D: 0,
-        preferences: (() => {
-            const p = new Array(32).fill(0);
-            p[0] = 0;     // DIG_RESAMPLING_TOLERANCE (default 0)
-            p[1] = 16;    // DIG_MIXER_CHANNELS (max simultaneous samples; MSS32 default=16)
-            p[2] = 500;   // DIG_LATENCY
-            p[3] = 120;   // DIG_MIXER_GRANULARITY
-            p[4] = 8;     // DIG_USE_WAVEOUT
-            p[5] = 127;   // DIG_DS_MIX_CHANNELS
-            p[6] = 1;     // DIG_DS_USE_PRIMARY
-            p[8] = 2;     // DIG_DS_DSBCAPS_CTRL
-            p[10] = 1536; // DIG_DS_SECONDARY_SIZE
-            p[11] = 49152;// DIG_OUTPUT_BUFFER_SIZE
-            p[12] = 5;    // DIG_DS_CREATION_HANDLER
-            p[31] = 1;    // DIG_ENABLE_RESAMPLE_FILTER
-            return p;
-        })(),
+        preferences: createMilesPreferences(),
         midiDriverHandle: 0,
         midiMasterVolume: 127,
         updateInterval: null,
