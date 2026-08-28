@@ -24,6 +24,17 @@ const SECURITY_DESCRIPTOR_MIN_LENGTH = 20;
 const SE_DACL_PRESENT = 0x0004;
 const SE_DACL_DEFAULTED = 0x0008;
 
+/**
+ * Orthros has one browser-owned security boundary rather than host Windows
+ * process/thread tokens.  A guest may still use the standard
+ * ImpersonateSelf/RevertToSelf pair to make OpenThreadToken available, so
+ * acknowledge both transitions without granting any host privilege.
+ */
+export const createImpersonationExports = (): Record<string, ThunkImplementation> => ({
+    ImpersonateSelf: () => ({ value: 1, stackCleanup: 4 }),
+    RevertToSelf: () => ({ value: 1, stackCleanup: 0 }),
+});
+
 export class Advapi32 implements IModule {
     name = "advapi32";
     exports: Record<string, ThunkImplementation> = {};
@@ -1677,6 +1688,8 @@ export class Advapi32 implements IModule {
             view.setUint32(pTokenHandle, 0x1acd, true);
             return { value: 1, stackCleanup: 16 };
         };
+
+        Object.assign(this.exports, createImpersonationExports());
 
         // GetTokenInformation - retrieve information about an access token
         // BOOL GetTokenInformation(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD)
