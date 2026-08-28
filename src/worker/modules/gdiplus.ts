@@ -301,6 +301,18 @@ export class GdiPlus implements IModule {
         // decoder already performs its color conversion, so share the loader.
         this.exports["GdipCreateBitmapFromFileICM"] = this.exports["GdipCreateBitmapFromFile"];
 
+        // Stream-backed images require calling the guest-owned IStream vtable.
+        // Keep the ABI and failure contract correct until that callback bridge is
+        // available: never report Ok with an uninitialised GpImage pointer.
+        this.exports["GdipCreateBitmapFromStream"] = (_ctx, mem, args) => {
+            const pImage = args[1] >>> 0;
+            if (pImage && pImage + 4 <= mem.length) {
+                new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(pImage, 0, true);
+            }
+            return InvalidParameter;
+        };
+        this.exports["GdipCreateBitmapFromStreamICM"] = this.exports["GdipCreateBitmapFromStream"];
+
         // ---------------------------------------------------------------
         // GdipCloneImage
         // ---------------------------------------------------------------
