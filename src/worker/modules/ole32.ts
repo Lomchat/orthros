@@ -6,11 +6,12 @@ import { Logger, LogCategory } from "../core/logger";
 import { InterfaceRegistry, registerStandardDirectXInterfaces } from "../core/com/interface-registry";
 import { ComObjectFactory, BaseComObject } from "../core/com/base-com-object";
 import { SystemResourceProvider } from "../core/resources/system-resource-provider";
-import { allocateComObject } from "../core/com/com-memory";
+import { allocateComObject, freeComObject } from "../core/com/com-memory";
 import { installComVtable, ComVtableMethod } from "../core/com/install-com-vtable";
 import { tryInprocCoCreateInstance, startInprocFromFactory } from "../core/com/inproc-com";
 import { Mem } from "../core/memory/mem-accessor";
 import { MEM_THUNK_CODE_BASE, MEM_THUNK_CODE_SIZE } from "../core/cpu/emulator-config";
+import { exports as kernelMemoryExports, inspectGlobalMemoryBlock } from "./kernel32/memory";
 
 // COM error codes
 const REGDB_E_CLASSNOTREG = 0x80040154;
@@ -20,6 +21,42 @@ const S_FALSE = 0x00000001;
 const E_POINTER = 0x80004003;
 const E_INVALIDARG = 0x80070057;
 const CO_E_NOTLOADED = 0x800401f0;
+const E_NOINTERFACE = 0x80004002;
+const E_NOTIMPL = 0x80004001;
+const STG_E_INVALIDFUNCTION = 0x80030001;
+const STG_E_MEDIUMFULL = 0x80030070;
+
+interface MemoryStreamState {
+    refCount: number;
+    hGlobal: number;
+    dataPtr: number;
+    size: number;
+    position: number;
+    deleteOnRelease: boolean;
+}
+
+let memoryStreamOwner: Process | null = null;
+const memoryStreams = new Map<number, MemoryStreamState>();
+
+function ensureMemoryStreamOwner(process: Process): void {
+    if (memoryStreamOwner === process) return;
+    memoryStreamOwner = process;
+    memoryStreams.clear();
+}
+
+/** Consume the unread bytes of an Orthros-owned HGLOBAL stream. GDI+ uses this
+ * direct bridge so decoding remains asynchronous without invoking guest COM
+ * callbacks from an async thunk. */
+export function readOrthrosMemoryStream(streamPtr: number, mem: Uint8Array): Uint8Array | null {
+    const state = memoryStreams.get(streamPtr >>> 0);
+    if (!state) return null;
+    const start = Math.min(state.position, state.size);
+    const end = state.dataPtr + state.size;
+    if (!state.dataPtr || end > mem.length) return null;
+    const bytes = mem.slice(state.dataPtr + start, end);
+    state.position = state.size;
+    return bytes;
+}
 
 // BLOWFISH.DLL IBlockCipher::Submit_Key — stdcall, max 56-byte key (Ghidra @ 0x11002011)
 const BF_MAX_KEY_LEN = 0x38;
@@ -39,6 +76,7 @@ export class Ole32 implements IModule {
     private classRegistrations = new Map<number, { clsid: string; punk: number; flags: number }>();
     private nextClassRegistration = 0x1000;
     private messageFilter = 0;
+    private memoryStreamVtableAddr = 0;
 
     // Map: object address in memory -> BaseComObject instance
     // This allows IUnknown methods to find the object by its memory address
@@ -54,6 +92,8 @@ export class Ole32 implements IModule {
 
         // Create universal IUnknown stubs that can be used by any COM object
         this.createIUnknownStubs();
+        ensureMemoryStreamOwner(process);
+        this.createMemoryStreamVtable();
 
         // CoInitialize - initialize COM library
         this.exports["CoInitialize"] = (ctx, mem, args) => {
@@ -453,6 +493,37 @@ export class Ole32 implements IModule {
             return 0x80004001; // E_NOTIMPL
         };
 
+        // HRESULT CreateStreamOnHGlobal(HGLOBAL, BOOL, LPSTREAM*)
+        this.exports["CreateStreamOnHGlobal"] = (ctx, mem, args) => {
+            const hGlobal = args[0] >>> 0;
+            const deleteOnRelease = args[1] !== 0;
+            const ppStream = args[2] >>> 0;
+            if (!ppStream || ppStream + 4 > mem.length || !this.memoryStreamVtableAddr) {
+                return E_POINTER;
+            }
+            const block = hGlobal ? inspectGlobalMemoryBlock(hGlobal) : { dataPtr: 0, size: 0 };
+            if (!block) {
+                Mem.writeUint32(ppStream, 0);
+                return E_INVALIDARG;
+            }
+            const objAddr = allocateComObject(
+                process.memory,
+                mem,
+                this.memoryStreamVtableAddr,
+                "THUNK_DATA",
+            );
+            memoryStreams.set(objAddr, {
+                refCount: 1,
+                hGlobal,
+                dataPtr: block.dataPtr,
+                size: block.size,
+                position: 0,
+                deleteOnRelease,
+            });
+            Mem.writeUint32(ppStream, objAddr);
+            return S_OK;
+        };
+
         // HRESULT PropVariantClear(PROPVARIANT *pvar)
         //
         // PROPVARIANT layout (x86, 16 bytes):
@@ -553,6 +624,138 @@ export class Ole32 implements IModule {
             Logger.verbose(LogCategory.COM, `PropVariantClear(0x${pvar.toString(16)}) vt=0x${vt.toString(16)}`);
             return S_OK;
         };
+    }
+
+    private createMemoryStreamVtable(): void {
+        const process = this.process;
+        const handlers: Record<string, ThunkImplementation> = {};
+        const stateFor = (args: number[]) => memoryStreams.get(args[0] >>> 0);
+
+        handlers["MS_QueryInterface"] = (_ctx, mem, args) => {
+            const selfPtr = args[0] >>> 0;
+            const riid = args[1] >>> 0;
+            const ppv = args[2] >>> 0;
+            const state = memoryStreams.get(selfPtr);
+            if (!state || !riid || riid + 16 > mem.length || !ppv || ppv + 4 > mem.length) {
+                return E_POINTER;
+            }
+            const iidBytes = mem.slice(riid, riid + 16);
+            const iid = this.normalizeGuid(this.bytesToGuid(iidBytes));
+            const supported = iid === "00000000-0000-0000-c000-000000000046"
+                || iid === "0000000c-0000-0000-c000-000000000046"
+                || iid === "0c733a30-2a1c-11ce-ade5-00aa0044773d";
+            Mem.writeUint32(ppv, supported ? selfPtr : 0);
+            if (!supported) return E_NOINTERFACE;
+            state.refCount++;
+            return S_OK;
+        };
+        handlers["MS_AddRef"] = (_ctx, _mem, args) => {
+            const state = stateFor(args);
+            return state ? ++state.refCount : 0;
+        };
+        handlers["MS_Release"] = (ctx, mem, args) => {
+            const selfPtr = args[0] >>> 0;
+            const state = memoryStreams.get(selfPtr);
+            if (!state) return 0;
+            state.refCount--;
+            if (state.refCount > 0) return state.refCount;
+            memoryStreams.delete(selfPtr);
+            if (state.deleteOnRelease && state.hGlobal) {
+                kernelMemoryExports.GlobalFree?.(ctx, mem, [state.hGlobal]);
+            }
+            freeComObject(process.memory, selfPtr);
+            return 0;
+        };
+        handlers["MS_Read"] = (_ctx, mem, args) => {
+            const state = stateFor(args);
+            const pv = args[1] >>> 0;
+            const cb = args[2] >>> 0;
+            const pcbRead = args[3] >>> 0;
+            if (!state || (cb && (!pv || pv + cb > mem.length))) return E_POINTER;
+            const count = Math.min(cb, Math.max(0, state.size - state.position));
+            if (count > 0) {
+                mem.copyWithin(pv, state.dataPtr + state.position, state.dataPtr + state.position + count);
+            }
+            state.position += count;
+            if (pcbRead) Mem.writeUint32(pcbRead, count);
+            return count === cb ? S_OK : S_FALSE;
+        };
+        handlers["MS_Write"] = (_ctx, mem, args) => {
+            const state = stateFor(args);
+            const pv = args[1] >>> 0;
+            const cb = args[2] >>> 0;
+            const pcbWritten = args[3] >>> 0;
+            if (!state || (cb && (!pv || pv + cb > mem.length))) return E_POINTER;
+            const count = Math.min(cb, Math.max(0, state.size - state.position));
+            if (count > 0) {
+                mem.copyWithin(state.dataPtr + state.position, pv, pv + count);
+            }
+            state.position += count;
+            if (pcbWritten) Mem.writeUint32(pcbWritten, count);
+            return count === cb ? S_OK : STG_E_MEDIUMFULL;
+        };
+        handlers["MS_Seek"] = (_ctx, _mem, args) => {
+            const state = stateFor(args);
+            if (!state) return E_POINTER;
+            const move = BigInt.asIntN(64, (BigInt(args[2] >>> 0) << 32n) | BigInt(args[1] >>> 0));
+            const origin = args[3] >>> 0;
+            const base = origin === 0 ? 0n : origin === 1 ? BigInt(state.position)
+                : origin === 2 ? BigInt(state.size) : -1n;
+            const next = base + move;
+            if (base < 0 || next < 0 || next > BigInt(Number.MAX_SAFE_INTEGER)) {
+                return STG_E_INVALIDFUNCTION;
+            }
+            state.position = Number(next);
+            const out = args[4] >>> 0;
+            if (out) {
+                Mem.writeUint32(out, state.position >>> 0);
+                Mem.writeUint32(out + 4, Math.floor(state.position / 0x100000000));
+            }
+            return S_OK;
+        };
+        handlers["MS_SetSize"] = () => E_NOTIMPL;
+        handlers["MS_CopyTo"] = () => E_NOTIMPL;
+        handlers["MS_Commit"] = () => S_OK;
+        handlers["MS_Revert"] = () => E_NOTIMPL;
+        handlers["MS_LockRegion"] = () => S_OK;
+        handlers["MS_UnlockRegion"] = () => S_OK;
+        handlers["MS_Stat"] = (_ctx, mem, args) => {
+            const state = stateFor(args);
+            const stat = args[1] >>> 0;
+            if (!state || !stat || stat + 72 > mem.length) return E_POINTER;
+            mem.fill(0, stat, stat + 72);
+            Mem.writeUint32(stat + 4, 2); // STGTY_STREAM
+            Mem.writeUint32(stat + 8, state.size >>> 0);
+            Mem.writeUint32(stat + 12, Math.floor(state.size / 0x100000000));
+            return S_OK;
+        };
+        handlers["MS_Clone"] = (_ctx, mem, args) => {
+            const state = stateFor(args);
+            const ppStream = args[1] >>> 0;
+            if (!state || !ppStream || ppStream + 4 > mem.length) return E_POINTER;
+            const clone = allocateComObject(process.memory, mem, this.memoryStreamVtableAddr, "THUNK_DATA");
+            memoryStreams.set(clone, { ...state, refCount: 1, deleteOnRelease: false });
+            Mem.writeUint32(ppStream, clone);
+            return S_OK;
+        };
+
+        const namesAndArgs: Array<[string, number]> = [
+            ["MS_QueryInterface", 3], ["MS_AddRef", 1], ["MS_Release", 1],
+            ["MS_Read", 4], ["MS_Write", 4], ["MS_Seek", 5], ["MS_SetSize", 3],
+            ["MS_CopyTo", 7], ["MS_Commit", 2], ["MS_Revert", 1],
+            ["MS_LockRegion", 6], ["MS_UnlockRegion", 6], ["MS_Stat", 3], ["MS_Clone", 2],
+        ];
+        const installed = installComVtable(process, {
+            moduleName: "ole32_memory_stream",
+            methods: namesAndArgs.map(([name, argCount]) => ({
+                name,
+                argCount,
+                stackCleanupBytes: argCount * 4,
+            })),
+            handlers,
+            logLabel: "HGLOBAL IStream",
+        });
+        this.memoryStreamVtableAddr = installed?.vtableAddr ?? 0;
     }
 
     /**

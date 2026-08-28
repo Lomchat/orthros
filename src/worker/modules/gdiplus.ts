@@ -13,6 +13,7 @@ import { Marshaler } from "../core/memory/marshaler";
 import { System } from "../core/system";
 import { Logger, LogCategory } from "../core/logger";
 import { asBlobPart, asArrayBufferView } from "../../dom-buffer";
+import { readOrthrosMemoryStream } from "./ole32";
 
 // GpStatus enum
 const Ok = 0;
@@ -142,6 +143,34 @@ async function imageBitmapFromRGBA(rgba: Uint8Array, width: number, height: numb
     return createImageBitmap(imageData);
 }
 
+async function decodeImageBytes(data: Uint8Array): Promise<{
+    width: number;
+    height: number;
+    imageBitmap: ImageBitmap;
+    rgba: Uint8Array | null;
+} | null> {
+    let mime = "";
+    if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) {
+        mime = "image/png";
+    } else if (data[0] === 0xff && data[1] === 0xd8) {
+        mime = "image/jpeg";
+    } else if (data[0] === 0x42 && data[1] === 0x4d) {
+        mime = "image/bmp";
+    }
+    if (mime) {
+        const imageBitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: mime }));
+        return { width: imageBitmap.width, height: imageBitmap.height, imageBitmap, rgba: null };
+    }
+    const tga = decodeTGA(data);
+    if (!tga) return null;
+    return {
+        width: tga.width,
+        height: tga.height,
+        imageBitmap: await imageBitmapFromRGBA(tga.rgba, tga.width, tga.height),
+        rgba: tga.rgba,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Helper: extract RGBA pixels from ImageBitmap
 // ---------------------------------------------------------------------------
@@ -241,39 +270,13 @@ export class GdiPlus implements IModule {
                 const fileSize = vfs.getFileSize(normalized);
                 const data = await vfs.read(fh, fileSize);
 
-                let width: number, height: number;
-                let imageBitmap: ImageBitmap;
-                let rgba: Uint8Array | null = null;
-
-                // Detect format by magic bytes
-                if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) {
-                    // PNG
-                    imageBitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: "image/png" }));
-                    width = imageBitmap.width;
-                    height = imageBitmap.height;
-                } else if (data[0] === 0xFF && data[1] === 0xD8) {
-                    // JPEG
-                    imageBitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: "image/jpeg" }));
-                    width = imageBitmap.width;
-                    height = imageBitmap.height;
-                } else if (data[0] === 0x42 && data[1] === 0x4D) {
-                    // BMP
-                    imageBitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: "image/bmp" }));
-                    width = imageBitmap.width;
-                    height = imageBitmap.height;
-                } else {
-                    // Assume TGA
-                    const tga = decodeTGA(data);
-                    if (!tga) {
-                        Logger.warn(LogCategory.SYSTEM, `GdipCreateBitmapFromFile: unsupported format "${normalized}"`);
-                        view.setUint32(pImage, 0, true);
-                        return GenericError;
-                    }
-                    width = tga.width;
-                    height = tga.height;
-                    rgba = tga.rgba;
-                    imageBitmap = await imageBitmapFromRGBA(rgba, width, height);
+                const decoded = await decodeImageBytes(data);
+                if (!decoded) {
+                    Logger.warn(LogCategory.SYSTEM, `GdipCreateBitmapFromFile: unsupported format "${normalized}"`);
+                    view.setUint32(pImage, 0, true);
+                    return GenericError;
                 }
+                const { width, height, imageBitmap, rgba } = decoded;
 
                 const handle = self.allocHandle();
                 self.gpImages.set(handle, {
@@ -301,15 +304,35 @@ export class GdiPlus implements IModule {
         // decoder already performs its color conversion, so share the loader.
         this.exports["GdipCreateBitmapFromFileICM"] = this.exports["GdipCreateBitmapFromFile"];
 
-        // Stream-backed images require calling the guest-owned IStream vtable.
-        // Keep the ABI and failure contract correct until that callback bridge is
-        // available: never report Ok with an uninitialised GpImage pointer.
-        this.exports["GdipCreateBitmapFromStream"] = (_ctx, mem, args) => {
+        // CreateStreamOnHGlobal produces an Orthros-owned IStream, so its bytes
+        // can be decoded directly without an unsafe guest callback from this
+        // asynchronous GDI+ thunk.
+        this.exports["GdipCreateBitmapFromStream"] = async (_ctx, mem, args) => {
+            const pStream = args[0] >>> 0;
             const pImage = args[1] >>> 0;
-            if (pImage && pImage + 4 <= mem.length) {
-                new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(pImage, 0, true);
+            if (!pImage || pImage + 4 > mem.length) return InvalidParameter;
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            view.setUint32(pImage, 0, true);
+            const data = readOrthrosMemoryStream(pStream, mem);
+            if (!data) return InvalidParameter;
+            try {
+                const decoded = await decodeImageBytes(data);
+                if (!decoded) return GenericError;
+                const handle = self.allocHandle();
+                self.gpImages.set(handle, {
+                    handle,
+                    ...decoded,
+                    pixelFormat: PixelFormat32bppARGB,
+                    locked: false,
+                    lockBitsPtr: 0,
+                    lockFlags: 0,
+                });
+                view.setUint32(pImage, handle, true);
+                return Ok;
+            } catch (error) {
+                Logger.warn(LogCategory.SYSTEM, `GdipCreateBitmapFromStream failed: ${String(error)}`);
+                return GenericError;
             }
-            return InvalidParameter;
         };
         this.exports["GdipCreateBitmapFromStreamICM"] = this.exports["GdipCreateBitmapFromStream"];
 

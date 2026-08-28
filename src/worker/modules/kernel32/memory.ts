@@ -29,6 +29,16 @@ export const HEAP_SMALL_ALLOC_MAX = 0x1000; // 4KB — the slab fast path covers
 const HEAP_ALLOC_GRANULARITY = 16;   // small allocs rounded up (Win32 heap granularity)
 const FASTMEM_BUMP_ADDRESS_SPACE_PROTECT = 3;
 
+export interface GlobalMemoryBlockView {
+    dataPtr: number;
+    size: number;
+    moveable: boolean;
+}
+
+/** Resolve an HGLOBAL without changing its lock count. Installed by the memory
+ * module below and shared with OLE's CreateStreamOnHGlobal implementation. */
+export let inspectGlobalMemoryBlock = (_handle: number): GlobalMemoryBlockView | null => null;
+
 const alignSmallAlloc = (size: number): number =>
     (size + (HEAP_ALLOC_GRANULARITY - 1)) & ~(HEAP_ALLOC_GRANULARITY - 1);
 
@@ -1018,6 +1028,29 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         }
 
         return 0;
+    };
+
+    inspectGlobalMemoryBlock = (hMem: number): GlobalMemoryBlockView | null => {
+        const process = System.getInstance().process;
+        if (!process || !hMem) return null;
+        resetMoveableTables();
+
+        if (isMoveableHandle(hMem)) {
+            const dataPtr = Mem.readUint32(hMem) ?? 0;
+            return {
+                dataPtr,
+                size: moveableDataSize.get(hMem) ?? 0,
+                moveable: true,
+            };
+        }
+        if (fixedLocalHandles.has(hMem)) {
+            return {
+                dataPtr: hMem,
+                size: fixedLocalUserSizes.get(hMem) ?? getFixedBlockCapacity(process, hMem) ?? 0,
+                moveable: false,
+            };
+        }
+        return null;
     };
 
     const reallocMoveableBlock = (
