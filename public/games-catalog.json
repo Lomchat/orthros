@@ -2,13 +2,55 @@
   {
     "id": "bfme",
     "name": "La Bataille pour la Terre du Milieu",
-    "subtitle": "1.03 FR",
+    "subtitle": "1.03",
     "wgbUrl": "/apps/bfme.wgb",
+    "sizeBytes": 3687550226,
     "coverUrl": "/covers/bfme-box.jpg",
-    "description": "Le jeu complet exécuté localement dans le navigateur, avec sauvegardes persistantes et réseau privé relayé par le VPS.",
+    "description": "",
     "year": "2004",
     "genre": "RTS",
-    "enabled": true
+    "enabled": true,
+    "defaultLanguage": "fr",
+    "languages": [
+      {
+        "code": "fr",
+        "label": "Français",
+        "flag": "fr",
+        "name": "La Bataille pour la Terre du Milieu",
+        "coverUrl": "/covers/bfme-box.jpg",
+        "gameId": "byo:bfme1-103-fr",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\EA Games\\The Battle for Middle-earth",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "French"
+            }
+          ]
+        }
+      },
+      {
+        "code": "en",
+        "label": "English",
+        "flag": "gb",
+        "name": "The Battle for Middle-earth",
+        "coverUrl": "/covers/bfme-box-en.jpg",
+        "gameId": "byo:bfme1-103-en",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\EA Games\\The Battle for Middle-earth",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "English"
+            }
+          ]
+        }
+      }
+    ]
   },
   {
     "id": "revolt",

@@ -318,7 +318,10 @@
 .st--setup::before { background: var(--amber-soft); }
 .st--save { color: var(--cyan-soft); }
 .st--save::before { background: var(--cyan-soft); }
-.card__year { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--fg-4); }
+.card__meta { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: var(--fs-2xs); }
+.card__size { color: var(--fg-2); }
+.card__year { color: var(--fg-4); }
+.card__size + .card__year::before { content: "·"; margin-right: 7px; color: var(--fg-4); }
 
 /* Add/drop card */
 .card--add {
@@ -404,3 +407,40 @@
     transition: none !important;
   }
 }
+
+/* Language flag + settings cog on a game card */
+.card__flag {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  width: 24px;
+  height: 16px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: var(--sh-1);
+  line-height: 0;
+}
+.card__flag svg { width: 100%; height: 100%; display: block; }
+
+.card__cog {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-2);
+  background: rgba(7, 10, 20, 0.78);
+  backdrop-filter: blur(4px);
+  color: var(--fg-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.card:hover .card__cog, .card__cog:focus-visible { opacity: 1; }
+.card__cog:hover { color: var(--amber); border-color: var(--amber); }

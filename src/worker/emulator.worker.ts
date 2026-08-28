@@ -83,8 +83,10 @@ import { guessCacheKey } from "@orthros/repack/manifest-synth";
 import { BufferSource, InnoFormatError, parseInnoHeader, MultiSliceReader, parseSliceFile, type SliceData } from "@orthros/formats/inno";
 import { SyncHttpRangeSource } from "@orthros/formats/zip";
 import { SabIoSource } from "./runtime/filesystem/sab-io-source";
+import { loadWgbIntegrity } from "./runtime/filesystem/wgb-integrity";
 import { UnpackDecoder } from "@orthros/formats/unpack";
 import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
+import { exportContainer } from "./runtime/filesystem/save-export";
 import { resolveGameId, gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
 import { PathPolicy } from "./runtime/filesystem/path-policy";
 import { detectUe1, detectUe2PcPackages, pinUeEngineIni, UE1_RENDER_DEVICE as UE1_RENDER_DEVICE_NAME } from "./runtime/filesystem/ue1-firstrun";
@@ -132,6 +134,9 @@ import { handleDebugMonitorMessage } from "./worker-handlers/debug-monitor";
 import { handleRegistryMessage } from "./worker-handlers/registry";
 
 bootMark("worker-script-start");
+
+let activeCloudGameId: string | null = null;
+let cloudExportInFlight = false;
 
 // Catch unhandled promise rejections in worker (captures truncated browser errors with full message)
 self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
@@ -246,6 +251,14 @@ let isPaused = false;
 let _prefetchController: AbortController | null = null;
 /** Serializes load_bundle so a new game always waits for the previous switch teardown. */
 let loadBundleChain: Promise<void> = Promise.resolve();
+/**
+ * Launch profile carried by the current load_bundle: a manifest layer merged onto the
+ * bundle's own manifest (so an overridden gameId re-keys the container, registry and cloud
+ * snapshots in one go) and a registry patch seeded after the bundle defaults. Authored by
+ * the catalog; the worker stays game-agnostic.
+ */
+let pendingLaunchProfile: { manifest?: Record<string, unknown>; registry?: unknown } | null = null;
+
 /** True once a PE has been booted in this worker session (loadApp / load_bundle without page reload). */
 let gameSessionActive = false;
 let registrySaveTimeout: number | null = null;
@@ -1242,7 +1255,8 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // A complete browser-local copy always wins. The previous order attempted
       // HTTP range streaming first, making even a fully cached game depend on the
       // VPS and causing hard reloads to fetch its boot working set again.
-      const cachedSource = await WgbCache.openSyncSourceForUrl(url);
+      const integrity = await loadWgbIntegrity(url);
+      const cachedSource = await WgbCache.openSyncSourceForUrl(url, integrity);
       if (cachedSource) {
         try {
           bundle = await WgbLoader.fromSource(cachedSource);
@@ -1279,7 +1293,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           let src: import("@orthros/formats/zip").ZipSource;
           let sabIo: SabIoSource | null = null;
           try {
-            sabIo = await SabIoSource.create(url);
+            sabIo = await SabIoSource.create(url, integrity);
             src = sabIo;
             (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo = sabIo;
             Logger.log(LogCategory.SYSTEM, `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`);
@@ -1320,7 +1334,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
         return buf;
       };
 
-      let syncSource = await WgbCache.openSyncSourceForUrl(url);
+      let syncSource = await WgbCache.openSyncSourceForUrl(url, integrity);
       let downloadedBuffer: Uint8Array | null = null;
       if (syncSource) {
         Logger.log(LogCategory.SYSTEM, `WGB: OPFS cache hit (sync), launching immediately`);
@@ -1336,7 +1350,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           const loadedMb = (loaded / 1024 / 1024).toFixed(0);
           const totalMb = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(0)} MB` : " MB";
           self.postMessage({ type: "loading_progress", phase: "downloading", percent, label: `${loadedMb}${totalMb}` });
-        }).catch((e) => {
+        }, integrity).catch((e) => {
           Logger.warn(LogCategory.SYSTEM, `WGB: streaming download failed (${e}) — falling back to in-RAM`);
           return null;
         });
@@ -1344,7 +1358,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           self.postMessage({ type: "loading_progress", phase: "starting", percent: 100, label: "" });
         } else {
           downloadedBuffer = await downloadToRam();
-          syncSource = await WgbCache.openSyncSourceForUrl(url);
+          syncSource = await WgbCache.openSyncSourceForUrl(url, integrity);
         }
       }
 
@@ -1524,11 +1538,20 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       }
     }
 
+    // Per-launch profile (language, resolution, intro videos). Merged last so it wins over
+    // both the bundle manifest and a stored manifest-editor override. Overriding gameId here
+    // is what gives each language its own container, saves and cloud snapshots.
+    if (pendingLaunchProfile?.manifest) {
+      deepMergeInto(bundle.manifest as unknown as Record<string, unknown>, pendingLaunchProfile.manifest);
+      Logger.log(LogCategory.SYSTEM, `WGB: launch profile ${JSON.stringify(pendingLaunchProfile.manifest)}`);
+    }
+
     // Resolve the per-game container key (WGB v2 gameId, namespaced) and open this game's writable
     // overlay (orthros/games/<containerDir>/overlay/). On a game switch the previous overlay is
     // closed and re-rooted so game B never sees game A's files (#5 isolation). Registry persistence
     // (below) keys by this same gameId.
     const gameId = resolveGameId(bundle.manifest);
+    activeCloudGameId = gameId;
     Logger.log(LogCategory.SYSTEM, `WGB: gameId="${gameId}" container="${gameIdToContainerDir(gameId)}"`);
     // Host overlay/title: surface the manifest display name as soon as we know it
     // (covers ?game=dev&load=… where the shell would otherwise keep saying "Dev").
@@ -1690,6 +1713,11 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     if (bundle.registry) {
       system.registry.seed(bundle.registry as any);
     }
+    // The profile's registry patch lands after the bundle defaults so the player's choice
+    // wins, but before persisted values are restored so an existing container keeps its own.
+    if (pendingLaunchProfile?.registry) {
+      system.registry.seed(pendingLaunchProfile.registry as any);
+    }
 
     // Restore persisted (game-written) registry LAST so it overrides the bundle defaults.
     const persistedState = await RegistryPersistence.load(gameId);
@@ -1849,13 +1877,20 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     }
   }
 
+  // Bind the production WASM URL to this content-hashed worker asset. A browser
+  // hard reload does not reliably bypass the nested fetch performed by v86,
+  // and /v86.wasm is otherwise cacheable for an hour. The worker filename
+  // changes on every material build, so this query changes exactly when the
+  // corresponding JIT binary changes without disabling caching between boots.
+  const workerRevision = new URL(globalThis.location.href).pathname.split('/').pop() || 'worker';
+  const wasmPath = import.meta.env?.DEV
+    ? `/v86.wasm?t=${Date.now()}`
+    : `/v86.wasm?v=${encodeURIComponent(workerRevision)}`;
+
   // v86 settings
   const settings = {
     canvas: canvas,
-    // DEV cache-bust: the worker's wasm fetch is NOT covered by a hard-reload's cache bypass,
-    // so a rebuilt /v86.wasm would otherwise keep loading from the browser cache. Unique URL per
-    // worker load forces a fresh fetch in dev. (Prod keeps the stable URL for HTTP caching.)
-    wasm_path: import.meta.env?.DEV ? `/v86.wasm?t=${Date.now()}` : "/v86.wasm",
+    wasm_path: wasmPath,
     memory_size: ramSize,
     vga_memory_size: EMU_VGA_MEMORY_SIZE,
     bios: { url: "/bios/seabios.bin" },
@@ -2607,6 +2642,55 @@ function resumeEmulator(): void {
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
 
+  if (message?.type === "cloud_save_export") {
+    const requestId = String(message.requestId ?? "");
+    if (cloudExportInFlight) {
+      self.postMessage({ type: "cloud_save_export", requestId, ok: false, error: "A cloud snapshot is already running" });
+      return;
+    }
+    if (!activeCloudGameId) {
+      self.postMessage({ type: "cloud_save_export", requestId, ok: false, error: "No active game container" });
+      return;
+    }
+    cloudExportInFlight = true;
+    void (async () => {
+      const system = System.getInstance();
+      const resumeAfter = !isPaused && !system.isPaused && !system.isExiting;
+      try {
+        if (resumeAfter) {
+          isPaused = true;
+          system.isPaused = true;
+          if (gdiPresentRafId !== null) { cancelAnimationFrame(gdiPresentRafId); gdiPresentRafId = null; }
+          system.windowManager.wakeWaiters();
+          const v86 = system.process?.v86;
+          if (v86?.is_running?.()) await v86.stop();
+        }
+        await system.fileSystem.flushAll();
+        const bytes = await exportContainer(activeCloudGameId!);
+        if (!bytes) {
+          self.postMessage({ type: "cloud_save_export", requestId, ok: false, error: "No persistent save data yet" });
+          return;
+        }
+        (self as unknown as Worker).postMessage(
+          {
+            type: "cloud_save_export",
+            requestId,
+            ok: true,
+            gameId: activeCloudGameId,
+            bytes,
+          },
+          [bytes.buffer],
+        );
+      } catch (error) {
+        self.postMessage({ type: "cloud_save_export", requestId, ok: false, error: String(error) });
+      } finally {
+        cloudExportInFlight = false;
+        if (resumeAfter && !system.isExiting) resumeEmulator();
+      }
+    })();
+    return;
+  }
+
   if (message?.type === "network_config") {
     const sanitized = String(message.room || "public")
       .replace(/[^a-zA-Z0-9_.-]/g, "")
@@ -2828,6 +2912,7 @@ self.onmessage = (event: MessageEvent) => {
       cfg.logOnly = !!message.hleLogOnly;
       Logger.log(LogCategory.SYSTEM, `[HLE-lib] enabled via load_bundle (logOnly=${cfg.logOnly})`);
     }
+    pendingLaunchProfile = (message.profile ?? null) as typeof pendingLaunchProfile;
     loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs });
   }
 

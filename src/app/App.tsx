@@ -4,6 +4,9 @@ import { cx } from "../ui/cx";
 import s from "./App.module.css";
 import OpfsTool from '../debug/OpfsTool';
 import StorageManagerModal from '../storage/StorageManagerModal';
+import AccountControl from '../auth/AccountControl';
+import { useCloudSaves } from '../cloud/CloudSaveProvider';
+import { gameIdToContainerDir } from '@orthros/formats/wgb/container-id';
 import RegistryTool from '../debug/RegistryTool';
 import DebugLogViewer from '../debug/DebugLogViewer';
 import MemoryPanel from '../debug/MemoryPanel';
@@ -28,7 +31,15 @@ import ManifestEditorModal from "../wizard/ManifestEditorModal";
 import { listAddedGames, removeAddedGame, type AddedGame } from "../wgb-library";
 import { ensurePersistentStorageRequested } from "../storage-manager";
 import { loadGamesCatalog } from "../games-catalog";
+import { loadGameProfile, resolveLanguage, buildLaunchProfile, type LaunchProfile } from "../game-profile";
 import { currentGameId, gameHref } from "./route";
+import {
+  advanceVirtualPointer,
+  canvasCursorStyle,
+  computeGameCursorPlacement,
+  decideBfmeEscapeKeyDown,
+  wantsRelativePointer,
+} from "./pointer-policy";
 import { DEFAULT_QUALITY, mergeQuality } from "../worker/core/quality-config";
 import type { QualityConfig } from "../worker/core/quality-config";
 import {
@@ -264,7 +275,7 @@ function loadingPatienceHint(phase: string, elapsedSeconds: number, label?: stri
 }
 
 type LocalCacheProgress = {
-  state: "checking" | "downloading" | "complete" | "unavailable" | "retrying";
+  state: "checking" | "downloading" | "verifying" | "complete" | "unavailable" | "retrying";
   loadedBytes: number;
   totalBytes: number;
 };
@@ -276,9 +287,37 @@ type StatsOverlaySnapshot = {
   windowMs: number;
 };
 
+type GameCursorFrame = {
+  width: number;
+  height: number;
+  hotspotX: number;
+  hotspotY: number;
+  pixels: Uint8Array;
+};
+
+type GameCursorAnimation = {
+  frames: GameCursorFrame[];
+  sequence: number[];
+  delaysMs: number[];
+};
+
 export default function App() {
+  const cloudSaves = useCloudSaves();
+  const cloudSavesRef = useRef(cloudSaves);
+  cloudSavesRef.current = cloudSaves;
+  const activeCloudContainerRef = useRef<string | null>(null);
+  const cloudSnapshotPendingRef = useRef(false);
+  const lastCloudSnapshotAtRef = useRef(0);
+  const requestCloudSnapshot = useCallback((reason: string) => {
+    if (!globalWorker || !cloudSavesRef.current.user || !activeCloudContainerRef.current) return;
+    if (cloudSnapshotPendingRef.current) return;
+    cloudSnapshotPendingRef.current = true;
+    lastCloudSnapshotAtRef.current = Date.now();
+    globalWorker.postMessage({ type: "cloud_save_export", requestId: `${reason}-${crypto.randomUUID()}` });
+  }, []);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cpuCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const gameCursorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cpuBitmapContextRef = useRef<ImageBitmapRenderingContext | null>(null);
   const [cpuFrameActive, setCpuFrameActive] = useState(false);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -334,7 +373,6 @@ export default function App() {
   const loadingStartedAtRef = useRef<number | null>(null);
   const [loadingElapsedSeconds, setLoadingElapsedSeconds] = useState(0);
   const [localCacheProgress, setLocalCacheProgress] = useState<LocalCacheProgress | null>(null);
-  const [canvasOverlayAnchor, setCanvasOverlayAnchor] = useState({ top: 8, right: 8 });
   const [addGameOpen, setAddGameOpen] = useState(false);
   const [addedGames, setAddedGames] = useState<AddedGame[]>([]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -347,9 +385,9 @@ export default function App() {
   const [profilerOpen, setProfilerOpen] = useState(false);
   const [debugGpuOpen, setDebugGpuOpen] = useState(false);
   const [frameAnalysisOpen, setFrameAnalysisOpen] = useState(false);
-  // Opt-in live FPS HUD. Its measurement is produced from real presents in the
-  // worker and rendered as DOM, never copied into the game's WebGPU surface.
-  const [statsOverlayEnabled, setStatsOverlayEnabled] = useState(false);
+  // Opt-in live FPS indicator. Its measurement is produced from real presents in
+  // the worker and rendered in the footer, never over or into the WebGPU surface.
+  const [statsOverlayEnabled, setStatsOverlayEnabled] = useState(true);
   const [statsOverlayStats, setStatsOverlayStats] = useState<StatsOverlaySnapshot | null>(null);
   const [fpuStrictEnabled, setFpuStrictEnabled] = useState(false);
   const [messageBox, setMessageBox] = useState<MessageBoxRequest | null>(null);
@@ -400,10 +438,9 @@ export default function App() {
     () => currentGameId(),
     [],
   );
-  // BFME is an absolute-pointer RTS. It hides the Win32 system cursor because the
-  // native renderer normally draws its own sprite, but that sprite is not reliable in
-  // the browser backend yet. Keep the host arrow visible and never enter FPS pointer-lock.
-  const forceHostCursor = gameIdFromUrl === "bfme";
+  // BFME keeps an absolute guest cursor, but host pointer-lock supplies stable relative
+  // motion to that virtual position. Its Win32 cursor files feed the DOM overlay below.
+  const forceBfmePointerCapture = gameIdFromUrl === "bfme";
   const selectedGame = useMemo<GameEntry | null>(() => {
     if (!gameIdFromUrl) return null;
     if (gameIdFromUrl === "dev") {
@@ -468,6 +505,7 @@ export default function App() {
   const autoLoadDoneRef = useRef(false);
   useEffect(() => {
     if (!browserSupport.supported || (webgpuProbe !== null && !webgpuProbe.ok)) return;
+    if (!cloudSaves.ready) return;
     if (!selectedGame || workerStatus !== "ready" || autoLoadDoneRef.current) return;
     const params = new URLSearchParams(window.location.search);
     const loadParam = params.get("load");
@@ -510,8 +548,18 @@ export default function App() {
       return;
     }
 
-    (window as any).loadApp?.(selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl);
-  }, [browserSupport.supported, selectedGame, workerStatus, webgpuProbe]);
+    // The player's per-game choices (language, resolution, videos) ride along with the
+    // bundle load: the worker merges them onto the manifest before resolving the container.
+    const stored = loadGameProfile(selectedGame.id);
+    const launchProfile = buildLaunchProfile(
+      stored,
+      resolveLanguage(selectedGame.languages, stored, selectedGame.defaultLanguage),
+    );
+    (window as any).loadApp?.(
+      selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl,
+      launchProfile,
+    );
+  }, [browserSupport.supported, cloudSaves.ready, selectedGame, workerStatus, webgpuProbe]);
 
   // Cover the worker/v86 boot phase too: before the worker posts "ready" there is no
   // load_bundle progress yet, so without this the user stares at a bare canvas while
@@ -575,9 +623,26 @@ export default function App() {
     if (!gameIdFromUrl) refreshAddedGames();
   }, [gameIdFromUrl, refreshAddedGames]);
 
+  // Periodic durable snapshots while a signed-in game is running. The worker briefly
+  // parks x86, closes OPFS writers and exports a coherent container before resuming.
+  useEffect(() => {
+    if (!cloudSaves.user || !gameIdFromUrl) return;
+    const timer = window.setInterval(() => requestCloudSnapshot("periodic"), 5 * 60_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden" && Date.now() - lastCloudSnapshotAtRef.current > 60_000) {
+        requestCloudSnapshot("hidden");
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [cloudSaves.user?.id, gameIdFromUrl, requestCloudSnapshot]);
+
   // Pointer lock state for FPS-style relative mouse input
   const pointerLockedRef   = useRef(false);
-  const wantsPointerLockRef = useRef(false);
+  const wantsPointerLockRef = useRef(forceBfmePointerCapture);
   const virtualMouseRef    = useRef({ x: 0, y: 0 });
   // Cooldown after exitPointerLock — browser rejects re-acquire for ~1 frame after exit
   const pointerLockCooldownRef = useRef(false);
@@ -586,9 +651,14 @@ export default function App() {
   // cursorClippedRef tracks ClipCursor; mouseCapturedRef tracks exclusive DInput acquire.
   const cursorClippedRef = useRef(false);
   const mouseCapturedRef = useRef(false);
-  // Right Ctrl deliberately released the lock — suppress auto re-acquire until the next
-  // explicit re-engage gesture (a canvas click).
+  // A host release (Right Ctrl generally, Escape for BFME) suppresses auto re-acquire
+  // until the next explicit re-engage gesture (a canvas click).
   const userReleasedLockRef = useRef(false);
+  // Escape can only be retained by the page when fullscreen Keyboard Lock succeeds.
+  // In that mode BFME receives the first physical press; a second short press is the
+  // explicit host release. Outside that mode the browser's mandatory gesture wins.
+  const keyboardEscapeLockedRef = useRef(false);
+  const escapeReleaseArmedUntilRef = useRef(0);
   /** Host F11 fullscreen — ref so the mount-stable input effect can call it. */
   const toggleFullscreenRef = useRef<() => void>(() => {});
 
@@ -602,9 +672,11 @@ export default function App() {
   // only attempt an opportunistic acquire (succeeds inside a gesture, otherwise armed for the
   // next click via handlePointerDown). Releasing happens immediately when intent drops.
   const updatePointerLockIntent = () => {
-    const wants = !forceHostCursor && (
-      !cursorVisibleRef.current || cursorClippedRef.current || mouseCapturedRef.current
-    );
+    const wants = wantsRelativePointer(gameIdFromUrl, {
+      cursorVisible: cursorVisibleRef.current,
+      cursorClipped: cursorClippedRef.current,
+      mouseCaptured: mouseCapturedRef.current,
+    });
     wantsPointerLockRef.current = wants;
     if (wants) {
       const c = canvasRef.current;
@@ -760,15 +832,88 @@ export default function App() {
 
     const updateCanvasCursor = (forceHovered?: boolean) => {
       const hovered = forceHovered ?? isCanvasHoveredRef.current;
-      if (forceHostCursor) {
-        // BFME's in-game cursor sprite is currently absent in the WebGPU translation.
-        // A normal host pointer keeps every menu and battlefield interaction usable.
-        canvas.style.cursor = "default";
-      } else if (!cursorVisibleRef.current && hovered) {
-        canvas.style.cursor = "none";
-      } else {
-        canvas.style.cursor = "";
+      canvas.style.cursor = canvasCursorStyle(
+        gameIdFromUrl,
+        hovered,
+        cursorVisibleRef.current,
+        pointerLockedRef.current,
+      );
+    };
+
+    let gameCursorAnimation: GameCursorAnimation | null = null;
+    const gameCursorDefinitions = new Map<number, GameCursorAnimation>();
+    let selectedGameCursorHandle = 0;
+    let gameCursorStep = 0;
+    let gameCursorTimer: number | null = null;
+
+    const currentGameCursorFrame = (): GameCursorFrame | null => {
+      if (!gameCursorAnimation?.frames.length) return null;
+      const frameIndex = gameCursorAnimation.sequence[gameCursorStep] ?? 0;
+      return gameCursorAnimation.frames[frameIndex] ?? gameCursorAnimation.frames[0] ?? null;
+    };
+
+    const syncGameCursorOverlay = () => {
+      const overlay = gameCursorCanvasRef.current;
+      const frame = currentGameCursorFrame();
+      if (!overlay || !frame || !forceBfmePointerCapture || !pointerLockedRef.current || !cursorVisibleRef.current) {
+        if (overlay) overlay.style.display = "none";
+        return;
       }
+      const canvasRect = canvasRectRef.current ?? canvas.getBoundingClientRect();
+      const panelRect = panelRef.current?.getBoundingClientRect();
+      if (!panelRect || canvasRect.width <= 0 || canvasRect.height <= 0) {
+        overlay.style.display = "none";
+        return;
+      }
+      const pointerSpace = mouseCoordinateModeRef.current === "guest"
+        ? guestResolutionRef.current
+        : resolutionRef.current;
+      const placement = computeGameCursorPlacement(
+        virtualMouseRef.current,
+        frame,
+        canvasRect,
+        panelRect,
+        pointerSpace.width,
+        pointerSpace.height,
+      );
+      overlay.style.display = "block";
+      overlay.style.left = `${placement.left}px`;
+      overlay.style.top = `${placement.top}px`;
+      overlay.style.width = `${placement.width}px`;
+      overlay.style.height = `${placement.height}px`;
+    };
+
+    const drawGameCursorStep = () => {
+      const overlay = gameCursorCanvasRef.current;
+      const frame = currentGameCursorFrame();
+      if (!overlay || !frame) {
+        syncGameCursorOverlay();
+        return;
+      }
+      if (overlay.width !== frame.width) overlay.width = frame.width;
+      if (overlay.height !== frame.height) overlay.height = frame.height;
+      const context = overlay.getContext("2d");
+      if (context) {
+        context.clearRect(0, 0, frame.width, frame.height);
+        context.putImageData(
+          new ImageData(new Uint8ClampedArray(frame.pixels), frame.width, frame.height),
+          0,
+          0,
+        );
+      }
+      syncGameCursorOverlay();
+    };
+
+    const scheduleGameCursor = () => {
+      if (gameCursorTimer !== null) window.clearTimeout(gameCursorTimer);
+      gameCursorTimer = null;
+      drawGameCursorStep();
+      if (!gameCursorAnimation || gameCursorAnimation.sequence.length <= 1) return;
+      const delay = gameCursorAnimation.delaysMs[gameCursorStep] ?? 100;
+      gameCursorTimer = window.setTimeout(() => {
+        gameCursorStep = (gameCursorStep + 1) % gameCursorAnimation!.sequence.length;
+        scheduleGameCursor();
+      }, Math.max(16, delay));
     };
 
     // 1. Initialize Worker (only once)
@@ -971,13 +1116,6 @@ export default function App() {
       resolutionRef.current = { width: renderWidth, height: renderHeight };
       const canvasRect = canvas.getBoundingClientRect();
       canvasRectRef.current = canvasRect;
-      const panelRect = panelRef.current?.getBoundingClientRect();
-      if (panelRect) {
-        setCanvasOverlayAnchor({
-          top: Math.max(8, canvasRect.top - panelRect.top + 44),
-          right: Math.max(8, panelRect.right - canvasRect.right + 8),
-        });
-      }
 
       const useGuestCoords = mouseCoordinateModeRef.current === "guest";
       const target = useGuestCoords
@@ -985,6 +1123,7 @@ export default function App() {
         : { width: renderWidth, height: renderHeight };
 
       worker.postMessage({ type: "resize", width: target.width, height: target.height });
+      syncGameCursorOverlay();
     };
 
     // 3. Setup Worker Message Handling
@@ -1094,10 +1233,27 @@ export default function App() {
         audioEngine?.stopAll();
         setLoadingProgress(null);
         setIsLoadingApp(false);
+        requestCloudSnapshot("exit");
       }
       if (event.data?.type === "bundle_meta") {
         const name = typeof event.data.name === "string" ? event.data.name.trim() : "";
         if (name) setBundleDisplayName(name);
+        const gameId = typeof event.data.gameId === "string" ? event.data.gameId : "";
+        if (gameId) activeCloudContainerRef.current = gameIdToContainerDir(gameId);
+      }
+      if (event.data?.type === "cloud_save_export") {
+        cloudSnapshotPendingRef.current = false;
+        if (event.data.ok && event.data.bytes instanceof Uint8Array) {
+          const gameId = typeof event.data.gameId === "string" ? event.data.gameId : "";
+          const containerId = gameId ? gameIdToContainerDir(gameId) : activeCloudContainerRef.current;
+          if (containerId) {
+            void cloudSavesRef.current.pushSnapshot(containerId, event.data.bytes).catch((error) => {
+              console.warn("Orthros: cloud-save upload deferred:", error);
+            });
+          }
+        } else if (event.data.error !== "No persistent save data yet") {
+          console.warn("Orthros: cloud-save snapshot failed:", event.data.error);
+        }
       }
       if (event.data?.type === "local_cache_progress") {
         const state = String(event.data.state || "checking") as LocalCacheProgress["state"];
@@ -1306,10 +1462,37 @@ export default function App() {
         if (sab) audioEngine?.registerStatsSab(sab);
       }
       // video_frame and video_end are handled in the worker via WebGPU compositor (smackw32.ts → backend.composite)
+      if (event.data?.type === "game_cursor_define") {
+        const handle = Number(event.data.handle) >>> 0;
+        const cursor = event.data.cursor as GameCursorAnimation | undefined;
+        if (handle && cursor?.frames?.length) gameCursorDefinitions.set(handle, cursor);
+        if (handle === selectedGameCursorHandle) {
+          gameCursorAnimation = cursor ?? null;
+          gameCursorStep = 0;
+          scheduleGameCursor();
+        }
+      }
+      if (event.data?.type === "game_cursor_select") {
+        selectedGameCursorHandle = Number(event.data.handle) >>> 0;
+        gameCursorAnimation = gameCursorDefinitions.get(selectedGameCursorHandle) ?? null;
+        gameCursorStep = 0;
+        scheduleGameCursor();
+      }
+      if (event.data?.type === "game_cursor_forget") {
+        const handle = Number(event.data.handle) >>> 0;
+        gameCursorDefinitions.delete(handle);
+        if (handle === selectedGameCursorHandle) {
+          selectedGameCursorHandle = 0;
+          gameCursorAnimation = null;
+          gameCursorStep = 0;
+          scheduleGameCursor();
+        }
+      }
       if (event.data?.type === "cursor_visibility") {
         const visible = event.data?.visible !== false;
         cursorVisibleRef.current = visible;
         updateCanvasCursor();
+        syncGameCursorOverlay();
         // Engage/release pointer-lock on the faithful relative signal (hidden OR clipped).
         updatePointerLockIntent();
       }
@@ -1332,6 +1515,7 @@ export default function App() {
         const x = Number(event.data.x) | 0;
         const y = Number(event.data.y) | 0;
         virtualMouseRef.current = { x, y };
+        syncGameCursorOverlay();
         if (pointerLockedRef.current && globalInputView) {
           beginInputWrite(globalInputView);
           globalInputView[INPUT_INDEX.mouseX] = x;
@@ -1385,17 +1569,9 @@ export default function App() {
           // maps to clamped 0,0). Re-capture after layout settles (double rAF = after paint).
           requestAnimationFrame(() => requestAnimationFrame(() => {
             const liveCanvas = canvasRef.current;
-            const livePanel = panelRef.current;
             if (liveCanvas) {
               const rect = liveCanvas.getBoundingClientRect();
               canvasRectRef.current = rect;
-              const panelRect = livePanel?.getBoundingClientRect();
-              if (panelRect) {
-                setCanvasOverlayAnchor({
-                  top: Math.max(8, rect.top - panelRect.top + 44),
-                  right: Math.max(8, panelRect.right - rect.right + 8),
-                });
-              }
             }
           }));
         }
@@ -1504,9 +1680,16 @@ export default function App() {
         const rect   = canvasRectRef.current ?? canvas.getBoundingClientRect();
         const scaleX = width  / Math.max(1, rect.width);
         const scaleY = height / Math.max(1, rect.height);
-        const virt   = virtualMouseRef.current;
-        virt.x = Math.max(0, Math.min(width  - 1, virt.x + event.movementX * scaleX));
-        virt.y = Math.max(0, Math.min(height - 1, virt.y + event.movementY * scaleY));
+        const virt = advanceVirtualPointer(
+          virtualMouseRef.current,
+          event.movementX,
+          event.movementY,
+          scaleX,
+          scaleY,
+          width,
+          height,
+        );
+        virtualMouseRef.current = virt;
         beginInputWrite(inputView);
         inputView[INPUT_INDEX.mouseX]  = Math.round(virt.x);
         inputView[INPUT_INDEX.mouseY]  = Math.round(virt.y);
@@ -1517,6 +1700,7 @@ export default function App() {
         Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX));
         Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY));
         endInputWrite(inputView);
+        syncGameCursorOverlay();
         globalWorker?.postMessage({ type: "input_tick" });
         return;
       }
@@ -1550,6 +1734,7 @@ export default function App() {
       const scaleY = height / rect.height;
       const x = Math.max(0, Math.min(width, (event.clientX - rect.left) * scaleX));
       const y = Math.max(0, Math.min(height, (event.clientY - rect.top) * scaleY));
+      virtualMouseRef.current = { x, y };
 
       beginInputWrite(inputView);
       inputView[INPUT_INDEX.mouseX] = Math.round(x);
@@ -1558,6 +1743,7 @@ export default function App() {
       Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX * scaleX));
       Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY * scaleY));
       endInputWrite(inputView);
+      syncGameCursorOverlay();
       globalWorker?.postMessage({ type: "input_tick" });
       if (isRecording) {
         recordedInputs.push({
@@ -1646,8 +1832,7 @@ export default function App() {
       // suppress auto re-acquire (handlePointerLockChange / updatePointerLockIntent) until the
       // next explicit canvas click. Consumed as a host key (not forwarded to the guest) so it
       // can't be confused with an in-game RControl bind while it's the escape hatch.
-      // (ESC is left untouched — the browser force-exits lock on ESC and it must still reach
-      // the guest as the menu key.)
+      // Escape has its own BFME double-press policy below.
       if (event.code === "ControlRight" && state === 1) {
         if (pointerLockedRef.current || document.pointerLockElement) {
           userReleasedLockRef.current = true;
@@ -1660,12 +1845,46 @@ export default function App() {
         }
       }
 
+      // Fullscreen Keyboard Lock is the only standards-compliant way to keep Pointer Lock
+      // across Escape. BFME receives the first physical press. A second press inside the
+      // policy window is consumed as the host release; repeats do not count, preserving the
+      // browser's long-hold emergency exit. Outside that mode, the first press is forwarded
+      // and the browser performs its mandatory Pointer Lock release as before.
+      if (
+        event.code === "Escape" &&
+        state === 1 &&
+        forceBfmePointerCapture &&
+        (pointerLockedRef.current || document.pointerLockElement === canvas)
+      ) {
+        const decision = decideBfmeEscapeKeyDown(
+          performance.now(),
+          escapeReleaseArmedUntilRef.current,
+          keyboardEscapeLockedRef.current,
+          event.repeat,
+        );
+        escapeReleaseArmedUntilRef.current = decision.armedUntil;
+        if (decision.action === "release-pointer") {
+          userReleasedLockRef.current = true;
+          pointerLockCooldownRef.current = true;
+          document.exitPointerLock();
+          setTimeout(() => { pointerLockCooldownRef.current = false; }, 32);
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        if (decision.action === "ignore-repeat") {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+
       // Pointer-locked: swallow browser chrome handling (Tab focus cycle, Alt menus, …)
       // so keys like Max Payne's painkiller Tab reach the guest. Capture-phase listeners
-      // (below) run before focus navigation. ESC stays un-preventDefault'd so the UA can
-      // exit lock; we still forward it to the guest as the menu key.
+      // (below) run before focus navigation. Escape is preventable only after Keyboard Lock
+      // succeeds; otherwise it remains the browser's required unlock gesture.
       if (pointerLockedRef.current || document.pointerLockElement === canvas) {
-        if (event.code !== "Escape") {
+        if (event.code !== "Escape" || keyboardEscapeLockedRef.current) {
           event.preventDefault();
           event.stopPropagation();
         }
@@ -1719,10 +1938,11 @@ export default function App() {
       // Guarded: throws InvalidStateError if the pointer was released before
       // this handler ran (fast tap, synthetic events, etc.) — safe to ignore.
       try { canvas.setPointerCapture(event.pointerId); } catch { }
-      // A deliberate click on the canvas is the re-engage gesture: clear the Right-Ctrl
-      // host-release suppression so lock can be re-acquired.
+      // A deliberate click on the canvas is the re-engage gesture: clear host-release
+      // suppression so lock can be re-acquired.
       userReleasedLockRef.current = false;
-      // If cursor is hidden by guest, request pointer lock (user click = valid gesture)
+      // BFME always captures on a canvas click; other games follow the guest's
+      // ShowCursor/ClipCursor/exclusive-DirectInput intent.
       if (wantsPointerLockRef.current && !pointerLockedRef.current) {
         requestPointerLockSafe(canvas);
         // Still forward this click — before pointer lock is acquired, absolute coords
@@ -1831,6 +2051,7 @@ export default function App() {
     // center would make LBUTTONUP jump to (width/2, height/2) mid-click (drag mismatch).
     const handlePointerLockChange = () => {
       pointerLockedRef.current = document.pointerLockElement === canvas;
+      escapeReleaseArmedUntilRef.current = 0;
       if (pointerLockedRef.current) {
         const iv = globalInputView;
         if (iv) {
@@ -1849,17 +2070,23 @@ export default function App() {
         }
         // No SAB write needed — position hasn't changed
       } else {
-        // Lock was lost (commonly ESC, which is also Unreal's menu key — the browser
+        // Lock was lost (commonly ESC, which is also a guest menu key — the browser
         // force-exits lock on ESC). If the guest still wants relative mouse and the user did
-        // NOT deliberately release via Right Ctrl, arm a re-acquire. handlePointerDown
+        // not deliberately release it, arm a re-acquire. handlePointerDown
         // re-requests on the next click (the reliable gesture); we also opportunistically
         // attempt on the next pointermove via writePointer.
-        if (wantsPointerLockRef.current && !userReleasedLockRef.current) {
+        if (forceBfmePointerCapture) {
+          // Escape is BFME's explicit release key. Keep it released until the
+          // next deliberate canvas click instead of opportunistically recapturing.
+          userReleasedLockRef.current = true;
+        } else if (wantsPointerLockRef.current && !userReleasedLockRef.current) {
           // ESC force-exit briefly rejects re-acquire; cooldown gates the click/move retries.
           pointerLockCooldownRef.current = true;
           setTimeout(() => { pointerLockCooldownRef.current = false; }, 32);
         }
       }
+      updateCanvasCursor();
+      syncGameCursorOverlay();
     };
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     const unlockAudio = () => {
@@ -1916,7 +2143,7 @@ export default function App() {
       return (window as any).loadApp(path);
     };
 
-    (window as any).loadApp = async (path: string) => {
+    (window as any).loadApp = async (path: string, profile?: LaunchProfile) => {
       console.log(`Orthros: Loading App from ${path}`);
       rotateLogFile(path.split(/[\\/]/).pop()?.replace(/\.wgb$/i, "") || "game");
       ensurePersistentStorageRequested();
@@ -1943,7 +2170,7 @@ export default function App() {
           .split(",")
           .map((name) => name.trim())
           .filter(Boolean);
-        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip });
+        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, profile });
         return;
       }
       try {
@@ -2225,6 +2452,7 @@ export default function App() {
       window.removeEventListener("blur", handleBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       document.removeEventListener("pointerlockchange", handlePointerLockChange);
+      if (gameCursorTimer !== null) window.clearTimeout(gameCursorTimer);
       // Keep loadApp exposed for buttons
     };
     // Deps are mount-stable only. Pause/load/worker-ready are read via refs
@@ -2345,13 +2573,28 @@ export default function App() {
       keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void };
     }).keyboard;
 
+    let requestGeneration = 0;
     const syncFullscreenState = () => {
       const doc = document as Document & { webkitFullscreenElement?: Element | null };
       const fs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
       setIsFullscreen(fs);
+      const generation = ++requestGeneration;
+      keyboardEscapeLockedRef.current = false;
+      escapeReleaseArmedUntilRef.current = 0;
       // Unsupported / not granted → ESC keeps exiting fullscreen, same as before.
-      if (fs) kb?.lock?.(["Escape"]).catch(() => { /* best-effort */ });
-      else kb?.unlock?.();
+      if (fs && kb?.lock) {
+        void kb.lock(["Escape"]).then(() => {
+          const currentDoc = document as Document & { webkitFullscreenElement?: Element | null };
+          if (
+            generation === requestGeneration &&
+            Boolean(currentDoc.fullscreenElement || currentDoc.webkitFullscreenElement)
+          ) {
+            keyboardEscapeLockedRef.current = true;
+          }
+        }).catch(() => { /* best-effort */ });
+      } else {
+        kb?.unlock?.();
+      }
     };
 
     document.addEventListener("fullscreenchange", syncFullscreenState);
@@ -2359,6 +2602,9 @@ export default function App() {
     syncFullscreenState();
 
     return () => {
+      requestGeneration++;
+      keyboardEscapeLockedRef.current = false;
+      escapeReleaseArmedUntilRef.current = 0;
       document.removeEventListener("fullscreenchange", syncFullscreenState);
       document.removeEventListener("webkitfullscreenchange", syncFullscreenState as EventListener);
       kb?.unlock?.();
@@ -2511,6 +2757,7 @@ export default function App() {
           }}
           onManageStorage={() => setStorageOpen(true)}
           onOpenSettings={() => setMainSettingsOpen(true)}
+          accountControl={<AccountControl />}
           disableSelection={launchBlocked}
           unsupportedMessage={browserUnsupportedMessage}
         />
@@ -2700,6 +2947,28 @@ export default function App() {
           )}
         </div>
         <div className={s["emu-topbar-actions"]}>
+          {statsOverlayEnabled && workerStatus === "ready" && (
+            <span
+              className={cx(
+                s,
+                "emu-status-pill",
+                "emu-status-pill--fps",
+                "emu-topbar-fps",
+                statsOverlayStats && (
+                  statsOverlayStats.fps >= 29 ? "is-good" :
+                    statsOverlayStats.fps >= 20 ? "is-warn" : "is-bad"
+                ),
+              )}
+              title={statsOverlayStats
+                ? `${statsOverlayStats.sampleCount} présentations sur ${(statsOverlayStats.windowMs / 1000).toFixed(2)} s`
+                : "Mesure des présentations en cours…"}
+              aria-label={statsOverlayStats ? `${statsOverlayStats.fps.toFixed(1)} images par seconde` : "Mesure FPS en cours"}
+            >
+              <span>FPS</span>
+              <strong>{statsOverlayStats ? statsOverlayStats.fps.toFixed(1) : "—"}</strong>
+              <small>{statsOverlayStats ? `${statsOverlayStats.frameMs.toFixed(1)} ms` : "mesure…"}</small>
+            </span>
+          )}
           <button
             className={cx(s, "emu-topbar-btn", isPaused && "emu-btn-active")}
             onClick={togglePause}
@@ -2767,7 +3036,6 @@ export default function App() {
           className={cx(s, "app__canvas", uiSettings.canvasFiltering === "pixelated" && "app__canvas--pixelated")}
           style={{
             aspectRatio: `${guestResolution.width} / ${guestResolution.height}`,
-            cursor: forceHostCursor ? "default" : undefined,
           }}
         />
         <canvas
@@ -2782,60 +3050,11 @@ export default function App() {
           )}
           style={{ aspectRatio: `${guestResolution.width} / ${guestResolution.height}` }}
         />
-        {statsOverlayEnabled && workerStatus === "ready" && (
-          <div
-            className={cx(
-              s,
-              "stats-hud",
-              statsOverlayStats && (
-                statsOverlayStats.fps >= 29 ? "is-good" :
-                  statsOverlayStats.fps >= 20 ? "is-warn" : "is-bad"
-              ),
-            )}
-            style={{ top: canvasOverlayAnchor.top, right: canvasOverlayAnchor.right }}
-            title={statsOverlayStats
-              ? `${statsOverlayStats.sampleCount} présentations sur ${(statsOverlayStats.windowMs / 1000).toFixed(2)} s`
-              : "Mesure des présentations en cours…"}
-            aria-label={statsOverlayStats ? `${statsOverlayStats.fps.toFixed(1)} images par seconde` : "Mesure FPS en cours"}
-          >
-            <span>FPS</span>
-            <strong>{statsOverlayStats ? statsOverlayStats.fps.toFixed(1) : "—"}</strong>
-            <small>{statsOverlayStats ? `${statsOverlayStats.frameMs.toFixed(1)} ms` : "mesure…"}</small>
-          </div>
-        )}
-        {forceHostCursor && localCacheProgress && !loadingProgress && (
-          <div
-            className={cx(s, "local-cache-badge", `is-${localCacheProgress.state}`)}
-            style={{ top: canvasOverlayAnchor.top + (statsOverlayEnabled ? 42 : 0), right: canvasOverlayAnchor.right }}
-            role="status"
-            aria-live="polite"
-          >
-            <div className={s["local-cache-badge__row"]}>
-              <span>
-                {localCacheProgress.state === "complete" ? "Jeu local" :
-                  localCacheProgress.state === "retrying" ? "Reconnexion…" :
-                  localCacheProgress.state === "unavailable" ? "Cache indisponible" :
-                  "Copie locale"}
-              </span>
-              <strong>
-                {localCacheProgress.state === "complete" ? "✓" :
-                  localCacheProgress.state === "unavailable" ? "!" :
-                  localCacheProgress.totalBytes > 0
-                    ? `${Math.min(100, Math.round(localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100))}%`
-                    : "…"}
-              </strong>
-            </div>
-            {localCacheProgress.state !== "complete" && localCacheProgress.state !== "unavailable" && (
-              <div className={s["local-cache-badge__bar"]}>
-                <span style={{
-                  width: localCacheProgress.totalBytes > 0
-                    ? `${Math.min(100, localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100)}%`
-                    : "4%",
-                }} />
-              </div>
-            )}
-          </div>
-        )}
+        <canvas
+          ref={gameCursorCanvasRef}
+          aria-hidden
+          className={s["game-cursor-overlay"]}
+        />
         {workerStatus === "ready" && <InputStatusOverlay status={inputStatus} />}
         {loadingProgress && !errorMessage && !exitInfo && (() => {
           const activeStage = loadPhaseStageIndex(loadingProgress.phase);
@@ -2931,7 +3150,45 @@ export default function App() {
             )}
           </span>
           <span className={s["emu-info-desc"]}>
-            {displayGame!.id !== "dev" ? displayGame!.description : ""}
+            {forceBfmePointerCapture && localCacheProgress ? (
+              <span className={s["emu-info-statuses"]}>
+                <span
+                  className={cx(s, "emu-status-pill", "emu-status-pill--cache", `is-${localCacheProgress.state}`)}
+                  role="status"
+                  aria-live="polite"
+                  title={localCacheProgress.totalBytes > 0
+                    ? `${localCacheProgress.loadedBytes.toLocaleString("fr-FR")} / ${localCacheProgress.totalBytes.toLocaleString("fr-FR")} octets`
+                    : undefined}
+                >
+                  <span className={s["emu-status-pill__dot"]} aria-hidden />
+                  <span>
+                    {localCacheProgress.state === "complete" ? "Jeu local" :
+                      localCacheProgress.state === "verifying" || localCacheProgress.state === "checking" ? "Vérification locale" :
+                      localCacheProgress.state === "retrying" ? "Reconnexion…" :
+                      localCacheProgress.state === "unavailable" ? "Cache indisponible" :
+                      "Copie en cours"}
+                  </span>
+                  <strong>
+                    {localCacheProgress.state === "complete" ? "✓" :
+                      localCacheProgress.state === "unavailable" ? "!" :
+                      localCacheProgress.totalBytes > 0
+                        ? `${Math.min(100, Math.round(localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100))} %`
+                        : "…"}
+                  </strong>
+                  {localCacheProgress.state !== "complete" && localCacheProgress.state !== "unavailable" && (
+                    <span className={s["emu-status-pill__progress"]} aria-hidden>
+                      <span style={{
+                        width: localCacheProgress.totalBytes > 0
+                          ? `${Math.min(100, localCacheProgress.loadedBytes / localCacheProgress.totalBytes * 100)}%`
+                          : "8%",
+                      }} />
+                    </span>
+                  )}
+                </span>
+              </span>
+            ) : (
+              displayGame!.id !== "dev" ? displayGame!.description : ""
+            )}
           </span>
           {displayGame!.id !== "dev" && displayGame!.gogUrl && (
             <a

@@ -15,7 +15,17 @@ import {
   GithubLogo,
 } from "@phosphor-icons/react";
 import type { AddedGame } from "../wgb-library";
+import { formatBytes } from "../storage-manager";
 import { cx } from "../ui/cx";
+import FlagIcon from "./FlagIcon";
+import GameSettingsModal from "./GameSettingsModal";
+import {
+  loadGameProfile,
+  saveGameProfile,
+  resolveLanguage,
+  type GameLanguage,
+  type GameProfile,
+} from "../game-profile";
 import s from "./GameSelectScreen.module.css";
 import ib from "../ui/IconButton/IconButton.module.css";
 import bm from "../ui/Button/Button.module.css";
@@ -25,6 +35,7 @@ export interface GameEntry {
   name: string;
   subtitle: string;
   wgbUrl: string;
+  sizeBytes?: number;
   description: string;
   year: string;
   genre: string;
@@ -33,6 +44,9 @@ export interface GameEntry {
   render?: string;
   status?: "ready" | "setup" | "save";
   gogUrl?: string;
+  /** Languages the bundle ships. Each one is a separate install (own gameId/container). */
+  languages?: GameLanguage[];
+  defaultLanguage?: string;
 }
 
 interface GameSelectScreenProps {
@@ -46,6 +60,7 @@ interface GameSelectScreenProps {
   onDevMode: () => void;
   onManageStorage?: () => void;
   onOpenSettings?: () => void;
+  accountControl?: React.ReactNode;
   disableSelection?: boolean;
   unsupportedMessage?: string | null;
   /** Banner heading above unsupportedMessage. Defaults to the browser-capability wording. */
@@ -79,6 +94,7 @@ export default function GameSelectScreen({
   onDevMode,
   onManageStorage,
   onOpenSettings,
+  accountControl,
   disableSelection = false,
   unsupportedMessage = null,
   unsupportedTitle = "Unsupported browser",
@@ -94,6 +110,15 @@ export default function GameSelectScreen({
   const sortWrapRef = React.useRef<HTMLDivElement>(null);
 
   const openSettings = onOpenSettings ?? onManageStorage ?? (() => {});
+  // Per-game profiles live in localStorage; App re-reads them at launch, so the modal only
+  // has to keep this view in sync.
+  const [profiles, setProfiles] = React.useState<Record<string, GameProfile>>({});
+  const [configuring, setConfiguring] = React.useState<GameEntry | null>(null);
+  React.useEffect(() => {
+    const next: Record<string, GameProfile> = {};
+    for (const g of games) if (g.languages?.length) next[g.id] = loadGameProfile(g.id);
+    setProfiles(next);
+  }, [games]);
   const totalGames = games.length + addedGames.length;
 
   React.useEffect(() => {
@@ -162,6 +187,7 @@ export default function GameSelectScreen({
         </div>
         <span className={s["cmd-spacer"]} />
         <div className={s["cmd-actions"]}>
+          {accountControl}
           <a
             className={ib["iconbtn"]}
             href="https://github.com/Lomchat/orthros"
@@ -183,8 +209,8 @@ export default function GameSelectScreen({
           <img src="/orthros_logo.png" className={s["hero__logo"]} alt="Orthros" />
           <div className={s["hero__t"]}>Turn classic Windows games into browser-playable packages.</div>
           <div className={s["hero__h"]}>
-            Drop a GOG installer, a folder, a ZIP, or a .wgb file. Orthros runs it locally with
-            WebAssembly + WebGPU — nothing is uploaded.
+            Drop a GOG installer, a folder, a ZIP, or a .wgb file. Games run locally with
+            WebAssembly + WebGPU; signed-in players can sync saves to their private cloud account.
           </div>
           <div className={s["hero__cta"]}>
             <button className={cx(bm, "btn", "btn--primary")} onClick={() => !disableSelection && onAddGame()} disabled={disableSelection}>
@@ -374,6 +400,8 @@ export default function GameSelectScreen({
                 game={game}
                 index={i + 1}
                 onPlay={() => onSelectGame(game)}
+                profile={profiles[game.id] ?? {}}
+                onConfigure={() => setConfiguring(game)}
                 disabled={disableSelection}
               />
             ))}
@@ -398,7 +426,7 @@ export default function GameSelectScreen({
             <span className={s["sep"]}>·</span>
             <span>{countLabel(totalGames)}</span>
             <span className={s["spacer"]} />
-            <span className={s["priv"]}>Local only — your games never leave this machine</span>
+            <span className={s["priv"]}>Games run locally · signed-in saves can sync privately</span>
             <span className={s["sep"]}>·</span>
             <a onClick={() => onManageStorage?.()}>Storage</a>
             <span className={s["sep"]}>·</span>
@@ -406,6 +434,20 @@ export default function GameSelectScreen({
           </div>
         </div>
       )}
+
+      <GameSettingsModal
+        isOpen={configuring !== null}
+        title={configuring?.name ?? ""}
+        languages={configuring?.languages}
+        defaultLanguage={configuring?.defaultLanguage}
+        profile={configuring ? (profiles[configuring.id] ?? {}) : {}}
+        onApply={(next) => {
+          if (!configuring) return;
+          saveGameProfile(configuring.id, next);
+          setProfiles((prev) => ({ ...prev, [configuring.id]: next }));
+        }}
+        onClose={() => setConfiguring(null)}
+      />
     </div>
   );
 }
@@ -416,6 +458,15 @@ function countLabel(n: number): string {
 
 function specLine(parts: Array<string | undefined>): string {
   return parts.filter(Boolean).join(" · ");
+}
+
+function GameCardMeta({ sizeBytes, year }: { sizeBytes?: number; year?: string | number }): React.ReactElement {
+  return (
+    <span className={s["card__meta"]}>
+      {typeof sizeBytes === "number" && <span className={s["card__size"]}>{formatBytes(sizeBytes)}</span>}
+      <span className={s["card__year"]}>{year ?? "—"}</span>
+    </span>
+  );
 }
 
 function StatusPill({ status }: { status?: "ready" | "setup" | "save" }): React.ReactElement | null {
@@ -458,13 +509,22 @@ function BuiltinCard({
   game,
   index,
   onPlay,
+  profile,
+  onConfigure,
   disabled,
 }: {
   game: GameEntry;
   index: number;
   onPlay: () => void;
+  profile: GameProfile;
+  onConfigure: () => void;
   disabled: boolean;
 }): React.ReactElement {
+  // A configured language rebrands the card: its own title, cover and flag.
+  const language = resolveLanguage(game.languages, profile, game.defaultLanguage);
+  const name = language?.name ?? game.name;
+  const coverUrl = language?.coverUrl ?? game.coverUrl;
+  const configurable = (game.languages?.length ?? 0) > 0;
   return (
     <article
       className={cx(s, "card", disabled && "card--disabled")}
@@ -478,10 +538,28 @@ function BuiltinCard({
     >
       <div className={s["card__cover"]}>
         <Cover
-          coverUrl={game.coverUrl}
-          name={game.name}
+          coverUrl={coverUrl}
+          name={name}
           badge={<span className={cx(s, "badge", "badge--builtin")}>Built-in</span>}
         />
+        {language ? (
+          <span className={s["card__flag"]} title={language.label}>
+            <FlagIcon country={language.flag} title={language.label} />
+          </span>
+        ) : null}
+        {configurable && !disabled ? (
+          <button
+            className={s["card__cog"]}
+            title="Game settings"
+            aria-label={`Settings for ${name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onConfigure();
+            }}
+          >
+            <GearSix size={16} aria-hidden />
+          </button>
+        ) : null}
         {game.subtitle ? <span className={cx(s, "badge", "badge--sub")}>{game.subtitle}</span> : null}
         <div className={s["card__play"]}>
           {disabled ? (
@@ -494,11 +572,11 @@ function BuiltinCard({
         </div>
       </div>
       <div className={s["card__info"]}>
-        <div className={s["card__name"]}>{game.name}</div>
+        <div className={s["card__name"]}>{name}</div>
         <div className={s["card__spec"]}>{specLine([game.genre, game.os, game.render])}</div>
         <div className={s["card__foot"]}>
           <StatusPill status={game.status} />
-          <span className={s["card__year"]}>{game.year}</span>
+          <GameCardMeta sizeBytes={game.sizeBytes} year={game.year} />
         </div>
       </div>
     </article>
@@ -583,7 +661,7 @@ function AddedCard({
         <div className={s["card__spec"]}>{specLine([game.developer, ".wgb package"])}</div>
         <div className={s["card__foot"]}>
           <StatusPill status="ready" />
-          <span className={s["card__year"]}>{game.year ?? "—"}</span>
+          <GameCardMeta sizeBytes={game.sizeBytes} year={game.year} />
         </div>
       </div>
     </article>

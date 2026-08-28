@@ -1,0 +1,66 @@
+.gs { max-width: 520px; }
+
+.gs__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line-1);
+}
+.gs__row:last-of-type { border-bottom: 0; }
+
+.gs__label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+}
+.gs__hint { font-size: var(--fs-xs); color: var(--fg-3); line-height: 1.4; }
+
+.gs__select {
+  flex: 0 0 auto;
+  min-width: 132px;
+  padding: 8px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-2);
+  background: var(--surf-1);
+  color: var(--fg-1);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.gs__select:hover { border-color: var(--line-3); }
+
+.gs__langs { display: flex; gap: 8px; flex: 0 0 auto; }
+.gs__lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-2);
+  background: var(--surf-1);
+  color: var(--fg-2);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
+}
+.gs__lang:hover { border-color: var(--line-3); color: var(--fg-1); }
+.gs__lang.is-active {
+  border-color: var(--amber);
+  background: var(--surf-amber);
+  color: var(--fg-1);
+}
+
+/* Native flag proportions (3:2), kept crisp at this size. */
+.gs__flag { width: 21px; height: 14px; border-radius: 2px; display: block; }
+
+.gs__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 22px;
+}
