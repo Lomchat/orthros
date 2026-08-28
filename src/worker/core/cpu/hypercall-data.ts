@@ -1392,7 +1392,8 @@ export class HypercallDataManager {
     /**
      * Set the starvation limit for WASM Sleep(0) handler.
      * Every N consecutive Sleep(0) calls with runnable peers, one falls through
-     * to JS for actual context switch. Others are no-ops in WASM.
+     * to JS for an actual context switch. A sole runnable thread uses a much
+     * higher multiple in WASM, yielding only when it is demonstrably spinning.
      */
     setSleepStarvationLimit(limit: number): void {
         if (!this.initialized || !this.view) return;
@@ -1403,7 +1404,8 @@ export class HypercallDataManager {
 
     /**
      * Update the "has runnable peers" flag in shared page.
-     * WASM Sleep(0) handler reads this: if 0, Sleep(0) is a no-op (stay in WASM).
+     * WASM Sleep(0) handler reads this to select guest-fairness or host-yield
+     * storm thresholds.
      * Called by scheduler on every thread state transition.
      */
     updateRunnablePeersFlag(hasRunnablePeers: boolean): void {

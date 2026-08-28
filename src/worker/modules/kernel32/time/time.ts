@@ -1,7 +1,7 @@
 // Time-related functions for kernel32
 // GetTickCount, GetSystemTimeAsFileTime, QueryPerformanceCounter, QueryPerformanceFrequency
 
-import { ThunkImplementation, FastPathImplementation } from '../../../core/thunking/thunk-dispatcher';
+import { ThunkImplementation } from '../../../core/thunking/thunk-dispatcher';
 import { TimeService } from '../../../runtime/time';
 import { Logger, LogCategory } from '../../../core/logger';
 import { System } from '../../../core/system';
@@ -27,27 +27,6 @@ export function registerFastPathTimeFunctions(dispatcher: any): void {
         dispatcher.registerFastPath('winmm', 'timeGetTime', TimeService.fastPathGetTickCount);
         dispatcher.registerFastPath('kernel32', 'QueryPerformanceCounter', TimeService.fastPathQueryPerformanceCounter);
         dispatcher.registerFastPath('kernel32', 'QueryPerformanceFrequency', TimeService.fastPathQueryPerformanceFrequency);
-
-        // Sleep(0) fast path: skip full thunk when no context switch is needed.
-        // D2 calls Sleep(0) ~600K times in 20s. When no other thread is runnable,
-        // this is a pure no-op — avoid UD2 trap → JS marshal → scheduler round-trip.
-        const fastPathSleep: FastPathImplementation = (
-            cpu: any, _mem8: Uint8Array, _mem32: Uint32Array, dataView: DataView
-        ): number | null => {
-            const esp = cpu.reg32[4]; // ESP
-            const dwMilliseconds = dataView.getUint32(esp + 4, true);
-
-            if (dwMilliseconds === 0) {
-                const sched = System.getInstance().scheduler;
-                if (!sched.hasOtherRunnableThreads(sched.getCurrentThreadId())) {
-                    return 0; // No-op: no peer to yield to
-                }
-            }
-
-            // Non-zero sleep or actual peers to yield to → full thunk
-            return null;
-        };
-        dispatcher.registerFastPath('kernel32', 'Sleep', fastPathSleep);
 
         Logger.log(LogCategory.KERNEL32, 'Registered fast path for time functions');
     }

@@ -2484,10 +2484,10 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         // so real messages always cause an immediate JS fallthrough regardless of counter.
         hypercallDataManager.setPeekMessageStarvationLimit(256);
 
-        // Configure Sleep(0) starvation limit:
-        // When peer threads exist, only every 64th Sleep(0) call falls through to JS
-        // for actual context switch. Others are WASM no-ops, matching real Windows
-        // behavior where Sleep(0) yields the time quantum remainder (often near-zero).
+        // Configure Sleep(0) starvation limit. Runnable guest peers get a JS
+        // scheduling opportunity every 64 calls. A sole runnable thread stays
+        // in WASM until a much larger storm threshold (currently 64 * 64), then
+        // yields to the browser host so polling loops do not burn a whole core.
         hypercallDataManager.setSleepStarvationLimit(64);
 
         // Configure SetEvent starvation limit:
