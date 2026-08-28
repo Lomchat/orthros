@@ -542,6 +542,24 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         const openFailure = vfs.classifyOpenFailure(filename, dwCreationDisposition);
         const disp = dwCreationDisposition >>> 0;
 
+        if (disp === 3 && (dwDesiredAccess & GENERIC_READ) !== 0 && vfs.canMaterializeBigEntry(filename)) {
+            return (async (): Promise<number> => {
+                if (await vfs.materializeBigEntry(filename)) {
+                    const nested = vfs.openSync(filename, dwDesiredAccess, disp);
+                    if (nested) {
+                        const handle = new FileHandleWrapper(nested, vfs);
+                        const handleId = System.getInstance().resourceProvider.registerFileHandle(handle);
+                        System.getInstance().scheduler.setLastError(0);
+                        noteBfmeVp6Open(filename);
+                        return handleId;
+                    }
+                }
+                recordMissingFile('CreateFileA', filename, openFailure, ctx.eip ?? 0);
+                System.getInstance().scheduler.setLastError(openFailure);
+                return INVALID_HANDLE_VALUE;
+            })();
+        }
+
         // Generic UE1 first-run: an OPEN_EXISTING read-miss on Detected.ini /
         // a config-ini → materialize/seed it into the overlay, then retry the open.
         // Gated on the ue1 flag (no-op for non-UE1 games). Async because it writes.
@@ -720,6 +738,22 @@ export const exports: Record<string, ThunkImplementation> = (() => {
 
         const disp = dwCreationDisposition >>> 0;
         const openFailure = vfs.classifyOpenFailure(filename, disp);
+
+        // Archive-based engines may open an entry by its virtual loose path.
+        // With layered installs, a partial expansion BIG can hide the
+        // same-named base BIG. Resolve only the requested nested entry across
+        // physical layers, then return to the ordinary synchronous VFS path.
+        if (disp === 3 && (dwDesiredAccess & GENERIC_READ) !== 0 && vfs.canMaterializeBigEntry(filename)) {
+            return (async (): Promise<number> => {
+                if (await vfs.materializeBigEntry(filename)) {
+                    const nested = vfs.openSync(filename, dwDesiredAccess, disp);
+                    if (nested) return finishOpen(nested);
+                }
+                recordMissingFile('CreateFileW', filename, openFailure, ctx.eip ?? 0);
+                System.getInstance().scheduler.setLastError(openFailure);
+                return INVALID_HANDLE_VALUE;
+            })();
+        }
 
         // UE1 may intentionally materialize a missing config file. This is the only
         // OPEN_EXISTING case that still needs asynchronous work.

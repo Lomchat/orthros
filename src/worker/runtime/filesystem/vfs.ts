@@ -50,6 +50,11 @@ export class VirtualFileSystem {
      * meaningful inside their source archive, so the merged path index must
      * retain this association. */
     private romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
+    /** Every physical layer entry for a path, lowest to highest priority. The
+     * merged ROM index intentionally keeps only the winner, but nested archive
+     * lookup may need a file from an older same-named BIG (expansions commonly
+     * ship partial BIG overlays beside the base archive). */
+    private romEntryLayers = new Map<string, Array<{ entry: ZipEntry; archive: ZipArchive }>>();
     /**
      * All directory paths present in the ROM (lowercased, "/"-separated, no trailing
      * slash), including every intermediate parent. Built once at mount so
@@ -110,6 +115,7 @@ export class VirtualFileSystem {
         this.romArchive = null;
         this.romIndex.clear();
         this.romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
+        this.romEntryLayers.clear();
         this.romDirs.clear();
         this.romCache.clear();
         this.romWhiteouts.clear();
@@ -142,12 +148,16 @@ export class VirtualFileSystem {
         this.romPinned.clear();
         this.romPinnedBytes = 0;
         this.romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
+        this.romEntryLayers.clear();
         let compressedEntries = 0;
         let firstCompressedName: string | null = null;
         let firstCompressedMethod: number | null = null;
         for (const layer of layers) {
             for (const [key, entry] of layer.index) {
                 const lowerKey = key.toLowerCase();
+                const physical = this.romEntryLayers.get(lowerKey) ?? [];
+                physical.push({ entry, archive: layer.archive });
+                this.romEntryLayers.set(lowerKey, physical);
                 this.romIndex.set(lowerKey, entry);
                 this.romEntryArchives.set(entry, layer.archive);
                 // Record every parent directory (and explicit dir entries) for O(1) lookup.
@@ -190,6 +200,99 @@ export class VirtualFileSystem {
 
     private archiveForEntry(entry: ZipEntry): ZipArchive | null {
         return this.romEntryArchives.get(entry) ?? this.romArchive;
+    }
+
+    /** True when a missing path such as Window\Foo.wnd has a same-named EA BIG
+     * container in at least one mounted ROM layer. This cheap guard avoids an
+     * asynchronous guest park for ordinary missing files. */
+    canMaterializeBigEntry(path: string): boolean {
+        const full = this.resolvePath(path);
+        const rel = this.relRomPath(full).toLowerCase();
+        const slash = rel.indexOf("/");
+        if (slash <= 0 || this.romIndex.has(rel)) return false;
+        return this.romEntryLayers.has(`${rel.slice(0, slash)}.big`);
+    }
+
+    /** Materialize one nested EA BIG4/BIGF entry as an in-memory read-only ROM
+     * file. Search same-named containers from highest to lowest layer so a
+     * partial expansion BIG can fall through to its base-game counterpart.
+     * Only the directory and requested byte range are read from the WGB. */
+    async materializeBigEntry(path: string): Promise<boolean> {
+        const full = this.resolvePath(path);
+        const rel = this.relRomPath(full).toLowerCase();
+        if (!rel || this.romIndex.has(rel)) return true;
+        const slash = rel.indexOf("/");
+        if (slash <= 0) return false;
+        const containers = this.romEntryLayers.get(`${rel.slice(0, slash)}.big`);
+        if (!containers?.length) return false;
+        const requested = rel.replace(/\//g, "\\");
+
+        for (let layer = containers.length - 1; layer >= 0; layer--) {
+            const { entry: outer, archive } = containers[layer];
+            const first = await archive.readEntryRange(outer, 0, 16);
+            if (first.byteLength < 16) continue;
+            const magic = String.fromCharCode(first[0], first[1], first[2], first[3]);
+            if (magic !== "BIG4" && magic !== "BIGF") continue;
+            const firstView = new DataView(first.buffer, first.byteOffset, first.byteLength);
+            const count = firstView.getUint32(8, false);
+            const headerSize = firstView.getUint32(12, false);
+            if (count > 100_000 || headerSize < 16 || headerSize > 64 * 1024 * 1024 || headerSize > outer.uncompressedSize) continue;
+            const header = await archive.readEntryRange(outer, 0, headerSize);
+            if (header.byteLength !== headerSize) continue;
+            const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+            let cursor = 16;
+            let nestedOffset = 0;
+            let nestedSize = 0;
+            let nestedName = "";
+            for (let i = 0; i < count; i++) {
+                if (cursor + 9 > headerSize) break;
+                const offset = view.getUint32(cursor, false);
+                const size = view.getUint32(cursor + 4, false);
+                cursor += 8;
+                const nameStart = cursor;
+                while (cursor < headerSize && header[cursor] !== 0) cursor++;
+                if (cursor >= headerSize) break;
+                const name = new TextDecoder("windows-1252").decode(header.subarray(nameStart, cursor));
+                cursor++;
+                const normalized = name.replace(/\//g, "\\").replace(/^\.?\\+/, "").toLowerCase();
+                if (normalized === requested) {
+                    nestedOffset = offset;
+                    nestedSize = size;
+                    nestedName = name;
+                    break;
+                }
+            }
+            if (!nestedName || nestedSize <= 0 || nestedSize > 64 * 1024 * 1024 || nestedOffset + nestedSize > outer.uncompressedSize) continue;
+            const bytes = await archive.readEntryRange(outer, nestedOffset, nestedSize);
+            if (bytes.byteLength !== nestedSize) continue;
+
+            const synthetic: ZipEntry = {
+                name: `${this.romPrefix}/${rel}`,
+                compressedSize: nestedSize,
+                uncompressedSize: nestedSize,
+                compression: 0,
+                localHeaderOffset: 0,
+                isDirectory: false,
+            };
+            this.romIndex.set(rel, synthetic);
+            this.romEntryArchives.set(synthetic, archive);
+            if (nestedSize <= this.PIN_FILE_MAX && this.romPinnedBytes + nestedSize <= this.PIN_TOTAL_MAX) {
+                this.romPinned.set(rel, bytes);
+                this.romPinnedBytes += nestedSize;
+            } else {
+                this.addRomCache(rel, bytes);
+            }
+            let dir = rel.slice(0, rel.lastIndexOf("/"));
+            while (dir && !this.romDirs.has(dir)) {
+                this.romDirs.add(dir);
+                const parent = dir.lastIndexOf("/");
+                dir = parent < 0 ? "" : dir.slice(0, parent);
+            }
+            Logger.log(LogCategory.SYSTEM,
+                `VFS: materialized nested BIG entry "${nestedName}" (${nestedSize} bytes) from layer ${layer + 1}/${containers.length}`);
+            return true;
+        }
+        return false;
     }
 
     async ensureOverlayIndex(): Promise<void> {

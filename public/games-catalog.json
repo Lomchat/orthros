@@ -157,7 +157,7 @@
     "romDependencies": [
       {
         "url": "/apps/bfme2-109-multi.wgb",
-        "include": ["lotrbfme2.exe", "lotrbfme2.lcf"]
+        "include": ["lotrbfme2.exe", "lotrbfme2.lcf", "window.big"]
       }
     ],
     "sizeBytes": 4679541842,
