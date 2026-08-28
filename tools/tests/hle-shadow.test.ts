@@ -41,6 +41,11 @@ describe('validatePrologueBytes', () => {
         const bytes = new Uint8Array([0x55, 0x8B, 0xEC, 0xE8, 0x00, 0x00, 0x00, 0x00]);
         expect(validatePrologueBytes(bytes)).toContain('unsupported');
     });
+    test('accepts an absolute indirect IAT call', () => {
+        expect(validatePrologueBytes(Uint8Array.from([
+            0x53, 0x56, 0xff, 0x15, 0x44, 0xa0, 0x37, 0x7c,
+        ]))).toBeNull();
+    });
     test('rejects a length that splits an instruction', () => {
         // 5 bytes cutting into `sub esp, imm32` (81 EC needs 6)
         const bytes = new Uint8Array([0x55, 0x8B, 0xEC, 0x81, 0xEC]);

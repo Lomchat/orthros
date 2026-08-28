@@ -21,6 +21,15 @@ import {
     msvcr71StrstrKernel,
 } from '../../src/worker/core/hle-lib/libs/msvcr71/string-memory';
 import { assembleMsvcr71SscanfScalarFilter } from '../../src/worker/core/hle-lib/libs/msvcr71/scanf-scalar';
+import {
+    assembleMsvcr71GetPtdInline,
+    buildMsvcr71GetPtdInline,
+    MSVCR71_GETPTD_TLS_INDEX_DELTA,
+} from '../../src/worker/core/hle-lib/libs/msvcr71/getptd-inline';
+import {
+    assembleMsvcr71LocaleStricmpFilter,
+    MSVCR71_STRICMP_TLS_INDEX_DELTA,
+} from '../../src/worker/core/hle-lib/libs/msvcr71/locale-compare-inline';
 import { msvcr71VsnprintfKernel, msvcr71VsnprintfShadow } from '../../src/worker/core/hle-lib/libs/msvcr71/vsnprintf';
 import type { ShadowView } from '../../src/worker/core/hle-lib/types';
 
@@ -142,8 +151,18 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
 
     test('requires both exact helper signatures before detection', () => {
         expect(msvcr71Descriptor.minConfidence).toBe(16);
-        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]);
-        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar', 'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii', 'strcmp', 'strstr']);
+        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]);
+        const getptdSignature = msvcr71Descriptor.signatures.getptd;
+        expect(getptdSignature.kind).toBe('bytes');
+        if (getptdSignature.kind === 'bytes') {
+            expect(getptdSignature.mask).toHaveLength(getptdSignature.pattern.length);
+        }
+        for (const signature of Object.values(msvcr71Descriptor.signatures)) {
+            if (signature.kind === 'bytes') {
+                expect(signature.mask).toHaveLength(signature.pattern.length);
+            }
+        }
+        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar', 'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii', 'strcmp', 'strstr', 'getptd', 'stricmp_locale']);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
         expect(msvcr71Descriptor.functions.add96.required).toBe(true);
         expect(msvcr71Descriptor.functions.shift96.required).toBe(true);
@@ -152,6 +171,53 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
         expect(msvcr71Descriptor.functions.sscanf_scalar.argCount).toBe(3);
         expect(msvcr71Descriptor.functions.vsnprintf.required).toBe(false);
         expect(msvcr71Descriptor.functions.vsnprintf.argCount).toBe(4);
+    });
+
+    test('guards the locale-aware stricmp wrapper and preserves its original route', () => {
+        const base = 0x1000;
+        const target = 0x130105dc;
+        const stub = 0x2200;
+        const trampoline = 0x3300;
+        const code = assembleMsvcr71LocaleStricmpFilter(base, target, stub, trampoline);
+        const dv = new DataView(code.buffer, code.byteOffset, code.byteLength);
+        expect([...code.slice(0, 8)]).toEqual([0x64, 0xa1, 0x2c, 0, 0, 0, 0x85, 0xc0]);
+        expect(dv.getUint32(16, true)).toBe((target + MSVCR71_STRICMP_TLS_INDEX_DELTA) >>> 0);
+        expect(code.includes(0xee)).toBe(false);
+        const firstJmp = code.length - 10;
+        const originalJmp = code.length - 5;
+        expect(base + firstJmp + 5 + dv.getInt32(firstJmp + 1, true)).toBe(stub);
+        expect(base + code.length + dv.getInt32(originalJmp + 1, true)).toBe(trampoline);
+    });
+
+    test('emits a direct TEB TLS lookup with exact original fallbacks', () => {
+        const base = 0x1000;
+        const target = 0x13009636;
+        const trampoline = 0x3000;
+        const code = assembleMsvcr71GetPtdInline(base, target, trampoline);
+        expect(code.includes(0xee)).toBe(false);
+        expect([...code.slice(0, 8)]).toEqual([0x64, 0xa1, 0x2c, 0, 0, 0, 0x85, 0xc0]);
+
+        const dv = new DataView(code.buffer, code.byteOffset, code.byteLength);
+        expect(dv.getUint32(16, true)).toBe((target + MSVCR71_GETPTD_TLS_INDEX_DELTA) >>> 0);
+        const originalOffset = 41;
+        for (const patch of [10, 25, 36]) {
+            expect(base + patch + 4 + dv.getInt32(patch, true)).toBe(base + originalOffset);
+        }
+        expect(base + 46 + dv.getInt32(42, true)).toBe(trampoline);
+        expect(Buffer.from(code).includes(Buffer.from([0x89, 0x14, 0x88]))).toBe(true);
+        expect(code[code.length - 1]).toBe(0xc3);
+
+        const memory = new Uint8Array(0x4000);
+        const address = buildMsvcr71GetPtdInline({
+            mem: memory,
+            targetAddress: target,
+            stubAddress: 0x2000,
+            trampolineAddress: trampoline,
+            allocCode: () => base,
+            markNonPreemptible: () => {},
+        });
+        expect(address).toBe(base);
+        expect(memory.slice(base, base + code.length)).toEqual(code);
     });
 
     test('emits a bounded scalar sscanf classifier with both exact exits', () => {

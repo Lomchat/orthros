@@ -26,6 +26,8 @@ import {
 } from './string-memory';
 import { buildMsvcr71SscanfScalarFilter, msvcr71SscanfScalarFallback } from './scanf-scalar';
 import { msvcr71VsnprintfFallback, msvcr71VsnprintfShadow } from './vsnprintf';
+import { buildMsvcr71GetPtdInline } from './getptd-inline';
+import { buildMsvcr71LocaleStricmpFilter } from './locale-compare-inline';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -126,6 +128,23 @@ const STRSTR_PATTERN = hexBytes(
     'c6013ac2741784c0740d8a0683c6013ac2740a84c075f35e5b5f33c0c38a0683',
 );
 
+// Internal `_getptd`, RVA 0x9636. Absolute IAT/data operands are relocation
+// sites and are deliberately wildcarded; the surrounding code is exact.
+const GETPTD_PATTERN = hexBytes(
+    '53 56 ff15 00000000 ff35 00000000 8bd8 ff15 00000000 ' +
+    '8bf0 85f6 7549 688c000000 6a01',
+);
+const GETPTD_MASK = 'xxxx????xx????xxxx????xxxxxxxxxxxxx';
+
+// Exported locale-aware `_stricmp`, RVA 0x105dc. Relative calls and the
+// relocated global-locale operand are wildcarded; the C-locale gate is exact.
+const LOCALE_STRICMP_PATTERN = hexBytes(
+    '558bec5153 e800000000 8b5864 3b1d00000000 7407 e800000000 8bd8 ' +
+    '837b1400 750f ff750c ff7508 e800000000 5959 eb35',
+);
+const LOCALE_STRICMP_MASK =
+    'xxxxxx????' + 'xxxxx????' + 'xxx????' + 'xxxxxxxxxxxxxxx????xxxx';
+
 
 export const msvcr71Descriptor: LibDescriptor = {
     id: 'msvcr71',
@@ -181,6 +200,14 @@ export const msvcr71Descriptor: LibDescriptor = {
         strstr: {
             kind: 'bytes', pattern: STRSTR_PATTERN,
             mask: 'x'.repeat(STRSTR_PATTERN.length), section: '.text', weight: 8,
+        },
+        getptd: {
+            kind: 'bytes', pattern: GETPTD_PATTERN,
+            mask: GETPTD_MASK, section: '.text', weight: 8,
+        },
+        stricmp_locale: {
+            kind: 'bytes', pattern: LOCALE_STRICMP_PATTERN,
+            mask: LOCALE_STRICMP_MASK, section: '.text', weight: 8,
         },
     },
     functions: {
@@ -317,6 +344,30 @@ export const msvcr71Descriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_STRSTR,
             shadow: msvcr71StrstrShadow,
         },
+        getptd: {
+            name: 'getptd',
+            entryProbe: {
+                kind: 'prologue', pattern: GETPTD_PATTERN,
+                mask: GETPTD_MASK, section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 0, required: false,
+            // push ebx; push esi; call dword ptr [GetLastError]
+            prologueLen: 8,
+            entryFilter: buildMsvcr71GetPtdInline,
+        },
+        stricmp_locale: {
+            name: 'stricmp_locale',
+            entryProbe: {
+                kind: 'prologue', pattern: LOCALE_STRICMP_PATTERN,
+                mask: LOCALE_STRICMP_MASK, section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            // push ebp; mov ebp,esp; push ecx
+            prologueLen: 5,
+            entryFilter: buildMsvcr71LocaleStricmpFilter,
+            hypercallHandlerId: HANDLER_MSVCR71_STRICMP,
+            shadow: msvcr71StricmpShadow,
+        },
     },
     handlers: {
         add_carry: msvcr71ArithmeticUnreachableHandler,
@@ -324,5 +375,6 @@ export const msvcr71Descriptor: LibDescriptor = {
         shift96: msvcr71ArithmeticUnreachableHandler,
         sscanf_scalar: msvcr71SscanfScalarFallback,
         vsnprintf: msvcr71VsnprintfFallback,
+        getptd: msvcr71ArithmeticUnreachableHandler,
     },
 };

@@ -124,6 +124,10 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         if (b === 0xD9 && b1 === 0x05) { i += 6; continue; }
         // mov eax, moffs32 (absolute — position-independent)
         if (b === 0xA1) { i += 5; continue; }
+        // call dword ptr [abs32]. The operand names an absolute IAT slot in
+        // 32-bit mode, so copying the instruction into a trampoline preserves
+        // its target exactly. Relative E8 calls remain deliberately rejected.
+        if (b === 0xFF && b1 === 0x15) { i += 6; continue; }
         // SEH prologue: mov eax, fs:[imm32]
         if (b === 0x64 && b1 === 0xA1) { i += 6; continue; }
         // xor r32, r32 (33 /r reg-reg)
