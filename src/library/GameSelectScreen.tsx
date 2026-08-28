@@ -25,6 +25,7 @@ import {
   resolveLanguage,
   type GameLanguage,
   type GameProfile,
+  type RomLayerSpec,
 } from "../game-profile";
 import s from "./GameSelectScreen.module.css";
 import ib from "../ui/IconButton/IconButton.module.css";
@@ -35,6 +36,8 @@ export interface GameEntry {
   name: string;
   subtitle: string;
   wgbUrl: string;
+  /** Read-only bundles mounted below this game's own WGB (base games, shared assets). */
+  romDependencies?: RomLayerSpec[];
   sizeBytes?: number;
   description: string;
   year: string;

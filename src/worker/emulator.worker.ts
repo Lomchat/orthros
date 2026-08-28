@@ -266,7 +266,11 @@ let loadBundleChain: Promise<void> = Promise.resolve();
  * snapshots in one go) and a registry patch seeded after the bundle defaults. Authored by
  * the catalog; the worker stays game-agnostic.
  */
-let pendingLaunchProfile: { manifest?: Record<string, unknown>; registry?: unknown } | null = null;
+let pendingLaunchProfile: {
+  manifest?: Record<string, unknown>;
+  registry?: unknown;
+  romLayers?: Array<{ url: string; include?: string[] }>;
+} | null = null;
 
 /** True once a PE has been booted in this worker session (loadApp / load_bundle without page reload). */
 let gameSessionActive = false;
@@ -1175,6 +1179,16 @@ const deepMergeInto = (target: Record<string, unknown>, src: Record<string, unkn
   }
 };
 
+const romLayerGlobMatches = (path: string, pattern: string): boolean => {
+  const normalized = pattern.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  const escaped = normalized
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\0")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\0/g, ".*");
+  return new RegExp(`^${escaped}$`, "i").test(path);
+};
+
 /** slice.cpp slice_filename — external slice file name for a given slice index. */
 const sliceFilename = (base: string, slice: number, slicesPerDisk: number): string => {
   if (slicesPerDisk <= 1) return `${base}-${slice + 1}.bin`;
@@ -1622,8 +1636,35 @@ const loadBundleImpl = async (payload: BundlePayload) => {
     bootMark("overlay-init-done");
 
     const romRoot = bundle.manifest.rom ?? "assets";
-    const romIndex = buildRomIndex(bundle.archive, romRoot);
-    system.fileSystem.mountRom(bundle.archive, romRoot, romIndex);
+    const primaryRomIndex = buildRomIndex(bundle.archive, romRoot);
+    const mountedRomLayers: Array<{
+      archive: typeof bundle.archive;
+      index: Map<string, import("@orthros/formats/zip").ZipEntry>;
+    }> = [];
+    for (const layerSpec of pendingLaunchProfile?.romLayers ?? []) {
+      const layerBundle = await WgbLoader.fromUrl(layerSpec.url);
+      const layerRoot = layerBundle.manifest.rom ?? "assets";
+      const fullLayerIndex = buildRomIndex(layerBundle.archive, layerRoot);
+      const layerIndex = layerSpec.include?.length
+        ? new Map([...fullLayerIndex].filter(([rel]) =>
+            layerSpec.include!.some((pattern) => romLayerGlobMatches(rel, pattern))))
+        : fullLayerIndex;
+      mountedRomLayers.push({
+        archive: layerBundle.archive,
+        index: layerIndex,
+      });
+      Logger.log(LogCategory.SYSTEM,
+        `WGB: mounted ROM underlay "${layerSpec.url}" (${layerIndex.size}/${fullLayerIndex.size} entries)`);
+    }
+    mountedRomLayers.push({ archive: bundle.archive, index: primaryRomIndex });
+
+    // The merged index drives generic preload discovery. Later layers win just as
+    // they do in the VFS, while each entry retains its owning archive there.
+    const romIndex = new Map<string, import("@orthros/formats/zip").ZipEntry>();
+    for (const layer of mountedRomLayers) {
+      for (const [rel, entry] of layer.index) romIndex.set(rel, entry);
+    }
+    system.fileSystem.mountRomLayers(mountedRomLayers, romRoot);
     const warmedOverlay = await system.fileSystem.warmOverlaySmallFiles();
     if (warmedOverlay.files > 0) {
       Logger.log(LogCategory.SYSTEM,

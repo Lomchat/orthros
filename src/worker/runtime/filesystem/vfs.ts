@@ -46,6 +46,10 @@ export class VirtualFileSystem {
     private readonly ROM_CACHE_MAX_BYTES = 256 * 1024 * 1024; // 256MB LRU cache
     private readonly MAX_CACHE_ENTRY_SIZE = 64 * 1024 * 1024; // 64MB per file
     private romIndex: Map<string, ZipEntry> = new Map();
+    /** Archive owning each entry in a layered ROM. ZipEntry offsets are only
+     * meaningful inside their source archive, so the merged path index must
+     * retain this association. */
+    private romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
     /**
      * All directory paths present in the ROM (lowercased, "/"-separated, no trailing
      * slash), including every intermediate parent. Built once at mount so
@@ -105,6 +109,7 @@ export class VirtualFileSystem {
     reset(): void {
         this.romArchive = null;
         this.romIndex.clear();
+        this.romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
         this.romDirs.clear();
         this.romCache.clear();
         this.romWhiteouts.clear();
@@ -117,41 +122,55 @@ export class VirtualFileSystem {
     }
 
     mountRom(archive: ZipArchive, romPrefix: string, index: Map<string, ZipEntry>): void {
-        this.romArchive = archive;
+        this.mountRomLayers([{ archive, index }], romPrefix);
+    }
+
+    /** Mount read-only ROM layers from lowest to highest priority. Later layers
+     * replace path collisions while untouched files remain visible from their
+     * underlay (base game + expansion/mod without duplicating either bundle). */
+    mountRomLayers(
+        layers: Array<{ archive: ZipArchive; index: Map<string, ZipEntry> }>,
+        romPrefix: string,
+    ): void {
+        this.romArchive = layers.at(-1)?.archive ?? null;
         this.romPrefix = romPrefix.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
-        
+
         // Build case-insensitive index
         this.romIndex.clear();
         this.romDirs.clear();
         this.romWhiteouts.clear();
         this.romPinned.clear();
         this.romPinnedBytes = 0;
+        this.romEntryArchives = new WeakMap<ZipEntry, ZipArchive>();
         let compressedEntries = 0;
         let firstCompressedName: string | null = null;
         let firstCompressedMethod: number | null = null;
-        for (const [key, entry] of index) {
-            const lowerKey = key.toLowerCase();
-            this.romIndex.set(lowerKey, entry);
-            // Record every parent directory (and explicit dir entries) for O(1) lookup.
-            const normKey = lowerKey.replace(/\/+$/, "");
-            const dirPath = entry.isDirectory
-                ? normKey
-                : (normKey.includes("/") ? normKey.replace(/\/[^/]*$/, "") : "");
-            let dir = dirPath;
-            while (dir && !this.romDirs.has(dir)) {
-                this.romDirs.add(dir);
-                const slash = dir.lastIndexOf("/");
-                dir = slash === -1 ? "" : dir.slice(0, slash);
-            }
-            if (!entry.isDirectory && entry.compression !== 0) {
-                compressedEntries++;
-                if (firstCompressedName === null) {
-                    firstCompressedName = entry.name;
-                    firstCompressedMethod = entry.compression;
+        for (const layer of layers) {
+            for (const [key, entry] of layer.index) {
+                const lowerKey = key.toLowerCase();
+                this.romIndex.set(lowerKey, entry);
+                this.romEntryArchives.set(entry, layer.archive);
+                // Record every parent directory (and explicit dir entries) for O(1) lookup.
+                const normKey = lowerKey.replace(/\/+$/, "");
+                const dirPath = entry.isDirectory
+                    ? normKey
+                    : (normKey.includes("/") ? normKey.replace(/\/[^/]*$/, "") : "");
+                let dir = dirPath;
+                while (dir && !this.romDirs.has(dir)) {
+                    this.romDirs.add(dir);
+                    const slash = dir.lastIndexOf("/");
+                    dir = slash === -1 ? "" : dir.slice(0, slash);
+                }
+                if (!entry.isDirectory && entry.compression !== 0) {
+                    compressedEntries++;
+                    if (firstCompressedName === null) {
+                        firstCompressedName = entry.name;
+                        firstCompressedMethod = entry.compression;
+                    }
                 }
             }
         }
-        
+
         if (compressedEntries > 0) {
             const message =
                 `Invalid WGB archive: found ${compressedEntries} compressed ZIP entr` +
@@ -163,9 +182,14 @@ export class VirtualFileSystem {
             Logger.error(LogCategory.SYSTEM, `VFS: ${message}`);
             throw new Error(message);
         }
-        Logger.verbose(LogCategory.SYSTEM, `VFS: ROM mounted, prefix="${this.romPrefix}", index size=${this.romIndex.size}`);
+        Logger.verbose(LogCategory.SYSTEM,
+            `VFS: ROM mounted, prefix="${this.romPrefix}", layers=${layers.length}, index size=${this.romIndex.size}`);
         //const files = Array.from(this.romIndex.keys()).sort();
         //Logger.log(LogCategory.SYSTEM, `VFS: ROM files list (${files.length} files):`);
+    }
+
+    private archiveForEntry(entry: ZipEntry): ZipArchive | null {
+        return this.romEntryArchives.get(entry) ?? this.romArchive;
     }
 
     async ensureOverlayIndex(): Promise<void> {
@@ -637,8 +661,9 @@ export class VirtualFileSystem {
 
             // Large uncached STORED ROM entries: sync range read (BufferSource WGB cache).
             const entry = this.romIndex.get(rel);
-            if (entry && this.romArchive && entry.compression === 0) {
-                const data = this.romArchive.readEntryRangeSync(entry, handle.position, length);
+            const archive = entry ? this.archiveForEntry(entry) : null;
+            if (entry && archive && entry.compression === 0) {
+                const data = archive.readEntryRangeSync(entry, handle.position, length);
                 if (data) {
                     handle.position += data.length;
                     return data;
@@ -752,8 +777,9 @@ export class VirtualFileSystem {
             }
 
             const entry = this.romIndex.get(rel);
-            if (entry && this.romArchive && entry.compression === 0) {
-                const data = this.romArchive.readEntryRangeSync(entry, handle.position, length);
+            const archive = entry ? this.archiveForEntry(entry) : null;
+            if (entry && archive && entry.compression === 0) {
+                const data = archive.readEntryRangeSync(entry, handle.position, length);
                 if (data && data.length > 0) {
                     target.set(data, targetOffset);
                     handle.position += data.length;
@@ -1358,9 +1384,11 @@ export class VirtualFileSystem {
 
     private async readRom(path: string, offset: number, length: number): Promise<Uint8Array> {
         const rel = this.relRomPath(path).toLowerCase();
-        if (!rel || this.romWhiteouts.has(rel) || !this.romArchive) return new Uint8Array();
+        if (!rel || this.romWhiteouts.has(rel)) return new Uint8Array();
         const entry = this.romIndex.get(rel);
         if (!entry) return new Uint8Array();
+        const archive = this.archiveForEntry(entry);
+        if (!archive) return new Uint8Array();
 
         const cached = this.romCache.get(rel);
         let data = cached;
@@ -1368,14 +1396,14 @@ export class VirtualFileSystem {
             // For uncompressed (STORED) large entries we read only requested range.
             // This avoids loading huge assets (e.g. videos) fully into memory.
             if (entry.compression === 0 && entry.uncompressedSize > this.MAX_CACHE_ENTRY_SIZE) {
-                return this.romArchive.readEntryRange(entry, offset, length);
+                return archive.readEntryRange(entry, offset, length);
             }
 
             const pending = this.romLoadPromises.get(rel);
             if (pending) {
                 data = await pending;
             } else {
-                const loadPromise = this.romArchive.readEntry(entry)
+                const loadPromise = archive.readEntry(entry)
                     .finally(() => this.romLoadPromises.delete(rel));
                 this.romLoadPromises.set(rel, loadPromise);
                 data = await loadPromise;
@@ -1426,7 +1454,8 @@ export class VirtualFileSystem {
     private async _prefetchEntry(rel: string, entry: ZipEntry): Promise<void> {
         const key = rel.toLowerCase();
         if (this.romCache.has(key)) return;
-        if (!this.romArchive) return;
+        const archive = this.archiveForEntry(entry);
+        if (!archive) return;
 
         const existing = this.romLoadPromises.get(key);
         if (existing) {
@@ -1434,7 +1463,7 @@ export class VirtualFileSystem {
             return;
         }
 
-        const loadPromise = this.romArchive.readEntry(entry)
+        const loadPromise = archive.readEntry(entry)
             .then(data => { this.addRomCache(key, data); return data; })
             .finally(() => this.romLoadPromises.delete(key));
 
@@ -1504,7 +1533,9 @@ export class VirtualFileSystem {
                 if (!entry || entry.isDirectory || entry.uncompressedSize > this.PIN_FILE_MAX) continue;
                 try {
                     const cached = this.romCache.get(key);
-                    const data = cached ?? await this.romArchive!.readEntry(entry);
+                    const archive = this.archiveForEntry(entry);
+                    if (!archive) continue;
+                    const data = cached ?? await archive.readEntry(entry);
                     if (tryPin(key, data)) pinned++;
                 } catch (_) { /* best-effort — a missing/short read just stays unpinned */ }
             }

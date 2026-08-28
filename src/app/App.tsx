@@ -554,6 +554,7 @@ export default function App() {
     const launchProfile = buildLaunchProfile(
       stored,
       resolveLanguage(selectedGame.languages, stored, selectedGame.defaultLanguage),
+      selectedGame.romDependencies,
     );
     (window as any).loadApp?.(
       selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl,

@@ -154,6 +154,12 @@
     "name": "L'Avènement du Roi-Sorcier",
     "subtitle": "Patch 2.02",
     "wgbUrl": "/apps/rotwk-202-multi.wgb",
+    "romDependencies": [
+      {
+        "url": "/apps/bfme2-109-multi.wgb",
+        "include": ["lotrbfme2.exe", "lotrbfme2.lcf"]
+      }
+    ],
     "sizeBytes": 4679541842,
     "coverUrl": "",
     "description": "",

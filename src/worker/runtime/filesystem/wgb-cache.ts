@@ -36,18 +36,23 @@ const STAGE_QUOTA_MARGIN = 256 * 1024 * 1024;
  */
 export class WgbCache {
     private static cacheDir: FileSystemDirectoryHandle | null = null;
-    /** Currently-open OPFS sync source (one SAH per file — closed before opening another). */
-    private static currentSource: SyncAccessHandleSource | null = null;
-    /** OPFS cache key (filename) for {@link currentSource}, if any. */
-    private static currentSourceKey: string | null = null;
+    /** Currently-open OPFS sync sources. OPFS permits one SAH per file, while
+     * layered games need distinct base/expansion files mounted concurrently. */
+    private static currentSources = new Map<string, SyncAccessHandleSource>();
+
+    private static releaseMountedSourceByKey(key: string): void {
+        const source = this.currentSources.get(key);
+        if (!source) return;
+        source.close();
+        this.currentSources.delete(key);
+    }
 
     /** Close the mounted bundle sync reader so OPFS writes to the same file can proceed. */
     static releaseMountedSource(): void {
-        if (this.currentSource) {
-            this.currentSource.close();
-            this.currentSource = null;
+        for (const source of this.currentSources.values()) {
+            source.close();
         }
-        this.currentSourceKey = null;
+        this.currentSources.clear();
     }
 
     /**
@@ -59,9 +64,7 @@ export class WgbCache {
         const dir = await this.getCacheDir();
         if (!dir) return;
 
-        if (this.currentSourceKey === key) {
-            this.releaseMountedSource();
-        }
+        this.releaseMountedSourceByKey(key);
 
         const fileHandle = await dir.getFileHandle(key, { create: true });
         const createSah = (fileHandle as unknown as { createSyncAccessHandle?: () => Promise<SyncAccessHandleLike> }).createSyncAccessHandle;
@@ -170,7 +173,7 @@ export class WgbCache {
         const victims: Array<{ key: string; size: number; used: number }> = [];
         for await (const [name, handle] of (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
             if (handle.kind !== "file" || name === LRU_META_FILE) continue;
-            if (name === excludeKey || name === this.currentSourceKey) continue;
+            if (name === excludeKey || this.currentSources.has(name)) continue;
             try {
                 const size = (await (handle as FileSystemFileHandle).getFile()).size;
                 victims.push({ key: name, size, used: meta[name] ?? 0 });
@@ -328,8 +331,8 @@ export class WgbCache {
         if (!dir) return null;
         const key = wgbCacheKeyForUrl(url);
 
-        // SAH and any prior reader on this file are mutually exclusive (one SAH per file).
-        this.releaseMountedSource();
+        // SAH and any prior reader on this file are mutually exclusive.
+        this.releaseMountedSourceByKey(key);
 
         const fileHandle = await dir.getFileHandle(key, { create: true });
         const createSah = (fileHandle as unknown as { createSyncAccessHandle?: () => Promise<SyncAccessHandleLike> }).createSyncAccessHandle;
@@ -391,8 +394,7 @@ export class WgbCache {
             return this.openSyncSourceForUrl(url, integrity);
         }
         const source = new SyncAccessHandleSource(sah, size);
-        this.currentSource = source;
-        this.currentSourceKey = key;
+        this.currentSources.set(key, source);
         this.queueTouch(key);
         Logger.log(LogCategory.SYSTEM, `WgbCache: streamed "${key}" to OPFS (${(size / 1024 / 1024).toFixed(1)} MB, off-disk, no RAM copy)`);
         return source;
@@ -555,8 +557,11 @@ export class WgbCache {
     ): Promise<SyncAccessHandleSource | null> {
         const dir = await this.getCacheDir();
         if (!dir) return null;
-        // Release any prior source (exclusive: one SAH per file).
-        this.releaseMountedSource();
+        const mounted = this.currentSources.get(key);
+        if (mounted) {
+            this.queueTouch(key);
+            return mounted;
+        }
         try {
             const fileHandle = await dir.getFileHandle(key); // no create — must already exist
             const createSah = (fileHandle as unknown as { createSyncAccessHandle?: () => Promise<SyncAccessHandleLike> }).createSyncAccessHandle;
@@ -596,8 +601,7 @@ export class WgbCache {
                 await this.removeSupersededPartialFiles(dir, key);
             }
             const source = new SyncAccessHandleSource(sah, size);
-            this.currentSource = source;
-            this.currentSourceKey = key;
+            this.currentSources.set(key, source);
             this.queueTouch(key);
             Logger.log(LogCategory.SYSTEM, `WgbCache: opened "${key}" as sync source (${(size / 1024 / 1024).toFixed(1)} MB, off-disk, no RAM copy)`);
             return source;
@@ -640,11 +644,9 @@ export class WgbCache {
         const dir = await this.getCacheDir();
         if (!dir) return null;
 
-        // Release any prior source (exclusive: one SAH per file).
-        this.releaseMountedSource();
-
         const name = (blob as File).name;
         const key = (typeof name === "string" && name) ? wgbCacheKeyForUrl(name) : BLOB_MOUNT_KEY;
+        this.releaseMountedSourceByKey(key);
 
         try {
             const fileHandle = await dir.getFileHandle(key, { create: true });
@@ -700,8 +702,7 @@ export class WgbCache {
             }
 
             const source = new SyncAccessHandleSource(sah, sah.getSize());
-            this.currentSource = source;
-            this.currentSourceKey = key;
+            this.currentSources.set(key, source);
             this.queueTouch(key);
             return source;
         } catch (e) {

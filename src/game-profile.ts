@@ -97,11 +97,20 @@ export function resolveLanguage(
 export interface LaunchProfile {
     manifest?: Record<string, unknown>;
     registry?: RegistryPatch | RegistryPatch[];
+    /** Read-only WGB URLs mounted from lowest to highest below the primary bundle. */
+    romLayers?: RomLayerSpec[];
+}
+
+export interface RomLayerSpec {
+    url: string;
+    /** Optional case-insensitive glob allowlist relative to the layer's ROM root. */
+    include?: string[];
 }
 
 export function buildLaunchProfile(
     profile: GameProfile,
     language: GameLanguage | null,
+    romLayers: readonly RomLayerSpec[] = [],
 ): LaunchProfile | undefined {
     const manifest: Record<string, unknown> = {};
     const emulator: Record<string, unknown> = {};
@@ -118,5 +127,9 @@ export function buildLaunchProfile(
     const launch: LaunchProfile = {};
     if (Object.keys(manifest).length > 0) launch.manifest = manifest;
     if (language?.registry) launch.registry = language.registry;
+    if (romLayers.length > 0) launch.romLayers = romLayers.map((layer) => ({
+        ...layer,
+        include: layer.include ? [...layer.include] : undefined,
+    }));
     return Object.keys(launch).length > 0 ? launch : undefined;
 }

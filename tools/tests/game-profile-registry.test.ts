@@ -26,4 +26,14 @@ describe("launch-profile registry metadata", () => {
     expect(buildLaunchProfile({}, language)?.registry).toEqual(registry);
     expect(buildLaunchProfile({}, language)?.manifest?.entrypoint).toBe("rom/native-launcher.exe");
   });
+
+  test("preserves read-only WGB underlays without requiring manifest overrides", () => {
+    expect(buildLaunchProfile({}, null, [
+      { url: "/apps/base.wgb", include: ["base.exe"] },
+      { url: "/apps/shared.wgb" },
+    ])).toEqual({ romLayers: [
+      { url: "/apps/base.wgb", include: ["base.exe"] },
+      { url: "/apps/shared.wgb", include: undefined },
+    ] });
+  });
 });
