@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +17,14 @@ const BUILD_SHA = (
   process.env.CF_PAGES_COMMIT_SHA ||
   (() => { try { return execSync("git rev-parse --short HEAD").toString().trim(); } catch { return "dev"; } })()
 ).slice(0, 7);
+// v86.wasm is copied from the nested v86 build and is not part of Vite's
+// module graph. Hash it explicitly: a Rust-only JIT rebuild can otherwise keep
+// the worker JavaScript byte-identical and leave browsers on the old WASM for
+// the full HTTP max-age.
+const V86_WASM_SHA = createHash("sha256")
+  .update(fs.readFileSync(path.resolve(__dirname, "public/v86.wasm")))
+  .digest("hex")
+  .slice(0, 16);
 // HTTP is the default (localhost is a secure context, so SharedArrayBuffer /
 // COOP-COEP work over plain HTTP and automation needn't clear a self-signed
 // cert). Opt into a self-signed HTTPS dev/preview server with VITE_SSL=1.
@@ -159,6 +168,7 @@ function copyPublicDirExceptApps(): Plugin {
 export default defineConfig({
   define: {
     __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+    __V86_WASM_SHA__: JSON.stringify(V86_WASM_SHA),
   },
   plugins: [
     audioWorkletPlugin(),

@@ -1980,15 +1980,13 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     }
   }
 
-  // Bind the production WASM URL to this content-hashed worker asset. A browser
-  // hard reload does not reliably bypass the nested fetch performed by v86,
-  // and /v86.wasm is otherwise cacheable for an hour. The worker filename
-  // changes on every material build, so this query changes exactly when the
-  // corresponding JIT binary changes without disabling caching between boots.
-  const workerRevision = new URL(globalThis.location.href).pathname.split('/').pop() || 'worker';
+  // Bind the production WASM URL to the binary's own build-time SHA. The WASM
+  // lives outside Vite's module graph, so a Rust-only JIT rebuild can leave the
+  // worker JavaScript unchanged. Keying this fetch by the worker filename did
+  // exactly that and let browsers retain an old JIT for the one-hour max-age.
   const wasmPath = import.meta.env?.DEV
     ? `/v86.wasm?t=${Date.now()}`
-    : `/v86.wasm?v=${encodeURIComponent(workerRevision)}`;
+    : `/v86.wasm?v=${encodeURIComponent(__V86_WASM_SHA__)}`;
 
   // v86 settings
   const settings = {
