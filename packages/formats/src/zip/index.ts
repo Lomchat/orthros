@@ -4,6 +4,13 @@ const EOCD_SIGNATURE = 0x06054b50;
 const CEN_SIGNATURE = 0x02014b50;
 const LOC_SIGNATURE = 0x04034b50;
 const MAX_EOCD_SEARCH = 0x10000 + 22;
+const ZIP64_EOCD_SIGNATURE = 0x06064b50;
+const ZIP64_LOCATOR_SIGNATURE = 0x07064b50;
+const ZIP64_LOCATOR_SIZE = 20;
+const ZIP64_EOCD_SIZE = 56;
+/** Sentinels a 32-bit field carries when its real value lives in a ZIP64 record. */
+const U32_MAX = 0xffffffff;
+const U16_MAX = 0xffff;
 
 export interface ZipSource {
     size: number;
@@ -344,15 +351,33 @@ export class ZipArchive {
             throw new Error("EOCD not found");
         }
 
-        const cdSize = view.getUint32(eocdOffset + 12, true);
-        const cdOffset = view.getUint32(eocdOffset + 16, true);
+        let cdSize = view.getUint32(eocdOffset + 12, true);
+        let cdOffset = view.getUint32(eocdOffset + 16, true);
+        const entryCount = view.getUint16(eocdOffset + 10, true);
+
+        // ZIP64: past 4 GiB (or 65535 entries) the 32-bit EOCD fields carry sentinels and the
+        // real values live in a ZIP64 EOCD record, which sits immediately before its locator,
+        // which itself sits immediately before the EOCD.
+        let cdEndOffset = size - tailSize + eocdOffset;
+        if (cdSize === U32_MAX || cdOffset === U32_MAX || entryCount === U16_MAX) {
+            const locatorOffset = eocdOffset - ZIP64_LOCATOR_SIZE;
+            if (locatorOffset < 0 || view.getUint32(locatorOffset, true) !== ZIP64_LOCATOR_SIGNATURE) {
+                throw new Error("ZIP64 locator not found");
+            }
+            const recordOffset = locatorOffset - ZIP64_EOCD_SIZE;
+            if (recordOffset < 0 || view.getUint32(recordOffset, true) !== ZIP64_EOCD_SIGNATURE) {
+                throw new Error("ZIP64 end-of-central-directory record not found");
+            }
+            cdSize = Number(view.getBigUint64(recordOffset + 40, true));
+            cdOffset = Number(view.getBigUint64(recordOffset + 48, true));
+            cdEndOffset = size - tailSize + recordOffset;
+        }
 
         // Recover the SFX prefix: the central directory always ends right where the EOCD
         // begins, so its true file offset is `eocdFileOffset - cdSize`. For a plain zip that
         // equals the stored `cdOffset` (delta 0); for a self-extractor it is larger by the
         // stub size. Negative (malformed) → fall back to 0 so we degrade to the old behavior.
-        const eocdFileOffset = size - tailSize + eocdOffset;
-        const delta = eocdFileOffset - cdSize - cdOffset;
+        const delta = cdEndOffset - cdSize - cdOffset;
         this.prefixDelta = delta > 0 ? delta : 0;
 
         const cdStart = cdOffset + this.prefixDelta;
@@ -373,12 +398,31 @@ export class ZipArchive {
 
             const flags = view.getUint16(offset + 8, true);
             const compression = view.getUint16(offset + 10, true);
-            const compressedSize = view.getUint32(offset + 20, true);
-            const uncompressedSize = view.getUint32(offset + 24, true);
+            let compressedSize = view.getUint32(offset + 20, true);
+            let uncompressedSize = view.getUint32(offset + 24, true);
             const nameLen = view.getUint16(offset + 28, true);
             const extraLen = view.getUint16(offset + 30, true);
             const commentLen = view.getUint16(offset + 32, true);
-            const localHeaderOffset = view.getUint32(offset + 42, true);
+            let localHeaderOffset = view.getUint32(offset + 42, true);
+
+            // ZIP64 extra field (header id 0x0001): the 64-bit values appear in a fixed order,
+            // but ONLY for the fields whose 32-bit slot holds the sentinel.
+            if (uncompressedSize === U32_MAX || compressedSize === U32_MAX || localHeaderOffset === U32_MAX) {
+                const extraStart = offset + 46 + nameLen;
+                let p = extraStart;
+                while (p + 4 <= extraStart + extraLen) {
+                    const id = view.getUint16(p, true);
+                    const len = view.getUint16(p + 2, true);
+                    if (id === 0x0001) {
+                        let q = p + 4;
+                        if (uncompressedSize === U32_MAX) { uncompressedSize = Number(view.getBigUint64(q, true)); q += 8; }
+                        if (compressedSize === U32_MAX) { compressedSize = Number(view.getBigUint64(q, true)); q += 8; }
+                        if (localHeaderOffset === U32_MAX) { localHeaderOffset = Number(view.getBigUint64(q, true)); q += 8; }
+                        break;
+                    }
+                    p += 4 + len;
+                }
+            }
 
             const nameBytes = cd.slice(offset + 46, offset + 46 + nameLen);
             const name = (flags & 0x0800) ? decoderUtf8.decode(nameBytes) : decoderUtf8.decode(nameBytes);

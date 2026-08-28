@@ -48,7 +48,7 @@
  *       --name "Quake" --exe quake.exe --os winnt --width 800 --height 600 --bpp 32
  */
 
-import { writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'fs';
+import { writeFileSync, readdirSync, statSync, readFileSync, existsSync, openSync, writeSync, closeSync } from 'fs';
 import { join, relative, basename, extname, resolve } from 'path';
 import { isValidGameId, deriveGameId, KNOWN_GAME_ID_SCHEMES } from '@orthros/formats/wgb/container-id';
 
@@ -68,70 +68,128 @@ function crc32(data: Buffer): number {
     return (crc ^ 0xffffffff) >>> 0;
 }
 
-interface ZipEntry { nameBuf: Buffer; data: Buffer; crc: number; offset: number; }
+interface ZipEntry { nameBuf: Buffer; size: number; crc: number; offset: number; }
 
-function buildZip(files: Map<string, Buffer>): Buffer {
-    const buffers: Buffer[] = [];
+const U32_MAX = 0xffffffff;
+
+/**
+ * Write a store-only ZIP straight to disk, one entry at a time.
+ *
+ * Streaming rather than concatenating: a single Buffer caps at 4 GiB under Bun, which a
+ * multi-language game bundle exceeds. Offsets and sizes stay plain numbers (exact below
+ * 2^53) and only cross into ZIP64 records when they pass the 32-bit ceiling.
+ */
+function writeZip(output: string, files: Map<string, Buffer>): number {
+    const fd = openSync(output, 'w');
     const entries: ZipEntry[] = [];
     let offset = 0;
+    const put = (b: Buffer) => { writeSync(fd, b); offset += b.length; };
 
-    for (const [name, data] of files) {
-        const nameBuf = Buffer.from(name, 'utf8');
-        const lfh = Buffer.alloc(30);
-        lfh.writeUint32LE(0x04034b50, 0);
-        lfh.writeUint16LE(20, 4);
-        lfh.writeUint16LE(0, 6);
-        lfh.writeUint16LE(0, 8);   // Store
-        lfh.writeUint16LE(0, 10);
-        lfh.writeUint16LE(0, 12);
-        const crc = crc32(data);
-        lfh.writeUint32LE(crc, 14);
-        lfh.writeUint32LE(data.length, 18);
-        lfh.writeUint32LE(data.length, 22);
-        lfh.writeUint16LE(nameBuf.length, 26);
-        lfh.writeUint16LE(0, 28);
-        entries.push({ nameBuf, data, crc, offset });
-        buffers.push(lfh, nameBuf, data);
-        offset += 30 + nameBuf.length + data.length;
+    try {
+        for (const [name, data] of files) {
+            const nameBuf = Buffer.from(name, 'utf8');
+            const crc = crc32(data);
+            const needsZip64 = data.length > U32_MAX || offset > U32_MAX;
+            // A local header that needs ZIP64 carries the sizes in its extra field; the
+            // reader only consults it for the central directory, but a conforming writer
+            // must still emit it so other tools can read the archive.
+            const extra = needsZip64 ? Buffer.alloc(20) : Buffer.alloc(0);
+            if (needsZip64) {
+                extra.writeUint16LE(0x0001, 0);
+                extra.writeUint16LE(16, 2);
+                extra.writeBigUint64LE(BigInt(data.length), 4);
+                extra.writeBigUint64LE(BigInt(data.length), 12);
+            }
+            const lfh = Buffer.alloc(30);
+            lfh.writeUint32LE(0x04034b50, 0);
+            lfh.writeUint16LE(needsZip64 ? 45 : 20, 4);
+            lfh.writeUint16LE(0, 6);
+            lfh.writeUint16LE(0, 8);   // Store
+            lfh.writeUint16LE(0, 10);
+            lfh.writeUint16LE(0, 12);
+            lfh.writeUint32LE(crc, 14);
+            lfh.writeUint32LE(needsZip64 ? U32_MAX : data.length, 18);
+            lfh.writeUint32LE(needsZip64 ? U32_MAX : data.length, 22);
+            lfh.writeUint16LE(nameBuf.length, 26);
+            lfh.writeUint16LE(extra.length, 28);
+            entries.push({ nameBuf, size: data.length, crc, offset });
+            put(lfh); put(nameBuf); if (extra.length) put(extra); put(data);
+        }
+
+        const cdOffset = offset;
+        for (const e of entries) {
+            const bigSize = e.size > U32_MAX;
+            const bigOffset = e.offset > U32_MAX;
+            const extraLen = (bigSize ? 16 : 0) + (bigOffset ? 8 : 0);
+            const extra = Buffer.alloc(extraLen ? extraLen + 4 : 0);
+            if (extraLen) {
+                extra.writeUint16LE(0x0001, 0);
+                extra.writeUint16LE(extraLen, 2);
+                let q = 4;
+                // Order is fixed by the spec: uncompressed, compressed, local-header offset.
+                if (bigSize) { extra.writeBigUint64LE(BigInt(e.size), q); q += 8; extra.writeBigUint64LE(BigInt(e.size), q); q += 8; }
+                if (bigOffset) extra.writeBigUint64LE(BigInt(e.offset), q);
+            }
+            const cdh = Buffer.alloc(46);
+            cdh.writeUint32LE(0x02014b50, 0);
+            cdh.writeUint16LE(extraLen ? 45 : 20, 4);
+            cdh.writeUint16LE(extraLen ? 45 : 20, 6);
+            cdh.writeUint16LE(0, 8);
+            cdh.writeUint16LE(0, 10);
+            cdh.writeUint16LE(0, 12);
+            cdh.writeUint16LE(0, 14);
+            cdh.writeUint32LE(e.crc, 16);
+            cdh.writeUint32LE(bigSize ? U32_MAX : e.size, 20);
+            cdh.writeUint32LE(bigSize ? U32_MAX : e.size, 24);
+            cdh.writeUint16LE(e.nameBuf.length, 28);
+            cdh.writeUint16LE(extra.length, 30);
+            cdh.writeUint16LE(0, 32);
+            cdh.writeUint16LE(0, 34);
+            cdh.writeUint16LE(0, 36);
+            cdh.writeUint32LE(0, 38);
+            cdh.writeUint32LE(bigOffset ? U32_MAX : e.offset, 42);
+            put(cdh); put(e.nameBuf); if (extra.length) put(extra);
+        }
+        const cdSize = offset - cdOffset;
+
+        const needsZip64 = cdOffset > U32_MAX || cdSize > U32_MAX || entries.length > 0xffff;
+        if (needsZip64) {
+            const rec = Buffer.alloc(56);
+            rec.writeUint32LE(0x06064b50, 0);
+            rec.writeBigUint64LE(44n, 4);        // size of the record after this field
+            rec.writeUint16LE(45, 12);
+            rec.writeUint16LE(45, 14);
+            rec.writeUint32LE(0, 16);
+            rec.writeUint32LE(0, 20);
+            rec.writeBigUint64LE(BigInt(entries.length), 24);
+            rec.writeBigUint64LE(BigInt(entries.length), 32);
+            rec.writeBigUint64LE(BigInt(cdSize), 40);
+            rec.writeBigUint64LE(BigInt(cdOffset), 48);
+            const recOffset = offset;
+            put(rec);
+
+            const loc = Buffer.alloc(20);
+            loc.writeUint32LE(0x07064b50, 0);
+            loc.writeUint32LE(0, 4);
+            loc.writeBigUint64LE(BigInt(recOffset), 8);
+            loc.writeUint32LE(1, 16);
+            put(loc);
+        }
+
+        const eocd = Buffer.alloc(22);
+        eocd.writeUint32LE(0x06054b50, 0);
+        eocd.writeUint16LE(0, 4);
+        eocd.writeUint16LE(0, 6);
+        eocd.writeUint16LE(Math.min(entries.length, 0xffff), 8);
+        eocd.writeUint16LE(Math.min(entries.length, 0xffff), 10);
+        eocd.writeUint32LE(cdSize > U32_MAX ? U32_MAX : cdSize, 12);
+        eocd.writeUint32LE(cdOffset > U32_MAX ? U32_MAX : cdOffset, 16);
+        eocd.writeUint16LE(0, 20);
+        put(eocd);
+    } finally {
+        closeSync(fd);
     }
-
-    const cdOffset = offset;
-    let cdSize = 0;
-    for (const e of entries) {
-        const cdh = Buffer.alloc(46);
-        cdh.writeUint32LE(0x02014b50, 0);
-        cdh.writeUint16LE(20, 4);
-        cdh.writeUint16LE(20, 6);
-        cdh.writeUint16LE(0, 8);
-        cdh.writeUint16LE(0, 10);
-        cdh.writeUint16LE(0, 12);
-        cdh.writeUint16LE(0, 14);
-        cdh.writeUint32LE(e.crc, 16);
-        cdh.writeUint32LE(e.data.length, 20);
-        cdh.writeUint32LE(e.data.length, 24);
-        cdh.writeUint16LE(e.nameBuf.length, 28);
-        cdh.writeUint16LE(0, 30);
-        cdh.writeUint16LE(0, 32);
-        cdh.writeUint16LE(0, 34);
-        cdh.writeUint16LE(0, 36);
-        cdh.writeUint32LE(0, 38);
-        cdh.writeUint32LE(e.offset, 42);
-        buffers.push(cdh, e.nameBuf);
-        cdSize += 46 + e.nameBuf.length;
-    }
-
-    const eocd = Buffer.alloc(22);
-    eocd.writeUint32LE(0x06054b50, 0);
-    eocd.writeUint16LE(0, 4);
-    eocd.writeUint16LE(0, 6);
-    eocd.writeUint16LE(entries.length, 8);
-    eocd.writeUint16LE(entries.length, 10);
-    eocd.writeUint32LE(cdSize, 12);
-    eocd.writeUint32LE(cdOffset, 16);
-    eocd.writeUint16LE(0, 20);
-    buffers.push(eocd);
-
-    return Buffer.concat(buffers);
+    return offset;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,9 +386,8 @@ files.set('registry.json', Buffer.from(JSON.stringify(registry, null, 2), 'utf8'
 // Game files under rom/ — already scanned above (romFiles), reuse to avoid a second walk.
 for (const [zipName, data] of romFiles) files.set(zipName, data);
 
-const zip = buildZip(files);
-writeFileSync(output, zip);
-console.log(`Created ${output} (${files.size} files, ${(zip.length / 1024 / 1024).toFixed(1)} MB)`);
+const zipSize = writeZip(output, files);
+console.log(`Created ${output} (${files.size} files, ${(zipSize / 1024 / 1024).toFixed(1)} MB)`);
 console.log(`  name:       ${name}`);
 console.log(`  entrypoint: rom/${exeName}`);
 console.log(`  resolution: ${width}x${height}x${bpp}`);

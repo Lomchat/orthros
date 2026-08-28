@@ -371,6 +371,10 @@ export const kernel32Module: ModuleDescriptor = {
         makeFunc("QueryDosDeviceW", 3),
         makeFunc("lstrlenA", 1),
         makeFunc("lstrlenW", 1),
+        // kernel32 exports the undecorated name too, as an alias of the ANSI form.
+        // The Windows header hides it behind a macro, so only binaries that import by
+        // ordinal or by plain name — BFME 2's game.dat among them — ask for it.
+        makeFunc("lstrlen", 1),
         // Global heap (often used by legacy apps)
         makeFunc("GlobalLock", 1),
         makeFunc("GlobalUnlock", 1),

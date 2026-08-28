@@ -749,6 +749,8 @@ export const exports: Record<string, ThunkImplementation> = {
         return len;
     },
 
+    'lstrlen': (ctx, mem, args) => exports['lstrlenA']!(ctx, mem, args),
+
     'lstrlenW': (ctx, mem, args) => {
         const lpString = args[0];
         if (!lpString || lpString >= mem.length) return 0;

@@ -2,9 +2,9 @@
   {
     "id": "bfme",
     "name": "La Bataille pour la Terre du Milieu",
-    "subtitle": "1.03",
+    "subtitle": "Patch 2.22",
     "wgbUrl": "/apps/bfme.wgb",
-    "sizeBytes": 3687550226,
+    "sizeBytes": 4277549584,
     "coverUrl": "/covers/bfme-box.jpg",
     "description": "",
     "year": "2004",
@@ -41,6 +41,108 @@
         "registry": {
           "root": "HKLM",
           "path": "Software\\Electronic Arts\\EA Games\\The Battle for Middle-earth",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "English"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "bfme2",
+    "name": "La Bataille pour la Terre du Milieu II",
+    "subtitle": "Patch 1.09",
+    "wgbUrl": "/apps/bfme2-109-multi.wgb",
+    "sizeBytes": 7266833281,
+    "coverUrl": "",
+    "description": "",
+    "year": "2006",
+    "genre": "RTS",
+    "enabled": true,
+    "defaultLanguage": "fr",
+    "languages": [
+      {
+        "code": "fr",
+        "label": "Français",
+        "flag": "fr",
+        "name": "La Bataille pour la Terre du Milieu II",
+        "gameId": "byo:bfme2-109-fr",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "French"
+            }
+          ]
+        }
+      },
+      {
+        "code": "en",
+        "label": "English",
+        "flag": "gb",
+        "name": "The Battle for Middle-earth II",
+        "gameId": "byo:bfme2-109-en",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "English"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "rotwk",
+    "name": "L'Avènement du Roi-Sorcier",
+    "subtitle": "Patch 2.02",
+    "wgbUrl": "/apps/rotwk-202-multi.wgb",
+    "sizeBytes": 4679541842,
+    "coverUrl": "",
+    "description": "",
+    "year": "2006",
+    "genre": "RTS",
+    "enabled": true,
+    "defaultLanguage": "fr",
+    "languages": [
+      {
+        "code": "fr",
+        "label": "Français",
+        "flag": "fr",
+        "name": "L'Avènement du Roi-Sorcier",
+        "gameId": "byo:rotwk-202-fr",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",
+          "values": [
+            {
+              "name": "Language",
+              "type": "REG_SZ",
+              "data": "French"
+            }
+          ]
+        }
+      },
+      {
+        "code": "en",
+        "label": "English",
+        "flag": "gb",
+        "name": "The Rise of the Witch-king",
+        "gameId": "byo:rotwk-202-en",
+        "registry": {
+          "root": "HKLM",
+          "path": "Software\\Electronic Arts\\Electronic Arts\\The Lord of the Rings, The Rise of the Witch-king",
           "values": [
             {
               "name": "Language",

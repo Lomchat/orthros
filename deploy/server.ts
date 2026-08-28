@@ -6,7 +6,7 @@
  */
 import path from "path";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, readdirSync, existsSync } from "node:fs";
 import { bfmeRelayStats, bfmeRelayWebSocket, upgradeBfmeRelay } from "./bfme-net-relay";
 import { auth } from "./auth";
 import { handleSaveApi } from "./save-api";
@@ -32,35 +32,81 @@ type WgbIntegrity = {
     segments: string[];
 };
 
-const bfmeIntegrityJson = await Bun.file(BFME_WGB_INTEGRITY_PATH).text();
-const bfmeIntegrity = JSON.parse(bfmeIntegrityJson) as WgbIntegrity;
-const actualWgbSize = await Bun.file(BFME_WGB_PATH).size;
-const actualWgbHasher = createHash("sha256");
-for await (const chunk of createReadStream(BFME_WGB_PATH, { highWaterMark: 8 * 1024 * 1024 })) {
-    actualWgbHasher.update(chunk);
+/** One published bundle: the file, its verified descriptor, and the routes that reach it. */
+type Bundle = {
+    filePath: string;
+    size: number;
+    etag: string;
+    integrityJson: string;
+    integrityEtag: string;
+};
+
+/**
+ * Re-hash a bundle and check it against its descriptor. Size alone is not enough — a bundle
+ * edited in place keeps its length — and the descriptor's chunk/segment hashes are what the
+ * browser cache trusts, so a stale one has to fail loudly at boot rather than mid-download.
+ */
+async function loadBundle(filePath: string, integrityPath: string): Promise<Bundle> {
+    const integrityJson = await Bun.file(integrityPath).text();
+    const integrity = JSON.parse(integrityJson) as WgbIntegrity;
+    const size = await Bun.file(filePath).size;
+    const hasher = createHash("sha256");
+    for await (const chunk of createReadStream(filePath, { highWaterMark: 8 * 1024 * 1024 })) {
+        hasher.update(chunk);
+    }
+    const sha256 = hasher.digest("hex");
+    if (integrity.version !== 1 || integrity.algorithm !== "sha256" ||
+        !/^[0-9a-f]{64}$/.test(integrity.sha256) || integrity.size !== size ||
+        integrity.sha256 !== sha256 ||
+        !Number.isSafeInteger(integrity.chunkSize) || integrity.chunkSize <= 0 ||
+        !Number.isSafeInteger(integrity.segmentSize) || integrity.segmentSize < integrity.chunkSize ||
+        integrity.segmentSize % integrity.chunkSize !== 0 ||
+        !Array.isArray(integrity.chunks) || !Array.isArray(integrity.segments) ||
+        integrity.chunks.length !== Math.ceil(size / integrity.chunkSize) ||
+        integrity.segments.length !== Math.ceil(size / integrity.segmentSize) ||
+        integrity.chunks.some((hash) => !/^[0-9a-f]{64}$/.test(hash)) ||
+        integrity.segments.some((hash) => !/^[0-9a-f]{64}$/.test(hash))) {
+        throw new Error(`Invalid or stale integrity descriptor: ${integrityPath}`);
+    }
+    console.log(`Verified WGB ${path.basename(filePath)} SHA-256 ${sha256}`);
+    return {
+        filePath,
+        size,
+        etag: `"sha256-${integrity.sha256}"`,
+        integrityJson,
+        integrityEtag: `"sha256-${new Bun.CryptoHasher("sha256").update(integrityJson).digest("hex")}"`,
+    };
 }
-const actualWgbSha256 = actualWgbHasher.digest("hex");
-if (bfmeIntegrity.version !== 1 || bfmeIntegrity.algorithm !== "sha256" ||
-    !/^[0-9a-f]{64}$/.test(bfmeIntegrity.sha256) || bfmeIntegrity.size !== actualWgbSize ||
-    bfmeIntegrity.sha256 !== actualWgbSha256 ||
-    !Number.isSafeInteger(bfmeIntegrity.chunkSize) || bfmeIntegrity.chunkSize <= 0 ||
-    !Number.isSafeInteger(bfmeIntegrity.segmentSize) || bfmeIntegrity.segmentSize < bfmeIntegrity.chunkSize ||
-    bfmeIntegrity.segmentSize % bfmeIntegrity.chunkSize !== 0 ||
-    !Array.isArray(bfmeIntegrity.chunks) || !Array.isArray(bfmeIntegrity.segments) ||
-    bfmeIntegrity.chunks.length !== Math.ceil(actualWgbSize / bfmeIntegrity.chunkSize) ||
-    bfmeIntegrity.segments.length !== Math.ceil(actualWgbSize / bfmeIntegrity.segmentSize) ||
-    bfmeIntegrity.chunks.some((hash) => !/^[0-9a-f]{64}$/.test(hash)) ||
-    bfmeIntegrity.segments.some((hash) => !/^[0-9a-f]{64}$/.test(hash))) {
-    throw new Error(`Invalid or stale BFME integrity descriptor: ${BFME_WGB_INTEGRITY_PATH}`);
+
+// Every *.wgb in the bundle directory that has a descriptor beside it gets published under
+// its own basename, plus a content-addressed alias. `/apps/bfme.wgb` stays pinned to
+// BFME_WGB_PATH so links and caches from before multi-game support keep resolving.
+const WGB_DIR = path.resolve(process.env.ORTHROS_WGB_DIR ?? path.dirname(BFME_WGB_PATH));
+const BUNDLE_ROUTES = new Map<string, Bundle>();
+const INTEGRITY_ROUTES = new Map<string, Bundle>();
+for (const entry of readdirSync(WGB_DIR).sort()) {
+    if (!entry.endsWith(".wgb")) continue;
+    const filePath = path.join(WGB_DIR, entry);
+    const integrityPath = `${filePath}.integrity.json`;
+    if (!existsSync(integrityPath)) {
+        console.warn(`Skipping ${entry}: no integrity descriptor`);
+        continue;
+    }
+    const bundle = await loadBundle(filePath, integrityPath);
+    const sha = bundle.etag.slice(8, -1);
+    const stem = entry.slice(0, -4);
+    for (const route of [`/apps/${entry}`, `/apps/${stem}-${sha}.wgb`]) {
+        BUNDLE_ROUTES.set(route, bundle);
+        INTEGRITY_ROUTES.set(`${route}.integrity.json`, bundle);
+    }
+    if (filePath === BFME_WGB_PATH) {
+        BUNDLE_ROUTES.set("/apps/bfme.wgb", bundle);
+        BUNDLE_ROUTES.set(`/apps/bfme-${sha}.wgb`, bundle);
+        INTEGRITY_ROUTES.set("/apps/bfme.wgb.integrity.json", bundle);
+        INTEGRITY_ROUTES.set(`/apps/bfme-${sha}.wgb.integrity.json`, bundle);
+    }
 }
-console.log(`Verified BFME WGB SHA-256 ${actualWgbSha256}`);
-const BFME_ETAG = `"sha256-${bfmeIntegrity.sha256}"`;
-const BFME_INTEGRITY_ETAG = `"sha256-${new Bun.CryptoHasher("sha256").update(bfmeIntegrityJson).digest("hex")}"`;
-const BFME_HASHED_PATH = `/apps/bfme-${bfmeIntegrity.sha256}.wgb`;
-const BFME_INTEGRITY_PATHS = new Set([
-    "/apps/bfme.wgb.integrity.json",
-    `${BFME_HASHED_PATH}.integrity.json`,
-]);
+if (BUNDLE_ROUTES.size === 0) throw new Error(`No verified .wgb found in ${WGB_DIR}`);
 
 const MIME: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
@@ -122,29 +168,26 @@ const server = Bun.serve({
 
         let pathname = decodeURIComponent(url.pathname);
 
-        if (BFME_INTEGRITY_PATHS.has(pathname)) {
+        const integrityBundle = INTEGRITY_ROUTES.get(pathname);
+        if (integrityBundle) {
             const headers = {
                 "Content-Type": "application/json; charset=utf-8",
                 "Cache-Control": "no-cache",
-                "ETag": BFME_INTEGRITY_ETAG,
+                "ETag": integrityBundle.integrityEtag,
                 ...COOP_COEP,
             };
-            if (req.headers.get("If-None-Match") === BFME_INTEGRITY_ETAG) {
+            if (req.headers.get("If-None-Match") === integrityBundle.integrityEtag) {
                 return new Response(null, { status: 304, headers });
             }
-            return new Response(bfmeIntegrityJson, {
-                headers: {
-                    ...headers,
-                },
-            });
+            return new Response(integrityBundle.integrityJson, { headers });
         }
 
         // SPA fallback for extensionless paths
         if (!path.extname(pathname)) pathname = "/index.html";
 
-        const isHashedBfmeBundle = pathname === BFME_HASHED_PATH;
-        const isBfmeBundle = pathname === "/apps/bfme.wgb" || isHashedBfmeBundle;
-        const filePath = isBfmeBundle ? BFME_WGB_PATH : path.join(DIST, pathname);
+        const bundle = BUNDLE_ROUTES.get(pathname);
+        const isBfmeBundle = bundle !== undefined;
+        const filePath = bundle ? bundle.filePath : path.join(DIST, pathname);
 
         // Prevent path traversal
         if (!isBfmeBundle && !filePath.startsWith(DIST + path.sep) && filePath !== DIST) {
@@ -169,11 +212,11 @@ const server = Bun.serve({
         }
         const contentType = MIME[ext] ?? "application/octet-stream";
         const rangeHeader = req.headers.get("Range");
-        const etag = isBfmeBundle ? BFME_ETAG : `W/"${fileSize}-${file.lastModified}"`;
+        const etag = bundle ? bundle.etag : `W/"${fileSize}-${file.lastModified}"`;
         const commonHeaders = {
-            "Cache-Control": cacheControl(pathname, isHashedBfmeBundle),
+            "Cache-Control": cacheControl(pathname, bundle !== undefined && pathname.includes("-" + bundle.etag.slice(8, -1))),
             "ETag": etag,
-            ...(isBfmeBundle ? { "X-Orthros-SHA256": bfmeIntegrity.sha256 } : {}),
+            ...(bundle ? { "X-Orthros-SHA256": bundle.etag.slice(8, -1) } : {}),
             ...COOP_COEP,
         };
 
