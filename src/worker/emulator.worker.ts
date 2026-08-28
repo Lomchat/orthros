@@ -739,7 +739,10 @@ const startScheduler = (v86: any) => {
     if (isPaused) return;
 
     const system = System.getInstance();
-    if (!system.process || system.isExiting) return;
+    if (!system.process || system.isExiting) {
+      if (system.isExiting) stopScheduler();
+      return;
+    }
 
     // pollTimeouts() may fire timers / wake event waiters → threads become READY.
     system.scheduler.pollTimeouts();
@@ -792,6 +795,13 @@ const startScheduler = (v86: any) => {
       }
     }
   }, EMU_SCHEDULER_INTERVAL_MS) as unknown as number;
+};
+
+/** Stop the 1 ms fallback poller whenever no guest can make progress. */
+const stopScheduler = () => {
+  if (schedulerInterval === null) return;
+  clearInterval(schedulerInterval);
+  schedulerInterval = null;
 };
 
 /**
@@ -920,8 +930,7 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     const mem8 = system.process.v86.mem8 || (system.process.v86.v86 && system.process.v86.v86.cpu.mem8);
 
     if (!cpu || !mem8) {
-      Logger.error(LogCategory.SYSTEM, "Could not find CPU or memory for bootloader setup");
-      return;
+      throw new Error("Could not find CPU or memory for bootloader setup");
     }
 
     // Create the bootloader that will switch to protected mode and jump to PE entry
@@ -982,6 +991,7 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     Logger.log(LogCategory.SYSTEM, `Starting bootloader execution at CS:IP = 0:0x${startAddress.toString(16)}`);
 
     resumeEmulator();
+    startScheduler(system.process.v86);
     // A stop/start race in v86's MessageChannel yield can lose the single tick
     // scheduled by run() while the wrapper still reports itself as running. A
     // second explicit run always revives it, but waiting for the heartbeat makes
@@ -1016,6 +1026,7 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     // "game crashed" dialog with a copyable report (e.g. a missing HLE API
     // discovered while generating import thunks), instead of a silent worker log.
     system.reportGuestCrash({ reason: `PE load failed: ${message}`, eip: 0, threadId: null });
+    throw err;
   }
 };
 
@@ -1198,6 +1209,7 @@ const prepareFullGameSwitch = async (): Promise<void> => {
   (globalThis as unknown as { __wgbSabIo?: SabIoSource }).__wgbSabIo = undefined;
   WgbCache.releaseMountedSource();
   setBootOverlayActive(false);
+  stopScheduler();
 
   const system = System.getInstance();
   cancelRegistryAutosave();
@@ -2573,16 +2585,15 @@ const initV86 = async (canvas: OffscreenCanvas) => {
       // Start heartbeat diagnostics
       startHeartbeat(v86);
 
-      // Start aggressive scheduler for preemptive multitasking
-      startScheduler(v86);
-
       // Start registry access log flush
       startRegistryFlush();
 
       if (pendingPeData) {
         const buffered = pendingPeData;
         pendingPeData = null;
-        loadPeData(buffered);
+        void loadPeData(buffered).catch((error) => {
+          self.postMessage({ type: "error", message: "PE load failed: " + (error as Error).message });
+        });
       }
       if (pendingBundle) {
         const buffered = pendingBundle;

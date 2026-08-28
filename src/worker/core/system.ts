@@ -29,6 +29,7 @@ import { libHleManager } from "./hle-lib/lib-hle-manager";
 import { hookRegistry } from "./hooks";
 import { resetSehDispatchState } from "./seh-dispatch";
 import { namedObjects } from "../modules/kernel32/named-objects";
+import { resetGuestMessageBoxes } from "./diagnostics/message-box-recorder";
 
 /**
  * The crash payload posted to the host (`process_exit{crashed:true, fault}`) and
@@ -62,6 +63,7 @@ export interface CrashFaultPayload {
     /** Recent C++ exceptions (decoded type/message + caught/unhandled outcome). An
      *  `unhandled` entry is the usual root of an MSVC/UE "Runtime Error! terminate". */
     cxxExceptions?: HarnessReport["cxxExceptions"];
+    messageBoxes?: HarnessReport["messageBoxes"];
     /** @deprecated Use faults — same data, kept for older host builds. */
     recentFaults?: Array<{ eip: number; faultAddr: number; lastThunk: string; threadId: number | null; kind: string }>;
     threads?: HarnessReport["threads"];
@@ -438,6 +440,7 @@ export class System {
             fault.recentGetProc = report.recentGetProc;
             fault.faults = report.faults;
             fault.cxxExceptions = report.cxxExceptions;
+            fault.messageBoxes = report.messageBoxes;
             fault.threads = report.threads;
             fault.stackGuardViolations = report.stackGuardViolations;
             fault.sehDispatchTrace = report.sehDispatchTrace;
@@ -599,6 +602,7 @@ export class System {
         this.isCleaningUp = false;
         this._releaseCount = 0;
         this._crashReported = false; // fresh game → allow a new crash report
+        resetGuestMessageBoxes();
 
         // Reset all subsystems
         this.windowManager.reset();
