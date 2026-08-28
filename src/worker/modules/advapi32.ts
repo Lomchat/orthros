@@ -21,6 +21,8 @@ const ERROR_INVALID_PARAMETER = 87;
 const ERROR_UNKNOWN_REVISION = 1305;
 const SECURITY_DESCRIPTOR_REVISION = 1;
 const SECURITY_DESCRIPTOR_MIN_LENGTH = 20;
+const SE_OWNER_DEFAULTED = 0x0001;
+const SE_GROUP_DEFAULTED = 0x0002;
 const SE_DACL_PRESENT = 0x0004;
 const SE_DACL_DEFAULTED = 0x0008;
 
@@ -1611,6 +1613,15 @@ export class Advapi32 implements IModule {
             return { value: 1, stackCleanup: 8 };
         };
 
+        // BOOL IsValidSecurityDescriptor(PSECURITY_DESCRIPTOR)
+        this.exports["IsValidSecurityDescriptor"] = (ctx, mem, args) => {
+            const pSecurityDescriptor = args[0] >>> 0;
+            const valid = pSecurityDescriptor !== 0
+                && isValidAddress(mem, pSecurityDescriptor, SECURITY_DESCRIPTOR_MIN_LENGTH, "r")
+                && Mem.readUint8(pSecurityDescriptor) === SECURITY_DESCRIPTOR_REVISION;
+            return { value: valid ? 1 : 0, stackCleanup: 4 };
+        };
+
         // SetSecurityDescriptorDacl - attach or clear the DACL pointer on an absolute SECURITY_DESCRIPTOR
         // BOOL SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR pSecurityDescriptor, BOOL bDaclPresent, PACL pDacl, BOOL bDaclDefaulted)
         this.exports["SetSecurityDescriptorDacl"] = (ctx, mem, args) => {
@@ -1652,6 +1663,78 @@ export class Advapi32 implements IModule {
 
             system.scheduler.setLastError(0);
             return { value: 1, stackCleanup: 16 };
+        };
+
+        const setSecurityDescriptorPrincipal = (
+            mem: Uint8Array,
+            pSecurityDescriptor: number,
+            pSid: number,
+            defaulted: number,
+            fieldOffset: number,
+            defaultedBit: number,
+        ): boolean => {
+            if (!pSecurityDescriptor
+                || !isValidAddress(mem, pSecurityDescriptor, SECURITY_DESCRIPTOR_MIN_LENGTH, "rw")
+                || Mem.readUint8(pSecurityDescriptor) !== SECURITY_DESCRIPTOR_REVISION) {
+                system.scheduler.setLastError(ERROR_INVALID_PARAMETER);
+                return false;
+            }
+            let control = Mem.readUint16(pSecurityDescriptor + 2) ?? 0;
+            control = defaulted ? control | defaultedBit : control & ~defaultedBit;
+            if (!Mem.writeUint16(pSecurityDescriptor + 2, control)
+                || !Mem.writeUint32(pSecurityDescriptor + fieldOffset, pSid)) {
+                system.scheduler.setLastError(ERROR_INVALID_PARAMETER);
+                return false;
+            }
+            system.scheduler.setLastError(0);
+            return true;
+        };
+
+        // BOOL SetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR, PSID, BOOL)
+        this.exports["SetSecurityDescriptorGroup"] = (ctx, mem, args) => ({
+            value: setSecurityDescriptorPrincipal(
+                mem,
+                args[0] >>> 0,
+                args[1] >>> 0,
+                args[2] >>> 0,
+                8,
+                SE_GROUP_DEFAULTED,
+            ) ? 1 : 0,
+            stackCleanup: 12,
+        });
+
+        // BOOL SetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR, PSID, BOOL)
+        this.exports["SetSecurityDescriptorOwner"] = (ctx, mem, args) => ({
+            value: setSecurityDescriptorPrincipal(
+                mem,
+                args[0] >>> 0,
+                args[1] >>> 0,
+                args[2] >>> 0,
+                4,
+                SE_OWNER_DEFAULTED,
+            ) ? 1 : 0,
+            stackCleanup: 12,
+        });
+
+        // BOOL AccessCheck(PSECURITY_DESCRIPTOR, HANDLE, DWORD, PGENERIC_MAPPING,
+        //                  PPRIVILEGE_SET, LPDWORD, LPDWORD, LPBOOL)
+        // Guest files and registry objects are already isolated by Orthros.  Grant
+        // the requested mask inside that sandbox; this does not bypass browser or
+        // host permissions.
+        this.exports["AccessCheck"] = (ctx, mem, args) => {
+            const desiredAccess = args[2] >>> 0;
+            const pGrantedAccess = args[6] >>> 0;
+            const pAccessStatus = args[7] >>> 0;
+            if (!pGrantedAccess || !pAccessStatus
+                || !isValidAddress(mem, pGrantedAccess, 4, "rw")
+                || !isValidAddress(mem, pAccessStatus, 4, "rw")) {
+                system.scheduler.setLastError(ERROR_INVALID_PARAMETER);
+                return { value: 0, stackCleanup: 32 };
+            }
+            Mem.writeUint32(pGrantedAccess, desiredAccess);
+            Mem.writeUint32(pAccessStatus, 1);
+            system.scheduler.setLastError(0);
+            return { value: 1, stackCleanup: 32 };
         };
 
         // AddAccessAllowedAce - add an access-allowed ACE to an ACL

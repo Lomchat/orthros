@@ -27,3 +27,19 @@ describe("advapi32 self impersonation", () => {
         });
     });
 });
+
+describe("advapi32 security descriptors", () => {
+    test("declares every descriptor API imported by the EA launchers", () => {
+        const arities: Record<string, number> = {
+            IsValidSecurityDescriptor: 1,
+            SetSecurityDescriptorGroup: 3,
+            SetSecurityDescriptorOwner: 3,
+            AccessCheck: 8,
+        };
+        for (const [name, arity] of Object.entries(arities)) {
+            const descriptor = advapi32Module.functions.find((fn) => fn.name === name);
+            expect(descriptor?.callingConvention).toBe("stdcall");
+            expect(descriptor?.params).toHaveLength(arity);
+        }
+    });
+});

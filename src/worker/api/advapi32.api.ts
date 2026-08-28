@@ -107,7 +107,11 @@ export const advapi32Module: ModuleDescriptor = {
         makeFunc("GetSidSubAuthority", 2),
         makeFunc("GetSidSubAuthorityCount", 1),
         makeFunc("InitializeSecurityDescriptor", 2),
+        makeFunc("IsValidSecurityDescriptor", 1),
         makeFunc("SetSecurityDescriptorDacl", 4),
+        makeFunc("SetSecurityDescriptorGroup", 3),
+        makeFunc("SetSecurityDescriptorOwner", 3),
+        makeFunc("AccessCheck", 8),
 
         // Auto-generated from reference signatures
         makeFunc("ConvertFiberToThread", 0),
