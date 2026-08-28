@@ -1,0 +1,22 @@
+import { describe, expect, test } from "bun:test";
+import { buildLaunchProfile, type GameLanguage } from "../../src/game-profile";
+
+describe("launch-profile registry metadata", () => {
+  test("preserves numeric DWORDs and multiple installation keys", () => {
+    const registry: NonNullable<GameLanguage["registry"]> = [
+      {
+        root: "HKLM",
+        path: "Software\\Vendor\\Base",
+        values: [{ name: "Version", type: "REG_DWORD", data: 0x10003 }],
+      },
+      {
+        root: "HKLM",
+        path: "Software\\Vendor\\Expansion",
+        values: [{ name: "InstallPath", type: "REG_SZ", data: "C:\\" }],
+      },
+    ];
+    const language: GameLanguage = { code: "fr", label: "Français", flag: "fr", registry };
+
+    expect(buildLaunchProfile({}, language)?.registry).toEqual(registry);
+  });
+});

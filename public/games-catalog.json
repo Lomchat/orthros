@@ -76,9 +76,24 @@
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
             {
+              "name": "InstallPath",
+              "type": "REG_SZ",
+              "data": "C:\\"
+            },
+            {
               "name": "Language",
               "type": "REG_SZ",
               "data": "French"
+            },
+            {
+              "name": "Version",
+              "type": "REG_DWORD",
+              "data": 65539
+            },
+            {
+              "name": "UserDataLeafName",
+              "type": "REG_SZ",
+              "data": "My Battle for Middle-earth II Files"
             }
           ]
         }
@@ -94,9 +109,24 @@
           "path": "Software\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
           "values": [
             {
+              "name": "InstallPath",
+              "type": "REG_SZ",
+              "data": "C:\\"
+            },
+            {
               "name": "Language",
               "type": "REG_SZ",
               "data": "English"
+            },
+            {
+              "name": "Version",
+              "type": "REG_DWORD",
+              "data": 65539
+            },
+            {
+              "name": "UserDataLeafName",
+              "type": "REG_SZ",
+              "data": "My Battle for Middle-earth II Files"
             }
           ]
         }

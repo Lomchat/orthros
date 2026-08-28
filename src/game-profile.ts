@@ -14,7 +14,7 @@
 export interface RegistryPatch {
     root: string;
     path: string;
-    values: Array<{ name: string; type: string; data: string }>;
+    values: Array<{ name: string; type: string; data: string | number }>;
 }
 
 /** A selectable edition of a game. In practice: a language the bundle ships. */
@@ -32,7 +32,7 @@ export interface GameLanguage {
     /** Own container key — omit to share the entry's default container. */
     gameId?: string;
     /** Seeded after the bundle's registry defaults, so the choice wins. */
-    registry?: RegistryPatch;
+    registry?: RegistryPatch | RegistryPatch[];
 }
 
 /** What the player picked. Absent fields mean "leave the bundle's value alone". */
@@ -94,7 +94,7 @@ export function resolveLanguage(
  */
 export interface LaunchProfile {
     manifest?: Record<string, unknown>;
-    registry?: RegistryPatch;
+    registry?: RegistryPatch | RegistryPatch[];
 }
 
 export function buildLaunchProfile(

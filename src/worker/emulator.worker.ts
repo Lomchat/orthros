@@ -1725,17 +1725,18 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     if (bundle.registry) {
       system.registry.seed(bundle.registry as any);
     }
-    // The profile's registry patch lands after the bundle defaults so the player's choice
-    // wins, but before persisted values are restored so an existing container keeps its own.
-    if (pendingLaunchProfile?.registry) {
-      system.registry.seed(pendingLaunchProfile.registry as any);
-    }
-
-    // Restore persisted (game-written) registry LAST so it overrides the bundle defaults.
+    // Restore persisted game-written values over bundle defaults.
     const persistedState = await RegistryPersistence.load(gameId);
     if (persistedState) {
       system.registry.restore(persistedState);
       Logger.log(LogCategory.SYSTEM, `Restored persisted registry for game "${gameId}"`);
+    }
+
+    // The explicit launch profile is authoritative over both bundle defaults and an
+    // older persisted install. This lets catalog metadata repair immutable install
+    // paths without deleting saves, while still preserving every unrelated value.
+    if (pendingLaunchProfile?.registry) {
+      system.registry.seed(pendingLaunchProfile.registry as any);
     }
 
     // Setup auto-save on registry changes (debounced, cancelled on game switch).
