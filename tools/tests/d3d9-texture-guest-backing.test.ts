@@ -106,6 +106,19 @@ describe("D3D9 transient texture guest backing", () => {
         expect(Array.from(host.subarray(0, 4))).toEqual([9, 8, 7, 6]);
         expect(new DataView(memory.buffer).getUint32(stateAddr, true)).toBe(0);
         expect(syncSurfaceLockInlineTexture(texture, host, memory)).toBe(false);
+        const collidingSurface = surface + 1024 * 8;
+        const collidingTexture = texture + 0x100;
+        const collidingGuest = guestPtr + 0x100;
+        expect(registerSurfaceLockInlineMapping(
+            collidingSurface, collidingTexture, collidingGuest, 16, 4, 4, 4,
+        )).toBe(true);
+        const collidingStateAddr = emitted.tableBase + (slot + 1) * 32 + 28;
+        new DataView(memory.buffer).setUint32(collidingStateAddr, 2, true);
+        memory.set([5, 4, 3, 2], collidingGuest);
+        const collidingHost = new Uint8Array(64);
+        expect(syncSurfaceLockInlineTexture(collidingTexture, collidingHost, memory)).toBe(true);
+        expect(Array.from(collidingHost.subarray(0, 4))).toEqual([5, 4, 3, 2]);
+        unregisterSurfaceLockInlineTexture(collidingTexture);
         unregisterSurfaceLockInlineTexture(texture);
         expect(new DataView(memory.buffer).getUint32(emitted.tableBase + slot * 32, true)).toBe(0);
     });

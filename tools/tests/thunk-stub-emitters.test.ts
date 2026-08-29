@@ -222,7 +222,7 @@ const EXPECTED: Record<string, Snapshot> = {
     ownerDisarmScalarTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4224},"hashes":{"code":"3872c71deed97fde2196b52379f1d1aa7abdf8847b81c6ffa488340c96ccc8c6"}},
     structCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4320},"hashes":{"code":"5ce49653ab8f3fa8c1218565df2c2234c05169a2d00d54a57c64d1602f2fbbed"}},
     upDrawCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4480},"hashes":{"code":"b4d6979e6cae69666eaacb40eb06265e73b17a766266b692442734350baf3642"}},
-    surfaceLockInlineTrampolines: {"result":{"lockAddr":36864,"unlockAddr":37063,"tableBase":4096,"codeRegionBase":36864,"codeRegionEnd":37134},"hashes":{"code":"e9060ddb7cf120f0de0d947384e087ff27665f2c579d1b4da6f6f93a147616bc","table":"c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479"}},
+    surfaceLockInlineTrampolines: {"result":{"lockAddr":37088,"unlockAddr":37369,"tableBase":4096,"codeRegionBase":37088,"codeRegionEnd":37522},"hashes":{"code":"33c2b685c1bff0d42f7fb7713b5cc578c3acb86d33f4d934c2ec3e99eb8eb301","table":"c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479"}},
 };
 
 describe('thunk stub emitters — byte-identity snapshots', () => {

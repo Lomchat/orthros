@@ -10,6 +10,7 @@ import type { StubAllocator } from '../../core/thunking/thunk-memory-manager';
 
 const SURFACE_LOCK_INLINE_SLOTS = 1024;
 const SURFACE_LOCK_INLINE_STRIDE = 32;
+const SURFACE_LOCK_INLINE_PROBES = 8;
 let surfaceLockInlineTableBase = 0;
 let surfaceLockInlineMemory: (() => Uint8Array) | null = null;
 const surfaceLockInlineByTexture = new Map<number, { surface: number; slot: number }>();
@@ -30,13 +31,23 @@ export function registerSurfaceLockInlineMapping(
     height: number,
 ): boolean {
     if (!surfaceLockInlineTableBase || !surfaceLockInlineMemory || guestPtr <= 0 || bytesPerPixel < 1 || bytesPerPixel > 4) return false;
-    const slot = ((surface >>> 3) & (SURFACE_LOCK_INLINE_SLOTS - 1)) >>> 0;
-    const addr = surfaceLockInlineTableBase + slot * SURFACE_LOCK_INLINE_STRIDE;
     const mem = surfaceLockInlineMemory();
-    if (addr > mem.length - SURFACE_LOCK_INLINE_STRIDE) return false;
     const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-    const owner = view.getUint32(addr, true);
-    if (owner !== 0 && owner !== (surface >>> 0)) return false;
+    const baseSlot = ((surface >>> 3) & (SURFACE_LOCK_INLINE_SLOTS - 1)) >>> 0;
+    let slot = -1;
+    let addr = 0;
+    for (let probe = 0; probe < SURFACE_LOCK_INLINE_PROBES; probe++) {
+        const candidateSlot = baseSlot + probe;
+        const candidateAddr = surfaceLockInlineTableBase + candidateSlot * SURFACE_LOCK_INLINE_STRIDE;
+        if (candidateAddr > mem.length - SURFACE_LOCK_INLINE_STRIDE) return false;
+        const owner = view.getUint32(candidateAddr, true);
+        if (owner === 0 || owner === (surface >>> 0)) {
+            slot = candidateSlot;
+            addr = candidateAddr;
+            break;
+        }
+    }
+    if (slot < 0) return false;
     const prior = surfaceLockInlineByTexture.get(texture >>> 0);
     if (prior && prior.surface !== (surface >>> 0)) {
         const priorAddr = surfaceLockInlineTableBase + prior.slot * SURFACE_LOCK_INLINE_STRIDE;
@@ -86,8 +97,9 @@ export function writeSurfaceLockInlineTrampolines(
     lockFuncId: number,
     unlockFuncId: number,
 ): { lockAddr: number; unlockAddr: number; tableBase: number; codeRegionBase: number; codeRegionEnd: number } {
-    const tableBase = allocator.alloc(SURFACE_LOCK_INLINE_SLOTS * SURFACE_LOCK_INLINE_STRIDE, 'THUNK_DATA', 'rw');
-    getMemory().fill(0, tableBase, tableBase + SURFACE_LOCK_INLINE_SLOTS * SURFACE_LOCK_INLINE_STRIDE);
+    const tableBytes = (SURFACE_LOCK_INLINE_SLOTS + SURFACE_LOCK_INLINE_PROBES - 1) * SURFACE_LOCK_INLINE_STRIDE;
+    const tableBase = allocator.alloc(tableBytes, 'THUNK_DATA', 'rw');
+    getMemory().fill(0, tableBase, tableBase + tableBytes);
     const codeRegionBase = allocator.alloc(768, 'THUNK_CODE', 'rx');
     const mem = getMemory();
     const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -103,6 +115,7 @@ export function writeSurfaceLockInlineTrampolines(
 
     const lockAddr = off;
     let lockFallback = 0;
+    let lockFound = 0;
     w8(0x53);                                                   // push ebx
     w8(0x83); w8(0x7c); w8(0x24); w8(0x14); w8(0x00);         // cmp [esp+20],0 flags
     jcc(0x85, () => lockFallback);                              // jne fallback
@@ -116,7 +129,14 @@ export function writeSurfaceLockInlineTrampolines(
     w8(0x81); w8(0xe3); w32(SURFACE_LOCK_INLINE_SLOTS - 1);   // and ebx,mask
     w8(0xc1); w8(0xe3); w8(0x05);                             // shl ebx,5
     w8(0x81); w8(0xc3); w32(tableBase);                       // add ebx,table
-    w8(0x39); w8(0x13); jcc(0x85, () => lockFallback);        // cmp [ebx],edx / jne
+    for (let probe = 0; probe < SURFACE_LOCK_INLINE_PROBES; probe++) {
+        w8(0x39); w8(0x13); jcc(0x84, () => lockFound);       // cmp [ebx],edx / je found
+        if (probe + 1 < SURFACE_LOCK_INLINE_PROBES) {
+            w8(0x83); w8(0xc3); w8(SURFACE_LOCK_INLINE_STRIDE); // add ebx,32
+        }
+    }
+    w8(0xe9); const lockMissPatch = off; w32(0);
+    lockFound = off;
     w8(0x83); w8(0x7b); w8(0x1c); w8(0x01); jcc(0x84, () => lockFallback); // active?
     // Validate left/top/right/bottom against stored width/height.
     w8(0x8b); w8(0x01); w8(0x85); w8(0xc0); jcc(0x88, () => lockFallback); // left < 0
@@ -136,20 +156,30 @@ export function writeSurfaceLockInlineTrampolines(
     w8(0x5b); w8(0x31); w8(0xc0); w8(0xc2); w8(0x10); w8(0x00);
     lockFallback = off;
     w8(0x5b); fallback(lockFuncId, 16);
+    dv.setInt32(lockMissPatch, lockFallback - (lockMissPatch + 4), true);
 
     const unlockAddr = off;
     let unlockFallback = 0;
+    let unlockFound = 0;
     w8(0x53);
     w8(0x8b); w8(0x54); w8(0x24); w8(0x08);                   // surface
     w8(0x8b); w8(0xda); w8(0xc1); w8(0xeb); w8(0x03);
     w8(0x81); w8(0xe3); w32(SURFACE_LOCK_INLINE_SLOTS - 1);
     w8(0xc1); w8(0xe3); w8(0x05); w8(0x81); w8(0xc3); w32(tableBase);
-    w8(0x39); w8(0x13); jcc(0x85, () => unlockFallback);
+    for (let probe = 0; probe < SURFACE_LOCK_INLINE_PROBES; probe++) {
+        w8(0x39); w8(0x13); jcc(0x84, () => unlockFound);
+        if (probe + 1 < SURFACE_LOCK_INLINE_PROBES) {
+            w8(0x83); w8(0xc3); w8(SURFACE_LOCK_INLINE_STRIDE);
+        }
+    }
+    w8(0xe9); const unlockMissPatch = off; w32(0);
+    unlockFound = off;
     w8(0x83); w8(0x7b); w8(0x1c); w8(0x01); jcc(0x85, () => unlockFallback);
     w8(0xc7); w8(0x43); w8(0x1c); w32(2);                    // state=dirty/unlocked
     w8(0x5b); w8(0x31); w8(0xc0); w8(0xc2); w8(0x04); w8(0x00);
     unlockFallback = off;
     w8(0x5b); fallback(unlockFuncId, 4);
+    dv.setInt32(unlockMissPatch, unlockFallback - (unlockMissPatch + 4), true);
 
     for (const patch of relPatches) dv.setInt32(patch.at, patch.target() - (patch.at + 4), true);
     installSurfaceLockInlineTable(tableBase, getMemory);
