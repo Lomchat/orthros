@@ -45,6 +45,12 @@ export type DecodedImage = {
     mipLevels: number;
 };
 
+export type ImageInfo = {
+    width: number;
+    height: number;
+    mipLevels: number;
+};
+
 const DDS_MAGIC = 0x20534444; // "DDS "
 const DDS_HEADER_SIZE = 124;
 const DDS_PIXELFORMAT_SIZE = 32;
@@ -91,6 +97,19 @@ function readU32LE(data: Uint8Array, offset: number): number {
         ((data[offset + 1] ?? 0) << 8) |
         ((data[offset + 2] ?? 0) << 16) |
         ((data[offset + 3] ?? 0) << 24)
+    ) >>> 0;
+}
+
+function readU16BE(data: Uint8Array, offset: number): number {
+    return ((data[offset] ?? 0) << 8) | (data[offset + 1] ?? 0);
+}
+
+function readU32BE(data: Uint8Array, offset: number): number {
+    return (
+        ((data[offset] ?? 0) << 24) |
+        ((data[offset + 1] ?? 0) << 16) |
+        ((data[offset + 2] ?? 0) << 8) |
+        (data[offset + 3] ?? 0)
     ) >>> 0;
 }
 
@@ -413,6 +432,77 @@ function computeMipLevels(width: number, height: number): number {
     return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
 
+/**
+ * Read only the container header needed by D3DXGetImageInfo*. This deliberately
+ * avoids createImageBitmap, canvas readback and full DDS/TGA pixel expansion.
+ */
+export function readImageInfoBytes(data: Uint8Array): ImageInfo | null {
+    let width = 0;
+    let height = 0;
+    let mipLevels = 0;
+
+    if (data.length >= 24
+        && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+        && data[12] === 0x49 && data[13] === 0x48 && data[14] === 0x44 && data[15] === 0x52) {
+        width = readU32BE(data, 16);
+        height = readU32BE(data, 20);
+    } else if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
+        let pos = 2;
+        while (pos + 3 < data.length) {
+            while (pos < data.length && data[pos] !== 0xff) pos++;
+            while (pos < data.length && data[pos] === 0xff) pos++;
+            if (pos >= data.length) break;
+            const marker = data[pos++];
+            if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+            if (marker === 0xd9 || marker === 0xda || pos + 1 >= data.length) break;
+            const segmentLength = readU16BE(data, pos);
+            if (segmentLength < 2 || pos + segmentLength > data.length) return null;
+            const isSof = (marker >= 0xc0 && marker <= 0xc3)
+                || (marker >= 0xc5 && marker <= 0xc7)
+                || (marker >= 0xc9 && marker <= 0xcb)
+                || (marker >= 0xcd && marker <= 0xcf);
+            if (isSof) {
+                if (segmentLength < 7) return null;
+                height = readU16BE(data, pos + 3);
+                width = readU16BE(data, pos + 5);
+                break;
+            }
+            pos += segmentLength;
+        }
+    } else if (data.length >= 26 && data[0] === 0x42 && data[1] === 0x4d) {
+        const dibSize = readU32LE(data, 14);
+        if (dibSize === 12) {
+            width = readU16LE(data, 18);
+            height = readU16LE(data, 20);
+        } else if (dibSize >= 40 && data.length >= 26) {
+            width = Math.abs(readU32LE(data, 18) | 0);
+            height = Math.abs(readU32LE(data, 22) | 0);
+        }
+    } else if (data.length >= 128 && readU32LE(data, 0) === DDS_MAGIC
+        && readU32LE(data, 4) === DDS_HEADER_SIZE && readU32LE(data, 76) === DDS_PIXELFORMAT_SIZE) {
+        height = readU32LE(data, 12);
+        width = readU32LE(data, 16);
+        mipLevels = Math.max(1, readU32LE(data, 28) || 1);
+    } else if (data.length >= 18) {
+        const colorMapType = data[1];
+        const imageType = data[2];
+        const bpp = data[16];
+        const isColorMapped = imageType === 1 || imageType === 9;
+        const isTrueColor = imageType === 2 || imageType === 10;
+        const isGrayscale = imageType === 3 || imageType === 11;
+        const formatOk = (isColorMapped && (bpp === 8 || bpp === 16))
+            || (isTrueColor && (bpp === 15 || bpp === 16 || bpp === 24 || bpp === 32))
+            || (isGrayscale && (bpp === 8 || bpp === 16));
+        if (formatOk && colorMapType === (isColorMapped ? 1 : 0)) {
+            width = readU16LE(data, 12);
+            height = readU16LE(data, 14);
+        }
+    }
+
+    if (width <= 0 || height <= 0) return null;
+    return { width, height, mipLevels: mipLevels || computeMipLevels(width, height) };
+}
+
 export async function decodeImageBytes(data: Uint8Array): Promise<DecodedImage | null> {
     try {
         let width: number;
@@ -483,4 +573,14 @@ export async function loadImageFromVfs(path: string): Promise<DecodedImage | nul
     if (size <= 0) return null;
     const data = await vfs.read(fh, size);
     return decodeImageBytes(data);
+}
+
+export async function loadImageInfoFromVfs(path: string): Promise<ImageInfo | null> {
+    const vfs = System.getInstance().fileSystem;
+    const normalized = path.replace(/\\/g, '/');
+    const fh = await vfs.open(normalized, 0x80000000, 3);
+    if (!fh) return null;
+    const size = vfs.getFileSize(normalized);
+    if (size <= 0) return null;
+    return readImageInfoBytes(await vfs.read(fh, size));
 }

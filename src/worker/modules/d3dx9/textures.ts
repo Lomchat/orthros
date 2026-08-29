@@ -13,7 +13,12 @@ import {
     D3DFMT_A8R8G8B8,
 } from '../d3d9/resource-registry';
 import { d3dxFilterTexture, uploadRgbaToTexture } from '../d3d9/d3dx-bridge';
-import { decodeImageBytes, loadImageFromVfs } from './image-decode';
+import {
+    decodeImageBytes,
+    loadImageFromVfs,
+    loadImageInfoFromVfs,
+    readImageInfoBytes,
+} from './image-decode';
 
 const D3DPOOL_MANAGED = 1;
 const D3DRTYPE_TEXTURE = 3;
@@ -98,9 +103,9 @@ export function createTextureExports(): Record<string, ThunkImplementation> {
         const pInfo = args[1] >>> 0;
         if (!pathPtr || !pInfo) return D3DERR_INVALIDCALL;
         const path = Marshaler.readString(mem, pathPtr);
-        const decoded = await loadImageFromVfs(path);
-        if (!decoded) return D3DERR_INVALIDCALL;
-        return writeImageInfo(pInfo, decoded.width, decoded.height, decoded.mipLevels) ? D3D_OK : D3DERR_INVALIDCALL;
+        const info = await loadImageInfoFromVfs(path);
+        if (!info) return D3DERR_INVALIDCALL;
+        return writeImageInfo(pInfo, info.width, info.height, info.mipLevels) ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
     exports['D3DXGetImageInfoFromFileW'] = async (_ctx, mem, args) => {
@@ -108,9 +113,9 @@ export function createTextureExports(): Record<string, ThunkImplementation> {
         const pInfo = args[1] >>> 0;
         if (!pathPtr || !pInfo) return D3DERR_INVALIDCALL;
         const path = Marshaler.readWideString(mem, pathPtr);
-        const decoded = await loadImageFromVfs(path);
-        if (!decoded) return D3DERR_INVALIDCALL;
-        return writeImageInfo(pInfo, decoded.width, decoded.height, decoded.mipLevels) ? D3D_OK : D3DERR_INVALIDCALL;
+        const info = await loadImageInfoFromVfs(path);
+        if (!info) return D3DERR_INVALIDCALL;
+        return writeImageInfo(pInfo, info.width, info.height, info.mipLevels) ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
     exports['D3DXGetImageInfoFromFileInMemory'] = async (_ctx, mem, args) => {
@@ -118,9 +123,10 @@ export function createTextureExports(): Record<string, ThunkImplementation> {
         const srcLen = args[1] >>> 0;
         const pInfo = args[2] >>> 0;
         if (!pSrc || !srcLen || !pInfo) return D3DERR_INVALIDCALL;
-        const decoded = await decodeImageBytes(mem.subarray(pSrc, pSrc + srcLen));
-        if (!decoded) return D3DERR_INVALIDCALL;
-        return writeImageInfo(pInfo, decoded.width, decoded.height, decoded.mipLevels)
+        if (pSrc + srcLen > mem.length) return D3DERR_INVALIDCALL;
+        const info = readImageInfoBytes(mem.subarray(pSrc, pSrc + srcLen));
+        if (!info) return D3DERR_INVALIDCALL;
+        return writeImageInfo(pInfo, info.width, info.height, info.mipLevels)
             ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
