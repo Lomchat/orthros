@@ -44,4 +44,31 @@ describe("D3DX memory surface upload", () => {
         ]);
         expect(commits).toBe(1);
     });
+
+    test("converts X8R8G8B8 into a DXT1 destination surface", () => {
+        const memory = new Uint8Array(0x800);
+        const source = 0x100;
+        for (let i = 0; i < 16; i++) memory.set([0, 0, 255, 0], source + i * 4);
+        const pixels = new Uint8Array(8);
+        let commits = 0;
+        const device = {
+            getTextureLevelPixels: () => ({ data: pixels, pitch: 8, width: 4, height: 4 }),
+            setTextureLevelPixels: (_texture: number, _level: number, data: Uint8Array, pitch: number) => {
+                expect(pitch).toBe(8);
+                pixels.set(data);
+                commits++;
+                return true;
+            },
+            lockTexture: () => { throw new Error("compressed upload must stay host-side"); },
+        };
+        resourceToDevice.set(SURFACE, device as any);
+        surfaceMeta.set(SURFACE, {
+            format: 0x31545844, type: 1, usage: 0, pool: 1, multiSampleType: 0,
+            multiSampleQuality: 0, width: 4, height: 4, texturePtr: TEXTURE, level: 0,
+        });
+
+        expect(d3dxLoadSurfaceFromMemory(memory, SURFACE, 0, source, 22, 16, 0, 1, 0)).toBe(0);
+        expect(commits).toBe(1);
+        expect(pixels.some((byte) => byte !== 0)).toBe(true);
+    });
 });

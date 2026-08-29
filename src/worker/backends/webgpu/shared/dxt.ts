@@ -69,6 +69,121 @@ export function dxtSurfaceBytes(format: number, width: number, height: number): 
     return dxtRowPitch(format, width) * blocksHigh(height);
 }
 
+function packRgb565(r: number, g: number, b: number): number {
+    return ((Math.round(r * 31 / 255) & 31) << 11)
+        | ((Math.round(g * 63 / 255) & 63) << 5)
+        | (Math.round(b * 31 / 255) & 31);
+}
+
+function unpackRgb565(value: number): [number, number, number] {
+    return [r5(value), g6(value), b5(value)];
+}
+
+/**
+ * Deterministic BC1/DXT1 range-fit encoder used by D3DX surface uploads.
+ * Quality is intentionally modest but stable: min/max endpoints followed by a
+ * perceptually weighted selector pass. This is the same inexpensive shape used
+ * by the validated BFME cold-load encoder, generalized to RGBA8 input.
+ */
+export function encodeRgbaToDxt1(
+    rgba: Uint8Array,
+    width: number,
+    height: number,
+    dst: Uint8Array,
+    dstPitch = dxtRowPitch(D3DFMT_DXT1, width),
+): boolean {
+    if (width <= 0 || height <= 0 || rgba.length < width * height * 4) return false;
+    const bw = blocksWide(width);
+    const bh = blocksHigh(height);
+    if (dstPitch < bw * 8 || dst.length < dstPitch * bh) return false;
+
+    const block = new Uint8Array(16 * 4);
+    for (let by = 0; by < bh; by++) {
+        for (let bx = 0; bx < bw; bx++) {
+            let opaque = 0;
+            let hasTransparent = false;
+            let minR = 255, minG = 255, minB = 255;
+            let maxR = 0, maxG = 0, maxB = 0;
+            for (let ty = 0; ty < 4; ty++) {
+                const sy = Math.min(height - 1, by * 4 + ty);
+                for (let tx = 0; tx < 4; tx++) {
+                    const sx = Math.min(width - 1, bx * 4 + tx);
+                    const src = (sy * width + sx) * 4;
+                    const p = (ty * 4 + tx) * 4;
+                    const r = rgba[src], g = rgba[src + 1], b = rgba[src + 2], a = rgba[src + 3];
+                    block[p] = r; block[p + 1] = g; block[p + 2] = b; block[p + 3] = a;
+                    if (a < 128) {
+                        hasTransparent = true;
+                    } else {
+                        opaque++;
+                        minR = Math.min(minR, r); minG = Math.min(minG, g); minB = Math.min(minB, b);
+                        maxR = Math.max(maxR, r); maxG = Math.max(maxG, g); maxB = Math.max(maxB, b);
+                    }
+                }
+            }
+
+            const out = by * dstPitch + bx * 8;
+            if (opaque === 0) {
+                dst[out] = 0; dst[out + 1] = 0; dst[out + 2] = 0; dst[out + 3] = 0;
+                dst[out + 4] = 0xff; dst[out + 5] = 0xff; dst[out + 6] = 0xff; dst[out + 7] = 0xff;
+                continue;
+            }
+
+            let c0 = packRgb565(maxR, maxG, maxB);
+            let c1 = packRgb565(minR, minG, minB);
+            if (hasTransparent) {
+                if (c0 > c1) [c0, c1] = [c1, c0];
+            } else if (c0 < c1) {
+                [c0, c1] = [c1, c0];
+            }
+            const p0 = unpackRgb565(c0);
+            const p1 = unpackRgb565(c1);
+            const palette: Array<[number, number, number]> = [p0, p1];
+            if (hasTransparent || c0 <= c1) {
+                palette.push([
+                    (p0[0] + p1[0]) >> 1,
+                    (p0[1] + p1[1]) >> 1,
+                    (p0[2] + p1[2]) >> 1,
+                ]);
+            } else {
+                palette.push([
+                    (2 * p0[0] + p1[0] + 1) / 3 | 0,
+                    (2 * p0[1] + p1[1] + 1) / 3 | 0,
+                    (2 * p0[2] + p1[2] + 1) / 3 | 0,
+                ], [
+                    (p0[0] + 2 * p1[0] + 1) / 3 | 0,
+                    (p0[1] + 2 * p1[1] + 1) / 3 | 0,
+                    (p0[2] + 2 * p1[2] + 1) / 3 | 0,
+                ]);
+            }
+
+            let selectors = 0;
+            const paletteLength = hasTransparent || c0 <= c1 ? 3 : 4;
+            for (let i = 0; i < 16; i++) {
+                const p = i * 4;
+                let best = 3;
+                if (block[p + 3] >= 128) {
+                    let bestError = Number.POSITIVE_INFINITY;
+                    for (let candidate = 0; candidate < paletteLength; candidate++) {
+                        const colour = palette[candidate]!;
+                        const dr = block[p] - colour[0];
+                        const dg = block[p + 1] - colour[1];
+                        const db = block[p + 2] - colour[2];
+                        const error = dr * dr * 0.29703665 + dg * dg + db * db * 0.10078278;
+                        if (error < bestError) { bestError = error; best = candidate; }
+                    }
+                }
+                selectors |= best << (i * 2);
+            }
+            dst[out] = c0 & 0xff; dst[out + 1] = c0 >>> 8;
+            dst[out + 2] = c1 & 0xff; dst[out + 3] = c1 >>> 8;
+            dst[out + 4] = selectors & 0xff; dst[out + 5] = selectors >>> 8 & 0xff;
+            dst[out + 6] = selectors >>> 16 & 0xff; dst[out + 7] = selectors >>> 24 & 0xff;
+        }
+    }
+    return true;
+}
+
 /** Map a DXT FourCC to its native WebGPU BC texture format. */
 export function dxtToBcGpuFormat(format: number): GPUTextureFormat {
     switch (format) {

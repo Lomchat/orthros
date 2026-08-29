@@ -4,6 +4,7 @@
 
 import { resolveSurfaceInfo, resolveTextureInfo, surfaceMeta, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
 import { decodeD3DTextureToRgba8, d3dFormatBpp } from '../../backends/webgpu/shared/texture-formats';
+import { D3DFMT_DXT1, decodeDxtToRgba, encodeRgbaToDxt1 } from '../../backends/webgpu/shared/dxt';
 
 const D3DX_FILTER_LINEAR = 3;
 
@@ -224,8 +225,7 @@ export function d3dxLoadSurfaceFromMemory(
     if (!dw || !dh || !sw || !sh) return D3D_OK;
 
     const srcBpp = d3dFormatBpp(srcFormat);
-    const destBpp = d3dFormatBpp(destMeta.format);
-    if (!srcBpp || !destBpp || (srcBpp & 7) !== 0 || (destBpp & 7) !== 0) return D3DERR_INVALIDCALL;
+    if (!srcBpp || (srcBpp & 7) !== 0) return D3DERR_INVALIDCALL;
     const srcBase = srcMemory + srcRect.top * srcPitch + srcRect.left * (srcBpp >>> 3);
     const rgba = new Uint8Array(sw * sh * 4);
     try {
@@ -233,6 +233,16 @@ export function d3dxLoadSurfaceFromMemory(
     } catch {
         return D3DERR_INVALIDCALL;
     }
+
+    if (destMeta.format === D3DFMT_DXT1) {
+        // The decoded buffer is already cropped to srcRect; present it as a
+        // tightly-packed image so the generic RGBA compositor can preserve any
+        // destination pixels outside destRect before recompressing the surface.
+        return d3dxLoadSurfaceFromRgba(mem, destSurface, destRectPtr, rgba, sw, sh, 0, filter, colorKey);
+    }
+
+    const destBpp = d3dFormatBpp(destMeta.format);
+    if (!destBpp || (destBpp & 7) !== 0) return D3DERR_INVALIDCALL;
 
     const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
     const destLock = direct ? null : dest.device.lockTexture(dest.texturePtr, dest.level);
@@ -324,6 +334,37 @@ export function d3dxLoadSurfaceFromRgba(
     if (destRect.left < 0 || destRect.top < 0 || destRect.right > dest.width || destRect.bottom > dest.height ||
         srcRect.left < 0 || srcRect.top < 0 || srcRect.right > srcWidth || srcRect.bottom > srcHeight) {
         return D3DERR_INVALIDCALL;
+    }
+
+    if (destMeta.format === D3DFMT_DXT1) {
+        const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
+        if (!direct) return D3DERR_INVALIDCALL;
+        const composed = new Uint8Array(dest.width * dest.height * 4);
+        decodeDxtToRgba(D3DFMT_DXT1, direct.data, direct.pitch, dest.width, dest.height, composed);
+        const useLinear = filter === D3DX_FILTER_LINEAR;
+        const sourcePixel = (px: number, py: number, channel: number) =>
+            rgba[((srcRect.top + py) * srcWidth + srcRect.left + px) * 4 + channel];
+        for (let y = 0; y < dh; y++) {
+            for (let x = 0; x < dw; x++) {
+                const fx = Math.max(0, Math.min(sw - 1, dw === sw ? x : (x * (sw - 1)) / Math.max(1, dw - 1)));
+                const fy = Math.max(0, Math.min(sh - 1, dh === sh ? y : (y * (sh - 1)) / Math.max(1, dh - 1)));
+                const x0 = Math.floor(fx), y0 = Math.floor(fy);
+                const x1 = Math.min(sw - 1, x0 + 1), y1 = Math.min(sh - 1, y0 + 1);
+                const tx = fx - x0, ty = fy - y0;
+                const channel = (c: number) => useLinear
+                    ? Math.round((sourcePixel(x0, y0, c) + (sourcePixel(x1, y0, c) - sourcePixel(x0, y0, c)) * tx) * (1 - ty)
+                        + (sourcePixel(x0, y1, c) + (sourcePixel(x1, y1, c) - sourcePixel(x0, y1, c)) * tx) * ty)
+                    : sourcePixel(Math.round(fx), Math.round(fy), c);
+                const r = channel(0), g = channel(1), b = channel(2), a = channel(3);
+                if (colorKeyMatch((a << 24) | (r << 16) | (g << 8) | b, colorKey)) continue;
+                const out = ((destRect.top + y) * dest.width + destRect.left + x) * 4;
+                composed[out] = r; composed[out + 1] = g; composed[out + 2] = b; composed[out + 3] = a;
+            }
+        }
+        const encoded = new Uint8Array(direct.data.length);
+        if (!encodeRgbaToDxt1(composed, dest.width, dest.height, encoded, direct.pitch)) return D3DERR_INVALIDCALL;
+        return dest.device.setTextureLevelPixels(dest.texturePtr, dest.level, encoded, direct.pitch)
+            ? D3D_OK : D3DERR_INVALIDCALL;
     }
 
     const destBpp = d3dFormatBpp(destMeta.format);
