@@ -9,7 +9,6 @@ import {
     HANDLER_MSVCR71_STRCMP,
     HANDLER_STRSTR,
     HANDLER_CDECL_CEIL,
-    HANDLER_CDECL_FLOOR,
 } from '../../../cpu/hypercall-data';
 import {
     buildMsvcr71AddCarryInline,
@@ -32,6 +31,7 @@ import { buildMsvcr71GetPtdInline } from './getptd-inline';
 import { buildMsvcr71LocaleStricmpFilter } from './locale-compare-inline';
 import {
     buildMsvcr71FiniteDoubleFilter,
+    buildMsvcr71FloorInline,
     msvcr71CeilFallback,
     msvcr71FloorFallback,
 } from './rounding-filter';
@@ -415,8 +415,7 @@ export const msvcr71Descriptor: LibDescriptor = {
             },
             callingConvention: 'cdecl', argCount: 2, required: false,
             prologueLen: 6,
-            entryFilter: buildMsvcr71FiniteDoubleFilter,
-            hypercallHandlerId: HANDLER_CDECL_FLOOR,
+            entryFilter: buildMsvcr71FloorInline,
         },
     },
     handlers: {
