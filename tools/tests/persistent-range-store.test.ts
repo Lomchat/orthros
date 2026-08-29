@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
     PersistentRangeStore,
     RangeChunkIntegrityError,
+    writeRangeChunkBestEffort,
 } from "../../src/worker/runtime/filesystem/persistent-range-store";
 import type { WgbIntegrityManifest } from "../../src/worker/runtime/filesystem/wgb-integrity";
 
@@ -101,6 +102,33 @@ function integrity(): WgbIntegrityManifest {
 
 afterEach(() => {
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: originalNavigator });
+});
+
+describe("foreground range persistence policy", () => {
+    test("keeps serving valid network bytes when optional storage fails", async () => {
+        const failure = new DOMException("target exists", "InvalidModificationError");
+        let disabledWith: unknown = null;
+        const stored = await writeRangeChunkBestEffort(
+            { writeChunk: async () => { throw failure; } },
+            3307,
+            new Uint8Array([1, 2, 3]),
+            (error) => { disabledWith = error; },
+        );
+        expect(stored).toBe(false);
+        expect(disabledWith).toBe(failure);
+    });
+
+    test("still propagates integrity failures so the network range is retried", async () => {
+        const failure = new RangeChunkIntegrityError(7, "expected", "actual");
+        let disabled = false;
+        await expect(writeRangeChunkBestEffort(
+            { writeChunk: async () => { throw failure; } },
+            7,
+            new Uint8Array([4, 5, 6]),
+            () => { disabled = true; },
+        )).rejects.toBe(failure);
+        expect(disabled).toBe(false);
+    });
 });
 
 describe("PersistentRangeStore", () => {

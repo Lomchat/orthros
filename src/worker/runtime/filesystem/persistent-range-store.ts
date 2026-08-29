@@ -323,3 +323,25 @@ export class PersistentRangeStore {
         this.meta = null;
     }
 }
+
+/**
+ * Persist a foreground range without making the optional OPFS cache part of the
+ * game's correctness path. Integrity failures still propagate so callers can
+ * retry the network bytes; quota, handle, flush and promotion failures disable
+ * persistence but must not discard the already-valid response being served.
+ */
+export async function writeRangeChunkBestEffort(
+    store: Pick<PersistentRangeStore, "writeChunk">,
+    index: number,
+    bytes: Uint8Array,
+    onStorageFailure: (error: unknown) => void,
+): Promise<boolean> {
+    try {
+        await store.writeChunk(index, bytes);
+        return true;
+    } catch (error) {
+        if (error instanceof RangeChunkIntegrityError) throw error;
+        onStorageFailure(error);
+        return false;
+    }
+}

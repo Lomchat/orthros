@@ -14,7 +14,7 @@
 
 import { HttpRangeSource } from "@orthros/formats/zip";
 import type { ZipSource } from "@orthros/formats/zip";
-import { PersistentRangeStore } from "./persistent-range-store";
+import { PersistentRangeStore, writeRangeChunkBestEffort } from "./persistent-range-store";
 import { RangeChunkIntegrityError } from "./persistent-range-store";
 import { integrityEtag, parseWgbIntegrity, sha256Hex, type WgbIntegrityManifest } from "./wgb-integrity";
 import { planBackgroundSpans } from "./background-range-plan";
@@ -68,6 +68,18 @@ let netFetches = 0;   // cold, on the guest's critical path
 let prefetches = 0;   // speculative, ahead of the cursor
 let cacheServes = 0;  // requests answered with zero cold fetch
 let requests = 0;
+
+function disablePersistentCache(store: PersistentRangeStore, error: unknown): void {
+    // Another async lane may already have disabled/replaced this exact store.
+    if (persistent !== store) return;
+    persistent = null;
+    try { store.close(); } catch { /* best-effort */ }
+    postCacheProgress("unavailable", true);
+    (self as unknown as Worker).postMessage({
+        type: "log",
+        msg: `local WGB cache disabled after storage failure; streaming continues: ${error}`,
+    });
+}
 
 function postCacheProgress(state: "checking" | "downloading" | "complete" | "unavailable" | "retrying", force = false): void {
     const now = performance.now();
@@ -131,7 +143,15 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
     const pending = inflight.get(ci);
     if (pending) return pending;
 
-    const stored = persistent?.readChunk(ci);
+    let stored: Uint8Array | null = null;
+    const readStore = persistent;
+    if (readStore) {
+        try {
+            stored = readStore.readChunk(ci);
+        } catch (error) {
+            disablePersistentCache(readStore, error);
+        }
+    }
     if (stored) {
         chunks.set(ci, stored);
         lru.push(ci);
@@ -150,9 +170,12 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
         let buf: Uint8Array | null = null;
         for (let integrityAttempt = 0; integrityAttempt < 3; integrityAttempt++) {
             buf = await readNetworkWithRetry(start, end);
-            if (!persistent) break;
+            const writeStore = persistent;
+            if (!writeStore) break;
             try {
-                await persistent.writeChunk(ci, buf);
+                await writeRangeChunkBestEffort(writeStore, ci, buf, (error) => {
+                    disablePersistentCache(writeStore, error);
+                });
                 postCacheProgress(backgroundFillRunning ? "downloading" : "checking");
                 break;
             } catch (err) {
@@ -247,6 +270,10 @@ async function fillPersistentCache(): Promise<void> {
             try {
                 await fillBackgroundRun(first, Math.min(count, first + chunksPerRun));
             } catch (err) {
+                const store = persistent;
+                if (store && !(err instanceof RangeChunkIntegrityError)) {
+                    disablePersistentCache(store, err);
+                }
                 (self as unknown as Worker).postMessage({ type: "log", msg: `background local-cache fill paused at chunk ${first}: ${err}` });
                 return;
             }
