@@ -151,7 +151,7 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
 
     test('requires both exact helper signatures before detection', () => {
         expect(msvcr71Descriptor.minConfidence).toBe(16);
-        expect(Object.values(msvcr71Descriptor.signatures).map(sig => sig.weight)).toEqual([8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]);
+        expect(Object.values(msvcr71Descriptor.signatures).every(sig => sig.weight === 8)).toBe(true);
         const getptdSignature = msvcr71Descriptor.signatures.getptd;
         expect(getptdSignature.kind).toBe('bytes');
         if (getptdSignature.kind === 'bytes') {
@@ -162,7 +162,12 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
                 expect(signature.mask).toHaveLength(signature.pattern.length);
             }
         }
-        expect(Object.keys(msvcr71Descriptor.functions)).toEqual(['add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar', 'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii', 'strcmp', 'strstr', 'getptd', 'stricmp_locale']);
+        expect(Object.keys(msvcr71Descriptor.functions)).toEqual([
+            'add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar',
+            'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii',
+            'strcmp', 'strstr', 'getptd', 'stricmp_locale', 'ceil_x87',
+            'floor_x87',
+        ]);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
         expect(msvcr71Descriptor.functions.add96.required).toBe(true);
         expect(msvcr71Descriptor.functions.shift96.required).toBe(true);
@@ -171,6 +176,8 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
         expect(msvcr71Descriptor.functions.sscanf_scalar.argCount).toBe(3);
         expect(msvcr71Descriptor.functions.vsnprintf.required).toBe(false);
         expect(msvcr71Descriptor.functions.vsnprintf.argCount).toBe(4);
+        expect(msvcr71Descriptor.functions.ceil_x87.required).toBe(false);
+        expect(msvcr71Descriptor.functions.floor_x87.required).toBe(false);
     });
 
     test('guards the locale-aware stricmp wrapper and preserves its original route', () => {

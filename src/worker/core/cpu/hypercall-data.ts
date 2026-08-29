@@ -108,8 +108,8 @@ const HANDLER_CDECL_FABS = 40;
 const HANDLER_CDECL_ATAN2 = 41;
 const HANDLER_CDECL_FMOD = 42;
 const HANDLER_CDECL_POW = 43;
-const HANDLER_CDECL_CEIL = 44;
-const HANDLER_CDECL_FLOOR = 45;
+export const HANDLER_CDECL_CEIL = 44;
+export const HANDLER_CDECL_FLOOR = 45;
 // String/memory hypercalls (Tier 3)
 const HANDLER_WCSLEN = 51;
 const HANDLER_WCSCPY = 52;

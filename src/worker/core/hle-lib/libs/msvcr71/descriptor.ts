@@ -8,6 +8,8 @@ import {
     HANDLER_MSVCR71_STRNICMP,
     HANDLER_MSVCR71_STRCMP,
     HANDLER_STRSTR,
+    HANDLER_CDECL_CEIL,
+    HANDLER_CDECL_FLOOR,
 } from '../../../cpu/hypercall-data';
 import {
     buildMsvcr71AddCarryInline,
@@ -28,6 +30,11 @@ import { buildMsvcr71SscanfScalarFilter, msvcr71SscanfScalarFallback } from './s
 import { msvcr71VsnprintfFallback, msvcr71VsnprintfShadow } from './vsnprintf';
 import { buildMsvcr71GetPtdInline } from './getptd-inline';
 import { buildMsvcr71LocaleStricmpFilter } from './locale-compare-inline';
+import {
+    buildMsvcr71FiniteDoubleFilter,
+    msvcr71CeilFallback,
+    msvcr71FloorFallback,
+} from './rounding-filter';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -145,6 +152,18 @@ const LOCALE_STRICMP_PATTERN = hexBytes(
 const LOCALE_STRICMP_MASK =
     'xxxxxx????' + 'xxxxx????' + 'xxx????' + 'xxxxxxxxxxxxxxx????xxxx';
 
+// VC71's x87 fallbacks for exported ceil/floor. On v86 the runtime's SSE2
+// capability flag is false, so the public entries jump here. Absolute globals
+// are relocated and wildcarded; the distinct relative call identifies each
+// routine within the byte-identical VC71 build used by the three BFME games.
+const CEIL_X87_PATTERN = hexBytes(
+    '558bec51515356beffff000056ff35 00000000 e8d1e9ffff dd4508',
+);
+const FLOOR_X87_PATTERN = hexBytes(
+    '558bec51515356beffff000056ff35 00000000 e8fee8ffff dd4508',
+);
+const ROUND_X87_MASK = 'x'.repeat(15) + '????' + 'x'.repeat(8);
+
 
 export const msvcr71Descriptor: LibDescriptor = {
     id: 'msvcr71',
@@ -208,6 +227,14 @@ export const msvcr71Descriptor: LibDescriptor = {
         stricmp_locale: {
             kind: 'bytes', pattern: LOCALE_STRICMP_PATTERN,
             mask: LOCALE_STRICMP_MASK, section: '.text', weight: 8,
+        },
+        ceil_x87: {
+            kind: 'bytes', pattern: CEIL_X87_PATTERN,
+            mask: ROUND_X87_MASK, section: '.text', weight: 8,
+        },
+        floor_x87: {
+            kind: 'bytes', pattern: FLOOR_X87_PATTERN,
+            mask: ROUND_X87_MASK, section: '.text', weight: 8,
         },
     },
     functions: {
@@ -368,6 +395,29 @@ export const msvcr71Descriptor: LibDescriptor = {
             hypercallHandlerId: HANDLER_MSVCR71_STRICMP,
             shadow: msvcr71StricmpShadow,
         },
+        ceil_x87: {
+            name: 'ceil_x87',
+            entryProbe: {
+                kind: 'prologue', pattern: CEIL_X87_PATTERN,
+                mask: ROUND_X87_MASK, section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            // push ebp; mov ebp,esp; push ecx; push ecx
+            prologueLen: 6,
+            entryFilter: buildMsvcr71FiniteDoubleFilter,
+            hypercallHandlerId: HANDLER_CDECL_CEIL,
+        },
+        floor_x87: {
+            name: 'floor_x87',
+            entryProbe: {
+                kind: 'prologue', pattern: FLOOR_X87_PATTERN,
+                mask: ROUND_X87_MASK, section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            prologueLen: 6,
+            entryFilter: buildMsvcr71FiniteDoubleFilter,
+            hypercallHandlerId: HANDLER_CDECL_FLOOR,
+        },
     },
     handlers: {
         add_carry: msvcr71ArithmeticUnreachableHandler,
@@ -376,5 +426,7 @@ export const msvcr71Descriptor: LibDescriptor = {
         sscanf_scalar: msvcr71SscanfScalarFallback,
         vsnprintf: msvcr71VsnprintfFallback,
         getptd: msvcr71ArithmeticUnreachableHandler,
+        ceil_x87: msvcr71CeilFallback,
+        floor_x87: msvcr71FloorFallback,
     },
 };
