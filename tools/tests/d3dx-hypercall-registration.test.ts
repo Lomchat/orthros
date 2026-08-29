@@ -33,4 +33,19 @@ describe('D3DX math hypercall registration', () => {
         expect(new Uint8Array(memory.buffer)[0x1000 + 0x100 + 321]).toBe(82);
         expect(manager.registeredEntries.get(321)).toBe(82);
     });
+
+    it('routes the public matrix inverse export to generic WASM handler 83', () => {
+        const memory = new WebAssembly.Memory({ initial: 2 });
+        manager.cpu = { wasm_memory: memory };
+        manager.hpBase = 0x1000;
+        manager.initialized = true;
+        manager.view = new DataView(memory.buffer);
+        manager.wasmMemory = memory.buffer;
+        manager.registeredEntries = new Map();
+
+        hypercallDataManager.registerFunction('D3DX9', 'D3DXMatrixInverse', 322);
+
+        expect(new Uint8Array(memory.buffer)[0x1000 + 0x100 + 322]).toBe(83);
+        expect(manager.registeredEntries.get(322)).toBe(83);
+    });
 });

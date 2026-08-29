@@ -150,6 +150,7 @@ const HANDLER_WAIT_FOR_SINGLE_OBJECT = 81;
 // Generic D3DX math leaves. These remain below the engine-specific 128+ band:
 // they implement the public D3DX contract and benefit every D3D9 title.
 const HANDLER_D3DX_VEC3_CATMULL_ROM = 82;
+const HANDLER_D3DX_MATRIX_INVERSE = 83;
 
 /**
  * Inner-loop HLE handler-id band (128..=255) — engine compute kernels, kept
@@ -263,6 +264,7 @@ const HANDLER_MAP: Record<string, number> = {
     'kernel32.releasemutex': HANDLER_RELEASE_MUTEX,
     'kernel32.waitforsingleobject': HANDLER_WAIT_FOR_SINGLE_OBJECT,
     'd3dx9.d3dxvec3catmullrom': HANDLER_D3DX_VEC3_CATMULL_ROM,
+    'd3dx9.d3dxmatrixinverse': HANDLER_D3DX_MATRIX_INVERSE,
     // GetCurrentThreadId — pure read of the page's current-thread-id (republished on every
     // context switch). Read-only, no scheduler state touched; onTickHook compensates the
     // skipped onThunkComplete the same as GetLastError. Hot via the CRT's _getptd().
