@@ -43,6 +43,7 @@ import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../mem
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getBfmeDxtEncodeCacheFallbacks } from '../hle-lib/libs/bfme/dxt-encode-cache';
 import { getD3dxAssembleShaderSamples } from '../../modules/d3dx9';
+import { getSurfaceLockDiagnostics, setSurfaceLockDiagnostics } from '../../modules/d3d9/resources';
 
 interface DbgConfig {
     enabled: boolean;
@@ -727,6 +728,18 @@ export const dbg = {
         const fn = (globalThis as any).getSlabReport;
         const result = typeof fn === 'function' ? fn() : null;
         console.log(`[dbg][heap-slab][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    /** Attribute D3D9 Surface::LockRect bursts by surface, flags, rectangle and
+     *  guest caller. Disabled by default because it intentionally counts calls. */
+    surfaceLockDiag(on = true, reset = true): any {
+        const result = setSurfaceLockDiagnostics(!!on, !!reset);
+        console.log(`[dbg][surface-lock] diagnostics ${on ? 'enabled' : 'disabled'}${reset ? ' + reset' : ''}`);
+        return result;
+    },
+    surfaceLockDiagReport(): any {
+        const result = getSurfaceLockDiagnostics();
+        console.log(`[dbg][surface-lock][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Toggle the byte-exact BFME DXT encoder memoization path. This is hot-

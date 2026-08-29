@@ -44,6 +44,129 @@ const D3DUSAGE_DEPTHSTENCIL = 0x00000002;
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
 
+interface SurfaceLockDiagRow {
+    surface: number;
+    texture: number;
+    width: number;
+    height: number;
+    format: number;
+    pool: number;
+    usage: number;
+    locks: number;
+    fullLocks: number;
+    partialLocks: number;
+    bytesPerLock: number;
+    flags: Map<number, number>;
+    callers: Map<number, number>;
+}
+
+let surfaceLockDiagEnabled = false;
+let surfaceLockDiagTotal = 0;
+let surfaceUnlockDiagTotal = 0;
+let surfaceLockDiagOverflow = 0;
+const surfaceLockDiagRows = new Map<number, SurfaceLockDiagRow>();
+
+function resetSurfaceLockDiagnostics(): void {
+    surfaceLockDiagTotal = 0;
+    surfaceUnlockDiagTotal = 0;
+    surfaceLockDiagOverflow = 0;
+    surfaceLockDiagRows.clear();
+}
+
+export function setSurfaceLockDiagnostics(enabled: boolean, reset = true): unknown {
+    if (reset) resetSurfaceLockDiagnostics();
+    surfaceLockDiagEnabled = enabled;
+    return getSurfaceLockDiagnostics();
+}
+
+export function getSurfaceLockDiagnostics(): unknown {
+    const rows = [...surfaceLockDiagRows.values()]
+        .sort((a, b) => b.locks - a.locks)
+        .slice(0, 64)
+        .map((row) => ({
+            surface: `0x${row.surface.toString(16)}`,
+            texture: `0x${row.texture.toString(16)}`,
+            width: row.width,
+            height: row.height,
+            format: `0x${row.format.toString(16)}`,
+            pool: row.pool,
+            usage: `0x${row.usage.toString(16)}`,
+            locks: row.locks,
+            fullLocks: row.fullLocks,
+            partialLocks: row.partialLocks,
+            bytesPerLock: row.bytesPerLock,
+            copiedBytesIfFullRoundTrip: row.bytesPerLock * row.locks * 2,
+            flags: Object.fromEntries(
+                [...row.flags.entries()]
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([flags, count]) => [`0x${flags.toString(16)}`, count]),
+            ),
+            callers: [...row.callers.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 12)
+                .map(([caller, count]) => ({ caller: `0x${caller.toString(16)}`, count })),
+        }));
+    return {
+        enabled: surfaceLockDiagEnabled,
+        totalLocks: surfaceLockDiagTotal,
+        totalUnlocks: surfaceUnlockDiagTotal,
+        uniqueSurfaces: surfaceLockDiagRows.size,
+        overflow: surfaceLockDiagOverflow,
+        rows,
+    };
+}
+
+function recordSurfaceLock(
+    pSurface: number,
+    meta: SurfaceMeta,
+    pRect: number,
+    flags: number,
+    caller: number,
+    mem: Uint8Array,
+    view: DataView,
+): void {
+    if (!surfaceLockDiagEnabled) return;
+    surfaceLockDiagTotal++;
+    let row = surfaceLockDiagRows.get(pSurface);
+    if (!row) {
+        if (surfaceLockDiagRows.size >= 512) {
+            surfaceLockDiagOverflow++;
+            return;
+        }
+        row = {
+            surface: pSurface >>> 0,
+            texture: (meta.texturePtr ?? 0) >>> 0,
+            width: meta.width,
+            height: meta.height,
+            format: meta.format >>> 0,
+            pool: meta.pool,
+            usage: meta.usage >>> 0,
+            locks: 0,
+            fullLocks: 0,
+            partialLocks: 0,
+            bytesPerLock: getD3DTextureLayout(meta.format, meta.width, meta.height).bytes,
+            flags: new Map(),
+            callers: new Map(),
+        };
+        surfaceLockDiagRows.set(pSurface, row);
+    }
+    row.locks++;
+    row.flags.set(flags >>> 0, (row.flags.get(flags >>> 0) ?? 0) + 1);
+    row.callers.set(caller >>> 0, (row.callers.get(caller >>> 0) ?? 0) + 1);
+    if (!pRect) {
+        row.fullLocks++;
+    } else if (pRect <= mem.length - 16) {
+        const left = view.getInt32(pRect, true);
+        const top = view.getInt32(pRect + 4, true);
+        const right = view.getInt32(pRect + 8, true);
+        const bottom = view.getInt32(pRect + 12, true);
+        if (left === 0 && top === 0 && right === meta.width && bottom === meta.height) row.fullLocks++;
+        else row.partialLocks++;
+    } else {
+        row.partialLocks++;
+    }
+}
+
 function writeSurfaceDesc(pDesc: number, meta: SurfaceMeta): boolean {
     return (
         Mem.writeUint32(pDesc + 0, meta.format >>> 0) &&
@@ -84,6 +207,8 @@ export function lockSurfaceRectDirect(
     pSurface: number,
     pLockedRect: number,
     pRect: number,
+    flags = 0,
+    caller = 0,
 ): number {
     const meta = surfaceMeta.get(pSurface);
     const device = resourceToDevice.get(pSurface);
@@ -92,6 +217,7 @@ export function lockSurfaceRectDirect(
     }
 
     const level = meta.level ?? 0;
+    recordSurfaceLock(pSurface, meta, pRect, flags, caller, mem, view);
     const lockInfo = device.lockTexture(meta.texturePtr, level);
     if (!lockInfo) return D3DERR_INVALIDCALL;
 
@@ -111,6 +237,7 @@ export function unlockSurfaceRectDirect(mem: Uint8Array, pSurface: number): numb
     const meta = surfaceMeta.get(pSurface);
     const device = resourceToDevice.get(pSurface);
     if (!meta || !device || !meta.texturePtr) return D3DERR_INVALIDCALL;
+    if (surfaceLockDiagEnabled) surfaceUnlockDiagTotal++;
 
     const level = meta.level ?? 0;
     const lockInfo = device.lockTexture(meta.texturePtr, level);
@@ -907,9 +1034,11 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
 
     exports['IDirect3DCubeTexture9_AddDirtyRect'] = () => D3D_OK;
 
-    exports['IDirect3DSurface9_LockRect'] = (_ctx, mem, args) => {
+    exports['IDirect3DSurface9_LockRect'] = (ctx, mem, args) => {
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-        return lockSurfaceRectDirect(mem, view, args[0], args[1], args[2]);
+        const esp = ctx?.esp >>> 0;
+        const caller = esp <= mem.length - 4 ? view.getUint32(esp, true) : 0;
+        return lockSurfaceRectDirect(mem, view, args[0], args[1], args[2], args[3], caller);
     };
 
     exports['IDirect3DSurface9_UnlockRect'] = (_ctx, mem, args) => {

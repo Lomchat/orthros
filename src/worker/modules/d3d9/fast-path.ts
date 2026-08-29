@@ -402,6 +402,8 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             view.getUint32(esp + 4, true),
             view.getUint32(esp + 8, true),
             view.getUint32(esp + 12, true),
+            view.getUint32(esp + 16, true),
+            view.getUint32(esp, true),
         );
     }, { trivial: true });
 

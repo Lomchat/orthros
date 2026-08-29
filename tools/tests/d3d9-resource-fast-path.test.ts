@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { registerFastPathD3D9Functions } from '../../src/worker/modules/d3d9/fast-path';
 import { devices, resourceToDevice } from '../../src/worker/modules/d3d9/shared-state';
 import { deviceSoftwareVertexProcessing, surfaceMeta } from '../../src/worker/modules/d3d9/resource-registry';
+import { getSurfaceLockDiagnostics, setSurfaceLockDiagnostics } from '../../src/worker/modules/d3d9/resources';
 
 type FastHandler = (cpu: any, mem: Uint8Array, mem32: Uint32Array, view: DataView) => number | null;
 
@@ -28,6 +29,7 @@ afterEach(() => {
     resourceToDevice.clear();
     surfaceMeta.clear();
     deviceSoftwareVertexProcessing.clear();
+    setSurfaceLockDiagnostics(false, true);
 });
 
 describe('D3D9 dynamic-buffer fast paths', () => {
@@ -126,6 +128,7 @@ describe('D3D9 dynamic-buffer fast paths', () => {
         resourceToDevice.set(surfacePtr, device as any);
 
         const lock = stackFor([surfacePtr, lockedRect, rect, 0]);
+        lock.view.setUint32(0x100, 0x4abcde, true);
         lock.view.setInt32(rect, 2, true);
         lock.view.setInt32(rect + 4, 3, true);
         expect(handlers.get('IDirect3DSurface9_LockRect')!(
@@ -139,5 +142,42 @@ describe('D3D9 dynamic-buffer fast paths', () => {
             unlock.cpu, unlock.mem, new Uint32Array(unlock.mem.buffer), unlock.view,
         )).toBe(0);
         expect(unlockedWith).toBe(unlock.mem);
+    });
+
+    test('surface-lock diagnostics preserve caller, flags, rectangle and copy volume', () => {
+        const handlers = collectHandlers();
+        const surfacePtr = 0x700;
+        const texturePtr = 0x710;
+        const lockedRect = 0x300;
+        const rect = 0x340;
+        surfaceMeta.set(surfacePtr, {
+            texturePtr, level: 0, format: 21, type: 1, usage: 1, pool: 2,
+            multiSampleType: 0, multiSampleQuality: 0, width: 64, height: 32,
+        });
+        resourceToDevice.set(surfacePtr, {
+            lockTexture: () => ({ ptr: 0x800, pitch: 256 }),
+            unlockTexture: () => 0,
+        } as any);
+        setSurfaceLockDiagnostics(true, true);
+
+        const lock = stackFor([surfacePtr, lockedRect, rect, 0x2010]);
+        lock.view.setUint32(0x100, 0x4abcde, true);
+        lock.view.setInt32(rect, 2, true);
+        lock.view.setInt32(rect + 4, 3, true);
+        lock.view.setInt32(rect + 8, 20, true);
+        lock.view.setInt32(rect + 12, 18, true);
+        expect(handlers.get('IDirect3DSurface9_LockRect')!(
+            lock.cpu, lock.mem, new Uint32Array(lock.mem.buffer), lock.view,
+        )).toBe(0);
+
+        const report = getSurfaceLockDiagnostics() as any;
+        expect(report.totalLocks).toBe(1);
+        expect(report.rows[0]).toMatchObject({
+            surface: '0x700', texture: '0x710', width: 64, height: 32,
+            locks: 1, fullLocks: 0, partialLocks: 1, bytesPerLock: 8192,
+            copiedBytesIfFullRoundTrip: 16384,
+            flags: { '0x2010': 1 },
+            callers: [{ caller: '0x4abcde', count: 1 }],
+        });
     });
 });
