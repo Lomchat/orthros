@@ -17,7 +17,7 @@ describe("graphics HRESULT recorder", () => {
             api: "d3d9:CreateThing",
             hresult: 0x8876086c,
             caller: 0x401234,
-            args: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+            args: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70],
             seq: 1,
             detail: "allocation failed",
         }]);

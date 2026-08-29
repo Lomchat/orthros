@@ -234,8 +234,16 @@ export function d3dxLoadSurfaceFromMemory(
         return D3DERR_INVALIDCALL;
     }
 
-    const destLock = dest.device.lockTexture(dest.texturePtr, dest.level);
-    if (!destLock) return D3DERR_INVALIDCALL;
+    const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
+    const destLock = direct ? null : dest.device.lockTexture(dest.texturePtr, dest.level);
+    if (!direct && !destLock) return D3DERR_INVALIDCALL;
+    // D3DX is already executing on the host. Writing through a temporary guest
+    // LockRect buffer needlessly allocates from the emulated HEAP and copies the
+    // whole surface twice. Work on a host-side copy when the backend exposes one,
+    // then commit it directly; retain LockRect as a compatibility fallback.
+    const destPixels = direct ? new Uint8Array(direct.data) : mem;
+    const destPtr = direct ? 0 : destLock!.ptr;
+    const destPitch = direct ? direct.pitch : destLock!.pitch;
     const destBytes = destBpp >>> 3;
     const useLinear = filter === D3DX_FILTER_LINEAR;
     const sample = (x: number, y: number): [number, number, number, number] => {
@@ -269,14 +277,18 @@ export function d3dxLoadSurfaceFromMemory(
             const [r, g, b, a] = sample(sx, sy);
             const packedBgra = (a << 24) | (r << 16) | (g << 8) | b;
             if (colorKeyMatch(packedBgra, colorKey)) continue;
-            const ptr = destLock.ptr + (destRect.top + y) * destLock.pitch + (destRect.left + x) * destBytes;
-            if (!writeEncodedPixel(mem, ptr, destMeta.format, r, g, b, a)) {
+            const ptr = destPtr + (destRect.top + y) * destPitch + (destRect.left + x) * destBytes;
+            if (!writeEncodedPixel(destPixels, ptr, destMeta.format, r, g, b, a)) {
                 ok = false;
                 break;
             }
         }
     }
-    dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    if (direct) {
+        if (ok) ok = dest.device.setTextureLevelPixels(dest.texturePtr, dest.level, destPixels, destPitch);
+    } else {
+        dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    }
     return ok ? D3D_OK : D3DERR_INVALIDCALL;
 }
 
@@ -316,8 +328,12 @@ export function d3dxLoadSurfaceFromRgba(
 
     const destBpp = d3dFormatBpp(destMeta.format);
     if (!destBpp || (destBpp & 7) !== 0) return D3DERR_INVALIDCALL;
-    const destLock = dest.device.lockTexture(dest.texturePtr, dest.level);
-    if (!destLock) return D3DERR_INVALIDCALL;
+    const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
+    const destLock = direct ? null : dest.device.lockTexture(dest.texturePtr, dest.level);
+    if (!direct && !destLock) return D3DERR_INVALIDCALL;
+    const destPixels = direct ? new Uint8Array(direct.data) : mem;
+    const destPtr = direct ? 0 : destLock!.ptr;
+    const destPitch = direct ? direct.pitch : destLock!.pitch;
 
     const destBytes = destBpp >>> 3;
     const useLinear = filter === D3DX_FILTER_LINEAR;
@@ -355,14 +371,18 @@ export function d3dxLoadSurfaceFromRgba(
             const [r, g, b, a] = sample(sx, sy);
             const packedBgra = (a << 24) | (r << 16) | (g << 8) | b;
             if (colorKeyMatch(packedBgra, colorKey)) continue;
-            const ptr = destLock.ptr + (destRect.top + y) * destLock.pitch + (destRect.left + x) * destBytes;
-            if (!writeEncodedPixel(mem, ptr, destMeta.format, r, g, b, a)) {
+            const ptr = destPtr + (destRect.top + y) * destPitch + (destRect.left + x) * destBytes;
+            if (!writeEncodedPixel(destPixels, ptr, destMeta.format, r, g, b, a)) {
                 ok = false;
                 break;
             }
         }
     }
-    dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    if (direct) {
+        if (ok) ok = dest.device.setTextureLevelPixels(dest.texturePtr, dest.level, destPixels, destPitch);
+    } else {
+        dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    }
     return ok ? D3D_OK : D3DERR_INVALIDCALL;
 }
 

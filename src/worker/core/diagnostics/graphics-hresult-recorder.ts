@@ -36,7 +36,10 @@ export function recordGraphicsHresultFailure(
     if (!GRAPHICS_PREFIXES.some((prefix) => lower.startsWith(prefix))) return;
 
     const copiedArgs: number[] = [];
-    const count = Math.min(6, Math.max(0, argCount | 0), args.length);
+    // Graphics helpers commonly carry more than six meaningful parameters
+    // (D3DXLoadSurfaceFromMemory has ten). Failures are rare and the ring is
+    // bounded, so retain enough arguments to diagnose the complete contract.
+    const count = Math.min(12, Math.max(0, argCount | 0), args.length);
     for (let i = 0; i < count; i++) copiedArgs.push(args[i]! >>> 0);
     failures.push({
         api,
