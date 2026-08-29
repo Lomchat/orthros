@@ -16,6 +16,17 @@ afterEach(() => {
 });
 
 describe("D3DXFilterTexture", () => {
+    test("returns immediately when the texture has no destination mip level", () => {
+        const device = {
+            getTextureLevelPixels: () => { throw new Error("single-level filtering must not read pixels"); },
+            setTextureLevelPixels: () => { throw new Error("single-level filtering must not write pixels"); },
+        };
+        textureMeta.set(TEXTURE, { width: 256, height: 256, levels: 1, usage: 0, pool: 1, format: D3DFMT_DXT1 });
+        resourceToDevice.set(TEXTURE, device as any);
+
+        expect(d3dxFilterTexture(TEXTURE, 0xffffffff, 0xffffffff)).toBe(0);
+    });
+
     test("accepts D3DX_DEFAULT and builds a DXT1 mip chain", () => {
         const baseRgba = new Uint8Array(4 * 4 * 4);
         for (let i = 0; i < 16; i++) baseRgba.set([240, 16, 8, 255], i * 4);

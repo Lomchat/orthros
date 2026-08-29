@@ -227,6 +227,39 @@ export function d3dxLoadSurfaceFromMemory(
     const srcBpp = d3dFormatBpp(srcFormat);
     if (!srcBpp || (srcBpp & 7) !== 0) return D3DERR_INVALIDCALL;
     const srcBase = srcMemory + srcRect.top * srcPitch + srcRect.left * (srcBpp >>> 3);
+
+    // The overwhelmingly common D3DX texture-upload case already has the
+    // destination's format and dimensions. Copy its rows verbatim instead of
+    // decoding every source pixel to RGBA and encoding it again. A zero color
+    // key is D3DX's disabled value, and equal dimensions make point/linear
+    // filtering equivalent for this copy.
+    if (destMeta.format === srcFormat && colorKey === 0 && dw === sw && dh === sh) {
+        const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
+        const destLock = direct ? null : dest.device.lockTexture(dest.texturePtr, dest.level);
+        if (!direct && !destLock) return D3DERR_INVALIDCALL;
+        const destPixels = direct ? direct.data : mem;
+        const destPtr = direct ? 0 : destLock!.ptr;
+        const destPitch = direct ? direct.pitch : destLock!.pitch;
+        const rowBytes = dw * (srcBpp >>> 3);
+        let ok = rowBytes <= srcPitch && rowBytes <= destPitch;
+        for (let y = 0; y < dh && ok; y++) {
+            const srcOffset = srcBase + y * srcPitch;
+            const destOffset = destPtr + (destRect.top + y) * destPitch + destRect.left * (srcBpp >>> 3);
+            if (srcOffset < 0 || srcOffset + rowBytes > mem.length ||
+                destOffset < 0 || destOffset + rowBytes > destPixels.length) {
+                ok = false;
+                break;
+            }
+            destPixels.set(mem.subarray(srcOffset, srcOffset + rowBytes), destOffset);
+        }
+        if (direct) {
+            if (ok) ok = dest.device.setTextureLevelPixels(dest.texturePtr, dest.level, destPixels, destPitch);
+        } else {
+            dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+        }
+        return ok ? D3D_OK : D3DERR_INVALIDCALL;
+    }
+
     const rgba = new Uint8Array(sw * sh * 4);
     try {
         decodeD3DTextureToRgba8(mem, srcBase, sw, sh, srcFormat, { pitch: srcPitch, out: rgba });
@@ -477,6 +510,9 @@ export function d3dxFilterTexture(texturePtr: number, srcLevel: number, _filter:
     // exact call pattern used by BFME II before any filtering happened.
     const start = (srcLevel >>> 0) === 0xffffffff ? 0 : Math.max(0, srcLevel >>> 0);
     if (start >= meta.levels) return D3DERR_INVALIDCALL;
+    // A one-level texture has no destination mip to generate. Returning before
+    // reading and decoding its base pixels makes this frequent D3DX no-op O(1).
+    if (start + 1 >= meta.levels) return D3D_OK;
 
     let level = start;
     const firstPixels = device.getTextureLevelPixels(texturePtr, level);

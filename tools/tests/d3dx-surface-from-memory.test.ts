@@ -12,6 +12,37 @@ afterEach(() => {
 });
 
 describe("D3DX memory surface upload", () => {
+    test("copies matching formats row-for-row without an RGBA intermediate", () => {
+        const memory = new Uint8Array(0x400);
+        const source = 0x100;
+        memory.set([1, 2, 3, 4, 5, 6, 7, 8, 201, 202, 203, 204], source);
+        memory.set([11, 12, 13, 14, 15, 16, 17, 18, 211, 212, 213, 214], source + 12);
+        const pixels = new Uint8Array(24).fill(0xee);
+        let commits = 0;
+        const device = {
+            getTextureLevelPixels: () => ({ data: pixels, pitch: 12, width: 2, height: 2 }),
+            setTextureLevelPixels: (_texture: number, _level: number, data: Uint8Array, pitch: number) => {
+                expect(data).toBe(pixels);
+                expect(pitch).toBe(12);
+                commits++;
+                return true;
+            },
+            lockTexture: () => { throw new Error("matching upload must not LockRect"); },
+        };
+        resourceToDevice.set(SURFACE, device as any);
+        surfaceMeta.set(SURFACE, {
+            format: 21, type: 1, usage: 0, pool: 1, multiSampleType: 0,
+            multiSampleQuality: 0, width: 2, height: 2, texturePtr: TEXTURE, level: 0,
+        });
+
+        expect(d3dxLoadSurfaceFromMemory(memory, SURFACE, 0, source, 21, 12, 0, 2, 0)).toBe(0);
+        expect(Array.from(pixels)).toEqual([
+            1, 2, 3, 4, 5, 6, 7, 8, 0xee, 0xee, 0xee, 0xee,
+            11, 12, 13, 14, 15, 16, 17, 18, 0xee, 0xee, 0xee, 0xee,
+        ]);
+        expect(commits).toBe(1);
+    });
+
     test("copies X8R8G8B8 through host pixels without allocating a guest LockRect", () => {
         const memory = new Uint8Array(0x400);
         const source = 0x100;
