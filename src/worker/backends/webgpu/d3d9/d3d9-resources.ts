@@ -669,6 +669,7 @@ export class TextureStore {
     getGpuTexture(index: number): GPUTexture | null { return this.gpuTextures[index]; }
     getView(index: number): GPUTextureView | null { return this.views[index]; }
     getPitch(index: number): number { return this.pitches[index]; }
+    getGuestPtr(index: number): number { return this.guestPtrs[index]; }
     isDirty(index: number): boolean { return this.dirtyFlags[index] !== 0; }
     isLocked(index: number): boolean { return this.lockedPtrs[index] !== -1; }
     getLockedPtr(index: number): number { return this.lockedPtrs[index]; }
@@ -678,6 +679,30 @@ export class TextureStore {
         this.views[index] = view;
     }
     setDirty(index: number, dirty: boolean): void { this.dirtyFlags[index] = dirty ? 1 : 0; }
+
+    /**
+     * Attach short-lived guest-visible storage for LockRect. Texture pixels live
+     * authoritatively in the host-side `data` array between locks; retaining a
+     * full second copy in the fixed guest HEAP for every managed texture exhausts
+     * the address space in texture-heavy games. The returned pointer remains
+     * valid until the matching unlock detaches it.
+     */
+    attachGuestBacking(index: number, guestPtr: number, memory: Uint8Array): { ptr: number; pitch: number } | null {
+        if (guestPtr <= 0 || this.data[index] === undefined || this.guestPtrs[index] >= 0) return null;
+        const data = this.data[index]!;
+        if (guestPtr + data.length > memory.length) return null;
+        memory.set(data, guestPtr);
+        this.guestPtrs[index] = guestPtr;
+        return this.lock(index);
+    }
+
+    /** Detach and return the transient LockRect allocation, or -1 if absent. */
+    detachGuestBacking(index: number): number {
+        const guestPtr = this.guestPtrs[index];
+        this.guestPtrs[index] = -1;
+        this.lockedPtrs[index] = -1;
+        return guestPtr;
+    }
     markRenderTarget(index: number): void { this.rtFlags[index] = 1; }
     isRenderTarget(index: number): boolean { return this.rtFlags[index] !== 0; }
     markCube(index: number): void { this.cubeFlags[index] = 1; }

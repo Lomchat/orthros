@@ -1294,10 +1294,12 @@ export class D3D9Device {
             this.lastTextureCreateFailure = "process unavailable";
             return 0;
         }
-        const bytes = getD3DTextureLayout(format, width, height).bytes;
         try {
-            const guestPtr = process.memory.alloc(bytes, "HEAP");
-            const index = this.textures.create(texPtr, width, height, levels, format, guestPtr);
+            // Managed texture pixels already live in TextureStore's host-side byte array.
+            // Guest-visible storage is needed only while LockRect is active, so allocate it
+            // lazily from the dedicated SURFACE bucket instead of pinning a duplicate copy
+            // in the fixed HEAP for the texture's whole lifetime.
+            const index = this.textures.create(texPtr, width, height, levels, format, -1);
             // D3DUSAGE_RENDERTARGET (0x1): the guest renders INTO this texture (no LockRect
             // upload). Create a render-attachment-capable GPU texture eagerly so it is a valid
             // sample source the instant the guest binds it (otherwise ensureTexture would see
@@ -1323,10 +1325,10 @@ export class D3D9Device {
                     this.textures.setDirty(index, false); // nothing to upload; content comes from rendering
                 }
             }
-            return guestPtr;
+            return texPtr || 1;
         } catch (e) {
             this.lastTextureCreateFailure = e instanceof Error ? e.message : String(e);
-            Logger.error(LogCategory.D3D9, `createTexture: HEAP alloc failed ${width}x${height}: ${e}`);
+            Logger.error(LogCategory.D3D9, `createTexture: host/GPU creation failed ${width}x${height}: ${e}`);
             return 0;
         }
     }
@@ -1344,10 +1346,9 @@ export class D3D9Device {
         const e = Math.max(1, edge >>> 0);
         const levelCount = Math.max(1, levels >>> 0);
         try {
-            // Scratch HEAP backing keeps TextureStore.create's bookkeeping uniform with 2D
-            // textures; cube faces are locked into per-face scratch on demand (lockCubeFace).
-            const guestPtr = process.memory.alloc(getD3DTextureLayout(format, e, e).bytes, "HEAP");
-            const index = this.textures.create(cubePtr, e, e, levelCount, format, guestPtr);
+            // Cube faces use transient per-face lock storage; no permanent guest copy is
+            // needed for the TextureStore entry itself.
+            const index = this.textures.create(cubePtr, e, e, levelCount, format, -1);
             this.textures.markCube(index);
             if (d3d9WasmArena.isInitialized()) d3d9WasmArena.markTextureCube(index, true);
 
@@ -1375,7 +1376,7 @@ export class D3D9Device {
                     this.textures.setDirty(index, false); // content comes from rendering into faces
                 }
             }
-            return guestPtr;
+            return cubePtr || 1;
         } catch (e2) {
             Logger.error(LogCategory.D3D9, `createCubeTexture: alloc failed ${edge}px: ${e2}`);
             return 0;
@@ -1401,9 +1402,9 @@ export class D3D9Device {
         if (!process) return null;
         let guestPtr: number;
         try {
-            guestPtr = process.memory.alloc(bytes, "HEAP");
+            guestPtr = process.memory.alloc(bytes, "SURFACE");
         } catch (err) {
-            Logger.error(LogCategory.D3D9, `lockCubeFace: HEAP alloc failed bytes=${bytes}: ${err}`);
+            Logger.error(LogCategory.D3D9, `lockCubeFace: SURFACE alloc failed bytes=${bytes}: ${err}`);
             return null;
         }
         // Seed with prior contents so a partial re-lock round-trips.
@@ -1438,7 +1439,7 @@ export class D3D9Device {
         const index = this.textures.getIndex(texPtr);
         if (index === null) return null;
 
-        // Level 0 is backed by the per-texture HEAP allocation.
+        // Level 0 gets guest-visible storage only for the lifetime of LockRect.
         if (level === 0) {
             if (this.textures.isLocked(index)) {
                 const ptr = this.textures.getLockedPtr(index);
@@ -1446,7 +1447,23 @@ export class D3D9Device {
                     return { ptr, pitch: this.textures.getPitch(index) };
                 }
             }
-            return this.textures.lock(index);
+            const process = System.getInstance().process;
+            if (!process) return null;
+            const layout = getD3DTextureLayout(
+                this.textures.getFormat(index),
+                this.textures.getWidth(index),
+                this.textures.getHeight(index),
+            );
+            let guestPtr: number;
+            try {
+                guestPtr = process.memory.alloc(layout.bytes, "SURFACE");
+            } catch (e) {
+                Logger.error(LogCategory.D3D9, `lockTexture level0: SURFACE alloc failed bytes=${layout.bytes}: ${e}`);
+                return null;
+            }
+            const lock = this.textures.attachGuestBacking(index, guestPtr, this.memory);
+            if (!lock) process.memory.free(guestPtr);
+            return lock;
         }
 
         // Compatibility path for mip levels > 0: provide a writable temp buffer and
@@ -1468,9 +1485,9 @@ export class D3D9Device {
         if (!process) return null;
         let guestPtr: number;
         try {
-            guestPtr = process.memory.alloc(bytes, "HEAP");
+            guestPtr = process.memory.alloc(bytes, "SURFACE");
         } catch (e) {
-            Logger.error(LogCategory.D3D9, `lockTexture mip${level}: HEAP alloc failed bytes=${bytes}: ${e}`);
+            Logger.error(LogCategory.D3D9, `lockTexture mip${level}: SURFACE alloc failed bytes=${bytes}: ${e}`);
             return null;
         }
 
@@ -1593,6 +1610,8 @@ export class D3D9Device {
         }
 
         this.textures.unlock(index, memory);
+        const guestPtr = this.textures.detachGuestBacking(index);
+        if (guestPtr > 0) System.getInstance().process?.memory.free(guestPtr);
         return 0;
     }
 
