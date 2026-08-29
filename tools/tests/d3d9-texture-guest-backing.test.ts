@@ -3,6 +3,12 @@ import {
     TextureStore,
     getD3D9TextureLockRegion,
 } from "../../src/worker/backends/webgpu/d3d9/d3d9-resources";
+import {
+    registerSurfaceLockInlineMapping,
+    syncSurfaceLockInlineTexture,
+    unregisterSurfaceLockInlineTexture,
+    writeSurfaceLockInlineTrampolines,
+} from "../../src/worker/modules/d3d9/capture-trampolines";
 
 describe("D3D9 transient texture guest backing", () => {
     test("keeps pixels host-side and attaches guest memory only while locked", () => {
@@ -76,5 +82,31 @@ describe("D3D9 transient texture guest backing", () => {
         expect(getD3D9TextureLockRegion(21, 4, 4, {
             left: 3, top: 3, right: 5, bottom: 4,
         })).toBeNull();
+    });
+
+    test("defers guest-authoritative inline writes until one host synchronization", () => {
+        const memory = new Uint8Array(0x20000);
+        let bump = 0x1000;
+        const allocator = { alloc: (size: number) => {
+            const out = bump;
+            bump = (bump + size + 15) & ~15;
+            return out;
+        } };
+        const emitted = writeSurfaceLockInlineTrampolines(allocator, () => memory, 7, 8);
+        const surface = 0x700;
+        const texture = 0x710;
+        const guestPtr = 0x12000;
+        expect(registerSurfaceLockInlineMapping(surface, texture, guestPtr, 16, 4, 4, 4)).toBe(true);
+        const slot = (surface >>> 3) & 1023;
+        const stateAddr = emitted.tableBase + slot * 32 + 28;
+        new DataView(memory.buffer).setUint32(stateAddr, 2, true);
+        memory.set([9, 8, 7, 6], guestPtr);
+        const host = new Uint8Array(64);
+        expect(syncSurfaceLockInlineTexture(texture, host, memory)).toBe(true);
+        expect(Array.from(host.subarray(0, 4))).toEqual([9, 8, 7, 6]);
+        expect(new DataView(memory.buffer).getUint32(stateAddr, true)).toBe(0);
+        expect(syncSurfaceLockInlineTexture(texture, host, memory)).toBe(false);
+        unregisterSurfaceLockInlineTexture(texture);
+        expect(new DataView(memory.buffer).getUint32(emitted.tableBase + slot * 32, true)).toBe(0);
     });
 });

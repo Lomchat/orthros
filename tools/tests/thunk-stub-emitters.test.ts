@@ -21,6 +21,7 @@ import {
     writeOwnerDisarmScalarTrampoline,
     writeStructCaptureTrampoline,
     writeUpDrawCaptureTrampoline,
+    writeSurfaceLockInlineTrampolines,
 } from '../../src/worker/modules/d3d9/capture-trampolines';
 import type { ShadowTrampolineSpec } from '../../src/worker/modules/d3d9/capture-trampolines';
 import type { StubAllocator } from '../../src/worker/core/thunking/thunk-memory-manager';
@@ -194,6 +195,16 @@ const cases: Record<string, (ctx: Ctx) => Snapshot> = {
         const r = writeUpDrawCaptureTrampoline(ctx.allocator, ctx.getMemory, RING_CTRL, RING_DATA, RING_CAP);
         return { result: r, hashes: { code: sha(ctx.mem, r.codeRegionBase, r.codeRegionEnd) } };
     },
+    surfaceLockInlineTrampolines: (ctx) => {
+        const r = writeSurfaceLockInlineTrampolines(ctx.allocator, ctx.getMemory, 0x321, 0x322);
+        return {
+            result: r,
+            hashes: {
+                code: sha(ctx.mem, r.codeRegionBase, r.codeRegionEnd),
+                table: sha(ctx.mem, r.tableBase, r.tableBase + 1024 * 32),
+            },
+        };
+    },
 };
 
 // Frozen snapshots (generated on the pre-move code; MUST NOT change across the move).
@@ -211,6 +222,7 @@ const EXPECTED: Record<string, Snapshot> = {
     ownerDisarmScalarTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4224},"hashes":{"code":"3872c71deed97fde2196b52379f1d1aa7abdf8847b81c6ffa488340c96ccc8c6"}},
     structCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4320},"hashes":{"code":"5ce49653ab8f3fa8c1218565df2c2234c05169a2d00d54a57c64d1602f2fbbed"}},
     upDrawCaptureTrampoline: {"result":{"trampAddr":4096,"codeRegionBase":4096,"codeRegionEnd":4480},"hashes":{"code":"b4d6979e6cae69666eaacb40eb06265e73b17a766266b692442734350baf3642"}},
+    surfaceLockInlineTrampolines: {"result":{"lockAddr":36864,"unlockAddr":37063,"tableBase":4096,"codeRegionBase":36864,"codeRegionEnd":37134},"hashes":{"code":"e9060ddb7cf120f0de0d947384e087ff27665f2c579d1b4da6f6f93a147616bc","table":"c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479"}},
 };
 
 describe('thunk stub emitters — byte-identity snapshots', () => {

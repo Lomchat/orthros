@@ -37,6 +37,10 @@ import {
     d3d9PerfStateBlockApply, d3d9PerfStateBlockCapture,
     d3d9PerfStateBlockWasmApply, d3d9PerfStateBlockWasmCapture,
 } from "../../../modules/d3d9/d3d9-perf";
+import {
+    syncSurfaceLockInlineTexture,
+    unregisterSurfaceLockInlineTexture,
+} from "../../../modules/d3d9/capture-trampolines";
 import { isValidAddress } from "../../../core/memory/address-guard";
 import { Mem } from "../../../core/memory/mem-accessor";
 import { sanitizeViewport } from "../ddraw/types";
@@ -1466,11 +1470,27 @@ export class D3D9Device {
         for (const [ptr, entry] of candidates) {
             const index = this.textures.getIndex(ptr);
             if (index !== null) this.textures.detachGuestBacking(index);
+            unregisterSurfaceLockInlineTexture(ptr);
             System.getInstance().process?.memory.free(entry.guestPtr);
             this.level0LockCache.delete(ptr);
             this.level0LockCacheBytes -= entry.bytes;
             if (this.level0LockCacheBytes + requiredBytes <= LEVEL0_LOCK_CACHE_MAX_BYTES) break;
         }
+    }
+
+    private syncInlineLevel0Texture(texPtr: number, index: number): boolean {
+        const data = this.textures.getData(index);
+        if (!data) return false;
+        const changed = syncSurfaceLockInlineTexture(texPtr, data, this.memory);
+        if (changed) this.textures.setDirty(index, true);
+        return changed;
+    }
+
+    getLevel0LockBacking(texPtr: number): { guestPtr: number; pitch: number } | null {
+        const index = this.textures.getIndex(texPtr);
+        const cache = this.level0LockCache.get(texPtr);
+        if (index === null || !cache || this.level0ActiveLocks.has(texPtr)) return null;
+        return { guestPtr: cache.guestPtr, pitch: this.textures.getPitch(index) };
     }
 
     lockTexture(
@@ -1492,6 +1512,7 @@ export class D3D9Device {
             }
             const process = System.getInstance().process;
             if (!process) return null;
+            this.syncInlineLevel0Texture(texPtr, index);
             const layout = getD3DTextureLayout(
                 this.textures.getFormat(index),
                 this.textures.getWidth(index),
@@ -1601,6 +1622,7 @@ export class D3D9Device {
         if (level === 0) {
             const data = this.textures.getData(index);
             if (!data || data.length < bytes) return null;
+            this.syncInlineLevel0Texture(texPtr, index);
             return { data, pitch, width, height };
         }
 
@@ -1628,6 +1650,8 @@ export class D3D9Device {
         if (level === 0) {
             const data = this.textures.getData(index);
             if (!data) return false;
+            this.syncInlineLevel0Texture(texPtr, index);
+            unregisterSurfaceLockInlineTexture(texPtr);
             if (srcPitch === pitch) {
                 data.set(src.subarray(0, bytes));
             } else {
@@ -1818,6 +1842,7 @@ export class D3D9Device {
             this.level0LockCacheBytes -= level0Cache.bytes;
             this.level0LockCache.delete(texPtr);
         }
+        unregisterSurfaceLockInlineTexture(texPtr);
         this.level0ActiveLocks.delete(texPtr);
 
         const tex = this.textures.release(texPtr);
@@ -3791,6 +3816,7 @@ export class D3D9Device {
         if (this.textures.isCubeMap(index)) { this.ensureCubeTexture(index, device); return; }
         const data = this.textures.getData(index);
         if (!data) return;
+        this.syncInlineLevel0Texture(this.textures.getHandle(index), index);
 
         const texFormat = this.textures.getFormat(index);
         if (isBlockCompressedFormat(texFormat)) {

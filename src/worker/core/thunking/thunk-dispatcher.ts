@@ -10,6 +10,7 @@ import {
     writeOwnerDisarmScalarTrampoline,
     writeStructCaptureTrampoline,
     writeUpDrawCaptureTrampoline,
+    writeSurfaceLockInlineTrampolines,
 } from '../../modules/d3d9/capture-trampolines';
 import type { ShadowTrampolineSpec } from '../../modules/d3d9/capture-trampolines';
 import { sehOnCatchCompletion } from '../seh-dispatch';
@@ -317,6 +318,8 @@ export class ThunkDispatcher {
     private pendingFastPathRegistrations: Map<string, { impl: FastPathImplementation; dllName: string; functionName: string; trivial?: boolean }> = new Map();
     private pendingWriteBufRegistrations: Map<string, { handler: WriteBufHandler; dllName: string; functionName: string; argCount: number; isStdcall: boolean; ptrDeref?: boolean; floatCount?: number; shaderConstant?: boolean; coalesceArgMask?: number; shadowSpec?: ShadowTrampolineSpec; barrier?: boolean; structCapture?: { ptrArgIndex: number; payloadDwords: number }; upDraw?: boolean; ownerDisarm?: boolean }> = new Map();
     private pendingConstStubRegistrations: Map<string, { dllName: string; functionName: string; value: number; popBytes: number }> = new Map();
+    private surfaceLockInlineRequested = false;
+    private surfaceLockInlinePatchedKey = '';
 
     /** Shared "active owner" pointer (guest RAM) for setter-shadow trampolines (the bound COM
      *  device `this`). Allocated lazily on first shadowed registration; seeded via setShadowOwner. */
@@ -3651,6 +3654,30 @@ export class ThunkDispatcher {
         return stub.functionId;
     }
 
+    /** Install paired synchronous guest trampolines for Surface9 LockRect/UnlockRect.
+     * Empty/colliding table entries fall back to the existing OUT fast path. */
+    registerD3D9SurfaceLockInlineFunctions(): void {
+        this.surfaceLockInlineRequested = true;
+        const lock = this.findStubsByName('d3d9', 'IDirect3DSurface9_LockRect')[0];
+        const unlock = this.findStubsByName('d3d9', 'IDirect3DSurface9_UnlockRect')[0];
+        if (!lock || !unlock || !this.thunkMemoryManager || !this.getMemory) return;
+        const key = `${lock.address}:${lock.functionId}:${unlock.address}:${unlock.functionId}`;
+        if (key === this.surfaceLockInlinePatchedKey) return;
+        const h = writeSurfaceLockInlineTrampolines(
+            this.thunkMemoryManager.stubAllocator,
+            this.getMemory,
+            lock.functionId,
+            unlock.functionId,
+        );
+        if (this.patchStubToTrampoline('d3d9', 'IDirect3DSurface9_LockRect', h.lockAddr) < 0) return;
+        if (this.patchStubToTrampoline('d3d9', 'IDirect3DSurface9_UnlockRect', h.unlockAddr) < 0) return;
+        try { System.getInstance().scheduler?.registerNonPreemptibleRange(h.codeRegionBase, h.codeRegionEnd); } catch { }
+        this.surfaceLockInlinePatchedKey = key;
+        Logger.log(LogCategory.THUNK,
+            `[INLINE] Surface9 LockRect/UnlockRect table=0x${h.tableBase.toString(16)} ` +
+            `lock=0x${h.lockAddr.toString(16)} unlock=0x${h.unlockAddr.toString(16)}`);
+    }
+
     /**
      * Capture-at-call WBUF registration for a stdcall setter with ONE fixed-size struct pointer
      * arg (SetTransform/SetMaterial/SetLight/SetViewport/SetClipPlane class). The trampoline
@@ -6476,6 +6503,8 @@ export class ThunkDispatcher {
             }
         }
 
+        if (this.surfaceLockInlineRequested) this.registerD3D9SurfaceLockInlineFunctions();
+
         if (applied > 0) {
             Logger.verbose(LogCategory.THUNK, `Applied ${applied} pending registrations`);
         }
@@ -6625,6 +6654,7 @@ export class ThunkDispatcher {
         this.writeBufArgCountTable.fill(0);
         this.writeBufCoalesceMaskTable.fill(0);
         this.wbufCoalescingEnabled = false;
+        this.surfaceLockInlinePatchedKey = '';
         this.argCountsTable.fill(-1);
         this.namesTable.fill(null);
         if (this._callbackManager) this._callbackManager.reset();

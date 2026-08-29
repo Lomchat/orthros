@@ -31,6 +31,7 @@ import {
 import { isDxExclusiveFormat } from '../../backends/webgpu/shared/dx-format-support';
 import { injectBfmeVp6Frame } from './bfme-vp6-bridge';
 import { recordGraphicsHresultFailure } from '../../core/diagnostics/graphics-hresult-recorder';
+import { registerSurfaceLockInlineMapping } from './capture-trampolines';
 
 const D3DERR_NOTAVAILABLE = 0x8876086a;
 const D3DFMT_A8R8G8B8 = 21;
@@ -266,6 +267,22 @@ export function unlockSurfaceRectDirect(mem: Uint8Array, pSurface: number): numb
         injectBfmeVp6Frame(mem, lockInfo.ptr, lockInfo.pitch, meta.width, meta.height, meta.format);
     }
     device.unlockTexture(meta.texturePtr, level, mem);
+    if (level === 0) {
+        const backing = device.getLevel0LockBacking?.(meta.texturePtr);
+        const layout = getD3DTextureLayout(meta.format, meta.width, meta.height);
+        if (backing && !layout.compressed) {
+            const bytesPerPixel = Math.max(1, Math.floor(layout.pitch / Math.max(1, meta.width)));
+            registerSurfaceLockInlineMapping(
+                pSurface,
+                meta.texturePtr,
+                backing.guestPtr,
+                backing.pitch,
+                bytesPerPixel,
+                meta.width,
+                meta.height,
+            );
+        }
+    }
     return D3D_OK;
 }
 

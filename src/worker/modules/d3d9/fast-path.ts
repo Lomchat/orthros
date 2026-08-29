@@ -412,6 +412,11 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
         return unlockSurfaceRectDirect(mem, view.getUint32(esp + 4, true));
     }, { trivial: true });
 
+    // After the first ordinary lock establishes a stable lazy guest backing,
+    // matching partial locks can complete entirely in guest x86. Table misses,
+    // unusual flags and full locks retain the exact FastPath fallback above.
+    dispatcher.registerD3D9SurfaceLockInlineFunctions?.();
+
     // Surface descriptions are immutable metadata after COM-object creation.
     // BFME asks for them more than 500 times/s on the menu, so avoid rebuilding a
     // generic thunk context for eight scalar writes.
