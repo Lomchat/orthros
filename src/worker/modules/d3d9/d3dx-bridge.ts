@@ -2,7 +2,6 @@
  * Bridge helpers for D3DX9 HLE — surface copy, mip filtering, texture upload.
  */
 
-import { Mem } from '../../core/memory/mem-accessor';
 import { resolveSurfaceInfo, resolveTextureInfo, surfaceMeta, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
 import { decodeD3DTextureToRgba8, d3dFormatBpp } from '../../backends/webgpu/shared/texture-formats';
 
@@ -10,13 +9,15 @@ const D3DX_FILTER_LINEAR = 3;
 
 type Rect = { left: number; top: number; right: number; bottom: number };
 
-function readRect(ptr: number, fullW: number, fullH: number): Rect {
+function readRect(mem: Uint8Array, ptr: number, fullW: number, fullH: number): Rect {
     if (!ptr) return { left: 0, top: 0, right: fullW, bottom: fullH };
+    if (ptr + 16 > mem.length) return { left: 0, top: 0, right: fullW, bottom: fullH };
+    const view = new DataView(mem.buffer, mem.byteOffset + ptr, 16);
     return {
-        left: Mem.readInt32(ptr) ?? 0,
-        top: Mem.readInt32(ptr + 4) ?? 0,
-        right: Mem.readInt32(ptr + 8) ?? fullW,
-        bottom: Mem.readInt32(ptr + 12) ?? fullH,
+        left: view.getInt32(0, true),
+        top: view.getInt32(4, true),
+        right: view.getInt32(8, true),
+        bottom: view.getInt32(12, true),
     };
 }
 
@@ -106,8 +107,8 @@ export function d3dxLoadSurfaceFromSurface(
     const src = resolveSurfaceInfo(srcSurface);
     if (!dest || !src) return D3DERR_INVALIDCALL;
 
-    const destRect = readRect(destRectPtr, dest.width, dest.height);
-    const srcRect = readRect(srcRectPtr, src.width, src.height);
+    const destRect = readRect(mem, destRectPtr, dest.width, dest.height);
+    const srcRect = readRect(mem, srcRectPtr, src.width, src.height);
     const dw = rectWidth(destRect);
     const dh = rectHeight(destRect);
     const sw = rectWidth(srcRect);
@@ -214,8 +215,8 @@ export function d3dxLoadSurfaceFromMemory(
     const destMeta = surfaceMeta.get(destSurface);
     if (!dest || !destMeta || !srcMemory || !srcPitch) return D3DERR_INVALIDCALL;
 
-    const destRect = readRect(destRectPtr, dest.width, dest.height);
-    const srcRect = readRect(srcRectPtr, rectWidth(destRect), rectHeight(destRect));
+    const destRect = readRect(mem, destRectPtr, dest.width, dest.height);
+    const srcRect = readRect(mem, srcRectPtr, rectWidth(destRect), rectHeight(destRect));
     const dw = rectWidth(destRect);
     const dh = rectHeight(destRect);
     const sw = rectWidth(srcRect);
@@ -255,6 +256,92 @@ export function d3dxLoadSurfaceFromMemory(
             const p10 = rgba[(y0 * sw + x1) * 4 + c];
             const p01 = rgba[(y1 * sw + x0) * 4 + c];
             const p11 = rgba[(y1 * sw + x1) * 4 + c];
+            return Math.round((p00 + (p10 - p00) * tx) * (1 - ty) + (p01 + (p11 - p01) * tx) * ty);
+        };
+        return [channel(0), channel(1), channel(2), channel(3)];
+    };
+
+    let ok = true;
+    for (let y = 0; y < dh && ok; y++) {
+        for (let x = 0; x < dw; x++) {
+            const sx = dw === sw ? x : (x * (sw - 1)) / Math.max(1, dw - 1);
+            const sy = dh === sh ? y : (y * (sh - 1)) / Math.max(1, dh - 1);
+            const [r, g, b, a] = sample(sx, sy);
+            const packedBgra = (a << 24) | (r << 16) | (g << 8) | b;
+            if (colorKeyMatch(packedBgra, colorKey)) continue;
+            const ptr = destLock.ptr + (destRect.top + y) * destLock.pitch + (destRect.left + x) * destBytes;
+            if (!writeEncodedPixel(mem, ptr, destMeta.format, r, g, b, a)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    dest.device.unlockTexture(dest.texturePtr, dest.level, mem);
+    return ok ? D3D_OK : D3DERR_INVALIDCALL;
+}
+
+/**
+ * Load decoded RGBA pixels directly into a D3D9 surface. This is the decoded-image
+ * counterpart of D3DXLoadSurfaceFromMemory and avoids manufacturing a second guest
+ * buffer merely to pass image data that already exists in host memory.
+ */
+export function d3dxLoadSurfaceFromRgba(
+    mem: Uint8Array,
+    destSurface: number,
+    destRectPtr: number,
+    rgba: Uint8Array,
+    srcWidth: number,
+    srcHeight: number,
+    srcRectPtr: number,
+    filter: number,
+    colorKey: number,
+): number {
+    const dest = resolveSurfaceInfo(destSurface);
+    const destMeta = surfaceMeta.get(destSurface);
+    if (!dest || !destMeta || srcWidth <= 0 || srcHeight <= 0 || rgba.length < srcWidth * srcHeight * 4) {
+        return D3DERR_INVALIDCALL;
+    }
+
+    const destRect = readRect(mem, destRectPtr, dest.width, dest.height);
+    const srcRect = readRect(mem, srcRectPtr, srcWidth, srcHeight);
+    const dw = rectWidth(destRect);
+    const dh = rectHeight(destRect);
+    const sw = rectWidth(srcRect);
+    const sh = rectHeight(srcRect);
+    if (!dw || !dh || !sw || !sh) return D3D_OK;
+    if (destRect.left < 0 || destRect.top < 0 || destRect.right > dest.width || destRect.bottom > dest.height ||
+        srcRect.left < 0 || srcRect.top < 0 || srcRect.right > srcWidth || srcRect.bottom > srcHeight) {
+        return D3DERR_INVALIDCALL;
+    }
+
+    const destBpp = d3dFormatBpp(destMeta.format);
+    if (!destBpp || (destBpp & 7) !== 0) return D3DERR_INVALIDCALL;
+    const destLock = dest.device.lockTexture(dest.texturePtr, dest.level);
+    if (!destLock) return D3DERR_INVALIDCALL;
+
+    const destBytes = destBpp >>> 3;
+    const useLinear = filter === D3DX_FILTER_LINEAR;
+    const sample = (x: number, y: number): [number, number, number, number] => {
+        const fx = Math.max(0, Math.min(sw - 1, x));
+        const fy = Math.max(0, Math.min(sh - 1, y));
+        const x0 = Math.floor(fx);
+        const y0 = Math.floor(fy);
+        const pixel = (px: number, py: number, channel: number) =>
+            rgba[((srcRect.top + py) * srcWidth + srcRect.left + px) * 4 + channel];
+        if (!useLinear) {
+            const px = Math.min(sw - 1, Math.round(fx));
+            const py = Math.min(sh - 1, Math.round(fy));
+            return [pixel(px, py, 0), pixel(px, py, 1), pixel(px, py, 2), pixel(px, py, 3)];
+        }
+        const x1 = Math.min(sw - 1, x0 + 1);
+        const y1 = Math.min(sh - 1, y0 + 1);
+        const tx = fx - x0;
+        const ty = fy - y0;
+        const channel = (c: number) => {
+            const p00 = pixel(x0, y0, c);
+            const p10 = pixel(x1, y0, c);
+            const p01 = pixel(x0, y1, c);
+            const p11 = pixel(x1, y1, c);
             return Math.round((p00 + (p10 - p00) * tx) * (1 - ty) + (p01 + (p11 - p01) * tx) * ty);
         };
         return [channel(0), channel(1), channel(2), channel(3)];
