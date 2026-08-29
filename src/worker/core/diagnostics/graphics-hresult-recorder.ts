@@ -13,6 +13,7 @@ export interface GraphicsHresultFailure {
     caller: number;
     args: number[];
     seq: number;
+    detail?: string;
 }
 
 const GRAPHICS_PREFIXES = ["d3d9:", "d3dx9:", "d3d8:", "ddraw:", "d3d:"];
@@ -27,6 +28,7 @@ export function recordGraphicsHresultFailure(
     caller: number,
     args: ArrayLike<number>,
     argCount: number,
+    detail?: string,
 ): void {
     const hr = hresult >>> 0;
     if ((hr & 0x80000000) === 0) return;
@@ -42,6 +44,7 @@ export function recordGraphicsHresultFailure(
         caller: caller >>> 0,
         args: copiedArgs,
         seq: ++sequence,
+        ...(detail ? { detail: detail.slice(0, 1024) } : {}),
     });
     if (failures.length > MAX_FAILURES) failures = failures.slice(-MAX_FAILURES);
 }

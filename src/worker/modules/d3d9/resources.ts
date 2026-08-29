@@ -29,6 +29,7 @@ import {
 } from '../../backends/webgpu/shared/dx-com-helpers';
 import { isDxExclusiveFormat } from '../../backends/webgpu/shared/dx-format-support';
 import { injectBfmeVp6Frame } from './bfme-vp6-bridge';
+import { recordGraphicsHresultFailure } from '../../core/diagnostics/graphics-hresult-recorder';
 
 const D3DERR_NOTAVAILABLE = 0x8876086a;
 const D3DFMT_A8R8G8B8 = 21;
@@ -139,23 +140,34 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         multiSampleQuality: number,
         ppSurface: number,
     ): number => {
-        if (!ppSurface) return D3DERR_INVALIDCALL;
+        const fail = (detail: string): number => {
+            recordGraphicsHresultFailure(
+                'd3d9:createStandaloneSurface#internal',
+                D3DERR_INVALIDCALL,
+                0,
+                [pDevice, widthArg, heightArg, format, pool, ppSurface],
+                6,
+                detail,
+            );
+            return D3DERR_INVALIDCALL;
+        };
+        if (!ppSurface) return fail('null output pointer');
         initReturnPtr(ppSurface);
-        if (format === D3DFMT_UNKNOWN || isDxExclusiveFormat(format, 9)) return D3DERR_INVALIDCALL;
+        if (format === D3DFMT_UNKNOWN || isDxExclusiveFormat(format, 9)) return fail(`unsupported format ${format >>> 0}`);
 
         const device = devices.get(pDevice);
-        if (!device) return D3DERR_INVALIDCALL;
+        if (!device) return fail(`unknown device 0x${(pDevice >>> 0).toString(16)}`);
         const vtables = getVTables();
         const textureVtable = vtables['IDirect3DTexture9']?.address;
         const surfaceVtable = vtables['IDirect3DSurface9']?.address;
-        if (!textureVtable || !surfaceVtable) return D3DERR_INVALIDCALL;
+        if (!textureVtable || !surfaceVtable) return fail('missing texture or surface vtable');
 
         const width = Math.max(1, widthArg >>> 0);
         const height = Math.max(1, heightArg >>> 0);
         const normalizedPool = normalizePalettizedTexturePool(format, pool);
         const texturePtr = createComObject(textureVtable);
         if (!device.createTexture(texturePtr, width, height, 1, format, usage >>> 0)) {
-            return D3DERR_INVALIDCALL;
+            return fail(`backing texture creation failed: ${device.getLastTextureCreateFailure() ?? 'unknown reason'}`);
         }
         resourceToDevice.set(texturePtr, device);
         textureMeta.set(texturePtr, {
@@ -181,7 +193,7 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             texturePtr,
             level: 0,
         });
-        return Mem.writeUint32(ppSurface, surfacePtr) ? D3D_OK : D3DERR_INVALIDCALL;
+        return Mem.writeUint32(ppSurface, surfacePtr) ? D3D_OK : fail(`cannot write output pointer 0x${(ppSurface >>> 0).toString(16)}`);
     };
 
     exports['IDirect3DDevice9_CreateVertexBuffer'] = (ctx, mem, args) => {

@@ -1281,9 +1281,19 @@ export class D3D9Device {
         return rect ? { textureView: this.cursorTextureView, ...rect } : null;
     }
 
+    private lastTextureCreateFailure: string | null = null;
+
+    getLastTextureCreateFailure(): string | null {
+        return this.lastTextureCreateFailure;
+    }
+
     createTexture(texPtr: number, width: number, height: number, levels: number, format: number, usage: number = 0): number {
+        this.lastTextureCreateFailure = null;
         const process = System.getInstance().process;
-        if (!process) return 0;
+        if (!process) {
+            this.lastTextureCreateFailure = "process unavailable";
+            return 0;
+        }
         const bytes = getD3DTextureLayout(format, width, height).bytes;
         try {
             const guestPtr = process.memory.alloc(bytes, "HEAP");
@@ -1315,6 +1325,7 @@ export class D3D9Device {
             }
             return guestPtr;
         } catch (e) {
+            this.lastTextureCreateFailure = e instanceof Error ? e.message : String(e);
             Logger.error(LogCategory.D3D9, `createTexture: HEAP alloc failed ${width}x${height}: ${e}`);
             return 0;
         }

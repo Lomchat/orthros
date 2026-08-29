@@ -77,7 +77,7 @@ export interface HarnessReport {
     /** Failed D3D/D3DX/DDraw HRESULTs survive the noisy crash reporter WinAPI tail. */
     graphicsHresultFailures: Array<{
         api: string; hresult: string; caller: string; callerSym: string | null;
-        args: string[]; seq: number;
+        args: string[]; seq: number; detail?: string;
     }>;
 }
 
@@ -204,6 +204,7 @@ export function buildHarnessReport(esp?: number): HarnessReport {
             callerSym: symbolize(failure.caller),
             args: failure.args.map(hx),
             seq: failure.seq,
+            ...(failure.detail ? { detail: failure.detail } : {}),
         })),
     };
 }

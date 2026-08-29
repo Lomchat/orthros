@@ -10,7 +10,7 @@ describe("graphics HRESULT recorder", () => {
 
     test("retains failed graphics calls with copied arguments", () => {
         const args = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70];
-        recordGraphicsHresultFailure("d3d9:CreateThing", 0x8876086c, 0x401234, args, args.length);
+        recordGraphicsHresultFailure("d3d9:CreateThing", 0x8876086c, 0x401234, args, args.length, "allocation failed");
         args[0] = 0;
 
         expect(getGraphicsHresultFailures()).toEqual([{
@@ -19,6 +19,7 @@ describe("graphics HRESULT recorder", () => {
             caller: 0x401234,
             args: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
             seq: 1,
+            detail: "allocation failed",
         }]);
     });
 
