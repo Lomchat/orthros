@@ -31,6 +31,7 @@ import { resetSehDispatchState } from "./seh-dispatch";
 import { namedObjects } from "../modules/kernel32/named-objects";
 import { resetGuestMessageBoxes } from "./diagnostics/message-box-recorder";
 import { resetMissingFiles } from "./diagnostics/missing-file-recorder";
+import { resetGraphicsHresultFailures } from "./diagnostics/graphics-hresult-recorder";
 import { hypercallDataManager } from "./cpu/hypercall-data";
 
 /**
@@ -614,6 +615,7 @@ export class System {
         this._crashReported = false; // fresh game → allow a new crash report
         resetGuestMessageBoxes();
         resetMissingFiles();
+        resetGraphicsHresultFailures();
 
         // Reset all subsystems
         this.windowManager.reset();

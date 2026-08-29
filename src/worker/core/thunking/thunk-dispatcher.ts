@@ -32,6 +32,7 @@ import {
 import { faultRecorder } from '../memory/fault-recorder';
 import { stubRegistry } from '../diagnostics/stub-registry';
 import { apiCensus } from '../diagnostics/api-census';
+import { recordGraphicsHresultFailure } from '../diagnostics/graphics-hresult-recorder';
 import { MEM_THUNK_CODE_BASE, MEM_THUNK_DATA_BASE, MEM_THUNK_DATA_SIZE } from '../cpu/emulator-config';
 import type { Scheduler } from '../scheduler/scheduler';
 import { ThunkBoundaryKind } from '../scheduler/types';
@@ -1669,6 +1670,7 @@ export class ThunkDispatcher {
         // Sync thunks don't spin-loop > instruction counter doesn't advance > virtual time
         // falls behind wall-clock. Credit handler time to keep game timing consistent.
         const implWallStart = performance.now();
+        let censusCaller = 0;
         try {
             const regsRaw = this.cachedReg32 || cpu.reg32;
             const ctx = this.reusableContext;
@@ -1689,7 +1691,7 @@ export class ThunkDispatcher {
             // catches "a stub pretends to work and the game derails far away" (the hot
             // string/sync/memcpy traffic rides the WASM hypercall tier, not this JS path,
             // so this stays cheap). See diagnostics/api-census.ts.
-            const censusCaller = (this.cachedDataView && this.isDataViewValid() && espAtEntry < this.memLength - 4)
+            censusCaller = (this.cachedDataView && this.isDataViewValid() && espAtEntry < this.memLength - 4)
                 ? this.cachedDataView.getUint32(espAtEntry, true) >>> 0 : 0;
             apiCensus.record(thunkName, impl.length, censusCaller);
 
@@ -1709,6 +1711,18 @@ export class ThunkDispatcher {
         if (isAsync) {
             this._handleAsyncResult(result, functionId, thunkName, cpu, espAtEntry, argCount, thunkStart);
         } else {
+            const syncValue = typeof result === 'number'
+                ? result
+                : (result && typeof result.value === 'number' ? result.value : 0);
+            if ((syncValue >>> 31) !== 0) {
+                recordGraphicsHresultFailure(
+                    thunkName,
+                    syncValue,
+                    censusCaller,
+                    this.reusableArgs,
+                    argCount,
+                );
+            }
             const dur = frameProfiler.endTimer("thunk", thunkStart);
             if ((this.thunkCount & 0xF) === 0) frameProfiler.recordThunk(thunkName, dur * 16);
             frameProfiler.markThunkEnd();

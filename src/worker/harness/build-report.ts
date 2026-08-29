@@ -13,6 +13,7 @@ import { getStackGuardViolations } from "../core/memory/stack-write-guard";
 import { hypercallDataManager } from "../core/cpu/hypercall-data";
 import { getGuestMessageBoxes } from "../core/diagnostics/message-box-recorder";
 import { getMissingFiles } from "../core/diagnostics/missing-file-recorder";
+import { getGraphicsHresultFailures } from "../core/diagnostics/graphics-hresult-recorder";
 
 const hx = (v: number) => "0x" + (v >>> 0).toString(16);
 
@@ -73,6 +74,11 @@ export interface HarnessReport {
     messageBoxes: ReturnType<typeof getGuestMessageBoxes>;
     /** Recent failed CreateFile/GetFileAttributes probes, oldest to newest. */
     missingFiles: ReturnType<typeof getMissingFiles>;
+    /** Failed D3D/D3DX/DDraw HRESULTs survive the noisy crash reporter WinAPI tail. */
+    graphicsHresultFailures: Array<{
+        api: string; hresult: string; caller: string; callerSym: string | null;
+        args: string[]; seq: number;
+    }>;
 }
 
 function readStackWords(esp: number, count = 4): string[] {
@@ -191,5 +197,13 @@ export function buildHarnessReport(esp?: number): HarnessReport {
         sehDispatchTrace: getSehDispatchTrace(),
         messageBoxes: getGuestMessageBoxes(),
         missingFiles: getMissingFiles(),
+        graphicsHresultFailures: getGraphicsHresultFailures().map((failure) => ({
+            api: failure.api,
+            hresult: hx(failure.hresult),
+            caller: hx(failure.caller),
+            callerSym: symbolize(failure.caller),
+            args: failure.args.map(hx),
+            seq: failure.seq,
+        })),
     };
 }
