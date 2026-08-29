@@ -4,8 +4,8 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "prebuild": "bun run generate-reference-argcounts && bun run generate-indexes",
-    "predev": "bun run clean:vite && bun run generate-reference-argcounts && bun run generate-indexes",
+    "prebuild": "bun run sync-v86-wasm && bun run generate-reference-argcounts && bun run generate-indexes",
+    "predev": "bun run sync-v86-wasm && bun run clean:vite && bun run generate-reference-argcounts && bun run generate-indexes",
     "dev": "bunx --bun vite",
     "dev:ssl": "VITE_SSL=1 bun run dev",
     "dev:logs": "bun run tools/log-server/log-server.ts",
@@ -32,6 +32,7 @@
     "logs:emergency": "bun tools/log-manager.ts emergency",
     "logs:stats": "bun tools/log-manager.ts stats",
     "analyze-trace": "bun tools/analyze-trace.ts",
+    "sync-v86-wasm": "bun tools/sync-v86-wasm.ts",
     "test:fpu-relaxed": "node vendor/v86/tests/fpu-relaxed-diff.mjs",
     "build:v86": "cd vendor/v86 && bash build-wasm.sh && cp build/v86.wasm ../../public/v86.wasm && echo 'v86.wasm copied to public/'",
     "build:video-decoder": "bash tools/build-ffmpeg-decoder/build.sh",
