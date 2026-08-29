@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { TextureStore } from "../../src/worker/backends/webgpu/d3d9/d3d9-resources";
+import {
+    TextureStore,
+    getD3D9TextureLockRegion,
+} from "../../src/worker/backends/webgpu/d3d9/d3d9-resources";
 
 describe("D3D9 transient texture guest backing", () => {
     test("keeps pixels host-side and attaches guest memory only while locked", () => {
@@ -33,5 +36,45 @@ describe("D3D9 transient texture guest backing", () => {
         expect(store.attachGuestBacking(index, 0xe0, memory)).toBeNull();
         expect(store.attachGuestBacking(index, 0x20, memory)).not.toBeNull();
         expect(store.attachGuestBacking(index, 0x80, memory)).toBeNull();
+    });
+
+    test("copies only a partial LockRect and can retain its lazy guest backing", () => {
+        const store = new TextureStore();
+        const index = store.create(0x9abc, 4, 4, 1, 21, -1);
+        const memory = new Uint8Array(0x200).fill(0xee);
+        const host = store.getData(index)!;
+        for (let i = 0; i < host.length; i++) host[i] = i;
+        const region = getD3D9TextureLockRegion(21, 4, 4, {
+            left: 2, top: 1, right: 3, bottom: 2,
+        })!;
+        expect(region).toEqual({ offset: 24, rowBytes: 4, rows: 1 });
+
+        expect(store.attachGuestBacking(index, 0x80, memory, region)).toEqual({ ptr: 0x80, pitch: 16 });
+        expect(Array.from(memory.subarray(0x80 + 24, 0x80 + 28))).toEqual([24, 25, 26, 27]);
+        expect(memory[0x80 + 23]).toBe(0xee);
+        memory.set([200, 201, 202, 203], 0x80 + 24);
+        memory[0x80 + 23] = 99;
+        store.unlock(index, memory, region);
+        expect(store.detachGuestBacking(index, true)).toBe(0x80);
+        expect(Array.from(host.subarray(24, 28))).toEqual([200, 201, 202, 203]);
+        expect(host[23]).toBe(23);
+
+        // A retained pointer can be attached again; READONLY-style writeBack=false
+        // leaves the authoritative host pixels unchanged.
+        expect(store.attachGuestBacking(index, 0x80, memory, region)).toEqual({ ptr: 0x80, pitch: 16 });
+        memory.set([1, 1, 1, 1], 0x80 + 24);
+        store.unlock(index, memory, region, false);
+        expect(store.detachGuestBacking(index)).toBe(0x80);
+        expect(Array.from(host.subarray(24, 28))).toEqual([200, 201, 202, 203]);
+    });
+
+    test("computes block-compressed LockRect rows without copying unrelated blocks", () => {
+        const dxt1 = 0x31545844;
+        expect(getD3D9TextureLockRegion(dxt1, 16, 16, {
+            left: 4, top: 4, right: 8, bottom: 8,
+        })).toEqual({ offset: 40, rowBytes: 8, rows: 1 });
+        expect(getD3D9TextureLockRegion(21, 4, 4, {
+            left: 3, top: 3, right: 5, bottom: 4,
+        })).toBeNull();
     });
 });

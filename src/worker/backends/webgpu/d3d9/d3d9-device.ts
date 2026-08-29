@@ -6,7 +6,14 @@ import { D3D9StateTracker } from "./d3d9-state-tracker";
 import { D3D9CommandRecorder } from "./d3d9-command-recorder";
 import { DynamicVbPool } from "./dynamic-vb-pool";
 import { D3D9BackendExecutor, UniformData } from "./d3d9-backend-executor";
-import { VertexBufferStore, IndexBufferStore, TextureStore } from "./d3d9-resources";
+import {
+    VertexBufferStore,
+    IndexBufferStore,
+    TextureStore,
+    getD3D9TextureLockRegion,
+    type D3D9LockRect,
+    type D3D9TextureLockRegion,
+} from "./d3d9-resources";
 import { DxSamplerCache } from "../shared/dx-sampler";
 import { TexturePaletteStore } from "../shared/texture-palette-store";
 import { decodeD3d9Sampler } from "./d3d9-sampler";
@@ -81,6 +88,10 @@ const D3DCULL_NONE = 1;
 const D3DCULL_CW = 2;
 const D3DCULL_CCW = 3;
 const D3DFMT_INDEX16 = 101;
+const D3DLOCK_READONLY = 0x10;
+const D3DLOCK_DISCARD = 0x2000;
+const LEVEL0_LOCK_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const LEVEL0_LOCK_CACHE_MAX_ENTRY_BYTES = 256 * 1024;
 
 // Alpha-test render states + D3DCMPFUNC ALWAYS (the no-op compare).
 const D3DRS_ALPHAREF = 24;
@@ -405,6 +416,18 @@ export class D3D9Device {
     private mipLevelLocks: Map<string, { guestPtr: number; pitch: number }> = new Map();
     // Persisted mip pixel data (level > 0) for D3DXFilterTexture and LockRect round-trips.
     private mipLevelData: Map<string, Uint8Array> = new Map();
+
+    // Level-0 textures remain host-authoritative, but small transient guest
+    // backings are retained lazily for textures that are actually locked. This
+    // avoids alloc/free storms without recreating a guest copy for every texture.
+    private level0LockCache = new Map<number, { guestPtr: number; bytes: number; lastUse: number }>();
+    private level0ActiveLocks = new Map<number, {
+        region: D3D9TextureLockRegion;
+        flags: number;
+        cached: boolean;
+    }>();
+    private level0LockCacheBytes = 0;
+    private level0LockSerial = 0;
 
     // ── Cube-texture per-face pixel storage (static / LockRect'd cubes) ──────
     // Active LockRect scratch for a cube face, keyed "cubePtr:face:level".
@@ -1435,17 +1458,37 @@ export class D3D9Device {
         return 0;
     }
 
-    lockTexture(texPtr: number, level: number): { ptr: number; pitch: number } | null {
+    private evictLevel0LockCache(requiredBytes: number, excludeTexPtr: number): void {
+        if (this.level0LockCacheBytes + requiredBytes <= LEVEL0_LOCK_CACHE_MAX_BYTES) return;
+        const candidates = [...this.level0LockCache.entries()]
+            .filter(([ptr]) => ptr !== excludeTexPtr && !this.level0ActiveLocks.has(ptr))
+            .sort((a, b) => a[1].lastUse - b[1].lastUse);
+        for (const [ptr, entry] of candidates) {
+            const index = this.textures.getIndex(ptr);
+            if (index !== null) this.textures.detachGuestBacking(index);
+            System.getInstance().process?.memory.free(entry.guestPtr);
+            this.level0LockCache.delete(ptr);
+            this.level0LockCacheBytes -= entry.bytes;
+            if (this.level0LockCacheBytes + requiredBytes <= LEVEL0_LOCK_CACHE_MAX_BYTES) break;
+        }
+    }
+
+    lockTexture(
+        texPtr: number,
+        level: number,
+        rect: D3D9LockRect | null = null,
+        flags = 0,
+    ): { ptr: number; pitch: number } | null {
         const index = this.textures.getIndex(texPtr);
         if (index === null) return null;
 
-        // Level 0 gets guest-visible storage only for the lifetime of LockRect.
+        // Level 0 uses a lazily retained guest-visible backing. Only the locked
+        // rectangle crosses the host/guest boundary; the rest may remain stale
+        // because D3D9 callers may only access the returned rectangle.
         if (level === 0) {
-            if (this.textures.isLocked(index)) {
-                const ptr = this.textures.getLockedPtr(index);
-                if (ptr >= 0) {
-                    return { ptr, pitch: this.textures.getPitch(index) };
-                }
+            const active = this.level0ActiveLocks.get(texPtr);
+            if (active && this.textures.isLocked(index)) {
+                return { ptr: this.textures.getLockedPtr(index), pitch: this.textures.getPitch(index) };
             }
             const process = System.getInstance().process;
             if (!process) return null;
@@ -1454,15 +1497,54 @@ export class D3D9Device {
                 this.textures.getWidth(index),
                 this.textures.getHeight(index),
             );
-            let guestPtr: number;
-            try {
-                guestPtr = process.memory.alloc(layout.bytes, "SURFACE");
-            } catch (e) {
-                Logger.error(LogCategory.D3D9, `lockTexture level0: SURFACE alloc failed bytes=${layout.bytes}: ${e}`);
+            const region = getD3D9TextureLockRegion(
+                this.textures.getFormat(index),
+                this.textures.getWidth(index),
+                this.textures.getHeight(index),
+                rect,
+            );
+            if (!region) return null;
+
+            let cache = this.level0LockCache.get(texPtr);
+            let cached = cache !== undefined;
+            if (!cache) {
+                cached = layout.bytes <= LEVEL0_LOCK_CACHE_MAX_ENTRY_BYTES;
+                if (cached) this.evictLevel0LockCache(layout.bytes, texPtr);
+                if (cached && this.level0LockCacheBytes + layout.bytes > LEVEL0_LOCK_CACHE_MAX_BYTES) {
+                    cached = false;
+                }
+                let guestPtr: number;
+                try {
+                    guestPtr = process.memory.alloc(layout.bytes, "SURFACE");
+                } catch (e) {
+                    Logger.error(LogCategory.D3D9, `lockTexture level0: SURFACE alloc failed bytes=${layout.bytes}: ${e}`);
+                    return null;
+                }
+                cache = { guestPtr, bytes: layout.bytes, lastUse: ++this.level0LockSerial };
+                if (cached) {
+                    this.level0LockCache.set(texPtr, cache);
+                    this.level0LockCacheBytes += layout.bytes;
+                }
+            }
+
+            cache.lastUse = ++this.level0LockSerial;
+            const lock = this.textures.attachGuestBacking(
+                index,
+                cache.guestPtr,
+                this.memory,
+                region,
+                (flags & D3DLOCK_DISCARD) === 0,
+            );
+            if (!lock) {
+                this.textures.detachGuestBacking(index);
+                if (cached) {
+                    this.level0LockCache.delete(texPtr);
+                    this.level0LockCacheBytes -= cache.bytes;
+                }
+                process.memory.free(cache.guestPtr);
                 return null;
             }
-            const lock = this.textures.attachGuestBacking(index, guestPtr, this.memory);
-            if (!lock) process.memory.free(guestPtr);
+            this.level0ActiveLocks.set(texPtr, { region, flags: flags >>> 0, cached });
             return lock;
         }
 
@@ -1609,9 +1691,22 @@ export class D3D9Device {
             return 0;
         }
 
-        this.textures.unlock(index, memory);
-        const guestPtr = this.textures.detachGuestBacking(index);
-        if (guestPtr > 0) System.getInstance().process?.memory.free(guestPtr);
+        const active = this.level0ActiveLocks.get(texPtr);
+        if (!active) return 0;
+        this.textures.unlock(
+            index,
+            memory,
+            active.region,
+            (active.flags & D3DLOCK_READONLY) === 0,
+        );
+        const guestPtr = this.textures.detachGuestBacking(index, active.cached);
+        if (active.cached) {
+            const cache = this.level0LockCache.get(texPtr);
+            if (cache) cache.lastUse = ++this.level0LockSerial;
+        } else if (guestPtr > 0) {
+            System.getInstance().process?.memory.free(guestPtr);
+        }
+        this.level0ActiveLocks.delete(texPtr);
         return 0;
     }
 
@@ -1717,6 +1812,13 @@ export class D3D9Device {
                 if (key.startsWith(viewPrefix)) this.cubeFaceRenderViews.delete(key);
             }
         }
+
+        const level0Cache = this.level0LockCache.get(texPtr);
+        if (level0Cache) {
+            this.level0LockCacheBytes -= level0Cache.bytes;
+            this.level0LockCache.delete(texPtr);
+        }
+        this.level0ActiveLocks.delete(texPtr);
 
         const tex = this.textures.release(texPtr);
         if (!tex) return;

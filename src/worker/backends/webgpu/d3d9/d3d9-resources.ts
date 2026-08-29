@@ -9,6 +9,57 @@ import {
     getD3DTextureLayout,
 } from "../shared/texture-formats";
 
+export interface D3D9LockRect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+}
+
+export interface D3D9TextureLockRegion {
+    offset: number;
+    rowBytes: number;
+    rows: number;
+}
+
+/** Resolve a D3D9 LockRect into byte rows inside the full level-0 backing.
+ * The guest still receives the native full-surface pitch, but only these rows
+ * need to cross the host/guest boundary. */
+export function getD3D9TextureLockRegion(
+    format: number,
+    width: number,
+    height: number,
+    rect: D3D9LockRect | null,
+): D3D9TextureLockRegion | null {
+    const layout = getD3DTextureLayout(format, width, height);
+    const left = rect?.left ?? 0;
+    const top = rect?.top ?? 0;
+    const right = rect?.right ?? width;
+    const bottom = rect?.bottom ?? height;
+    if (left < 0 || top < 0 || right <= left || bottom <= top || right > width || bottom > height) {
+        return null;
+    }
+
+    if (layout.compressed) {
+        const leftBlock = left >> 2;
+        const topBlock = top >> 2;
+        const rightBlock = (right + 3) >> 2;
+        const bottomBlock = (bottom + 3) >> 2;
+        return {
+            offset: topBlock * layout.pitch + leftBlock * layout.blockBytes,
+            rowBytes: Math.max(1, rightBlock - leftBlock) * layout.blockBytes,
+            rows: Math.max(1, bottomBlock - topBlock),
+        };
+    }
+
+    const bytesPerPixel = Math.max(1, Math.floor(layout.pitch / Math.max(1, width)));
+    return {
+        offset: top * layout.pitch + left * bytesPerPixel,
+        rowBytes: (right - left) * bytesPerPixel,
+        rows: bottom - top,
+    };
+}
+
 
 // Vertex Buffer Store - SoA layout
 export class VertexBufferStore {
@@ -687,19 +738,36 @@ export class TextureStore {
      * the address space in texture-heavy games. The returned pointer remains
      * valid until the matching unlock detaches it.
      */
-    attachGuestBacking(index: number, guestPtr: number, memory: Uint8Array): { ptr: number; pitch: number } | null {
-        if (guestPtr <= 0 || this.data[index] === undefined || this.guestPtrs[index] >= 0) return null;
+    attachGuestBacking(
+        index: number,
+        guestPtr: number,
+        memory: Uint8Array,
+        region?: D3D9TextureLockRegion,
+        seed = true,
+    ): { ptr: number; pitch: number } | null {
+        if (guestPtr <= 0 || this.data[index] === undefined || this.lockedPtrs[index] >= 0) return null;
+        const priorPtr = this.guestPtrs[index];
+        if (priorPtr >= 0 && priorPtr !== guestPtr) return null;
         const data = this.data[index]!;
         if (guestPtr + data.length > memory.length) return null;
-        memory.set(data, guestPtr);
+        if (seed) {
+            const pitch = this.pitches[index];
+            const copy = region ?? { offset: 0, rowBytes: pitch, rows: getD3DTextureLayout(
+                this.formats[index], this.widths[index], this.heights[index],
+            ).rows };
+            for (let row = 0; row < copy.rows; row++) {
+                const offset = copy.offset + row * pitch;
+                memory.set(data.subarray(offset, offset + copy.rowBytes), guestPtr + offset);
+            }
+        }
         this.guestPtrs[index] = guestPtr;
         return this.lock(index);
     }
 
     /** Detach and return the transient LockRect allocation, or -1 if absent. */
-    detachGuestBacking(index: number): number {
+    detachGuestBacking(index: number, retain = false): number {
         const guestPtr = this.guestPtrs[index];
-        this.guestPtrs[index] = -1;
+        if (!retain) this.guestPtrs[index] = -1;
         this.lockedPtrs[index] = -1;
         return guestPtr;
     }
@@ -715,7 +783,7 @@ export class TextureStore {
         return { ptr: guestBase, pitch: this.pitches[index] };
     }
 
-    unlock(index: number, memory: Uint8Array): void {
+    unlock(index: number, memory: Uint8Array, region?: D3D9TextureLockRegion, writeBack = true): void {
         const guestBase = this.guestPtrs[index];
         if (guestBase < 0 || this.lockedPtrs[index] === -1) return;
         const pitch = this.pitches[index];
@@ -723,13 +791,16 @@ export class TextureStore {
         // Compressed surfaces hold height/4 block rows, not `height` rows; with the
         // block-row pitch this avoids copying ~height*3/4 of adjacent guest memory.
         const rows = getD3DTextureLayout(this.formats[index], this.widths[index], height).rows;
-        const bytes = pitch * rows;
         const data = this.data[index];
-        if (data) {
-            data.set(memory.subarray(guestBase, guestBase + bytes));
+        if (data && writeBack) {
+            const copy = region ?? { offset: 0, rowBytes: pitch, rows };
+            for (let row = 0; row < copy.rows; row++) {
+                const offset = copy.offset + row * pitch;
+                data.set(memory.subarray(guestBase + offset, guestBase + offset + copy.rowBytes), offset);
+            }
+            this.dirtyFlags[index] = 1;
         }
         this.lockedPtrs[index] = -1;
-        this.dirtyFlags[index] = 1;
     }
 
     private grow(): void {

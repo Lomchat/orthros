@@ -22,6 +22,7 @@ import {
     type SurfaceMeta,
 } from './resource-registry';
 import { getD3DTextureLayout } from '../../backends/webgpu/shared/texture-formats';
+import { getD3D9TextureLockRegion } from '../../backends/webgpu/d3d9/d3d9-resources';
 import {
     initReturnPtr,
     D3DFMT_UNKNOWN,
@@ -56,6 +57,7 @@ interface SurfaceLockDiagRow {
     fullLocks: number;
     partialLocks: number;
     bytesPerLock: number;
+    rectangleCopyBytes: number;
     flags: Map<number, number>;
     callers: Map<number, number>;
 }
@@ -96,6 +98,7 @@ export function getSurfaceLockDiagnostics(): unknown {
             partialLocks: row.partialLocks,
             bytesPerLock: row.bytesPerLock,
             copiedBytesIfFullRoundTrip: row.bytesPerLock * row.locks * 2,
+            copiedBytesWithRectangles: row.rectangleCopyBytes,
             flags: Object.fromEntries(
                 [...row.flags.entries()]
                     .sort((a, b) => b[1] - a[1])
@@ -145,6 +148,7 @@ function recordSurfaceLock(
             fullLocks: 0,
             partialLocks: 0,
             bytesPerLock: getD3DTextureLayout(meta.format, meta.width, meta.height).bytes,
+            rectangleCopyBytes: 0,
             flags: new Map(),
             callers: new Map(),
         };
@@ -155,6 +159,11 @@ function recordSurfaceLock(
     row.callers.set(caller >>> 0, (row.callers.get(caller >>> 0) ?? 0) + 1);
     if (!pRect) {
         row.fullLocks++;
+        const region = getD3D9TextureLockRegion(meta.format, meta.width, meta.height, null);
+        if (region) {
+            const directions = ((flags & 0x2000) === 0 ? 1 : 0) + ((flags & 0x10) === 0 ? 1 : 0);
+            row.rectangleCopyBytes += region.rowBytes * region.rows * directions;
+        }
     } else if (pRect <= mem.length - 16) {
         const left = view.getInt32(pRect, true);
         const top = view.getInt32(pRect + 4, true);
@@ -162,6 +171,11 @@ function recordSurfaceLock(
         const bottom = view.getInt32(pRect + 12, true);
         if (left === 0 && top === 0 && right === meta.width && bottom === meta.height) row.fullLocks++;
         else row.partialLocks++;
+        const region = getD3D9TextureLockRegion(meta.format, meta.width, meta.height, { left, top, right, bottom });
+        if (region) {
+            const directions = ((flags & 0x2000) === 0 ? 1 : 0) + ((flags & 0x10) === 0 ? 1 : 0);
+            row.rectangleCopyBytes += region.rowBytes * region.rows * directions;
+        }
     } else {
         row.partialLocks++;
     }
@@ -218,7 +232,14 @@ export function lockSurfaceRectDirect(
 
     const level = meta.level ?? 0;
     recordSurfaceLock(pSurface, meta, pRect, flags, caller, mem, view);
-    const lockInfo = device.lockTexture(meta.texturePtr, level);
+    if (pRect && pRect > mem.length - 16) return D3DERR_INVALIDCALL;
+    const rect = pRect ? {
+        left: view.getInt32(pRect, true),
+        top: view.getInt32(pRect + 4, true),
+        right: view.getInt32(pRect + 8, true),
+        bottom: view.getInt32(pRect + 12, true),
+    } : null;
+    const lockInfo = device.lockTexture(meta.texturePtr, level, rect, flags);
     if (!lockInfo) return D3DERR_INVALIDCALL;
 
     let pBits = lockInfo.ptr >>> 0;
@@ -819,7 +840,14 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             Logger.verbose(LogCategory.D3D9, `Texture::LockRect(Level=${Level})`);
         }
 
-        const lockInfo = device.lockTexture(pTexture, Level);
+        if (pRect && pRect > mem.length - 16) return D3DERR_INVALIDCALL;
+        const rect = pRect ? {
+            left: Mem.readInt32(pRect) ?? 0,
+            top: Mem.readInt32(pRect + 4) ?? 0,
+            right: Mem.readInt32(pRect + 8) ?? 0,
+            bottom: Mem.readInt32(pRect + 12) ?? 0,
+        } : null;
+        const lockInfo = device.lockTexture(pTexture, Level, rect, Flags);
         if (!lockInfo) {
             Logger.error(LogCategory.D3D9, `Texture::LockRect failed for 0x${pTexture.toString(16)}`);
             return D3DERR_INVALIDCALL;
