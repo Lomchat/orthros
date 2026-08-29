@@ -1859,6 +1859,11 @@ export class Scheduler {
         if (ms === 0) {
             if (!this.hasOtherRunnableThreads(thread.id)) {
                 this.requestYieldToHost(this.computeYieldMs(1), "sleep0");
+                // A thunk boundary can sit hundreds of thousands of guest
+                // instructions before the next periodic tick. Force the WASM
+                // cycle to end now so Sleep(0) actually yields instead of
+                // running another large burst of the polling loop.
+                preemptionManager.requestImmediateExit();
                 return 0;
             }
             const context = createPostReturnContext(returnAddr, postReturnEsp, callerCtx, 0);
@@ -1880,6 +1885,12 @@ export class Scheduler {
                 this.sleepPathStats.soleRunnableYield++;
                 this.creditVirtualTimeForSoleRunnableSleep(ms);
                 this.requestYieldToHost(ms, "sleepN");
+                // Same invariant as a blocked wait: once Sleep has requested a
+                // host yield, no guest instruction after its return address may
+                // run until that yield is serviced. Without the immediate exit,
+                // a sole polling thread can execute the Sleep(1) loop hundreds
+                // of thousands of times inside one v86 slice.
+                preemptionManager.requestImmediateExit();
                 return 0;
             }
             if (ms !== INFINITE) {
@@ -4065,10 +4076,11 @@ export class Scheduler {
             }
         };
 
-        // For very short yields (≤1ms), use MessageChannel to bypass the
-        // browser's 4ms setTimeout floor. This reduces spin-loop yield
-        // overhead from ~4ms to ~0.1ms.
-        if (ms <= 1 && this.yieldPort && !this.yieldPortResolve) {
+        // For cooperative scheduler yields, MessageChannel bypasses the browser
+        // timer floor. A real Sleep(N>0) is different: waking it in ~0.1ms turns
+        // a harmless Windows polling thread into a CPU-burning loop. Preserve a
+        // timer turn for sleepN while keeping Sleep(0)/scheduler yields fast.
+        if (ms <= 1 && yieldSource !== "sleepN" && this.yieldPort && !this.yieldPortResolve) {
             this.yieldPortResolve = resume;
             this.yieldPort.postMessage(null);
         } else {

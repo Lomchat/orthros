@@ -18,4 +18,16 @@ describe('Sleep(0) host-yield storm guard', () => {
         expect(source).toContain("exports['Sleep']");
         expect(source).toContain('sched.sleepWithContext');
     });
+
+    test('services sole-runnable Sleep immediately and keeps positive sleeps wall-paced', async () => {
+        const source = await Bun.file(new URL('src/worker/core/scheduler/scheduler.ts', repoUrl)).text();
+        const shortSleep = source.slice(
+            source.indexOf('this.sleepPathStats.soleRunnableYield++'),
+            source.indexOf('if (ms !== INFINITE) {', source.indexOf('this.sleepPathStats.soleRunnableYield++')),
+        );
+
+        expect(shortSleep).toContain('this.requestYieldToHost(ms, "sleepN");');
+        expect(shortSleep).toContain('preemptionManager.requestImmediateExit();');
+        expect(source).toContain('yieldSource !== "sleepN" && this.yieldPort');
+    });
 });
