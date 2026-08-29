@@ -4,7 +4,7 @@
 
 import { resolveSurfaceInfo, resolveTextureInfo, surfaceMeta, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
 import { decodeD3DTextureToRgba8, d3dFormatBpp } from '../../backends/webgpu/shared/texture-formats';
-import { D3DFMT_DXT1, decodeDxtToRgba, encodeRgbaToDxt1 } from '../../backends/webgpu/shared/dxt';
+import { D3DFMT_DXT1, decodeDxtToRgba, encodeRgbaToDxt1, isDxtFormat } from '../../backends/webgpu/shared/dxt';
 
 const D3DX_FILTER_LINEAR = 3;
 
@@ -427,7 +427,7 @@ export function d3dxLoadSurfaceFromRgba(
     return ok ? D3D_OK : D3DERR_INVALIDCALL;
 }
 
-function downsampleBox2x(
+function downsampleRgbaBox2x(
     src: Uint8Array,
     srcPitch: number,
     srcW: number,
@@ -451,17 +451,17 @@ function downsampleBox2x(
                 for (let ox = 0; ox < 2; ox++) {
                     const px = Math.min(srcW - 1, sx + ox);
                     const off = py * srcPitch + px * 4;
-                    b += src[off];
+                    r += src[off];
                     g += src[off + 1];
-                    r += src[off + 2];
+                    b += src[off + 2];
                     a += src[off + 3];
                     count++;
                 }
             }
             const dstOff = y * dstPitch + x * 4;
-            dst[dstOff] = Math.round(b / count);
+            dst[dstOff] = Math.round(r / count);
             dst[dstOff + 1] = Math.round(g / count);
-            dst[dstOff + 2] = Math.round(r / count);
+            dst[dstOff + 2] = Math.round(b / count);
             dst[dstOff + 3] = Math.round(a / count);
         }
     }
@@ -472,33 +472,81 @@ export function d3dxFilterTexture(texturePtr: number, srcLevel: number, _filter:
     if (!info) return D3DERR_INVALIDCALL;
 
     const { device, meta } = info;
-    const start = Math.max(0, srcLevel >>> 0);
+    // D3DX_DEFAULT is explicitly accepted for SrcLevel and selects the base
+    // level. Treating 0xffffffff as an unsigned level previously rejected the
+    // exact call pattern used by BFME II before any filtering happened.
+    const start = (srcLevel >>> 0) === 0xffffffff ? 0 : Math.max(0, srcLevel >>> 0);
     if (start >= meta.levels) return D3DERR_INVALIDCALL;
 
     let level = start;
-    let srcPixels = device.getTextureLevelPixels(texturePtr, level);
-    if (!srcPixels) return D3DERR_INVALIDCALL;
+    const firstPixels = device.getTextureLevelPixels(texturePtr, level);
+    if (!firstPixels) return D3DERR_INVALIDCALL;
+    let srcWidth = firstPixels.width;
+    let srcHeight = firstPixels.height;
+    let srcRgba = new Uint8Array(srcWidth * srcHeight * 4);
+    try {
+        decodeD3DTextureToRgba8(firstPixels.data, 0, srcWidth, srcHeight, meta.format, {
+            pitch: firstPixels.pitch,
+            out: srcRgba,
+        });
+    } catch {
+        return D3DERR_INVALIDCALL;
+    }
 
     while (level + 1 < meta.levels) {
-        const dstW = Math.max(1, srcPixels.width >>> 1);
-        const dstH = Math.max(1, srcPixels.height >>> 1);
-        const dstPitch = dstW * 4;
-        const dst = new Uint8Array(dstPitch * dstH);
-        downsampleBox2x(
-            srcPixels.data,
-            srcPixels.pitch,
-            srcPixels.width,
-            srcPixels.height,
-            dst,
-            dstPitch,
+        const dstW = Math.max(1, srcWidth >>> 1);
+        const dstH = Math.max(1, srcHeight >>> 1);
+        const dstRgbaPitch = dstW * 4;
+        const dstRgba = new Uint8Array(dstRgbaPitch * dstH);
+        downsampleRgbaBox2x(
+            srcRgba,
+            srcWidth * 4,
+            srcWidth,
+            srcHeight,
+            dstRgba,
+            dstRgbaPitch,
             dstW,
             dstH,
         );
-        if (!device.setTextureLevelPixels(texturePtr, level + 1, dst, dstPitch)) {
+
+        const target = device.getTextureLevelPixels(texturePtr, level + 1);
+        if (!target) return D3DERR_INVALIDCALL;
+        let encoded: Uint8Array;
+        if (meta.format === D3DFMT_DXT1) {
+            encoded = new Uint8Array(target.data.length);
+            if (!encodeRgbaToDxt1(dstRgba, dstW, dstH, encoded, target.pitch)) {
+                return D3DERR_INVALIDCALL;
+            }
+        } else {
+            // DXT2-5 need their own alpha encoders. Never write RGBA bytes into
+            // block-compressed storage; fail cleanly until those codecs exist.
+            if (isDxtFormat(meta.format)) return D3DERR_INVALIDCALL;
+            const bpp = d3dFormatBpp(meta.format);
+            if (!bpp || (bpp & 7) !== 0) return D3DERR_INVALIDCALL;
+            const bytesPerPixel = bpp >>> 3;
+            encoded = new Uint8Array(target.data.length);
+            for (let y = 0; y < dstH; y++) {
+                for (let x = 0; x < dstW; x++) {
+                    const src = (y * dstW + x) * 4;
+                    if (!writeEncodedPixel(
+                        encoded,
+                        y * target.pitch + x * bytesPerPixel,
+                        meta.format,
+                        dstRgba[src],
+                        dstRgba[src + 1],
+                        dstRgba[src + 2],
+                        dstRgba[src + 3],
+                    )) return D3DERR_INVALIDCALL;
+                }
+            }
+        }
+        if (!device.setTextureLevelPixels(texturePtr, level + 1, encoded, target.pitch)) {
             return D3DERR_INVALIDCALL;
         }
         level++;
-        srcPixels = { data: dst, pitch: dstPitch, width: dstW, height: dstH };
+        srcRgba = dstRgba;
+        srcWidth = dstW;
+        srcHeight = dstH;
     }
 
     return D3D_OK;
