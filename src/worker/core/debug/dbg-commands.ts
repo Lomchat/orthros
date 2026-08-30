@@ -907,6 +907,28 @@ export const dbg = {
         console.log('[dbg][work-window] cancelled');
         return true;
     },
+    /** Share of retired guest instructions that ran in the interpreter rather
+     *  than a compiled module. This is the number that decides JIT-threshold and
+     *  compile-bandwidth experiments: lowering the threshold can only help to the
+     *  extent that a phase is still interpreted. */
+    interpretedShare(reset = false): any {
+        const w = wasm();
+        const odo = readGuestOdometer();
+        const interpreted = Number(w?.profiler_interpreted_steps_get?.() ?? 0);
+        const result = {
+            interpreted,
+            retired: odo.instructions,
+            interpretedPct: odo.instructions > 0
+                ? Math.round((interpreted / odo.instructions) * 10_000) / 100
+                : 0,
+        };
+        if (reset) {
+            w?.profiler_interpreted_steps_reset?.();
+            resetGuestOdometer();
+        }
+        console.log(`[dbg][interpreted-share][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
     /** Free-running retired-guest-instruction odometer. `reset` marks a phase
      *  boundary and returns the value the previous phase accumulated, which is the
      *  right denominator for "instructions to reach this milestone" comparisons. */
