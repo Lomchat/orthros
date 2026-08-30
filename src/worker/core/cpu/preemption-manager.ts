@@ -100,6 +100,11 @@ export class PreemptionManager {
      *  same-skirmish BFME II A/Bs showed a consistent 2–3% frame-time gain. */
     private repMovsBridgeEnabled = true;           // config idx 35
 
+    /** Guarded continuation after a synchronous JIT block boundary (idx 36).
+     *  Experimental and OFF until generic correctness tests plus real-game A/B
+     *  show that avoiding the extra module re-entry is worthwhile. */
+    private syncBoundaryContinuationEnabled = false; // config idx 36
+
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
      *  fork: the ret-memo outlived table-slot frees on the module-overwrite path
@@ -296,6 +301,16 @@ export class PreemptionManager {
     }
     isRepMovsBridgeEnabled(): boolean { return this.repMovsBridgeEnabled; }
 
+    setSyncBoundaryContinuation(on: boolean): void {
+        this.syncBoundaryContinuationEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(36, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isSyncBoundaryContinuationEnabled(): boolean {
+        return this.syncBoundaryContinuationEnabled;
+    }
+
     /** Hotness-tiering authoritative toggle (survives game reload). Pure runtime knob —
      *  promotion happens organically past the threshold, so no cache clear needed. */
     setTier2Threshold(threshold: number): void {
@@ -413,7 +428,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(32, this.dynamicChainSitePicSecondWayEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(33, this.dynamicChainSitePicFourWayEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(35, this.repMovsBridgeEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(36, this.syncBoundaryContinuationEnabled ? 1 : 0);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"} syncBoundary=${this.syncBoundaryContinuationEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the

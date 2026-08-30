@@ -332,6 +332,7 @@ export const dbg = {
      *  22=JIT_INLINE_INTRA_MODULE_DISPATCH 23=JIT_TIER2_REGIONS
      *  24=JIT_TIER2_ADAPTIVE 25=JIT_MAX_PENDING_COMPILES
      *  26=JIT_THRESHOLD 27=JIT_TIER2_LEAF_CALL_FUSION.
+     *  35=JIT_REP_MOVS_REDUCED_SPILL 36=JIT_SYNC_BOUNDARY_CONTINUATION.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -514,6 +515,22 @@ export const dbg = {
         else { w.set_jit_config(35, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
         const report = { enabled: w.get_jit_config ? (w.get_jit_config(35) >>> 0) : -1 };
         console.log(`[dbg][jitRepMovsBridge][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        return report;
+    },
+    /** Guarded in-module continuation after a synchronous block boundary
+     *  (JIT config 36). Experimental; OFF by default until real-game A/B. */
+    jitSyncBoundaryContinuation(on = true): unknown {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setSyncBoundaryContinuation) pm.setSyncBoundaryContinuation(on);
+        else { w.set_jit_config(36, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = {
+            enabled: w.get_jit_config ? (w.get_jit_config(36) >>> 0) : -1,
+            sitesCompiled: w.jit_sync_boundary_continuation_sites_compiled
+                ? (w.jit_sync_boundary_continuation_sites_compiled() >>> 0)
+                : -1,
+        };
+        console.log(`[dbg][jitSyncBoundaryContinuation][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
         return report;
     },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
