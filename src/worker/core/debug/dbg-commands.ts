@@ -44,6 +44,11 @@ import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getBfmeDxtEncodeCacheFallbacks } from '../hle-lib/libs/bfme/dxt-encode-cache';
 import { getD3dxAssembleShaderSamples } from '../../modules/d3dx9';
 import { getSurfaceLockDiagnostics, setSurfaceLockDiagnostics } from '../../modules/d3d9/resources';
+import {
+    getDxCompressedTextureAdvertisement,
+    getDxCompressedTextureNegotiationStats,
+    setDxCompressedTextureAdvertisement,
+} from '../../backends/webgpu/shared/dx-format-support';
 
 interface DbgConfig {
     enabled: boolean;
@@ -818,6 +823,22 @@ export const dbg = {
     surfaceLockDiagReport(): any {
         const result = getSurfaceLockDiagnostics();
         console.log(`[dbg][surface-lock][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    /** Advertise or hide DXT/BC texture formats during D3D8/9 capability
+     * negotiation. Direct resource creation remains supported. OFF is an
+     * experimental CPU-for-memory tradeoff for engines with an uncompressed
+     * fallback; the choice persists across game reloads in this Worker. */
+    dxtAdvertise(on = true): any {
+        setDxCompressedTextureAdvertisement(!!on);
+        const result = getDxCompressedTextureNegotiationStats(false);
+        console.log(`[dbg][dxt-advertise][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    dxtAdvertiseReport(reset = false): any {
+        const result = getDxCompressedTextureNegotiationStats(!!reset);
+        result.advertised = getDxCompressedTextureAdvertisement();
+        console.log(`[dbg][dxt-advertise][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Toggle the byte-exact BFME DXT encoder memoization path. This is hot-

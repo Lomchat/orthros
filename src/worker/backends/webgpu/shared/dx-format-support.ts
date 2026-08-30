@@ -21,6 +21,43 @@
 
 import { isDxtFormat } from './texture-formats';
 
+/**
+ * Capability-policy experiment: some legacy engines spend seconds compressing
+ * decoded images to DXT after CheckDeviceFormat reports DXT support.  Keeping
+ * this switch in capability negotiation (rather than CreateTexture) lets such
+ * engines select their own uncompressed fallback without lying about resources
+ * that they create directly.  It is intentionally enabled by default until the
+ * cross-game memory/fidelity gate has passed.
+ */
+let advertiseCompressedTextureFormats = true;
+let compressedTextureProbeCount = 0;
+let compressedTextureRejectedCount = 0;
+
+export function setDxCompressedTextureAdvertisement(enabled: boolean): void {
+    advertiseCompressedTextureFormats = !!enabled;
+}
+
+export function getDxCompressedTextureAdvertisement(): boolean {
+    return advertiseCompressedTextureFormats;
+}
+
+export function getDxCompressedTextureNegotiationStats(reset = false): {
+    advertised: boolean;
+    probes: number;
+    rejected: number;
+} {
+    const result = {
+        advertised: advertiseCompressedTextureFormats,
+        probes: compressedTextureProbeCount,
+        rejected: compressedTextureRejectedCount,
+    };
+    if (reset) {
+        compressedTextureProbeCount = 0;
+        compressedTextureRejectedCount = 0;
+    }
+    return result;
+}
+
 export type DxVersion = 8 | 9;
 
 export const D3D_OK = 0;
@@ -257,6 +294,17 @@ export function checkDxDeviceFormat(
     const fmt = checkFormat >>> 0;
     if (fmt === D3DFMT_UNKNOWN) return D3DERR_NOTAVAILABLE;
     if (isDxExclusiveFormat(fmt, version)) return D3DERR_NOTAVAILABLE;
+
+    if (
+        isDxtFormat(fmt) &&
+        (rType === D3DRTYPE_TEXTURE || rType === D3DRTYPE_VOLUMETEXTURE || rType === D3DRTYPE_CUBETEXTURE)
+    ) {
+        compressedTextureProbeCount++;
+        if (!advertiseCompressedTextureFormats) {
+            compressedTextureRejectedCount++;
+            return D3DERR_NOTAVAILABLE;
+        }
+    }
     if ((usage & D3DUSAGE_RENDERTARGET) && !isDxRenderableFormat(fmt, version)) return D3DERR_NOTAVAILABLE;
     if ((usage & D3DUSAGE_DEPTHSTENCIL) && !isDxDepthStencilFormat(fmt, version)) return D3DERR_NOTAVAILABLE;
     if ((usage & D3DUSAGE_QUERY_VERTEXTEXTURE) !== 0) return D3DERR_NOTAVAILABLE;
