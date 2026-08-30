@@ -1490,7 +1490,10 @@ export class HypercallDataManager {
         enabled: boolean; controlAddr: number; functionIds: number[];
         counter: number; limit: number; hasPeers: boolean;
     } {
-        this.sleepInlineEnabled = enabled && this.sleepInlineControlAddr !== 0;
+        // Retain the requested state even if called before kernel32 has been
+        // imported. The PE loader may attach the control block a few seconds
+        // later; an early diagnostic query must not silently disable it.
+        this.sleepInlineEnabled = enabled;
         this.refreshViews();
         for (const functionId of this.sleepInlineFunctionIds) {
             if (this.sleepInlineEnabled) this.unregisterRawHandler(functionId);

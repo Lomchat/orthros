@@ -42,5 +42,7 @@ describe('Sleep(0) host-yield storm guard', () => {
         expect(hypercall).toContain("key === 'kernel32.sleep'");
         expect(hypercall).toContain('this.sleepInlineFunctionIds.has(functionId)');
         expect(hypercall).toContain('this.unregisterRawHandler(functionId)');
+        expect(hypercall).toContain('this.sleepInlineEnabled = enabled;');
+        expect(hypercall).not.toContain('enabled && this.sleepInlineControlAddr !== 0');
     });
 });
