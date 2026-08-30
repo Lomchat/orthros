@@ -29,6 +29,8 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isSyncBoundaryContinuationEnabled()).toBe(true);
         expect(manager.isDeferredCompileQueueEnabled()).toBe(true);
         expect(manager.isContiguousCrossPageInstructionsEnabled()).toBe(true);
+        expect(manager.isDynamicChainBudgetFastExitEnabled()).toBe(true);
+        expect(manager.isImmediateExitCacheSyncEnabled()).toBe(true);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
@@ -44,10 +46,37 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(36)).toBe(1);
         expect(configs.get(37)).toBe(1);
         expect(configs.get(38)).toBe(1);
+        expect(configs.get(41)).toBe(1);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
         expect(configs.get(25)).toBe(2);
+    });
+
+    test("synchronizes an urgent zero budget with generated JIT guards", () => {
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const cachedLimits: number[] = [];
+        const manager = new PreemptionManager();
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: () => {},
+                    jit_set_cycle_limit_cached: (limit: number) => cachedLimits.push(limit),
+                },
+            },
+        });
+
+        manager.requestImmediateExit();
+        expect(new DataView(memory.buffer).getUint32(4, true)).toBe(0);
+        expect(cachedLimits).toEqual([0]);
+
+        manager.setImmediateExitCacheSync(false);
+        manager.requestImmediateExit();
+        expect(cachedLimits).toEqual([0]);
     });
 
     test("keeps the REP MOVS bridge kill-switch across a fresh v86 init", () => {

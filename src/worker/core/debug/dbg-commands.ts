@@ -340,14 +340,35 @@ export const dbg = {
      *  26=JIT_THRESHOLD 27=JIT_TIER2_LEAF_CALL_FUSION.
      *  35=JIT_REP_MOVS_REDUCED_SPILL 36=JIT_SYNC_BOUNDARY_CONTINUATION
      *  37=JIT_DEFERRED_COMPILE_QUEUE 38=JIT_CONTIGUOUS_CROSS_PAGE_INSTRUCTIONS
-     *  39=JIT_X87_WRITEBACK 40=JIT_FPU_ORDERED_COMPARE_FIRST.
+     *  39=JIT_X87_WRITEBACK 40=JIT_FPU_ORDERED_COMPARE_FIRST
+     *  41=JIT_DYNAMIC_CHAIN_BUDGET_FAST_EXIT.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
         if (w.set_jit_config) w.set_jit_config(index >>> 0, value >>> 0);
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)} X87_WRITEBACK=${g(39)} FPU_ORDERED_COMPARE=${g(40)}`);
+        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)} X87_WRITEBACK=${g(39)} FPU_ORDERED_COMPARE=${g(40)} DYNAMIC_BUDGET_FAST_EXIT=${g(41)}`);
+    },
+    /** Avoid the redundant shared-resolver call after generated code has already
+     *  observed an exhausted scheduler budget (JIT config 41). */
+    jitDynamicBudgetFastExit(on = true): { enabled: number } | null {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDynamicChainBudgetFastExit) pm.setDynamicChainBudgetFastExit(on);
+        else { w.set_jit_config(41, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = { enabled: w.get_jit_config ? (w.get_jit_config(41) >>> 0) : -1 };
+        console.log(`[dbg][jitDynamicBudgetFastExit][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        return report;
+    },
+    /** Synchronize requestImmediateExit() with generated JIT edge guards. This
+     *  is authoritative and does not require a JIT cache rebuild. */
+    jitImmediateExitCacheSync(on = true): { enabled: boolean } {
+        const pm = (globalThis as any).preemption;
+        pm?.setImmediateExitCacheSync?.(on);
+        const report = { enabled: !!pm?.isImmediateExitCacheSyncEnabled?.() };
+        console.log(`[dbg][jitImmediateExitCacheSync][JSON] ${JSON.stringify(report)} (authoritative)`);
+        return report;
     },
     /** Current-module RET/indirect lookup emitted directly into generated wasm
      *  (set_jit_config idx 22). Default ON; OFF keeps the historical call into the
@@ -1122,6 +1143,9 @@ export const dbg = {
         const setter = w["set_dispatch_stats"];
         if (typeof setter === "function") setter(on ? 1 : 0);
         if (w["profiler_init"]) w["profiler_init"]();
+        if (w["jit_dynamic_chain_resolver_diag_reset"]) {
+            w["jit_dynamic_chain_resolver_diag_reset"]();
+        }
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         console.log(`[dbg] dispatchStatsEnable=${on ? 1 : 0} (counters reset + JIT cache cleared). Drive the workload, then dbg.dispatchStats().`);
     },
@@ -1134,6 +1158,10 @@ export const dbg = {
         chainedEdge: number; chainBudgetExit: number; chainMiss: number;
         abseipDispatch: number; retChainHit: number; retChainMiss: number;
         syncBoundaryContinue: number;
+        dynamicResolver: {
+            budgetMisses: number; noMetaMisses: number; stateMisses: number;
+            noEntryMisses: number; memoHits: number; metaHits: number;
+        };
     } | null {
         const w = wasm(); if (!w) return null;
         const dget = w["profiler_dispatch_stat_get"];
@@ -1153,6 +1181,14 @@ export const dbg = {
         const retChainHit = Number(dget(11));
         const retChainMiss = Number(dget(12));
         const syncBoundaryContinue = Number(dget(13));
+        const dynamicResolver = {
+            budgetMisses: Number(w["jit_dynamic_chain_resolver_diag_budget_misses"]?.() ?? 0),
+            noMetaMisses: Number(w["jit_dynamic_chain_resolver_diag_no_meta_misses"]?.() ?? 0),
+            stateMisses: Number(w["jit_dynamic_chain_resolver_diag_state_misses"]?.() ?? 0),
+            noEntryMisses: Number(w["jit_dynamic_chain_resolver_diag_no_entry_misses"]?.() ?? 0),
+            memoHits: Number(w["jit_dynamic_chain_resolver_diag_memo_hits"]?.() ?? 0),
+            metaHits: Number(w["jit_dynamic_chain_resolver_diag_meta_hits"]?.() ?? 0),
+        };
         const intraEdge = Math.max(0, blockExec - reentry - chainedEdge);
         const baselineReentry = reentry + chainedEdge;
         const chainableTotal = chainable + chainedEdge;
@@ -1168,13 +1204,16 @@ export const dbg = {
             `indirect=${indirect}(${pct(indirect, reentry)}) other=${other}(${pct(other, reentry)})\n` +
             `      chaining: chainedEdge=${chainedEdge} budgetExit=${chainBudgetExit} miss=${chainMiss}\n` +
             `      absEip: dispatch=${abseipDispatch} retChainHit=${retChainHit} retChainMiss=${retChainMiss}\n` +
+            `      dynamic resolver: budget=${dynamicResolver.budgetMisses} noMeta=${dynamicResolver.noMetaMisses} ` +
+            `state=${dynamicResolver.stateMisses} noEntry=${dynamicResolver.noEntryMisses} ` +
+            `memoHit=${dynamicResolver.memoHits} metaHit=${dynamicResolver.metaHits}\n` +
             `      syncBoundary: continued=${syncBoundaryContinue}\n` +
             `      >>> CHAINABLE FRACTION = ${pct(chainableTotal, baselineReentry)} (baseline includes chained edges)${hint}`
         );
         return {
             enabled, blockExec, reentry, intraEdge, chainable, dynamic, indirect, other, chainableFraction,
             chainedEdge, chainBudgetExit, chainMiss, abseipDispatch, retChainHit, retChainMiss,
-            syncBoundaryContinue,
+            syncBoundaryContinue, dynamicResolver,
         };
     },
     /** Round-trip cause split. Answers "why does the

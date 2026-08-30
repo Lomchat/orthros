@@ -87,6 +87,13 @@ export class PreemptionManager {
      *  (config idx 33). Enabled after the generic four-caller benchmark gained
      *  37.9% and the same-skirmish BFME median frame time fell by 5.4%. */
     private dynamicChainSitePicFourWayEnabled = true; // config idx 33
+    /** Skip the shared resolver when a generated dynamic-chain site has already
+     *  proven that the live scheduler budget is exhausted (config idx 41). */
+    private dynamicChainBudgetFastExitEnabled = true;
+    /** Keep generated JIT edge guards coherent with an urgent host-side
+     *  cycle-budget change. Without this, Sleep/wait thunks zero the shared
+     *  budget while generated code can continue on its stale per-slice copy. */
+    private immediateExitCacheSyncEnabled = true;
     private retSpeculationEnabled = false;      // config idx 13
     /** Tier-2 tiny direct-CALL leaf fusion (config idx 27). A guarded direct
      *  continuation removes the dynamic RET dispatch while preserving the real
@@ -291,6 +298,23 @@ export class PreemptionManager {
     }
     isDynamicChainSitePicFourWayEnabled(): boolean { return this.dynamicChainSitePicFourWayEnabled; }
 
+    setDynamicChainBudgetFastExit(on: boolean): void {
+        this.dynamicChainBudgetFastExitEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(41, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isDynamicChainBudgetFastExitEnabled(): boolean {
+        return this.dynamicChainBudgetFastExitEnabled;
+    }
+
+    setImmediateExitCacheSync(on: boolean): void {
+        this.immediateExitCacheSyncEnabled = on;
+    }
+    isImmediateExitCacheSyncEnabled(): boolean {
+        return this.immediateExitCacheSyncEnabled;
+    }
+
     setRetSpeculation(on: boolean): void {
         this.retSpeculationEnabled = on;
         const ex = this.wasmExports;
@@ -468,11 +492,12 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(30, this.dynamicChainSitePicEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(32, this.dynamicChainSitePicSecondWayEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(33, this.dynamicChainSitePicFourWayEnabled ? 1 : 0);
+            this.wasmExports.set_jit_config(41, this.dynamicChainBudgetFastExitEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(35, this.repMovsBridgeEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(36, this.syncBoundaryContinuationEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(37, this.deferredCompileQueueEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(38, this.contiguousCrossPageInstructionsEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"} syncBoundary=${this.syncBoundaryContinuationEnabled ? "on" : "off"} deferredCompile=${this.deferredCompileQueueEnabled ? "on" : "off"} crossPage=${this.contiguousCrossPageInstructionsEnabled ? "on" : "off"}`);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} budgetFastExit=${this.dynamicChainBudgetFastExitEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"} syncBoundary=${this.syncBoundaryContinuationEnabled ? "on" : "off"} deferredCompile=${this.deferredCompileQueueEnabled ? "on" : "off"} crossPage=${this.contiguousCrossPageInstructionsEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the
@@ -544,6 +569,14 @@ export class PreemptionManager {
     requestImmediateExit(): void {
         if (!this.initialized) return;
         this.setCycleLimit(0);
+        // do_many_cycles_native snapshots the shared budget once per slice so
+        // generated edges avoid a shared-page load. A thunk can request an
+        // urgent exit in the middle of that slice; update the snapshot too or
+        // the JIT can keep chaining with the stale non-zero value. This call is
+        // made while execution is already in the host thunk dispatcher.
+        if (this.immediateExitCacheSyncEnabled) {
+            this.wasmExports?.jit_set_cycle_limit_cached?.(0);
+        }
     }
 
     /** Read back the live cycle-limit slot (diagnostic). -1 if unavailable. A RUNNING
