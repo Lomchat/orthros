@@ -150,10 +150,40 @@ function unwrapNull(value: unknown): unknown {
     return value;
 }
 
+/**
+ * Refuse to start while another bench run owns this profile.
+ *
+ * Killing stale browsers is not enough: two harnesses launched against the same
+ * profile each kill the other's browser at startup and then interleave their
+ * boots, producing plausible-looking numbers from two different configurations.
+ * The page-level isolation assert cannot see this, because each session really
+ * is alone at the instant it checks.
+ */
+function acquireProfileLock(profile: string, port: number): () => void {
+    const lockPath = `/tmp/orthros-bench-${profile.replace(/[^A-Za-z0-9]/g, "_")}.lock`;
+    const existing = Bun.spawnSync(["cat", lockPath]).stdout.toString().trim();
+    if (existing) {
+        const pid = Number(existing.split(" ")[0]);
+        const alive = Number.isFinite(pid) && Bun.spawnSync(["kill", "-0", String(pid)]).exitCode === 0;
+        if (alive && pid !== process.pid) {
+            throw new Error(
+                `another bench run (pid ${pid}) already owns ${profile}. ` +
+                `Measurements from two concurrent harnesses interleave silently — stop it first.`,
+            );
+        }
+    }
+    Bun.spawnSync(["sh", "-c", `printf '%s %s' ${process.pid} ${port} > ${lockPath}`]);
+    const release = () => { Bun.spawnSync(["rm", "-f", lockPath]); };
+    process.on("exit", release);
+    return release;
+}
+
 export async function openBenchSession(opts: BenchSessionOptions): Promise<BenchSession> {
     const { profile, url, port } = opts;
     const readyTimeoutSec = opts.readyTimeoutSec ?? 90;
 
+    const releaseLock = acquireProfileLock(profile, port);
+    void releaseLock;
     const killed = await killProfileProcesses(profile);
     if (killed > 0) console.log(`[bench] killed ${killed} stale process(es) for ${profile}`);
 
