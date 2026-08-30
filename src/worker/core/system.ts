@@ -27,6 +27,7 @@ import { TimeService } from "../runtime/time";
 import { videoEngine } from "../../video/video-engine";
 import { libHleManager } from "./hle-lib/lib-hle-manager";
 import { hookRegistry } from "./hooks";
+import { resetGuestWorkTracking } from "./debug/guest-work-window";
 import { resetSehDispatchState } from "./seh-dispatch";
 import { namedObjects } from "../modules/kernel32/named-objects";
 import { resetGuestMessageBoxes } from "./diagnostics/message-box-recorder";
@@ -576,6 +577,9 @@ export class System {
                 // We use restart() to fully reset the emulator internal state
                 // This is much more reliable than manual register patching
                 this.process.v86.restart();
+                // The guest instruction counter restarts from a different value and
+                // the accumulated work belongs to the dead process.
+                resetGuestWorkTracking();
                 const cpu = (this.process.v86 as any)?.cpu || (this.process.v86 as any)?.v86?.cpu;
                 try {
                     (globalThis as any).__applyDbgConfig?.(cpu?.wm?.exports);

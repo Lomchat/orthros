@@ -50,6 +50,13 @@ import {
     setDxCompressedTextureAdvertisement,
 } from '../../backends/webgpu/shared/dx-format-support';
 import { getD3D9TextureMemoryReport } from '../../modules/d3d9/resource-registry';
+import {
+    armGuestWorkWindow,
+    cancelGuestWorkWindow,
+    readGuestOdometer,
+    readGuestWorkWindow,
+    resetGuestOdometer,
+} from './guest-work-window';
 
 interface DbgConfig {
     enabled: boolean;
@@ -867,6 +874,40 @@ export const dbg = {
     d3d9TextureMemory(): any {
         const result = getD3D9TextureMemoryReport();
         console.log(`[dbg][d3d9-texture-memory][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    /**
+     * Run the guest until `instructions` guest instructions have retired, then
+     * freeze and report the wall time. This is the stationary replacement for
+     * "average ms/frame over N presentations": the amount of guest work is fixed
+     * by construction, so two windows are directly comparable even though the
+     * simulation keeps evolving. Poll `workWindowReport()` until `done` is true.
+     *
+     * Use for codegen / dispatch / scheduler A/Bs, where both arms execute the
+     * same instruction stream. Do NOT use it to judge an HLE hook that replaces
+     * guest code with a native handler: such a hook legitimately lowers MIPS.
+     */
+    workWindow(instructions = 1_000_000_000): any {
+        const result = armGuestWorkWindow(Number(instructions) || 1, performance.now());
+        console.log(`[dbg][work-window] armed target=${result.targetInstructions}`);
+        return result;
+    },
+    workWindowReport(): any {
+        const result = readGuestWorkWindow(performance.now());
+        console.log(`[dbg][work-window][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    workWindowCancel(): any {
+        cancelGuestWorkWindow();
+        console.log('[dbg][work-window] cancelled');
+        return true;
+    },
+    /** Free-running retired-guest-instruction odometer. `reset` marks a phase
+     *  boundary and returns the value the previous phase accumulated, which is the
+     *  right denominator for "instructions to reach this milestone" comparisons. */
+    guestOdometer(reset = false): any {
+        const result = reset ? resetGuestOdometer() : readGuestOdometer();
+        console.log(`[dbg][odometer][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Toggle the byte-exact BFME DXT encoder memoization path. This is hot-

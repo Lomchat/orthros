@@ -134,6 +134,7 @@ import { KERNEL32_VISTA_WARMUP_EXPORTS } from "./api/kernel32-vista-supplement";
 import "./core/diagnostics-commands";
 import { handleDbgCommand } from "./core/debug/dbg-commands";
 import { debugSession } from "./core/debug/debug-session";
+import { sampleGuestWorkCounter, resetGuestWorkTracking } from "./core/debug/guest-work-window";
 import { harnessService } from "./harness/service";
 import { HARNESS_RPC, HARNESS_CANCEL } from "./harness/rpc";
 import "./harness/commands"; // side-effect: register all harness commands
@@ -2591,6 +2592,12 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         let heapSlabAllocated = false;
         let ticksSinceStart = 0;
         v86Inner["tick_hooks_after"] = () => guardTickHook("after", () => {
+          // Guest-work odometer. One wrap-safe u32 delta plus one f64 add per
+          // main_loop() round trip (~200/s). This is the denominator that makes
+          // performance comparisons stationary: unlike ms/frame, retired guest
+          // instructions do not depend on the engine's 30 FPS pacing loop, on the
+          // AI's current unit count, or on the host's presentation fallback.
+          sampleGuestWorkCounter(cpu.instruction_counter?.[0] ?? 0, performance.now());
           // JIT-on guest-EIP sampler (opt-in via __eipSamp). Runs between v86 JIT
           // batches (~1ms) so it observes real full-speed behavior with no starvation;
           // streams the cumulative 4KB-page histogram to the main thread (the reliable
