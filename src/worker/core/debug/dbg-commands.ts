@@ -942,12 +942,15 @@ export const dbg = {
             interpretedPct: odo.instructions > 0
                 ? Math.round((interpreted / odo.instructions) * 10_000) / 100
                 : 0,
-            // Why those blocks were interpreted. "No module" is answered by
-            // compiling more; "missing entry" means compiled code exists for the
-            // page but does not cover this entry point, which more compilation
-            // cannot fix.
+            // Why those blocks were interpreted, split by what would fix each:
+            //   noModule     — nothing compiled for the page; needs compiling.
+            //   missingEntry — a module for THIS cpu state lacks this entry point;
+            //                  recompiling the page covers it (config 42's target).
+            //   stateMismatch— a module exists but for a different cpu state;
+            //                  recompiling cannot help, that needs its own module.
             blocksNoModule: Number(w?.profiler_interp_block_reason_get?.(0) ?? 0),
             blocksMissingEntry: Number(w?.profiler_interp_block_reason_get?.(1) ?? 0),
+            blocksStateMismatch: Number(w?.profiler_interp_block_reason_get?.(2) ?? 0),
         };
         if (reset) {
             w?.profiler_interpreted_steps_reset?.();
