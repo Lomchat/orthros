@@ -2195,6 +2195,20 @@ export const dbg = {
         const s = System.getInstance().scheduler as any;
         console.log(`[dbg][sleepCredit] sole-runnable Sleep virtual credit ${on ? 'ON' : 'OFF (baseline)'} stats=${JSON.stringify(s?.soleRunnableSleepStats ?? null)}`);
     },
+    /** Toggle the guest-native Sleep(0) wrapper. OFF restores handler-63 WASM
+     *  dispatch, making this a hot A/B against the previous production path. */
+    sleepInline(on = true): unknown {
+        try {
+            const hc = (globalThis as any).hypercall;
+            const out = hc?.setSleepInlineEnabled?.(!!on) ?? { err: 'no inline Sleep control' };
+            console.log(`[dbg][sleepInline][JSON] ${JSON.stringify(out)}`);
+            return out;
+        } catch (e) {
+            const out = { err: String(e) };
+            console.warn('[dbg] sleepInline err', e);
+            return out;
+        }
+    },
     /** Enable opt-in DDraw verbose logs (VTX dump, texture sync, blend sampling). */
     ddrawDiag(on = true): void {
         (globalThis as any).__ddrawVerboseDiag = on;

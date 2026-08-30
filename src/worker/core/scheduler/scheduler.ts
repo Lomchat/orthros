@@ -554,6 +554,7 @@ export class Scheduler {
         this.threads.clear();
         this.runQueue = [];
         this.currentThreadId = null;
+        hypercallDataManager.updateRunnablePeersFlag(false);
         this.mainThreadId = 0;
         this.nextThreadId = 1;
         this.unhandledFaultFired = false;
@@ -1663,6 +1664,7 @@ export class Scheduler {
 
         this.threads.set(threadId, thread);
         if (!isSuspended) this.runQueue.push(threadId);
+        this.publishRunnablePeersFlag();
 
         // Initialize implicit TLS data for the new thread.
         // Each PE module with __declspec(thread) vars needs its own TLS data copy.
@@ -3916,6 +3918,25 @@ export class Scheduler {
                 `Illegal state write: T${thread.id} ${THREAD_STATE_NAMES[thread.state]} -> ${THREAD_STATE_NAMES[newState]}`);
         }
         thread.state = newState;
+        this.publishRunnablePeersFlag();
+    }
+
+    /**
+     * Publish whether at least two Windows threads can currently execute. The
+     * Sleep(0) fast paths use this to select guest-fairness (64-call) versus
+     * sole-thread host-yield (4096-call) cadence. State changes are cold enough
+     * that the small scan is preferable to maintaining another fragile count.
+     */
+    private publishRunnablePeersFlag(): void {
+        let runnable = 0;
+        for (const t of this.threads.values()) {
+            if (t.state !== ThreadState.READY && t.state !== ThreadState.RUNNING) continue;
+            if (++runnable >= 2) {
+                hypercallDataManager.updateRunnablePeersFlag(true);
+                return;
+            }
+        }
+        hypercallDataManager.updateRunnablePeersFlag(false);
     }
 
     private pickNextRunnable(excludeId?: number): Thread | null {

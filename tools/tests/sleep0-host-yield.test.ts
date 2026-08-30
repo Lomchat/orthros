@@ -30,4 +30,15 @@ describe('Sleep(0) host-yield storm guard', () => {
         expect(shortSleep).toContain('preemptionManager.requestImmediateExit();');
         expect(source).toContain('yieldSource !== "sleepN" && this.yieldPort');
     });
+
+    test('publishes guest runnable-peer state and keeps the slow edge single-counted', async () => {
+        const scheduler = await Bun.file(new URL('src/worker/core/scheduler/scheduler.ts', repoUrl)).text();
+        const hypercall = await Bun.file(new URL('src/worker/core/cpu/hypercall-data.ts', repoUrl)).text();
+
+        expect(scheduler).toContain('publishRunnablePeersFlag');
+        expect(scheduler).toContain('hypercallDataManager.updateRunnablePeersFlag(true)');
+        expect(hypercall).toContain("key === 'kernel32.sleep'");
+        expect(hypercall).toContain('this.sleepInlineFunctionIds.has(functionId)');
+        expect(hypercall).toContain('this.unregisterRawHandler(functionId)');
+    });
 });

@@ -332,6 +332,16 @@ export class ThunkGenerator {
     }
 
     /**
+     * Redirect GetProcAddress/name lookups to an inline wrapper while retaining
+     * the original registered thunk by address/functionId as its slow target.
+     * Process reset clears this map and the PE loader re-emits the wrapper.
+     */
+    overrideExportAddress(dllName: string, exportName: string, address: number): void {
+        this.nameToAddress.set(buildQualifiedThunkKey(dllName, exportName), address >>> 0);
+        this.nameToAddress.set(exportName.toLowerCase(), address >>> 0);
+    }
+
+    /**
      * Get data export address by dll:name key (for GetProcAddress on data exports like _acmdln, _adjust_fdiv).
      * Data exports are global variables — the returned address points to the variable in guest memory,
      * NOT to a thunk stub. The game reads/writes this address directly as data.
