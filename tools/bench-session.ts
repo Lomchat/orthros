@@ -137,6 +137,19 @@ function chromeLogTail(port: number): string {
     catch { return ""; }
 }
 
+/**
+ * pageEval falls back to the raw CDP result descriptor when a call returns null,
+ * so a genuine `null` arrives as `{type:"object",subtype:"null"}` — which is
+ * truthy. A caller polling "did this command apply yet?" would stop on the first
+ * failure. Collapse it back to null.
+ */
+function unwrapNull(value: unknown): unknown {
+    const v = value as { type?: string; subtype?: string; value?: unknown } | null;
+    if (v && typeof v === "object" && v.type === "object" && v.subtype === "null") return null;
+    if (v && typeof v === "object" && v.type === "undefined") return undefined;
+    return value;
+}
+
 export async function openBenchSession(opts: BenchSessionOptions): Promise<BenchSession> {
     const { profile, url, port } = opts;
     const readyTimeoutSec = opts.readyTimeoutSec ?? 90;
@@ -199,10 +212,10 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         session,
         workerUrl,
         evalPage: <T>(expr: string, timeoutMs = 20_000) =>
-            pageEval(session, expr, { timeoutMs }) as Promise<T>,
+            pageEval(session, expr, { timeoutMs }).then(unwrapNull) as Promise<T>,
         dbg: <T>(name: string, ...args: unknown[]) =>
             pageEval(session, `__BS__.harness.dbgCall(${JSON.stringify(name)}${args.length ? "," + args.map((a) => JSON.stringify(a)).join(",") : ""})`,
-                { timeoutMs: 30_000 }) as Promise<T>,
+                { timeoutMs: 30_000 }).then(unwrapNull) as Promise<T>,
         async assertIsolated() {
             const targets = await listTargets(port);
             const pages = targets.filter((t) => t.type === "page");
