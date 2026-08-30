@@ -533,6 +533,17 @@ export const dbg = {
         console.log(`[dbg][jitSyncBoundaryContinuation][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
         return report;
     },
+    /** Queue a hot page once while the async JIT compile window is full and
+     *  start it when a slot completes (config 37). Experimental; OFF by default. */
+    jitDeferredCompileQueue(on = true): unknown {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDeferredCompileQueue) pm.setDeferredCompileQueue(on);
+        else { w.set_jit_config(37, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = { enabled: w.get_jit_config ? (w.get_jit_config(37) >>> 0) : -1 };
+        console.log(`[dbg][jitDeferredCompileQueue][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        return report;
+    },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
      *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
      *  (300K) via the Rust static — the promotion invalidation bug (ret-memo/dispatch
@@ -613,10 +624,14 @@ export const dbg = {
             pending: w.jit_get_compile_pending?.() >>> 0,
             pendingHighWater: w.jit_get_compile_pending_high_water?.() >>> 0,
             capSkips: w.jit_get_compile_cap_skips?.() >>> 0,
+            deferredQueued: w.jit_get_compile_deferred_queued?.() >>> 0,
+            deferredStarted: w.jit_get_compile_deferred_started?.() >>> 0,
+            deferredDropped: w.jit_get_compile_deferred_dropped?.() >>> 0,
+            deferredPending: w.jit_get_compile_deferred_pending?.() >>> 0,
             totalMs: (w.jit_get_compile_total_us?.() ?? 0) / 1000,
             maxMs: (w.jit_get_compile_max_us?.() ?? 0) / 1000,
         };
-        console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
+        console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
         return s;
     },
     /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
