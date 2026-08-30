@@ -506,6 +506,16 @@ export const dbg = {
         console.log(`[dbg][jit] leafReturnLocal=${report.enabled} + cache cleared`);
         return report;
     },
+    /** REP MOVS reduced-spill/direct-continuation kill-switch (JIT config 35). */
+    jitRepMovsBridge(on = true): unknown {
+        const w = wasm(); if (!w?.set_jit_config) return null;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setRepMovsBridge) pm.setRepMovsBridge(on);
+        else { w.set_jit_config(35, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const report = { enabled: w.get_jit_config ? (w.get_jit_config(35) >>> 0) : -1 };
+        console.log(`[dbg][jitRepMovsBridge][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        return report;
+    },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
      *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
      *  (300K) via the Rust static — the promotion invalidation bug (ret-memo/dispatch

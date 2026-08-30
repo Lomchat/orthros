@@ -25,6 +25,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isRetSpeculationEnabled()).toBe(false);
         expect(manager.isLeafCallFusionEnabled()).toBe(true);
         expect(manager.isLeafReturnLocalEnabled()).toBe(true);
+        expect(manager.isRepMovsBridgeEnabled()).toBe(true);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
@@ -36,10 +37,40 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(27)).toBe(1);
         expect(configs.get(28)).toBe(1);
         expect(configs.get(30)).toBe(1);
+        expect(configs.get(35)).toBe(1);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
         expect(configs.get(25)).toBe(2);
+    });
+
+    test("keeps the REP MOVS bridge kill-switch across a fresh v86 init", () => {
+        const configs = new Map<number, number>();
+        let cacheClears = 0;
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setRepMovsBridge(false);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                    jit_clear_cache_js: () => { cacheClears++; },
+                },
+            },
+        });
+
+        expect(manager.isRepMovsBridgeEnabled()).toBe(false);
+        expect(configs.get(35)).toBe(0);
+        expect(cacheClears).toBe(0);
+
+        manager.setRepMovsBridge(true);
+        expect(configs.get(35)).toBe(1);
+        expect(cacheClears).toBe(1);
     });
 
     test("keeps the dynamic-chain site-PIC kill-switch across a fresh v86 init", () => {
