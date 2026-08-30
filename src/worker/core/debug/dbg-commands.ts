@@ -506,22 +506,6 @@ export const dbg = {
         console.log(`[dbg][jit] leafReturnLocal=${report.enabled} + cache cleared`);
         return report;
     },
-    /** Cross-module tiny direct-CALL leaf fusion (JIT config 36). Only exact E8
-     *  calls to registered straight-line <=4-instruction C3 leaves qualify. */
-    jitExternalLeafCallFusion(on = true): { enabled: number; sitesCompiled: number } | null {
-        const w = wasm(); if (!w?.set_jit_config) return null;
-        const pm = (globalThis as any).preemption;
-        if (pm?.setExternalLeafCallFusion) pm.setExternalLeafCallFusion(on);
-        else { w.set_jit_config(36, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
-        const report = {
-            enabled: w.get_jit_config ? (w.get_jit_config(36) >>> 0) : -1,
-            sitesCompiled: w.jit_external_leaf_call_fusion_sites_compiled
-                ? (w.jit_external_leaf_call_fusion_sites_compiled() >>> 0)
-                : -1,
-        };
-        console.log(`[dbg][jit] externalLeafFusion=${report.enabled} sitesCompiled=${report.sitesCompiled} + cache cleared`);
-        return report;
-    },
     /** REP MOVS reduced-spill/direct-continuation kill-switch (JIT config 35). */
     jitRepMovsBridge(on = true): unknown {
         const w = wasm(); if (!w?.set_jit_config) return null;
