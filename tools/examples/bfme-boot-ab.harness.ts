@@ -33,7 +33,7 @@ const labelB = arg("label-b", "B");
 
 interface RunResult {
     arm: string; run: number; wallMs: number; instructions: number;
-    mips: number; interpretedPct?: number | null; jit: any;
+    mips: number; interp?: any; jit: any; fpu?: any;
     threadCpuMs?: any; sleepPaths?: any; ok: boolean; note?: string;
 }
 const results: RunResult[] = [];
@@ -66,14 +66,16 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         const interp = await bench.dbg<any>("interpretedShare").catch(() => null);
         const jit = await bench.dbg<any>("jitCompileStats").catch(() => null);
         const sched = await bench.dbg<any>("schedulerPerf").catch(() => null);
+        const fpu = await bench.dbg<any>("fpuRelaxedReport").catch(() => null);
         return {
             arm, run, wallMs: Math.round(wallMs),
             instructions: odo?.instructions ?? -1,
             mips: Math.round(((odo?.instructions ?? 0) / wallMs) / 1000 * 1000) / 1000,
-            interpretedPct: interp?.interpretedPct ?? null,
+            interp,
             // Forward the whole JIT report: hand-picking fields here silently
             // dropped newly added counters from finished experiments.
             jit,
+            fpu,
             threadCpuMs: sched?.threadCpuMs ?? null,
             sleepPaths: sched?.sleepPaths ?? null,
             ok: true,
@@ -108,7 +110,7 @@ function summarize(label: string) {
         insnMedian: median(insn),
         insnSpreadPct: Math.round(((insn[insn.length - 1]! - insn[0]!) / insn[0]!) * 10_000) / 100,
         mipsMean: Math.round(mean(rows.map((r) => r.mips)) * 1000) / 1000,
-        interpretedPctMean: Math.round(mean(rows.map((r) => r.interpretedPct ?? 0)) * 100) / 100,
+        interpretedPctMean: Math.round(mean(rows.map((r) => r.interp?.interpretedPct ?? 0)) * 100) / 100,
     };
 }
 

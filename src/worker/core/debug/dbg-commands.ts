@@ -941,6 +941,32 @@ export const dbg = {
         console.log(`[dbg][interpreted-share][JSON] ${JSON.stringify(result)}`);
         return result;
     },
+    /** Relaxed-FPU coverage. The f64 fast path only helps where it applies; a
+     *  fallback runs the 80-bit softfloat, which a boot profile shows costing
+     *  several percent before the map-load DXT phase even starts. Arming the
+     *  counters emits two increments into newly compiled blocks, so measure on a
+     *  fresh run rather than mid-session. */
+    fpuRelaxed(on = true): any {
+        const w = wasm();
+        if (!w?.set_fpu_relaxed_stats) return null;
+        w.set_fpu_relaxed_stats(on ? 1 : 0);
+        console.log(`[dbg][fpu-relaxed] stats ${on ? 'armed' : 'disarmed'}`);
+        return !!(w.get_fpu_relaxed_stats?.() >>> 0);
+    },
+    fpuRelaxedReport(): any {
+        const w = wasm();
+        if (!w?.profiler_fpu_relaxed_hit_get) return null;
+        const hit = Number(w.profiler_fpu_relaxed_hit_get());
+        const fallback = Number(w.profiler_fpu_relaxed_fallback_get?.() ?? 0);
+        const total = hit + fallback;
+        const result = {
+            armed: !!(w.get_fpu_relaxed_stats?.() >>> 0),
+            hit, fallback,
+            hitPct: total > 0 ? Math.round((hit / total) * 10_000) / 100 : 0,
+        };
+        console.log(`[dbg][fpu-relaxed][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
     /** Free-running retired-guest-instruction odometer. `reset` marks a phase
      *  boundary and returns the value the previous phase accumulated, which is the
      *  right denominator for "instructions to reach this milestone" comparisons. */
