@@ -71,11 +71,9 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
             instructions: odo?.instructions ?? -1,
             mips: Math.round(((odo?.instructions ?? 0) / wallMs) / 1000 * 1000) / 1000,
             interpretedPct: interp?.interpretedPct ?? null,
-            jit: jit ? {
-                completed: jit.completed, capSkips: jit.capSkips, totalMs: jit.totalMs,
-                maxPending: jit.maxPending, pendingHighWater: jit.pendingHighWater,
-                deferredQueued: jit.deferredQueued,
-            } : null,
+            // Forward the whole JIT report: hand-picking fields here silently
+            // dropped newly added counters from finished experiments.
+            jit,
             threadCpuMs: sched?.threadCpuMs ?? null,
             sleepPaths: sched?.sleepPaths ?? null,
             ok: true,
