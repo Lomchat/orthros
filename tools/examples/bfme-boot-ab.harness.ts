@@ -33,7 +33,7 @@ const labelB = arg("label-b", "B");
 
 interface RunResult {
     arm: string; run: number; wallMs: number; instructions: number;
-    mips: number; jit: any; ok: boolean; note?: string;
+    mips: number; interpretedPct?: number | null; jit: any; ok: boolean; note?: string;
 }
 const results: RunResult[] = [];
 
@@ -62,11 +62,13 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         }
         await bench.assertIsolated();
         const odo = await bench.dbg<any>("guestOdometer");
+        const interp = await bench.dbg<any>("interpretedShare").catch(() => null);
         const jit = await bench.dbg<any>("jitCompileStats").catch(() => null);
         return {
             arm, run, wallMs: Math.round(wallMs),
             instructions: odo?.instructions ?? -1,
             mips: Math.round(((odo?.instructions ?? 0) / wallMs) / 1000 * 1000) / 1000,
+            interpretedPct: interp?.interpretedPct ?? null,
             jit: jit ? {
                 completed: jit.completed, capSkips: jit.capSkips, totalMs: jit.totalMs,
                 maxPending: jit.maxPending, pendingHighWater: jit.pendingHighWater,
@@ -104,6 +106,7 @@ function summarize(label: string) {
         insnMedian: median(insn),
         insnSpreadPct: Math.round(((insn[insn.length - 1]! - insn[0]!) / insn[0]!) * 10_000) / 100,
         mipsMean: Math.round(mean(rows.map((r) => r.mips)) * 1000) / 1000,
+        interpretedPctMean: Math.round(mean(rows.map((r) => r.interpretedPct ?? 0)) * 100) / 100,
     };
 }
 
