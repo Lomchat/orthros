@@ -1,7 +1,6 @@
 import type { LibDescriptor } from '../../types';
-import { HANDLER_FTOL, HANDLER_MSVC_EH_PROLOG } from '../../../cpu/hypercall-data';
+import { HANDLER_FTOL } from '../../../cpu/hypercall-data';
 import { msvcEmbeddedFtol2Handler } from './ftol2';
-import { buildMsvcEhPrologWrapper, msvcEmbeddedEhPrologHandler } from './eh-prolog';
 
 function hexBytes(hex: string): Uint8Array {
     const compact = hex.replace(/\s+/g, '');
@@ -22,14 +21,6 @@ const FTOL2_SSE_PATTERN = hexBytes(
     '8b542414 f7c2ffffff7f 75b8 d95c2418 d95c2418 c9c3',
 );
 
-// Classic statically-linked MSVC `_EH_prolog`. Match the complete helper:
-// build registration record, link fs:[0], establish EBP, push caller return,
-// and RET into the actual function body.
-const EH_PROLOG_PATTERN = hexBytes(
-    '6aff 50 64a100000000 50 8b44240c 64892500000000 ' +
-    '896c240c 8d6c240c 50 c3',
-);
-
 export const msvcEmbeddedDescriptor: LibDescriptor = {
     id: 'msvc-embedded',
     displayName: 'Statically linked Microsoft C/C++ runtime intrinsics',
@@ -39,13 +30,6 @@ export const msvcEmbeddedDescriptor: LibDescriptor = {
             kind: 'bytes',
             pattern: FTOL2_SSE_PATTERN,
             mask: 'x'.repeat(FTOL2_SSE_PATTERN.length),
-            section: '.text',
-            weight: 16,
-        },
-        eh_prolog: {
-            kind: 'bytes',
-            pattern: EH_PROLOG_PATTERN,
-            mask: 'x'.repeat(EH_PROLOG_PATTERN.length),
             section: '.text',
             weight: 16,
         },
@@ -61,27 +45,11 @@ export const msvcEmbeddedDescriptor: LibDescriptor = {
             },
             callingConvention: 'cdecl',
             argCount: 0,
-            required: false,
+            required: true,
             hypercallHandlerId: HANDLER_FTOL,
-        },
-        eh_prolog: {
-            name: 'eh_prolog',
-            entryProbe: {
-                kind: 'prologue',
-                pattern: EH_PROLOG_PATTERN,
-                mask: 'x'.repeat(EH_PROLOG_PATTERN.length),
-                section: '.text',
-            },
-            callingConvention: 'cdecl',
-            argCount: 0,
-            required: false,
-            prologueLen: 9,
-            entryFilter: buildMsvcEhPrologWrapper,
-            hypercallHandlerId: HANDLER_MSVC_EH_PROLOG,
         },
     },
     handlers: {
         ftol2_sse: msvcEmbeddedFtol2Handler,
-        eh_prolog: msvcEmbeddedEhPrologHandler,
     },
 };
