@@ -339,14 +339,15 @@ export const dbg = {
      *  24=JIT_TIER2_ADAPTIVE 25=JIT_MAX_PENDING_COMPILES
      *  26=JIT_THRESHOLD 27=JIT_TIER2_LEAF_CALL_FUSION.
      *  35=JIT_REP_MOVS_REDUCED_SPILL 36=JIT_SYNC_BOUNDARY_CONTINUATION
-     *  37=JIT_DEFERRED_COMPILE_QUEUE 38=JIT_CONTIGUOUS_CROSS_PAGE_INSTRUCTIONS.
+     *  37=JIT_DEFERRED_COMPILE_QUEUE 38=JIT_CONTIGUOUS_CROSS_PAGE_INSTRUCTIONS
+     *  39=JIT_X87_WRITEBACK 40=JIT_FPU_ORDERED_COMPARE_FIRST.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
         if (w.set_jit_config) w.set_jit_config(index >>> 0, value >>> 0);
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)} X87_WRITEBACK=${g(39)}`);
+        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)} X87_WRITEBACK=${g(39)} FPU_ORDERED_COMPARE=${g(40)}`);
     },
     /** Current-module RET/indirect lookup emitted directly into generated wasm
      *  (set_jit_config idx 22). Default ON; OFF keeps the historical call into the
@@ -1011,6 +1012,14 @@ export const dbg = {
         if (pm?.setX87Writeback) pm.setX87Writeback(on);
         else { w.set_jit_config(39, on ? 1 : 0); w.jit_clear_cache_js?.(); }
         console.log(`[dbg][x87] writeback=${w.get_jit_config ? (w.get_jit_config(39) >>> 0) : (on ? 1 : 0)} (authoritative - survives reload) + cache cleared`);
+    },
+    /** Classify ordinary ordered x87 comparisons before the rare NaN case.
+     *  IEEE-754 semantics are unchanged; config 40 permits a live A/B. */
+    x87OrderedCompare(on = true): void {
+        const w = wasm(); if (!w?.set_jit_config) return;
+        w.set_jit_config(40, on ? 1 : 0);
+        w.jit_clear_cache_js?.();
+        console.log(`[dbg][x87] orderedCompare=${w.get_jit_config ? (w.get_jit_config(40) >>> 0) : (on ? 1 : 0)} + cache cleared`);
     },
     x87LocalStats(): any {
         const w = wasm(); if (!w) return null;

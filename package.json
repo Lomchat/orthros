@@ -33,7 +33,7 @@
     "logs:stats": "bun tools/log-manager.ts stats",
     "analyze-trace": "bun tools/analyze-trace.ts",
     "sync-v86-wasm": "bun tools/sync-v86-wasm.ts",
-    "test:fpu-relaxed": "node vendor/v86/tests/fpu-relaxed-diff.mjs",
+    "test:fpu-relaxed": "cd vendor/v86 && node tests/fpu-relaxed-diff.mjs",
     "build:v86": "cd vendor/v86 && bash build-wasm.sh && cp build/v86.wasm ../../public/v86.wasm && echo 'v86.wasm copied to public/'",
     "build:video-decoder": "bash tools/build-ffmpeg-decoder/build.sh",
     "build:unpack-streaming": "powershell -ExecutionPolicy Bypass -File tools/build-unpack-streaming/build.ps1",
