@@ -157,8 +157,10 @@ export class PreemptionManager {
      *  200k remains authoritative until cross-workload A/B data says otherwise. */
     private jitBaseThreshold = 200_000;
     // config idx 42: threshold divisor for a page that already owns a module.
-    // 1 = historical single threshold.
-    private jitRecompileDivisor = 1;
+    // Interpreting there is a coverage gap, not a cold page. Measured on an
+    // isolated BFME 1 cold boot (ABBA, work parity 0.13%): 4.7% faster with
+    // 10.3% fewer missing-entry blocks. 1 = historical single threshold.
+    private jitRecompileDivisor = 8;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
