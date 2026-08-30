@@ -56,6 +56,14 @@ async function jitStats(b: BenchSession): Promise<Record<string, number> | null>
     return b.evalPage(`__BS__.harness.dbgCall("jitCompileStats")`, 30_000).catch(() => null);
 }
 
+/** Splits interpreted work by what would fix it: a page with nothing compiled
+ *  needs a module, a page whose module lacks this entry point needs recompiling,
+ *  and a state mismatch needs its own module. Without this a high interpreted
+ *  share says only that the JIT is losing, not which lever would change it. */
+async function interpShare(b: BenchSession): Promise<Record<string, number> | null> {
+    return b.evalPage(`__BS__.harness.dbgCall("interpretedShare")`, 30_000).catch(() => null);
+}
+
 /** Draws per presentation identifies the screen; presentation rate identifies load. */
 async function probe(b: BenchSession, ms = 4_000): Promise<{ fps: number; dpf: number }> {
     const a = await sample(b);
@@ -175,22 +183,29 @@ if (!loading) {
 console.log("LOADING confirmed — sampling");
 let prev = await sample(bench);
 let prevJit = await jitStats(bench);
+let prevInterp = await interpShare(bench);
 const jit0 = prevJit;
 const tL = performance.now();
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     await Bun.sleep(10_000);
     const s = await sample(bench);
     const j = await jitStats(bench);
+    const ip = await interpShare(bench);
     const dp = s.present - prev.present;
     const d = (k: string) => (j && prevJit ? (j[k] ?? 0) - (prevJit[k] ?? 0) : 0);
+    const di = (k: string) => (ip && prevInterp ? (ip[k] ?? 0) - (prevInterp[k] ?? 0) : 0);
+    const retired = di("retired");
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
-        + ` flushes=+${d("cacheFlushes")} compiled=+${d("completed")} capSkips=+${d("capSkips")}`);
-    prev = s; prevJit = j;
+        + ` compiled=+${d("completed")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
+        + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
+        + ` stateMism=+${di("blocksStateMismatch")}`);
+    prev = s; prevJit = j; prevInterp = ip;
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
     jitAtLoadStart: jit0,
     jitAtLoadEnd: await jitStats(bench),
+    interpretedAtLoadEnd: await interpShare(bench),
 }));
 bench.close();
