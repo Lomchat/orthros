@@ -1,0 +1,148 @@
+/**
+ * bfme-reach-map-load — get BFME into an actual map load, reliably.
+ *
+ * Reaching the load is the prerequisite for every cold-path measurement, and it
+ * kept failing for a reason that is invisible without feedback: the menus depend
+ * on persisted profile state. A fresh profile shows a first-run modal that only
+ * the keyboard dismisses; a profile that already has a player shows a different
+ * screen, with a different draws-per-frame signature and a different Play
+ * position. Blind coordinate scripts therefore work on one profile and silently
+ * do nothing on another, producing zeroed counters that read as "the change
+ * under test had no effect".
+ *
+ * This drives the menus as a state machine keyed on draws-per-presentation:
+ * Escape back to a known screen, walk forward, verify every transition, and try
+ * candidate coordinates until one moves the screen. The map load itself is
+ * detected structurally — presentations nearly stop while draws keep climbing,
+ * because the engine is inside long synchronous work — so success does not
+ * depend on recognising any particular screen.
+ *
+ *   bun tools/examples/bfme-reach-map-load.harness.ts [--port 9530]
+ *     [--profile ...] [--attempts 3] [--hold 240]
+ *
+ * Exits non-zero if no load was reached, rather than reporting empty counters.
+ */
+
+import { openBenchSession, type BenchSession } from "../bench-session";
+
+function arg(name: string, fallback: string): string {
+    const i = process.argv.indexOf(`--${name}`);
+    return i >= 0 && process.argv[i + 1] ? process.argv[i + 1]! : fallback;
+}
+
+const port = Number(arg("port", "9530"));
+const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme1-current");
+const game = arg("game", "bfme");
+const attempts = Number(arg("attempts", "3"));
+const holdSec = Number(arg("hold", "240"));
+const bootTimeoutSec = Number(arg("boot-timeout", "400"));
+const tag = `load-${Date.now()}`;
+
+interface Sample { present: number; draws: number }
+
+async function sample(b: BenchSession): Promise<Sample> {
+    return b.evalPage<Sample>(`(async () => {
+        const a = (await __BS__.harness.dbgCall("d3d9Perf"))?.api ?? {};
+        return { present: a.present ?? 0,
+                 draws: (a.drawPrimitive ?? 0) + (a.drawIndexedPrimitive ?? 0)
+                      + (a.drawPrimitiveUP ?? 0) + (a.drawIndexedPrimitiveUP ?? 0) };
+    })()`, 30_000);
+}
+
+/** Draws per presentation identifies the screen; presentation rate identifies load. */
+async function probe(b: BenchSession, ms = 4_000): Promise<{ fps: number; dpf: number }> {
+    const a = await sample(b);
+    await Bun.sleep(ms);
+    const c = await sample(b);
+    const dp = c.present - a.present;
+    return { fps: dp / (ms / 1000), dpf: dp > 0 ? Math.round((c.draws - a.draws) / dp) : 0 };
+}
+
+async function click(b: BenchSession, x: number, y: number): Promise<void> {
+    await b.evalPage(`(async () => { await __BS__.harness.move(${x}, ${y});
+        await new Promise(r => setTimeout(r, 900));
+        return __BS__.harness.clickHold(${x}, ${y}, 600); })()`, 30_000).catch(() => {});
+}
+
+async function key(b: BenchSession, k: string | number): Promise<void> {
+    await b.evalPage(`__BS__.harness.keyHold(${JSON.stringify(k)}, 120)`, 20_000).catch(() => {});
+    await Bun.sleep(400);
+}
+
+/** True once presentations nearly stop while draws keep advancing. */
+function looksLikeLoading(before: Sample, after: Sample, seconds: number): boolean {
+    const fps = (after.present - before.present) / seconds;
+    return fps < 5 && after.draws > before.draws;
+}
+
+async function tryStep(
+    b: BenchSession, label: string, candidates: Array<[number, number]>, settleMs: number,
+): Promise<boolean> {
+    const before = await probe(b, 3_000);
+    for (const [x, y] of candidates) {
+        await click(b, x, y);
+        await Bun.sleep(settleMs);
+        const after = await probe(b, 3_000);
+        const moved = before.dpf > 0 ? Math.abs(after.dpf - before.dpf) / before.dpf : 1;
+        console.log(JSON.stringify({ step: label, tried: [x, y],
+            dpf: { before: before.dpf, after: after.dpf }, fps: after.fps,
+            changePct: Math.round(moved * 1000) / 10 }));
+        if (moved > 0.2 || after.fps < 5) return true;
+    }
+    return false;
+}
+
+const bench = await openBenchSession({
+    profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=${tag}`, matchToken: `bench=${tag}`,
+});
+
+const t0 = performance.now();
+while (performance.now() - t0 < bootTimeoutSec * 1_000) {
+    const s = await sample(bench).catch(() => null);
+    if (s && s.present > 0) break;
+    await Bun.sleep(2_000);
+}
+console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s`);
+await Bun.sleep(12_000);
+
+let loading = false;
+for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
+    // Escape back to a known screen: which one we start from depends on profile
+    // state left by earlier runs, and that is exactly what broke previous scripts.
+    for (let i = 0; i < 3; i++) await key(bench, "escape");
+    await Bun.sleep(6_000);
+    console.log(`attempt ${attempt} baseline ${JSON.stringify(await probe(bench))}`);
+
+    await tryStep(bench, "solo", [[90, 575], [215, 575], [160, 575]], 7_000);
+    await tryStep(bench, "skirmish", [[320, 575], [215, 387], [215, 420]], 12_000);
+    // No-op when the profile already exists; required on a first-run profile.
+    await key(bench, "enter");
+    await Bun.sleep(8_000);
+    await tryStep(bench, "play", [[340, 575], [705, 574], [640, 556]], 15_000);
+
+    const a = await sample(bench);
+    await Bun.sleep(20_000);
+    const c = await sample(bench);
+    loading = looksLikeLoading(a, c, 20);
+    console.log(JSON.stringify({ attempt, loading,
+        fps: Math.round(((c.present - a.present) / 20) * 100) / 100 }));
+}
+
+if (!loading) {
+    console.log("REACH-FAILED no map load detected");
+    bench.close();
+    process.exit(1);
+}
+
+console.log("LOADING confirmed — sampling");
+let prev = await sample(bench);
+const tL = performance.now();
+for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    await Bun.sleep(10_000);
+    const s = await sample(bench);
+    const dp = s.present - prev.present;
+    console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)} dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`);
+    prev = s;
+}
+console.log("RESULT " + JSON.stringify({ reached: true }));
+bench.close();
