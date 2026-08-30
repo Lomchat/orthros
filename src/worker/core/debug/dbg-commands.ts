@@ -658,29 +658,34 @@ export const dbg = {
     /** Maximum asynchronous wasm compilations in flight (idx 25, 1..8).
      *  Live and reversible; 1 is the historical globally serialized path. */
     jitPendingCompiles(maxPending = 2): number {
-        const w = wasm(); if (!w?.set_jit_config) return -1;
+        // Record the intent even before v86 exists: a cold-boot A/B has to set
+        // this at t=0, and bailing out on a missing WASM export would silently
+        // leave the default in place for the whole run being measured.
         const bounded = Math.max(1, Math.min(8, maxPending >>> 0));
         const pm = (globalThis as any).preemption;
         if (pm?.setJitMaxPendingCompiles) pm.setJitMaxPendingCompiles(bounded);
-        else w.set_jit_config(25, bounded);
-        const effective = w.get_jit_config?.(25) ?? bounded;
-        console.log(`[dbg] JIT_MAX_PENDING_COMPILES=${effective} (live; 1=historical)`);
-        return effective >>> 0;
+        const w = wasm();
+        if (!pm?.setJitMaxPendingCompiles && w?.set_jit_config) w.set_jit_config(25, bounded);
+        const applied = w?.get_jit_config?.(25);
+        console.log(`[dbg] JIT_MAX_PENDING_COMPILES=${bounded} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? bounded : (applied >>> 0);
     },
     /** Tier-1 page hotness before compilation (idx 26). Clears generated code
      *  because existing modules otherwise bias cold-start comparisons. */
     jitBaseThreshold(threshold = 200_000): number {
-        const w = wasm(); if (!w?.set_jit_config) return -1;
+        // Same reasoning as jitPendingCompiles: the interesting experiment sets
+        // this before the guest starts, so it must survive a missing WASM export.
         const bounded = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const pm = (globalThis as any).preemption;
         if (pm?.setJitBaseThreshold) pm.setJitBaseThreshold(bounded);
-        else {
+        const w = wasm();
+        if (!pm?.setJitBaseThreshold && w?.set_jit_config) {
             w.set_jit_config(26, bounded);
             w.jit_clear_cache_js?.();
         }
-        const effective = w.get_jit_config?.(26) ?? bounded;
-        console.log(`[dbg] JIT_BASE_THRESHOLD=${effective} + cache cleared`);
-        return effective >>> 0;
+        const applied = w?.get_jit_config?.(26);
+        console.log(`[dbg] JIT_BASE_THRESHOLD=${bounded} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? bounded : (applied >>> 0);
     },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
@@ -929,6 +934,42 @@ export const dbg = {
         w.bfme_dxt_fast_set_enabled(on ? 1 : 0);
         const result = !!(w.bfme_dxt_fast_get_enabled?.() >>> 0);
         console.log(`[dbg][dxt-fast] enabled=${result ? 1 : 0}`);
+        return result;
+    },
+    /** Compare the fast BC1 fit against the title's own encoder on every cache
+     *  miss, without changing what the guest receives. Answers whether the fast
+     *  path is a viable default: "the bytes differ" is not a quality argument for
+     *  texture data, the pixel magnitude is. */
+    dxtShadow(on = true, reset = true): any {
+        const w = wasm();
+        if (!w?.bfme_dxt_shadow_set_enabled) return null;
+        if (reset) w.bfme_dxt_shadow_reset_stats?.();
+        w.bfme_dxt_shadow_set_enabled(on ? 1 : 0);
+        console.log(`[dbg][dxt-shadow] ${on ? 'armed' : 'disarmed'}${reset ? ' + reset' : ''}`);
+        return !!(w.bfme_dxt_shadow_get_enabled?.() >>> 0);
+    },
+    dxtShadowReport(): any {
+        const w = wasm();
+        if (!w?.bfme_dxt_shadow_get_stat) return null;
+        const stat = (i: number) => Number(w.bfme_dxt_shadow_get_stat(i));
+        const blocks = stat(0);
+        const exact = stat(1);
+        const sumAbs = stat(6);
+        const samples = stat(7);
+        const result = {
+            enabled: !!(w.bfme_dxt_shadow_get_enabled?.() >>> 0),
+            blocks,
+            exact,
+            exactPct: blocks ? Math.round((exact * 10_000) / blocks) / 100 : 0,
+            // 8-bit channel units: "worst" is the largest single-channel error
+            // observed on any texel of any block.
+            worstChannelDelta: stat(2),
+            blocksOver4: stat(3),
+            blocksOver16: stat(4),
+            alphaMismatch: stat(5),
+            meanChannelDelta: samples ? Math.round((sumAbs / samples) * 10_000) / 10_000 : 0,
+        };
+        console.log(`[dbg][dxt-shadow][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     dxtCacheReport(reset = false): any {
