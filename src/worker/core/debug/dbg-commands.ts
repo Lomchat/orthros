@@ -928,6 +928,38 @@ export const dbg = {
         console.log('[dbg][work-window] cancelled');
         return true;
     },
+    /** Feasibility probe for caching a post-load state instead of recomputing it.
+     *  Reaching 30 FPS on a loading screen is arithmetically impossible — the
+     *  engine presents ~38 times across a 180 s load, so the only way to remove
+     *  the wait is to not perform the load. That requires snapshotting, and
+     *  v86's save_state covers only the guest side. This reports whether it
+     *  works here and how large it is, without restoring anything. */
+    async snapshotProbe(): Promise<unknown> {
+        const sys = System.getInstance();
+        const v86: any = sys.process?.v86;
+        if (!v86?.save_state) return { supported: false, reason: "v86.save_state unavailable" };
+        const t0 = performance.now();
+        let bytes = -1; let error: string | null = null;
+        try {
+            const state = await v86.save_state();
+            bytes = state?.byteLength ?? -1;
+        }
+        catch (e) { error = String(e); }
+        const result = {
+            supported: error === null,
+            error,
+            bytes,
+            megabytes: bytes > 0 ? Math.round((bytes / 1048576) * 100) / 100 : -1,
+            elapsedMs: Math.round(performance.now() - t0),
+            // The guest snapshot is only half the state: texture pixels live in
+            // host JS, outside guest RAM, and would have to be captured too.
+            hostTextureMB: (() => {
+                try { return getD3D9TextureMemoryReport()?.estimatedMB ?? null; } catch { return null; }
+            })(),
+        };
+        console.log(`[dbg][snapshot-probe][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
     /** Share of retired guest instructions that ran in the interpreter rather
      *  than a compiled module. This is the number that decides JIT-threshold and
      *  compile-bandwidth experiments: lowering the threshold can only help to the
