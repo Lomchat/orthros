@@ -49,6 +49,7 @@ import {
     getDxCompressedTextureNegotiationStats,
     setDxCompressedTextureAdvertisement,
 } from '../../backends/webgpu/shared/dx-format-support';
+import { getD3D9TextureMemoryReport } from '../../modules/d3d9/resource-registry';
 
 interface DbgConfig {
     enabled: boolean;
@@ -839,6 +840,11 @@ export const dbg = {
         const result = getDxCompressedTextureNegotiationStats(!!reset);
         result.advertised = getDxCompressedTextureAdvertisement();
         console.log(`[dbg][dxt-advertise][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
+    d3d9TextureMemory(): any {
+        const result = getD3D9TextureMemoryReport();
+        console.log(`[dbg][d3d9-texture-memory][JSON] ${JSON.stringify(result)}`);
         return result;
     },
     /** Toggle the byte-exact BFME DXT encoder memoization path. This is hot-

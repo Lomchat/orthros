@@ -8,6 +8,7 @@ import { devices, getVTables, createComObject, resourceToDevice } from './shared
 import { D3D9Device } from '../../backends/webgpu/d3d9/d3d9-device';
 import { initReturnPtr, D3DFMT_UNKNOWN, normalizePalettizedTexturePool } from '../../backends/webgpu/shared/dx-com-helpers';
 import { isDxExclusiveFormat } from '../../backends/webgpu/shared/dx-format-support';
+import { getD3DTextureLayout } from '../../backends/webgpu/shared/texture-formats';
 
 export type TextureMeta = {
     width: number;
@@ -61,6 +62,42 @@ export const deviceSoftwareVertexProcessing: Map<number, boolean> = new Map();
 export const textureLevelSurfaces: Map<number, Map<number, number>> = new Map();
 /** Cube texture COM ptr -> `${face}_${level}` -> stable IDirect3DSurface9 COM ptr. */
 export const cubeFaceSurfaces: Map<number, Map<string, number>> = new Map();
+
+export function estimateTextureStorageBytes(meta: TextureMeta): number {
+    let bytes = 0;
+    const faces = meta.isCube ? 6 : 1;
+    for (let level = 0; level < Math.max(1, meta.levels); level++) {
+        const dims = getTextureLevelDims(meta.width, meta.height, level);
+        bytes += getD3DTextureLayout(meta.format, dims.width, dims.height).bytes * faces;
+    }
+    return bytes;
+}
+
+/** Read-only live resource census. It has no frame-path bookkeeping cost and is
+ * used to gate CPU-for-memory capability experiments such as hiding DXT. */
+export function getD3D9TextureMemoryReport(): {
+    textureCount: number;
+    estimatedBytes: number;
+    estimatedMB: number;
+    byFormat: Record<string, { count: number; bytes: number }>;
+} {
+    let estimatedBytes = 0;
+    const byFormat: Record<string, { count: number; bytes: number }> = {};
+    for (const meta of textureMeta.values()) {
+        const bytes = estimateTextureStorageBytes(meta);
+        estimatedBytes += bytes;
+        const key = `0x${(meta.format >>> 0).toString(16)}`;
+        const row = byFormat[key] ?? (byFormat[key] = { count: 0, bytes: 0 });
+        row.count++;
+        row.bytes += bytes;
+    }
+    return {
+        textureCount: textureMeta.size,
+        estimatedBytes,
+        estimatedMB: Math.round((estimatedBytes / 1_048_576) * 100) / 100,
+        byFormat,
+    };
+}
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
