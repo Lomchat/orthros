@@ -19,7 +19,7 @@ export const DEFAULT_DEV_URL = process.env.BS_DEV_URL || "http://localhost:5174/
 export const GAME_DEV_FILTER = process.env.BS_URL_FILTER || "game=dev";
 const IS_MAC = process.platform === "darwin";
 const IS_LINUX = process.platform === "linux";
-const CHROME_PATH = process.env.BS_CHROME_PATH ?? (IS_MAC
+export const CHROME_PATH = process.env.BS_CHROME_PATH ?? (IS_MAC
     ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     : IS_LINUX
         ? (Bun.which("google-chrome") ?? Bun.which("chromium") ?? Bun.which("chromium-browser")
