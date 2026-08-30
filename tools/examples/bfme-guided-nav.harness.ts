@@ -16,8 +16,10 @@
  *   bun tools/examples/bfme-guided-nav.harness.ts [--port 9492] [--game bfme]
  *     [--profile ...] [--dxt] [--boot-timeout 400]
  *
- * With --dxt the BC1 shadow comparator is armed once the map load starts, which
- * is the measurement this navigation exists to enable.
+ * With --dxt the BC1 shadow comparator is armed before the map load. Note that
+ * BFME 1 ships with compressedTexturePolicy "prefer-uncompressed", which refuses
+ * all 321 compressed-format probes, so its encoder never runs and the comparator
+ * stays empty unless dxtAdvertise(true) is set first.
  */
 
 import { openBenchSession, type BenchSession } from "../bench-session";
@@ -55,6 +57,11 @@ async function fingerprint(bench: BenchSession, ms = 4_000): Promise<Signature> 
     const b = await signature(bench);
     const dp = b.present - a.present;
     return { ...b, drawsPerFrame: dp > 0 ? Math.round((b.draws - a.draws) / dp) : 0 };
+}
+
+async function key(bench: BenchSession, vk: number): Promise<void> {
+    await bench.evalPage(`__BS__.harness.keyHold(${vk}, 120)`, 20_000).catch(() => {});
+    await Bun.sleep(400);
 }
 
 async function click(bench: BenchSession, x: number, y: number): Promise<void> {
@@ -111,6 +118,21 @@ console.log("menu fingerprint " + JSON.stringify(await fingerprint(bench)));
 // is exactly what cannot be checked visually here.
 await clickUntilScreenChanges(bench, "solo", [[90, 575], [215, 575], [160, 575]]);
 await clickUntilScreenChanges(bench, "skirmish", [[320, 575], [215, 387], [215, 420]]);
+
+// The screen reached here is modal and waits on the KEYBOARD, not the mouse.
+// Measured: twelve clicks at six separated positions move draws/frame by 0-0.9%,
+// while Enter moves it 118 -> 175. Until this is sent, Play is unreachable and
+// every downstream counter reads zero — which is indistinguishable from "the
+// change under test did nothing" unless the landing is checked.
+const beforeEnter = await fingerprint(bench, 3_000);
+await key(bench, 13);
+await Bun.sleep(8_000);
+const afterEnter = await fingerprint(bench, 3_000);
+console.log(JSON.stringify({
+    step: "confirm-modal", key: "Enter",
+    drawsPerFrame: { before: beforeEnter.drawsPerFrame, after: afterEnter.drawsPerFrame },
+}));
+
 if (has("dxt")) await bench.dbg("dxtShadow", true, true).catch(() => null);
 await clickUntilScreenChanges(bench, "play", [[340, 575], [705, 574], [640, 556]], 15_000);
 
