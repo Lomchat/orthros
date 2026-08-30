@@ -692,8 +692,13 @@ export const dbg = {
     jitCompileStats(reset = false): Record<string, number> | null {
         const w = wasm(); if (!w?.jit_get_compile_started) return null;
         if (reset) w.jit_reset_compile_stats?.();
+        if (reset) w.jit_reset_cache_flushes?.();
         const s = {
             maxPending: w.get_jit_config?.(25) ?? 1,
+            // A full flush discards every compiled module: the working set falls
+            // back to the interpreter and has to re-cross the hotness threshold.
+            wasmTableSize: w.jit_get_wasm_table_size?.() >>> 0,
+            cacheFlushes: w.jit_get_cache_flushes?.() >>> 0,
             started: w.jit_get_compile_started() >>> 0,
             completed: w.jit_get_compile_completed?.() >>> 0,
             pending: w.jit_get_compile_pending?.() >>> 0,
