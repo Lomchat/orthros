@@ -17,7 +17,6 @@ import { installCw3220Stdio } from '../modules/cw3220/cw3220-stdio';
 import { writeHeapSlabStubs } from '../modules/kernel32/heap-slab-stubs';
 import { writeCriticalSectionInlineStubs } from '../modules/kernel32/critical-section-inline-stubs';
 import { writeTimeInlineStub } from '../modules/kernel32/time-inline-stubs';
-import { writeSleepInlineStub, type SleepInlineStub } from '../modules/kernel32/sleep-inline-stubs';
 import { patchLastErrorInlineStubs } from '../modules/kernel32/last-error-inline-stubs';
 import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs';
 import { TimeService } from '../runtime/time';
@@ -182,7 +181,6 @@ export class PELoader {
     private heapInlineStubs: { heapAllocStub: number; heapFreeStub: number; regionBase: number; regionEnd: number } | null = null;
     private criticalSectionInlineStubs: { enterStub: number; leaveStub: number; regionBase: number; regionEnd: number } | null = null;
     private timeInlineStub: { timeStub: number; regionBase: number; regionEnd: number } | null = null;
-    private sleepInlineStub: SleepInlineStub | null = null;
 
     /**
      * Cached addresses of inline x86 stubs for the msvcrt cdecl CRT allocator pair
@@ -259,7 +257,6 @@ export class PELoader {
         this.heapInlineStubs = null;
         this.criticalSectionInlineStubs = null;
         this.timeInlineStub = null;
-        this.sleepInlineStub = null;
         this.crtInlineStubs = null;
         this.caseFoldInlineStubs = null;
     }
@@ -1315,39 +1312,6 @@ export class PELoader {
                     }
                 }
 
-                // Trap-free ordinary Sleep(0): keep tight polling/pacing loops in
-                // guest x86 and enter the real scheduler only at the fairness/host
-                // yield threshold. Sleep(N>0) always takes the original thunk.
-                if (dllName === 'kernel32' && !this.sleepInlineStub
-                    && (globalThis as any).__noSleepInline !== true) {
-                    const sleepTrap = stubDll.exportTable.get('sleep');
-                    const sleepTrapInfo = sleepTrap
-                        ? this.thunkGenerator.getStubByAddress(sleepTrap) : undefined;
-                    if (sleepTrap && sleepTrapInfo) {
-                        try {
-                            const sys = System.getInstance();
-                            const tmm = sys.process?.thunkMemoryManager;
-                            if (tmm) {
-                                this.sleepInlineStub = writeSleepInlineStub(
-                                    tmm.stubAllocator, this.getMemory,
-                                    sleepTrap, sleepTrapInfo.functionId, 64);
-                                hypercallDataManager.setSleepInlineControlAddr(
-                                    this.sleepInlineStub.controlAddr, sleepTrapInfo.functionId);
-                                this.thunkGenerator.overrideExportAddress(
-                                    'kernel32', 'Sleep', this.sleepInlineStub.sleepStub);
-                                // Counter update is a non-atomic guest RMW. Do not
-                                // switch Windows threads in the middle of the wrapper.
-                                sys.scheduler?.registerNonPreemptibleRange(
-                                    this.sleepInlineStub.regionBase,
-                                    this.sleepInlineStub.regionEnd);
-                            }
-                        } catch (e) {
-                            Logger.warn(LogCategory.SYSTEM,
-                                `[PE] Inline Sleep(0) stub unavailable: ${e}`);
-                        }
-                    }
-                }
-
                 // One-time inline x86 stub generation for the msvcrt cdecl CRT
                 // allocator pair (malloc/operator new + free/operator delete). Rides
                 // the same WASM slab arena as the kernel32 heap stubs. Generated on the
@@ -1431,9 +1395,6 @@ export class PELoader {
                                 || (dllName === 'winmm' && funcKey === 'timegettime')) {
                                 stubAddress = this.timeInlineStub.timeStub;
                             }
-                        }
-                        if (dllName === 'kernel32' && funcKey === 'sleep' && this.sleepInlineStub) {
-                            stubAddress = this.sleepInlineStub.sleepStub;
                         }
                         if (stubAddress) {
                             this.view.setUint32(iatAddr, stubAddress, true);

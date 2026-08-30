@@ -30,19 +30,4 @@ describe('Sleep(0) host-yield storm guard', () => {
         expect(shortSleep).toContain('preemptionManager.requestImmediateExit();');
         expect(source).toContain('yieldSource !== "sleepN" && this.yieldPort');
     });
-
-    test('keeps the slow edge single-counted without forcing extra guest switches', async () => {
-        const scheduler = await Bun.file(new URL('src/worker/core/scheduler/scheduler.ts', repoUrl)).text();
-        const hypercall = await Bun.file(new URL('src/worker/core/cpu/hypercall-data.ts', repoUrl)).text();
-
-        // Orthros's instruction quantum already preempts runnable guest peers.
-        // Publishing every READY transition here made BFME II perform almost
-        // 500k switches before its first frame.
-        expect(scheduler).not.toContain('publishRunnablePeersFlag');
-        expect(hypercall).toContain("key === 'kernel32.sleep'");
-        expect(hypercall).toContain('this.sleepInlineFunctionIds.has(functionId)');
-        expect(hypercall).toContain('this.unregisterRawHandler(functionId)');
-        expect(hypercall).toContain('this.sleepInlineEnabled = enabled;');
-        expect(hypercall).not.toContain('enabled && this.sleepInlineControlAddr !== 0');
-    });
 });

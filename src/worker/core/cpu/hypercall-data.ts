@@ -467,13 +467,6 @@ export class HypercallDataManager {
     private readonly mutexMirrorShadow = new Uint32Array(EVENT_TABLE_SLOTS);
     // EAGL token-dispatch config block (guest RAM); pointer at OFF_HC_EAGL_TOKEN_CFG_PTR.
     private eaglTokenCfgAddr = 0;
-    // Guest-RAM control block used by the trap-free Sleep(0) wrapper:
-    // +0 counter, +4 peer limit, +8 has runnable peers, +12 enabled.
-    private sleepInlineControlAddr = 0;
-    private readonly sleepInlineFunctionIds = new Set<number>();
-    private sleepInlineEnabled = true;
-    private sleepStarvationLimitShadow = 64;
-    private runnablePeersShadow = false;
 
     // Registration tracking — Map stores functionId → handlerId for dispatch table rebuild
     // after WASM memory buffer changes (e.g., v86.restart() zeroes HYPERCALL_PAGE statics)
@@ -599,25 +592,6 @@ export class HypercallDataManager {
         if (this.eaglTokenCfgAddr !== 0) {
             this.view.setUint32(this.hpBase + OFF_HC_EAGL_TOKEN_CFG_PTR, this.eaglTokenCfgAddr, true);
         }
-        this.writeSleepInlineControl(true);
-    }
-
-    /** WASM-buffer offset of the guest-resident Sleep inline control block. */
-    private sleepInlineBlockBase(): number | null {
-        if (this.sleepInlineControlAddr === 0) return null;
-        const memBase = this.cpu?.mem8?.byteOffset;
-        return typeof memBase === 'number' ? memBase + this.sleepInlineControlAddr : null;
-    }
-
-    /** Re-publish JS-owned fields; preserve the live guest-owned counter unless requested. */
-    private writeSleepInlineControl(resetCounter: boolean): void {
-        if (!this.view) return;
-        const base = this.sleepInlineBlockBase();
-        if (base === null || base + 16 > this.view.byteLength) return;
-        if (resetCounter) this.view.setUint32(base + 0, 0, true);
-        this.view.setUint32(base + 4, this.sleepStarvationLimitShadow >>> 0, true);
-        this.view.setUint32(base + 8, this.runnablePeersShadow ? 1 : 0, true);
-        this.view.setUint32(base + 12, this.sleepInlineEnabled ? 1 : 0, true);
     }
 
     private writeFlsSharedState(): void {
@@ -942,16 +916,6 @@ export class HypercallDataManager {
         const handlerId = HANDLER_MAP[key];
         if (!handlerId) return;
 
-        // The inline wrapper's slow edge must reach JS immediately. Registering
-        // handler 63 here would apply the WASM starvation counter a second time.
-        if (key === 'kernel32.sleep' && this.sleepInlineEnabled
-            && this.sleepInlineFunctionIds.has(functionId)) {
-            this.registeredEntries.delete(functionId);
-            this.refreshViews();
-            if (this.view) this.view.setUint8(this.hpBase + OFF_HC_DISPATCH_TABLE + functionId, 0);
-            return;
-        }
-
         this.refreshViews();
         if (!this.view) return;
 
@@ -1118,11 +1082,6 @@ export class HypercallDataManager {
         this.slabControlAddr = 0;
         this.mutexMirrorAddr = 0;
         this.eaglTokenCfgAddr = 0;
-        this.sleepInlineControlAddr = 0;
-        this.sleepInlineFunctionIds.clear();
-        this.sleepInlineEnabled = true;
-        this.sleepStarvationLimitShadow = 64;
-        this.runnablePeersShadow = false;
         this.flsAllocatedShadow.fill(0);
         this.flsValuesShadow.fill(0);
         this.eventMirrorShadow.fill(0);
@@ -1453,76 +1412,10 @@ export class HypercallDataManager {
      * higher multiple in WASM, yielding only when it is demonstrably spinning.
      */
     setSleepStarvationLimit(limit: number): void {
-        this.sleepStarvationLimitShadow = limit >>> 0;
+        if (!this.initialized || !this.view) return;
         this.refreshViews();
-        if (this.view && this.hpBase !== 0) {
-            // The wrapper owns the real threshold. Its slow edge must fall through
-            // handler 63 immediately, hence a page-side limit of zero.
-            this.view.setUint32(this.hpBase + OFF_HC_SLEEP_STARVATION_LIMIT,
-                this.sleepInlineControlAddr !== 0 && this.sleepInlineEnabled ? 0 : limit >>> 0, true);
-            this.writeSleepInlineControl(false);
-        }
-    }
-
-    /**
-     * Attach the guest Sleep(0) wrapper to the original kernel32 Sleep thunk.
-     * May run before HYPERCALL_PAGE initialization; all state is retained and
-     * published once v86 is ready.
-     */
-    setSleepInlineControlAddr(guestAddr: number, functionId: number): void {
-        this.sleepInlineControlAddr = guestAddr >>> 0;
-        if (functionId > 0 && functionId < 4096) {
-            this.sleepInlineFunctionIds.add(functionId);
-            this.registeredEntries.delete(functionId);
-        }
-        this.refreshViews();
-        if (this.view) {
-            if (this.hpBase !== 0 && functionId > 0 && functionId < 4096) {
-                this.view.setUint8(this.hpBase + OFF_HC_DISPATCH_TABLE + functionId, 0);
-                this.view.setUint32(this.hpBase + OFF_HC_SLEEP_STARVATION_LIMIT, 0, true);
-            }
-            this.writeSleepInlineControl(true);
-        }
-    }
-
-    /** Hot A/B switch. OFF restores the previous WASM handler-63 baseline. */
-    setSleepInlineEnabled(enabled: boolean): {
-        enabled: boolean; controlAddr: number; functionIds: number[];
-        counter: number; limit: number; hasPeers: boolean;
-    } {
-        // Retain the requested state even if called before kernel32 has been
-        // imported. The PE loader may attach the control block a few seconds
-        // later; an early diagnostic query must not silently disable it.
-        this.sleepInlineEnabled = enabled;
-        this.refreshViews();
-        for (const functionId of this.sleepInlineFunctionIds) {
-            if (this.sleepInlineEnabled) this.unregisterRawHandler(functionId);
-            else this.registerRawHandler(functionId, HANDLER_SLEEP);
-        }
-        if (this.view && this.hpBase !== 0) {
-            this.view.setUint32(this.hpBase + OFF_HC_SLEEP_STARVATION_LIMIT,
-                this.sleepInlineEnabled ? 0 : this.sleepStarvationLimitShadow, true);
-            this.writeSleepInlineControl(true);
-        }
-        return this.getSleepInlineState();
-    }
-
-    getSleepInlineState(): {
-        enabled: boolean; controlAddr: number; functionIds: number[];
-        counter: number; limit: number; hasPeers: boolean;
-    } {
-        this.refreshViews();
-        const base = this.sleepInlineBlockBase();
-        const counter = this.view && base !== null && base + 4 <= this.view.byteLength
-            ? this.view.getUint32(base, true) >>> 0 : 0;
-        return {
-            enabled: this.sleepInlineEnabled && this.sleepInlineControlAddr !== 0,
-            controlAddr: this.sleepInlineControlAddr >>> 0,
-            functionIds: [...this.sleepInlineFunctionIds],
-            counter,
-            limit: this.sleepStarvationLimitShadow >>> 0,
-            hasPeers: this.runnablePeersShadow,
-        };
+        if (!this.view) return;
+        this.view.setUint32(this.hpBase + OFF_HC_SLEEP_STARVATION_LIMIT, limit >>> 0, true);
     }
 
     /**
@@ -1532,13 +1425,10 @@ export class HypercallDataManager {
      * Called by scheduler on every thread state transition.
      */
     updateRunnablePeersFlag(hasRunnablePeers: boolean): void {
-        this.runnablePeersShadow = hasRunnablePeers;
+        if (!this.initialized || !this.view) return;
         this.refreshViews();
         if (!this.view) return;
-        if (this.hpBase !== 0) {
-            this.view.setUint32(this.hpBase + OFF_HC_HAS_RUNNABLE_PEERS, hasRunnablePeers ? 1 : 0, true);
-        }
-        this.writeSleepInlineControl(false);
+        this.view.setUint32(this.hpBase + OFF_HC_HAS_RUNNABLE_PEERS, hasRunnablePeers ? 1 : 0, true);
     }
 
     /**
