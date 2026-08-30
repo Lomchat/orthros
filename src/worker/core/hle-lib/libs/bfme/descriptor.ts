@@ -256,9 +256,11 @@ const RGB24_EXPAND_PATTERN = hexBytes(
     '83c604 3bf1 72e4',
 );
 
-// lotrbfme.exe 1.03 FR @ 0x00e2f4f0. For every sparse {index,weight}
-// entry, accumulate weight*sourceFloat4 into destination[index].
+// lotrbfme.exe 1.03 FR @ 0x00e2f4c8. Complete three-level sparse float4
+// accumulation nest. Hooking this outer boundary amortizes the HLE crossing.
 const SPARSE_FLOAT4_PATTERN = hexBytes(
+    '8b38 8b4dd4 03f8 3b4df0 894dfc 7378 83c004 8945dc ' +
+    '8b45fc 8b00 8b4df8 8d0440 8b0c81 8b45dc eb4f ' +
     'd94004 8b75fc d84e04 8b30 c1e604 03f1 d9c0 d84af8 d806 d91e ' +
     '8b30 c1e604 d9c0 8d740e04 d84afc d806 d91e ' +
     '8b30 c1e604 d9c0 8d740e08 d80a d806 d91e ' +
@@ -637,6 +639,9 @@ export const bfmeDescriptor: LibDescriptor = {
                 section: '.text',
             },
             callingConvention: 'cdecl', argCount: 0, required: true,
+            // The backend experiment is OFF: leave the guest loop untouched
+            // unless an explicit experiment allow-list requests this hook.
+            enabledByDefault: false,
             // movzx ebx,[eax+2]; xor edx,edx
             prologueLen: 6,
             hypercallHandlerId: HANDLER_BFME_RGB24_EXPAND,
@@ -649,8 +654,11 @@ export const bfmeDescriptor: LibDescriptor = {
                 mask: 'x'.repeat(SPARSE_FLOAT4_PATTERN.length), section: '.text',
             },
             callingConvention: 'cdecl', argCount: 5, required: true,
-            // fld dword [eax+4]; mov esi,[ebp-4]
-            prologueLen: 6,
+            // This loop runs millions of times during map loads. Its backend
+            // experiment is OFF, so a declined wrapper cannot stay installed.
+            enabledByDefault: false,
+            // mov edi,[eax]; mov ecx,[ebp-0x2c]; add edi,eax
+            prologueLen: 7,
             hypercallHandlerId: HANDLER_BFME_SPARSE_FLOAT4,
             entryFilter: buildBfmeSparseFloat4Wrapper,
         },

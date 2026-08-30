@@ -118,6 +118,10 @@ export function validatePrologueBytes(bytes: Uint8Array): string | null {
         // BFME sparse float4 loop: fld dword [eax+4].
         if (b === 0xD9 && b1 === 0x40 && bytes[i + 2] === 0x04) { i += 3; continue; }
         if (b === 0x8B && b1 === 0x75 && bytes[i + 2] === 0xFC) { i += 3; continue; }
+        // BFME sparse outer loop: mov edi,[eax]; add edi,eax. Both operands
+        // are registers/register-indirect, with no relocation-sensitive data.
+        if (b === 0x8B && b1 === 0x38) { i += 2; continue; }
+        if (b === 0x03 && b1 === 0xF8) { i += 2; continue; }
         // BFME cold-map vertex blend: fld dword [abs32]. The encoded operand is
         // an absolute guest address (not EIP-relative in 32-bit mode), so the
         // instruction remains identical when copied into a trampoline.

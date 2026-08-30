@@ -110,6 +110,12 @@ export class PreemptionManager {
      *  Enabled after bounded lifecycle and generic throughput validation. */
     private deferredCompileQueueEnabled = true; // config idx 37
 
+    /** Compile ordinary instructions that straddle two contiguous guest pages
+     *  after proving the virtual-to-physical mapping and registering both pages
+     *  for invalidation (config idx 38). Enabled after the deterministic mapping
+     *  guard and BFME cold-load A/B passed. */
+    private contiguousCrossPageInstructionsEnabled = true;
+
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
      *  fork: the ret-memo outlived table-slot frees on the module-overwrite path
@@ -324,6 +330,16 @@ export class PreemptionManager {
     }
     isDeferredCompileQueueEnabled(): boolean { return this.deferredCompileQueueEnabled; }
 
+    setContiguousCrossPageInstructions(on: boolean): void {
+        this.contiguousCrossPageInstructionsEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(38, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isContiguousCrossPageInstructionsEnabled(): boolean {
+        return this.contiguousCrossPageInstructionsEnabled;
+    }
+
     /** Hotness-tiering authoritative toggle (survives game reload). Pure runtime knob —
      *  promotion happens organically past the threshold, so no cache clear needed. */
     setTier2Threshold(threshold: number): void {
@@ -443,7 +459,8 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(35, this.repMovsBridgeEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(36, this.syncBoundaryContinuationEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(37, this.deferredCompileQueueEnabled ? 1 : 0);
-            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"} syncBoundary=${this.syncBoundaryContinuationEnabled ? "on" : "off"} deferredCompile=${this.deferredCompileQueueEnabled ? "on" : "off"}`);
+            this.wasmExports.set_jit_config(38, this.contiguousCrossPageInstructionsEnabled ? 1 : 0);
+            console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"} tier2LeafFusion=${this.leafCallFusionEnabled ? "on" : "off"} leafReturnLocal=${this.leafReturnLocalEnabled ? "on" : "off"} sitePic=${this.dynamicChainSitePicEnabled ? "on" : "off"} sitePic2=${this.dynamicChainSitePicSecondWayEnabled ? "on" : "off"} sitePic4=${this.dynamicChainSitePicFourWayEnabled ? "on" : "off"} repMovs=${this.repMovsBridgeEnabled ? "on" : "off"} syncBoundary=${this.syncBoundaryContinuationEnabled ? "on" : "off"} deferredCompile=${this.deferredCompileQueueEnabled ? "on" : "off"} crossPage=${this.contiguousCrossPageInstructionsEnabled ? "on" : "off"}`);
 
             // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
             // init with the TS authority (default 0 = OFF, see tier2Threshold above — the

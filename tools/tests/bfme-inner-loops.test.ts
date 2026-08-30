@@ -766,20 +766,21 @@ describe('BFME DXT encode exact cache wrapper', () => {
 });
 
 describe('BFME sparse float4 accumulation wrapper', () => {
-    test('materializes five live inputs and guards the continuation', () => {
+    test('preserves live registers and guards the bulk-loop continuation', () => {
         const base = 0x1000, stub = 0x2400, trampoline = 0x3000, continuation = 0x3600;
         const code = assembleBfmeSparseFloat4Wrapper(base, stub, trampoline, continuation);
         const data = new DataView(code.buffer, code.byteOffset, code.byteLength);
-        expect([...code.slice(0, 6)]).toEqual([0x55, 0x52, 0x51, 0x57, 0x50, 0xe8]);
-        expect([...code.slice(10, 18)]).toEqual([0x85, 0xf6, 0x0f, 0x85, 0x0a, 0x00, 0x00, 0x00]);
-        expect([...code.slice(18, 23)]).toEqual([0x58, 0x5f, 0x59, 0x5a, 0x5d]);
-        expect([...code.slice(28, 35)]).toEqual([0x8b, 0x54, 0x24, 0x0c, 0x83, 0xc4, 0x14]);
-        expect((base + 10 + data.getInt32(6, true)) >>> 0).toBe(stub);
-        expect((base + 18 + data.getInt32(14, true)) >>> 0).toBe(base + 28);
-        expect((base + 28 + data.getInt32(24, true)) >>> 0).toBe(trampoline);
-        expect((base + 40 + data.getInt32(36, true)) >>> 0).toBe(continuation);
+        const restore = [0x58, 0x5f, 0x59, 0x5a, 0x5e, 0x5b, 0x5d];
+        expect([...code.slice(0, 8)]).toEqual([0x55, 0x53, 0x56, 0x52, 0x51, 0x57, 0x50, 0xe8]);
+        expect([...code.slice(12, 20)]).toEqual([0x85, 0xf6, 0x0f, 0x85, 0x0c, 0x00, 0x00, 0x00]);
+        expect([...code.slice(20, 27)]).toEqual(restore);
+        expect([...code.slice(32, 39)]).toEqual(restore);
+        expect((base + 12 + data.getInt32(8, true)) >>> 0).toBe(stub);
+        expect((base + 20 + data.getInt32(16, true)) >>> 0).toBe(base + 32);
+        expect((base + 32 + data.getInt32(28, true)) >>> 0).toBe(trampoline);
+        expect((base + 44 + data.getInt32(40, true)) >>> 0).toBe(continuation);
         expect(validatePrologueBytes(Uint8Array.from([
-            0xd9, 0x40, 0x04, 0x8b, 0x75, 0xfc,
+            0x8b, 0x38, 0x8b, 0x4d, 0xd4, 0x03, 0xf8,
         ]))).toBeNull();
     });
 });

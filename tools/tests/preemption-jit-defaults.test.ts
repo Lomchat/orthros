@@ -28,6 +28,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isRepMovsBridgeEnabled()).toBe(true);
         expect(manager.isSyncBoundaryContinuationEnabled()).toBe(true);
         expect(manager.isDeferredCompileQueueEnabled()).toBe(true);
+        expect(manager.isContiguousCrossPageInstructionsEnabled()).toBe(true);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
@@ -42,6 +43,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(35)).toBe(1);
         expect(configs.get(36)).toBe(1);
         expect(configs.get(37)).toBe(1);
+        expect(configs.get(38)).toBe(1);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
@@ -132,6 +134,35 @@ describe("PreemptionManager JIT defaults", () => {
 
         manager.setDeferredCompileQueue(false);
         expect(configs.get(37)).toBe(0);
+        expect(cacheClears).toBe(1);
+    });
+
+    test("keeps the contiguous cross-page instruction kill-switch across a fresh v86 init", () => {
+        const configs = new Map<number, number>();
+        let cacheClears = 0;
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setContiguousCrossPageInstructions(false);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                    jit_clear_cache_js: () => { cacheClears++; },
+                },
+            },
+        });
+
+        expect(manager.isContiguousCrossPageInstructionsEnabled()).toBe(false);
+        expect(configs.get(38)).toBe(0);
+        expect(cacheClears).toBe(0);
+
+        manager.setContiguousCrossPageInstructions(true);
+        expect(configs.get(38)).toBe(1);
         expect(cacheClears).toBe(1);
     });
 

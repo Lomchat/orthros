@@ -2171,7 +2171,11 @@ export default function App() {
           .split(",")
           .map((name) => name.trim())
           .filter(Boolean);
-        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, profile });
+        const hleForce = (params.get("hleForce") ?? "")
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean);
+        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, hleForce, profile });
         return;
       }
       try {

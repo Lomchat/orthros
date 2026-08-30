@@ -2975,7 +2975,7 @@ self.onmessage = (event: MessageEvent) => {
       enable: boolean;
       logOnly: boolean;
       galaxy?: { enable?: boolean; hleAudio?: boolean; hleMixer?: boolean };
-      bfme?: { enable?: boolean; disabledFunctions?: string[] };
+      bfme?: { enable?: boolean; disabledFunctions?: string[]; enabledFunctions?: string[] };
       [libId: string]: unknown;
     };
     // Galaxy full-module HLE is PARKED. The SAB-bypass needs proper glxSample reverse-
@@ -2985,6 +2985,14 @@ self.onmessage = (event: MessageEvent) => {
     // makes Galaxy.dll load + register its UClass natively, so UE1 audio works on the
     // native path. Flip enable back on when the glxSample bring-up is done.
     cfg.galaxy = { enable: false, hleAudio: false, hleMixer: false };
+    // A Worker can launch several games without being recreated. Diagnostic hook
+    // lists belong to one load request and must not leak into the next title.
+    for (const value of Object.values(cfg)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const lib = value as Record<string, unknown>;
+      if ('disabledFunctions' in lib) lib.disabledFunctions = [];
+      if ('enabledFunctions' in lib) lib.enabledFunctions = [];
+    }
     if (message.hleDisable === true) {
       cfg.enable = false;
       cfg.logOnly = false;
@@ -3010,6 +3018,27 @@ self.onmessage = (event: MessageEvent) => {
         cfg[libId] = { ...(previous ?? {}), disabledFunctions };
         Logger.log(LogCategory.SYSTEM,
           `[HLE-lib] ${libId} hook skip list: ${disabledFunctions.join(', ') || '(none)'}`);
+      }
+    }
+    if (Array.isArray(message.hleForce)) {
+      const requested = message.hleForce
+        .map((name: unknown) => String(name).trim())
+        .filter(Boolean);
+      const byLib = new Map<string, string[]>();
+      for (const token of requested) {
+        const colon = token.indexOf(':');
+        const libId = colon > 0 ? token.slice(0, colon).trim() : 'bfme';
+        const functionName = colon > 0 ? token.slice(colon + 1).trim() : token;
+        if (!libId || !functionName) continue;
+        const functions = byLib.get(libId) ?? [];
+        functions.push(functionName);
+        byLib.set(libId, functions);
+      }
+      for (const [libId, enabledFunctions] of byLib) {
+        const previous = cfg[libId] as Record<string, unknown> | undefined;
+        cfg[libId] = { ...(previous ?? {}), enabledFunctions };
+        Logger.log(LogCategory.SYSTEM,
+          `[HLE-lib] ${libId} optional hook allow-list: ${enabledFunctions.join(', ') || '(none)'}`);
       }
     }
     if (message.galaxyHle === true) {

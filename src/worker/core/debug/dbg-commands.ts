@@ -332,7 +332,8 @@ export const dbg = {
      *  22=JIT_INLINE_INTRA_MODULE_DISPATCH 23=JIT_TIER2_REGIONS
      *  24=JIT_TIER2_ADAPTIVE 25=JIT_MAX_PENDING_COMPILES
      *  26=JIT_THRESHOLD 27=JIT_TIER2_LEAF_CALL_FUSION.
-     *  35=JIT_REP_MOVS_REDUCED_SPILL 36=JIT_SYNC_BOUNDARY_CONTINUATION.
+     *  35=JIT_REP_MOVS_REDUCED_SPILL 36=JIT_SYNC_BOUNDARY_CONTINUATION
+     *  37=JIT_DEFERRED_COMPILE_QUEUE 38=JIT_CONTIGUOUS_CROSS_PAGE_INSTRUCTIONS.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -553,6 +554,31 @@ export const dbg = {
         console.log(`[dbg][jitDeferredCompileQueue][JSON] ${JSON.stringify(report)} (authoritative; persisted before v86 init)`);
         return report;
     },
+    /** Compile an ordinary instruction spanning two guest pages only after the
+     *  JIT proves that their current physical mappings are contiguous. Both
+     *  pages remain invalidation dependencies (config 38). */
+    jitCrossPageInstructions(on = true): unknown {
+        const pm = (globalThis as any).preemption;
+        const w = wasm();
+        if (pm?.setContiguousCrossPageInstructions) {
+            pm.setContiguousCrossPageInstructions(on);
+        }
+        else if (w?.set_jit_config) {
+            w.set_jit_config(38, on ? 1 : 0);
+            w.jit_clear_cache_js?.();
+        }
+        else return null;
+        const report = {
+            enabled: w?.get_jit_config
+                ? (w.get_jit_config(38) >>> 0)
+                : (pm?.isContiguousCrossPageInstructionsEnabled?.() ? 1 : 0),
+            compiled: w?.jit_contiguous_cross_page_instructions_compiled
+                ? (w.jit_contiguous_cross_page_instructions_compiled() >>> 0)
+                : -1,
+        };
+        console.log(`[dbg][jitCrossPageInstructions][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        return report;
+    },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
      *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
      *  (300K) via the Rust static — the promotion invalidation bug (ret-memo/dispatch
@@ -639,6 +665,7 @@ export const dbg = {
             deferredPending: w.jit_get_compile_deferred_pending?.() >>> 0,
             totalMs: (w.jit_get_compile_total_us?.() ?? 0) / 1000,
             maxMs: (w.jit_get_compile_max_us?.() ?? 0) / 1000,
+            crossPageInstructions: w.jit_contiguous_cross_page_instructions_compiled?.() ?? 0,
         };
         console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
         return s;

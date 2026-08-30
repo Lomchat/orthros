@@ -108,6 +108,12 @@ export interface HookedFunction {
     /** If false, missing probe is tolerated (likely LTO-inlined); if true, descriptor detection fails. */
     required: boolean;
     /**
+     * Whether this hook is installed during a normal launch. Defaults to true.
+     * Experimental kernels that are disabled in their backend must set this
+     * false, otherwise their wrapper and fallback still tax every guest call.
+     */
+    enabledByDefault?: boolean;
+    /**
      * When true, `runDetector` skips `entryProbe` and relies entirely on
      * `descriptor.resolveAdditionalFunctions` to supply the address. Needed
      * for libraries whose error strings aren't reachable via direct code

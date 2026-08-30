@@ -37,6 +37,7 @@ import {
 import { preemptionManager } from '../cpu/preemption-manager';
 import { MEM_THUNK_CODE_BASE, MEM_ROM_BASE } from '../cpu/emulator-config';
 import type { HleReportEntry, HookedFunction, LibMatch, PatchHandle, ShadowHookStatus, ShadowSpec } from './types';
+import { shouldInstallHook } from './hook-policy';
 
 interface ManagerInit {
     dispatcher: ThunkDispatcher;
@@ -137,6 +138,7 @@ class LibHleManager {
             const libCfg = (cfg as any)[desc.id] as {
                 enable?: boolean;
                 disabledFunctions?: string[];
+                enabledFunctions?: string[];
             } | undefined;
             if (libCfg && libCfg.enable === false) continue;
 
@@ -169,11 +171,19 @@ class LibHleManager {
                 continue;
             }
 
-            this.applyMatch(match, new Set(libCfg?.disabledFunctions ?? []));
+            this.applyMatch(
+                match,
+                new Set(libCfg?.disabledFunctions ?? []),
+                new Set(libCfg?.enabledFunctions ?? []),
+            );
         }
     }
 
-    private applyMatch(match: LibMatch, disabledFunctions = new Set<string>()): void {
+    private applyMatch(
+        match: LibMatch,
+        disabledFunctions = new Set<string>(),
+        enabledFunctions = new Set<string>(),
+    ): void {
         if (!this.init) return;
         const { descriptor, module, functionMatches } = match;
 
@@ -191,11 +201,14 @@ class LibHleManager {
         const libPatches = this.patches.get(descriptor.id)!;
 
         for (const fm of functionMatches) {
-            if (disabledFunctions.has(fm.name)) {
-                console.log(`[HLE-lib] Skipping ${descriptor.id}:${fm.name} via diagnostic opt-out`);
+            const decl = descriptor.functions[fm.name];
+            if (!shouldInstallHook(decl, fm.name, disabledFunctions, enabledFunctions)) {
+                const reason = disabledFunctions.has(fm.name)
+                    ? 'diagnostic opt-out'
+                    : 'inactive optional hook';
+                console.log(`[HLE-lib] Skipping ${descriptor.id}:${fm.name} (${reason})`);
                 continue;
             }
-            const decl = descriptor.functions[fm.name];
 
             // Guarded Inner-Loop HLE: shadow-enabled hooks derive their handler
             // from the kernel. The trampoline (prologueLen) is only needed for
