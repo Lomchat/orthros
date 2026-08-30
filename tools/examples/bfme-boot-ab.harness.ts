@@ -33,7 +33,8 @@ const labelB = arg("label-b", "B");
 
 interface RunResult {
     arm: string; run: number; wallMs: number; instructions: number;
-    mips: number; interpretedPct?: number | null; jit: any; ok: boolean; note?: string;
+    mips: number; interpretedPct?: number | null; jit: any;
+    threadCpuMs?: any; sleepPaths?: any; ok: boolean; note?: string;
 }
 const results: RunResult[] = [];
 
@@ -64,6 +65,7 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         const odo = await bench.dbg<any>("guestOdometer");
         const interp = await bench.dbg<any>("interpretedShare").catch(() => null);
         const jit = await bench.dbg<any>("jitCompileStats").catch(() => null);
+        const sched = await bench.dbg<any>("schedulerPerf").catch(() => null);
         return {
             arm, run, wallMs: Math.round(wallMs),
             instructions: odo?.instructions ?? -1,
@@ -74,6 +76,8 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
                 maxPending: jit.maxPending, pendingHighWater: jit.pendingHighWater,
                 deferredQueued: jit.deferredQueued,
             } : null,
+            threadCpuMs: sched?.threadCpuMs ?? null,
+            sleepPaths: sched?.sleepPaths ?? null,
             ok: true,
         };
     } finally {
