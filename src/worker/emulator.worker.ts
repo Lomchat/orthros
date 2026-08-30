@@ -100,6 +100,10 @@ import { frameProfiler } from "./core/frame-profiler";
 import { frameVarianceDiagnostics } from "./core/frame-variance-diagnostics";
 import { framePacer } from "./core/frame-pacer";
 import { EmulatorConfig } from "./core/emulator-config-manager";
+import {
+  getDxCompressedTextureNegotiationStats,
+  setDxCompressedTextureAdvertisement,
+} from "./backends/webgpu/shared/dx-format-support";
 import { videoEngine } from "../video/video-engine";
 import { preemptionManager } from "./core/cpu/preemption-manager";
 import { statsOverlay } from "./core/stats-overlay";
@@ -1831,6 +1835,12 @@ const loadBundleImpl = async (payload: BundlePayload) => {
     const emulatorConfig = EmulatorConfig.getInstance();
     emulatorConfig.reset();
     emulatorConfig.applyFromManifest(bundle.manifest);
+    // Apply before the guest can enumerate D3D caps. Reset counters as they are
+    // session diagnostics and a Worker may launch several games successively.
+    getDxCompressedTextureNegotiationStats(true);
+    setDxCompressedTextureAdvertisement(
+      emulatorConfig.compressedTexturePolicy !== "prefer-uncompressed",
+    );
 
     // Delete crash-sentinel and other stale files from CoW overlay before game starts
     if (emulatorConfig.deleteOnBoot.length > 0) {

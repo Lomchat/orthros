@@ -25,6 +25,7 @@ import {
   resolveLanguage,
   type GameLanguage,
   type GameProfile,
+  type LaunchEmulatorOptions,
   type RomLayerSpec,
 } from "../game-profile";
 import s from "./GameSelectScreen.module.css";
@@ -38,6 +39,8 @@ export interface GameEntry {
   wgbUrl: string;
   /** Read-only bundles mounted below this game's own WGB (base games, shared assets). */
   romDependencies?: RomLayerSpec[];
+  /** Generic per-title runtime policy, applied before the executable starts. */
+  emulator?: LaunchEmulatorOptions;
   sizeBytes?: number;
   description: string;
   year: string;

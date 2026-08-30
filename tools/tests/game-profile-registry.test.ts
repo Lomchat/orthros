@@ -36,4 +36,17 @@ describe("launch-profile registry metadata", () => {
       { url: "/apps/shared.wgb", include: undefined, mountPrefix: undefined },
     ] });
   });
+
+  test("merges a generic catalog runtime policy below player choices", () => {
+    expect(buildLaunchProfile(
+      { width: 1024, height: 768, skipVideo: true },
+      null,
+      [],
+      { compressedTexturePolicy: "prefer-uncompressed" },
+    )).toEqual({ manifest: { emulator: {
+      compressedTexturePolicy: "prefer-uncompressed",
+      screenResolution: { width: 1024, height: 768 },
+      skipVideo: true,
+    } } });
+  });
 });

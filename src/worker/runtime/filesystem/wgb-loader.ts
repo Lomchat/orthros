@@ -154,6 +154,13 @@ export interface WgbManifest {
         /** Skip video playback (BinkOpen/SmackOpen return stubs). For debugging video→menu transitions. */
         skipVideo?: boolean;
         /**
+         * D3D8/9 compressed-texture capability policy. `prefer-uncompressed`
+         * hides DXT/BC during CheckDeviceFormat only, allowing engines with an
+         * uncompressed fallback to trade memory for much less guest CPU work.
+         * Direct compressed resource creation remains valid.
+         */
+        compressedTexturePolicy?: "advertise" | "prefer-uncompressed";
+        /**
          * Boot with strict x87 FPU (relaxed-FPU f64 fast path disabled → full 80-bit precision).
          * For titles precision-sensitive at the default PC=64 control word — e.g. OGG Vorbis / float
          * audio codecs whose MDCT/synthesis diverges under the f64 relaxed path and corrupts decode

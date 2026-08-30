@@ -45,6 +45,17 @@ export interface GameProfile {
     skipVideo?: boolean;
 }
 
+/** Generic runtime choices authored by the catalog, independently of a game's
+ * identity. They are merged below the player's resolution/video choices. */
+export interface LaunchEmulatorOptions {
+    /**
+     * `prefer-uncompressed` hides DXT/BC formats from Direct3D capability
+     * negotiation so engines with a native fallback avoid guest-side texture
+     * compression. Directly-created compressed resources remain supported.
+     */
+    compressedTexturePolicy?: "advertise" | "prefer-uncompressed";
+}
+
 /** Resolutions offered when an entry declares `resolutions: true`. */
 export const RESOLUTION_CHOICES: ReadonlyArray<{ width: number; height: number; label: string }> = [
     { width: 800, height: 600, label: "800 × 600" },
@@ -113,9 +124,10 @@ export function buildLaunchProfile(
     profile: GameProfile,
     language: GameLanguage | null,
     romLayers: readonly RomLayerSpec[] = [],
+    emulatorDefaults: Readonly<LaunchEmulatorOptions> = {},
 ): LaunchProfile | undefined {
     const manifest: Record<string, unknown> = {};
-    const emulator: Record<string, unknown> = {};
+    const emulator: Record<string, unknown> = { ...emulatorDefaults };
 
     if (language?.gameId) manifest["gameId"] = language.gameId;
     if (language?.name) manifest["name"] = language.name;

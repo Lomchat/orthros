@@ -284,6 +284,10 @@ export class EmulatorConfig {
     // Skip video playback (BinkOpen/SmackOpen return stubs)
     public skipVideo = false;
 
+    // Capability negotiation remains hardware-faithful unless a title opts into
+    // the generic CPU-for-memory policy. This is reset between games in one Worker.
+    public compressedTexturePolicy: "advertise" | "prefer-uncompressed" = "advertise";
+
     // Strict x87 FPU: boot with relaxed-FPU (f64 fast path) DISABLED so all FPU runs at
     // full 80-bit extended precision. For titles whose code is precision-sensitive at the
     // default PC=64 control word — e.g. OGG Vorbis / float audio codecs whose MDCT/synthesis
@@ -411,6 +415,15 @@ export class EmulatorConfig {
             Logger.log(
                 LogCategory.SYSTEM,
                 `EmulatorConfig: Screen resolution set to ${this.screenResolution.width}x${this.screenResolution.height}x${this.screenResolution.bpp}@${this.screenResolution.refreshRate}Hz`
+            );
+        }
+
+        if (config.compressedTexturePolicy === "advertise" ||
+            config.compressedTexturePolicy === "prefer-uncompressed") {
+            this.compressedTexturePolicy = config.compressedTexturePolicy;
+            Logger.log(
+                LogCategory.SYSTEM,
+                `EmulatorConfig: compressed texture policy ${this.compressedTexturePolicy}`
             );
         }
 
@@ -621,6 +634,7 @@ export class EmulatorConfig {
         this.ddrawCaps = { ...EMU_DDRAW_DEFAULT_CAPS };
         this.screenBackgroundColor = { ...DEFAULT_SCREEN_BACKGROUND };
         this.skipVideo = false;
+        this.compressedTexturePolicy = "advertise";
         this.fpuStrict = false;
         this.disabledDlls = [];
         this.shellExecFake = [];

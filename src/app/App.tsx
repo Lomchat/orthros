@@ -555,6 +555,7 @@ export default function App() {
       stored,
       resolveLanguage(selectedGame.languages, stored, selectedGame.defaultLanguage),
       selectedGame.romDependencies,
+      selectedGame.emulator,
     );
     (window as any).loadApp?.(
       selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl,
