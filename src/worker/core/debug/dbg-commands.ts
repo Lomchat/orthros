@@ -703,6 +703,19 @@ export const dbg = {
         console.log(`[dbg] JIT_RECOMPILE_DIVISOR=${bounded} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? bounded : (applied >>> 0);
     },
+    /** Reclaim only unreferenced modules on wasm-table exhaustion (config 43)
+     *  instead of discarding every compiled module and its page hotness.
+     *  Survives a v86 re-creation; clears the cache so the A/B starts even. */
+    jitPartialEviction(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitPartialEviction) pm.setJitPartialEviction(!!on);
+        const w = wasm();
+        if (!pm?.setJitPartialEviction && w?.set_jit_config) w.set_jit_config(43, on ? 1 : 0);
+        w?.jit_clear_cache?.();
+        const applied = w?.get_jit_config?.(43);
+        console.log(`[dbg] JIT_PARTIAL_EVICTION=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
@@ -727,6 +740,9 @@ export const dbg = {
             totalMs: (w.jit_get_compile_total_us?.() ?? 0) / 1000,
             maxMs: (w.jit_get_compile_max_us?.() ?? 0) / 1000,
             crossPageInstructions: w.jit_contiguous_cross_page_instructions_compiled?.() ?? 0,
+            partialEvictions: w.jit_get_partial_evictions?.() >>> 0,
+            evictedModules: w.jit_get_evicted_modules?.() >>> 0,
+            evictionFallbacks: w.jit_get_eviction_fallbacks?.() >>> 0,
         };
         console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
         return s;

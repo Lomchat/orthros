@@ -82,6 +82,32 @@ function looksLikeLoading(before: Sample, after: Sample, seconds: number): boole
     return fps < 5 && after.draws > before.draws;
 }
 
+/**
+ * A profile with no player stops on a modal that ignores the mouse: it wants a
+ * name typed and confirmed. A profile that already has one goes straight to the
+ * map list. The two screens are only distinguishable by their draws per frame,
+ * and clicking Play on the wrong one does nothing at all — which reads as "the
+ * change under test had no effect" rather than as a navigation failure.
+ */
+async function dismissProfileModal(b: BenchSession): Promise<void> {
+    const before = await probe(b, 3_000);
+    await key(b, "enter");
+    await Bun.sleep(8_000);
+    let after = await probe(b, 3_000);
+    if (Math.abs(after.dpf - before.dpf) / Math.max(1, before.dpf) > 0.2) {
+        console.log(JSON.stringify({ step: "profile-modal", via: "enter",
+            dpf: { before: before.dpf, after: after.dpf } }));
+        return;
+    }
+    await b.evalPage(`__BS__.harness.type("Bench")`, 30_000).catch(() => {});
+    await Bun.sleep(1_500);
+    await key(b, "enter");
+    await Bun.sleep(9_000);
+    after = await probe(b, 3_000);
+    console.log(JSON.stringify({ step: "profile-modal", via: "type+enter",
+        dpf: { before: before.dpf, after: after.dpf } }));
+}
+
 async function tryStep(
     b: BenchSession, label: string, candidates: Array<[number, number]>, settleMs: number,
 ): Promise<boolean> {
@@ -122,9 +148,7 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
 
     await tryStep(bench, "solo", [[90, 575], [215, 575], [160, 575]], 7_000);
     await tryStep(bench, "skirmish", [[320, 575], [215, 387], [215, 420]], 12_000);
-    // No-op when the profile already exists; required on a first-run profile.
-    await key(bench, "enter");
-    await Bun.sleep(8_000);
+    await dismissProfileModal(bench);
     await tryStep(bench, "play", [[340, 575], [705, 574], [640, 556]], 15_000);
 
     const a = await sample(bench);

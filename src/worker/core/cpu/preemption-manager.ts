@@ -161,6 +161,11 @@ export class PreemptionManager {
     // isolated BFME 1 cold boot (ABBA, work parity 0.13%): 4.7% faster with
     // 10.3% fewer missing-entry blocks. 1 = historical single threshold.
     private jitRecompileDivisor = 8;
+    // config idx 43: on wasm-table exhaustion, reclaim only modules unreferenced
+    // since the last sweep instead of discarding the whole cache. A full flush
+    // also drops every page's hotness, so the working set re-interprets
+    // jitBaseThreshold instructions per page before any of it runs compiled again.
+    private jitPartialEviction = false;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -419,6 +424,13 @@ export class PreemptionManager {
     }
     getJitRecompileDivisor(): number { return this.jitRecompileDivisor; }
 
+    setJitPartialEviction(on: boolean): void {
+        this.jitPartialEviction = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(43, on ? 1 : 0);
+    }
+    getJitPartialEviction(): boolean { return this.jitPartialEviction; }
+
     setJitBaseThreshold(threshold: number): void {
         this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const ex = this.wasmExports;
@@ -521,6 +533,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(25, this.jitMaxPendingCompiles);
             this.wasmExports.set_jit_config(26, this.jitBaseThreshold);
             this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
+            this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 
