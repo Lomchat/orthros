@@ -156,6 +156,9 @@ export class PreemptionManager {
      *  sooner but can increase compiler contention and code memory. The stock
      *  200k remains authoritative until cross-workload A/B data says otherwise. */
     private jitBaseThreshold = 200_000;
+    // config idx 42: threshold divisor for a page that already owns a module.
+    // 1 = historical single threshold.
+    private jitRecompileDivisor = 1;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -407,6 +410,13 @@ export class PreemptionManager {
     }
     getJitMaxPendingCompiles(): number { return this.jitMaxPendingCompiles; }
 
+    setJitRecompileDivisor(divisor: number): void {
+        this.jitRecompileDivisor = Math.max(1, Math.min(64, divisor >>> 0));
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(42, this.jitRecompileDivisor);
+    }
+    getJitRecompileDivisor(): number { return this.jitRecompileDivisor; }
+
     setJitBaseThreshold(threshold: number): void {
         this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const ex = this.wasmExports;
@@ -508,6 +518,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(24, this.tier2AdaptiveEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(25, this.jitMaxPendingCompiles);
             this.wasmExports.set_jit_config(26, this.jitBaseThreshold);
+            this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 

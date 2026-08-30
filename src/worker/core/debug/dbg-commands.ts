@@ -687,6 +687,22 @@ export const dbg = {
         console.log(`[dbg] JIT_BASE_THRESHOLD=${bounded} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? bounded : (applied >>> 0);
     },
+    /** Threshold divisor for pages that ALREADY own a compiled module.
+     *  Interpreting there is a coverage gap, not a cold page: compiled code
+     *  exists and lacks this entry point, so recompiling widens an existing
+     *  module rather than paying for a cold one. Distinct from jitBaseThreshold,
+     *  which lowered globally is measurably worse because it also compiles cold
+     *  pages. 1 restores the historical single threshold. */
+    jitRecompileDivisor(divisor = 1): number {
+        const bounded = Math.max(1, Math.min(64, divisor >>> 0));
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitRecompileDivisor) pm.setJitRecompileDivisor(bounded);
+        const w = wasm();
+        if (!pm?.setJitRecompileDivisor && w?.set_jit_config) w.set_jit_config(42, bounded);
+        const applied = w?.get_jit_config?.(42);
+        console.log(`[dbg] JIT_RECOMPILE_DIVISOR=${bounded} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? bounded : (applied >>> 0);
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
