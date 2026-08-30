@@ -534,14 +534,23 @@ export const dbg = {
         return report;
     },
     /** Queue a hot page once while the async JIT compile window is full and
-     *  start it when a slot completes (config 37). Experimental; OFF by default. */
+     *  start it when a slot completes (config 37). ON by default, kill-switch retained. */
     jitDeferredCompileQueue(on = true): unknown {
-        const w = wasm(); if (!w?.set_jit_config) return null;
         const pm = (globalThis as any).preemption;
+        const w = wasm();
         if (pm?.setDeferredCompileQueue) pm.setDeferredCompileQueue(on);
-        else { w.set_jit_config(37, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
-        const report = { enabled: w.get_jit_config ? (w.get_jit_config(37) >>> 0) : -1 };
-        console.log(`[dbg][jitDeferredCompileQueue][JSON] ${JSON.stringify(report)} (authoritative) + cache cleared`);
+        else if (w?.set_jit_config) {
+            w.set_jit_config(37, on ? 1 : 0);
+            if (w.jit_clear_cache_js) w.jit_clear_cache_js();
+        }
+        else return null;
+        const report = {
+            enabled: w?.get_jit_config
+                ? (w.get_jit_config(37) >>> 0)
+                : (pm?.isDeferredCompileQueueEnabled?.() ? 1 : 0),
+            applied: !!w?.set_jit_config,
+        };
+        console.log(`[dbg][jitDeferredCompileQueue][JSON] ${JSON.stringify(report)} (authoritative; persisted before v86 init)`);
         return report;
     },
     /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;

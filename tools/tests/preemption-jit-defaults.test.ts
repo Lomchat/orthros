@@ -27,7 +27,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isLeafReturnLocalEnabled()).toBe(true);
         expect(manager.isRepMovsBridgeEnabled()).toBe(true);
         expect(manager.isSyncBoundaryContinuationEnabled()).toBe(true);
-        expect(manager.isDeferredCompileQueueEnabled()).toBe(false);
+        expect(manager.isDeferredCompileQueueEnabled()).toBe(true);
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
@@ -41,7 +41,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(30)).toBe(1);
         expect(configs.get(35)).toBe(1);
         expect(configs.get(36)).toBe(1);
-        expect(configs.get(37)).toBe(0);
+        expect(configs.get(37)).toBe(1);
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);

@@ -107,8 +107,8 @@ export class PreemptionManager {
 
     /** Queue one hot page while the bounded async compiler window is full,
      *  then admit it on completion instead of retrying every interpreted slice.
-     *  Experimental and OFF until synthetic plus cold-game A/B (config idx 37). */
-    private deferredCompileQueueEnabled = false; // config idx 37
+     *  Enabled after bounded lifecycle and generic throughput validation. */
+    private deferredCompileQueueEnabled = true; // config idx 37
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the

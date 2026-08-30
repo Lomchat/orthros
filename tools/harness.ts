@@ -296,6 +296,9 @@ async function cmdReload(): Promise<void> {
  *  Numeric args (e.g. an esp) are parsed; everything else passes through. */
 async function cmdSingle(cmd: string, rest: string[]): Promise<void> {
     const args = rest.map((a) => {
+        if (a === "true") return true;
+        if (a === "false") return false;
+        if (a === "null") return null;
         if (/^0x[0-9a-f]+$/i.test(a)) return parseInt(a, 16);
         if (/^\d+$/.test(a)) return Number(a);
         if (/^[[{]/.test(a)) { try { return JSON.parse(a); } catch { return a; } } // {"continuous":true} etc.
