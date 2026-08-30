@@ -49,6 +49,13 @@ async function sample(b: BenchSession): Promise<Sample> {
     })()`, 30_000);
 }
 
+/** A full JIT cache flush sends the whole working set back to the interpreter to
+ *  re-climb the hotness ramp, so its rate during a load explains far more about
+ *  the frame times than the presentation counters do. */
+async function jitStats(b: BenchSession): Promise<Record<string, number> | null> {
+    return b.evalPage(`__BS__.harness.dbgCall("jitCompileStats")`, 30_000).catch(() => null);
+}
+
 /** Draws per presentation identifies the screen; presentation rate identifies load. */
 async function probe(b: BenchSession, ms = 4_000): Promise<{ fps: number; dpf: number }> {
     const a = await sample(b);
@@ -136,13 +143,23 @@ if (!loading) {
 
 console.log("LOADING confirmed — sampling");
 let prev = await sample(bench);
+let prevJit = await jitStats(bench);
+const jit0 = prevJit;
 const tL = performance.now();
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     await Bun.sleep(10_000);
     const s = await sample(bench);
+    const j = await jitStats(bench);
     const dp = s.present - prev.present;
-    console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)} dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`);
-    prev = s;
+    const d = (k: string) => (j && prevJit ? (j[k] ?? 0) - (prevJit[k] ?? 0) : 0);
+    console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
+        + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
+        + ` flushes=+${d("cacheFlushes")} compiled=+${d("completed")} capSkips=+${d("capSkips")}`);
+    prev = s; prevJit = j;
 }
-console.log("RESULT " + JSON.stringify({ reached: true }));
+console.log("RESULT " + JSON.stringify({
+    reached: true,
+    jitAtLoadStart: jit0,
+    jitAtLoadEnd: await jitStats(bench),
+}));
 bench.close();

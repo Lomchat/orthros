@@ -43,6 +43,7 @@ export interface BenchSession {
     evalPage<T = unknown>(expr: string, timeoutMs?: number): Promise<T>;
     /** Re-assert that this is still the only game page. Call before recording. */
     assertIsolated(): Promise<void>;
+    /** Close the CDP session AND kill the browser this session launched. */
     close(): void;
 }
 
@@ -84,6 +85,24 @@ export async function killProfileProcesses(profile: string): Promise<number> {
     }
     for (const pid of survivors()) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
     await Bun.sleep(1_000);
+    clearSingletonLocks(profile);
+    return pids.length;
+}
+
+/**
+ * Synchronous variant for teardown: `close()` cannot await, and a browser left
+ * running keeps a GPU process and a renderer burning CPU into whatever measures
+ * next — contention that shows up as a slower run, not as an error.
+ */
+export function killProfileProcessesSync(profile: string): number {
+    const pattern = `--user-data-dir=${profile}`;
+    const self = new Set([process.pid, process.ppid]);
+    const survivors = () => Bun.spawnSync(["pgrep", "-f", "--", pattern]).stdout.toString()
+        .trim().split("\n").filter(Boolean)
+        .map(Number).filter((pid) => Number.isFinite(pid) && !self.has(pid));
+
+    const pids = survivors();
+    for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
     clearSingletonLocks(profile);
     return pids.length;
 }
@@ -259,7 +278,10 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
                 throw new Error(`benchmark not isolated: ${emulators.length} emulator Workers alive`);
             }
         },
-        close: () => session.close(),
+        close: () => {
+            try { session.close(); } catch { /* transport already gone */ }
+            killProfileProcessesSync(profile);
+        },
     };
 
     await api.assertIsolated();
