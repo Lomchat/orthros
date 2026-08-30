@@ -926,9 +926,16 @@ export const dbg = {
             interpretedPct: odo.instructions > 0
                 ? Math.round((interpreted / odo.instructions) * 10_000) / 100
                 : 0,
+            // Why those blocks were interpreted. "No module" is answered by
+            // compiling more; "missing entry" means compiled code exists for the
+            // page but does not cover this entry point, which more compilation
+            // cannot fix.
+            blocksNoModule: Number(w?.profiler_interp_block_reason_get?.(0) ?? 0),
+            blocksMissingEntry: Number(w?.profiler_interp_block_reason_get?.(1) ?? 0),
         };
         if (reset) {
             w?.profiler_interpreted_steps_reset?.();
+            w?.profiler_interp_block_reason_reset?.();
             resetGuestOdometer();
         }
         console.log(`[dbg][interpreted-share][JSON] ${JSON.stringify(result)}`);
