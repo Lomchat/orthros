@@ -151,6 +151,8 @@ const HANDLER_WAIT_FOR_SINGLE_OBJECT = 81;
 // they implement the public D3DX contract and benefit every D3D9 title.
 const HANDLER_D3DX_VEC3_CATMULL_ROM = 82;
 const HANDLER_D3DX_MATRIX_INVERSE = 83;
+/** Statically-linked classic MSVC `_EH_prolog` registration-frame helper. */
+export const HANDLER_MSVC_EH_PROLOG = 84;
 
 /**
  * Inner-loop HLE handler-id band (128..=255) — engine compute kernels, kept
