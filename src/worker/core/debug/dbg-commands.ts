@@ -518,7 +518,7 @@ export const dbg = {
         return report;
     },
     /** Guarded in-module continuation after a synchronous block boundary
-     *  (JIT config 36). Experimental; OFF by default until real-game A/B. */
+     *  (JIT config 36). Validated default; false is the persistent kill-switch. */
     jitSyncBoundaryContinuation(on = true): unknown {
         const w = wasm(); if (!w?.set_jit_config) return null;
         const pm = (globalThis as any).preemption;
@@ -1037,6 +1037,7 @@ export const dbg = {
         chainable: number; dynamic: number; indirect: number; other: number; chainableFraction: number;
         chainedEdge: number; chainBudgetExit: number; chainMiss: number;
         abseipDispatch: number; retChainHit: number; retChainMiss: number;
+        syncBoundaryContinue: number;
     } | null {
         const w = wasm(); if (!w) return null;
         const dget = w["profiler_dispatch_stat_get"];
@@ -1055,6 +1056,7 @@ export const dbg = {
         const abseipDispatch = Number(dget(10));
         const retChainHit = Number(dget(11));
         const retChainMiss = Number(dget(12));
+        const syncBoundaryContinue = Number(dget(13));
         const intraEdge = Math.max(0, blockExec - reentry - chainedEdge);
         const baselineReentry = reentry + chainedEdge;
         const chainableTotal = chainable + chainedEdge;
@@ -1070,11 +1072,13 @@ export const dbg = {
             `indirect=${indirect}(${pct(indirect, reentry)}) other=${other}(${pct(other, reentry)})\n` +
             `      chaining: chainedEdge=${chainedEdge} budgetExit=${chainBudgetExit} miss=${chainMiss}\n` +
             `      absEip: dispatch=${abseipDispatch} retChainHit=${retChainHit} retChainMiss=${retChainMiss}\n` +
+            `      syncBoundary: continued=${syncBoundaryContinue}\n` +
             `      >>> CHAINABLE FRACTION = ${pct(chainableTotal, baselineReentry)} (baseline includes chained edges)${hint}`
         );
         return {
             enabled, blockExec, reentry, intraEdge, chainable, dynamic, indirect, other, chainableFraction,
             chainedEdge, chainBudgetExit, chainMiss, abseipDispatch, retChainHit, retChainMiss,
+            syncBoundaryContinue,
         };
     },
     /** Round-trip cause split. Answers "why does the

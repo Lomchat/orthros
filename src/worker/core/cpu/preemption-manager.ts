@@ -101,9 +101,9 @@ export class PreemptionManager {
     private repMovsBridgeEnabled = true;           // config idx 35
 
     /** Guarded continuation after a synchronous JIT block boundary (idx 36).
-     *  Experimental and OFF until generic correctness tests plus real-game A/B
-     *  show that avoiding the extra module re-entry is worthwhile. */
-    private syncBoundaryContinuationEnabled = false; // config idx 36
+     *  Enabled after the redirect guard, +52–55% synthetic throughput, 728k
+     *  directly counted continuations in BFME II and a neutral long 3D A/B. */
+    private syncBoundaryContinuationEnabled = true; // config idx 36
 
     /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
      *  0 = OFF). Default ON after the null-function root cause was fixed in the
