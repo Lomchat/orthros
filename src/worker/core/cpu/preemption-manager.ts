@@ -39,6 +39,9 @@ export class PreemptionManager {
     private fastmemReadsEnabled = true;         // config idx 9
     private fastmemReadSplitEnabled = true;     // config idx 18 (split-range read shape)
     private x87LocalsEnabled = true;            // config idx 10
+    /** Deferred architectural stores for relaxed x87 locals (config idx 39).
+     *  Experimental until a real-game A/B complements the bit-exact harness. */
+    private x87WritebackEnabled = false;        // config idx 39
     private pushRunCoalescingEnabled = true;    // config idx 11
 
     /** Fastmem WRITES behind the per-page writability map (config idx 19).
@@ -242,6 +245,14 @@ export class PreemptionManager {
     }
     isX87LocalsEnabled(): boolean { return this.x87LocalsEnabled; }
 
+    setX87Writeback(on: boolean): void {
+        this.x87WritebackEnabled = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(39, on ? 1 : 0);
+        if (ex?.jit_clear_cache_js) ex.jit_clear_cache_js();
+    }
+    isX87WritebackEnabled(): boolean { return this.x87WritebackEnabled; }
+
     setPushRunCoalescing(on: boolean): void {
         this.pushRunCoalescingEnabled = on;
         const ex = this.wasmExports;
@@ -431,6 +442,7 @@ export class PreemptionManager {
             // resets the wasm flags to their codegen default (OFF) on every game load.
             this.wasmExports.set_jit_config(9, this.fastmemReadsEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(10, this.x87LocalsEnabled ? 1 : 0);
+            this.wasmExports.set_jit_config(39, this.x87WritebackEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(11, this.pushRunCoalescingEnabled ? 1 : 0);
             this.wasmExports.set_jit_config(18, this.fastmemReadSplitEnabled ? 1 : 0);
             // Fastmem-writes idx 19 — re-applied per init. Default OFF; when enabled the
@@ -444,7 +456,7 @@ export class PreemptionManager {
             // Inline AbsoluteEip resolver idx 22 — default ON. Applied at boot while
             // the cache is cold; live diagnostics route through the setter below.
             this.wasmExports.set_jit_config(22, this.inlineIntraModuleDispatchEnabled ? 1 : 0);
-            console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"} inlineDispatch=${this.inlineIntraModuleDispatchEnabled ? "on" : "off"}`);
+            console.log(`[PERF] fastmem-wave: reads=${this.fastmemReadsEnabled ? "on" : "off"} x87Locals=${this.x87LocalsEnabled ? "on" : "off"} x87Writeback=${this.x87WritebackEnabled ? "on" : "off"} pushRun=${this.pushRunCoalescingEnabled ? "on" : "off"} readSplit=${this.fastmemReadSplitEnabled ? "on" : "off"} writes=${this.fastmemWritesEnabled ? "on" : "off"} flagLocals=${this.flagLocalsEnabled ? "on" : "off"} inlineDispatch=${this.inlineIntraModuleDispatchEnabled ? "on" : "off"}`);
 
             // Dynamic RET dispatch (idx 12/13) — RET chaining is retained by the
             // current BFME A/B; local target speculation remains disabled. Re-apply

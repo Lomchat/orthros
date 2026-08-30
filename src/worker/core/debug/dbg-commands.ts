@@ -340,7 +340,7 @@ export const dbg = {
         if (w.set_jit_config) w.set_jit_config(index >>> 0, value >>> 0);
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)}`);
+        console.log(`[dbg] set_jit_config(${index},${value}) + clear. now: DISABLED=${g(0)} MAX_PAGES=${g(1)} LOOP_SAFETY=${g(2)} MAX_EXTRA_BB=${g(3)} BLOCK_CHAINING=${g(4)} DEAD_FLAG_ELISION=${g(5)} INDIRECT_REGIONS=${g(6)} REGION_PAGES=${g(8)} FASTMEM_READS=${g(9)} X87_LOCALS=${g(10)} PUSH_RUN=${g(11)} INLINE_DISPATCH=${g(22)} X87_WRITEBACK=${g(39)}`);
     },
     /** Current-module RET/indirect lookup emitted directly into generated wasm
      *  (set_jit_config idx 22). Default ON; OFF keeps the historical call into the
@@ -975,6 +975,15 @@ export const dbg = {
         if (pm?.setX87Locals) pm.setX87Locals(on);
         else { w.set_jit_config(10, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
         console.log(`[dbg][x87] locals=${w.get_jit_config ? (w.get_jit_config(10) >>> 0) : (on ? 1 : 0)} (authoritative - survives reload) + cache cleared`);
+    },
+    /** Keep relaxed x87 results in block-scoped locals until an architectural
+     *  boundary. Experimental; guarded by config 39 and clears compiled code. */
+    x87Writeback(on = true): void {
+        const w = wasm(); if (!w?.set_jit_config) return;
+        const pm = (globalThis as any).preemption;
+        if (pm?.setX87Writeback) pm.setX87Writeback(on);
+        else { w.set_jit_config(39, on ? 1 : 0); w.jit_clear_cache_js?.(); }
+        console.log(`[dbg][x87] writeback=${w.get_jit_config ? (w.get_jit_config(39) >>> 0) : (on ? 1 : 0)} (authoritative - survives reload) + cache cleared`);
     },
     x87LocalStats(): any {
         const w = wasm(); if (!w) return null;
