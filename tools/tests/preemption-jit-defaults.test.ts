@@ -34,7 +34,9 @@ describe("PreemptionManager JIT defaults", () => {
         expect(manager.isInlineIntraModuleDispatchEnabled()).toBe(true);
         expect(manager.isTier2RegionsEnabled()).toBe(false);
         expect(manager.isTier2AdaptiveEnabled()).toBe(true);
-        expect(manager.getJitMaxPendingCompiles()).toBe(2);
+        // Six, not two: two leaves the queue permanently backed up, and one slow
+        // module (272,6 ms measured) then stalls every module behind it.
+        expect(manager.getJitMaxPendingCompiles()).toBe(6);
         expect(manager.isDirectBlockChainingEnabled()).toBe(false);
         expect(configs.get(4)).toBe(0);
         expect(configs.get(12)).toBe(1);
@@ -50,7 +52,7 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(22)).toBe(1);
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
-        expect(configs.get(25)).toBe(2);
+        expect(configs.get(25)).toBe(6);
     });
 
     test("synchronizes an urgent zero budget with generated JIT guards", () => {

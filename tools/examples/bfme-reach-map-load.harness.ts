@@ -192,6 +192,11 @@ if (process.argv.includes("--rearm-on-switch")) {
         await bench.dbg("rearmOnSwitch", true).catch((e) => String(e))));
 }
 
+if (process.argv.includes("--park-guard")) {
+    console.log("park-guard " + JSON.stringify(
+        await bench.dbg("jitChainParkGuard", true).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--honor-urgent-exit")) {
     console.log("honor-urgent-exit " + JSON.stringify(
         await bench.dbg("jitHonorUrgentExit", true).catch((e) => String(e))));

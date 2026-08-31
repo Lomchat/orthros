@@ -808,6 +808,17 @@ export const dbg = {
         console.log(`[dbg][thunkCensus][JSON] ${JSON.stringify(r)}`);
         return r;
     },
+    /** Guard dynamic chaining on the park address rather than on a zeroed cycle
+     *  budget (config 45). Clears the JIT cache so both arms start even. */
+    jitChainParkGuard(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitChainParkGuard) pm.setJitChainParkGuard(!!on);
+        const w = wasm();
+        if (!pm?.setJitChainParkGuard && w?.set_jit_config) w.set_jit_config(45, on ? 1 : 0);
+        const applied = w?.get_jit_config?.(45);
+        console.log(`[dbg] JIT_CHAIN_PARK_GUARD=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {

@@ -150,7 +150,12 @@ export class PreemptionManager {
     /** Bounded asynchronous wasm compilation window (idx 25). Two pending
      *  modules remove most of the historical global one-Promise serialization
      *  while limiting compiler contention during interactive frames. */
-    private jitMaxPendingCompiles = 2;
+    // Two in flight leaves the queue permanently backed up: a real session shows
+    // 766 capacity refusals and 93,662 ms of accumulated compile latency, with a
+    // single module reaching 272,6 ms. Widening does not by itself speed up a
+    // boot (measured 0,17 %), but it stops one slow module from stalling the
+    // ones behind it, which is what a game hits when new code appears mid-frame.
+    private jitMaxPendingCompiles = 6;
 
     /** Tier-1 compilation hotness (idx 26). Lower values compile cold pages
      *  sooner but can increase compiler contention and code memory. The stock
@@ -172,6 +177,18 @@ export class PreemptionManager {
     // only stops generated edges from chaining. A caller asking to end the slice
     // otherwise gets the guest running on to the full budget with chaining off.
     private jitHonorUrgentExit = false;
+    // config idx 45: guard dynamic chaining on the park address instead of on a
+    // zeroed cycle budget. The budget check was a proxy for one invariant — never
+    // chain past an async park — but it disables chaining for the whole remainder
+    // of any slice in which any thunk asked to exit: 1,602,938 refusals from a
+    // zeroed budget against 458 from a slice that genuinely ran its course.
+    // Changes no scheduling: the slice runs to its local budget either way, which
+    // is what separates this from the two candidates that regressed — re-arming
+    // the budget at a context switch, and honouring the urgent exit in the native
+    // loop. Measured on a map load: zeroed-budget refusals 1.6M -> 0, successful
+    // chains 635/2309/2815 -> 2965/14661/16768 over three windows, no faults.
+    // Kill-switch: dbg.jitChainParkGuard(false).
+    private jitChainParkGuard = true;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -444,6 +461,14 @@ export class PreemptionManager {
     }
     getJitHonorUrgentExit(): boolean { return this.jitHonorUrgentExit; }
 
+    setJitChainParkGuard(on: boolean): void {
+        this.jitChainParkGuard = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(45, on ? 1 : 0);
+        ex?.jit_clear_cache?.();
+    }
+    getJitChainParkGuard(): boolean { return this.jitChainParkGuard; }
+
     setJitBaseThreshold(threshold: number): void {
         this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const ex = this.wasmExports;
@@ -548,6 +573,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
             this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
             this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
+            this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 
