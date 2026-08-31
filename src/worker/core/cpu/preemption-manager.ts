@@ -166,6 +166,12 @@ export class PreemptionManager {
     // also drops every page's hotness, so the working set re-interprets
     // jitBaseThreshold instructions per page before any of it runs compiled again.
     private jitPartialEviction = false;
+    // config idx 44: let the native cycle loop re-check the urgent-exit signal.
+    // requestImmediateExit() zeroes the shared budget and the cached copy, but the
+    // loop tests a snapshot taken at slice entry, so it keeps running — the zero
+    // only stops generated edges from chaining. A caller asking to end the slice
+    // otherwise gets the guest running on to the full budget with chaining off.
+    private jitHonorUrgentExit = false;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -431,6 +437,13 @@ export class PreemptionManager {
     }
     getJitPartialEviction(): boolean { return this.jitPartialEviction; }
 
+    setJitHonorUrgentExit(on: boolean): void {
+        this.jitHonorUrgentExit = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(44, on ? 1 : 0);
+    }
+    getJitHonorUrgentExit(): boolean { return this.jitHonorUrgentExit; }
+
     setJitBaseThreshold(threshold: number): void {
         this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const ex = this.wasmExports;
@@ -534,6 +547,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(26, this.jitBaseThreshold);
             this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
             this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
+            this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 

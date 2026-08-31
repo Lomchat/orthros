@@ -170,6 +170,11 @@ if (process.argv.includes("--attribute-chain-misses")) {
         await bench.dbg("jitBudgetFastExit", false).catch((e) => String(e))));
 }
 
+if (process.argv.includes("--honor-urgent-exit")) {
+    console.log("honor-urgent-exit " + JSON.stringify(
+        await bench.dbg("jitHonorUrgentExit", true).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--partial-eviction")) {
     console.log("partial-eviction " + JSON.stringify(
         await bench.dbg("jitPartialEviction", true).catch((e) => String(e))));

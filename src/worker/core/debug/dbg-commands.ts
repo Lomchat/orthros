@@ -763,6 +763,18 @@ export const dbg = {
         console.log(`[dbg] JIT budget fast-exit=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Let the native cycle loop honour an urgent exit (config 44). Without it
+     *  requestImmediateExit() does not end the slice at all — it only zeroes the
+     *  budget the generated edges read, so the guest runs on with chaining off. */
+    jitHonorUrgentExit(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitHonorUrgentExit) pm.setJitHonorUrgentExit(!!on);
+        const w = wasm();
+        if (!pm?.setJitHonorUrgentExit && w?.set_jit_config) w.set_jit_config(44, on ? 1 : 0);
+        const applied = w?.get_jit_config?.(44);
+        console.log(`[dbg] JIT_HONOR_URGENT_EXIT=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
