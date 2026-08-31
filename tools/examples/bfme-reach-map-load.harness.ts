@@ -192,6 +192,15 @@ if (process.argv.includes("--rearm-on-switch")) {
         await bench.dbg("rearmOnSwitch", true).catch((e) => String(e))));
 }
 
+// config 42 lowers the compile threshold for a page that already owns a module,
+// so a missing entry point recompiles it — and every recompile frees the old slot,
+// which invalidates the whole return cache. Worth an A/B against 1 (off).
+const divisorArg = process.argv.indexOf("--recompile-divisor");
+if (divisorArg >= 0 && process.argv[divisorArg + 1]) {
+    console.log("recompile-divisor " + JSON.stringify(
+        await bench.dbg("jitRecompileDivisor", Number(process.argv[divisorArg + 1])).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--park-guard")) {
     console.log("park-guard " + JSON.stringify(
         await bench.dbg("jitChainParkGuard", true).catch((e) => String(e))));
