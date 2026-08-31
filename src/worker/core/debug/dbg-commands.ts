@@ -1505,6 +1505,10 @@ export const dbg = {
             threadCpuMs: sched.getThreadCpuMs?.() ?? {},
             roundTrips: { ...(sched.roundTripStats ?? {}) },
             sleepPaths: { ...(sched.sleepPathStats ?? {}) },
+            // How much wall time the runtime spends deliberately yielding to the
+            // host because the guest asked to sleep — invisible in a CPU profile,
+            // which only sees the thread when it is running.
+            soleRunnableSleepStats: { ...(sched.soleRunnableSleepStats ?? {}) },
             threadSummary: sched.getThreadSummary?.() ?? null,
         };
         if (reset) {
@@ -1516,6 +1520,8 @@ export const dbg = {
             }
             const p = sched.sleepPathStats;
             if (p) { p.soleRunnableYield = 0; p.blockedWait = 0; }
+            const c = sched.soleRunnableSleepStats;
+            if (c) { c.credits = 0; c.msCredited = 0; }
         }
         console.log(`[dbg][schedulerPerf] ${JSON.stringify(out)}`);
         return out;

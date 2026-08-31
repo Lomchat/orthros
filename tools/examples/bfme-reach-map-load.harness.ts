@@ -52,6 +52,13 @@ async function sample(b: BenchSession): Promise<Sample> {
 /** A full JIT cache flush sends the whole working set back to the interpreter to
  *  re-climb the hotness ramp, so its rate during a load explains far more about
  *  the frame times than the presentation counters do. */
+/** Read-and-reset, so each value covers exactly one sampling window. The
+ *  question is how much of a load is the emulator deliberately yielding to the
+ *  host because the guest asked to sleep. */
+async function sleepStats(b: BenchSession): Promise<any> {
+    return b.evalPage(`__BS__.harness.dbgCall("schedulerPerf", true)`, 30_000).catch(() => null);
+}
+
 async function jitStats(b: BenchSession): Promise<Record<string, number> | null> {
     return b.evalPage(`__BS__.harness.dbgCall("jitCompileStats")`, 30_000).catch(() => null);
 }
@@ -245,6 +252,14 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         console.log(`   ${label} hot: ` + hot.top.slice(0, 4)
             .map((r: any) => `${r.module || r.page}=${r.pct}%`).join("  ")
             + ` (collisions ${hot.collisions})`);
+    }
+    const sl = await sleepStats(bench);
+    if (sl) {
+        const sp = sl.sleepPaths ?? {};
+        const cr = sl.soleRunnableSleepStats ?? {};
+        console.log(`   sleep: soleYield=${sp.soleRunnableYield ?? "?"} blockedWait=${sp.blockedWait ?? "?"}`
+            + ` credits=${cr.credits ?? "?"} msCredited=${Math.round(cr.msCredited ?? 0)}`
+            + ` realSwitch=${sl.roundTrips?.realSwitch ?? "?"} ticks=${sl.roundTrips?.ticks ?? "?"}`);
     }
     prev = s; prevJit = j; prevInterp = ip;
 }
