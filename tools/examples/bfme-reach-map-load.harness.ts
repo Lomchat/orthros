@@ -219,8 +219,17 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
     await Bun.sleep(6_000);
     console.log(`attempt ${attempt} baseline ${JSON.stringify(await probe(bench))}`);
 
-    await tryStep(bench, "solo", [[90, 575], [215, 575], [160, 575]], 7_000);
-    await tryStep(bench, "skirmish", [[320, 575], [215, 387], [215, 420]], 12_000);
+    // Explicit coordinates when the title's layout is known: the greedy "first
+    // candidate that moves the screen wins" rule picks the wrong button on BFME II,
+    // whose menu differs from BFME 1's.
+    const coord = (name: string, fallback: Array<[number, number]>): Array<[number, number]> => {
+        const i = process.argv.indexOf(`--${name}`);
+        if (i < 0 || !process.argv[i + 1]) return fallback;
+        const [x, y] = process.argv[i + 1]!.split(",").map(Number);
+        return [[x!, y!]];
+    };
+    await tryStep(bench, "solo", coord("solo", [[90, 575], [215, 575], [160, 575]]), 7_000);
+    await tryStep(bench, "skirmish", coord("skirmish", [[320, 575], [215, 387], [215, 420]]), 12_000);
     await dismissProfileModal(bench);
     // Arm before the click, not after the loading heuristic confirms: that
     // heuristic fires up to a sampling period late, and a retried attempt adds a
@@ -230,7 +239,7 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
         console.log("work-window " + JSON.stringify(
             await bench.dbg("workWindow", workTarget).catch((e) => String(e))));
     }
-    await tryStep(bench, "play", [[340, 575], [705, 574], [640, 556]], 15_000);
+    await tryStep(bench, "play", coord("play", [[340, 575], [705, 574], [640, 556]]), 15_000);
 
     const a = await sample(bench);
     await Bun.sleep(20_000);
