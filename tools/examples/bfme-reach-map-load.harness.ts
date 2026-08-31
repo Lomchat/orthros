@@ -222,6 +222,15 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         profiledStall = true;
         const prof = await bench.profileWorker(8_000, 12).catch((e) => ({ error: String(e) } as any));
         console.log("   STALL cpu-profile " + JSON.stringify(prof));
+        // The profile says the dispatch loop dominates; this says why it is
+        // re-entered, which is the difference between a fixable exit cause and
+        // an irreducible one.
+        await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
+        await Bun.sleep(6_000);
+        const ds = await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch((e) => ({ error: String(e) }));
+        console.log("   STALL dispatch " + JSON.stringify(ds));
+        const rt = await bench.evalPage(`__BS__.harness.dbgCall("roundTrips")`, 20_000).catch(() => null);
+        console.log("   STALL roundTrips " + JSON.stringify(rt));
     }
     // A window with no presentations is the one worth naming: it is where the
     // load actually spends its time, and it is invisible to a JS-timer sampler.
