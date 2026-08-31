@@ -170,6 +170,11 @@ if (process.argv.includes("--attribute-chain-misses")) {
         await bench.dbg("jitBudgetFastExit", false).catch((e) => String(e))));
 }
 
+if (process.argv.includes("--rearm-on-switch")) {
+    console.log("rearm-on-switch " + JSON.stringify(
+        await bench.dbg("rearmOnSwitch", true).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--honor-urgent-exit")) {
     console.log("honor-urgent-exit " + JSON.stringify(
         await bench.dbg("jitHonorUrgentExit", true).catch((e) => String(e))));
@@ -281,6 +286,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     if (sl) {
         const sp = sl.sleepPaths ?? {};
         const cr = sl.soleRunnableSleepStats ?? {};
+        console.log(`   exits: ${JSON.stringify(sl.immediateExitReasons ?? {})}`);
         console.log(`   sleep: soleYield=${sp.soleRunnableYield ?? "?"} blockedWait=${sp.blockedWait ?? "?"}`
             + ` credits=${cr.credits ?? "?"} msCredited=${Math.round(cr.msCredited ?? 0)}`
             + ` realSwitch=${sl.roundTrips?.realSwitch ?? "?"} ticks=${sl.roundTrips?.ticks ?? "?"}`);

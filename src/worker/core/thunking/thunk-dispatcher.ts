@@ -2101,7 +2101,7 @@ export class ThunkDispatcher {
             // worker CPU) instead of yielding to the scheduler. Safe because the current thread
             // is WAITING here (cycle_limit=0 is valid only while WAITING/async-parked; the
             // per-tick prepareForExecution restores the budget for the next thread).
-            preemptionManager.requestImmediateExit();
+            preemptionManager.requestImmediateExit("blockedNoSwitch");
             return;
         }
 
@@ -2369,7 +2369,7 @@ export class ThunkDispatcher {
             (scheduler as any).traceAsyncRestore?.("parkThreadAsync", cpu,
                 `thunk=${name},fn=0x${(id >>> 0).toString(16)},T${tid}/g${thunkInfo.asyncParkGeneration},` +
                 `esp=0x${(esp >>> 0).toString(16)},ret=0x${((returnAddr ?? 0) >>> 0).toString(16)}`);
-            preemptionManager.requestImmediateExit();
+            preemptionManager.requestImmediateExit("asyncPark");
         } else {
             (scheduler as any).traceAsyncRestore?.("parkThreadAsync", cpu,
                 `legacy-spin fallback thunk=${name},fn=0x${(id >>> 0).toString(16)},T${tid},` +

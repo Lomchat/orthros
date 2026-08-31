@@ -233,7 +233,7 @@ export class Scheduler {
      *  against ~500 boundary round-trips/s. */
     onWinmmTimerCallbackReturned(): void {
         this.timerDispatchStats.cbReturnImmediateExit++;
-        preemptionManager.requestImmediateExit();
+        preemptionManager.requestImmediateExit("winmmTimerReturn");
     }
     /** Idle-pump activity — how many wall-paced idle pumps ran and
      *  how many WINMM timers they fired (the storm fires WINMM timers from the idle
@@ -1502,6 +1502,10 @@ export class Scheduler {
             }
         }
         this.roundTripStats.realSwitch++;
+        // The outgoing thread's park zeroed the budget, but the slice continues
+        // here on a thread that is RUNNING; leaving the zero in place disables
+        // every budget-guarded chaining edge for the rest of the slice.
+        preemptionManager.rearmCycleBudgetForResumedThread();
 
         // Full context restore
         if (!next.context) {
@@ -1863,7 +1867,7 @@ export class Scheduler {
                 // instructions before the next periodic tick. Force the WASM
                 // cycle to end now so Sleep(0) actually yields instead of
                 // running another large burst of the polling loop.
-                preemptionManager.requestImmediateExit();
+                preemptionManager.requestImmediateExit("sleep0SoleRunnable");
                 return 0;
             }
             const context = createPostReturnContext(returnAddr, postReturnEsp, callerCtx, 0);
@@ -1890,7 +1894,7 @@ export class Scheduler {
                 // run until that yield is serviced. Without the immediate exit,
                 // a sole polling thread can execute the Sleep(1) loop hundreds
                 // of thousands of times inside one v86 slice.
-                preemptionManager.requestImmediateExit();
+                preemptionManager.requestImmediateExit("sleepNSoleRunnable");
                 return 0;
             }
             if (ms !== INFINITE) {

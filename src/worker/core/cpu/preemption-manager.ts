@@ -606,8 +606,14 @@ export class PreemptionManager {
      * spin loop. prepareForExecution() restores the normal limit on the
      * next tick.
      */
-    requestImmediateExit(): void {
+    /** Per-caller tally. The signal does not end a slice for a thread that stays
+     *  RUNNING — it only disables chaining for the remainder — so which caller
+     *  raises it decides whether that cost buys anything. */
+    public immediateExitReasons: Record<string, number> = {};
+
+    requestImmediateExit(reason = "unspecified"): void {
         if (!this.initialized) return;
+        this.immediateExitReasons[reason] = (this.immediateExitReasons[reason] ?? 0) + 1;
         this.setCycleLimit(0);
         // do_many_cycles_native snapshots the shared budget once per slice so
         // generated edges avoid a shared-page load. A thunk can request an
@@ -641,6 +647,30 @@ export class PreemptionManager {
     rearmCycleBudget(): void {
         if (!this.initialized) return;
         this.setCycleLimit(PreemptionManager.SINGLE_THREAD_LIMIT);
+    }
+
+    // A park zeroes the budget for the thread that blocked, but the slice does not
+    // end — the scheduler switches and execution continues on a thread that is
+    // RUNNING, which must never carry a zero budget (the watchdog self-heal exists
+    // for exactly that state). Until the next tick it did, and every budget-guarded
+    // chaining edge was off: measured on a map load, 323,791 refusals per window
+    // from a zeroed budget against 458 from a slice that genuinely ran its course.
+    // Kill-switch: dbg.rearmOnSwitch(false).
+    private rearmOnSwitchEnabled = true;
+
+    setRearmOnSwitch(on: boolean): void { this.rearmOnSwitchEnabled = on; }
+    getRearmOnSwitch(): boolean { return this.rearmOnSwitchEnabled; }
+
+    /** Give a thread resuming execution its full budget back, including the copy
+     *  the generated edges read. Unlike ending the slice, this changes no control
+     *  flow — it only stops chaining from being disabled for a thread that is
+     *  entitled to run. */
+    rearmCycleBudgetForResumedThread(): void {
+        if (!this.initialized || !this.rearmOnSwitchEnabled) return;
+        this.setCycleLimit(PreemptionManager.SINGLE_THREAD_LIMIT);
+        if (this.immediateExitCacheSyncEnabled) {
+            this.wasmExports?.jit_set_cycle_limit_cached?.(PreemptionManager.SINGLE_THREAD_LIMIT);
+        }
     }
 
     /**

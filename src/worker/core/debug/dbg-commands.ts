@@ -775,6 +775,15 @@ export const dbg = {
         console.log(`[dbg] JIT_HONOR_URGENT_EXIT=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Re-arm the cycle budget when the scheduler resumes a RUNNING thread. A
+     *  park zeroes it for the thread that blocked, but the slice continues on
+     *  another thread that is entitled to its full budget. */
+    rearmOnSwitch(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        pm?.setRearmOnSwitch?.(!!on);
+        console.log(`[dbg] rearmOnSwitch=${on ? 1 : 0}`);
+        return !!pm?.getRearmOnSwitch?.();
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
@@ -1552,6 +1561,7 @@ export const dbg = {
             // host because the guest asked to sleep — invisible in a CPU profile,
             // which only sees the thread when it is running.
             soleRunnableSleepStats: { ...(sched.soleRunnableSleepStats ?? {}) },
+            immediateExitReasons: { ...((globalThis as any).preemption?.immediateExitReasons ?? {}) },
             threadSummary: sched.getThreadSummary?.() ?? null,
         };
         if (reset) {
@@ -1565,6 +1575,8 @@ export const dbg = {
             if (p) { p.soleRunnableYield = 0; p.blockedWait = 0; }
             const c = sched.soleRunnableSleepStats;
             if (c) { c.credits = 0; c.msCredited = 0; }
+            const pm = (globalThis as any).preemption;
+            if (pm) pm.immediateExitReasons = {};
         }
         console.log(`[dbg][schedulerPerf] ${JSON.stringify(out)}`);
         return out;
