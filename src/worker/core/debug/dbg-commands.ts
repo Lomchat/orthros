@@ -748,12 +748,25 @@ export const dbg = {
         console.log(`[dbg][hotPages][JSON] ${JSON.stringify(result)}`);
         return result;
     },
+    /** Turn the generated budget fast-exit (config 41) off, so every failed
+     *  dynamic chain reaches the Rust resolver and is attributed there. The
+     *  generated path counts all its refusals as one undifferentiated
+     *  RET_CHAIN_MISS, which cannot say whether the budget was zeroed, spent, or
+     *  the CPU halted. Diagnostic only — it costs a call per miss. */
+    jitBudgetFastExit(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setDynamicChainBudgetFastExit) pm.setDynamicChainBudgetFastExit(!!on);
+        const w = wasm();
+        if (!pm?.setDynamicChainBudgetFastExit && w?.set_jit_config) w.set_jit_config(41, on ? 1 : 0);
+        w?.jit_clear_cache?.();
+        const applied = w?.get_jit_config?.(41);
+        console.log(`[dbg] JIT budget fast-exit=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
         const w = wasm(); if (!w?.jit_get_compile_started) return null;
-        if (reset) w.jit_reset_compile_stats?.();
-        if (reset) w.jit_reset_cache_flushes?.();
         const s = {
             maxPending: w.get_jit_config?.(25) ?? 1,
             // A full flush discards every compiled module: the working set falls
@@ -772,10 +785,20 @@ export const dbg = {
             totalMs: (w.jit_get_compile_total_us?.() ?? 0) / 1000,
             maxMs: (w.jit_get_compile_max_us?.() ?? 0) / 1000,
             crossPageInstructions: w.jit_contiguous_cross_page_instructions_compiled?.() ?? 0,
+            // A global epoch bump discards every return prediction at once. The
+            // split says whether the cause is module churn (narrowable to the
+            // freed slot) or a changed code mapping (not narrowable).
+            retCacheInvalSlot: w.jit_ret_cache_invalidations_by_slot?.() >>> 0,
+            retCacheInvalTlb: w.jit_ret_cache_invalidations_by_tlb?.() >>> 0,
             partialEvictions: w.jit_get_partial_evictions?.() >>> 0,
             evictedModules: w.jit_get_evicted_modules?.() >>> 0,
             evictionFallbacks: w.jit_get_eviction_fallbacks?.() >>> 0,
         };
+        if (reset) {
+            w.jit_reset_compile_stats?.();
+            w.jit_reset_cache_flushes?.();
+            w.jit_ret_cache_invalidations_reset?.();
+        }
         console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
         return s;
     },
@@ -1387,6 +1410,7 @@ export const dbg = {
         if (w["jit_dynamic_chain_resolver_diag_reset"]) {
             w["jit_dynamic_chain_resolver_diag_reset"]();
         }
+        if (w["jit_dynamic_chain_budget_reset"]) w["jit_dynamic_chain_budget_reset"]();
         if (w.jit_clear_cache_js) w.jit_clear_cache_js();
         console.log(`[dbg] dispatchStatsEnable=${on ? 1 : 0} (counters reset + JIT cache cleared). Drive the workload, then dbg.dispatchStats().`);
     },
@@ -1402,6 +1426,7 @@ export const dbg = {
         dynamicResolver: {
             budgetMisses: number; noMetaMisses: number; stateMisses: number;
             noEntryMisses: number; memoHits: number; metaHits: number;
+            budgetZero: number; budgetSpent: number; budgetHlt: number;
         };
     } | null {
         const w = wasm(); if (!w) return null;
@@ -1429,6 +1454,12 @@ export const dbg = {
             noEntryMisses: Number(w["jit_dynamic_chain_resolver_diag_no_entry_misses"]?.() ?? 0),
             memoHits: Number(w["jit_dynamic_chain_resolver_diag_memo_hits"]?.() ?? 0),
             metaHits: Number(w["jit_dynamic_chain_resolver_diag_meta_hits"]?.() ?? 0),
+            // Split of the budget refusal, whose three conditions call for
+            // opposite fixes: an urgent exit requested by the host, a slice that
+            // genuinely ran its course, or a halted CPU.
+            budgetZero: Number(w["jit_dynamic_chain_budget_zero"]?.() ?? 0),
+            budgetSpent: Number(w["jit_dynamic_chain_budget_spent"]?.() ?? 0),
+            budgetHlt: Number(w["jit_dynamic_chain_budget_hlt"]?.() ?? 0),
         };
         const intraEdge = Math.max(0, blockExec - reentry - chainedEdge);
         const baselineReentry = reentry + chainedEdge;

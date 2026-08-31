@@ -59,8 +59,9 @@ async function sleepStats(b: BenchSession): Promise<any> {
     return b.evalPage(`__BS__.harness.dbgCall("schedulerPerf", true)`, 30_000).catch(() => null);
 }
 
+/** Read-and-reset so each value covers exactly one window. */
 async function jitStats(b: BenchSession): Promise<Record<string, number> | null> {
-    return b.evalPage(`__BS__.harness.dbgCall("jitCompileStats")`, 30_000).catch(() => null);
+    return b.evalPage(`__BS__.harness.dbgCall("jitCompileStats", true)`, 30_000).catch(() => null);
 }
 
 /** Splits interpreted work by what would fix it: a page with nothing compiled
@@ -160,6 +161,15 @@ const bench = await openBenchSession({
 
 // Set before the boot compiles anything, so the whole run is one policy rather
 // than a mixture either side of a mid-flight toggle.
+// Route every failed dynamic chain through the Rust resolver so the refusal is
+// attributed by cause instead of collapsing into one counter.
+// The PreemptionManager remembers this across the v86 that does not exist yet;
+// the dispatch counters cannot be armed until it does, so that waits for the load.
+if (process.argv.includes("--attribute-chain-misses")) {
+    console.log("budget-fast-exit off " + JSON.stringify(
+        await bench.dbg("jitBudgetFastExit", false).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--partial-eviction")) {
     console.log("partial-eviction " + JSON.stringify(
         await bench.dbg("jitPartialEviction", true).catch((e) => String(e))));
@@ -202,6 +212,10 @@ if (!loading) {
 }
 
 console.log("LOADING confirmed — sampling");
+if (process.argv.includes("--attribute-chain-misses")) {
+    console.log("fastExit=" + JSON.stringify(await bench.dbg("jitBudgetFastExit", false).catch(() => null)));
+    await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
+}
 let prev = await sample(bench);
 let prevJit = await jitStats(bench);
 let prevInterp = await interpShare(bench);
@@ -215,12 +229,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     const j = await jitStats(bench);
     const ip = await interpShare(bench);
     const dp = s.present - prev.present;
-    const d = (k: string) => (j && prevJit ? (j[k] ?? 0) - (prevJit[k] ?? 0) : 0);
+    // jitStats now resets, so its values already cover this window.
+    const d = (k: string) => (j ? (j[k] ?? 0) : 0);
     const di = (k: string) => (ip && prevInterp ? (ip[k] ?? 0) - (prevInterp[k] ?? 0) : 0);
     const retired = di("retired");
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
-        + ` compiled=+${d("completed")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
+        + ` compiled=${d("completed")} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
     // Entry histograms rank by dispatch entries, not time. Confirm the first
@@ -252,6 +267,10 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         console.log(`   ${label} hot: ` + hot.top.slice(0, 4)
             .map((r: any) => `${r.module || r.page}=${r.pct}%`).join("  ")
             + ` (collisions ${hot.collisions})`);
+    }
+    if (process.argv.includes("--attribute-chain-misses")) {
+        const ds = await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null);
+        if (ds) console.log("   chain " + JSON.stringify(ds));
     }
     const sl = await sleepStats(bench);
     if (sl) {
