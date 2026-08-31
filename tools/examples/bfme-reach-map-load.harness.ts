@@ -231,6 +231,12 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         console.log("   STALL dispatch " + JSON.stringify(ds));
         const rt = await bench.evalPage(`__BS__.harness.dbgCall("roundTrips")`, 20_000).catch(() => null);
         console.log("   STALL roundTrips " + JSON.stringify(rt));
+        // Names the guest threads and the Win32 primitive they alternate on:
+        // ~95k context switches a second is what keeps the JIT cycle budget spent.
+        const sp = await bench.evalPage(`__BS__.harness.dbgCall("schedulerPerf")`, 20_000).catch(() => null);
+        console.log("   STALL schedulerPerf " + JSON.stringify(sp));
+        const ring = await bench.evalPage(`__BS__.harness.dbgCall("ring", 256, 32)`, 20_000).catch(() => null);
+        console.log("   STALL ring " + JSON.stringify(ring));
     }
     // A window with no presentations is the one worth naming: it is where the
     // load actually spends its time, and it is invisible to a JS-timer sampler.

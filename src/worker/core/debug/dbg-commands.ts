@@ -2029,18 +2029,19 @@ export const dbg = {
     },
     /** Dump the last N WinAPI calls from the dispatcher ring buffer — reveals
      *  what the guest is spinning on while a screen won't advance. */
-    lastCalls(n = 30): void {
+    lastCalls(n = 30): unknown {
         try {
             const d = System.getInstance().process?.dispatcher as any;
             const calls = d?.getLastWinApiCalls?.(n) ?? [];
             console.log(`[dbg] lastCalls(${n}): ${JSON.stringify(calls)}`);
-        } catch (e) { console.warn('[dbg] lastCalls err', e); }
+            return calls;
+        } catch (e) { console.warn('[dbg] lastCalls err', e); return null; }
     },
     /** Dump the FULL dispatcher ring (rich, INCLUDING noisy ddraw/d3d/blt calls
      *  that lastCalls() hides) as JSON. Logs a name-frequency histogram + the raw
      *  last `seq` call names in order, so the real per-frame cycle (Flip/Lock/etc.)
      *  is visible past the rand flood. n caps at the 256-entry ring. */
-    ring(n = 256, seq = 48): void {
+    ring(n = 256, seq = 48): unknown {
         try {
             const d = System.getInstance().process?.dispatcher as any;
             const rich = d?.getLastWinApiCallsRich?.(n) ?? [];
@@ -2048,8 +2049,10 @@ export const dbg = {
             for (const e of rich) hist[e.name] = (hist[e.name] ?? 0) + 1;
             const sorted = Object.entries(hist).sort((a, b) => b[1] - a[1]);
             const tail = rich.slice(Math.max(0, rich.length - seq)).map((e: any) => e.name);
-            console.log(`[dbg][ring][JSON] ${JSON.stringify({ total: rich.length, hist: sorted, tail })}`);
-        } catch (e) { console.warn('[dbg] ring err', e); }
+            const out = { total: rich.length, hist: sorted, tail };
+            console.log(`[dbg][ring][JSON] ${JSON.stringify(out)}`);
+            return out;
+        } catch (e) { console.warn('[dbg] ring err', e); return null; }
     },
     /** Dump in-flight async thunks (Promises parked at the spin loop, per thread)
      *  + the pending-restore FIFO (resolved but not yet applied). A thread stuck
