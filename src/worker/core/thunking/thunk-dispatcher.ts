@@ -1620,6 +1620,9 @@ export class ThunkDispatcher {
         this.recordWinApiCall(thunkName, functionId, espAtEntry, ringArg0);
         this.checkEspSanity(espAtEntry, thunkName);
         this.checkEbpSanity(cpu.reg32[5] >>> 0, thunkName);
+        // Not inside shouldProfileThunk: that call is short-circuited away whenever
+        // the profiler is off, which is exactly when the census is wanted.
+        this.noteThunkCensus(thunkName);
         const profileThunk = profilerEnabled && this.shouldProfileThunk(thunkName);
         if (profileThunk) profiler.startAsync(thunkName);
 
@@ -1758,6 +1761,27 @@ export class ThunkDispatcher {
         }
     }
 
+
+    /** Cumulative slow-path thunk tally, independent of frames. The frame-driven
+     *  stall collector sees nothing during a load — almost no frames are presented
+     *  — so a load's Win32 mix is otherwise unmeasurable. Off by default: one Map
+     *  write per slow-path dispatch. */
+    thunkCensusEnabled = false;
+    private thunkCensus = new Map<string, number>();
+
+    resetThunkCensus(): void { this.thunkCensus.clear(); }
+
+    getThunkCensus(top = 20): { total: number; top: Array<[string, number]> } {
+        let total = 0;
+        for (const n of this.thunkCensus.values()) total += n;
+        const rows = [...this.thunkCensus.entries()].sort((a, b) => b[1] - a[1]).slice(0, top);
+        return { total, top: rows };
+    }
+
+    private noteThunkCensus(thunkName: string): void {
+        if (!this.thunkCensusEnabled) return;
+        this.thunkCensus.set(thunkName, (this.thunkCensus.get(thunkName) ?? 0) + 1);
+    }
 
     private shouldProfileThunk(thunkName: string): boolean {
         const key = thunkName.toLowerCase();

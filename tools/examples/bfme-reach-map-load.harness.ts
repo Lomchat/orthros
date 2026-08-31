@@ -170,6 +170,15 @@ if (process.argv.includes("--attribute-chain-misses")) {
         await bench.dbg("jitBudgetFastExit", false).catch((e) => String(e))));
 }
 
+// The Tier-1 threshold was last judged with return chaining effectively off,
+// so the balance between compiling a page and interpreting it may have moved.
+const thresholdArg = process.argv.indexOf("--threshold");
+if (thresholdArg >= 0 && process.argv[thresholdArg + 1]) {
+    const t = Number(process.argv[thresholdArg + 1]);
+    console.log(`threshold ${t} -> ` + JSON.stringify(
+        await bench.dbg("jitBaseThreshold", t).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--no-rearm")) {
     console.log("rearm disabled " + JSON.stringify(
         await bench.dbg("rearmOnSwitch", false).catch((e) => String(e))));
@@ -227,6 +236,8 @@ if (!loading) {
 }
 
 console.log("LOADING confirmed — sampling");
+await bench.dbg("stallReset").catch(() => null);
+await bench.dbg("thunkCensus", true).catch(() => null);
 if (process.argv.includes("--attribute-chain-misses")) {
     console.log("fastExit=" + JSON.stringify(await bench.dbg("jitBudgetFastExit", false).catch(() => null)));
     await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
@@ -305,6 +316,8 @@ console.log("RESULT " + JSON.stringify({
     // Must be asked of the Worker: `preemption` does not exist in the page.
     rearmOnSwitch: await bench.dbg("rearmOnSwitchStatus").catch(() => null),
     chain: await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null),
+    stalls: await bench.dbg("stallReport").catch(() => null),
+    thunks: await bench.dbg("thunkCensus", false, 14).catch(() => null),
     jitAtLoadStart: jit0,
     jitAtLoadEnd: await jitStats(bench),
     interpretedAtLoadEnd: await interpShare(bench),

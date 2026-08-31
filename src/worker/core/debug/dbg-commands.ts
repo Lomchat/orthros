@@ -788,6 +788,26 @@ export const dbg = {
         console.log(`[dbg] rearmOnSwitch=${on ? 1 : 0}`);
         return !!pm?.getRearmOnSwitch?.();
     },
+    /** Slow-frame classifier: every stall bucketed by cause, with the thunks that
+     *  dominated the worst ones. Reachable from the harness, which cannot call the
+     *  bare globalThis helpers. */
+    stallReset(): void { (globalThis as any).stallReset?.(); },
+    stallReport(): unknown {
+        const r = (globalThis as any).stallReport?.();
+        return r ?? null;
+    },
+    /** Cumulative slow-path Win32/CRT call mix, independent of frames — the only
+     *  way to see a load's thunk profile, since the frame-driven collector records
+     *  nothing when almost nothing is presented. */
+    thunkCensus(arm: boolean | null = null, top = 20): unknown {
+        const d = System.getInstance().process?.dispatcher as any;
+        if (!d) return null;
+        if (arm === true) { d.thunkCensusEnabled = true; d.resetThunkCensus?.(); return { armed: true }; }
+        if (arm === false) d.thunkCensusEnabled = false;
+        const r = d.getThunkCensus?.(top) ?? null;
+        console.log(`[dbg][thunkCensus][JSON] ${JSON.stringify(r)}`);
+        return r;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {

@@ -44,7 +44,11 @@ function rTypeName(rType: number): string {
 
 const NORMAL_LOG_CAP = 48;
 let totalCalls = 0;
-const seenOkKeys = new Set<string>();
+// Both outcomes, not just successes: a refusal repeats exactly as often as a
+// success, and a title that probes many unsupported formats — anything running
+// with compressedTexturePolicy "prefer-uncompressed" — is precisely the case the
+// cap exists for. Keyed on the probe, so every distinct one is still logged once.
+const seenKeys = new Set<string>();
 
 /** Opt-in unlimited logging from dbg: `d3d8LogCheckFormat(true)` */
 let verboseEnabled = false;
@@ -58,7 +62,7 @@ export function setDxCheckFormatVerboseLogging(enabled: boolean): void {
 
 export function resetDxCheckFormatLogForTests(): void {
     totalCalls = 0;
-    seenOkKeys.clear();
+    seenKeys.clear();
     verboseEnabled = false;
 }
 
@@ -73,14 +77,10 @@ export function logDxCheckDeviceFormat(
     totalCalls++;
     const ok = hr === D3D_OK;
     const key = `${adapterFormat >>> 0}:${usage >>> 0}:${rType}:${checkFormat >>> 0}`;
-    const shouldLog =
-        verboseEnabled ||
-        !ok ||
-        totalCalls <= NORMAL_LOG_CAP ||
-        !seenOkKeys.has(key);
+    const shouldLog = verboseEnabled || totalCalls <= NORMAL_LOG_CAP || !seenKeys.has(key);
 
     if (!shouldLog) return;
-    if (ok) seenOkKeys.add(key);
+    seenKeys.add(key);
 
     const result = ok ? "OK" : "NOTAVAILABLE";
     Logger.log(

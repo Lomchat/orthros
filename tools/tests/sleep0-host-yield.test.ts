@@ -27,7 +27,9 @@ describe('Sleep(0) host-yield storm guard', () => {
         );
 
         expect(shortSleep).toContain('this.requestYieldToHost(ms, "sleepN");');
-        expect(shortSleep).toContain('preemptionManager.requestImmediateExit();');
+        // Match the call, not its argument list: the reason tag is diagnostic and
+        // must not make this invariant guard fail when it changes.
+        expect(shortSleep).toContain('preemptionManager.requestImmediateExit(');
         expect(source).toContain('yieldSource !== "sleepN" && this.yieldPort');
     });
 });
