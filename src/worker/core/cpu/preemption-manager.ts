@@ -610,10 +610,13 @@ export class PreemptionManager {
      *  RUNNING — it only disables chaining for the remainder — so which caller
      *  raises it decides whether that cost buys anything. */
     public immediateExitReasons: Record<string, number> = {};
+    public exitReasonCensusEnabled = false;
 
     requestImmediateExit(reason = "unspecified"): void {
         if (!this.initialized) return;
-        this.immediateExitReasons[reason] = (this.immediateExitReasons[reason] ?? 0) + 1;
+        if (this.exitReasonCensusEnabled) {
+            this.immediateExitReasons[reason] = (this.immediateExitReasons[reason] ?? 0) + 1;
+        }
         this.setCycleLimit(0);
         // do_many_cycles_native snapshots the shared budget once per slice so
         // generated edges avoid a shared-page load. A thunk can request an
@@ -655,8 +658,13 @@ export class PreemptionManager {
     // for exactly that state). Until the next tick it did, and every budget-guarded
     // chaining edge was off: measured on a map load, 323,791 refusals per window
     // from a zeroed budget against 458 from a slice that genuinely ran its course.
-    // Kill-switch: dbg.rearmOnSwitch(false).
-    private rearmOnSwitchEnabled = true;
+    // OFF: a park is what returns control to the host, and the host event loop is
+    // what settles async D3DX image decodes. Re-arming let the next thread run a
+    // full ~500k-instruction slice first, delaying every async completion by up to
+    // ~10ms — reported on real hardware as stalls plus magenta placeholder
+    // textures, which is what the backend draws when a texture is not ready yet.
+    // Opt-in via dbg.rearmOnSwitch(true).
+    private rearmOnSwitchEnabled = false;
 
     setRearmOnSwitch(on: boolean): void { this.rearmOnSwitchEnabled = on; }
     getRearmOnSwitch(): boolean { return this.rearmOnSwitchEnabled; }

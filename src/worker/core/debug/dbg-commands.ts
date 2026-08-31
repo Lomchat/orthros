@@ -1585,7 +1585,11 @@ export const dbg = {
             // host because the guest asked to sleep — invisible in a CPU profile,
             // which only sees the thread when it is running.
             soleRunnableSleepStats: { ...(sched.soleRunnableSleepStats ?? {}) },
-            immediateExitReasons: { ...((globalThis as any).preemption?.immediateExitReasons ?? {}) },
+            immediateExitReasons: (() => {
+                const pm = (globalThis as any).preemption;
+                if (pm && !pm.exitReasonCensusEnabled) pm.exitReasonCensusEnabled = true;
+                return { ...(pm?.immediateExitReasons ?? {}) };
+            })(),
             threadSummary: sched.getThreadSummary?.() ?? null,
         };
         if (reset) {
