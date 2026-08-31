@@ -17,7 +17,7 @@
  * still does not re-download several gigabytes.
  */
 
-import { CHROME_PATH, connect, pageEval, type CdpSession } from "./cdp-core";
+import { CHROME_PATH, CdpSession, connect, pageEval } from "./cdp-core";
 
 export interface BenchSessionOptions {
     /** Chrome user-data-dir. Kept across runs so the OPFS WGB cache survives. */
@@ -43,8 +43,70 @@ export interface BenchSession {
     evalPage<T = unknown>(expr: string, timeoutMs?: number): Promise<T>;
     /** Re-assert that this is still the only game page. Call before recording. */
     assertIsolated(): Promise<void>;
+    /** Sample the emulator Worker's CPU for `ms` and return self time by
+     *  function. The Worker is where guest execution lives, so a page-side
+     *  profile shows almost nothing. */
+    profileWorker(ms: number, top?: number): Promise<WorkerProfile>;
     /** Close the CDP session AND kill the browser this session launched. */
     close(): void;
+}
+
+export interface WorkerProfile {
+    totalSamples: number;
+    durationMs: number;
+    /** Self time share, descending. */
+    top: Array<{ fn: string; url: string; pct: number; samples: number }>;
+}
+
+/**
+ * Attach to the emulator Worker target and take a CPU profile.
+ *
+ * A stall inside one long synchronous guest slice is exactly what a JS-timer
+ * sampler cannot see, and dispatch-entry histograms count entries rather than
+ * time — code full of short branchy blocks scores high without necessarily
+ * costing the most. V8's sampling profiler settles that: it attributes real
+ * time, including time inside the wasm helpers x87 emulation runs through.
+ */
+async function profileWorkerTarget(
+    session: CdpSession, sessionId: string | null, ms: number, top: number,
+): Promise<WorkerProfile> {
+    if (!sessionId) throw new Error("no emulator Worker session (auto-attach saw none)");
+
+    await session.send("Profiler.enable", {}, sessionId);
+    await session.send("Profiler.setSamplingInterval", { interval: 200 }, sessionId);
+    await session.send("Profiler.start", {}, sessionId);
+    const started = performance.now();
+    await Bun.sleep(ms);
+    const stopped: any = await session.send("Profiler.stop", {}, sessionId);
+    const durationMs = performance.now() - started;
+    await session.send("Profiler.disable", {}, sessionId).catch(() => {});
+
+    // send() resolves the whole CDP message, so the payload is under `result`.
+    // Reading it one level too high yields an empty profile rather than an error.
+    const profile = stopped?.result?.profile;
+    if (!profile?.samples?.length) {
+        throw new Error(`Worker profile came back empty (keys: ${Object.keys(stopped ?? {}).join(",")})`);
+    }
+    const nodes: any[] = profile?.nodes ?? [];
+    const byId = new Map<number, any>(nodes.map((n) => [n.id, n]));
+    const self = new Map<number, number>();
+    for (const id of profile?.samples ?? []) self.set(id, (self.get(id) ?? 0) + 1);
+    const totalSamples = (profile?.samples ?? []).length;
+
+    const agg = new Map<string, { fn: string; url: string; samples: number }>();
+    for (const [id, count] of self) {
+        const f = byId.get(id)?.callFrame;
+        if (!f) continue;
+        const key = `${f.functionName || "(anonymous)"}|${f.url || ""}`;
+        const e = agg.get(key) ?? { fn: f.functionName || "(anonymous)", url: f.url || "", samples: 0 };
+        e.samples += count;
+        agg.set(key, e);
+    }
+    const rows = [...agg.values()].sort((a, b) => b.samples - a.samples).slice(0, top)
+        .map((e) => ({ fn: e.fn, url: e.url.split("/").at(-1) ?? "",
+            pct: totalSamples > 0 ? Math.round((e.samples / totalSamples) * 1000) / 10 : 0,
+            samples: e.samples }));
+    return { totalSamples, durationMs: Math.round(durationMs), top: rows };
 }
 
 async function fetchJson(port: number, path: string): Promise<any> {
@@ -239,6 +301,20 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
     const matchToken = opts.matchToken ?? new URL(url).search.slice(1).split("&")[0] ?? url;
     const { session } = await connect({ port, urlMatch: matchToken });
 
+    // A dedicated Worker is not a discoverable target and is absent from both
+    // /json/list and Target.getTargets; auto-attach is the only way its session
+    // is ever announced. Arm it before the page boots so the emulator Worker is
+    // caught as it is created.
+    let workerSessionId: string | null = null;
+    session.on("Target.attachedToTarget", (p: any) => {
+        if (p?.targetInfo?.type === "worker"
+            && String(p.targetInfo.url ?? "").includes("emulator.worker")) {
+            workerSessionId = p.sessionId;
+        }
+    });
+    await session.send("Target.setAutoAttach",
+        { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+
     const deadline = Date.now() + readyTimeoutSec * 1_000;
     let ready = false;
     while (Date.now() < deadline) {
@@ -278,6 +354,7 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
                 throw new Error(`benchmark not isolated: ${emulators.length} emulator Workers alive`);
             }
         },
+        profileWorker: (ms: number, top = 25) => profileWorkerTarget(session, workerSessionId, ms, top),
         close: () => {
             try { session.close(); } catch { /* transport already gone */ }
             killProfileProcessesSync(profile);

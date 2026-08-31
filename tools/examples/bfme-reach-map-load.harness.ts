@@ -65,6 +65,8 @@ async function interpShare(b: BenchSession): Promise<Record<string, number> | nu
 }
 
 const hotPages = process.argv.includes("--hot-pages");
+const cpuProfile = process.argv.includes("--cpu-profile");
+let profiledStall = false;
 
 /** Arm the in-dispatch page histogram for the next window. */
 async function armHot(b: BenchSession): Promise<void> {
@@ -214,6 +216,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` compiled=+${d("completed")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
+    // Entry histograms rank by dispatch entries, not time. Confirm the first
+    // stall against a real CPU profile before acting on it.
+    if (dp === 0 && cpuProfile && !profiledStall) {
+        profiledStall = true;
+        const prof = await bench.profileWorker(8_000, 12).catch((e) => ({ error: String(e) } as any));
+        console.log("   STALL cpu-profile " + JSON.stringify(prof));
+    }
     // A window with no presentations is the one worth naming: it is where the
     // load actually spends its time, and it is invisible to a JS-timer sampler.
     if (hot?.top?.length) {
