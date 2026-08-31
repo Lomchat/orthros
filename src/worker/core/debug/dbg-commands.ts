@@ -716,6 +716,38 @@ export const dbg = {
         console.log(`[dbg] JIT_PARTIAL_EVICTION=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Which guest pages the dispatch loop actually enters, with no prior
+     *  knowledge of where to look. `hotJit` samples from a JS timer, so a guest
+     *  that stalls for seconds inside one synchronous slice is invisible to it,
+     *  and trace2 only instruments pages named in advance. This counts inside
+     *  the dispatch loop, which is what a stall keeps running.
+     *  Arm, let the phase of interest run, then read. */
+    hotPages(arm: boolean | null = null, top = 25): unknown {
+        const w = wasm();
+        if (!w?.hotpage_arm) { console.warn("[dbg] hotpage exports missing — rebuild v86"); return null; }
+        if (arm === true) { w.hotpage_reset(); w.hotpage_arm(1); console.log("[dbg] hotPages armed"); return { armed: true }; }
+        if (arm === false) { w.hotpage_arm(0); console.log("[dbg] hotPages disarmed"); }
+
+        const n = w.hotpage_snapshot() >>> 0;
+        const mreg = (globalThis as any).System?.getInstance?.()?.process?.moduleRegistry
+            ?? System.getInstance().process?.moduleRegistry;
+        const total = w.hotpage_total() >>> 0;
+        const rows: Array<Record<string, unknown>> = [];
+        for (let i = 0; i < Math.min(n, top); i++) {
+            const addr = w.hotpage_addr(i) >>> 0;
+            const count = w.hotpage_count_at(i) >>> 0;
+            let mod = "";
+            try {
+                const m = mreg?.getModuleContainingAddress?.(addr);
+                if (m) mod = `${m.name}+0x${(addr - m.baseAddress).toString(16)}`;
+            } catch { /* unmapped */ }
+            rows.push({ page: "0x" + addr.toString(16), entries: count,
+                pct: total > 0 ? Math.round((count / total) * 1000) / 10 : 0, module: mod });
+        }
+        const result = { total, pages: n, collisions: w.hotpage_collisions() >>> 0, top: rows };
+        console.log(`[dbg][hotPages][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {

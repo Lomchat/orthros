@@ -64,6 +64,18 @@ async function interpShare(b: BenchSession): Promise<Record<string, number> | nu
     return b.evalPage(`__BS__.harness.dbgCall("interpretedShare")`, 30_000).catch(() => null);
 }
 
+const hotPages = process.argv.includes("--hot-pages");
+
+/** Arm the in-dispatch page histogram for the next window. */
+async function armHot(b: BenchSession): Promise<void> {
+    if (hotPages) await b.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
+}
+
+async function readHot(b: BenchSession): Promise<any> {
+    if (!hotPages) return null;
+    return b.evalPage(`__BS__.harness.dbgCall("hotPages", false, 6)`, 30_000).catch(() => null);
+}
+
 /** Draws per presentation identifies the screen; presentation rate identifies load. */
 async function probe(b: BenchSession, ms = 4_000): Promise<{ fps: number; dpf: number }> {
     const a = await sample(b);
@@ -187,7 +199,9 @@ let prevInterp = await interpShare(bench);
 const jit0 = prevJit;
 const tL = performance.now();
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    await armHot(bench);
     await Bun.sleep(10_000);
+    const hot = await readHot(bench);
     const s = await sample(bench);
     const j = await jitStats(bench);
     const ip = await interpShare(bench);
@@ -200,6 +214,14 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` compiled=+${d("completed")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
+    // A window with no presentations is the one worth naming: it is where the
+    // load actually spends its time, and it is invisible to a JS-timer sampler.
+    if (hot?.top?.length) {
+        const label = dp === 0 ? "STALL" : "moving";
+        console.log(`   ${label} hot: ` + hot.top.slice(0, 4)
+            .map((r: any) => `${r.module || r.page}=${r.pct}%`).join("  ")
+            + ` (collisions ${hot.collisions})`);
+    }
     prev = s; prevJit = j; prevInterp = ip;
 }
 console.log("RESULT " + JSON.stringify({
