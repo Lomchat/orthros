@@ -35,6 +35,9 @@ const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme1-current");
 const game = arg("game", "bfme");
 const attempts = Number(arg("attempts", "3"));
 const holdSec = Number(arg("hold", "240"));
+/** Guest instructions to time. Work parity removes the "how far did the load
+ *  get" term, which otherwise dominates every comparison. */
+const workTarget = Number(arg("work", "0"));
 const bootTimeoutSec = Number(arg("boot-timeout", "400"));
 const tag = `load-${Date.now()}`;
 
@@ -219,6 +222,14 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
     await tryStep(bench, "solo", [[90, 575], [215, 575], [160, 575]], 7_000);
     await tryStep(bench, "skirmish", [[320, 575], [215, 387], [215, 420]], 12_000);
     await dismissProfileModal(bench);
+    // Arm before the click, not after the loading heuristic confirms: that
+    // heuristic fires up to a sampling period late, and a retried attempt adds a
+    // whole navigation cycle — two runs armed 23.6bn and 44.9bn instructions
+    // apart and so measured different parts of the load.
+    if (workTarget > 0) {
+        console.log("work-window " + JSON.stringify(
+            await bench.dbg("workWindow", workTarget).catch((e) => String(e))));
+    }
     await tryStep(bench, "play", [[340, 575], [705, 574], [640, 556]], 15_000);
 
     const a = await sample(bench);
@@ -297,6 +308,14 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     if (process.argv.includes("--attribute-chain-misses")) {
         const ds = await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null);
         if (ds) console.log("   chain " + JSON.stringify(ds));
+    }
+    if (workTarget > 0) {
+        const w: any = await bench.dbg("workWindowReport").catch(() => null);
+        if (w) {
+            console.log(`   work: done=${w.done} retired=${w.instructions ?? "?"}`
+                + ` ms=${w.elapsedMs !== undefined ? Math.round(w.elapsedMs) : "?"}`
+                + ` mips=${w.mips ?? "?"}`);
+        }
     }
     const sl = await sleepStats(bench);
     if (sl) {
