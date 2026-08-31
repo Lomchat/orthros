@@ -170,6 +170,11 @@ if (process.argv.includes("--attribute-chain-misses")) {
         await bench.dbg("jitBudgetFastExit", false).catch((e) => String(e))));
 }
 
+if (process.argv.includes("--no-rearm")) {
+    console.log("rearm disabled " + JSON.stringify(
+        await bench.dbg("rearmOnSwitch", false).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--rearm-on-switch")) {
     console.log("rearm-on-switch " + JSON.stringify(
         await bench.dbg("rearmOnSwitch", true).catch((e) => String(e))));
@@ -295,6 +300,11 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
+    // A default that silently corrupts guest state would still finish the load.
+    faults: await bench.evalPage(`__BS__.harness.faults(5)`).catch(() => null),
+    // Must be asked of the Worker: `preemption` does not exist in the page.
+    rearmOnSwitch: await bench.dbg("rearmOnSwitchStatus").catch(() => null),
+    chain: await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null),
     jitAtLoadStart: jit0,
     jitAtLoadEnd: await jitStats(bench),
     interpretedAtLoadEnd: await interpShare(bench),

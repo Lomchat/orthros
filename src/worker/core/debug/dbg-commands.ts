@@ -778,6 +778,10 @@ export const dbg = {
     /** Re-arm the cycle budget when the scheduler resumes a RUNNING thread. A
      *  park zeroes it for the thread that blocked, but the slice continues on
      *  another thread that is entitled to its full budget. */
+    /** Read the flag without changing it. */
+    rearmOnSwitchStatus(): boolean {
+        return !!(globalThis as any).preemption?.getRearmOnSwitch?.();
+    },
     rearmOnSwitch(on = true): boolean {
         const pm = (globalThis as any).preemption;
         pm?.setRearmOnSwitch?.(!!on);
