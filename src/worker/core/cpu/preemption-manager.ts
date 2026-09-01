@@ -189,6 +189,13 @@ export class PreemptionManager {
     // chains 635/2309/2815 -> 2965/14661/16768 over three windows, no faults.
     // Kill-switch: dbg.jitChainParkGuard(false).
     private jitChainParkGuard = true;
+    // config idx 46: prove flags dead across instructions that can fault. The
+    // walk stops at any memory operand because a #PF before the overwrite would
+    // leave the fault frame needing the architectural flags — and `mov` is 32%
+    // of a game binary, which is why only 11% of candidates are proven dead
+    // (8,358 of 76,649 on a real BFME 1 frame). Those flags are observable only
+    // if a guest SEH handler reads EFlags from its CONTEXT. Off until measured.
+    private jitFlagElisionAcrossFaults = false;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -469,6 +476,14 @@ export class PreemptionManager {
     }
     getJitChainParkGuard(): boolean { return this.jitChainParkGuard; }
 
+    setJitFlagElisionAcrossFaults(on: boolean): void {
+        this.jitFlagElisionAcrossFaults = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(46, on ? 1 : 0);
+        ex?.jit_clear_cache?.();
+    }
+    getJitFlagElisionAcrossFaults(): boolean { return this.jitFlagElisionAcrossFaults; }
+
     setJitBaseThreshold(threshold: number): void {
         this.jitBaseThreshold = Math.max(10_000, Math.min(2_000_000, threshold >>> 0));
         const ex = this.wasmExports;
@@ -574,6 +589,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
             this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
             this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
+            this.wasmExports.set_jit_config(46, this.jitFlagElisionAcrossFaults ? 1 : 0);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 

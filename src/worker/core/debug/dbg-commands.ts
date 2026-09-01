@@ -819,6 +819,17 @@ export const dbg = {
         console.log(`[dbg] JIT_CHAIN_PARK_GUARD=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Prove flags dead across faulting instructions (config 46). Clears the JIT
+     *  cache so both arms of an A/B start even. */
+    jitFlagElisionAcrossFaults(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitFlagElisionAcrossFaults) pm.setJitFlagElisionAcrossFaults(!!on);
+        const w = wasm();
+        if (!pm?.setJitFlagElisionAcrossFaults && w?.set_jit_config) w.set_jit_config(46, on ? 1 : 0);
+        const applied = w?.get_jit_config?.(46);
+        console.log(`[dbg] JIT_FLAG_ELISION_ACROSS_FAULTS=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
@@ -1483,6 +1494,7 @@ export const dbg = {
             budgetMisses: number; noMetaMisses: number; stateMisses: number;
             noEntryMisses: number; memoHits: number; metaHits: number;
             budgetZero: number; budgetSpent: number; budgetHlt: number;
+            flagElisionCandidates: number; flagElided: number;
         };
     } | null {
         const w = wasm(); if (!w) return null;
@@ -1516,6 +1528,11 @@ export const dbg = {
             budgetZero: Number(w["jit_dynamic_chain_budget_zero"]?.() ?? 0),
             budgetSpent: Number(w["jit_dynamic_chain_budget_spent"]?.() ?? 0),
             budgetHlt: Number(w["jit_dynamic_chain_budget_hlt"]?.() ?? 0),
+            // Dead-flag elision rate. v86 stops its forward walk at any faulting
+            // or control-flow instruction, so the share it actually proves dead
+            // bounds how much a wider analysis could still remove.
+            flagElisionCandidates: Number(w["profiler_dispatch_stat_get"]?.(8) ?? 0),
+            flagElided: Number(w["profiler_dispatch_stat_get"]?.(9) ?? 0),
         };
         const intraEdge = Math.max(0, blockExec - reentry - chainedEdge);
         const baselineReentry = reentry + chainedEdge;

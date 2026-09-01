@@ -201,6 +201,11 @@ if (divisorArg >= 0 && process.argv[divisorArg + 1]) {
         await bench.dbg("jitRecompileDivisor", Number(process.argv[divisorArg + 1])).catch((e) => String(e))));
 }
 
+if (process.argv.includes("--flag-elision")) {
+    console.log("flag-elision-across-faults " + JSON.stringify(
+        await bench.dbg("jitFlagElisionAcrossFaults", true).catch((e) => String(e))));
+}
+
 if (process.argv.includes("--park-guard")) {
     console.log("park-guard " + JSON.stringify(
         await bench.dbg("jitChainParkGuard", true).catch((e) => String(e))));
