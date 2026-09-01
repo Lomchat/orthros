@@ -830,6 +830,19 @@ export const dbg = {
         console.log(`[dbg] JIT_FLAG_ELISION_ACROSS_FAULTS=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Read or set any JIT config index, for A/B work on knobs that have no
+     *  dedicated command. Clears the cache so both arms start even. */
+    jitConfig(index: number, value?: number): number | null {
+        const w = wasm();
+        if (!w?.set_jit_config) { console.warn("[dbg] wasm not ready"); return null; }
+        if (value !== undefined) {
+            w.set_jit_config(index >>> 0, value >>> 0);
+            w.jit_clear_cache?.();
+        }
+        const applied = w.get_jit_config?.(index >>> 0) ?? null;
+        console.log(`[dbg] jit_config[${index}] = ${applied}`);
+        return applied;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {

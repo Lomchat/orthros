@@ -228,6 +228,16 @@ while (performance.now() - t0 < bootTimeoutSec * 1_000) {
     await Bun.sleep(2_000);
 }
 console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s`);
+
+// After boot, not before: these go straight to the wasm instance, which does not
+// exist until the game has loaded. Applied earlier they silently do nothing.
+for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] !== "--jit-config" || !process.argv[i + 1]) continue;
+    const [idx, val] = process.argv[i + 1]!.split("=").map(Number);
+    const applied = await bench.dbg("jitConfig", idx, val).catch((e) => String(e));
+    console.log(`jit-config ${idx}=${val} -> ${JSON.stringify(applied)}`);
+    if (applied !== val) throw new Error(`jit config ${idx} did not take (got ${applied})`);
+}
 await Bun.sleep(12_000);
 
 let loading = false;
@@ -371,6 +381,22 @@ if (process.argv.includes("--profile-ingame")) {
         await Bun.sleep(20_000);                       // let the scene settle
         const warm = await probe(bench, 10_000);
         console.log(`in-game warm ${JSON.stringify(warm)}`);
+
+        // Paired in-session A/B: the same scene, seconds apart, so the run-to-run
+        // variance that swamps a 15% effect across sessions cancels.
+        for (let i = 0; i < process.argv.length; i++) {
+            if (process.argv[i] !== "--jit-config-ingame" || !process.argv[i + 1]) continue;
+            const [idx, val] = process.argv[i + 1]!.split("=").map(Number);
+            const applied = await bench.dbg("jitConfig", idx, val).catch((e) => String(e));
+            console.log(`in-game jit-config ${idx}=${val} -> ${JSON.stringify(applied)}`);
+            // Switching clears the JIT cache, so the first minutes measure
+            // recompilation rather than the new steady state. Report the whole
+            // recovery curve and read the plateau, not the first sample.
+            for (let k = 0; k < 9; k++) {
+                const p = await probe(bench, 20_000);
+                console.log(`in-game AFTER +${(k + 1) * 20}s ${JSON.stringify(p)}`);
+            }
+        }
 
         await bench.dbg("hotPages", true).catch(() => null);
         await bench.dbg("thunkCensus", true).catch(() => null);
