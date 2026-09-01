@@ -351,6 +351,32 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     }
     prev = s; prevJit = j; prevInterp = ip;
 }
+// In-game profile. Every measurement in this project so far has been of the
+// loading phase; the warm path is where the largest past wins came from
+// (_ftol2_sse alone was -12% of frame time) and it has never been profiled.
+if (process.argv.includes("--profile-ingame")) {
+    const inGameDeadline = performance.now() + 240_000;
+    let live = false;
+    while (performance.now() < inGameDeadline) {
+        const p = await probe(bench, 6_000);
+        if (p.fps > 5) { live = true; break; }
+    }
+    console.log(`in-game reached=${live}`);
+    if (live) {
+        await Bun.sleep(20_000);                       // let the scene settle
+        const warm = await probe(bench, 10_000);
+        console.log(`in-game warm ${JSON.stringify(warm)}`);
+
+        await bench.dbg("hotPages", true).catch(() => null);
+        await bench.dbg("thunkCensus", true).catch(() => null);
+        const cpu = await bench.profileWorker(10_000, 16).catch((e) => ({ error: String(e) } as any));
+        console.log("in-game cpu " + JSON.stringify(cpu));
+        console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
+        console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
+        console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
+    }
+}
+
 console.log("RESULT " + JSON.stringify({
     reached: true,
     // A default that silently corrupts guest state would still finish the load.
