@@ -70,10 +70,21 @@ export class PreemptionManager {
 
     /** Direct JMP/Jcc cross-module tail chaining (config idx 4). The target
      *  lookup and scheduler guard are emitted inline, but the wasm tail-call
-     *  opcode must be supported by the browser. Default OFF until the BFME A/B
-     *  gate passes; the synthetic two-page chain alone is not enough. */
-    private directBlockChainingEnabled = false;      // config idx 4
+     *  opcode must be supported by the browser, so this is ANDed with the probe.
+     *
+     *  ON since the BFME gate passed. Without it every module exit with a
+     *  compile-time-constant successor still returns to the dispatcher: 1.46
+     *  billion such exits in one in-game window, none of them chained. With it,
+     *  332M of them tail-call the target module directly. Boot measures +1.2%
+     *  over three runs per arm at 0.2% work parity, an in-game toggle measures
+     *  +27.6% enabling and -5.8% disabling, and guest faults stay empty. */
+    private directBlockChainingEnabled = true;       // config idx 4
     private directBlockChainingSupported = false;
+    /** What was asked for, kept apart from what is in force. The tail-call probe
+     *  only runs once v86 exists, so a request made before boot — the only point
+     *  at which a cold-path A/B can set it — would otherwise be ANDed against a
+     *  not-yet-known `supported` and lost for good. */
+    private directBlockChainingRequested = true;
 
     /** Dynamic RET dispatch. Ret chaining is ON after the menu-construction A/B with
      *  guest-native Win32 leaves measured a 16.15 FPS median versus 10.5 OFF across
@@ -280,7 +291,24 @@ export class PreemptionManager {
 
     /** Inline-guarded direct block chaining (idx 4). Authoritative across game
      *  reloads and constrained by v86's WebAssembly tail-call feature probe. */
+    /** JIT config values requested before v86 exists, applied once it does.
+     *  Without this, the only knobs testable from a cold boot are the ones that
+     *  happen to have a dedicated setter here — every other index silently does
+     *  nothing when set pre-boot, which reads as "this knob has no effect". */
+    private pendingJitConfig = new Map<number, number>();
+
+    setJitConfigOverride(index: number, value: number): void {
+        this.pendingJitConfig.set(index >>> 0, value >>> 0);
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) {
+            ex.set_jit_config(index >>> 0, value >>> 0);
+            ex.jit_clear_cache?.();
+        }
+    }
+    getJitConfigOverrides(): ReadonlyMap<number, number> { return this.pendingJitConfig; }
+
     setDirectBlockChaining(on: boolean): void {
+        this.directBlockChainingRequested = on;
         this.directBlockChainingEnabled = on && this.directBlockChainingSupported;
         const ex = this.wasmExports;
         if (ex?.set_jit_config) ex.set_jit_config(4, this.directBlockChainingEnabled ? 1 : 0);
@@ -513,7 +541,8 @@ export class PreemptionManager {
         this.hpBase = this.wasmExports.get_hypercall_page_ptr();
         this.refreshViews(cpu);
         this.directBlockChainingSupported = cpu.jit_block_chaining_supported === true;
-        if (!this.directBlockChainingSupported) this.directBlockChainingEnabled = false;
+        this.directBlockChainingEnabled =
+            this.directBlockChainingRequested && this.directBlockChainingSupported;
         this.setCycleLimit(PreemptionManager.SINGLE_THREAD_LIMIT);
 
         // Relaxed FPU — inline x87 path matches helpers (see vendor/v86/tests/fpu-relaxed-diff.mjs).
@@ -543,6 +572,10 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(5, this.deadFlagElisionEnabled ? 1 : 0);
             console.log(`[PERF] JIT dead-flag elision ${this.deadFlagElisionEnabled ? "enabled" : "DISABLED"}`);
             console.log(`[PERF] JIT direct block chaining ${this.directBlockChainingEnabled ? "enabled" : "DISABLED"} (tail-call ${this.directBlockChainingSupported ? "supported" : "unsupported"})`);
+            // Last, so a diagnostic override outranks every default above.
+            for (const [index, value] of this.pendingJitConfig) {
+                this.wasmExports.set_jit_config(index, value);
+            }
 
             // Fastmem-wave (idx 9/10/11) — default ON, re-applied per init because v86
             // resets the wasm flags to their codegen default (OFF) on every game load.

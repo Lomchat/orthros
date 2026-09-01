@@ -55,7 +55,7 @@ export interface WorkerProfile {
     totalSamples: number;
     durationMs: number;
     /** Self time share, descending. */
-    top: Array<{ fn: string; url: string; pct: number; samples: number }>;
+    top: Array<{ fn: string; url: string; pos: string; pct: number; samples: number }>;
     /** Self time share per subsystem. Generated JIT modules are one function
      *  each, so they never surface in `top` however much they cost in total —
      *  only the sum says whether the guest's own code or the runtime around it
@@ -119,15 +119,19 @@ async function profileWorkerTarget(
     for (const id of profile?.samples ?? []) self.set(id, (self.get(id) ?? 0) + 1);
     const totalSamples = (profile?.samples ?? []).length;
 
-    const agg = new Map<string, { fn: string; url: string; samples: number }>();
+    // Minified bundles name almost nothing, so an "(anonymous)" row at 3% of the
+    // profile is unactionable without its position: the offset is what locates
+    // the function in the built worker.
+    const agg = new Map<string, { fn: string; url: string; samples: number; pos: string }>();
     const bucketSamples = new Map<string, number>();
     for (const [id, count] of self) {
         const f = byId.get(id)?.callFrame;
         if (!f) continue;
         const fn = f.functionName || "(anonymous)";
         const url = f.url || "";
-        const key = `${fn}|${url}`;
-        const e = agg.get(key) ?? { fn, url, samples: 0 };
+        const key = `${fn}|${url}|${f.lineNumber}:${f.columnNumber}`;
+        const e = agg.get(key)
+            ?? { fn, url, samples: 0, pos: `${f.lineNumber ?? "?"}:${f.columnNumber ?? "?"}` };
         e.samples += count;
         agg.set(key, e);
         const b = classifyFrame(fn, url);
@@ -138,7 +142,7 @@ async function profileWorkerTarget(
         buckets[name] = totalSamples > 0 ? Math.round((count / totalSamples) * 1000) / 10 : 0;
     }
     const rows = [...agg.values()].sort((a, b) => b.samples - a.samples).slice(0, top)
-        .map((e) => ({ fn: e.fn, url: e.url.split("/").at(-1) ?? "",
+        .map((e) => ({ fn: e.fn, url: e.url.split("/").at(-1) ?? "", pos: e.pos,
             pct: totalSamples > 0 ? Math.round((e.samples / totalSamples) * 1000) / 10 : 0,
             samples: e.samples }));
     return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets };

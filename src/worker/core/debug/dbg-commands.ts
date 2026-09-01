@@ -48,6 +48,7 @@ import {
     getDxCompressedTextureAdvertisement,
     getDxCompressedTextureNegotiationStats,
     setDxCompressedTextureAdvertisement,
+    setDxCompressedTextureAdvertisementOverride,
 } from '../../backends/webgpu/shared/dx-format-support';
 import { getD3D9TextureMemoryReport } from '../../modules/d3d9/resource-registry';
 import {
@@ -398,10 +399,17 @@ export const dbg = {
         exactInserts: number; exactHits: number; exactMisses: number; exactOverflows: number;
         memoHighWater: number; memoOverflows: number;
     } | void {
-        const w = wasm(); if (!w?.set_jit_config) return;
+        // The interesting experiment sets this before the guest starts, which is
+        // also the only moment the wasm exports do not exist yet — so record the
+        // intent through the authority FIRST and bail only if there is none.
         const pm = (globalThis as any).preemption;
         if (pm?.setDirectBlockChaining) pm.setDirectBlockChaining(on);
-        else { w.set_jit_config(4, on ? 1 : 0); if (w.jit_clear_cache_js) w.jit_clear_cache_js(); }
+        const w = wasm();
+        if (!w?.set_jit_config) return;
+        if (!pm?.setDirectBlockChaining) {
+            w.set_jit_config(4, on ? 1 : 0);
+            if (w.jit_clear_cache_js) w.jit_clear_cache_js();
+        }
         const report = {
             enabled: w.get_jit_config ? (w.get_jit_config(4) >>> 0) : -1,
             supported: pm?.isDirectBlockChainingSupported?.() ?? true,
@@ -833,9 +841,15 @@ export const dbg = {
     /** Read or set any JIT config index, for A/B work on knobs that have no
      *  dedicated command. Clears the cache so both arms start even. */
     jitConfig(index: number, value?: number): number | null {
+        // Record through the authority first: a cold-boot A/B sets this before
+        // the wasm exists, and that is exactly when it matters.
+        const pm = (globalThis as any).preemption;
+        if (value !== undefined && pm?.setJitConfigOverride) {
+            pm.setJitConfigOverride(index >>> 0, value >>> 0);
+        }
         const w = wasm();
-        if (!w?.set_jit_config) { console.warn("[dbg] wasm not ready"); return null; }
-        if (value !== undefined) {
+        if (!w?.set_jit_config) { console.warn("[dbg] wasm not ready (recorded for next init)"); return null; }
+        if (value !== undefined && !pm?.setJitConfigOverride) {
             w.set_jit_config(index >>> 0, value >>> 0);
             w.jit_clear_cache?.();
         }
@@ -1042,7 +1056,11 @@ export const dbg = {
      * experimental CPU-for-memory tradeoff for engines with an uncompressed
      * fallback; the choice persists across game reloads in this Worker. */
     dxtAdvertise(on = true): any {
-        setDxCompressedTextureAdvertisement(!!on);
+        // Records the intent as an override so it also works when set before the
+        // guest starts, which is the only point at which it can change which
+        // formats the engine selects for its textures. null clears it.
+        setDxCompressedTextureAdvertisementOverride(on === null ? null : !!on);
+        if (on !== null) setDxCompressedTextureAdvertisement(!!on);
         const result = getDxCompressedTextureNegotiationStats(false);
         console.log(`[dbg][dxt-advertise][JSON] ${JSON.stringify(result)}`);
         return result;

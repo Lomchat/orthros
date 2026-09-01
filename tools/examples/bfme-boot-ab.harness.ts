@@ -33,7 +33,7 @@ const labelB = arg("label-b", "B");
 
 interface RunResult {
     arm: string; run: number; wallMs: number; instructions: number;
-    mips: number; interp?: any; jit: any; fpu?: any;
+    mips: number; interp?: any; jit: any; fpu?: any; tex?: any; dxt?: any; chain?: any;
     threadCpuMs?: any; sleepPaths?: any; ok: boolean; note?: string;
 }
 const results: RunResult[] = [];
@@ -67,6 +67,15 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         const jit = await bench.dbg<any>("jitCompileStats").catch(() => null);
         const sched = await bench.dbg<any>("schedulerPerf").catch(() => null);
         const fpu = await bench.dbg<any>("fpuRelaxedReport").catch(() => null);
+        // Texture memory is the mechanical half of the compressed-format question:
+        // wall time drifts, 8x the bytes does not.
+        const tex = await bench.dbg<any>("d3d9TextureMemory").catch(() => null);
+        const dxt = await bench.dbg<any>("dxtAdvertiseReport").catch(() => null);
+        // Read-only: proves the arm is actually in the state its label claims.
+        // Two A/Bs in this repo compared identical arms because a pre-boot
+        // setting was silently dropped, and the wall times looked like a null
+        // result rather than a broken experiment.
+        const chain = await bench.dbg<any>("jitConfig", 4).catch(() => null);
         return {
             arm, run, wallMs: Math.round(wallMs),
             instructions: odo?.instructions ?? -1,
@@ -76,6 +85,9 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
             // dropped newly added counters from finished experiments.
             jit,
             fpu,
+            tex,
+            dxt,
+            chain,
             threadCpuMs: sched?.threadCpuMs ?? null,
             sleepPaths: sched?.sleepPaths ?? null,
             ok: true,

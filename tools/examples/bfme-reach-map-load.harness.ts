@@ -434,10 +434,15 @@ if (process.argv.includes("--profile-ingame")) {
             if (process.argv[i] !== "--dbg-ingame" || !process.argv[i + 1]) continue;
             const [name, raw] = process.argv[i + 1]!.split("=");
             const val = raw === "false" ? false : raw === "true" ? true : Number(raw);
+            // Both arms must sit behind the same settle. Sleeping only after the
+            // toggle put every "after" window 60s further into an evolving scene
+            // than its "before" — which is how turning a knob OFF could read as
+            // an improvement.
+            await Bun.sleep(60_000);
             await ingameMips(`before ${name}=${raw}`);
             console.log(`in-game dbg ${name}=${raw} -> ` + JSON.stringify(
                 await bench.dbg(name!, val).catch((e) => String(e))));
-            await Bun.sleep(60_000);                      // let the cache rebuild
+            await Bun.sleep(60_000);
             await ingameMips(`after ${name}=${raw}`);
         }
 
@@ -462,6 +467,21 @@ if (process.argv.includes("--profile-ingame")) {
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
         console.log("in-game fpu " + JSON.stringify(await bench.dbg("fpuRelaxedReport").catch(() => null)));
         console.log("in-game d3d9 " + JSON.stringify(await bench.dbg("d3d9Perf").catch(() => null)));
+        // Purple characters mean a texture failed, and a failure that retries is
+        // a per-frame cost, not a cosmetic one. rgbaScratch is CPU-side, so this
+        // reads real pixels even though SwiftShader's readback is black.
+        console.log("in-game dxt " + JSON.stringify(await bench.dbg("dxtAdvertiseReport").catch(() => null)));
+        console.log("in-game texmem " + JSON.stringify(await bench.dbg("d3d9TextureMemory").catch(() => null)));
+        const gallery: any = await bench.evalPage(`__BS__.harness.dbgCall("textures")`, 60_000).catch(() => null);
+        if (gallery) {
+            const list = Array.isArray(gallery) ? gallery : (gallery.textures ?? gallery.items ?? []);
+            const byFormat: Record<string, number> = {};
+            for (const t of list) {
+                const f = String(t.format ?? t.fmt ?? "?");
+                byFormat[f] = (byFormat[f] ?? 0) + 1;
+            }
+            console.log(`in-game textures count=${list.length} byFormat=${JSON.stringify(byFormat)}`);
+        }
         await bench.dbg("jitCompileStats", true).catch(() => null);
         await Bun.sleep(30_000);
         console.log("in-game jit30s " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)));

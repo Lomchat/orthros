@@ -303,20 +303,27 @@ describe("PreemptionManager JIT defaults", () => {
             },
         });
 
+        // Default ON where the browser supports wasm tail calls: without chaining
+        // every constant-successor module exit returns to the dispatcher.
         manager.initialize(makeCpu(true));
         expect(manager.isDirectBlockChainingSupported()).toBe(true);
-        expect(manager.isDirectBlockChainingEnabled()).toBe(false);
-        expect(configs.get(4)).toBe(0);
-
-        manager.setDirectBlockChaining(true);
         expect(manager.isDirectBlockChainingEnabled()).toBe(true);
         expect(configs.get(4)).toBe(1);
+
+        // A diagnostic opt-out must survive a reload, so the kill switch is not
+        // silently undone by the next game load.
+        manager.setDirectBlockChaining(false);
+        expect(manager.isDirectBlockChainingEnabled()).toBe(false);
+        expect(configs.get(4)).toBe(0);
         expect(cacheClears).toBe(1);
 
         configs.clear();
         manager.initialize(makeCpu(true));
-        expect(configs.get(4)).toBe(1);
+        expect(configs.get(4)).toBe(0);
         expect(cacheClears).toBe(1); // cold-cache boot does not clear again
+
+        manager.setDirectBlockChaining(true);
+        expect(configs.get(4)).toBe(1);
 
         configs.clear();
         manager.initialize(makeCpu(false));

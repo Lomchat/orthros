@@ -33,8 +33,26 @@ let advertiseCompressedTextureFormats = true;
 let compressedTextureProbeCount = 0;
 let compressedTextureRejectedCount = 0;
 
+/**
+ * Diagnostic override that outranks the bundle manifest. The manifest policy is
+ * applied at bundle load, after any pre-boot setup has run, so without this a
+ * toggle set before the guest starts is silently discarded — and setting it
+ * afterwards is too late to change which formats the engine picked. null defers
+ * to the manifest.
+ */
+let advertisementOverride: boolean | null = null;
+
+export function setDxCompressedTextureAdvertisementOverride(value: boolean | null): void {
+    advertisementOverride = value;
+    if (value !== null) advertiseCompressedTextureFormats = value;
+}
+
+export function getDxCompressedTextureAdvertisementOverride(): boolean | null {
+    return advertisementOverride;
+}
+
 export function setDxCompressedTextureAdvertisement(enabled: boolean): void {
-    advertiseCompressedTextureFormats = !!enabled;
+    advertiseCompressedTextureFormats = advertisementOverride ?? !!enabled;
 }
 
 export function getDxCompressedTextureAdvertisement(): boolean {
