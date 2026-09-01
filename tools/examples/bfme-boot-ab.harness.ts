@@ -26,6 +26,9 @@ const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme1-current");
 const game = arg("game", "bfme");
 const runs = Number(arg("runs", "4"));
 const bootTimeoutSec = Number(arg("boot-timeout", "400"));
+/** Config index to read back per run, so an arm that failed to apply its
+ *  setting shows up as a broken experiment rather than a null result. */
+const verifyConfig = Number(arg("verify-config", "-1"));
 const setupA = arg("setup-a", "");
 const setupB = arg("setup-b", "");
 const labelA = arg("label-a", "A");
@@ -33,7 +36,7 @@ const labelB = arg("label-b", "B");
 
 interface RunResult {
     arm: string; run: number; wallMs: number; instructions: number;
-    mips: number; interp?: any; jit: any; fpu?: any; tex?: any; dxt?: any; chain?: any;
+    mips: number; interp?: any; jit: any; fpu?: any; tex?: any; dxt?: any; chain?: any; verified?: any;
     threadCpuMs?: any; sleepPaths?: any; ok: boolean; note?: string;
 }
 const results: RunResult[] = [];
@@ -76,6 +79,9 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         // setting was silently dropped, and the wall times looked like a null
         // result rather than a broken experiment.
         const chain = await bench.dbg<any>("jitConfig", 4).catch(() => null);
+        const verified = verifyConfig >= 0
+            ? await bench.dbg<any>("jitConfig", verifyConfig).catch(() => null)
+            : null;
         return {
             arm, run, wallMs: Math.round(wallMs),
             instructions: odo?.instructions ?? -1,
@@ -88,6 +94,7 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
             tex,
             dxt,
             chain,
+            verified,
             threadCpuMs: sched?.threadCpuMs ?? null,
             sleepPaths: sched?.sleepPaths ?? null,
             ok: true,

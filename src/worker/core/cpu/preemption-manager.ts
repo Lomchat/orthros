@@ -572,10 +572,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(5, this.deadFlagElisionEnabled ? 1 : 0);
             console.log(`[PERF] JIT dead-flag elision ${this.deadFlagElisionEnabled ? "enabled" : "DISABLED"}`);
             console.log(`[PERF] JIT direct block chaining ${this.directBlockChainingEnabled ? "enabled" : "DISABLED"} (tail-call ${this.directBlockChainingSupported ? "supported" : "unsupported"})`);
-            // Last, so a diagnostic override outranks every default above.
-            for (const [index, value] of this.pendingJitConfig) {
-                this.wasmExports.set_jit_config(index, value);
-            }
+
 
             // Fastmem-wave (idx 9/10/11) — default ON, re-applied per init because v86
             // resets the wasm flags to their codegen default (OFF) on every game load.
@@ -629,6 +626,15 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
             this.wasmExports.set_jit_config(46, this.jitFlagElisionAcrossFaults ? 1 : 0);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
+        }
+
+        // Genuinely last, after every default above: an override placed mid-method
+        // is silently overwritten by the defaults that follow it, which is how a
+        // pre-boot A/B ends up comparing two identical arms.
+        if (this.wasmExports?.set_jit_config) {
+            for (const [index, value] of this.pendingJitConfig) {
+                this.wasmExports.set_jit_config(index, value);
+            }
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.
