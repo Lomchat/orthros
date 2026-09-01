@@ -405,7 +405,9 @@ if (process.argv.includes("--profile-ingame")) {
         // One throwaway window first: the scene is still compiling right after the
         // load, and that warm-up alone reads as +14% if it lands in the "before"
         // slot — which is exactly how flagLocals first looked like a win.
-        if (process.argv.some((a) => a === "--dbg-ingame")) await ingameMips("warm-up (discarded)");
+        if (process.argv.some((a) => a === "--dbg-ingame" || a === "--jit-config-ingame")) {
+            await ingameMips("warm-up (discarded)");
+        }
 
         for (let i = 0; i < process.argv.length; i++) {
             if (process.argv[i] !== "--dbg-ingame" || !process.argv[i + 1]) continue;
@@ -423,15 +425,11 @@ if (process.argv.includes("--profile-ingame")) {
         for (let i = 0; i < process.argv.length; i++) {
             if (process.argv[i] !== "--jit-config-ingame" || !process.argv[i + 1]) continue;
             const [idx, val] = process.argv[i + 1]!.split("=").map(Number);
+            await ingameMips(`before jit-config ${idx}=${val}`);
             const applied = await bench.dbg("jitConfig", idx, val).catch((e) => String(e));
             console.log(`in-game jit-config ${idx}=${val} -> ${JSON.stringify(applied)}`);
-            // Switching clears the JIT cache, so the first minutes measure
-            // recompilation rather than the new steady state. Report the whole
-            // recovery curve and read the plateau, not the first sample.
-            for (let k = 0; k < 9; k++) {
-                const p = await probe(bench, 20_000);
-                console.log(`in-game AFTER +${(k + 1) * 20}s ${JSON.stringify(p)}`);
-            }
+            await Bun.sleep(60_000);                      // let the cache rebuild
+            await ingameMips(`after jit-config ${idx}=${val}`);
         }
 
         await bench.dbg("hotPages", true).catch(() => null);
