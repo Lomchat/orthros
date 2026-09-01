@@ -853,6 +853,10 @@ export const dbg = {
             // back to the interpreter and has to re-cross the hotness threshold.
             wasmTableSize: w.jit_get_wasm_table_size?.() >>> 0,
             cacheFlushes: w.jit_get_cache_flushes?.() >>> 0,
+            // A page written to loses its module; if this tracks `started` the
+            // JIT is recompiling the same code rather than covering new code.
+            pageInvalWithCode: w.jit_get_page_invalidations_with_code?.() >>> 0,
+            pageInvalNoCode: w.jit_get_page_invalidations_no_code?.() >>> 0,
             started: w.jit_get_compile_started() >>> 0,
             completed: w.jit_get_compile_completed?.() >>> 0,
             pending: w.jit_get_compile_pending?.() >>> 0,
@@ -877,6 +881,7 @@ export const dbg = {
         if (reset) {
             w.jit_reset_compile_stats?.();
             w.jit_reset_cache_flushes?.();
+            w.jit_reset_page_invalidations?.();
             w.jit_ret_cache_invalidations_reset?.();
         }
         console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);

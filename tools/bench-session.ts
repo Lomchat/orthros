@@ -56,6 +56,32 @@ export interface WorkerProfile {
     durationMs: number;
     /** Self time share, descending. */
     top: Array<{ fn: string; url: string; pct: number; samples: number }>;
+    /** Self time share per subsystem. Generated JIT modules are one function
+     *  each, so they never surface in `top` however much they cost in total —
+     *  only the sum says whether the guest's own code or the runtime around it
+     *  dominates. */
+    buckets: Record<string, number>;
+}
+
+/** Which subsystem a sampled frame belongs to. */
+function classifyFrame(fn: string, url: string): string {
+    if (/^(\(idle\)|\(program\)|\(garbage collector\)|\(root\))$/.test(fn)) return "runtime";
+    if (url.includes("emulator.worker")) return "worker-js";
+    if (!url.includes("v86.wasm")) {
+        // Each compiled page is its own module at its own blob URL, so anything
+        // else presenting as wasm is generated guest code.
+        return /^wasm-function/.test(fn) ? "jit-code" : "other";
+    }
+    // cycle_internal is NOT interpretation: it runs on every block entry, including
+    // the ones that go on to execute a compiled module. Folding it into
+    // "interpreter" overstates what removing interpreted blocks can win.
+    if (/cycle_internal/.test(fn)) return "dispatcher";
+    if (/interpreter|run_prefix|modrm_resolve/.test(fn)) return "interpreter";
+    if (/fpu_|softfloat|F80|fxsave|fxrstor/.test(fn)) return "x87";
+    if (/find_cache_entry|dynamic_chaining/.test(fn)) return "chain-lookup";
+    if (/jit_|codegen|analysis|wasmgen|WasmBuilder/.test(fn)) return "jit-compiler";
+    if (/safe_read|safe_write|translate_address|page_walk|read_write_addr|tlb/.test(fn)) return "memory";
+    return "v86-other";
 }
 
 /**
@@ -94,19 +120,28 @@ async function profileWorkerTarget(
     const totalSamples = (profile?.samples ?? []).length;
 
     const agg = new Map<string, { fn: string; url: string; samples: number }>();
+    const bucketSamples = new Map<string, number>();
     for (const [id, count] of self) {
         const f = byId.get(id)?.callFrame;
         if (!f) continue;
-        const key = `${f.functionName || "(anonymous)"}|${f.url || ""}`;
-        const e = agg.get(key) ?? { fn: f.functionName || "(anonymous)", url: f.url || "", samples: 0 };
+        const fn = f.functionName || "(anonymous)";
+        const url = f.url || "";
+        const key = `${fn}|${url}`;
+        const e = agg.get(key) ?? { fn, url, samples: 0 };
         e.samples += count;
         agg.set(key, e);
+        const b = classifyFrame(fn, url);
+        bucketSamples.set(b, (bucketSamples.get(b) ?? 0) + count);
+    }
+    const buckets: Record<string, number> = {};
+    for (const [name, count] of [...bucketSamples.entries()].sort((a, b) => b[1] - a[1])) {
+        buckets[name] = totalSamples > 0 ? Math.round((count / totalSamples) * 1000) / 10 : 0;
     }
     const rows = [...agg.values()].sort((a, b) => b.samples - a.samples).slice(0, top)
         .map((e) => ({ fn: e.fn, url: e.url.split("/").at(-1) ?? "",
             pct: totalSamples > 0 ? Math.round((e.samples / totalSamples) * 1000) / 10 : 0,
             samples: e.samples }));
-    return { totalSamples, durationMs: Math.round(durationMs), top: rows };
+    return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets };
 }
 
 async function fetchJson(port: number, path: string): Promise<any> {

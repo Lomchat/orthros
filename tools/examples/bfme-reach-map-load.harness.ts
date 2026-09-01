@@ -238,6 +238,19 @@ for (let i = 0; i < process.argv.length; i++) {
     console.log(`jit-config ${idx}=${val} -> ${JSON.stringify(applied)}`);
     if (applied !== val) throw new Error(`jit config ${idx} did not take (got ${applied})`);
 }
+// The relaxed-FPU counters are emitted into blocks as they compile, so arming
+// them here covers everything compiled from the menu on; arming at report time
+// would only see blocks that happened to recompile afterwards.
+if (process.argv.includes("--fpu-stats")) {
+    console.log(`fpu-stats armed -> ${JSON.stringify(await bench.dbg("fpuRelaxed", true).catch((e) => String(e)))}`);
+    await bench.dbg("jitClear").catch(() => null);
+}
+// Same constraint, and the counters cost enough that FPS read while they are
+// armed is not comparable to a production frame time.
+if (process.argv.includes("--dispatch-stats")) {
+    console.log(`dispatch-stats armed -> ${JSON.stringify(await bench.dbg("dispatchStatsEnable", true).catch((e) => String(e)))}`);
+    await bench.dbg("jitClear").catch(() => null);
+}
 await Bun.sleep(12_000);
 
 let loading = false;
@@ -390,6 +403,11 @@ if (process.argv.includes("--profile-ingame")) {
         // Timing a fixed number of retired guest instructions measures emulation
         // throughput directly and holds the amount of work constant.
         const ingameMips = async (label: string): Promise<number> => {
+            // Reset alongside the work window so the interpreted share describes
+            // this arm only. MIPS moves with whatever the scene is doing; this
+            // ratio answers "did the change convert interpreted work to compiled
+            // work" without depending on the scene being stationary.
+            await bench.dbg("interpretedShare", true).catch(() => null);
             await bench.dbg("workWindow", 2_000_000_000).catch(() => null);
             let last: any = null;
             for (let k = 0; k < 40; k++) {
@@ -398,7 +416,10 @@ if (process.argv.includes("--profile-ingame")) {
                 if (last?.done) break;
             }
             const mips = Number(last?.mips ?? 0);
-            console.log(`in-game MIPS ${label}: ${mips.toFixed(2)} (retired ${last?.instructions ?? "?"})`);
+            const share: any = await bench.dbg("interpretedShare").catch(() => null);
+            console.log(`in-game MIPS ${label}: ${mips.toFixed(2)} (retired ${last?.instructions ?? "?"})`
+                + ` interp=${share?.interpretedPct ?? "?"}% noModule=${share?.blocksNoModule ?? "?"}`
+                + ` missEntry=${share?.blocksMissingEntry ?? "?"}`);
             return mips;
         };
 
@@ -439,6 +460,13 @@ if (process.argv.includes("--profile-ingame")) {
         console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
         console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
+        console.log("in-game fpu " + JSON.stringify(await bench.dbg("fpuRelaxedReport").catch(() => null)));
+        await bench.dbg("jitCompileStats", true).catch(() => null);
+        await Bun.sleep(30_000);
+        console.log("in-game jit30s " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)));
+        if (process.argv.includes("--dispatch-stats")) {
+            console.log("in-game dispatch " + JSON.stringify(await bench.dbg("dispatchStats").catch(() => null)));
+        }
     }
 }
 
