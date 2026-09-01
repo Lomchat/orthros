@@ -455,12 +455,13 @@ if (process.argv.includes("--profile-ingame")) {
 
         await bench.dbg("hotPages", true).catch(() => null);
         await bench.dbg("thunkCensus", true).catch(() => null);
-        const cpu = await bench.profileWorker(10_000, 16).catch((e) => ({ error: String(e) } as any));
+        const cpu = await bench.profileWorker(10_000, 40).catch((e) => ({ error: String(e) } as any));
         console.log("in-game cpu " + JSON.stringify(cpu));
         console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
         console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
         console.log("in-game fpu " + JSON.stringify(await bench.dbg("fpuRelaxedReport").catch(() => null)));
+        console.log("in-game d3d9 " + JSON.stringify(await bench.dbg("d3d9Perf").catch(() => null)));
         await bench.dbg("jitCompileStats", true).catch(() => null);
         await Bun.sleep(30_000);
         console.log("in-game jit30s " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)));
