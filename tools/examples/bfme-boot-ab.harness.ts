@@ -29,6 +29,9 @@ const bootTimeoutSec = Number(arg("boot-timeout", "400"));
 /** Config index to read back per run, so an arm that failed to apply its
  *  setting shows up as a broken experiment rather than a null result. */
 const verifyConfig = Number(arg("verify-config", "-1"));
+/** Profile the worker for 10s starting this many seconds into the boot, to catch
+ *  the phase where the JIT is compiling hardest rather than a settled frame. */
+const profileAtSec = Number(arg("profile-at", "-1"));
 const setupA = arg("setup-a", "");
 const setupB = arg("setup-b", "");
 const labelA = arg("label-a", "A");
@@ -54,13 +57,20 @@ async function bootOnce(arm: string, setup: string, run: number): Promise<RunRes
         }
         const t0 = performance.now();
         let wallMs = -1;
+        let bootProfile: any = null;
         while (performance.now() - t0 < bootTimeoutSec * 1_000) {
+            if (profileAtSec >= 0 && !bootProfile
+                && performance.now() - t0 >= profileAtSec * 1_000) {
+                bootProfile = await bench.profileWorker(10_000, 20)
+                    .catch((e) => ({ error: String(e) }));
+            }
             const present = await bench.evalPage<number>(
                 `(async () => (await __BS__.harness.dbgCall("d3d9Perf"))?.api?.present ?? 0)()`, 20_000)
                 .catch(() => 0);
             if (present > 0) { wallMs = performance.now() - t0; break; }
             await Bun.sleep(1_000);
         }
+        if (bootProfile) console.log("BOOTPROFILE " + JSON.stringify(bootProfile));
         if (wallMs < 0) {
             return { arm, run, wallMs: -1, instructions: -1, mips: 0, jit: null, ok: false, note: "timeout" };
         }
