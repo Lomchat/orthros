@@ -59,6 +59,11 @@ interface FunctionReport {
     blocks: number;
     reason: Reason;
     detail?: string;
+    /** A function that calls nothing needs no interop with the emulator at all:
+     *  registers in, registers out, memory in between. Every hand-written HLE
+     *  handler in this repo replaces exactly this shape. */
+    leaf: boolean;
+    memoryOps: number;
 }
 
 function arg(name: string, fallback: string): string {
@@ -160,6 +165,8 @@ function analyze(entry: number): FunctionReport {
     let reason: Reason = "ok";
     let detail: string | undefined;
     let sawReturn = false;
+    let calls = 0;
+    let memoryOps = 0;
 
     while (queue.length > 0) {
         let pc = queue.pop()!;
@@ -168,10 +175,10 @@ function analyze(entry: number): FunctionReport {
         for (;;) {
             if (seen.has(pc)) break;
             const insn = byAddr.get(pc);
-            if (!insn) { reason = "runaway"; detail = "fell off"; return { entry, instructions: count, blocks, reason, detail }; }
+            if (!insn) { reason = "runaway"; detail = "fell off"; return { entry, instructions: count, blocks, reason, detail, leaf: calls === 0, memoryOps }; }
             seen.add(pc);
             count++;
-            if (count > MAX_INSNS) { reason = "runaway"; detail = "budget"; return { entry, instructions: count, blocks, reason, detail }; }
+            if (count > MAX_INSNS) { reason = "runaway"; detail = "budget"; return { entry, instructions: count, blocks, reason, detail, leaf: calls === 0, memoryOps }; }
 
             const { mnemonic, operand } = insn;
             const next = pc + insn.size;
@@ -182,14 +189,15 @@ function analyze(entry: number): FunctionReport {
                 // constrain translatability. An indirect one needs the dispatcher.
                 if (directTarget(operand) === null) {
                     reason = "indirect"; detail = `call ${operand}`;
-                    return { entry, instructions: count, blocks, reason, detail };
+                    return { entry, instructions: count, blocks, reason, detail, leaf: false, memoryOps };
                 }
+                calls++;
                 pc = next;
                 continue;
             }
             if (mnemonic === "jmp") {
                 const t = directTarget(operand);
-                if (t === null) { reason = "indirect"; detail = `jmp ${operand}`; return { entry, instructions: count, blocks, reason, detail }; }
+                if (t === null) { reason = "indirect"; detail = `jmp ${operand}`; return { entry, instructions: count, blocks, reason, detail, leaf: calls === 0, memoryOps }; }
                 // A jump to another function's entry is a tail call, not part of
                 // this function. Following it merges the two and then runs away
                 // through the whole call graph.
@@ -199,23 +207,25 @@ function analyze(entry: number): FunctionReport {
             }
             if (COND_BRANCH.has(mnemonic)) {
                 const t = directTarget(operand);
-                if (t === null) { reason = "indirect"; detail = `${mnemonic} ${operand}`; return { entry, instructions: count, blocks, reason, detail }; }
+                if (t === null) { reason = "indirect"; detail = `${mnemonic} ${operand}`; return { entry, instructions: count, blocks, reason, detail, leaf: calls === 0, memoryOps }; }
                 queue.push(t);
                 pc = next;
                 continue;
             }
+            if (operand.includes("PTR")) memoryOps++;
             if (isX87(mnemonic)) { x87++; pc = next; continue; }
             if (!TRANSLATABLE.has(mnemonic)) {
                 reason = "unknown"; detail = mnemonic;
-                return { entry, instructions: count, blocks, reason, detail };
+                return { entry, instructions: count, blocks, reason, detail, leaf: calls === 0, memoryOps };
             }
             pc = next;
         }
     }
 
-    if (!sawReturn) return { entry, instructions: count, blocks, reason: "no-return" };
-    if (x87 > 0) return { entry, instructions: count, blocks, reason: "x87", detail: `${x87} x87 insns` };
-    return { entry, instructions: count, blocks, reason };
+    const leaf = calls === 0;
+    if (!sawReturn) return { entry, instructions: count, blocks, reason: "no-return", leaf, memoryOps };
+    if (x87 > 0) return { entry, instructions: count, blocks, reason: "x87", detail: `${x87} x87 insns`, leaf, memoryOps };
+    return { entry, instructions: count, blocks, reason, leaf, memoryOps };
 }
 
 const reports: FunctionReport[] = [];
@@ -234,9 +244,13 @@ for (const [reason, t] of [...tally.entries()].sort((a, b) => b[1].n - a[1].n)) 
 }
 
 const ok = reports.filter((r) => r.reason === "ok").sort((a, b) => b.instructions - a.instructions);
-console.log(`\nlargest fully translatable functions (top ${topN}):`);
-for (const r of ok.slice(0, topN)) {
-    console.log(`  0x${r.entry.toString(16)}  rva 0x${(r.entry - imageBase).toString(16)}  ${String(r.instructions).padStart(5)} insns  ${r.blocks} blocks`);
+const leaves = ok.filter((r) => r.leaf);
+const leafInsns = leaves.reduce((a, r) => a + r.instructions, 0);
+console.log(`\ntranslatable LEAF functions (no calls at all): ${leaves.length.toLocaleString()}`
+    + `  ${leafInsns.toLocaleString()} insns  ${(leafInsns * 100 / totalInsns).toFixed(1)}% of reached`);
+console.log(`largest translatable leaves (top ${topN}):`);
+for (const r of leaves.slice(0, topN)) {
+    console.log(`  0x${r.entry.toString(16)}  rva 0x${(r.entry - imageBase).toString(16)}  ${String(r.instructions).padStart(5)} insns  ${String(r.blocks).padStart(3)} blocks  ${r.memoryOps} mem`);
 }
 
 const runaway = new Map<string, number>();
