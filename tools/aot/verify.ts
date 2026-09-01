@@ -23,6 +23,11 @@ const FUNC_OFF = 0x8000;
 const SCRATCH = 0x400000;            // registers point here; compared afterwards
 const SCRATCH_LEN = 0x8000;
 const STACK_TOP = 0x300000;
+// A function reading a stack argument sees whatever the caller left there, so
+// both sides need an identical frame — including the return address the guest's
+// own `call`-less stub pushes.
+const STACK_BASE = STACK_TOP - 0x1000;
+const STACK_LEN = 0x2000;
 
 function arg(name: string, fallback: string): string {
     const i = process.argv.indexOf(`--${name}`);
@@ -88,8 +93,8 @@ async function readFunctionBytes(path: string, start: number, len: number): Prom
 }
 
 /** v86 reference run: registers in, function runs, `hlt` ends it. */
-function runGuest(code: Uint8Array, funcAddr: number, regs: Int32Array, scratch: Uint8Array) {
-    return new Promise<{ regs: Int32Array; scratch: Uint8Array; ok: boolean }>(async (resolve) => {
+function runGuest(code: Uint8Array, funcAddr: number, regs: Int32Array, scratch: Uint8Array, stack: Uint8Array) {
+    return new Promise<{ regs: Int32Array; scratch: Uint8Array; stack: Uint8Array; ok: boolean }>(async (resolve) => {
         const { V86 } = await import("../../vendor/v86/build/libv86.mjs" as string);
         const emulator = new (V86 as any)({ autostart: false, memory_size: MEM_SIZE, log_level: 0 });
         const timer = setTimeout(() => finish(false), 20_000);
@@ -100,8 +105,9 @@ function runGuest(code: Uint8Array, funcAddr: number, regs: Int32Array, scratch:
             const outRegs = Int32Array.from(cpu.reg32.slice(0, 8));
             const mem = cpu.mem8 as Uint8Array;
             const outScratch = mem.slice(SCRATCH, SCRATCH + SCRATCH_LEN);
+            const outStack = mem.slice(STACK_BASE, STACK_BASE + STACK_LEN);
             try { emulator.stop(); } catch { /* already stopped */ }
-            resolve({ regs: outRegs, scratch: outScratch, ok });
+            resolve({ regs: outRegs, scratch: outScratch, stack: outStack, ok });
         }
 
         emulator.bus.register("cpu-event-halt", () => finish(true));
@@ -143,6 +149,7 @@ function runGuest(code: Uint8Array, funcAddr: number, regs: Int32Array, scratch:
 
             cpu.load_multiboot(img.buffer.slice(0));
             cpu.mem8.set(scratch, SCRATCH);
+            cpu.mem8.set(stack, STACK_BASE);
             void funcAddr;
             emulator.run();
         });
@@ -172,17 +179,35 @@ for (const entry of entries) {
 
     const scratch = new Uint8Array(SCRATCH_LEN);
     fill(scratch, seed);
+    const stack = new Uint8Array(STACK_LEN);
+    fill(stack, seed ^ 0x5bd1e995);
+    // Stack arguments are overwhelmingly pointers. Random bytes make every one
+    // of them wild, so the function faults before doing anything comparable;
+    // pointing them into the scratch region gives it something real to work on.
+    {
+        const sv = new DataView(stack.buffer);
+        for (let i = 0; i < 8; i++) {
+            const off = (STACK_TOP - STACK_BASE) + i * 4;   // [esp+4], [esp+8], ...
+            if (off + 4 <= STACK_LEN) sv.setInt32(off, SCRATCH + 0x2000 + i * 0x100, true);
+        }
+    }
 
-    const guest = await runGuest(code, entry, regs, scratch);
+    const guest = await runGuest(code, entry, regs, scratch, stack);
     if (!guest.ok) { console.log(`0x${entry.toString(16)}  SKIP (guest did not halt)`); skipped++; continue; }
 
     // Translated side, over an identical copy.
     const jsScratch = new Uint8Array(SCRATCH_LEN);
     fill(jsScratch, seed);
+    const jsStack = Uint8Array.from(stack);   // identical frame, arguments included
     const mem = new Uint8Array(MEM_SIZE);
     mem.set(jsScratch, SCRATCH);
+    mem.set(jsStack, STACK_BASE);
     const dv = new DataView(mem.buffer);
     const jsRegs = Int32Array.from(regs);
+    // Mirror the frame the stub built: return address pushed, esp below it.
+    const HALT_AT = IMAGE_BASE_GUEST + STUB_OFF + 0x200;
+    jsRegs[4] = (STACK_TOP - 4) | 0;
+    new DataView(mem.buffer).setInt32(STACK_TOP - 4, HALT_AT, true);
     // eslint-disable-next-line no-new-func
     const fn = new Function("r", "dv", t.js) as (r: Int32Array, dv: DataView) => void;
     try { fn(jsRegs, dv); }
@@ -209,6 +234,15 @@ for (const entry of entries) {
         if (guest.scratch[i] !== mem[SCRATCH + i]) memDiff++;
     }
     if (memDiff > 0) diffs.push(`${memDiff} scratch bytes differ`);
+    let stackDiff = 0;
+    for (let i = 0; i < STACK_LEN; i++) {
+        // The stub's own pushes live just below STACK_TOP and are not the
+        // function's doing.
+        const addr = STACK_BASE + i;
+        if (addr >= STACK_TOP - 8 && addr < STACK_TOP) continue;
+        if (guest.stack[i] !== mem[addr]) stackDiff++;
+    }
+    if (stackDiff > 0) diffs.push(`${stackDiff} stack bytes differ`);
 
     if (diffs.length === 0) { console.log(`0x${entry.toString(16)}  PASS  ${t.instructions} insns translated`); pass++; }
     else { console.log(`0x${entry.toString(16)}  FAIL  ${diffs.join("; ")}`); fail++; }
