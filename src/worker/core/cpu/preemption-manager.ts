@@ -50,7 +50,12 @@ export class PreemptionManager {
      *  (a stale/all-zero map is safe = all-slow, but a wrong bit0 is corruption) — the
      *  dbg.fastmemWrites verb does that rebuild before flipping this on. Kill-switch:
      *  setFastmemWrites(false) / dbg.fastmemWrites(false). */
-    private fastmemWritesEnabled = false;       // config idx 19
+    // Measured in game by retired-instruction parity, both directions agreeing:
+    // 65.63 -> 80.46 MIPS turning it on, 72.42 -> 65.22 turning it off, no guest
+    // faults. Every guest store went through the slow path for want of an in-game
+    // gate that was never run. An empty write map is safe (all stores slow), and
+    // the authoritative build happens once paging is on and the image is mapped.
+    private fastmemWritesEnabled = true;        // config idx 19
 
     /** Lazy-flag tuple in wasm locals (config idx 21). Default OFF until the in-race
      *  A/B gate passes. Kill-switch: setFlagLocals(false) /

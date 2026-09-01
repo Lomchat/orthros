@@ -4642,6 +4642,20 @@ export class ThunkDispatcher {
                 if (scheduler) {
                     scheduler.initializeMainThreadTeb();
                 }
+                // Authoritative fastmem write map, built here because this is the
+                // one moment both halves of its definition are settled: paging is
+                // on, the image is mapped, and no guest VirtualProtect has run yet.
+                // Every later writability change maintains it incrementally
+                // (AddressSpace register/release/protect, PTM commit/decommit/
+                // setProtection). An empty map is safe — it just means every store
+                // takes the slow path — so config 19 may be on before this runs.
+                const proc: any = System.getInstance().process;
+                const writeMapOwner = proc?.pageTableManager;
+                const space = proc?.addressSpace;
+                if (writeMapOwner?.rebuildWriteMap && space?.getFastWritableRanges) {
+                    writeMapOwner.rebuildWriteMap(space.getFastWritableRanges());
+                    Logger.log(LogCategory.SYSTEM, "[PageTableManager] fastmem write map built");
+                }
             }
         }
     }

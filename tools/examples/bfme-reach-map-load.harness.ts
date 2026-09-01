@@ -382,6 +382,42 @@ if (process.argv.includes("--profile-ingame")) {
         const warm = await probe(bench, 10_000);
         console.log(`in-game warm ${JSON.stringify(warm)}`);
 
+        // Paired in-session A/B for any dbg verb, e.g. --dbg-ingame flagLocals=true.
+        // Several optimisations in this repo were built and left off "until the
+        // in-game gate passes", and that gate was never run.
+        // FPS is the wrong instrument for a JIT knob in game: the simulation itself
+        // swings between 12 and 25 fps inside one session, which swamps the effect.
+        // Timing a fixed number of retired guest instructions measures emulation
+        // throughput directly and holds the amount of work constant.
+        const ingameMips = async (label: string): Promise<number> => {
+            await bench.dbg("workWindow", 2_000_000_000).catch(() => null);
+            let last: any = null;
+            for (let k = 0; k < 40; k++) {
+                await Bun.sleep(5_000);
+                last = await bench.dbg("workWindowReport").catch(() => null);
+                if (last?.done) break;
+            }
+            const mips = Number(last?.mips ?? 0);
+            console.log(`in-game MIPS ${label}: ${mips.toFixed(2)} (retired ${last?.instructions ?? "?"})`);
+            return mips;
+        };
+
+        // One throwaway window first: the scene is still compiling right after the
+        // load, and that warm-up alone reads as +14% if it lands in the "before"
+        // slot — which is exactly how flagLocals first looked like a win.
+        if (process.argv.some((a) => a === "--dbg-ingame")) await ingameMips("warm-up (discarded)");
+
+        for (let i = 0; i < process.argv.length; i++) {
+            if (process.argv[i] !== "--dbg-ingame" || !process.argv[i + 1]) continue;
+            const [name, raw] = process.argv[i + 1]!.split("=");
+            const val = raw === "false" ? false : raw === "true" ? true : Number(raw);
+            await ingameMips(`before ${name}=${raw}`);
+            console.log(`in-game dbg ${name}=${raw} -> ` + JSON.stringify(
+                await bench.dbg(name!, val).catch((e) => String(e))));
+            await Bun.sleep(60_000);                      // let the cache rebuild
+            await ingameMips(`after ${name}=${raw}`);
+        }
+
         // Paired in-session A/B: the same scene, seconds apart, so the run-to-run
         // variance that swamps a 15% effect across sessions cancels.
         for (let i = 0; i < process.argv.length; i++) {
@@ -415,6 +451,9 @@ console.log("RESULT " + JSON.stringify({
     // Must be asked of the Worker: `preemption` does not exist in the page.
     rearmOnSwitch: await bench.dbg("rearmOnSwitchStatus").catch(() => null),
     chain: await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null),
+    // Corruption-class gate for fastmem writes: any danger count means a page is
+    // marked fast-writable that is not present+RW, which would silently corrupt.
+    fastmemAudit: await bench.dbg("fastmemWriteAudit").catch(() => null),
     stalls: await bench.dbg("stallReport").catch(() => null),
     thunks: await bench.dbg("thunkCensus", false, 14).catch(() => null),
     jitAtLoadStart: jit0,
