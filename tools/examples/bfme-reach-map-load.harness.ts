@@ -355,7 +355,32 @@ const holdFps: number[] = [];
 // by calls over the hold. Armed once here, read at the end of the hold.
 const slowPath = process.argv.includes("--slow-path");
 if (slowPath) console.log("slow-path profile armed: " + JSON.stringify(await bench.dbg("slowPathProfile", true).catch((e) => String(e))));
+// --trace2-pages a,b,c --trace2-at N: record the blocks executed on those pages
+// for one window starting at hold second N, then name the ones that are
+// Win32/CRT stubs. Answers "which stubs make the dispatcher re-enter these
+// generated pages" — the hot-page histogram only counts entries per page.
+const trace2Pages = (arg("trace2-pages", "") as string).split(",").map((x) => x.trim()).filter(Boolean);
+const trace2AtSec = Number(arg("trace2-at", "40"));
+const attributeChain = process.argv.includes("--attribute-chain-misses");
+if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
+let prevChain: any = null;
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    if (trace2Pages.length && i * 10 === trace2AtSec) {
+        await bench.dbg("trace2Reset").catch(() => null);
+        console.log("trace2 armed: " + JSON.stringify(await bench.dbg("trace2Watch", trace2Pages).catch((e) => String(e))));
+    }
+    if (trace2Pages.length && i * 10 === trace2AtSec + 10) {
+        const rows: any[] = (await bench.dbg("trace2Blocks", 40).catch(() => null)) ?? [];
+        const named: any[] = [];
+        for (const r of rows) {
+            const a = Number(r.addr);
+            // Stubs are 16-byte aligned; a block inside one starts at its head or at the RET after the OUT.
+            const st: any = await bench.dbg("stub", (a & ~0xf) >>> 0).catch(() => null);
+            named.push({ ...r, stub: st?.name ?? null });
+        }
+        console.log(`TRACE2-BLOCKS at T+${i * 10}s ` + JSON.stringify(named));
+        await bench.dbg("trace2UnwatchAll").catch(() => null);
+    }
     if (hotDump && i * 10 === hotDumpAtSec) {
         await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
         await Bun.sleep(30_000);
@@ -444,9 +469,19 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             .map((r: any) => `${r.module || r.page}=${r.pct}%`).join("  ")
             + ` (collisions ${hot.collisions})`);
     }
-    if (process.argv.includes("--attribute-chain-misses")) {
-        const ds = await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null);
-        if (ds) console.log("   chain " + JSON.stringify(ds));
+    if (attributeChain) {
+        const ds: any = await bench.evalPage(`__BS__.harness.dbgCall("dispatchStats")`, 20_000).catch(() => null);
+        if (ds) {
+            // Counters are cumulative since dispatchStatsEnable: print this window's deltas.
+            const delta: Record<string, number> = {};
+            for (const k of ["blockExec", "reentry", "intraEdge", "chainable", "dynamic", "indirect", "other", "chainedEdge", "chainBudgetExit", "chainMiss", "abseipDispatch", "retChainHit", "retChainMiss", "syncBoundaryContinue"]) {
+                delta[k] = (ds[k] ?? 0) - (prevChain?.[k] ?? 0);
+            }
+            const dr: Record<string, number> = {};
+            for (const k of Object.keys(ds.dynamicResolver ?? {})) dr[k] = (ds.dynamicResolver[k] ?? 0) - (prevChain?.dynamicResolver?.[k] ?? 0);
+            console.log("   chain " + JSON.stringify({ ...delta, dynamicResolver: dr }));
+            prevChain = ds;
+        }
     }
     if (workTarget > 0) {
         const w: any = await bench.dbg("workWindowReport").catch(() => null);

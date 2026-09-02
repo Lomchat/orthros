@@ -1,3 +1,4 @@
+import { d3d9PerfBackendInc } from "../../../modules/d3d9/d3d9-perf";
 /**
  * D3D9StateTracker - Manages render state, transforms, and stream bindings
  *
@@ -150,7 +151,7 @@ export class D3D9StateTracker {
         this.dirtyFlags.renderStates = true;
         this.pipelineKeyDirty = true;
         this.metrics.stateUpdates++;
-        if (FFP_BLOCK_RENDER_STATES[state] === 1) this.version++;
+        if (FFP_BLOCK_RENDER_STATES[state] === 1) { this.version++; d3d9PerfBackendInc("ffpInvRenderState"); }
         return true;
     }
 
@@ -179,7 +180,7 @@ export class D3D9StateTracker {
         for (let i = 0; i < 16; i++) target[i] = matrix[i]!;
         this.dirtyFlags.transforms = true;
         this.metrics.transformUpdates++;
-        if (type === D3DTS_WORLD) this.worldVersion++; else this.version++;
+        if (type === D3DTS_WORLD) this.worldVersion++; else { this.version++; d3d9PerfBackendInc("ffpInvTransform"); }
         if (type === D3DTS_WORLD || type === D3DTS_VIEW) this.worldViewDirty = true;
         if (type === D3DTS_WORLD || type === D3DTS_VIEW || type === D3DTS_PROJECTION) this.mvpDirty = true;
         return true;
@@ -218,7 +219,7 @@ export class D3D9StateTracker {
         this.fvf = fvf;
         this.dirtyFlags.fvf = true;
         this.pipelineKeyDirty = true;
-        this.version++;
+        this.version++; d3d9PerfBackendInc("ffpInvFvf");
         return true;
     }
 
@@ -262,7 +263,7 @@ export class D3D9StateTracker {
         this.metrics.textureChanges++;
         // The block only knows whether a stage has a texture; which one is a
         // bind-group matter. Binding a different texture must not rebuild it.
-        if ((previous === null) !== (textureIndex === null)) this.version++;
+        if ((previous === null) !== (textureIndex === null)) { this.version++; d3d9PerfBackendInc("ffpInvTexturePresence"); }
         return true;
     }
 

@@ -384,7 +384,7 @@ export class D3D9Device {
      *  the surface pointer → its parent texture pointer (surfaceMeta) before calling us. Switching the
      *  target eagerly flushes the commands accumulated for the previous target as their own pass. */
     setRenderTarget(_index: number, texturePtr: number, face: number = -1): number {
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvRenderTarget");
         this.rtSetsThisFrame++;
         let newTarget: number | null = null;
         let newFace = -1;
@@ -1011,7 +1011,7 @@ export class D3D9Device {
         }
         if (this.activeVertexDecl !== internalHandle) {
             this.activeVertexDecl = internalHandle;
-            this.ffpVersion++;
+            this.ffpVersion++; d3d9PerfBackendInc("ffpInvDecl");
             this.currentPipelineKey = null;
             this.currentPipelineId = null;
         }
@@ -1812,7 +1812,7 @@ export class D3D9Device {
             d3d9PerfSkip("setTexture");
             return 0;
         }
-        if (this.currentRtIndex !== null && (index === this.currentRtIndex || previous === this.currentRtIndex)) this.ffpVersion++;
+        if (this.currentRtIndex !== null && (index === this.currentRtIndex || previous === this.currentRtIndex)) this.ffpVersion++; d3d9PerfBackendInc("ffpInvRenderTarget");
 
         // Update frame snapshot counter
         if (this.frameSnapshot.frameCounters) {
@@ -1949,7 +1949,7 @@ export class D3D9Device {
             return 0;
         }
         this.textureStageStates.set(key, v);
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvStageState");
         // Keep the guest shadow coherent for state-block Apply and all other
         // paths that call the device directly rather than through its trampoline.
         if (stage >= 0 && stage < 8 && type >= 0 && type < 64) {
@@ -1987,6 +1987,7 @@ export class D3D9Device {
             return 0;
         }
         this.samplerStates.set(key, v);
+        if (sampler >= 0 && sampler < 16) this.stageSamplerVersion[sampler]++;
         // Mirror into the guest shadow (slot = (Sampler<<4)|Type, matching the trampoline's fold;
         // only the shadowed range). Covers state-block Apply and any other non-trampoline path.
         if (sampler >= 0 && sampler < 16 && type >= 0 && type < 16) {
@@ -2017,7 +2018,7 @@ export class D3D9Device {
         if (same) return 0;
         this.materialData.fill(0);
         this.materialData.set(data.subarray(0, size), 0);
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvMaterial");
         return 0;
     }
 
@@ -2044,7 +2045,7 @@ export class D3D9Device {
         copy.fill(0);
         copy.set(data.subarray(0, size), 0);
         this.lights.set(index >>> 0, copy);
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvLight");
         return 0;
     }
 
@@ -2059,7 +2060,7 @@ export class D3D9Device {
             return 0;
         }
         this.lightEnables.set(index >>> 0, value);
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvLight");
         return 0;
     }
 
@@ -2076,7 +2077,7 @@ export class D3D9Device {
             return 0;
         }
         this.clipPlanes.set(index >>> 0, copy);
-        this.ffpVersion++;
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvClipPlane");
         return 0;
     }
 
@@ -3647,11 +3648,22 @@ export class D3D9Device {
     }
 
     /** Resolve the faithful GPU sampler for one texture stage from the game's D3DSAMP_* state. */
+    // Per-stage sampler versions: the decoded sampler of a stage is reused
+    // across draws until one of its sampler states actually changes.
+    private readonly stageSamplerVersion = new Uint32Array(16);
+    private readonly stageSamplerResolved: Array<{ version: number; cache: DxSamplerCache; sampler: GPUSampler | null }> = [];
+
     private resolveStageSampler(stage: number): GPUSampler | null {
         const device = this.backend.getDevice();
         if (!device) return null;
         if (!this.samplerCache) this.samplerCache = new DxSamplerCache(device);
-        return this.samplerCache.acquire(decodeD3d9Sampler((type) => this.getSamplerState(stage, type)));
+        const cache = this.samplerCache;
+        const version = stage < 16 ? this.stageSamplerVersion[stage] : -1;
+        const hit = this.stageSamplerResolved[stage];
+        if (hit !== undefined && hit.version === version && hit.cache === cache && version >= 0) return hit.sampler;
+        const sampler = cache.acquire(decodeD3d9Sampler((type) => this.getSamplerState(stage, type)));
+        if (version >= 0) this.stageSamplerResolved[stage] = { version, cache, sampler };
+        return sampler;
     }
 
     /**
@@ -3881,9 +3893,17 @@ export class D3D9Device {
                 // slots change, everything else in the block is still right.
                 patchFfpWorldMatrices(block, this.stateTracker.getMVP(), this.stateTracker.getWorldView(), this.stateTracker.getWorldMatrix());
                 c.worldVersion = wv;
+                d3d9PerfBackendInc("ffpBlockPatch");
+            } else {
+                d3d9PerfBackendInc("ffpBlockReuse");
             }
         } else {
             block = this.buildFfpUniformBlock(w, h);
+            d3d9PerfBackendInc("ffpBlockBuild");
+            if (c) {
+                if (c.trackerVersion !== tv) d3d9PerfBackendInc("ffpBlockTrackerChanged");
+                if (c.deviceVersion !== dv) d3d9PerfBackendInc("ffpBlockDeviceChanged");
+            }
             if (!debugForced) this.ffpBlockCache = { trackerVersion: tv, worldVersion: wv, deviceVersion: dv, w, h, block };
         }
         const state = frame.nextFixedState(block.length);

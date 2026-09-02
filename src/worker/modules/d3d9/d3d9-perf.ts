@@ -94,6 +94,12 @@ const BACKEND_KEYS = [
     "clearCalls",
     "progPipelineCacheHits",
     "progPipelineCacheMisses",
+    // Fixed-function uniform block per draw: rebuilt, patched (world matrix
+    // only) or reused, and which version moved when it was rebuilt.
+    "ffpBlockBuild", "ffpBlockPatch", "ffpBlockReuse", "ffpBlockTrackerChanged", "ffpBlockDeviceChanged",
+    // Why the block was invalidated (one count per setter call that changed a block input).
+    "ffpInvRenderState", "ffpInvFvf", "ffpInvTexturePresence", "ffpInvTransform",
+    "ffpInvStageState", "ffpInvMaterial", "ffpInvLight", "ffpInvClipPlane", "ffpInvRenderTarget", "ffpInvDecl",
 ] as const;
 type ApiKey = typeof API_KEYS[number];
 type SkipKey = typeof SKIP_KEYS[number];
@@ -154,6 +160,21 @@ const backend: Record<BackendKey, number> = {
     clearCalls: 0,
     progPipelineCacheHits: 0,
     progPipelineCacheMisses: 0,
+    ffpBlockBuild: 0,
+    ffpBlockPatch: 0,
+    ffpBlockReuse: 0,
+    ffpBlockTrackerChanged: 0,
+    ffpBlockDeviceChanged: 0,
+    ffpInvRenderState: 0,
+    ffpInvFvf: 0,
+    ffpInvTexturePresence: 0,
+    ffpInvTransform: 0,
+    ffpInvStageState: 0,
+    ffpInvMaterial: 0,
+    ffpInvLight: 0,
+    ffpInvClipPlane: 0,
+    ffpInvRenderTarget: 0,
+    ffpInvDecl: 0,
 };
 
 const stateBlock = {

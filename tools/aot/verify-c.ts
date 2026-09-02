@@ -72,6 +72,7 @@ async function textSection(path: string): Promise<{ vma: number; bytes: Uint8Arr
 }
 
 interface RunResult {
+    ms: number;
     ok: boolean;
     status: string;
     regs: Int32Array;
@@ -161,11 +162,27 @@ function buildImage(text: { vma: number; bytes: Uint8Array }): Uint8Array {
     return img;
 }
 
-/** Patch the stub for one function: registers in, halt as return address. */
+/** Patch the stub for one function: registers in, halt as return address.
+ *  With --bench, call it `benchIters` times instead (EBX counts down). */
 function writeStub(img: Uint8Array, funcAddr: number, regs: Int32Array): void {
     const dv = new DataView(img.buffer);
     let o = STUB_OFF;
     const haltAt = IMAGE_BASE_GUEST + STUB_OFF + 0x200;
+    if (benchIters > 0) {
+        img[o++] = 0xBC; dv.setUint32(o, STACK_TOP, true); o += 4;
+        for (const reg of [0, 1, 2, 5, 6, 7]) {
+            img[o++] = 0xB8 + reg; dv.setUint32(o, regs[reg]!, true); o += 4;
+        }
+        img[o++] = 0xBB; dv.setUint32(o, benchIters, true); o += 4;
+        const loop = o;
+        img[o++] = 0xE8; dv.setInt32(o, funcAddr - (IMAGE_BASE_GUEST + o + 4), true); o += 4;
+        img[o++] = 0x4B;
+        img[o++] = 0x0F; img[o++] = 0x85; dv.setInt32(o, loop - (o + 4), true); o += 4;
+        img[o++] = 0xF4; img[o++] = 0xEB; img[o++] = 0xFE;
+        img[STUB_OFF + 0x200] = 0xF4;
+        img[STUB_OFF + 0x201] = 0xEB; img[STUB_OFF + 0x202] = 0xFE;
+        return;
+    }
     img[o++] = 0xBC; dv.setUint32(o, STACK_TOP, true); o += 4;
     img[o++] = 0xB8; dv.setUint32(o, haltAt, true); o += 4;
     img[o++] = 0x50;
@@ -180,6 +197,11 @@ function writeStub(img: Uint8Array, funcAddr: number, regs: Int32Array): void {
 }
 
 let traceEntry: number | null = null;
+// --bench N: call the function N times from the stub (counter in EBX, which
+// the ABI preserves) and report wall time for the JIT run and the translated
+// run. The number the stage verdict lacked: is translated code faster per
+// instruction than the JIT's, through the real dispatcher.
+const benchIters = Number(arg("bench", "0"));
 function runGuest(
     img: Uint8Array, scratch: Uint8Array, stack: Uint8Array,
     install: ((cpu: any) => Promise<boolean>) | null,
@@ -201,6 +223,7 @@ function runGuest(
             }
             const out: RunResult = {
                 ok: status === "halt", status,
+                ms: performance.now() - started,
                 regs: Int32Array.from(cpu.reg32.slice(0, 8)),
                 scratch: mem.slice(SCRATCH, SCRATCH + SCRATCH_LEN),
                 stack: mem.slice(STACK_BASE, STACK_BASE + STACK_LEN),
@@ -213,7 +236,8 @@ function runGuest(
             try { emulator.stop(); } catch { /* already stopped */ }
             resolve(out);
         };
-        const timer = setTimeout(() => finish("timeout"), 6_000);
+        let started = 0;
+        const timer = setTimeout(() => finish("timeout"), benchIters > 0 ? 180_000 : 6_000);
         emulator.bus.register("cpu-event-halt", () => finish("halt"));
         emulator.add_listener("emulator-loaded", async () => {
             const cpu = emulator.v86.cpu;
@@ -230,6 +254,7 @@ function runGuest(
                 cpu.mem8.set(scratch, SCRATCH);
                 cpu.mem8.set(stack, STACK_BASE);
                 if (install && !(await install(cpu))) { finish("install-failed"); return; }
+                started = performance.now();
                 emulator.run();
             } catch (e) {
                 finish(`error: ${String(e).split("\n")[0]}`);
@@ -342,6 +367,15 @@ for (const t of functions) {
         return true;
     });
     if (!ext.ok) { console.log(`0x${t.entry.toString(16)}  FAIL (external: ${ext.status} at eip=0x${ext.eip.toString(16)}, retired=${ext.retired}, guest retired=${guest.retired})`); fail++; continue; }
+    if (benchIters > 0) {
+        const ratio = guest.ms / Math.max(0.001, ext.ms);
+        console.log(`BENCH 0x${t.entry.toString(16)}  ${t.instructions ?? "?"} insns  iterations=${benchIters}  ` +
+            `v86=${guest.ms.toFixed(0)}ms (${(guest.retired / guest.ms / 1000).toFixed(1)} MIPS, interp=${guest.interpreted})  ` +
+            `translated=${ext.ms.toFixed(0)}ms (${(ext.retired / ext.ms / 1000).toFixed(1)} MIPS, interp=${ext.interpreted}, slowExits=${slowExits.length}, guardExits=${guardExits.length})  ` +
+            `retired ${guest.retired}/${ext.retired}  ${ratio >= 1 ? `${ratio.toFixed(2)}x faster` : `${(1 / ratio).toFixed(2)}x SLOWER`}`);
+        pass++;
+        continue;
+    }
 
     const diffs: string[] = [];
     for (let i = 0; i < 8; i++) {
