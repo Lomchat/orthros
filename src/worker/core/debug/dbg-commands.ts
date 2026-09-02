@@ -952,7 +952,7 @@ export const dbg = {
         return { pages, entries, failed, bytes: bytes.byteLength };
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
-        dispatches: number; misses: number; stalls: number } {
+        dispatches: number; misses: number; stalls: number; recent: string[] } {
         const s = aotInstalled;
         const ex = wasm();
         // pagesReplaced: external page modules a JIT compile of the same page

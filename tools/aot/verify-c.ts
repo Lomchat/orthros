@@ -19,6 +19,7 @@
  */
 
 import { CapstoneDecoder } from "./decoder-capstone";
+import { compileTranslationC } from "./compile-c";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
 const MEM_SIZE = 64 * 1024 * 1024;
@@ -83,6 +84,8 @@ interface RunResult {
     /** x87 state: the eight slots (mantissa + tag, padding excluded), TOP,
      *  the empty bitmap, the status and control words and the dirty flag. */
     fpu: Uint8Array;
+    /** Effective EFLAGS (lazy flags materialised). */
+    eflags: number;
 }
 
 /** A slot's value as f64 bits: relaxed slots hold them directly, true F80
@@ -205,6 +208,7 @@ function runGuest(
                 interpreted: Number(ex["profiler_interpreted_steps_get"]?.() ?? -1),
                 eip: cpu.instruction_pointer[0] >>> 0,
                 fpu: captureFpu(new Uint8Array(cpu.wasm_memory.buffer)),
+                eflags: (cpu.get_eflags?.() ?? 0) >>> 0,
             };
             try { emulator.stop(); } catch { /* already stopped */ }
             resolve(out);
@@ -262,12 +266,9 @@ Bun.spawnSync(["mkdir", "-p", dir]);
 const cPath = `${dir}/batch.c`;
 const wasmPath = `${dir}/batch.wasm`;
 await Bun.write(cPath, batch.c);
-const clang = Bun.spawnSync([
-    "clang", "--target=wasm32", "-O2", "-nostdlib", "-Wl,--no-entry", "-Wl,--import-memory",
-    "-Wl,--allow-undefined", "-o", wasmPath, cPath,
-], { stdout: "pipe", stderr: "pipe" });
-if (clang.exitCode !== 0) {
-    console.error(clang.stderr.toString());
+const compiled = compileTranslationC(cPath, wasmPath);
+if (!compiled.ok) {
+    console.error(compiled.error);
     process.exit(1);
 }
 const wasmBytes = new Uint8Array(await Bun.file(wasmPath).arrayBuffer());
@@ -360,6 +361,13 @@ for (const t of functions) {
     let fpuDiff = false;
     for (let i = 0; i < guest.fpu.length; i++) if (guest.fpu[i] !== ext.fpu[i]) { fpuDiff = true; break; }
     if (fpuDiff) diffs.push(`x87 guest=${describeFpu(guest.fpu)} c=${describeFpu(ext.fpu)}`);
+    // CF, PF, ZF, SF, OF after the run. A translation materialises them at
+    // every exit when its last flag writer is modelled; an unmodelled writer
+    // (shift, multiply, adc/sbb) leaves v86's copy stale, which the x86
+    // calling convention makes unobservable, so this is reported, not judged.
+    const flagMask = 0x8c5;
+    const flagNote = (guest.eflags & flagMask) !== (ext.eflags & flagMask)
+        ? `, flags guest=0x${(guest.eflags & flagMask).toString(16)} c=0x${(ext.eflags & flagMask).toString(16)}` : "";
     // A guard exit is not a divergence: the instruction ran in v86 instead, and
     // the state comparison above is what judges the outcome. It is reported so
     // a synthetic pointer past RAM is visible.
@@ -375,7 +383,7 @@ for (const t of functions) {
         console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (not entered: interpreted ${ext.interpreted} vs ${guest.interpreted}${guardNote})`);
         inconclusive++;
     } else if (diffs.length === 0) {
-        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}`);
+        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}${flagNote}`);
         pass++;
     } else {
         console.log(`0x${t.entry.toString(16)}  FAIL  ${diffs.join("; ")}`);

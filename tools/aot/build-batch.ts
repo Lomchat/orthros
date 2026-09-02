@@ -20,6 +20,7 @@
  */
 
 import { CapstoneDecoder } from "./decoder-capstone";
+import { compileTranslationC } from "./compile-c";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
@@ -115,11 +116,8 @@ if (selectedPath) {
 
 const cPath = `${out}.c`;
 await Bun.write(cPath, batch.c);
-const clang = Bun.spawnSync([
-    "clang", "--target=wasm32", "-O2", "-nostdlib", "-Wl,--no-entry", "-Wl,--import-memory",
-    "-Wl,--allow-undefined", "-o", `${out}.wasm`, cPath,
-], { stdout: "pipe", stderr: "pipe" });
-if (clang.exitCode !== 0) { console.error(clang.stderr.toString()); process.exit(1); }
+const compiled = compileTranslationC(cPath, `${out}.wasm`);
+if (!compiled.ok) { console.error(compiled.error); process.exit(1); }
 
 const manifest = {
     version: 1,

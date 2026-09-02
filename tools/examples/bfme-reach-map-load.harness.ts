@@ -392,8 +392,10 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         // whether the Worker is still spinning.
         if (!profiledAotHang && ((st as any)?.error || retired === 0)) {
             profiledAotHang = true;
-            const rep = await bench.evalPage(`__BS__.harness.dbgCall("report")`, 20_000).catch((e) => ({ error: String(e) }));
-            console.log("   AOT-HANG report " + JSON.stringify(rep).slice(0, 6000));
+            for (const ev of ["fault", "wasm_trap", "guest_crash"]) {
+                const rep = await bench.evalPage(`__BS__.harness.lastEvent(${JSON.stringify(ev)})`, 20_000).catch((e) => ({ error: String(e) }));
+                console.log(`   AOT-HANG ${ev} ` + JSON.stringify(rep).slice(0, 4000));
+            }
             const prof = await bench.profileWorker(6_000, 15).catch((e) => ({ error: String(e) } as any));
             console.log("   AOT-HANG cpu-profile " + JSON.stringify(prof).slice(0, 3000));
         }
