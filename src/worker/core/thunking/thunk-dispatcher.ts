@@ -485,6 +485,13 @@ export class ThunkDispatcher {
      */
     private isDataViewValid(): boolean {
         if (!this.cachedDataView || !this.cachedMem8) return false;
+        // Runs per thunk call. Where the engine exposes ArrayBuffer.detached,
+        // a non-detached cached buffer is still the live one (v86 only ever
+        // replaces the buffer by growing, which detaches the old one) and
+        // no read goes through the memory view's proxy.
+        const detached = (this.cachedDataView.buffer as ArrayBuffer & { detached?: boolean }).detached;
+        if (detached === false) return true;
+        if (detached === true) return false;
         // Check through cachedMem8, as reading byteLength on detached DataView throws error
         try {
             return this.cachedMem8.byteLength > 0 &&

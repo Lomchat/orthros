@@ -77,12 +77,20 @@ export function unregisterSurfaceLockInlineTexture(texture: number): void {
 }
 
 /** Copy a guest-authoritative burst back once, immediately before host/GPU use. */
+let syncView: DataView | null = null;
+
 export function syncSurfaceLockInlineTexture(texture: number, host: Uint8Array, memory: Uint8Array): boolean {
     const row = surfaceLockInlineByTexture.get(texture >>> 0);
     if (!row || !surfaceLockInlineTableBase) return false;
     const addr = surfaceLockInlineTableBase + row.slot * SURFACE_LOCK_INLINE_STRIDE;
     if (addr > memory.length - SURFACE_LOCK_INLINE_STRIDE) return false;
-    const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+    // Per frame per locked texture: the view is kept as long as the guest
+    // memory buffer is the same one (v86 replaces it when the memory grows).
+    const buffer = memory.buffer;
+    if (syncView === null || syncView.buffer !== buffer) {
+        syncView = new DataView(buffer, memory.byteOffset, memory.byteLength);
+    }
+    const view = syncView;
     if (view.getUint32(addr, true) !== row.surface || view.getUint32(addr + 28, true) !== 2) return false;
     const guestPtr = view.getUint32(addr + 8, true);
     if (guestPtr > memory.length - host.length) return false;
