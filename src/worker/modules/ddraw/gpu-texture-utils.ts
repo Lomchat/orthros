@@ -32,6 +32,15 @@ export const RGB555_TO_RGBA = new Uint32Array(32768);
  * Format: 0xAABBGGRR
  */
 export const ARGB1555_TO_RGBA = new Uint32Array(65536);
+/** A4R4G4B4 and X4R4G4B4 → RGBA8888, 4-bit channels expanded exactly (×17). */
+export const ARGB4444_TO_RGBA = new Uint32Array(65536);
+export const XRGB4444_TO_RGBA = new Uint32Array(65536);
+for (let pixel = 0; pixel < 65536; pixel++) {
+    const r8 = ((pixel >> 8) & 0xF) * 17, g8 = ((pixel >> 4) & 0xF) * 17, b8 = (pixel & 0xF) * 17;
+    const a8 = ((pixel >> 12) & 0xF) * 17;
+    ARGB4444_TO_RGBA[pixel] = ((a8 << 24) | (b8 << 16) | (g8 << 8) | r8) >>> 0;
+    XRGB4444_TO_RGBA[pixel] = (0xFF000000 | (b8 << 16) | (g8 << 8) | r8) >>> 0;
+}
 
 /**
  * REVERSE LOOKUPS: RGBA8888 to Surface Formats
@@ -121,6 +130,7 @@ export const enum PixelFormat {
     XRGB8888 = 7,    // X:8 R:8 G:8 B:8 (32-bit, alpha ignored)
     PALETTE8 = 8,    // 8-bit palette indexed
     LUMINANCE8 = 9,  // 8-bit luminance (L → RGB(L,L,L), A=255)
+    XRGB4444 = 10,   // X:4 R:4 G:4 B:4 (alpha ignored)
 }
 
 export interface FormatInfo {
@@ -163,6 +173,9 @@ export function detectPixelFormat(format: FormatInfo): PixelFormat {
         // ARGB4444: A=0xF000, R=0x0F00, G=0x00F0, B=0x000F
         if (rMask === 0x0F00 && gMask === 0x00F0 && bMask === 0x000F && aMask === 0xF000) {
             return PixelFormat.ARGB4444;
+        }
+        if (rMask === 0x0F00 && gMask === 0x00F0 && bMask === 0x000F && !aMask) {
+            return PixelFormat.XRGB4444;
         }
     } else if (bpp === 24) {
         return PixelFormat.RGB888;
@@ -575,6 +588,41 @@ function convertARGB1555ToRGBA(
             if (pixelOffset >= 0 && pixelOffset + 1 < src.length) {
                 const pixel = src[pixelOffset] | (src[pixelOffset + 1] << 8);
                 dst[dstIdx++] = ARGB1555_TO_RGBA[pixel];
+            } else {
+                dst[dstIdx++] = 0xFF000000;
+            }
+        }
+    }
+}
+
+/** 16-bit pixels through a 65,536-entry table (A4R4G4B4 / X4R4G4B4). */
+function convert16ViaTable(
+    src: Uint8Array,
+    srcOffset: number,
+    srcPitch: number,
+    dst: Uint32Array,
+    width: number,
+    height: number,
+    table: Uint32Array,
+    skipBoundsCheck: boolean = false
+): void {
+    let dstIdx = 0;
+    if (skipBoundsCheck) {
+        for (let y = 0; y < height; y++) {
+            const rowOffset = srcOffset + y * srcPitch;
+            for (let x = 0; x < width; x++) {
+                const pixelOffset = rowOffset + x * 2;
+                dst[dstIdx++] = table[src[pixelOffset] | (src[pixelOffset + 1] << 8)];
+            }
+        }
+        return;
+    }
+    for (let y = 0; y < height; y++) {
+        const rowOffset = srcOffset + y * srcPitch;
+        for (let x = 0; x < width; x++) {
+            const pixelOffset = rowOffset + x * 2;
+            if (pixelOffset >= 0 && pixelOffset + 1 < src.length) {
+                dst[dstIdx++] = table[src[pixelOffset] | (src[pixelOffset + 1] << 8)];
             } else {
                 dst[dstIdx++] = 0xFF000000;
             }
@@ -1025,6 +1073,14 @@ export function convertSurfaceToRGBA(
 
         case PixelFormat.ARGB1555:
             convertARGB1555ToRGBA(mem, surfacePtr, pitch, rgba32, width, height, inBounds);
+            break;
+
+        case PixelFormat.ARGB4444:
+            convert16ViaTable(mem, surfacePtr, pitch, rgba32, width, height, ARGB4444_TO_RGBA, inBounds);
+            break;
+
+        case PixelFormat.XRGB4444:
+            convert16ViaTable(mem, surfacePtr, pitch, rgba32, width, height, XRGB4444_TO_RGBA, inBounds);
             break;
 
         case PixelFormat.RGB888:
