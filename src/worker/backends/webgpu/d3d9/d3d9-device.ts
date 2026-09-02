@@ -1995,7 +1995,6 @@ export class D3D9Device {
     }
 
     setMaterial(data: Uint8Array): number {
-        this.ffpVersion++;
         if (this.recordingStateBlock) {
             const copy = new Uint8Array(D3DMATERIAL9_SIZE);
             copy.set(data.subarray(0, Math.min(D3DMATERIAL9_SIZE, data.length)), 0);
@@ -2003,8 +2002,17 @@ export class D3D9Device {
             return 0;
         }
         const size = Math.min(D3DMATERIAL9_SIZE, data.length);
+        // Games re-set the same material for most draws: a byte-identical
+        // material leaves the fixed-function block cache valid.
+        let same = size === D3DMATERIAL9_SIZE;
+        if (same) {
+            const cur = this.materialData;
+            for (let i = 0; i < size; i++) { if (cur[i] !== data[i]) { same = false; break; } }
+        }
+        if (same) return 0;
         this.materialData.fill(0);
         this.materialData.set(data.subarray(0, size), 0);
+        this.ffpVersion++;
         return 0;
     }
 
@@ -2013,12 +2021,23 @@ export class D3D9Device {
     }
 
     setLight(index: number, data: Uint8Array): number {
-        const copy = new Uint8Array(D3DLIGHT9_SIZE);
-        copy.set(data.subarray(0, Math.min(D3DLIGHT9_SIZE, data.length)), 0);
+        const size = Math.min(D3DLIGHT9_SIZE, data.length);
         if (this.recordingStateBlock) {
+            const copy = new Uint8Array(D3DLIGHT9_SIZE);
+            copy.set(data.subarray(0, size), 0);
             this.recordStateBlock({ op: "light", index: index >>> 0, data: copy });
             return 0;
         }
+        // Same light re-set every frame: no copy, no cache invalidation.
+        const existing = this.lights.get(index >>> 0);
+        if (existing && size === D3DLIGHT9_SIZE) {
+            let same = true;
+            for (let i = 0; i < size; i++) { if (existing[i] !== data[i]) { same = false; break; } }
+            if (same) return 0;
+        }
+        const copy = existing ?? new Uint8Array(D3DLIGHT9_SIZE);
+        copy.fill(0);
+        copy.set(data.subarray(0, size), 0);
         this.lights.set(index >>> 0, copy);
         this.ffpVersion++;
         return 0;
