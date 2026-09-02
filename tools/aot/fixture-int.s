@@ -163,3 +163,42 @@ t_narrow:
 1:
     mov [edi+24], ecx
     ret
+
+    .globl t_callee
+t_callee:
+    mov eax, [esp+4]
+    add eax, [esp+8]
+    imul eax, eax, 3
+    ret 8
+
+    .globl t_caller
+t_caller:
+    push esi
+    mov esi, [esp+8]
+    push 5
+    push dword ptr [esi]
+    call t_callee
+    mov [esi+4], eax
+    push eax
+    push 7
+    call t_callee
+    mov [esi+8], eax
+    cmp eax, 100
+    jl 1f
+    mov dword ptr [esi+12], 1
+1:
+    push 1
+    push 2
+    call t_callee_slow
+    mov [esi+16], eax
+    pop esi
+    ret
+
+    .globl t_callee_slow
+t_callee_slow:
+    fld1
+    fsqrt
+    fstp st(0)
+    mov eax, [esp+4]
+    sub eax, [esp+8]
+    ret 8

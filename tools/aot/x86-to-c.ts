@@ -95,6 +95,12 @@ function preservesFlags(m: string): boolean {
 
 const LOOP_LIMIT = 100_000;
 const SIZE_BUDGET = 4096;
+/** Guest instructions one entry may retire (through native calls included)
+ *  before handing control back to the dispatcher, so the scheduler's quantum
+ *  is honoured; and the native call depth a translation may add to the host
+ *  stack before falling back to the dispatcher for the call. */
+const INVOCATION_BUDGET = 100_000;
+const NATIVE_CALL_DEPTH = 24;
 
 type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi";
 
@@ -499,6 +505,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     let calls = 0;
     let fpuUsed = false;
     const x87Helpers = { parseOperand, readExpr, guardMem, guardExit, slowExit };
+    const loads = REG32.map((r, i) => `uint32_t ${r} = (uint32_t)REG32[${i}];`).join(" ");
+    const reloads = REG32.map((r, i) => `${r} = (uint32_t)REG32[${i}];`).join(" ");
+    const stores = REG32.map((r, i) => `REG32[${i}] = (int32_t)${r};`).join(" ");
+    let nativeCalls = 0;
 
     for (const start of order) {
         const block = blocks.get(start)!;
@@ -847,7 +857,24 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const targetOp = direct === null ? parseOperand(term.operand) : null;
             if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
             const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
-            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${n}u; esp -= 4u; ST32(esp, ${(term.addr + term.size) >>> 0}u); ${exitAt("t")} }`);
+            const ret = (term.addr + term.size) >>> 0;
+            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${n}u; esp -= 4u; ST32(esp, ${ret}u);`);
+            // A callee in the same batch is called natively: state goes through
+            // memory both ways, and if the callee came back by ret to our
+            // return address we carry on here; any other exit of the callee is
+            // ours too, with its state already committed (exit_foreign).
+            const resume = indexOf.get(ret);
+            if (direct !== null && resume !== undefined) {
+                nativeCalls++;
+                const fpuOut = fpuUsed ? `if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; fdirty = 0u; } ` : "";
+                const fpuIn = fpuUsed ? ` top = FPU_TOP; fempty = FPU_EMPTY;` : "";
+                lines.push(`#ifdef HAVE_fn_${direct.toString(16)}`);
+                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(0, depth + 1u);`);
+                lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
+                lines.push(`    goto exit_foreign; }`);
+                lines.push(`#endif`);
+            }
+            lines.push(`${exitAt("t")} }`);
         }
         else if (term.mnemonic === "jmp") {
             const direct = directTarget(term.operand);
@@ -861,7 +888,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const bi = indexOf.get(direct);
                 if (bi === undefined) return reject("jmp outside the function");
                 lines.push(`cnt += ${n}u;`);
-                if (direct <= term.addr) lines.push(`if (++loops > ${LOOP_LIMIT}u) { ${exitAt(`${direct >>> 0}u`)} }`);
+                if (direct <= term.addr) lines.push(`if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${direct >>> 0}u`)} }`);
                 lines.push(`b = ${bi}; continue;`);
             }
         }
@@ -872,7 +899,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const taken = indexOf.get(target);
             const fall = indexOf.get(term.addr + term.size);
             if (taken === undefined || fall === undefined) return reject("branch outside the function");
-            const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
+            const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
             lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
         }
         else if (x87Kind(term.mnemonic, term.operand) === "slow") {
@@ -892,27 +919,29 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     if (out.length === 0) return reject("empty body");
 
     const name = `fn_${entry.toString(16)}`;
-    const loads = REG32.map((r, i) => `    uint32_t ${r} = (uint32_t)REG32[${i}];`).join("\n");
-    const stores = REG32.map((r, i) => `    REG32[${i}] = (int32_t)${r};`).join("\n");
     // TOP and the empty bitmap live in locals while the translation runs: no
     // helper can observe them in between, and every exit writes them back.
     const fpuLoad = fpuUsed ? `    uint32_t top = FPU_TOP, fempty = FPU_EMPTY, fdirty = 0u;\n` : "";
     const fpuStore = fpuUsed ? `    if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; }\n` : "";
     const c =
-        `static void ${name}(int b)\n{\n` +
+        `static void ${name}(int b, uint32_t depth)\n{\n` +
         `    const uint32_t mb = mem_base();\n` +
         `    const uint32_t ml = MEM_SIZE;\n` +
-        `${loads}\n` +
+        `    ${loads}\n` +
         `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
+        `    const uint32_t cnt0 = *INSTRUCTION_COUNTER;\n` +
+        `    (void)depth; (void)cnt0;\n` +
         fpuLoad +
         `    for (;;) switch (b) {\n${out.join("\n")}\n` +
         `        default: ip = ${entry >>> 0}u; goto exit;\n    }\n` +
-        `exit:\n${stores}\n` +
+        `exit:\n    ${stores}\n` +
         FLAGS_EPILOGUE +
         fpuStore +
         `    *PREVIOUS_IP = (int32_t)ip;\n` +
         `    *INSTRUCTION_POINTER = (int32_t)ip;\n` +
         `    *INSTRUCTION_COUNTER += cnt;\n` +
+        `    return;\n` +
+        (nativeCalls > 0 ? `exit_foreign:\n    *INSTRUCTION_COUNTER += cnt;\n` : "") +
         `}\n`;
 
     const entries = [{ addr: entry, block: indexOf.get(entry)! }];
@@ -945,9 +974,12 @@ export function assembleBatch(functions: CFunction[]): Batch {
         `__attribute__((export_name("${pm.name}")))\n` +
         `void ${pm.name}(int32_t initial_state)\n{\n` +
         `    switch (initial_state) {\n` +
-        pm.states.map((s, i) => `        case ${i}: ${s.fn}(${s.block}); return;`).join("\n") +
+        pm.states.map((s, i) => `        case ${i}: ${s.fn}(${s.block}, 0u); return;`).join("\n") +
         `\n        default: return;\n    }\n}\n`
     ).join("\n");
-    const c = C_PRELUDE + "\n" + functions.map((f) => f.c).join("\n") + "\n" + pageCode;
+    // Every function is declared and flagged up front, so a call to another
+    // translated function compiles to a native call whatever the order.
+    const decls = functions.map((f) => `#define HAVE_${f.name} 1\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
+    const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + pageCode;
     return { c, functions, pages };
 }
