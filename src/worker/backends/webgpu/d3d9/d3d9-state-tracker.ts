@@ -59,6 +59,9 @@ export class D3D9StateTracker {
 
     // Cached pipeline key
     private pipelineKey: number | null = null;
+    /** Bumped by every setter that changes state: a draw whose version
+     *  matches the last fixed-function block's reuses that block. */
+    version = 0;
     private pipelineKeyDirty = true;
 
     // Performance metrics
@@ -133,6 +136,7 @@ export class D3D9StateTracker {
         this.dirtyFlags.renderStates = true;
         this.pipelineKeyDirty = true;
         this.metrics.stateUpdates++;
+        this.version++;
         return true;
     }
 
@@ -161,6 +165,7 @@ export class D3D9StateTracker {
         for (let i = 0; i < 16; i++) target[i] = matrix[i]!;
         this.dirtyFlags.transforms = true;
         this.metrics.transformUpdates++;
+        this.version++;
         return true;
     }
 
@@ -189,6 +194,7 @@ export class D3D9StateTracker {
         this.fvf = fvf;
         this.dirtyFlags.fvf = true;
         this.pipelineKeyDirty = true;
+        this.version++;
         return true;
     }
 
@@ -200,6 +206,7 @@ export class D3D9StateTracker {
         if (cur && cur.index === index && cur.offset === offset && cur.stride === stride) return false;
         this.streamSource = { index, offset, stride };
         this.dirtyFlags.streams = true;
+        this.version++;
         return true;
     }
 
@@ -209,6 +216,7 @@ export class D3D9StateTracker {
         if (this.streamSource === null) return false;
         this.streamSource = null;
         this.dirtyFlags.streams = true;
+        this.version++;
         return true;
     }
 
@@ -217,6 +225,7 @@ export class D3D9StateTracker {
         if (this.indexSource === index) return false;
         this.indexSource = index;
         this.dirtyFlags.streams = true;
+        this.version++;
         return true;
     }
 
@@ -229,6 +238,7 @@ export class D3D9StateTracker {
         this.textureStages[stage] = textureIndex;
         this.dirtyFlags.textures = true;
         this.metrics.textureChanges++;
+        this.version++;
         return true;
     }
 

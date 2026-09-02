@@ -384,6 +384,7 @@ export class D3D9Device {
      *  the surface pointer → its parent texture pointer (surfaceMeta) before calling us. Switching the
      *  target eagerly flushes the commands accumulated for the previous target as their own pass. */
     setRenderTarget(_index: number, texturePtr: number, face: number = -1): number {
+        this.ffpVersion++;
         this.rtSetsThisFrame++;
         let newTarget: number | null = null;
         let newFace = -1;
@@ -522,6 +523,11 @@ export class D3D9Device {
 
     // Fixed-function state commonly touched by older D3D9 games
     private textureStageStates = new Map<number, number>();
+    /** Device-side fixed-function inputs that the state tracker does not own
+     *  (stage states, material, lights, clip planes, declaration, target):
+     *  bumped on every change, part of the uniform block's cache key. */
+    private ffpVersion = 0;
+    private ffpBlockCache: { trackerVersion: number; deviceVersion: number; w: number; h: number; block: Float32Array } | null = null;
     /** Diagnostic (dbg.d3d9DumpShaders): sticky record of whether the app ever set D3DTTFF_PROJECTED. */
     private projectedSetCount = 0;
     private projectedFlagsSeen = 0;
@@ -1005,6 +1011,7 @@ export class D3D9Device {
         }
         if (this.activeVertexDecl !== internalHandle) {
             this.activeVertexDecl = internalHandle;
+            this.ffpVersion++;
             this.currentPipelineKey = null;
             this.currentPipelineId = null;
         }
@@ -1937,6 +1944,7 @@ export class D3D9Device {
             return 0;
         }
         this.textureStageStates.set(key, v);
+        this.ffpVersion++;
         // Keep the guest shadow coherent for state-block Apply and all other
         // paths that call the device directly rather than through its trampoline.
         if (stage >= 0 && stage < 8 && type >= 0 && type < 64) {
@@ -1987,6 +1995,7 @@ export class D3D9Device {
     }
 
     setMaterial(data: Uint8Array): number {
+        this.ffpVersion++;
         if (this.recordingStateBlock) {
             const copy = new Uint8Array(D3DMATERIAL9_SIZE);
             copy.set(data.subarray(0, Math.min(D3DMATERIAL9_SIZE, data.length)), 0);
@@ -2011,6 +2020,7 @@ export class D3D9Device {
             return 0;
         }
         this.lights.set(index >>> 0, copy);
+        this.ffpVersion++;
         return 0;
     }
 
@@ -2025,6 +2035,7 @@ export class D3D9Device {
             return 0;
         }
         this.lightEnables.set(index >>> 0, value);
+        this.ffpVersion++;
         return 0;
     }
 
@@ -2041,6 +2052,7 @@ export class D3D9Device {
             return 0;
         }
         this.clipPlanes.set(index >>> 0, copy);
+        this.ffpVersion++;
         return 0;
     }
 
@@ -3830,7 +3842,20 @@ export class D3D9Device {
         const frame = this.commandRecorder.getCurrentFrame();
         const index = frame.fixedStateCount;
         const { w, h } = this.getCurrentTargetSize();
-        const block = this.buildFfpUniformBlock(w, h);
+        // Consecutive draws mostly share their fixed-function state: rebuild
+        // the block (allocations, light parsing, 432 floats) only when a
+        // setter has run since the last one. Textures and samplers are
+        // resolved per draw regardless.
+        const tv = this.stateTracker.version, dv = this.ffpVersion;
+        const c = this.ffpBlockCache;
+        const debugForced = (globalThis as any).__d3d9ForceFullbright === true;
+        let block: Float32Array;
+        if (c && !debugForced && c.trackerVersion === tv && c.deviceVersion === dv && c.w === w && c.h === h) {
+            block = c.block;
+        } else {
+            block = this.buildFfpUniformBlock(w, h);
+            if (!debugForced) this.ffpBlockCache = { trackerVersion: tv, deviceVersion: dv, w, h, block };
+        }
         const state = frame.nextFixedState(block.length);
         state.uniforms.set(block);
         const forceWhite = (globalThis as any).__d3d9ForceWhiteTexture === true;
