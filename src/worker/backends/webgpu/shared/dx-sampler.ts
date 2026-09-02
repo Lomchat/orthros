@@ -49,7 +49,7 @@ const clampAniso = (n: number): number => Math.max(1, Math.min(16, Math.floor(n)
  */
 export class DxSamplerCache {
     private device: GPUDevice;
-    private cache = new Map<string, GPUSampler>();
+    private cache = new Map<number, GPUSampler>();
 
     constructor(device: GPUDevice) {
         this.device = device;
@@ -110,18 +110,18 @@ export class DxSamplerCache {
         return desc;
     }
 
-    /** Stable cache key for an effective descriptor. */
-    private static keyOf(d: GPUSamplerDescriptor): string {
+    /** Stable cache key for an effective descriptor, packed into an integer:
+     *  this runs per texture stage per draw, so no string is built. */
+    private static keyOf(d: GPUSamplerDescriptor): number {
         const fb = (f: GPUFilterMode | GPUMipmapFilterMode | undefined): number => (f === "linear" ? 1 : 0);
         const ab = (a: GPUAddressMode | undefined): number =>
             a === "repeat" ? 1 : a === "mirror-repeat" ? 2 : a === "clamp-to-edge" ? 0 : 3;
-        return [
-            fb(d.minFilter), fb(d.magFilter), fb(d.mipmapFilter),
-            ab(d.addressModeU), ab(d.addressModeV), ab(d.addressModeW),
-            d.maxAnisotropy ?? 1,
-            d.lodMinClamp ?? 0,
-            d.lodMaxClamp === undefined ? -1 : d.lodMaxClamp,
-        ].join(":");
+        const aniso = Math.min(31, d.maxAnisotropy ?? 1);
+        const lodMin = Math.min(31, Math.max(0, Math.round(d.lodMinClamp ?? 0)));
+        const lodMax = d.lodMaxClamp === undefined ? 0 : Math.min(31, Math.max(0, Math.round(d.lodMaxClamp))) + 1;
+        return fb(d.minFilter) | (fb(d.magFilter) << 1) | (fb(d.mipmapFilter) << 2)
+            | (ab(d.addressModeU) << 3) | (ab(d.addressModeV) << 5) | (ab(d.addressModeW) << 7)
+            | (aniso << 9) | (lodMin << 14) | (lodMax << 19);
     }
 
     /** Acquire (create-or-reuse) the GPU sampler for the given spec. */

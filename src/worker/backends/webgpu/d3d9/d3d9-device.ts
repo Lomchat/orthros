@@ -447,6 +447,9 @@ export class D3D9Device {
     private mipLevelLocks: Map<string, { guestPtr: number; pitch: number }> = new Map();
     // Persisted mip pixel data (level > 0) for D3DXFilterTexture and LockRect round-trips.
     private mipLevelData: Map<string, Uint8Array> = new Map();
+    /** Which mip levels have authored data, per texture pointer (bit = level):
+     *  what ensureTexture asks per draw, without building a key string. */
+    private mipPresent: Map<number, number> = new Map();
 
     // Level-0 textures remain host-authoritative, but small transient guest
     // backings are retained lazily for textures that are actually locked. This
@@ -1705,18 +1708,21 @@ export class D3D9Device {
             }
         }
         this.mipLevelData.set(`${texPtr}:${level}`, out);
+        this.mipPresent.set(texPtr, (this.mipPresent.get(texPtr) ?? 0) | (1 << level));
         return true;
     }
 
     clearMipLevelData(texPtr?: number): void {
         if (texPtr === undefined) {
             this.mipLevelData.clear();
+            this.mipPresent.clear();
             return;
         }
         const prefix = `${texPtr}:`;
         for (const key of this.mipLevelData.keys()) {
             if (key.startsWith(prefix)) this.mipLevelData.delete(key);
         }
+        this.mipPresent.delete(texPtr);
     }
 
     unlockTexture(texPtr: number, level: number, memory: Uint8Array): number {
@@ -1734,6 +1740,7 @@ export class D3D9Device {
                 const saved = new Uint8Array(bytes);
                 saved.set(memory.subarray(lock.guestPtr, lock.guestPtr + bytes));
                 this.mipLevelData.set(key, saved);
+                this.mipPresent.set(texPtr, (this.mipPresent.get(texPtr) ?? 0) | (1 << level));
                 System.getInstance().process?.memory.free(lock.guestPtr);
                 this.mipLevelLocks.delete(key);
                 // Mark dirty so ensureTexture re-uploads (and re-sizes the chain) with the new mip.
@@ -3860,7 +3867,7 @@ export class D3D9Device {
         // guest LockRect'd). Conservative: never create empty slots that would sample as black.
         const levelCount = effectiveMipLevels(
             this.textures.getLevels(index), width, height,
-            (lvl) => this.mipLevelData.has(`${handle}:${lvl}`),
+            (lvl) => ((this.mipPresent.get(handle) ?? 0) & (1 << lvl)) !== 0,
         );
 
         let gpuTexture = this.textures.getGpuTexture(index);

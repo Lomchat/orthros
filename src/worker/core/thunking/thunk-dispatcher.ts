@@ -3416,11 +3416,27 @@ export class ThunkDispatcher {
      *  directly). Without it the guest shadow drifts behind the tracker and wrong-skips a later set
      *  that matches the stale shadow (the NFSU state-block translucency/untexture bug). */
     writeShadowSlot(dllName: string, funcName: string, slot: number, value: number): void {
-        const h = this.shadowHandles.get(`${dllName}:${funcName}`.toLowerCase());
+        // Called per shadowed state set (thousands per frame): no key string
+        // and no DataView per call. The lookup caches the lowercased key by
+        // the two identity strings, the view by the memory it wraps.
+        let byFunc = this.shadowKeyCache.get(dllName);
+        if (!byFunc) { byFunc = new Map(); this.shadowKeyCache.set(dllName, byFunc); }
+        let h = byFunc.get(funcName);
+        if (h === undefined) {
+            h = this.shadowHandles.get(`${dllName}:${funcName}`.toLowerCase()) ?? null;
+            byFunc.set(funcName, h);
+        }
         if (!h || !this.getMemory || slot < 0 || slot >= h.slotCount) return;
         const mem = this.getMemory();
-        new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setInt32(h.shadowBase + slot * 4, value | 0, true);
+        if (this.shadowView === null || this.shadowViewMem !== mem) {
+            this.shadowView = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            this.shadowViewMem = mem;
+        }
+        this.shadowView.setInt32(h.shadowBase + slot * 4, value | 0, true);
     }
+    private shadowKeyCache = new Map<string, Map<string, { shadowBase: number; slotCount: number } | null>>();
+    private shadowView: DataView | null = null;
+    private shadowViewMem: Uint8Array | null = null;
 
     /** Raw guest-RAM shadow slot values for a shadowed setter (diagnostic: diff vs the JS
      *  state-of-record to find wrong-skip desyncs). Returns null if unknown/not ready. */
