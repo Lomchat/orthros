@@ -350,30 +350,37 @@ function installHotProfileAutosave(gameId: string): void {
 
 let hotProfilePrecompileTimer: number | null = null;
 const HOT_PROFILE_PRECOMPILE_TICK_MS = 40;
-const HOT_PROFILE_PRECOMPILE_MAX_MS = 180_000;
+const HOT_PROFILE_PRECOMPILE_IDLE_MS = 1_000;
+const HOT_PROFILE_PRECOMPILE_MAX_MS = 20 * 60_000;
 const HOT_PROFILE_PRECOMPILE_BUDGET = 4;
 
 /**
  * Compile the profile's pages ahead of the guest reaching them, a few per
  * tick so the guest keeps running in between: the compile bursts of a new
  * game phase then land during loading instead of in play. Pages whose bytes
- * are not there yet are retried until the deadline.
+ * are not there yet (a map's code loads minutes after boot) are polled once
+ * a second until every known page owns a module.
  */
 function installHotProfilePrecompile(): void {
-  if (hotProfilePrecompileTimer !== null) clearInterval(hotProfilePrecompileTimer);
+  if (hotProfilePrecompileTimer !== null) clearTimeout(hotProfilePrecompileTimer);
   const started = performance.now();
-  hotProfilePrecompileTimer = setInterval(() => {
+  let lastRemaining = -1;
+  const tick = (): void => {
+    hotProfilePrecompileTimer = null;
     const ex = preemptionManager.getWasmExports();
     const fn = ex?.jit_hot_profile_precompile;
-    if (typeof fn !== "function") return;
+    if (typeof fn !== "function") { hotProfilePrecompileTimer = setTimeout(tick, HOT_PROFILE_PRECOMPILE_IDLE_MS) as unknown as number; return; }
     const remaining = fn(HOT_PROFILE_PRECOMPILE_BUDGET) >>> 0;
     if (remaining === 0 || performance.now() - started > HOT_PROFILE_PRECOMPILE_MAX_MS) {
-      clearInterval(hotProfilePrecompileTimer!);
-      hotProfilePrecompileTimer = null;
       Logger.info(LogCategory.SYSTEM,
         `[HOTP] precompile done: ${ex.jit_hot_profile_precompiled?.() >>> 0} pages compiled ahead, ${remaining} known pages without a module`);
+      return;
     }
-  }, HOT_PROFILE_PRECOMPILE_TICK_MS) as unknown as number;
+    const progressed = remaining !== lastRemaining;
+    lastRemaining = remaining;
+    hotProfilePrecompileTimer = setTimeout(tick, progressed ? HOT_PROFILE_PRECOMPILE_TICK_MS : HOT_PROFILE_PRECOMPILE_IDLE_MS) as unknown as number;
+  };
+  hotProfilePrecompileTimer = setTimeout(tick, HOT_PROFILE_PRECOMPILE_TICK_MS) as unknown as number;
 }
 
 function installRegistryAutosave(gameId: string): void {
