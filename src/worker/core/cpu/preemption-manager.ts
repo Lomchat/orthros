@@ -322,6 +322,37 @@ export class PreemptionManager {
     }
     getJitConfigOverrides(): ReadonlyMap<number, number> { return this.pendingJitConfig; }
 
+    /** Hot-page profile (v86 `HOTP` image): pages a previous session compiled are
+     *  compiled at first touch instead of after the interpreted-hotness ramp.
+     *  Kept here so it survives v86 re-creation and can be set before boot. */
+    private jitHotProfile: Uint8Array | null = null;
+
+    setJitHotProfile(bytes: Uint8Array | null): { pages: number } | null {
+        this.jitHotProfile = bytes;
+        if (!bytes) {
+            this.wasmExports?.jit_hot_profile_clear?.();
+            return { pages: 0 };
+        }
+        return this.applyJitHotProfile();
+    }
+    getJitHotProfile(): Uint8Array | null { return this.jitHotProfile; }
+
+    private applyJitHotProfile(): { pages: number } | null {
+        const ex = this.wasmExports;
+        const bytes = this.jitHotProfile;
+        if (!bytes || !ex?.jit_hot_profile_io_alloc || !ex.jit_hot_profile_import_commit) return null;
+        this.refreshViews();
+        const mem = this.wasmMemoryObj ?? ex.memory;
+        if (!mem?.buffer) return null;
+        const ptr = ex.jit_hot_profile_io_alloc(bytes.length) >>> 0;
+        // The staging Vec lives in wasm memory; re-read the buffer after the
+        // allocation in case it grew the memory and detached the old one.
+        new Uint8Array(mem.buffer, ptr, bytes.length).set(bytes);
+        const pages = ex.jit_hot_profile_import_commit(bytes.length) >>> 0;
+        console.log(`[PERF] JIT hot-page profile: ${pages} pages from ${bytes.length} bytes`);
+        return { pages };
+    }
+
     setDirectBlockChaining(on: boolean): void {
         this.directBlockChainingRequested = on;
         this.directBlockChainingEnabled = on && this.directBlockChainingSupported;
@@ -651,6 +682,9 @@ export class PreemptionManager {
                 this.wasmExports.set_jit_config(index, value);
             }
         }
+        // A fresh wasm instance starts with an empty profile; re-install the
+        // one this authority holds so a pre-boot import reaches the guest.
+        this.applyJitHotProfile();
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.
         // v86 is re-created per game load, which clears the wasm dbg_* statics; the

@@ -39,6 +39,12 @@ const holdSec = Number(arg("hold", "240"));
  *  get" term, which otherwise dominates every comparison. */
 const workTarget = Number(arg("work", "0"));
 const bootTimeoutSec = Number(arg("boot-timeout", "400"));
+/** Hot-page profile (HOTP image) to install before the guest boots, and the
+ *  file to write the merged profile to after the hold. Pages the profile knows
+ *  compile at first touch, so a second session skips the interpreted ramp the
+ *  first one paid; comparing the two runs is the gate for that mechanism. */
+const importProfile = arg("import-profile", "");
+const exportProfile = arg("export-profile", "");
 const tag = `load-${Date.now()}`;
 
 interface Sample { present: number; draws: number }
@@ -221,6 +227,17 @@ if (process.argv.includes("--partial-eviction")) {
         await bench.dbg("jitPartialEviction", true).catch((e) => String(e))));
 }
 
+if (importProfile) {
+    // Before the guest boots: the authority records the profile and installs it
+    // on v86 init. If the worker is already past init, it installs immediately
+    // and the pages touched so far simply miss the forced compile.
+    const b64 = Buffer.from(await Bun.file(importProfile).arrayBuffer()).toString("base64");
+    const applied = await bench.evalPage(
+        `__BS__.harness.dbgCall("jitHotProfileImport", ${JSON.stringify(b64)})`, 60_000)
+        .catch((e) => `import failed: ${e}`);
+    console.log(`import-profile ${importProfile} (${b64.length} b64 chars) -> ${JSON.stringify(applied)}`);
+}
+
 const t0 = performance.now();
 while (performance.now() - t0 < bootTimeoutSec * 1_000) {
     const s = await sample(bench).catch(() => null);
@@ -228,6 +245,8 @@ while (performance.now() - t0 < bootTimeoutSec * 1_000) {
     await Bun.sleep(2_000);
 }
 console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s`);
+console.log("boot jit " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)));
+console.log("boot hot-profile " + JSON.stringify(await bench.dbg("jitHotProfileStats").catch(() => null)));
 
 // After boot, not before: these go straight to the wasm instance, which does not
 // exist until the game has loaded. Applied earlier they silently do nothing.
@@ -307,8 +326,14 @@ if (process.argv.includes("--attribute-chain-misses")) {
 let prev = await sample(bench);
 let prevJit = await jitStats(bench);
 let prevInterp = await interpShare(bench);
+// Read-and-reset now, or the first window's scheduler counters cover the whole
+// boot and menu instead of ten seconds of loading.
+await sleepStats(bench);
 const jit0 = prevJit;
 const tL = performance.now();
+/** Per-window frame rate through the hold, so the load phase can be isolated
+ *  from the gameplay that follows it rather than averaged together with it. */
+const holdFps: number[] = [];
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     await armHot(bench);
     await Bun.sleep(10_000);
@@ -317,13 +342,14 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     const j = await jitStats(bench);
     const ip = await interpShare(bench);
     const dp = s.present - prev.present;
+    holdFps.push(dp / 10);
     // jitStats now resets, so its values already cover this window.
     const d = (k: string) => (j ? (j[k] ?? 0) : 0);
     const di = (k: string) => (ip && prevInterp ? (ip[k] ?? 0) - (prevInterp[k] ?? 0) : 0);
     const retired = di("retired");
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
-        + ` compiled=${d("completed")} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
+        + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
     // Entry histograms rank by dispatch entries, not time. Confirm the first
@@ -465,6 +491,17 @@ if (process.argv.includes("--profile-ingame")) {
         console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
         console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
+        // The load phase is the leading run of windows before the frame rate
+        // recovers, NOT a fixed time slice: averaging a 40s stall together with
+        // the gameplay that follows reports the gameplay and hides the stall.
+        {
+            const lead: number[] = [];
+            for (const f of holdFps) { if (f > 10) break; lead.push(f); }
+            const avg = lead.length > 0 ? lead.reduce((a, b) => a + b, 0) / lead.length : 0;
+            console.log(`load-phase stallSec=${lead.length * 10} fpsDuringStall=${avg.toFixed(2)}`
+                + ` windows=${JSON.stringify(lead)}`);
+        }
+        console.log("in-game hot-profile " + JSON.stringify(await bench.dbg("jitHotProfileStats").catch(() => null)));
         console.log("in-game fpu " + JSON.stringify(await bench.dbg("fpuRelaxedReport").catch(() => null)));
         console.log("in-game d3d9 " + JSON.stringify(await bench.dbg("d3d9Perf").catch(() => null)));
         console.log("in-game fastmem " + JSON.stringify(await bench.dbg("fastmemStats").catch(() => null)));
@@ -508,5 +545,17 @@ console.log("RESULT " + JSON.stringify({
     jitAtLoadStart: jit0,
     jitAtLoadEnd: await jitStats(bench),
     interpretedAtLoadEnd: await interpShare(bench),
+    hotProfile: await bench.dbg("jitHotProfileStats").catch(() => null),
 }));
+if (exportProfile) {
+    const b64 = await bench.evalPage<string | null>(
+        `__BS__.harness.dbgCall("jitHotProfileExport")`, 60_000).catch(() => null);
+    if (typeof b64 === "string" && b64.length > 0) {
+        const bytes = Buffer.from(b64, "base64");
+        await Bun.write(exportProfile, bytes);
+        console.log(`export-profile ${exportProfile}: ${bytes.length} bytes`);
+    } else {
+        console.log(`export-profile FAILED: ${JSON.stringify(b64)}`);
+    }
+}
 bench.close();

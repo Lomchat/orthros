@@ -857,6 +857,45 @@ export const dbg = {
         console.log(`[dbg] jit_config[${index}] = ${applied}`);
         return applied;
     },
+    /** Export the hot-page profile as base64 of v86's HOTP image: every page
+     *  that owns a module or is being compiled, merged with any imported
+     *  profile whose pages still match. */
+    jitHotProfileExport(): string | null {
+        const w = wasm(); if (!w?.jit_hot_profile_export_build) return null;
+        const len = w.jit_hot_profile_export_build() >>> 0;
+        const ptr = w.jit_hot_profile_io_ptr() >>> 0;
+        const mem = (globalThis as any).preemption?.getWasmExports?.()?.memory ?? w.memory;
+        const bytes = new Uint8Array(mem.buffer, ptr, len).slice();
+        let s = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+            s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000) as unknown as number[]);
+        }
+        console.log(`[dbg] hot profile export: ${len} bytes, pages=${w.jit_hot_profile_pages?.() >>> 0}`);
+        return btoa(s);
+    },
+    /** Install a hot-page profile (base64 HOTP image, or null to clear). Works
+     *  before boot: the authority holds it and installs it on every v86 init. */
+    jitHotProfileImport(b64: string | null): { pages: number } | null {
+        const pm = (globalThis as any).preemption;
+        if (!pm?.setJitHotProfile) return null;
+        if (!b64) return pm.setJitHotProfile(null);
+        const s = atob(b64);
+        const bytes = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+        const r = pm.setJitHotProfile(bytes);
+        console.log(`[dbg] hot profile import: ${bytes.length} bytes -> ${r ? JSON.stringify(r) : "recorded for next init"}`);
+        return r ?? { pages: -1 };
+    },
+    jitHotProfileStats(): { pages: number; forced: number; mismatches: number } | null {
+        const w = wasm(); if (!w?.jit_hot_profile_pages) return null;
+        const s = {
+            pages: w.jit_hot_profile_pages() >>> 0,
+            forced: w.jit_hot_profile_forced?.() >>> 0,
+            mismatches: w.jit_hot_profile_mismatches?.() >>> 0,
+        };
+        console.log(`[dbg] hot profile: pages=${s.pages} forced=${s.forced} mismatches=${s.mismatches}`);
+        return s;
+    },
     /** Cold/warm JIT compilation observability. Times include browser compile
      *  latency and event-loop scheduling until the module is published. */
     jitCompileStats(reset = false): Record<string, number> | null {
@@ -901,6 +940,15 @@ export const dbg = {
             partialEvictions: w.jit_get_partial_evictions?.() >>> 0,
             evictedModules: w.jit_get_evicted_modules?.() >>> 0,
             evictionFallbacks: w.jit_get_eviction_fallbacks?.() >>> 0,
+            // Synchronous worker CPU in analysis + wasm emission, as opposed to
+            // totalMs which is the browser's asynchronous compile latency.
+            codegenMs: (w.jit_get_codegen_total_us?.() ?? 0) / 1000,
+            codegenMaxMs: (w.jit_get_codegen_max_us?.() ?? 0) / 1000,
+            codegenCount: w.jit_get_codegen_count?.() >>> 0,
+            codegenBytes: w.jit_get_codegen_bytes?.() ?? 0,
+            hotForced: w.jit_hot_profile_forced?.() >>> 0,
+            hotMismatch: w.jit_hot_profile_mismatches?.() >>> 0,
+            hotPages: w.jit_hot_profile_pages?.() >>> 0,
         };
         if (reset) {
             w.jit_reset_compile_stats?.();
