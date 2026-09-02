@@ -217,3 +217,109 @@ t_negimm:
     mov [edi], eax
     mov [edi+4], edx
     ret
+
+    .globl t_shifts
+t_shifts:
+    mov edi, [esp+4]
+    mov eax, 0x80000001
+    shl eax, 1
+    setc cl
+    seto ch
+    mov edx, 0x80000000
+    sar edx, 4
+    setc dl
+    sets dh
+    mov ebx, 3
+    shr ebx, 1
+    setc bl
+    setz bh
+    mov [edi], eax
+    mov [edi+4], ecx
+    mov [edi+8], edx
+    mov [edi+12], ebx
+    mov al, 0x81
+    shl al, 1
+    setc ah
+    mov cl, 3
+    mov si, 0x8000
+    shr si, cl
+    setz cl
+    mov edx, 0x12345678
+    shl edx, 0
+    setc dl
+    mov [edi+16], eax
+    mov [edi+20], ecx
+    mov [edi+24], esi
+    mov [edi+28], edx
+    ret
+
+    .globl t_adc_sbb
+t_adc_sbb:
+    mov edi, [esp+4]
+    mov eax, 0xffffffff
+    add eax, 1
+    mov ecx, 5
+    adc ecx, 0
+    setc dl
+    seto dh
+    mov al, 0xff
+    add al, 1
+    mov bl, 0x7f
+    adc bl, 0
+    seto bh
+    sets al
+    mov esi, 3
+    cmp esi, 4
+    sbb esi, esi
+    setc ch
+    mov edx, 0x80000000
+    sub edx, 1
+    mov ebp, 0
+    sbb ebp, 0x7fffffff
+    seto cl
+    mov [edi], eax
+    mov [edi+4], ecx
+    mov [edi+8], ebx
+    mov [edi+12], esi
+    mov [edi+16], ebp
+    ret
+
+    .globl t_mul_flags
+t_mul_flags:
+    mov edi, [esp+4]
+    mov eax, 0x10000
+    mov ecx, 0x10000
+    mul ecx
+    setc bl
+    seto bh
+    mov eax, 0x7fffffff
+    imul eax, eax, 2
+    seto cl
+    mov edx, 3
+    imul edx, edx, 7
+    seto ch
+    mov [edi], ebx
+    mov [edi+4], ecx
+    ret
+
+    .globl t_crossblock
+t_crossblock:
+    mov edi, [esp+4]
+    mov eax, [edi]
+    cmp eax, 10
+    jmp 1f
+1:
+    sbb ecx, ecx
+    setl dl
+    jg 2f
+    or ecx, 0x100
+2:
+    mov [edi+4], ecx
+    mov [edi+8], edx
+    mov eax, [edi+12]
+    shl eax, 3
+    jmp 3f
+3:
+    setc cl
+    mov [edi+16], ecx
+    ret

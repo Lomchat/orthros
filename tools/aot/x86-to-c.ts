@@ -76,6 +76,7 @@ const COND_BRANCH = new Set([
 /** Flag producers a consumer can read. `sahf` and the fcomi family carry the
  *  x87 compare result into EFLAGS. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec", "neg",
+    "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
     "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi"]);
 /** Instructions that leave the flags alone; anything else between a producer
@@ -102,7 +103,7 @@ const SIZE_BUDGET = 4096;
 const INVOCATION_BUDGET = 100_000;
 const NATIVE_CALL_DEPTH = 24;
 
-type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi";
+type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi" | "raw" | "runtime";
 
 interface Operand {
     kind: "reg32" | "reg16" | "reg8lo" | "reg8hi" | "imm" | "mem";
@@ -293,6 +294,13 @@ function flagExprs(kind: ProducerKind): { ZF: string; SF: string; CF: string | n
         // SF != OF is false.
         case "fcomi":
             return { ZF: `((fa >> 6) & 1u)`, SF: "0", CF: `(fa & 1u)`, SO: "0", PF: `((fa >> 2) & 1u)` };
+        // raw: fa holds the materialised CF|PF|ZF|SF|OF bits (shifts, adc/sbb,
+        // multiplies). runtime: no producer in this block; the flags are
+        // whatever the last producer left (fk...) or, with fk = 0, v86's own.
+        case "raw":
+            return { ZF: `((fa >> 6) & 1u)`, SF: `((fa >> 7) & 1u)`, CF: `(fa & 1u)`, SO: `(((fa >> 7) & 1u) != ((fa >> 11) & 1u))`, PF: `((fa >> 2) & 1u)` };
+        case "runtime":
+            return { ZF: `((fl >> 6) & 1u)`, SF: `((fl >> 7) & 1u)`, CF: `(fl & 1u)`, SO: `(((fl >> 7) & 1u) != ((fl >> 11) & 1u))`, PF: `((fl >> 2) & 1u)` };
     }
 }
 
@@ -372,6 +380,25 @@ typedef uint16_t __attribute__((aligned(1))) u16u;
 __attribute__((import_module("env"), import_name("mem_base"))) uint32_t mem_base(void);
 __attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(uint32_t addr);
+__attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_eflags(void);
+#define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
+/* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
+static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
+    uint32_t cf, zf, sf, of, pf;
+    switch (fk) {
+    case 0: return (uint32_t)get_eflags() & 0x8d5u;
+    case 1: cf = fa < fb; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fb) & (fa ^ fr)) >> 31; break;
+    case 2: cf = fc; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fr) & (fb ^ fr)) >> 31; break;
+    case 3: cf = 0u; zf = fr == 0u; sf = fr >> 31; of = 0u; break;
+    case 4: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fr == fb; break;
+    case 5: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fa == fb; break;
+    case 6: return ((uint32_t)FLAGS & 0x800u) | (fa & 0xd5u);
+    default: return fa & 0x8d5u;
+    }
+    pf = (__builtin_parity(fr & 0xffu) == 0);
+    return cf | (pf << 2) | (zf << 6) | (sf << 7) | (of << 11);
+}
+
 #define LD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
 #define LD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
 #define LD32(a) (*(volatile u32u *)(uintptr_t)(mb + (a)))
@@ -380,29 +407,10 @@ __attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(u
 #define ST32(a, v) (*(volatile u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
 ` + X87_PRELUDE;
 
-/**
- * Materialise the flags of the last modelled producer into v86's EFLAGS at
- * every exit, so the interpreter or a caller reads what the guest would hold.
- * fk: 1 cmp/sub/neg/cmps (fa, fb, fr), 2 add (fa, fb, fr, fc), 3 and/or/xor/test (fr),
- * 4 inc / 5 dec (fa, fb = width minimum, fr; CF unchanged), 6 sahf (fa = AH).
- * AF is not modelled (cleared); no game reads it outside BCD arithmetic.
- */
+/** Materialise the last modelled producer's flags into v86's EFLAGS at every
+ *  exit (fk 0 = none ran since entry, so v86's copy is already right). */
 const FLAGS_EPILOGUE =
-    `    if (fk) {\n` +
-    `        uint32_t f, cf, zf, sf, of, pf;\n` +
-    `        switch (fk) {\n` +
-    `        case 1: cf = fa < fb; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fb) & (fa ^ fr)) >> 31; pf = (__builtin_parity(fr & 0xffu) == 0); break;\n` +
-    `        case 2: cf = fc; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fr) & (fb ^ fr)) >> 31; pf = (__builtin_parity(fr & 0xffu) == 0); break;\n` +
-    `        case 3: cf = 0u; zf = fr == 0u; sf = fr >> 31; of = 0u; pf = (__builtin_parity(fr & 0xffu) == 0); break;\n` +
-    `        case 4: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fr == fb; pf = (__builtin_parity(fr & 0xffu) == 0); break;\n` +
-    `        case 5: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fa == fb; pf = (__builtin_parity(fr & 0xffu) == 0); break;\n` +
-    `        default: cf = zf = sf = of = pf = 0u; break;\n` +
-    `        }\n` +
-    `        if (fk == 6u) f = ((uint32_t)FLAGS & 0x800u) | (fa & 0xd5u);\n` +
-    `        else f = ((uint32_t)FLAGS & 0x800u & 0u) | cf | (pf << 2) | (zf << 6) | (sf << 7) | (of << 11);\n` +
-    `        FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | f);\n` +
-    `        FLAGS_CHANGED = 0;\n` +
-    `    }\n`;
+    `    if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; }\n`;
 
 /** Operand expression of a call/jmp target that is not a direct address. */
 function indirectTargetExpr(operand: string): string | null {
@@ -534,20 +542,26 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     return reject(`${block.insns[i]!.mnemonic} after unmodelled flag writer ${m}`);
                 }
             }
-            if (p < 0) return reject(`${block.insns[i]!.mnemonic} with no flag producer in its block`);
+            // No producer in this block: the flags are read at run time from
+            // the last producer of this invocation, or from v86 when none ran.
             producerOf.set(i, p);
-            captured.add(p);
+            if (p >= 0) captured.add(p);
         }
         const kinds = new Map<number, ProducerKind>();
+        const runtimeFlags = (i: number, lines: string[]): void => {
+            if (producerOf.get(i) === -1) lines.push(`fl = x86_flags_now(fk, fa, fb, fr, fc);`);
+        };
         const condFor = (i: number, cc: string): string | null => {
-            const kind = kinds.get(producerOf.get(i)!);
+            const p = producerOf.get(i)!;
+            const kind = p === -1 ? "runtime" : kinds.get(p);
             return kind ? conditionExpr(cc, kind) : null;
         };
         const carryFor = (i: number): string | null => {
-            const kind = kinds.get(producerOf.get(i)!);
+            const p = producerOf.get(i)!;
+            const kind = p === -1 ? "runtime" : kinds.get(p);
             return kind ? flagExprs(kind).CF : null;
         };
-        const producerName = (i: number): string => block.insns[producerOf.get(i)!]!.mnemonic;
+        const producerName = (i: number): string => { const p = producerOf.get(i)!; return p === -1 ? "(runtime flags)" : block.insns[p]!.mnemonic; };
 
         for (let i = 0; i < n; i++) {
             const insn = block.insns[i]!;
@@ -653,6 +667,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (!dst) return reject(`operand: ${mnemonic} ${dstText}`);
 
             if (SETCC.test(mnemonic)) {
+                runtimeFlags(i, lines);
                 const cond = condFor(i, mnemonic.slice(3));
                 if (cond === null) return reject(`${mnemonic} after ${producerName(i)}`);
                 if (operandWidth(dst) !== 1) return reject(`${mnemonic} ${dstText}`);
@@ -664,6 +679,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
             if (CMOVCC.test(mnemonic)) {
                 if (!srcText) return reject(`${mnemonic} missing source`);
+                runtimeFlags(i, lines);
                 const cond = condFor(i, mnemonic.slice(4));
                 if (cond === null) return reject(`${mnemonic} after ${producerName(i)}`);
                 const src = parseOperand(srcText);
@@ -679,18 +695,26 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
             if (mnemonic === "adc" || mnemonic === "sbb") {
                 if (!srcText) return reject(`${mnemonic} missing source`);
+                runtimeFlags(i, lines);
                 const cf = carryFor(i);
                 if (cf === null) return reject(`${mnemonic} after ${producerName(i)}`);
                 const src = parseOperand(srcText);
                 if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
-                if (operandWidth(dst) !== 4) return reject(`${mnemonic} on a sub-register`);
+                const w = operandWidth(dst);
                 guardMem(lines, dst, insn.addr, i); guardMem(lines, src, insn.addr, i);
                 const a = readExpr(dst), b = readExpr(src);
                 if (a === null || b === null) return reject(`read: ${mnemonic}`);
-                const expr = mnemonic === "adc" ? `(${a} + ${b} + (uint32_t)${cf})` : `(${a} - ${b} - (uint32_t)${cf})`;
-                const w = writeStmt(dst, expr);
-                if (!w) return reject(`write: ${mnemonic}`);
-                lines.push(w, `fk = 0u;`);
+                const M = widthMask(w);
+                // Carry-in is read before anything is written; the width-exact
+                // carry-out and overflow come from the zero- and sign-extended
+                // operands, the rest from the re-extended result.
+                if (mnemonic === "adc") {
+                    lines.push(`{ uint32_t ci = (uint32_t)${cf}; uint32_t az = ${a} & ${M}, bz = ${b} & ${M}; uint64_t t = (uint64_t)az + bz + ci; fa = ${sext("(uint32_t)az", w)}; fb = ${sext("bz", w)}; fr = ${sext("(uint32_t)t", w)}; uint32_t cfo = (uint32_t)(t >> ${8 * w}) & 1u; uint32_t of = ((fa ^ fr) & (fb ^ fr)) >> 31; fa = cfo | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7) | (of << 11); fk = 8u; ${writeStmt(dst, "fr")} }`);
+                } else {
+                    lines.push(`{ uint32_t ci = (uint32_t)${cf}; uint32_t az = ${a} & ${M}, bz = ${b} & ${M}; fa = ${sext("az", w)}; fb = ${sext("bz", w)}; fr = ${sext("(az - bz - ci)", w)}; uint32_t cfo = ((uint64_t)az < (uint64_t)bz + ci); uint32_t of = ((fa ^ fb) & (fa ^ fr)) >> 31; fa = cfo | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7) | (of << 11); fk = 8u; ${writeStmt(dst, "fr")} }`);
+                }
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
                 continue;
             }
 
@@ -726,11 +750,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 guardMem(lines, dst, insn.addr, i);
                 const s = readExpr(dst);
                 if (s === null) return reject(`read: ${mnemonic}`);
-                lines.push(`fk = 0u;`);
                 if (mnemonic === "mul") {
-                    lines.push(`{ uint64_t p = (uint64_t)eax * (uint64_t)(${s}); eax = (uint32_t)p; edx = (uint32_t)(p >> 32); }`);
+                    // CF = OF = high half non-zero; ZF/SF/PF from the low half.
+                    lines.push(`{ uint64_t p = (uint64_t)eax * (uint64_t)(${s}); eax = (uint32_t)p; edx = (uint32_t)(p >> 32); uint32_t o = edx != 0u; fa = o | (o << 11) | ((__builtin_parity(eax & 0xffu) == 0) << 2) | ((eax == 0u) << 6) | ((eax >> 31) << 7); fk = 8u; }`);
+                    kinds.set(i, "raw");
                 } else if (mnemonic === "imul") {
-                    lines.push(`{ int64_t p = (int64_t)(int32_t)eax * (int64_t)(int32_t)(${s}); eax = (uint32_t)p; edx = (uint32_t)((uint64_t)p >> 32); }`);
+                    lines.push(`{ int64_t p = (int64_t)(int32_t)eax * (int64_t)(int32_t)(${s}); eax = (uint32_t)p; edx = (uint32_t)((uint64_t)p >> 32); uint32_t o = p != (int64_t)(int32_t)eax; fa = o | (o << 11) | ((__builtin_parity(eax & 0xffu) == 0) << 2) | ((eax == 0u) << 6) | ((eax >> 31) << 7); fk = 8u; }`);
+                    kinds.set(i, "raw");
                 } else if (mnemonic === "div") {
                     lines.push(`{ uint32_t d = ${s}; uint64_t num = ((uint64_t)edx << 32) | eax; if (d == 0u || num / d > 0xffffffffull) { ${guardExit(insn.addr, i)} } eax = (uint32_t)(num / d); edx = (uint32_t)(num % d); }`);
                 } else {
@@ -772,7 +798,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 guardMem(lines, src, insn.addr, i);
                 const b = readExpr(src);
                 if (b === null) return reject("read: imul");
-                resultExpr = `(${b} * ${imm.value! >>> 0}u)`;
+                lines.push(`{ int64_t p = (int64_t)(int32_t)(${b}) * (int64_t)${imm.value! | 0}; fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                resultExpr = "fr";
             }
             else if (BINARY[mnemonic]) {
                 if (!srcText) return reject(`${mnemonic} missing source`);
@@ -782,9 +811,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const a = readExpr(dst), b = readExpr(src);
                 if (a === null || b === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(dst);
-                if ((mnemonic === "shl" || mnemonic === "shr" || mnemonic === "sar" || mnemonic === "imul") && w !== 4) {
-                    return reject(`${mnemonic} on a sub-register`);
-                }
+                if (mnemonic === "imul" && w !== 4) return reject(`imul on a sub-register`);
                 const expr = BINARY[mnemonic]!(a, b);
                 if (mnemonic === "add" || mnemonic === "sub" || mnemonic === "and" || mnemonic === "or" || mnemonic === "xor") {
                     if (mnemonic === "add") {
@@ -804,9 +831,30 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     lines.push(wr);
                     continue;
                 }
-                if (isCaptured) return reject(`${mnemonic} as flag producer`);
-                lines.push(`fk = 0u;`);
-                resultExpr = expr;
+                if (mnemonic === "imul") {
+                    lines.push(`{ int64_t p = (int64_t)(int32_t)(${a}) * (int64_t)(int32_t)(${b}); fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                    kinds.set(i, "raw");
+                    if (isCaptured) liveFlagSites++;
+                    resultExpr = "fr";
+                } else {
+                    // shl/shr/sar: a zero count leaves the flags alone; CF is
+                    // the last bit shifted out, OF is defined for a count of
+                    // one (and computed that way for any count).
+                    const W = 8 * w;
+                    const az = `(${a} & ${widthMask(w)})`;
+                    let body: string;
+                    if (mnemonic === "shl") {
+                        body = `uint32_t r = ${sext(`((az << c) & ${widthMask(w)})`, w)}; uint32_t cfo = c <= ${W}u ? (az >> (${W}u - c)) & 1u : 0u; uint32_t of = ((r >> 31) ^ cfo) & 1u;`;
+                    } else if (mnemonic === "shr") {
+                        body = `uint32_t r = ${sext(`(az >> (c > ${W - 1}u ? ${W - 1}u : c))`, w)}; if (c > ${W - 1}u) r = 0u; uint32_t cfo = c <= ${W}u ? (az >> (c - 1u)) & 1u : 0u; uint32_t of = (az >> ${W - 1}u) & 1u;`;
+                    } else {
+                        body = `int32_t as = (int32_t)${sext("az", w)}; uint32_t r = (uint32_t)(as >> (c > 31u ? 31u : c)); uint32_t cfo = c <= ${W}u ? ((uint32_t)as >> (c - 1u)) & 1u : (uint32_t)(as < 0); uint32_t of = 0u;`;
+                    }
+                    lines.push(`{ uint32_t c = (${b}) & 31u; uint32_t az = ${az}; if (c) { ${body} fr = r; fa = cfo | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7) | (of << 11); fk = 8u; ${writeStmt(dst, "fr")} } }`);
+                    kinds.set(i, "raw");
+                    if (isCaptured) liveFlagSites++;
+                    continue;
+                }
             }
             else if (mnemonic === "inc" || mnemonic === "dec") {
                 const a = readExpr(dst);
@@ -894,6 +942,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
         }
         else if (COND_BRANCH.has(term.mnemonic)) {
+            runtimeFlags(n - 1, lines);
             const cond = condFor(n - 1, term.mnemonic.slice(1));
             if (cond === null) return reject(`${term.mnemonic} after ${producerName(n - 1)}`);
             const target = directTarget(term.operand)!;
@@ -929,7 +978,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         `    const uint32_t mb = mem_base();\n` +
         `    const uint32_t ml = MEM_SIZE;\n` +
         `    ${loads}\n` +
-        `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
+        `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, fl = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
+        `    (void)fl;\n` +
         `    const uint32_t cnt0 = *INSTRUCTION_COUNTER;\n` +
         `    (void)depth; (void)cnt0;\n` +
         fpuLoad +

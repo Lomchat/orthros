@@ -314,9 +314,13 @@ for (const t of functions) {
             memory: cpu.wasm_memory, mem_base: () => memBase,
             guard_exit: (addr: number) => { guardExits.push(addr >>> 0); },
             slow_exit: (addr: number) => { slowExits.push(addr >>> 0); ex["jit_ext_interpret_once"]?.(addr >>> 0); },
+            get_eflags: ex["get_eflags"],
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
+        // The translation must be what runs, even if the JIT compiles the
+        // page during the run.
+        ex["jit_set_external_first"]?.(1);
         // Only this function's entries: each lives in its page's module at the
         // state index the page assigned to it.
         for (const e of t.entries) {

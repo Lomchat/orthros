@@ -929,6 +929,9 @@ export const dbg = {
             // bypasses the external table once at that address (wasm to wasm,
             // no JS frame in between).
             slow_exit: ex.jit_ext_interpret_once ?? (() => {}),
+            // A translated block that consumes flags no producer of its own
+            // set reads v86's effective flags (lazy flags materialised).
+            get_eflags: ex.get_eflags,
         } });
         const first = ex.jit_external_module_first_index() >>> 0;
         const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
