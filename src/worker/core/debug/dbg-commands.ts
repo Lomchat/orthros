@@ -23,6 +23,7 @@
  */
 
 import { System } from '../system';
+import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
 import { TimeService } from '../../runtime/time';
@@ -895,6 +896,15 @@ export const dbg = {
         const applied = wasm()?.get_jit_config?.(48);
         console.log(`[dbg] hot profile mode=${pm?.getJitHotProfileMode?.() ?? "?"} applied=${applied ?? "pending-wasm"}`);
         return applied ?? (pm?.getJitHotProfileMode?.() ?? -1);
+    },
+    /** Delete the current game's stored profile and clear the live one, so the
+     *  next boot starts from nothing (or from the server sidecar). */
+    async jitHotProfileForget(): Promise<{ gameId: string | null; removed: boolean }> {
+        const gameId = (System.getInstance() as any).registry?.serialize?.()?.gameId ?? null;
+        const removed = gameId ? await HotProfilePersistence.remove(gameId) : false;
+        (globalThis as any).preemption?.setJitHotProfile?.(null);
+        console.log(`[dbg] hot profile forgotten: gameId=${gameId} removed=${removed}`);
+        return { gameId, removed };
     },
     jitHotProfileStats(): { pages: number; forced: number; mismatches: number } | null {
         const w = wasm(); if (!w?.jit_hot_profile_pages) return null;

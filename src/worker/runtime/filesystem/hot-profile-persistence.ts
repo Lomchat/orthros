@@ -44,6 +44,22 @@ export class HotProfilePersistence {
         }
     }
 
+    /** Delete the stored profile; true when a file was removed. */
+    static async remove(gameId: string): Promise<boolean> {
+        try {
+            const dir = await getContainerDir(gameId, false);
+            if (!dir) return false;
+            await dir.removeEntry(this.FILE);
+            Logger.log(LogCategory.SYSTEM, `Removed hot-page profile for ${gameId}`);
+            return true;
+        } catch (err: any) {
+            if (err?.name !== "NotFoundError") {
+                Logger.error(LogCategory.SYSTEM, `Failed to remove hot-page profile for ${gameId}: ${err?.message ?? err}`);
+            }
+            return false;
+        }
+    }
+
     static async save(gameId: string, bytes: Uint8Array): Promise<boolean> {
         if (!this.isImage(bytes)) return false;
         try {

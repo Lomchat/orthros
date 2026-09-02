@@ -84,6 +84,7 @@ async function loadBundle(filePath: string, integrityPath: string): Promise<Bund
 const WGB_DIR = path.resolve(process.env.ORTHROS_WGB_DIR ?? path.dirname(BFME_WGB_PATH));
 const BUNDLE_ROUTES = new Map<string, Bundle>();
 const INTEGRITY_ROUTES = new Map<string, Bundle>();
+const HOT_PROFILE_ROUTES = new Map<string, string>();
 for (const entry of readdirSync(WGB_DIR).sort()) {
     if (!entry.endsWith(".wgb")) continue;
     const filePath = path.join(WGB_DIR, entry);
@@ -95,16 +96,20 @@ for (const entry of readdirSync(WGB_DIR).sort()) {
     const bundle = await loadBundle(filePath, integrityPath);
     const sha = bundle.etag.slice(8, -1);
     const stem = entry.slice(0, -4);
-    for (const route of [`/apps/${entry}`, `/apps/${stem}-${sha}.wgb`]) {
+    // Optional sidecar: a hot-page profile (v86 HOTP image) recorded on the VPS,
+    // handed to a browser that has none yet so its first session already
+    // compiles the known pages at first touch. Pages carry their own hash, so a
+    // stale sidecar degrades to "no profile", never to wrong code.
+    const hotProfilePath = `${filePath}.hotp`;
+    const hasHotProfile = existsSync(hotProfilePath);
+    const routes = [`/apps/${entry}`, `/apps/${stem}-${sha}.wgb`];
+    if (filePath === BFME_WGB_PATH) routes.push("/apps/bfme.wgb", `/apps/bfme-${sha}.wgb`);
+    for (const route of routes) {
         BUNDLE_ROUTES.set(route, bundle);
         INTEGRITY_ROUTES.set(`${route}.integrity.json`, bundle);
+        if (hasHotProfile) HOT_PROFILE_ROUTES.set(`${route}.hotp`, hotProfilePath);
     }
-    if (filePath === BFME_WGB_PATH) {
-        BUNDLE_ROUTES.set("/apps/bfme.wgb", bundle);
-        BUNDLE_ROUTES.set(`/apps/bfme-${sha}.wgb`, bundle);
-        INTEGRITY_ROUTES.set("/apps/bfme.wgb.integrity.json", bundle);
-        INTEGRITY_ROUTES.set(`/apps/bfme-${sha}.wgb.integrity.json`, bundle);
-    }
+    if (hasHotProfile) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
 }
 if (BUNDLE_ROUTES.size === 0) throw new Error(`No verified .wgb found in ${WGB_DIR}`);
 
@@ -180,6 +185,23 @@ const server = Bun.serve({
                 return new Response(null, { status: 304, headers });
             }
             return new Response(integrityBundle.integrityJson, { headers });
+        }
+
+        const hotProfilePath = HOT_PROFILE_ROUTES.get(pathname);
+        if (hotProfilePath) {
+            // Re-read per request: the sidecar is small and gets replaced in
+            // place when a better profile is recorded, without a restart.
+            const hot = Bun.file(hotProfilePath);
+            if (!(await hot.exists())) return new Response("Not found", { status: 404, headers: COOP_COEP });
+            const etag = `"hotp-${hot.size}-${Math.floor(hot.lastModified)}"`;
+            const headers = {
+                "Content-Type": "application/octet-stream",
+                "Cache-Control": "no-cache",
+                "ETag": etag,
+                ...COOP_COEP,
+            };
+            if (req.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers });
+            return new Response(hot, { headers });
         }
 
         // SPA fallback for extensionless paths

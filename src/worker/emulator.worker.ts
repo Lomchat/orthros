@@ -326,6 +326,20 @@ async function saveHotProfile(reason: string): Promise<void> {
   }
 }
 
+/** `<bundle url>.hotp`, when the server publishes one; null on any failure. */
+async function fetchHotProfileSidecar(bundleUrl: string): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(`${bundleUrl}.hotp`, { cache: "no-cache" });
+    if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!HotProfilePersistence.isImage(bytes)) return null;
+    Logger.log(LogCategory.SYSTEM, `[JIT] hot-page profile sidecar: ${bytes.byteLength} bytes from ${bundleUrl}.hotp`);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
 function installHotProfileAutosave(gameId: string): void {
   if (hotProfileSaveTimer !== null) clearInterval(hotProfileSaveTimer);
   hotProfileGameId = gameId;
@@ -1284,6 +1298,9 @@ const prepareFullGameSwitch = async (): Promise<void> => {
   await saveHotProfile("game-switch");
   hotProfileGameId = null;
   hotProfileLastSaved = null;
+  // The next title must not inherit this one's pages. The first load keeps
+  // whatever a pre-boot import placed, since no game has run yet.
+  if (gameSessionActive) preemptionManager.setJitHotProfile(null);
   if (system.process?.v86) {
     isPaused = true;
     system.isPaused = true;
@@ -1877,7 +1894,18 @@ const loadBundleImpl = async (payload: BundlePayload) => {
 
     // Pages earlier sessions compiled, installed before v86 exists so the
     // first boot pages already compile at first touch (see preemption-manager).
-    preemptionManager.setJitHotProfile(await HotProfilePersistence.load(gameId));
+    // A browser with no profile yet asks the server for the bundle's sidecar,
+    // recorded once on the VPS; each page carries its own hash, so a sidecar
+    // from another build degrades to "no profile" rather than to wrong code.
+    // An explicit pre-boot import (dbg.jitHotProfileImport, the A/B harness)
+    // outranks both stores and must not be replaced by an empty result.
+    if (!preemptionManager.getJitHotProfile()) {
+      let hotProfile = await HotProfilePersistence.load(gameId);
+      if (!hotProfile && payload.url) {
+        hotProfile = await fetchHotProfileSidecar(payload.url);
+      }
+      if (hotProfile) preemptionManager.setJitHotProfile(hotProfile);
+    }
     installHotProfileAutosave(gameId);
 
     // Apply emulator configuration from manifest (fresh per-bundle to avoid stale cross-game overrides)
