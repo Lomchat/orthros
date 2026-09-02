@@ -26,7 +26,7 @@ import { System } from '../system';
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
 /** Ahead-of-time modules installed in this worker (see dbg.aotInstall). */
-const aotInstalled = { nextSlot: 0, pages: 0, entries: 0, bytes: 0 };
+const aotInstalled = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0 };
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
 import { TimeService } from '../../runtime/time';
@@ -919,7 +919,13 @@ export const dbg = {
         const bytes = new Uint8Array(await wasmRes.arrayBuffer());
         const manifest = await jsonRes.json() as { pages: Array<{ page: number; name: string; states: number[] }> };
         const memBase = cpu.mem8.byteOffset >>> 0;
-        const { instance } = await WebAssembly.instantiate(bytes, { env: { memory: cpu.wasm_memory, mem_base: () => memBase } });
+        const { instance } = await WebAssembly.instantiate(bytes, { env: {
+            memory: cpu.wasm_memory,
+            mem_base: () => memBase,
+            // A translated instruction about to touch memory past guest RAM
+            // exits to the dispatcher instead; count how often that happens.
+            guard_exit: () => { aotInstalled.guardExits++; },
+        } });
         const first = ex.jit_external_module_first_index() >>> 0;
         const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
         const flags = ex.jit_get_current_state_flags() >>> 0;
@@ -941,9 +947,9 @@ export const dbg = {
         console.log(`[dbg] aotInstall ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes`);
         return { pages, entries, failed, bytes: bytes.byteLength };
     },
-    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number } {
+    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number } {
         const s = aotInstalled;
-        return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot };
+        return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits };
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */

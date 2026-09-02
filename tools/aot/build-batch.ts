@@ -11,7 +11,7 @@
  * Verify the same candidates with verify-c.ts before shipping a batch.
  */
 
-import { Decoder } from "./decode";
+import { CapstoneDecoder } from "./decoder-capstone";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
@@ -31,7 +31,7 @@ if (candidatesPath) {
     const list = (JSON.parse(await Bun.file(candidatesPath).text()).accepted as Array<{ entry: number }>);
     entries = entries.concat(list.slice(skip, skip + take).map((c) => c.entry));
 }
-const decoder = await Decoder.open(exe);
+const decoder = await CapstoneDecoder.open(exe);
 const functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {

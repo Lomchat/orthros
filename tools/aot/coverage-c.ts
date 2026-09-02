@@ -11,7 +11,7 @@
  *       [--out /tmp/aot-candidates.json] [--limit N]
  */
 
-import { Decoder } from "./decode";
+import { CapstoneDecoder } from "./decoder-capstone";
 import { lastRejection, translateFunctionC } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
@@ -40,7 +40,7 @@ for (let k = 0; k < count; k++) {
 }
 entries.sort((a, b) => a - b);
 
-const decoder = await Decoder.open(exe);
+const decoder = await CapstoneDecoder.open(exe);
 const reasons = new Map<string, number>();
 const accepted: Array<{ entry: number; instructions: number; blocks: number; liveFlagSites: number }> = [];
 let inText = 0;

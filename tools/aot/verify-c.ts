@@ -18,7 +18,7 @@
  * name works), and vendor/v86/build with jit_register_external_module.
  */
 
-import { Decoder } from "./decode";
+import { CapstoneDecoder } from "./decoder-capstone";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
 const MEM_SIZE = 64 * 1024 * 1024;
@@ -68,6 +68,8 @@ interface RunResult {
     stack: Uint8Array;
     retired: number;
     interpreted: number;
+    /** Where the guest stopped, which names the loop when a run times out. */
+    eip: number;
 }
 
 /** Build the guest image once: .text at its VMA plus the register stub. */
@@ -129,6 +131,7 @@ function runGuest(
                 stack: mem.slice(STACK_BASE, STACK_BASE + STACK_LEN),
                 retired: cpu.instruction_counter[0] >>> 0,
                 interpreted: Number(ex["profiler_interpreted_steps_get"]?.() ?? -1),
+                eip: cpu.instruction_pointer[0] >>> 0,
             };
             try { emulator.stop(); } catch { /* already stopped */ }
             resolve(out);
@@ -165,7 +168,7 @@ if (candidatesPath) {
 }
 if (entries.length === 0) { console.error("--entries or --candidates required"); process.exit(2); }
 
-const decoder = await Decoder.open(exe);
+const decoder = await CapstoneDecoder.open(exe);
 const functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
@@ -222,10 +225,11 @@ for (const t of functions) {
     const guest = await runGuest(img, scratch, stack, null);
     if (!guest.ok) { console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (guest: ${guest.status})`); inconclusive++; continue; }
 
+    const guardExits: number[] = [];
     const ext = await runGuest(img, scratch, stack, async (cpu: any) => {
         const ex = cpu.wm.exports;
         const memBase = cpu.mem8.byteOffset >>> 0;
-        const { instance } = await WebAssembly.instantiate(wasmBytes, { env: { memory: cpu.wasm_memory, mem_base: () => memBase } });
+        const { instance } = await WebAssembly.instantiate(wasmBytes, { env: { memory: cpu.wasm_memory, mem_base: () => memBase, guard_exit: (addr: number) => { guardExits.push(addr >>> 0); } } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
         // Only this function's entries: each lives in its page's module at the
@@ -242,7 +246,7 @@ for (const t of functions) {
         }
         return true;
     });
-    if (!ext.ok) { console.log(`0x${t.entry.toString(16)}  FAIL (external: ${ext.status})`); fail++; continue; }
+    if (!ext.ok) { console.log(`0x${t.entry.toString(16)}  FAIL (external: ${ext.status} at eip=0x${ext.eip.toString(16)}, retired=${ext.retired}, guest retired=${guest.retired})`); fail++; continue; }
 
     const diffs: string[] = [];
     for (let i = 0; i < 8; i++) {
@@ -257,10 +261,15 @@ for (const t of functions) {
     for (let i = 0; i < STACK_LEN; i++) if (guest.stack[i] !== ext.stack[i]) stackDiff++;
     if (stackDiff > 0) diffs.push(`${stackDiff} stack bytes differ`);
     if (guest.retired !== ext.retired) diffs.push(`retired guest=${guest.retired} c=${ext.retired}`);
+    // A guard exit is not a divergence: the instruction ran in v86 instead, and
+    // the state comparison above is what judges the outcome. It is reported so
+    // a synthetic pointer past RAM is visible.
+    const guardNote = guardExits.length > 0
+        ? `, ${guardExits.length} guard exit(s) at ${guardExits.slice(0, 3).map((a) => "0x" + a.toString(16)).join(",")}` : "";
     if (!(ext.interpreted < guest.interpreted)) diffs.push(`module not entered (interpreted ${ext.interpreted} vs ${guest.interpreted})`);
 
     if (diffs.length === 0) {
-        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}`);
+        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}`);
         pass++;
     } else {
         console.log(`0x${t.entry.toString(16)}  FAIL  ${diffs.join("; ")}`);
@@ -270,4 +279,5 @@ for (const t of functions) {
 
 console.log(`\npass=${pass} fail=${fail} inconclusive=${inconclusive} skipped=${skipped}`);
 if (!keep) Bun.spawnSync(["rm", "-rf", dir]);
+decoder.close();
 process.exit(fail > 0 ? 1 : 0);

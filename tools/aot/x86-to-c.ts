@@ -28,7 +28,7 @@
  * share v86's memory.
  */
 
-import { Decoder, directTarget, type Insn } from "./decode";
+import { BlockReader, CapstoneDecoder, directTarget, type Insn } from "./decoder-capstone";
 
 export let lastRejection = "";
 
@@ -275,6 +275,24 @@ function conditionExpr(branch: string, kind: "cmp" | "add" | "logic" | "inc" | "
 
 interface Block { start: number; insns: Insn[] }
 
+/**
+ * Guest RAM ends at MEM_SIZE; anything past it would trap the wasm module
+ * instead of faulting the guest. The guard exits to the dispatcher at the
+ * instruction's own address before it runs, with every earlier effect already
+ * committed, so v86 raises the fault exactly where the guest would have.
+ */
+function guardMem(lines: string[], op: Operand, insnAddr: number, done: number): void {
+    if (op.kind !== "mem") return;
+    lines.push(`a0 = ${op.addr}; if (a0 > ml - ${op.width}u) { ${guardExit(insnAddr, done)} }`);
+    op.addr = "a0";
+}
+
+/** Exit before instruction `insnAddr`, crediting the `done` instructions of
+ *  the block that already ran; the host is told, then v86 resumes there. */
+function guardExit(insnAddr: number, done: number): string {
+    return `cnt += ${done}u; ip = ${insnAddr >>> 0}u; guard_exit(ip); goto exit;`;
+}
+
 function splitOperands(operand: string): number | null {
     let depth = 0;
     for (let i = 0; i < operand.length; i++) {
@@ -294,6 +312,8 @@ typedef uint16_t __attribute__((aligned(1))) u16u;
 #define PREVIOUS_IP ((volatile int32_t *)560)
 #define INSTRUCTION_COUNTER ((volatile uint32_t *)664)
 #define FSBASE ((uint32_t)*(volatile int32_t *)(736 + 4 * 4))
+#define MEM_SIZE (*(volatile uint32_t *)812)
+__attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("mem_base"))) uint32_t mem_base(void);
 #define LD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
 #define LD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
@@ -312,16 +332,12 @@ function indirectTargetExpr(operand: string): string | null {
     return null;
 }
 
-export async function translateFunctionC(decoder: Decoder, entry: number): Promise<CFunction | null> {
+export async function translateFunctionC(decoder: CapstoneDecoder, entry: number): Promise<CFunction | null> {
     lastRejection = "";
-    const byAddr = new Map<number, Insn>();
-    const at = async (pc: number): Promise<Insn | null> => {
-        const hit = byAddr.get(pc);
-        if (hit) return hit;
-        const insn = await decoder.at(pc);
-        if (insn) byAddr.set(pc, insn);
-        return insn;
-    };
+    // Every block decodes from its own leader; a sequential read continues
+    // that window, so the same address always yields the same instruction.
+    const reader = new BlockReader(decoder);
+    const at = (pc: number): Promise<Insn | null> => reader.at(pc);
 
     const first = await at(entry);
     if (!first) return reject(`no instruction at 0x${entry.toString(16)}`);
@@ -395,7 +411,8 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
     for (const start of order) {
         const block = blocks.get(start)!;
         total += block.insns.length;
-        const lines: string[] = [`cnt += ${block.insns.length}u;`];
+        const lines: string[] = [];
+        const n = block.insns.length;
 
         const term = block.insns[block.insns.length - 1]!;
         const branchNeedsFlags = COND_BRANCH.has(term.mnemonic);
@@ -420,7 +437,7 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             if (mnemonic === "nop") continue;
             if (mnemonic === "int3") return reject("int3 inside function");
             if (OTHER_FLAG_READER.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
-            if (mnemonic === "leave") { lines.push(`esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
+            if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
 
@@ -433,6 +450,7 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
                 if (!srcText) return reject(`${mnemonic} missing source`);
                 const a = parseOperand(dstText), b = parseOperand(srcText);
                 if (!a || !b) return reject(`operand: ${mnemonic} ${operand}`);
+                guardMem(lines, a, insn.addr, i); guardMem(lines, b, insn.addr, i);
                 const ra = readExpr(a), rb = readExpr(b);
                 if (ra === null || rb === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(a);
@@ -451,16 +469,19 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             if (!dst) return reject(`operand: ${mnemonic} ${dstText}`);
 
             if (mnemonic === "push") {
-                const v = readExpr(dst);
-                if (v === null) return reject(`read: push ${dstText}`);
                 if (dst.kind === "reg16" || dst.kind === "reg8lo" || dst.kind === "reg8hi") return reject("push of a sub-register");
                 if (dst.kind === "mem" && dst.width !== 4) return reject("push of a narrow memory operand");
-                lines.push(`esp -= 4u;`, `ST32(esp, ${v});`);
+                guardMem(lines, dst, insn.addr, i);
+                const v = readExpr(dst);
+                if (v === null) return reject(`read: push ${dstText}`);
+                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ${v});`);
                 continue;
             }
             if (mnemonic === "pop") {
                 if (dst.kind === "mem" && dst.addr!.includes("esp")) return reject("pop into esp-relative memory");
                 if (dst.kind !== "reg32" && !(dst.kind === "mem" && dst.width === 4)) return reject(`pop ${dstText}`);
+                lines.push(`if (esp > ml - 4u) { ${guardExit(insn.addr, i)} }`);
+                guardMem(lines, dst, insn.addr, i);
                 const w = writeStmt(dst, `LD32(esp)`);
                 if (!w) return reject(`write: pop ${dstText}`);
                 lines.push(w, `esp += 4u;`);
@@ -475,17 +496,22 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             }
 
             let resultExpr: string | null = null;
+            // One memory operand per instruction (string forms are not
+            // translated), so a single guard covers both the read and the write.
+            guardMem(lines, dst, insn.addr, i);
 
             if (mnemonic === "mov" || mnemonic === "movzx") {
                 if (!srcText) return reject(`${mnemonic} missing source`);
                 const src = parseOperand(srcText);
                 if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
+                guardMem(lines, src, insn.addr, i);
                 resultExpr = readExpr(src);
             }
             else if (mnemonic === "movsx") {
                 if (!srcText) return reject("movsx missing source");
                 const src = parseOperand(srcText);
                 if (!src || src.kind === "imm") return reject(`operand: movsx ${srcText}`);
+                guardMem(lines, src, insn.addr, i);
                 const raw = readExpr(src);
                 if (raw === null) return reject("read: movsx");
                 const bits = src.kind === "reg16" || src.width === 2 ? 16 : 8;
@@ -502,6 +528,7 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
                 if (!srcText) return reject(`${mnemonic} missing source`);
                 const src = parseOperand(srcText);
                 if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
+                guardMem(lines, src, insn.addr, i);
                 const a = readExpr(dst), b = readExpr(src);
                 if (a === null || b === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(dst);
@@ -565,7 +592,7 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             const imm = term.operand.trim();
             const pops = imm ? Number(imm) : 0;
             if (!Number.isFinite(pops)) return reject(`ret ${imm}`);
-            lines.push(`ip = LD32(esp);`, `esp += ${4 + pops}u;`, `goto exit;`);
+            lines.push(`if (esp > ml - 4u) { ${guardExit(term.addr, n - 1)} }`, `cnt += ${n}u;`, `ip = LD32(esp);`, `esp += ${4 + pops}u;`, `goto exit;`);
         }
         else if (term.mnemonic === "call") {
             const direct = directTarget(term.operand);
@@ -574,17 +601,23 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             calls++;
             // Evaluate the target before the push: an esp-relative target must
             // see the stack as the guest did.
-            lines.push(`{ uint32_t t = ${target}; esp -= 4u; ST32(esp, ${(term.addr + term.size) >>> 0}u); ${exitAt("t")} }`);
+            const targetOp = direct === null ? parseOperand(term.operand) : null;
+            if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
+            const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
+            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${n}u; esp -= 4u; ST32(esp, ${(term.addr + term.size) >>> 0}u); ${exitAt("t")} }`);
         }
         else if (term.mnemonic === "jmp") {
             const direct = directTarget(term.operand);
             if (direct === null) {
-                const target = indirectTargetExpr(term.operand);
+                const targetOp = parseOperand(term.operand);
+                if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
+                const target = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : indirectTargetExpr(term.operand);
                 if (target === null) return reject(`jmp ${term.operand}`);
-                lines.push(exitAt(target));
+                lines.push(`cnt += ${n}u;`, exitAt(target));
             } else {
                 const bi = indexOf.get(direct);
                 if (bi === undefined) return reject("jmp outside the function");
+                lines.push(`cnt += ${n}u;`);
                 if (direct <= term.addr) lines.push(`if (++loops > ${LOOP_LIMIT}u) { ${exitAt(`${direct >>> 0}u`)} }`);
                 lines.push(`b = ${bi}; continue;`);
             }
@@ -597,12 +630,12 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
             const fall = indexOf.get(term.addr + term.size);
             if (taken === undefined || fall === undefined) return reject("branch outside the function");
             const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
-            lines.push(`if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
+            lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
         }
         else {
             const fall = indexOf.get(term.addr + term.size);
             if (fall === undefined) return reject("fallthrough outside the function");
-            lines.push(`b = ${fall}; continue;`);
+            lines.push(`cnt += ${n}u;`, `b = ${fall}; continue;`);
         }
 
         out.push(`        case ${indexOf.get(start)}: {\n${lines.map((l) => "            " + l).join("\n")}\n        }`);
@@ -616,8 +649,9 @@ export async function translateFunctionC(decoder: Decoder, entry: number): Promi
     const c =
         `static void ${name}(int b)\n{\n` +
         `    const uint32_t mb = mem_base();\n` +
+        `    const uint32_t ml = MEM_SIZE;\n` +
         `${loads}\n` +
-        `    uint32_t fa = 0u, fb = 0u, fr = 0u, cnt = 0u, loops = 0u, ip = 0u;\n` +
+        `    uint32_t fa = 0u, fb = 0u, fr = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
         `    for (;;) switch (b) {\n${out.join("\n")}\n` +
         `        default: ip = ${entry >>> 0}u; goto exit;\n    }\n` +
         `exit:\n${stores}\n` +
