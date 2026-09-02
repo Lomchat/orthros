@@ -80,6 +80,63 @@ interface RunResult {
     interpreted: number;
     /** Where the guest stopped, which names the loop when a run times out. */
     eip: number;
+    /** x87 state: the eight slots (mantissa + tag, padding excluded), TOP,
+     *  the empty bitmap, the status and control words and the dirty flag. */
+    fpu: Uint8Array;
+}
+
+/** A slot's value as f64 bits: relaxed slots hold them directly, true F80
+ *  slots are converted with round-to-nearest-even on the dropped mantissa
+ *  bits, as v86's own to_f64 does. The two representations are both legal in
+ *  v86 (the interpreter's helpers push constants as true F80, the JIT pushes
+ *  them relaxed), so the comparison must not distinguish them. */
+function slotF64Bits(m: bigint, se: number): bigint {
+    if (se === 0x7ffe) return m;
+    const sign = (se >> 15) & 1;
+    const exp = se & 0x7fff;
+    if (exp === 0 && m === 0n) return BigInt(sign) << 63n;
+    if (exp === 0x7fff) {
+        // infinity or NaN
+        const frac = (m & 0x7fffffffffffffffn) >> 11n;
+        return (BigInt(sign) << 63n) | (0x7ffn << 52n) | frac;
+    }
+    let e = exp - 16383 + 1023;
+    if (e <= 0 || e >= 0x7ff) return (BigInt(sign) << 63n) | (BigInt(Math.max(0, Math.min(0x7ff, e))) << 52n);
+    let sig = m >> 11n; // 53 bits with the explicit integer bit
+    const rem = m & 0x7ffn;
+    if (rem > 0x400n || (rem === 0x400n && (sig & 1n) === 1n)) sig += 1n;
+    if (sig >> 53n) { sig >>= 1n; e += 1; }
+    const frac = sig & 0xfffffffffffffn;
+    return (BigInt(sign) << 63n) | (BigInt(e) << 52n) | frac;
+}
+
+function captureFpu(lin: Uint8Array): Uint8Array {
+    const out = new Uint8Array(8 * 10 + 7);
+    const dv = new DataView(lin.buffer, lin.byteOffset, lin.byteLength);
+    for (let s = 0; s < 8; s++) {
+        const m = dv.getBigUint64(1152 + 16 * s, true), se = dv.getUint16(1160 + 16 * s, true);
+        const o = new DataView(out.buffer, s * 10, 10);
+        o.setBigUint64(0, slotF64Bits(m, se), true);
+        o.setUint16(8, 0, true);
+    }
+    out[80] = lin[1032]!; out[81] = lin[816]!;
+    // The status word without its exception flags: the interpreter's helpers
+    // raise IE on an out-of-range fist, the JIT's inline path (which the
+    // translation mirrors) does not, and no game reads that bit.
+    out[82] = 0; out[83] = lin[1041]!;
+    out[84] = lin[1036]!; out[85] = lin[1037]!;
+    out[86] = lin[632]!;
+    return out;
+}
+
+function describeFpu(f: Uint8Array): string {
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
+    const slots: string[] = [];
+    for (let s = 0; s < 8; s++) {
+        const m = dv.getBigUint64(s * 10, true), t = dv.getUint16(s * 10 + 8, true);
+        if (m !== 0n || t !== 0) slots.push(`${s}:${m.toString(16)}/${t.toString(16)}`);
+    }
+    return `top=${f[80]} empty=${f[81]!.toString(16)} sw=${dv.getUint16(82, true).toString(16)} cw=${dv.getUint16(84, true).toString(16)} dirty=${f[86]} [${slots.join(" ")}]`;
 }
 
 /** Build the guest image once: .text at its VMA plus the register stub. */
@@ -147,6 +204,7 @@ function runGuest(
                 retired: cpu.instruction_counter[0] >>> 0,
                 interpreted: Number(ex["profiler_interpreted_steps_get"]?.() ?? -1),
                 eip: cpu.instruction_pointer[0] >>> 0,
+                fpu: captureFpu(new Uint8Array(cpu.wasm_memory.buffer)),
             };
             try { emulator.stop(); } catch { /* already stopped */ }
             resolve(out);
@@ -159,6 +217,9 @@ function runGuest(
                 cpu.reboot_internal();
                 cpu.reset_memory();
                 cpu.set_jit_config(26, 10_000);
+                // The production runtime runs the FPU in relaxed mode (raw f64
+                // in the stack slots); the translation assumes it.
+                cpu.wm.exports["set_relaxed_fpu"]?.(1);
                 cpu.jit_clear_cache?.();
                 cpu.wm.exports["profiler_interpreted_steps_reset"]?.();
                 cpu.load_multiboot(img.buffer.slice(0));
@@ -242,10 +303,17 @@ for (const t of functions) {
     if (!guest.ok) { console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (guest: ${guest.status})`); inconclusive++; continue; }
 
     const guardExits: number[] = [];
+    const slowExits: number[] = [];
     const ext = await runGuest(img, scratch, stack, async (cpu: any) => {
         const ex = cpu.wm.exports;
         const memBase = cpu.mem8.byteOffset >>> 0;
-        const { instance } = await WebAssembly.instantiate(wasmBytes, { env: { memory: cpu.wasm_memory, mem_base: () => memBase, guard_exit: (addr: number) => { guardExits.push(addr >>> 0); } } });
+        // slow_exit: the module is about to hand an instruction to the
+        // interpreter; v86 bypasses the external table once at that address.
+        const { instance } = await WebAssembly.instantiate(wasmBytes, { env: {
+            memory: cpu.wasm_memory, mem_base: () => memBase,
+            guard_exit: (addr: number) => { guardExits.push(addr >>> 0); },
+            slow_exit: (addr: number) => { slowExits.push(addr >>> 0); ex["jit_ext_interpret_once"]?.(addr >>> 0); },
+        } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
         // Only this function's entries: each lives in its page's module at the
@@ -277,17 +345,27 @@ for (const t of functions) {
         }
     }
     let memDiff = 0;
-    for (let i = 0; i < SCRATCH_LEN; i++) if (guest.scratch[i] !== ext.scratch[i]) memDiff++;
-    if (memDiff > 0) diffs.push(`${memDiff} scratch bytes differ`);
+    const firstDiffs: string[] = [];
+    for (let i = 0; i < SCRATCH_LEN; i++) {
+        if (guest.scratch[i] !== ext.scratch[i]) {
+            memDiff++;
+            if (firstDiffs.length < 4) firstDiffs.push(`+0x${i.toString(16)}:${guest.scratch[i]!.toString(16)}/${ext.scratch[i]!.toString(16)}`);
+        }
+    }
+    if (memDiff > 0) diffs.push(`${memDiff} scratch bytes differ (${firstDiffs.join(" ")})`);
     let stackDiff = 0;
     for (let i = 0; i < STACK_LEN; i++) if (guest.stack[i] !== ext.stack[i]) stackDiff++;
     if (stackDiff > 0) diffs.push(`${stackDiff} stack bytes differ`);
     if (guest.retired !== ext.retired) diffs.push(`retired guest=${guest.retired} c=${ext.retired}`);
+    let fpuDiff = false;
+    for (let i = 0; i < guest.fpu.length; i++) if (guest.fpu[i] !== ext.fpu[i]) { fpuDiff = true; break; }
+    if (fpuDiff) diffs.push(`x87 guest=${describeFpu(guest.fpu)} c=${describeFpu(ext.fpu)}`);
     // A guard exit is not a divergence: the instruction ran in v86 instead, and
     // the state comparison above is what judges the outcome. It is reported so
     // a synthetic pointer past RAM is visible.
-    const guardNote = guardExits.length > 0
-        ? `, ${guardExits.length} guard exit(s) at ${guardExits.slice(0, 3).map((a) => "0x" + a.toString(16)).join(",")}` : "";
+    const guardNote = (guardExits.length > 0
+        ? `, ${guardExits.length} guard exit(s) at ${guardExits.slice(0, 3).map((a) => "0x" + a.toString(16)).join(",")}` : "")
+        + (slowExits.length > 0 ? `, ${slowExits.length} slow exit(s)` : "");
     // Identical state but no drop in interpreted work: the dispatcher never
     // entered the translation (or it exited at once). Not a divergence, but
     // not a verification either.

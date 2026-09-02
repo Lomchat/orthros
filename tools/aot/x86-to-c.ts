@@ -33,6 +33,7 @@
  */
 
 import { BlockReader, CapstoneDecoder, directTarget, type Insn } from "./decoder-capstone";
+import { X87_PRELUDE, emitX87, x87Kind } from "./x87-c";
 
 export let lastRejection = "";
 
@@ -70,23 +71,31 @@ const REG8_HIGH = ["ah", "ch", "dh", "bh"];
 const COND_BRANCH = new Set([
     "je", "jz", "jne", "jnz", "jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl",
     "jb", "jnae", "jc", "jbe", "jna", "ja", "jnbe", "jae", "jnb", "jnc", "js", "jns",
+    "jp", "jpe", "jnp", "jpo",
 ]);
-/** Flag producers a consumer can read. */
-const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec"]);
+/** Flag producers a consumer can read. `sahf` and the fcomi family carry the
+ *  x87 compare result into EFLAGS. */
+const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec",
+    "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi"]);
 /** Instructions that leave the flags alone; anything else between a producer
- *  and its consumer is a flag writer the model does not follow. */
+ *  and its consumer is a flag writer the model does not follow. Every x87
+ *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not",
-    "enter",
+    "enter", "wait", "fwait",
 ]);
-const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns)$/;
-const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns)$/;
-const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|rcl|rcr|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*|jecxz)$/;
+const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po)$/;
+const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po)$/;
+const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|fcmov[a-z]+|rcl|rcr|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*|jecxz)$/;
+
+function preservesFlags(m: string): boolean {
+    return FLAG_PRESERVING.has(m) || (x87Kind(m) !== null && !FLAG_PRODUCER.has(m) && !/^fcmov/.test(m));
+}
 
 const LOOP_LIMIT = 100_000;
 const SIZE_BUDGET = 4096;
 
-type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec";
+type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi";
 
 interface Operand {
     kind: "reg32" | "reg16" | "reg8lo" | "reg8hi" | "imm" | "mem";
@@ -136,7 +145,7 @@ function parseAddress(inner: string, segment: string | null): string | null {
     return `(${parts.join(" + ")})`;
 }
 
-function parseOperand(text: string): Operand | null {
+export function parseOperand(text: string): Operand | null {
     const t = text.trim();
     const r32 = regIndex(t);
     if (r32 !== null) return { kind: "reg32", index: r32 };
@@ -148,8 +157,8 @@ function parseOperand(text: string): Operand | null {
     if (r8h >= 0) return { kind: "reg8hi", index: r8h };
     const imm = /^(0x[0-9a-f]+|-?\d+)$/i.exec(t);
     if (imm) return { kind: "imm", value: Number(imm[1]) | 0 };
-    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8 };
-    const mem = /^(?:(BYTE|WORD|DWORD|QWORD)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
+    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10 };
+    const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
     if (mem) {
         const width = mem[1] ? widths[mem[1].toUpperCase()]! : 4;
         const addr = parseAddress(mem[3]!, mem[2] ? mem[2].toLowerCase() : null);
@@ -248,33 +257,42 @@ const BINARY: Record<string, (a: string, b: string) => string> = {
  *   logic   : fr = result (and/or/xor/test)   CF = OF = 0
  *   inc/dec : fa = a, fr = result        CF unchanged: carry forms decline
  */
-function flagExprs(kind: ProducerKind): { ZF: string; SF: string; CF: string | null; SO: string } {
+function flagExprs(kind: ProducerKind): { ZF: string; SF: string; CF: string | null; SO: string | null; PF: string | null } {
     switch (kind) {
         case "cmp":
-            return { ZF: `(fa == fb)`, SF: `((int32_t)(fa - fb) < 0)`, CF: `(fa < fb)`, SO: `((int32_t)fa < (int32_t)fb)` };
+            return { ZF: `(fa == fb)`, SF: `((int32_t)(fa - fb) < 0)`, CF: `(fa < fb)`, SO: `((int32_t)fa < (int32_t)fb)`, PF: null };
         case "add":
             return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: `(fr < fa)`,
-                SO: `(((int32_t)fr < 0) != (((int32_t)((fa ^ fr) & (fb ^ fr))) < 0))` };
+                SO: `(((int32_t)fr < 0) != (((int32_t)((fa ^ fr) & (fb ^ fr))) < 0))`, PF: null };
         case "logic":
-            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "0", SO: `((int32_t)fr < 0)` };
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "0", SO: `((int32_t)fr < 0)`, PF: null };
         case "inc":
-            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x7fffffffu))` };
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x7fffffffu))`, PF: null };
         case "dec":
-            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x80000000u))` };
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x80000000u))`, PF: null };
+        // sahf: fa = AH. OF is untouched, so signed conditions decline.
+        case "sahf":
+            return { ZF: `((fa >> 6) & 1u)`, SF: `((fa >> 7) & 1u)`, CF: `(fa & 1u)`, SO: null, PF: `((fa >> 2) & 1u)` };
+        // fcomi: fa = CF|PF|ZF of the compare; OF and SF are cleared, so
+        // SF != OF is false.
+        case "fcomi":
+            return { ZF: `((fa >> 6) & 1u)`, SF: "0", CF: `(fa & 1u)`, SO: "0", PF: `((fa >> 2) & 1u)` };
     }
 }
 
 function conditionExpr(cc: string, kind: ProducerKind): string | null {
-    const { ZF, SF, CF, SO } = flagExprs(kind);
+    const { ZF, SF, CF, SO, PF } = flagExprs(kind);
     switch (cc) {
         case "e": case "z": return ZF;
         case "ne": case "nz": return `!${ZF}`;
         case "s": return SF;
         case "ns": return `!${SF}`;
         case "l": case "nge": return SO;
-        case "ge": case "nl": return `!${SO}`;
-        case "le": case "ng": return `(${ZF} || ${SO})`;
-        case "g": case "nle": return `(!${ZF} && !${SO})`;
+        case "ge": case "nl": return SO === null ? null : `!${SO}`;
+        case "le": case "ng": return SO === null ? null : `(${ZF} || ${SO})`;
+        case "g": case "nle": return SO === null ? null : `(!${ZF} && !${SO})`;
+        case "p": case "pe": return PF;
+        case "np": case "po": return PF === null ? null : `!${PF}`;
         case "b": case "nae": case "c": return CF;
         case "ae": case "nb": case "nc": return CF === null ? null : `!${CF}`;
         case "be": case "na": return CF === null ? null : `(${CF} || ${ZF})`;
@@ -287,8 +305,15 @@ interface Block { start: number; insns: Insn[] }
 
 /** Exit before instruction `insnAddr`, crediting the `done` instructions of
  *  the block that already ran; the host is told, then v86 resumes there. */
-function guardExit(insnAddr: number, done: number): string {
+export function guardExit(insnAddr: number, done: number): string {
     return `cnt += ${done}u; ip = ${insnAddr >>> 0}u; guard_exit(ip); goto exit;`;
+}
+
+/** Exit before instruction `insnAddr` so the interpreter runs it: v86 is told
+ *  to bypass this module once at that address, and the instruction after it
+ *  is an entry, so the translation resumes right behind. */
+export function slowExit(insnAddr: number, done: number): string {
+    return `cnt += ${done}u; ip = ${insnAddr >>> 0}u; slow_exit(ip); goto exit;`;
 }
 
 /**
@@ -297,7 +322,7 @@ function guardExit(insnAddr: number, done: number): string {
  * instruction's own address before it runs, with every earlier effect already
  * committed, so v86 raises the fault exactly where the guest would have.
  */
-function guardMem(lines: string[], op: Operand, insnAddr: number, done: number): void {
+export function guardMem(lines: string[], op: Operand, insnAddr: number, done: number): void {
     if (op.kind !== "mem") return;
     lines.push(`a0 = ${op.addr}; if (a0 > ml - ${op.width}u) { ${guardExit(insnAddr, done)} }`);
     op.addr = "a0";
@@ -328,13 +353,14 @@ typedef uint16_t __attribute__((aligned(1))) u16u;
 #define MEM_SIZE (*(volatile uint32_t *)812)
 __attribute__((import_module("env"), import_name("mem_base"))) uint32_t mem_base(void);
 __attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
+__attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(uint32_t addr);
 #define LD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
 #define LD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
 #define LD32(a) (*(volatile u32u *)(uintptr_t)(mb + (a)))
 #define ST8(a, v)  (*(volatile uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
 #define ST16(a, v) (*(volatile u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
 #define ST32(a, v) (*(volatile u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
-`;
+` + X87_PRELUDE;
 
 /** Operand expression of a call/jmp target that is not a direct address. */
 function indirectTargetExpr(operand: string): string | null {
@@ -386,6 +412,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     leaders.add(after); resumes.add(after); work.push(after);
                     break;
                 }
+                // An x87 instruction the translation hands to the interpreter
+                // ends its block: the dispatcher resumes right behind it.
+                if (x87Kind(mnemonic, operand) === "slow") {
+                    const after = pc + insn.size;
+                    leaders.add(after); resumes.add(after); work.push(after);
+                    break;
+                }
                 if (mnemonic === "jmp") {
                     const t = directTarget(operand);
                     if (t === null) break;
@@ -415,6 +448,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (pc > maxEnd) maxEnd = pc;
             const m = insn.mnemonic;
             if (m === "ret" || m === "retn" || m === "jmp" || m === "call" || COND_BRANCH.has(m)) break;
+            if (x87Kind(m, insn.operand) === "slow") break;
             if (leaders.has(pc)) break;
         }
         blocks.set(start, { start, insns: body });
@@ -428,6 +462,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     let liveFlagSites = 0;
     let total = 0;
     let calls = 0;
+    let fpuUsed = false;
+    const x87Helpers = { parseOperand, readExpr, guardMem, guardExit, slowExit };
 
     for (const start of order) {
         const block = blocks.get(start)!;
@@ -446,7 +482,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             for (let j = i - 1; j >= 0; j--) {
                 const m = block.insns[j]!.mnemonic;
                 if (FLAG_PRODUCER.has(m)) { p = j; break; }
-                if (!FLAG_PRESERVING.has(m) && !SETCC.test(m) && !CMOVCC.test(m)) {
+                if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) {
                     return reject(`${block.insns[i]!.mnemonic} after unmodelled flag writer ${m}`);
                 }
             }
@@ -472,8 +508,24 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 
             if (mnemonic === "ret" || mnemonic === "retn" || mnemonic === "call") break;
             if (mnemonic === "jmp" || COND_BRANCH.has(mnemonic)) break;
-            if (mnemonic === "nop") continue;
+            if (mnemonic === "nop" || mnemonic === "wait" || mnemonic === "fwait") continue;
             if (mnemonic === "int3") return reject("int3 inside function");
+            const xk = x87Kind(mnemonic, operand);
+            if (xk === "slow") break;
+            if (mnemonic === "sahf") {
+                if (!isCaptured) continue;
+                lines.push(`fa = (eax >> 8) & 0xffu;`);
+                kinds.set(i, "sahf");
+                liveFlagSites++;
+                continue;
+            }
+            if (xk === "fast") {
+                const r = emitX87(x87Helpers, mnemonic, splitOperands(operand), insn, i, lines);
+                if (typeof r === "string") return reject(r);
+                fpuUsed = true;
+                if (r.producer) { kinds.set(i, "fcomi"); liveFlagSites++; }
+                continue;
+            }
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
             if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
@@ -759,6 +811,11 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
             lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
         }
+        else if (x87Kind(term.mnemonic, term.operand) === "slow") {
+            // The interpreter runs this one instruction; the block after it is
+            // an entry, so the translation is re-entered right behind.
+            lines.push(slowExit(term.addr, n - 1));
+        }
         else {
             const fall = indexOf.get(term.addr + term.size);
             if (fall === undefined) return reject("fallthrough outside the function");
@@ -773,15 +830,21 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     const name = `fn_${entry.toString(16)}`;
     const loads = REG32.map((r, i) => `    uint32_t ${r} = (uint32_t)REG32[${i}];`).join("\n");
     const stores = REG32.map((r, i) => `    REG32[${i}] = (int32_t)${r};`).join("\n");
+    // TOP and the empty bitmap live in locals while the translation runs: no
+    // helper can observe them in between, and every exit writes them back.
+    const fpuLoad = fpuUsed ? `    uint32_t top = FPU_TOP, fempty = FPU_EMPTY, fdirty = 0u;\n` : "";
+    const fpuStore = fpuUsed ? `    if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; }\n` : "";
     const c =
         `static void ${name}(int b)\n{\n` +
         `    const uint32_t mb = mem_base();\n` +
         `    const uint32_t ml = MEM_SIZE;\n` +
         `${loads}\n` +
         `    uint32_t fa = 0u, fb = 0u, fr = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
+        fpuLoad +
         `    for (;;) switch (b) {\n${out.join("\n")}\n` +
         `        default: ip = ${entry >>> 0}u; goto exit;\n    }\n` +
         `exit:\n${stores}\n` +
+        fpuStore +
         `    *PREVIOUS_IP = (int32_t)ip;\n` +
         `    *INSTRUCTION_POINTER = (int32_t)ip;\n` +
         `    *INSTRUCTION_COUNTER += cnt;\n` +

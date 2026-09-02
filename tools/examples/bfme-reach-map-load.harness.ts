@@ -94,6 +94,7 @@ async function interpShare(b: BenchSession): Promise<Record<string, number> | nu
 const hotPages = process.argv.includes("--hot-pages");
 const cpuProfile = process.argv.includes("--cpu-profile");
 let profiledStall = false;
+let profiledAotHang = false;
 
 /** Arm the in-dispatch page histogram for the next window. */
 async function armHot(b: BenchSession): Promise<void> {
@@ -382,6 +383,21 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
+    if (aotInstall && i * 10 >= aotAtSec) {
+        const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) }));
+        console.log(`   aot ${JSON.stringify(st)}`);
+        // A guest that stops retiring instructions right after the install:
+        // the recorder names the last translated entries, the report carries
+        // the log tail (a wasm trap ends up there) and the profile tells
+        // whether the Worker is still spinning.
+        if (!profiledAotHang && ((st as any)?.error || retired === 0)) {
+            profiledAotHang = true;
+            const rep = await bench.evalPage(`__BS__.harness.dbgCall("report")`, 20_000).catch((e) => ({ error: String(e) }));
+            console.log("   AOT-HANG report " + JSON.stringify(rep).slice(0, 6000));
+            const prof = await bench.profileWorker(6_000, 15).catch((e) => ({ error: String(e) } as any));
+            console.log("   AOT-HANG cpu-profile " + JSON.stringify(prof).slice(0, 3000));
+        }
+    }
     // Entry histograms rank by dispatch entries, not time. Confirm the first
     // stall against a real CPU profile before acting on it.
     if (dp === 0 && cpuProfile && !profiledStall) {

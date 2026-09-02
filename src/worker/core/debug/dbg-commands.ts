@@ -925,6 +925,10 @@ export const dbg = {
             // A translated instruction about to touch memory past guest RAM
             // exits to the dispatcher instead; count how often that happens.
             guard_exit: () => { aotInstalled.guardExits++; },
+            // An instruction the translation leaves to the interpreter: v86
+            // bypasses the external table once at that address (wasm to wasm,
+            // no JS frame in between).
+            slow_exit: ex.jit_ext_interpret_once ?? (() => {}),
         } });
         const first = ex.jit_external_module_first_index() >>> 0;
         const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
@@ -947,12 +951,27 @@ export const dbg = {
         console.log(`[dbg] aotInstall ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes`);
         return { pages, entries, failed, bytes: bytes.byteLength };
     },
-    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number } {
+    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
+        dispatches: number; misses: number; stalls: number } {
         const s = aotInstalled;
+        const ex = wasm();
         // pagesReplaced: external page modules a JIT compile of the same page
         // evicted — each one is a page the batch left partly uncovered.
+        // stalls: external entries that returned without retiring anything and
+        // were handed to the interpreter once — a guard at an entry instruction.
+        // recent: the last external dispatches, latest first, as
+        // entry->exit:retired.
+        const recent: string[] = [];
+        const total = ex?.jit_ext_trace ? ex.jit_ext_trace(0, 3) >>> 0 : 0;
+        for (let i = 0; i < Math.min(total, 32); i++) {
+            recent.push(`${(ex.jit_ext_trace(i, 0) >>> 0).toString(16)}->${(ex.jit_ext_trace(i, 1) >>> 0).toString(16)}:${ex.jit_ext_trace(i, 2) >>> 0}`);
+        }
         return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits,
-            pagesReplaced: wasm()?.jit_external_pages_replaced?.() >>> 0 };
+            pagesReplaced: ex?.jit_external_pages_replaced?.() >>> 0,
+            dispatches: ex?.jit_external_dispatches?.() >>> 0,
+            misses: ex?.jit_external_misses?.() >>> 0,
+            stalls: ex?.jit_external_stalls?.() >>> 0,
+            recent };
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */
