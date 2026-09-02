@@ -151,12 +151,40 @@ export class AddressSpace {
         return newEntry.id;
     }
 
+    /** Releases by region kind. Every release bumps the fastmem generation, which
+     *  deoptimises every speculating module — 99.7% of all bumps in a skirmish
+     *  come from here — so which kinds churn decides whether the bump can be
+     *  made conditional. */
+    static releasesByKind = new Map<string, number>();
+    /** Diagnostic kill switch for the conditional bump above. */
+    static skipRedundantReleaseBump = true;
+    static skippedReleaseBumps = 0;
+
     releaseRegion(base: number): boolean {
         const idx = this.regions.findIndex(region => region.base === base && region.owner !== "Layout");
         if (idx >= 0) {
             const released = this.regions[idx];
             this.regions.splice(idx, 1);
-            bumpFastmemGeneration(FASTMEM_BUMP_ADDRESS_SPACE_RELEASE);
+            const key = `${released.kind}:${released.owner ?? "?"}`;
+            AddressSpace.releasesByKind.set(key, (AddressSpace.releasesByKind.get(key) ?? 0) + 1);
+            // The generation bump deoptimises every module speculating on fastmem,
+            // so it must answer "did this release change what is mapped?". Freeing
+            // a sub-allocation back into a layout bucket that stays mapped and
+            // keeps its permissions does not: the address remains as accessible as
+            // it was. Bumping there made a D3D9 texture lock invalidate the whole
+            // JIT — 5 461 SURFACE releases in one skirmish, 99.7% of all bumps.
+            const bucket = this.layoutBucketMap.get(released.kind);
+            const insideLiveBucket = AddressSpace.skipRedundantReleaseBump
+                && bucket !== undefined
+                && released.base >= bucket.base
+                && released.base + released.size <= bucket.base + bucket.size
+                && bucket.perms === released.perms;
+            if (!insideLiveBucket) {
+                bumpFastmemGeneration(FASTMEM_BUMP_ADDRESS_SPACE_RELEASE);
+            }
+            else {
+                AddressSpace.skippedReleaseBumps++;
+            }
             // A released VA is no longer a known writable region — drop bit0.
             setWriteMapBase(released.base, released.size, false);
             return true;
@@ -454,3 +482,6 @@ export class AddressSpace {
         Logger.warn(LogCategory.SYSTEM, `Invalid AddressSpace access: addr=0x${address.toString(16)} size=0x${size.toString(16)} requiredPerms=${perms}`);
     }
 }
+
+// Exposed for dbg.releaseKinds(); diagnostic only.
+(globalThis as any).__AddressSpaceClass = AddressSpace;

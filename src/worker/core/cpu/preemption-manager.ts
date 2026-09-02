@@ -36,22 +36,22 @@ export class PreemptionManager {
      *  dbg.*(false) verbs (which route through these setters, so the choice survives a
      *  game reload). fastmem carries the read relaxation + its own thrash auto-latch.
      *  x87-locals is a no-op under strict/PC=24 FPU (codegen self-gates). */
-    /** Fastmem reads/writes are OFF: their deopt path frees the module and forces
-     *  a recompile, and in a settled BFME 1 skirmish that fires often enough to
-     *  keep the JIT in a permanent free/recompile storm. Every free also
-     *  invalidates all 512 return predictions AND the inline caches in generated
-     *  code, so the working set repeatedly falls back to the interpreter.
+    /** Fastmem reads/writes are ON. Their deopt path frees the module and forces
+     *  a recompile, and until the AddressSpace fix below it fired constantly:
+     *  every D3D9 texture lock released a SURFACE sub-allocation, each release
+     *  bumped the fastmem generation, and each bump deoptimised every speculating
+     *  module — 5 461 releases in one skirmish, 99.7% of all bumps, keeping the
+     *  JIT in a permanent free/recompile storm.
      *
-     *  Measured over 15-minute skirmishes, three runs on against two off:
-     *  module frees per window 166-180 -> 10-15, compiles 170 -> 11, mean FPS
-     *  16.2 -> 25.2, windows below 15 FPS 43-52% -> 0%, and the map load's
-     *  0-1 FPS stall shortens from ~180s to ~40s. Boot is unchanged at ~100s.
+     *  With releases that do not change mappability no longer bumping (see
+     *  AddressSpace.releaseRegion), module frees per window fall 166-180 -> 9 and
+     *  a 15-minute skirmish measures mean 30.1 FPS against 16.2 before, with no
+     *  window below 15 FPS.
      *
-     *  A 2-billion-instruction window measures fastmem writes as +22.6% and
-     *  cannot see any of this: the cost is variance, not throughput, and it
-     *  needs a quarter of an hour to show. setFastmemReads/setFastmemWrites(true)
-     *  restore the old behaviour. */
-    private fastmemReadsEnabled = false;        // config idx 9
+     *  Do not re-validate either flag on a throughput window: a 2-billion
+     *  instruction run scored the broken configuration at +22.6% and could not
+     *  see the storm at all, because the cost was variance, not throughput. */
+    private fastmemReadsEnabled = true;         // config idx 9
     private fastmemReadSplitEnabled = true;     // config idx 18 (split-range read shape)
     private x87LocalsEnabled = true;            // config idx 10
     /** Deferred architectural stores for relaxed x87 locals (config idx 39).
@@ -70,7 +70,7 @@ export class PreemptionManager {
     // faults. Every guest store went through the slow path for want of an in-game
     // gate that was never run. An empty write map is safe (all stores slow), and
     // the authoritative build happens once paging is on and the image is mapped.
-    private fastmemWritesEnabled = false;       // config idx 19
+    private fastmemWritesEnabled = true;        // config idx 19
 
     /** Lazy-flag tuple in wasm locals (config idx 21). Default OFF until the in-race
      *  A/B gate passes. Kill-switch: setFlagLocals(false) /

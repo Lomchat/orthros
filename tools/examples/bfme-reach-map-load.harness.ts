@@ -467,6 +467,8 @@ if (process.argv.includes("--profile-ingame")) {
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
         console.log("in-game fpu " + JSON.stringify(await bench.dbg("fpuRelaxedReport").catch(() => null)));
         console.log("in-game d3d9 " + JSON.stringify(await bench.dbg("d3d9Perf").catch(() => null)));
+        console.log("in-game fastmem " + JSON.stringify(await bench.dbg("fastmemStats").catch(() => null)));
+        console.log("in-game releases " + JSON.stringify(await bench.dbg("releaseKinds").catch(() => null)));
         // Purple characters mean a texture failed, and a failure that retries is
         // a per-frame cost, not a cosmetic one. rgbaScratch is CPU-side, so this
         // reads real pixels even though SwiftShader's readback is black.

@@ -1350,6 +1350,17 @@ export const dbg = {
         return result;
     },
     /** Fastmem counters: generation, compiled raw-load sites, lazy deopts, source bump counts. */
+    /** Which region kinds are released, and therefore which ones are bumping the
+     *  fastmem generation. Read-only; the map is filled unconditionally. */
+    releaseKinds(): any {
+        const AS: any = (globalThis as any).__AddressSpaceClass;
+        const m: Map<string, number> | undefined = AS?.releasesByKind;
+        if (!m) return null;
+        const rows = [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+        const result = Object.fromEntries(rows);
+        console.log(`[dbg][release-kinds][JSON] ${JSON.stringify(result)}`);
+        return result;
+    },
     fastmemStats(): any {
         const w = wasm(); if (!w?.fastmem_get_generation) return null;
         const sourceNames = [
