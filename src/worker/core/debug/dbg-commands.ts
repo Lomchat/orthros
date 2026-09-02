@@ -715,6 +715,19 @@ export const dbg = {
         console.log(`[dbg] JIT_RECOMPILE_DIVISOR=${bounded} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? bounded : (applied >>> 0);
     },
+    /** Entry points in the last 16 bytes of a page are recorded and compiled
+     *  (config 50, needs config 38's contiguity proof). Off, such blocks run
+     *  interpreted on every visit. Clears the cache so an A/B starts even. */
+    jitPageTailEntries(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitPageTailEntries) pm.setJitPageTailEntries(!!on);
+        const w = wasm();
+        if (!pm?.setJitPageTailEntries && w?.set_jit_config) w.set_jit_config(50, on ? 1 : 0);
+        w?.jit_clear_cache?.();
+        const applied = w?.get_jit_config?.(50);
+        console.log(`[dbg] JIT_PAGE_TAIL_ENTRIES=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Reclaim only unreferenced modules on wasm-table exhaustion (config 43)
      *  instead of discarding every compiled module and its page hotness.
      *  Survives a v86 re-creation; clears the cache so the A/B starts even. */

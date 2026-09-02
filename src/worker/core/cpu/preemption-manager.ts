@@ -202,6 +202,8 @@ export class PreemptionManager {
     // also drops every page's hotness, so the working set re-interprets
     // jitBaseThreshold instructions per page before any of it runs compiled again.
     private jitPartialEviction = false;
+    /** Config 50: entry points in the page tail compile like any other. */
+    private jitPageTailEntries = true;
     // config idx 44: let the native cycle loop re-check the urgent-exit signal.
     // requestImmediateExit() zeroes the shared budget and the cached copy, but the
     // loop tests a snapshot taken at slice entry, so it keeps running — the zero
@@ -563,6 +565,13 @@ export class PreemptionManager {
     }
     getJitPartialEviction(): boolean { return this.jitPartialEviction; }
 
+    setJitPageTailEntries(on: boolean): void {
+        this.jitPageTailEntries = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(50, on ? 1 : 0);
+    }
+    getJitPageTailEntries(): boolean { return this.jitPageTailEntries; }
+
     setJitHonorUrgentExit(on: boolean): void {
         this.jitHonorUrgentExit = on;
         const ex = this.wasmExports;
@@ -691,6 +700,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(26, this.jitBaseThreshold);
             this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
             this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
+            this.wasmExports.set_jit_config(50, this.jitPageTailEntries ? 1 : 0);
             this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
             this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
             this.wasmExports.set_jit_config(46, this.jitFlagElisionAcrossFaults ? 1 : 0);
