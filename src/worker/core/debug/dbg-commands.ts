@@ -926,7 +926,9 @@ export const dbg = {
         ex.jit_set_external_first(on ? 1 : 0);
         return !!(ex.jit_get_external_first?.() ?? (on ? 1 : 0));
     },
-    async aotInstall(url: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
+    /** `filter` = "lo:hi", fractions of the manifest's page list to install
+     *  (e.g. "0:0.5"): bisects a batch in game when one translation misbehaves. */
+    async aotInstall(url: string, filter?: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
         const proc = (System.getInstance() as any).process;
         const v86 = proc?.v86;
         const cpu = v86?.cpu ?? v86?.v86?.cpu;
@@ -960,7 +962,13 @@ export const dbg = {
         const flags = ex.jit_get_current_state_flags() >>> 0;
         const state = aotInstalled;
         let entries = 0, failed = 0, pages = 0;
-        for (const pm of manifest.pages) {
+        let lo = 0, hi = manifest.pages.length;
+        if (filter) {
+            const [a, b] = filter.split(":").map(Number);
+            if (Number.isFinite(a) && Number.isFinite(b)) { lo = Math.floor(a * manifest.pages.length); hi = Math.floor(b * manifest.pages.length); }
+        }
+        for (const [pi, pm] of manifest.pages.entries()) {
+            if (pi < lo || pi >= hi) continue;
             if (state.nextSlot >= slots) { failed += pm.states.length; continue; }
             const fn = (instance.exports as any)[pm.name];
             if (typeof fn !== "function") { failed += pm.states.length; continue; }
@@ -977,7 +985,8 @@ export const dbg = {
         return { pages, entries, failed, bytes: bytes.byteLength };
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
-        dispatches: number; misses: number; stalls: number; recent: string[] } {
+        dispatches: number; misses: number; stalls: number; recent: string[];
+        runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; iterations: number; retired: number } } {
         const s = aotInstalled;
         const ex = wasm();
         // pagesReplaced: external page modules a JIT compile of the same page
@@ -992,6 +1001,7 @@ export const dbg = {
             recent.push(`${(ex.jit_ext_trace(i, 0) >>> 0).toString(16)}->${(ex.jit_ext_trace(i, 1) >>> 0).toString(16)}:${ex.jit_ext_trace(i, 2) >>> 0}`);
         }
         return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits,
+            runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9) }; })(),
             pagesReplaced: ex?.jit_external_pages_replaced?.() >>> 0,
             dispatches: ex?.jit_external_dispatches?.() >>> 0,
             misses: ex?.jit_external_misses?.() >>> 0,

@@ -397,7 +397,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         console.log(`MISS-ENTRY-TOP at T+${i * 10}s ${JSON.stringify(top)}`);
     }
     if (aotInstall && i * 10 === aotAtSec) {
-        const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)})`, 120_000)
+        const aotFilter = arg("aot-filter", "");
+        const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)}${aotFilter ? `, ${JSON.stringify(aotFilter)}` : ""})`, 120_000)
             .catch((e) => `aotInstall failed: ${e}`);
         console.log(`AOT-INSTALL at T+${i * 10}s ${JSON.stringify(r)}`);
         // --aot-external-first: prefer the translations over JIT modules from
@@ -409,10 +410,31 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     }
     await armHot(bench);
     await Bun.sleep(10_000);
-    const hot = await readHot(bench);
-    const s = await sample(bench);
-    const j = await jitStats(bench);
-    const ip = await interpShare(bench);
+    let hot: any, s: any, j: any, ip: any;
+    try {
+        hot = await readHot(bench);
+        s = await sample(bench);
+        j = await jitStats(bench);
+        ip = await interpShare(bench);
+    } catch (e) {
+        // The page no longer answers: with a batch installed that is the
+        // Worker pinned in the guest. Profile it through its own CDP session
+        // (the inspector interrupts a busy isolate) and name where it spins.
+        console.log(`WINDOW-EVAL-FAILED at T+${i * 10}s: ${String(e).slice(0, 200)}`);
+        if (aotInstall) {
+            const prof = await bench.profileWorker(6_000, 20).catch((e2) => ({ error: String(e2) } as any));
+            console.log("   AOT-HANG cpu-profile " + JSON.stringify(prof).slice(0, 6000));
+            console.log("   AOT-HANG errors " + JSON.stringify(bench.workerErrors().slice(-5)));
+            console.log("   AOT-HANG dialogs " + JSON.stringify(bench.dialogs().slice(-3)));
+            for (const ev of ["fault", "guest_crash", "wasm_trap"]) {
+                const rep = await bench.evalPage(`__BS__.harness.lastEvent(${JSON.stringify(ev)})`, 15_000).catch((e2) => ({ error: String(e2) }));
+                console.log(`   AOT-HANG ${ev} ` + JSON.stringify(rep).slice(0, 3000));
+            }
+            const rep = await bench.evalPage(`__BS__.harness.report()`, 20_000).catch((e2) => ({ error: String(e2) }));
+            console.log("   AOT-HANG report " + JSON.stringify(rep).slice(0, 4000));
+        }
+        break;
+    }
     const dp = s.present - prev.present;
     holdFps.push(dp / 10);
     // jitStats now resets, so its values already cover this window.
@@ -443,6 +465,11 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             }
             const prof = await bench.profileWorker(6_000, 15).catch((e) => ({ error: String(e) } as any));
             console.log("   AOT-HANG cpu-profile " + JSON.stringify(prof).slice(0, 3000));
+            // A guest that stopped without a fault usually sits in a MessageBox:
+            // the report keeps the last boxes' text, the session the page dialogs.
+            console.log("   AOT-HANG dialogs " + JSON.stringify(bench.dialogs().slice(-3)));
+            const rep = await bench.evalPage(`__BS__.harness.report()`, 20_000).catch((e) => ({ error: String(e) }));
+            console.log("   AOT-HANG report " + JSON.stringify(rep).slice(0, 5000));
         }
     }
     // Entry histograms rank by dispatch entries, not time. Confirm the first

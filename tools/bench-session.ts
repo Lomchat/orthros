@@ -50,6 +50,8 @@ export interface BenchSession {
     /** Exceptions and console errors the emulator Worker reported since the
      *  session opened (a silent freeze after boot is usually one of these). */
     workerErrors(): string[];
+    /** Page dialogs (alert/confirm) seen and dismissed: a modal blocks every page eval. */
+    dialogs(): string[];
     /** Close the CDP session AND kill the browser this session launched. */
     close(): void;
 }
@@ -427,6 +429,16 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         const text = (p.args ?? []).map(describe).join(" ").slice(0, 400);
         if (workerErrors.length < 50) workerErrors.push(`console.error ${text}`);
     });
+    // A guest fault halt ends in a page alert(); left open it blocks every
+    // Runtime.evaluate on the page and reads as a hung Worker. Dismiss and keep
+    // the text.
+    const dialogs: string[] = [];
+    session.on("Page.javascriptDialogOpening", (p: any, sid?: string) => {
+        if (sid && sid === workerSessionId) return;
+        dialogs.push(`${p?.type ?? "dialog"}: ${String(p?.message ?? "").slice(0, 400)}`);
+        session.send("Page.handleJavaScriptDialog", { accept: true }, sid).catch(() => {});
+    });
+    session.send("Page.enable", {}).catch(() => {});
     session.on("Target.attachedToTarget", (p: any) => {
         if (p?.targetInfo?.type === "worker"
             && String(p.targetInfo.url ?? "").includes("emulator.worker")) {
@@ -478,6 +490,7 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         },
         profileWorker: (ms: number, top = 25) => profileWorkerTarget(session, workerSessionId, ms, top),
         workerErrors: () => workerErrors.slice(),
+        dialogs: () => dialogs.slice(),
         close: () => {
             try { session.close(); } catch { /* transport already gone */ }
             killProfileProcessesSync(profile);
