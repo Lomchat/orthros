@@ -241,6 +241,27 @@ export class Scheduler {
     public idlePumpStats = { pumps: 0, winmmFires: 0, lastNextFireInMs: 0 };
     /** Sole-runnable Sleep virtual-time credits (see creditVirtualTimeForSoleRunnableSleep). */
     public soleRunnableSleepStats = { credits: 0, msCredited: 0 };
+    /** What the other threads were doing when the sole runnable thread slept:
+     *  one sample every 16 sole-runnable Sleeps, keyed by the Sleep call site
+     *  and each other live thread's state/wait. Read and reset by schedulerPerf. */
+    public soleRunnableSleepWaits = new Map<string, number>();
+    private soleRunnableSleepSampleCounter = 0;
+
+    private sampleSoleRunnableSleepWaits(returnAddr: number): void {
+        if ((++this.soleRunnableSleepSampleCounter & 15) !== 0) return;
+        let key = `ret=0x${returnAddr.toString(16)}`;
+        for (const t of this.threads.values()) {
+            if (t.id === this.currentThreadId || t.state === ThreadState.TERMINATED) continue;
+            const w = t.waitInfo;
+            key += `|T${t.id}:${THREAD_STATE_NAMES[t.state] ?? t.state}`;
+            if (t.state === ThreadState.WAITING && w) {
+                key += `:${WAIT_REASON_NAMES[w.reason] ?? w.reason}`;
+                if (w.reason === WaitReason.CRITICAL_SECTION || w.reason === WaitReason.SRW_LOCK) key += `@0x${w.csAddress.toString(16)}`;
+                else if (w.handles.length) key += `@h${w.handles.map((h) => h.toString(16)).join(",")}`;
+            }
+        }
+        this.soleRunnableSleepWaits.set(key, (this.soleRunnableSleepWaits.get(key) ?? 0) + 1);
+    }
     /** Which sleepWithContext branch handled non-zero Sleep (diagnostics). */
     public sleepPathStats = { soleRunnableYield: 0, blockedWait: 0 };
     /** Round-trip characterisation (block-chaining ROI investigation).
@@ -1862,6 +1883,7 @@ export class Scheduler {
 
         if (ms === 0) {
             if (!this.hasOtherRunnableThreads(thread.id)) {
+                this.sampleSoleRunnableSleepWaits(returnAddr);
                 this.requestYieldToHost(this.computeYieldMs(1), "sleep0");
                 // A thunk boundary can sit hundreds of thousands of guest
                 // instructions before the next periodic tick. Force the WASM
@@ -1887,6 +1909,7 @@ export class Scheduler {
             // while host yield is capped at 50ms would fast-forward virtual time (menu/loading).
             if (ms !== INFINITE && ms <= SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS) {
                 this.sleepPathStats.soleRunnableYield++;
+                this.sampleSoleRunnableSleepWaits(returnAddr);
                 this.creditVirtualTimeForSoleRunnableSleep(ms);
                 this.requestYieldToHost(ms, "sleepN");
                 // Same invariant as a blocked wait: once Sleep has requested a

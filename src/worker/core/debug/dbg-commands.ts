@@ -1853,6 +1853,9 @@ export const dbg = {
             // host because the guest asked to sleep — invisible in a CPU profile,
             // which only sees the thread when it is running.
             soleRunnableSleepStats: { ...(sched.soleRunnableSleepStats ?? {}) },
+            soleRunnableSleepWaits: sched.soleRunnableSleepWaits
+                ? [...(sched.soleRunnableSleepWaits as Map<string, number>).entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+                : [],
             immediateExitReasons: (() => {
                 const pm = (globalThis as any).preemption;
                 if (pm && !pm.exitReasonCensusEnabled) pm.exitReasonCensusEnabled = true;
@@ -1871,6 +1874,7 @@ export const dbg = {
             if (p) { p.soleRunnableYield = 0; p.blockedWait = 0; }
             const c = sched.soleRunnableSleepStats;
             if (c) { c.credits = 0; c.msCredited = 0; }
+            sched.soleRunnableSleepWaits?.clear();
             const pm = (globalThis as any).preemption;
             if (pm) pm.immediateExitReasons = {};
         }
@@ -3139,6 +3143,27 @@ export const dbg = {
     wt(pattern: string, opts?: any): void { (globalThis as any).watchThunk?.(pattern, opts); },
     /** Slow-path thunk frequency report (delegates to diagnostics slowPathReport). */
     slow(): void { (globalThis as any).slowPathReport?.(); },
+    /** Count the thunks that miss the fast path (one Map.set per slow call
+     *  while armed); `slowPathTop()` reads the ranking. */
+    slowPathProfile(on: boolean): boolean {
+        const d = System.getInstance().process?.dispatcher as any;
+        if (!d) return false;
+        if (on) { d.resetSlowPathStats(); d.enableSlowPathProfile(); } else d.disableSlowPathProfile();
+        return true;
+    },
+    /** Async thunks ranked by wall-clock parked, with per-thread split and a
+     *  duration histogram; `reset` restarts the window after reading. */
+    asyncParkTop(n: number = 8, reset: boolean = false): any[] {
+        const d = System.getInstance().process?.dispatcher as any;
+        if (!d) return [];
+        const rows = d.getAsyncParkReport().rows.slice(0, n);
+        if (reset) d.resetAsyncParkStats();
+        return rows;
+    },
+    slowPathTop(n: number = 24): Array<{ name: string; hits: number }> {
+        const d = System.getInstance().process?.dispatcher as any;
+        return d ? d.getSlowPathReport().slice(0, n) : [];
+    },
 
     /** Snapshot the live CPU GP registers (mid-loop `this`/counters). Uses the
      *  dispatcher's cached reg32 Int32Array (live view into v86 regs). */

@@ -12,6 +12,13 @@ const D3DRS_ZWRITEENABLE = 14;
 const D3DCULL_NONE = 1;
 
 const D3DTS_WORLD = 0x100;
+
+/** Render states the fixed-function uniform block reads (SPECULARENABLE,
+ *  TEXTUREFACTOR, COLORVERTEX, LIGHTING, AMBIENT, LOCALVIEWER, the four
+ *  *MATERIALSOURCE, CLIPPLANEENABLE). Any other render state feeds the
+ *  pipeline key, not the block, so it must not invalidate the block. */
+const FFP_BLOCK_RENDER_STATES = new Uint8Array(256);
+for (const rs of [29, 60, 134, 137, 139, 142, 145, 146, 147, 148, 152]) FFP_BLOCK_RENDER_STATES[rs] = 1;
 const D3DTS_VIEW = 2;
 const D3DTS_PROJECTION = 3;
 const D3DTS_TEXTURE0 = 16;
@@ -38,6 +45,10 @@ export class D3D9StateTracker {
     private worldMatrix: Float32Array;
     private viewMatrix: Float32Array;
     private projMatrix: Float32Array;
+    private readonly worldViewCache = new Float32Array(16);
+    private readonly mvpCache = new Float32Array(16);
+    private worldViewDirty = true;
+    private mvpDirty = true;
     private textureMatrices: Float32Array[];
 
     // FVF and stream bindings
@@ -62,6 +73,9 @@ export class D3D9StateTracker {
     /** Bumped by every setter that changes state: a draw whose version
      *  matches the last fixed-function block's reuses that block. */
     version = 0;
+    /** Bumped only by a world-matrix change: a draw whose other versions
+     *  match patches the matrices of the last block instead of rebuilding. */
+    worldVersion = 0;
     private pipelineKeyDirty = true;
 
     // Performance metrics
@@ -136,7 +150,7 @@ export class D3D9StateTracker {
         this.dirtyFlags.renderStates = true;
         this.pipelineKeyDirty = true;
         this.metrics.stateUpdates++;
-        this.version++;
+        if (FFP_BLOCK_RENDER_STATES[state] === 1) this.version++;
         return true;
     }
 
@@ -165,7 +179,9 @@ export class D3D9StateTracker {
         for (let i = 0; i < 16; i++) target[i] = matrix[i]!;
         this.dirtyFlags.transforms = true;
         this.metrics.transformUpdates++;
-        this.version++;
+        if (type === D3DTS_WORLD) this.worldVersion++; else this.version++;
+        if (type === D3DTS_WORLD || type === D3DTS_VIEW) this.worldViewDirty = true;
+        if (type === D3DTS_WORLD || type === D3DTS_VIEW || type === D3DTS_PROJECTION) this.mvpDirty = true;
         return true;
     }
 
@@ -176,16 +192,24 @@ export class D3D9StateTracker {
         return this.textureMatrices[stage] ?? this.textureMatrices[0];
     }
 
+    /** world × view × projection. Returns an internal buffer, recomputed only after a
+     *  transform change: callers copy it out, they never keep or mutate it. */
     getMVP(): Float32Array {
-        return multiplyMatrices(
-            multiplyMatrices(this.worldMatrix, this.viewMatrix),
-            this.projMatrix
-        );
+        if (this.mvpDirty) {
+            multiplyMatricesInto(this.mvpCache, this.getWorldView(), this.projMatrix);
+            this.mvpDirty = false;
+        }
+        return this.mvpCache;
     }
 
-    /** world × view — eye/view-space transform used by FFP lighting for pos + normal. */
+    /** world × view — eye/view-space transform used by FFP lighting for pos + normal.
+     *  Same contract as getMVP(): an internal, read-only buffer. */
     getWorldView(): Float32Array {
-        return multiplyMatrices(this.worldMatrix, this.viewMatrix);
+        if (this.worldViewDirty) {
+            multiplyMatricesInto(this.worldViewCache, this.worldMatrix, this.viewMatrix);
+            this.worldViewDirty = false;
+        }
+        return this.worldViewCache;
     }
 
     // FVF management
@@ -206,7 +230,6 @@ export class D3D9StateTracker {
         if (cur && cur.index === index && cur.offset === offset && cur.stride === stride) return false;
         this.streamSource = { index, offset, stride };
         this.dirtyFlags.streams = true;
-        this.version++;
         return true;
     }
 
@@ -216,7 +239,6 @@ export class D3D9StateTracker {
         if (this.streamSource === null) return false;
         this.streamSource = null;
         this.dirtyFlags.streams = true;
-        this.version++;
         return true;
     }
 
@@ -225,7 +247,6 @@ export class D3D9StateTracker {
         if (this.indexSource === index) return false;
         this.indexSource = index;
         this.dirtyFlags.streams = true;
-        this.version++;
         return true;
     }
 
@@ -234,11 +255,14 @@ export class D3D9StateTracker {
     // Texture stage management
     setTexture(stage: number, textureIndex: number | null): boolean {
         if (stage < 0 || stage >= this.textureStages.length) return false;
-        if (this.textureStages[stage] === textureIndex) return false;
+        const previous = this.textureStages[stage];
+        if (previous === textureIndex) return false;
         this.textureStages[stage] = textureIndex;
         this.dirtyFlags.textures = true;
         this.metrics.textureChanges++;
-        this.version++;
+        // The block only knows whether a stage has a texture; which one is a
+        // bind-group matter. Binding a different texture must not rebuild it.
+        if ((previous === null) !== (textureIndex === null)) this.version++;
         return true;
     }
 
@@ -304,6 +328,8 @@ export class D3D9StateTracker {
         this.worldMatrix = identityMatrix();
         this.viewMatrix = identityMatrix();
         this.projMatrix = identityMatrix();
+        this.worldViewDirty = true;
+        this.mvpDirty = true;
         this.fvf = 0;
         this.streamSource = null;
         this.indexSource = null;
@@ -338,8 +364,7 @@ function identityMatrix(): Float32Array {
     ]);
 }
 
-function multiplyMatrices(a: Float32Array, b: Float32Array): Float32Array {
-    const out = new Float32Array(16);
+function multiplyMatricesInto(out: Float32Array, a: Float32Array, b: Float32Array): Float32Array {
     for (let row = 0; row < 4; row++) {
         for (let col = 0; col < 4; col++) {
             out[row * 4 + col] =

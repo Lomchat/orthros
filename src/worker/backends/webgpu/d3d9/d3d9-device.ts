@@ -52,7 +52,7 @@ import {
 } from "./shader";
 import { AlphaTest, alphaTestSnippet } from "./shader/sm-wgsl";
 import { Op, opName } from "./shader/sm-enums";
-import {
+import { patchFfpWorldMatrices,
     FFP_UNIFORM_STRUCT_WGSL,
     FFP_SELECT_COLOR_WGSL,
     emitFfpComputeLighting,
@@ -527,7 +527,7 @@ export class D3D9Device {
      *  (stage states, material, lights, clip planes, declaration, target):
      *  bumped on every change, part of the uniform block's cache key. */
     private ffpVersion = 0;
-    private ffpBlockCache: { trackerVersion: number; deviceVersion: number; w: number; h: number; block: Float32Array } | null = null;
+    private ffpBlockCache: { trackerVersion: number; worldVersion: number; deviceVersion: number; w: number; h: number; block: Float32Array } | null = null;
     /** Diagnostic (dbg.d3d9DumpShaders): sticky record of whether the app ever set D3DTTFF_PROJECTED. */
     private projectedSetCount = 0;
     private projectedFlagsSeen = 0;
@@ -1804,10 +1804,15 @@ export class D3D9Device {
         // `index` is the SAME internal numeric id used everywhere else in this store (not
         // the raw guest COM pointer) — exactly what the arena's textureId expects.
         if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setTexture(stage, index ?? 0);
+        // A texture that is the active render target reads as "no texture" in
+        // the fixed-function block: binding or replacing one changes the block
+        // even though the tracker only counts null/non-null transitions.
+        const previous = this.stateTracker.getTexture(stage);
         if (!this.stateTracker.setTexture(stage, index)) {
             d3d9PerfSkip("setTexture");
             return 0;
         }
+        if (this.currentRtIndex !== null && (index === this.currentRtIndex || previous === this.currentRtIndex)) this.ffpVersion++;
 
         // Update frame snapshot counter
         if (this.frameSnapshot.frameCounters) {
@@ -3865,15 +3870,21 @@ export class D3D9Device {
         // the block (allocations, light parsing, 432 floats) only when a
         // setter has run since the last one. Textures and samplers are
         // resolved per draw regardless.
-        const tv = this.stateTracker.version, dv = this.ffpVersion;
+        const tv = this.stateTracker.version, wv = this.stateTracker.worldVersion, dv = this.ffpVersion;
         const c = this.ffpBlockCache;
         const debugForced = (globalThis as any).__d3d9ForceFullbright === true;
         let block: Float32Array;
         if (c && !debugForced && c.trackerVersion === tv && c.deviceVersion === dv && c.w === w && c.h === h) {
             block = c.block;
+            if (c.worldVersion !== wv) {
+                // Only the world matrix moved (the next object): three matrix
+                // slots change, everything else in the block is still right.
+                patchFfpWorldMatrices(block, this.stateTracker.getMVP(), this.stateTracker.getWorldView(), this.stateTracker.getWorldMatrix());
+                c.worldVersion = wv;
+            }
         } else {
             block = this.buildFfpUniformBlock(w, h);
-            if (!debugForced) this.ffpBlockCache = { trackerVersion: tv, deviceVersion: dv, w, h, block };
+            if (!debugForced) this.ffpBlockCache = { trackerVersion: tv, worldVersion: wv, deviceVersion: dv, w, h, block };
         }
         const state = frame.nextFixedState(block.length);
         state.uniforms.set(block);

@@ -64,6 +64,12 @@ export interface WorkerProfile {
      *  only the sum says whether the guest's own code or the runtime around it
      *  dominates. */
     buckets: Record<string, number>;
+    /** Callers of the hottest JS frames, two levels up. */
+    callers?: Record<string, Array<{ fn: string; pos: string; samples: number }>>;
+    /** Inclusive time share (self + callees) of Worker JS functions: what a
+     *  whole path such as a draw call costs, which a flat self-time list of
+     *  twenty 0.5 % helpers cannot say. */
+    inclusive?: Array<{ fn: string; pos: string; pct: number; samples: number }>;
 }
 
 /** Which subsystem a sampled frame belongs to. */
@@ -175,7 +181,30 @@ async function profileWorkerTarget(
         }
         callers[`${row.fn}@${row.pos}`] = [...byParent.values()].sort((a, b) => b.samples - a.samples).slice(0, 4);
     }
-    return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets, callers };
+    // Inclusive time of JS frames: each sample credits every distinct function
+    // on its stack once (recursion counted once), so a row reads as "the share
+    // of samples with this function somewhere on the stack".
+    const incl = new Map<string, { fn: string; pos: string; samples: number }>();
+    for (const [id, count] of self) {
+        const seen = new Set<string>();
+        for (let cur: number | undefined = id; cur !== undefined; cur = parentOf.get(cur)) {
+            const f = byId.get(cur)?.callFrame;
+            if (!f) break;
+            if (!(f.url || "").includes("emulator.worker")) continue;
+            const fn = f.functionName || "(anonymous)";
+            const pos = `${f.lineNumber ?? "?"}:${f.columnNumber ?? "?"}`;
+            const key = `${fn}@${pos}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const e = incl.get(key) ?? { fn, pos, samples: 0 };
+            e.samples += count;
+            incl.set(key, e);
+        }
+    }
+    const inclusive = [...incl.values()].sort((a, b) => b.samples - a.samples).slice(0, 32)
+        .map((e) => ({ fn: e.fn, pos: e.pos, samples: e.samples,
+            pct: totalSamples > 0 ? Math.round((e.samples / totalSamples) * 1000) / 10 : 0 }));
+    return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets, callers, inclusive };
 }
 
 async function fetchJson(port: number, path: string): Promise<any> {

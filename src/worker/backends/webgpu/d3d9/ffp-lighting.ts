@@ -230,6 +230,14 @@ export function packFfpUniforms(out: Float32Array, p: FfpUniformParams): void {
     writeColor(out, OFF_TEXTURE_FACTOR, p.textureFactor);
 }
 
+/** Rewrite the three slots that depend on the world matrix in a block built
+ *  for the same everything-else: the per-object case between two draws. */
+export function patchFfpWorldMatrices(out: Float32Array, mvp: Float32Array, worldView: Float32Array, world: Float32Array): void {
+    out.set(mvp.subarray(0, 16), OFF_MVP);
+    out.set(worldView.subarray(0, 16), OFF_WORLDVIEW);
+    out.set(world.subarray(0, 16), OFF_WORLD);
+}
+
 const IDENTITY4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const _lightTmp: [number, number, number] = [0, 0, 0];
 

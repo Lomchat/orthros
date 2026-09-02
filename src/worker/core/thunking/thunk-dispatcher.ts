@@ -265,6 +265,7 @@ export class ThunkDispatcher {
     // Rebuilt in updateMemoryCache() when mem8.buffer changes (WASM memory growth).
     private cachedReg32Raw: Int32Array | null = null;
     private cachedIpRaw: Int32Array | null = null;
+    private cachedInsnCounterRaw: Uint32Array | null = null;
     private cachedFlagsRaw: Int32Array | null = null;
     private cachedSegOffsetsRaw: Int32Array | null = null;
     private cachedWasmBuffer: ArrayBufferLike | null = null;
@@ -545,6 +546,7 @@ export class ThunkDispatcher {
                 this.cachedReg32Raw      = new Int32Array(mem8.buffer, 64,  8);
                 this.cachedFlagsRaw      = new Int32Array(mem8.buffer, 120, 1);
                 this.cachedIpRaw         = new Int32Array(mem8.buffer, 556, 1);
+                this.cachedInsnCounterRaw = new Uint32Array(mem8.buffer, 664, 1);
                 this.cachedSegOffsetsRaw = new Int32Array(mem8.buffer, 736, 8);
             }
         }
@@ -1603,7 +1605,7 @@ export class ThunkDispatcher {
                     }
                 }
             }
-            if (this.busyWaitDetector.check(thunkName, (cpu.instruction_counter?.[0] ?? 0) >>> 0)) {
+            if (this.busyWaitDetector.check(thunkName, (this.cachedInsnCounterRaw ? this.cachedInsnCounterRaw[0] : (cpu.instruction_counter?.[0] ?? 0)) >>> 0)) {
                 sched.requestSwitch();
             }
         }
@@ -1632,7 +1634,7 @@ export class ThunkDispatcher {
         } catch { /* detached buffer */ }
         this.recordWinApiCall(thunkName, functionId, espAtEntry, ringArg0);
         this.checkEspSanity(espAtEntry, thunkName);
-        this.checkEbpSanity(cpu.reg32[5] >>> 0, thunkName);
+        this.checkEbpSanity((this.cachedReg32Raw ?? cpu.reg32)[5] >>> 0, thunkName);
         // Not inside shouldProfileThunk: that call is short-circuited away whenever
         // the profiler is off, which is exactly when the census is wanted.
         this.noteThunkCensus(thunkName);
@@ -1691,11 +1693,11 @@ export class ThunkDispatcher {
         const implWallStart = performance.now();
         let censusCaller = 0;
         try {
-            const regsRaw = this.cachedReg32 || cpu.reg32;
+            const regsRaw = this.cachedReg32Raw || this.cachedReg32 || cpu.reg32;
             const ctx = this.reusableContext;
             ctx.eax = regsRaw[0]; ctx.ecx = regsRaw[1]; ctx.edx = regsRaw[2]; ctx.ebx = regsRaw[3];
             ctx.esp = regsRaw[4]; ctx.ebp = regsRaw[5]; ctx.esi = regsRaw[6]; ctx.edi = regsRaw[7];
-            ctx.eip = (this.cachedInstructionPointer || cpu.instruction_pointer)[0];
+            ctx.eip = (this.cachedIpRaw || this.cachedInstructionPointer || cpu.instruction_pointer)[0];
             // Materialize lazy arithmetic flags: this ctx.eflags feeds
             // createPostReturnContext for async/blocked thunks, whose restore
             // clears flags_changed — a raw flags[0] here would bake stale
@@ -3436,18 +3438,18 @@ export class ThunkDispatcher {
             h = this.shadowHandles.get(`${dllName}:${funcName}`.toLowerCase()) ?? null;
             byFunc.set(funcName, h);
         }
-        if (!h || !this.getMemory || slot < 0 || slot >= h.slotCount) return;
-        const mem = this.getMemory();
-        // The guest memory view is a proxy over a buffer that v86 replaces
-        // when the wasm memory grows: a view cached on the old buffer is
-        // detached, so the cache is keyed by the buffer itself.
-        if (this.shadowView === null || this.shadowView.buffer !== mem.buffer) {
-            this.shadowView = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        if (!h || slot < 0 || slot >= h.slotCount) return;
+        // v86 replaces its memory buffer when the wasm memory grows, which
+        // detaches every view on the old one. Reading `.buffer` through the
+        // guest-memory Proxy to compare costs a trap per call; the detached
+        // flag of the cached view answers the same question for free.
+        if (this.cachedDataView === null || (this.cachedDataView.buffer as ArrayBuffer & { detached?: boolean }).detached === true) {
+            this.updateMemoryCache();
+            if (this.cachedDataView === null) return;
         }
-        this.shadowView.setInt32(h.shadowBase + slot * 4, value | 0, true);
+        this.cachedDataView.setInt32(h.shadowBase + slot * 4, value | 0, true);
     }
     private shadowKeyCache = new Map<string, Map<string, { shadowBase: number; slotCount: number } | null>>();
-    private shadowView: DataView | null = null;
 
     /** Raw guest-RAM shadow slot values for a shadowed setter (diagnostic: diff vs the JS
      *  state-of-record to find wrong-skip desyncs). Returns null if unknown/not ready. */

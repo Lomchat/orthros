@@ -351,6 +351,10 @@ const tL = performance.now();
 /** Per-window frame rate through the hold, so the load phase can be isolated
  *  from the gameplay that follows it rather than averaged together with it. */
 const holdFps: number[] = [];
+// --slow-path: which thunks still take the JavaScript slow dispatch path, ranked
+// by calls over the hold. Armed once here, read at the end of the hold.
+const slowPath = process.argv.includes("--slow-path");
+if (slowPath) console.log("slow-path profile armed: " + JSON.stringify(await bench.dbg("slowPathProfile", true).catch((e) => String(e))));
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     if (hotDump && i * 10 === hotDumpAtSec) {
         await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
@@ -460,8 +464,25 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         console.log(`   sleep: soleYield=${sp.soleRunnableYield ?? "?"} blockedWait=${sp.blockedWait ?? "?"}`
             + ` credits=${cr.credits ?? "?"} msCredited=${Math.round(cr.msCredited ?? 0)}`
             + ` realSwitch=${sl.roundTrips?.realSwitch ?? "?"} ticks=${sl.roundTrips?.ticks ?? "?"}`);
+        // Sampled 1/16: what the other threads were doing while the sole runnable
+        // thread slept, by Sleep call site. Names the wait behind a polling loop.
+        const waits: Array<[string, number]> = sl.soleRunnableSleepWaits ?? [];
+        if (waits.length) console.log(`   waits: ` + waits.slice(0, 4).map(([k, n]) => `${n}x ${k}`).join("  "));
+    }
+    // The async thunks the guest threads parked in during this window, by
+    // wall-clock: the host operation behind a WAITING:ASYNC_THUNK above.
+    const parks: any[] = await bench.dbg("asyncParkTop", 4, true).catch(() => []);
+    if (parks?.length) {
+        console.log(`   parks: ` + parks.map((r: any) => `${r.name} n=${r.count} ms=${r.totalMs} max=${r.maxMs}`
+            + ` >16ms=${(r.buckets?.le50 ?? 0) + (r.buckets?.gt50 ?? 0)}`
+            + ` [${(r.byTid ?? []).slice(0, 3).map((t: any) => `T${t.tid}:${t.count}/${t.totalMs}ms`).join(",")}]`).join("  "));
     }
     prev = s; prevJit = j; prevInterp = ip;
+}
+if (slowPath) {
+    const top = await bench.dbg("slowPathTop", 32).catch((e) => ({ error: String(e) }));
+    console.log("SLOW-PATH-TOP over the hold " + JSON.stringify(top));
+    await bench.dbg("slowPathProfile", false).catch(() => null);
 }
 // In-game profile. Every measurement in this project so far has been of the
 // loading phase; the warm path is where the largest past wins came from
@@ -546,6 +567,7 @@ if (process.argv.includes("--profile-ingame")) {
         await bench.dbg("thunkCensus", true).catch(() => null);
         const cpu = await bench.profileWorker(10_000, 40).catch((e) => ({ error: String(e) } as any));
         console.log("in-game cpu " + JSON.stringify(cpu));
+        console.log("in-game inclusive " + JSON.stringify((cpu as any).inclusive ?? []).slice(0, 3000));
         console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
         console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
