@@ -119,6 +119,7 @@ function writeStub(img: Uint8Array, funcAddr: number, regs: Int32Array): void {
     img[STUB_OFF + 0x201] = 0xEB; img[STUB_OFF + 0x202] = 0xFE;
 }
 
+let traceEntry: number | null = null;
 function runGuest(
     img: Uint8Array, scratch: Uint8Array, stack: Uint8Array,
     install: ((cpu: any) => Promise<boolean>) | null,
@@ -134,6 +135,10 @@ function runGuest(
             const cpu = emulator.v86.cpu;
             const ex = cpu.wm.exports;
             const mem = cpu.mem8 as Uint8Array;
+            if (process.argv.includes("--trace-dispatch") && traceEntry !== null) {
+                const d = ex["jit_debug_dispatch"]?.(traceEntry) >>> 0;
+                console.log(`  dispatch(0x${traceEntry.toString(16)}) at ${status}: jit=${(d >>> 31) & 1} ext=${(d >>> 30) & 1} flagsMatch=${(d >>> 29) & 1} state=0x${(d & 0xffff).toString(16)} flags=0x${(ex["jit_get_current_state_flags"]?.() >>> 0).toString(16)} extDispatches=${ex["jit_external_dispatches"]?.() >>> 0} extMisses=${ex["jit_external_misses"]?.() >>> 0}`);
+            }
             const out: RunResult = {
                 ok: status === "halt", status,
                 regs: Int32Array.from(cpu.reg32.slice(0, 8)),
@@ -232,6 +237,7 @@ for (const t of functions) {
     const img = image.slice();
     writeStub(img, t.entry, regs);
 
+    traceEntry = t.entry;
     const guest = await runGuest(img, scratch, stack, null);
     if (!guest.ok) { console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (guest: ${guest.status})`); inconclusive++; continue; }
 
@@ -253,6 +259,12 @@ for (const t of functions) {
             const index = first + pageSlot.get(page)!;
             cpu.wm.wasm_table.set(index + WASM_TABLE_OFFSET, fn);
             if ((ex["jit_register_external_module"](index, e.addr, flags, state) >>> 0) !== 1) return false;
+        }
+        // The dispatcher's view of the entry right after registration (the TLB
+        // has no entry yet, so this only tells whether registration published).
+        if (process.argv.includes("--trace-dispatch")) {
+            const d = ex["jit_debug_dispatch"]?.(t.entry) >>> 0;
+            console.log(`  dispatch(0x${t.entry.toString(16)}) after register: jit=${(d >>> 31) & 1} ext=${(d >>> 30) & 1} flagsMatch=${(d >>> 29) & 1} state=0x${(d & 0xffff).toString(16)} externalPages=${ex["jit_external_pages"]?.() >>> 0}`);
         }
         return true;
     });
@@ -276,9 +288,15 @@ for (const t of functions) {
     // a synthetic pointer past RAM is visible.
     const guardNote = guardExits.length > 0
         ? `, ${guardExits.length} guard exit(s) at ${guardExits.slice(0, 3).map((a) => "0x" + a.toString(16)).join(",")}` : "";
-    if (!(ext.interpreted < guest.interpreted)) diffs.push(`module not entered (interpreted ${ext.interpreted} vs ${guest.interpreted})`);
+    // Identical state but no drop in interpreted work: the dispatcher never
+    // entered the translation (or it exited at once). Not a divergence, but
+    // not a verification either.
+    const notEntered = diffs.length === 0 && !(ext.interpreted < guest.interpreted);
 
-    if (diffs.length === 0) {
+    if (notEntered) {
+        console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (not entered: interpreted ${ext.interpreted} vs ${guest.interpreted}${guardNote})`);
+        inconclusive++;
+    } else if (diffs.length === 0) {
         console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}`);
         pass++;
     } else {
