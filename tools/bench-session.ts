@@ -153,8 +153,9 @@ async function profileWorkerTarget(
     // function and position over every node of that frame.
     const parentOf = new Map<number, number>();
     for (const n of nodes) for (const c of n.children ?? []) parentOf.set(c, n.id);
+    // Two levels of callers ("parent < grandparent"), for the top JS rows.
     const callers: Record<string, Array<{ fn: string; pos: string; samples: number }>> = {};
-    for (const row of rows.slice(0, 12)) {
+    for (const row of rows.slice(0, 24)) {
         if (!row.url.endsWith(".js")) continue;
         const byParent = new Map<string, { fn: string; pos: string; samples: number }>();
         for (const [id, count] of self) {
@@ -162,10 +163,13 @@ async function profileWorkerTarget(
             if (!f) continue;
             const fn = f.functionName || "(anonymous)";
             if (fn !== row.fn || `${f.lineNumber ?? "?"}:${f.columnNumber ?? "?"}` !== row.pos) continue;
-            const p = byId.get(parentOf.get(id) ?? -1)?.callFrame;
+            const pid = parentOf.get(id) ?? -1;
+            const p = byId.get(pid)?.callFrame;
             if (!p) continue;
-            const pk = `${p.functionName || "(anonymous)"}@${p.lineNumber}:${p.columnNumber}`;
-            const e = byParent.get(pk) ?? { fn: p.functionName || "(anonymous)", pos: `${p.lineNumber}:${p.columnNumber}`, samples: 0 };
+            const g = byId.get(parentOf.get(pid) ?? -1)?.callFrame;
+            const name = (c: any) => (c?.functionName || "(anonymous)");
+            const pk = `${name(p)}@${p.lineNumber}:${p.columnNumber}<${g ? name(g) : ""}`;
+            const e = byParent.get(pk) ?? { fn: `${name(p)} < ${g ? name(g) : "?"}`, pos: `${p.lineNumber}:${p.columnNumber}`, samples: 0 };
             e.samples += count;
             byParent.set(pk, e);
         }
