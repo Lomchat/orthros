@@ -24,6 +24,9 @@
 
 import { System } from '../system';
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
+
+/** Ahead-of-time modules installed in this worker (see dbg.aotInstall). */
+const aotInstalled = { nextSlot: 0, pages: 0, entries: 0, bytes: 0 };
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
 import { TimeService } from '../../runtime/time';
@@ -896,6 +899,51 @@ export const dbg = {
         const applied = wasm()?.get_jit_config?.(48);
         console.log(`[dbg] hot profile mode=${pm?.getJitHotProfileMode?.() ?? "?"} applied=${applied ?? "pending-wasm"}`);
         return applied ?? (pm?.getJitHotProfileMode?.() ?? -1);
+    },
+    /** Install an ahead-of-time batch (`<url>.wasm` + `<url>.json` from
+     *  tools/aot/build-batch.ts): one reserved table slot per page module,
+     *  one registration per entry. From then on the dispatcher enters the
+     *  translated code for those entries; a page write drops it like a
+     *  compiled page. `dbg.aotStats()` reports what is installed. */
+    async aotInstall(url: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
+        const proc = (System.getInstance() as any).process;
+        const v86 = proc?.v86;
+        const cpu = v86?.cpu ?? v86?.v86?.cpu;
+        const ex = cpu?.wm?.exports;
+        if (!cpu || !ex?.jit_register_external_module || !ex.jit_external_module_first_index) {
+            console.warn("[dbg] aotInstall: v86 or its external-module exports unavailable");
+            return null;
+        }
+        const [wasmRes, jsonRes] = await Promise.all([fetch(`${url}.wasm`), fetch(`${url}.json`)]);
+        if (!wasmRes.ok || !jsonRes.ok) { console.warn(`[dbg] aotInstall: ${url} not found (${wasmRes.status}/${jsonRes.status})`); return null; }
+        const bytes = new Uint8Array(await wasmRes.arrayBuffer());
+        const manifest = await jsonRes.json() as { pages: Array<{ page: number; name: string; states: number[] }> };
+        const memBase = cpu.mem8.byteOffset >>> 0;
+        const { instance } = await WebAssembly.instantiate(bytes, { env: { memory: cpu.wasm_memory, mem_base: () => memBase } });
+        const first = ex.jit_external_module_first_index() >>> 0;
+        const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
+        const flags = ex.jit_get_current_state_flags() >>> 0;
+        const state = aotInstalled;
+        let entries = 0, failed = 0, pages = 0;
+        for (const pm of manifest.pages) {
+            if (state.nextSlot >= slots) { failed += pm.states.length; continue; }
+            const fn = (instance.exports as any)[pm.name];
+            if (typeof fn !== "function") { failed += pm.states.length; continue; }
+            const index = first + state.nextSlot++;
+            cpu.wm.wasm_table.set(index + 1024, fn);
+            pages++;
+            pm.states.forEach((addr, i) => {
+                if ((ex.jit_register_external_module(index, addr >>> 0, flags, i) >>> 0) === 1) entries++;
+                else failed++;
+            });
+        }
+        state.pages += pages; state.entries += entries; state.bytes += bytes.byteLength;
+        console.log(`[dbg] aotInstall ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes`);
+        return { pages, entries, failed, bytes: bytes.byteLength };
+    },
+    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number } {
+        const s = aotInstalled;
+        return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot };
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */

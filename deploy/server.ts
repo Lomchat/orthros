@@ -110,6 +110,10 @@ for (const entry of readdirSync(WGB_DIR).sort()) {
         BUNDLE_ROUTES.set(route, bundle);
         INTEGRITY_ROUTES.set(`${route}.integrity.json`, bundle);
         HOT_PROFILE_ROUTES.set(`${route}.hotp`, hotProfilePath);
+        // Ahead-of-time translation batch (tools/aot/build-batch.ts), same
+        // sidecar convention: dropped beside the bundle, served when present.
+        HOT_PROFILE_ROUTES.set(`${route}.aot.wasm`, `${filePath}.aot.wasm`);
+        HOT_PROFILE_ROUTES.set(`${route}.aot.json`, `${filePath}.aot.json`);
     }
     if (existsSync(hotProfilePath)) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
 }
@@ -195,9 +199,10 @@ const server = Bun.serve({
             // place when a better profile is recorded, without a restart.
             const hot = Bun.file(hotProfilePath);
             if (!(await hot.exists())) return new Response("Not found", { status: 404, headers: COOP_COEP });
-            const etag = `"hotp-${hot.size}-${Math.floor(hot.lastModified)}"`;
+            const etag = `"sidecar-${hot.size}-${Math.floor(hot.lastModified)}"`;
             const headers = {
-                "Content-Type": "application/octet-stream",
+                "Content-Type": pathname.endsWith(".json") ? "application/json; charset=utf-8"
+                    : pathname.endsWith(".wasm") ? "application/wasm" : "application/octet-stream",
                 "Cache-Control": "no-cache",
                 "ETag": etag,
                 ...COOP_COEP,
