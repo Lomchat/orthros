@@ -50,6 +50,8 @@ const exportProfile = arg("export-profile", "");
  *  compare the same session with and without the translated code. */
 const aotInstall = arg("aot-install", "");
 const aotAtSec = Number(arg("aot-at", "120"));
+/** Print the hottest missing-entry addresses (reset ten seconds earlier). */
+const missTopAtSec = Number(arg("miss-top-at", "-1"));
 /** Dump the dispatch-entry histogram by page (30 s window starting at
  *  --hot-dump-at seconds into the hold) to a JSON file: the dynamic hotness
  *  an ahead-of-time batch should be selected by. */
@@ -356,6 +358,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         await bench.evalPage(`__BS__.harness.dbgCall("hotPages", null)`, 30_000).catch(() => {});
         await Bun.write(hotDump, JSON.stringify(hp));
         console.log(`HOT-DUMP ${hotDump}: ${JSON.stringify({ total: (hp as any)?.total, pages: (hp as any)?.pages })}`);
+    }
+    if (missTopAtSec >= 0 && i * 10 === missTopAtSec - 10) {
+        await bench.evalPage(`__BS__.harness.dbgCall("missEntryTop", 0, true)`, 15_000).catch(() => {});
+    }
+    if (missTopAtSec >= 0 && i * 10 === missTopAtSec) {
+        const top = await bench.evalPage(`__BS__.harness.dbgCall("missEntryTop", 32)`, 15_000).catch((e) => ({ error: String(e) }));
+        console.log(`MISS-ENTRY-TOP at T+${i * 10}s ${JSON.stringify(top)}`);
     }
     if (aotInstall && i * 10 === aotAtSec) {
         const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)})`, 120_000)

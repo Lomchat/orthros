@@ -976,6 +976,21 @@ export const dbg = {
             stalls: ex?.jit_external_stalls?.() >>> 0,
             recent };
     },
+    /** Hottest addresses the dispatcher interpreted because their page's
+     *  compiled module has no entry for them (`reset` clears the histogram). */
+    missEntryTop(n = 24, reset = false): Array<{ eip: string; count: number; jitPage: boolean }> {
+        const ex = wasm();
+        if (!ex?.jit_miss_entry_top) return [];
+        if (reset) { ex.jit_miss_entry_reset?.(); return []; }
+        const out: Array<{ eip: string; count: number; jitPage: boolean }> = [];
+        for (let i = 0; i < n; i++) {
+            const eip = ex.jit_miss_entry_top(i, 0) >>> 0;
+            const count = ex.jit_miss_entry_top(i, 1) >>> 0;
+            if (!count) break;
+            out.push({ eip: eip.toString(16), count, jitPage: !!(ex.jit_page_has_code?.(eip >>> 12) >>> 0) });
+        }
+        return out;
+    },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */
     async jitHotProfileForget(): Promise<{ gameId: string | null; removed: boolean }> {
