@@ -373,7 +373,11 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     const d = (k: string) => (j ? (j[k] ?? 0) : 0);
     const di = (k: string) => (ip && prevInterp ? (ip[k] ?? 0) - (prevInterp[k] ?? 0) : 0);
     const retired = di("retired");
+    // Retired guest instructions per second: the throughput a capped frame
+    // rate cannot show, and the number that compares an installed batch with
+    // the windows before it.
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
+        + ` mips=${(retired / 10e6).toFixed(1)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
