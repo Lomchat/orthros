@@ -696,15 +696,20 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
     if (typeof dispatcher.registerStructCaptureWriteBufferFunction === 'function'
         && !(globalThis as any).__noStructCapture) {
         // SetTransform(this, State, pMatrix[16 floats]) — payload at ptr+12.
+        // The scratch pair is hoisted: a world matrix per object per frame made
+        // this two allocations per call on a hot path. Safe because every
+        // consumer copies — the state tracker writes element-wise into its own
+        // matrix, and the state-block recorder takes an explicit Float32Array
+        // copy — so nothing retains the reference past the call.
+        const transformScratch = new Float32Array(16);
+        const transformScratchU32 = new Uint32Array(transformScratch.buffer);
         dispatcher.registerStructCaptureWriteBufferFunction('d3d9', 'IDirect3DDevice9_SetTransform', 3, 2, 16,
             (_mem8: Uint8Array, mem32: Uint32Array, ptr: number) => {
                 const device = devices.get(mem32[ptr >> 2]);
                 if (!device) return;
-                const f = new Float32Array(16);
-                const u = new Uint32Array(f.buffer);
                 const w = (ptr + 12) >> 2;
-                for (let i = 0; i < 16; i++) u[i] = mem32[w + i];
-                device.setTransform(mem32[(ptr + 4) >> 2], f);
+                for (let i = 0; i < 16; i++) transformScratchU32[i] = mem32[w + i]!;
+                device.setTransform(mem32[(ptr + 4) >> 2], transformScratch);
             });
 
         // SetMaterial(this, pMaterial[68 bytes = 17 dwords]) — payload at ptr+8.
