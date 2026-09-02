@@ -100,16 +100,18 @@ for (const entry of readdirSync(WGB_DIR).sort()) {
     // handed to a browser that has none yet so its first session already
     // compiles the known pages at first touch. Pages carry their own hash, so a
     // stale sidecar degrades to "no profile", never to wrong code.
+    // The route is registered whether or not the file exists yet: existence
+    // is checked per request, so a sidecar dropped beside the bundle later
+    // starts being served without a restart.
     const hotProfilePath = `${filePath}.hotp`;
-    const hasHotProfile = existsSync(hotProfilePath);
     const routes = [`/apps/${entry}`, `/apps/${stem}-${sha}.wgb`];
     if (filePath === BFME_WGB_PATH) routes.push("/apps/bfme.wgb", `/apps/bfme-${sha}.wgb`);
     for (const route of routes) {
         BUNDLE_ROUTES.set(route, bundle);
         INTEGRITY_ROUTES.set(`${route}.integrity.json`, bundle);
-        if (hasHotProfile) HOT_PROFILE_ROUTES.set(`${route}.hotp`, hotProfilePath);
+        HOT_PROFILE_ROUTES.set(`${route}.hotp`, hotProfilePath);
     }
-    if (hasHotProfile) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
+    if (existsSync(hotProfilePath)) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
 }
 if (BUNDLE_ROUTES.size === 0) throw new Error(`No verified .wgb found in ${WGB_DIR}`);
 
