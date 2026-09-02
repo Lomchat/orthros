@@ -947,9 +947,12 @@ export const dbg = {
         console.log(`[dbg] aotInstall ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes`);
         return { pages, entries, failed, bytes: bytes.byteLength };
     },
-    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number } {
+    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number } {
         const s = aotInstalled;
-        return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits };
+        // pagesReplaced: external page modules a JIT compile of the same page
+        // evicted — each one is a page the batch left partly uncovered.
+        return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits,
+            pagesReplaced: wasm()?.jit_external_pages_replaced?.() >>> 0 };
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */
