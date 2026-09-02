@@ -53,9 +53,20 @@ const rawBase = arg("raw-base", "") ? Number(arg("raw-base", "")) : null;
 const keep = arg("keep", "");
 
 function fill(buf: Uint8Array, s: number): void {
+    // --fixture pointers: every dword is a pointer into the scratch region, so a
+    // function that chases pointers out of its inputs keeps reading valid
+    // memory (the bench needs thousands of calls, and a wild pointer is a
+    // guard exit for the translation but a silent zero read for v86).
+    const pointers = arg("fixture", "random") === "pointers";
     let x = s >>> 0;
     for (let i = 0; i < buf.length; i++) {
         x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+        if (pointers && (i & 3) === 0 && i + 4 <= buf.length) {
+            const p = (SCRATCH + ((x >>> 8) & (SCRATCH_LEN - 1) & ~0x3f)) >>> 0;
+            buf[i] = p & 0xff; buf[i + 1] = (p >>> 8) & 0xff; buf[i + 2] = (p >>> 16) & 0xff; buf[i + 3] = (p >>> 24) & 0xff;
+            i += 3;
+            continue;
+        }
         buf[i] = (x >>> 24) & 0xff;
     }
 }
@@ -169,12 +180,15 @@ function writeStub(img: Uint8Array, funcAddr: number, regs: Int32Array): void {
     let o = STUB_OFF;
     const haltAt = IMAGE_BASE_GUEST + STUB_OFF + 0x200;
     if (benchIters > 0) {
+        // Every iteration restarts from the same ESP and the same volatile
+        // registers: a `ret N` callee would otherwise walk ESP off the stack
+        // region after a few thousand calls (the fixture aging bench.ts saw).
+        img[o++] = 0xBB; dv.setUint32(o, benchIters, true); o += 4;
+        const loop = o;
         img[o++] = 0xBC; dv.setUint32(o, STACK_TOP, true); o += 4;
         for (const reg of [0, 1, 2, 5, 6, 7]) {
             img[o++] = 0xB8 + reg; dv.setUint32(o, regs[reg]!, true); o += 4;
         }
-        img[o++] = 0xBB; dv.setUint32(o, benchIters, true); o += 4;
-        const loop = o;
         img[o++] = 0xE8; dv.setInt32(o, funcAddr - (IMAGE_BASE_GUEST + o + 4), true); o += 4;
         img[o++] = 0x4B;
         img[o++] = 0x0F; img[o++] = 0x85; dv.setInt32(o, loop - (o + 4), true); o += 4;
@@ -276,9 +290,13 @@ if (entries.length === 0) { console.error("--entries or --candidates required");
 const decoder = await CapstoneDecoder.open(exe, undefined, rawBase);
 const functions: CFunction[] = [];
 let skipped = 0;
+// --leaf-only (bench): a function that calls anything cannot be timed in the
+// bare fixture, where imports and most callees resolve to nothing runnable.
+const leafOnly = process.argv.includes("--leaf-only");
 for (const entry of entries) {
     const t = await translateFunctionC(decoder, entry);
     if (!t) { console.log(`0x${entry.toString(16)}  SKIP — ${lastRejection}`); skipped++; continue; }
+    if (leafOnly && t.calls > 0) { skipped++; continue; }
     functions.push(t);
 }
 if (functions.length === 0) { console.log(`pass=0 fail=0 inconclusive=0 skipped=${skipped}`); process.exit(0); }
@@ -340,6 +358,7 @@ for (const t of functions) {
             guard_exit: (addr: number) => { guardExits.push(addr >>> 0); },
             slow_exit: (addr: number) => { slowExits.push(addr >>> 0); ex["jit_ext_interpret_once"]?.(addr >>> 0); },
             get_eflags: ex["get_eflags"],
+            run_until: ex["jit_run_until"] ?? ((_ret: number, _max: number) => 1),
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
@@ -371,7 +390,7 @@ for (const t of functions) {
         const ratio = guest.ms / Math.max(0.001, ext.ms);
         console.log(`BENCH 0x${t.entry.toString(16)}  ${t.instructions ?? "?"} insns  iterations=${benchIters}  ` +
             `v86=${guest.ms.toFixed(0)}ms (${(guest.retired / guest.ms / 1000).toFixed(1)} MIPS, interp=${guest.interpreted})  ` +
-            `translated=${ext.ms.toFixed(0)}ms (${(ext.retired / ext.ms / 1000).toFixed(1)} MIPS, interp=${ext.interpreted}, slowExits=${slowExits.length}, guardExits=${guardExits.length})  ` +
+            `translated=${ext.ms.toFixed(0)}ms (${(ext.retired / ext.ms / 1000).toFixed(1)} MIPS, interp=${ext.interpreted}, slowExits=${slowExits.length}${slowExits.length ? `@0x${slowExits[0]!.toString(16)}` : ""}, guardExits=${guardExits.length}${guardExits.length ? `@0x${guardExits[0]!.toString(16)}` : ""})  ` +
             `retired ${guest.retired}/${ext.retired}  ${ratio >= 1 ? `${ratio.toFixed(2)}x faster` : `${(1 / ratio).toFixed(2)}x SLOWER`}`);
         pass++;
         continue;

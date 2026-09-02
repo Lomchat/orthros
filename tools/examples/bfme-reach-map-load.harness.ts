@@ -400,6 +400,12 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)})`, 120_000)
             .catch((e) => `aotInstall failed: ${e}`);
         console.log(`AOT-INSTALL at T+${i * 10}s ${JSON.stringify(r)}`);
+        // --aot-external-first: prefer the translations over JIT modules from
+        // the moment they are installed (the mode the bridge is meant for).
+        if (process.argv.includes("--aot-external-first")) {
+            const ef = await bench.dbg("aotExternalFirst", true).catch((e) => String(e));
+            console.log(`AOT-EXTERNAL-FIRST ${JSON.stringify(ef)}`);
+        }
     }
     await armHot(bench);
     await Bun.sleep(10_000);

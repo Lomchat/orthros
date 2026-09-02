@@ -918,6 +918,14 @@ export const dbg = {
      *  one registration per entry. From then on the dispatcher enters the
      *  translated code for those entries; a page write drops it like a
      *  compiled page. `dbg.aotStats()` reports what is installed. */
+    /** Prefer installed translations over JIT modules when both own an entry
+     *  (OFF by default). Returns the state after the call. */
+    aotExternalFirst(on: boolean): boolean {
+        const ex = System.getInstance().process?.v86?.v86?.cpu?.wm?.exports ?? System.getInstance().process?.v86?.cpu?.wm?.exports;
+        if (!ex?.jit_set_external_first) return false;
+        ex.jit_set_external_first(on ? 1 : 0);
+        return !!(ex.jit_get_external_first?.() ?? (on ? 1 : 0));
+    },
     async aotInstall(url: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
         const proc = (System.getInstance() as any).process;
         const v86 = proc?.v86;
@@ -945,6 +953,7 @@ export const dbg = {
             // A translated block that consumes flags no producer of its own
             // set reads v86's effective flags (lazy flags materialised).
             get_eflags: ex.get_eflags,
+            run_until: ex.jit_run_until ?? ((_ret: number, _max: number) => 1),
         } });
         const first = ex.jit_external_module_first_index() >>> 0;
         const slots = ex.jit_external_module_slots?.() >>> 0 || 256;

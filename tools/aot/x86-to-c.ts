@@ -381,6 +381,7 @@ __attribute__((import_module("env"), import_name("mem_base"))) uint32_t mem_base
 __attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_eflags(void);
+__attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t max);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
 /* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
@@ -913,15 +914,27 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             // return address we carry on here; any other exit of the callee is
             // ours too, with its state already committed (exit_foreign).
             const resume = indexOf.get(ret);
+            const fpuOut = fpuUsed ? `if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; fdirty = 0u; } ` : "";
+            const fpuIn = fpuUsed ? ` top = FPU_TOP; fempty = FPU_EMPTY;` : "";
             if (direct !== null && resume !== undefined) {
                 nativeCalls++;
-                const fpuOut = fpuUsed ? `if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; fdirty = 0u; } ` : "";
-                const fpuIn = fpuUsed ? ` top = FPU_TOP; fempty = FPU_EMPTY;` : "";
                 lines.push(`#ifdef HAVE_fn_${direct.toString(16)}`);
                 lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(0, depth + 1u);`);
                 lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
                 lines.push(`    goto exit_foreign; }`);
                 lines.push(`#endif`);
+            }
+            if (resume !== undefined) {
+                // A callee this batch does not own (an import, an indirect
+                // target, a function outside the lot) runs under the nested
+                // dispatcher until it returns here; the flags are made exact
+                // first because the callee may be JIT code reading them.
+                nativeCalls++;
+                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}`);
+                lines.push(`    if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; fk = 0u; }`);
+                lines.push(`    *INSTRUCTION_COUNTER += cnt; cnt = 0u; *PREVIOUS_IP = (int32_t)t; *INSTRUCTION_POINTER = (int32_t)t;`);
+                lines.push(`    if (run_until(${ret}u, ${INVOCATION_BUDGET}u) == 0u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
+                lines.push(`    goto exit_foreign; }`);
             }
             lines.push(`${exitAt("t")} }`);
         }

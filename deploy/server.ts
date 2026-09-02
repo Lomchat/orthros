@@ -114,6 +114,10 @@ for (const entry of readdirSync(WGB_DIR).sort()) {
         // sidecar convention: dropped beside the bundle, served when present.
         HOT_PROFILE_ROUTES.set(`${route}.aot.wasm`, `${filePath}.aot.wasm`);
         HOT_PROFILE_ROUTES.set(`${route}.aot.json`, `${filePath}.aot.json`);
+        // A candidate batch under test, installed by name (dbg.aotInstall
+        // "<route>.aot-bridge") without touching the shipped one.
+        HOT_PROFILE_ROUTES.set(`${route}.aot-bridge.wasm`, `${filePath}.aot-bridge.wasm`);
+        HOT_PROFILE_ROUTES.set(`${route}.aot-bridge.json`, `${filePath}.aot-bridge.json`);
     }
     if (existsSync(hotProfilePath)) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
 }
