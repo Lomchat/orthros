@@ -47,6 +47,9 @@ export interface BenchSession {
      *  function. The Worker is where guest execution lives, so a page-side
      *  profile shows almost nothing. */
     profileWorker(ms: number, top?: number): Promise<WorkerProfile>;
+    /** Exceptions and console errors the emulator Worker reported since the
+     *  session opened (a silent freeze after boot is usually one of these). */
+    workerErrors(): string[];
     /** Close the CDP session AND kill the browser this session launched. */
     close(): void;
 }
@@ -145,7 +148,30 @@ async function profileWorkerTarget(
         .map((e) => ({ fn: e.fn, url: e.url.split("/").at(-1) ?? "", pos: e.pos,
             pct: totalSamples > 0 ? Math.round((e.samples / totalSamples) * 1000) / 10 : 0,
             samples: e.samples }));
-    return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets };
+    // Who calls the hottest JS frames: a tiny helper at 1% of the profile is
+    // only actionable through its callers. Parents are aggregated by
+    // function and position over every node of that frame.
+    const parentOf = new Map<number, number>();
+    for (const n of nodes) for (const c of n.children ?? []) parentOf.set(c, n.id);
+    const callers: Record<string, Array<{ fn: string; pos: string; samples: number }>> = {};
+    for (const row of rows.slice(0, 12)) {
+        if (!row.url.endsWith(".js")) continue;
+        const byParent = new Map<string, { fn: string; pos: string; samples: number }>();
+        for (const [id, count] of self) {
+            const f = byId.get(id)?.callFrame;
+            if (!f) continue;
+            const fn = f.functionName || "(anonymous)";
+            if (fn !== row.fn || `${f.lineNumber ?? "?"}:${f.columnNumber ?? "?"}` !== row.pos) continue;
+            const p = byId.get(parentOf.get(id) ?? -1)?.callFrame;
+            if (!p) continue;
+            const pk = `${p.functionName || "(anonymous)"}@${p.lineNumber}:${p.columnNumber}`;
+            const e = byParent.get(pk) ?? { fn: p.functionName || "(anonymous)", pos: `${p.lineNumber}:${p.columnNumber}`, samples: 0 };
+            e.samples += count;
+            byParent.set(pk, e);
+        }
+        callers[`${row.fn}@${row.pos}`] = [...byParent.values()].sort((a, b) => b.samples - a.samples).slice(0, 4);
+    }
+    return { totalSamples, durationMs: Math.round(durationMs), top: rows, buckets, callers };
 }
 
 async function fetchJson(port: number, path: string): Promise<any> {
@@ -350,10 +376,29 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
     // is ever announced. Arm it before the page boots so the emulator Worker is
     // caught as it is created.
     let workerSessionId: string | null = null;
+    const workerErrors: string[] = [];
+    const describe = (v: any): string => {
+        if (!v) return "";
+        if (v.description) return String(v.description).split("\n").slice(0, 4).join(" | ");
+        if (v.value !== undefined) return String(v.value);
+        return String(v.className ?? v.type ?? "");
+    };
+    session.on("Runtime.exceptionThrown", (p: any, sid?: string) => {
+        if (sid !== workerSessionId) return;
+        const d = p?.exceptionDetails;
+        const text = `${d?.text ?? "exception"} ${describe(d?.exception)} at ${d?.url ?? ""}:${d?.lineNumber ?? "?"}:${d?.columnNumber ?? "?"}`;
+        if (workerErrors.length < 50) workerErrors.push(text);
+    });
+    session.on("Runtime.consoleAPICalled", (p: any, sid?: string) => {
+        if (sid !== workerSessionId || p?.type !== "error") return;
+        const text = (p.args ?? []).map(describe).join(" ").slice(0, 400);
+        if (workerErrors.length < 50) workerErrors.push(`console.error ${text}`);
+    });
     session.on("Target.attachedToTarget", (p: any) => {
         if (p?.targetInfo?.type === "worker"
             && String(p.targetInfo.url ?? "").includes("emulator.worker")) {
             workerSessionId = p.sessionId;
+            session.send("Runtime.enable", {}, p.sessionId).catch(() => {});
         }
     });
     await session.send("Target.setAutoAttach",
@@ -399,6 +444,7 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
             }
         },
         profileWorker: (ms: number, top = 25) => profileWorkerTarget(session, workerSessionId, ms, top),
+        workerErrors: () => workerErrors.slice(),
         close: () => {
             try { session.close(); } catch { /* transport already gone */ }
             killProfileProcessesSync(profile);

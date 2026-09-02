@@ -3345,6 +3345,9 @@ export class ThunkDispatcher {
             trampAddr: h.trampAddr, shadowBase: h.shadowBase, slotCount: h.slotCount,
             sentinel: h.sentinel, skipCounterAddr: h.skipCounterAddr, countsSkips: h.countsSkips,
         });
+        // A re-registration (device reset, Process.reset) moves the shadow
+        // region: cached lookups must not keep writing the old one.
+        this.shadowKeyCache.clear();
         Logger.log(LogCategory.THUNK,
             `[WBUF] Shadowed ${dllName}:${funcName} → tramp 0x${h.trampAddr.toString(16)} ` +
             `(slots=${h.slotCount}, owner@0x${this.shadowOwnerGlobal.toString(16)}, skipCtr@0x${h.skipCounterAddr.toString(16)})`);
@@ -3428,15 +3431,16 @@ export class ThunkDispatcher {
         }
         if (!h || !this.getMemory || slot < 0 || slot >= h.slotCount) return;
         const mem = this.getMemory();
-        if (this.shadowView === null || this.shadowViewMem !== mem) {
+        // The guest memory view is a proxy over a buffer that v86 replaces
+        // when the wasm memory grows: a view cached on the old buffer is
+        // detached, so the cache is keyed by the buffer itself.
+        if (this.shadowView === null || this.shadowView.buffer !== mem.buffer) {
             this.shadowView = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-            this.shadowViewMem = mem;
         }
         this.shadowView.setInt32(h.shadowBase + slot * 4, value | 0, true);
     }
     private shadowKeyCache = new Map<string, Map<string, { shadowBase: number; slotCount: number } | null>>();
     private shadowView: DataView | null = null;
-    private shadowViewMem: Uint8Array | null = null;
 
     /** Raw guest-RAM shadow slot values for a shadowed setter (diagnostic: diff vs the JS
      *  state-of-record to find wrong-skip desyncs). Returns null if unknown/not ready. */

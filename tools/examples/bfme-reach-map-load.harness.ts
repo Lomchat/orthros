@@ -328,6 +328,7 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
 
 if (!loading) {
     console.log("REACH-FAILED no map load detected");
+    for (const e of bench.workerErrors()) console.log("WORKER-ERROR " + e);
     bench.close();
     process.exit(1);
 }
