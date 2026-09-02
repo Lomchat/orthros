@@ -277,6 +277,7 @@ export class D3D9Device {
     private drawRsTransitions: Array<Record<string, number>> = [];
     private lastDrawRsTransitions: Array<Record<string, number>> = [];
     private lastDrawRsSignature = "";
+    private lastDrawRsHash = 0;
     /** Record a SetRenderTarget surface→texture resolution (dedup'd) for diagnostics. */
     noteRtResolve(surfacePtr: number, metaHit: boolean, texturePtr: number): void {
         const idx = texturePtr ? this.textures.getIndex(texturePtr) : null;
@@ -315,28 +316,54 @@ export class D3D9Device {
     }
 
     private traceDrawRenderState(): boolean {
-        const row = {
-            colorWrite: this.getRenderState(168) >>> 0,
-            alphaBlend: this.getRenderState(27) >>> 0,
-            srcBlend: this.getRenderState(19) >>> 0,
-            dstBlend: this.getRenderState(20) >>> 0,
-            zEnable: this.getRenderState(7) >>> 0,
-            zWrite: this.getRenderState(14) >>> 0,
-            stencil: this.getRS(D3DRS_STENCILENABLE) >>> 0,
-            stencilFunc: this.getRS(D3DRS_STENCILFUNC) >>> 0,
-            stencilRef: this.getRS(D3DRS_STENCILREF) >>> 0,
-            stencilFail: this.getRS(D3DRS_STENCILFAIL) >>> 0,
-            stencilZFail: this.getRS(D3DRS_STENCILZFAIL) >>> 0,
-            stencilPass: this.getRS(D3DRS_STENCILPASS) >>> 0,
-            twoSided: this.getRS(D3DRS_TWOSIDEDSTENCILMODE) >>> 0,
-            ccwZFail: this.getRS(D3DRS_CCW_STENCILZFAIL) >>> 0,
-            ccwPass: this.getRS(D3DRS_CCW_STENCILPASS) >>> 0,
-        };
-        const signature = Object.values(row).join(",");
-        if (signature !== this.lastDrawRsSignature && this.drawRsTransitions.length < 128) {
+        // Runs on EVERY draw — ~6,600/s in a skirmish. Hashing the states into a
+        // number first means the object literal and its string signature are built
+        // only when the state actually changed, which is a handful of times per
+        // frame instead of once per draw.
+        const colorWrite = this.getRenderState(168) >>> 0;
+        const alphaBlend = this.getRenderState(27) >>> 0;
+        const srcBlend = this.getRenderState(19) >>> 0;
+        const dstBlend = this.getRenderState(20) >>> 0;
+        const zEnable = this.getRenderState(7) >>> 0;
+        const zWrite = this.getRenderState(14) >>> 0;
+        const stencil = this.getRS(D3DRS_STENCILENABLE) >>> 0;
+        const stencilFunc = this.getRS(D3DRS_STENCILFUNC) >>> 0;
+        const stencilRef = this.getRS(D3DRS_STENCILREF) >>> 0;
+        const stencilFail = this.getRS(D3DRS_STENCILFAIL) >>> 0;
+        const stencilZFail = this.getRS(D3DRS_STENCILZFAIL) >>> 0;
+        const stencilPass = this.getRS(D3DRS_STENCILPASS) >>> 0;
+        const twoSided = this.getRS(D3DRS_TWOSIDEDSTENCILMODE) >>> 0;
+        const ccwZFail = this.getRS(D3DRS_CCW_STENCILZFAIL) >>> 0;
+        const ccwPass = this.getRS(D3DRS_CCW_STENCILPASS) >>> 0;
+
+        let hash = 17;
+        hash = (Math.imul(hash, 31) + colorWrite) | 0;
+        hash = (Math.imul(hash, 31) + alphaBlend) | 0;
+        hash = (Math.imul(hash, 31) + srcBlend) | 0;
+        hash = (Math.imul(hash, 31) + dstBlend) | 0;
+        hash = (Math.imul(hash, 31) + zEnable) | 0;
+        hash = (Math.imul(hash, 31) + zWrite) | 0;
+        hash = (Math.imul(hash, 31) + stencil) | 0;
+        hash = (Math.imul(hash, 31) + stencilFunc) | 0;
+        hash = (Math.imul(hash, 31) + stencilRef) | 0;
+        hash = (Math.imul(hash, 31) + stencilFail) | 0;
+        hash = (Math.imul(hash, 31) + stencilZFail) | 0;
+        hash = (Math.imul(hash, 31) + stencilPass) | 0;
+        hash = (Math.imul(hash, 31) + twoSided) | 0;
+        hash = (Math.imul(hash, 31) + ccwZFail) | 0;
+        hash = (Math.imul(hash, 31) + ccwPass) | 0;
+
+        if (hash !== this.lastDrawRsHash && this.drawRsTransitions.length < 128) {
+            this.lastDrawRsHash = hash;
+            const row = {
+                colorWrite, alphaBlend, srcBlend, dstBlend, zEnable, zWrite,
+                stencil, stencilFunc, stencilRef, stencilFail, stencilZFail,
+                stencilPass, twoSided, ccwZFail, ccwPass,
+            };
             this.drawRsTransitions.push(row);
-            this.lastDrawRsSignature = signature;
+            this.lastDrawRsSignature = Object.values(row).join(",");
         }
+        const row = { stencil };
         const dbg = globalThis as any;
         if (row.stencil !== 0 && dbg.__d3d9SkipStencilDraws === true) return true;
         const textureIndex = this.stateTracker.getTexture(0);
@@ -3639,6 +3666,7 @@ export class D3D9Device {
             this.lastDrawRsTransitions = this.drawRsTransitions;
             this.drawRsTransitions = [];
             this.lastDrawRsSignature = "";
+            this.lastDrawRsHash = 0;
         }
         const size = this.backendExecutor.getCanvasSize();
         // When a render target is active, the pass renders into that texture (its own size +
