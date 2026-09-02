@@ -66,8 +66,9 @@ const hotPagesPath = arg("hot-pages", "");
 const topPages = Number(arg("top-pages", "0"));
 let hotSet: Set<number> | null = null;
 if (hotPagesPath && topPages > 0) {
-    const hp = JSON.parse(await Bun.file(hotPagesPath).text()) as { top: Array<{ page?: number; addr?: number; count?: number; entries?: number }> };
-    const rows = (hp.top ?? []).map((r) => ({ page: r.page ?? ((r.addr ?? 0) >>> 12), n: r.count ?? r.entries ?? 0 }))
+    // dbg.hotPages rows carry the page as a hex address string ("0xbab000").
+    const hp = JSON.parse(await Bun.file(hotPagesPath).text()) as { top: Array<{ page?: number | string; addr?: number; count?: number; entries?: number }> };
+    const rows = (hp.top ?? []).map((r) => ({ page: (typeof r.page === "string" ? Number(r.page) : (r.page ?? (r.addr ?? 0))) >>> 12, n: r.count ?? r.entries ?? 0 }))
         .sort((a, b) => b.n - a.n).slice(0, topPages);
     hotSet = new Set(rows.map((r) => r.page));
     console.log(`hot pages: keeping ${hotSet.size} of ${hp.top?.length ?? 0}`);
@@ -83,9 +84,11 @@ for (const entry of entries) {
     functions.push(t);
 }
 
-// Page coverage: an entry the runtime dispatches to must be an entry of some
-// translated function on that page, or the JIT takes the page back.
-if (recorded.size > 0) {
+// Page coverage (opt-in with --whole-pages): keep only pages where every
+// entry the runtime dispatches to lands in a translation. v86 now lets a JIT
+// module and an external module share a page, so this is no longer required;
+// it remains available to measure the fully-covered subset.
+if (recorded.size > 0 && process.argv.includes("--whole-pages")) {
     const covered = new Set<number>();
     for (const f of functions) for (const e of f.entries) covered.add(e.addr);
     const badPages = new Set<number>();
