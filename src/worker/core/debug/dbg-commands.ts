@@ -1192,12 +1192,19 @@ export const dbg = {
     fpuRelaxedReport(): any {
         const w = wasm();
         if (!w?.profiler_fpu_relaxed_hit_get) return null;
+        // Helper entries, counted at the callee. The hit/fallback ratio only sees
+        // blocks that reached the inline site, so an opcode form compiled without
+        // one — precision-control single, for instance — never appears in it.
+        const helperAdd = w.fpu_get_helper_add_calls?.() >>> 0;
+        const helperMul = w.fpu_get_helper_mul_calls?.() >>> 0;
+        const precisionSingle = !!(w.fpu_get_precision_single?.() >>> 0);
         const hit = Number(w.profiler_fpu_relaxed_hit_get());
         const fallback = Number(w.profiler_fpu_relaxed_fallback_get?.() ?? 0);
         const total = hit + fallback;
         const result = {
             armed: !!(w.get_fpu_relaxed_stats?.() >>> 0),
             hit, fallback,
+            helperAdd, helperMul, precisionSingle,
             hitPct: total > 0 ? Math.round((hit / total) * 10_000) / 100 : 0,
         };
         console.log(`[dbg][fpu-relaxed][JSON] ${JSON.stringify(result)}`);
