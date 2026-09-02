@@ -384,7 +384,6 @@ export class D3D9Device {
      *  the surface pointer → its parent texture pointer (surfaceMeta) before calling us. Switching the
      *  target eagerly flushes the commands accumulated for the previous target as their own pass. */
     setRenderTarget(_index: number, texturePtr: number, face: number = -1): number {
-        this.ffpVersion++; d3d9PerfBackendInc("ffpInvRenderTarget");
         this.rtSetsThisFrame++;
         let newTarget: number | null = null;
         let newFace = -1;
@@ -398,6 +397,9 @@ export class D3D9Device {
         }
         if (newTarget !== null) this.rtNonBackThisFrame++;
         if (newTarget === this.currentRtIndex && newFace === this.currentRtFace) return 0;
+        // Only a real target change reaches the block (viewport size, texture
+        // conflicts): games re-set the backbuffer every few draws.
+        this.ffpVersion++; d3d9PerfBackendInc("ffpInvRenderTarget");
         // Flush everything drawn for the current target/face before switching.
         this.submitFrame(false);
         this.currentRtIndex = newTarget;
