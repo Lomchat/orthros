@@ -345,6 +345,35 @@ function installHotProfileAutosave(gameId: string): void {
   hotProfileGameId = gameId;
   hotProfileLastSaved = preemptionManager.getJitHotProfile();
   hotProfileSaveTimer = setInterval(() => { void saveHotProfile("periodic"); }, HOT_PROFILE_SAVE_INTERVAL_MS);
+  installHotProfilePrecompile();
+}
+
+let hotProfilePrecompileTimer: number | null = null;
+const HOT_PROFILE_PRECOMPILE_TICK_MS = 40;
+const HOT_PROFILE_PRECOMPILE_MAX_MS = 180_000;
+const HOT_PROFILE_PRECOMPILE_BUDGET = 4;
+
+/**
+ * Compile the profile's pages ahead of the guest reaching them, a few per
+ * tick so the guest keeps running in between: the compile bursts of a new
+ * game phase then land during loading instead of in play. Pages whose bytes
+ * are not there yet are retried until the deadline.
+ */
+function installHotProfilePrecompile(): void {
+  if (hotProfilePrecompileTimer !== null) clearInterval(hotProfilePrecompileTimer);
+  const started = performance.now();
+  hotProfilePrecompileTimer = setInterval(() => {
+    const ex = preemptionManager.getWasmExports();
+    const fn = ex?.jit_hot_profile_precompile;
+    if (typeof fn !== "function") return;
+    const remaining = fn(HOT_PROFILE_PRECOMPILE_BUDGET) >>> 0;
+    if (remaining === 0 || performance.now() - started > HOT_PROFILE_PRECOMPILE_MAX_MS) {
+      clearInterval(hotProfilePrecompileTimer!);
+      hotProfilePrecompileTimer = null;
+      Logger.info(LogCategory.SYSTEM,
+        `[HOTP] precompile done: ${ex.jit_hot_profile_precompiled?.() >>> 0} pages compiled ahead, ${remaining} known pages without a module`);
+    }
+  }, HOT_PROFILE_PRECOMPILE_TICK_MS) as unknown as number;
 }
 
 function installRegistryAutosave(gameId: string): void {
