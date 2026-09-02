@@ -433,7 +433,13 @@ export class ThunkDispatcher {
     // runs on EVERY thunk (fast AND slow path); the old object-literal-per-entry ring
     // allocated ~480K objects/sec under NFSU and was a measurable GC driver (~2-3%).
     // Preallocated slots → zero allocation on the hot path.
+    /** Sequence numbers, not wall-clock. This ring is written on EVERY thunk call
+     *  — roughly 166k/s in a skirmish — and performance.now() there was a clock
+     *  read per call for a post-mortem that only prints on corruption. Ordering
+     *  is what the dump actually needs, and a counter gives it for free; the dump
+     *  stamps the wall clock once. */
     private ssTs = new Float64Array(ThunkDispatcher.SHADOW_STACK_RING_SIZE);
+    private ssSeq = 0;
     private ssThreadId = new Uint32Array(ThunkDispatcher.SHADOW_STACK_RING_SIZE);
     private ssThunkId = new Uint32Array(ThunkDispatcher.SHADOW_STACK_RING_SIZE);
     private ssEspEntry = new Uint32Array(ThunkDispatcher.SHADOW_STACK_RING_SIZE);
@@ -4032,7 +4038,7 @@ export class ThunkDispatcher {
         retAddr: number
     ): void {
         const i = this.shadowStackRingIdx;
-        this.ssTs[i] = performance.now();
+        this.ssTs[i] = ++this.ssSeq;
         this.ssThreadId[i] = threadId >>> 0;
         this.ssThunkId[i] = thunkId >>> 0;
         this.ssEspEntry[i] = espEntry >>> 0;
@@ -4048,11 +4054,11 @@ export class ThunkDispatcher {
         const SIZE = ThunkDispatcher.SHADOW_STACK_RING_SIZE;
         // Oldest entry: index 0 while not yet wrapped, else the next-write slot.
         const start = len < SIZE ? 0 : this.shadowStackRingIdx;
-        const lines = [`[SHADOW STACK] ${reason} (${len} entries)`];
+        const lines = [`[SHADOW STACK] ${reason} (${len} entries, dumped at t=${performance.now().toFixed(1)})`];
         for (let i = 0; i < len; i++) {
             const e = (start + i) % SIZE;
             lines.push(
-                `  [${i}] t=${this.ssTs[e].toFixed(1)} T${this.ssThreadId[e]} thunk=0x${this.ssThunkId[e].toString(16)} ` +
+                `  [${i}] seq=${this.ssTs[e]} T${this.ssThreadId[e]} thunk=0x${this.ssThunkId[e].toString(16)} ` +
                 `espEntry=0x${this.ssEspEntry[e].toString(16)} expectedPost=0x${this.ssExpectedPost[e].toString(16)} ` +
                 `ret=0x${this.ssRetAddr[e].toString(16)}`
             );
