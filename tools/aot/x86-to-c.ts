@@ -349,7 +349,13 @@ function isFlagConsumer(m: string): boolean {
     return SETCC.test(m) || CMOVCC.test(m) || m === "adc" || m === "sbb" || COND_BRANCH.has(m);
 }
 
-export async function translateFunctionC(decoder: CapstoneDecoder, entry: number): Promise<CFunction | null> {
+/**
+ * `extraEntries`: addresses the runtime is known to dispatch to (a recorded
+ * hot profile). Any of them that is a block of this function becomes an
+ * entry too, so a return into the function or a jump-table target lands in
+ * the translation instead of handing the page back to the JIT.
+ */
+export async function translateFunctionC(decoder: CapstoneDecoder, entry: number, extraEntries?: Set<number>): Promise<CFunction | null> {
     lastRejection = "";
     // Every block decodes from its own leader; a sequential read continues
     // that window, so the same address always yields the same instruction.
@@ -782,7 +788,11 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         `}\n`;
 
     const entries = [{ addr: entry, block: indexOf.get(entry)! }];
-    for (const r of [...resumes].sort((a, b) => a - b)) {
+    const wanted = new Set<number>(resumes);
+    if (extraEntries) {
+        for (const a of order) if (a !== entry && extraEntries.has(a)) wanted.add(a);
+    }
+    for (const r of [...wanted].sort((a, b) => a - b)) {
         const bi = indexOf.get(r);
         if (bi !== undefined) entries.push({ addr: r, block: bi });
     }
