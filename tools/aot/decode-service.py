@@ -43,7 +43,11 @@ def text_section(path):
 
 def main():
     path = sys.argv[1]
-    regions = text_section(path)
+    if len(sys.argv) > 3 and sys.argv[2] == "--raw":
+        # A flat code blob at a given base, for synthetic fixtures.
+        regions = [(int(sys.argv[3], 0), open(path, "rb").read())]
+    else:
+        regions = text_section(path)
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     md.detail = False
     out = sys.stdout

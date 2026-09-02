@@ -29,16 +29,19 @@ export class CapstoneDecoder {
     /** Linear decodes by start address, in insertion order for eviction. */
     private windows = new Map<number, Insn[]>();
 
-    private constructor(exe: string, python: string) {
-        this.proc = Bun.spawn([python, new URL("./decode-service.py", import.meta.url).pathname, exe], {
+    private constructor(exe: string, python: string, rawBase: number | null) {
+        const args = [python, new URL("./decode-service.py", import.meta.url).pathname, exe];
+        if (rawBase !== null) args.push("--raw", `0x${rawBase.toString(16)}`);
+        this.proc = Bun.spawn(args, {
             stdin: "pipe", stdout: "pipe", stderr: "inherit",
         });
         this.sink = this.proc.stdin as unknown as { write(chunk: string): number; flush(): void; end(): void };
         void this.pump();
     }
 
-    static async open(exe: string, python = "/srv/bfme/app/orthros/.ghidra-home/venv/bin/python"): Promise<CapstoneDecoder> {
-        const d = new CapstoneDecoder(exe, python);
+    /** `rawBase`: treat `exe` as a flat code blob loaded at that address. */
+    static async open(exe: string, python = "/srv/bfme/app/orthros/.ghidra-home/venv/bin/python", rawBase: number | null = null): Promise<CapstoneDecoder> {
+        const d = new CapstoneDecoder(exe, python, rawBase);
         const lines = await d.request("?");
         d.regions = lines.map((l) => { const [b, s] = l.split(" ").map(Number); return { base: b!, size: s! }; });
         if (d.regions.length === 0) throw new Error("decode service reported no executable region");

@@ -50,6 +50,11 @@ const exportProfile = arg("export-profile", "");
  *  compare the same session with and without the translated code. */
 const aotInstall = arg("aot-install", "");
 const aotAtSec = Number(arg("aot-at", "120"));
+/** Dump the dispatch-entry histogram by page (30 s window starting at
+ *  --hot-dump-at seconds into the hold) to a JSON file: the dynamic hotness
+ *  an ahead-of-time batch should be selected by. */
+const hotDump = arg("dump-hot-pages", "");
+const hotDumpAtSec = Number(arg("hot-dump-at", "90"));
 const tag = `load-${Date.now()}`;
 
 interface Sample { present: number; draws: number }
@@ -343,6 +348,14 @@ const tL = performance.now();
  *  from the gameplay that follows it rather than averaged together with it. */
 const holdFps: number[] = [];
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    if (hotDump && i * 10 === hotDumpAtSec) {
+        await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
+        await Bun.sleep(30_000);
+        const hp = await bench.evalPage(`__BS__.harness.dbgCall("hotPages", false, 6000)`, 60_000).catch(() => null);
+        await bench.evalPage(`__BS__.harness.dbgCall("hotPages", null)`, 30_000).catch(() => {});
+        await Bun.write(hotDump, JSON.stringify(hp));
+        console.log(`HOT-DUMP ${hotDump}: ${JSON.stringify({ total: (hp as any)?.total, pages: (hp as any)?.pages })}`);
+    }
     if (aotInstall && i * 10 === aotAtSec) {
         const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)})`, 120_000)
             .catch((e) => `aotInstall failed: ${e}`);

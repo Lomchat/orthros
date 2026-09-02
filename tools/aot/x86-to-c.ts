@@ -15,13 +15,17 @@
  * instruction pointer at the fixed offsets of `global_pointers.rs`, guest RAM
  * at `mem_base()`. Every exit materialises EIP: `ret` pops it, a call sets
  * the target, an indirect jump its computed target, a loop that exhausts its
- * budget the loop head. The instruction counter is exact per block, because
- * v86 derives guest time from it.
+ * budget the loop head, and a memory access past guest RAM or a division
+ * that would fault exits at the instruction's own address before running
+ * it, so v86 raises the fault where the guest would have. The instruction
+ * counter is exact, because v86 derives guest time from it.
  *
- * Flags: a conditional branch reads the last flag-writing instruction of its
- * own block, which must be one of the modelled producers (cmp, test, add,
- * sub, and, or, xor, inc, dec); every other flag update is dead by the x86
- * calling convention. Any shape outside the subset declines the function.
+ * Flags: every consumer (a conditional branch, setcc, cmovcc, adc, sbb) reads
+ * the last flag-writing instruction before it in its own block, which must be
+ * one of the modelled producers (cmp, test, add, sub, and, or, xor, inc,
+ * dec); the producer's operands are captured only when something consumes
+ * them, every other flag update being dead by the x86 calling convention.
+ * Any shape outside the subset declines the function.
  *
  * The emitted C must never use a data segment or the C shadow stack: only
  * locals, the guest stack and the shared memory. That is what lets a module
@@ -67,17 +71,22 @@ const COND_BRANCH = new Set([
     "je", "jz", "jne", "jnz", "jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl",
     "jb", "jnae", "jc", "jbe", "jna", "ja", "jnbe", "jae", "jnb", "jnc", "js", "jns",
 ]);
-/** Flag producers a branch can consume. */
+/** Flag producers a consumer can read. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec"]);
 /** Instructions that leave the flags alone; anything else between a producer
- *  and its branch is a flag writer the model does not follow. */
+ *  and its consumer is a flag writer the model does not follow. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not",
+    "enter",
 ]);
-const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|adc|sbb|rcl|rcr|salc|lahf|pushf[d]?|popf[d]?)$/;
+const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns)$/;
+const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns)$/;
+const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|rcl|rcr|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*|jecxz)$/;
 
 const LOOP_LIMIT = 100_000;
 const SIZE_BUDGET = 4096;
+
+type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec";
 
 interface Operand {
     kind: "reg32" | "reg16" | "reg8lo" | "reg8hi" | "imm" | "mem";
@@ -122,7 +131,7 @@ function parseAddress(inner: string, segment: string | null): string | null {
         }
     }
     if (segment === "fs") parts.push("FSBASE");
-    else if (segment && segment !== "ds") return null;
+    else if (segment && segment !== "ds" && segment !== "es" && segment !== "ss" && segment !== "cs") return null;
     if (disp !== 0 || parts.length === 0) parts.push(`${disp >>> 0}u`);
     return `(${parts.join(" + ")})`;
 }
@@ -147,7 +156,6 @@ function parseOperand(text: string): Operand | null {
         if (addr === null) return null;
         return { kind: "mem", addr, width };
     }
-    // moffs forms: `ds:0x12ed5c8`, `DWORD PTR ds:0x...`, `fs:0x0`.
     const moffs = /^(?:(BYTE|WORD|DWORD|QWORD)\s+PTR\s+)?([a-z]{2}):(0x[0-9a-f]+|\d+)$/i.exec(t);
     if (moffs) {
         const width = moffs[1] ? widths[moffs[1].toUpperCase()]! : 4;
@@ -216,6 +224,10 @@ function sext(expr: string, width: number): string {
     return `((uint32_t)(int32_t)(int${width * 8}_t)(${expr}))`;
 }
 
+function widthMask(width: number): string {
+    return width === 4 ? "0xffffffffu" : width === 2 ? "0xffffu" : "0xffu";
+}
+
 const BINARY: Record<string, (a: string, b: string) => string> = {
     add: (a, b) => `(${a} + ${b})`,
     sub: (a, b) => `(${a} - ${b})`,
@@ -229,51 +241,55 @@ const BINARY: Record<string, (a: string, b: string) => string> = {
 };
 
 /**
- * Exact condition for a branch from the producer's kind and the values kept
- * in fa/fb/fr (all sign-extended to 32 bits from the operation's width):
+ * Exact flag expressions from the producer's kind and the values kept in
+ * fa/fb/fr (all sign-extended to 32 bits from the operation's width):
  *   cmp/sub : fa = a, fb = b            (flags of a - b)
  *   add     : fa = a, fb = b, fr = a+b
  *   logic   : fr = result (and/or/xor/test)   CF = OF = 0
  *   inc/dec : fa = a, fr = result        CF unchanged: carry forms decline
  */
-function conditionExpr(branch: string, kind: "cmp" | "add" | "logic" | "inc" | "dec"): string | null {
-    let ZF: string, SF: string, CF: string | null, SO: string | null; // SO = SF ^ OF
+function flagExprs(kind: ProducerKind): { ZF: string; SF: string; CF: string | null; SO: string } {
     switch (kind) {
         case "cmp":
-            ZF = `(fa == fb)`; SF = `((int32_t)(fa - fb) < 0)`; CF = `(fa < fb)`; SO = `((int32_t)fa < (int32_t)fb)`;
-            break;
+            return { ZF: `(fa == fb)`, SF: `((int32_t)(fa - fb) < 0)`, CF: `(fa < fb)`, SO: `((int32_t)fa < (int32_t)fb)` };
         case "add":
-            ZF = `(fr == 0u)`; SF = `((int32_t)fr < 0)`; CF = `(fr < fa)`;
-            SO = `(((int32_t)fr < 0) != (((int32_t)((fa ^ fr) & (fb ^ fr))) < 0))`;
-            break;
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: `(fr < fa)`,
+                SO: `(((int32_t)fr < 0) != (((int32_t)((fa ^ fr) & (fb ^ fr))) < 0))` };
         case "logic":
-            ZF = `(fr == 0u)`; SF = `((int32_t)fr < 0)`; CF = "0"; SO = SF;
-            break;
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "0", SO: `((int32_t)fr < 0)` };
         case "inc":
-            ZF = `(fr == 0u)`; SF = `((int32_t)fr < 0)`; CF = null; SO = `(((int32_t)fr < 0) != (fa == 0x7fffffffu))`;
-            break;
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x7fffffffu))` };
         case "dec":
-            ZF = `(fr == 0u)`; SF = `((int32_t)fr < 0)`; CF = null; SO = `(((int32_t)fr < 0) != (fa == 0x80000000u))`;
-            break;
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == 0x80000000u))` };
     }
-    switch (branch) {
-        case "je": case "jz": return ZF;
-        case "jne": case "jnz": return `!${ZF}`;
-        case "js": return SF;
-        case "jns": return `!${SF}`;
-        case "jl": case "jnge": return SO;
-        case "jge": case "jnl": return `!${SO}`;
-        case "jle": case "jng": return `(${ZF} || ${SO})`;
-        case "jg": case "jnle": return `(!${ZF} && !${SO})`;
-        case "jb": case "jnae": case "jc": return CF;
-        case "jae": case "jnb": case "jnc": return CF === null ? null : `!${CF}`;
-        case "jbe": case "jna": return CF === null ? null : `(${CF} || ${ZF})`;
-        case "ja": case "jnbe": return CF === null ? null : `(!${CF} && !${ZF})`;
+}
+
+function conditionExpr(cc: string, kind: ProducerKind): string | null {
+    const { ZF, SF, CF, SO } = flagExprs(kind);
+    switch (cc) {
+        case "e": case "z": return ZF;
+        case "ne": case "nz": return `!${ZF}`;
+        case "s": return SF;
+        case "ns": return `!${SF}`;
+        case "l": case "nge": return SO;
+        case "ge": case "nl": return `!${SO}`;
+        case "le": case "ng": return `(${ZF} || ${SO})`;
+        case "g": case "nle": return `(!${ZF} && !${SO})`;
+        case "b": case "nae": case "c": return CF;
+        case "ae": case "nb": case "nc": return CF === null ? null : `!${CF}`;
+        case "be": case "na": return CF === null ? null : `(${CF} || ${ZF})`;
+        case "a": case "nbe": return CF === null ? null : `(!${CF} && !${ZF})`;
         default: return null;
     }
 }
 
 interface Block { start: number; insns: Insn[] }
+
+/** Exit before instruction `insnAddr`, crediting the `done` instructions of
+ *  the block that already ran; the host is told, then v86 resumes there. */
+function guardExit(insnAddr: number, done: number): string {
+    return `cnt += ${done}u; ip = ${insnAddr >>> 0}u; guard_exit(ip); goto exit;`;
+}
 
 /**
  * Guest RAM ends at MEM_SIZE; anything past it would trap the wasm module
@@ -287,34 +303,31 @@ function guardMem(lines: string[], op: Operand, insnAddr: number, done: number):
     op.addr = "a0";
 }
 
-/** Exit before instruction `insnAddr`, crediting the `done` instructions of
- *  the block that already ran; the host is told, then v86 resumes there. */
-function guardExit(insnAddr: number, done: number): string {
-    return `cnt += ${done}u; ip = ${insnAddr >>> 0}u; guard_exit(ip); goto exit;`;
-}
-
-function splitOperands(operand: string): number | null {
-    let depth = 0;
+function splitOperands(operand: string): string[] {
+    const out: string[] = [];
+    let depth = 0, last = 0;
     for (let i = 0; i < operand.length; i++) {
         const c = operand[i];
         if (c === "[") depth++;
         else if (c === "]") depth--;
-        else if (c === "," && depth === 0) return i;
+        else if (c === "," && depth === 0) { out.push(operand.slice(last, i)); last = i + 1; }
     }
-    return null;
+    out.push(operand.slice(last));
+    return out.map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
 export const C_PRELUDE = `#include <stdint.h>
 typedef uint32_t __attribute__((aligned(1))) u32u;
 typedef uint16_t __attribute__((aligned(1))) u16u;
 #define REG32 ((volatile int32_t *)64)
+#define FLAGS (*(volatile int32_t *)120)
 #define INSTRUCTION_POINTER ((volatile int32_t *)556)
 #define PREVIOUS_IP ((volatile int32_t *)560)
 #define INSTRUCTION_COUNTER ((volatile uint32_t *)664)
 #define FSBASE ((uint32_t)*(volatile int32_t *)(736 + 4 * 4))
 #define MEM_SIZE (*(volatile uint32_t *)812)
-__attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("mem_base"))) uint32_t mem_base(void);
+__attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit(uint32_t addr);
 #define LD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
 #define LD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
 #define LD32(a) (*(volatile u32u *)(uintptr_t)(mb + (a)))
@@ -332,6 +345,10 @@ function indirectTargetExpr(operand: string): string | null {
     return null;
 }
 
+function isFlagConsumer(m: string): boolean {
+    return SETCC.test(m) || CMOVCC.test(m) || m === "adc" || m === "sbb" || COND_BRANCH.has(m);
+}
+
 export async function translateFunctionC(decoder: CapstoneDecoder, entry: number): Promise<CFunction | null> {
     lastRejection = "";
     // Every block decodes from its own leader; a sequential read continues
@@ -343,8 +360,6 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     if (!first) return reject(`no instruction at 0x${entry.toString(16)}`);
     if (first.mnemonic === "int3") return reject("entry is padding");
 
-    // Leaders: the entry, branch targets and fall-throughs, and the
-    // instruction after each call (a resume entry).
     const leaders = new Set<number>([entry]);
     const resumes = new Set<number>();
     {
@@ -367,7 +382,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 }
                 if (mnemonic === "jmp") {
                     const t = directTarget(operand);
-                    if (t === null) break;                       // indirect: an exit
+                    if (t === null) break;
                     leaders.add(t); work.push(t); break;
                 }
                 if (COND_BRANCH.has(mnemonic)) {
@@ -413,40 +428,85 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         total += block.insns.length;
         const lines: string[] = [];
         const n = block.insns.length;
+        const term = block.insns[n - 1]!;
 
-        const term = block.insns[block.insns.length - 1]!;
-        const branchNeedsFlags = COND_BRANCH.has(term.mnemonic);
-        let producerIdx = -1;
-        if (branchNeedsFlags) {
-            for (let i = block.insns.length - 2; i >= 0; i--) {
-                const m = block.insns[i]!.mnemonic;
-                if (FLAG_PRODUCER.has(m)) { producerIdx = i; break; }
-                if (!FLAG_PRESERVING.has(m)) return reject(`${term.mnemonic} after unmodelled flag writer ${m}`);
+        // Each consumer's producer: the last flag writer before it, which must
+        // be modelled. Captured producers keep their operands in fa/fb/fr.
+        const producerOf = new Map<number, number>();
+        const captured = new Set<number>();
+        for (let i = 0; i < n; i++) {
+            if (!isFlagConsumer(block.insns[i]!.mnemonic)) continue;
+            let p = -1;
+            for (let j = i - 1; j >= 0; j--) {
+                const m = block.insns[j]!.mnemonic;
+                if (FLAG_PRODUCER.has(m)) { p = j; break; }
+                if (!FLAG_PRESERVING.has(m) && !SETCC.test(m) && !CMOVCC.test(m)) {
+                    return reject(`${block.insns[i]!.mnemonic} after unmodelled flag writer ${m}`);
+                }
             }
-            if (producerIdx < 0) return reject(`${term.mnemonic} with no flag producer in its block`);
+            if (p < 0) return reject(`${block.insns[i]!.mnemonic} with no flag producer in its block`);
+            producerOf.set(i, p);
+            captured.add(p);
         }
-        let producerKind: "cmp" | "add" | "logic" | "inc" | "dec" | null = null;
+        const kinds = new Map<number, ProducerKind>();
+        const condFor = (i: number, cc: string): string | null => {
+            const kind = kinds.get(producerOf.get(i)!);
+            return kind ? conditionExpr(cc, kind) : null;
+        };
+        const carryFor = (i: number): string | null => {
+            const kind = kinds.get(producerOf.get(i)!);
+            return kind ? flagExprs(kind).CF : null;
+        };
+        const producerName = (i: number): string => block.insns[producerOf.get(i)!]!.mnemonic;
 
-        for (let i = 0; i < block.insns.length; i++) {
+        for (let i = 0; i < n; i++) {
             const insn = block.insns[i]!;
             const { mnemonic, operand } = insn;
-            const isProducer = i === producerIdx;
+            const isCaptured = captured.has(i);
 
             if (mnemonic === "ret" || mnemonic === "retn" || mnemonic === "call") break;
             if (mnemonic === "jmp" || COND_BRANCH.has(mnemonic)) break;
             if (mnemonic === "nop") continue;
             if (mnemonic === "int3") return reject("int3 inside function");
-            if (OTHER_FLAG_READER.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
+            if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
             if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
+            if (mnemonic === "cbw") { lines.push(`eax = (eax & ~0xffffu) | ((uint32_t)(int32_t)(int8_t)eax & 0xffffu);`); continue; }
 
-            const commaIdx = splitOperands(operand);
-            const dstText = commaIdx === null ? operand : operand.slice(0, commaIdx);
-            const srcText = commaIdx === null ? null : operand.slice(commaIdx + 1);
+            const ops = splitOperands(operand);
+            const dstText = ops[0] ?? "";
+            const srcText = ops[1] ?? null;
+
+            if (mnemonic === "enter") {
+                const size = Number(ops[0]), level = Number(ops[1] ?? "0");
+                if (!Number.isFinite(size) || level !== 0) return reject(`enter ${operand}`);
+                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ebp);`, `ebp = esp;`, `esp -= ${size >>> 0}u;`);
+                continue;
+            }
+
+            if (mnemonic.startsWith("rep ")) {
+                // rep movs/stos: forward only (DF set exits to v86), whole range
+                // guarded up front so the guest faults before any element moves.
+                const op = mnemonic.slice(4);
+                const elem = op.endsWith("d") ? 4 : op.endsWith("w") ? 2 : op.endsWith("b") ? 1 : 0;
+                if (elem === 0 || (!op.startsWith("movs") && !op.startsWith("stos"))) return reject(`unsupported: ${mnemonic}`);
+                const ld = elem === 4 ? "LD32" : elem === 2 ? "LD16" : "LD8";
+                const st = elem === 4 ? "ST32" : elem === 2 ? "ST16" : "ST8";
+                lines.push(`if (FLAGS & 0x400) { ${guardExit(insn.addr, i)} }`);
+                if (op.startsWith("movs")) {
+                    lines.push(`if ((uint64_t)esi + (uint64_t)ecx * ${elem}u > ml || (uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
+                    lines.push(`while (ecx != 0u) { ${st}(edi, ${ld}(esi)); esi += ${elem}u; edi += ${elem}u; ecx -= 1u; }`);
+                } else {
+                    const src = elem === 4 ? "eax" : elem === 2 ? "(eax & 0xffffu)" : "(eax & 0xffu)";
+                    lines.push(`if ((uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
+                    lines.push(`while (ecx != 0u) { ${st}(edi, ${src}); edi += ${elem}u; ecx -= 1u; }`);
+                }
+                continue;
+            }
 
             if (mnemonic === "cmp" || mnemonic === "test") {
-                if (!isProducer) continue;
+                if (!isCaptured) continue;
                 if (!srcText) return reject(`${mnemonic} missing source`);
                 const a = parseOperand(dstText), b = parseOperand(srcText);
                 if (!a || !b) return reject(`operand: ${mnemonic} ${operand}`);
@@ -455,11 +515,11 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (ra === null || rb === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(a);
                 if (mnemonic === "cmp") {
-                    lines.push(`fa = ${sext(ra, w)}; fb = ${sext(`(${rb} & ${w === 4 ? "0xffffffffu" : w === 2 ? "0xffffu" : "0xffu"})`, w)};`);
-                    producerKind = "cmp";
+                    lines.push(`fa = ${sext(ra, w)}; fb = ${sext(`(${rb} & ${widthMask(w)})`, w)};`);
+                    kinds.set(i, "cmp");
                 } else {
                     lines.push(`fr = ${sext(`(${ra} & ${rb})`, w)};`);
-                    producerKind = "logic";
+                    kinds.set(i, "logic");
                 }
                 liveFlagSites++;
                 continue;
@@ -467,6 +527,48 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 
             const dst = parseOperand(dstText);
             if (!dst) return reject(`operand: ${mnemonic} ${dstText}`);
+
+            if (SETCC.test(mnemonic)) {
+                const cond = condFor(i, mnemonic.slice(3));
+                if (cond === null) return reject(`${mnemonic} after ${producerName(i)}`);
+                if (operandWidth(dst) !== 1) return reject(`${mnemonic} ${dstText}`);
+                guardMem(lines, dst, insn.addr, i);
+                const w = writeStmt(dst, `${cond} ? 1u : 0u`);
+                if (!w) return reject(`write: ${mnemonic}`);
+                lines.push(w);
+                continue;
+            }
+            if (CMOVCC.test(mnemonic)) {
+                if (!srcText) return reject(`${mnemonic} missing source`);
+                const cond = condFor(i, mnemonic.slice(4));
+                if (cond === null) return reject(`${mnemonic} after ${producerName(i)}`);
+                const src = parseOperand(srcText);
+                if (!src || (dst.kind !== "reg32" && dst.kind !== "reg16")) return reject(`${mnemonic} ${operand}`);
+                // The source is read whether or not the move happens.
+                guardMem(lines, src, insn.addr, i);
+                const v = readExpr(src);
+                if (v === null) return reject(`read: ${mnemonic}`);
+                const w = writeStmt(dst, v);
+                if (!w) return reject(`write: ${mnemonic}`);
+                lines.push(`if (${cond}) { ${w} }`);
+                continue;
+            }
+            if (mnemonic === "adc" || mnemonic === "sbb") {
+                if (!srcText) return reject(`${mnemonic} missing source`);
+                const cf = carryFor(i);
+                if (cf === null) return reject(`${mnemonic} after ${producerName(i)}`);
+                const src = parseOperand(srcText);
+                if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
+                if (operandWidth(dst) !== 4) return reject(`${mnemonic} on a sub-register`);
+                guardMem(lines, dst, insn.addr, i); guardMem(lines, src, insn.addr, i);
+                const a = readExpr(dst), b = readExpr(src);
+                if (a === null || b === null) return reject(`read: ${mnemonic}`);
+                const expr = mnemonic === "adc" ? `(${a} + ${b} + (uint32_t)${cf})` : `(${a} - ${b} - (uint32_t)${cf})`;
+                const w = writeStmt(dst, expr);
+                if (!w) return reject(`write: ${mnemonic}`);
+                lines.push(w);
+                continue;
+            }
 
             if (mnemonic === "push") {
                 if (dst.kind === "reg16" || dst.kind === "reg8lo" || dst.kind === "reg8hi") return reject("push of a sub-register");
@@ -494,10 +596,23 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`{ uint32_t t = ${REG32[dst.index!]}; ${REG32[dst.index!]} = ${REG32[src.index!]}; ${REG32[src.index!]} = t; }`);
                 continue;
             }
+            if (mnemonic === "mul" || mnemonic === "div" || mnemonic === "idiv") {
+                if (srcText) return reject(`${mnemonic} ${operand}`);
+                if (operandWidth(dst) !== 4) return reject(`${mnemonic} on a sub-register`);
+                guardMem(lines, dst, insn.addr, i);
+                const s = readExpr(dst);
+                if (s === null) return reject(`read: ${mnemonic}`);
+                if (mnemonic === "mul") {
+                    lines.push(`{ uint64_t p = (uint64_t)eax * (uint64_t)(${s}); eax = (uint32_t)p; edx = (uint32_t)(p >> 32); }`);
+                } else if (mnemonic === "div") {
+                    lines.push(`{ uint32_t d = ${s}; uint64_t num = ((uint64_t)edx << 32) | eax; if (d == 0u || num / d > 0xffffffffull) { ${guardExit(insn.addr, i)} } eax = (uint32_t)(num / d); edx = (uint32_t)(num % d); }`);
+                } else {
+                    lines.push(`{ int32_t d = (int32_t)(${s}); int64_t num = (int64_t)(((uint64_t)edx << 32) | eax); if (d == 0 || (num == INT64_MIN && d == -1)) { ${guardExit(insn.addr, i)} } int64_t q = num / d; if (q != (int64_t)(int32_t)q) { ${guardExit(insn.addr, i)} } eax = (uint32_t)(int32_t)q; edx = (uint32_t)(int32_t)(num % d); }`);
+                }
+                continue;
+            }
 
             let resultExpr: string | null = null;
-            // One memory operand per instruction (string forms are not
-            // translated), so a single guard covers both the read and the write.
             guardMem(lines, dst, insn.addr, i);
 
             if (mnemonic === "mov" || mnemonic === "movzx") {
@@ -524,6 +639,14 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (m[1]) return reject("lea with segment");
                 resultExpr = parseAddress(m[2]!, null);
             }
+            else if (mnemonic === "imul" && ops.length === 3) {
+                const src = parseOperand(ops[1]!), imm = parseOperand(ops[2]!);
+                if (!src || !imm || imm.kind !== "imm" || dst.kind !== "reg32") return reject(`imul ${operand}`);
+                guardMem(lines, src, insn.addr, i);
+                const b = readExpr(src);
+                if (b === null) return reject("read: imul");
+                resultExpr = `(${b} * ${imm.value! >>> 0}u)`;
+            }
             else if (BINARY[mnemonic]) {
                 if (!srcText) return reject(`${mnemonic} missing source`);
                 const src = parseOperand(srcText);
@@ -536,16 +659,16 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     return reject(`${mnemonic} on a sub-register`);
                 }
                 const expr = BINARY[mnemonic]!(a, b);
-                if (isProducer) {
+                if (isCaptured) {
                     if (mnemonic === "add") {
-                        lines.push(`fa = ${sext(a, w)}; fb = ${sext(`(${b} & ${w === 4 ? "0xffffffffu" : w === 2 ? "0xffffu" : "0xffu"})`, w)}; fr = fa + fb;`);
-                        producerKind = "add";
+                        lines.push(`fa = ${sext(a, w)}; fb = ${sext(`(${b} & ${widthMask(w)})`, w)}; fr = fa + fb;`);
+                        kinds.set(i, "add");
                     } else if (mnemonic === "sub") {
-                        lines.push(`fa = ${sext(a, w)}; fb = ${sext(`(${b} & ${w === 4 ? "0xffffffffu" : w === 2 ? "0xffffu" : "0xffu"})`, w)}; fr = fa - fb;`);
-                        producerKind = "cmp";
+                        lines.push(`fa = ${sext(a, w)}; fb = ${sext(`(${b} & ${widthMask(w)})`, w)}; fr = fa - fb;`);
+                        kinds.set(i, "cmp");
                     } else if (mnemonic === "and" || mnemonic === "or" || mnemonic === "xor") {
                         lines.push(`fr = ${sext(expr, w)};`);
-                        producerKind = "logic";
+                        kinds.set(i, "logic");
                     } else {
                         return reject(`${mnemonic} as flag producer`);
                     }
@@ -562,9 +685,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (a === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(dst);
                 const expr = `(${a} ${mnemonic === "inc" ? "+" : "-"} 1u)`;
-                if (isProducer) {
+                if (isCaptured) {
                     lines.push(`fa = ${sext(a, w)}; fr = ${sext(expr, w)};`);
-                    producerKind = mnemonic;
+                    kinds.set(i, mnemonic);
                     liveFlagSites++;
                     const wr = writeStmt(dst, "fr");
                     if (!wr) return reject(`write: ${mnemonic}`);
@@ -599,8 +722,6 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const target = direct !== null ? `${direct >>> 0}u` : indirectTargetExpr(term.operand);
             if (target === null) return reject(`call ${term.operand}`);
             calls++;
-            // Evaluate the target before the push: an esp-relative target must
-            // see the stack as the guest did.
             const targetOp = direct === null ? parseOperand(term.operand) : null;
             if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
             const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
@@ -623,8 +744,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
         }
         else if (COND_BRANCH.has(term.mnemonic)) {
-            const cond = conditionExpr(term.mnemonic, producerKind!);
-            if (cond === null) return reject(`${term.mnemonic} after ${block.insns[producerIdx]!.mnemonic}`);
+            const cond = condFor(n - 1, term.mnemonic.slice(1));
+            if (cond === null) return reject(`${term.mnemonic} after ${producerName(n - 1)}`);
             const target = directTarget(term.operand)!;
             const taken = indexOf.get(target);
             const fall = indexOf.get(term.addr + term.size);
@@ -660,15 +781,11 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         `    *INSTRUCTION_COUNTER += cnt;\n` +
         `}\n`;
 
-    const entries = [{ addr: entry, block: 0 }];
+    const entries = [{ addr: entry, block: indexOf.get(entry)! }];
     for (const r of [...resumes].sort((a, b) => a - b)) {
         const bi = indexOf.get(r);
         if (bi !== undefined) entries.push({ addr: r, block: bi });
     }
-    // Block 0 is the entry: `order` is sorted by address and the entry is the
-    // lowest address reachable only if nothing jumps backwards before it, so
-    // look the real index up instead of assuming 0.
-    entries[0]!.block = indexOf.get(entry)!;
 
     return { entry, name, c, instructions: total, blocks: blocks.size, liveFlagSites, calls, entries, extent: maxEnd - entry };
 }

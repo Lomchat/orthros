@@ -40,6 +40,15 @@ function arg(name: string, fallback: string): string {
 const exe = process.argv[2];
 if (!exe) { console.error("usage: verify-c.ts <exe> --entries 0x...,0x..."); process.exit(2); }
 const seed = Number(arg("seed", "20260902"));
+/** "pointers" (default) points stack arguments into the scratch region;
+ *  "small" makes them small integers, which is what count-taking functions
+ *  (rep movs, loops) need to terminate. */
+const argStyle = arg("args", "pointers");
+/** "pointers" (default) points registers into scratch; "small" makes them
+ *  small integers, for functions whose counts or indices arrive in registers. */
+const regStyle = arg("regs", "pointers");
+/** Treat <exe> as a flat code blob at this address (synthetic fixtures). */
+const rawBase = arg("raw-base", "") ? Number(arg("raw-base", "")) : null;
 const keep = arg("keep", "");
 
 function fill(buf: Uint8Array, s: number): void {
@@ -51,6 +60,7 @@ function fill(buf: Uint8Array, s: number): void {
 }
 
 async function textSection(path: string): Promise<{ vma: number; bytes: Uint8Array }> {
+    if (rawBase !== null) return { vma: rawBase, bytes: new Uint8Array(await Bun.file(path).arrayBuffer()) };
     const tmp = `/tmp/aot-text-${process.pid}.bin`;
     Bun.spawnSync(["objcopy", "-O", "binary", "--only-section=.text", path, tmp]);
     const bytes = new Uint8Array(await Bun.file(tmp).arrayBuffer());
@@ -136,7 +146,7 @@ function runGuest(
             try { emulator.stop(); } catch { /* already stopped */ }
             resolve(out);
         };
-        const timer = setTimeout(() => finish("timeout"), 20_000);
+        const timer = setTimeout(() => finish("timeout"), 6_000);
         emulator.bus.register("cpu-event-halt", () => finish("halt"));
         emulator.add_listener("emulator-loaded", async () => {
             const cpu = emulator.v86.cpu;
@@ -168,7 +178,7 @@ if (candidatesPath) {
 }
 if (entries.length === 0) { console.error("--entries or --candidates required"); process.exit(2); }
 
-const decoder = await CapstoneDecoder.open(exe);
+const decoder = await CapstoneDecoder.open(exe, undefined, rawBase);
 const functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
@@ -206,7 +216,7 @@ let pass = 0, fail = 0, inconclusive = 0;
 
 for (const t of functions) {
     const regs = new Int32Array(8);
-    for (let i = 0; i < 8; i++) regs[i] = SCRATCH + 0x1000 + i * 0x40;
+    for (let i = 0; i < 8; i++) regs[i] = regStyle === "small" ? 0x100 + i * 8 : SCRATCH + 0x1000 + i * 0x40;
     regs[4] = STACK_TOP;
     const scratch = new Uint8Array(SCRATCH_LEN);
     fill(scratch, seed);
@@ -216,7 +226,7 @@ for (const t of functions) {
         const sv = new DataView(stack.buffer);
         for (let i = 0; i < 8; i++) {
             const off = (STACK_TOP - STACK_BASE) + i * 4;
-            if (off + 4 <= STACK_LEN) sv.setInt32(off, SCRATCH + 0x2000 + i * 0x100, true);
+            if (off + 4 <= STACK_LEN) sv.setInt32(off, argStyle === "small" ? 3 + i * 2 : SCRATCH + 0x2000 + i * 0x100, true);
         }
     }
     const img = image.slice();
