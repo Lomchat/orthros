@@ -227,6 +227,10 @@ export class PreemptionManager {
     // (8,358 of 76,649 on a real BFME 1 frame). Those flags are observable only
     // if a guest SEH handler reads EFlags from its CONTEXT. Off until measured.
     private jitFlagElisionAcrossFaults = false;
+    /** Config 48: how a hot-page profile forces compiles. 1 = only while a
+     *  compile slot is free (a boot touches a thousand known pages at once);
+     *  0 = whenever the page is touched, queueing behind the compile cap. */
+    private jitHotProfileMode = 1;
 
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
@@ -322,6 +326,12 @@ export class PreemptionManager {
     }
     getJitConfigOverrides(): ReadonlyMap<number, number> { return this.pendingJitConfig; }
 
+    setJitHotProfileMode(mode: number): void {
+        this.jitHotProfileMode = mode >>> 0;
+        this.wasmExports?.set_jit_config?.(48, this.jitHotProfileMode);
+    }
+    getJitHotProfileMode(): number { return this.jitHotProfileMode; }
+
     /** Hot-page profile (v86 `HOTP` image): pages a previous session compiled are
      *  compiled at first touch instead of after the interpreted-hotness ramp.
      *  Kept here so it survives v86 re-creation and can be set before boot. */
@@ -336,6 +346,19 @@ export class PreemptionManager {
         return this.applyJitHotProfile();
     }
     getJitHotProfile(): Uint8Array | null { return this.jitHotProfile; }
+
+    /** Current profile from the live JIT: every page that owns a module or is
+     *  being compiled, merged with what was imported. Null before v86 exists. */
+    exportJitHotProfile(): Uint8Array | null {
+        const ex = this.wasmExports;
+        if (!ex?.jit_hot_profile_export_build || !ex.jit_hot_profile_io_ptr) return null;
+        const len = ex.jit_hot_profile_export_build() >>> 0;
+        const ptr = ex.jit_hot_profile_io_ptr() >>> 0;
+        this.refreshViews();
+        const mem = this.wasmMemoryObj ?? ex.memory;
+        if (!mem?.buffer || len === 0) return null;
+        return new Uint8Array(mem.buffer, ptr, len).slice();
+    }
 
     private applyJitHotProfile(): { pages: number } | null {
         const ex = this.wasmExports;
@@ -671,6 +694,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
             this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
             this.wasmExports.set_jit_config(46, this.jitFlagElisionAcrossFaults ? 1 : 0);
+            this.wasmExports.set_jit_config(48, this.jitHotProfileMode);
             console.log(`[PERF] JIT: baseThreshold=${this.jitBaseThreshold} pendingCompiles=${this.jitMaxPendingCompiles}; B3 threshold=${this.tier2Threshold || "OFF"} pageSetCap=${this.tier2PageSetCap} regions=${this.tier2RegionsEnabled ? "on" : "off"} adaptive=${this.tier2AdaptiveEnabled ? "on" : "off"}`);
         }
 

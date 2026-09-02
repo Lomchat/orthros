@@ -86,6 +86,7 @@ import { SabIoSource } from "./runtime/filesystem/sab-io-source";
 import { loadWgbIntegrity } from "./runtime/filesystem/wgb-integrity";
 import { UnpackDecoder } from "@orthros/formats/unpack";
 import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
+import { HotProfilePersistence } from "./runtime/filesystem/hot-profile-persistence";
 import { exportContainer } from "./runtime/filesystem/save-export";
 import { resolveGameId, gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
 import { PathPolicy } from "./runtime/filesystem/path-policy";
@@ -297,6 +298,39 @@ function cancelRegistryAutosave(): void {
     registrySaveTimeout = null;
   }
   System.getInstance().registry.setOnChange(null);
+}
+
+let hotProfileSaveTimer: ReturnType<typeof setInterval> | null = null;
+let hotProfileGameId: string | null = null;
+let hotProfileLastSaved: Uint8Array | null = null;
+/** Autosave cadence for the hot-page profile. It only grows as new pages
+ *  compile, so a minute of drift is at most a minute of pages a crash loses. */
+const HOT_PROFILE_SAVE_INTERVAL_MS = 60_000;
+
+/** Persist the live JIT's page profile if it changed since the last save. */
+async function saveHotProfile(reason: string): Promise<void> {
+  const gameId = hotProfileGameId;
+  if (!gameId) return;
+  const bytes = preemptionManager.exportJitHotProfile();
+  if (!bytes || bytes.byteLength <= 12) return;
+  if (hotProfileLastSaved && hotProfileLastSaved.byteLength === bytes.byteLength) {
+    let same = true;
+    for (let i = 0; i < bytes.byteLength; i++) {
+      if (bytes[i] !== hotProfileLastSaved[i]) { same = false; break; }
+    }
+    if (same) return;
+  }
+  if (await HotProfilePersistence.save(gameId, bytes)) {
+    hotProfileLastSaved = bytes;
+    Logger.verbose(LogCategory.SYSTEM, `[JIT] hot-page profile saved (${reason}): ${bytes.byteLength} bytes`);
+  }
+}
+
+function installHotProfileAutosave(gameId: string): void {
+  if (hotProfileSaveTimer !== null) clearInterval(hotProfileSaveTimer);
+  hotProfileGameId = gameId;
+  hotProfileLastSaved = preemptionManager.getJitHotProfile();
+  hotProfileSaveTimer = setInterval(() => { void saveHotProfile("periodic"); }, HOT_PROFILE_SAVE_INTERVAL_MS);
 }
 
 function installRegistryAutosave(gameId: string): void {
@@ -758,7 +792,12 @@ const startScheduler = (v86: any) => {
 
     const system = System.getInstance();
     if (!system.process || system.isExiting) {
-      if (system.isExiting) stopScheduler();
+      if (system.isExiting) {
+        stopScheduler();
+        // The wasm instance is still alive here; a profile that only reaches
+        // disk on the periodic timer would lose the last minute of pages.
+        void saveHotProfile("exit");
+      }
       return;
     }
 
@@ -1241,6 +1280,10 @@ const prepareFullGameSwitch = async (): Promise<void> => {
 
   const system = System.getInstance();
   cancelRegistryAutosave();
+  if (hotProfileSaveTimer !== null) { clearInterval(hotProfileSaveTimer); hotProfileSaveTimer = null; }
+  await saveHotProfile("game-switch");
+  hotProfileGameId = null;
+  hotProfileLastSaved = null;
   if (system.process?.v86) {
     isPaused = true;
     system.isPaused = true;
@@ -1831,6 +1874,11 @@ const loadBundleImpl = async (payload: BundlePayload) => {
 
     // Setup auto-save on registry changes (debounced, cancelled on game switch).
     installRegistryAutosave(gameId);
+
+    // Pages earlier sessions compiled, installed before v86 exists so the
+    // first boot pages already compile at first touch (see preemption-manager).
+    preemptionManager.setJitHotProfile(await HotProfilePersistence.load(gameId));
+    installHotProfileAutosave(gameId);
 
     // Apply emulator configuration from manifest (fresh per-bundle to avoid stale cross-game overrides)
     const emulatorConfig = EmulatorConfig.getInstance();

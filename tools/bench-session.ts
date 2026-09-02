@@ -227,8 +227,13 @@ function launchChrome(profile: string, port: number): void {
     // Keep stderr: a launch abort (stale SingletonLock, missing lib) is otherwise
     // indistinguishable from a slow start.
     Bun.spawnSync(["sh", "-c", `: > ${chromeLogPath(port)}`]);
+    // ORTHROS_BENCH_CPUS="12-23,36-47" pins the whole browser (renderer, GPU
+    // process, worker) to those cores. On a shared box other sessions' browsers
+    // and the frequency governor are the largest sources of run-to-run noise.
+    const cpus = process.env.ORTHROS_BENCH_CPUS?.trim();
+    const pin = cpus ? `taskset -c ${cpus} ` : "";
     Bun.spawn(["sh", "-c",
-        `exec setsid -f "$0" "$@" >> ${chromeLogPath(port)} 2>&1`,
+        `exec ${pin}setsid -f "$0" "$@" >> ${chromeLogPath(port)} 2>&1`,
         CHROME_PATH,
         "--headless=new",
         "--no-sandbox",

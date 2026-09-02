@@ -886,6 +886,16 @@ export const dbg = {
         console.log(`[dbg] hot profile import: ${bytes.length} bytes -> ${r ? JSON.stringify(r) : "recorded for next init"}`);
         return r ?? { pages: -1 };
     },
+    /** Config 48: 1 = force a known page only while a compile slot is free
+     *  (default), 0 = force whenever touched. Recorded before boot like the
+     *  other JIT settings. */
+    jitHotProfileMode(mode?: number): number {
+        const pm = (globalThis as any).preemption;
+        if (mode !== undefined && pm?.setJitHotProfileMode) pm.setJitHotProfileMode(mode);
+        const applied = wasm()?.get_jit_config?.(48);
+        console.log(`[dbg] hot profile mode=${pm?.getJitHotProfileMode?.() ?? "?"} applied=${applied ?? "pending-wasm"}`);
+        return applied ?? (pm?.getJitHotProfileMode?.() ?? -1);
+    },
     jitHotProfileStats(): { pages: number; forced: number; mismatches: number } | null {
         const w = wasm(); if (!w?.jit_hot_profile_pages) return null;
         const s = {

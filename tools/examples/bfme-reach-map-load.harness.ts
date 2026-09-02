@@ -247,6 +247,9 @@ while (performance.now() - t0 < bootTimeoutSec * 1_000) {
 console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s`);
 console.log("boot jit " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)));
 console.log("boot hot-profile " + JSON.stringify(await bench.dbg("jitHotProfileStats").catch(() => null)));
+// Interpreted share of the boot itself: the profile's first-touch compiles
+// only pay off if this falls, so the number belongs next to the boot time.
+console.log("boot interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
 
 // After boot, not before: these go straight to the wasm instance, which does not
 // exist until the game has loaded. Applied earlier they silently do nothing.
