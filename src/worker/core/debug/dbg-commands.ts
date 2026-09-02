@@ -870,6 +870,16 @@ export const dbg = {
             // A page written to loses its module; if this tracks `started` the
             // JIT is recompiling the same code rather than covering new code.
             pageInvalWithCode: w.jit_get_page_invalidations_with_code?.() >>> 0,
+            // Which of the three sites freed a module. Each free invalidates every
+            // return prediction and the inline caches in generated code, so the
+            // dominant site is what to attack.
+            freeWritten: w.jit_free_site_written?.() >>> 0,
+            freeOverwrite: w.jit_free_site_overwrite?.() >>> 0,
+            freePageInval: w.jit_free_site_page_invalidated?.() >>> 0,
+            // A fastmem deopt frees the module and recompiles it, so a steady
+            // deopt rate is a steady invalidation of every return prediction.
+            fastmemDeopts: w.fastmem_get_deopt_recompiles?.() >>> 0,
+            tier2Promotions: w.jit_get_tier2_promotions?.() >>> 0,
             pageInvalNoCode: w.jit_get_page_invalidations_no_code?.() >>> 0,
             started: w.jit_get_compile_started() >>> 0,
             completed: w.jit_get_compile_completed?.() >>> 0,
@@ -896,6 +906,7 @@ export const dbg = {
             w.jit_reset_compile_stats?.();
             w.jit_reset_cache_flushes?.();
             w.jit_reset_page_invalidations?.();
+            w.jit_free_sites_reset?.();
             w.jit_ret_cache_invalidations_reset?.();
         }
         console.log(`[dbg] jit compile: pending=${s.pending}/${s.maxPending} highWater=${s.pendingHighWater} started=${s.started} completed=${s.completed} capSkips=${s.capSkips} deferred=${s.deferredStarted}/${s.deferredQueued} pending=${s.deferredPending} dropped=${s.deferredDropped} totalMs=${s.totalMs.toFixed(1)} maxMs=${s.maxMs.toFixed(1)}`);
