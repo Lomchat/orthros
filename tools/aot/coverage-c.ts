@@ -70,3 +70,6 @@ if (out) {
     await Bun.write(out, JSON.stringify({ exe, profile: profilePath, accepted }, null, 1));
     console.log(`wrote ${accepted.length} candidates to ${out}`);
 }
+// The decode service holds stdout open; close it or the process never exits.
+decoder.close();
+process.exit(0);

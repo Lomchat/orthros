@@ -60,3 +60,5 @@ const manifest = {
 await Bun.write(`${out}.json`, JSON.stringify(manifest));
 const wasmSize = (await Bun.file(`${out}.wasm`).arrayBuffer()).byteLength;
 console.log(`${out}.wasm: ${functions.length} functions (${manifest.instructions} insns), ${batch.pages.length} page modules, ${wasmSize} bytes; skipped ${skipped}`);
+decoder.close();
+process.exit(0);
