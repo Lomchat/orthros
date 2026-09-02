@@ -202,3 +202,18 @@ t_callee_slow:
     mov eax, [esp+4]
     sub eax, [esp+8]
     ret 8
+
+    .globl t_negimm
+t_negimm:
+    mov edi, [esp+4]
+    mov eax, 0x100
+    add eax, -0x10
+    and eax, -0x100
+    sub esp, -0x10
+    mov ecx, esp
+    add esp, -0x10
+    cmp eax, -0x1
+    setne dl
+    mov [edi], eax
+    mov [edi+4], edx
+    ret

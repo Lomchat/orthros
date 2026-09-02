@@ -162,8 +162,9 @@ export function parseOperand(text: string): Operand | null {
     if (r8l >= 0) return { kind: "reg8lo", index: r8l };
     const r8h = REG8_HIGH.indexOf(t);
     if (r8h >= 0) return { kind: "reg8hi", index: r8h };
-    const imm = /^(0x[0-9a-f]+|-?\d+)$/i.exec(t);
-    if (imm) return { kind: "imm", value: Number(imm[1]) | 0 };
+    const imm = /^(-?)(0x[0-9a-f]+|\d+)$/i.exec(t);
+    // Number() does not parse a signed hexadecimal literal.
+    if (imm) return { kind: "imm", value: (imm[1] ? -Number(imm[2]) : Number(imm[2])) | 0 };
     const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10 };
     const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
     if (mem) {
