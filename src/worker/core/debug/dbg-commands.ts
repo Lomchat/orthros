@@ -925,7 +925,15 @@ export const dbg = {
     aotExternalFirst(on?: boolean): boolean {
         return on === undefined ? getAotExternalFirst() : setAotExternalFirst(on);
     },
-    /** Automatic install of the bundle's published batch at boot (ON by default). */
+    /** Instructions a bridged callee may still retire once the slice budget is
+     *  zero before the nested dispatcher gives up on it (0 = the old behaviour). */
+    aotZeroBudgetGrace(n?: number): number {
+        const ex = wasm();
+        if (!ex?.jit_get_run_until_zero_budget_grace) return -1;
+        if (n !== undefined) ex.jit_set_run_until_zero_budget_grace?.(n >>> 0);
+        return ex.jit_get_run_until_zero_budget_grace() >>> 0;
+    },
+    /** Automatic install of the bundle's published batch (opt-in). */
     aotAuto(on?: boolean): boolean {
         if (on !== undefined) setAotAutoEnabled(!!on);
         return isAotAutoEnabled();
