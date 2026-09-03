@@ -503,7 +503,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         // guest runs 32-bit flat code; report what it did.
         const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) })) as any;
         const ef = await bench.evalPage(`__BS__.harness.dbgCall("aotExternalFirst", undefined)`, 15_000).catch(() => null);
-        console.log(`AOT-AUTO pages=${st?.pages ?? "?"} entries=${st?.entries ?? "?"} bytes=${st?.bytes ?? "?"} externalFirst=${ef}`);
+        console.log(`AOT-AUTO pages=${st?.pages ?? "?"} entries=${st?.entries ?? "?"} bytes=${st?.bytes ?? "?"} externalFirst=${ef}${st?.lastError ? ` error=${st.lastError}` : ""}`);
         // Arm and reset the urgent-exit reason census for the rest of the hold.
         await bench.evalPage(`__BS__.harness.dbgCall("schedulerPerf", true)`, 15_000).catch(() => null);
         const graceArg = arg("aot-grace", "");

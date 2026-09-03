@@ -21,10 +21,13 @@ export interface AotBatchState {
     guardExits: number;
     /** URL of the batch installed by the automatic path, once done. */
     autoUrl: string | null;
+    /** Why the last install did nothing (missing exports, unpublished batch,
+     *  link error...); null after a successful install. */
+    lastError: string | null;
 }
 
 /** Installed modules of this worker, across installs. */
-export const aotBatchState: AotBatchState = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0, autoUrl: null };
+export const aotBatchState: AotBatchState = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0, autoUrl: null, lastError: null };
 
 export interface AotInstallResult { pages: number; entries: number; failed: number; bytes: number }
 
@@ -79,10 +82,10 @@ function v86Exports(): { cpu: any; ex: any } | null { return provider(); }
  */
 export async function installAotBatch(url: string, filter?: string): Promise<AotInstallResult | null> {
     const v = v86Exports();
-    if (!v) { Logger.warn(LogCategory.SYSTEM, '[AOT] install: v86 or its external-module exports unavailable'); return null; }
+    if (!v) { aotBatchState.lastError = 'v86 or its external-module exports unavailable'; Logger.warn(LogCategory.SYSTEM, `[AOT] install: ${aotBatchState.lastError}`); return null; }
     const { cpu, ex } = v;
     const [wasmRes, jsonRes] = await Promise.all([fetch(`${url}.wasm`), fetch(`${url}.json`)]);
-    if (!wasmRes.ok || !jsonRes.ok) { Logger.warn(LogCategory.SYSTEM, `[AOT] install: ${url} not found (${wasmRes.status}/${jsonRes.status})`); return null; }
+    if (!wasmRes.ok || !jsonRes.ok) { aotBatchState.lastError = `${url} not found (${wasmRes.status}/${jsonRes.status})`; Logger.warn(LogCategory.SYSTEM, `[AOT] install: ${aotBatchState.lastError}`); return null; }
     const bytes = new Uint8Array(await wasmRes.arrayBuffer());
     const manifest = await jsonRes.json() as AotManifest;
     const memBase = cpu.mem8.byteOffset >>> 0;
@@ -134,6 +137,7 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
     }
     aotBatchState.pages += pages; aotBatchState.entries += entries; aotBatchState.bytes += bytes.byteLength;
     Logger.info(LogCategory.SYSTEM, `[AOT] ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${skippedStale} skipped (stale region), ${bytes.byteLength} bytes, state flags 0x${flags.toString(16)}`);
+    aotBatchState.lastError = null;
     return { pages, entries, failed, bytes: bytes.byteLength };
 }
 
@@ -206,7 +210,7 @@ export function scheduleAotAutoInstall(bundleUrl: string): void {
                     const head = await fetch(`${url}.json`, { method: 'HEAD' });
                     probed = head.ok;
                 }
-                if (!probed) { Logger.log(LogCategory.SYSTEM, `[AOT] no batch published for ${bundleUrl}`); return; }
+                if (!probed) { aotBatchState.lastError = `no batch published for ${bundleUrl}`; Logger.log(LogCategory.SYSTEM, `[AOT] ${aotBatchState.lastError}`); return; }
                 if (!autoEnabled) return;
                 const r = await installAotBatch(url);
                 if (r && r.pages > 0) {
@@ -215,7 +219,8 @@ export function scheduleAotAutoInstall(bundleUrl: string): void {
                     Logger.info(LogCategory.SYSTEM, `[AOT] auto install done: ${r.pages} pages, ${r.entries} entries, external-first on`);
                 }
             } catch (e) {
-                Logger.warn(LogCategory.SYSTEM, `[AOT] auto install failed: ${String(e).slice(0, 160)}`);
+                aotBatchState.lastError = String(e).slice(0, 200);
+                Logger.warn(LogCategory.SYSTEM, `[AOT] auto install failed: ${aotBatchState.lastError}`);
             } finally {
                 installing = false;
             }

@@ -111,6 +111,30 @@ describe("AOT batch automatic install", () => {
         expect(f.calls).toEqual(["HEAD /apps/other.wgb.aot-bridge.json"]);
         expect(v.registered.length).toBe(0);
         expect(v.externalFirst()).toBe(0);
+        expect(aotBatchState.lastError).toBe("no batch published for /apps/other.wgb");
+    });
+
+    test("a module whose imports the worker cannot satisfy records the link error", async () => {
+        const flags = { value: 0xb };
+        const v = fakeV86(flags);
+        setAotExportsProvider(() => ({ cpu: v.cpu, ex: v.ex }));
+        // A module importing `env.missing_import` (i32)->void: instantiate throws a
+        // LinkError, which the automatic path must record rather than swallow.
+        const needy = new Uint8Array([
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+            0x01, 0x05, 0x01, 0x60, 0x01, 0x7f, 0x00,
+            0x02, 0x16, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x0e, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6e, 0x67, 0x5f, 0x69, 0x6d, 0x70, 0x6f, 0x72, 0x74, 0x00, 0x00,
+            0x03, 0x02, 0x01, 0x00,
+            0x07, 0x0f, 0x01, 0x0b, 0x70, 0x61, 0x67, 0x65, 0x5f, 0x34, 0x30, 0x31, 0x30, 0x30, 0x30, 0x00, 0x01,
+            0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+        ]);
+        (globalThis as any).fetch = async (input: string, init?: { method?: string }) =>
+            input.endsWith(".json") ? new Response(init?.method === "HEAD" ? null : JSON.stringify(MANIFEST), { status: 200 }) : new Response(needy, { status: 200 });
+        scheduleAotAutoInstall("/apps/bfme.wgb");
+        await sleep(120);
+        expect(v.registered.length).toBe(0);
+        expect(v.externalFirst()).toBe(0);
+        expect(aotBatchState.lastError ?? "").toMatch(/LinkError|missing_import/);
     });
 
     test("a region whose live bytes differ from the translated image is skipped", async () => {
