@@ -919,16 +919,27 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             lines.push(`if (esp > ml - 4u) { ${guardExit(term.addr, n - 1)} }`, `cnt += ${n}u;`, `ip = LD32(esp);`, `esp += ${4 + pops}u;`, `goto exit;`);
         }
         else if (term.mnemonic === "call") {
-            const direct = directTarget(term.operand);
-            const target = direct !== null ? `${direct >>> 0}u` : indirectTargetExpr(term.operand);
+            let direct = directTarget(term.operand);
+            let operandText = term.operand;
+            let folded = false;
+            // A direct call to an import thunk (jmp dword ptr [slot]) is the
+            // call through the slot: no thunk to enter, and the stub behind
+            // the slot is performed here.
+            if (direct !== null) {
+                const thunk = (await decoder.linear(direct, 8))[0];
+                const m = thunk && thunk.mnemonic === "jmp" ? /^dword ptr \[(0x[0-9a-f]+)\]$/i.exec(thunk.operand) : null;
+                if (m) { operandText = `dword ptr [${m[1]}]`; direct = null; folded = true; }
+            }
+            const target = direct !== null ? `${direct >>> 0}u` : indirectTargetExpr(operandText);
             if (target === null) return reject(`call ${term.operand}`);
             calls++;
             if (direct !== null) callTargets.push(direct >>> 0);
-            const targetOp = direct === null ? parseOperand(term.operand) : null;
+            const targetOp = direct === null ? parseOperand(operandText) : null;
             if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
             const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
             const ret = (term.addr + term.size) >>> 0;
-            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${n}u; esp -= 4u; ST32(esp, ${ret}u);`);
+            // A folded thunk retired its jmp on the way to the target.
+            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${folded ? n + 1 : n}u; esp -= 4u; ST32(esp, ${ret}u);`);
             // A callee in the same batch is called natively: state goes through
             // memory both ways, and if the callee came back by ret to our
             // return address we carry on here; any other exit of the callee is

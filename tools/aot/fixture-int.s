@@ -424,3 +424,22 @@ t_stubcall:
     add dword ptr [esi+8], 7
     pop esi
     ret
+
+# A direct call to an import thunk (jmp dword ptr [slot]): the translation
+# folds it into the call through the slot, and the stub behind it is
+# performed in place. The slot lives in .text so the flat image carries it.
+    .align 4
+import_slot:
+    .long stub_b077
+thunk_import:
+    jmp dword ptr [import_slot]
+    .globl t_viathunk
+t_viathunk:
+    push esi
+    mov esi, [esp+8]
+    push dword ptr [esi+4]
+    call thunk_import
+    mov [esi+8], eax
+    add dword ptr [esi+12], 11
+    pop esi
+    ret
