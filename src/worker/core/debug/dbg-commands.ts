@@ -23,6 +23,7 @@
  */
 
 import { System } from '../system';
+import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
 /** Ahead-of-time modules installed in this worker (see dbg.aotInstall). */
@@ -3178,6 +3179,34 @@ export const dbg = {
         const rows = d.getAsyncParkReport().rows.slice(0, n);
         if (reset) d.resetAsyncParkStats();
         return rows;
+    },
+    /** The last RaiseException calls the guest made (code, flags, first argument, caller). */
+    exceptions(): unknown { return ((globalThis as any).__guestRaisedExceptions ?? []).slice(); },
+    /** The last guest MessageBox texts, readable from the Worker's own CDP
+     *  session when the page is blocked by the box itself. */
+    messageBoxes(): unknown { return getGuestMessageBoxes(); },
+    /** Directory listing of the guest file system (ROM + overlay), for crash
+     *  logs the game writes to its user folder. */
+    vfsList(dir: string): Array<{ name: string; kind: string; size: number; source: string }> {
+        const vfs = System.getInstance().fileSystem as any;
+        try {
+            return (vfs.listDirectory(dir) as Array<{ name: string; kind: string; size: number; source: string }>)
+                .map((e) => ({ name: e.name, kind: e.kind, size: e.size, source: e.source }));
+        } catch (e) { return [{ name: `error: ${String(e)}`, kind: "error", size: 0, source: "" }]; }
+    },
+    /** First `max` bytes of a guest file as text (latin-1). */
+    vfsRead(path: string, max: number = 8192): string | null {
+        const vfs = System.getInstance().fileSystem as any;
+        try {
+            const h = vfs.openSync(path, 0x80000000, 3);
+            if (!h) return null;
+            const bytes = vfs.readSync(h, max) as Uint8Array | null;
+            try { vfs.closeSync?.(h) ?? vfs.close?.(h); } catch { /* best effort */ }
+            if (!bytes) return null;
+            let out = "";
+            for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]!);
+            return out;
+        } catch (e) { return `error: ${String(e)}`; }
     },
     slowPathTop(n: number = 24): Array<{ name: string; hits: number }> {
         const d = System.getInstance().process?.dispatcher as any;

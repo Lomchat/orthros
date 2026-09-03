@@ -350,6 +350,22 @@ const jit0 = prevJit;
 const tL = performance.now();
 /** Per-window frame rate through the hold, so the load phase can be isolated
  *  from the gameplay that follows it rather than averaged together with it. */
+// --vfs-dump "C:\\dir": list a guest folder right after boot and print any file
+// whose name looks like a crash or error log (the engine's own report from a
+// previous run persists in the OPFS overlay).
+const vfsDump = arg("vfs-dump", "");
+for (const dumpDir of vfsDump.split(";").map((x) => x.trim()).filter(Boolean)) {
+    const listing = await bench.evalWorker(`JSON.stringify((globalThis.dbg?.vfsList?.(${JSON.stringify(dumpDir)}) ?? []).filter((e) => e.source === "overlay"))`, 15_000).catch((e) => `error: ${String(e)}`);
+    console.log(`VFS-DUMP ${dumpDir} (overlay only) ` + String(listing).slice(0, 3000));
+    const vfsDumpDir = dumpDir;
+    const files: any[] = (() => { try { return JSON.parse(String(listing)) ?? []; } catch { return []; } })();
+    for (const f of files) {
+        if (f.kind === "file" && /crash|error|except|assert|log|txt/i.test(f.name)) {
+            const text = await bench.evalWorker(`globalThis.dbg?.vfsRead?.(${JSON.stringify(vfsDumpDir + "\\" + f.name)}, 12000) ?? null`, 15_000).catch((e) => `error: ${String(e)}`);
+            console.log(`VFS-FILE ${f.name} (${f.size} bytes) ` + String(text).replace(/\r?\n/g, " | ").slice(0, 8000));
+        }
+    }
+}
 const holdFps: number[] = [];
 // --slow-path: which thunks still take the JavaScript slow dispatch path, ranked
 // by calls over the hold. Armed once here, read at the end of the hold.
@@ -421,11 +437,26 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         // Worker pinned in the guest. Profile it through its own CDP session
         // (the inspector interrupts a busy isolate) and name where it spins.
         console.log(`WINDOW-EVAL-FAILED at T+${i * 10}s: ${String(e).slice(0, 200)}`);
+        // The page itself no longer answers. First the OS view of the renderer
+        // (twice, two seconds apart, so CPU deltas show who is busy), then the
+        // page's own profile and exceptions, then the Worker.
+        const t1 = await bench.rendererThreads().catch((e2) => [`error: ${String(e2)}`]);
+        await Bun.sleep(2_000);
+        const t2 = await bench.rendererThreads().catch((e2) => [`error: ${String(e2)}`]);
+        console.log("   PAGE-HANG renderer-threads " + JSON.stringify(t1).slice(0, 2500));
+        console.log("   PAGE-HANG renderer-threads+2s " + JSON.stringify(t2).slice(0, 2500));
+        const pprof = await bench.profilePage(6_000, 20).catch((e2) => ({ error: String(e2) } as any));
+        console.log("   PAGE-HANG cpu-profile " + JSON.stringify(pprof).slice(0, 5000));
+        console.log("   PAGE-HANG errors " + JSON.stringify(bench.pageErrors().slice(-8)).slice(0, 2000));
         if (aotInstall) {
             const prof = await bench.profileWorker(6_000, 20).catch((e2) => ({ error: String(e2) } as any));
             console.log("   AOT-HANG cpu-profile " + JSON.stringify(prof).slice(0, 6000));
             console.log("   AOT-HANG errors " + JSON.stringify(bench.workerErrors().slice(-5)));
             console.log("   AOT-HANG dialogs " + JSON.stringify(bench.dialogs().slice(-3)));
+            const probe = await bench.evalWorker("typeof dbg + ' ' + typeof globalThis.dbg + ' ' + Object.keys(globalThis).filter(k => /dbg|harness|report|BS|System/i.test(k)).join(',') + ' | ' + String(self.location && self.location.href).slice(-60)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG worker-globals " + String(probe).slice(0, 400));
+            const boxes = await bench.evalWorker("JSON.stringify(globalThis.dbg?.messageBoxes?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG messageBoxes " + String(boxes).slice(0, 2000));
             for (const ev of ["fault", "guest_crash", "wasm_trap"]) {
                 const rep = await bench.evalPage(`__BS__.harness.lastEvent(${JSON.stringify(ev)})`, 15_000).catch((e2) => ({ error: String(e2) }));
                 console.log(`   AOT-HANG ${ev} ` + JSON.stringify(rep).slice(0, 3000));
@@ -468,6 +499,30 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             // A guest that stopped without a fault usually sits in a MessageBox:
             // the report keeps the last boxes' text, the session the page dialogs.
             console.log("   AOT-HANG dialogs " + JSON.stringify(bench.dialogs().slice(-3)));
+            const probe = await bench.evalWorker("typeof dbg + ' ' + typeof globalThis.dbg + ' ' + Object.keys(globalThis).filter(k => /dbg|harness|report|BS|System/i.test(k)).join(',') + ' | ' + String(self.location && self.location.href).slice(-60)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG worker-globals " + String(probe).slice(0, 400));
+            const boxes = await bench.evalWorker("JSON.stringify(globalThis.dbg?.messageBoxes?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG messageBoxes " + String(boxes).slice(0, 2000));
+            // The last Win32 calls before the stop: an assertion path shows as
+            // RaiseException / MessageBox / ExitProcess with its arguments.
+            const ring = await bench.evalWorker("JSON.stringify(globalThis.dbg?.ring?.(96, 40) ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG ring " + String(ring).slice(0, 6000));
+            const exc = await bench.evalWorker("JSON.stringify(globalThis.dbg?.exceptions?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG exceptions " + String(exc).slice(0, 4000));
+            // The game's own crash text, if it wrote one to its user folder.
+            // Orthros answers CSIDL_APPDATA with C:\Windows\Application Data.
+            const userDirs = ["C:\\Windows\\Application Data\\My Battle for Middle-earth Files", "C:\\Windows\\Application Data", "C:\\"];
+            for (const d of userDirs) {
+                const listing = await bench.evalWorker(`JSON.stringify(globalThis.dbg?.vfsList?.(${JSON.stringify(d)}) ?? null)`, 15_000).catch((e) => `error: ${String(e)}`);
+                console.log(`   AOT-HANG vfs ${d} ` + String(listing).slice(0, 1500));
+                const files: any[] = (() => { try { return JSON.parse(String(listing)) ?? []; } catch { return []; } })();
+                for (const f of files) {
+                    if (f.kind === "file" && /crash|error|except|assert/i.test(f.name)) {
+                        const text = await bench.evalWorker(`globalThis.dbg?.vfsRead?.(${JSON.stringify(d + "\\" + f.name)}, 6000) ?? null`, 15_000).catch((e) => `error: ${String(e)}`);
+                        console.log(`   AOT-HANG file ${f.name} ` + String(text).replace(/\s+/g, " ").slice(0, 4000));
+                    }
+                }
+            }
             const rep = await bench.evalPage(`__BS__.harness.report()`, 20_000).catch((e) => ({ error: String(e) }));
             console.log("   AOT-HANG report " + JSON.stringify(rep).slice(0, 5000));
         }

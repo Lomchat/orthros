@@ -52,6 +52,14 @@ export interface BenchSession {
     workerErrors(): string[];
     /** Page dialogs (alert/confirm) seen and dismissed: a modal blocks every page eval. */
     dialogs(): string[];
+    /** Evaluate in the emulator Worker's own context (works while the page is blocked). */
+    evalWorker(expr: string, timeoutMs?: number): Promise<any>;
+    /** CPU profile of the page's main thread (the inspector interrupts a busy isolate). */
+    profilePage(ms: number, top?: number): Promise<WorkerProfile>;
+    /** Uncaught exceptions and console errors of the page itself. */
+    pageErrors(): string[];
+    /** Renderer thread states from /proc (works when the page's DevTools agent is dead). */
+    rendererThreads(): Promise<string[]>;
     /** Close the CDP session AND kill the browser this session launched. */
     close(): void;
 }
@@ -105,18 +113,19 @@ function classifyFrame(fn: string, url: string): string {
  * time, including time inside the wasm helpers x87 emulation runs through.
  */
 async function profileWorkerTarget(
-    session: CdpSession, sessionId: string | null, ms: number, top: number,
+    session: CdpSession, sessionId: string | null, ms: number, top: number, page = false,
 ): Promise<WorkerProfile> {
-    if (!sessionId) throw new Error("no emulator Worker session (auto-attach saw none)");
+    if (!sessionId && !page) throw new Error("no emulator Worker session (auto-attach saw none)");
+    const sid = page ? undefined : sessionId!;
 
-    await session.send("Profiler.enable", {}, sessionId);
-    await session.send("Profiler.setSamplingInterval", { interval: 200 }, sessionId);
-    await session.send("Profiler.start", {}, sessionId);
+    await session.send("Profiler.enable", {}, sid);
+    await session.send("Profiler.setSamplingInterval", { interval: 200 }, sid);
+    await session.send("Profiler.start", {}, sid);
     const started = performance.now();
     await Bun.sleep(ms);
-    const stopped: any = await session.send("Profiler.stop", {}, sessionId);
+    const stopped: any = await session.send("Profiler.stop", {}, sid);
     const durationMs = performance.now() - started;
-    await session.send("Profiler.disable", {}, sessionId).catch(() => {});
+    await session.send("Profiler.disable", {}, sid).catch(() => {});
 
     // send() resolves the whole CDP message, so the payload is under `result`.
     // Reading it one level too high yields an empty profile rather than an error.
@@ -418,13 +427,21 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         if (v.value !== undefined) return String(v.value);
         return String(v.className ?? v.type ?? "");
     };
+    const pageErrors: string[] = [];
     session.on("Runtime.exceptionThrown", (p: any, sid?: string) => {
-        if (sid !== workerSessionId) return;
+        if (!sid || sid !== workerSessionId) {
+            const d = p?.exceptionDetails;
+            if (pageErrors.length < 50) pageErrors.push(`${d?.text ?? "exception"} ${describe(d?.exception)} at ${d?.url ?? ""}:${d?.lineNumber ?? "?"}`);
+            if (sid !== workerSessionId) return;
+        }
         const d = p?.exceptionDetails;
         const text = `${d?.text ?? "exception"} ${describe(d?.exception)} at ${d?.url ?? ""}:${d?.lineNumber ?? "?"}:${d?.columnNumber ?? "?"}`;
         if (workerErrors.length < 50) workerErrors.push(text);
     });
     session.on("Runtime.consoleAPICalled", (p: any, sid?: string) => {
+        if ((!sid || sid !== workerSessionId) && p?.type === "error" && pageErrors.length < 50) {
+            pageErrors.push(`console.error ${(p.args ?? []).map(describe).join(" ").slice(0, 400)}`);
+        }
         if (sid !== workerSessionId || p?.type !== "error") return;
         const text = (p.args ?? []).map(describe).join(" ").slice(0, 400);
         if (workerErrors.length < 50) workerErrors.push(`console.error ${text}`);
@@ -491,6 +508,50 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         profileWorker: (ms: number, top = 25) => profileWorkerTarget(session, workerSessionId, ms, top),
         workerErrors: () => workerErrors.slice(),
         dialogs: () => dialogs.slice(),
+        pageErrors: () => pageErrors.slice(),
+        profilePage: (ms: number, top = 25) => Promise.race([
+            profileWorkerTarget(session, null as any, ms, top, true),
+            Bun.sleep(ms + 15_000).then(() => { throw new Error(`profilePage: page session did not answer within ${ms + 15_000}ms`); }),
+        ]),
+        /** What the browser's renderer threads are doing right now, from /proc: the
+         *  view that survives a page whose DevTools agent no longer answers. */
+        rendererThreads: async () => {
+            const ps = Bun.spawnSync(["ps", "-eo", "pid,ppid,args"]);
+            const rows = ps.stdout.toString().split("\n");
+            const browser = rows.find((r) => r.includes(`--remote-debugging-port=${port}`) && !r.includes("--type="));
+            const browserPid = browser ? Number(browser.trim().split(/\s+/)[0]) : -1;
+            const renderers = rows.filter((r) => r.includes("--type=renderer") && (browserPid < 0 || Number(r.trim().split(/\s+/)[1]) === browserPid))
+                .map((r) => Number(r.trim().split(/\s+/)[0]));
+            const out: string[] = [];
+            for (const pid of renderers) {
+                const tasks = Bun.spawnSync(["ls", `/proc/${pid}/task`]).stdout.toString().split("\n").filter(Boolean);
+                const threads: string[] = [];
+                for (const tid of tasks) {
+                    const comm = Bun.spawnSync(["cat", `/proc/${pid}/task/${tid}/comm`]).stdout.toString().trim();
+                    const stat = Bun.spawnSync(["cat", `/proc/${pid}/task/${tid}/stat`]).stdout.toString();
+                    const wchan = Bun.spawnSync(["cat", `/proc/${pid}/task/${tid}/wchan`]).stdout.toString().trim();
+                    const f = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+                    const state = f[0], utime = Number(f[11]), stime = Number(f[12]);
+                    if (/CrRendererMain|DedicatedWorker|Compositor|VizCompositor|ThreadPoolFore/.test(comm) || state === "R") {
+                        threads.push(`${comm}[${tid}] ${state} cpu=${utime + stime} wchan=${wchan}`);
+                    }
+                }
+                out.push(`renderer ${pid}: ` + threads.join("; "));
+            }
+            return out;
+        },
+        evalWorker: async (expr: string, timeoutMs = 15_000) => {
+            if (!workerSessionId) throw new Error("no emulator Worker session");
+            const r: any = await Promise.race([
+                session.send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }, workerSessionId),
+                Bun.sleep(timeoutMs).then(() => ({ __timeout: true })),
+            ]);
+            if (r?.__timeout) throw new Error(`evalWorker timed out after ${timeoutMs}ms`);
+            // send() resolves the whole CDP message: the payload sits under `result`.
+            const payload = r?.result ?? r;
+            if (payload?.exceptionDetails) throw new Error(`evalWorker: ${payload.exceptionDetails.text ?? "exception"} ${describe(payload.exceptionDetails.exception)}`);
+            return payload?.result?.value;
+        },
         close: () => {
             try { session.close(); } catch { /* transport already gone */ }
             killProfileProcessesSync(profile);

@@ -83,6 +83,19 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         return { value: 0, terminated: true };
     };
 
+    // The last RaiseException calls (code, flags, first argument, caller):
+    // the engine's own crash path raises before it writes a report or shows
+    // a box, and this is what names the first failure. dbg.exceptions().
+    const raised: Array<{ code: string; flags: number; arg0: string; caller: string; esp: string }> = [];
+    (globalThis as any).__guestRaisedExceptions = raised;
+    const noteRaise = (mem: Uint8Array, esp: number, code: number, flags: number, nargs: number, lpArgs: number): void => {
+        const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const caller = esp + 4 <= mem.length ? dv.getUint32(esp, true) >>> 0 : 0;
+        const arg0 = nargs > 0 && lpArgs + 4 <= mem.length ? dv.getUint32(lpArgs, true) >>> 0 : 0;
+        raised.push({ code: `0x${(code >>> 0).toString(16)}`, flags: flags >>> 0, arg0: `0x${arg0.toString(16)}`, caller: `0x${caller.toString(16)}`, esp: `0x${(esp >>> 0).toString(16)}` });
+        if (raised.length > 32) raised.shift();
+    };
+
     const dispatchRaiseExceptionViaSeh = (
         mem: Uint8Array,
         ctx: { esp: number },
@@ -92,6 +105,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         lpArguments: number,
         label: string,
     ): ThunkResult => {
+        noteRaise(mem, ctx.esp, dwExceptionCode, dwExceptionFlags, nNumberOfArguments, lpArguments);
         const system = System.getInstance();
         const cpu = getCPU(system.process!.v86);
         const dispatcher = system.process?.dispatcher;
