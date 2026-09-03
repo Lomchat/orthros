@@ -117,7 +117,7 @@ let functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
     if (hotSet && !hotSet.has(entry >>> 12) && !inExtra(entry)) continue;
-    const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined);
+    const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined, (addr) => decoderFor(addr) === decoderFor(entry));
     // Every rejection inside an extra image is printed: those few runtime bodies
     // are the reason the image is there.
     if (!t) { skipped++; if (skipped <= 10 || inExtra(entry)) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
@@ -138,7 +138,7 @@ for (let round = 0; round < closureRounds; round++) {
     for (const f of functions) for (const t of f.callTargets) if (!have.has(t)) wanted.add(t);
     let added = 0, rejected = 0, tooBig = 0;
     for (const target of [...wanted].sort((a, b) => a - b)) {
-        const t = await translateFunctionC(decoderFor(target), target, recordedAll.size ? recordedAll : undefined);
+        const t = await translateFunctionC(decoderFor(target), target, recordedAll.size ? recordedAll : undefined, (addr) => decoderFor(addr) === decoderFor(target));
         if (!t) { rejected++; continue; }
         if (t.instructions > closureMaxInsns) { tooBig++; continue; }
         functions.push(t); added++;

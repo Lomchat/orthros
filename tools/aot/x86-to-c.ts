@@ -93,7 +93,7 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
-    "enter", "wait", "fwait", "pushfd",
+    "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr",
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
@@ -397,6 +397,7 @@ __attribute__((import_module("env"), import_name("hypercall_out"))) void hyperca
    translation has retired but not yet committed folded in, as the JIT does. */
 __attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc(int32_t pending);
 #define FS_BASE (*(volatile int32_t *)752)
+#define MXCSR (*(volatile int32_t *)824)
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
 __attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth);
@@ -450,7 +451,11 @@ function isFlagConsumer(m: string): boolean {
  * entry too, so a return into the function or a jump-table target lands in
  * the translation instead of handing the page back to the JIT.
  */
-export async function translateFunctionC(decoder: CapstoneDecoder, entry: number, extraEntries?: Set<number>): Promise<CFunction | null> {
+export async function translateFunctionC(decoder: CapstoneDecoder, entry: number, extraEntries?: Set<number>, sameImage?: (addr: number) => boolean): Promise<CFunction | null> {
+    // A direct jump whose target lives in another image than the entry (an EXE
+    // function tail-calling a THUNK_CODE leaf, a DLL leaf) is a tail call, not a
+    // block of this function: it exits to the dispatcher. Default: one image.
+    const inImage = sameImage ?? (() => true);
     lastRejection = "";
     // Every block decodes from its own leader; a sequential read continues
     // that window, so the same address always yields the same instruction.
@@ -498,14 +503,15 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 }
                 if (mnemonic === "jmp") {
                     const t = directTarget(operand);
-                    if (t === null) break;
+                    if (t === null || !inImage(t)) break;
                     leaders.add(t); work.push(t); break;
                 }
                 if (COND_BRANCH.has(mnemonic)) {
                     const t = directTarget(operand);
                     if (t === null) return reject(`indirect ${mnemonic}`);
-                    leaders.add(t); leaders.add(pc + insn.size);
-                    work.push(t); work.push(pc + insn.size); break;
+                    leaders.add(pc + insn.size); work.push(pc + insn.size);
+                    if (inImage(t)) { leaders.add(t); work.push(t); }
+                    break;
                 }
                 pc += insn.size;
             }
@@ -658,6 +664,20 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const size = Number(ops[0]), level = Number(ops[1] ?? "0");
                 if (!Number.isFinite(size) || level !== 0) return reject(`enter ${operand}`);
                 lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ebp);`, `ebp = esp;`, `esp -= ${size >>> 0}u;`);
+                continue;
+            }
+            if (mnemonic === "stmxcsr" || mnemonic === "ldmxcsr") {
+                // MXCSR round-trips through v86's field (offset 824). The
+                // relaxed SSE path computes in round-to-nearest, so a guest that
+                // saves and restores the default control word matches; a leaf
+                // that only stores or reloads it (CRT _controlfp, _ftol setup)
+                // is exact.
+                const m = parseOperand(ops[0] ?? "");
+                if (!m || m.kind !== "mem") return reject(`${mnemonic} ${operand}`);
+                guardMem(lines, m, insn.addr, i);
+                // ldmxcsr changes SSE state: mark the FPU/SSE context dirty
+                // so a context switch saves the new MXCSR, as v86 does.
+                lines.push(mnemonic === "stmxcsr" ? `ST32(${m.addr}, MXCSR);` : `MXCSR = (int32_t)LD32(${m.addr}); FPU_DIRTY = 1u;`);
                 continue;
             }
 
@@ -1079,6 +1099,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const target = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : indirectTargetExpr(term.operand);
                 if (target === null) return reject(`jmp ${term.operand}`);
                 lines.push(`cnt += ${n}u;`, exitAt(target));
+            } else if (!inImage(direct)) {
+                lines.push(`cnt += ${n}u;`, exitAt(`${direct >>> 0}u`));
             } else {
                 const bi = indexOf.get(direct);
                 if (bi === undefined) return reject("jmp outside the function");
@@ -1092,11 +1114,18 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const cond = condFor(n - 1, term.mnemonic.slice(1));
             if (cond === null) return reject(`${term.mnemonic} after ${producerName(n - 1)}`);
             const target = directTarget(term.operand)!;
-            const taken = indexOf.get(target);
             const fall = indexOf.get(term.addr + term.size);
-            if (taken === undefined || fall === undefined) return reject("branch outside the function");
-            const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
-            lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
+            if (fall === undefined) return reject("branch outside the function");
+            if (!inImage(target)) {
+                // The taken edge tail-calls another image: exit there; the
+                // fall-through stays this function's next block.
+                lines.push(`cnt += ${n}u;`, `if (${cond}) { ${exitAt(`${target >>> 0}u`)} }`, `b = ${fall}; continue;`);
+            } else {
+                const taken = indexOf.get(target);
+                if (taken === undefined) return reject("branch outside the function");
+                const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
+                lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
+            }
         }
         else if (x87Kind(term.mnemonic, term.operand) === "slow") {
             // The interpreter runs this one instruction; the block after it is

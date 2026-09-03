@@ -540,3 +540,15 @@ t_outbody:
     mov dword ptr [edi+4], 1
 1:
     ret
+
+# stmxcsr/ldmxcsr round-trip through the MXCSR field: store the live value,
+# reload the default and store it again. Both stores must match v86.
+    .globl t_mxcsr
+t_mxcsr:
+    mov edi, [esp+4]
+    stmxcsr [edi]
+    mov eax, 0x1f80
+    mov [edi+4], eax
+    ldmxcsr [edi+4]
+    stmxcsr [edi+8]
+    ret
