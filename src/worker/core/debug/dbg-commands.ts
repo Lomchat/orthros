@@ -945,7 +945,7 @@ export const dbg = {
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
         dispatches: number; misses: number; stalls: number; recent: string[];
-        runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; nestedBarrier: number; threadSwitch: number; targets: string[]; iterations: number; retired: number } } {
+        runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; nestedBarrier: number; threadSwitch: number; targets: string[]; targetPages: string[]; iterations: number; retired: number } } {
         const s = aotInstalled;
         const ex = wasm();
         // pagesReplaced: external page modules a JIT compile of the same page
@@ -960,7 +960,7 @@ export const dbg = {
             recent.push(`${(ex.jit_ext_trace(i, 0) >>> 0).toString(16)}->${(ex.jit_ext_trace(i, 1) >>> 0).toString(16)}:${ex.jit_ext_trace(i, 2) >>> 0}`);
         }
         return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits,
-            runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9), nestedBarrier: g(10), threadSwitch: g(11), targets: bridgedTargets(ex) }; })(),
+            runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9), nestedBarrier: g(10), threadSwitch: g(11), targets: bridgedTargets(ex), targetPages: bridgedTargetPages(ex) }; })(),
             pagesReplaced: ex?.jit_external_pages_replaced?.() >>> 0,
             dispatches: ex?.jit_external_dispatches?.() >>> 0,
             misses: ex?.jit_external_misses?.() >>> 0,
@@ -3442,10 +3442,22 @@ export function emitDialogShow(rootHwnd: number): void {
 function bridgedTargets(ex: any): string[] {
     if (!ex?.jit_run_until_target) return [];
     const rows: Array<[number, number]> = [];
-    for (let i = 0; i < 4096; i++) {
+    for (let i = 0; i < 65536; i++) {
         const eip = ex.jit_run_until_target(i, 0) >>> 0;
         if (eip !== 0) rows.push([eip, ex.jit_run_until_target(i, 1) >>> 0]);
     }
     rows.sort((a, b) => b[1] - a[1]);
     return rows.map(([eip, n]) => `${eip.toString(16)}:${n}`);
+}
+
+/** Bridged callees by code page, `page:calls`, most called first. */
+function bridgedTargetPages(ex: any): string[] {
+    if (!ex?.jit_run_until_target_page) return [];
+    const rows: Array<[number, number]> = [];
+    for (let i = 0; i < 4096; i++) {
+        const key = ex.jit_run_until_target_page(i, 0) >>> 0;
+        if (key !== 0) rows.push([((key - 1) << 12) >>> 0, ex.jit_run_until_target_page(i, 1) >>> 0]);
+    }
+    rows.sort((a, b) => b[1] - a[1]);
+    return rows.map(([page, n]) => `${page.toString(16)}:${n}`);
 }
