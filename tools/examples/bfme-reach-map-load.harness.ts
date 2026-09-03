@@ -660,6 +660,10 @@ if (process.argv.includes("--aot-auto")) {
             console.log(`AOT-AUTO-BYTES 0x${a.toString(16)}: ${(bytes ?? []).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
         }
     } catch (e) { console.log(`AOT-AUTO-BYTES unavailable: ${String(e).slice(0, 100)}`); }
+}
+{
+    // The dumps below serve a batch build whatever the run's install mode.
+    const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch(() => null) as any;
     // --dump-region 0xbase:0xsize:<file>[,...]: any guest range, raw, for a
     // batch's --extra-image (a DLL mapped and relocated at run time, whose
     // file on disk is not what the guest executes); base in <file>.json.
