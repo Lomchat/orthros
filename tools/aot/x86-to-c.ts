@@ -1062,10 +1062,24 @@ export function assembleBatch(functions: CFunction[]): Batch {
     // translated function compiles to a native call whatever the order.
     const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
     // The compare tree: -fno-jump-tables keeps it free of data segments.
-    // noinline: without it clang weighs inlining the whole tree at every one of
-    // the ~150 000 indirect call sites and the compile takes hours.
-    const dispatch = "__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n"
-        + functions.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
+    // Two levels, page then offset, so no generated function has more than a
+    // few dozen blocks: one switch over every entry made the WebAssembly
+    // backend's CFG stackifier take hours. noinline keeps clang from weighing
+    // the tree at every one of the ~150 000 indirect call sites.
+    const byEntryPage = new Map<number, CFunction[]>();
+    for (const f of functions) {
+        const page = f.entry >>> 12;
+        let list = byEntryPage.get(page);
+        if (!list) { list = []; byEntryPage.set(page, list); }
+        list.push(f);
+    }
+    const dispatchPages = [...byEntryPage.entries()].sort((a, b) => a[0] - b[0]);
+    const dispatch = dispatchPages.map(([page, list]) =>
+        `__attribute__((noinline)) static int aot_dispatch_p${page.toString(16)}(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n`
+        + list.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
+        + "\n        default: return 0;\n    }\n}\n").join("\n")
+        + "\n__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target >> 12) {\n"
+        + dispatchPages.map(([page]) => `        case ${page}u: return aot_dispatch_p${page.toString(16)}(target, depth);`).join("\n")
         + "\n        default: return 0;\n    }\n}\n";
     const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;
     return { c, functions, pages };
