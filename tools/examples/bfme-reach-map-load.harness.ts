@@ -649,6 +649,17 @@ if (process.argv.includes("--aot-auto")) {
     const sp = await bench.evalPage(`__BS__.harness.dbgCall("schedulerPerf")`, 15_000).catch((e) => ({ error: String(e) })) as any;
     const grace = await bench.evalPage(`__BS__.harness.dbgCall("aotZeroBudgetGrace")`, 15_000).catch(() => null);
     console.log(`AOT-AUTO-EXITS grace=${grace} ${JSON.stringify(sp?.immediateExitReasons ?? sp)}`);
+    // The shape of what the translations keep leaving for: the bytes at the
+    // most bridged addresses of the most bridged page.
+    try {
+        const pages = (st?.runUntil?.targetPages ?? []) as string[];
+        const top = pages.length ? Number("0x" + pages[0]!.split(":")[0]) : 0;
+        const addrs = ((st?.runUntil?.targets ?? []) as string[]).map((t) => Number("0x" + t.split(":")[0])).filter((a) => (a >>> 12) === (top >>> 12)).slice(0, 3);
+        for (const a of addrs) {
+            const bytes = await bench.evalPage(`__BS__.harness.dbgCall("memBytes", ${a}, 32)`, 15_000) as number[];
+            console.log(`AOT-AUTO-BYTES 0x${a.toString(16)}: ${(bytes ?? []).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+        }
+    } catch (e) { console.log(`AOT-AUTO-BYTES unavailable: ${String(e).slice(0, 100)}`); }
 }
 if (slowPath) {
     const top = await bench.dbg("slowPathTop", 32).catch((e) => ({ error: String(e) }));

@@ -268,6 +268,13 @@ export const dbg = {
         console.log(`[dbg] [0x${x.toString(16)}] = 0x${v.toString(16)}`); return v;
     },
     /** Hex-dump len bytes of guest memory from addr. */
+    /** Guest bytes as an array, for a caller that wants data rather than a dump. */
+    memBytes(a: number | string, len = 64): number[] {
+        const w = wasm(); if (!w) return []; const base = toAddr(a);
+        const out: number[] = [];
+        for (let i = 0; i < Math.min(len, 4096); i++) out.push(w.dbg_read_u8((base + i) >>> 0) & 0xff);
+        return out;
+    },
     mem(a: number | string, len = 64): void {
         const w = wasm(); if (!w) return; const base = toAddr(a);
         const rows = Math.ceil(len / 16);
