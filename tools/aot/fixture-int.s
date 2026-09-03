@@ -443,3 +443,14 @@ t_viathunk:
     add dword ptr [esi+12], 11
     pop esi
     ret
+
+# rdtsc: not in the t_ parity set — v86's virtual counter follows the host
+# clock in the bare harness, so the two runs read different values. Kept as a
+# translation smoke test (x_rdtsc: verify-c ... --entries <addr>).
+    .globl x_rdtsc
+x_rdtsc:
+    mov ecx, [esp+4]
+    rdtsc
+    mov [ecx], eax
+    mov [ecx+4], edx
+    ret

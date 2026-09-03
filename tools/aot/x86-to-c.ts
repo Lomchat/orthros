@@ -91,7 +91,7 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
  *  and its consumer is a flag writer the model does not follow. Every x87
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
-    "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not",
+    "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
     "enter", "wait", "fwait",
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
@@ -392,6 +392,9 @@ __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_efl
 __attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t stop_esp, uint32_t max);
 /* The stub's out 0xB077, eax, performed by the translation itself. */
 __attribute__((import_module("env"), import_name("hypercall_out"))) void hypercall_out(int32_t value);
+/* rdtsc: v86's virtual time-stamp counter, with the instructions this
+   translation has retired but not yet committed folded in, as the JIT does. */
+__attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc(int32_t pending);
 #define FS_BASE (*(volatile int32_t *)752)
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
@@ -610,6 +613,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
             if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
+            if (mnemonic === "rdtsc") { lines.push(`{ uint64_t ts = read_tsc((int32_t)cnt); eax = (uint32_t)ts; edx = (uint32_t)(ts >> 32); }`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
             if (mnemonic === "cbw") { lines.push(`eax = (eax & ~0xffffu) | ((uint32_t)(int32_t)(int8_t)eax & 0xffffu);`); continue; }
 

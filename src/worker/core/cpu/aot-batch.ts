@@ -103,6 +103,8 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         run_until: ex.jit_run_until ?? ((_ret: number, _esp: number, _max: number) => 1),
         // A stub's port write performed by the translation itself.
         hypercall_out: ex.jit_hypercall_out ?? ((_v: number) => {}),
+        // rdtsc from a translation: the virtual counter with pending instructions folded in.
+        read_tsc: ex.read_tsc_jit ?? (() => 0n),
     } });
     const first = ex.jit_external_module_first_index() >>> 0;
     const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
@@ -159,13 +161,13 @@ const AUTO_GIVE_UP_MS = 10 * 60_000;
 // entries the dispatcher never matches.
 const STATE_IS_32 = 1, STATE_FLAT = 8;
 
-// Opt-in: on this VPS the corrected batch runs the game correctly but about
-// 6 % slower than the JIT alone (bridged calls and nested dispatches), so a
-// title only gets it when asked (`aot=1`, dbg.aotAuto(true)).
-let autoEnabled = false;
+// On by default: with import stubs performed inline, sequential A/Bs alone on
+// the VPS put the batch ahead of the JIT alone (32.3 vs 29.8 FPS mean, floor
+// 28.3 vs 21.9). `aot=0` in the URL or dbg.aotAuto(false) keeps a title off it.
+let autoEnabled = true;
 let autoTimer: number | null = null;
 
-/** Opt-in switch for the automatic install (dbg.aotAuto, the `aot=1` URL option). */
+/** Switch for the automatic install (dbg.aotAuto; `aot=0` in the URL turns it off). */
 export function setAotAutoEnabled(on: boolean): void {
     autoEnabled = on;
     if (!on) cancelAotAutoInstall();

@@ -363,6 +363,7 @@ for (const t of functions) {
             get_eflags: ex["get_eflags"],
             run_until: ex["jit_run_until"] ?? ((_ret: number, _esp: number, _max: number) => 1),
             hypercall_out: ex["jit_hypercall_out"] ?? ((_v: number) => {}),
+            read_tsc: ex["read_tsc_jit"] ?? (() => 0n),
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
