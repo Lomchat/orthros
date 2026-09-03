@@ -2176,9 +2176,9 @@ export default function App() {
           .split(",")
           .map((name) => name.trim())
           .filter(Boolean);
-        // aot=1 installs the bundle's ahead-of-time batch (opt-in: measured
-        // correct but not faster than the JIT alone).
-        const aot = params.get("aot") === "1";
+        // The bundle's ahead-of-time batch installs itself unless aot=0 asks for
+        // the JIT alone.
+        const aot = params.get("aot") !== "0";
         globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, hleForce, profile, aot });
         return;
       }

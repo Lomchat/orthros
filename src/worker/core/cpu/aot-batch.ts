@@ -165,13 +165,13 @@ const AUTO_GIVE_UP_MS = 10 * 60_000;
 // entries the dispatcher never matches.
 const STATE_IS_32 = 1, STATE_FLAT = 8;
 
-// Opt-in until the batch with Orthros's runtime bodies is measured: `aot=1`
-// in the URL or dbg.aotAuto(true) installs it (sequential A/Bs alone on the
-// VPS already put the batch ahead of the JIT alone: 32.3 vs 29.8 FPS mean).
-let autoEnabled = false;
+// On by default: with import stubs performed inline and the runtime bodies
+// translated, sequential A/Bs alone on the VPS put the batch ahead of the JIT
+// alone. `aot=0` in the URL or dbg.aotAuto(false) keeps a title off it.
+let autoEnabled = true;
 let autoTimer: number | null = null;
 
-/** Opt-in switch for the automatic install (dbg.aotAuto, the `aot=1` URL option). */
+/** Switch for the automatic install (dbg.aotAuto; `aot=0` in the URL turns it off). */
 export function setAotAutoEnabled(on: boolean): void {
     autoEnabled = on;
     if (!on) cancelAotAutoInstall();

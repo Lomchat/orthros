@@ -959,7 +959,7 @@ export const dbg = {
         if (n !== undefined) ex.jit_set_run_until_zero_budget_grace?.(n >>> 0);
         return ex.jit_get_run_until_zero_budget_grace() >>> 0;
     },
-    /** Automatic install of the bundle's published batch (opt-in). */
+    /** Automatic install of the bundle's published batch (on by default; aot=0 turns it off). */
     aotAuto(on?: boolean): boolean {
         if (on !== undefined) setAotAutoEnabled(!!on);
         return isAotAutoEnabled();
