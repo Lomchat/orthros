@@ -23,6 +23,7 @@
  */
 
 import { System } from '../system';
+import { recentGuestText } from "../../modules/user32/guest-text-ring";
 import { framePacer } from "../frame-pacer";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
@@ -3185,7 +3186,7 @@ export const dbg = {
     framePacer(): unknown { return framePacer.getStats(); },
     /** The last strings the guest formatted with wsprintf or added to a list box:
      *  an engine's own crash or assertion dialog, readable before it shows. */
-    recentText(): string[] { return (((globalThis as any).__guestRecentText as string[] | undefined) ?? []).slice(); },
+    recentText(): string[] { return recentGuestText(); },
     /** The last guest faults (page faults, GP, traps) as the fault reporter saw them. */
     faults(): unknown { return ((globalThis as any).__guestFaults ?? []).slice(); },
     /** The last RaiseException calls the guest made (code, flags, first argument, caller). */

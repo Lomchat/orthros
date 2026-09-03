@@ -6,6 +6,7 @@
  * control stores instead of a real control window-proc.
  */
 import { Logger, LogCategory } from '../../core/logger';
+import { noteGuestText } from "./guest-text-ring";
 import { Marshaler } from '../../core/memory/marshaler';
 import { System } from '../../core/system';
 import { WindowInfo, windows, buttonCheckStates, getOrCreateListState, getOrCreateTrackbarState, controlImageHandles } from './shared-state';
@@ -280,6 +281,7 @@ export function handleSystemControlMessage(
         case WM_SETTEXT:
             if (lParam) {
                 child.title = readAnsiOrWideString(lParam);
+                noteGuestText('settext', child.title);
                 Logger.log(LogCategory.USER32, `handleSysCtrlMsg WM_SETTEXT: hwnd=0x${child.handle.toString(16)} id=${child.controlId ?? '?'} -> "${child.title}"`);
             }
             return 1;
@@ -337,7 +339,7 @@ export function handleSystemControlMessage(
             const index = state.items.length;
             state.items.push({ text, data: 0 });
             // Crash dialogs fill a list box with their stack trace: keep the lines.
-            { const ring = ((globalThis as unknown as { __guestRecentText?: string[] }).__guestRecentText ??= []); ring.push(`lb: ${text}`); if (ring.length > 48) ring.shift(); }
+            noteGuestText('lb', text);
             Logger.log(LogCategory.USER32,
                 `handleSysCtrlMsg ${msg === CB_ADDSTRING ? 'CB_ADDSTRING' : 'LB_ADDSTRING'}: ` +
                 `hwnd=0x${child.handle.toString(16)} id=${child.controlId ?? '?'} index=${index} text="${text}"`);

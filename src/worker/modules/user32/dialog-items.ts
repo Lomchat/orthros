@@ -4,6 +4,7 @@
  * state.
  */
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
+import { noteGuestText } from "./guest-text-ring";
 import { Logger, LogCategory } from '../../core/logger';
 import { Marshaler } from '../../core/memory/marshaler';
 import { Mem } from '../../core/memory/mem-accessor';
@@ -40,6 +41,7 @@ export function registerDialogItemExports(exports: Record<string, ThunkImplement
         const lpString = args[2];
 
         const text = lpString ? Marshaler.readString(mem, lpString) : '';
+        noteGuestText('dlgitem', text);
         Logger.log(LogCategory.USER32, `SetDlgItemTextA(0x${hDlg.toString(16)}, id=${nIDDlgItem}, "${text}")`);
 
         const child = findChildByControlId(hDlg, nIDDlgItem);

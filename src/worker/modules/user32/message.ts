@@ -5,6 +5,7 @@
  */
 
 import { ThunkImplementation, FastPathImplementation, ThunkResult, X86Context } from '../../core/thunking/thunk-dispatcher';
+import { noteGuestText } from "./guest-text-ring";
 import { Logger, LogCategory } from '../../core/logger';
 import { Marshaler } from '../../core/memory/marshaler';
 import { System } from '../../core/system';
@@ -1304,6 +1305,7 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
                 case WM_SETTEXT:
                     if (lParam) {
                         targetWindow.title = readAnsiOrWideString(lParam);
+                        noteGuestText('settext', targetWindow.title);
                         Logger.log(LogCategory.USER32, `SendMessage WM_SETTEXT hwnd=0x${hWnd.toString(16)} -> "${targetWindow.title}"`);
                         // Sync tab title for top-level windows (matches SetWindowTextA/W behavior)
                         if (!targetWindow.parent) {

@@ -5,6 +5,7 @@
  */
 
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
+import { noteGuestText } from "./guest-text-ring";
 import { parseBMPHeader, parseBMPPixels } from '../gdi32/gdi-raster';
 import { Logger, LogCategory } from '../../core/logger';
 import { Marshaler } from '../../core/memory/marshaler';
@@ -618,13 +619,6 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     };
 
     // wsprintfA - variadic string formatting function (direct-write: no JS string concat, no TextEncoder)
-    // The last strings the guest formatted: an engine's crash dialog and its
-    // assertion text are built with wsprintf before any window shows them.
-    const recentText: string[] = ((globalThis as unknown as { __guestRecentText?: string[] }).__guestRecentText ??= []);
-    const noteText = (kind: string, text: string): void => {
-        recentText.push(`${kind}: ${text}`);
-        if (recentText.length > 48) recentText.shift();
-    };
 
     exports['wsprintfA'] = (ctx, mem, args) => {
         const lpOut = args[0];
@@ -638,7 +632,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         if (wsprintfResult > 0) {
             let text = '';
             for (let i = 0; i < Math.min(wsprintfResult, 300); i++) text += String.fromCharCode(mem[lpOut + i]!);
-            noteText('wsprintf', text);
+            noteGuestText('wsprintf', text);
         }
         return wsprintfResult;
     };

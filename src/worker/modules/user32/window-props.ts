@@ -4,6 +4,7 @@
  * the shared window map. Z-order / focus / capture core stays in window.ts.
  */
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
+import { noteGuestText } from "./guest-text-ring";
 import { Logger, LogCategory } from '../../core/logger';
 import { System } from '../../core/system';
 import { Marshaler } from '../../core/memory/marshaler';
@@ -184,6 +185,7 @@ export function registerWindowPropExports(exports: Record<string, ThunkImplement
         const hWnd = args[0];
         const lpString = args[1];
         const text = lpString ? Marshaler.readString(mem, lpString) : '';
+        noteGuestText('wndtext', text);
         const window = windows.get(hWnd);
         if (window) {
             window.title = text;
