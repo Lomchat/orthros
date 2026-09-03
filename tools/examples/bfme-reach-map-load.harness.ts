@@ -660,6 +660,22 @@ if (process.argv.includes("--aot-auto")) {
             console.log(`AOT-AUTO-BYTES 0x${a.toString(16)}: ${(bytes ?? []).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
         }
     } catch (e) { console.log(`AOT-AUTO-BYTES unavailable: ${String(e).slice(0, 100)}`); }
+    // --dump-region 0xbase:0xsize:<file>[,...]: any guest range, raw, for a
+    // batch's --extra-image (a DLL mapped and relocated at run time, whose
+    // file on disk is not what the guest executes); base in <file>.json.
+    const dumpRegions = arg("dump-region", "");
+    for (const spec of dumpRegions ? dumpRegions.split(",") : []) {
+        const [b, sz, file] = spec.split(":");
+        const base = Number(b), size = Number(sz);
+        if (!file || !Number.isFinite(base) || !(size > 0)) { console.log(`AOT-REGION bad spec ${spec}`); continue; }
+        try {
+            const b64 = await bench.evalPage(`__BS__.harness.dbgCall("memDumpBase64", ${base}, ${size})`, 120_000) as string;
+            const bytes = Buffer.from(b64, "base64");
+            await Bun.write(file, bytes);
+            await Bun.write(`${file}.json`, JSON.stringify({ base, size: bytes.length }));
+            console.log(`AOT-REGION dumped 0x${base.toString(16)}..0x${(base + bytes.length).toString(16)} (${bytes.length} bytes) to ${file}`);
+        } catch (e) { console.log(`AOT-REGION dump failed for ${spec}: ${String(e).slice(0, 120)}`); }
+    }
     // --dump-thunk-code <file>: the THUNK_CODE range in use, raw, so a batch can
     // translate the runtime x86 bodies Orthros put there (base in <file>.json).
     const dumpPath = arg("dump-thunk-code", "");
