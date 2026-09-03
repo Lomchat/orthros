@@ -361,3 +361,26 @@ recur_ret:
 1:
     mov eax, 100
     ret 4
+
+# Native call into a callee whose CFG has a block below its entry: the
+# helper block sits before t_lowblock, so it is block 0 of that translation
+# while the entry is block 1. t_lowcaller calls t_lowblock natively (both are
+# translated together); starting the callee at block 0 would skip its body.
+lowblock_tail:
+    add eax, 1000
+    ret
+    .globl t_lowblock
+t_lowblock:
+    mov eax, [esp+4]
+    add eax, 7
+    jmp lowblock_tail
+    .globl t_lowcaller
+t_lowcaller:
+    push esi
+    mov esi, [esp+8]
+    push dword ptr [esi]
+    call t_lowblock
+    add esp, 4
+    mov [esi+4], eax
+    pop esi
+    ret

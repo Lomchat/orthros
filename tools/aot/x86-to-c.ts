@@ -923,7 +923,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (direct !== null && resume !== undefined) {
                 nativeCalls++;
                 lines.push(`#ifdef HAVE_fn_${direct.toString(16)}`);
-                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(0, depth + 1u);`);
+                // Blocks are numbered by address, so the callee's entry is not
+                // block 0 whenever its CFG reaches below the entry (a tail call
+                // through a lower jump thunk, a loop placed before it).
+                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(ENTRY_fn_${direct.toString(16)}, depth + 1u);`);
                 lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
                 lines.push(`    goto exit_foreign; }`);
                 lines.push(`#endif`);
@@ -1047,7 +1050,7 @@ export function assembleBatch(functions: CFunction[]): Batch {
     ).join("\n");
     // Every function is declared and flagged up front, so a call to another
     // translated function compiles to a native call whatever the order.
-    const decls = functions.map((f) => `#define HAVE_${f.name} 1\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
+    const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
     const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + pageCode;
     return { c, functions, pages };
 }
