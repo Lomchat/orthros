@@ -498,6 +498,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
+    if (!aotInstall && i === 1) {
+        // The Worker installs the bundle's published batch by itself once the
+        // guest runs 32-bit flat code; report what it did.
+        const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) })) as any;
+        const ef = await bench.evalPage(`__BS__.harness.dbgCall("aotExternalFirst", undefined)`, 15_000).catch(() => null);
+        console.log(`AOT-AUTO pages=${st?.pages ?? "?"} entries=${st?.entries ?? "?"} bytes=${st?.bytes ?? "?"} externalFirst=${ef}`);
+    }
     if (aotInstall && i * 10 >= aotAtSec) {
         const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) }));
         console.log(`   aot ${JSON.stringify(st)}`);

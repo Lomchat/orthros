@@ -86,6 +86,7 @@ import { SabIoSource } from "./runtime/filesystem/sab-io-source";
 import { loadWgbIntegrity } from "./runtime/filesystem/wgb-integrity";
 import { UnpackDecoder } from "@orthros/formats/unpack";
 import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
+import { scheduleAotAutoInstall, cancelAotAutoInstall, setAotAutoEnabled } from './core/cpu/aot-batch';
 import { HotProfilePersistence } from "./runtime/filesystem/hot-profile-persistence";
 import { exportContainer } from "./runtime/filesystem/save-export";
 import { resolveGameId, gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
@@ -253,7 +254,7 @@ const state: WorkerState = {
 
 let placeholderActive = true;
 let pendingPeData: Uint8Array | null = null;
-type BundlePayload = { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] };
+type BundlePayload = { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[]; /** false: no ahead-of-time batch for this title. */ aot?: boolean };
 let pendingBundle: BundlePayload | null = null;
 let activeBundlePayload: BundlePayload | null = null;
 let pendingChildLaunch: GuestProcessHandoffRequest | null = null;
@@ -1330,6 +1331,7 @@ const prepareFullGameSwitch = async (): Promise<void> => {
 
   const system = System.getInstance();
   cancelRegistryAutosave();
+  cancelAotAutoInstall();
   if (hotProfileSaveTimer !== null) { clearInterval(hotProfileSaveTimer); hotProfileSaveTimer = null; }
   await saveHotProfile("game-switch");
   hotProfileGameId = null;
@@ -1943,6 +1945,11 @@ const loadBundleImpl = async (payload: BundlePayload) => {
       if (hotProfile) preemptionManager.setJitHotProfile(hotProfile);
     }
     installHotProfileAutosave(gameId);
+    // The bundle's ahead-of-time batch, when the server publishes one, installs
+    // itself once the guest runs 32-bit flat code; `aot: false` in the load
+    // request (the `aot=0` URL option) keeps this title on the JIT alone.
+    if (payload.aot === false) setAotAutoEnabled(false);
+    if (payload.url) scheduleAotAutoInstall(payload.url);
 
     // Apply emulator configuration from manifest (fresh per-bundle to avoid stale cross-game overrides)
     const emulatorConfig = EmulatorConfig.getInstance();
@@ -3181,7 +3188,7 @@ self.onmessage = (event: MessageEvent) => {
     clearGuestProcessHandoff();
     pendingChildLaunch = null;
     pendingLaunchProfile = (message.profile ?? null) as typeof pendingLaunchProfile;
-    loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs });
+    loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs, aot: message.aot === false ? false : undefined });
   }
 
   // --- WGB wizard build service (Stage 1) — additive, separate from the boot path above. -----

@@ -28,8 +28,7 @@ import { framePacer } from "../frame-pacer";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
-/** Ahead-of-time modules installed in this worker (see dbg.aotInstall). */
-const aotInstalled = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0 };
+import { aotBatchState as aotInstalled, installAotBatch, setAotExternalFirst, getAotExternalFirst, setAotAutoEnabled, isAotAutoEnabled } from '../cpu/aot-batch';
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
 import { TimeService } from '../../runtime/time';
@@ -923,69 +922,18 @@ export const dbg = {
      *  compiled page. `dbg.aotStats()` reports what is installed. */
     /** Prefer installed translations over JIT modules when both own an entry
      *  (OFF by default). Returns the state after the call. */
-    aotExternalFirst(on: boolean): boolean {
-        const ex = System.getInstance().process?.v86?.v86?.cpu?.wm?.exports ?? System.getInstance().process?.v86?.cpu?.wm?.exports;
-        if (!ex?.jit_set_external_first) return false;
-        ex.jit_set_external_first(on ? 1 : 0);
-        return !!(ex.jit_get_external_first?.() ?? (on ? 1 : 0));
+    aotExternalFirst(on?: boolean): boolean {
+        return on === undefined ? getAotExternalFirst() : setAotExternalFirst(on);
+    },
+    /** Automatic install of the bundle's published batch at boot (ON by default). */
+    aotAuto(on?: boolean): boolean {
+        if (on !== undefined) setAotAutoEnabled(!!on);
+        return isAotAutoEnabled();
     },
     /** `filter` = "lo:hi", fractions of the manifest's page list to install
      *  (e.g. "0:0.5"): bisects a batch in game when one translation misbehaves. */
     async aotInstall(url: string, filter?: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
-        const proc = (System.getInstance() as any).process;
-        const v86 = proc?.v86;
-        const cpu = v86?.cpu ?? v86?.v86?.cpu;
-        const ex = cpu?.wm?.exports;
-        if (!cpu || !ex?.jit_register_external_module || !ex.jit_external_module_first_index) {
-            console.warn("[dbg] aotInstall: v86 or its external-module exports unavailable");
-            return null;
-        }
-        const [wasmRes, jsonRes] = await Promise.all([fetch(`${url}.wasm`), fetch(`${url}.json`)]);
-        if (!wasmRes.ok || !jsonRes.ok) { console.warn(`[dbg] aotInstall: ${url} not found (${wasmRes.status}/${jsonRes.status})`); return null; }
-        const bytes = new Uint8Array(await wasmRes.arrayBuffer());
-        const manifest = await jsonRes.json() as { pages: Array<{ page: number; name: string; states: number[] }> };
-        const memBase = cpu.mem8.byteOffset >>> 0;
-        const { instance } = await WebAssembly.instantiate(bytes, { env: {
-            memory: cpu.wasm_memory,
-            mem_base: () => memBase,
-            // A translated instruction about to touch memory past guest RAM
-            // exits to the dispatcher instead; count how often that happens.
-            guard_exit: () => { aotInstalled.guardExits++; },
-            // An instruction the translation leaves to the interpreter: v86
-            // bypasses the external table once at that address (wasm to wasm,
-            // no JS frame in between).
-            slow_exit: ex.jit_ext_interpret_once ?? (() => {}),
-            // A translated block that consumes flags no producer of its own
-            // set reads v86's effective flags (lazy flags materialised).
-            get_eflags: ex.get_eflags,
-            run_until: ex.jit_run_until ?? ((_ret: number, _esp: number, _max: number) => 1),
-        } });
-        const first = ex.jit_external_module_first_index() >>> 0;
-        const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
-        const flags = ex.jit_get_current_state_flags() >>> 0;
-        const state = aotInstalled;
-        let entries = 0, failed = 0, pages = 0;
-        let lo = 0, hi = manifest.pages.length;
-        if (filter) {
-            const [a, b] = filter.split(":").map(Number);
-            if (Number.isFinite(a) && Number.isFinite(b)) { lo = Math.floor(a * manifest.pages.length); hi = Math.floor(b * manifest.pages.length); }
-        }
-        for (const [pi, pm] of manifest.pages.entries()) {
-            if (pi < lo || pi >= hi) continue;
-            if (state.nextSlot >= slots) { failed += pm.states.length; continue; }
-            const fn = (instance.exports as any)[pm.name];
-            if (typeof fn !== "function") { failed += pm.states.length; continue; }
-            const index = first + state.nextSlot++;
-            cpu.wm.wasm_table.set(index + 1024, fn);
-            pages++;
-            pm.states.forEach((addr, i) => {
-                if ((ex.jit_register_external_module(index, addr >>> 0, flags, i) >>> 0) === 1) entries++;
-                else failed++;
-            });
-        }
-        state.pages += pages; state.entries += entries; state.bytes += bytes.byteLength;
-        console.log(`[dbg] aotInstall ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes`);
-        return { pages, entries, failed, bytes: bytes.byteLength };
+        return installAotBatch(url, filter);
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
         dispatches: number; misses: number; stalls: number; recent: string[];

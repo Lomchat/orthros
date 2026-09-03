@@ -2176,7 +2176,9 @@ export default function App() {
           .split(",")
           .map((name) => name.trim())
           .filter(Boolean);
-        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, hleForce, profile });
+        // aot=0 keeps a title on the JIT alone: no ahead-of-time batch install.
+        const aot = params.get("aot") !== "0";
+        globalWorker.postMessage({ type: "load_bundle", url: path, hleDisable, hleSkip, hleForce, profile, aot });
         return;
       }
       try {
