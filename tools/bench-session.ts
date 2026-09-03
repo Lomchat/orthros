@@ -532,8 +532,11 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
                     const wchan = Bun.spawnSync(["cat", `/proc/${pid}/task/${tid}/wchan`]).stdout.toString().trim();
                     const f = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
                     const state = f[0], utime = Number(f[11]), stime = Number(f[12]);
-                    if (/CrRendererMain|DedicatedWorker|Compositor|VizCompositor|ThreadPoolFore/.test(comm) || state === "R") {
-                        threads.push(`${comm}[${tid}] ${state} cpu=${utime + stime} wchan=${wchan}`);
+                    // The main thread keeps the process name as its comm: select it by
+                    // tid === pid. Thread-pool workers are noise unless they run.
+                    const isMain = Number(tid) === pid;
+                    if (isMain || /DedicatedWorker|Compositor|VizCompositor/.test(comm) || state === "R") {
+                        threads.push(`${isMain ? "MAIN:" : ""}${comm}[${tid}] ${state} cpu=${utime + stime} wchan=${wchan}`);
                     }
                 }
                 out.push(`renderer ${pid}: ` + threads.join("; "));
