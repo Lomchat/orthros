@@ -85,6 +85,16 @@ const WGB_DIR = path.resolve(process.env.ORTHROS_WGB_DIR ?? path.dirname(BFME_WG
 const BUNDLE_ROUTES = new Map<string, Bundle>();
 const INTEGRITY_ROUTES = new Map<string, Bundle>();
 const HOT_PROFILE_ROUTES = new Map<string, string>();
+const AOT_CANDIDATE_ROUTES: Array<{ route: string; filePath: string }> = [];
+const AOT_CANDIDATE_RE = /^(.*)\.aot-([a-z0-9]+)\.(wasm|json)$/;
+function sidecarPathFor(pathname: string): string | undefined {
+    const exact = HOT_PROFILE_ROUTES.get(pathname);
+    if (exact) return exact;
+    const m = AOT_CANDIDATE_RE.exec(pathname);
+    if (!m) return undefined;
+    const owner = AOT_CANDIDATE_ROUTES.find((r) => r.route === m[1]);
+    return owner ? `${owner.filePath}.aot-${m[2]}.${m[3]}` : undefined;
+}
 for (const entry of readdirSync(WGB_DIR).sort()) {
     if (!entry.endsWith(".wgb")) continue;
     const filePath = path.join(WGB_DIR, entry);
@@ -114,10 +124,12 @@ for (const entry of readdirSync(WGB_DIR).sort()) {
         // sidecar convention: dropped beside the bundle, served when present.
         HOT_PROFILE_ROUTES.set(`${route}.aot.wasm`, `${filePath}.aot.wasm`);
         HOT_PROFILE_ROUTES.set(`${route}.aot.json`, `${filePath}.aot.json`);
-        // A candidate batch under test, installed by name (dbg.aotInstall
-        // "<route>.aot-bridge") without touching the shipped one.
+        // `<route>.aot-bridge.*` is the batch the worker installs by itself;
+        // any other `<route>.aot-<name>.*` beside the bundle is a candidate
+        // installed by name (dbg.aotInstall) without touching the served one.
         HOT_PROFILE_ROUTES.set(`${route}.aot-bridge.wasm`, `${filePath}.aot-bridge.wasm`);
         HOT_PROFILE_ROUTES.set(`${route}.aot-bridge.json`, `${filePath}.aot-bridge.json`);
+        AOT_CANDIDATE_ROUTES.push({ route, filePath });
     }
     if (existsSync(hotProfilePath)) console.log(`Hot-page profile sidecar for ${entry}: ${hotProfilePath}`);
 }
@@ -197,7 +209,7 @@ const server = Bun.serve({
             return new Response(integrityBundle.integrityJson, { headers });
         }
 
-        const hotProfilePath = HOT_PROFILE_ROUTES.get(pathname);
+        const hotProfilePath = sidecarPathFor(pathname);
         if (hotProfilePath) {
             // Re-read per request: the sidecar is small and gets replaced in
             // place when a better profile is recorded, without a restart.
