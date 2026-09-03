@@ -386,7 +386,7 @@ __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_efl
 __attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t stop_esp, uint32_t max);
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
-static int aot_dispatch(uint32_t target, uint32_t depth);
+__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
 /* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
@@ -1062,7 +1062,9 @@ export function assembleBatch(functions: CFunction[]): Batch {
     // translated function compiles to a native call whatever the order.
     const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
     // The compare tree: -fno-jump-tables keeps it free of data segments.
-    const dispatch = "static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n"
+    // noinline: without it clang weighs inlining the whole tree at every one of
+    // the ~150 000 indirect call sites and the compile takes hours.
+    const dispatch = "__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n"
         + functions.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
         + "\n        default: return 0;\n    }\n}\n";
     const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;
