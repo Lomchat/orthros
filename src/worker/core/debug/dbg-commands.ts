@@ -23,6 +23,7 @@
  */
 
 import { System } from '../system';
+import { framePacer } from "../frame-pacer";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
@@ -3180,6 +3181,8 @@ export const dbg = {
         if (reset) d.resetAsyncParkStats();
         return rows;
     },
+    /** Frame pacer state: rAF ticks, armed loop, a waiting Present, age of the last rAF, stall grants. */
+    framePacer(): unknown { return framePacer.getStats(); },
     /** The last guest faults (page faults, GP, traps) as the fault reporter saw them. */
     faults(): unknown { return ((globalThis as any).__guestFaults ?? []).slice(); },
     /** The last RaiseException calls the guest made (code, flags, first argument, caller). */

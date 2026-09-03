@@ -463,6 +463,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG exceptions " + String(exc2).slice(0, 4000));
             const flt2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.faults?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
             console.log("   AOT-HANG faults " + String(flt2).slice(0, 4000));
+            const pac2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.framePacer?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG pacer " + String(pac2).slice(0, 600));
             const sched = await bench.evalWorker("JSON.stringify(globalThis.dbg?.schedulerPerf?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
             console.log("   AOT-HANG schedulerPerf " + String(sched).slice(0, 3000));
             for (const ev of ["fault", "guest_crash", "wasm_trap"]) {
@@ -519,6 +521,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG exceptions " + String(exc).slice(0, 4000));
             const flt = await bench.evalWorker("JSON.stringify(globalThis.dbg?.faults?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
             console.log("   AOT-HANG faults " + String(flt).slice(0, 4000));
+            const pac = await bench.evalWorker("JSON.stringify(globalThis.dbg?.framePacer?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG pacer " + String(pac).slice(0, 600));
             // The game's own crash text, if it wrote one to its user folder.
             // Orthros answers CSIDL_APPDATA with C:\Windows\Application Data.
             const userDirs = ["C:\\Windows\\Application Data\\My Battle for Middle-earth Files", "C:\\Windows\\Application Data", "C:\\"];
@@ -604,6 +608,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     }
     // The async thunks the guest threads parked in during this window, by
     // wall-clock: the host operation behind a WAITING:ASYNC_THUNK above.
+    const pacer: any = await bench.dbg("framePacer").catch(() => null);
+    if (pacer) console.log(`   pacer: tick=${pacer.rafTick} running=${pacer.running} waiting=${pacer.waiting} permit=${pacer.permitAvailable} lastRafAgo=${pacer.lastRafAgoMs}ms stalls=${pacer.rafStalls}`);
     const parks: any[] = await bench.dbg("asyncParkTop", 4, true).catch(() => []);
     if (parks?.length) {
         console.log(`   parks: ` + parks.map((r: any) => `${r.name} n=${r.count} ms=${r.totalMs} max=${r.maxMs}`

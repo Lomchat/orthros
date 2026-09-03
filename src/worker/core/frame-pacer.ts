@@ -27,6 +27,15 @@ export type FramePacerStats = {
     totalWaits: number;
     totalWaitTimeMs: number;
     currentWaitStartMs: number;
+    /** rAF ticks seen, whether the loop is armed, whether a Present waits, and
+     *  how long ago the last rAF fired: a frozen rAF shows as a growing age. */
+    rafTick: number;
+    running: boolean;
+    waiting: boolean;
+    permitAvailable: boolean;
+    lastRafAgoMs: number;
+    /** Permits granted by the stall timer because no rAF came in time. */
+    rafStalls: number;
 };
 
 class FramePacerImpl {
@@ -76,6 +85,24 @@ class FramePacerImpl {
     // The old accumulator only re-anchored when it fell BEHIND, so on frames that snapped to a
     // shorter hold it drifted AHEAD ~1 vsync/frame and compounded into 6–7-vsync (100ms+) holds
     // = the "14-FPS collapse". Anchoring to rafTick bounds every hold to exactly smoothVsyncs.
+    private rafStalls = 0;
+    private stallTimer: ReturnType<typeof setTimeout> | null = null;
+    /** A Worker's requestAnimationFrame stops with its document's compositor;
+     *  a Present that waits for a permit would then never return and the guest
+     *  would sleep forever. Grant the permit from a timer when no rAF comes. */
+    private armStallGuard(): void {
+        if (this.stallTimer !== null) clearTimeout(this.stallTimer);
+        const delay = Math.max(50, Math.ceil(this.rAfInterval * 3));
+        this.stallTimer = setTimeout(() => {
+            this.stallTimer = null;
+            if (this.waiter) {
+                this.rafStalls++;
+                const resolve = this.waiter;
+                this.waiter = null;
+                resolve();
+            }
+        }, delay);
+    }
     private rafTick = 0;            // monotonic vsync counter, incremented once per rAF (onFrame)
     private smoothReleaseTick = -1; // rafTick at the last present (the cadence anchor)
     private smoothVsyncs = 0;       // current steady hold count (0 = uninitialised), hysteresis below
@@ -196,7 +223,7 @@ class FramePacerImpl {
 
         // Wait for the next rAF permit
         await new Promise<void>(resolve => {
-            this.waiter = resolve;
+            this.waiter = resolve; this.armStallGuard();
         });
 
         const wallElapsed = performance.now() - wallBefore;
@@ -234,7 +261,7 @@ class FramePacerImpl {
         this.slotBusy = true;
         const wallBefore = performance.now();
         this.currentWaitStartMs = wallBefore;
-        await new Promise<void>(resolve => { this.waiter = resolve; });
+        await new Promise<void>(resolve => { this.waiter = resolve; this.armStallGuard(); });
         const wallElapsed = performance.now() - wallBefore;
         this.totalWaitTimeMs += wallElapsed;
         this.slotBusy = false;
@@ -245,7 +272,7 @@ class FramePacerImpl {
     /** Await exactly one rAF permit (fast-path the pre-queued one). */
     private awaitRafPermit(): Promise<void> {
         if (this.permitAvailable) { this.permitAvailable = false; return Promise.resolve(); }
-        return new Promise<void>(resolve => { this.waiter = resolve; });
+        return new Promise<void>(resolve => { this.waiter = resolve; this.armStallGuard(); });
     }
 
     /**
@@ -344,6 +371,12 @@ class FramePacerImpl {
             totalWaits: this.totalWaits,
             totalWaitTimeMs: this.totalWaitTimeMs,
             currentWaitStartMs: this.currentWaitStartMs,
+            rafTick: this.rafTick,
+            running: this.running,
+            waiting: this.waiter !== null,
+            permitAvailable: this.permitAvailable,
+            lastRafAgoMs: this.lastRafTime > 0 ? Math.round(performance.now() - this.lastRafTime) : -1,
+            rafStalls: this.rafStalls,
         };
     }
 
@@ -388,6 +421,7 @@ class FramePacerImpl {
         this.lastRafTime = now;
 
         // Grant the permit: release the waiting Flip/Present
+        if (this.stallTimer !== null) { clearTimeout(this.stallTimer); this.stallTimer = null; }
         if (this.waiter) {
             const resolve = this.waiter;
             this.waiter = null;
