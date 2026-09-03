@@ -60,7 +60,13 @@ export interface PageModule {
 }
 
 export interface Batch {
+    /** The whole unit, for a batch small enough to compile in one go. */
     c: string;
+    /** Prelude, declarations and macros shared by every unit. */
+    header: string;
+    /** Function bodies split into balanced units; the last one also holds the
+     *  dispatcher and the page modules. Compiled in parallel and linked. */
+    units: string[];
     functions: CFunction[];
     pages: PageModule[];
 }
@@ -386,7 +392,7 @@ __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_efl
 __attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t stop_esp, uint32_t max);
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
-__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth);
+__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
 /* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
@@ -1004,7 +1010,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     const fpuLoad = fpuUsed ? `    uint32_t top = FPU_TOP, fempty = FPU_EMPTY, fdirty = 0u;\n` : "";
     const fpuStore = fpuUsed ? `    if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; }\n` : "";
     const c =
-        `static void ${name}(int b, uint32_t depth)\n{\n` +
+        `void ${name}(int b, uint32_t depth)\n{\n` +
         `    const uint32_t mb = mem_base();\n` +
         `    const uint32_t ml = MEM_SIZE;\n` +
         `    ${loads}\n` +
@@ -1044,7 +1050,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 }
 
 /** Group translated functions into per-page modules and one C unit. */
-export function assembleBatch(functions: CFunction[]): Batch {
+export function assembleBatch(functions: CFunction[], units = 1): Batch {
     const byPage = new Map<number, PageModule>();
     for (const f of functions) {
         for (const e of f.entries) {
@@ -1065,7 +1071,7 @@ export function assembleBatch(functions: CFunction[]): Batch {
     ).join("\n");
     // Every function is declared and flagged up front, so a call to another
     // translated function compiles to a native call whatever the order.
-    const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
+    const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nvoid ${f.name}(int b, uint32_t depth);`).join("\n");
     // The compare tree: -fno-jump-tables keeps it free of data segments.
     // Two levels, page then offset, so no generated function has more than a
     // few dozen blocks: one switch over every entry made the WebAssembly
@@ -1080,12 +1086,25 @@ export function assembleBatch(functions: CFunction[]): Batch {
     }
     const dispatchPages = [...byEntryPage.entries()].sort((a, b) => a[0] - b[0]);
     const dispatch = dispatchPages.map(([page, list]) =>
-        `__attribute__((noinline)) static int aot_dispatch_p${page.toString(16)}(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n`
+        `__attribute__((noinline)) int aot_dispatch_p${page.toString(16)}(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n`
         + list.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
         + "\n        default: return 0;\n    }\n}\n").join("\n")
-        + "\n__attribute__((noinline)) static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target >> 12) {\n"
+        + "\n__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target >> 12) {\n"
         + dispatchPages.map(([page]) => `        case ${page}u: return aot_dispatch_p${page.toString(16)}(target, depth);`).join("\n")
         + "\n        default: return 0;\n    }\n}\n";
-    const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;
-    return { c, functions, pages };
+    const header = C_PRELUDE + "\n" + decls + "\n";
+    const c = header + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;
+    // Balanced by C length; a unit is only worth its own clang above ~40 MB.
+    const total = functions.reduce((a, f) => a + f.c.length, 0);
+    const unitCount = Math.max(1, Math.min(units, Math.ceil(total / (40 << 20))));
+    const bodies: string[][] = Array.from({ length: unitCount }, () => []);
+    const sizes = new Array<number>(unitCount).fill(0);
+    for (const f of functions) {
+        let k = 0;
+        for (let i = 1; i < unitCount; i++) if (sizes[i]! < sizes[k]!) k = i;
+        bodies[k]!.push(f.c); sizes[k]! += f.c.length;
+    }
+    const unitTexts = bodies.map((b) => b.join("\n") + "\n");
+    unitTexts[unitTexts.length - 1] += dispatch + "\n" + pageCode;
+    return { c, header, units: unitTexts, functions, pages };
 }

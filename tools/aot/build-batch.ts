@@ -20,7 +20,7 @@
  */
 
 import { CapstoneDecoder } from "./decoder-capstone";
-import { compileTranslationC } from "./compile-c";
+import { compileTranslationC, compileTranslationUnits } from "./compile-c";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
@@ -129,7 +129,8 @@ if (recorded.size > 0 && process.argv.includes("--whole-pages")) {
     functions = functions.filter((f) => f.entries.every((e) => !badPages.has(e.addr >>> 12)));
     console.log(`page coverage: ${badPages.size} pages with uncovered recorded entries dropped (${before - functions.length} functions), ${uncovered} uncovered entries`);
 }
-const batch = assembleBatch(functions);
+const unitsArg = Number(arg("units", "1"));
+const batch = assembleBatch(functions, unitsArg);
 if (batch.pages.length > 4096) { console.error(`${batch.pages.length} pages exceed the 4096 external slots`); process.exit(2); }
 // The exact function list that went in, so verify-c.ts can check the batch.
 const selectedPath = arg("dump-selected", "");
@@ -138,12 +139,31 @@ if (selectedPath) {
 }
 
 const cPath = `${out}.c`;
-await Bun.write(cPath, batch.c);
-if (process.argv.includes("--no-compile")) {
-    console.log(`${cPath}: ${functions.length} functions (${functions.reduce((a, f) => a + f.instructions, 0)} insns), ${batch.pages.length} page modules; not compiled (--no-compile)`);
-    process.exit(0);
+let compiled: import("./compile-c").CompileResult;
+if (batch.units.length > 1) {
+    // Several units: the header once, one file per unit, compiled in parallel.
+    const hPath = `${out}.h`;
+    await Bun.write(hPath, batch.header);
+    const unitPaths: string[] = [];
+    for (const [i, u] of batch.units.entries()) {
+        const up = `${out}.u${i}.c`;
+        await Bun.write(up, `#include "${hPath}"\n` + u);
+        unitPaths.push(up);
+    }
+    console.log(`${unitPaths.length} units (${batch.units.map((u) => (u.length >> 20) + " MB").join(", ")})`);
+    if (process.argv.includes("--no-compile")) {
+        console.log(`${functions.length} functions (${functions.reduce((a, f) => a + f.instructions, 0)} insns), ${batch.pages.length} page modules; not compiled (--no-compile)`);
+        process.exit(0);
+    }
+    compiled = await compileTranslationUnits(unitPaths, `${out}.wasm`, Number(arg("jobs", "8")));
+} else {
+    await Bun.write(cPath, batch.c);
+    if (process.argv.includes("--no-compile")) {
+        console.log(`${cPath}: ${functions.length} functions (${functions.reduce((a, f) => a + f.instructions, 0)} insns), ${batch.pages.length} page modules; not compiled (--no-compile)`);
+        process.exit(0);
+    }
+    compiled = compileTranslationC(cPath, `${out}.wasm`);
 }
-const compiled = compileTranslationC(cPath, `${out}.wasm`);
 if (!compiled.ok) { console.error(compiled.error); process.exit(1); }
 
 const manifest = {

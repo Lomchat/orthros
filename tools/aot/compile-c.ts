@@ -58,3 +58,36 @@ export function compileTranslationC(cPath: string, wasmPath: string): CompileRes
     if (sp === true) return { ok: false, error: `${wasmPath}: code uses the shadow stack pointer` };
     return { ok: true, bytes: bytes.byteLength };
 }
+
+/**
+ * Compile a batch as several units in parallel (each `unit.c` includes the
+ * shared header), link them into one module and run the same checks. A
+ * 500 MB batch compiled as one unit takes clang over an hour and 16 GB;
+ * eight units of 60 MB finish in minutes.
+ */
+export async function compileTranslationUnits(unitPaths: string[], wasmPath: string, jobs = 8): Promise<CompileResult> {
+    const cflags = FLAGS.filter((f) => !f.startsWith("-Wl,"));
+    const objects = unitPaths.map((u) => u.replace(/\.c$/, ".o"));
+    let error = "";
+    let next = 0;
+    const worker = async (): Promise<void> => {
+        while (next < unitPaths.length && !error) {
+            const i = next++;
+            const proc = Bun.spawn(["clang", ...cflags, "-c", "-o", objects[i]!, unitPaths[i]!], { stdout: "pipe", stderr: "pipe" });
+            const code = await proc.exited;
+            if (code !== 0) error = `${unitPaths[i]}: ${await new Response(proc.stderr).text()}`;
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(jobs, unitPaths.length) }, worker));
+    if (error) return { ok: false, error };
+    const link = Bun.spawnSync(["clang", ...FLAGS, "-o", wasmPath, ...objects], { stdout: "pipe", stderr: "pipe" });
+    if (link.exitCode !== 0) return { ok: false, error: link.stderr.toString() };
+    const bytes = new Uint8Array(Bun.spawnSync(["cat", wasmPath], { maxBuffer: 1 << 30 }).stdout);
+    const data = wasmSections(bytes).find((s) => s.id === 11);
+    if (data && (data.segments ?? 0) > 0) {
+        return { ok: false, error: `${wasmPath}: ${data.segments} data segment(s) would be written into v86's memory at instantiation` };
+    }
+    const sp = usesStackPointer(wasmPath);
+    if (sp === true) return { ok: false, error: `${wasmPath}: code uses the shadow stack pointer` };
+    return { ok: true, bytes: bytes.byteLength };
+}
