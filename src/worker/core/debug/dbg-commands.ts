@@ -28,6 +28,7 @@ import { framePacer } from "../frame-pacer";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
+import { MEM_THUNK_CODE_BASE } from '../cpu/emulator-config';
 import { aotBatchState as aotInstalled, installAotBatch, setAotExternalFirst, getAotExternalFirst, setAotAutoEnabled, isAotAutoEnabled } from '../cpu/aot-batch';
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
@@ -268,6 +269,24 @@ export const dbg = {
         console.log(`[dbg] [0x${x.toString(16)}] = 0x${v.toString(16)}`); return v;
     },
     /** Hex-dump len bytes of guest memory from addr. */
+    /** THUNK_CODE range the stub generator has filled so far: the runtime x86
+     *  bodies and stubs a batch may translate from a dump of this range. */
+    thunkCodeRange(): { base: number; end: number } | null {
+        const gen = (System.getInstance() as any).process?.thunkGenerator;
+        const end = gen?.getCurrentAddress?.();
+        if (typeof end !== "number") return null;
+        return { base: MEM_THUNK_CODE_BASE, end: end >>> 0 };
+    },
+    /** Guest bytes as base64, for a dump of a whole region (up to 4 MB). */
+    memDumpBase64(a: number | string, len: number): string {
+        const w = wasm(); if (!w) return ""; const base = toAddr(a);
+        const n = Math.min(len >>> 0, 4 << 20);
+        const bytes = new Uint8Array(n);
+        for (let i = 0; i < n; i++) bytes[i] = w.dbg_read_u8((base + i) >>> 0) & 0xff;
+        let bin = "";
+        for (let i = 0; i < n; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, Math.min(n, i + 0x8000)));
+        return btoa(bin);
+    },
     /** Guest bytes as an array, for a caller that wants data rather than a dump. */
     memBytes(a: number | string, len = 64): number[] {
         const w = wasm(); if (!w) return []; const base = toAddr(a);

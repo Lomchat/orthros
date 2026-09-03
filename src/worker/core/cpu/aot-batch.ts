@@ -28,7 +28,33 @@ export const aotBatchState: AotBatchState = { nextSlot: 0, pages: 0, entries: 0,
 
 export interface AotInstallResult { pages: number; entries: number; failed: number; bytes: number }
 
-interface AotManifest { pages: Array<{ page: number; name: string; states: number[] }> }
+interface AotManifest {
+    pages: Array<{ page: number; name: string; states: number[] }>;
+    /** Code translated from an image outside the executable; its pages are only
+     *  registered when the live bytes still hash to the image's digest. */
+    regions?: Array<{ base: number; size: number; sha256: string }>;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+    // A copy on its own ArrayBuffer: v86's memory is a SharedArrayBuffer view,
+    // which subtle.digest does not accept.
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Regions whose live bytes no longer match the image they were translated from. */
+async function staleRegions(cpu: any, regions: AotManifest["regions"]): Promise<Array<{ base: number; size: number }>> {
+    const stale: Array<{ base: number; size: number }> = [];
+    for (const r of regions ?? []) {
+        const mem8 = cpu.mem8 as Uint8Array;
+        if (r.base + r.size > mem8.length) { stale.push(r); continue; }
+        const live = await sha256Hex(mem8.slice(r.base, r.base + r.size));
+        if (live !== r.sha256) stale.push(r);
+    }
+    return stale;
+}
 
 type ExportsProvider = () => { cpu: any; ex: any } | null;
 
@@ -81,7 +107,10 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
     const first = ex.jit_external_module_first_index() >>> 0;
     const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
     const flags = ex.jit_get_current_state_flags() >>> 0;
-    let entries = 0, failed = 0, pages = 0;
+    let entries = 0, failed = 0, pages = 0, skippedStale = 0;
+    const stale = await staleRegions(cpu, manifest.regions);
+    for (const r of stale) Logger.warn(LogCategory.SYSTEM, `[AOT] region 0x${r.base.toString(16)}+0x${r.size.toString(16)} differs from the translated image; its pages are skipped`);
+    const inStale = (addr: number): boolean => stale.some((r) => addr >= r.base && addr < r.base + r.size);
     let lo = 0, hi = manifest.pages.length;
     if (filter) {
         const [a, b] = filter.split(':').map(Number);
@@ -89,6 +118,7 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
     }
     for (const [pi, pm] of manifest.pages.entries()) {
         if (pi < lo || pi >= hi) continue;
+        if (inStale((pm.page << 12) >>> 0)) { skippedStale += pm.states.length; continue; }
         if (aotBatchState.nextSlot >= slots) { failed += pm.states.length; continue; }
         const fn = (instance.exports as any)[pm.name];
         if (typeof fn !== 'function') { failed += pm.states.length; continue; }
@@ -101,7 +131,7 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         });
     }
     aotBatchState.pages += pages; aotBatchState.entries += entries; aotBatchState.bytes += bytes.byteLength;
-    Logger.info(LogCategory.SYSTEM, `[AOT] ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${bytes.byteLength} bytes, state flags 0x${flags.toString(16)}`);
+    Logger.info(LogCategory.SYSTEM, `[AOT] ${url}: ${pages} page modules, ${entries} entries, ${failed} failed, ${skippedStale} skipped (stale region), ${bytes.byteLength} bytes, state flags 0x${flags.toString(16)}`);
     return { pages, entries, failed, bytes: bytes.byteLength };
 }
 

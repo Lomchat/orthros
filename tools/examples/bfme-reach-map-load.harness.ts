@@ -660,6 +660,21 @@ if (process.argv.includes("--aot-auto")) {
             console.log(`AOT-AUTO-BYTES 0x${a.toString(16)}: ${(bytes ?? []).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
         }
     } catch (e) { console.log(`AOT-AUTO-BYTES unavailable: ${String(e).slice(0, 100)}`); }
+    // --dump-thunk-code <file>: the THUNK_CODE range in use, raw, so a batch can
+    // translate the runtime x86 bodies Orthros put there (base in <file>.json).
+    const dumpPath = arg("dump-thunk-code", "");
+    if (dumpPath) {
+        try {
+            const range = await bench.evalPage(`__BS__.harness.dbgCall("thunkCodeRange")`, 15_000) as { base: number; end: number } | null;
+            if (range && range.end > range.base) {
+                const b64 = await bench.evalPage(`__BS__.harness.dbgCall("memDumpBase64", ${range.base}, ${range.end - range.base})`, 60_000) as string;
+                const bytes = Buffer.from(b64, "base64");
+                await Bun.write(dumpPath, bytes);
+                await Bun.write(`${dumpPath}.json`, JSON.stringify({ base: range.base, size: bytes.length }));
+                console.log(`AOT-THUNK-CODE dumped 0x${range.base.toString(16)}..0x${range.end.toString(16)} (${bytes.length} bytes) to ${dumpPath}`);
+            } else console.log(`AOT-THUNK-CODE range unavailable: ${JSON.stringify(range)}`);
+        } catch (e) { console.log(`AOT-THUNK-CODE dump failed: ${String(e).slice(0, 120)}`); }
+    }
 }
 if (slowPath) {
     const top = await bench.dbg("slowPathTop", 32).catch((e) => ({ error: String(e) }));

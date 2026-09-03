@@ -86,11 +86,29 @@ if (hotPagesPath && topPages > 0) {
 }
 
 const decoder = await CapstoneDecoder.open(exe);
+// --extra-image <file> --extra-base 0x...: a raw image of code that is not in
+// the executable (Orthros's runtime x86 bodies in THUNK_CODE, dumped by the
+// harness), translated at its address; entries are routed by address range.
+// The manifest carries the image's hash so the install can verify the live
+// bytes before trusting those translations.
+const extraImage = arg("extra-image", "");
+const extraBase = Number(arg("extra-base", "0"));
+let extraDecoder: CapstoneDecoder | null = null;
+let extraRegion: { base: number; size: number; sha256: string } | null = null;
+if (extraImage && extraBase > 0) {
+    const bytes = new Uint8Array(await Bun.file(extraImage).arrayBuffer());
+    const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    extraDecoder = await CapstoneDecoder.open(extraImage, undefined, extraBase);
+    extraRegion = { base: extraBase, size: bytes.byteLength, sha256: sha };
+    console.log(`extra image: ${extraImage} at 0x${extraBase.toString(16)}, ${bytes.byteLength} bytes, sha256 ${sha.slice(0, 16)}`);
+}
+const decoderFor = (addr: number): CapstoneDecoder =>
+    extraDecoder && extraRegion && addr >= extraRegion.base && addr < extraRegion.base + extraRegion.size ? extraDecoder : decoder;
 let functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
-    if (hotSet && !hotSet.has(entry >>> 12)) continue;
-    const t = await translateFunctionC(decoder, entry, recordedAll.size ? recordedAll : undefined);
+    if (hotSet && !hotSet.has(entry >>> 12) && !(extraRegion && entry >= extraRegion.base && entry < extraRegion.base + extraRegion.size)) continue;
+    const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined);
     if (!t) { skipped++; if (skipped <= 10) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
     functions.push(t);
 }
@@ -109,7 +127,7 @@ for (let round = 0; round < closureRounds; round++) {
     for (const f of functions) for (const t of f.callTargets) if (!have.has(t)) wanted.add(t);
     let added = 0, rejected = 0, tooBig = 0;
     for (const target of [...wanted].sort((a, b) => a - b)) {
-        const t = await translateFunctionC(decoder, target, recordedAll.size ? recordedAll : undefined);
+        const t = await translateFunctionC(decoderFor(target), target, recordedAll.size ? recordedAll : undefined);
         if (!t) { rejected++; continue; }
         if (t.instructions > closureMaxInsns) { tooBig++; continue; }
         functions.push(t); added++;
@@ -182,9 +200,13 @@ const manifest = {
     functions: functions.length,
     instructions: functions.reduce((s, f) => s + f.instructions, 0),
     pages: batch.pages.map((pm) => ({ page: pm.page, name: pm.name, states: pm.states.map((s) => s.addr) })),
+    // Code translated from a raw image outside the executable: the install
+    // checks these bytes against live memory before registering their pages.
+    regions: extraRegion ? [extraRegion] : [],
 };
 await Bun.write(`${out}.json`, JSON.stringify(manifest));
 const wasmSize = (await Bun.file(`${out}.wasm`).arrayBuffer()).byteLength;
 console.log(`${out}.wasm: ${functions.length} functions (${manifest.instructions} insns), ${batch.pages.length} page modules, ${wasmSize} bytes; skipped ${skipped}`);
 decoder.close();
+extraDecoder?.close();
 process.exit(0);

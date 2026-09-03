@@ -113,6 +113,31 @@ describe("AOT batch automatic install", () => {
         expect(v.externalFirst()).toBe(0);
     });
 
+    test("a region whose live bytes differ from the translated image is skipped", async () => {
+        const flags = { value: 0xb };
+        const v = fakeV86(flags);
+        setAotExportsProvider(() => ({ cpu: v.cpu, ex: v.ex }));
+        // Region 0x2000..0x2100 of the fake memory: hash it as it is (match), and
+        // once with a wrong digest (mismatch); pages inside a stale region skip.
+        v.cpu.mem8.fill(0x90, 0x2000, 0x2100);
+        const digest = await crypto.subtle.digest("SHA-256", v.cpu.mem8.slice(0x2000, 0x2100).buffer);
+        const sha = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        const manifest = (hash: string) => ({
+            pages: [{ page: 2, name: "page_401000", states: [0x2000, 0x2010] }, { page: 0x401, name: "page_401000", states: [0x401000] }],
+            regions: [{ base: 0x2000, size: 0x100, sha256: hash }],
+        });
+        (globalThis as any).fetch = async (input: string) =>
+            input.endsWith(".json") ? new Response(JSON.stringify(manifest(sha)), { status: 200 }) : new Response(PAGE_WASM, { status: 200 });
+        const ok = await installAotBatch("/apps/x.aot-bridge");
+        expect(ok).toEqual({ pages: 2, entries: 3, failed: 0, bytes: PAGE_WASM.byteLength });
+        v.registered.length = 0;
+        (globalThis as any).fetch = async (input: string) =>
+            input.endsWith(".json") ? new Response(JSON.stringify(manifest("00")), { status: 200 }) : new Response(PAGE_WASM, { status: 200 });
+        const stale = await installAotBatch("/apps/x.aot-bridge");
+        expect(stale).toEqual({ pages: 1, entries: 1, failed: 0, bytes: PAGE_WASM.byteLength });
+        expect(v.registered.map((r) => r[1])).toEqual([0x401000]);
+    });
+
     test("an explicit install honours the page-list filter", async () => {
         const flags = { value: 0xb };
         const v = fakeV86(flags);
