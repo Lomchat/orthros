@@ -336,6 +336,8 @@ export function handleSystemControlMessage(
             const text = readAnsiOrWideString(lParam);
             const index = state.items.length;
             state.items.push({ text, data: 0 });
+            // Crash dialogs fill a list box with their stack trace: keep the lines.
+            { const ring = ((globalThis as unknown as { __guestRecentText?: string[] }).__guestRecentText ??= []); ring.push(`lb: ${text}`); if (ring.length > 48) ring.shift(); }
             Logger.log(LogCategory.USER32,
                 `handleSysCtrlMsg ${msg === CB_ADDSTRING ? 'CB_ADDSTRING' : 'LB_ADDSTRING'}: ` +
                 `hwnd=0x${child.handle.toString(16)} id=${child.controlId ?? '?'} index=${index} text="${text}"`);

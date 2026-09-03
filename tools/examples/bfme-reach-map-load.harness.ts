@@ -465,6 +465,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG faults " + String(flt2).slice(0, 4000));
             const pac2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.framePacer?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
             console.log("   AOT-HANG pacer " + String(pac2).slice(0, 600));
+            const txt2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.recentText?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG recentText " + String(txt2).slice(0, 6000));
             const sched = await bench.evalWorker("JSON.stringify(globalThis.dbg?.schedulerPerf?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
             console.log("   AOT-HANG schedulerPerf " + String(sched).slice(0, 3000));
             for (const ev of ["fault", "guest_crash", "wasm_trap"]) {
@@ -523,6 +525,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG faults " + String(flt).slice(0, 4000));
             const pac = await bench.evalWorker("JSON.stringify(globalThis.dbg?.framePacer?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
             console.log("   AOT-HANG pacer " + String(pac).slice(0, 600));
+            const txt = await bench.evalWorker("JSON.stringify(globalThis.dbg?.recentText?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG recentText " + String(txt).slice(0, 6000));
             // The game's own crash text, if it wrote one to its user folder.
             // Orthros answers CSIDL_APPDATA with C:\Windows\Application Data.
             const userDirs = ["C:\\Windows\\Application Data\\My Battle for Middle-earth Files", "C:\\Windows\\Application Data", "C:\\"];

@@ -618,6 +618,14 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
     };
 
     // wsprintfA - variadic string formatting function (direct-write: no JS string concat, no TextEncoder)
+    // The last strings the guest formatted: an engine's crash dialog and its
+    // assertion text are built with wsprintf before any window shows them.
+    const recentText: string[] = ((globalThis as unknown as { __guestRecentText?: string[] }).__guestRecentText ??= []);
+    const noteText = (kind: string, text: string): void => {
+        recentText.push(`${kind}: ${text}`);
+        if (recentText.length > 48) recentText.shift();
+    };
+
     exports['wsprintfA'] = (ctx, mem, args) => {
         const lpOut = args[0];
         const lpFmt = args[1];
@@ -626,6 +634,16 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
             Logger.warn(LogCategory.USER32, 'wsprintfA: NULL pointer');
             return -1;
         }
+        const wsprintfResult = wsprintfBody(ctx, mem, args, lpOut, lpFmt);
+        if (wsprintfResult > 0) {
+            let text = '';
+            for (let i = 0; i < Math.min(wsprintfResult, 300); i++) text += String.fromCharCode(mem[lpOut + i]!);
+            noteText('wsprintf', text);
+        }
+        return wsprintfResult;
+    };
+
+    const wsprintfBody = (ctx: any, mem: Uint8Array, args: number[], lpOut: number, lpFmt: number): number => {
 
         // Write cursor into guest memory
         let out = lpOut;

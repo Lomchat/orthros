@@ -3183,6 +3183,9 @@ export const dbg = {
     },
     /** Frame pacer state: rAF ticks, armed loop, a waiting Present, age of the last rAF, stall grants. */
     framePacer(): unknown { return framePacer.getStats(); },
+    /** The last strings the guest formatted with wsprintf or added to a list box:
+     *  an engine's own crash or assertion dialog, readable before it shows. */
+    recentText(): string[] { return (((globalThis as any).__guestRecentText as string[] | undefined) ?? []).slice(); },
     /** The last guest faults (page faults, GP, traps) as the fault reporter saw them. */
     faults(): unknown { return ((globalThis as any).__guestFaults ?? []).slice(); },
     /** The last RaiseException calls the guest made (code, flags, first argument, caller). */
