@@ -417,6 +417,11 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         const r = await bench.evalPage(`__BS__.harness.dbgCall("aotInstall", ${JSON.stringify(aotInstall)}${aotFilter ? `, ${JSON.stringify(aotFilter)}` : ""})`, 120_000)
             .catch((e) => `aotInstall failed: ${e}`);
         console.log(`AOT-INSTALL at T+${i * 10}s ${JSON.stringify(r)}`);
+        try {
+            const fm = await bench.evalPage(`__BS__.harness.dbgCall("fastmemStats")`, 15000) as any;
+            const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15000) as any;
+            console.log(`AOT-INSTALL slabs ${JSON.stringify(fm?.dispatchSlabs ?? null)} ext ${JSON.stringify({ pages: st?.pages, entries: st?.entries, slotsUsed: st?.slotsUsed, misses: st?.misses, stalls: st?.stalls, pagesReplaced: st?.pagesReplaced })}`);
+        } catch (e) { console.log(`AOT-INSTALL stats unavailable: ${String(e).slice(0, 120)}`); }
         // --aot-external-first: prefer the translations over JIT modules from
         // the moment they are installed (the mode the bridge is meant for).
         if (process.argv.includes("--aot-external-first")) {

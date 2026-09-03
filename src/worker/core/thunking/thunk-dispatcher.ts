@@ -5136,10 +5136,19 @@ export class ThunkDispatcher {
         try {
             const bt = this.getGuestCallStack(gameEsp, 0x400, 12);
             const g = globalThis as unknown as { __guestFaults?: unknown[] };
+            // The last external (AOT) dispatches, latest first: entry->exit:retired.
+            const ext: string[] = [];
+            const tr = cpu?.wm?.exports?.jit_ext_trace as ((i: number, k: number) => number) | undefined;
+            if (tr) for (let i = 0; i < 32; i++) {
+                const a = tr(i, 0) >>> 0;
+                if (a === 0) break;
+                ext.push(`${a.toString(16)}->${(tr(i, 1) >>> 0).toString(16)}:${tr(i, 2) >>> 0}`);
+            }
             (g.__guestFaults ??= []).push({
                 kind: 'seh-av', eip: faultingEip, addr: faultAddr, isWrite,
                 esp: gameEsp, tid: this.currentThreadId, t: Math.round(performance.now()),
                 frames: bt.frames.map((f) => `0x${f.retAddr.toString(16)}${f.moduleName ? ` ${f.moduleName}+0x${f.moduleOffset.toString(16)}` : ''}${f.isThunk ? ' [thunk]' : ''}`),
+                ext,
             });
             if (g.__guestFaults.length > 16) g.__guestFaults.shift();
         } catch { /* diagnostic only */ }
