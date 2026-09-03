@@ -667,24 +667,19 @@ if (process.argv.includes("--aot-auto")) {
         try {
             const range = await bench.evalPage(`__BS__.harness.dbgCall("thunkCodeRange")`, 15_000) as { base: number; end: number } | null;
             if (range && range.end > range.base) {
-                const b64 = await bench.evalPage(`__BS__.harness.dbgCall("memDumpBase64", ${range.base}, ${range.end - range.base})`, 60_000) as string;
+                // One contiguous image: the stubs (mov eax, id; jmp body) and the
+                // shared x86 bodies they jump to must be decodable together, and
+                // other allocators place those bodies past the generator's cursor.
+                // Extend to the highest THUNK_CODE page the bridge saw.
+                const pages = ((st?.runUntil?.targetPages ?? []) as string[]).map((t) => Number("0x" + t.split(":")[0]))
+                    .filter((pg) => pg >= 0x21000000 && pg < 0x22000000);
+                const end = Math.max(range.end, ...pages.map((pg) => pg + 0x1000));
+                const size = end - range.base;
+                const b64 = await bench.evalPage(`__BS__.harness.dbgCall("memDumpBase64", ${range.base}, ${size})`, 120_000) as string;
                 const bytes = Buffer.from(b64, "base64");
                 await Bun.write(dumpPath, bytes);
-                await Bun.write(`${dumpPath}.json`, JSON.stringify({ base: range.base, size: bytes.length }));
-                console.log(`AOT-THUNK-CODE dumped 0x${range.base.toString(16)}..0x${range.end.toString(16)} (${bytes.length} bytes) to ${dumpPath}`);
-                // Bodies other allocators placed past the generator's cursor: every
-                // THUNK_CODE page the bridge histogram saw, one file per page.
-                const pages = ((st?.runUntil?.targetPages ?? []) as string[]).map((t) => Number("0x" + t.split(":")[0]))
-                    .filter((pg) => pg >= 0x21000000 && pg < 0x22000000 && (pg + 0x1000 <= range.base || pg >= range.end));
-                const extra: string[] = [];
-                for (const pg of pages) {
-                    const b64p = await bench.evalPage(`__BS__.harness.dbgCall("memDumpBase64", ${pg}, 4096)`, 30_000) as string;
-                    const file = `${dumpPath}.${pg.toString(16)}`;
-                    await Bun.write(file, Buffer.from(b64p, "base64"));
-                    extra.push(`${file}@0x${pg.toString(16)}`);
-                }
-                await Bun.write(`${dumpPath}.pages`, extra.join("\n") + (extra.length ? "\n" : ""));
-                console.log(`AOT-THUNK-CODE ${extra.length} bridged page(s) past the cursor dumped (${dumpPath}.pages)`);
+                await Bun.write(`${dumpPath}.json`, JSON.stringify({ base: range.base, size: bytes.length, cursor: range.end }));
+                console.log(`AOT-THUNK-CODE dumped 0x${range.base.toString(16)}..0x${end.toString(16)} (${bytes.length} bytes, cursor 0x${range.end.toString(16)}) to ${dumpPath}`);
             } else console.log(`AOT-THUNK-CODE range unavailable: ${JSON.stringify(range)}`);
         } catch (e) { console.log(`AOT-THUNK-CODE dump failed: ${String(e).slice(0, 120)}`); }
     }

@@ -211,7 +211,25 @@ const manifest = {
     pages: batch.pages.map((pm) => ({ page: pm.page, name: pm.name, states: pm.states.map((s) => s.addr) })),
     // Code translated from a raw image outside the executable: the install
     // checks these bytes against live memory before registering their pages.
-    regions: extras.map((e) => e.region),
+    // Hashed per 4 KB page actually used by a translation, so allocations
+    // elsewhere in the region after the dump do not invalidate it.
+    regions: await (async () => {
+        const out: Array<{ base: number; size: number; sha256: string }> = [];
+        for (const e of extras) {
+            const bytes = new Uint8Array(await Bun.file(extraSpecs.find((sp) => sp.base === e.region.base)!.file).arrayBuffer());
+            const used = new Set<number>();
+            for (const f of functions) {
+                if (f.entry < e.region.base || f.entry >= e.region.base + e.region.size) continue;
+                for (let a = f.entry & ~0xfff; a < f.entry + Math.max(f.extent, 1); a += 0x1000) used.add(a);
+            }
+            for (const pg of [...used].sort((a, b) => a - b)) {
+                const off = pg - e.region.base;
+                const slice = bytes.subarray(Math.max(0, off), Math.min(bytes.byteLength, off + 0x1000));
+                out.push({ base: pg, size: slice.byteLength, sha256: new Bun.CryptoHasher("sha256").update(slice).digest("hex") });
+            }
+        }
+        return out;
+    })(),
 };
 await Bun.write(`${out}.json`, JSON.stringify(manifest));
 const wasmSize = (await Bun.file(`${out}.wasm`).arrayBuffer()).byteLength;
