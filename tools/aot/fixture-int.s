@@ -384,3 +384,22 @@ t_lowcaller:
     mov [esi+4], eax
     pop esi
     ret
+
+# Indirect call to a translated callee: the batch dispatches it natively when
+# the target is one of its entries, and bridges it otherwise.
+    .globl t_indirect
+t_indirect:
+    push esi
+    mov esi, [esp+8]
+    push dword ptr [esi]
+    mov eax, offset t_lowblock
+    call eax
+    add esp, 4
+    mov [esi+4], eax
+    push 3
+    push 4
+    mov eax, offset t_callee
+    call eax
+    mov [esi+8], eax
+    pop esi
+    ret

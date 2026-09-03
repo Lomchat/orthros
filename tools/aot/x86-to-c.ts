@@ -384,6 +384,9 @@ __attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit
 __attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_eflags(void);
 __attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t stop_esp, uint32_t max);
+/* Native call of a batch function by address (a compare tree over every entry);
+   1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
+static int aot_dispatch(uint32_t target, uint32_t depth);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
 /* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
@@ -944,6 +947,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}`);
                 lines.push(`    if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; fk = 0u; }`);
                 lines.push(`    *INSTRUCTION_COUNTER += cnt; cnt = 0u; *PREVIOUS_IP = (int32_t)t; *INSTRUCTION_POINTER = (int32_t)t;`);
+                // An indirect target the batch owns is called natively, like a
+                // direct one; anything else runs under the nested dispatcher.
+                lines.push(`    if (aot_dispatch(t, depth + 1u)) { if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; } goto exit_foreign; }`);
                 lines.push(`    if (run_until(${ret}u, esp, ${INVOCATION_BUDGET}u) == 0u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
                 lines.push(`    goto exit_foreign; }`);
             }
@@ -1055,6 +1061,10 @@ export function assembleBatch(functions: CFunction[]): Batch {
     // Every function is declared and flagged up front, so a call to another
     // translated function compiles to a native call whatever the order.
     const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nstatic void ${f.name}(int b, uint32_t depth);`).join("\n");
-    const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + pageCode;
+    // The compare tree: -fno-jump-tables keeps it free of data segments.
+    const dispatch = "static int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n"
+        + functions.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
+        + "\n        default: return 0;\n    }\n}\n";
+    const c = C_PRELUDE + "\n" + decls + "\n" + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;
     return { c, functions, pages };
 }
