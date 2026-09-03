@@ -118,7 +118,9 @@ let skipped = 0;
 for (const entry of entries) {
     if (hotSet && !hotSet.has(entry >>> 12) && !inExtra(entry)) continue;
     const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined);
-    if (!t) { skipped++; if (skipped <= 10) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
+    // Every rejection inside an extra image is printed: those few runtime bodies
+    // are the reason the image is there.
+    if (!t) { skipped++; if (skipped <= 10 || inExtra(entry)) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
     functions.push(t);
 }
 
