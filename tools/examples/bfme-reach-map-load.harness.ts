@@ -634,6 +634,12 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     }
     prev = s; prevJit = j; prevInterp = ip;
 }
+if (process.argv.includes("--aot-auto")) {
+    // Bridge cost over the hold: how often translations left for the nested
+    // dispatcher, why those runs ended, and the callees they left for most.
+    const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) })) as any;
+    console.log(`AOT-AUTO-END ${JSON.stringify({ pages: st?.pages, entries: st?.entries, guardExits: st?.guardExits, misses: st?.misses, stalls: st?.stalls, dispatches: st?.dispatches, runUntil: st?.runUntil })}`);
+}
 if (slowPath) {
     const top = await bench.dbg("slowPathTop", 32).catch((e) => ({ error: String(e) }));
     console.log("SLOW-PATH-TOP over the hold " + JSON.stringify(top));
