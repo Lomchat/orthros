@@ -454,3 +454,89 @@ x_rdtsc:
     mov [ecx], eax
     mov [ecx+4], edx
     ret
+
+# pushfd carries the producer's flags; popfd makes the popped arithmetic
+# flags the producer of what follows, over an intervening clobber.
+    .globl t_flagsstack
+t_flagsstack:
+    mov edi, [esp+4]
+    mov eax, [edi]
+    cmp eax, 5
+    pushfd
+    xor ecx, ecx
+    add eax, 7
+    popfd
+    jb 1f
+    or ecx, 1
+1:
+    jz 2f
+    or ecx, 2
+2:
+    pushfd
+    pop edx
+    and edx, 0x8d5
+    mov [edi+4], edx
+    mov [edi+8], ecx
+    ret
+
+# bt family: register and memory forms, a lock prefix, register bit offsets
+# past the dword in both directions, and the untouched flags kept.
+    .globl t_bitops
+t_bitops:
+    mov edi, [esp+4]
+    mov eax, [edi]
+    xor ecx, ecx
+    bt eax, 3
+    setc cl
+    bts eax, 5
+    setc ch
+    mov edx, 37
+    lock bts dword ptr [edi+4], edx
+    jnc 1f
+    or ecx, 0x100
+1:
+    btr dword ptr [edi+4], 2
+    jc 2f
+    or ecx, 0x200
+2:
+    btc eax, 31
+    jnc 3f
+    or ecx, 0x400
+3:
+    mov edx, -3
+    bt dword ptr [edi+8], edx
+    jnc 4f
+    or ecx, 0x800
+4:
+    cmp eax, 1
+    bt eax, 0
+    jnz 5f
+    or ecx, 0x1000
+5:
+    mov [edi+12], eax
+    mov [edi+16], ecx
+    ret
+
+# inc after cmp: the exit's CF is the cmp's, not v86's stale copy.
+    .globl t_inccf
+t_inccf:
+    mov edi, [esp+4]
+    mov eax, [edi]
+    cmp eax, -1
+    inc eax
+    mov [edi+4], eax
+    ret
+
+# out dx, eax to the hypercall port inside a body, with a compare behind it.
+    .globl t_outbody
+t_outbody:
+    mov edi, [esp+4]
+    mov eax, 0x9999
+    mov edx, 0xB077
+    out dx, eax
+    mov ecx, [edi]
+    cmp ecx, 4
+    jne 1f
+    mov dword ptr [edi+4], 1
+1:
+    ret

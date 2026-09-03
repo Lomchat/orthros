@@ -85,6 +85,7 @@ const COND_BRANCH = new Set([
  *  x87 compare result into EFLAGS. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec", "neg",
     "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
+    "bt", "bts", "btr", "btc", "popfd",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
     "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi"]);
 /** Instructions that leave the flags alone; anything else between a producer
@@ -92,7 +93,7 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
-    "enter", "wait", "fwait",
+    "enter", "wait", "fwait", "pushfd",
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
@@ -408,8 +409,8 @@ static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint
     case 1: cf = fa < fb; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fb) & (fa ^ fr)) >> 31; break;
     case 2: cf = fc; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fr) & (fb ^ fr)) >> 31; break;
     case 3: cf = 0u; zf = fr == 0u; sf = fr >> 31; of = 0u; break;
-    case 4: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fr == fb; break;
-    case 5: cf = (uint32_t)FLAGS & 1u; zf = fr == 0u; sf = fr >> 31; of = fa == fb; break;
+    case 4: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fr == fb; break;
+    case 5: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fa == fb; break;
     case 6: return ((uint32_t)FLAGS & 0x800u) | (fa & 0xd5u);
     default: return fa & 0x8d5u;
     }
@@ -483,6 +484,14 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // An x87 instruction the translation hands to the interpreter
                 // ends its block: the dispatcher resumes right behind it.
                 if (x87Kind(mnemonic, operand) === "slow") {
+                    const after = pc + insn.size;
+                    leaders.add(after); resumes.add(after); work.push(after);
+                    break;
+                }
+                // A port write performed in place may hand the guest to the
+                // dispatcher, or to the interpreter for another port: the
+                // instruction behind it is where the translation resumes.
+                if (mnemonic === "out") {
                     const after = pc + insn.size;
                     leaders.add(after); resumes.add(after); work.push(after);
                     break;
@@ -610,10 +619,34 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (r.producer) { kinds.set(i, "fcomi"); lines.push(`fk = 0u;`); if (isCaptured) liveFlagSites++; }
                 continue;
             }
+            if (mnemonic === "pushfd") {
+                // The word pushed carries the last modelled producer's
+                // arithmetic flags (v86's own when none ran) over v86's other
+                // bits; an unmodelled writer in between cannot be materialised.
+                for (let j = i - 1; j >= 0; j--) {
+                    const m = block.insns[j]!.mnemonic;
+                    if (FLAG_PRODUCER.has(m)) break;
+                    if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) return reject(`pushfd after unmodelled flag writer ${m}`);
+                }
+                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc));`);
+                continue;
+            }
+            if (mnemonic === "popfd") {
+                // A change of IF or TF is privileged and traps: the interpreter
+                // runs that pop. Otherwise DF, NT, AC and ID are written as v86
+                // does in ring 0, and the arithmetic bits become the producer
+                // of what follows.
+                lines.push(`if (esp > ml - 4u) { ${guardExit(insn.addr, i)} }`);
+                lines.push(`{ uint32_t v = LD32(esp); if (((v ^ (uint32_t)FLAGS) & 0x300u) != 0u) { ${slowExit(insn.addr, i)} }`);
+                lines.push(`  esp += 4u; FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x244400u) | (v & 0x244400u)); fa = v & 0x8d5u; fk = 8u; }`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
+            }
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
             if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
-            if (mnemonic === "rdtsc") { lines.push(`{ uint64_t ts = read_tsc((int32_t)cnt); eax = (uint32_t)ts; edx = (uint32_t)(ts >> 32); }`); continue; }
+            if (mnemonic === "rdtsc") { lines.push(`{ uint64_t ts = read_tsc((int32_t)(cnt + ${i}u)); eax = (uint32_t)ts; edx = (uint32_t)(ts >> 32); }`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
             if (mnemonic === "cbw") { lines.push(`eax = (eax & ~0xffffu) | ((uint32_t)(int32_t)(int8_t)eax & 0xffffu);`); continue; }
 
@@ -625,6 +658,26 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const size = Number(ops[0]), level = Number(ops[1] ?? "0");
                 if (!Number.isFinite(size) || level !== 0) return reject(`enter ${operand}`);
                 lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ebp);`, `ebp = esp;`, `esp -= ${size >>> 0}u;`);
+                continue;
+            }
+
+            if (mnemonic === "out") {
+                // out dx, eax to Orthros's hypercall port is performed in place,
+                // as a stub's is; any other port is the interpreter's. The
+                // handler may switch threads, park or redirect the thread: EIP
+                // or the FS base then differs and the dispatcher takes over with
+                // the state already committed. Nothing is assumed about the
+                // flags or registers it leaves.
+                if (dstText !== "dx" || srcText !== "eax") return reject(`unsupported: out ${operand}`);
+                nativeCalls++;
+                const next = (insn.addr + insn.size) >>> 0;
+                const fpuOut = fpuUsed ? `if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; fdirty = 0u; } ` : "";
+                const fpuIn = fpuUsed ? ` top = FPU_TOP; fempty = FPU_EMPTY;` : "";
+                lines.push(`if ((edx & 0xffffu) != 0xB077u) { ${slowExit(insn.addr, i)} }`);
+                lines.push(`${stores} ${fpuOut}if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; fk = 0u; }`);
+                lines.push(`*INSTRUCTION_COUNTER += cnt + ${i + 1}u; cnt = 0u; *PREVIOUS_IP = (int32_t)${insn.addr >>> 0}u; *INSTRUCTION_POINTER = (int32_t)${next}u;`);
+                lines.push(`{ int32_t fs0 = FS_BASE; hypercall_out((int32_t)eax); if (FS_BASE != fs0 || (uint32_t)*INSTRUCTION_POINTER != ${next}u) goto exit_foreign; }`);
+                lines.push(`${reloads}${fpuIn} fk = 0u; cnt = 0u - ${i + 1}u;`);
                 continue;
             }
 
@@ -761,6 +814,30 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(w, `esp += 4u;`);
                 continue;
             }
+            if (mnemonic === "bt" || mnemonic === "bts" || mnemonic === "btr" || mnemonic === "btc") {
+                // CF takes the selected bit; the other arithmetic flags are
+                // undefined and keep the previous producer's values, as the
+                // hardware leaves them. A register bit offset on memory selects
+                // the dword at addr + 4 * floor(offset / 32).
+                if (!srcText) return reject(`${mnemonic} missing source`);
+                const src = parseOperand(srcText);
+                if (!src || (src.kind !== "reg32" && src.kind !== "imm")) return reject(`${mnemonic} ${operand}`);
+                if (dst.kind !== "reg32" && !(dst.kind === "mem" && dst.width === 4)) return reject(`${mnemonic} ${dstText}`);
+                const bit = src.kind === "imm" ? `${(src.value! & 31) >>> 0}u` : `(${REG32[src.index!]} & 31u)`;
+                const update = mnemonic === "bts" ? "v | m" : mnemonic === "btr" ? "v & ~m" : mnemonic === "btc" ? "v ^ m" : null;
+                const carry = `fa = (x86_flags_now(fk, fa, fb, fr, fc) & ~1u) | ((v >> ${bit}) & 1u); fk = 8u;`;
+                if (dst.kind === "mem") {
+                    const off = src.kind === "imm" ? "" : ` + (uint32_t)(((int32_t)${REG32[src.index!]} >> 5) << 2)`;
+                    lines.push(`a0 = ${dst.addr}${off}; if (a0 > ml - 4u) { ${guardExit(insn.addr, i)} }`);
+                    lines.push(`{ uint32_t v = LD32(a0), m = 1u << ${bit}; ${carry}${update ? ` ST32(a0, ${update});` : ""} }`);
+                } else {
+                    const r = REG32[dst.index!];
+                    lines.push(`{ uint32_t v = ${r}, m = 1u << ${bit}; ${carry}${update ? ` ${r} = ${update};` : ""} }`);
+                }
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
+            }
             if (mnemonic === "xchg") {
                 if (!srcText) return reject("xchg missing source");
                 const src = parseOperand(srcText);
@@ -886,6 +963,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const w = operandWidth(dst);
                 const expr = `(${a} ${mnemonic === "inc" ? "+" : "-"} 1u)`;
                 const minValue = w === 4 ? "0x80000000u" : w === 2 ? "0xffff8000u" : "0xffffff80u";
+                // CF is untouched: taken from the current flags, exact whether a
+                // producer ran in this invocation or v86's copy is still lazy.
+                lines.push(`fc = (fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS)) & 1u;`);
                 lines.push(`fa = ${sext(a, w)}; fb = ${minValue}; fr = ${sext(expr, w)}; fk = ${mnemonic === "inc" ? 4 : 5}u;`);
                 kinds.set(i, mnemonic);
                 if (isCaptured) liveFlagSites++;

@@ -19,6 +19,9 @@ export interface Insn {
 const WINDOW_BYTES = 256;
 const CACHE_LIMIT = 200_000;
 
+/** The lock prefix orders nothing on a single guest thread; v86 ignores it too. */
+function stripLock(m: string): string { return m.startsWith("lock ") ? m.slice(5) : m; }
+
 export class CapstoneDecoder {
     private proc: ReturnType<typeof Bun.spawn>;
     private sink: { write(chunk: string): number; flush(): void; end(): void };
@@ -98,7 +101,7 @@ export class CapstoneDecoder {
             insns.push({
                 addr: Number(l.slice(0, sp1)),
                 size: Number(l.slice(sp1 + 1, sp2)),
-                mnemonic: l.slice(sp2 + 1, tab < 0 ? undefined : tab),
+                mnemonic: stripLock(l.slice(sp2 + 1, tab < 0 ? undefined : tab)),
                 operand: tab < 0 ? "" : l.slice(tab + 1).trim(),
             });
         }
