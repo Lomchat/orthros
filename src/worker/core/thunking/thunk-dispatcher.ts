@@ -5131,6 +5131,19 @@ export class ThunkDispatcher {
                 `on real Windows this would be STATUS_ACCESS_VIOLATION (0xC0000005)`);
         }
 
+        // A dispatched AV is recoverable, so it never reaches the halt reporter; keep the
+        // faulting frame chain where dbg.faults() can find it after the guest's own handler ran.
+        try {
+            const bt = this.getGuestCallStack(gameEsp, 0x400, 12);
+            const g = globalThis as unknown as { __guestFaults?: unknown[] };
+            (g.__guestFaults ??= []).push({
+                kind: 'seh-av', eip: faultingEip, addr: faultAddr, isWrite,
+                esp: gameEsp, tid: this.currentThreadId, t: Math.round(performance.now()),
+                frames: bt.frames.map((f) => `0x${f.retAddr.toString(16)}${f.moduleName ? ` ${f.moduleName}+0x${f.moduleOffset.toString(16)}` : ''}${f.isThunk ? ' [thunk]' : ''}`),
+            });
+            if (g.__guestFaults.length > 16) g.__guestFaults.shift();
+        } catch { /* diagnostic only */ }
+
         // Try SEH dispatch before halting � games with __try/__except expect
         // EXCEPTION_ACCESS_VIOLATION to be dispatched through the SEH chain.
         if (view && esp + 16 <= this.memLength) {

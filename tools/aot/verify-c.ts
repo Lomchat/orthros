@@ -91,6 +91,8 @@ interface RunResult {
     stack: Uint8Array;
     retired: number;
     interpreted: number;
+    /** Bridge barrier hits by a nested activation of the caller's return address. */
+    nestedBarrier: number;
     /** Where the guest stopped, which names the loop when a run times out. */
     eip: number;
     /** x87 state: the eight slots (mantissa + tag, padding excluded), TOP,
@@ -243,6 +245,7 @@ function runGuest(
                 stack: mem.slice(STACK_BASE, STACK_BASE + STACK_LEN),
                 retired: cpu.instruction_counter[0] >>> 0,
                 interpreted: Number(ex["profiler_interpreted_steps_get"]?.() ?? -1),
+                nestedBarrier: Number(ex["jit_run_until_stat"]?.(10) ?? 0),
                 eip: cpu.instruction_pointer[0] >>> 0,
                 fpu: captureFpu(new Uint8Array(cpu.wasm_memory.buffer)),
                 eflags: (cpu.get_eflags?.() ?? 0) >>> 0,
@@ -358,7 +361,7 @@ for (const t of functions) {
             guard_exit: (addr: number) => { guardExits.push(addr >>> 0); },
             slow_exit: (addr: number) => { slowExits.push(addr >>> 0); ex["jit_ext_interpret_once"]?.(addr >>> 0); },
             get_eflags: ex["get_eflags"],
-            run_until: ex["jit_run_until"] ?? ((_ret: number, _max: number) => 1),
+            run_until: ex["jit_run_until"] ?? ((_ret: number, _esp: number, _max: number) => 1),
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;
@@ -431,6 +434,7 @@ for (const t of functions) {
     const guardNote = (guardExits.length > 0
         ? `, ${guardExits.length} guard exit(s) at ${guardExits.slice(0, 3).map((a) => "0x" + a.toString(16)).join(",")}` : "")
         + (slowExits.length > 0 ? `, ${slowExits.length} slow exit(s)` : "");
+    const barrierNote = ext.nestedBarrier > 0 ? `, ${ext.nestedBarrier} nested barrier hit(s)` : "";
     // Identical state but no drop in interpreted work: the dispatcher never
     // entered the translation (or it exited at once). Not a divergence, but
     // not a verification either.
@@ -440,7 +444,7 @@ for (const t of functions) {
         console.log(`0x${t.entry.toString(16)}  INCONCLUSIVE (not entered: interpreted ${ext.interpreted} vs ${guest.interpreted}${guardNote})`);
         inconclusive++;
     } else if (diffs.length === 0) {
-        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}${flagNote}`);
+        console.log(`0x${t.entry.toString(16)}  PASS  ${t.instructions} insns, ${t.blocks} blocks, ${t.calls} calls, ${t.liveFlagSites} live flag sites, retired=${guest.retired}${guardNote}${barrierNote}${flagNote}`);
         pass++;
     } else {
         console.log(`0x${t.entry.toString(16)}  FAIL  ${diffs.join("; ")}`);

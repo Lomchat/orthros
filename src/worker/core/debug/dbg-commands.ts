@@ -958,7 +958,7 @@ export const dbg = {
             // A translated block that consumes flags no producer of its own
             // set reads v86's effective flags (lazy flags materialised).
             get_eflags: ex.get_eflags,
-            run_until: ex.jit_run_until ?? ((_ret: number, _max: number) => 1),
+            run_until: ex.jit_run_until ?? ((_ret: number, _esp: number, _max: number) => 1),
         } });
         const first = ex.jit_external_module_first_index() >>> 0;
         const slots = ex.jit_external_module_slots?.() >>> 0 || 256;
@@ -989,7 +989,7 @@ export const dbg = {
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number;
         dispatches: number; misses: number; stalls: number; recent: string[];
-        runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; iterations: number; retired: number } } {
+        runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; nestedBarrier: number; threadSwitch: number; iterations: number; retired: number } } {
         const s = aotInstalled;
         const ex = wasm();
         // pagesReplaced: external page modules a JIT compile of the same page
@@ -1004,7 +1004,7 @@ export const dbg = {
             recent.push(`${(ex.jit_ext_trace(i, 0) >>> 0).toString(16)}->${(ex.jit_ext_trace(i, 1) >>> 0).toString(16)}:${ex.jit_ext_trace(i, 2) >>> 0}`);
         }
         return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits,
-            runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9) }; })(),
+            runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9), nestedBarrier: g(10), threadSwitch: g(11) }; })(),
             pagesReplaced: ex?.jit_external_pages_replaced?.() >>> 0,
             dispatches: ex?.jit_external_dispatches?.() >>> 0,
             misses: ex?.jit_external_misses?.() >>> 0,

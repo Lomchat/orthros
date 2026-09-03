@@ -323,3 +323,41 @@ t_crossblock:
     setc cl
     mov [edi+16], ecx
     ret
+
+# Nested-activation barrier: t_recur bridges a call to a helper the verifier
+# never translates. The helper builds a frame like t_recur's and jumps into
+# recur_body, which is not a state entry, so that activation runs in v86 under
+# the outer bridged call and executes the same call instruction: it returns to
+# the same address one frame deeper. The outer call must only end when its own
+# frame returns; ending early leaves the inner frames on the stack.
+    .globl t_recur
+t_recur:
+    push ebx
+    push esi
+    mov esi, [esp+12]
+    mov ebx, [esi]
+    and ebx, 7
+recur_body:
+    push ebx
+    call recur_helper
+    add eax, ebx
+    mov [esi+4], eax
+    add dword ptr [esi+8], 1
+    pop esi
+    pop ebx
+    ret
+recur_helper:
+    mov eax, [esp+4]
+    test eax, eax
+    jz 1f
+    dec eax
+    push offset recur_ret
+    push ebx
+    push esi
+    mov ebx, eax
+    jmp recur_body
+recur_ret:
+    ret 4
+1:
+    mov eax, 100
+    ret 4
