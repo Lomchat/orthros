@@ -33,6 +33,16 @@ const out = arg("out", "");
 if (!exe || !out) { console.error("usage: build-batch.ts <exe> --out <path> [--candidates ...]"); process.exit(2); }
 
 let entries = arg("entries", "").split(",").filter(Boolean).map((e) => Number(e));
+// --entries-file: one address per line (hex), e.g. the bridged callees a run
+// observed (dbg.aotStats().runUntil.targets), which the static closure cannot
+// see because they are reached through indirect calls.
+const entriesFile = arg("entries-file", "");
+if (entriesFile) {
+    const extra = (await Bun.file(entriesFile).text()).split(/\s+/).map((t) => t.trim()).filter(Boolean)
+        .map((t) => Number(t.startsWith("0x") ? t : `0x${t}`)).filter((n) => Number.isFinite(n) && n > 0);
+    entries = entries.concat(extra);
+    console.log(`entries file: ${extra.length} addresses`);
+}
 const candidatesPath = arg("candidates", "");
 if (candidatesPath) {
     const take = Number(arg("take", "1000000"));

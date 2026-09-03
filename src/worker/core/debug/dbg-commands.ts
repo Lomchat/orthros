@@ -3442,10 +3442,10 @@ export function emitDialogShow(rootHwnd: number): void {
 function bridgedTargets(ex: any): string[] {
     if (!ex?.jit_run_until_target) return [];
     const rows: Array<[number, number]> = [];
-    for (let i = 0; i < 256; i++) {
+    for (let i = 0; i < 4096; i++) {
         const eip = ex.jit_run_until_target(i, 0) >>> 0;
         if (eip !== 0) rows.push([eip, ex.jit_run_until_target(i, 1) >>> 0]);
     }
     rows.sort((a, b) => b[1] - a[1]);
-    return rows.slice(0, 16).map(([eip, n]) => `${eip.toString(16)}:${n}`);
+    return rows.map(([eip, n]) => `${eip.toString(16)}:${n}`);
 }
