@@ -504,6 +504,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) })) as any;
         const ef = await bench.evalPage(`__BS__.harness.dbgCall("aotExternalFirst", undefined)`, 15_000).catch(() => null);
         console.log(`AOT-AUTO pages=${st?.pages ?? "?"} entries=${st?.entries ?? "?"} bytes=${st?.bytes ?? "?"} externalFirst=${ef}`);
+        // Arm and reset the urgent-exit reason census for the rest of the hold.
+        await bench.evalPage(`__BS__.harness.dbgCall("schedulerPerf", true)`, 15_000).catch(() => null);
     }
     if (aotInstall && i * 10 >= aotAtSec) {
         const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) }));
@@ -639,6 +641,8 @@ if (process.argv.includes("--aot-auto")) {
     // dispatcher, why those runs ended, and the callees they left for most.
     const st = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch((e) => ({ error: String(e) })) as any;
     console.log(`AOT-AUTO-END ${JSON.stringify({ pages: st?.pages, entries: st?.entries, guardExits: st?.guardExits, misses: st?.misses, stalls: st?.stalls, dispatches: st?.dispatches, runUntil: st?.runUntil })}`);
+    const sp = await bench.evalPage(`__BS__.harness.dbgCall("schedulerPerf")`, 15_000).catch((e) => ({ error: String(e) })) as any;
+    console.log(`AOT-AUTO-EXITS ${JSON.stringify(sp?.immediateExitReasons ?? sp)}`);
 }
 if (slowPath) {
     const top = await bench.dbg("slowPathTop", 32).catch((e) => ({ error: String(e) }));
