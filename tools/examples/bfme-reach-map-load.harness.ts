@@ -178,7 +178,7 @@ async function tryStep(
 }
 
 const bench = await openBenchSession({
-    profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=${tag}`, matchToken: `bench=${tag}`,
+    profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=${tag}${process.argv.includes("--aot-auto") ? "&aot=1" : ""}`, matchToken: `bench=${tag}`,
 });
 
 // Set before the boot compiles anything, so the whole run is one policy rather

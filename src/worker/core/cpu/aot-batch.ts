@@ -127,10 +127,13 @@ const AUTO_GIVE_UP_MS = 10 * 60_000;
 // entries the dispatcher never matches.
 const STATE_IS_32 = 1, STATE_FLAT = 8;
 
-let autoEnabled = true;
+// Opt-in: on this VPS the corrected batch runs the game correctly but about
+// 6 % slower than the JIT alone (bridged calls and nested dispatches), so a
+// title only gets it when asked (`aot=1`, dbg.aotAuto(true)).
+let autoEnabled = false;
 let autoTimer: number | null = null;
 
-/** Kill switch for the automatic install (dbg.aotAuto, the `aot=0` URL option). */
+/** Opt-in switch for the automatic install (dbg.aotAuto, the `aot=1` URL option). */
 export function setAotAutoEnabled(on: boolean): void {
     autoEnabled = on;
     if (!on) cancelAotAutoInstall();

@@ -254,7 +254,7 @@ const state: WorkerState = {
 
 let placeholderActive = true;
 let pendingPeData: Uint8Array | null = null;
-type BundlePayload = { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[]; /** false: no ahead-of-time batch for this title. */ aot?: boolean };
+type BundlePayload = { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[]; /** true: install the bundle's ahead-of-time batch (opt-in). */ aot?: boolean };
 let pendingBundle: BundlePayload | null = null;
 let activeBundlePayload: BundlePayload | null = null;
 let pendingChildLaunch: GuestProcessHandoffRequest | null = null;
@@ -1945,10 +1945,10 @@ const loadBundleImpl = async (payload: BundlePayload) => {
       if (hotProfile) preemptionManager.setJitHotProfile(hotProfile);
     }
     installHotProfileAutosave(gameId);
-    // The bundle's ahead-of-time batch, when the server publishes one, installs
-    // itself once the guest runs 32-bit flat code; `aot: false` in the load
-    // request (the `aot=0` URL option) keeps this title on the JIT alone.
-    if (payload.aot === false) setAotAutoEnabled(false);
+    // The bundle's ahead-of-time batch, when the server publishes one and the
+    // load request asks for it (`aot: true`, the `aot=1` URL option), installs
+    // itself once the guest runs 32-bit flat code.
+    if (payload.aot !== undefined) setAotAutoEnabled(payload.aot);
     if (payload.url) scheduleAotAutoInstall(payload.url);
 
     // Apply emulator configuration from manifest (fresh per-bundle to avoid stale cross-game overrides)
@@ -3188,7 +3188,7 @@ self.onmessage = (event: MessageEvent) => {
     clearGuestProcessHandoff();
     pendingChildLaunch = null;
     pendingLaunchProfile = (message.profile ?? null) as typeof pendingLaunchProfile;
-    loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs, aot: message.aot === false ? false : undefined });
+    loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs, aot: typeof message.aot === 'boolean' ? message.aot : undefined });
   }
 
   // --- WGB wizard build service (Stage 1) — additive, separate from the boot path above. -----

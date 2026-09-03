@@ -86,7 +86,7 @@ describe("AOT batch automatic install", () => {
         expect(aotBatchState.autoUrl).toBe("/apps/bfme.wgb.aot-bridge");
     });
 
-    test("the kill switch stops a pending install", async () => {
+    test("the switch turned off stops a pending install", async () => {
         const flags = { value: 0 };
         const v = fakeV86(flags);
         setAotExportsProvider(() => ({ cpu: v.cpu, ex: v.ex }));
