@@ -421,6 +421,13 @@ export class System {
 
         // Harness: one event for every crash class, not just #PF AVs.
         try { harnessBus.emit('fault', fault); } catch { /* */ }
+        // Also kept here, readable from the Worker's own CDP session when the
+        // page (the harness bus's other end) no longer answers.
+        try {
+            const g = globalThis as unknown as { __guestFaults?: unknown[] };
+            (g.__guestFaults ??= []).push(fault);
+            if (g.__guestFaults.length > 8) g.__guestFaults.shift();
+        } catch { /* */ }
     }
 
     /** Harness-grade enrichment while guest state is still live. */

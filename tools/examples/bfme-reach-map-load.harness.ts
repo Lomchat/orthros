@@ -457,6 +457,14 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG worker-globals " + String(probe).slice(0, 400));
             const boxes = await bench.evalWorker("JSON.stringify(globalThis.dbg?.messageBoxes?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
             console.log("   AOT-HANG messageBoxes " + String(boxes).slice(0, 2000));
+            const ring2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.ring?.(96, 40) ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG ring " + String(ring2).slice(0, 4000));
+            const exc2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.exceptions?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG exceptions " + String(exc2).slice(0, 4000));
+            const flt2 = await bench.evalWorker("JSON.stringify(globalThis.dbg?.faults?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG faults " + String(flt2).slice(0, 4000));
+            const sched = await bench.evalWorker("JSON.stringify(globalThis.dbg?.schedulerPerf?.() ?? null)", 15_000).catch((e2) => `error: ${String(e2)}`);
+            console.log("   AOT-HANG schedulerPerf " + String(sched).slice(0, 3000));
             for (const ev of ["fault", "guest_crash", "wasm_trap"]) {
                 const rep = await bench.evalPage(`__BS__.harness.lastEvent(${JSON.stringify(ev)})`, 15_000).catch((e2) => ({ error: String(e2) }));
                 console.log(`   AOT-HANG ${ev} ` + JSON.stringify(rep).slice(0, 3000));
@@ -509,6 +517,8 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
             console.log("   AOT-HANG ring " + String(ring).slice(0, 6000));
             const exc = await bench.evalWorker("JSON.stringify(globalThis.dbg?.exceptions?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
             console.log("   AOT-HANG exceptions " + String(exc).slice(0, 4000));
+            const flt = await bench.evalWorker("JSON.stringify(globalThis.dbg?.faults?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`);
+            console.log("   AOT-HANG faults " + String(flt).slice(0, 4000));
             // The game's own crash text, if it wrote one to its user folder.
             // Orthros answers CSIDL_APPDATA with C:\Windows\Application Data.
             const userDirs = ["C:\\Windows\\Application Data\\My Battle for Middle-earth Files", "C:\\Windows\\Application Data", "C:\\"];

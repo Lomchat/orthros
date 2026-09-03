@@ -518,9 +518,9 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         rendererThreads: async () => {
             const ps = Bun.spawnSync(["ps", "-eo", "pid,ppid,args"]);
             const rows = ps.stdout.toString().split("\n");
-            const browser = rows.find((r) => r.includes(`--remote-debugging-port=${port}`) && !r.includes("--type="));
-            const browserPid = browser ? Number(browser.trim().split(/\s+/)[0]) : -1;
-            const renderers = rows.filter((r) => r.includes("--type=renderer") && (browserPid < 0 || Number(r.trim().split(/\s+/)[1]) === browserPid))
+            // Renderers are children of the zygote, not of the browser: take every
+            // renderer of this Chrome build (the bench owns the only Chrome here).
+            const renderers = rows.filter((r) => r.includes("--type=renderer") && r.includes("chrome"))
                 .map((r) => Number(r.trim().split(/\s+/)[0]));
             const out: string[] = [];
             for (const pid of renderers) {

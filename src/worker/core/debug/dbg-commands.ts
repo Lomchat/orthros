@@ -3180,6 +3180,8 @@ export const dbg = {
         if (reset) d.resetAsyncParkStats();
         return rows;
     },
+    /** The last guest faults (page faults, GP, traps) as the fault reporter saw them. */
+    faults(): unknown { return ((globalThis as any).__guestFaults ?? []).slice(); },
     /** The last RaiseException calls the guest made (code, flags, first argument, caller). */
     exceptions(): unknown { return ((globalThis as any).__guestRaisedExceptions ?? []).slice(); },
     /** The last guest MessageBox texts, readable from the Worker's own CDP
