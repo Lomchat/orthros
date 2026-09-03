@@ -85,6 +85,29 @@ for (const entry of entries) {
     functions.push(t);
 }
 
+// Call-graph closure (--closure N [--closure-max-insns M]): the callees the
+// translated set leaves for are bridged through the nested dispatcher at
+// every call; pulling the small ones in turns those into native calls. Each
+// round translates the direct call targets of the current set that are not
+// yet translated and fit the size bound; thunks are one-instruction callees
+// whose CFG follows the jump, so a thunk's target comes with it.
+const closureRounds = Number(arg("closure", "0"));
+const closureMaxInsns = Number(arg("closure-max-insns", "64"));
+for (let round = 0; round < closureRounds; round++) {
+    const have = new Set(functions.map((f) => f.entry));
+    const wanted = new Set<number>();
+    for (const f of functions) for (const t of f.callTargets) if (!have.has(t)) wanted.add(t);
+    let added = 0, rejected = 0, tooBig = 0;
+    for (const target of [...wanted].sort((a, b) => a - b)) {
+        const t = await translateFunctionC(decoder, target, recordedAll.size ? recordedAll : undefined);
+        if (!t) { rejected++; continue; }
+        if (t.instructions > closureMaxInsns) { tooBig++; continue; }
+        functions.push(t); added++;
+    }
+    console.log(`closure round ${round + 1}: ${wanted.size} callees wanted, ${added} added, ${tooBig} over ${closureMaxInsns} instructions, ${rejected} rejected`);
+    if (added === 0) break;
+}
+
 // Page coverage (opt-in with --whole-pages): keep only pages where every
 // entry the runtime dispatches to lands in a translation. v86 now lets a JIT
 // module and an external module share a page, so this is no longer required;
@@ -116,6 +139,10 @@ if (selectedPath) {
 
 const cPath = `${out}.c`;
 await Bun.write(cPath, batch.c);
+if (process.argv.includes("--no-compile")) {
+    console.log(`${cPath}: ${functions.length} functions (${functions.reduce((a, f) => a + f.instructions, 0)} insns), ${batch.pages.length} page modules; not compiled (--no-compile)`);
+    process.exit(0);
+}
 const compiled = compileTranslationC(cPath, `${out}.wasm`);
 if (!compiled.ok) { console.error(compiled.error); process.exit(1); }
 

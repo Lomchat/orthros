@@ -45,6 +45,8 @@ export interface CFunction {
     blocks: number;
     liveFlagSites: number;
     calls: number;
+    /** Direct call targets, for a batch to pull in the callees a function leaves for. */
+    callTargets: number[];
     /** Entry addresses (function start + after-call resumes) and their block index. */
     entries: Array<{ addr: number; block: number }>;
     extent: number;
@@ -513,6 +515,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     let liveFlagSites = 0;
     let total = 0;
     let calls = 0;
+    const callTargets: number[] = [];
     // Decided before emission: a call site emitted before the function's first
     // x87 instruction must already save and reload TOP/EMPTY around the call,
     // or a callee that returns a value on the x87 stack leaves the local stack
@@ -908,6 +911,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const target = direct !== null ? `${direct >>> 0}u` : indirectTargetExpr(term.operand);
             if (target === null) return reject(`call ${term.operand}`);
             calls++;
+            if (direct !== null) callTargets.push(direct >>> 0);
             const targetOp = direct === null ? parseOperand(term.operand) : null;
             if (targetOp && targetOp.kind === "mem") guardMem(lines, targetOp, term.addr, n - 1);
             const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
@@ -1025,7 +1029,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         if (bi !== undefined) entries.push({ addr: r, block: bi });
     }
 
-    return { entry, name, c, instructions: total, blocks: blocks.size, liveFlagSites, calls, entries, extent: maxEnd - entry };
+    return { entry, name, c, instructions: total, blocks: blocks.size, liveFlagSites, calls, callTargets, entries, extent: maxEnd - entry };
 }
 
 /** Group translated functions into per-page modules and one C unit. */
