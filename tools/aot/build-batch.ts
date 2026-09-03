@@ -43,6 +43,11 @@ if (entriesFile) {
     entries = entries.concat(extra);
     console.log(`entries file: ${extra.length} addresses`);
 }
+// Entries named on the command line or in --entries-file are deliberate
+// (the bridged callees a run recorded): they are always translated, even
+// when a --top-pages hot set would otherwise drop their page. Only the broad
+// --candidates list is subject to the hot filter.
+const forced = new Set<number>(entries);
 const candidatesPath = arg("candidates", "");
 if (candidatesPath) {
     const take = Number(arg("take", "1000000"));
@@ -116,7 +121,7 @@ const decoderFor = (addr: number): CapstoneDecoder => inExtra(addr)?.decoder ?? 
 let functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
-    if (hotSet && !hotSet.has(entry >>> 12) && !inExtra(entry)) continue;
+    if (hotSet && !hotSet.has(entry >>> 12) && !inExtra(entry) && !forced.has(entry)) continue;
     const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined, (addr) => decoderFor(addr) === decoderFor(entry));
     // Every rejection inside an extra image is printed: those few runtime bodies
     // are the reason the image is there.
