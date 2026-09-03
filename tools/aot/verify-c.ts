@@ -251,7 +251,7 @@ function runGuest(
             resolve(out);
         };
         let started = 0;
-        const timer = setTimeout(() => finish("timeout"), benchIters > 0 ? 180_000 : 6_000);
+        const timer = setTimeout(() => finish("timeout"), benchIters > 0 ? 180_000 : Number(arg("timeout", "6000")));
         emulator.bus.register("cpu-event-halt", () => finish("halt"));
         emulator.add_listener("emulator-loaded", async () => {
             const cpu = emulator.v86.cpu;

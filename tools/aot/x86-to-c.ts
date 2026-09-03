@@ -513,7 +513,11 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     let liveFlagSites = 0;
     let total = 0;
     let calls = 0;
-    let fpuUsed = false;
+    // Decided before emission: a call site emitted before the function's first
+    // x87 instruction must already save and reload TOP/EMPTY around the call,
+    // or a callee that returns a value on the x87 stack leaves the local stack
+    // pointer stale (and every fst/fstp after it reads the wrong slot).
+    let fpuUsed = order.some((start) => blocks.get(start)!.insns.some((insn) => x87Kind(insn.mnemonic, insn.operand) === "fast"));
     const x87Helpers = { parseOperand, readExpr, guardMem, guardExit, slowExit };
     const loads = REG32.map((r, i) => `uint32_t ${r} = (uint32_t)REG32[${i}];`).join(" ");
     const reloads = REG32.map((r, i) => `${r} = (uint32_t)REG32[${i}];`).join(" ");

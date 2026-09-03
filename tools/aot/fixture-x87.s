@@ -179,6 +179,28 @@ x87_fisttp:
     fisttp dword ptr [edi]
     ret
 
+    # A callee returning its result on the x87 stack, called before the
+    # caller's first x87 instruction: the caller must reload TOP after the
+    # call or its fstp pops the wrong slot. ret_float is not an entry, so the
+    # call is bridged through the nested dispatcher.
+    .globl x87_call_before_use
+x87_call_before_use:
+    mov edi, [esp+4]
+    mov eax, 7
+    call ret_float
+    fstp dword ptr [edi]
+    fld dword ptr [edi]
+    fadd qword ptr [c1]
+    fstp qword ptr [edi+8]
+    call ret_float
+    fmul qword ptr [c2]
+    fstp qword ptr [edi+16]
+    ret
+ret_float:
+    fld qword ptr [c2]
+    fadd qword ptr [c1]
+    ret
+
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25
