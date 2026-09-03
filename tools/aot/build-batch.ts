@@ -91,23 +91,32 @@ const decoder = await CapstoneDecoder.open(exe);
 // harness), translated at its address; entries are routed by address range.
 // The manifest carries the image's hash so the install can verify the live
 // bytes before trusting those translations.
-const extraImage = arg("extra-image", "");
-const extraBase = Number(arg("extra-base", "0"));
-let extraDecoder: CapstoneDecoder | null = null;
-let extraRegion: { base: number; size: number; sha256: string } | null = null;
-if (extraImage && extraBase > 0) {
-    const bytes = new Uint8Array(await Bun.file(extraImage).arrayBuffer());
-    const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-    extraDecoder = await CapstoneDecoder.open(extraImage, undefined, extraBase);
-    extraRegion = { base: extraBase, size: bytes.byteLength, sha256: sha };
-    console.log(`extra image: ${extraImage} at 0x${extraBase.toString(16)}, ${bytes.byteLength} bytes, sha256 ${sha.slice(0, 16)}`);
+// Several images: --extra-image <file> --extra-base 0x... for one, and/or
+// --extra-images <list> whose lines are `file@0xbase` (the harness writes one
+// per bridged THUNK_CODE page past the generator's cursor).
+const extraSpecs: Array<{ file: string; base: number }> = [];
+if (arg("extra-image", "") && Number(arg("extra-base", "0")) > 0) extraSpecs.push({ file: arg("extra-image", ""), base: Number(arg("extra-base", "0")) });
+const extraList = arg("extra-images", "");
+if (extraList) {
+    for (const line of (await Bun.file(extraList).text()).split(/\r?\n/)) {
+        const m = /^(.+)@(0x[0-9a-fA-F]+)$/.exec(line.trim());
+        if (m) extraSpecs.push({ file: m[1]!, base: Number(m[2]) });
+    }
 }
-const decoderFor = (addr: number): CapstoneDecoder =>
-    extraDecoder && extraRegion && addr >= extraRegion.base && addr < extraRegion.base + extraRegion.size ? extraDecoder : decoder;
+const extras: Array<{ decoder: CapstoneDecoder; region: { base: number; size: number; sha256: string } }> = [];
+for (const spec of extraSpecs) {
+    const bytes = new Uint8Array(await Bun.file(spec.file).arrayBuffer());
+    if (bytes.byteLength === 0) continue;
+    const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    extras.push({ decoder: await CapstoneDecoder.open(spec.file, undefined, spec.base), region: { base: spec.base, size: bytes.byteLength, sha256: sha } });
+    console.log(`extra image: ${spec.file} at 0x${spec.base.toString(16)}, ${bytes.byteLength} bytes, sha256 ${sha.slice(0, 16)}`);
+}
+const inExtra = (addr: number) => extras.find((e) => addr >= e.region.base && addr < e.region.base + e.region.size);
+const decoderFor = (addr: number): CapstoneDecoder => inExtra(addr)?.decoder ?? decoder;
 let functions: CFunction[] = [];
 let skipped = 0;
 for (const entry of entries) {
-    if (hotSet && !hotSet.has(entry >>> 12) && !(extraRegion && entry >= extraRegion.base && entry < extraRegion.base + extraRegion.size)) continue;
+    if (hotSet && !hotSet.has(entry >>> 12) && !inExtra(entry)) continue;
     const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined);
     if (!t) { skipped++; if (skipped <= 10) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
     functions.push(t);
@@ -202,11 +211,11 @@ const manifest = {
     pages: batch.pages.map((pm) => ({ page: pm.page, name: pm.name, states: pm.states.map((s) => s.addr) })),
     // Code translated from a raw image outside the executable: the install
     // checks these bytes against live memory before registering their pages.
-    regions: extraRegion ? [extraRegion] : [],
+    regions: extras.map((e) => e.region),
 };
 await Bun.write(`${out}.json`, JSON.stringify(manifest));
 const wasmSize = (await Bun.file(`${out}.wasm`).arrayBuffer()).byteLength;
 console.log(`${out}.wasm: ${functions.length} functions (${manifest.instructions} insns), ${batch.pages.length} page modules, ${wasmSize} bytes; skipped ${skipped}`);
 decoder.close();
-extraDecoder?.close();
+for (const e of extras) e.decoder.close();
 process.exit(0);
