@@ -403,3 +403,24 @@ t_indirect:
     mov [esi+8], eax
     pop esi
     ret
+
+# An Orthros-shaped import stub (mov eax, id ; mov edx, 0xB077 ; out dx, eax ;
+# ret 4) called indirectly: the translation performs the port write itself and
+# emulates the ret; in this bare guest the port write is a no-op, so parity
+# with v86 executing the same stub is the check (stack, EIP, EAX untouched).
+stub_b077:
+    .byte 0xb8, 0x05, 0x00, 0x00, 0x00
+    .byte 0xba, 0x77, 0xb0, 0x00, 0x00
+    .byte 0xef
+    .byte 0xc2, 0x04, 0x00
+    .globl t_stubcall
+t_stubcall:
+    push esi
+    mov esi, [esp+8]
+    push dword ptr [esi]
+    mov eax, offset stub_b077
+    call eax
+    mov [esi+4], eax
+    add dword ptr [esi+8], 7
+    pop esi
+    ret

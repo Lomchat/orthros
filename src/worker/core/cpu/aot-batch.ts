@@ -75,6 +75,8 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         // A callee the batch does not own runs under the nested dispatcher
         // until it returns to the caller's frame.
         run_until: ex.jit_run_until ?? ((_ret: number, _esp: number, _max: number) => 1),
+        // A stub's port write performed by the translation itself.
+        hypercall_out: ex.jit_hypercall_out ?? ((_v: number) => {}),
     } });
     const first = ex.jit_external_module_first_index() >>> 0;
     const slots = ex.jit_external_module_slots?.() >>> 0 || 256;

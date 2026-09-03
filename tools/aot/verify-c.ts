@@ -362,6 +362,7 @@ for (const t of functions) {
             slow_exit: (addr: number) => { slowExits.push(addr >>> 0); ex["jit_ext_interpret_once"]?.(addr >>> 0); },
             get_eflags: ex["get_eflags"],
             run_until: ex["jit_run_until"] ?? ((_ret: number, _esp: number, _max: number) => 1),
+            hypercall_out: ex["jit_hypercall_out"] ?? ((_v: number) => {}),
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;
         const flags = ex["jit_get_current_state_flags"]() >>> 0;

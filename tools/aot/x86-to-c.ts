@@ -390,6 +390,9 @@ __attribute__((import_module("env"), import_name("guard_exit"))) void guard_exit
 __attribute__((import_module("env"), import_name("slow_exit"))) void slow_exit(uint32_t addr);
 __attribute__((import_module("env"), import_name("get_eflags"))) int32_t get_eflags(void);
 __attribute__((import_module("env"), import_name("run_until"))) uint32_t run_until(uint32_t ret_eip, uint32_t stop_esp, uint32_t max);
+/* The stub's out 0xB077, eax, performed by the translation itself. */
+__attribute__((import_module("env"), import_name("hypercall_out"))) void hypercall_out(int32_t value);
+#define FS_BASE (*(volatile int32_t *)752)
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
 __attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth);
@@ -950,6 +953,18 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // dispatcher until it returns here; the flags are made exact
                 // first because the callee may be JIT code reading them.
                 nativeCalls++;
+                // A Win32/CRT stub (mov eax, id; mov edx, 0xB077; out dx, eax;
+                // ret N) is performed here instead of under the nested
+                // dispatcher: the same port write the interpreter would make,
+                // then the ret. A handler that switched threads, parked the
+                // thread or redirected to a callback leaves EIP or the FS base
+                // changed, and the exit hands the guest to the dispatcher.
+                lines.push(`if (t + 14u <= ml && LD8(t) == 0xB8u && LD8(t + 5u) == 0xBAu && LD32(t + 6u) == 0xB077u && LD8(t + 10u) == 0xEFu && (LD8(t + 11u) == 0xC2u || LD8(t + 11u) == 0xC3u)) {`);
+                lines.push(`    uint32_t hid = LD32(t + 1u), hn = LD8(t + 11u) == 0xC2u ? LD16(t + 12u) : 0u; eax = hid; edx = 0xB077u; ${stores} ${fpuOut}`);
+                lines.push(`    if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; fk = 0u; }`);
+                lines.push(`    *INSTRUCTION_COUNTER += cnt + 3u; cnt = 0u; *PREVIOUS_IP = (int32_t)(t + 10u); *INSTRUCTION_POINTER = (int32_t)(t + 11u);`);
+                lines.push(`    { int32_t fs0 = FS_BASE; hypercall_out((int32_t)hid); if (FS_BASE != fs0 || (uint32_t)*INSTRUCTION_POINTER != t + 11u) goto exit_foreign; }`);
+                lines.push(`    ${reloads}${fpuIn} fk = 0u; ip = LD32(esp); esp += 4u + hn; cnt = 1u; if (ip == ${ret}u) { b = ${resume}; continue; } goto exit; }`);
                 lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}`);
                 lines.push(`    if (fk) { FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc)); FLAGS_CHANGED = 0; fk = 0u; }`);
                 lines.push(`    *INSTRUCTION_COUNTER += cnt; cnt = 0u; *PREVIOUS_IP = (int32_t)t; *INSTRUCTION_POINTER = (int32_t)t;`);
