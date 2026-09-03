@@ -1050,7 +1050,28 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 }
 
 /** Group translated functions into per-page modules and one C unit. */
-export function assembleBatch(functions: CFunction[], units = 1): Batch {
+export function assembleBatch(allFunctions: CFunction[], units = 1): Batch {
+    // A translation whose every entry another translation already owns (a
+    // thunk chain covers its target's body) gets no page state; unless a kept
+    // function calls it directly it is unreachable and only adds code. Keep
+    // the reachable set, to a fixed point, as clang's dead-function removal
+    // did when every function was static in one unit.
+    const claimed = new Set<number>();
+    const owner = new Map<number, CFunction>();
+    for (const f of allFunctions) {
+        for (const e of f.entries) if (!claimed.has(e.addr)) { claimed.add(e.addr); owner.set(e.addr, f); }
+    }
+    const byEntry = new Map(allFunctions.map((f) => [f.entry, f] as const));
+    const kept = new Set<CFunction>();
+    for (const f of owner.values()) kept.add(f);
+    for (let grew = true; grew;) {
+        grew = false;
+        for (const f of [...kept]) for (const t of f.callTargets) {
+            const callee = byEntry.get(t);
+            if (callee && !kept.has(callee)) { kept.add(callee); grew = true; }
+        }
+    }
+    const functions = allFunctions.filter((f) => kept.has(f));
     const byPage = new Map<number, PageModule>();
     for (const f of functions) {
         for (const e of f.entries) {
