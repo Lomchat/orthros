@@ -934,7 +934,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // block 0 whenever its CFG reaches below the entry (a tail call
                 // through a lower jump thunk, a loop placed before it).
                 lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(ENTRY_fn_${direct.toString(16)}, depth + 1u);`);
-                lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
+                lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { rb = ${resume}u; goto native_return; }`);
                 lines.push(`    goto exit_foreign; }`);
                 lines.push(`#endif`);
             }
@@ -949,8 +949,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`    *INSTRUCTION_COUNTER += cnt; cnt = 0u; *PREVIOUS_IP = (int32_t)t; *INSTRUCTION_POINTER = (int32_t)t;`);
                 // An indirect target the batch owns is called natively, like a
                 // direct one; anything else runs under the nested dispatcher.
-                lines.push(`    if (aot_dispatch(t, depth + 1u)) { if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; } goto exit_foreign; }`);
-                lines.push(`    if (run_until(${ret}u, esp, ${INVOCATION_BUDGET}u) == 0u) { ${reloads}${fpuIn} fk = 0u; b = ${resume}; continue; }`);
+                lines.push(`    if (aot_dispatch(t, depth + 1u)) { if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { rb = ${resume}u; goto native_return; } goto exit_foreign; }`);
+                lines.push(`    if (run_until(${ret}u, esp, ${INVOCATION_BUDGET}u) == 0u) { rb = ${resume}u; goto native_return; }`);
                 lines.push(`    goto exit_foreign; }`);
             }
             lines.push(`${exitAt("t")} }`);
@@ -1008,13 +1008,18 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         `    const uint32_t mb = mem_base();\n` +
         `    const uint32_t ml = MEM_SIZE;\n` +
         `    ${loads}\n` +
-        `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, fl = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u;\n` +
+        `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, fl = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u, rb = 0u;\n` +
         `    (void)fl;\n` +
         `    const uint32_t cnt0 = *INSTRUCTION_COUNTER;\n` +
         `    (void)depth; (void)cnt0;\n` +
         fpuLoad +
-        `    for (;;) switch (b) {\n${out.join("\n")}\n` +
+        `    for (;;) { switch (b) {\n${out.join("\n")}\n` +
         `        default: ip = ${entry >>> 0}u; goto exit;\n    }\n` +
+        // One reload arm per function: a callee that came back natively to a
+        // return address lands here with the resume block in rb. Kept out of
+        // the ~150 000 call sites, which each held a copy.
+        (nativeCalls > 0 ? `    native_return: ${reloads}${fpuUsed ? " top = FPU_TOP; fempty = FPU_EMPTY;" : ""} fk = 0u; b = (int)rb;\n` : "") +
+        `    }\n` +
         `exit:\n    ${stores}\n` +
         FLAGS_EPILOGUE +
         fpuStore +
