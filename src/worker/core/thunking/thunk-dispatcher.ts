@@ -2008,6 +2008,10 @@ export class ThunkDispatcher {
     // =========================================================================
 
     private _handleSyncResult(result: any, id: number, name: string, cpu: any, ctx: X86Context, argCount: number, espAtEntry: number): void {
+        // The handler may have allocated guest memory and grown the wasm memory:
+        // the raw views taken at entry then sit on a detached buffer and read
+        // undefined. Re-resolve by buffer identity before reading post-call state.
+        if (this.cachedMem8 && this.cachedWasmBuffer !== this.cachedMem8.buffer) this.updateMemoryCache();
         // Direct Int32Array view — bypasses v86 Proxy trap on reg32 access.
         const reg32 = this.cachedReg32Raw ?? cpu.reg32;
         // Check if thread/process terminated
