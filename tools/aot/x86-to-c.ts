@@ -511,14 +511,14 @@ function emitSseFp(mnemonic: string, ops: string[], insn: Insn, i: number, lines
     if (!dOp || dOp.kind !== "xmm" || !sOp) return `${mnemonic} ${ops.join(", ")}`;
     // Source double lanes (lane 0 low, lane 1 high) as C double expressions.
     let s0: string, s1: string;
-    if (sOp.kind === "xmm") { s0 = `f64u(XLO(${sOp.index}))`; s1 = `f64u(XHI(${sOp.index}))`; }
+    if (sOp.kind === "xmm") { s0 = `f64u(xl${sOp.index})`; s1 = `f64u(xh${sOp.index})`; }
     else if (sOp.kind === "mem") { h.guardMem(lines, sOp, insn.addr, i); s0 = `f64u(LD64(${sOp.addr}))`; s1 = `f64u(LD64((${sOp.addr}) + 8u))`; }
     else return `${mnemonic} ${ops.join(", ")}`;
-    const d0 = `f64u(XLO(${dOp.index}))`, d1 = `f64u(XHI(${dOp.index}))`;
+    const d0 = `f64u(xl${dOp.index})`, d1 = `f64u(xh${dOp.index})`;
     const lane = (dv: string, sv: string): string =>
         pred ? `${pred(dv, sv)} ? ~(uint64_t)0 : (uint64_t)0` : `u64d(${dv} ${arith} ${sv})`;
-    if (scalar) lines.push(`{ double da = ${d0}, sa = ${s0}; XLO(${dOp.index}) = ${lane("da", "sa")}; }`);
-    else lines.push(`{ double da0 = ${d0}, da1 = ${d1}, sa0 = ${s0}, sa1 = ${s1}; XLO(${dOp.index}) = ${lane("da0", "sa0")}; XHI(${dOp.index}) = ${lane("da1", "sa1")}; }`);
+    if (scalar) lines.push(`{ double da = ${d0}, sa = ${s0}; xl${dOp.index} = ${lane("da", "sa")}; }`);
+    else lines.push(`{ double da0 = ${d0}, da1 = ${d1}, sa0 = ${s0}, sa1 = ${s1}; xl${dOp.index} = ${lane("da0", "sa0")}; xh${dOp.index} = ${lane("da1", "sa1")}; }`);
     lines.push(`FPU_DIRTY = 1u;`);
     return;
 }
@@ -529,28 +529,28 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
     if (!dst) return `operand: ${mnemonic} ${ops[0] ?? ""}`;
     // Bounds-check a memory operand once, leaving its address in a0.
     const guard = (op: Operand): string => { h.guardMem(lines, op, insn.addr, i); return op.addr!; };
-    const dirty = () => lines.push(`FPU_DIRTY = 1u;`);
+    const dirty = () => lines.push(`xdirty = 1u;`);
 
     if (mnemonic === "movd") {
         // 32-bit lane <-> GP register or memory. Writing an xmm zero-extends.
-        if (dst.kind === "xmm" && src && src.kind === "reg32") { lines.push(`XLO(${dst.index}) = (uint32_t)${REG32[src.index!]}; XHI(${dst.index}) = 0u;`); dirty(); return; }
-        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD32(${a}); XHI(${dst.index}) = 0u;`); dirty(); return; }
-        if (dst.kind === "reg32" && src && src.kind === "xmm") { lines.push(`${REG32[dst.index!]} = (uint32_t)XLO(${src.index});`); return; }
-        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST32(${a}, (uint32_t)XLO(${src.index}));`); return; }
+        if (dst.kind === "xmm" && src && src.kind === "reg32") { lines.push(`xl${dst.index} = (uint32_t)${REG32[src.index!]}; xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = LD32(${a}); xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "reg32" && src && src.kind === "xmm") { lines.push(`${REG32[dst.index!]} = (uint32_t)xl${src.index};`); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST32(${a}, (uint32_t)xl${src.index});`); return; }
         return `movd ${ops.join(", ")}`;
     }
     if (mnemonic === "movq") {
         // Low 64 bits; writing an xmm from mem/xmm zero-extends the high lane.
-        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${src.index}); XHI(${dst.index}) = 0u;`); dirty(); return; }
-        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD64(${a}); XHI(${dst.index}) = 0u;`); dirty(); return; }
-        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, XLO(${src.index}));`); return; }
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`xl${dst.index} = xl${src.index}; xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = LD64(${a}); xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, xl${src.index});`); return; }
         return `movq ${ops.join(", ")}`;
     }
     // 128-bit move (aligned/unaligned/packed-double/packed-int all identical here).
     if (mnemonic === "movapd" || mnemonic === "movaps" || mnemonic === "movdqa" || mnemonic === "movups" || mnemonic === "movdqu") {
-        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${src.index}); XHI(${dst.index}) = XHI(${src.index});`); dirty(); return; }
-        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD64(${a}); XHI(${dst.index}) = LD64((${a}) + 8u);`); dirty(); return; }
-        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, XLO(${src.index})); ST64((${a}) + 8u, XHI(${src.index}));`); return; }
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`xl${dst.index} = xl${src.index}; xh${dst.index} = xh${src.index};`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = LD64(${a}); xh${dst.index} = LD64((${a}) + 8u);`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, xl${src.index}); ST64((${a}) + 8u, xh${src.index});`); return; }
         return `${mnemonic} ${ops.join(", ")}`;
     }
     // Packed 64-bit lane shifts, by imm8 or by the low 64 bits of another xmm.
@@ -559,40 +559,40 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         const op = mnemonic === "psrlq" ? ">>" : "<<";
         if (src.kind === "imm") {
             const sh = (src.value! & 0xff) >>> 0;
-            if (sh > 63) lines.push(`XLO(${dst.index}) = 0u; XHI(${dst.index}) = 0u;`);
-            else lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${op} ${sh}u; XHI(${dst.index}) = XHI(${dst.index}) ${op} ${sh}u;`);
+            if (sh > 63) lines.push(`xl${dst.index} = 0u; xh${dst.index} = 0u;`);
+            else lines.push(`xl${dst.index} = xl${dst.index} ${op} ${sh}u; xh${dst.index} = xh${dst.index} ${op} ${sh}u;`);
             dirty(); return;
         }
-        if (src.kind === "xmm") { lines.push(`{ uint64_t sh = XLO(${src.index}); if (sh > 63u) { XLO(${dst.index}) = 0u; XHI(${dst.index}) = 0u; } else { XLO(${dst.index}) = XLO(${dst.index}) ${op} sh; XHI(${dst.index}) = XHI(${dst.index}) ${op} sh; } }`); dirty(); return; }
+        if (src.kind === "xmm") { lines.push(`{ uint64_t sh = xl${src.index}; if (sh > 63u) { xl${dst.index} = 0u; xh${dst.index} = 0u; } else { xl${dst.index} = xl${dst.index} ${op} sh; xh${dst.index} = xh${dst.index} ${op} sh; } }`); dirty(); return; }
         return `${mnemonic} ${ops.join(", ")}`;
     }
     // Packed 32-bit add/sub over the four dwords.
     if (mnemonic === "psubd" || mnemonic === "paddd") {
         if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
         const op = mnemonic === "psubd" ? "-" : "+";
-        const sl = src.kind === "xmm" ? `XLO(${src.index})` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
+        const sl = src.kind === "xmm" ? `xl${src.index}` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
         if (sl === null) return `${mnemonic} ${ops.join(", ")}`;
-        const sh = src.kind === "xmm" ? `XHI(${src.index})` : `LD64((a0) + 8u)`;
-        lines.push(`{ uint64_t dl = XLO(${dst.index}), dh = XHI(${dst.index}), sl = ${sl}, sh = ${sh};`
+        const sh = src.kind === "xmm" ? `xh${src.index}` : `LD64((a0) + 8u)`;
+        lines.push(`{ uint64_t dl = xl${dst.index}, dh = xh${dst.index}, sl = ${sl}, sh = ${sh};`
             + ` uint32_t r0 = (uint32_t)dl ${op} (uint32_t)sl, r1 = (uint32_t)(dl >> 32) ${op} (uint32_t)(sl >> 32),`
             + ` r2 = (uint32_t)dh ${op} (uint32_t)sh, r3 = (uint32_t)(dh >> 32) ${op} (uint32_t)(sh >> 32);`
-            + ` XLO(${dst.index}) = (uint64_t)r0 | ((uint64_t)r1 << 32); XHI(${dst.index}) = (uint64_t)r2 | ((uint64_t)r3 << 32); }`);
+            + ` xl${dst.index} = (uint64_t)r0 | ((uint64_t)r1 << 32); xh${dst.index} = (uint64_t)r2 | ((uint64_t)r3 << 32); }`);
         dirty(); return;
     }
     // 128-bit bitwise. pandn is (~dst) & src.
     if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
     const bit: Record<string, string> = { andpd: "&", andps: "&", pand: "&", orpd: "|", orps: "|", por: "|", xorpd: "^", xorps: "^", pxor: "^" };
     if (mnemonic === "pandn") {
-        const sl = src.kind === "xmm" ? `XLO(${src.index})` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
+        const sl = src.kind === "xmm" ? `xl${src.index}` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
         if (sl === null) return `pandn ${ops.join(", ")}`;
-        const sh = src.kind === "xmm" ? `XHI(${src.index})` : `LD64((a0) + 8u)`;
-        lines.push(`{ uint64_t sl = ${sl}, sh = ${sh}; XLO(${dst.index}) = (~XLO(${dst.index})) & sl; XHI(${dst.index}) = (~XHI(${dst.index})) & sh; }`);
+        const sh = src.kind === "xmm" ? `xh${src.index}` : `LD64((a0) + 8u)`;
+        lines.push(`{ uint64_t sl = ${sl}, sh = ${sh}; xl${dst.index} = (~xl${dst.index}) & sl; xh${dst.index} = (~xh${dst.index}) & sh; }`);
         dirty(); return;
     }
     const b = bit[mnemonic];
     if (!b) return `unsupported: ${mnemonic}`;
-    if (src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${b} XLO(${src.index}); XHI(${dst.index}) = XHI(${dst.index}) ${b} XHI(${src.index});`); dirty(); return; }
-    if (src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${b} LD64(${a}); XHI(${dst.index}) = XHI(${dst.index}) ${b} LD64((${a}) + 8u);`); dirty(); return; }
+    if (src.kind === "xmm") { lines.push(`xl${dst.index} = xl${dst.index} ${b} xl${src.index}; xh${dst.index} = xh${dst.index} ${b} xh${src.index};`); dirty(); return; }
+    if (src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = xl${dst.index} ${b} LD64(${a}); xh${dst.index} = xh${dst.index} ${b} LD64((${a}) + 8u);`); dirty(); return; }
     return `${mnemonic} ${ops.join(", ")}`;
 }
 
@@ -696,10 +696,20 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     // or a callee that returns a value on the x87 stack leaves the local stack
     // pointer stale (and every fst/fstp after it reads the wrong slot).
     let fpuUsed = order.some((start) => blocks.get(start)!.insns.some((insn) => x87Kind(insn.mnemonic, insn.operand) === "fast"));
+    // XMM registers this function touches: held in 64-bit lane locals like the
+    // integer registers, committed to v86's reg_xmm before calls and at exits,
+    // reloaded after calls (XMM is caller-saved). A memory round trip per SSE
+    // operation made the native path slower than the bridge it replaced.
+    const xmmUsed = new Set<number>();
+    for (const start of order) for (const insn of blocks.get(start)!.insns) for (const m of insn.operand.matchAll(/\bxmm([0-7])\b/g)) xmmUsed.add(Number(m[1]));
+    const xmmList = [...xmmUsed].sort((a, b) => a - b);
     const x87Helpers = { parseOperand, readExpr, guardMem, guardExit, slowExit };
-    const loads = REG32.map((r, i) => `uint32_t ${r} = (uint32_t)REG32[${i}];`).join(" ");
-    const reloads = REG32.map((r, i) => `${r} = (uint32_t)REG32[${i}];`).join(" ");
-    const stores = REG32.map((r, i) => `REG32[${i}] = (int32_t)${r};`).join(" ");
+    const loads = REG32.map((r, i) => `uint32_t ${r} = (uint32_t)REG32[${i}];`).join(" ")
+        + xmmList.map((n) => ` uint64_t xl${n} = xl${n}, xh${n} = xh${n};`).join("") + (xmmList.length ? " uint32_t xdirty = 0u;" : "");
+    const reloads = REG32.map((r, i) => `${r} = (uint32_t)REG32[${i}];`).join(" ")
+        + xmmList.map((n) => ` xl${n} = xl${n}; xh${n} = xh${n};`).join("");
+    const stores = REG32.map((r, i) => `REG32[${i}] = (int32_t)${r};`).join(" ")
+        + xmmList.map((n) => ` xl${n} = xl${n}; xh${n} = xh${n};`).join("") + (xmmList.length ? " if (xdirty) { FPU_DIRTY = 1u; xdirty = 0u; }" : "");
     let nativeCalls = 0;
 
     for (const start of order) {
@@ -841,9 +851,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const single = mnemonic.endsWith("ss");
                 const dOp = parseOperand(ops[0] ?? ""); const sOp = parseOperand(ops[1] ?? "");
                 if (!dOp || dOp.kind !== "xmm" || !sOp) return reject(`${mnemonic} ${operand}`);
-                const av = single ? `(double)f32u((uint32_t)XLO(${dOp.index}))` : `f64u(XLO(${dOp.index}))`;
+                const av = single ? `(double)f32u((uint32_t)xl${dOp.index})` : `f64u(xl${dOp.index})`;
                 let bv: string;
-                if (sOp.kind === "xmm") bv = single ? `(double)f32u((uint32_t)XLO(${sOp.index}))` : `f64u(XLO(${sOp.index}))`;
+                if (sOp.kind === "xmm") bv = single ? `(double)f32u((uint32_t)xl${sOp.index})` : `f64u(xl${sOp.index})`;
                 else if (sOp.kind === "mem") { guardMem(lines, sOp, insn.addr, i); bv = single ? `(double)f32u(LD32(${sOp.addr}))` : `f64u(LD64(${sOp.addr}))`; }
                 else return reject(`${mnemonic} ${operand}`);
                 lines.push(`{ double a = ${av}, b = ${bv}; fa = (a != a || b != b) ? 0x45u : (a < b ? 0x01u : (a == b ? 0x40u : 0x00u)); FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | fa); FLAGS_CHANGED = 0; }`);
