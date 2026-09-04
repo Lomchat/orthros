@@ -2216,7 +2216,7 @@ export class ThunkDispatcher {
         if (mem8 && !skipStackCheck && !this.validateReturnAddr(mem8, espAtEntry, `Sync thunk ${name}`, allowStubSync)) {
             Logger.error(LogCategory.THUNK,
                 `Invalid return address for ${name}! ` +
-                `ESP=0x${espAtEntry.toString(16)}, EAX=0x${thunkRes.value.toString(16)}. ` +
+                `ESP=0x${espAtEntry.toString(16)}, EAX=0x${(thunkRes.value >>> 0).toString(16)}. ` +
                 `Preventing RET execution to avoid crash.`);
 
             reg32[0] = (thunkRes.value >>> 0);
