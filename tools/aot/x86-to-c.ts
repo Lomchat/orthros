@@ -1190,6 +1190,14 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 
 /** Group translated functions into per-page modules and one C unit. */
 export function assembleBatch(allFunctions: CFunction[], units = 1): Batch {
+    // The same entry can arrive twice (listed as an explicit entry and reached
+    // again by closure); keep the first so a function is defined once. Without
+    // this both copies survive ownership + call-closure and clang sees a
+    // redefinition.
+    {
+        const seen = new Set<number>();
+        allFunctions = allFunctions.filter((f) => (seen.has(f.entry) ? false : (seen.add(f.entry), true)));
+    }
     // A translation whose every entry another translation already owns (a
     // thunk chain covers its target's body) gets no page state; unless a kept
     // function calls it directly it is unreachable and only adds code. Keep
