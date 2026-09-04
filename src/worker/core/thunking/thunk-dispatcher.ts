@@ -1278,7 +1278,7 @@ export class ThunkDispatcher {
             const fastImpl = this.fastPathTable[functionId];
             if (fastImpl) {
                 // Ensure memory cache is valid
-                if (!this.cachedMem8 || this.cachedMem8.byteLength === 0) this.updateMemoryCache();
+                if (!this.cachedMem8 || this.cachedWasmBuffer !== this.cachedMem8.buffer) this.updateMemoryCache();
                 const cpu = this.cachedCpu;
                 if (!cpu || !this.cachedMem8) return;
 
@@ -1407,7 +1407,7 @@ export class ThunkDispatcher {
         }
 
         // Ensure memory cache is valid
-        if (!this.cachedMem8 || this.cachedMem8.byteLength === 0) this.updateMemoryCache();
+        if (!this.cachedMem8 || this.cachedWasmBuffer !== this.cachedMem8.buffer) this.updateMemoryCache();
         if (!this.cachedMem8) return;
         const cpu = this.cachedCpu || (this.v86.cpu || (this.v86.v86 && this.v86.v86.cpu));
         if (!cpu) return;
@@ -1881,7 +1881,9 @@ export class ThunkDispatcher {
         // perfectly valid; only its *value* matters. Rejecting on alignment alone
         // turned a valid call into a false "thunk stack desync, pre-call" crash
         // (Discworld Noir boot). Validate the value, not the alignment.
-        if (esp < 0 || esp + 4 > this.memLength) return false;
+        // `!(esp >= 0)` also rejects NaN/undefined, which a register view left on a
+        // buffer that memory growth detached would yield.
+        if (!(esp >= 0) || esp + 4 > this.memLength) return false;
 
         try {
             // Fast path: cached Uint32Array — only valid for a 4-byte-aligned ESP.
@@ -1902,7 +1904,7 @@ export class ThunkDispatcher {
                     if (retAddr >= STACK_REGION_START && retAddr < STACK_REGION_END) {
                         Logger.error(LogCategory.THUNK,
                             `?? STACK CORRUPTION: Return address 0x${retAddr.toString(16)} points to STACK! ` +
-                            `ESP=0x${esp.toString(16)}, current thunk may return to garbage. ` +
+                            `ESP=0x${(esp >>> 0).toString(16)}, current thunk may return to garbage. ` +
                             `Last thunk: ${this.lastThunkName}`);
                     }
                     return true;
@@ -1922,7 +1924,7 @@ export class ThunkDispatcher {
             if (retAddr >= STACK_REGION_START && retAddr < STACK_REGION_END) {
                 Logger.error(LogCategory.THUNK,
                     `?? STACK CORRUPTION: Return address 0x${retAddr.toString(16)} points to STACK! ` +
-                    `ESP=0x${esp.toString(16)}, Last thunk: ${this.lastThunkName}`);
+                    `ESP=0x${(esp >>> 0).toString(16)}, Last thunk: ${this.lastThunkName}`);
             }
             return true;
         } catch (e) {
