@@ -87,13 +87,17 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
     "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
     "bt", "bts", "btr", "btc", "popfd",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
-    "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi"]);
+    "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi",
+    "ucomisd", "comisd", "ucomiss", "comiss"]);
 /** Instructions that leave the flags alone; anything else between a producer
  *  and its consumer is a flag writer the model does not follow. Every x87
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
     "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr",
+    "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
+    "psrlq", "psllq", "psubd", "paddd", "andpd", "andps", "orpd", "orps",
+    "xorpd", "xorps", "pand", "pandn", "por", "pxor",
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
@@ -115,7 +119,7 @@ const NATIVE_CALL_DEPTH = 24;
 type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi" | "raw" | "runtime";
 
 interface Operand {
-    kind: "reg32" | "reg16" | "reg8lo" | "reg8hi" | "imm" | "mem";
+    kind: "reg32" | "reg16" | "reg8lo" | "reg8hi" | "imm" | "mem" | "xmm";
     index?: number;
     value?: number;
     addr?: string;
@@ -164,6 +168,8 @@ function parseAddress(inner: string, segment: string | null): string | null {
 
 export function parseOperand(text: string): Operand | null {
     const t = text.trim();
+    const xmm = /^xmm([0-7])$/i.exec(t);
+    if (xmm) return { kind: "xmm", index: Number(xmm[1]) };
     const r32 = regIndex(t);
     if (r32 !== null) return { kind: "reg32", index: r32 };
     const r16 = REG16.indexOf(t);
@@ -175,8 +181,8 @@ export function parseOperand(text: string): Operand | null {
     const imm = /^(-?)(0x[0-9a-f]+|\d+)$/i.exec(t);
     // Number() does not parse a signed hexadecimal literal.
     if (imm) return { kind: "imm", value: (imm[1] ? -Number(imm[2]) : Number(imm[2])) | 0 };
-    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10 };
-    const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
+    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10, XMMWORD: 16 };
+    const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE|XMMWORD)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
     if (mem) {
         const width = mem[1] ? widths[mem[1].toUpperCase()]! : 4;
         const addr = parseAddress(mem[3]!, mem[2] ? mem[2].toLowerCase() : null);
@@ -200,6 +206,7 @@ function operandWidth(op: Operand): number {
         case "reg32": return 4;
         case "reg16": return 2;
         case "reg8lo": case "reg8hi": return 1;
+        case "xmm": return 16;
         case "mem": return op.width!;
         default: return 4;
     }
@@ -379,6 +386,7 @@ function splitOperands(operand: string): string[] {
 export const C_PRELUDE = `#include <stdint.h>
 typedef uint32_t __attribute__((aligned(1))) u32u;
 typedef uint16_t __attribute__((aligned(1))) u16u;
+typedef uint64_t __attribute__((aligned(1))) u64u;
 #define REG32 ((volatile int32_t *)64)
 #define FLAGS (*(volatile int32_t *)120)
 #define INSTRUCTION_POINTER ((volatile int32_t *)556)
@@ -398,6 +406,9 @@ __attribute__((import_module("env"), import_name("hypercall_out"))) void hyperca
 __attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc(int32_t pending);
 #define FS_BASE (*(volatile int32_t *)752)
 #define MXCSR (*(volatile int32_t *)824)
+/* SSE state: v86 reg_xmm is 8 x 16 bytes at offset 832. Two 64-bit lanes each. */
+#define XLO(i) (*(volatile u64u *)(uintptr_t)(832u + 16u*(uint32_t)(i)))
+#define XHI(i) (*(volatile u64u *)(uintptr_t)(832u + 16u*(uint32_t)(i) + 8u))
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
 __attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth);
@@ -425,6 +436,8 @@ static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint
 #define ST8(a, v)  (*(volatile uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
 #define ST16(a, v) (*(volatile u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
 #define ST32(a, v) (*(volatile u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
+#define LD64(a) (*(volatile u64u *)(uintptr_t)(mb + (a)))
+#define ST64(a, v) (*(volatile u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
 ` + X87_PRELUDE;
 
 /** Materialise the last modelled producer's flags into v86's EFLAGS at every
@@ -451,6 +464,138 @@ function isFlagConsumer(m: string): boolean {
  * entry too, so a return into the function or a jump-table target lands in
  * the translation instead of handing the page back to the JIT.
  */
+/** SSE2 integer/move/bitwise instructions the translator models directly on
+ *  v86's XMM field (XLO/XHI lanes at 832). No rounding-mode dependence, so the
+ *  packed-integer and bitwise forms are exact; loads/stores go through guest
+ *  memory. Any XMM-register write marks the SSE/FPU context dirty, as v86 does,
+ *  so a context switch saves it. */
+const SSE2_INT = new Set([
+    "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
+    "psrlq", "psllq", "psubd", "paddd",
+    "andpd", "andps", "orpd", "orps", "xorpd", "xorps",
+    "pand", "pandn", "por", "pxor",
+]);
+
+interface Sse2Helpers {
+    parseOperand: (t: string) => Operand | null;
+    guardMem: (lines: string[], op: Operand, insnAddr: number, done: number) => void;
+    guardExit: (insnAddr: number, done: number) => string;
+}
+
+/** SSE2 scalar/packed double arithmetic and compares. Bits reinterpret through
+ *  f64u/u64d; NaN follows IEEE (a compare with a NaN is false, so lt/le/eq are
+ *  false and neq/nlt/nle/unord are true). Packed touches both lanes, scalar the
+ *  low lane only. Single-precision (ps/ss) is handled where needed. */
+const SSE_FP_PRED: Record<string, (a: string, b: string) => string> = {
+    eq: (a, b) => `(${a} == ${b})`, lt: (a, b) => `(${a} < ${b})`, le: (a, b) => `(${a} <= ${b})`,
+    unord: (a, b) => `(${a} != ${a} || ${b} != ${b})`, neq: (a, b) => `!(${a} == ${b})`,
+    nlt: (a, b) => `!(${a} < ${b})`, nle: (a, b) => `!(${a} <= ${b})`,
+    ord: (a, b) => `!(${a} != ${a} || ${b} != ${b})`,
+};
+const SSE_FP_ARITH: Record<string, string> = { add: "+", sub: "-", mul: "*", div: "/" };
+
+function emitSseFp(mnemonic: string, ops: string[], insn: Insn, i: number, lines: string[], h: Sse2Helpers): string | void | false {
+    // Suffix pd/ps/sd/ss decides element type and lane count; the stem is an
+    // arithmetic op or a cmpXX predicate. Returns false if not one of these.
+    const m = /^(add|sub|mul|div|cmp([a-z]+))(pd|ps|sd|ss)$/.exec(mnemonic);
+    if (!m) return false;
+    const suffix = m[3]!;
+    const isDouble = suffix === "pd" || suffix === "sd";
+    const scalar = suffix === "sd" || suffix === "ss";
+    if (!isDouble) return `unsupported: ${mnemonic}`; // ps/ss added when a target needs them
+    const pred = m[2] ? SSE_FP_PRED[m[2]] : null;
+    if (m[1]!.startsWith("cmp") && !pred) return `unsupported: ${mnemonic}`;
+    const arith = !m[2] ? SSE_FP_ARITH[m[1]!] : null;
+
+    const dOp = h.parseOperand(ops[0] ?? ""); const sOp = h.parseOperand(ops[1] ?? "");
+    if (!dOp || dOp.kind !== "xmm" || !sOp) return `${mnemonic} ${ops.join(", ")}`;
+    // Source double lanes (lane 0 low, lane 1 high) as C double expressions.
+    let s0: string, s1: string;
+    if (sOp.kind === "xmm") { s0 = `f64u(XLO(${sOp.index}))`; s1 = `f64u(XHI(${sOp.index}))`; }
+    else if (sOp.kind === "mem") { h.guardMem(lines, sOp, insn.addr, i); s0 = `f64u(LD64(${sOp.addr}))`; s1 = `f64u(LD64((${sOp.addr}) + 8u))`; }
+    else return `${mnemonic} ${ops.join(", ")}`;
+    const d0 = `f64u(XLO(${dOp.index}))`, d1 = `f64u(XHI(${dOp.index}))`;
+    const lane = (dv: string, sv: string): string =>
+        pred ? `${pred(dv, sv)} ? ~(uint64_t)0 : (uint64_t)0` : `u64d(${dv} ${arith} ${sv})`;
+    if (scalar) lines.push(`{ double da = ${d0}, sa = ${s0}; XLO(${dOp.index}) = ${lane("da", "sa")}; }`);
+    else lines.push(`{ double da0 = ${d0}, da1 = ${d1}, sa0 = ${s0}, sa1 = ${s1}; XLO(${dOp.index}) = ${lane("da0", "sa0")}; XHI(${dOp.index}) = ${lane("da1", "sa1")}; }`);
+    lines.push(`FPU_DIRTY = 1u;`);
+    return;
+}
+
+function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines: string[], h: Sse2Helpers): string | void {
+    const dst = h.parseOperand(ops[0] ?? "");
+    const src = h.parseOperand(ops[1] ?? "");
+    if (!dst) return `operand: ${mnemonic} ${ops[0] ?? ""}`;
+    // Bounds-check a memory operand once, leaving its address in a0.
+    const guard = (op: Operand): string => { h.guardMem(lines, op, insn.addr, i); return op.addr!; };
+    const dirty = () => lines.push(`FPU_DIRTY = 1u;`);
+
+    if (mnemonic === "movd") {
+        // 32-bit lane <-> GP register or memory. Writing an xmm zero-extends.
+        if (dst.kind === "xmm" && src && src.kind === "reg32") { lines.push(`XLO(${dst.index}) = (uint32_t)${REG32[src.index!]}; XHI(${dst.index}) = 0u;`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD32(${a}); XHI(${dst.index}) = 0u;`); dirty(); return; }
+        if (dst.kind === "reg32" && src && src.kind === "xmm") { lines.push(`${REG32[dst.index!]} = (uint32_t)XLO(${src.index});`); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST32(${a}, (uint32_t)XLO(${src.index}));`); return; }
+        return `movd ${ops.join(", ")}`;
+    }
+    if (mnemonic === "movq") {
+        // Low 64 bits; writing an xmm from mem/xmm zero-extends the high lane.
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${src.index}); XHI(${dst.index}) = 0u;`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD64(${a}); XHI(${dst.index}) = 0u;`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, XLO(${src.index}));`); return; }
+        return `movq ${ops.join(", ")}`;
+    }
+    // 128-bit move (aligned/unaligned/packed-double/packed-int all identical here).
+    if (mnemonic === "movapd" || mnemonic === "movaps" || mnemonic === "movdqa" || mnemonic === "movups" || mnemonic === "movdqu") {
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${src.index}); XHI(${dst.index}) = XHI(${src.index});`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = LD64(${a}); XHI(${dst.index}) = LD64((${a}) + 8u);`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, XLO(${src.index})); ST64((${a}) + 8u, XHI(${src.index}));`); return; }
+        return `${mnemonic} ${ops.join(", ")}`;
+    }
+    // Packed 64-bit lane shifts, by imm8 or by the low 64 bits of another xmm.
+    if (mnemonic === "psrlq" || mnemonic === "psllq") {
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const op = mnemonic === "psrlq" ? ">>" : "<<";
+        if (src.kind === "imm") {
+            const sh = (src.value! & 0xff) >>> 0;
+            if (sh > 63) lines.push(`XLO(${dst.index}) = 0u; XHI(${dst.index}) = 0u;`);
+            else lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${op} ${sh}u; XHI(${dst.index}) = XHI(${dst.index}) ${op} ${sh}u;`);
+            dirty(); return;
+        }
+        if (src.kind === "xmm") { lines.push(`{ uint64_t sh = XLO(${src.index}); if (sh > 63u) { XLO(${dst.index}) = 0u; XHI(${dst.index}) = 0u; } else { XLO(${dst.index}) = XLO(${dst.index}) ${op} sh; XHI(${dst.index}) = XHI(${dst.index}) ${op} sh; } }`); dirty(); return; }
+        return `${mnemonic} ${ops.join(", ")}`;
+    }
+    // Packed 32-bit add/sub over the four dwords.
+    if (mnemonic === "psubd" || mnemonic === "paddd") {
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const op = mnemonic === "psubd" ? "-" : "+";
+        const sl = src.kind === "xmm" ? `XLO(${src.index})` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
+        if (sl === null) return `${mnemonic} ${ops.join(", ")}`;
+        const sh = src.kind === "xmm" ? `XHI(${src.index})` : `LD64((a0) + 8u)`;
+        lines.push(`{ uint64_t dl = XLO(${dst.index}), dh = XHI(${dst.index}), sl = ${sl}, sh = ${sh};`
+            + ` uint32_t r0 = (uint32_t)dl ${op} (uint32_t)sl, r1 = (uint32_t)(dl >> 32) ${op} (uint32_t)(sl >> 32),`
+            + ` r2 = (uint32_t)dh ${op} (uint32_t)sh, r3 = (uint32_t)(dh >> 32) ${op} (uint32_t)(sh >> 32);`
+            + ` XLO(${dst.index}) = (uint64_t)r0 | ((uint64_t)r1 << 32); XHI(${dst.index}) = (uint64_t)r2 | ((uint64_t)r3 << 32); }`);
+        dirty(); return;
+    }
+    // 128-bit bitwise. pandn is (~dst) & src.
+    if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+    const bit: Record<string, string> = { andpd: "&", andps: "&", pand: "&", orpd: "|", orps: "|", por: "|", xorpd: "^", xorps: "^", pxor: "^" };
+    if (mnemonic === "pandn") {
+        const sl = src.kind === "xmm" ? `XLO(${src.index})` : src.kind === "mem" ? `LD64(${guard(src)})` : null;
+        if (sl === null) return `pandn ${ops.join(", ")}`;
+        const sh = src.kind === "xmm" ? `XHI(${src.index})` : `LD64((a0) + 8u)`;
+        lines.push(`{ uint64_t sl = ${sl}, sh = ${sh}; XLO(${dst.index}) = (~XLO(${dst.index})) & sl; XHI(${dst.index}) = (~XHI(${dst.index})) & sh; }`);
+        dirty(); return;
+    }
+    const b = bit[mnemonic];
+    if (!b) return `unsupported: ${mnemonic}`;
+    if (src.kind === "xmm") { lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${b} XLO(${src.index}); XHI(${dst.index}) = XHI(${dst.index}) ${b} XHI(${src.index});`); dirty(); return; }
+    if (src.kind === "mem") { const a = guard(src); lines.push(`XLO(${dst.index}) = XLO(${dst.index}) ${b} LD64(${a}); XHI(${dst.index}) = XHI(${dst.index}) ${b} LD64((${a}) + 8u);`); dirty(); return; }
+    return `${mnemonic} ${ops.join(", ")}`;
+}
+
 export async function translateFunctionC(decoder: CapstoneDecoder, entry: number, extraEntries?: Set<number>, sameImage?: (addr: number) => boolean): Promise<CFunction | null> {
     // A direct jump whose target lives in another image than the entry (an EXE
     // function tail-calling a THUNK_CODE leaf, a DLL leaf) is a tail call, not a
@@ -678,6 +823,33 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // ldmxcsr changes SSE state: mark the FPU/SSE context dirty
                 // so a context switch saves the new MXCSR, as v86 does.
                 lines.push(mnemonic === "stmxcsr" ? `ST32(${m.addr}, MXCSR);` : `MXCSR = (int32_t)LD32(${m.addr}); FPU_DIRTY = 1u;`);
+                continue;
+            }
+            {
+                const r = emitSseFp(mnemonic, ops, insn, i, lines, { parseOperand, guardMem, guardExit });
+                if (typeof r === "string") return reject(r);
+                if (r !== false) continue;
+            }
+            if (SSE2_INT.has(mnemonic)) {
+                const r = emitSse2(mnemonic, ops, insn, i, lines, { parseOperand, guardMem, guardExit });
+                if (typeof r === "string") return reject(r);
+                continue;
+            }
+            if (mnemonic === "ucomisd" || mnemonic === "comisd" || mnemonic === "ucomiss" || mnemonic === "comiss") {
+                // Scalar FP compare into CF/PF/ZF, with OF/SF/AF cleared, exactly
+                // as x87 fcomi: unordered sets CF|PF|ZF, else CF=below, ZF=equal.
+                const single = mnemonic.endsWith("ss");
+                const dOp = parseOperand(ops[0] ?? ""); const sOp = parseOperand(ops[1] ?? "");
+                if (!dOp || dOp.kind !== "xmm" || !sOp) return reject(`${mnemonic} ${operand}`);
+                const av = single ? `(double)f32u((uint32_t)XLO(${dOp.index}))` : `f64u(XLO(${dOp.index}))`;
+                let bv: string;
+                if (sOp.kind === "xmm") bv = single ? `(double)f32u((uint32_t)XLO(${sOp.index}))` : `f64u(XLO(${sOp.index}))`;
+                else if (sOp.kind === "mem") { guardMem(lines, sOp, insn.addr, i); bv = single ? `(double)f32u(LD32(${sOp.addr}))` : `f64u(LD64(${sOp.addr}))`; }
+                else return reject(`${mnemonic} ${operand}`);
+                lines.push(`{ double a = ${av}, b = ${bv}; fa = (a != a || b != b) ? 0x45u : (a < b ? 0x01u : (a == b ? 0x40u : 0x00u)); FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | fa); FLAGS_CHANGED = 0; }`);
+                lines.push(`fk = 0u;`);
+                kinds.set(i, "fcomi");
+                if (isCaptured) liveFlagSites++;
                 continue;
             }
 

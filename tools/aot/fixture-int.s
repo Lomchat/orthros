@@ -552,3 +552,104 @@ t_mxcsr:
     ldmxcsr [edi+4]
     stmxcsr [edi+8]
     ret
+
+# SSE2 low-64 moves and 32-bit extract: load a qword, extract dword, shift,
+# store back. edi points to scratch (>= 32 bytes of pointers region).
+    .globl t_sse_move
+t_sse_move:
+    mov edi, [esp+4]
+    movq xmm0, qword ptr [edi]
+    movd eax, xmm0
+    mov [edi+16], eax
+    psrlq xmm0, 4
+    movq qword ptr [edi+24], xmm0
+    ret
+
+# psrlq/psllq by an xmm count, and a 128-bit unaligned move round-trip.
+    .globl t_sse_shift
+t_sse_shift:
+    mov edi, [esp+4]
+    movdqu xmm0, xmmword ptr [edi]
+    movdqu xmm1, xmmword ptr [edi]
+    psrlq xmm1, 5
+    psllq xmm0, 3
+    movdqu xmmword ptr [edi+16], xmm0
+    movdqu xmmword ptr [edi+32], xmm1
+    ret
+
+# packed 32-bit subtract and 128-bit bitwise (pand/pxor).
+    .globl t_sse_packed
+t_sse_packed:
+    mov edi, [esp+4]
+    movdqu xmm0, xmmword ptr [edi]
+    movdqu xmm1, xmmword ptr [edi+16]
+    psubd xmm0, xmm1
+    movdqu xmmword ptr [edi+32], xmm0
+    movdqu xmm2, xmmword ptr [edi]
+    pand xmm2, xmm1
+    pxor xmm2, xmm1
+    movdqu xmmword ptr [edi+48], xmm2
+    ret
+
+# ucomisd sets CF/PF/ZF; jb/jz/jnp read them. Compare two doubles from scratch
+# and record the branch outcomes, so verify-c checks the flag mapping.
+    .globl t_sse_cmp
+t_sse_cmp:
+    mov edi, [esp+4]
+    xor ecx, ecx
+    movq xmm0, qword ptr [edi]
+    movq xmm1, qword ptr [edi+8]
+    ucomisd xmm0, xmm1
+    jb 1f
+    or ecx, 1
+1:
+    jz 2f
+    or ecx, 2
+2:
+    jnp 3f
+    or ecx, 4
+3:
+    ucomisd xmm0, xmm0
+    jnp 4f
+    or ecx, 8
+4:
+    mov [edi+16], ecx
+    ret
+
+# SSE2 double arithmetic: packed and scalar add/sub/mul/div, results to scratch.
+# movapd is reg-reg only (no alignment need); loads/stores use movdqu.
+    .globl t_sse_fp
+t_sse_fp:
+    mov edi, [esp+4]
+    movdqu xmm0, xmmword ptr [edi]
+    movdqu xmm1, xmmword ptr [edi+16]
+    movapd xmm2, xmm0
+    addpd xmm2, xmm1
+    movdqu xmmword ptr [edi+32], xmm2
+    movapd xmm3, xmm0
+    subsd xmm3, xmm1
+    movdqu xmmword ptr [edi+48], xmm3
+    movapd xmm4, xmm0
+    mulpd xmm4, xmm1
+    movdqu xmmword ptr [edi+64], xmm4
+    movapd xmm5, xmm0
+    divsd xmm5, xmm1
+    movdqu xmmword ptr [edi+80], xmm5
+    ret
+
+# SSE2 packed double compares producing per-lane masks.
+    .globl t_sse_fpcmp
+t_sse_fpcmp:
+    mov edi, [esp+4]
+    movdqu xmm0, xmmword ptr [edi]
+    movdqu xmm1, xmmword ptr [edi+16]
+    movapd xmm2, xmm0
+    cmpltpd xmm2, xmm1
+    movdqu xmmword ptr [edi+32], xmm2
+    movapd xmm3, xmm0
+    cmpeqpd xmm3, xmm1
+    movdqu xmmword ptr [edi+48], xmm3
+    movapd xmm4, xmm0
+    cmpunordpd xmm4, xmm1
+    movdqu xmmword ptr [edi+64], xmm4
+    ret
