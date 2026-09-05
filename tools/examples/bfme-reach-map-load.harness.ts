@@ -62,6 +62,9 @@ const hotDumpAtSec = Number(arg("hot-dump-at", "90"));
  *  histogram and the thunk census over the same window, so the load's cost
  *  can be split between guest code, dispatcher, thunks and decoding. */
 const profileLoadMs = Number(arg("profile-load", "0"));
+/** --shot <file.png>: save a screenshot of the page at the end of the hold, to
+ *  check by eye that a rendering change did not corrupt the frame. */
+const shotPath = arg("shot", "");
 const tag = `load-${Date.now()}`;
 
 interface Sample { present: number; draws: number
@@ -881,6 +884,13 @@ if (process.argv.includes("--profile-ingame")) {
     }
 }
 
+if (shotPath) {
+    try {
+        const png = await bench.shot();
+        await Bun.write(shotPath, png);
+        console.log(`SHOT ${shotPath} (${png.byteLength} bytes)`);
+    } catch (e) { console.log(`SHOT failed: ${String(e).slice(0, 120)}`); }
+}
 console.log("RESULT " + JSON.stringify({
     reached: true,
     // A default that silently corrupts guest state would still finish the load.
