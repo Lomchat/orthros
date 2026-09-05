@@ -478,9 +478,6 @@ export class D3D9Device {
     private vertexConversionBufferSize: number = 0;
     /** Reuse pool for DrawPrimitiveUP vertex buffers (lazily created — needs the device). */
     private upArena: DynamicVbArena | null = null;
-    /** The previous draw's fixed-function state, to share its slot when nothing changed. */
-    private ffpDedupe: { frameId: number; index: number; block: Float32Array | null; worldVersion: number; textures: Array<GPUTextureView | null>; samplers: Array<GPUSampler | null> } =
-        { frameId: -1, index: -1, block: null, worldVersion: -1, textures: [null, null, null, null], samplers: [null, null, null, null] };
     private vbPool: DynamicVbPool | null = null;
 
     // Reusable buffer for texture ARGB→RGBA conversion to avoid GC pressure
@@ -3918,29 +3915,13 @@ export class D3D9Device {
             }
             if (!debugForced) this.ffpBlockCache = { trackerVersion: tv, worldVersion: wv, deviceVersion: dv, w, h, block };
         }
-        // Consecutive draws with the very same block and the same textures and
-        // samplers share one state slot: no copy, no bind-group switch, and the
-        // executor's shadow compare runs once for all of them.
-        const forceWhite = (globalThis as any).__d3d9ForceWhiteTexture === true;
-        const d = this.ffpDedupe;
-        let same = d.frameId === frame.frameSerial && d.index >= 0 && d.block === block && d.worldVersion === wv && !forceWhite;
-        if (same) {
-            for (let stage = 0; stage < FFP_MAX_TEXTURE_STAGES; stage++) {
-                const tex = this.resolveStageTexture(stage);
-                const samp = this.resolveStageSampler(stage);
-                if (d.textures[stage] !== tex || d.samplers[stage] !== samp) { same = false; break; }
-            }
-            if (same) { d3d9PerfBackendInc("ffpStateShared"); return d.index; }
-        }
         const state = frame.nextFixedState(block.length);
         state.uniforms.set(block);
+        const forceWhite = (globalThis as any).__d3d9ForceWhiteTexture === true;
         for (let stage = 0; stage < FFP_MAX_TEXTURE_STAGES; stage++) {
             state.textures[stage] = forceWhite ? null : this.resolveStageTexture(stage);
             state.samplers[stage] = this.resolveStageSampler(stage);
-            d.textures[stage] = state.textures[stage];
-            d.samplers[stage] = state.samplers[stage];
         }
-        d.frameId = frame.frameSerial; d.index = index; d.block = block; d.worldVersion = wv;
         return index;
     }
 
