@@ -12,7 +12,7 @@
  */
 
 import { CapstoneDecoder } from "./decoder-capstone";
-import { lastRejection, translateFunctionC } from "./x86-to-c";
+import { lastRejection, translateFunctionC, setSizeBudget } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
     const i = process.argv.indexOf(`--${name}`);
@@ -42,6 +42,9 @@ entries.sort((a, b) => a - b);
 
 const decoder = await CapstoneDecoder.open(exe);
 const reasons = new Map<string, number>();
+// --size-budget N: largest function translated (default 4096 instructions).
+{ const i = process.argv.indexOf("--size-budget"); if (i >= 0 && process.argv[i + 1]) setSizeBudget(Number(process.argv[i + 1])); }
+
 const accepted: Array<{ entry: number; instructions: number; blocks: number; liveFlagSites: number }> = [];
 let inText = 0;
 const t0 = performance.now();
