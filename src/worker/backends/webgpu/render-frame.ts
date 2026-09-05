@@ -274,6 +274,14 @@ export class RenderFrame {
         this.uploadScratchUsed = used + n;
     }
 
+    /** Like queueUpload for data that stays valid until the submit (a buffer's
+     *  shadow copy): the view is kept, nothing is copied now. */
+    queueUploadRef(buffer: GPUBuffer, data: Uint8Array, destinationOffset = 0): void {
+        this.uploadBuffers.push(buffer);
+        this.uploadOffsets.push(destinationOffset >>> 0);
+        this.uploadData.push(data);
+    }
+
     registerTemporaryBuffer(buffer: GPUBuffer): void {
         this.temporaryBuffers.push(buffer);
     }

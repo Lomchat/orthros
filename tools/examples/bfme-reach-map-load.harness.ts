@@ -57,16 +57,27 @@ const missTopAtSec = Number(arg("miss-top-at", "-1"));
  *  an ahead-of-time batch should be selected by. */
 const hotDump = arg("dump-hot-pages", "");
 const hotDumpAtSec = Number(arg("hot-dump-at", "90"));
+/** --profile-load <ms>: CPU-profile the Worker over the first <ms> of the map
+ *  load (from the moment loading is confirmed), with the dispatch-entry page
+ *  histogram and the thunk census over the same window, so the load's cost
+ *  can be split between guest code, dispatcher, thunks and decoding. */
+const profileLoadMs = Number(arg("profile-load", "0"));
 const tag = `load-${Date.now()}`;
 
-interface Sample { present: number; draws: number }
+interface Sample { present: number; draws: number
+    upBytes: number;
+    ups: number;
+}
 
 async function sample(b: BenchSession): Promise<Sample> {
     return b.evalPage<Sample>(`(async () => {
-        const a = (await __BS__.harness.dbgCall("d3d9Perf"))?.api ?? {};
+        const p = await __BS__.harness.dbgCall("d3d9Perf");
+        const a = p?.api ?? {};
+        const b = p?.backend ?? {};
         return { present: a.present ?? 0,
                  draws: (a.drawPrimitive ?? 0) + (a.drawIndexedPrimitive ?? 0)
-                      + (a.drawPrimitiveUP ?? 0) + (a.drawIndexedPrimitiveUP ?? 0) };
+                      + (a.drawPrimitiveUP ?? 0) + (a.drawIndexedPrimitiveUP ?? 0),
+                 upBytes: b.stagedUploadBytes ?? 0, ups: b.stagedUploads ?? 0 };
     })()`, 30_000);
 }
 
@@ -334,6 +345,11 @@ if (!loading) {
 }
 
 console.log("LOADING confirmed — sampling");
+let loadProfile: Promise<any> | null = null;
+if (profileLoadMs > 0) {
+    await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
+    loadProfile = bench.profileWorker(profileLoadMs, 30).catch((e) => ({ error: String(e) }));
+}
 await bench.dbg("stallReset").catch(() => null);
 await bench.dbg("thunkCensus", true).catch(() => null);
 if (process.argv.includes("--attribute-chain-misses")) {
@@ -381,6 +397,22 @@ const attributeChain = process.argv.includes("--attribute-chain-misses");
 if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
 let prevChain: any = null;
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    if (loadProfile && i * 10_000 >= profileLoadMs) {
+        const prof = await loadProfile; loadProfile = null;
+        const top = (prof?.top ?? []).map((r: any) => `${r.name ?? r.fn ?? "?"}:${r.selfPct ?? r.pct ?? r.self ?? "?"}`);
+        console.log(`LOAD-PROFILE ${profileLoadMs}ms samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top).slice(0, 3000)}`);
+        // Who calls the hottest host frames: the JS path behind a GPU upload
+        // (buffer unlock, uniform block, texture) is what a fix has to target.
+        const callers = prof?.callers ?? {};
+        for (const fn of Object.keys(callers).slice(0, 6)) console.log(`LOAD-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 700)}`);
+        const incl = (prof?.inclusive ?? []).slice(0, 16).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
+        console.log(`LOAD-INCLUSIVE ${JSON.stringify(incl).slice(0, 1500)}`);
+        const hp = await bench.evalPage(`__BS__.harness.dbgCall("hotPages", false, 20)`, 60_000).catch(() => null);
+        await bench.evalPage(`__BS__.harness.dbgCall("hotPages", null)`, 30_000).catch(() => {});
+        console.log(`LOAD-HOTPAGES ${JSON.stringify(hp).slice(0, 2500)}`);
+        const th = await bench.dbg("thunkCensus", false, 14).catch(() => null);
+        console.log(`LOAD-THUNKS ${JSON.stringify(th).slice(0, 2500)}`);
+    }
     if (trace2Pages.length && i * 10 === trace2AtSec) {
         await bench.dbg("trace2Reset").catch(() => null);
         console.log("trace2 armed: " + JSON.stringify(await bench.dbg("trace2Watch", trace2Pages).catch((e) => String(e))));
@@ -495,6 +527,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` mips=${(retired / 10e6).toFixed(1)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
+        + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups}`
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);

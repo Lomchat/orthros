@@ -5,6 +5,7 @@ import { LruCache } from "../../../core/collections/lru-cache";
 import { D3D9StateTracker } from "./d3d9-state-tracker";
 import { D3D9CommandRecorder } from "./d3d9-command-recorder";
 import { DynamicVbPool } from "./dynamic-vb-pool";
+import { DynamicVbArena } from "./dynamic-vb-arena";
 import { D3D9BackendExecutor, UniformData } from "./d3d9-backend-executor";
 import {
     VertexBufferStore,
@@ -476,6 +477,7 @@ export class D3D9Device {
     private vertexConversionBuffer: Uint8Array | null = null;
     private vertexConversionBufferSize: number = 0;
     /** Reuse pool for DrawPrimitiveUP vertex buffers (lazily created — needs the device). */
+    private upArena: DynamicVbArena | null = null;
     private vbPool: DynamicVbPool | null = null;
 
     // Reusable buffer for texture ARGB→RGBA conversion to avoid GC pressure
@@ -2607,17 +2609,18 @@ export class D3D9Device {
         // synthetic-FVF pipeline (cull forced off). Same pooled-buffer flow as drawPrimitiveUP.
         const view = out.subarray(0, outBytes);
         if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
-        const gpuBuffer = this.vbPool.acquire(Math.max(16, outBytes));
-        this.commandRecorder.queueUpload(gpuBuffer, view, 0);
+        if (!this.upArena) this.upArena = new DynamicVbArena(device);
+        const upOffset = this.upArena.alloc(Math.max(16, outBytes));
+        this.upArena.data.set(view, upOffset);
+        const gpuBuffer = this.upArena.buffer!;
 
         const pipelineId = this.getPointSpritePipelineId(outFvf);
         const fixedStateIndex = this.captureFixedFunctionDrawState();
         this.commandRecorder.setStencilReference(this.getRS(D3DRS_STENCILREF));
         this.commandRecorder.recordDraw({
-            pipelineId, gpuBuffer, bufferOffset: 0, bufferSize: outBytes,
+            pipelineId, gpuBuffer, bufferOffset: upOffset, bufferSize: outBytes,
             vertexCount: outVerts, startVertex: 0, fixedStateIndex,
         });
-        this.commandRecorder.registerPooledBuffer(gpuBuffer);
         this.drawCount += 1;
         this.frameSnapshot.drawCalls++;
         return true;
@@ -2630,7 +2633,7 @@ export class D3D9Device {
         const start = this.vertexBuffers.getDirtyStart(index) & ~3;
         const end = Math.min(data.byteLength, (this.vertexBuffers.getDirtyEnd(index) + 3) & ~3);
         if (end <= start) return 0;
-        this.commandRecorder.queueUpload(gpuBuffer, data.subarray(start, end), start);
+        this.commandRecorder.queueUploadRef(gpuBuffer, data.subarray(start, end), start);
         this.vertexBuffers.setDirty(index, false);
         return end - start;
     }
@@ -2639,7 +2642,7 @@ export class D3D9Device {
         const start = this.indexBuffers.getDirtyStart(index) & ~3;
         const end = Math.min(data.byteLength, (this.indexBuffers.getDirtyEnd(index) + 3) & ~3);
         if (end <= start) return 0;
-        this.commandRecorder.queueUpload(gpuBuffer, data.subarray(start, end), start);
+        this.commandRecorder.queueUploadRef(gpuBuffer, data.subarray(start, end), start);
         this.indexBuffers.setDirty(index, false);
         return end - start;
     }
@@ -2830,16 +2833,14 @@ export class D3D9Device {
             finalVertexCount = srcVertexCount;
         }
 
-        // Acquire a pooled vertex buffer (reused across frames — no per-draw
-        // createBuffer/destroy churn) and queue the upload with the frame's other
-        // geometry: one staging write per frame instead of one queue.writeBuffer
-        // per UP draw. queueUpload snapshots finalData (a view into the shared
-        // conversion scratch that the NEXT UP draw overwrites) into the frame's
-        // scratch, so the copy is a memcpy, not an allocation.
-        const bufferSize = Math.max(16, finalData.byteLength);
-        if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
-        const gpuBuffer = this.vbPool.acquire(bufferSize);
-        this.commandRecorder.queueUpload(gpuBuffer, finalData, 0);
+        // The frame's UP arena: one vertex buffer shared by every UP draw of the
+        // frame, written to the GPU once before the submit. finalData (a view
+        // into the shared conversion scratch that the NEXT UP draw overwrites) is
+        // copied into the arena's mirror right here.
+        if (!this.upArena) this.upArena = new DynamicVbArena(device);
+        const upOffset = this.upArena.alloc(Math.max(16, finalData.byteLength));
+        this.upArena.data.set(finalData, upOffset);
+        const gpuBuffer = this.upArena.buffer!;
 
         const isLine = primitiveType === D3DPT_LINELIST || primitiveType === D3DPT_LINESTRIP;
         const topology = isLine ? "line-list" : "triangle-list";
@@ -2866,7 +2867,7 @@ export class D3D9Device {
         let fixedStateIndex: number | undefined;
         if (this.isProgrammable()) {
             pipelineId = this.resolveProgrammablePipeline(topology, true, stride, arenaKey);
-            if (pipelineId < 0) { this.commandRecorder.registerPooledBuffer(gpuBuffer); return 0; }
+            if (pipelineId < 0) return 0;
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineIdForTopology(topology, true);
@@ -2877,7 +2878,7 @@ export class D3D9Device {
         this.commandRecorder.recordDraw({
             pipelineId,
             gpuBuffer,
-            bufferOffset: 0,
+            bufferOffset: upOffset,
             bufferSize: finalData.byteLength,
             vertexCount: finalVertexCount,
             startVertex: 0,
@@ -3787,12 +3788,15 @@ export class D3D9Device {
             this.backendExecutor.drainArenaVerifyOnly();
         }
 
+        // The UP arena's write is queued before the submit inside execute().
+        this.upArena?.flush();
         this.backendExecutor.execute(frame, uniforms, textureView, present, {
             videoOverlayCanvas,
             gdiOverlayCanvas,
             gdiOverlayRects,
             cursor: composit ? this.getCursorOverlay(size.width, size.height) : null,
         }, target);
+        this.upArena?.endFrame();
 
         // Return DrawPrimitiveUP vertex buffers to the reuse pool. execute() has already
         // issued queue.submit, so by WebGPU queue ordering the next frame's writeBuffer

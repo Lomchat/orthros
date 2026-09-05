@@ -83,6 +83,11 @@ export class D3D9CommandRecorder {
         this.frame.queueUpload(buffer, data, destinationOffset);
     }
 
+    /** Queue a range whose backing store outlives the frame (a buffer's shadow copy). */
+    queueUploadRef(buffer: GPUBuffer, data: Uint8Array, destinationOffset = 0): void {
+        this.frame.queueUploadRef(buffer, data, destinationOffset);
+    }
+
     /**
      * Record a non-indexed draw call
      */

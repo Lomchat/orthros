@@ -189,7 +189,7 @@ export class D3D9BackendExecutor {
         bindGroupCacheHits: 0,
         drawCalls: 0,
         clearCalls: 0,
-        progConstWrites: 0,
+        progConstWrites: 0, stagedUploads: 0, stagedUploadBytes: 0,
         progConstReuseHits: 0,
         // The CPU/ImageBitmap presentation bridge is asynchronous and deliberately
         // keeps at most one readback in flight. These counters make its real output
@@ -353,6 +353,8 @@ export class D3D9BackendExecutor {
         this.metrics.drawCalls = 0;
         this.metrics.clearCalls = 0;
         this.metrics.progConstWrites = 0;
+        this.metrics.stagedUploads = 0;
+        this.metrics.stagedUploadBytes = 0;
         this.metrics.progConstReuseHits = 0;
         this.metrics.cpuPresentEncoded = 0;
         this.metrics.cpuPresentDropped = 0;
@@ -1332,6 +1334,8 @@ export class D3D9BackendExecutor {
             totalBytes += alignUp(frame.uploadData[i].byteLength, 4);
         }
         if (totalBytes <= 0) return;
+        this.metrics.stagedUploads += count;
+        this.metrics.stagedUploadBytes += totalBytes;
 
         if (!this.geometryStagingBuffer || this.geometryStagingSize < totalBytes) {
             this.geometryStagingBuffer?.destroy();
