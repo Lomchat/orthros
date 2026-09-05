@@ -885,11 +885,18 @@ if (process.argv.includes("--profile-ingame")) {
 }
 
 if (shotPath) {
+    // The page screenshot is black under headless SwiftShader (the WebGPU
+    // swapchain is not readable there); the presenter's own readback is.
+    try {
+        const r = await bench.evalPage(`__BS__.harness.rpc("shot", [])`, 60_000) as { bytes?: number; base64?: string };
+        const png = Buffer.from(r?.base64 ?? "", "base64");
+        await Bun.write(shotPath, png);
+        console.log(`SHOT ${shotPath} (${png.byteLength} bytes, presenter readback)`);
+    } catch (e) { console.log(`SHOT readback failed: ${String(e).slice(0, 160)}`); }
     try {
         const png = await bench.shot();
-        await Bun.write(shotPath, png);
-        console.log(`SHOT ${shotPath} (${png.byteLength} bytes)`);
-    } catch (e) { console.log(`SHOT failed: ${String(e).slice(0, 120)}`); }
+        await Bun.write(shotPath.replace(/\.png$/i, "") + ".page.png", png);
+    } catch { /* page screenshot is only a fallback */ }
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
