@@ -96,7 +96,7 @@ const BACKEND_KEYS = [
     "progPipelineCacheMisses",
     // Fixed-function uniform block per draw: rebuilt, patched (world matrix
     // only) or reused, and which version moved when it was rebuilt.
-    "ffpBlockBuild", "ffpBlockPatch", "ffpBlockReuse", "ffpBlockTrackerChanged", "ffpBlockDeviceChanged",
+    "ffpBlockBuild", "ffpBlockPatch", "ffpBlockReuse", "ffpBlockTrackerChanged", "ffpBlockDeviceChanged", "ffpStateShared",
     // Why the block was invalidated (one count per setter call that changed a block input).
     "ffpInvRenderState", "ffpInvFvf", "ffpInvTexturePresence", "ffpInvTransform",
     "ffpInvStageState", "ffpInvMaterial", "ffpInvLight", "ffpInvClipPlane", "ffpInvRenderTarget", "ffpInvDecl",
@@ -163,6 +163,7 @@ const backend: Record<BackendKey, number> = {
     ffpBlockBuild: 0,
     ffpBlockPatch: 0,
     ffpBlockReuse: 0,
+    ffpStateShared: 0,
     ffpBlockTrackerChanged: 0,
     ffpBlockDeviceChanged: 0,
     ffpInvRenderState: 0,

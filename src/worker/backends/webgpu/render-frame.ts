@@ -71,6 +71,8 @@ export class RenderFrame {
     bufferRefs: GPUBuffer[] = [];
     uploadBuffers: GPUBuffer[] = [];
     uploadData: Uint8Array[] = [];
+    /** Identity of the current use of this pooled frame: bumped by reset(). */
+    frameSerial = 0;
     private uploadScratch = new Uint8Array(1 << 20);
     private uploadScratchUsed = 0;
     /** Destination byte offset paired with each deferred buffer upload. */
@@ -100,6 +102,7 @@ export class RenderFrame {
         this.uploadData.length = 0;
         this.uploadOffsets.length = 0;
         this.uploadScratchUsed = 0;
+        this.frameSerial++;
         this.temporaryBuffers.length = 0;
         this.pooledBuffers.length = 0;
         // Rewind the draw-state pool without dropping the slots (keeps their
