@@ -5,6 +5,7 @@
  * multi-threading preparation, and cleaner separation of concerns.
  */
 
+import { d3d9PerfBackendInc } from "../../../modules/d3d9/d3d9-perf";
 import { RenderFrame, RenderFramePool } from "../render-frame";
 
 /** Extra vertex-stream binding (multi-stream D3D8 declarations): slot = stream number. */
@@ -64,7 +65,7 @@ export class D3D9CommandRecorder {
     private lastIb: GPUBuffer | null = null;
     private lastIbFormat: string | null = null;
     private setVertexBuffer0(buffer: GPUBuffer, offset: number, size: number): void {
-        if (this.lastVb === buffer && this.lastVbOffset === offset && this.lastVbSize === size) return;
+        if (this.lastVb === buffer && this.lastVbOffset === offset && this.lastVbSize === size) { d3d9PerfBackendInc("vbSetSkipped"); return; }
         this.frame.pushSetVertexBuffer(buffer, offset, size);
         this.lastVb = buffer; this.lastVbOffset = offset; this.lastVbSize = size;
     }
@@ -74,7 +75,7 @@ export class D3D9CommandRecorder {
         this.lastIb = null; this.lastIbFormat = null;
     }
     private setIndexBuffer(buffer: GPUBuffer, format: "uint16" | "uint32"): void {
-        if (this.lastIb === buffer && this.lastIbFormat === format) return;
+        if (this.lastIb === buffer && this.lastIbFormat === format) { d3d9PerfBackendInc("ibSetSkipped"); return; }
         this.frame.pushSetIndexBuffer(buffer, format);
         this.lastIb = buffer; this.lastIbFormat = format;
     }

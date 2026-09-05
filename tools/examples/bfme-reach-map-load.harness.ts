@@ -78,7 +78,8 @@ interface Sample { present: number; draws: number
     ffpBytes: number;
     ffpUp: number;
     ffpSkip: number;
-    ffpShared: number;
+    vbSkip: number;
+    ibSkip: number;
 }
 
 async function sample(b: BenchSession): Promise<Sample> {
@@ -92,7 +93,7 @@ async function sample(b: BenchSession): Promise<Sample> {
                  upBytes: b.stagedUploadBytes ?? 0, ups: b.stagedUploads ?? 0,
                  upArena: b.upArenaBytes ?? 0,
                  ffpBytes: b.ffpStagedBytes ?? 0, ffpUp: b.ffpStatesUploaded ?? 0, ffpSkip: b.ffpStatesSkipped ?? 0,
-                 ffpShared: b.ffpStateShared ?? 0 };
+                 vbSkip: b.vbSetSkipped ?? 0, ibSkip: b.ibSetSkipped ?? 0 };
     })()`, 30_000);
 }
 
@@ -562,7 +563,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` mips=${(retired / 10e6).toFixed(1)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
-        + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups} upArena=${((s.upArena - prev.upArena) / 1048576).toFixed(1)}MB ffp=${((s.ffpBytes - prev.ffpBytes) / 1048576).toFixed(1)}MB/${s.ffpUp - prev.ffpUp}up/${s.ffpSkip - prev.ffpSkip}skip/${s.ffpShared - prev.ffpShared}shared`
+        + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups} upArena=${((s.upArena - prev.upArena) / 1048576).toFixed(1)}MB ffp=${((s.ffpBytes - prev.ffpBytes) / 1048576).toFixed(1)}MB/${s.ffpUp - prev.ffpUp}up/${s.ffpSkip - prev.ffpSkip}skip` + ` vbskip=${s.vbSkip - prev.vbSkip}/${s.ibSkip - prev.ibSkip}'
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
