@@ -90,8 +90,11 @@ function classifyFrame(fn: string, url: string): string {
     if (url.includes("emulator.worker")) return "worker-js";
     if (!url.includes("v86.wasm")) {
         // Each compiled page is its own module at its own blob URL, so anything
-        // else presenting as wasm is generated guest code.
-        return /^wasm-function/.test(fn) ? "jit-code" : "other";
+        // else presenting as wasm is generated guest code; the ahead-of-time
+        // batch's functions carry their own names (fn_/page_/aot_dispatch).
+        if (/^wasm-function/.test(fn)) return "jit-code";
+        if (/^(fn_[0-9a-f]+|page_[0-9a-f]+|aot_dispatch)/.test(fn)) return "aot-code";
+        return "other";
     }
     // cycle_internal is NOT interpretation: it runs on every block entry, including
     // the ones that go on to execute a compiled module. Folding it into
