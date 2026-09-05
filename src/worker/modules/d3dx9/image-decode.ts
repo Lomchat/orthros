@@ -414,10 +414,6 @@ function readTgaColor(data: Uint8Array, offset: number, bpp: number, alphaBits: 
     ];
 }
 
-async function imageBitmapFromRGBA(rgba: Uint8Array, width: number, height: number): Promise<ImageBitmap> {
-    const clamped = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
-    return createImageBitmap(new ImageData(asArrayBufferView(clamped), width, height));
-}
 
 async function rgbaFromImageBitmap(bitmap: ImageBitmap): Promise<Uint8Array> {
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -540,13 +536,15 @@ export async function decodeImageBytes(data: Uint8Array): Promise<DecodedImage |
                 mipLevels: dds.mipLevels,
             };
         } else {
+            // decodeTGA already yields straight-alpha RGBA in the right
+            // orientation, like the DDS branch: no bitmap round trip (which
+            // premultiplied then un-premultiplied the alpha and cost a canvas
+            // per texture).
             const tga = decodeTGA(data);
             if (!tga) return null;
             width = tga.width;
             height = tga.height;
-            const bitmap = await imageBitmapFromRGBA(tga.rgba, width, height);
-            rgba = await rgbaFromImageBitmap(bitmap);
-            bitmap.close();
+            rgba = tga.rgba;
         }
 
         return {
