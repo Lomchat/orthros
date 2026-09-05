@@ -510,8 +510,8 @@ export async function openBenchSession(opts: BenchSessionOptions): Promise<Bench
         },
         profileWorker: (ms: number, top = 25) => profileWorkerTarget(session, workerSessionId, ms, top),
         shot: async () => {
-            const r = await session.send("Page.captureScreenshot", { format: "png" }) as { data: string };
-            return new Uint8Array(Buffer.from(r.data, "base64"));
+            const r = await session.send("Page.captureScreenshot", { format: "png" }) as { result?: { data?: string }; data?: string };
+            return new Uint8Array(Buffer.from(r.result?.data ?? r.data ?? "", "base64"));
         },
         workerErrors: () => workerErrors.slice(),
         dialogs: () => dialogs.slice(),
