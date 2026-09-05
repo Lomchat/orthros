@@ -127,6 +127,8 @@ export class D3D9BackendExecutor {
         textures: (GPUTextureView | null)[];
         samplers: GPUSampler[];
         bindGroup: GPUBindGroup;
+    /** The block the buffer holds, to skip an equal upload. */
+    shadow: Float32Array | null;
     }>();
     private uniformBuffer: GPUBuffer | null = null;
     private uniformBufferSize = 0;
@@ -189,7 +191,7 @@ export class D3D9BackendExecutor {
         bindGroupCacheHits: 0,
         drawCalls: 0,
         clearCalls: 0,
-        progConstWrites: 0, stagedUploads: 0, stagedUploadBytes: 0,
+        progConstWrites: 0, stagedUploads: 0, stagedUploadBytes: 0, ffpStatesUploaded: 0, ffpStatesSkipped: 0, ffpStagedBytes: 0,
         progConstReuseHits: 0,
         // The CPU/ImageBitmap presentation bridge is asynchronous and deliberately
         // keeps at most one readback in flight. These counters make its real output
@@ -238,6 +240,7 @@ export class D3D9BackendExecutor {
     private vsArena: UniformArena | null = null;
     private psArena: UniformArena | null = null;
     private ffpBlockUploaded = false;
+    private fixedStageOffsets = new Int32Array(512);
 
     // Material-keyed programmable bind-group cache. With dynamic offsets, the only
     // per-draw-varying part of the bind group is the uniform offset (passed at
@@ -273,12 +276,6 @@ export class D3D9BackendExecutor {
     /** Persistent COPY_SRC arenas. queue.writeBuffer is ordered on the GPU queue,
      * so one arena upload can feed every copy in a frame without per-draw calls or
      * per-frame mapped-buffer creation/destruction (which destabilises Chromium). */
-    private geometryStagingBuffer: GPUBuffer | null = null;
-    private geometryStagingSize = 0;
-    private geometryStagingData = new Uint8Array(0);
-    private fixedStagingBuffer: GPUBuffer | null = null;
-    private fixedStagingSize = 0;
-    private fixedStagingData = new Uint8Array(0);
 
     /**
      * Shared, explicit bind-group/pipeline layout for programmable pipelines, parameterised by
@@ -355,6 +352,9 @@ export class D3D9BackendExecutor {
         this.metrics.progConstWrites = 0;
         this.metrics.stagedUploads = 0;
         this.metrics.stagedUploadBytes = 0;
+        this.metrics.ffpStatesUploaded = 0;
+        this.metrics.ffpStatesSkipped = 0;
+        this.metrics.ffpStagedBytes = 0;
         this.metrics.progConstReuseHits = 0;
         this.metrics.cpuPresentEncoded = 0;
         this.metrics.cpuPresentDropped = 0;
@@ -1253,16 +1253,20 @@ export class D3D9BackendExecutor {
                 textures: [null, null, null, null],
                 samplers: [this.getSampler(), this.getSampler(), this.getSampler(), this.getSampler()],
                 bindGroup: null as unknown as GPUBindGroup,
+                shadow: null,
             };
             this.fixedStateResources.set(state, resource);
         }
         return resource;
     }
 
-    /** Upload every fixed-function uniform block through one mapped staging allocation.
-     * copyBufferToBuffer requires 4-byte-aligned offsets/sizes, naturally satisfied by the
-     * Float32 blocks. The staging buffer is destroyed after queue.submit via the frame's
-     * existing temporary-buffer lifetime. */
+    /** Upload the fixed-function uniform blocks that changed, through one upload
+     * buffer mapped at creation. The pooled draw-state slots hold the same draw
+     * from one frame to the next in a stable scene, and each slot's GPU buffer
+     * keeps a shadow of what it holds: a block equal to its shadow is neither
+     * staged nor copied. copyBufferToBuffer requires 4-byte-aligned offsets and
+     * sizes, naturally satisfied by the Float32 blocks. The upload buffer is
+     * destroyed after queue.submit via the frame's temporary-buffer lifetime. */
     private stageFixedFunctionUniforms(
         device: GPUDevice,
         encoder: GPUCommandEncoder,
@@ -1270,57 +1274,63 @@ export class D3D9BackendExecutor {
     ): void {
         const count = frame.fixedStateCount;
         if (count <= 0) return;
-
-        let totalBytes = 0;
-        for (let i = 0; i < count; i++) {
-            totalBytes += Math.max(16, frame.fixedStates[i].uniformLen * 4);
-        }
-        if (totalBytes <= 0) return;
-
-        const required = alignUp(totalBytes, 4);
-        if (!this.fixedStagingBuffer || this.fixedStagingSize < required) {
-            this.fixedStagingBuffer?.destroy();
-            this.fixedStagingSize = nextPowerOfTwo(required);
-            this.fixedStagingBuffer = device.createBuffer({
-                label: "d3d9-ffp-frame-staging",
-                size: this.fixedStagingSize,
-                usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-            });
-            this.fixedStagingData = new Uint8Array(this.fixedStagingSize);
-        }
-        const mapped = this.fixedStagingData;
-        let offset = 0;
+        if (this.fixedStageOffsets.length < count) this.fixedStageOffsets = new Int32Array(count * 2);
+        const offsets = this.fixedStageOffsets;
+        let required = 0;
         for (let i = 0; i < count; i++) {
             const state = frame.fixedStates[i];
-            const byteSize = Math.max(16, state.uniformLen * 4);
-            const source = new Uint8Array(
-                state.uniforms.buffer,
-                state.uniforms.byteOffset,
-                state.uniformLen * 4,
-            );
-            mapped.set(source, offset);
-            // The remaining bytes (only possible for an empty block) stay zero-initialized.
-            offset += byteSize;
-        }
-        this.backend.getQueue()!.writeBuffer(this.fixedStagingBuffer, 0, mapped.buffer, 0, required);
-
-        offset = 0;
-        for (let i = 0; i < count; i++) {
-            const state = frame.fixedStates[i];
-            const byteSize = Math.max(16, state.uniformLen * 4);
             const resource = this.ensureFixedStateResource(device, state);
-            encoder.copyBufferToBuffer(this.fixedStagingBuffer, offset, resource.buffer, 0, byteSize);
-            offset += byteSize;
+            const n = state.uniformLen;
+            const u = state.uniforms;
+            const sh = resource.shadow;
+            let same = sh !== null && sh.length === n;
+            if (same) {
+                for (let j = 0; j < n; j++) if (sh![j] !== u[j]) { same = false; break; }
+            }
+            if (same) { offsets[i] = -1; this.metrics.ffpStatesSkipped++; continue; }
+            offsets[i] = required;
+            required += Math.max(16, n * 4);
+            this.metrics.ffpStatesUploaded++;
         }
+        if (required <= 0) return;
+        this.metrics.ffpStagedBytes += required;
+        const staging = device.createBuffer({
+            label: "d3d9-ffp-upload",
+            size: required,
+            usage: GPUBufferUsage.COPY_SRC,
+            mappedAtCreation: true,
+        });
+        const dst = new Float32Array(staging.getMappedRange());
+        for (let i = 0; i < count; i++) {
+            const off = offsets[i];
+            if (off < 0) continue;
+            const state = frame.fixedStates[i];
+            const n = state.uniformLen;
+            const u = state.uniforms;
+            const base = off >> 2;
+            if (u.length === n) dst.set(u, base);
+            else for (let j = 0; j < n; j++) dst[base + j] = u[j];
+            const resource = this.fixedStateResources.get(state)!;
+            let sh = resource.shadow;
+            if (!sh || sh.length !== n) { sh = new Float32Array(n); resource.shadow = sh; }
+            if (u.length === n) sh.set(u); else for (let j = 0; j < n; j++) sh[j] = u[j];
+        }
+        staging.unmap();
+        for (let i = 0; i < count; i++) {
+            const off = offsets[i];
+            if (off < 0) continue;
+            const state = frame.fixedStates[i];
+            const resource = this.fixedStateResources.get(state)!;
+            encoder.copyBufferToBuffer(staging, off, resource.buffer, 0, Math.max(16, state.uniformLen * 4));
+        }
+        frame.registerTemporaryBuffer(staging);
     }
 
-    /** Upload all deferred vertex/index data through one mapped staging buffer.
-     *
-     * BFME records roughly one dynamic geometry upload for every draw. Chromium's
-     * queue.writeBuffer path serialises each call and was costing another ~35 ms per
-     * frame. A single mapped allocation followed by encoder copies preserves the
-     * original ordering (including repeated writes to the same destination) while
-     * reducing the JavaScript/WebGPU crossing to one operation per submission. */
+    /** Upload all deferred vertex/index data through one upload buffer mapped at
+     * creation: the ranges are copied straight into the mapped memory, the buffer
+     * is unmapped, and encoder copies preserve the original ordering (including
+     * repeated writes to the same destination). One WebGPU crossing per
+     * submission, no intermediate array and no queue.writeBuffer. */
     private stageQueuedUploads(
         device: GPUDevice,
         encoder: GPUCommandEncoder,
@@ -1337,24 +1347,20 @@ export class D3D9BackendExecutor {
         this.metrics.stagedUploads += count;
         this.metrics.stagedUploadBytes += totalBytes;
 
-        if (!this.geometryStagingBuffer || this.geometryStagingSize < totalBytes) {
-            this.geometryStagingBuffer?.destroy();
-            this.geometryStagingSize = nextPowerOfTwo(totalBytes);
-            this.geometryStagingBuffer = device.createBuffer({
-                label: "d3d9-geometry-frame-staging",
-                size: this.geometryStagingSize,
-                usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-            });
-            this.geometryStagingData = new Uint8Array(this.geometryStagingSize);
-        }
-        const mapped = this.geometryStagingData;
+        const staging = device.createBuffer({
+            label: "d3d9-geometry-upload",
+            size: totalBytes,
+            usage: GPUBufferUsage.COPY_SRC,
+            mappedAtCreation: true,
+        });
+        const dst = new Uint8Array(staging.getMappedRange());
         let offset = 0;
         for (let i = 0; i < count; i++) {
             const data = frame.uploadData[i];
-            mapped.set(data, offset);
+            dst.set(data, offset);
             offset += alignUp(data.byteLength, 4);
         }
-        this.backend.getQueue()!.writeBuffer(this.geometryStagingBuffer, 0, mapped.buffer, 0, totalBytes);
+        staging.unmap();
 
         offset = 0;
         for (let i = 0; i < count; i++) {
@@ -1362,9 +1368,9 @@ export class D3D9BackendExecutor {
             if (byteLength > 0) {
                 // WebGPU requires copy sizes to be multiples of four. D3D vertex and
                 // index uploads are naturally aligned, but round defensively and rely
-                // on the zero-filled staging padding for the final bytes.
+                // on the zero-filled mapped padding for the final bytes.
                 encoder.copyBufferToBuffer(
-                    this.geometryStagingBuffer,
+                    staging,
                     offset,
                     frame.uploadBuffers[i],
                     frame.uploadOffsets[i] ?? 0,
@@ -1373,6 +1379,7 @@ export class D3D9BackendExecutor {
             }
             offset += alignUp(byteLength, 4);
         }
+        frame.registerTemporaryBuffer(staging);
     }
 
     private resetRenderPassBindCache(): void {
