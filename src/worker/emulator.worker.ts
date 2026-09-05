@@ -1,4 +1,5 @@
 import { V86 } from "v86";
+import { sharedNow, startSharedClock } from "./core/time/shared-clock";
 import { ThunkGenerator } from "./core/thunking/thunk-generator";
 import { Process } from "./core/process";
 import { System } from "./core/system";
@@ -2127,7 +2128,11 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     : `/v86.wasm?v=${encodeURIComponent(__V86_WASM_SHA__)}`;
 
   // v86 settings
+  // v86 samples the clock twice per slice; the shared clock makes that a
+  // memory load (see core/time/shared-clock.ts).
+  const clockShared = startSharedClock();
   const settings = {
+    microtick: clockShared ? sharedNow : undefined,
     canvas: canvas,
     wasm_path: wasmPath,
     memory_size: ramSize,

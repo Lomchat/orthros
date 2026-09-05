@@ -62,6 +62,10 @@ const hotDumpAtSec = Number(arg("hot-dump-at", "90"));
  *  histogram and the thunk census over the same window, so the load's cost
  *  can be split between guest code, dispatcher, thunks and decoding. */
 const profileLoadMs = Number(arg("profile-load", "0"));
+/** --profile-at <sec>: CPU-profile the Worker for 10 s starting <sec> seconds
+ *  after loading is confirmed — an in-game profile with callers, comparable
+ *  from one build to the next. */
+const profileAtSec = Number(arg("profile-at", "-1"));
 /** --shot <file.png>: save a screenshot of the page at the end of the hold, to
  *  check by eye that a rendering change did not corrupt the frame. */
 const shotPath = arg("shot", "");
@@ -413,6 +417,15 @@ const attributeChain = process.argv.includes("--attribute-chain-misses");
 if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
 let prevChain: any = null;
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    if (profileAtSec >= 0 && i * 10 === profileAtSec) {
+        const prof = await bench.profileWorker(10_000, 40).catch((e) => ({ error: String(e) })) as any;
+        const top = (prof?.top ?? []).map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
+        console.log(`GAME-PROFILE at T+${profileAtSec}s samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top).slice(0, 3200)}`);
+        const callers = prof?.callers ?? {};
+        for (const fn of Object.keys(callers)) console.log(`GAME-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 600)}`);
+        const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
+        console.log(`GAME-INCLUSIVE ${JSON.stringify(incl).slice(0, 1800)}`);
+    }
     if (loadProfile && i * 10_000 >= profileLoadMs) {
         const prof = await loadProfile; loadProfile = null;
         const top = (prof?.top ?? []).map((r: any) => `${r.name ?? r.fn ?? "?"}:${r.selfPct ?? r.pct ?? r.self ?? "?"}`);

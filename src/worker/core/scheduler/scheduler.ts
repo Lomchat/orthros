@@ -11,6 +11,7 @@
  * 7. No circular dependencies — one-way data flow
  */
 
+import { sharedNow } from "../time/shared-clock";
 import { Logger, LogCategory } from '../logger';
 import { Process } from '../process';
 import { preemptionManager } from '../cpu/preemption-manager';
@@ -287,7 +288,7 @@ export class Scheduler {
 
     /** Attribute wall time since the last mark to the outgoing current thread. */
     private accumThreadCpu(): void {
-        const now = performance.now();
+        const now = sharedNow();
         if (this.threadCpuMarkMs > 0 && this.currentThreadId !== null) {
             const id = this.currentThreadId;
             this.threadCpuMs.set(id, (this.threadCpuMs.get(id) ?? 0) + (now - this.threadCpuMarkMs));
@@ -304,7 +305,7 @@ export class Scheduler {
     }
     public resetThreadCpuMs(): void {
         this.threadCpuMs.clear();
-        this.threadCpuMarkMs = performance.now();
+        this.threadCpuMarkMs = sharedNow();
     }
     public fpuSwitchStats = {
         saves: 0,
@@ -1586,7 +1587,7 @@ export class Scheduler {
             this.onThreadSwitchCallback(oldId, next.id);
         }
 
-        next.lastSwitchTime = performance.now();
+        next.lastSwitchTime = sharedNow();
         next.lastSwitchInsn = this.retiredInsns(cpu); // deterministic quantum baseline for the resumed thread
         return true;
     }
@@ -4022,7 +4023,7 @@ export class Scheduler {
     }
 
     detectDeadlock(): void {
-        const now = performance.now();
+        const now = sharedNow();
         if (now - this.lastDeadlockCheckMs < 2000) return;
         this.lastDeadlockCheckMs = now;
 
@@ -4048,7 +4049,7 @@ export class Scheduler {
         const yieldSource = source ?? this.pendingYieldSource;
         this.pendingYieldSource = "req";
         this.intentionalYield = true;
-        const yieldStartMs = performance.now();
+        const yieldStartMs = sharedNow();
         // Use the INNER engine, not the V86 starter wrapper: starter.stop() registers a
         // one-shot "emulator-stopped" bus listener per call, and on the short-yield path
         // resume()/run() lands before do_tick processes the stop — the event never fires
@@ -4070,7 +4071,7 @@ export class Scheduler {
             // !intentionalYield) and the heartbeat "v86 not running" warn are permanently
             // disabled → silent hang. A reYield re-sets it via the nested yieldToHost.
             this.intentionalYield = false;
-            const actual = performance.now() - yieldStartMs;
+            const actual = sharedNow() - yieldStartMs;
             try {
                 frameVarianceDiagnostics.recordIdleTime('yield', actual);
                 this.recordYield(yieldSource, actual, ms);

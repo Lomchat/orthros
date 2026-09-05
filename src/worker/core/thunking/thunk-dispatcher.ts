@@ -1,4 +1,5 @@
 import { ThunkGenerator, ThunkStub } from './thunk-generator';
+import { sharedNow } from "../time/shared-clock";
 import { CallbackManager } from './callback-manager';
 import { Logger, LogCategory } from '../logger';
 import { System } from '../system';
@@ -1687,10 +1688,6 @@ export class ThunkDispatcher {
         let result: any;
         frameProfiler.markThunkStart();
         const thunkStart = frameProfiler.startTimer();
-        // PERF: Capture wall-clock time for virtual time compensation.
-        // Sync thunks don't spin-loop > instruction counter doesn't advance > virtual time
-        // falls behind wall-clock. Credit handler time to keep game timing consistent.
-        const implWallStart = performance.now();
         let censusCaller = 0;
         try {
             const regsRaw = this.cachedReg32Raw || this.cachedReg32 || cpu.reg32;
@@ -1758,7 +1755,7 @@ export class ThunkDispatcher {
             // Also refresh the hypercall page so the WASM GetTickCount hypercall sees the
             // updated value within the same tick (it reads OFF_HC_TICK_COUNT directly).
             const ts = this.cachedTimeService || (this.cachedTimeService = TimeService.getInstance());
-            const wallNow = performance.now();
+            const wallNow = sharedNow();
             const deficit = wallNow - ts.nowMs();
             if (deficit > 0.5) {
                 ts.advanceVirtualTime(Math.min(deficit, 16));

@@ -176,7 +176,7 @@ async function profileWorkerTarget(
     // frames included: a WebGPU call at 25 % of the profile is only actionable
     // through the JS path that issues it.
     const callers: Record<string, Array<{ fn: string; pos: string; samples: number }>> = {};
-    for (const row of rows.slice(0, 24)) {
+    for (const row of rows.slice(0, 40)) {
         const byParent = new Map<string, { fn: string; pos: string; samples: number }>();
         for (const [id, count] of self) {
             const f = byId.get(id)?.callFrame;
