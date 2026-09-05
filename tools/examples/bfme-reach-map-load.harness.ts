@@ -420,9 +420,13 @@ if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsE
 let prevChain: any = null;
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     if (profileAtSec >= 0 && i * 10 === profileAtSec) {
-        const prof = await bench.profileWorker(10_000, 40).catch((e) => ({ error: String(e) })) as any;
+        const prof = await bench.profileWorker(10_000, 80).catch((e) => ({ error: String(e) })) as any;
         const top = (prof?.top ?? []).map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
-        console.log(`GAME-PROFILE at T+${profileAtSec}s samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top).slice(0, 3200)}`);
+        console.log(`GAME-PROFILE at T+${profileAtSec}s samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top.slice(0, 40)).slice(0, 3200)}`);
+        // Native frames (WebGPU bindings, GC, idle) — the "other" bucket by name.
+        const native = (prof?.top ?? []).filter((r: any) => !String(r.url ?? "").endsWith(".js") && !String(r.url ?? "").endsWith(".wasm") && !String(r.fn ?? "").startsWith("wasm-function") && !String(r.fn ?? "").startsWith("fn_") && !String(r.fn ?? "").startsWith("page_") && !String(r.fn ?? "").startsWith("_ZN"))
+            .map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
+        console.log(`GAME-NATIVE ${JSON.stringify(native.slice(0, 30)).slice(0, 2000)}`);
         const callers = prof?.callers ?? {};
         for (const fn of Object.keys(callers)) console.log(`GAME-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 600)}`);
         const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
