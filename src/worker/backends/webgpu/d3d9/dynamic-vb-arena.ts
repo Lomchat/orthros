@@ -18,6 +18,7 @@ export class DynamicVbArena {
     private retired: GPUBuffer[] = [];
     flushes = 0;
     grows = 0;
+    bytesFlushed = 0;
 
     constructor(private readonly device: GPUDevice) {}
 
@@ -56,6 +57,7 @@ export class DynamicVbArena {
     flush(): void {
         if (this.buffer && this.cursor > this.flushed) {
             this.device.queue.writeBuffer(this.buffer, this.flushed, this.mirror.buffer, this.flushed, this.cursor - this.flushed);
+            this.bytesFlushed += this.cursor - this.flushed;
             this.flushed = this.cursor;
             this.flushes++;
         }

@@ -170,10 +170,11 @@ async function profileWorkerTarget(
     // function and position over every node of that frame.
     const parentOf = new Map<number, number>();
     for (const n of nodes) for (const c of n.children ?? []) parentOf.set(c, n.id);
-    // Two levels of callers ("parent < grandparent"), for the top JS rows.
+    // Two levels of callers ("parent < grandparent"), for the top rows — native
+    // frames included: a WebGPU call at 25 % of the profile is only actionable
+    // through the JS path that issues it.
     const callers: Record<string, Array<{ fn: string; pos: string; samples: number }>> = {};
     for (const row of rows.slice(0, 24)) {
-        if (!row.url.endsWith(".js")) continue;
         const byParent = new Map<string, { fn: string; pos: string; samples: number }>();
         for (const [id, count] of self) {
             const f = byId.get(id)?.callFrame;

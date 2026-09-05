@@ -67,6 +67,7 @@ const tag = `load-${Date.now()}`;
 interface Sample { present: number; draws: number
     upBytes: number;
     ups: number;
+    upArena: number;
 }
 
 async function sample(b: BenchSession): Promise<Sample> {
@@ -77,7 +78,8 @@ async function sample(b: BenchSession): Promise<Sample> {
         return { present: a.present ?? 0,
                  draws: (a.drawPrimitive ?? 0) + (a.drawIndexedPrimitive ?? 0)
                       + (a.drawPrimitiveUP ?? 0) + (a.drawIndexedPrimitiveUP ?? 0),
-                 upBytes: b.stagedUploadBytes ?? 0, ups: b.stagedUploads ?? 0 };
+                 upBytes: b.stagedUploadBytes ?? 0, ups: b.stagedUploads ?? 0,
+                 upArena: b.upArenaBytes ?? 0 };
     })()`, 30_000);
 }
 
@@ -527,7 +529,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     console.log(`T+${((performance.now() - tL) / 1000).toFixed(0)}s fps=${(dp / 10).toFixed(2)}`
         + ` mips=${(retired / 10e6).toFixed(1)}`
         + ` dpf=${dp > 0 ? Math.round((s.draws - prev.draws) / dp) : 0}`
-        + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups}`
+        + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups} upArena=${((s.upArena - prev.upArena) / 1048576).toFixed(1)}MB`
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`);
