@@ -3116,6 +3116,8 @@ export class D3D9Device {
     } {
         const backend = this.backendExecutor.getMetrics() as Record<string, number>;
         if (this.upArena) { backend.upArenaBytes = this.upArena.bytesFlushed; backend.upArenaFlushes = this.upArena.flushes; }
+        const pool = this.backendExecutor.stagingPoolStats();
+        if (pool) { backend.stagingCreated = pool.created; backend.stagingReused = pool.reused; backend.stagingDestroyed = pool.destroyed; }
         return {
             stateTracker: this.stateTracker.getMetrics(),
             backend: backend as ReturnType<D3D9BackendExecutor["getMetrics"]>,

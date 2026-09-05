@@ -14,6 +14,7 @@ import {
 } from "./presentation-policy";
 import { PROG_BIND } from "./shader";
 import { d3d9WasmArena, ArenaCommandType } from "./d3d9-wasm-arena";
+import { MappedStagingPool } from "../mapped-staging-pool";
 
 export interface PipelineInfo {
     pipeline: GPURenderPipeline;
@@ -241,6 +242,11 @@ export class D3D9BackendExecutor {
     private psArena: UniformArena | null = null;
     private ffpBlockUploaded = false;
     private fixedStageOffsets = new Int32Array(512);
+    private stagingPool: MappedStagingPool | null = null;
+    stagingPoolStats(): { created: number; reused: number; destroyed: number } | null {
+        const p = this.stagingPool;
+        return p ? { created: p.created, reused: p.reused, destroyed: p.destroyed } : null;
+    }
 
     // Material-keyed programmable bind-group cache. With dynamic offsets, the only
     // per-draw-varying part of the bind group is the uniform offset (passed at
@@ -758,6 +764,7 @@ export class D3D9BackendExecutor {
             this.traceGpu("queue submit begin");
             queue.submit([encoder.finish()]);
             this.traceGpu("queue submit end");
+            this.stagingPool?.recycleAfterSubmit();
             if (present && !target) this.discardBackbufferColor = true;
             frameProfiler.endTimer("gpu", submitStart);
             if (cpuReadback) void this.publishCpuPresentation(cpuReadback);
@@ -1294,12 +1301,8 @@ export class D3D9BackendExecutor {
         }
         if (required <= 0) return;
         this.metrics.ffpStagedBytes += required;
-        const staging = device.createBuffer({
-            label: "d3d9-ffp-upload",
-            size: required,
-            usage: GPUBufferUsage.COPY_SRC,
-            mappedAtCreation: true,
-        });
+        if (!this.stagingPool) this.stagingPool = new MappedStagingPool(device);
+        const staging = this.stagingPool.acquire(required);
         const dst = new Float32Array(staging.getMappedRange());
         for (let i = 0; i < count; i++) {
             const off = offsets[i];
@@ -1323,7 +1326,6 @@ export class D3D9BackendExecutor {
             const resource = this.fixedStateResources.get(state)!;
             encoder.copyBufferToBuffer(staging, off, resource.buffer, 0, Math.max(16, state.uniformLen * 4));
         }
-        frame.registerTemporaryBuffer(staging);
     }
 
     /** Upload all deferred vertex/index data through one upload buffer mapped at
@@ -1347,12 +1349,8 @@ export class D3D9BackendExecutor {
         this.metrics.stagedUploads += count;
         this.metrics.stagedUploadBytes += totalBytes;
 
-        const staging = device.createBuffer({
-            label: "d3d9-geometry-upload",
-            size: totalBytes,
-            usage: GPUBufferUsage.COPY_SRC,
-            mappedAtCreation: true,
-        });
+        if (!this.stagingPool) this.stagingPool = new MappedStagingPool(device);
+        const staging = this.stagingPool.acquire(totalBytes);
         const dst = new Uint8Array(staging.getMappedRange());
         let offset = 0;
         for (let i = 0; i < count; i++) {
@@ -1379,7 +1377,6 @@ export class D3D9BackendExecutor {
             }
             offset += alignUp(byteLength, 4);
         }
-        frame.registerTemporaryBuffer(staging);
     }
 
     private resetRenderPassBindCache(): void {
