@@ -154,7 +154,9 @@ else {
 }
 console.log(`function entries: ${entries.size.toLocaleString()}`);
 
-const MAX_INSNS = 4096;
+// --max-insns N: the largest function still analysed (the translator has its
+// own budget, raised alongside for the engine's big update loops).
+const MAX_INSNS = (() => { const i = process.argv.indexOf("--max-insns"); return i >= 0 && process.argv[i + 1] ? Number(process.argv[i + 1]) : 4096; })();
 
 function analyze(entry: number): FunctionReport {
     const seen = new Set<number>();

@@ -21,7 +21,7 @@
 
 import { CapstoneDecoder } from "./decoder-capstone";
 import { compileTranslationC, compileTranslationUnits } from "./compile-c";
-import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
+import { assembleBatch, lastRejection, setSizeBudget, translateFunctionC, type CFunction } from "./x86-to-c";
 
 function arg(name: string, fallback: string): string {
     const i = process.argv.indexOf(`--${name}`);
@@ -80,6 +80,8 @@ if (profilePath) {
 // Hot pages from the harness dump: keep the top N by dispatch entries.
 const hotPagesPath = arg("hot-pages", "");
 const topPages = Number(arg("top-pages", "0"));
+// --size-budget N: largest function translated (default 4096 instructions).
+setSizeBudget(Number(arg("size-budget", "4096")));
 let hotSet: Set<number> | null = null;
 if (hotPagesPath && topPages > 0) {
     // dbg.hotPages rows carry the page as a hex address string ("0xbab000").

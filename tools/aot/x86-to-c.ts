@@ -108,7 +108,10 @@ function preservesFlags(m: string): boolean {
 }
 
 const LOOP_LIMIT = 100_000;
-const SIZE_BUDGET = 4096;
+let SIZE_BUDGET = 4096;
+/** Largest function (instructions walked) the translator accepts; a batch
+ *  build raises it for the engine's big loops. */
+export function setSizeBudget(n: number): void { if (n > 0) SIZE_BUDGET = n; }
 /** Guest instructions one entry may retire (through native calls included)
  *  before handing control back to the dispatcher, so the scheduler's quantum
  *  is honoured; and the native call depth a translation may add to the host
