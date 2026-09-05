@@ -14,7 +14,7 @@ export class MappedStagingPool {
     reused = 0;
     destroyed = 0;
 
-    constructor(private readonly device: GPUDevice, private readonly maxPerClass = 4) {}
+    constructor(private readonly device: GPUDevice, private readonly maxPerClass = 8) {}
 
     /** A buffer mapped for writing, usable as a copy source, capacity >= size. */
     acquire(size: number): GPUBuffer {
@@ -40,17 +40,19 @@ export class MappedStagingPool {
         return b;
     }
 
-    /** After queue.submit: map the frame's buffers again so the next frame reuses them. */
+    /** After queue.submit: map the frame's buffers again so a later frame reuses
+     *  them. The map completes when the GPU has consumed the buffer, a frame or
+     *  two later on a software GPU, so several frames' worth stay in flight; the
+     *  ready list is bounded only when a buffer comes back to a full one. */
     recycleAfterSubmit(): void {
         for (let i = 0; i < this.usedThisFrame.length; i++) {
             const b = this.usedThisFrame[i]!;
             const cap = b.size;
-            const list = this.ready.get(cap);
-            if (list && list.length >= this.maxPerClass) { b.destroy(); this.destroyed++; continue; }
             b.mapAsync(GPUMapMode.WRITE).then(
                 () => {
                     let l = this.ready.get(cap);
                     if (!l) { l = []; this.ready.set(cap, l); }
+                    if (l.length >= this.maxPerClass) { b.destroy(); this.destroyed++; return; }
                     l.push(b);
                 },
                 () => { b.destroy(); this.destroyed++; },
