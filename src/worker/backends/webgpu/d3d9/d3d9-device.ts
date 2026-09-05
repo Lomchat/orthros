@@ -2608,7 +2608,7 @@ export class D3D9Device {
         const view = out.subarray(0, outBytes);
         if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
         const gpuBuffer = this.vbPool.acquire(Math.max(16, outBytes));
-        device.queue.writeBuffer(gpuBuffer, 0, view);
+        this.commandRecorder.queueUpload(gpuBuffer, view, 0);
 
         const pipelineId = this.getPointSpritePipelineId(outFvf);
         const fixedStateIndex = this.captureFixedFunctionDrawState();
@@ -2831,14 +2831,15 @@ export class D3D9Device {
         }
 
         // Acquire a pooled vertex buffer (reused across frames — no per-draw
-        // createBuffer/destroy churn) and upload immediately. queue.writeBuffer copies
-        // the source synchronously, so finalData (a view into the shared conversion
-        // scratch that the NEXT UP draw overwrites) is safe to pass without a staging
-        // copy — unlike the deferred queueUpload path, which had to snapshot it.
+        // createBuffer/destroy churn) and queue the upload with the frame's other
+        // geometry: one staging write per frame instead of one queue.writeBuffer
+        // per UP draw. queueUpload snapshots finalData (a view into the shared
+        // conversion scratch that the NEXT UP draw overwrites) into the frame's
+        // scratch, so the copy is a memcpy, not an allocation.
         const bufferSize = Math.max(16, finalData.byteLength);
         if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
         const gpuBuffer = this.vbPool.acquire(bufferSize);
-        device.queue.writeBuffer(gpuBuffer, 0, finalData);
+        this.commandRecorder.queueUpload(gpuBuffer, finalData, 0);
 
         const isLine = primitiveType === D3DPT_LINELIST || primitiveType === D3DPT_LINESTRIP;
         const topology = isLine ? "line-list" : "triangle-list";

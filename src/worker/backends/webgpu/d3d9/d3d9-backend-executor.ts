@@ -46,6 +46,12 @@ class UniformArena {
     buffer: GPUBuffer | null = null;
     private capacity = 0;
     private cursor = 0;
+    /** CPU copy of [0, cursor): each per-draw write lands here, and the whole
+     *  range crosses to the GPU in one writeBuffer before the submit. Chromium
+     *  serialises every queue.writeBuffer to the GPU process, so one call per
+     *  draw cost more than the draws themselves. */
+    private mirror: Float32Array | null = null;
+    private flushed = 0;
 
     constructor(private device: GPUDevice, private label: string) {}
 
@@ -61,20 +67,32 @@ class UniformArena {
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             });
         }
+        if (!this.mirror || this.mirror.byteLength < this.capacity) this.mirror = new Float32Array(this.capacity >> 2);
         this.cursor = 0;
+        this.flushed = 0;
     }
 
     /** Bump-write the first `floatLen` floats of `data` (zero-alloc), returning the
      *  256-aligned byte offset used as the per-draw dynamic offset. */
-    write(queue: GPUQueue, data: Float32Array, floatLen: number): number {
+    write(_queue: GPUQueue, data: Float32Array, floatLen: number): number {
         const size = Math.max(16, floatLen * 4);
         const offset = this.cursor;
         if (floatLen > 0) {
-            // Typed-array overload: dataOffset and size are in ELEMENTS, not bytes.
-            queue.writeBuffer(this.buffer!, offset, data, 0, floatLen);
+            const m = this.mirror!;
+            const base = offset >> 2;
+            if (floatLen === data.length) m.set(data, base);
+            else for (let i = 0; i < floatLen; i++) m[base + i] = data[i]!;
         }
         this.cursor = alignUp(offset + size, UNIFORM_ALIGN);
         return offset;
+    }
+
+    /** Upload what was written since the last flush, in one call. */
+    flush(queue: GPUQueue): void {
+        if (this.buffer && this.mirror && this.cursor > this.flushed) {
+            queue.writeBuffer(this.buffer, this.flushed, this.mirror.buffer, this.flushed, this.cursor - this.flushed);
+            this.flushed = this.cursor;
+        }
     }
 }
 
@@ -219,6 +237,7 @@ export class D3D9BackendExecutor {
     private progLayouts: Map<number, { bindGroupLayout: GPUBindGroupLayout; pipelineLayout: GPUPipelineLayout }> = new Map();
     private vsArena: UniformArena | null = null;
     private psArena: UniformArena | null = null;
+    private ffpBlockUploaded = false;
 
     // Material-keyed programmable bind-group cache. With dynamic offsets, the only
     // per-draw-varying part of the bind group is the uniform offset (passed at
@@ -494,6 +513,7 @@ export class D3D9BackendExecutor {
             // queue.writeBuffer calls.
             const encoder = device.createCommandEncoder();
             this.stageQueuedUploads(device, encoder, frame);
+            this.ffpBlockUploaded = false;
 
             // Pre-size the programmable per-draw uniform arenas for this frame.
             if (frame.drawStateCount > 0) {
@@ -731,6 +751,8 @@ export class D3D9BackendExecutor {
             }
 
             const submitStart = frameProfiler.startTimer();
+            this.vsArena?.flush(queue);
+            this.psArena?.flush(queue);
             this.traceGpu("queue submit begin");
             queue.submit([encoder.finish()]);
             this.traceGpu("queue submit end");
@@ -1089,7 +1111,12 @@ export class D3D9BackendExecutor {
                     // Cached FFP bind groups reference the old buffer — drop them.
                     this.bindGroupCache.clear();
                 }
-                queue.writeBuffer(this.uniformBuffer, 0, block);
+                // The block is built once per frame: the first pipeline set of
+                // the frame uploads it, the others only bind.
+                if (!this.ffpBlockUploaded) {
+                    queue.writeBuffer(this.uniformBuffer, 0, block);
+                    this.ffpBlockUploaded = true;
+                }
             } else {
                 // Defensive fallback: viewport (vec2) + pad (vec2) + mat4x4 MVP only.
                 if (!this.uniformBuffer) {

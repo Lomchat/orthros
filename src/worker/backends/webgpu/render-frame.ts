@@ -71,6 +71,8 @@ export class RenderFrame {
     bufferRefs: GPUBuffer[] = [];
     uploadBuffers: GPUBuffer[] = [];
     uploadData: Uint8Array[] = [];
+    private uploadScratch = new Uint8Array(1 << 20);
+    private uploadScratchUsed = 0;
     /** Destination byte offset paired with each deferred buffer upload. */
     uploadOffsets: number[] = [];
     temporaryBuffers: GPUBuffer[] = [];
@@ -97,6 +99,7 @@ export class RenderFrame {
         this.uploadBuffers.length = 0;
         this.uploadData.length = 0;
         this.uploadOffsets.length = 0;
+        this.uploadScratchUsed = 0;
         this.temporaryBuffers.length = 0;
         this.pooledBuffers.length = 0;
         // Rewind the draw-state pool without dropping the slots (keeps their
@@ -254,9 +257,21 @@ export class RenderFrame {
     queueUpload(buffer: GPUBuffer, data: Uint8Array, destinationOffset = 0): void {
         this.uploadBuffers.push(buffer);
         this.uploadOffsets.push(destinationOffset >>> 0);
-        // IMPORTANT: Make a copy! The source data may be a view into a shared
-        // conversion buffer that gets overwritten by subsequent DrawPrimitiveUP calls.
-        this.uploadData.push(new Uint8Array(data));
+        // The source may be a view into a shared conversion buffer that the next
+        // DrawPrimitiveUP overwrites: snapshot it into the frame's bump scratch
+        // (no allocation once warm). A scratch that overflows is replaced, and
+        // the views already handed out keep the old one alive until reset.
+        const n = data.byteLength;
+        let used = this.uploadScratchUsed;
+        if (used + n > this.uploadScratch.byteLength) {
+            let cap = this.uploadScratch.byteLength * 2;
+            while (cap < used + n) cap *= 2;
+            this.uploadScratch = new Uint8Array(cap);
+            used = 0;
+        }
+        this.uploadScratch.set(data, used);
+        this.uploadData.push(this.uploadScratch.subarray(used, used + n));
+        this.uploadScratchUsed = used + n;
     }
 
     registerTemporaryBuffer(buffer: GPUBuffer): void {
