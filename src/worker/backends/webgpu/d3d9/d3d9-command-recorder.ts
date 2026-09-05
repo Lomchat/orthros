@@ -55,6 +55,29 @@ export class D3D9CommandRecorder {
      *  differ per pipeline) and at finalize (executor bind caches reset per pass/frame). */
     private currentBindStateIndex: number | null = null;
     private currentFixedStateIndex: number | null = null;
+    // Slot-0 vertex buffer and index buffer last set in this frame: consecutive
+    // draws from one buffer (the UP arena, a mesh drawn in pieces) re-set them
+    // otherwise, and each set is a WebGPU call at execute.
+    private lastVb: GPUBuffer | null = null;
+    private lastVbOffset = -1;
+    private lastVbSize = -1;
+    private lastIb: GPUBuffer | null = null;
+    private lastIbFormat: string | null = null;
+    private setVertexBuffer0(buffer: GPUBuffer, offset: number, size: number): void {
+        if (this.lastVb === buffer && this.lastVbOffset === offset && this.lastVbSize === size) return;
+        this.frame.pushSetVertexBuffer(buffer, offset, size);
+        this.lastVb = buffer; this.lastVbOffset = offset; this.lastVbSize = size;
+    }
+    /** A new render pass starts with no buffers bound: forget what was set. */
+    private forgetBoundBuffers(): void {
+        this.lastVb = null; this.lastVbOffset = -1; this.lastVbSize = -1;
+        this.lastIb = null; this.lastIbFormat = null;
+    }
+    private setIndexBuffer(buffer: GPUBuffer, format: "uint16" | "uint32"): void {
+        if (this.lastIb === buffer && this.lastIbFormat === format) return;
+        this.frame.pushSetIndexBuffer(buffer, format);
+        this.lastIb = buffer; this.lastIbFormat = format;
+    }
     private currentStencilReference: number | null = null;
     private drawCount = 0;
 
@@ -107,7 +130,7 @@ export class D3D9CommandRecorder {
             this.frame.pushBindFixedFunction(cmd.fixedStateIndex);
             this.currentFixedStateIndex = cmd.fixedStateIndex;
         }
-        this.frame.pushSetVertexBuffer(cmd.gpuBuffer, cmd.bufferOffset, cmd.bufferSize);
+        this.setVertexBuffer0(cmd.gpuBuffer, cmd.bufferOffset, cmd.bufferSize);
         if (cmd.extraStreams) {
             for (const s of cmd.extraStreams) {
                 this.frame.pushSetVertexBuffer(s.buffer, s.offset, s.size, s.slot);
@@ -136,13 +159,13 @@ export class D3D9CommandRecorder {
             this.frame.pushBindFixedFunction(cmd.fixedStateIndex);
             this.currentFixedStateIndex = cmd.fixedStateIndex;
         }
-        this.frame.pushSetVertexBuffer(cmd.vbGpuBuffer, cmd.vbOffset, cmd.vbSize);
+        this.setVertexBuffer0(cmd.vbGpuBuffer, cmd.vbOffset, cmd.vbSize);
         if (cmd.extraStreams) {
             for (const s of cmd.extraStreams) {
                 this.frame.pushSetVertexBuffer(s.buffer, s.offset, s.size, s.slot);
             }
         }
-        this.frame.pushSetIndexBuffer(cmd.ibGpuBuffer, cmd.ibFormat);
+        this.setIndexBuffer(cmd.ibGpuBuffer, cmd.ibFormat);
         this.frame.pushDrawIndexed(cmd.indexCount, cmd.startIndex, cmd.baseVertex);
         this.drawCount++;
     }
@@ -157,6 +180,7 @@ export class D3D9CommandRecorder {
         this.currentBindStateIndex = null;
         this.currentFixedStateIndex = null;
         this.currentStencilReference = null;
+        this.forgetBoundBuffers();
         return completedFrame;
     }
 
