@@ -12,7 +12,7 @@
  */
 
 import { sharedNow } from "../time/shared-clock";
-import { Logger, LogCategory } from '../logger';
+import { Logger, LogCategory, LogLevel } from '../logger';
 import { Process } from '../process';
 import { preemptionManager } from '../cpu/preemption-manager';
 import { MEM_THUNK_CODE_BASE, MEM_ROM_BASE } from '../cpu/emulator-config';
@@ -2016,7 +2016,7 @@ export class Scheduler {
         if (timeoutMs === 0) return WAIT_TIMEOUT;
 
         // Debug: Log when a thread blocks on INFINITE wait (helps trace unsignaled events)
-        if (timeoutMs === INFINITE) {
+        if (timeoutMs === INFINITE && Logger.isEnabled(LogCategory.THREAD, LogLevel.VERBOSE)) {
             const handleDescs = resolved.map(h => {
                 const obj = this.syncObjects.describeHandle(h);
                 return `0x${h.toString(16)}(${obj})`;

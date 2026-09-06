@@ -595,6 +595,10 @@ if (!loading) {
 }
 
 console.log("LOADING confirmed — sampling");
+// Which static-library hooks are live, still shadowing (original invoked
+// and compared on every call), or disabled: a hook stuck in shadowing costs
+// an emulated call per invocation and reads as a slow thunk.
+console.log("HLE-SHADOW " + String(await bench.evalWorker("JSON.stringify(globalThis.hleShadow?.() ?? null)", 15_000).catch((e) => `error: ${String(e)}`)).slice(0, 1500));
 let loadProfile: Promise<any> | null = null;
 if (profileLoadMs > 0) {
     await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});

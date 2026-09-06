@@ -1311,6 +1311,8 @@ if (typeof globalThis !== 'undefined') {
         return cfg;
     };
 
+    /** Per-hook shadow state as data, for harnesses that cannot read the console. */
+    (globalThis as any).hleShadow = () => libHleManager.getShadowStatuses();
     (globalThis as any).hleReport = () => {
         const rows = libHleManager.getReport();
         if (rows.length === 0) {
