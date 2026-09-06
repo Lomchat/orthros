@@ -127,7 +127,14 @@ interface Operand {
     value?: number;
     addr?: string;
     width?: number;
+    /** Plain `[base + disp]` shape of a memory operand, for guard hoisting. */
+    base?: string | null;
+    hasIndex?: boolean;
+    disp?: number;
+    segment?: boolean;
 }
+
+interface AddressInfo { expr: string; base: string | null; hasIndex: boolean; disp: number; segment: boolean }
 
 function regIndex(name: string): number | null {
     const i = REG32.indexOf(name);
@@ -136,9 +143,11 @@ function regIndex(name: string): number | null {
 
 function reject(reason: string): null { lastRejection = reason; return null; }
 
-function parseAddress(inner: string, segment: string | null): string | null {
+function parseAddress(inner: string, segment: string | null): AddressInfo | null {
     const parts: string[] = [];
     let disp = 0;
+    let base: string | null = null;
+    let hasIndex = false;
     for (const rawTerm of inner.split("+")) {
         for (const [i, sub] of rawTerm.split("-").entries()) {
             const term = sub.trim();
@@ -149,12 +158,14 @@ function parseAddress(inner: string, segment: string | null): string | null {
                 const r = regIndex(scaled[1]!);
                 if (r === null || negative) return null;
                 parts.push(`(${REG32[r]} * ${scaled[2]}u)`);
+                hasIndex = true;
                 continue;
             }
             const r = regIndex(term);
             if (r !== null) {
                 if (negative) return null;
                 parts.push(REG32[r]!);
+                if (base === null) base = REG32[r]!; else hasIndex = true;
                 continue;
             }
             const n = /^(0x[0-9a-f]+|\d+)$/i.exec(term);
@@ -166,7 +177,7 @@ function parseAddress(inner: string, segment: string | null): string | null {
     if (segment === "fs") parts.push("FSBASE");
     else if (segment && segment !== "ds" && segment !== "es" && segment !== "ss" && segment !== "cs") return null;
     if (disp !== 0 || parts.length === 0) parts.push(`${disp >>> 0}u`);
-    return `(${parts.join(" + ")})`;
+    return { expr: `(${parts.join(" + ")})`, base, hasIndex, disp: disp | 0, segment: segment === "fs" };
 }
 
 export function parseOperand(text: string): Operand | null {
@@ -188,9 +199,9 @@ export function parseOperand(text: string): Operand | null {
     const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE|XMMWORD)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
     if (mem) {
         const width = mem[1] ? widths[mem[1].toUpperCase()]! : 4;
-        const addr = parseAddress(mem[3]!, mem[2] ? mem[2].toLowerCase() : null);
-        if (addr === null) return null;
-        return { kind: "mem", addr, width };
+        const info = parseAddress(mem[3]!, mem[2] ? mem[2].toLowerCase() : null);
+        if (info === null) return null;
+        return { kind: "mem", addr: info.expr, width, base: info.base, hasIndex: info.hasIndex, disp: info.disp, segment: info.segment };
     }
     const moffs = /^(?:(BYTE|WORD|DWORD|QWORD)\s+PTR\s+)?([a-z]{2}):(0x[0-9a-f]+|\d+)$/i.exec(t);
     if (moffs) {
@@ -369,8 +380,99 @@ export function slowExit(insnAddr: number, done: number): string {
  */
 export function guardMem(lines: string[], op: Operand, insnAddr: number, done: number): void {
     if (op.kind !== "mem") return;
-    lines.push(`a0 = ${op.addr}; if (a0 > ml - ${op.width}u) { ${guardExit(insnAddr, done)} }`);
+    const wide = hoistGuard(lines, op.base ?? null, op.hasIndex || op.segment ? null : op.disp!, op.width!, insnAddr, done);
+    if (wide === null) lines.push(`a0 = ${op.addr}; if (a0 > ml - ${op.width}u) { ${guardExit(insnAddr, done)} }`);
+    else lines.push(`${wide}a0 = ${op.addr};`);
     op.addr = "a0";
+}
+
+/** The stack guards of push/call (`delta` -4: the slot below ESP) and of
+ *  pop/ret/leave (`delta` 0: the slot at the base), through the same tracker. */
+export function stackGuard(base: "esp" | "ebp", delta: number, insnAddr: number, done: number): string {
+    const wide = hoist.lines ? hoistGuard(hoist.lines, base, delta, 4, insnAddr, done) : null;
+    if (wide !== null) return wide;
+    return delta < 0 ? `if (${base} - ${-delta}u > ml - 4u) { ${guardExit(insnAddr, done)} }` : `if (${base} > ml - 4u) { ${guardExit(insnAddr, done)} }`;
+}
+
+/**
+ * Guard hoisting, per block. The first access through a base register with a
+ * plain `[base + disp]` operand checks the base's range once (base in
+ * [SLACK, ml - 2*SLACK], exiting at that instruction like a plain guard); the
+ * following accesses through it whose displacement plus the base's constant
+ * drift stays within the slack need no guard. Any other write to the base ends
+ * its coverage and the next access checks again. Writes are found by scanning
+ * the emitted C: every register write is an assignment to the named local, and
+ * a write inside a braced or conditional statement counts as unknown. Memory
+ * beyond MEM_SIZE and the wrap below zero are both excluded by the check, so a
+ * fault still surfaces where the guest would raise it.
+ */
+const HOIST_SLACK = 0x1000;
+const hoist = { lines: null as string[] | null, valid: new Map<string, number>(), scanned: 0, pending: null as { reg: string; delta: number } | null };
+const REG_WRITE = /\b(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(\+\+|--|<<=|>>=|[-+*/%&|^]?=)(?!=)/g;
+const REG_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) (\+=|-=) (\d+)u\s*$/;
+// The flag-producing forms of add/sub/inc/dec with an immediate: the result
+// is built in fr on one line and assigned to the register on the next.
+const FR_ADDSUB = /^\s*fa = (eax|ecx|edx|ebx|esp|ebp|esi|edi); fb = \((\d+)u & 0xffffffffu\); fr = \(fa ([+-]) fb\);/;
+const FR_INCDEC = /\bfr = \((eax|ecx|edx|ebx|esp|ebp|esi|edi) ([+-]) (\d+)u\);/;
+const ASSIGN_FR = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(fr\)\s*$/;
+// lea reg, [reg + disp]
+const LEA_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(\((eax|ecx|edx|ebx|esp|ebp|esi|edi) \+ (\d+)u\)\)\s*$/;
+const signed32 = (n: number): number => (n >= 0x80000000 ? n - 0x100000000 : n);
+
+function hoistDrift(reg: string, delta: number): void {
+    const d = hoist.valid.get(reg);
+    if (d !== undefined) hoist.valid.set(reg, d + delta);
+}
+
+function hoistScan(lines: string[]): void {
+    for (; hoist.scanned < lines.length; hoist.scanned++) {
+        if (hoist.valid.size === 0) continue;
+        const line = lines[hoist.scanned]!;
+        const guarded = /[{]|\bif \(|\bfor \(|\bwhile \(/.test(line);
+        if (guarded) {
+            hoist.pending = null;
+            for (const w of line.matchAll(REG_WRITE)) hoist.valid.delete(w[1]!);
+            continue;
+        }
+        const addsub = FR_ADDSUB.exec(line);
+        const incdec = addsub ? null : FR_INCDEC.exec(line);
+        const pending = hoist.pending;
+        if (addsub) hoist.pending = { reg: addsub[1]!, delta: (addsub[3] === "+" ? 1 : -1) * signed32(Number(addsub[2])) };
+        else if (incdec) hoist.pending = { reg: incdec[1]!, delta: (incdec[2] === "+" ? 1 : -1) * signed32(Number(incdec[3])) };
+        else if (/\bfr = /.test(line)) hoist.pending = null;
+        for (const stmt of line.split(";")) {
+            const drift = REG_DRIFT.exec(stmt);
+            if (drift) { hoistDrift(drift[1]!, (drift[2] === "+=" ? 1 : -1) * Number(drift[3])); continue; }
+            const fromFr = ASSIGN_FR.exec(stmt);
+            if (fromFr && pending && pending.reg === fromFr[1]) { hoistDrift(fromFr[1]!, pending.delta); hoist.pending = null; continue; }
+            const lea = LEA_DRIFT.exec(stmt);
+            if (lea && lea[1] === lea[2]) { hoistDrift(lea[1]!, signed32(Number(lea[3]))); continue; }
+            for (const w of stmt.matchAll(REG_WRITE)) hoist.valid.delete(w[1]!);
+        }
+    }
+}
+
+/** "" when the access is covered, the wide check (which then covers the
+ *  following accesses) when it starts coverage, null when only a plain guard
+ *  will do (index, segment, or a displacement beyond the slack). */
+function hoistGuard(lines: string[], base: string | null, disp: number | null, width: number, insnAddr: number, done: number): string | null {
+    if (hoist.lines !== lines || !base || disp === null) return null;
+    if (disp < -HOIST_SLACK || disp + width > 2 * HOIST_SLACK) return null;
+    hoistScan(lines);
+    const drift = hoist.valid.get(base);
+    if (drift !== undefined) {
+        const lo = drift + disp;
+        if (lo >= -HOIST_SLACK && lo + width <= 2 * HOIST_SLACK) return "";
+    }
+    hoist.valid.set(base, 0);
+    return `if (${base} - ${HOIST_SLACK}u > ml - ${3 * HOIST_SLACK}u) { ${guardExit(insnAddr, done)} } `;
+}
+
+function beginHoistBlock(lines: string[]): void {
+    hoist.lines = lines;
+    hoist.valid.clear();
+    hoist.pending = null;
+    hoist.scanned = lines.length;
 }
 
 function splitOperands(operand: string): string[] {
@@ -414,7 +516,7 @@ __attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc
 #define XHI(i) (*(volatile u64u *)(uintptr_t)(832u + 16u*(uint32_t)(i) + 8u))
 /* Native call of a batch function by address (a compare tree over every entry);
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
-__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth);
+__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth, uint32_t mb, uint32_t ml);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
 /* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
@@ -433,12 +535,12 @@ static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint
     return cf | (pf << 2) | (zf << 6) | (sf << 7) | (of << 11);
 }
 
-#define LD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
-#define LD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
-#define LD32(a) (*(volatile u32u *)(uintptr_t)(mb + (a)))
-#define ST8(a, v)  (*(volatile uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
-#define ST16(a, v) (*(volatile u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
-#define ST32(a, v) (*(volatile u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
+#define LD8(a)  ((uint32_t)*(uint8_t *)(uintptr_t)(mb + (a)))
+#define LD16(a) ((uint32_t)*(u16u *)(uintptr_t)(mb + (a)))
+#define LD32(a) (*(u32u *)(uintptr_t)(mb + (a)))
+#define ST8(a, v)  (*(uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
+#define ST16(a, v) (*(u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
+#define ST32(a, v) (*(u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
 #define LD64(a) (*(volatile u64u *)(uintptr_t)(mb + (a)))
 #define ST64(a, v) (*(volatile u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
 ` + X87_PRELUDE;
@@ -707,12 +809,22 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     for (const start of order) for (const insn of blocks.get(start)!.insns) for (const m of insn.operand.matchAll(/\bxmm([0-7])\b/g)) xmmUsed.add(Number(m[1]));
     const xmmList = [...xmmUsed].sort((a, b) => a - b);
     const x87Helpers = { parseOperand, readExpr, guardMem, guardExit, slowExit };
-    const loads = REG32.map((r, i) => `uint32_t ${r} = (uint32_t)REG32[${i}];`).join(" ")
-        + xmmList.map((n) => ` uint64_t xl${n} = xl${n}, xh${n} = xh${n};`).join("") + (xmmList.length ? " uint32_t xdirty = 0u;" : "");
-    const reloads = REG32.map((r, i) => `${r} = (uint32_t)REG32[${i}];`).join(" ")
-        + xmmList.map((n) => ` xl${n} = xl${n}; xh${n} = xh${n};`).join("");
-    const stores = REG32.map((r, i) => `REG32[${i}] = (int32_t)${r};`).join(" ")
-        + xmmList.map((n) => ` xl${n} = xl${n}; xh${n} = xh${n};`).join("") + (xmmList.length ? " if (xdirty) { FPU_DIRTY = 1u; xdirty = 0u; }" : "");
+    // Spill strings are placeholders until the body exists: only the integer
+    // registers the body names are loaded at entry, stored before calls and at
+    // exits, and reloaded after calls (ESP always). The slots of the others stay
+    // whatever the caller or the dispatcher left there, which is their value.
+    // XMM lanes are loaded from v86's reg_xmm, written back when dirty.
+    const loads = "@LOADS@";
+    const reloads = "@RELOADS@";
+    const stores = "@STORES@";
+    const spillStrings = (regs: string[]) => ({
+        loads: regs.map((r) => `uint32_t ${r} = (uint32_t)REG32[${REG32.indexOf(r)}];`).join(" ")
+            + xmmList.map((n) => ` uint64_t xl${n} = XLO(${n}), xh${n} = XHI(${n});`).join("") + (xmmList.length ? " uint32_t xdirty = 0u;" : ""),
+        reloads: regs.map((r) => `${r} = (uint32_t)REG32[${REG32.indexOf(r)}];`).join(" ")
+            + xmmList.map((n) => ` xl${n} = XLO(${n}); xh${n} = XHI(${n});`).join(""),
+        stores: regs.map((r) => `REG32[${REG32.indexOf(r)}] = (int32_t)${r};`).join(" ")
+            + (xmmList.length ? ` if (xdirty) {${xmmList.map((n) => ` XLO(${n}) = xl${n}; XHI(${n}) = xh${n};`).join("")} FPU_DIRTY = 1u; xdirty = 0u; }` : ""),
+    });
     let nativeCalls = 0;
 
     for (const start of order) {
@@ -721,6 +833,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         const lines: string[] = [];
         const n = block.insns.length;
         const term = block.insns[n - 1]!;
+        beginHoistBlock(lines);
 
         // Each consumer's producer: the last flag writer before it, which must
         // be modelled. Every modelled producer keeps its operands in fa/fb/fr
@@ -792,7 +905,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     if (FLAG_PRODUCER.has(m)) break;
                     if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) return reject(`pushfd after unmodelled flag writer ${m}`);
                 }
-                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc));`);
+                lines.push(stackGuard("esp", -4, insn.addr, i), `esp -= 4u;`, `ST32(esp, ((uint32_t)FLAGS & ~0x8d5u) | x86_flags_now(fk, fa, fb, fr, fc));`);
                 continue;
             }
             if (mnemonic === "popfd") {
@@ -800,7 +913,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // runs that pop. Otherwise DF, NT, AC and ID are written as v86
                 // does in ring 0, and the arithmetic bits become the producer
                 // of what follows.
-                lines.push(`if (esp > ml - 4u) { ${guardExit(insn.addr, i)} }`);
+                lines.push(stackGuard("esp", 0, insn.addr, i));
                 lines.push(`{ uint32_t v = LD32(esp); if (((v ^ (uint32_t)FLAGS) & 0x300u) != 0u) { ${slowExit(insn.addr, i)} }`);
                 lines.push(`  esp += 4u; FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x244400u) | (v & 0x244400u)); fa = v & 0x8d5u; fk = 8u; }`);
                 kinds.set(i, "raw");
@@ -808,7 +921,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 continue;
             }
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
-            if (mnemonic === "leave") { lines.push(`if (ebp > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
+            if (mnemonic === "leave") { lines.push(stackGuard("ebp", 0, insn.addr, i), `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
             if (mnemonic === "rdtsc") { lines.push(`{ uint64_t ts = read_tsc((int32_t)(cnt + ${i}u)); eax = (uint32_t)ts; edx = (uint32_t)(ts >> 32); }`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
@@ -821,7 +934,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (mnemonic === "enter") {
                 const size = Number(ops[0]), level = Number(ops[1] ?? "0");
                 if (!Number.isFinite(size) || level !== 0) return reject(`enter ${operand}`);
-                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ebp);`, `ebp = esp;`, `esp -= ${size >>> 0}u;`);
+                lines.push(stackGuard("esp", -4, insn.addr, i), `esp -= 4u;`, `ST32(esp, ebp);`, `ebp = esp;`, `esp -= ${size >>> 0}u;`);
                 continue;
             }
             if (mnemonic === "stmxcsr" || mnemonic === "ldmxcsr") {
@@ -1006,13 +1119,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 guardMem(lines, dst, insn.addr, i);
                 const v = readExpr(dst);
                 if (v === null) return reject(`read: push ${dstText}`);
-                lines.push(`if (esp - 4u > ml - 4u) { ${guardExit(insn.addr, i)} }`, `esp -= 4u;`, `ST32(esp, ${v});`);
+                lines.push(stackGuard("esp", -4, insn.addr, i), `esp -= 4u;`, `ST32(esp, ${v});`);
                 continue;
             }
             if (mnemonic === "pop") {
                 if (dst.kind === "mem" && dst.addr!.includes("esp")) return reject("pop into esp-relative memory");
                 if (dst.kind !== "reg32" && !(dst.kind === "mem" && dst.width === 4)) return reject(`pop ${dstText}`);
-                lines.push(`if (esp > ml - 4u) { ${guardExit(insn.addr, i)} }`);
+                lines.push(stackGuard("esp", 0, insn.addr, i));
                 guardMem(lines, dst, insn.addr, i);
                 const w = writeStmt(dst, `LD32(esp)`);
                 if (!w) return reject(`write: pop ${dstText}`);
@@ -1096,7 +1209,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const m = /^(?:BYTE|WORD|DWORD|QWORD)?\s*(?:PTR)?\s*(?:([a-z]{2}):)?\[(.+)\]$/i.exec(srcText.trim());
                 if (!m) return reject(`lea form: ${srcText}`);
                 if (m[1]) return reject("lea with segment");
-                resultExpr = parseAddress(m[2]!, null);
+                resultExpr = parseAddress(m[2]!, null)?.expr ?? null;
             }
             else if (mnemonic === "imul" && ops.length === 3) {
                 const src = parseOperand(ops[1]!), imm = parseOperand(ops[2]!);
@@ -1205,7 +1318,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const imm = term.operand.trim();
             const pops = imm ? Number(imm) : 0;
             if (!Number.isFinite(pops)) return reject(`ret ${imm}`);
-            lines.push(`if (esp > ml - 4u) { ${guardExit(term.addr, n - 1)} }`, `cnt += ${n}u;`, `ip = LD32(esp);`, `esp += ${4 + pops}u;`, `goto exit;`);
+            lines.push(stackGuard("esp", 0, term.addr, n - 1), `cnt += ${n}u;`, `ip = LD32(esp);`, `esp += ${4 + pops}u;`, `goto exit;`);
         }
         else if (term.mnemonic === "call") {
             let direct = directTarget(term.operand);
@@ -1228,7 +1341,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             const targetExpr = targetOp && targetOp.kind === "mem" ? `LD32(a0)` : target;
             const ret = (term.addr + term.size) >>> 0;
             // A folded thunk retired its jmp on the way to the target.
-            lines.push(`{ uint32_t t = ${targetExpr}; if (esp - 4u > ml - 4u) { ${guardExit(term.addr, n - 1)} } cnt += ${folded ? n + 1 : n}u; esp -= 4u; ST32(esp, ${ret}u);`);
+            lines.push(`{ uint32_t t = ${targetExpr}; ${stackGuard("esp", -4, term.addr, n - 1)} cnt += ${folded ? n + 1 : n}u; esp -= 4u; ST32(esp, ${ret}u);`);
             // A callee in the same batch is called natively: state goes through
             // memory both ways, and if the callee came back by ret to our
             // return address we carry on here; any other exit of the callee is
@@ -1242,7 +1355,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // Blocks are numbered by address, so the callee's entry is not
                 // block 0 whenever its CFG reaches below the entry (a tail call
                 // through a lower jump thunk, a loop placed before it).
-                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(ENTRY_fn_${direct.toString(16)}, depth + 1u);`);
+                lines.push(`if (depth < ${NATIVE_CALL_DEPTH}u) { ${stores} ${fpuOut}*INSTRUCTION_COUNTER += cnt; cnt = 0u; fn_${direct.toString(16)}(ENTRY_fn_${direct.toString(16)}, depth + 1u, mb, ml);`);
                 lines.push(`    if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { rb = ${resume}u; goto native_return; }`);
                 lines.push(`    goto exit_foreign; }`);
                 lines.push(`#endif`);
@@ -1270,7 +1383,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`    *INSTRUCTION_COUNTER += cnt; cnt = 0u; *PREVIOUS_IP = (int32_t)t; *INSTRUCTION_POINTER = (int32_t)t;`);
                 // An indirect target the batch owns is called natively, like a
                 // direct one; anything else runs under the nested dispatcher.
-                lines.push(`    if (aot_dispatch(t, depth + 1u)) { if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { rb = ${resume}u; goto native_return; } goto exit_foreign; }`);
+                lines.push(`    if (aot_dispatch(t, depth + 1u, mb, ml)) { if ((uint32_t)*INSTRUCTION_POINTER == ${ret}u) { rb = ${resume}u; goto native_return; } goto exit_foreign; }`);
                 lines.push(`    if (run_until(${ret}u, esp, ${INVOCATION_BUDGET}u) == 0u) { rb = ${resume}u; goto native_return; }`);
                 lines.push(`    goto exit_foreign; }`);
             }
@@ -1333,10 +1446,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     // helper can observe them in between, and every exit writes them back.
     const fpuLoad = fpuUsed ? `    uint32_t top = FPU_TOP, fempty = FPU_EMPTY, fdirty = 0u;\n` : "";
     const fpuStore = fpuUsed ? `    if (fdirty) { FPU_TOP = (uint8_t)top; FPU_EMPTY = (uint8_t)fempty; FPU_DIRTY = 1u; }\n` : "";
-    const c =
-        `void ${name}(int b, uint32_t depth)\n{\n` +
-        `    const uint32_t mb = mem_base();\n` +
-        `    const uint32_t ml = MEM_SIZE;\n` +
+    const cRaw =
+        `void ${name}(int b, uint32_t depth, uint32_t mb, uint32_t ml)\n{\n` +
         `    ${loads}\n` +
         `    uint32_t fa = 0u, fb = 0u, fr = 0u, fc = 0u, fk = 0u, fl = 0u, cnt = 0u, loops = 0u, ip = 0u, a0 = 0u, rb = 0u;\n` +
         `    (void)fl;\n` +
@@ -1359,6 +1470,12 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         `    return;\n` +
         (nativeCalls > 0 ? `exit_foreign:\n    *INSTRUCTION_COUNTER += cnt;\n` : "") +
         `}\n`;
+    // Every register the body touches appears by name in the C (explicit
+    // operands and the implicit ones the emitters spell out alike); a register
+    // absent from the text has no local, so a missed use cannot compile.
+    const bodyRegs = REG32.filter((r) => r === "esp" || new RegExp(`\\b${r}\\b`).test(cRaw));
+    const spill = spillStrings(bodyRegs);
+    const c = cRaw.replaceAll("@LOADS@", spill.loads).replaceAll("@RELOADS@", spill.reloads).replaceAll("@STORES@", spill.stores);
 
     const entries = [{ addr: entry, block: indexOf.get(entry)! }];
     const wanted = new Set<number>(resumes);
@@ -1417,14 +1534,18 @@ export function assembleBatch(allFunctions: CFunction[], units = 1): Batch {
     for (const pm of pages) pm.states.sort((a, b) => a.addr - b.addr);
     const pageCode = pages.map((pm) =>
         `__attribute__((export_name("${pm.name}")))\n` +
+        // The guest RAM base and size are read once per dispatcher entry and
+        // passed down: a native call then costs no import call.
         `void ${pm.name}(int32_t initial_state)\n{\n` +
+        `    const uint32_t mb = mem_base();\n` +
+        `    const uint32_t ml = MEM_SIZE;\n` +
         `    switch (initial_state) {\n` +
-        pm.states.map((s, i) => `        case ${i}: ${s.fn}(${s.block}, 0u); return;`).join("\n") +
+        pm.states.map((s, i) => `        case ${i}: ${s.fn}(${s.block}, 0u, mb, ml); return;`).join("\n") +
         `\n        default: return;\n    }\n}\n`
     ).join("\n");
     // Every function is declared and flagged up front, so a call to another
     // translated function compiles to a native call whatever the order.
-    const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nvoid ${f.name}(int b, uint32_t depth);`).join("\n");
+    const decls = functions.map((f) => `#define HAVE_${f.name} 1\n#define ENTRY_${f.name} ${f.entries[0]!.block}\nvoid ${f.name}(int b, uint32_t depth, uint32_t mb, uint32_t ml);`).join("\n");
     // The compare tree: -fno-jump-tables keeps it free of data segments.
     // Two levels, page then offset, so no generated function has more than a
     // few dozen blocks: one switch over every entry made the WebAssembly
@@ -1439,11 +1560,11 @@ export function assembleBatch(allFunctions: CFunction[], units = 1): Batch {
     }
     const dispatchPages = [...byEntryPage.entries()].sort((a, b) => a[0] - b[0]);
     const dispatch = dispatchPages.map(([page, list]) =>
-        `__attribute__((noinline)) int aot_dispatch_p${page.toString(16)}(uint32_t target, uint32_t depth)\n{\n    switch (target) {\n`
-        + list.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth); return 1;`).join("\n")
+        `__attribute__((noinline)) int aot_dispatch_p${page.toString(16)}(uint32_t target, uint32_t depth, uint32_t mb, uint32_t ml)\n{\n    switch (target) {\n`
+        + list.map((f) => `        case ${f.entry >>> 0}u: ${f.name}(ENTRY_${f.name}, depth, mb, ml); return 1;`).join("\n")
         + "\n        default: return 0;\n    }\n}\n").join("\n")
-        + "\n__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth)\n{\n    switch (target >> 12) {\n"
-        + dispatchPages.map(([page]) => `        case ${page}u: return aot_dispatch_p${page.toString(16)}(target, depth);`).join("\n")
+        + "\n__attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth, uint32_t mb, uint32_t ml)\n{\n    switch (target >> 12) {\n"
+        + dispatchPages.map(([page]) => `        case ${page}u: return aot_dispatch_p${page.toString(16)}(target, depth, mb, ml);`).join("\n")
         + "\n        default: return 0;\n    }\n}\n";
     const header = C_PRELUDE + "\n" + decls + "\n";
     const c = header + functions.map((f) => f.c).join("\n") + "\n" + dispatch + "\n" + pageCode;

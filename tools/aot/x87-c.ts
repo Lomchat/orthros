@@ -26,8 +26,8 @@ export interface X87Helpers {
 }
 
 export const X87_PRELUDE = `typedef uint64_t __attribute__((aligned(1))) u64u;
-#define LD64(a) (*(volatile u64u *)(uintptr_t)(mb + (a)))
-#define ST64(a, v) (*(volatile u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
+#define LD64(a) (*(u64u *)(uintptr_t)(mb + (a)))
+#define ST64(a, v) (*(u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
 #define FPU_ST_M(s) (*(volatile uint64_t *)(uintptr_t)(1152u + 16u * (s)))
 #define FPU_ST_T(s) (*(volatile uint16_t *)(uintptr_t)(1160u + 16u * (s)))
 #define FPU_TOP (*(volatile uint8_t *)1032)

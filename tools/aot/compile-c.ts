@@ -16,7 +16,7 @@ export interface CompileResult {
 }
 
 const FLAGS = [
-    "--target=wasm32", "-O2", "-nostdlib", "-fno-jump-tables", "-fno-stack-protector",
+    "--target=wasm32", "-O2", "-nostdlib", "-fno-jump-tables", "-fno-stack-protector", "-fno-strict-aliasing",
     "-Wl,--no-entry", "-Wl,--import-memory", "-Wl,--allow-undefined",
 ];
 

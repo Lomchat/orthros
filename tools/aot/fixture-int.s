@@ -653,3 +653,29 @@ t_sse_fpcmp:
     cmpunordpd xmm4, xmm1
     movdqu xmmword ptr [edi+64], xmm4
     ret
+
+# Native-call oracle: a caller looping over a small callee, so a bench times
+# the call convention (spills, callee entry, memory-base import) and not
+# arithmetic. edi = [esp+4] points into scratch; the callee reads through ecx.
+    .globl t_callloop
+t_callloop:
+    mov edi, [esp+4]
+    push ebx
+    push esi
+    mov ebx, 2000
+    mov esi, edi
+1:
+    mov ecx, esi
+    call t_callleaf
+    add [esi], eax
+    dec ebx
+    jnz 1b
+    pop esi
+    pop ebx
+    ret
+
+    .globl t_callleaf
+t_callleaf:
+    mov eax, [ecx]
+    add eax, 1
+    ret

@@ -89,6 +89,9 @@ interface RunResult {
     regs: Int32Array;
     scratch: Uint8Array;
     stack: Uint8Array;
+    /** v86's reg_xmm (8 x 16 bytes at 832): a translation that keeps lanes in
+     *  locals must have written the dirty ones back by the time it exits. */
+    xmm: Uint8Array;
     retired: number;
     interpreted: number;
     /** Bridge barrier hits by a nested activation of the caller's return address. */
@@ -243,6 +246,7 @@ function runGuest(
                 regs: Int32Array.from(cpu.reg32.slice(0, 8)),
                 scratch: mem.slice(SCRATCH, SCRATCH + SCRATCH_LEN),
                 stack: mem.slice(STACK_BASE, STACK_BASE + STACK_LEN),
+                xmm: new Uint8Array(cpu.wasm_memory.buffer).slice(832, 832 + 128),
                 retired: cpu.instruction_counter[0] >>> 0,
                 interpreted: Number(ex["profiler_interpreted_steps_get"]?.() ?? -1),
                 nestedBarrier: Number(ex["jit_run_until_stat"]?.(10) ?? 0),
@@ -299,8 +303,47 @@ const leafOnly = process.argv.includes("--leaf-only");
 for (const entry of entries) {
     const t = await translateFunctionC(decoder, entry);
     if (!t) { console.log(`0x${entry.toString(16)}  SKIP — ${lastRejection}`); skipped++; continue; }
-    if (leafOnly && t.calls > 0) { skipped++; continue; }
     functions.push(t);
+}
+// --closure N: pull in the direct callees (N rounds) so a caller whose whole
+// call tree is translated can be benched as a leaf would be; its calls then
+// run natively instead of through the fixture's empty dispatcher.
+const closureRounds = Number(arg("closure", "0"));
+const requested = new Set(functions.map((f) => f.entry));
+for (let round = 0; round < closureRounds; round++) {
+    const have = new Set(functions.map((f) => f.entry));
+    const wanted = new Set<number>();
+    for (const f of functions) for (const t of f.callTargets) if (!have.has(t)) wanted.add(t);
+    let added = 0;
+    for (const target of [...wanted].sort((a, b) => a - b)) {
+        const t = await translateFunctionC(decoder, target);
+        if (!t) continue;
+        functions.push(t); added++;
+    }
+    if (added === 0) break;
+}
+if (leafOnly) {
+    // Resolvable = every call is direct and its target is in the set,
+    // transitively; anything else would leave the fixture for nothing runnable.
+    const have = new Map(functions.map((f) => [f.entry, f]));
+    const resolvable = new Map<number, boolean>();
+    const check = (entry: number, stack: Set<number>): boolean => {
+        const known = resolvable.get(entry);
+        if (known !== undefined) return known;
+        if (stack.has(entry)) return true;
+        const f = have.get(entry);
+        if (!f || f.calls !== f.callTargets.length) { resolvable.set(entry, false); return false; }
+        stack.add(entry);
+        const ok = f.callTargets.every((t) => check(t, stack));
+        stack.delete(entry);
+        resolvable.set(entry, ok);
+        return ok;
+    };
+    const keep = functions.filter((f) => check(f.entry, new Set()));
+    const dropped = functions.filter((f) => requested.has(f.entry) && !keep.includes(f)).length;
+    skipped += dropped;
+    functions.length = 0;
+    functions.push(...keep);
 }
 if (functions.length === 0) { console.log(`pass=0 fail=0 inconclusive=0 skipped=${skipped}`); process.exit(0); }
 
@@ -419,6 +462,9 @@ for (const t of functions) {
     let stackDiff = 0;
     for (let i = 0; i < STACK_LEN; i++) if (guest.stack[i] !== ext.stack[i]) stackDiff++;
     if (stackDiff > 0) diffs.push(`${stackDiff} stack bytes differ`);
+    let xmmDiff = 0;
+    for (let i = 0; i < 128; i++) if (guest.xmm[i] !== ext.xmm[i]) xmmDiff++;
+    if (xmmDiff > 0) diffs.push(`${xmmDiff} xmm bytes differ`);
     // v86 re-enters a long rep string instruction in chunks and counts each
     // re-entry; the translation counts the instruction once. With identical
     // state that is a counting difference, reported but not judged.
