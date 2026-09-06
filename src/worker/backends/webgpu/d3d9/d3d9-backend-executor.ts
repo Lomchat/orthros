@@ -192,6 +192,7 @@ export class D3D9BackendExecutor {
         drawCalls: 0,
         clearCalls: 0,
         progConstWrites: 0, stagedUploads: 0, stagedUploadBytes: 0, ffpStatesUploaded: 0, ffpStatesSkipped: 0, ffpStagedBytes: 0,
+        stagingCreates: 0, stagingWrites: 0,
         progConstReuseHits: 0,
         // The CPU/ImageBitmap presentation bridge is asynchronous and deliberately
         // keeps at most one readback in flight. These counters make its real output
@@ -241,6 +242,12 @@ export class D3D9BackendExecutor {
     private psArena: UniformArena | null = null;
     private ffpBlockUploaded = false;
     private fixedStageOffsets = new Int32Array(512);
+    /** Persistent upload staging (opt-in via __d3d9PersistentStaging): one
+     * buffer written with writeBuffer each frame instead of a mapped-at-creation
+     * buffer created and destroyed per frame; `host` mirrors it and is written
+     * in place by the stagers. */
+    private persistentStaging: GPUBuffer | null = null;
+    private persistentStagingHost: ArrayBuffer | null = null;
 
 
     // Material-keyed programmable bind-group cache. With dynamic offsets, the only
@@ -356,6 +363,8 @@ export class D3D9BackendExecutor {
         this.metrics.ffpStatesUploaded = 0;
         this.metrics.ffpStatesSkipped = 0;
         this.metrics.ffpStagedBytes = 0;
+        this.metrics.stagingCreates = 0;
+        this.metrics.stagingWrites = 0;
         this.metrics.progConstReuseHits = 0;
         this.metrics.cpuPresentEncoded = 0;
         this.metrics.cpuPresentDropped = 0;
@@ -1360,17 +1369,48 @@ export class D3D9BackendExecutor {
         const geomBytes = this.planQueuedUploads(frame);
         const total = ffpBytes + geomBytes;
         if (total <= 0) return;
+        if ((globalThis as any).__d3d9PersistentStaging !== false) {
+            const staging = this.ensurePersistentStaging(device, total);
+            const host = this.persistentStagingHost!;
+            if (ffpBytes > 0) this.stageFixedFunctionUniforms(encoder, frame, staging, host, 0);
+            if (geomBytes > 0) this.stageQueuedUploads(encoder, frame, staging, host, ffpBytes);
+            device.queue.writeBuffer(staging, 0, host, 0, alignUp(total, 4));
+            this.metrics.stagingWrites++;
+            return;
+        }
         const staging = device.createBuffer({
             label: "d3d9-frame-upload",
             size: total,
             usage: GPUBufferUsage.COPY_SRC,
             mappedAtCreation: true,
         });
+        this.metrics.stagingCreates++;
         const mapped = staging.getMappedRange();
         if (ffpBytes > 0) this.stageFixedFunctionUniforms(encoder, frame, staging, mapped, 0);
         if (geomBytes > 0) this.stageQueuedUploads(encoder, frame, staging, mapped, ffpBytes);
         staging.unmap();
         frame.registerTemporaryBuffer(staging);
+    }
+
+    /** The persistent staging and its host mirror, grown by powers of two. Both
+     * outlive the frame: the queue orders this frame's copies before the next
+     * frame's writeBuffer into the same buffer. */
+    private ensurePersistentStaging(device: GPUDevice, total: number): GPUBuffer {
+        let buffer = this.persistentStaging;
+        if (buffer === null || buffer.size < total) {
+            buffer?.destroy();
+            let size = 1 << 18;
+            while (size < total) size <<= 1;
+            buffer = device.createBuffer({
+                label: "d3d9-frame-upload-persistent",
+                size,
+                usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            });
+            this.persistentStaging = buffer;
+            this.persistentStagingHost = new ArrayBuffer(size);
+            this.metrics.stagingCreates++;
+        }
+        return buffer;
     }
 
     private resetRenderPassBindCache(): void {

@@ -226,6 +226,12 @@ if (process.argv.includes("--dxt-advertise")) {
     console.log("dxt advertise " + JSON.stringify(await bench.dbg("dxtAdvertise", true).catch((e) => String(e))));
 }
 
+// --persistent-staging: one persistent upload buffer written per frame instead
+// of a mapped-at-creation buffer created and destroyed per frame.
+if (process.argv.includes("--persistent-staging")) {
+    console.log("persistent staging " + JSON.stringify(await bench.dbg("d3d9PersistentStaging", true).catch((e) => String(e))));
+}
+
 // The Tier-1 threshold was last judged with return chaining effectively off,
 // so the balance between compiling a page and interpreting it may have moved.
 const thresholdArg = process.argv.indexOf("--threshold");
@@ -431,7 +437,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         const perf = await bench.dbg("d3d9Perf").catch(() => null) as any;
         const bk = perf?.backend ?? {};
         const ft = (bk.ffpBlockBuild ?? 0) + (bk.ffpBlockPatch ?? 0) + (bk.ffpBlockReuse ?? 0);
-        console.log(`GAME-D3D9 ffpBlock=${bk.ffpBlockBuild ?? 0}b/${bk.ffpBlockPatch ?? 0}p/${bk.ffpBlockReuse ?? 0}r${ft ? ` (build ${(100 * (bk.ffpBlockBuild ?? 0) / ft).toFixed(0)}%)` : ""} progConst=${bk.progConstReuseHits ?? 0}hit/${bk.progConstWrites ?? 0}w vbskip=${bk.vbSetSkipped ?? 0}/${bk.ibSetSkipped ?? 0} ffpUp=${bk.ffpStatesUploaded ?? 0}/${bk.ffpStatesSkipped ?? 0}`);
+        console.log(`GAME-D3D9 ffpBlock=${bk.ffpBlockBuild ?? 0}b/${bk.ffpBlockPatch ?? 0}p/${bk.ffpBlockReuse ?? 0}r${ft ? ` (build ${(100 * (bk.ffpBlockBuild ?? 0) / ft).toFixed(0)}%)` : ""} progConst=${bk.progConstReuseHits ?? 0}hit/${bk.progConstWrites ?? 0}w vbskip=${bk.vbSetSkipped ?? 0}/${bk.ibSetSkipped ?? 0} ffpUp=${bk.ffpStatesUploaded ?? 0}/${bk.ffpStatesSkipped ?? 0} staging=${bk.stagingCreates ?? 0}c/${bk.stagingWrites ?? 0}w`);
         const callers = prof?.callers ?? {};
         for (const fn of Object.keys(callers)) console.log(`GAME-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 600)}`);
         const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);

@@ -964,6 +964,13 @@ export const dbg = {
         if (on !== undefined) setAotAutoEnabled(!!on);
         return isAotAutoEnabled();
     },
+    /** Per-frame D3D9 upload staging: a persistent buffer written once per frame
+     *  (true, the default) or a mapped-at-creation buffer created and destroyed
+     *  per frame (false). */
+    d3d9PersistentStaging(on?: boolean): boolean {
+        if (on !== undefined) (globalThis as any).__d3d9PersistentStaging = !!on;
+        return (globalThis as any).__d3d9PersistentStaging !== false;
+    },
     /** `filter` = "lo:hi", fractions of the manifest's page list to install
      *  (e.g. "0:0.5"): bisects a batch in game when one translation misbehaves. */
     async aotInstall(url: string, filter?: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
