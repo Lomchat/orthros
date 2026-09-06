@@ -118,6 +118,11 @@ export function setSizeBudget(n: number): void { if (n > 0) SIZE_BUDGET = n; }
  *  stack before falling back to the dispatcher for the call. */
 const INVOCATION_BUDGET = 100_000;
 const NATIVE_CALL_DEPTH = 24;
+/** Above this many instructions a function keeps volatile guest accesses:
+ *  clang's memory passes do not finish on the non-volatile model of a
+ *  16 000-instruction function (24 GB, no end), and such functions are rare
+ *  and never hot per instruction. */
+const VOLATILE_ABOVE = 4096;
 
 type ProducerKind = "cmp" | "add" | "logic" | "inc" | "dec" | "sahf" | "fcomi" | "raw" | "runtime";
 
@@ -665,8 +670,17 @@ static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint
 #define ST8(a, v)  (*(uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
 #define ST16(a, v) (*(u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
 #define ST32(a, v) (*(u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
-#define LD64(a) (*(volatile u64u *)(uintptr_t)(mb + (a)))
-#define ST64(a, v) (*(volatile u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
+#define LD64(a) (*(u64u *)(uintptr_t)(mb + (a)))
+#define ST64(a, v) (*(u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
+/* The volatile forms, kept by functions too large for clang's memory passes. */
+#define VLD8(a)  ((uint32_t)*(volatile uint8_t *)(uintptr_t)(mb + (a)))
+#define VLD16(a) ((uint32_t)*(volatile u16u *)(uintptr_t)(mb + (a)))
+#define VLD32(a) (*(volatile u32u *)(uintptr_t)(mb + (a)))
+#define VLD64(a) (*(volatile u64u *)(uintptr_t)(mb + (a)))
+#define VST8(a, v)  (*(volatile uint8_t *)(uintptr_t)(mb + (a)) = (uint8_t)(v))
+#define VST16(a, v) (*(volatile u16u *)(uintptr_t)(mb + (a)) = (uint16_t)(v))
+#define VST32(a, v) (*(volatile u32u *)(uintptr_t)(mb + (a)) = (uint32_t)(v))
+#define VST64(a, v) (*(volatile u64u *)(uintptr_t)(mb + (a)) = (uint64_t)(v))
 ` + X87_PRELUDE;
 
 /** Materialise the last modelled producer's flags into v86's EFLAGS at every
@@ -1635,7 +1649,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     // absent from the text has no local, so a missed use cannot compile.
     const bodyRegs = REG32.filter((r) => r === "esp" || new RegExp(`\\b${r}\\b`).test(cRaw));
     const spill = spillStrings(bodyRegs);
-    const c = cRaw.replaceAll("@LOADS@", spill.loads).replaceAll("@RELOADS@", spill.reloads).replaceAll("@STORES@", spill.stores);
+    const spilled = cRaw.replaceAll("@LOADS@", spill.loads).replaceAll("@RELOADS@", spill.reloads).replaceAll("@STORES@", spill.stores);
+    const c = total > VOLATILE_ABOVE ? spilled.replace(/\b(LD|ST)(8|16|32|64)\(/g, "V$1$2(") : spilled;
 
     const entries = [{ addr: entry, block: indexOf.get(entry)! }];
     const wanted = new Set<number>(resumes);
