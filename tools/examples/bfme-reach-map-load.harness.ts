@@ -77,7 +77,9 @@ const profileLoadMs = Number(arg("profile-load", "0"));
 /** --profile-at <sec>: CPU-profile the Worker for 10 s starting <sec> seconds
  *  after loading is confirmed — an in-game profile with callers, comparable
  *  from one build to the next. */
-const profileAtSec = Number(arg("profile-at", "-1"));
+/** --profile-at 40,120,240: ten-second Worker CPU profiles at those hold
+ *  seconds, each attributed per guest page (jit_<page> / fn_<addr>). */
+const profileAtSet = new Set(arg("profile-at", "").split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n >= 0));
 /** --shot <file.png>: save a screenshot of the page at the end of the hold, to
  *  check by eye that a rendering change did not corrupt the frame. */
 const shotPath = arg("shot", "");
@@ -669,10 +671,10 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         prev = await sample(bench); prevJit = await jitStats(bench); prevInterp = await interpShare(bench);
         await sleepStats(bench);
     }
-    if (profileAtSec >= 0 && i * 10 === profileAtSec) {
+    if (profileAtSet.has(i * 10)) {
         const prof = await bench.profileWorker(10_000, 80).catch((e) => ({ error: String(e) })) as any;
         const top = (prof?.top ?? []).map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
-        console.log(`GAME-PROFILE at T+${profileAtSec}s samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top.slice(0, 40)).slice(0, 3200)}`);
+        console.log(`GAME-PROFILE at T+${i * 10}s samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top.slice(0, 40)).slice(0, 3200)}`);
         // Native frames (WebGPU bindings, GC, idle) — the "other" bucket by name.
         const native = (prof?.top ?? []).filter((r: any) => !String(r.url ?? "").endsWith(".js") && !String(r.url ?? "").endsWith(".wasm") && !String(r.fn ?? "").startsWith("wasm-function") && !String(r.fn ?? "").startsWith("fn_") && !String(r.fn ?? "").startsWith("page_") && !String(r.fn ?? "").startsWith("_ZN"))
             .map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
