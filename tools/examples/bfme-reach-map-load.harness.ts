@@ -37,6 +37,16 @@ const attempts = Number(arg("attempts", "3"));
 const holdSec = Number(arg("hold", "240"));
 const profileFromPlayMs = Number(arg("profile-from-play", "0"));
 let playProfile: Promise<any> | null = null;
+/** --fine N: sample presentations every 250 ms for N seconds from the Play
+ *  click, printed per second, so the loading screen, the world-creation gap
+ *  and the ramp to a steady rate are visible separately (a ten-second window
+ *  averages them into one number). */
+const fineSec = Number(arg("fine", "0"));
+/** --build-at N: at hold second N, try to issue a real build order (find a
+ *  friendly object under the game cursor, select it, click a command-bar
+ *  slot) and measure the following seconds. */
+const buildAtSec = Number(arg("build-at", "-1"));
+const cursorTablePath = arg("cursor-table", new URL("./bfme1-cursor-fingerprints.json", import.meta.url).pathname);
 /** Guest instructions to time. Work parity removes the "how far did the load
  *  get" term, which otherwise dominates every comparison. */
 const workTarget = Number(arg("work", "0"));
@@ -155,6 +165,206 @@ async function click(b: BenchSession, x: number, y: number): Promise<void> {
 async function key(b: BenchSession, k: string | number): Promise<void> {
     await b.evalPage(`__BS__.harness.keyHold(${JSON.stringify(k)}, 120)`, 20_000).catch(() => {});
     await Bun.sleep(400);
+}
+
+/* ---- Fine presentation timeline (--fine) --------------------------------- */
+type FineSample = { t: number; present: number; draws: number; rtt: number };
+const fine: FineSample[] = [];
+let tPlay = 0;
+let finePromise: Promise<void> | null = null;
+let fineGen = 0;
+/** Restarted on every Play attempt: a click that does not take would otherwise
+ *  leave the timeline anchored a menu round-trip before the real load. */
+function startFine(b: BenchSession): void {
+    fine.length = 0; tPlay = performance.now(); fineGen++;
+    finePromise = fineSampler(b, tPlay, fineSec, fineGen);
+}
+async function fineSampler(b: BenchSession, t0: number, seconds: number, gen: number): Promise<void> {
+    while (gen === fineGen && performance.now() - t0 < seconds * 1000) {
+        const s0 = performance.now();
+        const s = await sample(b).catch(() => null);
+        if (s) fine.push({ t: (s0 - t0) / 1000, present: s.present, draws: s.draws, rtt: performance.now() - s0 });
+        await Bun.sleep(250);
+    }
+}
+/** One entry per second: presentations, @draws per presentation, and the worst
+ *  Worker round trip when it exceeds 200 ms — a blocked Worker answers late, so
+ *  a missing second or a long round trip is itself the stall. */
+function printFine(label: string): void {
+    if (fine.length < 2) { console.log(`${label} no samples`); return; }
+    let sec = Math.floor(fine[0]!.t); let first = fine[0]!; let last = first; let rtt = 0;
+    const out: string[] = [];
+    const flush = () => {
+        const dp = last.present - first.present;
+        const dpf = dp > 0 ? Math.round((last.draws - first.draws) / dp) : 0;
+        out.push(`s${sec}:${dp}${dpf ? `@${dpf}` : ""}${rtt > 200 ? `!${Math.round(rtt)}ms` : ""}`);
+    };
+    for (const s of fine.slice(1)) {
+        const sSec = Math.floor(s.t);
+        if (sSec !== sec) { flush(); sec = sSec; first = last; rtt = 0; }
+        rtt = Math.max(rtt, s.rtt); last = s;
+    }
+    flush();
+    console.log(`${label} ${out.join(" ")}`);
+}
+
+/* ---- Player build order (--build-at) ------------------------------------- */
+/** The game cursor is the only sensor this headless box has (pixels are not
+ *  readable here): the Worker defines each cursor once (frames decoded from the
+ *  game's own .ani/.cur) and selects by handle; fingerprinting the frames names
+ *  what the game shows under the mouse. Installed before boot so no define is
+ *  missed. */
+const CURSOR_HOOK = `(() => {
+    const w = window.worker; if (!w) return "no-worker";
+    if (window.__curHook) return "installed";
+    const hook = { defs: {}, sel: 0, seq: 0 }; window.__curHook = hook;
+    const fnv = (px) => { let h = 2166136261; for (let i = 0; i < px.length; i++) { h ^= px[i]; h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
+    w.addEventListener("message", (ev) => { const m = ev.data; if (!m || typeof m !== "object") return;
+        if (m.type === "game_cursor_define") { const a = m.cursor, f = a && a.frames && a.frames[0];
+            if (f) hook.defs[m.handle >>> 0] = a.frames.length + "x" + f.width + "x" + f.height + ":" + f.hotspotX + "," + f.hotspotY + ":" + ((a.delaysMs && a.delaysMs[0]) || 0) + ":" + fnv(f.pixels); }
+        else if (m.type === "game_cursor_select") { hook.sel = m.handle >>> 0; hook.seq++; } });
+    return "installed"; })()`;
+let cursorTable: Record<string, string[]> = {};
+async function cursorAt(b: BenchSession, x: number, y: number): Promise<string> {
+    const r: any = await b.evalPage(`(async () => { await __BS__.harness.move(${x}, ${y});
+        await new Promise(r => setTimeout(r, 160));
+        const h = window.__curHook; return h ? { sel: h.sel, fp: h.defs[h.sel] || null } : null; })()`, 20_000).catch(() => null);
+    if (!r) return "?";
+    const names = r.fp ? cursorTable[r.fp] : undefined;
+    return names ? names[0]!.replace(/\.(ani|cur)$/i, "") : `h${(r.sel >>> 0).toString(16)}`;
+}
+const CURSOR_GLYPH: Array<[RegExp, string]> = [[/pointer/i, "."], [/move/i, "m"], [/friendly/i, "F"],
+    [/hostile|attack/i, "H"], [/scroll/i, "s"], [/noaction|noentry/i, "x"], [/enter/i, "E"], [/place/i, "P"],
+    [/rally/i, "R"], [/repair/i, "r"]];
+function glyph(name: string): string {
+    for (const [re, g] of CURSOR_GLYPH) if (re.test(name)) return g;
+    return name === "?" ? "?" : "o";
+}
+async function cursorScan(b: BenchSession, label: string): Promise<Array<{ x: number; y: number; name: string }>> {
+    const cells: Array<{ x: number; y: number; name: string }> = [];
+    const counts = new Map<string, number>();
+    const rows: string[] = [];
+    for (let y = 60; y <= 460; y += 40) {
+        let row = "";
+        for (let x = 100; x <= 700; x += 40) {
+            const name = await cursorAt(b, x, y);
+            cells.push({ x, y, name });
+            counts.set(name, (counts.get(name) ?? 0) + 1);
+            row += glyph(name);
+        }
+        rows.push(`y${String(y).padStart(3)} ${row}`);
+    }
+    console.log(`CURSOR-SCAN ${label} x=100..700/40 ${[...counts.entries()].map(([n, c]) => `${glyph(n)}=${n}:${c}`).join(" ")}`);
+    for (const r of rows) console.log(`CURSOR-SCAN ${label} ${r}`);
+    return cells;
+}
+/** ControlBar.wnd ButtonCommand02..05 centres at the 800x600 creation
+ *  resolution: the first command-set slots of whatever is selected. */
+const COMMAND_SLOTS: Array<[number, number]> = [[240, 514], [240, 560], [303, 514], [303, 560]];
+/** Asset-loading signature of a window: a newly built object loads a W3D
+ *  model (vertex/index buffers, which unit orders never create), its textures
+ *  and a voice line; command-bar icons only create small textures. */
+async function textureThunks(b: BenchSession): Promise<{ tex: number; vb: number; snd: number; total: number; top: string }> {
+    const c: any = await b.dbg("thunkCensus", false, 400).catch(() => null);
+    await b.dbg("thunkCensus", true).catch(() => null);
+    const rows: Array<[string, number]> = c?.top ?? [];
+    const sum = (re: RegExp) => rows.filter(([n]) => re.test(n)).reduce((a, [, k]) => a + k, 0);
+    const tex = sum(/createtexture|loadsurface|createcubetexture|filtertexture/i);
+    const vb = sum(/createvertexbuffer|createindexbuffer/i);
+    const snd = sum(/start_sample|set_sample_file|load_sample|init_sample|allocate_sample|set_named_sample_file|start_3D_sample|set_3D_sample_file/i);
+    const top = rows.slice(0, 4).map(([n, k]) => `${n.replace(/^.*[:!]/, "")}:${k}`).join(",");
+    return { tex, vb, snd, total: c?.total ?? 0, top };
+}
+/** Per-second presentations, texture-creating thunks and >60 ms frames over a
+ *  short window, so a click's consequence can be read against a baseline. */
+async function measureWindow(b: BenchSession, ms: number): Promise<string> {
+    const a = await sample(b); const t0 = performance.now();
+    const secs: number[] = []; let prev = a;
+    while (performance.now() - t0 < ms) {
+        await Bun.sleep(1000);
+        const s = await sample(b).catch(() => prev);
+        secs.push(s.present - prev.present); prev = s;
+    }
+    const tex = await textureThunks(b);
+    const sp: any = await b.evalPage(`__BS__.harness.perfSpikes({ top: 3, minMs: 60 })`, 30_000).catch(() => null);
+    await b.evalPage(`__BS__.harness.perfProfile({ enable: true, reset: true })`, 30_000).catch(() => null);
+    const worst = (sp?.spikes ?? []).slice(0, 3).map((s: any) => `${Math.round(s.frameMs)}ms`
+        + `[${(s.topThunks ?? []).slice(0, 2).map((t: any) => `${String(t.name ?? t[0] ?? "?").replace(/^.*[:!]/, "")}:${Math.round(t.ms ?? t[1] ?? 0)}`).join(",")}]`).join("/");
+    const dp = prev.present - a.present;
+    return `presents/s=[${secs.join(",")}] dpf=${dp > 0 ? Math.round((prev.draws - a.draws) / dp) : 0}`
+        + ` tex=${tex.tex} vb/ib=${tex.vb} snd=${tex.snd} thunks=${tex.total} worst>60ms=${worst || "-"} top=${tex.top}`;
+}
+function modelLoaded(line: string): boolean {
+    const m = /vb\/ib=(\d+)/.exec(line);
+    return !!m && Number(m[1]) > 0;
+}
+async function buildExperiment(b: BenchSession): Promise<void> {
+    try { cursorTable = JSON.parse(await Bun.file(cursorTablePath).text()); } catch { console.log(`BUILD no cursor table at ${cursorTablePath}`); }
+    const hook = await b.evalPage(CURSOR_HOOK, 20_000).catch((e) => String(e));
+    const defs = await b.evalPage(`Object.keys(window.__curHook?.defs ?? {}).length`, 20_000).catch(() => "?");
+    console.log(`BUILD hook=${JSON.stringify(hook)} cursorsDefined=${defs}`);
+    // Sounds name what happened: the MSS layer logs every sample it pulls out of
+    // a BIG archive, and a construction order plays sounds a unit order never
+    // does. A watch plus a page-side accumulator, because the log ring is short
+    // and the facade keeps only the last event.
+    await b.evalPage(`__BS__.harness.watchLog("MSS32: loaded")`, 20_000).catch(() => null);
+    await b.evalPage(`(() => { const w = window.worker; if (!w) return "no-worker"; if (window.__logHits) return "installed";
+        const hits = []; window.__logHits = hits;
+        w.addEventListener("message", (ev) => { const m = ev.data;
+            if (m && m.event === "logMatch" && m.data && typeof m.data.message === "string") hits.push(m.data.message); });
+        return "installed"; })()`, 20_000).catch(() => null);
+    const soundsLoaded = async (): Promise<string> => {
+        const hits: string[] = await b.evalPage(`(() => { const h = window.__logHits || []; return h.splice(0, h.length); })()`, 20_000).catch(() => []);
+        const names = [...new Set(hits.map((m) => /loaded (\S+) \(/.exec(m)?.[1] ?? m).map((n) => n.replace(/^.*[\\/]/, "")))];
+        return names.length ? ` sounds=${names.slice(0, 10).join(",")}${names.length > 10 ? `,+${names.length - 10}` : ""}` : " sounds=-";
+    };
+    await b.dbg("thunkCensus", true).catch(() => null);
+    await b.evalPage(`__BS__.harness.perfProfile({ enable: true, reset: true })`, 30_000).catch(() => null);
+    await soundsLoaded();
+    console.log(`BUILD baseline ${await measureWindow(b, 8_000)}${await soundsLoaded()}`);
+    const cells = await cursorScan(b, "idle");
+    const counts = new Map<string, number>();
+    for (const c of cells) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
+    const majority = [...counts.entries()].sort((p, q) => q[1] - p[1])[0]?.[0];
+    // Objects are where the cursor departs from what open terrain shows.
+    let candidates = cells.filter((c) => c.name !== majority && !/scroll|\?/.test(c.name));
+    candidates.sort((p, q) => Math.hypot(p.x - 400, p.y - 280) - Math.hypot(q.x - 400, q.y - 280));
+    if (candidates.length === 0) {
+        candidates = ([[400, 280], [330, 240], [470, 240], [330, 330], [470, 330], [400, 200], [400, 360]] as Array<[number, number]>)
+            .map(([x, y]) => ({ x, y, name: "blind" }));
+    }
+    console.log(`BUILD candidates=${candidates.length} terrain=${majority}: ${candidates.slice(0, 12).map((c) => `${c.name}@${c.x},${c.y}`).join(" ")}`);
+    // Pre-pass: select each object once and read the cursor over it. A unit
+    // keeps SCCSelect; a building or foundation plot shows SCCNoAction, and a
+    // plot's command-set slot 1 is the cheapest building (Farm).
+    const classified: Array<{ x: number; y: number; name: string; sel: string }> = [];
+    for (const c of candidates.slice(0, 40)) {
+        await click(b, c.x, c.y);
+        await Bun.sleep(400);
+        classified.push({ ...c, sel: await cursorAt(b, c.x, c.y) });
+    }
+    const order = [...classified.filter((c) => /noaction/i.test(c.sel)), ...classified.filter((c) => !/noaction/i.test(c.sel))];
+    console.log(`BUILD classified: ${classified.map((c) => `${c.sel.replace(/^SCC/, "")}@${c.x},${c.y}`).join(" ")}`);
+    const [sx, sy] = COMMAND_SLOTS[0]!;
+    let n = 0; let loaded = false;
+    for (const c of order.slice(0, 14)) {
+        n++;
+        await soundsLoaded();
+        await click(b, c.x, c.y);
+        await Bun.sleep(400);
+        const selectSounds = await soundsLoaded();
+        await click(b, sx, sy);
+        const line = await measureWindow(b, 10_000);
+        console.log(`BUILD try#${n} ${c.sel}@${c.x},${c.y} onSelect${selectSounds} slot1@${sx},${sy}: ${line}${await soundsLoaded()}`);
+        if (modelLoaded(line)) {
+            loaded = true;
+            console.log(`BUILD model load detected after try#${n}; following it for 30 s`);
+            for (let k = 0; k < 3; k++) console.log(`BUILD follow+${(k + 1) * 10}s: ${await measureWindow(b, 10_000)}`);
+            break;
+        }
+    }
+    if (!loaded) console.log("BUILD no model load detected in any try");
+    await cursorScan(b, "after");
 }
 
 /** True once presentations nearly stop while draws keep advancing. */
@@ -295,6 +505,7 @@ if (importProfile) {
 
 const t0 = performance.now();
 while (performance.now() - t0 < bootTimeoutSec * 1_000) {
+    if (buildAtSec >= 0) await bench.evalPage(CURSOR_HOOK, 10_000).catch(() => null);
     const s = await sample(bench).catch(() => null);
     if (s && s.present > 0) break;
     await Bun.sleep(2_000);
@@ -365,6 +576,7 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
         await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
         playProfile = bench.profileWorker(profileFromPlayMs, 40).catch((e) => ({ error: String(e) }));
     }
+    if (fineSec > 0) startFine(bench);
     await tryStep(bench, "play", coord("play", [[340, 575], [705, 574], [640, 556]]), 15_000);
 
     const a = await sample(bench);
@@ -444,6 +656,15 @@ const attributeChain = process.argv.includes("--attribute-chain-misses");
 if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
 let prevChain: any = null;
 for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
+    if (finePromise && performance.now() - tPlay >= fineSec * 1000) {
+        await finePromise; finePromise = null;
+        printFine("FINE presents/s from the Play click (s<second>:<presents>@<draws per present>!<worst Worker RPC>):");
+    }
+    if (buildAtSec >= 0 && i * 10 === buildAtSec) {
+        await buildExperiment(bench);
+        prev = await sample(bench); prevJit = await jitStats(bench); prevInterp = await interpShare(bench);
+        await sleepStats(bench);
+    }
     if (profileAtSec >= 0 && i * 10 === profileAtSec) {
         const prof = await bench.profileWorker(10_000, 80).catch((e) => ({ error: String(e) })) as any;
         const top = (prof?.top ?? []).map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
