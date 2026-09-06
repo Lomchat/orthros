@@ -92,7 +92,7 @@ function classifyFrame(fn: string, url: string): string {
         // Each compiled page is its own module at its own blob URL, so anything
         // else presenting as wasm is generated guest code; the ahead-of-time
         // batch's functions carry their own names (fn_/page_/aot_dispatch).
-        if (/^wasm-function/.test(fn)) return "jit-code";
+        if (/^wasm-function/.test(fn) || /^jit_[0-9a-f]+/.test(fn)) return "jit-code";
         if (/^(fn_[0-9a-f]+|page_[0-9a-f]+|aot_dispatch)/.test(fn)) return "aot-code";
         return "other";
     }
