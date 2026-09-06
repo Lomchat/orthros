@@ -423,7 +423,32 @@ export function stackGuard(base: "esp" | "ebp", delta: number, insnAddr: number,
  * fault still surfaces where the guest would raise it.
  */
 const HOIST_SLACK = 0x1000;
-const hoist = { lines: null as string[] | null, valid: new Map<string, number>(), scanned: 0, pending: null as { reg: string; delta: number } | null, absEnd: 0 };
+/** A base's drift since its range check, as an interval: exact within a
+ *  block, widened at a join to the union of the incoming drifts. */
+interface Drift { lo: number; hi: number }
+/** What a block may assume at entry: the bases proven in range by every
+ *  predecessor (with their drift interval) and the highest absolute end
+ *  every predecessor has checked against ml. */
+interface HoistIn { valid: Map<string, Drift>; absEnd: number }
+interface HoistState {
+    lines: string[] | null;
+    valid: Map<string, Drift>;
+    scanned: number;
+    pending: { reg: string; delta: number } | null;
+    absEnd: number;
+    /** Block summary bookkeeping: net constant drift of every register and
+     *  the registers written in an unknown way, over the whole block. */
+    net: Map<string, number>;
+    killed: Set<string>;
+    /** Re-apply the range checks found in the text (summary of a finished
+     *  block) rather than trust the live tracker (which emitted them). */
+    applyChecks: boolean;
+}
+const newHoistState = (applyChecks: boolean): HoistState => ({ lines: null, valid: new Map(), scanned: 0, pending: null, absEnd: 0, net: new Map(), killed: new Set(), applyChecks });
+const hoist: HoistState = newHoistState(false);
+const HOIST_BASES = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "FSBASE"];
+const WIDE_CHECK = /if \((eax|ecx|edx|ebx|esp|ebp|esi|edi|FSBASE) - 4096u > ml - 12288u\)/g;
+const ABS_CHECK = /if \(ml < (\d+)u\)/g;
 const REG_WRITE = /\b(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(\+\+|--|<<=|>>=|[-+*/%&|^]?=)(?!=)/g;
 const REG_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) (\+=|-=) (\d+)u\s*$/;
 // The flag-producing forms of add/sub/inc/dec with an immediate: the result
@@ -435,37 +460,119 @@ const ASSIGN_FR = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(fr\)\s*
 const LEA_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(\((eax|ecx|edx|ebx|esp|ebp|esi|edi) \+ (\d+)u\)\)\s*$/;
 const signed32 = (n: number): number => (n >= 0x80000000 ? n - 0x100000000 : n);
 
-function hoistDrift(reg: string, delta: number): void {
-    const d = hoist.valid.get(reg);
-    if (d !== undefined) hoist.valid.set(reg, d + delta);
+function hoistDrift(st: HoistState, reg: string, delta: number): void {
+    st.net.set(reg, (st.net.get(reg) ?? 0) + delta);
+    const d = st.valid.get(reg);
+    if (d !== undefined) st.valid.set(reg, { lo: d.lo + delta, hi: d.hi + delta });
 }
 
-function hoistScan(lines: string[]): void {
-    for (; hoist.scanned < lines.length; hoist.scanned++) {
-        if (hoist.valid.size === 0) continue;
-        const line = lines[hoist.scanned]!;
+function hoistKill(st: HoistState, reg: string): void {
+    st.killed.add(reg);
+    st.valid.delete(reg);
+}
+
+function hoistScanLines(st: HoistState, lines: string[]): void {
+    for (; st.scanned < lines.length; st.scanned++) {
+        const line = lines[st.scanned]!;
+        if (st.applyChecks) {
+            for (const m of line.matchAll(WIDE_CHECK)) st.valid.set(m[1]!, { lo: 0, hi: 0 });
+            for (const m of line.matchAll(ABS_CHECK)) st.absEnd = Math.max(st.absEnd, Number(m[1]));
+        }
         const guarded = /[{]|\bif \(|\bfor \(|\bwhile \(/.test(line);
         if (guarded) {
-            hoist.pending = null;
-            for (const w of line.matchAll(REG_WRITE)) hoist.valid.delete(w[1]!);
+            st.pending = null;
+            for (const w of line.matchAll(REG_WRITE)) hoistKill(st, w[1]!);
             continue;
         }
         const addsub = FR_ADDSUB.exec(line);
         const incdec = addsub ? null : FR_INCDEC.exec(line);
-        const pending = hoist.pending;
-        if (addsub) hoist.pending = { reg: addsub[1]!, delta: (addsub[3] === "+" ? 1 : -1) * signed32(Number(addsub[2])) };
-        else if (incdec) hoist.pending = { reg: incdec[1]!, delta: (incdec[2] === "+" ? 1 : -1) * signed32(Number(incdec[3])) };
-        else if (/\bfr = /.test(line)) hoist.pending = null;
+        const pending = st.pending;
+        if (addsub) st.pending = { reg: addsub[1]!, delta: (addsub[3] === "+" ? 1 : -1) * signed32(Number(addsub[2])) };
+        else if (incdec) st.pending = { reg: incdec[1]!, delta: (incdec[2] === "+" ? 1 : -1) * signed32(Number(incdec[3])) };
+        else if (/\bfr = /.test(line)) st.pending = null;
         for (const stmt of line.split(";")) {
             const drift = REG_DRIFT.exec(stmt);
-            if (drift) { hoistDrift(drift[1]!, (drift[2] === "+=" ? 1 : -1) * Number(drift[3])); continue; }
+            if (drift) { hoistDrift(st, drift[1]!, (drift[2] === "+=" ? 1 : -1) * Number(drift[3])); continue; }
             const fromFr = ASSIGN_FR.exec(stmt);
-            if (fromFr && pending && pending.reg === fromFr[1]) { hoistDrift(fromFr[1]!, pending.delta); hoist.pending = null; continue; }
+            if (fromFr && pending && pending.reg === fromFr[1]) { hoistDrift(st, fromFr[1]!, pending.delta); st.pending = null; continue; }
             const lea = LEA_DRIFT.exec(stmt);
-            if (lea && lea[1] === lea[2]) { hoistDrift(lea[1]!, signed32(Number(lea[3]))); continue; }
-            for (const w of stmt.matchAll(REG_WRITE)) hoist.valid.delete(w[1]!);
+            if (lea && lea[1] === lea[2]) { hoistDrift(st, lea[1]!, signed32(Number(lea[3]))); continue; }
+            for (const w of stmt.matchAll(REG_WRITE)) hoistKill(st, w[1]!);
         }
     }
+}
+
+function hoistScan(lines: string[]): void { hoistScanLines(hoist, lines); }
+
+/** What a finished block does to every base, read back from its C, with no
+ *  assumption at entry: the bases it writes in an unknown way, the net
+ *  constant drift of the others, and the state its own checks leave at exit. */
+interface BlockSummary { killed: Set<string>; net: Map<string, number>; out: Map<string, Drift>; absEnd: number }
+function summarizeBlock(lines: string[]): BlockSummary {
+    const st = newHoistState(true);
+    hoistScanLines(st, lines);
+    return { killed: st.killed, net: st.net, out: st.valid, absEnd: st.absEnd };
+}
+
+/**
+ * Cross-block seeds: a block that only the function's own edges reach may
+ * assume what every predecessor proves at its exit. Forward dataflow over
+ * the block graph, intersection at joins (a base is in range only if every
+ * predecessor leaves it so; drift intervals take the union; the absolute
+ * end takes the minimum), from the optimistic top down to a fixed point.
+ * Dispatcher entries (the function entry, resumes after calls and slow
+ * instructions, profile entries) assume nothing, and a drift interval that
+ * keeps widening through a loop is dropped once it exceeds the slack.
+ */
+function crossBlockSeeds(order: number[], succ: Map<number, number[]>, entries: Set<number>, summaries: Map<number, BlockSummary>): Map<number, HoistIn> {
+    const preds = new Map<number, number[]>();
+    for (const s of order) preds.set(s, []);
+    for (const [s, targets] of succ) for (const t of targets) preds.get(t)?.push(s);
+    const empty = (): HoistIn => ({ valid: new Map(), absEnd: 0 });
+    const top = (): HoistIn => ({ valid: new Map(HOIST_BASES.map((r) => [r, { lo: 0, hi: 0 }])), absEnd: Number.POSITIVE_INFINITY });
+    const inState = new Map<number, HoistIn>();
+    for (const s of order) inState.set(s, entries.has(s) || preds.get(s)!.length === 0 ? empty() : top());
+    const outOf = (s: number): HoistIn => {
+        const sm = summaries.get(s)!;
+        const inp = inState.get(s)!;
+        const valid = new Map<string, Drift>();
+        for (const r of HOIST_BASES) {
+            let d: Drift | undefined;
+            if (sm.killed.has(r)) d = sm.out.get(r);
+            else if (inp.valid.has(r)) { const i = inp.valid.get(r)!, n = sm.net.get(r) ?? 0; d = { lo: i.lo + n, hi: i.hi + n }; }
+            else d = sm.out.get(r);
+            if (d && d.hi - d.lo <= 4 * HOIST_SLACK && Math.abs(d.lo) <= 16 * HOIST_SLACK && Math.abs(d.hi) <= 16 * HOIST_SLACK) valid.set(r, d);
+        }
+        return { valid, absEnd: Math.max(inp.absEnd, sm.absEnd) };
+    };
+    const same = (a: HoistIn, b: HoistIn): boolean => {
+        if (a.absEnd !== b.absEnd || a.valid.size !== b.valid.size) return false;
+        for (const [r, d] of a.valid) { const e = b.valid.get(r); if (!e || e.lo !== d.lo || e.hi !== d.hi) return false; }
+        return true;
+    };
+    for (let round = 0; round < 64; round++) {
+        let changed = false;
+        for (const s of order) {
+            const ps = preds.get(s)!;
+            if (entries.has(s) || ps.length === 0) continue;
+            let acc: HoistIn | null = null;
+            for (const p of ps) {
+                const o = outOf(p);
+                if (acc === null) { acc = { valid: new Map(o.valid), absEnd: o.absEnd }; continue; }
+                for (const [r, d] of [...acc.valid]) {
+                    const e = o.valid.get(r);
+                    if (!e) acc.valid.delete(r); else acc.valid.set(r, { lo: Math.min(d.lo, e.lo), hi: Math.max(d.hi, e.hi) });
+                }
+                acc.absEnd = Math.min(acc.absEnd, o.absEnd);
+            }
+            if (!same(acc!, inState.get(s)!)) { inState.set(s, acc!); changed = true; }
+        }
+        if (!changed) {
+            for (const s of order) if (!Number.isFinite(inState.get(s)!.absEnd)) inState.get(s)!.absEnd = 0;
+            return inState;
+        }
+    }
+    return new Map(order.map((s) => [s, empty()]));
 }
 
 /** "" when the access is covered, the wide check (which then covers the
@@ -476,19 +583,19 @@ function hoistGuard(lines: string[], base: string | null, disp: number | null, w
     if (disp < -HOIST_SLACK || disp + width > 2 * HOIST_SLACK) return null;
     hoistScan(lines);
     const drift = hoist.valid.get(base);
-    if (drift !== undefined) {
-        const lo = drift + disp;
-        if (lo >= -HOIST_SLACK && lo + width <= 2 * HOIST_SLACK) return "";
-    }
-    hoist.valid.set(base, 0);
+    if (drift !== undefined && drift.lo + disp >= -HOIST_SLACK && drift.hi + disp + width <= 2 * HOIST_SLACK) return "";
+    hoist.valid.set(base, { lo: 0, hi: 0 });
     return `if (${base} - ${HOIST_SLACK}u > ml - ${3 * HOIST_SLACK}u) { ${guardExit(insnAddr, done)} } `;
 }
 
-function beginHoistBlock(lines: string[]): void {
+function beginHoistBlock(lines: string[], seed?: HoistIn): void {
     hoist.lines = lines;
     hoist.valid.clear();
+    if (seed) for (const [r, d] of seed.valid) hoist.valid.set(r, { lo: d.lo, hi: d.hi });
     hoist.pending = null;
-    hoist.absEnd = 0;
+    hoist.absEnd = seed ? seed.absEnd : 0;
+    hoist.net.clear();
+    hoist.killed.clear();
     hoist.scanned = lines.length;
 }
 
@@ -844,13 +951,40 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     });
     let nativeCalls = 0;
 
+    // Block successors inside the function (a call, a slow x87 instruction or
+    // an out end their block at a dispatcher entry, not on an edge) and the
+    // blocks the dispatcher may land on: the cross-block guard seeds need both.
+    const succ = new Map<number, number[]>();
+    for (const start of order) {
+        const insns = blocks.get(start)!.insns;
+        const term = insns[insns.length - 1]!;
+        const s: number[] = [];
+        const m = term.mnemonic;
+        const edge = (a: number): void => { if (indexOf.has(a)) s.push(a); };
+        if (m === "ret" || m === "retn" || m === "call" || m === "out" || x87Kind(m, term.operand) === "slow") { /* ends at an entry */ }
+        else if (m === "jmp") { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); }
+        else if (COND_BRANCH.has(m)) { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); edge(term.addr + term.size); }
+        else edge(term.addr + term.size);
+        succ.set(start, s);
+    }
+    const dispatcherEntries = new Set<number>([entry, ...resumes]);
+    if (extraEntries) for (const a of order) if (extraEntries.has(a)) dispatcherEntries.add(a);
+    const blockLines = new Map<number, string[]>();
+    let seeds: Map<number, HoistIn> | null = null;
+
+    // Emitted twice: once with no assumption at any block entry, which yields
+    // each block's summary; then with the cross-block seeds, which drop the
+    // checks a predecessor already made.
+    const emitAll = async (): Promise<true | null> => {
+    out.length = 0; liveFlagSites = 0; total = 0; calls = 0; callTargets.length = 0; nativeCalls = 0; blockLines.clear();
     for (const start of order) {
         const block = blocks.get(start)!;
         total += block.insns.length;
         const lines: string[] = [];
         const n = block.insns.length;
         const term = block.insns[n - 1]!;
-        beginHoistBlock(lines);
+        beginHoistBlock(lines, seeds?.get(start));
+        blockLines.set(start, lines);
 
         // Each consumer's producer: the last flag writer before it, which must
         // be modelled. Every modelled producer keeps its operands in fa/fb/fr
@@ -1455,6 +1589,15 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
 
         out.push(`        case ${indexOf.get(start)}: {\n${lines.map((l) => "            " + l).join("\n")}\n        }`);
     }
+    return true;
+    };
+    if ((await emitAll()) === null) return null;
+    {
+        const summaries = new Map<number, BlockSummary>();
+        for (const [s, l] of blockLines) summaries.set(s, summarizeBlock(l));
+        seeds = crossBlockSeeds(order, succ, dispatcherEntries, summaries);
+    }
+    if ((await emitAll()) === null) return null;
 
     if (out.length === 0) return reject("empty body");
 
