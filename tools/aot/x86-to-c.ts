@@ -380,10 +380,26 @@ export function slowExit(insnAddr: number, done: number): string {
  */
 export function guardMem(lines: string[], op: Operand, insnAddr: number, done: number): void {
     if (op.kind !== "mem") return;
-    const wide = hoistGuard(lines, op.base ?? null, op.hasIndex || op.segment ? null : op.disp!, op.width!, insnAddr, done);
+    let wide: string | null = null;
+    if (op.hasIndex) wide = null;
+    else if (op.base) wide = op.segment ? null : hoistGuard(lines, op.base, op.disp!, op.width!, insnAddr, done);
+    // fs:[disp]: the FS base only changes with the thread, at an exit or a
+    // call, so within a block it is a base register that is never written.
+    else if (op.segment) wide = hoistGuard(lines, "FSBASE", op.disp!, op.width!, insnAddr, done);
+    else wide = absoluteGuard(lines, (op.disp! >>> 0) + op.width!, insnAddr, done);
     if (wide === null) lines.push(`a0 = ${op.addr}; if (a0 > ml - ${op.width}u) { ${guardExit(insnAddr, done)} }`);
     else lines.push(`${wide}a0 = ${op.addr};`);
     op.addr = "a0";
+}
+
+/** An absolute address needs `end <= ml`, and ml does not change within a
+ *  block: one check per block for the highest end seen so far covers every
+ *  absolute access at or below it. */
+function absoluteGuard(lines: string[], end: number, insnAddr: number, done: number): string | null {
+    if (hoist.lines !== lines || end > 0xffffffff) return null;
+    if (end <= hoist.absEnd) return "";
+    hoist.absEnd = end;
+    return `if (ml < ${end >>> 0}u) { ${guardExit(insnAddr, done)} } `;
 }
 
 /** The stack guards of push/call (`delta` -4: the slot below ESP) and of
@@ -407,7 +423,7 @@ export function stackGuard(base: "esp" | "ebp", delta: number, insnAddr: number,
  * fault still surfaces where the guest would raise it.
  */
 const HOIST_SLACK = 0x1000;
-const hoist = { lines: null as string[] | null, valid: new Map<string, number>(), scanned: 0, pending: null as { reg: string; delta: number } | null };
+const hoist = { lines: null as string[] | null, valid: new Map<string, number>(), scanned: 0, pending: null as { reg: string; delta: number } | null, absEnd: 0 };
 const REG_WRITE = /\b(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(\+\+|--|<<=|>>=|[-+*/%&|^]?=)(?!=)/g;
 const REG_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) (\+=|-=) (\d+)u\s*$/;
 // The flag-producing forms of add/sub/inc/dec with an immediate: the result
@@ -472,6 +488,7 @@ function beginHoistBlock(lines: string[]): void {
     hoist.lines = lines;
     hoist.valid.clear();
     hoist.pending = null;
+    hoist.absEnd = 0;
     hoist.scanned = lines.length;
 }
 
