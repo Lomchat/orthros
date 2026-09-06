@@ -418,27 +418,30 @@ export function stackGuard(base: "esp" | "ebp", delta: number, insnAddr: number,
 
 /**
  * Guard hoisting, per block. The first access through a base register with a
- * plain `[base + disp]` operand checks the base's range once (base in
- * [SLACK, ml - 2*SLACK], exiting at that instruction like a plain guard); the
- * following accesses through it whose displacement plus the base's constant
- * drift stays within the slack need no guard. Any other write to the base ends
- * its coverage and the next access checks again. Writes are found by scanning
- * the emitted C: every register write is an assignment to the named local, and
- * a write inside a braced or conditional statement counts as unknown. Memory
- * beyond MEM_SIZE and the wrap below zero are both excluded by the check, so a
- * fault still surfaces where the guest would raise it.
+ * plain `[base + disp]` operand checks the base once for every offset the rest
+ * of the block will use through it (the block is scanned ahead, following the
+ * constant drift of push/pop/add/sub), exiting at that instruction like a
+ * plain guard; the accesses within the proven offsets then need no guard.
+ * The proven high bound is exact: an exit can only happen where an access of
+ * this very block would fault, so a pointer near the top of guest RAM (where
+ * the SURFACE region grows) never exits spuriously. Only the low bound keeps a
+ * margin, below which no user-mode address is ever valid. Any other write to
+ * the base ends its coverage and the next access checks again. Writes are found
+ * by scanning the emitted C: every register write is an assignment to the
+ * named local, and a write inside a braced or conditional statement counts as
+ * unknown.
  */
-const HOIST_SLACK = 0x1000;
-/** A base's drift since its range check, as an interval: exact within a
- *  block, widened at a join to the union of the incoming drifts. */
-interface Drift { lo: number; hi: number }
-/** What a block may assume at entry: the bases proven in range by every
- *  predecessor (with their drift interval) and the highest absolute end
- *  every predecessor has checked against ml. */
-interface HoistIn { valid: Map<string, Drift>; absEnd: number }
+const HOIST_LOW = 0x1000;
+/** Offsets [lo, hi) relative to the base's current value proven in bounds. */
+interface Range { lo: number; hi: number }
+/** What a block may assume at entry: the offset ranges every predecessor
+ *  proves for each base, and the highest absolute end every predecessor has
+ *  checked against ml. */
+interface HoistIn { valid: Map<string, Range>; absEnd: number }
 interface HoistState {
     lines: string[] | null;
-    valid: Map<string, Drift>;
+    block: Block | null;
+    valid: Map<string, Range>;
     scanned: number;
     pending: { reg: string; delta: number } | null;
     absEnd: number;
@@ -450,10 +453,11 @@ interface HoistState {
      *  block) rather than trust the live tracker (which emitted them). */
     applyChecks: boolean;
 }
-const newHoistState = (applyChecks: boolean): HoistState => ({ lines: null, valid: new Map(), scanned: 0, pending: null, absEnd: 0, net: new Map(), killed: new Set(), applyChecks });
+const newHoistState = (applyChecks: boolean): HoistState => ({ lines: null, block: null, valid: new Map(), scanned: 0, pending: null, absEnd: 0, net: new Map(), killed: new Set(), applyChecks });
 const hoist: HoistState = newHoistState(false);
 const HOIST_BASES = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "FSBASE"];
-const WIDE_CHECK = /if \((eax|ecx|edx|ebx|esp|ebp|esi|edi|FSBASE) - 4096u > ml - 12288u\)/g;
+/** `if (base - Lu > ml - Tu)` proves offsets [-L, T - L). */
+const WIDE_CHECK = /if \((eax|ecx|edx|ebx|esp|ebp|esi|edi|FSBASE) - (\d+)u > ml - (\d+)u\)/g;
 const ABS_CHECK = /if \(ml < (\d+)u\)/g;
 const REG_WRITE = /\b(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(\+\+|--|<<=|>>=|[-+*/%&|^]?=)(?!=)/g;
 const REG_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) (\+=|-=) (\d+)u\s*$/;
@@ -466,10 +470,11 @@ const ASSIGN_FR = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(fr\)\s*
 const LEA_DRIFT = /^\s*(eax|ecx|edx|ebx|esp|ebp|esi|edi) = \(uint32_t\)\(\((eax|ecx|edx|ebx|esp|ebp|esi|edi) \+ (\d+)u\)\)\s*$/;
 const signed32 = (n: number): number => (n >= 0x80000000 ? n - 0x100000000 : n);
 
+/** base += delta: an offset o' from the new value is o' + delta from the old. */
 function hoistDrift(st: HoistState, reg: string, delta: number): void {
     st.net.set(reg, (st.net.get(reg) ?? 0) + delta);
-    const d = st.valid.get(reg);
-    if (d !== undefined) st.valid.set(reg, { lo: d.lo + delta, hi: d.hi + delta });
+    const r = st.valid.get(reg);
+    if (r !== undefined) st.valid.set(reg, { lo: r.lo - delta, hi: r.hi - delta });
 }
 
 function hoistKill(st: HoistState, reg: string): void {
@@ -481,7 +486,7 @@ function hoistScanLines(st: HoistState, lines: string[]): void {
     for (; st.scanned < lines.length; st.scanned++) {
         const line = lines[st.scanned]!;
         if (st.applyChecks) {
-            for (const m of line.matchAll(WIDE_CHECK)) st.valid.set(m[1]!, { lo: 0, hi: 0 });
+            for (const m of line.matchAll(WIDE_CHECK)) { const L = Number(m[2]), T = Number(m[3]); st.valid.set(m[1]!, { lo: -L, hi: T - L }); }
             for (const m of line.matchAll(ABS_CHECK)) st.absEnd = Math.max(st.absEnd, Number(m[1]));
         }
         const guarded = /[{]|\bif \(|\bfor \(|\bwhile \(/.test(line);
@@ -534,20 +539,25 @@ function crossBlockSeeds(order: number[], succ: Map<number, number[]>, entries: 
     const preds = new Map<number, number[]>();
     for (const s of order) preds.set(s, []);
     for (const [s, targets] of succ) for (const t of targets) preds.get(t)?.push(s);
+    const INF = 0x40000000;
     const empty = (): HoistIn => ({ valid: new Map(), absEnd: 0 });
-    const top = (): HoistIn => ({ valid: new Map(HOIST_BASES.map((r) => [r, { lo: 0, hi: 0 }])), absEnd: Number.POSITIVE_INFINITY });
+    const top = (): HoistIn => ({ valid: new Map(HOIST_BASES.map((r) => [r, { lo: -INF, hi: INF }])), absEnd: Number.POSITIVE_INFINITY });
     const inState = new Map<number, HoistIn>();
     for (const s of order) inState.set(s, entries.has(s) || preds.get(s)!.length === 0 ? empty() : top());
+    // A range that keeps changing at a block (a loop drifting its base) is
+    // dropped after a few rounds instead of shrinking to nothing one step at
+    // a time.
+    const churn = new Map<string, number>();
     const outOf = (s: number): HoistIn => {
         const sm = summaries.get(s)!;
         const inp = inState.get(s)!;
-        const valid = new Map<string, Drift>();
+        const valid = new Map<string, Range>();
         for (const r of HOIST_BASES) {
-            let d: Drift | undefined;
+            let d: Range | undefined;
             if (sm.killed.has(r)) d = sm.out.get(r);
-            else if (inp.valid.has(r)) { const i = inp.valid.get(r)!, n = sm.net.get(r) ?? 0; d = { lo: i.lo + n, hi: i.hi + n }; }
+            else if (inp.valid.has(r)) { const i = inp.valid.get(r)!, n = sm.net.get(r) ?? 0; d = { lo: i.lo - n, hi: i.hi - n }; }
             else d = sm.out.get(r);
-            if (d && d.hi - d.lo <= 4 * HOIST_SLACK && Math.abs(d.lo) <= 16 * HOIST_SLACK && Math.abs(d.hi) <= 16 * HOIST_SLACK) valid.set(r, d);
+            if (d && d.lo < d.hi && d.lo >= -INF && d.hi <= INF) valid.set(r, d);
         }
         return { valid, absEnd: Math.max(inp.absEnd, sm.absEnd) };
     };
@@ -567,11 +577,22 @@ function crossBlockSeeds(order: number[], succ: Map<number, number[]>, entries: 
                 if (acc === null) { acc = { valid: new Map(o.valid), absEnd: o.absEnd }; continue; }
                 for (const [r, d] of [...acc.valid]) {
                     const e = o.valid.get(r);
-                    if (!e) acc.valid.delete(r); else acc.valid.set(r, { lo: Math.min(d.lo, e.lo), hi: Math.max(d.hi, e.hi) });
+                    if (!e) { acc.valid.delete(r); continue; }
+                    const m = { lo: Math.max(d.lo, e.lo), hi: Math.min(d.hi, e.hi) };
+                    if (m.lo < m.hi) acc.valid.set(r, m); else acc.valid.delete(r);
                 }
                 acc.absEnd = Math.min(acc.absEnd, o.absEnd);
             }
-            if (!same(acc!, inState.get(s)!)) { inState.set(s, acc!); changed = true; }
+            const prev = inState.get(s)!;
+            for (const [r, d] of [...acc!.valid]) {
+                const e = prev.valid.get(r);
+                if (e && (e.lo !== d.lo || e.hi !== d.hi)) {
+                    const key = `${s}:${r}`, c = (churn.get(key) ?? 0) + 1;
+                    churn.set(key, c);
+                    if (c > 8) acc!.valid.delete(r);
+                }
+            }
+            if (!same(acc!, prev)) { inState.set(s, acc!); changed = true; }
         }
         if (!changed) {
             for (const s of order) if (!Number.isFinite(inState.get(s)!.absEnd)) inState.get(s)!.absEnd = 0;
@@ -581,21 +602,89 @@ function crossBlockSeeds(order: number[], succ: Map<number, number[]>, entries: 
     return new Map(order.map((s) => [s, empty()]));
 }
 
-/** "" when the access is covered, the wide check (which then covers the
- *  following accesses) when it starts coverage, null when only a plain guard
- *  will do (index, segment, or a displacement beyond the slack). */
-function hoistGuard(lines: string[], base: string | null, disp: number | null, width: number, insnAddr: number, done: number): string | null {
-    if (hoist.lines !== lines || !base || disp === null) return null;
-    if (disp < -HOIST_SLACK || disp + width > 2 * HOIST_SLACK) return null;
-    hoistScan(lines);
-    const drift = hoist.valid.get(base);
-    if (drift !== undefined && drift.lo + disp >= -HOIST_SLACK && drift.hi + disp + width <= 2 * HOIST_SLACK) return "";
-    hoist.valid.set(base, { lo: 0, hi: 0 });
-    return `if (${base} - ${HOIST_SLACK}u > ml - ${3 * HOIST_SLACK}u) { ${guardExit(insnAddr, done)} } `;
+/** Register operand aliasing `base` (any width). */
+function isBaseReg(op: Operand | null, base: string): boolean {
+    return op !== null && (op.kind === "reg32" || op.kind === "reg16" || op.kind === "reg8lo" || op.kind === "reg8hi") && REG32[op.index!] === base;
 }
 
-function beginHoistBlock(lines: string[], seed?: HoistIn): void {
+/** Plain access through `base` of a memory operand (fs:[disp] for FSBASE). */
+function accessThrough(op: Operand | null, base: string): boolean {
+    if (!op || op.kind !== "mem" || op.hasIndex) return false;
+    return base === "FSBASE" ? (op.segment === true && !op.base) : (op.base === base && !op.segment);
+}
+
+/** Instructions whose implicit writes end a base's coverage in the scan
+ *  ahead; missing one only makes a check wider than needed (the emitted-C
+ *  scanner still ends coverage exactly), never unsound. */
+const IMPLICIT_WRITERS: Record<string, string[]> = {
+    eax: ["mul", "imul", "div", "idiv", "cdq", "cwde", "cbw", "rdtsc", "cpuid", "xlat", "lods", "lodsb", "lodsw", "lodsd", "cmpxchg", "cmpxchg8b", "aaa", "aad", "aam", "aas", "daa", "das", "in", "lahf", "sahf"],
+    edx: ["mul", "imul", "div", "idiv", "cdq", "cwd", "rdtsc", "cpuid", "cmpxchg8b"],
+    ecx: ["loop", "loope", "loopne", "rep", "repe", "repne", "cpuid", "movs", "movsb", "movsw", "movsd", "stos", "stosb", "stosw", "stosd", "cmps", "cmpsb", "cmpsw", "cmpsd", "scas", "scasb", "scasw", "scasd", "lods", "lodsb", "lodsw", "lodsd", "ins", "outs"],
+    ebx: ["cpuid", "cmpxchg8b"],
+    esi: ["movs", "movsb", "movsw", "movsd", "lods", "lodsb", "lodsw", "lodsd", "cmps", "cmpsb", "cmpsw", "cmpsd", "outs"],
+    edi: ["movs", "movsb", "movsw", "movsd", "stos", "stosb", "stosw", "stosd", "cmps", "cmpsb", "cmpsw", "cmpsd", "scas", "scasb", "scasw", "scasd", "ins"],
+    esp: ["leave", "enter", "popad", "popa", "pushad", "pusha"],
+    ebp: ["leave", "enter", "popad", "popa"],
+    FSBASE: [],
+};
+
+/** Offsets the rest of the block (from instruction `from`) will access
+ *  through `base`, relative to its value at that point, following its
+ *  constant drift and stopping at the first other write to it. */
+function needsFrom(block: Block, from: number, base: string): Range | null {
+    let drift = 0, lo = Number.POSITIVE_INFINITY, hi = Number.NEGATIVE_INFINITY;
+    const use = (off: number, width: number): void => { lo = Math.min(lo, off); hi = Math.max(hi, off + width); };
+    for (let k = from; k < block.insns.length; k++) {
+        const insn = block.insns[k]!;
+        const m = insn.mnemonic;
+        const ops = splitOperands(insn.operand).map((t) => parseOperand(t));
+        if (m !== "lea" && m !== "nop") for (const op of ops) if (accessThrough(op, base)) use(drift + op!.disp!, op!.width!);
+        if (base === "esp") {
+            if (m === "push" || m === "pushfd" || m === "pushf") { use(drift - 4, 4); drift -= 4; continue; }
+            if (m === "call") { use(drift - 4, 4); break; }
+            if (m === "pop" || m === "popfd" || m === "popf") { use(drift, 4); drift += 4; if (m === "pop" && isBaseReg(ops[0] ?? null, base)) break; continue; }
+            if (m === "ret" || m === "retn") { use(drift, 4); break; }
+        }
+        if (base === "ebp" && m === "leave") { use(drift, 4); break; }
+        // imul writes edx:eax only in its one-operand form.
+        const implicit = m === "imul" ? ops.length === 1 : IMPLICIT_WRITERS[base]!.includes(m);
+        if (implicit || (m.startsWith("rep") && base !== "FSBASE" && ["ecx", "esi", "edi"].includes(base))) break;
+        const dst = ops[0] ?? null;
+        if (isBaseReg(dst, base)) {
+            const src = ops[1] ?? null;
+            if ((m === "add" || m === "sub") && src && src.kind === "imm" && dst!.kind === "reg32") { drift += (m === "add" ? 1 : -1) * src.value!; continue; }
+            if ((m === "inc" || m === "dec") && dst!.kind === "reg32") { drift += m === "inc" ? 1 : -1; continue; }
+            if (m === "lea" && src && src.kind === "mem" && src.base === base && !src.hasIndex && !src.segment) { drift += src.disp!; continue; }
+            if (m === "cmp" || m === "test" || m === "push") continue;
+            break;
+        }
+        if ((m === "xchg" || m === "xadd") && isBaseReg(ops[1] ?? null, base)) break;
+        if (base === "esp" && (m === "mov" || m === "lea") && dst && dst.kind === "reg32" && REG32[dst.index!] === "esp") break;
+    }
+    return lo === Number.POSITIVE_INFINITY ? null : { lo, hi };
+}
+
+/** "" when the access is covered, the range check (which then covers the
+ *  offsets the rest of the block needs) when it starts coverage, null when
+ *  only a plain guard will do (index, or an unreasonable span). */
+function hoistGuard(lines: string[], base: string | null, disp: number | null, width: number, insnAddr: number, done: number): string | null {
+    if (hoist.lines !== lines || !base || disp === null) return null;
+    hoistScan(lines);
+    const r = hoist.valid.get(base);
+    if (r !== undefined && r.lo <= disp && disp + width <= r.hi) return "";
+    const need = hoist.block ? needsFrom(hoist.block, done, base) : null;
+    let lo = Math.min(disp, need ? need.lo : disp);
+    const hi = Math.max(disp + width, need ? need.hi : disp + width);
+    lo = Math.min(lo, -HOIST_LOW);
+    if (hi - lo > 0x100000 || hi > 0x80000000) return null;
+    const L = -lo, T = hi - lo;
+    hoist.valid.set(base, { lo, hi });
+    return `if (${base} - ${L}u > ml - ${T}u) { ${guardExit(insnAddr, done)} } `;
+}
+
+function beginHoistBlock(lines: string[], block: Block, seed?: HoistIn): void {
     hoist.lines = lines;
+    hoist.block = block;
     hoist.valid.clear();
     if (seed) for (const [r, d] of seed.valid) hoist.valid.set(r, { lo: d.lo, hi: d.hi });
     hoist.pending = null;
@@ -992,7 +1081,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         const lines: string[] = [];
         const n = block.insns.length;
         const term = block.insns[n - 1]!;
-        beginHoistBlock(lines, seeds?.get(start));
+        beginHoistBlock(lines, block, seeds?.get(start));
         blockLines.set(start, lines);
 
         // Each consumer's producer: the last flag writer before it, which must

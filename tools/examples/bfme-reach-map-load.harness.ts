@@ -388,6 +388,7 @@ if (process.argv.includes("--attribute-chain-misses")) {
 let prev = await sample(bench);
 let prevJit = await jitStats(bench);
 let prevInterp = await interpShare(bench);
+let prevGuardExits = 0;
 // Read-and-reset now, or the first window's scheduler counters cover the whole
 // boot and menu instead of ten seconds of loading.
 await sleepStats(bench);
@@ -509,12 +510,15 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
     }
     await armHot(bench);
     await Bun.sleep(10_000);
-    let hot: any, s: any, j: any, ip: any;
+    let hot: any, s: any, j: any, ip: any, ao: any = null;
     try {
         hot = await readHot(bench);
         s = await sample(bench);
         j = await jitStats(bench);
         ip = await interpShare(bench);
+        // Guard exits of the translated code: a burst here with near-zero
+        // MIPS is a translation exiting to the dispatcher at every access.
+        ao = await bench.evalPage(`__BS__.harness.dbgCall("aotStats")`, 15_000).catch(() => null);
     } catch (e) {
         // The page no longer answers: with a batch installed that is the
         // Worker pinned in the guest. Profile it through its own CDP session
@@ -576,7 +580,9 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` up=${((s.upBytes - prev.upBytes) / 1048576).toFixed(1)}MB/${s.ups - prev.ups} upArena=${((s.upArena - prev.upArena) / 1048576).toFixed(1)}MB ffp=${((s.ffpBytes - prev.ffpBytes) / 1048576).toFixed(1)}MB/${s.ffpUp - prev.ffpUp}up/${s.ffpSkip - prev.ffpSkip}skip vbskip=${s.vbSkip - prev.vbSkip}/${s.ibSkip - prev.ibSkip}`
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
-        + ` stateMism=+${di("blocksStateMismatch")}`);
+        + ` stateMism=+${di("blocksStateMismatch")}`
+        + ` aotGuard=+${ao && typeof ao.guardExits === "number" ? ao.guardExits - prevGuardExits : "?"}`);
+    if (ao && typeof ao.guardExits === "number") prevGuardExits = ao.guardExits;
     if (!aotInstall && i === 1) {
         // The Worker installs the bundle's published batch by itself once the
         // guest runs 32-bit flat code; report what it did.
