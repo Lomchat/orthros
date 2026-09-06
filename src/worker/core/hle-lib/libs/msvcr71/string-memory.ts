@@ -125,3 +125,68 @@ export const msvcr71StrstrShadow: ShadowSpec = {
     kernel: msvcr71StrstrKernel,
     n: 64,
 };
+
+/** memcpy and memmove: one overlap-safe body behind both exports. */
+export function msvcr71MemmoveKernel(view: ShadowView, args: number[]): number {
+    const destination = args[0] >>> 0;
+    const source = args[1] >>> 0;
+    const length = args[2] >>> 0;
+    if (destination > source && destination < source + length) {
+        for (let i = length - 1; i >= 0; i--) view.writeU8((destination + i) >>> 0, view.readU8((source + i) >>> 0));
+    } else {
+        for (let i = 0; i < length; i++) view.writeU8((destination + i) >>> 0, view.readU8((source + i) >>> 0));
+    }
+    return destination;
+}
+
+/** At most `count` bytes, stopping at the first NUL of either; -1/0/1 on unsigned bytes. */
+export function msvcr71StrncmpKernel(view: ShadowView, args: number[]): number {
+    const left = args[0] >>> 0;
+    const right = args[1] >>> 0;
+    const count = args[2] >>> 0;
+    for (let i = 0; i < count; i++) {
+        const a = view.readU8((left + i) >>> 0);
+        const b = view.readU8((right + i) >>> 0);
+        if (a !== b) return a < b ? -1 : 1;
+        if (a === 0) break;
+    }
+    return 0;
+}
+
+/** Last occurrence of the byte, the terminator included (0 finds it), else 0. */
+export function msvcr71StrrchrKernel(view: ShadowView, args: number[]): number {
+    const string = args[0] >>> 0;
+    const wanted = (args[1] >>> 0) & 0xff;
+    let length = 0;
+    for (; length < 0x10_0000; length++) {
+        if (view.readU8((string + length) >>> 0) === 0) break;
+    }
+    if (length >= 0x10_0000) throw new Error('MSVCR71 strrchr input exceeds validation bound');
+    for (let i = length; i >= 0; i--) {
+        if (view.readU8((string + i) >>> 0) === wanted) return (string + i) >>> 0;
+    }
+    return 0;
+}
+
+export const msvcr71MemmoveShadow: ShadowSpec = {
+    ranges: (args) => [{ addr: args[0] >>> 0, len: args[2] >>> 0 }],
+    guard: (args) => (args[2] >>> 0) <= 0x10_0000
+        && ((args[2] >>> 0) === 0 || ((args[0] >>> 0) !== 0 && (args[1] >>> 0) !== 0)),
+    kernel: msvcr71MemmoveKernel,
+    n: 64,
+};
+
+export const msvcr71StrncmpShadow: ShadowSpec = {
+    ranges: () => [],
+    guard: (args) => (args[2] >>> 0) <= 0x10_0000
+        && ((args[2] >>> 0) === 0 || ((args[0] >>> 0) !== 0 && (args[1] >>> 0) !== 0)),
+    kernel: msvcr71StrncmpKernel,
+    n: 64,
+};
+
+export const msvcr71StrrchrShadow: ShadowSpec = {
+    ranges: () => [],
+    guard: (args) => (args[0] >>> 0) !== 0,
+    kernel: msvcr71StrrchrKernel,
+    n: 64,
+};

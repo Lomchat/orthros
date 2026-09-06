@@ -7,6 +7,9 @@ import {
     HANDLER_MSVCR71_STRNCPY,
     HANDLER_MSVCR71_STRNICMP,
     HANDLER_MSVCR71_STRCMP,
+    HANDLER_MSVCR71_MEMMOVE,
+    HANDLER_MSVCR71_STRNCMP,
+    HANDLER_MSVCR71_STRRCHR,
     HANDLER_STRSTR,
     HANDLER_CDECL_CEIL,
 } from '../../../cpu/hypercall-data';
@@ -27,6 +30,7 @@ import {
 } from './string-memory';
 import { buildMsvcr71SscanfScalarFilter, msvcr71SscanfScalarFallback } from './scanf-scalar';
 import { msvcr71VsnprintfFallback, msvcr71VsnprintfShadow } from './vsnprintf';
+import { msvcr71MemmoveShadow, msvcr71StrncmpShadow, msvcr71StrrchrShadow } from './string-memory';
 import { buildMsvcr71GetPtdInline } from './getptd-inline';
 import { buildMsvcr71LocaleStricmpFilter } from './locale-compare-inline';
 import {
@@ -134,6 +138,13 @@ const STRSTR_PATTERN = hexBytes(
     '8b4c24085753568a118b7c241084d2746f8a710184f674558bf78b4c24148a0783' +
     'c6013ac2741784c0740d8a0683c6013ac2740a84c075f35e5b5f33c0c38a0683',
 );
+// memcpy and memmove share one overlap-safe body; only the distance of the
+// relative branch to the backward-copy path (0x17b against 0x178) tells the
+// two entries apart, so both patterns run through it.
+const MEMCPY_PATTERN = hexBytes('558bec57568b750c8b4d108b7d088bc18bd103c63bfe76083bf80f827b010000');
+const MEMMOVE_PATTERN = hexBytes('558bec57568b750c8b4d108b7d088bc18bd103c63bfe76083bf80f8278010000');
+const STRNCMP_PATTERN = hexBytes('558bec5756538b4d10e3278bd98b7d088bf733c0f2aef7d903cb8bfe8b750cf3a6');
+const STRRCHR_PATTERN = hexBytes('558bec578b7d0833c083c9fff2ae83c101f7d983ef018a450cfdf2ae83c7013807');
 
 // Internal `_getptd`, RVA 0x9636. Absolute IAT/data operands are relocation
 // sites and are deliberately wildcarded; the surrounding code is exact.
@@ -219,6 +230,22 @@ export const msvcr71Descriptor: LibDescriptor = {
         strstr: {
             kind: 'bytes', pattern: STRSTR_PATTERN,
             mask: 'x'.repeat(STRSTR_PATTERN.length), section: '.text', weight: 8,
+        },
+        memcpy: {
+            kind: 'bytes', pattern: MEMCPY_PATTERN,
+            mask: 'x'.repeat(MEMCPY_PATTERN.length), section: '.text', weight: 8,
+        },
+        memmove: {
+            kind: 'bytes', pattern: MEMMOVE_PATTERN,
+            mask: 'x'.repeat(MEMMOVE_PATTERN.length), section: '.text', weight: 8,
+        },
+        strncmp: {
+            kind: 'bytes', pattern: STRNCMP_PATTERN,
+            mask: 'x'.repeat(STRNCMP_PATTERN.length), section: '.text', weight: 8,
+        },
+        strrchr: {
+            kind: 'bytes', pattern: STRRCHR_PATTERN,
+            mask: 'x'.repeat(STRRCHR_PATTERN.length), section: '.text', weight: 8,
         },
         getptd: {
             kind: 'bytes', pattern: GETPTD_PATTERN,
@@ -370,6 +397,50 @@ export const msvcr71Descriptor: LibDescriptor = {
             prologueLen: 6,
             hypercallHandlerId: HANDLER_STRSTR,
             shadow: msvcr71StrstrShadow,
+        },
+        memcpy: {
+            name: 'memcpy',
+            entryProbe: {
+                kind: 'prologue', pattern: MEMCPY_PATTERN,
+                mask: 'x'.repeat(MEMCPY_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 5,
+            hypercallHandlerId: HANDLER_MSVCR71_MEMMOVE,
+            shadow: msvcr71MemmoveShadow,
+        },
+        memmove: {
+            name: 'memmove',
+            entryProbe: {
+                kind: 'prologue', pattern: MEMMOVE_PATTERN,
+                mask: 'x'.repeat(MEMMOVE_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 5,
+            hypercallHandlerId: HANDLER_MSVCR71_MEMMOVE,
+            shadow: msvcr71MemmoveShadow,
+        },
+        strncmp: {
+            name: 'strncmp',
+            entryProbe: {
+                kind: 'prologue', pattern: STRNCMP_PATTERN,
+                mask: 'x'.repeat(STRNCMP_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 3, required: false,
+            prologueLen: 5,
+            hypercallHandlerId: HANDLER_MSVCR71_STRNCMP,
+            shadow: msvcr71StrncmpShadow,
+        },
+        strrchr: {
+            name: 'strrchr',
+            entryProbe: {
+                kind: 'prologue', pattern: STRRCHR_PATTERN,
+                mask: 'x'.repeat(STRRCHR_PATTERN.length), section: '.text',
+            },
+            callingConvention: 'cdecl', argCount: 2, required: false,
+            prologueLen: 7,
+            hypercallHandlerId: HANDLER_MSVCR71_STRRCHR,
+            shadow: msvcr71StrrchrShadow,
         },
         getptd: {
             name: 'getptd',

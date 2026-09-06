@@ -25,6 +25,7 @@
 import { System } from '../system';
 import { recentGuestText } from "../../modules/user32/guest-text-ring";
 import { framePacer } from "../frame-pacer";
+import { frameProfiler } from "../frame-profiler";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
@@ -775,6 +776,16 @@ export const dbg = {
      *  and trace2 only instruments pages named in advance. This counts inside
      *  the dispatch loop, which is what a stall keeps running.
      *  Arm, let the phase of interest run, then read. */
+    /** Per-frame guest attribution for the frame profiler: v86's dispatch-entry
+     *  page histogram is reset at every frame end and its top pages are stored
+     *  with each bad frame (perfSpikes shows them named by module). */
+    frameHotPages(on = true): boolean {
+        const w = wasm();
+        if (!w?.hotpage_arm) { console.warn("[dbg] hotpage exports missing — rebuild v86"); return false; }
+        if (on) { w.hotpage_reset(); w.hotpage_arm(1); frameProfiler.setHotPageExports(w); }
+        else { frameProfiler.setHotPageExports(null); w.hotpage_arm(0); }
+        return !!on;
+    },
     hotPages(arm: boolean | null = null, top = 25): unknown {
         const w = wasm();
         if (!w?.hotpage_arm) { console.warn("[dbg] hotpage exports missing — rebuild v86"); return null; }

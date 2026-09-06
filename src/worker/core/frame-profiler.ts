@@ -62,6 +62,8 @@ export type BadFrameCapture = {
     threadSwitchCount: number;
     activeThreadCount: number;
     reason: "spike" | "threshold" | "manual";
+    /** Dispatch-entry pages of the frame (opt-in, see setHotPageExports). */
+    hotPages?: Array<{ page: number; entries: number }>;
 };
 
 export type FrameStatsSnapshot = {
@@ -107,6 +109,16 @@ export class FrameProfiler {
     private badFrames: BadFrameCapture[] = [];
     private readonly MAX_BAD_FRAMES = 5;
     private nextBadFrameId = 1;
+
+    // Per-frame guest attribution (opt-in): v86's dispatch-entry page
+    // histogram is reset at every frame end and read into a bad frame's
+    // capture, naming the guest pages a 100 ms frame ran instead of only the
+    // thunks it called.
+    private hotPageExports: { hotpage_reset(): void; hotpage_snapshot(): number; hotpage_addr(i: number): number; hotpage_count_at(i: number): number } | null = null;
+
+    setHotPageExports(exports: FrameProfiler["hotPageExports"]): void {
+        this.hotPageExports = exports;
+    }
 
     // Track sliding average for spike detection
     private rollingAvgFrameMs = 16.67;
@@ -329,6 +341,7 @@ export class FrameProfiler {
         this.currentCategories.fill(0);
         this.currentThunkAggregates.clear();
         this.currentThreadSwitchCount = 0;
+        if (this.hotPageExports) this.hotPageExports.hotpage_reset();
         // Note: activeThreadCount is NOT reset - it persists until next update
         // Reset lastThunkEndTime to avoid counting inter-frame time as V86
         // Without this, time between last thunk of frame N and first thunk of frame N+1
@@ -360,6 +373,13 @@ export class FrameProfiler {
             activeThreadCount: this.currentActiveThreadCount,
             reason
         };
+        const hp = this.hotPageExports;
+        if (hp) {
+            const n = Math.min(hp.hotpage_snapshot() >>> 0, 6);
+            const pages: Array<{ page: number; entries: number }> = [];
+            for (let i = 0; i < n; i++) pages.push({ page: hp.hotpage_addr(i) >>> 0, entries: hp.hotpage_count_at(i) >>> 0 });
+            capture.hotPages = pages;
+        }
 
         this.badFrames.push(capture);
         if (this.badFrames.length > this.MAX_BAD_FRAMES) {

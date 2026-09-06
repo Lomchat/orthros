@@ -35,6 +35,8 @@ const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme1-current");
 const game = arg("game", "bfme");
 const attempts = Number(arg("attempts", "3"));
 const holdSec = Number(arg("hold", "240"));
+const profileFromPlayMs = Number(arg("profile-from-play", "0"));
+let playProfile: Promise<any> | null = null;
 /** Guest instructions to time. Work parity removes the "how far did the load
  *  get" term, which otherwise dominates every comparison. */
 const workTarget = Number(arg("work", "0"));
@@ -356,6 +358,13 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
         console.log("work-window " + JSON.stringify(
             await bench.dbg("workWindow", workTarget).catch((e) => String(e))));
     }
+    // --profile-from-play <ms>: CPU-profile the Worker from the click on Play,
+    // before loading is detected structurally, so the phase where the world
+    // is drawn but the guest barely runs (waiting on the host) is inside it.
+    if (profileFromPlayMs > 0) {
+        await bench.evalPage(`__BS__.harness.dbgCall("hotPages", true)`, 30_000).catch(() => {});
+        playProfile = bench.profileWorker(profileFromPlayMs, 40).catch((e) => ({ error: String(e) }));
+    }
     await tryStep(bench, "play", coord("play", [[340, 575], [705, 574], [640, 556]]), 15_000);
 
     const a = await sample(bench);
@@ -413,6 +422,14 @@ for (const dumpDir of vfsDump.split(";").map((x) => x.trim()).filter(Boolean)) {
     }
 }
 const holdFps: number[] = [];
+const censusWindows = process.argv.includes("--census-windows");
+// --spikes: the frame profiler's worst frames with their category and thunk
+// breakdown, once for the load (read and reset at T+60) and once for the game.
+const spikes = process.argv.includes("--spikes");
+if (spikes) await bench.evalPage(`__BS__.harness.perfProfile({ enable: true, reset: true })`, 30_000).catch(() => null);
+// --frame-hot-pages: name the guest pages each bad frame dispatched into
+// (perfSpikes then carries hotPages next to the thunks).
+if (process.argv.includes("--frame-hot-pages")) console.log("frame hot pages " + JSON.stringify(await bench.dbg("frameHotPages", true).catch((e) => String(e))));
 // --slow-path: which thunks still take the JavaScript slow dispatch path, ranked
 // by calls over the hold. Armed once here, read at the end of the hold.
 const slowPath = process.argv.includes("--slow-path");
@@ -443,6 +460,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         for (const fn of Object.keys(callers)) console.log(`GAME-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 600)}`);
         const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
         console.log(`GAME-INCLUSIVE ${JSON.stringify(incl).slice(0, 1800)}`);
+    }
+    if (spikes && i * 10 === 60) {
+        const sp = await bench.evalPage(`__BS__.harness.perfSpikes({ top: 12, minMs: 40 })`, 30_000).catch((e) => ({ error: String(e) }));
+        console.log(`LOAD-SPIKES ${JSON.stringify(sp).slice(0, 7000)}`);
+        const ps = await bench.evalPage(`__BS__.harness.perfStats()`, 30_000).catch((e) => ({ error: String(e) }));
+        console.log(`LOAD-PERFSTATS ${JSON.stringify(ps).slice(0, 3000)}`);
+        await bench.evalPage(`__BS__.harness.perfProfile({ enable: true, reset: true })`, 30_000).catch(() => null);
     }
     if (loadProfile && i * 10_000 >= profileLoadMs) {
         const prof = await loadProfile; loadProfile = null;
@@ -583,6 +607,35 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` stateMism=+${di("blocksStateMismatch")}`
         + ` aotGuard=+${ao && typeof ao.guardExits === "number" ? ao.guardExits - prevGuardExits : "?"}`);
     if (ao && typeof ao.guardExits === "number") prevGuardExits = ao.guardExits;
+    // --census-windows: the thunks (host time) and the dispatch-entry pages
+    // (guest side) of each window, so a dip is attributed to one or the other
+    // instead of read off the aggregate at the end of the hold.
+    if (censusWindows) {
+        const th = await bench.dbg("thunkCensus", false, 8).catch(() => null);
+        await bench.dbg("thunkCensus", true).catch(() => null);
+        console.log(`WIN-THUNKS T+${((performance.now() - tL) / 1000).toFixed(0)}s ${JSON.stringify(th).slice(0, 900)}`);
+        if (hot) console.log(`WIN-HOT T+${((performance.now() - tL) / 1000).toFixed(0)}s ${JSON.stringify(hot).slice(0, 600)}`);
+        if (spikes) {
+            // The window's average frame split (guest / thunks / present) and
+            // its three worst frames with their thunks, then a fresh profiler.
+            const sp: any = await bench.evalPage(`__BS__.harness.perfSpikes({ top: 4, minMs: 30 })`, 30_000).catch(() => null);
+            const worst = (sp?.spikes ?? []).slice(0, 3).map((s: any) => ({ ms: s.frameMs, cats: s.categories, thunks: (s.topThunks ?? []).slice(0, 3).map((t: any) => `${t.name}:${t.count}:${t.totalMs}`) }));
+            console.log(`WIN-SPIKES T+${((performance.now() - tL) / 1000).toFixed(0)}s avg=${JSON.stringify(sp?.average ?? null)} n=${sp?.sampleCount ?? "?"} worst=${JSON.stringify(worst).slice(0, 900)}`);
+            await bench.evalPage(`__BS__.harness.perfProfile({ enable: true, reset: true })`, 30_000).catch(() => null);
+        }
+    }
+    if (playProfile && i * 10_000 + 30_000 >= profileFromPlayMs) {
+        const prof = await playProfile; playProfile = null;
+        const top = (prof?.top ?? []).map((r: any) => `${r.name ?? r.fn ?? "?"}:${r.selfPct ?? r.pct ?? r.self ?? "?"}`);
+        console.log(`PLAY-PROFILE ${profileFromPlayMs}ms samples=${prof?.totalSamples} buckets=${JSON.stringify(prof?.buckets)} top=${JSON.stringify(top).slice(0, 3000)}`);
+        const callers = prof?.callers ?? {};
+        for (const fn of Object.keys(callers).slice(0, 8)) console.log(`PLAY-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 700)}`);
+        const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
+        console.log(`PLAY-INCLUSIVE ${JSON.stringify(incl).slice(0, 1800)}`);
+        const hp = await bench.evalPage(`__BS__.harness.dbgCall("hotPages", false, 20)`, 60_000).catch(() => null);
+        await bench.evalPage(`__BS__.harness.dbgCall("hotPages", null)`, 30_000).catch(() => {});
+        console.log(`PLAY-HOTPAGES ${JSON.stringify(hp).slice(0, 2500)}`);
+    }
     if (!aotInstall && i === 1) {
         // The Worker installs the bundle's published batch by itself once the
         // guest runs 32-bit flat code; report what it did.
@@ -880,6 +933,12 @@ if (process.argv.includes("--profile-ingame")) {
         console.log("in-game inclusive " + JSON.stringify((cpu as any).inclusive ?? []).slice(0, 3000));
         console.log("in-game hot " + JSON.stringify(await bench.dbg("hotPages", false, 12).catch(() => null)));
         console.log("in-game thunks " + JSON.stringify(await bench.dbg("thunkCensus", false, 14).catch(() => null)));
+        if (spikes) {
+            const sp = await bench.evalPage(`__BS__.harness.perfSpikes({ top: 12, minMs: 40 })`, 30_000).catch((e) => ({ error: String(e) }));
+            console.log(`GAME-SPIKES ${JSON.stringify(sp).slice(0, 7000)}`);
+            const ps = await bench.evalPage(`__BS__.harness.perfStats()`, 30_000).catch((e) => ({ error: String(e) }));
+            console.log(`GAME-PERFSTATS ${JSON.stringify(ps).slice(0, 3000)}`);
+        }
         console.log("in-game interp " + JSON.stringify(await bench.dbg("interpretedShare").catch(() => null)));
         // The load phase is the leading run of windows before the frame rate
         // recovers, NOT a fixed time slice: averaging a 40s stall together with
@@ -946,6 +1005,7 @@ console.log("RESULT " + JSON.stringify({
     fastmemAudit: await bench.dbg("fastmemWriteAudit").catch(() => null),
     stalls: await bench.dbg("stallReport").catch(() => null),
     thunks: await bench.dbg("thunkCensus", false, 14).catch(() => null),
+    spikes: spikes ? await bench.evalPage(`__BS__.harness.perfSpikes({ top: 12, minMs: 40 })`, 30_000).catch((e) => ({ error: String(e) })) : null,
     jitAtLoadStart: jit0,
     jitAtLoadEnd: await jitStats(bench),
     interpretedAtLoadEnd: await interpShare(bench),

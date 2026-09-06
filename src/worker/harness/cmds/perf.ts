@@ -33,12 +33,21 @@ function summarizeBadFrame(bf: BadFrameCapture, topThunks: number) {
         .map(([name, agg]) => ({ name, count: agg.count, totalMs: Math.round(agg.totalMs * 100) / 100 }))
         .sort((a, b) => b.totalMs - a.totalMs)
         .slice(0, topThunks);
+    // Guest pages the frame dispatched into (when frameHotPages is armed),
+    // named by module so a 100 ms frame points at engine code, not only thunks.
+    const mreg = (globalThis as any).System?.getInstance?.()?.process?.moduleRegistry;
+    const hotPages = (bf.hotPages ?? []).map((p) => {
+        let mod = "";
+        try { const m = mreg?.getModuleContainingAddress?.(p.page); if (m) mod = `${m.name}+0x${(p.page - m.baseAddress).toString(16)}`; } catch { /* unmapped */ }
+        return `0x${p.page.toString(16)}:${p.entries}${mod ? `:${mod}` : ""}`;
+    });
     return {
         id: bf.id,
         frameMs: Math.round(bf.frameMs * 100) / 100,
         reason: bf.reason,
         categories: categoriesMs(bf.categories),
         topThunks: thunks,
+        ...(hotPages.length ? { hotPages } : {}),
     };
 }
 

@@ -9,7 +9,7 @@ function fn(entry: number, callTargets: number[] = []): CFunction {
     return {
         entry,
         name: `fn_${entry.toString(16)}`,
-        c: `void fn_${entry.toString(16)}(int b, uint32_t depth) { (void)b; (void)depth; }\n`,
+        c: `void fn_${entry.toString(16)}(int b, uint32_t depth, uint32_t mb, uint32_t ml) { (void)b; (void)depth; (void)mb; (void)ml; }\n`,
         instructions: 1,
         blocks: 1,
         liveFlagSites: 0,
@@ -25,9 +25,9 @@ test("a duplicate entry is defined once in the assembled batch", () => {
     const batch = assembleBatch([fn(0x401000, [0x44b650]), fn(0x44b650), fn(0x44b650)], 1);
     // The signature appears twice legitimately: one forward declaration
     // (ends ';') and one definition (ends '{'). The definition must be unique.
-    const defs = batch.c.split("void fn_44b650(int b, uint32_t depth) {").length - 1;
+    const defs = batch.c.split("void fn_44b650(int b, uint32_t depth, uint32_t mb, uint32_t ml) {").length - 1;
     expect(defs).toBe(1);
-    const decls = batch.c.split("void fn_44b650(int b, uint32_t depth);").length - 1;
+    const decls = batch.c.split("void fn_44b650(int b, uint32_t depth, uint32_t mb, uint32_t ml);").length - 1;
     expect(decls).toBe(1);
     // The page module for 0x44b650 lists it once.
     const page = batch.pages.find((p) => p.page === (0x44b650 >>> 12));

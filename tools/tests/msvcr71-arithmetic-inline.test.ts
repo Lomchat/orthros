@@ -165,8 +165,8 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
         expect(Object.keys(msvcr71Descriptor.functions)).toEqual([
             'add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar',
             'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii',
-            'strcmp', 'strstr', 'getptd', 'stricmp_locale', 'ceil_x87',
-            'floor_x87',
+            'strcmp', 'strstr', 'memcpy', 'memmove', 'strncmp', 'strrchr',
+            'getptd', 'stricmp_locale', 'ceil_x87', 'floor_x87',
         ]);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
         expect(msvcr71Descriptor.functions.add96.required).toBe(true);
@@ -323,5 +323,49 @@ describe('MSVCR71 ASCII case-insensitive comparison', () => {
         expect(msvcr71StricmpKernel(view, [0x50, 0x10])).toBe(-1);
         expect(msvcr71StricmpKernel(view, [0x10, 0x50])).toBe(1);
         expect(msvcr71StricmpKernel(view, [0x70, 0x80])).toBe(-1);
+    });
+});
+
+describe('msvcr71 memmove/strncmp/strrchr kernels', () => {
+    const { msvcr71MemmoveKernel, msvcr71StrncmpKernel, msvcr71StrrchrKernel } = require('../../src/worker/core/hle-lib/libs/msvcr71/string-memory');
+    test('memmove copies forward, backward over overlap, and returns the destination', () => {
+        const memory = new Uint8Array(0x200);
+        const view = stringView(memory);
+        for (let i = 0; i < 16; i++) memory[0x40 + i] = i + 1;
+        expect(msvcr71MemmoveKernel(view, [0x80, 0x40, 16])).toBe(0x80);
+        expect([...memory.subarray(0x80, 0x90)]).toEqual([...memory.subarray(0x40, 0x50)]);
+        // Destination inside the source, above it: only a backward copy keeps the bytes.
+        expect(msvcr71MemmoveKernel(view, [0x44, 0x40, 12])).toBe(0x44);
+        expect([...memory.subarray(0x44, 0x50)]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        // Destination below the source: forward copy.
+        for (let i = 0; i < 16; i++) memory[0x40 + i] = i + 1;
+        expect(msvcr71MemmoveKernel(view, [0x3c, 0x40, 12])).toBe(0x3c);
+        expect([...memory.subarray(0x3c, 0x48)]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        expect(msvcr71MemmoveKernel(view, [0x100, 0x40, 0])).toBe(0x100);
+    });
+    test('strncmp stops at the count or the first terminator, unsigned', () => {
+        const memory = new Uint8Array(0x200);
+        const view = stringView(memory);
+        memory.set(Buffer.from('Upgrade_Angmar\0'), 0x40);
+        memory.set(Buffer.from('Upgrade_Isengard\0'), 0x60);
+        memory.set(Buffer.from('Upgrade\0'), 0x80);
+        expect(msvcr71StrncmpKernel(view, [0x40, 0x60, 8])).toBe(0);
+        expect(msvcr71StrncmpKernel(view, [0x40, 0x60, 9])).toBe(-1);
+        expect(msvcr71StrncmpKernel(view, [0x60, 0x40, 9])).toBe(1);
+        expect(msvcr71StrncmpKernel(view, [0x40, 0x80, 32])).toBe(1);
+        expect(msvcr71StrncmpKernel(view, [0x80, 0x80, 32])).toBe(0);
+        expect(msvcr71StrncmpKernel(view, [0x40, 0x60, 0])).toBe(0);
+        memory[0xa0] = 0x80; memory[0xa1] = 0; memory[0xb0] = 0x7f; memory[0xb1] = 0;
+        expect(msvcr71StrncmpKernel(view, [0xa0, 0xb0, 4])).toBe(1);
+    });
+    test('strrchr finds the last occurrence, the terminator for 0, else null', () => {
+        const memory = new Uint8Array(0x200);
+        const view = stringView(memory);
+        memory.set(Buffer.from('art\\textures\\unit.tga\0'), 0x40);
+        expect(msvcr71StrrchrKernel(view, [0x40, 0x5c])).toBe(0x40 + 12);
+        expect(msvcr71StrrchrKernel(view, [0x40, 0x2e])).toBe(0x40 + 17);
+        expect(msvcr71StrrchrKernel(view, [0x40, 0])).toBe(0x40 + 21);
+        expect(msvcr71StrrchrKernel(view, [0x40, 0x7a])).toBe(0);
+        expect(msvcr71StrrchrKernel(view, [0x40, 0x100 + 0x2e])).toBe(0x40 + 17);
     });
 });

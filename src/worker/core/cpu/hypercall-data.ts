@@ -217,6 +217,12 @@ export const HANDLER_MSVCR71_STRNCPY = 160;
 export const HANDLER_MSVCR71_STRNICMP = 161;
 /** MSVCR71 7.10 byte-exact normalized string comparison. */
 export const HANDLER_MSVCR71_STRCMP = 162;
+/** MSVCR71 7.10 overlap-safe copy: memcpy and memmove share one body. */
+export const HANDLER_MSVCR71_MEMMOVE = 163;
+/** MSVCR71 7.10 bounded string comparison, -1/0/1 on unsigned bytes. */
+export const HANDLER_MSVCR71_STRNCMP = 164;
+/** MSVCR71 7.10 last occurrence of a byte, terminator included. */
+export const HANDLER_MSVCR71_STRRCHR = 165;
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
 export const OFF_HC_SLAB_END = 0x1404;
