@@ -22,7 +22,6 @@ import { CapstoneDecoder } from "./decoder-capstone";
 import { compileTranslationC } from "./compile-c";
 import { assembleBatch, lastRejection, translateFunctionC, type CFunction } from "./x86-to-c";
 
-const MEM_SIZE = 64 * 1024 * 1024;
 const IMAGE_BASE_GUEST = 0x100000;
 const STUB_OFF = 0x1000;
 const SCRATCH = 0x2000000;
@@ -50,6 +49,9 @@ const argStyle = arg("args", "pointers");
 const regStyle = arg("regs", "pointers");
 /** Treat <exe> as a flat code blob at this address (synthetic fixtures). */
 const rawBase = arg("raw-base", "") ? Number(arg("raw-base", "")) : null;
+/** Guest RAM: a raw image mapped high (a dumped runtime library at its real
+ *  base) needs the memory to reach it; the synthetic fixtures do not. */
+const MEM_SIZE = rawBase !== null && rawBase >= 48 * 1024 * 1024 ? 512 * 1024 * 1024 : 64 * 1024 * 1024;
 const keep = arg("keep", "");
 
 function fill(buf: Uint8Array, s: number): void {

@@ -85,8 +85,9 @@ const COND_BRANCH = new Set([
  *  x87 compare result into EFLAGS. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec", "neg",
     "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
-    "bt", "bts", "btr", "btc", "popfd",
+    "bt", "bts", "btr", "btc", "popfd", "rol", "ror",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
+    "repne scasb", "repne scasw", "repne scasd", "repe scasb", "repe scasw", "repe scasd",
     "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi",
     "ucomisd", "comisd", "ucomiss", "comiss"]);
 /** Instructions that leave the flags alone; anything else between a producer
@@ -95,6 +96,8 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
     "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr",
+    "movsb", "movsw", "movsd", "stosb", "stosw", "stosd", "cld", "std", "xlatb",
+    "rep movsb", "rep movsw", "rep movsd", "rep stosb", "rep stosw", "rep stosd",
     "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
     "psrlq", "psllq", "psubd", "paddd", "andpd", "andps", "orpd", "orps",
     "xorpd", "xorps", "pand", "pandn", "por", "pxor",
@@ -617,7 +620,7 @@ function accessThrough(op: Operand | null, base: string): boolean {
  *  ahead; missing one only makes a check wider than needed (the emitted-C
  *  scanner still ends coverage exactly), never unsound. */
 const IMPLICIT_WRITERS: Record<string, string[]> = {
-    eax: ["mul", "imul", "div", "idiv", "cdq", "cwde", "cbw", "rdtsc", "cpuid", "xlat", "lods", "lodsb", "lodsw", "lodsd", "cmpxchg", "cmpxchg8b", "aaa", "aad", "aam", "aas", "daa", "das", "in", "lahf", "sahf"],
+    eax: ["mul", "imul", "div", "idiv", "cdq", "cwde", "cbw", "rdtsc", "cpuid", "xlat", "xlatb", "lods", "lodsb", "lodsw", "lodsd", "cmpxchg", "cmpxchg8b", "aaa", "aad", "aam", "aas", "daa", "das", "in", "lahf", "sahf"],
     edx: ["mul", "imul", "div", "idiv", "cdq", "cwd", "rdtsc", "cpuid", "cmpxchg8b"],
     ecx: ["loop", "loope", "loopne", "rep", "repe", "repne", "cpuid", "movs", "movsb", "movsw", "movsd", "stos", "stosb", "stosw", "stosd", "cmps", "cmpsb", "cmpsw", "cmpsd", "scas", "scasb", "scasw", "scasd", "lods", "lodsb", "lodsw", "lodsd", "ins", "outs"],
     ebx: ["cpuid", "cmpxchg8b"],
@@ -1172,6 +1175,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);
             if (mnemonic === "leave") { lines.push(stackGuard("ebp", 0, insn.addr, i), `esp = ebp;`, `ebp = LD32(esp);`, `esp += 4u;`); continue; }
             if (mnemonic === "cdq") { lines.push(`edx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;`); continue; }
+            // DF lives in FLAGS itself, outside the lazily tracked arithmetic bits.
+            if (mnemonic === "cld") { lines.push(`FLAGS = (int32_t)((uint32_t)FLAGS & ~0x400u);`); continue; }
+            if (mnemonic === "std") { lines.push(`FLAGS = (int32_t)((uint32_t)FLAGS | 0x400u);`); continue; }
+            if (mnemonic === "xlatb") {
+                lines.push(`if ((uint64_t)ebx + (eax & 0xffu) + 1u > ml) { ${guardExit(insn.addr, i)} }`, `eax = (eax & 0xffffff00u) | LD8(ebx + (eax & 0xffu));`);
+                continue;
+            }
             if (mnemonic === "rdtsc") { lines.push(`{ uint64_t ts = read_tsc((int32_t)(cnt + ${i}u)); eax = (uint32_t)ts; edx = (uint32_t)(ts >> 32); }`); continue; }
             if (mnemonic === "cwde") { lines.push(`eax = (uint32_t)(int32_t)(int16_t)eax;`); continue; }
             if (mnemonic === "cbw") { lines.push(`eax = (eax & ~0xffffu) | ((uint32_t)(int32_t)(int8_t)eax & 0xffffu);`); continue; }
@@ -1276,14 +1286,66 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (elem === 0 || (!op.startsWith("movs") && !op.startsWith("stos"))) return reject(`unsupported: ${mnemonic}`);
                 const ld = elem === 4 ? "LD32" : elem === 2 ? "LD16" : "LD8";
                 const st = elem === 4 ? "ST32" : elem === 2 ? "ST16" : "ST8";
-                lines.push(`if (FLAGS & 0x400) { ${guardExit(insn.addr, i)} }`);
+                // Backward (DF set) walks down from the starting element, so the
+                // range to prove is [start - (ecx-1)*elem, start + elem).
+                const back = (reg: string) => `(uint64_t)${reg} + ${elem}u > ml || (uint64_t)(ecx - 1u) * ${elem}u > ${reg}`;
                 if (op.startsWith("movs")) {
+                    lines.push(`if ((uint32_t)FLAGS & 0x400u) { if (ecx != 0u) { if (${back("esi")} || ${back("edi")}) { ${guardExit(insn.addr, i)} }`
+                        + ` while (ecx != 0u) { ${st}(edi, ${ld}(esi)); esi -= ${elem}u; edi -= ${elem}u; ecx -= 1u; } } } else {`);
                     lines.push(`if ((uint64_t)esi + (uint64_t)ecx * ${elem}u > ml || (uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
-                    lines.push(`while (ecx != 0u) { ${st}(edi, ${ld}(esi)); esi += ${elem}u; edi += ${elem}u; ecx -= 1u; }`);
+                    // A forward copy whose destination does not start inside the
+                    // source is byte for byte a memmove, which clang lowers to
+                    // memory.copy; a destination inside the source smears, and
+                    // only the element loop reproduces that.
+                    lines.push(`if (ecx >= 8u) { uint32_t n = ecx * ${elem}u; if (!(edi > esi && edi < esi + n)) { __builtin_memmove((void *)(uintptr_t)(mb + edi), (const void *)(uintptr_t)(mb + esi), n); esi += n; edi += n; ecx = 0u; } }`);
+                    lines.push(`while (ecx != 0u) { ${st}(edi, ${ld}(esi)); esi += ${elem}u; edi += ${elem}u; ecx -= 1u; } }`);
                 } else {
                     const src = elem === 4 ? "eax" : elem === 2 ? "(eax & 0xffffu)" : "(eax & 0xffu)";
+                    lines.push(`if ((uint32_t)FLAGS & 0x400u) { if (ecx != 0u) { if (${back("edi")}) { ${guardExit(insn.addr, i)} }`
+                        + ` while (ecx != 0u) { ${st}(edi, ${src}); edi -= ${elem}u; ecx -= 1u; } } } else {`);
                     lines.push(`if ((uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
-                    lines.push(`while (ecx != 0u) { ${st}(edi, ${src}); edi += ${elem}u; ecx -= 1u; }`);
+                    // A fill whose element repeats one byte is memory.fill.
+                    const uniform = elem === 1 ? "1" : elem === 2 ? "((eax & 0xffu) * 0x0101u == (eax & 0xffffu))" : "((eax & 0xffu) * 0x01010101u == eax)";
+                    lines.push(`if (ecx >= 8u && ${uniform}) { uint32_t n = ecx * ${elem}u; __builtin_memset((void *)(uintptr_t)(mb + edi), (int)(eax & 0xffu), n); edi += n; ecx = 0u; }`);
+                    lines.push(`while (ecx != 0u) { ${st}(edi, ${src}); edi += ${elem}u; ecx -= 1u; } }`);
+                }
+                continue;
+            }
+            if (mnemonic.startsWith("repne scas") || mnemonic.startsWith("repe scas")) {
+                // repne/repe scas: like repe cmps, the flags are those of the last
+                // element compared with the accumulator, and ECX = 0 leaves them
+                // alone, which the interpreter runs.
+                const stopOnEqual = mnemonic.startsWith("repne");
+                const elem = mnemonic.endsWith("d") ? 4 : mnemonic.endsWith("w") ? 2 : 1;
+                const ld = elem === 4 ? "LD32" : elem === 2 ? "LD16" : "LD8";
+                const acc = elem === 4 ? "eax" : elem === 2 ? "(eax & 0xffffu)" : "(eax & 0xffu)";
+                for (let j = i - 1; j >= 0; j--) {
+                    const m = block.insns[j]!.mnemonic;
+                    if (FLAG_PRODUCER.has(m)) break;
+                    if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) return reject(`${mnemonic} after unmodelled flag writer ${m}`);
+                }
+                lines.push(`if (ecx == 0u) { ${slowExit(insn.addr, i)} }`);
+                lines.push(`{ uint32_t dfb = (uint32_t)FLAGS & 0x400u; if (dfb) { if ((uint64_t)edi + ${elem}u > ml || (uint64_t)(ecx - 1u) * ${elem}u > edi) { ${guardExit(insn.addr, i)} } }`
+                    + ` else if ((uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
+                lines.push(`for (;;) { fa = ${sext(acc, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; edi = dfb ? edi - ${elem}u : edi + ${elem}u; ecx -= 1u; if (${stopOnEqual ? "fa == fb" : "fa != fb"} || ecx == 0u) break; } }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
+                kinds.set(i, "cmp");
+                if (isCaptured) liveFlagSites++;
+                continue;
+            }
+            if (/^(movs|stos)[bwd]$/.test(mnemonic) && !/xmm/.test(operand)) {
+                // One element, forward only, no flags. (The SSE scalar move
+                // shares the movsd mnemonic and is told apart by its xmm operand.)
+                const elem = mnemonic.endsWith("d") ? 4 : mnemonic.endsWith("w") ? 2 : 1;
+                const ld = elem === 4 ? "LD32" : elem === 2 ? "LD16" : "LD8";
+                const st = elem === 4 ? "ST32" : elem === 2 ? "ST16" : "ST8";
+                const step = `(((uint32_t)FLAGS & 0x400u) ? 0u - ${elem}u : ${elem}u)`;
+                if (mnemonic.startsWith("movs")) {
+                    lines.push(`if ((uint64_t)esi + ${elem}u > ml || (uint64_t)edi + ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
+                    lines.push(`{ uint32_t stp = ${step}; ${st}(edi, ${ld}(esi)); esi += stp; edi += stp; }`);
+                } else {
+                    const src = elem === 4 ? "eax" : elem === 2 ? "(eax & 0xffffu)" : "(eax & 0xffu)";
+                    lines.push(`if ((uint64_t)edi + ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
+                    lines.push(`${st}(edi, ${src}); edi += ${step};`);
                 }
                 continue;
             }
@@ -1470,6 +1532,34 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 kinds.set(i, "raw");
                 if (isCaptured) liveFlagSites++;
                 resultExpr = "fr";
+            }
+            else if (mnemonic === "rol" || mnemonic === "ror") {
+                // Rotates write CF, and OF (defined for a count of one, computed
+                // that way for any count); ZF/SF/PF keep whatever the current
+                // flags hold, and a masked count of zero leaves every flag alone.
+                if (!srcText) return reject(`${mnemonic} missing source`);
+                const src = parseOperand(srcText);
+                if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
+                guardMem(lines, dst, insn.addr, i);
+                const a = readExpr(dst), b = readExpr(src);
+                if (a === null || b === null) return reject(`read: ${mnemonic}`);
+                const w = operandWidth(dst);
+                const W = 8 * w;
+                const rot = mnemonic === "rol"
+                    ? `(((az << c) | (az >> (${W}u - c))) & ${widthMask(w)})`
+                    : `(((az >> c) | (az << (${W}u - c))) & ${widthMask(w)})`;
+                const cf = mnemonic === "rol" ? `(r & 1u)` : `((r >> ${W - 1}u) & 1u)`;
+                const of = mnemonic === "rol"
+                    ? `(((r >> ${W - 1}u) & 1u) ^ (r & 1u))`
+                    : `(((r >> ${W - 1}u) ^ (r >> ${W - 2}u)) & 1u)`;
+                const wr = writeStmt(dst, "fr");
+                if (!wr) return reject(`write: ${mnemonic}`);
+                lines.push(`{ uint32_t cm = (${b}) & 31u; if (cm) { uint32_t c = cm % ${W}u; uint32_t az = (${a}) & ${widthMask(w)}; uint32_t r = c ? ${rot} : az;`
+                    + ` uint32_t cur = fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS);`
+                    + ` fr = ${sext("r", w)}; fa = (cur & 0xc4u) | ${cf} | (${of} << 11); fk = 8u; ${wr} } }`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
             }
             else if (BINARY[mnemonic]) {
                 if (!srcText) return reject(`${mnemonic} missing source`);

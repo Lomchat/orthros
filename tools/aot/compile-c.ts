@@ -16,7 +16,9 @@ export interface CompileResult {
 }
 
 const FLAGS = [
-    "--target=wasm32", "-O2", "-nostdlib", "-fno-jump-tables", "-fno-stack-protector",
+    // bulk-memory: __builtin_memmove/memset lower to memory.copy/fill instead
+    // of an env.memset import the runtime does not provide.
+    "--target=wasm32", "-O2", "-nostdlib", "-mbulk-memory", "-fno-jump-tables", "-fno-stack-protector",
     "-Wl,--no-entry", "-Wl,--import-memory", "-Wl,--allow-undefined",
 ];
 

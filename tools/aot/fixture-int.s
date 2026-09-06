@@ -679,3 +679,126 @@ t_callleaf:
     mov eax, [ecx]
     add eax, 1
     ret
+
+    # rep movs/stos bulk paths: non-overlapping copy, a destination inside the
+    # source (smear, element loop), a destination below the source (memmove),
+    # dword and byte fills, and a short fill below the bulk threshold.
+    .globl t_movsbulk
+t_movsbulk:
+    push esi
+    push edi
+    mov esi, ecx
+    lea edi, [ecx + 4096]
+    mov ecx, 300
+    rep movsd
+    lea esi, [edi - 1200]
+    lea edi, [esi + 8]
+    mov ecx, 50
+    rep movsd
+    lea edi, [esi - 64]
+    mov ecx, 40
+    rep movsd
+    mov eax, 0
+    mov ecx, 100
+    rep stosd
+    mov al, 0x5a
+    mov ecx, 37
+    rep stosb
+    mov ecx, 3
+    rep stosb
+    mov eax, 0x12345678
+    mov ecx, 20
+    rep stosd
+    mov eax, edi
+    pop edi
+    pop esi
+    ret
+
+    # repne/repe scasb with their flag consumers, then single stos/movs.
+    .globl t_scas
+t_scas:
+    push edi
+    push esi
+    mov edi, ecx
+    mov byte ptr [ecx + 40], 0x7e
+    mov al, 0x7e
+    mov ecx, 100
+    repne scasb
+    jne 1f
+    add eax, 1000
+1:  setz dl
+    movzx edx, dl
+    lea eax, [edi + ecx*4]
+    add eax, edx
+    mov al, [edi]
+    mov ecx, 20
+    repe scasb
+    je 2f
+    add eax, 7
+2:  lea esi, [edi + 64]
+    mov al, 0x11
+    stosb
+    mov eax, 0x22334455
+    stosd
+    movsb
+    movsd
+    sub eax, edi
+    add eax, esi
+    pop esi
+    pop edi
+    ret
+
+    # rol/ror by immediate and by CL with CF/OF consumers; a rotate by CL
+    # whose masked count is zero must leave the flags of the preceding add.
+    .globl t_rol
+t_rol:
+    mov eax, ecx
+    rol eax, 5
+    setc dl
+    ror eax, 1
+    seto dh
+    mov cl, 3
+    rol ax, cl
+    jc 1f
+    add eax, 7
+1:  ror eax, cl
+    movzx edx, dx
+    add eax, edx
+    mov cl, 32
+    add eax, 1
+    rol eax, cl
+    jz 2f
+    add eax, 3
+2:  rol byte ptr [esp - 4], 1
+    ret
+
+    # Backward scan under DF (strrchr's shape), the flag left by cld, a
+    # backward single stos/movs, and xlatb through a table at ECX.
+    .globl t_std
+t_std:
+    push edi
+    push esi
+    lea edi, [ecx + 200]
+    mov byte ptr [ecx + 150], 0x33
+    mov al, 0x33
+    mov ecx, 100
+    std
+    repne scasb
+    cld
+    jne 1f
+    add eax, 500
+1:  mov edx, edi
+    lea esi, [edi + 300]
+    std
+    mov al, 0x44
+    stosb
+    movsd
+    cld
+    mov ecx, esi
+    mov al, 5
+    xlatb
+    sub eax, edi
+    add eax, edx
+    pop esi
+    pop edi
+    ret
