@@ -967,7 +967,11 @@ export const dbg = {
     /** `filter` = "lo:hi", fractions of the manifest's page list to install
      *  (e.g. "0:0.5"): bisects a batch in game when one translation misbehaves. */
     async aotInstall(url: string, filter?: string): Promise<{ pages: number; entries: number; failed: number; bytes: number } | null> {
-        return installAotBatch(url, filter);
+        const r = await installAotBatch(url, filter);
+        // An installed batch is only exercised when the dispatcher prefers it;
+        // turn external-first on so a manual install measures like the served path.
+        if (r && r.pages > 0) setAotExternalFirst(true);
+        return r;
     },
     aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number; lastError: string | null;
         dispatches: number; misses: number; stalls: number; recent: string[];
