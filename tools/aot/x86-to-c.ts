@@ -618,9 +618,12 @@ function splitOperands(operand: string): string[] {
 }
 
 export const C_PRELUDE = `#include <stdint.h>
-typedef uint32_t __attribute__((aligned(1))) u32u;
-typedef uint16_t __attribute__((aligned(1))) u16u;
-typedef uint64_t __attribute__((aligned(1))) u64u;
+/* Guest accesses read back bytes written as words and words written as bytes:
+   may_alias keeps that exact under strict aliasing, which stays on (turning
+   it off makes clang's memory passes diverge on a 2 500-block function). */
+typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
+typedef uint16_t __attribute__((aligned(1), may_alias)) u16u;
+typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
 #define REG32 ((volatile int32_t *)64)
 #define FLAGS (*(volatile int32_t *)120)
 #define INSTRUCTION_POINTER ((volatile int32_t *)556)
