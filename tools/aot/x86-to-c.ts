@@ -1324,10 +1324,21 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     if (FLAG_PRODUCER.has(m)) break;
                     if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) return reject(`${mnemonic} after unmodelled flag writer ${m}`);
                 }
+                // ECX is often -1 (the strlen idiom), so the whole-range proof of
+                // repe cmps would exit every time. Instead the scan is bounded by
+                // the elements memory can hold: it stops long before the end in
+                // practice, and if it does reach the end with ECX still nonzero
+                // the next element would fault, so the exit happens there with
+                // ECX/EDI advanced and the flags of the last element compared —
+                // exactly the state x86 leaves when a rep faults mid-way.
                 lines.push(`if (ecx == 0u) { ${slowExit(insn.addr, i)} }`);
-                lines.push(`{ uint32_t dfb = (uint32_t)FLAGS & 0x400u; if (dfb) { if ((uint64_t)edi + ${elem}u > ml || (uint64_t)(ecx - 1u) * ${elem}u > edi) { ${guardExit(insn.addr, i)} } }`
-                    + ` else if ((uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
-                lines.push(`for (;;) { fa = ${sext(acc, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; edi = dfb ? edi - ${elem}u : edi + ${elem}u; ecx -= 1u; if (${stopOnEqual ? "fa == fb" : "fa != fb"} || ecx == 0u) break; } }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
+                lines.push(`{ uint32_t dfb = (uint32_t)FLAGS & 0x400u;`
+                    + ` uint32_t room = dfb ? ((uint64_t)edi + ${elem}u > ml ? 0u : edi / ${elem}u + 1u) : (edi >= ml ? 0u : (ml - edi) / ${elem}u);`
+                    + ` if (room == 0u) { ${guardExit(insn.addr, i)} }`
+                    + ` uint32_t left = ecx < room ? ecx : room;`);
+                lines.push(`for (;;) { fa = ${sext(acc, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; edi = dfb ? edi - ${elem}u : edi + ${elem}u; ecx -= 1u; left -= 1u;`
+                    + ` if (${stopOnEqual ? "fa == fb" : "fa != fb"} || ecx == 0u) break;`
+                    + ` if (left == 0u) { fr = ${sext("(fa - fb)", elem)}; fk = 1u; ${guardExit(insn.addr, i)} } } }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
                 kinds.set(i, "cmp");
                 if (isCaptured) liveFlagSites++;
                 continue;

@@ -802,3 +802,20 @@ t_std:
     pop esi
     pop edi
     ret
+
+    # The strlen idiom: ECX = -1 must not defeat the scan's range proof.
+    .globl t_strlen
+t_strlen:
+    push edi
+    mov edi, ecx
+    mov byte ptr [ecx + 77], 0
+    or ecx, -1
+    xor eax, eax
+    repne scasb
+    not ecx
+    dec ecx
+    mov eax, ecx
+    jne 1f
+    add eax, 100
+1:  pop edi
+    ret
