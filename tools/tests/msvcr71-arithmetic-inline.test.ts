@@ -165,8 +165,8 @@ describe('MSVCR71 guest-native arithmetic leaves', () => {
         expect(Object.keys(msvcr71Descriptor.functions)).toEqual([
             'add_carry', 'add96', 'shift96', 'stricmp', 'sscanf_scalar',
             'vsnprintf', 'memcmp', 'strlen', 'strncpy', 'strnicmp_ascii',
-            'strcmp', 'strstr', 'memcpy', 'memmove', 'strncmp', 'strrchr',
-            'getptd', 'stricmp_locale', 'ceil_x87', 'floor_x87',
+            'strcmp', 'strstr', 'getptd', 'stricmp_locale', 'ceil_x87',
+            'floor_x87',
         ]);
         expect(msvcr71Descriptor.functions.add_carry.required).toBe(true);
         expect(msvcr71Descriptor.functions.add96.required).toBe(true);
