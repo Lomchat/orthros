@@ -976,16 +976,21 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     leaders.add(after); resumes.add(after); work.push(after);
                     break;
                 }
+                // A loop head is a resume point: a back edge that exhausts its
+                // budget exits to the dispatcher at the head, and without a
+                // state there the JIT keeps the rest of the loop for good.
                 if (mnemonic === "jmp") {
                     const t = directTarget(operand);
                     if (t === null || !inImage(t)) break;
-                    leaders.add(t); work.push(t); break;
+                    leaders.add(t); work.push(t);
+                    if (t <= pc) resumes.add(t);
+                    break;
                 }
                 if (COND_BRANCH.has(mnemonic)) {
                     const t = directTarget(operand);
                     if (t === null) return reject(`indirect ${mnemonic}`);
                     leaders.add(pc + insn.size); work.push(pc + insn.size);
-                    if (inImage(t)) { leaders.add(t); work.push(t); }
+                    if (inImage(t)) { leaders.add(t); work.push(t); if (t <= pc) resumes.add(t); }
                     break;
                 }
                 pc += insn.size;
