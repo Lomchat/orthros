@@ -14,9 +14,16 @@ describe('Sleep(0) host-yield storm guard', () => {
     test('does not swallow the deliberate WASM fallthrough in a second TS fast path', async () => {
         const source = await Bun.file(new URL('src/worker/modules/kernel32/time/time.ts', repoUrl)).text();
 
-        expect(source).not.toContain("registerFastPath('kernel32', 'Sleep'");
         expect(source).toContain("exports['Sleep']");
         expect(source).toContain('sched.sleepWithContext');
+        // A fast path may exist only if it reaches the same scheduler routine
+        // before any numeric return: a Sleep(0) no-op here would swallow the
+        // WASM handler's deliberate fallthrough and starve the host.
+        const fastStart = source.indexOf('const fastPathSleep');
+        expect(fastStart).toBeGreaterThan(0);
+        const fast = source.slice(fastStart, source.indexOf("registerFastPath('kernel32', 'Sleep'"));
+        expect(fast).toContain('sched.sleepWithContext(');
+        expect(fast.indexOf('sched.sleepWithContext(')).toBeLessThan(fast.indexOf('return 0'));
     });
 
     test('services sole-runnable Sleep immediately and keeps positive sleeps wall-paced', async () => {

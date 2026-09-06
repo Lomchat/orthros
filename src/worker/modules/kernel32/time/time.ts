@@ -1,7 +1,8 @@
 // Time-related functions for kernel32
 // GetTickCount, GetSystemTimeAsFileTime, QueryPerformanceCounter, QueryPerformanceFrequency
 
-import { ThunkImplementation } from '../../../core/thunking/thunk-dispatcher';
+import { FastPathImplementation, ThunkImplementation } from '../../../core/thunking/thunk-dispatcher';
+import { SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS } from '../../../core/scheduler/scheduler';
 import { TimeService } from '../../../runtime/time';
 import { Logger, LogCategory } from '../../../core/logger';
 import { System } from '../../../core/system';
@@ -21,8 +22,43 @@ let lastSleepExStormWarnMs = 0;
 /**
  * Register fast path implementations for high-frequency time functions
  */
+/**
+ * Sleep on the fast path. A loader-polling loop calls Sleep(1) tens of
+ * thousands of times per ten seconds, and the generic marshal (context
+ * object, argument array, call ring, shadow stack) costs more than the
+ * scheduler work itself. This enters the same scheduler routine as the slow
+ * path, so every yield-to-host and thread switch it decides still happens at
+ * the boundary completeFastPathSync notifies. The one outcome a numeric
+ * result cannot express — a long sole-runnable sleep, which the slow path
+ * turns into a spin-loop redirect — is predicted and left to the slow path.
+ */
+const fastPathSleep: FastPathImplementation = (cpu, mem8, _mem32, view) => {
+    const esp = cpu.reg32[4] >>> 0;
+    if (esp + 8 > mem8.length) return null;
+    const returnAddr = view.getUint32(esp, true) >>> 0;
+    if (returnAddr < 0x100000 || returnAddr >= 0x80000000) return null;
+    const ms = view.getUint32(esp + 4, true) >>> 0;
+    const sched = System.getInstance().scheduler;
+    if (!sched) return null;
+    const tid = sched.getCurrentThreadId();
+    const peers = sched.hasOtherRunnableThreads(tid);
+    if (ms !== 0 && ms !== 0xFFFFFFFF && ms > SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS && !peers) return null;
+    sleepCallCount += 1;
+    lastSleepMs = ms;
+    const r = cpu.reg32;
+    const eflags = typeof cpu.get_eflags === 'function' ? cpu.get_eflags() : (cpu.flags ? cpu.flags[0] : 0);
+    const res = sched.sleepWithContext(ms, returnAddr, esp + 8,
+        { ecx: r[1], edx: r[2], ebx: r[3], ebp: r[5], esi: r[6], edi: r[7], eflags });
+    if (ms === 0 && peers) sched.requestSwitch();
+    if (res === WAIT_BLOCKED_NO_SWITCH) {
+        Logger.error(LogCategory.KERNEL32, `Sleep fast path: unexpected blockedNoSwitch for ${ms} ms`);
+    }
+    return 0;
+};
+
 export function registerFastPathTimeFunctions(dispatcher: any): void {
     if (dispatcher && typeof dispatcher.registerFastPath === 'function') {
+        dispatcher.registerFastPath('kernel32', 'Sleep', fastPathSleep);
         dispatcher.registerFastPath('kernel32', 'GetTickCount', TimeService.fastPathGetTickCount);
         dispatcher.registerFastPath('winmm', 'timeGetTime', TimeService.fastPathGetTickCount);
         dispatcher.registerFastPath('kernel32', 'QueryPerformanceCounter', TimeService.fastPathQueryPerformanceCounter);

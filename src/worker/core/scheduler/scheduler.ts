@@ -78,7 +78,7 @@ import type { WinMM } from '../../modules/winmm';
 const IDLE_PUMP_MAX_MS = 250;
 
 /** Sole-runnable Sleep(ms): credit+yield only for short pump sleeps; longer → blockThread. */
-const SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS = 50;
+export const SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS = 50;
 
 // Fairness budget for the winmm timer thread before its queued callbacks are
 // deferred (vs the general minQuantumMs=1ms). The software audio mixer runs as a
