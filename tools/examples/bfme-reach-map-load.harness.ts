@@ -428,6 +428,10 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         const native = (prof?.top ?? []).filter((r: any) => !String(r.url ?? "").endsWith(".js") && !String(r.url ?? "").endsWith(".wasm") && !String(r.fn ?? "").startsWith("wasm-function") && !String(r.fn ?? "").startsWith("fn_") && !String(r.fn ?? "").startsWith("page_") && !String(r.fn ?? "").startsWith("_ZN"))
             .map((r: any) => `${r.fn ?? "?"}:${r.pct ?? "?"}`);
         console.log(`GAME-NATIVE ${JSON.stringify(native.slice(0, 30)).slice(0, 2000)}`);
+        const perf = await bench.dbg("d3d9Perf").catch(() => null) as any;
+        const bk = perf?.backend ?? {};
+        const ft = (bk.ffpBlockBuild ?? 0) + (bk.ffpBlockPatch ?? 0) + (bk.ffpBlockReuse ?? 0);
+        console.log(`GAME-D3D9 ffpBlock=${bk.ffpBlockBuild ?? 0}b/${bk.ffpBlockPatch ?? 0}p/${bk.ffpBlockReuse ?? 0}r${ft ? ` (build ${(100 * (bk.ffpBlockBuild ?? 0) / ft).toFixed(0)}%)` : ""} progConst=${bk.progConstReuseHits ?? 0}hit/${bk.progConstWrites ?? 0}w vbskip=${bk.vbSetSkipped ?? 0}/${bk.ibSetSkipped ?? 0} ffpUp=${bk.ffpStatesUploaded ?? 0}/${bk.ffpStatesSkipped ?? 0}`);
         const callers = prof?.callers ?? {};
         for (const fn of Object.keys(callers)) console.log(`GAME-CALLERS ${fn} <- ${JSON.stringify(callers[fn]).slice(0, 600)}`);
         const incl = (prof?.inclusive ?? []).slice(0, 20).map((r: any) => `${r.fn ?? r.name}:${r.pct ?? r.incl ?? "?"}`);
