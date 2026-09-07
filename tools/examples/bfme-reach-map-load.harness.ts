@@ -47,6 +47,12 @@ const fineSec = Number(arg("fine", "0"));
  *  slot) and measure the following seconds. */
 const buildAtSec = Number(arg("build-at", "-1"));
 const cursorTablePath = arg("cursor-table", new URL("./bfme1-cursor-fingerprints.json", import.meta.url).pathname);
+/** --trace2-pages 0xe32000,... with --trace2-at N: block execution counts of
+ *  JIT-owned pages armed at hold second N and read ten seconds later; N = -1
+ *  arms at the Play click and reads at the first hold window, which covers the
+ *  map load and world creation. */
+const trace2Pages = (arg("trace2-pages", "") as string).split(",").map((x) => x.trim()).filter(Boolean);
+const trace2AtSec = Number(arg("trace2-at", "40"));
 /** Guest instructions to time. Work parity removes the "how far did the load
  *  get" term, which otherwise dominates every comparison. */
 const workTarget = Number(arg("work", "0"));
@@ -579,6 +585,11 @@ for (let attempt = 1; attempt <= attempts && !loading; attempt++) {
         playProfile = bench.profileWorker(profileFromPlayMs, 40).catch((e) => ({ error: String(e) }));
     }
     if (fineSec > 0) startFine(bench);
+    if (trace2Pages.length && trace2AtSec < 0) {
+        await bench.dbg("trace2Reset").catch(() => null);
+        await bench.dbg("trace2Watch", trace2Pages).catch(() => null);
+        console.log(`trace2 armed at Play on ${trace2Pages.join(",")}`);
+    }
     await tryStep(bench, "play", coord("play", [[340, 575], [705, 574], [640, 556]]), 15_000);
 
     const a = await sample(bench);
@@ -656,8 +667,6 @@ if (slowPath) console.log("slow-path profile armed: " + JSON.stringify(await ben
 // for one window starting at hold second N, then name the ones that are
 // Win32/CRT stubs. Answers "which stubs make the dispatcher re-enter these
 // generated pages" — the hot-page histogram only counts entries per page.
-const trace2Pages = (arg("trace2-pages", "") as string).split(",").map((x) => x.trim()).filter(Boolean);
-const trace2AtSec = Number(arg("trace2-at", "40"));
 const attributeChain = process.argv.includes("--attribute-chain-misses");
 if (attributeChain) await bench.evalPage(`__BS__.harness.dbgCall("dispatchStatsEnable")`, 20_000).catch(() => {});
 let prevChain: any = null;
@@ -715,7 +724,7 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         await bench.dbg("trace2Reset").catch(() => null);
         console.log("trace2 armed: " + JSON.stringify(await bench.dbg("trace2Watch", trace2Pages).catch((e) => String(e))));
     }
-    if (trace2Pages.length && i * 10 === trace2AtSec + 10) {
+    if (trace2Pages.length && ((trace2AtSec < 0 && i === 0) || i * 10 === trace2AtSec + 10)) {
         const rows: any[] = (await bench.dbg("trace2Blocks", 40).catch(() => null)) ?? [];
         const named: any[] = [];
         for (const r of rows) {
