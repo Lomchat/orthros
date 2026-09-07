@@ -19,6 +19,11 @@ export interface AotBatchState {
     entries: number;
     bytes: number;
     guardExits: number;
+    /** Instructions a translation handed to the interpreter (slow_exit), and
+     *  by exit address — a site that fires at a block entry is a stall that
+     *  hands the whole function to the JIT. */
+    slowExits: number;
+    slowExitHist: Map<number, number>;
     /** URL of the batch installed by the automatic path, once done. */
     autoUrl: string | null;
     /** Why the last install did nothing (missing exports, unpublished batch,
@@ -27,7 +32,7 @@ export interface AotBatchState {
 }
 
 /** Installed modules of this worker, across installs. */
-export const aotBatchState: AotBatchState = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0, autoUrl: null, lastError: null };
+export const aotBatchState: AotBatchState = { nextSlot: 0, pages: 0, entries: 0, bytes: 0, guardExits: 0, slowExits: 0, slowExitHist: new Map(), autoUrl: null, lastError: null };
 
 export interface AotInstallResult { pages: number; entries: number; failed: number; bytes: number }
 
@@ -97,7 +102,14 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         guard_exit: () => { aotBatchState.guardExits++; },
         // An instruction the translation leaves to the interpreter: v86
         // bypasses the external table once at that address.
-        slow_exit: ex.jit_ext_interpret_once ?? (() => {}),
+        slow_exit: (ip: number) => {
+            aotBatchState.slowExits++;
+            const h = aotBatchState.slowExitHist;
+            const c = h.get(ip >>> 0);
+            if (c !== undefined) h.set(ip >>> 0, c + 1);
+            else if (h.size < 4096) h.set(ip >>> 0, 1);
+            ex.jit_ext_interpret_once?.(ip);
+        },
         // A translated block that consumes flags no producer of its own set
         // reads v86's effective flags (lazy flags materialised).
         get_eflags: ex.get_eflags,

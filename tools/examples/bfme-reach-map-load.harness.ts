@@ -849,6 +849,11 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` aotStall=+${ao && typeof ao.stalls === "number" ? ao.stalls - prevAotStalls : "?"}`);
     if (ao && typeof ao.guardExits === "number") prevGuardExits = ao.guardExits;
     if (ao && typeof ao.stalls === "number") prevAotStalls = ao.stalls;
+    // --aot-recent: the external flight recorder every window (entry -> exit
+    // : retired), so a stall (retired 0) seen during the load names its exit.
+    if (ao && process.argv.includes("--aot-recent")) {
+        console.log(`AOT-RECENT T+${((performance.now() - tL) / 1000).toFixed(0)}s stalls=${ao.stalls} misses=${ao.misses} slowExits=${ao.slowExits} slowExitTop=${JSON.stringify(ao.slowExitTop ?? [])} ${JSON.stringify((ao.recent ?? []).slice(0, 16))}`);
+    }
     // --census-windows: the thunks (host time) and the dispatch-entry pages
     // (guest side) of each window, so a dip is attributed to one or the other
     // instead of read off the aggregate at the end of the hold.

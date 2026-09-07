@@ -991,7 +991,7 @@ export const dbg = {
         if (r && r.pages > 0) setAotExternalFirst(true);
         return r;
     },
-    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; pagesReplaced: number; lastError: string | null;
+    aotStats(): { pages: number; entries: number; bytes: number; slotsUsed: number; guardExits: number; slowExits: number; slowExitTop: string[]; pagesReplaced: number; lastError: string | null;
         dispatches: number; misses: number; stalls: number; recent: string[];
         runUntil: { calls: number; returned: number; budgetZero: number; sliceSpent: number; hltOrPark: number; cap: number; depth: number; iterCap: number; nestedBarrier: number; threadSwitch: number; targets: string[]; targetPages: string[]; iterations: number; retired: number } } {
         const s = aotInstalled;
@@ -1008,6 +1008,8 @@ export const dbg = {
             recent.push(`${(ex.jit_ext_trace(i, 0) >>> 0).toString(16)}->${(ex.jit_ext_trace(i, 1) >>> 0).toString(16)}:${ex.jit_ext_trace(i, 2) >>> 0}`);
         }
         return { pages: s.pages, entries: s.entries, bytes: s.bytes, slotsUsed: s.nextSlot, guardExits: s.guardExits, lastError: s.lastError,
+            slowExits: s.slowExits,
+            slowExitTop: [...s.slowExitHist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 24).map(([a, c]) => `${a.toString(16)}:${c}`),
             runUntil: (() => { const g = (n: number) => Number(ex?.jit_run_until_stat?.(n) ?? 0); return { calls: g(0), returned: g(1), budgetZero: g(2), sliceSpent: g(3), hltOrPark: g(4), cap: g(5), depth: g(6), iterCap: g(7), iterations: g(8), retired: g(9), nestedBarrier: g(10), threadSwitch: g(11), targets: bridgedTargets(ex), targetPages: bridgedTargetPages(ex) }; })(),
             pagesReplaced: ex?.jit_external_pages_replaced?.() >>> 0,
             dispatches: ex?.jit_external_dispatches?.() >>> 0,
