@@ -266,6 +266,59 @@ x87_trig:
     mov [edi+56], ax
     ret
 
+    # fxam on the edge classes: -0.0, a denormal, -infinity (via c2 / [big]^n).
+    .globl x87_fxam2
+x87_fxam2:
+    mov edi, [esp+4]
+    fld qword ptr [negzero]
+    fxam
+    fnstsw ax
+    mov [edi], ax
+    fstp st(0)
+    fld qword ptr [denorm]
+    fxam
+    fnstsw ax
+    mov [edi+2], ax
+    fstp st(0)
+    fld qword ptr [c2]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fxam
+    fnstsw ax
+    mov [edi+4], ax
+    fstp qword ptr [edi+8]
+    ret
+
     .globl x87_fxam
 x87_fxam:
     mov edi, [esp+4]
@@ -330,6 +383,8 @@ x87_fxam:
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25
+negzero: .quad 0x8000000000000000
+denorm:  .quad 0x0000000000000001
 c3:     .float 2.5
 nanv:   .quad 0x7ff8000000000000
 big:    .double 1e10

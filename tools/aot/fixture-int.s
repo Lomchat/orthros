@@ -838,3 +838,56 @@ t_cmps:
     pop edi
     pop esi
     ret
+
+    # repe cmps with ECX = 0 leaves the flags of the previous producer (here a
+    # cmp with CF set, then one with ZF set), read by setcc and by the
+    # memcmp idiom sbb eax,eax / sbb eax,-1; then a real compare in the same
+    # block, consumed the same way.
+    .globl t_cmps0
+t_cmps0:
+    push esi
+    push edi
+    mov esi, ecx
+    lea edi, [ecx + 512]
+    mov byte ptr [ecx + 3], 0x41
+    mov byte ptr [ecx + 515], 0x42
+    cmp ecx, edi
+    xor ecx, ecx
+    repe cmpsb
+    setb al
+    sete ah
+    movzx edx, ax
+    sbb eax, eax
+    sbb eax, -1
+    lea edx, [edx + eax*4 + 8]
+    cmp edi, edi
+    xor ecx, ecx
+    repe cmpsb
+    sete al
+    movzx eax, al
+    add edx, eax
+    mov ecx, 8
+    repe cmpsb
+    sbb eax, eax
+    sbb eax, -1
+    lea eax, [edx + eax*2 + 4]
+    add eax, ecx
+    pop edi
+    pop esi
+    ret
+
+    # inc on memory whose carry is overwritten by the next add: the loop of
+    # a counting pass (histogram build), a bench of dead carry materialization.
+    .globl t_incloop
+t_incloop:
+    push edi
+    mov edi, ecx
+    xor ecx, ecx
+    mov edx, 4096
+1:  inc dword ptr [edi]
+    add ecx, 8
+    cmp ecx, edx
+    jb 1b
+    mov eax, [edi]
+    pop edi
+    ret

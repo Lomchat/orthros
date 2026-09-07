@@ -375,10 +375,12 @@ async function buildExperiment(b: BenchSession): Promise<void> {
     await cursorScan(b, "after");
 }
 
-/** True once presentations nearly stop while draws keep advancing. */
+/** True once presentations nearly stop while draws keep advancing. The menu
+ *  and the skirmish screen never drop under 30 FPS on this bench; a loading
+ *  screen that presents 6–8 times a second (a faster batch) is still a load. */
 function looksLikeLoading(before: Sample, after: Sample, seconds: number): boolean {
     const fps = (after.present - before.present) / seconds;
-    return fps < 5 && after.draws > before.draws;
+    return fps < 12 && after.draws > before.draws;
 }
 
 /**
@@ -1246,6 +1248,10 @@ if (shotPath) {
 {
     const ao: any = await bench.dbg("aotStats").catch(() => null);
     if (ao) console.log(`AOT-RECENT stalls=${ao.stalls} misses=${ao.misses} dispatches=${ao.dispatches} guardExits=${ao.guardExits} recent=${JSON.stringify((ao.recent ?? []).slice(0, 48))}`);
+    // Addresses dispatched on batch pages without a state: the entries the
+    // next batch should add (function heads or loop heads the closure missed).
+    const mt: any = await bench.dbg("aotMissTop", 32).catch(() => null);
+    if (Array.isArray(mt) && mt.length) console.log(`AOT-MISS-TOP ${mt.map((e: any) => `${e.eip}:${e.count}`).join(" ")}`);
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,

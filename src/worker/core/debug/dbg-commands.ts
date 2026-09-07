@@ -1032,6 +1032,22 @@ export const dbg = {
         }
         return out;
     },
+    /** Hottest addresses dispatched on a page owned by an installed AOT batch
+     *  that has no state for them, i.e. the entries the batch lacks (`reset`
+     *  clears the histogram). */
+    aotMissTop(n = 24, reset = false): Array<{ eip: string; count: number }> {
+        const ex = wasm();
+        if (!ex?.jit_ext_miss_top) return [];
+        if (reset) { ex.jit_ext_miss_reset?.(); return []; }
+        const out: Array<{ eip: string; count: number }> = [];
+        for (let i = 0; i < n; i++) {
+            const eip = ex.jit_ext_miss_top(i, 0) >>> 0;
+            const count = ex.jit_ext_miss_top(i, 1) >>> 0;
+            if (!count) break;
+            out.push({ eip: eip.toString(16), count });
+        }
+        return out;
+    },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */
     async jitHotProfileForget(): Promise<{ gameId: string | null; removed: boolean }> {
