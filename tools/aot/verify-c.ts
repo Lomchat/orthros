@@ -409,6 +409,10 @@ for (const t of functions) {
             run_until: ex["jit_run_until"] ?? ((_ret: number, _esp: number, _max: number) => 1),
             hypercall_out: ex["jit_hypercall_out"] ?? ((_v: number) => {}),
             x87_set_cw: ex["set_control_word"] ?? ((_cw: number) => {}),
+            x87_sin: ex["x87_sin_f64"] ?? Math.sin,
+            x87_cos: ex["x87_cos_f64"] ?? Math.cos,
+            x87_tan: ex["x87_tan_f64"] ?? Math.tan,
+            x87_atan2: ex["x87_atan2_f64"] ?? Math.atan2,
             read_tsc: ex["read_tsc_jit"] ?? (() => 0n),
         } });
         const first = ex["jit_external_module_first_index"]() >>> 0;

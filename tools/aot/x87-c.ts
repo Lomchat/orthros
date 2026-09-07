@@ -67,7 +67,7 @@ const FAST = new Set([
     "fchs", "fabs", "fld1", "fldz", "fldpi", "fldl2e", "fldln2", "fldlg2", "fldl2t",
     "fxch", "fcom", "fcomp", "fcompp", "fucom", "fucomp", "fucompp", "ficom", "ficomp", "ftst",
     "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi", "fnstsw", "fstsw", "fnstcw", "fstcw", "ffree", "fnop",
-    "fsqrt", "fldcw",
+    "fsqrt", "fldcw", "fxam", "fsin", "fcos", "fsincos", "fptan", "fpatan",
 ]);
 
 /** "fast" (translated inline), "slow" (interpreter runs it), or null when
@@ -240,6 +240,40 @@ export function emitX87(
     if (mnemonic === "fsqrt") {
         // f64.sqrt is correctly rounded, like the relaxed helper's f64 sqrt.
         lines.push(`{ if (!X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)); FPU_ST_M(top) = u64d(X87_ROUND(__builtin_sqrt(x))); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fsin" || mnemonic === "fcos") {
+        // v86: the f64 function of the interpreter's libm (imported from it),
+        // C2 cleared, no range reduction check.
+        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } FPU_ST_M(top) = u64d(x87_${mnemonic.slice(1)}(f64u(FPU_ST_M(top))));`
+            + ` FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x400u); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fsincos") {
+        // v86: ST(0) = sin, then cos pushed (C1 cleared by the push), C2 cleared.
+        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)); FPU_ST_M(top) = u64d(x87_sin(x));`
+            + ` X87_PUSH(u64d(x87_cos(x)), 0x7ffeu); FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x600u); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fptan") {
+        // v86: ST(0) = tan, then 1.0 pushed (C1 cleared by the push), C2 cleared.
+        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } FPU_ST_M(top) = u64d(x87_tan(f64u(FPU_ST_M(top))));`
+            + ` X87_PUSH(0x3ff0000000000000ull, 0x7ffeu); FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x600u); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fpatan") {
+        // v86: ST(1) = atan2(ST(1), ST(0)), then pop.
+        lines.push(`{ uint32_t s1 = (top + 1u) & 7u; if (((fempty >> top) & 1u) || ((fempty >> s1) & 1u) || !X87_OK(top) || !X87_OK(s1)) { ${slow} }`
+            + ` FPU_ST_M(s1) = u64d(x87_atan2(f64u(FPU_ST_M(s1)), f64u(FPU_ST_M(top)))); X87_POP(); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fxam") {
+        // v86: C1 = sign, then NaN -> C0, zero -> C3, infinite -> C2|C0, else
+        // C2 (no denormal class). An empty slot raises a stack fault there,
+        // which stays the interpreter's.
+        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } uint64_t m = FPU_ST_M(top); double x = f64u(m);`
+            + ` uint32_t sw = ((uint32_t)FPU_SW & ~0x4700u) | ((uint32_t)(m >> 63) << 9);`
+            + ` if (x != x) sw |= 0x100u; else if (x == 0.0) sw |= 0x4000u; else if (x - x != 0.0) sw |= 0x500u; else sw |= 0x400u; FPU_SW = (uint16_t)sw; }`);
         return { producer: false };
     }
     if (mnemonic === "fldcw") {

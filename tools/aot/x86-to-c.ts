@@ -735,6 +735,10 @@ __attribute__((import_module("env"), import_name("hypercall_out"))) void hyperca
    translation has retired but not yet committed folded in, as the JIT does. */
 __attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc(int32_t pending);
 __attribute__((import_module("env"), import_name("x87_set_cw"))) void x87_set_cw(int32_t cw);
+__attribute__((import_module("env"), import_name("x87_sin"))) double x87_sin(double x);
+__attribute__((import_module("env"), import_name("x87_cos"))) double x87_cos(double x);
+__attribute__((import_module("env"), import_name("x87_tan"))) double x87_tan(double x);
+__attribute__((import_module("env"), import_name("x87_atan2"))) double x87_atan2(double y, double x);
 #define FS_BASE (*(volatile int32_t *)752)
 #define MXCSR (*(volatile int32_t *)824)
 /* SSE state: v86 reg_xmm is 8 x 16 bytes at offset 832. Two 64-bit lanes each. */
@@ -1116,7 +1120,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         }
         const kinds = new Map<number, ProducerKind>();
         const runtimeFlags = (i: number, lines: string[]): void => {
-            if (producerOf.get(i) === -1) lines.push(`fl = x86_flags_now(fk, fa, fb, fr, fc);`);
+            const p = producerOf.get(i)!;
+            if (p === -1 || kinds.get(p) === "runtime") lines.push(`fl = x86_flags_now(fk, fa, fb, fr, fc);`);
         };
         const condFor = (i: number, cc: string): string | null => {
             const p = producerOf.get(i)!;
@@ -1267,8 +1272,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (mnemonic.startsWith("repe cmps")) {
                 // repe cmps: compares until a mismatch or ECX = 0; the flags are
                 // those of the last pair compared. With ECX = 0 nothing is
-                // compared and the flags stay as they were, which this model
-                // cannot express: the interpreter runs that case.
+                // compared and the flags stay as they were, so the consumers of
+                // this site read the flags at run time from whichever producer
+                // ran last.
                 const elem = mnemonic.endsWith("d") ? 4 : mnemonic.endsWith("w") ? 2 : 1;
                 const ld = elem === 4 ? "LD32" : elem === 2 ? "LD16" : "LD8";
                 for (let j = i - 1; j >= 0; j--) {
@@ -1280,13 +1286,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // Like scas: ECX may be -1, so the scan is bounded by the elements
                 // both ranges can hold and exits, state advanced and flags of the
                 // last pair, at the element that would fault.
-                lines.push(`if (ecx == 0u) { ${slowExit(insn.addr, i)} }`);
-                lines.push(`{ uint32_t rs = esi >= ml ? 0u : (ml - esi) / ${elem}u, rd = edi >= ml ? 0u : (ml - edi) / ${elem}u; uint32_t room = rs < rd ? rs : rd;`
+                lines.push(`if (ecx != 0u) { uint32_t rs = esi >= ml ? 0u : (ml - esi) / ${elem}u, rd = edi >= ml ? 0u : (ml - edi) / ${elem}u; uint32_t room = rs < rd ? rs : rd;`
                     + ` if (room == 0u) { ${guardExit(insn.addr, i)} } uint32_t left = ecx < room ? ecx : room;`);
                 lines.push(`for (;;) { fa = ${sext(`${ld}(esi)`, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; esi += ${elem}u; edi += ${elem}u; ecx -= 1u; left -= 1u;`
                     + ` if (fa != fb || ecx == 0u) break;`
-                    + ` if (left == 0u) { fr = ${sext("(fa - fb)", elem)}; fk = 1u; ${guardExit(insn.addr, i)} } } }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
-                kinds.set(i, "cmp");
+                    + ` if (left == 0u) { fr = ${sext("(fa - fb)", elem)}; fk = 1u; ${guardExit(insn.addr, i)} } }`
+                    + ` fr = ${sext("(fa - fb)", elem)}; fk = 1u; }`);
+                kinds.set(i, "runtime");
                 if (isCaptured) liveFlagSites++;
                 continue;
             }

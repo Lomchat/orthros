@@ -121,6 +121,11 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         // fldcw performed by a translation: v86's rounding mode and precision
         // flag follow the control word the translation already stored.
         x87_set_cw: ex.set_control_word ?? ((_cw: number) => {}),
+        // x87 transcendentals performed by a translation: the interpreter's own libm.
+        x87_sin: ex.x87_sin_f64 ?? Math.sin,
+        x87_cos: ex.x87_cos_f64 ?? Math.cos,
+        x87_tan: ex.x87_tan_f64 ?? Math.tan,
+        x87_atan2: ex.x87_atan2_f64 ?? Math.atan2,
         // rdtsc from a translation: the virtual counter with pending instructions folded in.
         read_tsc: ex.read_tsc_jit ?? (() => 0n),
     } });

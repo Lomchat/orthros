@@ -239,6 +239,94 @@ x87_sqrt:
     fstp qword ptr [edi+16]
     ret
 
+
+    # fxam over the classes v86 distinguishes: normal, zero, negative, NaN, infinite.
+    .globl x87_trig
+x87_trig:
+    mov edi, [esp+4]
+    fld qword ptr [c1]
+    fsin
+    fstp qword ptr [edi]
+    fld qword ptr [c2]
+    fcos
+    fstp qword ptr [edi+8]
+    fld qword ptr [c1]
+    fsincos
+    fstp qword ptr [edi+16]
+    fstp qword ptr [edi+24]
+    fld qword ptr [c2]
+    fptan
+    fstp qword ptr [edi+32]
+    fstp qword ptr [edi+40]
+    fld qword ptr [c1]
+    fld qword ptr [c2]
+    fpatan
+    fstp qword ptr [edi+48]
+    fnstsw ax
+    mov [edi+56], ax
+    ret
+
+    .globl x87_fxam
+x87_fxam:
+    mov edi, [esp+4]
+    fld qword ptr [c1]
+    fxam
+    fnstsw ax
+    mov word ptr [edi], ax
+    fstp st(0)
+    fldz
+    fxam
+    fnstsw ax
+    mov word ptr [edi+2], ax
+    fstp st(0)
+    fld qword ptr [c2]
+    fxam
+    fnstsw ax
+    mov word ptr [edi+4], ax
+    fstp st(0)
+    fld qword ptr [nanv]
+    fxam
+    fnstsw ax
+    mov word ptr [edi+6], ax
+    fstp st(0)
+    fld qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fmul qword ptr [big]
+    fxam
+    fnstsw ax
+    mov word ptr [edi+8], ax
+    fstp st(0)
+    ret
+
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25
