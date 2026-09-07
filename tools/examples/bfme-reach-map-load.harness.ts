@@ -627,6 +627,7 @@ let prev = await sample(bench);
 let prevJit = await jitStats(bench);
 let prevInterp = await interpShare(bench);
 let prevGuardExits = 0;
+let prevAotStalls = 0;
 // Read-and-reset now, or the first window's scheduler counters cover the whole
 // boot and menu instead of ten seconds of loading.
 await sleepStats(bench);
@@ -841,8 +842,13 @@ for (let i = 0; i < Math.ceil(holdSec / 10); i++) {
         + ` compiled=${d("completed")} forced=${d("hotForced")} codegenMs=${d("codegenMs").toFixed(0)} invalSlot=${d("retCacheInvalSlot")} invalTlb=${d("retCacheInvalTlb")} interp=${retired > 0 ? ((di("interpreted") / retired) * 100).toFixed(1) : "?"}%`
         + ` noModule=+${di("blocksNoModule")} missEntry=+${di("blocksMissingEntry")}`
         + ` stateMism=+${di("blocksStateMismatch")}`
-        + ` aotGuard=+${ao && typeof ao.guardExits === "number" ? ao.guardExits - prevGuardExits : "?"}`);
+        + ` aotGuard=+${ao && typeof ao.guardExits === "number" ? ao.guardExits - prevGuardExits : "?"}`
+        // Stalls: a translation handed one instruction to the interpreter
+        // (slow_exit); the dispatcher then bypasses the external module once
+        // at that address, which is how a JIT module inherits a function.
+        + ` aotStall=+${ao && typeof ao.stalls === "number" ? ao.stalls - prevAotStalls : "?"}`);
     if (ao && typeof ao.guardExits === "number") prevGuardExits = ao.guardExits;
+    if (ao && typeof ao.stalls === "number") prevAotStalls = ao.stalls;
     // --census-windows: the thunks (host time) and the dispatch-entry pages
     // (guest side) of each window, so a dip is attributed to one or the other
     // instead of read off the aggregate at the end of the hold.
@@ -1228,6 +1234,13 @@ if (shotPath) {
         const png = await bench.shot();
         await Bun.write(shotPath.replace(/\.png$/i, "") + ".page.png", png);
     } catch { /* page screenshot is only a fallback */ }
+}
+// Where the batch stalled last: entries that exited without retiring anything
+// (from -> exit address : count), which names the instruction a translation
+// hands back to the interpreter.
+{
+    const ao: any = await bench.dbg("aotStats").catch(() => null);
+    if (ao) console.log(`AOT-RECENT stalls=${ao.stalls} misses=${ao.misses} dispatches=${ao.dispatches} guardExits=${ao.guardExits} recent=${JSON.stringify((ao.recent ?? []).slice(0, 48))}`);
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
