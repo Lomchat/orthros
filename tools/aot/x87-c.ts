@@ -25,13 +25,18 @@ export interface X87Helpers {
     slowExit(insnAddr: number, done: number): string;
 }
 
-export const X87_PRELUDE = `#define FPU_ST_M(s) (*(volatile uint64_t *)(uintptr_t)(1152u + 16u * (s)))
-#define FPU_ST_T(s) (*(volatile uint16_t *)(uintptr_t)(1160u + 16u * (s)))
-#define FPU_TOP (*(volatile uint8_t *)1032)
-#define FPU_EMPTY (*(volatile uint8_t *)816)
-#define FPU_CW (*(volatile uint16_t *)1036)
-#define FPU_SW (*(volatile uint16_t *)1040)
-#define FPU_DIRTY (*(volatile uint8_t *)632)
+export const X87_PRELUDE = `/* The x87 register file lives in v86's memory but is only touched by this
+ * code while a translation runs: every call out (hypercall_out, run_until) is
+ * an opaque call clang must assume clobbers memory, so plain may_alias
+ * accesses are exact and let a block keep ST(i), the tags and the control
+ * word in registers instead of a volatile round trip per instruction. */
+#define FPU_ST_M(s) (*(u64u *)(uintptr_t)(1152u + 16u * (s)))
+#define FPU_ST_T(s) (*(u16u *)(uintptr_t)(1160u + 16u * (s)))
+#define FPU_TOP (*(uint8_t *)1032)
+#define FPU_EMPTY (*(uint8_t *)816)
+#define FPU_CW (*(u16u *)1036)
+#define FPU_SW (*(u16u *)1040)
+#define FPU_DIRTY (*(uint8_t *)632)
 #define FLAGS_CHANGED (*(volatile int32_t *)100)
 typedef union { double d; uint64_t u; float f; uint32_t w; } fbits;
 static inline double f64u(uint64_t u) { fbits b; b.u = u; return b.d; }
