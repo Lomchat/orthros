@@ -55,6 +55,9 @@ static inline double x87_round_rc(double v, uint32_t rc) {
 static inline uint32_t x87_to_i32(double r) {
     return (r != r || r >= 2147483648.0 || r < -2147483648.0) ? 0x80000000u : (uint32_t)(int32_t)r;
 }
+static inline uint64_t x87_to_i64(double r) {
+    return (r != r || r >= 9223372036854775808.0 || r < -9223372036854775808.0) ? 0x8000000000000000ull : (uint64_t)(int64_t)r;
+}
 `;
 
 const FAST = new Set([
@@ -64,6 +67,7 @@ const FAST = new Set([
     "fchs", "fabs", "fld1", "fldz", "fldpi", "fldl2e", "fldln2", "fldlg2", "fldl2t",
     "fxch", "fcom", "fcomp", "fcompp", "fucom", "fucomp", "fucompp", "ficom", "ficomp", "ftst",
     "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi", "fnstsw", "fstsw", "fnstcw", "fstcw", "ffree", "fnop",
+    "fsqrt", "fldcw",
 ]);
 
 /** "fast" (translated inline), "slow" (interpreter runs it), or null when
@@ -76,7 +80,6 @@ export function x87Kind(mnemonic: string, operand?: string): "fast" | "slow" | n
         const o = operand.toLowerCase();
         if (o.includes("tbyte")) return "slow";
         // fistp m64 is a helper in the JIT too.
-        if ((mnemonic === "fistp" || mnemonic === "fisttp" || mnemonic === "fist") && o.includes("qword")) return "slow";
         if ((mnemonic === "fst" || mnemonic === "fstp") && o.includes("qword") && !o.includes("[")) return "slow";
     }
     return "fast";
@@ -182,12 +185,13 @@ export function emitX87(
     if (mnemonic === "fist" || mnemonic === "fistp" || mnemonic === "fisttp") {
         const op = mem(ops[0] ?? "");
         if (typeof op === "string") return op;
-        if (op.width !== 2 && op.width !== 4) return `${mnemonic} width ${op.width}`;
+        if (op.width !== 2 && op.width !== 4 && op.width !== 8) return `${mnemonic} width ${op.width}`;
         lines.push(`if (!X87_OK(top)) { ${slow} }`);
         const rounded = mnemonic === "fisttp"
             ? `__builtin_trunc(f64u(FPU_ST_M(top)))`
             : `x87_round_rc(f64u(FPU_ST_M(top)), (((uint32_t)FPU_CW) >> 10) & 3u)`;
-        if (op.width === 4) lines.push(`ST32(${op.addr}, x87_to_i32(${rounded}));`);
+        if (op.width === 8) lines.push(`ST64(${op.addr}, x87_to_i64(${rounded}));`);
+        else if (op.width === 4) lines.push(`ST32(${op.addr}, x87_to_i32(${rounded}));`);
         else lines.push(`{ int32_t w = (int32_t)x87_to_i32(${rounded}); if (w < -0x8000 || w > 0x7fff) w = -0x8000; ST16(${op.addr}, (uint32_t)w); }`);
         if (mnemonic !== "fist") lines.push(`X87_POP();`);
         return { producer: false };
@@ -231,6 +235,20 @@ export function emitX87(
     if (mnemonic === "fchs" || mnemonic === "fabs") {
         lines.push(`if (!X87_OK(top)) { ${slow} }`);
         lines.push(mnemonic === "fchs" ? `FPU_ST_M(top) ^= 0x8000000000000000ull;` : `FPU_ST_M(top) &= 0x7fffffffffffffffull;`);
+        return { producer: false };
+    }
+    if (mnemonic === "fsqrt") {
+        // f64.sqrt is correctly rounded, like the relaxed helper's f64 sqrt.
+        lines.push(`{ if (!X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)); FPU_ST_M(top) = u64d(X87_ROUND(__builtin_sqrt(x))); }`);
+        return { producer: false };
+    }
+    if (mnemonic === "fldcw") {
+        // The control word also drives v86's own rounding mode and precision
+        // flag (helpers, JIT codegen), so the runtime is told through an import.
+        const op = mem(ops[0] ?? "");
+        if (typeof op === "string") return op;
+        if (op.width !== 2) return `fldcw width ${op.width}`;
+        lines.push(`{ uint32_t cw = LD16(${op.addr}); FPU_CW = (uint16_t)cw; x87_set_cw((int32_t)cw); }`);
         return { producer: false };
     }
     if (mnemonic === "fxch") {

@@ -118,6 +118,9 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
         run_until: ex.jit_run_until ?? ((_ret: number, _esp: number, _max: number) => 1),
         // A stub's port write performed by the translation itself.
         hypercall_out: ex.jit_hypercall_out ?? ((_v: number) => {}),
+        // fldcw performed by a translation: v86's rounding mode and precision
+        // flag follow the control word the translation already stored.
+        x87_set_cw: ex.set_control_word ?? ((_cw: number) => {}),
         // rdtsc from a translation: the virtual counter with pending instructions folded in.
         read_tsc: ex.read_tsc_jit ?? (() => 0n),
     } });

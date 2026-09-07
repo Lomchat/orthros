@@ -819,3 +819,22 @@ t_strlen:
     add eax, 100
 1:  pop edi
     ret
+
+    # repe cmps with ECX = -1: bounded by memory, stops at the first mismatch.
+    .globl t_cmps
+t_cmps:
+    push esi
+    push edi
+    mov esi, ecx
+    lea edi, [ecx + 1024]
+    mov byte ptr [ecx + 30], 0x41
+    mov byte ptr [ecx + 1054], 0x42
+    mov ecx, -1
+    repe cmpsb
+    setb al
+    sete ah
+    movzx eax, ax
+    add eax, ecx
+    pop edi
+    pop esi
+    ret

@@ -201,6 +201,44 @@ ret_float:
     fadd qword ptr [c1]
     ret
 
+
+    # The MSVC float-to-int idiom: fnstcw / or 0xc00 / fldcw / fistp m64 / fldcw,
+    # then nearest-even, a large value and NaN (indefinite), and fsqrt.
+    .globl x87_ftol64
+x87_ftol64:
+    mov edi, [esp+4]
+    fld qword ptr [c1]
+    fnstcw word ptr [edi+40]
+    mov ax, word ptr [edi+40]
+    or ax, 0x0c00
+    mov word ptr [edi+42], ax
+    fldcw word ptr [edi+42]
+    fistp qword ptr [edi]
+    fld qword ptr [c2]
+    fistp qword ptr [edi+8]
+    fldcw word ptr [edi+40]
+    fld qword ptr [c2]
+    fistp qword ptr [edi+16]
+    fld qword ptr [big]
+    fistp qword ptr [edi+24]
+    fld qword ptr [nanv]
+    fistp qword ptr [edi+32]
+    ret
+
+    .globl x87_sqrt
+x87_sqrt:
+    mov edi, [esp+4]
+    fld qword ptr [c1]
+    fsqrt
+    fstp qword ptr [edi]
+    fld dword ptr [c3]
+    fsqrt
+    fstp dword ptr [edi+8]
+    fld qword ptr [c2]
+    fsqrt
+    fstp qword ptr [edi+16]
+    ret
+
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25

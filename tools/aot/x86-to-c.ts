@@ -734,6 +734,7 @@ __attribute__((import_module("env"), import_name("hypercall_out"))) void hyperca
 /* rdtsc: v86's virtual time-stamp counter, with the instructions this
    translation has retired but not yet committed folded in, as the JIT does. */
 __attribute__((import_module("env"), import_name("read_tsc"))) uint64_t read_tsc(int32_t pending);
+__attribute__((import_module("env"), import_name("x87_set_cw"))) void x87_set_cw(int32_t cw);
 #define FS_BASE (*(volatile int32_t *)752)
 #define MXCSR (*(volatile int32_t *)824)
 /* SSE state: v86 reg_xmm is 8 x 16 bytes at offset 832. Two 64-bit lanes each. */
@@ -1276,9 +1277,15 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     if (!preservesFlags(m) && !SETCC.test(m) && !CMOVCC.test(m)) return reject(`${mnemonic} after unmodelled flag writer ${m}`);
                 }
                 lines.push(`if (FLAGS & 0x400) { ${guardExit(insn.addr, i)} }`);
+                // Like scas: ECX may be -1, so the scan is bounded by the elements
+                // both ranges can hold and exits, state advanced and flags of the
+                // last pair, at the element that would fault.
                 lines.push(`if (ecx == 0u) { ${slowExit(insn.addr, i)} }`);
-                lines.push(`if ((uint64_t)esi + (uint64_t)ecx * ${elem}u > ml || (uint64_t)edi + (uint64_t)ecx * ${elem}u > ml) { ${guardExit(insn.addr, i)} }`);
-                lines.push(`for (;;) { fa = ${sext(`${ld}(esi)`, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; esi += ${elem}u; edi += ${elem}u; ecx -= 1u; if (fa != fb || ecx == 0u) break; }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
+                lines.push(`{ uint32_t rs = esi >= ml ? 0u : (ml - esi) / ${elem}u, rd = edi >= ml ? 0u : (ml - edi) / ${elem}u; uint32_t room = rs < rd ? rs : rd;`
+                    + ` if (room == 0u) { ${guardExit(insn.addr, i)} } uint32_t left = ecx < room ? ecx : room;`);
+                lines.push(`for (;;) { fa = ${sext(`${ld}(esi)`, elem)}; fb = ${sext(`${ld}(edi)`, elem)}; esi += ${elem}u; edi += ${elem}u; ecx -= 1u; left -= 1u;`
+                    + ` if (fa != fb || ecx == 0u) break;`
+                    + ` if (left == 0u) { fr = ${sext("(fa - fb)", elem)}; fk = 1u; ${guardExit(insn.addr, i)} } } }`, `fr = ${sext("(fa - fb)", elem)}; fk = 1u;`);
                 kinds.set(i, "cmp");
                 if (isCaptured) liveFlagSites++;
                 continue;
