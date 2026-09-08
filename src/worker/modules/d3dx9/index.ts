@@ -13,6 +13,11 @@ import { createTextureExports } from './textures';
 import { createEffectExports, resetEffectState } from './effects';
 import { computeFvfStride } from '../../backends/webgpu/ddraw/compute/vertex-converter';
 import { Marshaler } from '../../core/memory/marshaler';
+import { Mem } from '../../core/memory/mem-accessor';
+import { assembleShader, ShaderAssemblyError } from './shader-assembler';
+import { createD3dxBuffer, resetD3dxBuffers } from './buffer';
+
+const D3DXERR_INVALIDDATA = 0x88760b59;
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
@@ -51,14 +56,40 @@ export class D3dx9 implements IModule {
                 return 0;
             }
         };
+        // HRESULT D3DXAssembleShader(LPCSTR pSrcData, UINT SrcDataLen, const D3DXMACRO*, LPD3DXINCLUDE,
+        //                            DWORD Flags, LPD3DXBUFFER* ppShader, LPD3DXBUFFER* ppErrorMsgs)
+        // SM1.x–3.0 text to bytecode; the byte buffer comes back as an ID3DXBuffer,
+        // errors as a NUL-terminated message in ppErrorMsgs with D3DXERR_INVALIDDATA.
         this.exports['D3DXAssembleShader'] = (_ctx, mem, args) => {
             const sourcePtr = args[0] >>> 0;
             const sourceLength = args[1] >>> 0;
-            if (sourcePtr && sourceLength && assembleShaderSamples.length < 16) {
-                const source = Marshaler.readString(mem, sourcePtr).slice(0, sourceLength);
-                if (!assembleShaderSamples.includes(source)) assembleShaderSamples.push(source);
+            const ppShader = args[5] >>> 0;
+            const ppErrorMsgs = args[6] >>> 0;
+            if (!sourcePtr || sourcePtr + sourceLength > mem.length) return D3DERR_INVALIDCALL;
+            const source = sourceLength
+                ? new TextDecoder('latin1').decode(mem.subarray(sourcePtr, sourcePtr + sourceLength))
+                : Marshaler.readString(mem, sourcePtr);
+            if (assembleShaderSamples.length < 16 && !assembleShaderSamples.includes(source)) assembleShaderSamples.push(source);
+            if (ppErrorMsgs && ppErrorMsgs + 4 <= mem.length) Mem.writeUint32(ppErrorMsgs, 0);
+            let tokens: Uint32Array;
+            try {
+                tokens = assembleShader(source);
+            } catch (e) {
+                const message = e instanceof ShaderAssemblyError ? e.message : `assembler: ${String(e)}`;
+                Logger.warn(LogCategory.SYSTEM, `d3dx9:D3DXAssembleShader failed — ${message}`);
+                if (ppShader && ppShader + 4 <= mem.length) Mem.writeUint32(ppShader, 0);
+                if (ppErrorMsgs && ppErrorMsgs + 4 <= mem.length) {
+                    const errBuf = createD3dxBuffer(process, new TextEncoder().encode(message + '\0'));
+                    Mem.writeUint32(ppErrorMsgs, errBuf);
+                }
+                return D3DXERR_INVALIDDATA;
             }
-            return invalidCall('D3DXAssembleShader');
+            if (!ppShader || ppShader + 4 > mem.length) return D3DERR_INVALIDCALL;
+            const bytes = new Uint8Array(tokens.buffer, tokens.byteOffset, tokens.byteLength);
+            const buf = createD3dxBuffer(process, bytes);
+            if (!buf) return D3DERR_INVALIDCALL;
+            Mem.writeUint32(ppShader, buf);
+            return D3D_OK;
         };
 
         Object.assign(this.exports, createMathExports());
@@ -91,5 +122,6 @@ export class D3dx9 implements IModule {
         warnedStubs.clear();
         assembleShaderSamples.length = 0;
         resetEffectState();
+        resetD3dxBuffers();
     }
 }
