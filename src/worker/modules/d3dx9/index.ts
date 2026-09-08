@@ -24,9 +24,16 @@ const D3DERR_INVALIDCALL = 0x8876086c;
 
 const warnedStubs = new Set<string>();
 const assembleShaderSamples: string[] = [];
+const assembleShaderFailures: string[] = [];
+let assembleShaderOk = 0;
 
 export function getD3dxAssembleShaderSamples(): readonly string[] {
     return assembleShaderSamples;
+}
+
+/** Diagnostics: sources seen, assemblies that succeeded, messages of those that failed. */
+export function getD3dxAssembleShaderStatus(): { samples: readonly string[]; ok: number; failures: readonly string[] } {
+    return { samples: assembleShaderSamples, ok: assembleShaderOk, failures: assembleShaderFailures };
 }
 
 function warnOnce(name: string, detail: string): void {
@@ -77,6 +84,7 @@ export class D3dx9 implements IModule {
             } catch (e) {
                 const message = e instanceof ShaderAssemblyError ? e.message : `assembler: ${String(e)}`;
                 Logger.warn(LogCategory.SYSTEM, `d3dx9:D3DXAssembleShader failed — ${message}`);
+                if (assembleShaderFailures.length < 16) assembleShaderFailures.push(message);
                 if (ppShader && ppShader + 4 <= mem.length) Mem.writeUint32(ppShader, 0);
                 if (ppErrorMsgs && ppErrorMsgs + 4 <= mem.length) {
                     const errBuf = createD3dxBuffer(process, new TextEncoder().encode(message + '\0'));
@@ -89,6 +97,7 @@ export class D3dx9 implements IModule {
             const buf = createD3dxBuffer(process, bytes);
             if (!buf) return D3DERR_INVALIDCALL;
             Mem.writeUint32(ppShader, buf);
+            assembleShaderOk++;
             return D3D_OK;
         };
 

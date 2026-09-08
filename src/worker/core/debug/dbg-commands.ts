@@ -50,7 +50,7 @@ import { ioTraceRing } from './io-trace-ring';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getBfmeDxtEncodeCacheFallbacks } from '../hle-lib/libs/bfme/dxt-encode-cache';
-import { getD3dxAssembleShaderSamples } from '../../modules/d3dx9';
+import { getD3dxAssembleShaderSamples, getD3dxAssembleShaderStatus } from '../../modules/d3dx9';
 import { getSurfaceLockDiagnostics, setSurfaceLockDiagnostics } from '../../modules/d3d9/resources';
 import {
     getDxCompressedTextureAdvertisement,
@@ -1047,6 +1047,10 @@ export const dbg = {
             out.push({ eip: eip.toString(16), count });
         }
         return out;
+    },
+    /** D3DXAssembleShader diagnostics: sources seen, successes, failure messages. */
+    d3dxShaderAssembly(): { samples: readonly string[]; ok: number; failures: readonly string[] } {
+        return getD3dxAssembleShaderStatus();
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */

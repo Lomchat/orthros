@@ -1260,6 +1260,11 @@ if (shotPath) {
         const sorted = [...stubs].sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
         console.log(`API-CENSUS n=${sorted.length} ${sorted.slice(0, 32).map((s) => `${s.api}:${s.count}@${s.firstCallerSym ?? s.firstCaller}`).join(" ")}`);
     }
+    // Shader assembly: what D3DXAssembleShader saw and whether it assembled.
+    const asm: any = await bench.dbg("d3dxShaderAssembly").catch(() => null);
+    if (asm && (asm.samples?.length || asm.failures?.length)) {
+        console.log(`D3DX-ASM ok=${asm.ok} samples=${asm.samples.length} failures=${JSON.stringify(asm.failures)} first=${JSON.stringify((asm.samples[0] ?? "").slice(0, 400))}`);
+    }
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
