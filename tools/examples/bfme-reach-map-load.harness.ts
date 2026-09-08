@@ -1252,6 +1252,14 @@ if (shotPath) {
     // next batch should add (function heads or loop heads the closure missed).
     const mt: any = await bench.dbg("aotMissTop", 32).catch(() => null);
     if (Array.isArray(mt) && mt.length) console.log(`AOT-MISS-TOP ${mt.map((e: any) => `${e.eip}:${e.count}`).join(" ")}`);
+    // API census: every unimplemented import or vtable slot the guest called,
+    // by hit count — the generic gaps this title names for the next one.
+    const census: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "stubs", args: [] }])`, 30_000).catch(() => null);
+    const stubs: any[] = census?.steps?.[0]?.result ?? [];
+    if (Array.isArray(stubs)) {
+        const sorted = [...stubs].sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+        console.log(`API-CENSUS n=${sorted.length} ${sorted.slice(0, 32).map((s) => `${s.api}:${s.count}@${s.firstCallerSym ?? s.firstCaller}`).join(" ")}`);
+    }
 }
 console.log("RESULT " + JSON.stringify({
     reached: true,
