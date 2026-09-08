@@ -79,13 +79,13 @@ const REG8_HIGH = ["ah", "ch", "dh", "bh"];
 const COND_BRANCH = new Set([
     "je", "jz", "jne", "jnz", "jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl",
     "jb", "jnae", "jc", "jbe", "jna", "ja", "jnbe", "jae", "jnb", "jnc", "js", "jns",
-    "jp", "jpe", "jnp", "jpo", "jo", "jno",
+    "jp", "jpe", "jnp", "jpo", "jo", "jno", "jecxz",
 ]);
 /** Flag producers a consumer can read. `sahf` and the fcomi family carry the
  *  x87 compare result into EFLAGS. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec", "neg",
     "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
-    "bt", "bts", "btr", "btc", "popfd", "rol", "ror",
+    "bt", "bts", "btr", "btc", "popfd", "rol", "ror", "rcl", "rcr", "stc", "clc", "cmc",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
     "repne scasb", "repne scasw", "repne scasd", "repe scasb", "repe scasw", "repe scasd",
     "sahf", "fcomi", "fcomip", "fcompi", "fucomi", "fucomip", "fucompi",
@@ -95,7 +95,7 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
     "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
-    "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr",
+    "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr", "emms", "pushal", "popal", "pushad", "popad",
     "movsb", "movsw", "movsd", "stosb", "stosw", "stosd", "cld", "std", "xlatb",
     "rep movsb", "rep movsw", "rep movsd", "rep stosb", "rep stosw", "rep stosd",
     "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
@@ -104,7 +104,7 @@ const FLAG_PRESERVING = new Set([
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
-const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|fcmov[a-z]+|rcl|rcr|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*|jecxz)$/;
+const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|fcmov[a-z]+|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*)$/;
 
 function preservesFlags(m: string): boolean {
     return FLAG_PRESERVING.has(m) || (x87Kind(m) !== null && !FLAG_PRODUCER.has(m) && !/^fcmov/.test(m));
@@ -629,7 +629,7 @@ const IMPLICIT_WRITERS: Record<string, string[]> = {
     esi: ["movs", "movsb", "movsw", "movsd", "lods", "lodsb", "lodsw", "lodsd", "cmps", "cmpsb", "cmpsw", "cmpsd", "outs"],
     edi: ["movs", "movsb", "movsw", "movsd", "stos", "stosb", "stosw", "stosd", "cmps", "cmpsb", "cmpsw", "cmpsd", "scas", "scasb", "scasw", "scasd", "ins"],
     esp: ["leave", "enter", "popad", "popa", "pushad", "pusha"],
-    ebp: ["leave", "enter", "popad", "popa"],
+    ebp: ["leave", "enter", "popad", "popa", "popal"],
     FSBASE: [],
 };
 
@@ -646,6 +646,8 @@ function needsFrom(block: Block, from: number, base: string): Range | null {
         if (m !== "lea" && m !== "nop") for (const op of ops) if (accessThrough(op, base)) use(drift + op!.disp!, op!.width!);
         if (base === "esp") {
             if (m === "push" || m === "pushfd" || m === "pushf") { use(drift - 4, 4); drift -= 4; continue; }
+            if (m === "pushal" || m === "pushad" || m === "pusha") { use(drift - 32, 32); drift -= 32; continue; }
+            if (m === "popal" || m === "popad" || m === "popa") { use(drift, 32); drift += 32; continue; }
             if (m === "call") { use(drift - 4, 4); break; }
             if (m === "pop" || m === "popfd" || m === "popf") { use(drift, 4); drift += 4; if (m === "pop" && isBaseReg(ops[0] ?? null, base)) break; continue; }
             if (m === "ret" || m === "retn") { use(drift, 4); break; }
@@ -792,7 +794,7 @@ function indirectTargetExpr(operand: string): string | null {
 }
 
 function isFlagConsumer(m: string): boolean {
-    return SETCC.test(m) || CMOVCC.test(m) || m === "adc" || m === "sbb" || COND_BRANCH.has(m);
+    return SETCC.test(m) || CMOVCC.test(m) || m === "adc" || m === "sbb" || m === "rcl" || m === "rcr" || (COND_BRANCH.has(m) && m !== "jecxz");
 }
 
 /**
@@ -1040,7 +1042,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
     // x87 instruction must already save and reload TOP/EMPTY around the call,
     // or a callee that returns a value on the x87 stack leaves the local stack
     // pointer stale (and every fst/fstp after it reads the wrong slot).
-    let fpuUsed = order.some((start) => blocks.get(start)!.insns.some((insn) => x87Kind(insn.mnemonic, insn.operand) === "fast"));
+    let fpuUsed = order.some((start) => blocks.get(start)!.insns.some((insn) => x87Kind(insn.mnemonic, insn.operand) === "fast" || insn.mnemonic === "emms"));
     // XMM registers this function touches: held in 64-bit lane locals like the
     // integer registers, committed to v86's reg_xmm before calls and at exits,
     // reloaded after calls (XMM is caller-saved). A memory round trip per SSE
@@ -1149,6 +1151,29 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (mnemonic === "jmp" || COND_BRANCH.has(mnemonic)) break;
             if (mnemonic === "nop" || mnemonic === "wait" || mnemonic === "fwait") continue;
             if (mnemonic === "int3") break;
+            if (mnemonic === "emms") {
+                // v86: every x87 slot tagged empty; the stack pointer stays.
+                lines.push(`fempty = 0xffu; fdirty = 1u;`);
+                continue;
+            }
+            if (mnemonic === "pushal" || mnemonic === "pushad" || mnemonic === "pusha") {
+                lines.push(stackGuard("esp", -32, insn.addr, i), stackGuard("esp", -4, insn.addr, i),
+                    `{ uint32_t t = esp; esp -= 32u; ST32(esp + 28u, eax); ST32(esp + 24u, ecx); ST32(esp + 20u, edx); ST32(esp + 16u, ebx); ST32(esp + 12u, t); ST32(esp + 8u, ebp); ST32(esp + 4u, esi); ST32(esp, edi); }`);
+                continue;
+            }
+            if (mnemonic === "popal" || mnemonic === "popad" || mnemonic === "popa") {
+                lines.push(stackGuard("esp", 0, insn.addr, i), stackGuard("esp", 28, insn.addr, i),
+                    `{ edi = LD32(esp); esi = LD32(esp + 4u); ebp = LD32(esp + 8u); ebx = LD32(esp + 16u); edx = LD32(esp + 20u); ecx = LD32(esp + 24u); eax = LD32(esp + 28u); esp += 32u; }`);
+                continue;
+            }
+            if (mnemonic === "stc" || mnemonic === "clc" || mnemonic === "cmc") {
+                // CF alone changes; the other flags are kept as they are now.
+                const op = mnemonic === "stc" ? "| 1u" : mnemonic === "clc" ? "& ~1u" : "^ 1u";
+                lines.push(`fa = (fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS)) ${op}; fk = 8u;`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
+            }
             const xk = x87Kind(mnemonic, operand);
             if (xk === "slow") break;
             if (mnemonic === "sahf") {
@@ -1568,6 +1593,42 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (isCaptured) liveFlagSites++;
                 resultExpr = "fr";
             }
+            else if (mnemonic === "rcl" || mnemonic === "rcr") {
+                // Rotate through carry, v86's exact forms: CF in from the
+                // current flags, CF out is the bit rotated out, OF is CF^MSB
+                // (rcl) or the two top bits of the result (rcr); ZF/SF/PF keep
+                // the current flags and a masked count of zero changes nothing.
+                if (!srcText) return reject(`${mnemonic} missing source`);
+                const src = parseOperand(srcText);
+                if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
+                guardMem(lines, dst, insn.addr, i);
+                const a = readExpr(dst), b = readExpr(src);
+                if (a === null || b === null) return reject(`read: ${mnemonic}`);
+                const w = operandWidth(dst);
+                const W = 8 * w;
+                const mod = w === 1 ? " % 9u" : w === 2 ? " % 17u" : "";
+                let body: string;
+                if (mnemonic === "rcl") {
+                    body = w === 4
+                        ? `uint32_t r = (az << c) | (ci << (c - 1u)); if (c > 1u) r |= az >> (33u - c); uint32_t co = (az >> (32u - c)) & 1u; uint32_t of = (co ^ (r >> 31)) & 1u;`
+                        : `uint32_t r = (az << c) | (ci << (c - 1u)) | (az >> (${W + 1}u - c)); uint32_t co = (r >> ${W}u) & 1u; uint32_t of = (co ^ (r >> ${W - 1}u)) & 1u; r &= ${widthMask(w)};`;
+                } else {
+                    body = w === 4
+                        ? `uint32_t r = (az >> c) | (ci << (32u - c)); if (c > 1u) r |= az << (33u - c); uint32_t co = (az >> (c - 1u)) & 1u; uint32_t of = ((r >> 31) ^ (r >> 30)) & 1u;`
+                        : `uint32_t r = (az >> c) | (ci << (${W}u - c)) | (az << (${W + 1}u - c)); uint32_t co = (r >> ${W}u) & 1u; uint32_t of = ((r >> ${W - 1}u) ^ (r >> ${W - 2}u)) & 1u; r &= ${widthMask(w)};`;
+                }
+                const wr = writeStmt(dst, "r");
+                if (!wr) return reject(`write: ${mnemonic}`);
+                // A zero count keeps every flag: the current flags are still
+                // materialised into fa, since this site is the raw producer
+                // its consumers read.
+                lines.push(`{ uint32_t c = ((${b}) & 31u)${mod};`
+                    + ` uint32_t cur = fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS);`
+                    + ` if (c) { uint32_t az = (${a}) & ${widthMask(w)}; uint32_t ci = cur & 1u; ${body} fa = (cur & 0xc4u) | co | (of << 11); ${wr} } else { fa = cur & 0x8d5u; } fk = 8u; }`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
+            }
             else if (mnemonic === "rol" || mnemonic === "ror") {
                 // Rotates write CF, and OF (defined for a count of one, computed
                 // that way for any count); ZF/SF/PF keep whatever the current
@@ -1589,9 +1650,13 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     : `(((r >> ${W - 1}u) ^ (r >> ${W - 2}u)) & 1u)`;
                 const wr = writeStmt(dst, "fr");
                 if (!wr) return reject(`write: ${mnemonic}`);
-                lines.push(`{ uint32_t cm = (${b}) & 31u; if (cm) { uint32_t c = cm % ${W}u; uint32_t az = (${a}) & ${widthMask(w)}; uint32_t r = c ? ${rot} : az;`
+                // A masked count of zero keeps every flag; they are still
+                // materialised into fa, this site being the raw producer its
+                // consumers read.
+                lines.push(`{ uint32_t cm = (${b}) & 31u;`
                     + ` uint32_t cur = fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS);`
-                    + ` fr = ${sext("r", w)}; fa = (cur & 0xc4u) | ${cf} | (${of} << 11); fk = 8u; ${wr} } }`);
+                    + ` if (cm) { uint32_t c = cm % ${W}u; uint32_t az = (${a}) & ${widthMask(w)}; uint32_t r = c ? ${rot} : az;`
+                    + ` fr = ${sext("r", w)}; fa = (cur & 0xc4u) | ${cf} | (${of} << 11); ${wr} } else { fa = cur & 0x8d5u; } fk = 8u; }`);
                 kinds.set(i, "raw");
                 if (isCaptured) liveFlagSites++;
                 continue;
@@ -1785,8 +1850,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
         }
         else if (COND_BRANCH.has(term.mnemonic)) {
-            runtimeFlags(n - 1, lines);
-            const cond = condFor(n - 1, term.mnemonic.slice(1));
+            // jecxz tests ECX, not the flags.
+            if (term.mnemonic !== "jecxz") runtimeFlags(n - 1, lines);
+            const cond = term.mnemonic === "jecxz" ? "(ecx == 0u)" : condFor(n - 1, term.mnemonic.slice(1));
             if (cond === null) return reject(`${term.mnemonic} after ${producerName(n - 1)}`);
             const target = directTarget(term.operand)!;
             const fall = indexOf.get(term.addr + term.size);

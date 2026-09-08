@@ -267,6 +267,23 @@ x87_trig:
     ret
 
     # fxam on the edge classes: -0.0, a denormal, -infinity (via c2 / [big]^n).
+    # emms empties every slot: a value left on the stack disappears, the next
+    # fld pushes normally, and fxam on the emptied slot reports empty (C3|C0).
+    .globl x87_emms
+x87_emms:
+    mov edi, [esp+4]
+    fld qword ptr [c1]
+    emms
+    fxam
+    fnstsw ax
+    mov [edi], ax
+    fld qword ptr [c2]
+    fxam
+    fnstsw ax
+    mov [edi+2], ax
+    fstp qword ptr [edi+8]
+    ret
+
     .globl x87_fxam2
 x87_fxam2:
     mov edi, [esp+4]

@@ -937,6 +937,108 @@ t_int3pad:
 3:  int3
     int3
 
+    # rcl/rcr through the carry: 32/16/8-bit, immediate and CL counts, a
+    # count of one and larger, a masked zero count; CF and OF read by setcc.
+    .globl t_rcl
+t_rcl:
+    push ebx
+    push esi
+    mov eax, 0x80000001
+    stc
+    rcl eax, 1
+    setc bl
+    seto bh
+    movzx esi, bx
+    mov ecx, 5
+    rcr eax, cl
+    setc bl
+    seto bh
+    movzx ebx, bx
+    lea esi, [esi + ebx*4]
+    mov dx, 0x8001
+    clc
+    rcl dx, 3
+    setc bl
+    seto bh
+    movzx ebx, bx
+    lea esi, [esi + ebx*8]
+    rcr dl, 1
+    setc bl
+    seto bh
+    movzx ebx, bx
+    add esi, ebx
+    mov cl, 32
+    rcl eax, cl
+    setc bl
+    movzx ebx, bl
+    add esi, ebx
+    movzx edx, dx
+    lea eax, [eax + edx]
+    add eax, esi
+    pop esi
+    pop ebx
+    ret
+
+    # jecxz taken and not taken.
+    .globl t_jecxz
+t_jecxz:
+    mov eax, 1
+    xor ecx, ecx
+    jecxz 1f
+    add eax, 100
+1:  inc ecx
+    jecxz 2f
+    add eax, 10
+2:  ret
+
+    # pushal/popal round trip with a register changed in between and the
+    # pushed ESP read back.
+    .globl t_pushal
+t_pushal:
+    push ebx
+    push esi
+    mov eax, 11
+    mov ebx, 22
+    mov esi, 33
+    pushad
+    mov eax, [esp + 12]
+    sub eax, esp
+    mov [esp + 16], eax
+    mov eax, 44
+    popad
+    lea eax, [eax + ebx*2]
+    add eax, esi
+    pop esi
+    pop ebx
+    ret
+
+    # rotates and shifts by a masked zero count keep the flags of the earlier
+    # cmp (CF set), which the following setcc must still read.
+    .globl t_rot0
+t_rot0:
+    push ebx
+    mov eax, 5
+    cmp eax, 7
+    mov cl, 32
+    rol eax, cl
+    setc bl
+    ror eax, cl
+    setc bh
+    movzx edx, bx
+    shl eax, cl
+    setc bl
+    shr eax, cl
+    setc bh
+    movzx ebx, bx
+    lea edx, [edx + ebx*4]
+    sar eax, cl
+    setz bl
+    movzx ebx, bl
+    lea eax, [eax + edx*8 + 1]
+    add eax, ebx
+    pop ebx
+    ret
+
     # inc on memory whose carry is overwritten by the next add: the loop of
     # a counting pass (histogram build), a bench of dead carry materialization.
     .globl t_incloop
