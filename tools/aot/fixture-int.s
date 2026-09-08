@@ -876,6 +876,67 @@ t_cmps0:
     pop esi
     ret
 
+    # 16-bit imul, two- and three-operand forms, with and without overflow,
+    # flags read through setcc (raw producer).
+    .globl t_imul16
+t_imul16:
+    push ebx
+    mov eax, 300
+    mov ecx, 300
+    imul ax, cx
+    seto bl
+    setc bh
+    movzx edx, bx
+    imul cx, cx, 3
+    seto bl
+    setz bh
+    movzx ebx, bx
+    lea edx, [edx + ebx*4]
+    imul bx, cx, -1000
+    seto cl
+    sets ch
+    movzx ecx, cx
+    lea eax, [eax + edx*8]
+    add eax, ecx
+    movzx ebx, bx
+    add eax, ebx
+    pop ebx
+    ret
+
+    # dec/inc preserve CF: jae/jb/adc after them read the carry of the earlier
+    # cmp, through the materialised carry.
+    .globl t_decjae
+t_decjae:
+    mov eax, 5
+    mov edx, 7
+    cmp eax, edx
+    dec edx
+    jae 1f
+    add eax, 100
+1:  cmp edx, eax
+    inc eax
+    jb 2f
+    add eax, 1000
+2:  cmp eax, edx
+    dec eax
+    adc eax, 0
+    inc edx
+    sbb edx, 0
+    lea eax, [eax + edx*4]
+    ret
+
+    # int3 padding behind a branch that is never taken: the translation must
+    # exist and the taken path stays the interpreter's.
+    .globl t_int3pad
+t_int3pad:
+    mov eax, ecx
+    test eax, eax
+    jz 3f
+    add eax, 17
+    ret
+3:  int3
+    int3
+
     # inc on memory whose carry is overwritten by the next add: the loop of
     # a counting pass (histogram build), a bench of dead carry materialization.
     .globl t_incloop

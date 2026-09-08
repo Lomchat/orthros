@@ -322,10 +322,12 @@ function flagExprs(kind: ProducerKind): { ZF: string; SF: string; CF: string | n
             return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "0", SO: `((int32_t)fr < 0)`, PF: parity("fr") };
         // inc/dec: fa = operand, fr = result, fb = the width's minimum value
         // (sign-extended), so the overflow test is width-exact.
+        // CF is untouched by inc/dec: fc holds the carry materialised from the
+        // previous producer when the instruction was emitted.
         case "inc":
-            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fr == fb))`, PF: parity("fr") };
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "fc", SO: `(((int32_t)fr < 0) != (fr == fb))`, PF: parity("fr") };
         case "dec":
-            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: null, SO: `(((int32_t)fr < 0) != (fa == fb))`, PF: parity("fr") };
+            return { ZF: `(fr == 0u)`, SF: `((int32_t)fr < 0)`, CF: "fc", SO: `(((int32_t)fr < 0) != (fa == fb))`, PF: parity("fr") };
         // sahf: fa = AH. OF is untouched, so signed conditions decline.
         case "sahf":
             return { ZF: `((fa >> 6) & 1u)`, SF: `((fa >> 7) & 1u)`, CF: `(fa & 1u)`, SO: null, PF: `((fa >> 2) & 1u)` };
@@ -961,6 +963,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (walked.size > SIZE_BUDGET) return reject("function exceeds size budget");
                 const { mnemonic, operand } = insn;
                 if (mnemonic === "ret" || mnemonic === "retn") break;
+                // int3 is the padding after a call that never returns: the
+                // interpreter takes it, nothing follows in this function.
+                if (mnemonic === "int3") break;
                 if (mnemonic === "call") {
                     const after = pc + insn.size;
                     leaders.add(after); resumes.add(after); work.push(after);
@@ -1016,7 +1021,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (pc > maxEnd) maxEnd = pc;
             const m = insn.mnemonic;
             if (m === "ret" || m === "retn" || m === "jmp" || m === "call" || COND_BRANCH.has(m)) break;
-            if (x87Kind(m, insn.operand) === "slow") break;
+            if (x87Kind(m, insn.operand) === "slow" || m === "int3") break;
             if (leaders.has(pc)) break;
         }
         blocks.set(start, { start, insns: body });
@@ -1072,7 +1077,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         const s: number[] = [];
         const m = term.mnemonic;
         const edge = (a: number): void => { if (indexOf.has(a)) s.push(a); };
-        if (m === "ret" || m === "retn" || m === "call" || m === "out" || x87Kind(m, term.operand) === "slow") { /* ends at an entry */ }
+        if (m === "ret" || m === "retn" || m === "call" || m === "out" || m === "int3" || x87Kind(m, term.operand) === "slow") { /* ends at an entry */ }
         else if (m === "jmp") { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); }
         else if (COND_BRANCH.has(m)) { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); edge(term.addr + term.size); }
         else edge(term.addr + term.size);
@@ -1143,7 +1148,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (mnemonic === "ret" || mnemonic === "retn" || mnemonic === "call") break;
             if (mnemonic === "jmp" || COND_BRANCH.has(mnemonic)) break;
             if (mnemonic === "nop" || mnemonic === "wait" || mnemonic === "fwait") continue;
-            if (mnemonic === "int3") return reject("int3 inside function");
+            if (mnemonic === "int3") break;
             const xk = x87Kind(mnemonic, operand);
             if (xk === "slow") break;
             if (mnemonic === "sahf") {
@@ -1553,11 +1558,12 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             }
             else if (mnemonic === "imul" && ops.length === 3) {
                 const src = parseOperand(ops[1]!), imm = parseOperand(ops[2]!);
-                if (!src || !imm || imm.kind !== "imm" || dst.kind !== "reg32") return reject(`imul ${operand}`);
+                if (!src || !imm || imm.kind !== "imm" || (dst.kind !== "reg32" && dst.kind !== "reg16")) return reject(`imul ${operand}`);
                 guardMem(lines, src, insn.addr, i);
                 const b = readExpr(src);
                 if (b === null) return reject("read: imul");
-                lines.push(`{ int64_t p = (int64_t)(int32_t)(${b}) * (int64_t)${imm.value! | 0}; fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                if (dst.kind === "reg16") lines.push(`{ int32_t p = (int32_t)(int16_t)(${b}) * (int32_t)(int16_t)${imm.value! | 0}; fr = (uint32_t)(int32_t)(int16_t)p; uint32_t o = (int32_t)fr != p; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                else lines.push(`{ int64_t p = (int64_t)(int32_t)(${b}) * (int64_t)${imm.value! | 0}; fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
                 kinds.set(i, "raw");
                 if (isCaptured) liveFlagSites++;
                 resultExpr = "fr";
@@ -1598,7 +1604,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const a = readExpr(dst), b = readExpr(src);
                 if (a === null || b === null) return reject(`read: ${mnemonic}`);
                 const w = operandWidth(dst);
-                if (mnemonic === "imul" && w !== 4) return reject(`imul on a sub-register`);
+                if (mnemonic === "imul" && w !== 4 && w !== 2) return reject(`imul on a byte register`);
                 const expr = BINARY[mnemonic]!(a, b);
                 if (mnemonic === "add" || mnemonic === "sub" || mnemonic === "and" || mnemonic === "or" || mnemonic === "xor") {
                     if (mnemonic === "add") {
@@ -1619,7 +1625,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     continue;
                 }
                 if (mnemonic === "imul") {
-                    lines.push(`{ int64_t p = (int64_t)(int32_t)(${a}) * (int64_t)(int32_t)(${b}); fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                    // 16-bit: the product of the sign-extended halves, result
+                    // sign-extended so ZF/SF/parity read the same expressions.
+                    if (w === 2) lines.push(`{ int32_t p = (int32_t)(int16_t)(${a}) * (int32_t)(int16_t)(${b}); fr = (uint32_t)(int32_t)(int16_t)p; uint32_t o = (int32_t)fr != p; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
+                    else lines.push(`{ int64_t p = (int64_t)(int32_t)(${a}) * (int64_t)(int32_t)(${b}); fr = (uint32_t)p; uint32_t o = p != (int64_t)(int32_t)fr; fa = o | (o << 11) | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7); fk = 8u; }`);
                     kinds.set(i, "raw");
                     if (isCaptured) liveFlagSites++;
                     resultExpr = "fr";
@@ -1793,9 +1802,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
             }
         }
-        else if (x87Kind(term.mnemonic, term.operand) === "slow") {
+        else if (x87Kind(term.mnemonic, term.operand) === "slow" || term.mnemonic === "int3") {
             // The interpreter runs this one instruction; the block after it is
-            // an entry, so the translation is re-entered right behind.
+            // an entry, so the translation is re-entered right behind (int3
+            // padding has no block after it: the interpreter owns what follows).
             lines.push(slowExit(term.addr, n - 1));
         }
         else {

@@ -127,7 +127,7 @@ for (const entry of entries) {
     const t = await translateFunctionC(decoderFor(entry), entry, recordedAll.size ? recordedAll : undefined, (addr) => decoderFor(addr) === decoderFor(entry));
     // Every rejection inside an extra image is printed: those few runtime bodies
     // are the reason the image is there.
-    if (!t) { skipped++; if (skipped <= 10 || inExtra(entry)) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
+    if (!t) { skipped++; if (skipped <= 10 || inExtra(entry) || forced.has(entry)) console.log(`0x${entry.toString(16)} skipped: ${lastRejection}`); continue; }
     functions.push(t);
 }
 
