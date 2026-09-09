@@ -205,6 +205,13 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         console.log(JSON.stringify({ step: "uimap", draws: draws.length, error: r?.steps?.[0]?.error?.message ?? r?.error, rows }).slice(0, 12000));
         continue;
     }
+    if (cmd === "page") {
+        // page EXPR: evaluate an expression on the page (main thread), e.g. JS heap size,
+        // rAF cadence, canvas state — the Worker's dbg commands cannot see the page.
+        const r = await bench.evalPage(argText, 30_000).catch((e) => ({ error: String(e) }));
+        console.log(JSON.stringify({ step: `page ${argText.slice(0, 40)}`, result: r }).slice(0, 1500));
+        continue;
+    }
     if (cmd === "dbg") {
         // dbg NAME [JSON args]: any Worker debug command, e.g. `dbg d3dxShaderAssembly` or `dbg thunkCensus false 20`.
         const [name, ...rest2] = argText.split(/\s+/);
