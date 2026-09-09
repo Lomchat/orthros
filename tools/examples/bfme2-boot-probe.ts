@@ -40,6 +40,22 @@ const sorted = [...stubs].sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
 console.log(`API-CENSUS n=${sorted.length} ${sorted.slice(0, 40).map((s) => `${s.api}:${s.count}@${s.firstCallerSym ?? s.firstCaller}`).join(" ")}`);
 const hr: any = await bench.dbg("report").catch(() => null);
 if (hr?.graphicsHresultFailures) console.log(`HRESULT-FAILURES ${JSON.stringify(hr.graphicsHresultFailures).slice(0, 1500)}`);
+if (present === 0) {
+    // No presentation: say where the guest went instead — dialogs it built,
+    // the last files it opened or failed to open, its last Win32 calls and
+    // where its threads sit.
+    const boxes: any = await bench.dbg("messageBoxes").catch(() => null);
+    console.log(`NO-PRESENT message boxes ${JSON.stringify(boxes).slice(0, 800)}`);
+    const files: any[] = await bench.dbg("recentFiles").catch(() => []);
+    console.log(`NO-PRESENT recent files ${JSON.stringify(files.slice(-24).map((f) => f.path))}`.slice(0, 2500));
+    const rep: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "report", args: [] }])`, 60_000).catch(() => null);
+    const r = rep?.steps?.[0]?.result ?? {};
+    console.log(`NO-PRESENT missing files ${JSON.stringify((r.missingFiles ?? []).slice(-12))}`.slice(0, 2000));
+    console.log(`NO-PRESENT last thunks ${JSON.stringify((r.lastThunks ?? r.recentThunks ?? []).slice(-16))}`.slice(0, 2500));
+    console.log(`NO-PRESENT threads ${JSON.stringify(r.threads ?? r.scheduler ?? null)}`.slice(0, 1500));
+    console.log(`NO-PRESENT cpu ${JSON.stringify(r.cpu ?? r.registers ?? null)}`.slice(0, 600));
+    console.log(`NO-PRESENT backtrace ${JSON.stringify(r.backtrace ?? null)}`.slice(0, 1500));
+}
 console.log("faults " + JSON.stringify(await bench.dbg("faults").catch(() => null)).slice(0, 400));
 console.log("worker errors " + JSON.stringify(bench.workerErrors()).slice(0, 600));
 bench.close();
