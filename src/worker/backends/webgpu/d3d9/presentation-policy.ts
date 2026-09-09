@@ -23,3 +23,21 @@ export function d3d9PresentSourceTextureUsage(usage: {
 }): GPUTextureUsageFlags {
     return usage.COPY_SRC | usage.RENDER_ATTACHMENT | usage.TEXTURE_BINDING;
 }
+
+/**
+ * Back-off of the CPU readback presentation path. A readback that never completes
+ * (map or bitmap timeout) must not be re-queued every frame: each attempt leaves a
+ * pending map request alive inside the GPU process beyond its timeout, and their
+ * accumulation slows every later queue submission. After three consecutive
+ * timeouts the path pauses 30 s, doubling per further failure up to five minutes;
+ * a completed readback clears the streak.
+ */
+export const CPU_PRESENT_BACKOFF_AFTER = 3;
+export const CPU_PRESENT_BACKOFF_BASE_MS = 30_000;
+export const CPU_PRESENT_BACKOFF_MAX_MS = 300_000;
+
+export function cpuPresentBackoffMs(consecutiveTimeouts: number): number {
+    if (consecutiveTimeouts < CPU_PRESENT_BACKOFF_AFTER) return 0;
+    const doublings = consecutiveTimeouts - CPU_PRESENT_BACKOFF_AFTER;
+    return Math.min(CPU_PRESENT_BACKOFF_MAX_MS, CPU_PRESENT_BACKOFF_BASE_MS * 2 ** Math.min(doublings, 8));
+}

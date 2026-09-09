@@ -10,8 +10,7 @@ import { RenderFrame, RenderCommandType, ProgrammableDrawState, FixedFunctionDra
 import { frameProfiler } from "../../../core/frame-profiler";
 import {
     d3d9PresentSourceTextureUsage,
-    shouldUseDirectD3D9Presentation,
-} from "./presentation-policy";
+    shouldUseDirectD3D9Presentation, cpuPresentBackoffMs } from "./presentation-policy";
 import { PROG_BIND } from "./shader";
 import { d3d9WasmArena, ArenaCommandType } from "./d3d9-wasm-arena";
 
@@ -163,6 +162,10 @@ export class D3D9BackendExecutor {
     private cpuPresentSequence = 0;
     private cpuPresentStartedAt = 0;
     private cpuPresentPhase = 0; // 0 idle, 1 GPU map, 2 ImageBitmap conversion
+    // Readback timeouts in a row and the instant before which no readback is encoded
+    // (see cpuPresentBackoffMs).
+    private cpuPresentConsecutiveTimeouts = 0;
+    private cpuPresentBackoffUntil = 0;
     private readonly defaultDirectPresentation = shouldUseDirectD3D9Presentation(
         undefined,
         typeof navigator === "undefined" ? "" : navigator.userAgent,
@@ -203,6 +206,7 @@ export class D3D9BackendExecutor {
         cpuPresentPublished: 0,
         cpuPresentFailed: 0,
         cpuPresentTimeouts: 0,
+        cpuPresentBackoff: 0,
         cpuPresentMapMs: 0,
         cpuPresentBitmapMs: 0,
         directPresentFrames: 0,
@@ -371,6 +375,7 @@ export class D3D9BackendExecutor {
         this.metrics.cpuPresentPublished = 0;
         this.metrics.cpuPresentFailed = 0;
         this.metrics.cpuPresentTimeouts = 0;
+        this.metrics.cpuPresentBackoff = 0;
         this.metrics.cpuPresentMapMs = 0;
         this.metrics.cpuPresentBitmapMs = 0;
         this.metrics.directPresentFrames = 0;
@@ -799,6 +804,10 @@ export class D3D9BackendExecutor {
             this.metrics.cpuPresentDropped++;
             return null;
         }
+        if (this.cpuPresentBackoffUntil > performance.now()) {
+            this.metrics.cpuPresentBackoff++;
+            return null;
+        }
         const device = this.backend.getDevice();
         if (!device) return null;
         const { width, height } = this.getCanvasSize();
@@ -832,10 +841,15 @@ export class D3D9BackendExecutor {
         paddedBytesPerRow: number;
         sequence: number;
     }): Promise<void> {
+        // A map that outlives its timeout still owns the buffer inside the GPU process:
+        // destroy it only once the map settles, never underneath it.
+        const mapPromise = readback.buffer.mapAsync(GPUMapMode.READ);
+        let mapSettled = false;
+        mapPromise.then(() => { mapSettled = true; }, () => { mapSettled = true; });
         try {
             const mapStartedAt = performance.now();
             await this.cpuPresentWithTimeout(
-                readback.buffer.mapAsync(GPUMapMode.READ),
+                mapPromise,
                 1_000,
                 "GPU readback map",
             );
@@ -895,11 +909,16 @@ export class D3D9BackendExecutor {
                 sequence: readback.sequence,
             }, { transfer: [bitmap] });
             this.metrics.cpuPresentPublished++;
+            this.cpuPresentConsecutiveTimeouts = 0;
         } catch (error) {
             this.metrics.cpuPresentFailed++;
             this.traceGpu(`cpu presentation failed: ${String(error)}`);
+            const backoff = cpuPresentBackoffMs(++this.cpuPresentConsecutiveTimeouts);
+            if (backoff > 0) this.cpuPresentBackoffUntil = performance.now() + backoff;
         } finally {
-            try { readback.buffer.destroy(); } catch { /* device may have been lost */ }
+            const destroy = () => { try { readback.buffer.destroy(); } catch { /* device may have been lost */ } };
+            if (mapSettled) destroy();
+            else void mapPromise.then(destroy, destroy);
             this.cpuPresentInFlight = false;
             this.cpuPresentStartedAt = 0;
             this.cpuPresentPhase = 0;
