@@ -22,7 +22,9 @@
  *   harness NAME [JSON…] any harness service command (report, stubs, textures…)
  *   texlist              current D3D9 textures, largest first (the UI's own sheets stand out)
  *   tex N                decode texture-store slot N to /tmp/nav-tex-N.png (readable as an image)
- *   uimap                capture one frame: every pretransformed draw as screen rect + atlas rect
+ *   uimap                capture one frame: every draw as screen rect + atlas rect (MVP-projected)
+ *   quick move|click X,Y [holdMs]  the gesture with a 300 ms settle only (timed menus)
+ *   page EXPR            evaluate an expression on the page (main thread)
  *   dbg NAME [JSON…]     any Worker debug command
  *   quit
  *
@@ -99,6 +101,20 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
     const argText = rest.join(" ");
     const t = performance.now();
     if (cmd === "quit") break;
+    if (cmd === "quick") {
+        // quick move|click X,Y [holdMs]: same gestures with a 300 ms settle and no sensor
+        // delta, for menus that close on a timer or on the next roll-out.
+        const [sub, xy, hold] = argText.split(/\s+/);
+        const [x, y] = (xy ?? "").split(",").map(Number);
+        if (sub === "click") {
+            await bench.evalPage(`(async () => { await __BS__.harness.move(${x}, ${y}); await new Promise(r => setTimeout(r, 150)); return __BS__.harness.clickHold(${x}, ${y}, ${Number(hold) || 120}); })()`, 30_000).catch(() => {});
+        } else {
+            await bench.evalPage(`__BS__.harness.move(${x}, ${y})`, 30_000).catch(() => {});
+        }
+        await Bun.sleep(300);
+        console.log(JSON.stringify({ step: `quick ${sub} ${x},${y}` }));
+        continue;
+    }
     if (cmd === "click" || cmd === "move") {
         const [x, y] = argText.split(",").map(Number);
         if (cmd === "click") {
