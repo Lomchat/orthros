@@ -1034,6 +1034,13 @@ export class D3D9BackendExecutor {
         return { width: canvas.width, height: canvas.height };
     }
 
+    /** The swap-chain backbuffer texture (created on demand): the source or target of a
+     *  StretchRect that names the implicit backbuffer. */
+    getOffscreen(): { texture: GPUTexture; view: GPUTextureView } | null {
+        this.ensureOffscreenTarget();
+        return this.offscreenTexture && this.offscreenView ? { texture: this.offscreenTexture, view: this.offscreenView } : null;
+    }
+
     private ensureOffscreenTarget(): void {
         const device = this.backend.getDevice()!;
         const format = this.backend.getFormat()!;

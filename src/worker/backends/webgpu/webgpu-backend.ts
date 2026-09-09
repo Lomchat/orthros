@@ -19,6 +19,8 @@ export class WebGPUBackend implements RenderBackend {
     private overlayPipeline: GPURenderPipeline | null = null;
     private overlayPipelineOpaque: GPURenderPipeline | null = null;
     private overlayPipelineFormat: GPUTextureFormat | null = null;
+    private copyPipelines = new Map<GPUTextureFormat, GPURenderPipeline>();
+    private copyVertexBuffer: GPUBuffer | null = null;
     private overlayTexture: GPUTexture | null = null;
     private overlayTextureView: GPUTextureView | null = null;
     /**
@@ -517,6 +519,68 @@ export class WebGPUBackend implements RenderBackend {
         pass.setPipeline(this.overlayPipeline!);
         pass.setBindGroup(0, bindGroup);
         pass.setVertexBuffer(0, this.rectVertexBuffer);
+        pass.draw(6, 1, 0, 0);
+        pass.end();
+    }
+
+    /** Opaque textured copy of a source view into a rectangle of a target view (no blending,
+     *  pipeline cached per target format): the GPU half of IDirect3DDevice9::StretchRect. */
+    copyTextureRect(
+        source: GPUTextureView,
+        target: GPUTextureView,
+        targetFormat: GPUTextureFormat,
+        encoder: GPUCommandEncoder,
+        dst: { x: number; y: number; width: number; height: number },
+        targetSize: { width: number; height: number },
+        uv: { u0: number; v0: number; u1: number; v1: number },
+        nearest: boolean,
+    ): void {
+        if (!this.device || !this.queue || dst.width <= 0 || dst.height <= 0 || targetSize.width <= 0 || targetSize.height <= 0) return;
+        let pipeline = this.copyPipelines.get(targetFormat);
+        if (!pipeline) {
+            const shader = this.device.createShaderModule({ code: `
+                struct VertexOutput { @builtin(position) position: vec4f, @location(0) uv: vec2f }
+                @vertex fn vs_main(@location(0) pos: vec2f, @location(1) uv: vec2f) -> VertexOutput {
+                    var out: VertexOutput; out.position = vec4f(pos, 0.0, 1.0); out.uv = uv; return out;
+                }
+                @group(0) @binding(0) var texSampler: sampler;
+                @group(0) @binding(1) var tex: texture_2d<f32>;
+                @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f { return textureSample(tex, texSampler, in.uv); }
+            ` });
+            pipeline = this.device.createRenderPipeline({
+                layout: "auto",
+                vertex: { module: shader, entryPoint: "vs_main", buffers: [{ arrayStride: 16, attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x2" },
+                    { shaderLocation: 1, offset: 8, format: "float32x2" },
+                ] }] },
+                fragment: { module: shader, entryPoint: "fs_main", targets: [{ format: targetFormat }] },
+                primitive: { topology: "triangle-list" },
+            });
+            this.copyPipelines.set(targetFormat, pipeline);
+        }
+        const x0 = (dst.x / targetSize.width) * 2 - 1;
+        const x1 = ((dst.x + dst.width) / targetSize.width) * 2 - 1;
+        const y1 = 1 - (dst.y / targetSize.height) * 2;
+        const y0 = 1 - ((dst.y + dst.height) / targetSize.height) * 2;
+        const vertices = new Float32Array([
+            x0, y0, uv.u0, uv.v1,  x1, y0, uv.u1, uv.v1,  x1, y1, uv.u1, uv.v0,
+            x0, y0, uv.u0, uv.v1,  x1, y1, uv.u1, uv.v0,  x0, y1, uv.u0, uv.v0,
+        ]);
+        if (!this.copyVertexBuffer) {
+            this.copyVertexBuffer = this.device.createBuffer({ size: vertices.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        }
+        this.queue.writeBuffer(this.copyVertexBuffer, 0, vertices);
+        const bindGroup = this.device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: nearest ? this.getNearestSampler() : this.getSampler() },
+                { binding: 1, resource: source },
+            ],
+        });
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: target, loadOp: "load", storeOp: "store" }] });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.setVertexBuffer(0, this.copyVertexBuffer);
         pass.draw(6, 1, 0, 0);
         pass.end();
     }

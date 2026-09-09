@@ -47,6 +47,7 @@ import { Mem } from "../../../core/memory/mem-accessor";
 import { sanitizeViewport } from "../ddraw/types";
 import { frameProfiler } from "../../../core/frame-profiler";
 import { framePacer } from "../../../core/frame-pacer";
+import { resolveStretchRects, type Rect as StretchRectArg } from "./stretch-rect-math";
 import {
     compileVertexShader, compilePixelShader, linkProgram, computeCubeMask,
     CompiledVs, CompiledPs, RawVertexElement, PROG_BIND,
@@ -406,6 +407,57 @@ export class D3D9Device {
         this.currentRtIndex = newTarget;
         this.currentRtFace = newFace;
         return 0;
+    }
+
+    /** IDirect3DDevice9::StretchRect between the implicit backbuffer (texPtr 0) and
+     *  render-target textures (2D or one cube face): a GPU copy when the rectangles have
+     *  the same size, a sampled draw otherwise (point or linear filter). The frame's pending
+     *  draws are flushed first so the copy sees what the guest drew before calling. */
+    stretchRect(
+        src: { texPtr: number; level: number; face: number; rect: StretchRectArg },
+        dst: { texPtr: number; level: number; face: number; rect: StretchRectArg },
+        linear: boolean,
+    ): boolean {
+        const dev = this.backend.getDevice();
+        if (!dev) return false;
+        const resolve = (s: { texPtr: number; face: number }) => {
+            if (s.texPtr === 0) {
+                const off = this.backendExecutor.getOffscreen();
+                return off ? { texture: off.texture, view: off.view, width: off.texture.width, height: off.texture.height, layer: 0, cube: false, copyDst: false } : null;
+            }
+            const idx = this.textures.getIndex(s.texPtr);
+            if (idx === null) return null;
+            const tex = this.textures.getGpuTexture(idx);
+            if (!tex || !this.textures.isRenderTarget(idx)) return null;
+            const cube = this.textures.isCubeMap(idx);
+            const layer = cube ? Math.max(0, s.face) : 0;
+            const view = cube ? this.getCubeFaceRenderView(idx, layer, 0) : this.textures.getView(idx);
+            if (!view) return null;
+            return { texture: tex, view, width: this.textures.getWidth(idx), height: this.textures.getHeight(idx), layer, cube, copyDst: true };
+        };
+        const a = resolve(src), b = resolve(dst);
+        if (!a || !b) return false;
+        const r = resolveStretchRects(a.width, a.height, src.rect, b.width, b.height, dst.rect);
+        if (!r) return true;
+        this.submitFrame(false);
+        const encoder = dev.createCommandEncoder();
+        if (r.sw === r.dw && r.sh === r.dh && b.copyDst && a.texture.format === b.texture.format && a.texture !== b.texture) {
+            encoder.copyTextureToTexture(
+                { texture: a.texture, origin: { x: r.sx, y: r.sy, z: a.layer } },
+                { texture: b.texture, origin: { x: r.dx, y: r.dy, z: b.layer } },
+                { width: r.sw, height: r.sh, depthOrArrayLayers: 1 },
+            );
+        } else {
+            // A cube's own view is dimension:"cube"; sampling one face needs a 2D view of it.
+            const srcView = a.cube
+                ? a.texture.createView({ dimension: "2d", baseArrayLayer: a.layer, arrayLayerCount: 1, baseMipLevel: 0, mipLevelCount: 1 })
+                : a.view;
+            this.backend.copyTextureRect(srcView, b.view, b.texture.format, encoder,
+                { x: r.dx, y: r.dy, width: r.dw, height: r.dh }, { width: b.width, height: b.height },
+                { u0: r.sx / a.width, v0: r.sy / a.height, u1: (r.sx + r.sw) / a.width, v1: (r.sy + r.sh) / a.height }, !linear);
+        }
+        dev.queue.submit([encoder.finish()]);
+        return true;
     }
 
     /** A 2D render view into one face (+ mip level) of a cube RT. WebGPU renders into a single

@@ -20,6 +20,7 @@ import {
     precreateCubeFaceSurfaces,
     clearTextureSubresourceSurfaces,
     type SurfaceMeta,
+    deviceImplicitBackBuffer,
 } from './resource-registry';
 import { getD3DTextureLayout } from '../../backends/webgpu/shared/texture-formats';
 import { getD3D9TextureLockRegion } from '../../backends/webgpu/d3d9/d3d9-resources';
@@ -639,6 +640,42 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         );
 
         return Mem.writeUint32(ppSurface, surfacePtr) ? D3D_OK : D3DERR_INVALIDCALL;
+    };
+
+    // StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter): a copy
+    // between render-target surfaces (backbuffer included), scaled when the rectangles
+    // differ. Depth-stencil surfaces and non-render-target surfaces are refused as on real D3D9.
+    exports['IDirect3DDevice9_StretchRect'] = (_ctx, _mem, args) => {
+        const devicePtr = args[0] >>> 0;
+        const srcPtr = args[1] >>> 0;
+        const srcRectPtr = args[2] >>> 0;
+        const dstPtr = args[3] >>> 0;
+        const dstRectPtr = args[4] >>> 0;
+        const filter = args[5] >>> 0;
+        const src = surfaceMeta.get(srcPtr);
+        const dst = surfaceMeta.get(dstPtr);
+        const device = resourceToDevice.get(srcPtr);
+        if (!src || !dst || !device || resourceToDevice.get(dstPtr) !== device) return D3DERR_INVALIDCALL;
+        const D3DUSAGE_DEPTHSTENCIL_FLAG = 0x2;
+        if ((src.usage & D3DUSAGE_DEPTHSTENCIL_FLAG) || (dst.usage & D3DUSAGE_DEPTHSTENCIL_FLAG)) return D3DERR_INVALIDCALL;
+        const backBuffer = deviceImplicitBackBuffer.get(devicePtr) ?? 0;
+        const describe = (ptr: number, m: SurfaceMeta) => ({
+            texPtr: ptr === backBuffer ? 0 : (m.texturePtr ?? -1),
+            level: m.level ?? 0,
+            face: m.face ?? -1,
+            rect: null as { left: number; top: number; right: number; bottom: number } | null,
+        });
+        const readRect = (p: number) => p ? {
+            left: Mem.readInt32(p) ?? 0, top: Mem.readInt32(p + 4) ?? 0,
+            right: Mem.readInt32(p + 8) ?? 0, bottom: Mem.readInt32(p + 12) ?? 0,
+        } : null;
+        const s = describe(srcPtr, src);
+        const d = describe(dstPtr, dst);
+        if (s.texPtr < 0 || d.texPtr < 0) return D3DERR_INVALIDCALL;
+        s.rect = readRect(srcRectPtr);
+        d.rect = readRect(dstRectPtr);
+        const D3DTEXF_LINEAR = 2;
+        return device.stretchRect(s, d, filter === D3DTEXF_LINEAR) ? D3D_OK : D3DERR_INVALIDCALL;
     };
 
     exports['IDirect3DDevice9_UpdateSurface'] = (_ctx, _mem, args) => {
