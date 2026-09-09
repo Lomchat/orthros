@@ -196,7 +196,23 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
             const fv: any[] = d.firstVertices ?? [];
             if (!fv.length) continue;
             const tex = (d.warnings ?? []).find((w: string) => w.startsWith("tex0 "))?.replace("tex0 store-index=", "t") ?? "t-";
-            const xs = fv.map((v) => v.x), ys = fv.map((v) => v.y);
+            // Non-pretransformed draws (the APT UI draws through a world/view/projection):
+            // project the first vertices with the captured MVP into viewport pixels so
+            // every row reads in the same screen space.
+            const m: number[] | undefined = Array.isArray(d.mvp) && d.mvp.length === 16 ? d.mvp : undefined;
+            const vp = d.viewport ?? {};
+            const vw = Number(vp.width) || 800, vh = Number(vp.height) || 600, vx = Number(vp.x) || 0, vy = Number(vp.y) || 0;
+            const proj = (v: any): [number, number] => {
+                if (d.isRHW || !m) return [v.x, v.y];
+                const x = v.x, y = v.y, z = v.z ?? 0;
+                const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+                const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+                const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+                const w = Math.abs(cw) > 1e-6 ? cw : 1;
+                return [vx + (cx / w * 0.5 + 0.5) * vw, vy + (0.5 - cy / w * 0.5) * vh];
+            };
+            const pts = fv.map(proj);
+            const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
             const us = fv.map((v) => v.u ?? 0), vs = fv.map((v) => v.v ?? 0);
             const rect = `${Math.round(Math.min(...xs))},${Math.round(Math.min(...ys))}-${Math.round(Math.max(...xs))},${Math.round(Math.max(...ys))}`;
             const uv = `${Math.min(...us).toFixed(3)},${Math.min(...vs).toFixed(3)}-${Math.max(...us).toFixed(3)},${Math.max(...vs).toFixed(3)}`;
