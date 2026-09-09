@@ -160,7 +160,8 @@
     "romDependencies": [
       {
         "url": "/apps/bfme2-109-multi.wgb",
-        "include": ["lotrbfme2.exe", "lotrbfme2.lcf", "game.dat", "eauninstall.exe", "filelist.txt", "window.big", "maps.big", "_wsmaps.big", "bases.big", "shaders.big"],
+        "include": ["**"],
+        "exclude": ["ini.big", "#*.big", "##*.big", "###*.big"],
         "mountPrefix": "BFME2"
       }
     ],

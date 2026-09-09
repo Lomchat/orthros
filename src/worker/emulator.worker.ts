@@ -277,7 +277,7 @@ let loadBundleChain: Promise<void> = Promise.resolve();
 let pendingLaunchProfile: {
   manifest?: Record<string, unknown>;
   registry?: unknown;
-  romLayers?: Array<{ url: string; include?: string[]; mountPrefix?: string }>;
+  romLayers?: Array<{ url: string; include?: string[]; exclude?: string[]; mountPrefix?: string }>;
 } | null = null;
 
 /** True once a PE has been booted in this worker session (loadApp / load_bundle without page reload). */
@@ -1749,10 +1749,17 @@ const loadBundleImpl = async (payload: BundlePayload) => {
       const layerBundle = await WgbLoader.fromUrl(layerSpec.url);
       const layerRoot = layerBundle.manifest.rom ?? "assets";
       const fullLayerIndex = buildRomIndex(layerBundle.archive, layerRoot);
-      const filteredLayerIndex = layerSpec.include?.length
+      // include narrows the layer to an allowlist; exclude then removes what
+      // must stay invisible (an expansion sees all of the base game except
+      // the INI archives whose definitions conflict with its own).
+      const includedLayerIndex = layerSpec.include?.length
         ? new Map([...fullLayerIndex].filter(([rel]) =>
             layerSpec.include!.some((pattern) => romLayerGlobMatches(rel, pattern))))
         : fullLayerIndex;
+      const filteredLayerIndex = layerSpec.exclude?.length
+        ? new Map([...includedLayerIndex].filter(([rel]) =>
+            !layerSpec.exclude!.some((pattern) => romLayerGlobMatches(rel, pattern))))
+        : includedLayerIndex;
       const mountPrefix = (layerSpec.mountPrefix ?? "")
         .replace(/^[a-z]:[\\/]+/i, "")
         .replace(/^[\\/]+|[\\/]+$/g, "")

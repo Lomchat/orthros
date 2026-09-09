@@ -5,12 +5,15 @@ describe('Roi-Sorcier base-game layer', () => {
         const catalog = await Bun.file(new URL('../../public/games-catalog.json', import.meta.url)).json();
         const rotwk = catalog.find((game: { id?: string }) => game.id === 'rotwk');
 
-        // The base maps are part of the contract: the expansion enumerates the
-        // base game's campaign and living-world maps through the homonymous
-        // maps.big fallback and quits without a frame when they are absent.
+        // A real installation shows the expansion the whole base directory: it
+        // reads the base game's maps, AI bases, shaders and more through the
+        // homonymous-archive fallback. Only the base INI archives stay out —
+        // their definitions conflict with the expansion's own (the patch
+        // archives #bt2dc… carry INI too).
         expect(rotwk?.romDependencies).toEqual([{
             url: '/apps/bfme2-109-multi.wgb',
-            include: ['lotrbfme2.exe', 'lotrbfme2.lcf', 'game.dat', 'eauninstall.exe', 'filelist.txt', 'window.big', 'maps.big', '_wsmaps.big', 'bases.big', 'shaders.big'],
+            include: ['**'],
+            exclude: ['ini.big', '#*.big', '##*.big', '###*.big'],
             mountPrefix: 'BFME2',
         }]);
     });
