@@ -1198,6 +1198,10 @@ export const dbg = {
             // Successor edges block discovery recorded but never materialised
             // (page tail, unmapped or non-contiguous next page); the graph drops them.
             danglingEdges: w.jit_dangling_edges?.() >>> 0,
+            // Modules declined because a block's Some(successor) is not a block in the
+            // module — the emitter would otherwise unwrap a missing dispatcher index and
+            // panic (WASM `unreachable`). The page stays interpreted; never miscompiles.
+            orphanSuccessorDeclines: w.jit_orphan_successor_declines?.() >>> 0,
             // A page written to loses its module; if this tracks `started` the
             // JIT is recompiling the same code rather than covering new code.
             pageInvalWithCode: w.jit_get_page_invalidations_with_code?.() >>> 0,
