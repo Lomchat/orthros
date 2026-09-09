@@ -78,13 +78,24 @@ describe('LeaveCriticalSection fast path', () => {
         expect(clearedOwner).toEqual([f.cs]);
     });
 
-    test('preserves the exact slow path when the semaphore has a live waiter', () => {
+    test('hands a contended section to its waiter without the slow path: section kept locked, semaphore signalled', () => {
         hasWaiters = true;
-        const f = leaveFixture(0x60000);
-        expect(f.handler(f.cpu, f.mem, f.mem32, f.view)).toBeNull();
-        expect(f.view.getUint32(f.cs + 8, true)).toBe(1);
-        expect(f.view.getUint32(f.cs + 12, true)).toBe(7);
-        expect(clearedOwner).toEqual([]);
+        const setEvents: number[] = [];
+        const savedSetEvent = scheduler.setEvent;
+        scheduler.setEvent = (h: number) => { setEvents.push(h); return true; };
+        try {
+            const f = leaveFixture(0x60000);
+            expect(f.handler(f.cpu, f.mem, f.mem32, f.view)).toBe(0);
+            // The wake transfers ownership (LockCount 0, RecursionCount 1, OwningThread = waiter);
+            // until then the section stays locked for everyone else.
+            expect(f.view.getUint32(f.cs + 4, true)).toBe(0);
+            expect(f.view.getUint32(f.cs + 8, true)).toBe(0);
+            expect(f.view.getUint32(f.cs + 12, true)).toBe(7);
+            expect(clearedOwner).toEqual([f.cs]);
+            expect(setEvents).toEqual([0x60000]);
+        } finally {
+            scheduler.setEvent = savedSetEvent;
+        }
     });
 
     test('normalizes a stale semaphore before releasing', () => {

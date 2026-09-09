@@ -1670,7 +1670,15 @@ const syncModule = (() => {
                 mem32[ptr32 + 4] = 0;
                 lockSem = 0;
             } else if (sched.hasWaitersForHandle(lockSem)) {
-                return null;
+                // A waiter takes the section: keep it locked and let the scheduler's wake
+                // transfer ownership (LockCount 0, RecursionCount 1, OwningThread = waiter),
+                // exactly as the ordinary implementation below does — but without the
+                // full thunk marshal, which a contended section pays hundreds of times per
+                // frame when worker threads hand work back and forth.
+                mem32[ptr32 + 2] = 0; // offset 8: RecursionCount = 0
+                if (ownerThread !== 0) clearCsOwner(ptr, ownerThread); else clearCsOwner(ptr);
+                sched.setEvent(lockSem);
+                return 0;
             }
         }
 
