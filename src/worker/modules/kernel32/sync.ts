@@ -497,12 +497,29 @@ const syncModule = (() => {
         const hasWaiters = lockSem !== 0 && sched.hasWaitersForHandle(lockSem);
 
         if (hasWaiters) {
-            // Active waiters — keep CS locked (don't write OwnerThread=0 or LockCount=-1).
-            // wakeThread does atomic ownership transfer: LockCount=0, RecursionCount=1, OwnerThread=waiter.
             csLeaveSlowStats.waiters++;
-            Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
-            clearCsOwner(lpCriticalSection, ownerThread);
-            sched.setEvent(lockSem);
+            // Modern-Windows release of a contended section: release it fully and let the
+            // scheduler wake the waiter at its next boundary (no convoy). The v86 WASM
+            // handler declines every contended release to this thunk, so this is where the
+            // policy has to act — the JS fast path is bypassed for kernel32 in the relayed
+            // game process. deferCriticalSectionWake is a pure state change (queue the
+            // csAddr); the wake's setEvent + ownership transfer still runs from the tick,
+            // never inline here. When it declines (policy off, or a starved waiter), fall
+            // back to the ordinary immediate hand-off.
+            if (typeof (sched as any).deferCriticalSectionWake === 'function' &&
+                (sched as any).deferCriticalSectionWake(lpCriticalSection >>> 0, lockSem >>> 0)) {
+                csLeaveSlowStats.deferred++;
+                Mem.writeUint32((lpCriticalSection + CS_OFFSET_LOCKCOUNT) >>> 0, 0xffffffff);
+                Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
+                Mem.writeUint32((lpCriticalSection + CS_OFFSET_OWNER) >>> 0, 0);
+                clearCsOwner(lpCriticalSection, ownerThread);
+            } else {
+                // Active waiters — keep CS locked (don't write OwnerThread=0 or LockCount=-1).
+                // wakeThread does atomic ownership transfer: LockCount=0, RecursionCount=1, OwnerThread=waiter.
+                Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
+                clearCsOwner(lpCriticalSection, ownerThread);
+                sched.setEvent(lockSem);
+            }
         } else {
             // No waiters — fully release
             csLeaveSlowStats.free++;

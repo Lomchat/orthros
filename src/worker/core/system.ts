@@ -398,6 +398,9 @@ export class System {
             gameEsp: (ov.gameEsp ?? rec?.gameEsp ?? 0) >>> 0,
             stackDump: ov.stackDump ?? rec?.stackDump ?? [],
             escapeAnalysis: ov.escapeAnalysis,
+            // A WASM trap ("unreachable") is how a release-build v86 Rust panic surfaces;
+            // its stack names the panicking Rust frame (function index + offset).
+            wasmStack: ov.wasmStack,
         };
 
         this.enrichFaultReport(fault);
