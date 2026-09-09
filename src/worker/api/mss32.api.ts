@@ -199,6 +199,10 @@ export const mss32Module: ModuleDescriptor = {
         makeFunc("_AIL_sample_playback_rate@4", 1),
         makeFunc("_AIL_sample_loop_count@4", 1),
         makeFunc("_AIL_sample_position@4", 1),
+        makeFunc("_AIL_sample_offset@4", 1),
+        makeFunc("_AIL_set_sample_offset@8", 2),
+        makeFunc("_AIL_3D_sample_offset@4", 1),
+        makeFunc("_AIL_set_3D_sample_offset@8", 2),
         // Error and timing functions
         makeFunc("_AIL_last_error@0", 0),
         makeFunc("_AIL_set_error@4", 1),

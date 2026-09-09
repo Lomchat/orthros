@@ -543,6 +543,22 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
         return sample ? sample.position : 0;
     };
 
+    // Byte offset of the play cursor (the MSS 5 name of the position API): the game
+    // reads it to sync animation with a sound; a stub returning 0 makes the caller
+    // wait forever for the sound to advance.
+    exports["_AIL_sample_offset@4"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        return sample ? sample.position : 0;
+    };
+    exports["_AIL_set_sample_offset@8"] = (ctxThunk, mem, args) => {
+        const sample = ctx.samples.get(args[0]);
+        if (!sample) return 0;
+        const offset = args[1] >>> 0;
+        const max = sample.pcmBytes ?? 0;
+        sample.position = max > 0 ? Math.min(offset, max) : offset;
+        return 0;
+    };
+
     // _AIL_set_sample_user_data@12
     exports["_AIL_set_sample_user_data@12"] = (ctxThunk, mem, args) => {
         const sample = args[0];
@@ -689,6 +705,12 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
 
     exports["_AIL_3D_sample_loop_count@4"] = (ctxThunk, mem, args) =>
         exports["_AIL_sample_loop_count@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_3D_sample_offset@4"] = (ctxThunk, mem, args) =>
+        exports["_AIL_sample_offset@4"]!(ctxThunk, mem, args);
+
+    exports["_AIL_set_3D_sample_offset@8"] = (ctxThunk, mem, args) =>
+        exports["_AIL_set_sample_offset@8"]!(ctxThunk, mem, args);
 
     // Reverb/occlusion strength — no DSP for it yet; accept and ignore.
     exports["_AIL_set_3D_sample_effects_level@8"] = () => 0;
