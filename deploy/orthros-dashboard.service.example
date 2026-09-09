@@ -1,0 +1,10 @@
+[Unit]
+Description=Orthros bring-up dashboard (boot probe of every catalogued title)
+After=orthros.service
+Requires=orthros.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/bfme/app/orthros
+ExecStart=/bin/bash /srv/bfme/app/orthros/tools/examples/titles-dashboard.sh
+Nice=10
