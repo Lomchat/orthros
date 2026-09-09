@@ -33,7 +33,7 @@ import { LARGE_IO_TRACE_ENABLED, traceLargeRead } from '../../core/diagnostics/l
 import { ioTraceRing } from '../../core/debug/io-trace-ring';
 import { hypercallDataManager } from '../../core/cpu/hypercall-data';
 import { noteBfmeVp6Open } from '../d3d9/bfme-vp6-bridge';
-import { recordMissingFile } from '../../core/diagnostics/missing-file-recorder';
+import { recordMissingFile, recordOpenedFile } from '../../core/diagnostics/missing-file-recorder';
 
 const readFileFirstLogged = new Set<number>();
 
@@ -688,6 +688,17 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         const lpPathName = args[0];
         const iReadWrite = args[1] >>> 0;
         return exports['OpenFile']!(ctx, mem, [lpPathName, 0, iReadWrite]);
+    };
+
+    // Successful opens feed the recent-files ring (dbg.recentFiles): the one
+    // navigation sensor left when a UI draws its own text (APT/Flash menus).
+    const createFileAInner = exports['CreateFileA']!;
+    exports['CreateFileA'] = (ctx, mem, args) => {
+        const h = createFileAInner(ctx, mem, args) as unknown as number;
+        if (typeof h === 'number' && h !== INVALID_HANDLE_VALUE && h !== 0 && args[0]) {
+            recordOpenedFile('CreateFileA', readStringA(mem, args[0]), ctx.eip ?? 0);
+        }
+        return h;
     };
 
     exports['CreateFileW'] = (ctx, mem, args) => {

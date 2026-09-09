@@ -28,6 +28,39 @@ export function getMissingFiles(): MissingFileRecord[] {
     return out;
 }
 
+// The last files the guest opened successfully: which archive, movie or
+// screen definition a UI transition loaded is the one navigation sensor
+// that works when the screen itself is not readable (APT/Flash menus draw
+// their own text). Same ring shape as the failures, kept apart so a burst
+// of failures cannot push the opens out.
+export interface OpenedFileRecord {
+    op: string;
+    path: string;
+    eip: number;
+    seq: number;
+}
+
+const openedRecords: Array<OpenedFileRecord | undefined> = new Array(CAPACITY);
+let openedCount = 0;
+let openedCursor = 0;
+let openedSeq = 0;
+
+export function recordOpenedFile(op: string, path: string, eip: number): void {
+    openedRecords[openedCursor] = { op, path: path.slice(0, 2048), eip: eip >>> 0, seq: ++openedSeq };
+    openedCursor = (openedCursor + 1) % CAPACITY;
+    if (openedCount < CAPACITY) openedCount++;
+}
+
+export function getRecentFiles(): OpenedFileRecord[] {
+    const out: OpenedFileRecord[] = [];
+    const start = openedCount === CAPACITY ? openedCursor : 0;
+    for (let i = 0; i < openedCount; i++) {
+        const record = openedRecords[(start + i) % CAPACITY];
+        if (record) out.push({ ...record });
+    }
+    return out;
+}
+
 export function resetMissingFiles(): void {
     records.fill(undefined);
     count = 0;

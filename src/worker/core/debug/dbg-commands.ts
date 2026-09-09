@@ -27,6 +27,7 @@ import { recentGuestText } from "../../modules/user32/guest-text-ring";
 import { framePacer } from "../frame-pacer";
 import { frameProfiler } from "../frame-profiler";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
+import { getRecentFiles } from "../diagnostics/missing-file-recorder";
 import { HotProfilePersistence } from '../../runtime/filesystem/hot-profile-persistence';
 
 import { MEM_THUNK_CODE_BASE } from '../cpu/emulator-config';
@@ -1051,6 +1052,11 @@ export const dbg = {
     /** D3DXAssembleShader diagnostics: sources seen, successes, failure messages. */
     d3dxShaderAssembly(): { samples: readonly string[]; ok: number; failures: readonly string[] } {
         return getD3dxAssembleShaderStatus();
+    },
+    /** The last 64 files the guest opened successfully (path, caller, sequence number):
+     *  which archive or screen definition a UI transition loaded. */
+    recentFiles(): Array<{ op: string; path: string; eip: string; seq: number }> {
+        return getRecentFiles().map((r) => ({ op: r.op, path: r.path, eip: "0x" + r.eip.toString(16), seq: r.seq }));
     },
     /** Delete the current game's stored profile and clear the live one, so the
      *  next boot starts from nothing (or from the server sidecar). */
