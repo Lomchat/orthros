@@ -1,21 +1,32 @@
-# nav-probe actions: Rise of the Witch-king from the main menu towards a skirmish, reading the
-# labels of every screen on the way (its bottom bar has five buttons and the SOLO submenu three
-# entries, unlike BFME II). Coordinates: 800×600, label hit rectangles from the APT textures.
+# nav-probe actions: Rise of the Witch-king from the main menu to a skirmish against the AI, then
+# two minutes of in-game sensors. Coordinates are the label hit rectangles read from the APT
+# menu textures (800×600). Its layout differs from BFME II: SOLO is the leftmost button, its
+# submenu starts with ESCARMOUCHE, and the setup screen opens under an "Ajouter un nouveau profil"
+# dialog (name field 274–395 × 270–299, ACCEPTER 255–375 × 386–416) that must be filled before
+# JOUER (616–749 × 554–594) does anything. The presentation path is forced direct: the bench's
+# CPU readback path degrades over minutes.
 dbg d3d9DirectPresent true
 wait 20
-uimap
-tex 74
-tex 70
-tex 72
-tex 62
-tex 59
-click 217,556
-wait 2
-uimap
-tex 76
-tex 78
-tex 80
-quick click 241,436
+click 85,556
+quick click 85,381
 wait 6
 uimap
-texlist
+quick click 334,284
+type Bench
+quick click 315,401
+wait 4
+uimap
+quick click 682,574
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+dbg faults
+dbg messageBoxes
+harness stubs
+dbg waitGraph
+quit

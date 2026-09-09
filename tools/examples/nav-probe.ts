@@ -273,7 +273,8 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
             const uv = `${Math.min(...us).toFixed(3)},${Math.min(...vs).toFixed(3)}-${Math.max(...us).toFixed(3)},${Math.max(...vs).toFixed(3)}`;
             rows.push(`${d.index}:${tex}${d.isRHW ? "" : "*"} ${rect} uv${uv} n${d.vertexCount}`);
         }
-        console.log(JSON.stringify({ step: "uimap", draws: draws.length, error: r?.steps?.[0]?.error?.message ?? r?.error, rows }).slice(0, 12000));
+        // Bound the line by rows, never by characters: a cut JSON line is unreadable downstream.
+        console.log(JSON.stringify({ step: "uimap", draws: draws.length, error: r?.steps?.[0]?.error?.message ?? r?.error, rows: rows.slice(0, 240), truncated: rows.length > 240 ? rows.length - 240 : 0 }));
         continue;
     }
     if (cmd === "page") {
