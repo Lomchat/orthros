@@ -758,6 +758,19 @@ export const dbg = {
         console.log(`[dbg] JIT_PAGE_TAIL_ENTRIES=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Config 51: advance the fastmem generation on every mapping change (commit,
+     *  decommit, protect, release), which deoptimises and recompiles every speculating
+     *  module although the read fast path never consults page state. OFF by default;
+     *  ON restores the historical behaviour for an A/B. Survives a v86 re-creation. */
+    fastmemGenerationAdvance(on = true): boolean {
+        const pm = (globalThis as any).preemption;
+        if (pm?.setJitFastmemGenerationAdvance) pm.setJitFastmemGenerationAdvance(!!on);
+        const w = wasm();
+        if (!pm?.setJitFastmemGenerationAdvance && w?.set_jit_config) w.set_jit_config(51, on ? 1 : 0);
+        const applied = w?.get_jit_config?.(51);
+        console.log(`[dbg] JIT_FASTMEM_GENERATION_ADVANCE=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
+        return applied === undefined ? !!on : applied !== 0;
+    },
     /** Reclaim only unreferenced modules on wasm-table exhaustion (config 43)
      *  instead of discarding every compiled module and its page hotness.
      *  Survives a v86 re-creation; clears the cache so the A/B starts even. */
@@ -1625,6 +1638,7 @@ export const dbg = {
         const s = {
             enabled: w.get_jit_config ? !!(w.get_jit_config(9) >>> 0) : false,
             generation: w.fastmem_get_generation() >>> 0,
+            generationAdvance: w.get_jit_config ? !!(w.get_jit_config(51) >>> 0) : null,
             speculatedLoadsCompiled: w.fastmem_get_speculated_loads_compiled ? (w.fastmem_get_speculated_loads_compiled() >>> 0) : 0,
             deoptRecompiles: w.fastmem_get_deopt_recompiles ? (w.fastmem_get_deopt_recompiles() >>> 0) : 0,
             thrashLatched: w.fastmem_get_thrash_latched ? !!(w.fastmem_get_thrash_latched() >>> 0) : false,

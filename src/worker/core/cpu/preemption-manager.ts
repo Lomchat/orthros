@@ -204,6 +204,8 @@ export class PreemptionManager {
     private jitPartialEviction = false;
     /** Config 50: entry points in the page tail compile like any other. */
     private jitPageTailEntries = true;
+    // Config 51: advance the fastmem generation on mapping changes (deopt storm); OFF by default.
+    private jitFastmemGenerationAdvance = false;
     // config idx 44: let the native cycle loop re-check the urgent-exit signal.
     // requestImmediateExit() zeroes the shared budget and the cached copy, but the
     // loop tests a snapshot taken at slice entry, so it keeps running — the zero
@@ -572,6 +574,13 @@ export class PreemptionManager {
     }
     getJitPageTailEntries(): boolean { return this.jitPageTailEntries; }
 
+    setJitFastmemGenerationAdvance(on: boolean): void {
+        this.jitFastmemGenerationAdvance = on;
+        const ex = this.wasmExports;
+        if (ex?.set_jit_config) ex.set_jit_config(51, on ? 1 : 0);
+    }
+    getJitFastmemGenerationAdvance(): boolean { return this.jitFastmemGenerationAdvance; }
+
     setJitHonorUrgentExit(on: boolean): void {
         this.jitHonorUrgentExit = on;
         const ex = this.wasmExports;
@@ -701,6 +710,7 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(42, this.jitRecompileDivisor);
             this.wasmExports.set_jit_config(43, this.jitPartialEviction ? 1 : 0);
             this.wasmExports.set_jit_config(50, this.jitPageTailEntries ? 1 : 0);
+            this.wasmExports.set_jit_config(51, this.jitFastmemGenerationAdvance ? 1 : 0);
             this.wasmExports.set_jit_config(44, this.jitHonorUrgentExit ? 1 : 0);
             this.wasmExports.set_jit_config(45, this.jitChainParkGuard ? 1 : 0);
             this.wasmExports.set_jit_config(46, this.jitFlagElisionAcrossFaults ? 1 : 0);

@@ -53,6 +53,36 @@ describe("PreemptionManager JIT defaults", () => {
         expect(configs.get(23)).toBe(0);
         expect(configs.get(24)).toBe(1);
         expect(configs.get(25)).toBe(6);
+        // Config 51 OFF: a mapping change (commit/decommit/protect/release) no longer
+        // deoptimises every speculating module, since the read fast path never
+        // consults page state and the recompilation is identical.
+        expect(manager.getJitFastmemGenerationAdvance()).toBe(false);
+        expect(configs.get(51)).toBe(0);
+    });
+
+    test("keeps the fastmem generation-advance switch across a fresh v86 init", () => {
+        const configs = new Map<number, number>();
+        const memory = { buffer: new ArrayBuffer(4096) };
+        const manager = new PreemptionManager();
+        manager.setJitFastmemGenerationAdvance(true);
+
+        manager.initialize({
+            wasm_memory: memory,
+            wm: {
+                exports: {
+                    memory,
+                    get_hypercall_page_ptr: () => 4,
+                    set_relaxed_fpu: () => {},
+                    set_jit_config: (index: number, value: number) => configs.set(index, value),
+                },
+            },
+        });
+
+        expect(manager.getJitFastmemGenerationAdvance()).toBe(true);
+        expect(configs.get(51)).toBe(1);
+
+        manager.setJitFastmemGenerationAdvance(false);
+        expect(configs.get(51)).toBe(0);
     });
 
     test("synchronizes an urgent zero budget with generated JIT guards", () => {
