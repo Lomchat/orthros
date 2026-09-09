@@ -33,4 +33,16 @@ for t in $TITLES; do
     DANG=$(grep -oE "\"danglingEdges\":[0-9]+" "$LOG" | head -1 | sed 's/"danglingEdges"://')
     printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$STAMP" "$t" "${FP:-aucun}" "${FAULTS:-?}" "${WERR:-?}" "${API:-?}" "${ASM:-?}" "${DANG:-?}" "${WORKER:-?}" "${BATCH:-?}" >> "$OUT"
 done
+# In-game probe: BFME II from the menu to a skirmish by the scripted path (label hit
+# rectangles read from the APT textures), then two minutes of sensors. The row carries the
+# per-15 s FPS series in the "premier rendu" column (load dip, then the in-game cadence).
+case " $TITLES " in *" bfme2 "*)
+    LOG=$DIR/$STAMP-bfme2-escarmouche.log
+    timeout 900 bun tools/examples/nav-probe.ts --game bfme2 --profile /srv/bfme/app/orthros/tmp/bfme2-b6c6795 --port 9551 --actions tools/examples/bfme2-skirmish.actions --boot-timeout 600 > "$LOG" 2>&1
+    FPS=$(grep -oE '"step":"wait 15","fps":-?[0-9.]+' "$LOG" | sed -E 's/.*"fps":(-?[0-9.]+)/\1/' | tr '\n' '/' | sed 's,/$,,')
+    FAULTS=$(grep -oE '"step":"dbg faults","result":\[[^]]*\]' "$LOG" | head -1 | sed -E 's/.*"result"://' | cut -c1-40)
+    MB=$(grep -oE '"step":"dbg messageBoxes","result":\[[^]]*\]' "$LOG" | head -1 | sed -E 's/.*"result"://' | cut -c1-40)
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$STAMP" "bfme2 escarmouche" "${FPS:-aucune}" "${FAULTS:-?}" "boîtes ${MB:-?}" "-" "-" "-" "${WORKER:-?}" "-" >> "$OUT"
+    ;;
+esac
 echo "$(date +%H:%M:%S) dashboard done ($TITLES)" > /tmp/dashboard.out

@@ -1,0 +1,22 @@
+# nav-probe actions: BFME II from the main menu to a Harlindon skirmish against the AI, then
+# two minutes of in-game sensors. Coordinates are the label hit rectangles read from the APT
+# menu textures (800×600): SOLO, then ESCARMOUCHE in its submenu, then JOUER on the setup screen.
+# The presentation path is forced direct: the bench's CPU readback path degrades over minutes.
+dbg d3d9DirectPresent true
+wait 20
+click 217,556
+quick click 217,381
+wait 6
+uimap
+quick click 704,573
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+wait 15
+dbg faults
+dbg messageBoxes
+quit
