@@ -95,7 +95,10 @@ async function stallDump(b: BenchSession, label: string): Promise<void> {
     out.faults = await b.dbg("faults").catch(() => null);
     out.messageBoxes = await b.dbg("messageBoxes").catch(() => null);
     out.asyncParkTop = await b.dbg("asyncParkTop", 6).catch(() => null);
-    console.log(JSON.stringify(out).slice(0, 12000));
+    out.lastCalls = await b.dbg("lastCalls", 60).catch(() => null);
+    out.recentText = ((await b.dbg("recentText").catch(() => null)) as any[] | null)?.slice(-16) ?? null;
+    // Bounded by fields above, never by characters: a cut JSON line is unreadable downstream.
+    console.log(JSON.stringify(out));
 }
 
 async function delta(b: BenchSession, before: Sensors, seconds: number, label: string): Promise<Sensors> {
