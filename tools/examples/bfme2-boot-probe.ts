@@ -55,6 +55,8 @@ if (present === 0) {
     console.log(`NO-PRESENT threads ${JSON.stringify(r.threads ?? r.scheduler ?? null)}`.slice(0, 1500));
     console.log(`NO-PRESENT cpu ${JSON.stringify(r.cpu ?? r.registers ?? null)}`.slice(0, 600));
     console.log(`NO-PRESENT backtrace ${JSON.stringify(r.backtrace ?? null)}`.slice(0, 1500));
+    const txt: any = await bench.dbg("recentText").catch(() => null);
+    console.log(`NO-PRESENT guest text ${JSON.stringify((txt ?? []).slice(-24))}`.slice(0, 2000));
 }
 console.log("faults " + JSON.stringify(await bench.dbg("faults").catch(() => null)).slice(0, 400));
 console.log("worker errors " + JSON.stringify(bench.workerErrors()).slice(0, 600));
