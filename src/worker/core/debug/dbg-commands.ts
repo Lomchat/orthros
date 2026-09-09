@@ -1053,6 +1053,10 @@ export const dbg = {
     d3dxShaderAssembly(): { samples: readonly string[]; ok: number; failures: readonly string[] } {
         return getD3dxAssembleShaderStatus();
     },
+    /** What the guest was launched with: the command line the program sees (GetCommandLine). */
+    launchInfo(): { executableArgs: string } {
+        return { executableArgs: System.getInstance().executableArgs };
+    },
     /** The last 64 files the guest opened successfully (path, caller, sequence number):
      *  which archive or screen definition a UI transition loaded. */
     recentFiles(): Array<{ op: string; path: string; eip: string; seq: number }> {
