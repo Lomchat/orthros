@@ -1670,13 +1670,16 @@ const syncModule = (() => {
                 mem32[ptr32 + 4] = 0;
                 lockSem = 0;
             } else if (sched.hasWaitersForHandle(lockSem)) {
-                // A contended section must hand off through the full thunk: the wake performs
-                // an atomic ownership transfer and a context switch, which is only safe from
-                // the thunk-completion machinery. Doing it inline from this fast path lets the
-                // leaving thread resume while the waiter also takes the section — the guest
-                // then branches into corrupt state and traps (measured: Witch-king froze at
-                // battle start). The marshal cost stays; correctness first.
-                return null;
+                // A waiter is parked. Modern Windows does not hand the section over: the
+                // leaver releases it and keeps running, the waiter re-acquires when it is
+                // next scheduled — the scheduler delivers that wake at its next boundary if
+                // the section is still free. When it declines (policy off, or a waiter
+                // skipped too many times), the ordinary thunk performs the immediate
+                // hand-off; doing that wake inline from this fast path is not safe.
+                if (typeof sched.deferCriticalSectionWake !== 'function' ||
+                    !sched.deferCriticalSectionWake(ptr, lockSem)) {
+                    return null;
+                }
             }
         }
 

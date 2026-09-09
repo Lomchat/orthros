@@ -80,6 +80,13 @@ const IDLE_PUMP_MAX_MS = 250;
 /** Sole-runnable Sleep(ms): credit+yield only for short pump sleeps; longer → blockThread. */
 export const SOLE_RUNNABLE_SLEEP_CREDIT_MAX_MS = 50;
 
+/** Release policy of a contended critical section. Modern Windows (Server 2003 SP1 and
+ *  later) does not hand the section to its waiter: the leaving thread releases it fully and
+ *  keeps running, and the waiter re-acquires when it is next scheduled. Off = the original
+ *  hand-off, which switches to the waiter at every contended release. Module-level so the
+ *  choice survives a scheduler reset (launcher → game relay). */
+export const csDeferredWakePolicy = { enabled: false };
+
 // Fairness budget for the winmm timer thread before its queued callbacks are
 // deferred (vs the general minQuantumMs=1ms). The software audio mixer runs as a
 // timeSetEvent callback on this thread; a 1ms defer chops the mixer's per-tick
@@ -407,6 +414,13 @@ export class Scheduler {
 
     // Critical section owner tracking
     private criticalSectionOwners = new Map<number, number>();
+    /** Sections released with a waiter parked on their LockSemaphore, wake not yet
+     *  delivered (csAddress → LockSemaphore). See deferCriticalSectionWake. */
+    private pendingCsWakes = new Map<number, number>();
+    /** Consecutive boundaries at which a section's deferred wake found it taken again. */
+    private csWakeStarve = new Map<number, number>();
+    public csWakeStats = { deferred: 0, delivered: 0, skipped: 0, noWaiter: 0, fairFallback: 0 };
+    private static readonly CS_WAKE_STARVE_LIMIT = 8;
     private csLockSemaphores = new Map<number, number>();
 
     // ── TEMP DIAGNOSTIC (crash-hunt): watch a guest doubly-linked-list head across
@@ -586,6 +600,8 @@ export class Scheduler {
         this.idleAnchorWallMs = 0;
         this.criticalSectionOwners.clear();
         this.csLockSemaphores.clear();
+        this.pendingCsWakes.clear();
+        this.csWakeStarve.clear();
         this.reapQueue.length = 0;
         this.reapHead = 0;
         this.lastReapCheckMs = 0;
@@ -826,6 +842,11 @@ export class Scheduler {
 
         // 3b. Dispatch one queued callback if safe
         this.callbackCoord.dispatchOne();
+
+        // 3c. Deferred critical-section wakes: the tick is where a released section's
+        // waiter gets the CPU (a block, yield or switch of the current thread delivers them
+        // earlier).
+        if (this.pendingCsWakes.size !== 0) this.drainPendingCsWakes();
 
         // 4. Deadlock detection
         this.detectDeadlock();
@@ -1447,6 +1468,14 @@ export class Scheduler {
 
     private performSwitch(cpu: V86Cpu, kind: ThunkBoundaryKind, cleanup: number): boolean {
         this.accumThreadCpu();
+        if (this.pendingCsWakes.size !== 0) {
+            // Every switch (quantum, block, thread exit) delivers the deferred wakes first so
+            // the waiter competes for this pick. The wake's own switch request is redundant
+            // here and would preempt the picked thread again at the next boundary.
+            const requested = this.switchRequested;
+            this.drainPendingCsWakes();
+            this.switchRequested = requested;
+        }
         let current = this.getCurrentThread();
         this.traceAsyncRestore("performSwitch", cpu, `boundary=${boundaryKindName(kind)},cleanup=${cleanup}`);
 
@@ -2691,6 +2720,55 @@ export class Scheduler {
     /** Check if any threads are currently waiting on the given handle. */
     hasWaitersForHandle(handle: number): boolean {
         return this.waitEngine.getHandleWaiters(handle).length > 0;
+    }
+
+    setCsDeferredWake(on: boolean): void {
+        csDeferredWakePolicy.enabled = on;
+        if (!on) this.drainPendingCsWakes();
+    }
+
+    isCsDeferredWake(): boolean { return csDeferredWakePolicy.enabled; }
+
+    /** LeaveCriticalSection with a waiter parked: the caller releases the section fully and
+     *  keeps running; the wake is delivered at the next tick, or before the caller blocks,
+     *  yields or is switched out — if the section is still free then. Returns false when the
+     *  caller must hand off through the ordinary path instead: policy off, or a waiter this
+     *  section has skipped too many boundaries in a row. */
+    deferCriticalSectionWake(csAddress: number, lockSem: number): boolean {
+        if (!csDeferredWakePolicy.enabled) return false;
+        const cs = csAddress >>> 0;
+        if ((this.csWakeStarve.get(cs) ?? 0) >= Scheduler.CS_WAKE_STARVE_LIMIT) {
+            this.csWakeStarve.delete(cs);
+            this.csWakeStats.fairFallback++;
+            return false;
+        }
+        this.pendingCsWakes.set(cs, lockSem >>> 0);
+        this.csWakeStats.deferred++;
+        return true;
+    }
+
+    /** Deliver the deferred wakes whose section is free: the LockSemaphore is signalled and
+     *  wakeThread transfers ownership to the waiter exactly as an immediate release does. A
+     *  section taken again meanwhile keeps its waiter parked (the next release re-arms the
+     *  wake); a skip streak past the limit makes that release hand off at once. */
+    drainPendingCsWakes(): void {
+        for (const [cs, sem] of this.pendingCsWakes) {
+            this.pendingCsWakes.delete(cs);
+            if (!this.hasWaitersForHandle(sem)) {
+                this.csWakeStats.noWaiter++;
+                this.csWakeStarve.delete(cs);
+                continue;
+            }
+            const owner = (Mem.readUint32((cs + 12) >>> 0) ?? 0) >>> 0;
+            if (owner !== 0) {
+                this.csWakeStats.skipped++;
+                this.csWakeStarve.set(cs, (this.csWakeStarve.get(cs) ?? 0) + 1);
+                continue;
+            }
+            this.csWakeStarve.delete(cs);
+            this.csWakeStats.delivered++;
+            this.setEvent(sem);
+        }
     }
 
     createSemaphore(initialCount: number, maxCount: number): number {
@@ -3982,6 +4060,9 @@ export class Scheduler {
     }
 
     hasOtherRunnableThreads(excludeId: number): boolean {
+        // A thread about to block or yield must not park the worker behind a wake it
+        // deferred itself.
+        if (this.pendingCsWakes.size !== 0) this.drainPendingCsWakes();
         for (const t of this.threads.values()) {
             if (t.id === excludeId) continue;
             if (t.state === ThreadState.READY || t.state === ThreadState.RUNNING) return true;

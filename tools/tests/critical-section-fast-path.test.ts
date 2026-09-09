@@ -11,20 +11,26 @@ const saved = {
     getCurrentThreadId: scheduler.getCurrentThreadId,
     hasWaitersForHandle: scheduler.hasWaitersForHandle,
     clearCriticalSectionOwner: scheduler.clearCriticalSectionOwner,
+    deferCriticalSectionWake: scheduler.deferCriticalSectionWake,
     isValidHandle: resources.isValidHandle,
 };
 
 let hasWaiters = false;
 let validHandle = true;
+let deferAccepted = false;
 let clearedOwner: number[] = [];
+let deferred: Array<[number, number]> = [];
 
 beforeEach(() => {
     hasWaiters = false;
     validHandle = true;
+    deferAccepted = false;
     clearedOwner = [];
+    deferred = [];
     scheduler.getCurrentThreadId = () => 7;
     scheduler.hasWaitersForHandle = () => hasWaiters;
     scheduler.clearCriticalSectionOwner = (ptr: number) => { clearedOwner.push(ptr); return true; };
+    scheduler.deferCriticalSectionWake = (cs: number, sem: number) => { deferred.push([cs, sem]); return deferAccepted; };
     resources.isValidHandle = () => validHandle;
 });
 
@@ -32,6 +38,7 @@ afterEach(() => {
     scheduler.getCurrentThreadId = saved.getCurrentThreadId;
     scheduler.hasWaitersForHandle = saved.hasWaitersForHandle;
     scheduler.clearCriticalSectionOwner = saved.clearCriticalSectionOwner;
+    scheduler.deferCriticalSectionWake = saved.deferCriticalSectionWake;
     resources.isValidHandle = saved.isValidHandle;
 });
 
@@ -78,13 +85,27 @@ describe('LeaveCriticalSection fast path', () => {
         expect(clearedOwner).toEqual([f.cs]);
     });
 
-    test('a contended section falls to the slow thunk (its wake+switch is unsafe inline)', () => {
+    test('a contended section falls to the slow thunk when the scheduler declines the deferred wake', () => {
         hasWaiters = true;
         const f = leaveFixture(0x60000);
         expect(f.handler(f.cpu, f.mem, f.mem32, f.view)).toBeNull();
+        expect(deferred).toEqual([[f.cs, 0x60000]]);
         expect(f.view.getUint32(f.cs + 8, true)).toBe(1);
         expect(f.view.getUint32(f.cs + 12, true)).toBe(7);
         expect(clearedOwner).toEqual([]);
+    });
+
+    test('a contended section is released fully when the scheduler defers the wake', () => {
+        hasWaiters = true;
+        deferAccepted = true;
+        const f = leaveFixture(0x60000);
+        expect(f.handler(f.cpu, f.mem, f.mem32, f.view)).toBe(0);
+        expect(deferred).toEqual([[f.cs, 0x60000]]);
+        expect(f.view.getUint32(f.cs + 4, true)).toBe(0xffffffff);
+        expect(f.view.getUint32(f.cs + 8, true)).toBe(0);
+        expect(f.view.getUint32(f.cs + 12, true)).toBe(0);
+        expect(f.view.getUint32(f.cs + 16, true)).toBe(0x60000);
+        expect(clearedOwner).toEqual([f.cs]);
     });
 
     test('normalizes a stale semaphore before releasing', () => {

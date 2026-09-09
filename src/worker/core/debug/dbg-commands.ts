@@ -779,6 +779,29 @@ export const dbg = {
         console.log(`[dbg] __d3d9DirectPresent=${String((globalThis as any).__d3d9DirectPresent)}`);
         return on;
     },
+    /** Contended critical-section release policy: true = release fully and wake the waiter
+     *  at the next scheduler boundary (modern Windows), false = hand off and switch at once
+     *  (original). Survives the launcher → game relay. */
+    csDeferredWake(on = true): boolean {
+        const sched = (System.getInstance() as any).scheduler;
+        sched?.setCsDeferredWake?.(!!on);
+        const applied = sched?.isCsDeferredWake?.() ?? null;
+        console.log(`[dbg] csDeferredWake=${String(applied)}`);
+        return applied;
+    },
+    /** Counters of the deferred critical-section wakes: deferred at release, delivered at a
+     *  boundary, skipped because the section was taken again, waiter gone, and releases that
+     *  fell back to the immediate hand-off after a skip streak. */
+    csWakeStats(reset = false): unknown {
+        const sched = (System.getInstance() as any).scheduler;
+        if (!sched) return null;
+        const out = { enabled: !!sched.isCsDeferredWake?.(), pending: sched.pendingCsWakes?.size ?? 0, ...(sched.csWakeStats ?? {}) };
+        if (reset && sched.csWakeStats) {
+            for (const k of Object.keys(sched.csWakeStats)) sched.csWakeStats[k] = 0;
+        }
+        console.log(`[dbg][csWakeStats] ${JSON.stringify(out)}`);
+        return out;
+    },
     /** Wait graph of the guest threads: each thread's state, wait reason and the
      *  kernel objects it waits on, with each object's kind/signal/owner — what a
      *  deadlock looks like, returned as data (dumpHandle only prints). */

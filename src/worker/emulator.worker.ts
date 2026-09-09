@@ -216,7 +216,13 @@ self.addEventListener('error', (event: ErrorEvent) => {
                 reason: `WASM trap: ${msg}`,
                 eip,
                 threadId: typeof curTid === 'number' ? curTid : null,
-                fault: { regs: regsObj, recentCalls: recent.map((r: any) => typeof r === 'string' ? r : JSON.stringify(r)), gameEsp: esp, stackDump, lastThunk: recent.length ? String(recent[recent.length - 1]) : '' },
+                fault: {
+                    regs: regsObj, recentCalls: recent.map((r: any) => typeof r === 'string' ? r : JSON.stringify(r)), gameEsp: esp, stackDump,
+                    lastThunk: recent.length ? String(recent[recent.length - 1]) : '',
+                    // The wasm frames (function index + offset) name the v86 routine that
+                    // trapped; the guest EIP alone does not.
+                    wasmStack: String((event as any)?.error?.stack ?? '').slice(0, 4000) || undefined,
+                },
             });
         } catch { /* reportGuestCrash also stops v86; fall through to the guard below */ }
         try { v86?.stop?.(); } catch { /* */ }

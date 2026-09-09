@@ -100,6 +100,9 @@ export interface CrashFaultPayload {
     /** Recent SEH catch dispatches (newest last): catch target, frame EBP, continuation
      *  ESP (+fallback flag), and the descent window each trampoline executed in. */
     sehDispatchTrace?: string[];
+    /** WASM trap only: the JS/wasm stack of the RuntimeError (function index + offset name
+     *  the v86 routine that trapped). */
+    wasmStack?: string;
 }
 
 export class System {
