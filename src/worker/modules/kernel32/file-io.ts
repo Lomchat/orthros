@@ -919,6 +919,17 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         }
     };
 
+    // Unicode opens feed the same ring (an engine that mounts its archives
+    // through CreateFileW would otherwise be invisible to it).
+    const createFileWInner = exports['CreateFileW']!;
+    exports['CreateFileW'] = (ctx, mem, args) => {
+        const h = createFileWInner(ctx, mem, args) as unknown as number;
+        if (typeof h === 'number' && h !== INVALID_HANDLE_VALUE && h !== 0 && args[0]) {
+            recordOpenedFile('CreateFileW', readStringW(mem, args[0]), ctx.eip ?? 0);
+        }
+        return h;
+    };
+
     exports['CopyFileA'] = async (ctx, mem, args) => {
         const lpExistingFileName = args[0];
         const lpNewFileName = args[1];
