@@ -1793,6 +1793,11 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         return 0; // NULL
     };
 
+    // BOOL HeapSetInformation(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T): the
+    // classes an application sets (termination on corruption, low-fragmentation
+    // heap) change nothing observable in this allocator; accepting them is the
+    // documented success path.
+    exports['HeapSetInformation'] = () => 1;
     exports['HeapSize'] = (ctx, mem, args) => {
         const hHeap = args[0];
         const dwFlags = args[1];
