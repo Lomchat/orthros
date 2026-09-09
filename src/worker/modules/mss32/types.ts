@@ -88,6 +88,8 @@ export interface MSSWaveOut {
 export interface MSSStream {
     id: number;
     handle: number;
+    /** AIL_set_stream_user_data slots (8 DWORDs the application owns). */
+    userData?: number[];
     fileData: Uint8Array | null;
     decodedData: Float32Array | null;
     filename: string | null;

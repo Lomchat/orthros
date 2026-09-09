@@ -221,6 +221,23 @@ export function createStreamExports(ctx: MSSContext): Record<string, ThunkImplem
         if (stream.isPaused) return SMP_PLAYING;
         return stream.isPlaying ? SMP_PLAYING : SMP_DONE;
     };
+    // _AIL_set_stream_user_data@12(stream, index, value) / _AIL_stream_user_data@8(stream, index):
+    // eight application-owned DWORD slots per stream (the engine keeps its own
+    // handle there and reads it back from the stream callback).
+    exports["_AIL_set_stream_user_data@12"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        const index = args[1] | 0;
+        if (!stream || index < 0 || index > 7) return 0;
+        if (!stream.userData) stream.userData = [];
+        stream.userData[index] = args[2] >>> 0;
+        return 0;
+    };
+    exports["_AIL_stream_user_data@8"] = (ctxThunk, mem, args) => {
+        const stream = ctx.streams.get(args[0]);
+        const index = args[1] | 0;
+        if (!stream || index < 0 || index > 7) return 0;
+        return stream.userData?.[index] ?? 0;
+    };
 
     // _AIL_stream_position@4
     exports["_AIL_stream_position@4"] = (ctxThunk, mem, args) => {

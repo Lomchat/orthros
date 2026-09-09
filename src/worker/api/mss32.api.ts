@@ -109,6 +109,8 @@ export const mss32Module: ModuleDescriptor = {
         makeFunc("_AIL_sample_buffer_ready@4", 1),
         makeFunc("_AIL_sample_buffer_info@20", 5),
         makeFunc("_AIL_set_sample_user_data@12", 3),
+        makeFunc("_AIL_set_stream_user_data@12", 3),
+        makeFunc("_AIL_stream_user_data@8", 2),
         // Digital driver config / service / HWND (often used by Bink/MSS)
         makeFunc("_AIL_digital_configuration@16", 4),
         makeFunc("_AIL_HWND@0", 0),
