@@ -19,4 +19,6 @@ wait 15
 wait 15
 dbg faults
 dbg messageBoxes
+harness stubs
+dbg waitGraph
 quit
