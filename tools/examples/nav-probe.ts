@@ -151,6 +151,14 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         continue;
     }
     if (cmd === "sample") { state = await delta(bench, state, 1, "sample"); continue; }
+    if (cmd === "dbg") {
+        // dbg NAME [JSON args]: any Worker debug command, e.g. `dbg d3dxShaderAssembly` or `dbg thunkCensus false 20`.
+        const [name, ...rest2] = argText.split(/\s+/);
+        const args = rest2.map((a) => { try { return JSON.parse(a); } catch { return a; } });
+        const r: any = await bench.dbg(name!, ...args).catch((e) => ({ error: String(e) }));
+        console.log(JSON.stringify({ step: `dbg ${name}`, result: r }).slice(0, 3000));
+        continue;
+    }
     if (cmd === "shot") {
         const png = await bench.evalPage<string>(`__BS__.harness.shot ? __BS__.harness.shot() : null`, 30_000).catch(() => null);
         if (png) await Bun.write(`/tmp/nav-${argText || "shot"}.png`, Buffer.from(String(png).replace(/^data:image\/png;base64,/, ""), "base64"));
