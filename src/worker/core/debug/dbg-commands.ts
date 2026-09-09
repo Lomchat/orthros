@@ -771,6 +771,14 @@ export const dbg = {
         console.log(`[dbg] JIT_FASTMEM_GENERATION_ADVANCE=${on ? 1 : 0} applied=${applied ?? "pending-wasm"}`);
         return applied === undefined ? !!on : applied !== 0;
     },
+    /** Force the D3D9 presentation path: true = direct swap-chain composition (the
+     *  player path), false = CPU readback + ImageBitmap (what headless Chromium picks),
+     *  null = the executor's own choice. Takes effect at the next present. */
+    d3d9DirectPresent(on: boolean | null = true): boolean | null {
+        (globalThis as any).__d3d9DirectPresent = on === null ? undefined : !!on;
+        console.log(`[dbg] __d3d9DirectPresent=${String((globalThis as any).__d3d9DirectPresent)}`);
+        return on;
+    },
     /** Reclaim only unreferenced modules on wasm-table exhaustion (config 43)
      *  instead of discarding every compiled module and its page hotness.
      *  Survives a v86 re-creation; clears the cache so the A/B starts even. */
