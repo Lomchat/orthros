@@ -2625,7 +2625,7 @@ export const dbg = {
     /** WASM-resident D3D9 arena stats: command/bump
      *  high-water marks, overflow/ffpFallback/mismatch counters, + (if dbg.d3dWasmPath(true) is
      *  on) the executor's verify-only drain counters aggregated across devices. */
-    d3dArenaStats(): void {
+    d3dArenaStats(): unknown {
         try {
             const stats = d3d9WasmArena.stats();
             const drain = {
@@ -2639,8 +2639,10 @@ export const dbg = {
                     drain[k] += s[k];
                 }
             }
-            console.log(`[dbg][d3dArenaStats][JSON] ${JSON.stringify({ ...stats, wasmPathEnabled: isWasmPathEnabled(), drain })}`);
-        } catch (e) { console.warn('[dbg] d3dArenaStats err', e); }
+            const out = { ...stats, wasmPathEnabled: isWasmPathEnabled(), drain };
+            console.log(`[dbg][d3dArenaStats][JSON] ${JSON.stringify(out)}`);
+            return out;
+        } catch (e) { console.warn('[dbg] d3dArenaStats err', e); return null; }
     },
     /** Real bypass: programmable-draw pipeline cache key is resolved via the WASM arena
      *  instead of the legacy template-string key. RenderFrame ordering/clears/FFP path are
