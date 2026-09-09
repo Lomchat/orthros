@@ -31,6 +31,7 @@ while (performance.now() - t0 < bootTimeoutSec * 1_000) {
 }
 console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s (present=${present})`);
 await Bun.sleep(settleSec * 1_000);
+console.log("boot jit " + JSON.stringify(await bench.dbg("jitCompileStats").catch(() => null)).slice(0, 600));
 const asm: any = await bench.dbg("d3dxShaderAssembly").catch((e) => ({ error: String(e) }));
 console.log(`D3DX-ASM ${JSON.stringify(asm)}`.slice(0, 3000));
 const census: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "stubs", args: [] }])`, 30_000).catch(() => null);
