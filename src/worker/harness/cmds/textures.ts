@@ -80,11 +80,14 @@ export function registerTextureCommands(svc: HarnessService): void {
         for (const [devicePtr, dev] of d3d9Devices) {
             const pixels = (dev as any).getTextureDebugPixels?.(index);
             if (!pixels) continue;
-            const opts = (args[1] ?? {}) as { save?: string };
+            // inline: return the PNG in the result too (a bench session has no
+            // log server to receive the dump; the caller writes the file).
+            const opts = (args[1] ?? {}) as { save?: string; inline?: boolean };
             const name = (opts.save ?? `d3d9_tex_${index}_${pixels.width}x${pixels.height}`).replace(/\.png$/i, "");
             const base64 = await encodePngBase64(pixels.rgba, pixels.width, pixels.height);
             (self as unknown as Worker).postMessage({ type: "debug_png_dump", name, base64 });
             return {
+                ...(opts.inline ? { base64 } : {}),
                 saved: `logs/debug/${name}.png`,
                 index,
                 handle: "0x" + (pixels.handle >>> 0).toString(16),

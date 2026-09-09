@@ -153,6 +153,32 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         continue;
     }
     if (cmd === "sample") { state = await delta(bench, state, 1, "sample"); continue; }
+    if (cmd === "harness") {
+        // harness NAME [JSON args]: any harness service command (textures, dumpTexture, report, stubs…).
+        const [name, ...rest2] = argText.split(/\s+/);
+        const args = rest2.map((a) => { try { return JSON.parse(a); } catch { return a; } });
+        const r: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: ${JSON.stringify(name)}, args: ${JSON.stringify(args)} }])`, 60_000).catch((e) => ({ error: String(e) }));
+        const res = r?.steps?.[0]?.result ?? r;
+        console.log(JSON.stringify({ step: `harness ${name}`, result: res }).slice(0, 3000));
+        continue;
+    }
+    if (cmd === "texlist") {
+        // Current D3D9 textures (index, size, format), largest first: the UI's own sheets stand out.
+        const r: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "textures", args: [] }])`, 60_000).catch(() => null);
+        const list: any[] = r?.steps?.[0]?.result?.d3d9 ?? [];
+        const rows = list.map((t) => ({ i: t.index, w: t.width, h: t.height, f: t.format })).sort((a, b) => b.w * b.h - a.w * a.h);
+        console.log(JSON.stringify({ step: "texlist", n: list.length, top: rows.slice(0, 40) }).slice(0, 3000));
+        continue;
+    }
+    if (cmd === "tex") {
+        // tex N: decode texture-store slot N to /tmp/nav-tex-N.png (readable as an image).
+        const index = Number(argText);
+        const r: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "dumpTexture", args: ["index:${index}", { inline: true }] }])`, 60_000).catch(() => null);
+        const res = r?.steps?.[0]?.result;
+        if (res?.base64) await Bun.write(`/tmp/nav-tex-${index}.png`, Buffer.from(res.base64, "base64"));
+        console.log(JSON.stringify({ step: `tex ${index}`, saved: !!res?.base64, w: res?.w, h: res?.h, format: res?.format, error: r?.steps?.[0]?.error?.message }).slice(0, 400));
+        continue;
+    }
     if (cmd === "dbg") {
         // dbg NAME [JSON args]: any Worker debug command, e.g. `dbg d3dxShaderAssembly` or `dbg thunkCensus false 20`.
         const [name, ...rest2] = argText.split(/\s+/);
