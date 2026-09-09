@@ -23,10 +23,24 @@ const settleSec = Number(arg("settle", "30"));
 const bench = await openBenchSession({ profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=probe` });
 const t0 = performance.now();
 let present = 0;
+// While no frame comes: every 60 s, what the guest is doing (top Win32 calls
+// in the window, files opened in the window), so a silent exit can be placed.
+let lastWindow = performance.now(), lastSeq = 0;
+await bench.dbg("thunkCensus", true).catch(() => null);
 while (performance.now() - t0 < bootTimeoutSec * 1_000) {
     const p: any = await bench.dbg("d3d9Perf").catch(() => null);
     present = p?.api?.present ?? 0;
     if (present > 0) break;
+    if (performance.now() - lastWindow >= 60_000) {
+        const census: any = await bench.dbg("thunkCensus", false, 400).catch(() => null);
+        const top = ((census?.top ?? []) as Array<[string, number]>).slice(0, 12).map(([n, c]) => `${n.replace(/^[a-z0-9_]+:/, "")}:${c}`);
+        const files: any[] = await bench.dbg("recentFiles").catch(() => []);
+        const opened = files.filter((f) => f.seq > lastSeq).map((f) => f.path.replace(/^.*\\/, ""));
+        lastSeq = files.length ? files[files.length - 1].seq : lastSeq;
+        console.log(`BOOT-WINDOW T+${Math.round((performance.now() - t0) / 1000)}s calls=${census?.total ?? "?"} top=${top.join(" ")} opened=${JSON.stringify(opened.slice(0, 16))}`.slice(0, 1200));
+        await bench.dbg("thunkCensus", true).catch(() => null);
+        lastWindow = performance.now();
+    }
     await Bun.sleep(2_000);
 }
 console.log(`first present after ${Math.round((performance.now() - t0) / 1000)}s (present=${present})`);
