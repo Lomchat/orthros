@@ -1845,7 +1845,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 const bi = indexOf.get(direct);
                 if (bi === undefined) return reject("jmp outside the function");
                 lines.push(`cnt += ${n}u;`);
-                if (direct <= term.addr) lines.push(`if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${direct >>> 0}u`)} }`);
+                if (direct <= term.addr) lines.push(`if (++loops > ${LOOP_LIMIT}u || ((loops & 63u) == 0u && *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u)) { ${exitAt(`${direct >>> 0}u`)} }`);
                 lines.push(`b = ${bi}; continue;`);
             }
         }
@@ -1864,7 +1864,10 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             } else {
                 const taken = indexOf.get(target);
                 if (taken === undefined) return reject("branch outside the function");
-                const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u || *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u) { ${exitAt(`${target >>> 0}u`)} } ` : "";
+                // The invocation budget (the counter v86 shares) is read every 64
+                // back-edges: a volatile load per iteration on every loop for a
+                // limit that is soft by design.
+                const backEdge = target <= term.addr ? `if (++loops > ${LOOP_LIMIT}u || ((loops & 63u) == 0u && *INSTRUCTION_COUNTER - cnt0 + cnt > ${INVOCATION_BUDGET}u)) { ${exitAt(`${target >>> 0}u`)} } ` : "";
                 lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
             }
         }
