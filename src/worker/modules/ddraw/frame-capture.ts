@@ -110,6 +110,7 @@ function readSrcVertex(view: DataView, memLen: number, base: number, L: FvfLayou
 
 // Module-level capture state
 let captureActive = false;
+let captureArmed = false;
 let captureBuffer: CapturedDrawCall[] = [];
 let clearBuffer: CapturedClear[] = [];
 let captureResolve: ((frame: CapturedFrame) => void) | null = null;
@@ -129,7 +130,10 @@ export function startCapture(): Promise<CapturedFrame> {
     captureBuffer = [];
     clearBuffer = [];
     captureBackend = "ddraw";
-    captureActive = true;
+    // Recording starts at the next frame boundary, so the capture holds one whole
+    // frame rather than the tail of the frame in progress when it was armed.
+    captureArmed = true;
+    captureActive = false;
     return new Promise<CapturedFrame>((resolve, reject) => {
         captureResolve = resolve;
         captureReject = reject;
@@ -163,6 +167,13 @@ export function recordRawDraw(partial: Partial<CapturedDrawCall> & { backend: st
 }
 
 export function onFrameEnd(): void {
+    if (captureArmed) {
+        captureArmed = false;
+        captureActive = true;
+        captureBuffer = [];
+        clearBuffer = [];
+        return;
+    }
     if (!captureActive) return;
     // A capture request can arrive while an async Present that belongs to the
     // preceding frame is already in flight. Ending on that Present produces an
