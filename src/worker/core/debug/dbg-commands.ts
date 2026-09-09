@@ -24,6 +24,7 @@
 
 import { System } from '../system';
 import { recentGuestText } from "../../modules/user32/guest-text-ring";
+import { csLeaveFastStats, csLeaveSlowStats } from "../../modules/kernel32/cs-stats";
 import { framePacer } from "../frame-pacer";
 import { frameProfiler } from "../frame-profiler";
 import { getGuestMessageBoxes } from "../diagnostics/message-box-recorder";
@@ -795,11 +796,36 @@ export const dbg = {
     csWakeStats(reset = false): unknown {
         const sched = (System.getInstance() as any).scheduler;
         if (!sched) return null;
-        const out = { enabled: !!sched.isCsDeferredWake?.(), pending: sched.pendingCsWakes?.size ?? 0, ...(sched.csWakeStats ?? {}) };
-        if (reset && sched.csWakeStats) {
-            for (const k of Object.keys(sched.csWakeStats)) sched.csWakeStats[k] = 0;
+        const out = {
+            enabled: !!sched.isCsDeferredWake?.(), pending: sched.pendingCsWakes?.size ?? 0, ...(sched.csWakeStats ?? {}),
+            fast: { ...csLeaveFastStats }, slow: { ...csLeaveSlowStats },
+        };
+        if (reset) {
+            if (sched.csWakeStats) for (const k of Object.keys(sched.csWakeStats)) sched.csWakeStats[k] = 0;
+            for (const k of Object.keys(csLeaveFastStats)) (csLeaveFastStats as any)[k] = 0;
+            for (const k of Object.keys(csLeaveSlowStats)) (csLeaveSlowStats as any)[k] = 0;
         }
         console.log(`[dbg][csWakeStats] ${JSON.stringify(out)}`);
+        return out;
+    },
+    /** Whether a thunk's JS fast path and WASM handler are bound in the current process
+     *  (stub id, address, fast-path table entry, hypercall handler id) — the wiring an
+     *  A/B on a fast-path branch must confirm before reading its counters. */
+    fastPathState(dll = 'kernel32', fn = 'LeaveCriticalSection'): unknown {
+        const d = System.getInstance().process?.dispatcher as any;
+        if (!d) return null;
+        const hc = (globalThis as any).hypercall;
+        const hpView = hc?.view as DataView | null;
+        const hpBase = (hc?.hpBase as number) ?? 0;
+        const stubs: any[] = d.findStubsByName?.(dll, fn) ?? [];
+        const out = stubs.map((s) => ({
+            id: s.functionId,
+            address: '0x' + ((s.address ?? 0) >>> 0).toString(16),
+            fastPath: !!d.fastPathTable?.[s.functionId],
+            trivial: !!d.trivialFastPathTable?.[s.functionId],
+            wasmHandler: hpView && hpBase ? hpView.getUint8(hpBase + 0x100 + s.functionId) : null,
+        }));
+        console.log(`[dbg][fastPathState] ${dll}:${fn} ${JSON.stringify(out)}`);
         return out;
     },
     /** Wait graph of the guest threads: each thread's state, wait reason and the

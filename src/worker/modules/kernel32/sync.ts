@@ -20,6 +20,7 @@ import {
     tryAcquireSrwShared,
 } from './srw-lock';
 import { namedObjects } from './named-objects';
+import { csLeaveFastStats, csLeaveSlowStats } from './cs-stats';
 
 const syncModule = (() => {
     const exports: Record<string, ThunkImplementation> = {};
@@ -458,6 +459,7 @@ const syncModule = (() => {
         const lpCriticalSection = args[0];
         const sched = getScheduler();
         const currentThreadId = sched.getCurrentThreadId();
+        csLeaveSlowStats.calls++;
 
         if (lpCriticalSection === 0 || lpCriticalSection + CS_SIZE > mem.length) {
             Logger.warn(LogCategory.KERNEL32, `LeaveCriticalSection: invalid lpCriticalSection=0x${lpCriticalSection.toString(16)}`);
@@ -481,6 +483,7 @@ const syncModule = (() => {
 
         if (recursionCount > 1) {
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, (recursionCount - 1) >>> 0);
+            csLeaveSlowStats.recursive++;
             return { value: 0, stackCleanup: 4 };
         }
 
@@ -496,11 +499,13 @@ const syncModule = (() => {
         if (hasWaiters) {
             // Active waiters — keep CS locked (don't write OwnerThread=0 or LockCount=-1).
             // wakeThread does atomic ownership transfer: LockCount=0, RecursionCount=1, OwnerThread=waiter.
+            csLeaveSlowStats.waiters++;
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
             clearCsOwner(lpCriticalSection, ownerThread);
             sched.setEvent(lockSem);
         } else {
             // No waiters — fully release
+            csLeaveSlowStats.free++;
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_LOCKCOUNT) >>> 0, 0xffffffff);
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_OWNER) >>> 0, 0);
@@ -1638,6 +1643,7 @@ const syncModule = (() => {
         const esp = cpu.reg32[4];
         const ptr = dataView.getUint32(esp + 4, true);
 
+        csLeaveFastStats.calls++;
         if (ptr === 0 || ptr + 24 > mem8.length || (ptr & 3) !== 0) return 0;
         const ptr32 = ptr >>> 2;
 
@@ -1650,11 +1656,13 @@ const syncModule = (() => {
 
         // Non-owner release requires strict slow-path validation/fatal handling.
         if (ownerThread !== 0 && currentThreadId !== 0 && ownerThread !== currentThreadId) {
+            csLeaveFastStats.nonOwner++;
             return null;
         }
 
         if (rec > 1) {
             mem32[ptr32 + 2] = rec - 1;
+            csLeaveFastStats.recursive++;
             return 0;
         }
 
@@ -1669,6 +1677,7 @@ const syncModule = (() => {
             if (!isValidSyncHandle(lockSem)) {
                 mem32[ptr32 + 4] = 0;
                 lockSem = 0;
+                csLeaveFastStats.staleSem++;
             } else if (sched.hasWaitersForHandle(lockSem)) {
                 // A waiter is parked. Modern Windows does not hand the section over: the
                 // leaver releases it and keeps running, the waiter re-acquires when it is
@@ -1676,15 +1685,19 @@ const syncModule = (() => {
                 // the section is still free. When it declines (policy off, or a waiter
                 // skipped too many times), the ordinary thunk performs the immediate
                 // hand-off; doing that wake inline from this fast path is not safe.
+                csLeaveFastStats.waiters++;
                 if (typeof sched.deferCriticalSectionWake !== 'function' ||
                     !sched.deferCriticalSectionWake(ptr, lockSem)) {
+                    csLeaveFastStats.declined++;
                     return null;
                 }
+                csLeaveFastStats.deferred++;
             }
         }
 
         // Release fully (scheduler confirms no current waiters; the semaphore
         // handle itself may legitimately persist after earlier contention).
+        csLeaveFastStats.released++;
         mem32[ptr32 + 1] = 0xffffffff; // offset 4: LockCount = -1
         mem32[ptr32 + 2] = 0;          // offset 8: RecursionCount = 0
         mem32[ptr32 + 3] = 0;          // offset 12: OwningThread = 0
