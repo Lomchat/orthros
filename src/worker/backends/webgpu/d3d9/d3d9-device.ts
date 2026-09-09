@@ -2347,11 +2347,19 @@ export class D3D9Device {
      *  no FFP render-state arrays, so it records a backend-tagged minimal draw
      *  (primitive/counts/textured/programmable) into the one schema. Placed before
      *  the trilist guard so non-trilist draws are still counted. Gated → zero cost. */
-    private captureDrawIfArmed(primitiveType: number, primitiveCount: number, startVertex: number = 0): void {
+    private captureDrawIfArmed(
+        primitiveType: number,
+        primitiveCount: number,
+        startVertex: number = 0,
+        up: { ptr: number; stride: number } | null = null,
+    ): void {
         if (!frameCapture.isCapturing()) return;
         const stage0 = this.stateTracker.getTexture(0);
         const fvf = this.stateTracker.getFVF() >>> 0;
-        const stream = this.stateTracker.getStreamSource();
+        // A UP draw carries its own vertices; the bound stream is unrelated to it.
+        const stream = up
+            ? { index: -1, offset: 0, stride: up.stride }
+            : this.stateTracker.getStreamSource();
         const captureMaterial = this.parseMaterial();
         const captureLights = [...this.lightEnables.entries()]
             .filter(([, enabled]) => enabled !== 0)
@@ -2370,7 +2378,9 @@ export class D3D9Device {
             u?: number; v?: number;
         }> = [];
         if (stream) {
-            const bytes = this.vertexBuffers.getData(stream.index);
+            const bytes = up
+                ? this.memory.subarray(up.ptr, up.ptr + Math.min(4, primitiveCount * 3) * up.stride)
+                : this.vertexBuffers.getData(stream.index);
             if (bytes && stream.stride >= 12) {
                 const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
                 for (let i = 0; i < Math.min(4, primitiveCount * 3); i++) {
@@ -2447,7 +2457,9 @@ export class D3D9Device {
             viewport: { ...this.viewport },
             warnings: [
                 ...(stage0 != null ? [`tex0 store-index=${stage0}`] : []),
-                ...(stream ? [`vb store-index=${stream.index} offset=${stream.offset}`] : ["no stream source"]),
+                ...(up
+                    ? [`up ptr=0x${(up.ptr >>> 0).toString(16)} stride=${up.stride}`]
+                    : stream ? [`vb store-index=${stream.index} offset=${stream.offset}`] : ["no stream source"]),
                 `colorWrite=0x${(this.getRenderState(168) >>> 0).toString(16)}`,
                 `stencil=${this.getRenderState(D3DRS_STENCILENABLE)} func=${this.getRenderState(D3DRS_STENCILFUNC)} ref=${this.getRenderState(D3DRS_STENCILREF)} fail/zfail/pass=${this.getRenderState(D3DRS_STENCILFAIL)}/${this.getRenderState(D3DRS_STENCILZFAIL)}/${this.getRenderState(D3DRS_STENCILPASS)} mask=0x${(this.getRenderState(D3DRS_STENCILMASK) >>> 0).toString(16)} write=0x${(this.getRenderState(D3DRS_STENCILWRITEMASK) >>> 0).toString(16)} two=${this.getRenderState(D3DRS_TWOSIDEDSTENCILMODE)}`,
                 `lighting colorVertex=${this.getRenderState(D3DRS_COLORVERTEX)} sources=${this.getRenderState(D3DRS_DIFFUSEMATERIALSOURCE)}/${this.getRenderState(D3DRS_AMBIENTMATERIALSOURCE)}/${this.getRenderState(D3DRS_SPECULARMATERIALSOURCE)}/${this.getRenderState(D3DRS_EMISSIVEMATERIALSOURCE)} ambient=0x${(this.getRenderState(D3DRS_AMBIENT) >>> 0).toString(16)} lights=${[...this.lightEnables.values()].filter(Boolean).length}`,
@@ -2749,7 +2761,7 @@ export class D3D9Device {
         d3d9PerfInc("drawPrimitiveUP");
         if (this.traceDrawRenderState()) return 0;
         if (primitiveCount <= 0) return 0;
-        this.captureDrawIfArmed(primitiveType, primitiveCount); // harness capture (UP renders non-trilist too)
+        this.captureDrawIfArmed(primitiveType, primitiveCount, 0, { ptr: vertexDataPtr, stride }); // harness capture (UP renders non-trilist too)
 
         const fvf = this.stateTracker.getFVF();
         const device = this.backend.getDevice()!;

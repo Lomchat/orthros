@@ -19,6 +19,11 @@
  *   files                print every recent file (not only the delta)
  *   sample               print the sensors without acting
  *   shot NAME            page screenshot (canvas may be black on SwiftShader)
+ *   harness NAME [JSON…] any harness service command (report, stubs, textures…)
+ *   texlist              current D3D9 textures, largest first (the UI's own sheets stand out)
+ *   tex N                decode texture-store slot N to /tmp/nav-tex-N.png (readable as an image)
+ *   uimap                capture one frame: every pretransformed draw as screen rect + atlas rect
+ *   dbg NAME [JSON…]     any Worker debug command
  *   quit
  *
  *   bun tools/examples/nav-probe.ts --game bfme2 --profile <dir> --port 9551 --actions /tmp/nav.txt
@@ -177,6 +182,27 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         const res = r?.steps?.[0]?.result;
         if (res?.base64) await Bun.write(`/tmp/nav-tex-${index}.png`, Buffer.from(res.base64, "base64"));
         console.log(JSON.stringify({ step: `tex ${index}`, saved: !!res?.base64, w: res?.w, h: res?.h, format: res?.format, error: r?.steps?.[0]?.error?.message }).slice(0, 400));
+        continue;
+    }
+    if (cmd === "uimap") {
+        // uimap: capture one frame and print every pretransformed (XYZRHW) draw as a screen
+        // rectangle + texture rectangle: the UI's quads (frames, icons, glyphs) with their
+        // atlas cell, in draw order. Reads like a layout of the current screen.
+        const r: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "captureFrame", args: [{ timeoutMs: 8000 }] }])`, 60_000).catch((e) => ({ error: String(e) }));
+        const frame = r?.steps?.[0]?.result;
+        const draws: any[] = frame?.drawCalls ?? [];
+        const rows: string[] = [];
+        for (const d of draws) {
+            const fv: any[] = d.firstVertices ?? [];
+            if (!fv.length) continue;
+            const tex = (d.warnings ?? []).find((w: string) => w.startsWith("tex0 "))?.replace("tex0 store-index=", "t") ?? "t-";
+            const xs = fv.map((v) => v.x), ys = fv.map((v) => v.y);
+            const us = fv.map((v) => v.u ?? 0), vs = fv.map((v) => v.v ?? 0);
+            const rect = `${Math.round(Math.min(...xs))},${Math.round(Math.min(...ys))}-${Math.round(Math.max(...xs))},${Math.round(Math.max(...ys))}`;
+            const uv = `${Math.min(...us).toFixed(3)},${Math.min(...vs).toFixed(3)}-${Math.max(...us).toFixed(3)},${Math.max(...vs).toFixed(3)}`;
+            rows.push(`${d.index}:${tex}${d.isRHW ? "" : "*"} ${rect} uv${uv} n${d.vertexCount}`);
+        }
+        console.log(JSON.stringify({ step: "uimap", draws: draws.length, error: r?.steps?.[0]?.error?.message ?? r?.error, rows }).slice(0, 12000));
         continue;
     }
     if (cmd === "dbg") {
