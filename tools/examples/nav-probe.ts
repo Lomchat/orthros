@@ -62,6 +62,41 @@ async function sensors(b: BenchSession): Promise<Sensors> {
     return { present, draws, dpf: present ? Math.round(draws / present) : 0, sounds, files: files.length, seq };
 }
 
+// Stall dump: when two consecutive windows present nothing after the game had been
+// presenting, capture the guest's state once (where it loops, which pages run, which
+// threads consume CPU, the thunk ring) so a hang seen at minute 13 of a soak is diagnosed
+// by the log rather than lost when the session closes.
+let stallDumped = false;
+let stalledWindows = 0;
+let everPresented = false;
+async function stallDump(b: BenchSession, label: string): Promise<void> {
+    stallDumped = true;
+    const out: Record<string, unknown> = { step: `STALL after ${label}` };
+    const rep: any = await b.evalPage(`__BS__.harness.__runSteps([{ cmd: "report", args: [] }])`, 60_000).catch((e) => ({ error: String(e) }));
+    const r = rep?.steps?.[0]?.result ?? rep;
+    out.cpu = r?.cpu;
+    out.backtrace = (r?.backtrace ?? []).slice(0, 8).map((f: any) => f.sym ?? f.ret);
+    out.threads = r?.threads;
+    out.lastThunks = (r?.lastThunks ?? []).slice(-12);
+    out.stubs = r?.stubs;
+    await b.dbg("hotPages", true).catch(() => null);
+    await b.dbg("schedulerPerf", true).catch(() => null);
+    const eips: string[] = [];
+    for (let i = 0; i < 5; i++) {
+        await Bun.sleep(1_000);
+        const s: any = await b.evalPage(`__BS__.harness.__runSteps([{ cmd: "report", args: [] }])`, 60_000).catch(() => null);
+        eips.push(s?.steps?.[0]?.result?.cpu?.eipSym ?? String(s?.steps?.[0]?.result?.cpu?.eip));
+    }
+    out.eipSamples = eips;
+    out.hotPages = await b.dbg("hotPages", false, 12).catch((e) => String(e));
+    out.schedulerPerf5s = await b.dbg("schedulerPerf", true).catch((e) => String(e));
+    out.jit = await b.dbg("jitCompileStats").catch(() => null);
+    out.faults = await b.dbg("faults").catch(() => null);
+    out.messageBoxes = await b.dbg("messageBoxes").catch(() => null);
+    out.asyncParkTop = await b.dbg("asyncParkTop", 6).catch(() => null);
+    console.log(JSON.stringify(out).slice(0, 12000));
+}
+
 async function delta(b: BenchSession, before: Sensors, seconds: number, label: string): Promise<Sensors> {
     const after = await sensors(b);
     const fps = (after.present - before.present) / Math.max(0.001, seconds);
@@ -69,6 +104,9 @@ async function delta(b: BenchSession, before: Sensors, seconds: number, label: s
     const files: any[] = await b.dbg("recentFiles").catch(() => []);
     const opened = files.filter((f) => f.seq > before.seq).map((f) => f.path.replace(/^.*\\/, "").toLowerCase());
     console.log(JSON.stringify({ step: label, fps: Math.round(fps * 10) / 10, dpf, sounds: after.sounds - before.sounds, opened: opened.slice(0, 12) }));
+    if (after.present > before.present) { everPresented = true; stalledWindows = 0; }
+    else if (everPresented && seconds >= 5) stalledWindows++;
+    if (stalledWindows >= 2 && !stallDumped) await stallDump(b, label);
     return after;
 }
 
