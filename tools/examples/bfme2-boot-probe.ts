@@ -19,8 +19,10 @@ const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme2-b6c6795");
 const port = Number(arg("port", "9551"));
 const bootTimeoutSec = Number(arg("boot-timeout", "900"));
 const settleSec = Number(arg("settle", "30"));
+// --args "<command line>": the program's arguments for this launch (engine switches).
+const extraArgs = arg("args", "");
 
-const bench = await openBenchSession({ profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=probe` });
+const bench = await openBenchSession({ profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=probe${extraArgs ? `&args=${encodeURIComponent(extraArgs)}` : ""}` });
 const t0 = performance.now();
 let present = 0;
 // While no frame comes: every 60 s, what the guest is doing (top Win32 calls

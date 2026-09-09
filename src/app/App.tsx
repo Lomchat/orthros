@@ -551,12 +551,18 @@ export default function App() {
     // The player's per-game choices (language, resolution, videos) ride along with the
     // bundle load: the worker merges them onto the manifest before resolving the container.
     const stored = loadGameProfile(selectedGame.id);
-    const launchProfile = buildLaunchProfile(
+    let launchProfile = buildLaunchProfile(
       stored,
       resolveLanguage(selectedGame.languages, stored, selectedGame.defaultLanguage),
       selectedGame.romDependencies,
       selectedGame.emulator,
     );
+    // ?args= overrides the program's command line for one launch (automation:
+    // an engine's own switches, e.g. loading a map directly, without menus).
+    const argsOverride = new URLSearchParams(window.location.search).get("args");
+    if (argsOverride !== null) {
+      launchProfile = { ...(launchProfile ?? {}), manifest: { ...(launchProfile?.manifest ?? {}), args: argsOverride } };
+    }
     (window as any).loadApp?.(
       selectedGame.id === "dev" ? loadParam : selectedGame.wgbUrl,
       launchProfile,

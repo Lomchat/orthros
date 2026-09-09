@@ -35,6 +35,8 @@ const profile = arg("profile", "/srv/bfme/app/orthros/tmp/bfme2-b6c6795");
 const port = Number(arg("port", "9551"));
 const actionsPath = arg("actions", "/tmp/nav.txt");
 const bootTimeoutSec = Number(arg("boot-timeout", "900"));
+// --args "<command line>": the program's arguments for this launch (engine switches).
+const extraArgs = arg("args", "");
 
 type Sensors = { present: number; draws: number; dpf: number; sounds: number; files: number; seq: number };
 
@@ -63,7 +65,7 @@ async function delta(b: BenchSession, before: Sensors, seconds: number, label: s
     return after;
 }
 
-const bench = await openBenchSession({ profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=nav` });
+const bench = await openBenchSession({ profile, port, url: `http://127.0.0.1:5173/?game=${game}&bench=nav${extraArgs ? `&args=${encodeURIComponent(extraArgs)}` : ""}` });
 const t0 = performance.now();
 let present = 0;
 while (performance.now() - t0 < bootTimeoutSec * 1_000) {
