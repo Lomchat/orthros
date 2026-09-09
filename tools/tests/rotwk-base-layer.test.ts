@@ -10,7 +10,7 @@ describe('Roi-Sorcier base-game layer', () => {
         // maps.big fallback and quits without a frame when they are absent.
         expect(rotwk?.romDependencies).toEqual([{
             url: '/apps/bfme2-109-multi.wgb',
-            include: ['lotrbfme2.exe', 'lotrbfme2.lcf', 'game.dat', 'eauninstall.exe', 'filelist.txt', 'window.big', 'maps.big', '_wsmaps.big', 'bases.big'],
+            include: ['lotrbfme2.exe', 'lotrbfme2.lcf', 'game.dat', 'eauninstall.exe', 'filelist.txt', 'window.big', 'maps.big', '_wsmaps.big', 'bases.big', 'shaders.big'],
             mountPrefix: 'BFME2',
         }]);
     });
