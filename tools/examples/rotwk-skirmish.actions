@@ -1,26 +1,21 @@
-# nav-probe actions: Rise of the Witch-king from the main menu to a skirmish, then two
-# minutes of in-game sensors. Same APT layout family as BFME II; the layout is captured
-# before each click so a moved button shows up in the log (uimap rows) rather than silently.
+# nav-probe actions: Rise of the Witch-king from the main menu towards a skirmish, reading the
+# labels of every screen on the way (its bottom bar has five buttons and the SOLO submenu three
+# entries, unlike BFME II). Coordinates: 800×600, label hit rectangles from the APT textures.
 dbg d3d9DirectPresent true
 wait 20
 uimap
+tex 74
+tex 70
+tex 72
+tex 62
+tex 59
 click 217,556
 wait 2
 uimap
-quick click 217,381
+tex 76
+tex 78
+tex 80
+quick click 241,436
 wait 6
 uimap
 texlist
-quick click 704,573
-wait 15
-wait 15
-wait 15
-wait 15
-wait 15
-wait 15
-wait 15
-wait 15
-dbg faults
-dbg messageBoxes
-uimap
-quit
