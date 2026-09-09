@@ -2322,13 +2322,15 @@ export const dbg = {
     /** Dump + reset the PeekMessage fast-path histogram (__peekDiag in message.ts):
      *  ret0/ret1 counts and dequeued-message-id frequencies since last call. The direct
      *  window into "what message floods the pump". */
-    peekstats(): void {
+    peekstats(): unknown {
         try {
             (globalThis as any).__peekDiagEnabled = true;
             const d = (globalThis as any).__peekDiag;
-            console.log(`[dbg][peekstats][JSON] ${JSON.stringify(d ?? { err: 'no data yet' })}`);
+            const snapshot = d ? { ret0: d.ret0, ret1: d.ret1, byMsg: { ...d.byMsg } } : { err: 'no data yet' };
+            console.log(`[dbg][peekstats][JSON] ${JSON.stringify(snapshot)}`);
             if (d) { d.ret0 = 0; d.ret1 = 0; d.byMsg = {}; }
-        } catch (e) { console.warn('[dbg] peekstats err', e); }
+            return snapshot;
+        } catch (e) { console.warn('[dbg] peekstats err', e); return null; }
     },
     /** Resolve a THUNK_CODE stub address to its functionId + dll:function name
      *  (reads the MOV EAX,imm32 at the stub head + dispatcher.namesTable). */
@@ -2521,7 +2523,7 @@ export const dbg = {
      *  timer-thread dispatch stats (invoked vs empty/deferred/eip-guard). Reveals
      *  whether the Galaxy audio timer fires AND whether its guest callback is
      *  actually invoked on the timer thread. Logs JSON. */
-    timers(): void {
+    timers(): unknown {
         try {
             const sys = System.getInstance();
             const winmm = sys.process?.getModule?.('winmm') as any;
@@ -2538,7 +2540,8 @@ export const dbg = {
                 trace: (sched?.timerThreadTrace as string[] | undefined)?.slice(-48) ?? null,
             };
             console.log(`[dbg][timers][JSON] ${JSON.stringify(out)}`);
-        } catch (e) { console.warn('[dbg] timers err', e); }
+            return out;
+        } catch (e) { console.warn('[dbg] timers err', e); return null; }
     },
     /** Captured source passed to the still-unimplemented legacy D3DX assembler. */
     d3dxAssembleSamples(): readonly string[] {
