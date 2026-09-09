@@ -1081,6 +1081,9 @@ export const dbg = {
             // back to the interpreter and has to re-cross the hotness threshold.
             wasmTableSize: w.jit_get_wasm_table_size?.() >>> 0,
             cacheFlushes: w.jit_get_cache_flushes?.() >>> 0,
+            // Successor edges block discovery recorded but never materialised
+            // (page tail, unmapped or non-contiguous next page); the graph drops them.
+            danglingEdges: w.jit_dangling_edges?.() >>> 0,
             // A page written to loses its module; if this tracks `started` the
             // JIT is recompiling the same code rather than covering new code.
             pageInvalWithCode: w.jit_get_page_invalidations_with_code?.() >>> 0,
