@@ -779,6 +779,40 @@ export const dbg = {
         console.log(`[dbg] __d3d9DirectPresent=${String((globalThis as any).__d3d9DirectPresent)}`);
         return on;
     },
+    /** Wait graph of the guest threads: each thread's state, wait reason and the
+     *  kernel objects it waits on, with each object's kind/signal/owner — what a
+     *  deadlock looks like, returned as data (dumpHandle only prints). */
+    waitGraph(): unknown {
+        try {
+            const sys = System.getInstance();
+            const sched = sys.scheduler as any;
+            const rp = sys.resourceProvider as any;
+            const threads: any[] = [];
+            const objects: Record<string, unknown> = {};
+            const pick = (o: any) => {
+                const out: Record<string, unknown> = { kind: o?.kind };
+                for (const k of ['signaled', 'ownerThreadId', 'ownerTid', 'owner', 'recursionCount', 'count', 'maxCount', 'manualReset', 'name', 'state', 'threadId', 'exitCode']) {
+                    if (o && o[k] !== undefined && typeof o[k] !== 'object') out[k] = o[k];
+                }
+                return out;
+            };
+            for (const [tid, t] of ((sched?.threads as Map<number, any>) ?? new Map())) {
+                const handles: number[] = (t.waitInfo?.handles ?? []).map((h: number) => h >>> 0);
+                for (const h of handles) {
+                    const key = '0x' + h.toString(16);
+                    if (!(key in objects)) objects[key] = pick(rp?.getKernelObject?.(h));
+                }
+                threads.push({
+                    id: tid, state: t.state, waitReason: t.waitInfo?.reason ?? null,
+                    waitsOn: handles.map((h) => '0x' + h.toString(16)),
+                    timeoutMs: t.waitInfo?.timeoutMs ?? t.waitInfo?.timeout ?? null,
+                    eip: t.context?.eip != null ? '0x' + (t.context.eip >>> 0).toString(16) : null,
+                    cpuMs: t.cpuTimeMs ?? t.cpuMs ?? null,
+                });
+            }
+            return { currentThreadId: sched?.getCurrentThreadId?.() ?? null, threads, objects };
+        } catch (e) { return { error: String(e) }; }
+    },
     /** Reclaim only unreferenced modules on wasm-table exhaustion (config 43)
      *  instead of discarding every compiled module and its page hotness.
      *  Survives a v86 re-creation; clears the cache so the A/B starts even. */

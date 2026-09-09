@@ -88,6 +88,7 @@ async function stallDump(b: BenchSession, label: string): Promise<void> {
         eips.push(s?.steps?.[0]?.result?.cpu?.eipSym ?? String(s?.steps?.[0]?.result?.cpu?.eip));
     }
     out.eipSamples = eips;
+    out.waitGraph = await b.dbg("waitGraph").catch((e) => String(e));
     out.hotPages = await b.dbg("hotPages", false, 12).catch((e) => String(e));
     out.schedulerPerf5s = await b.dbg("schedulerPerf", true).catch((e) => String(e));
     out.jit = await b.dbg("jitCompileStats").catch(() => null);
