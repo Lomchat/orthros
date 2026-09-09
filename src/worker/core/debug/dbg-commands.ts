@@ -2478,11 +2478,11 @@ export const dbg = {
      *  v86 read_tsc falls back to raw wall clock (frozen per-frame delta). vtActive=false means
      *  enableVirtualTime() never ran. Existence of THIS command confirms the latest worker TS is
      *  loaded (rules out a stale worker bundle). JSON. */
-    hcstate(): void {
+    hcstate(): unknown {
         try {
             const hc = (globalThis as any).hypercall;
             const ts = TimeService.getInstance();
-            if (!hc) { console.log('[dbg][hcstate][JSON] {"err":"no hypercall manager on globalThis"}'); return; }
+            if (!hc) { console.log('[dbg][hcstate][JSON] {"err":"no hypercall manager on globalThis"}'); return { err: 'no hypercall manager' }; }
             const out: any = {
                 initialized: hc.initialized ?? null,
                 enabled: hc.enabled ?? null,
@@ -2505,7 +2505,8 @@ export const dbg = {
                 };
             }
             console.log(`[dbg][hcstate][JSON] ${JSON.stringify(out)}`);
-        } catch (e) { console.warn('[dbg] hcstate err', e); }
+            return out;
+        } catch (e) { console.warn('[dbg] hcstate err', e); return null; }
     },
     /** Dump the last N WinAPI calls from the dispatcher ring buffer — reveals
      *  what the guest is spinning on while a screen won't advance. */
