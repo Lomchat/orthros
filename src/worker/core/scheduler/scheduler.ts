@@ -2665,6 +2665,9 @@ export class Scheduler {
 
     unregisterCsLockSemaphore(address: number): void {
         this.csLockSemaphores.delete(address >>> 0);
+        // A deleted section's semaphore handle may be reused before the next boundary.
+        this.pendingCsWakes.delete(address >>> 0);
+        this.csWakeStarve.delete(address >>> 0);
     }
 
     /** True if the thread exists and is not TERMINATED. Thread ids are never reused. */

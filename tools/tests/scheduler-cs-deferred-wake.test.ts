@@ -139,6 +139,17 @@ describe('scheduler/deferCriticalSectionWake', () => {
         expect((s as any).switchRequested).toBe(false);
     });
 
+    test('deleting the section drops its pending wake (its semaphore handle may be reused)', () => {
+        const { s, waiter, sem } = contended();
+        expect(s.deferCriticalSectionWake(CS, sem)).toBe(true);
+        writeSection(-1, 0, 0, sem);
+        s.unregisterCsLockSemaphore(CS);
+        expect((s as any).pendingCsWakes.size).toBe(0);
+        s.drainPendingCsWakes();
+        expect(waiter.state).toBe(ThreadState.WAITING);
+        expect(s.csWakeStats.delivered).toBe(0);
+    });
+
     test('turning the policy off delivers what is pending', () => {
         const { s, waiter, sem } = contended();
         expect(s.deferCriticalSectionWake(CS, sem)).toBe(true);
