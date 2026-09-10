@@ -94,7 +94,7 @@ const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", 
  *  and its consumer is a flag writer the model does not follow. Every x87
  *  instruction except the fcomi family and fcmovcc is one of them. */
 const FLAG_PRESERVING = new Set([
-    "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc",
+    "mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "nop", "cdq", "cwde", "cbw", "leave", "not", "rdtsc", "lahf",
     "enter", "wait", "fwait", "pushfd", "stmxcsr", "ldmxcsr", "emms", "pushal", "popal", "pushad", "popad",
     "movsb", "movsw", "movsd", "stosb", "stosw", "stosd", "cld", "std", "xlatb",
     "rep movsb", "rep movsw", "rep movsd", "rep stosb", "rep stosw", "rep stosd",
@@ -756,21 +756,23 @@ __attribute__((import_module("env"), import_name("x87_atan2"))) double x87_atan2
    1 if it ran, 0 if the address is not in the batch. Defined by the batch. */
 __attribute__((noinline)) int aot_dispatch(uint32_t target, uint32_t depth, uint32_t mb, uint32_t ml);
 #define FLAGS_CHANGED_PTR (*(volatile int32_t *)100)
-/* CF|PF|ZF|SF|OF of the last modelled producer, or v86's own flags when none ran. */
+/* CF|PF|AF|ZF|SF|OF of the last modelled producer, or v86's own flags when
+ * none ran. AF is the carry out of bit 3 (operands xor result), as v86 derives
+ * it lazily; logic ops clear it. */
 static inline uint32_t x86_flags_now(uint32_t fk, uint32_t fa, uint32_t fb, uint32_t fr, uint32_t fc) {
-    uint32_t cf, zf, sf, of, pf;
+    uint32_t cf, zf, sf, of, pf, af;
     switch (fk) {
     case 0: return (uint32_t)get_eflags() & 0x8d5u;
-    case 1: cf = fa < fb; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fb) & (fa ^ fr)) >> 31; break;
-    case 2: cf = fc; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fr) & (fb ^ fr)) >> 31; break;
-    case 3: cf = 0u; zf = fr == 0u; sf = fr >> 31; of = 0u; break;
-    case 4: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fr == fb; break;
-    case 5: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fa == fb; break;
+    case 1: cf = fa < fb; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fb) & (fa ^ fr)) >> 31; af = ((fa ^ fb ^ fr) >> 4) & 1u; break;
+    case 2: cf = fc; zf = fr == 0u; sf = fr >> 31; of = ((fa ^ fr) & (fb ^ fr)) >> 31; af = ((fa ^ fb ^ fr) >> 4) & 1u; break;
+    case 3: cf = 0u; zf = fr == 0u; sf = fr >> 31; of = 0u; af = 0u; break;
+    case 4: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fr == fb; af = ((fa ^ fr) >> 4) & 1u; break;
+    case 5: cf = fc; zf = fr == 0u; sf = fr >> 31; of = fa == fb; af = ((fa ^ fr) >> 4) & 1u; break;
     case 6: return ((uint32_t)FLAGS & 0x800u) | (fa & 0xd5u);
     default: return fa & 0x8d5u;
     }
     pf = (__builtin_parity(fr & 0xffu) == 0);
-    return cf | (pf << 2) | (zf << 6) | (sf << 7) | (of << 11);
+    return cf | (pf << 2) | (af << 4) | (zf << 6) | (sf << 7) | (of << 11);
 }
 
 #define LD8(a)  ((uint32_t)*(uint8_t *)(uintptr_t)(mb + (a)))
@@ -1293,6 +1295,12 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`  esp += 4u; FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x244400u) | (v & 0x244400u)); fa = v & 0x8d5u; fk = 8u; }`);
                 kinds.set(i, "raw");
                 if (isCaptured) liveFlagSites++;
+                continue;
+            }
+            if (mnemonic === "lahf") {
+                // AH = SF:ZF:0:AF:0:PF:1:CF from the live flags: the last producer
+                // of this invocation, else v86's own (materialised if lazy).
+                lines.push(`{ uint32_t fl = fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS); eax = (eax & 0xffff00ffu) | (((fl & 0xd5u) | 0x2u) << 8); }`);
                 continue;
             }
             if (OTHER_FLAG_READER.test(mnemonic) && !SETCC.test(mnemonic) && !CMOVCC.test(mnemonic)) return reject(`reads flags: ${mnemonic}`);

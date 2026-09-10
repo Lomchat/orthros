@@ -616,6 +616,47 @@ t_sse_cmp:
     mov [edi+16], ecx
     ret
 
+# lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
+# result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
+# v86 materialises its lazy flags, auxiliary carry included.
+    .globl t_lahf
+t_lahf:
+    mov edi, [esp+4]
+    mov eax, 0x0f
+    mov ecx, 0x01
+    add eax, ecx
+    lahf
+    mov [edi], eax
+    mov eax, 0x10
+    sub eax, ecx
+    lahf
+    mov [edi+4], eax
+    mov eax, 0x1f
+    inc eax
+    lahf
+    mov [edi+8], eax
+    mov eax, 0x20
+    dec eax
+    lahf
+    mov [edi+12], eax
+    mov eax, 0xff
+    and eax, 0xf0
+    lahf
+    mov [edi+16], eax
+    mov eax, 0
+    sub eax, ecx
+    lahf
+    mov [edi+20], eax
+    mov ah, 0xd7
+    sahf
+    lahf
+    mov [edi+24], eax
+    mov eax, 0x7fffffff
+    add eax, ecx
+    lahf
+    mov [edi+28], eax
+    ret
+
 # SSE scalar single: integers converted to floats, add/sub/mul/div with
 # register and memory sources, min/max (NaN and order rules), sqrt, a compare
 # mask, truncating conversions (in range and NaN) and single<->double. Results
