@@ -616,6 +616,86 @@ t_sse_cmp:
     mov [edi+16], ecx
     ret
 
+# SSE scalar single: integers converted to floats, add/sub/mul/div with
+# register and memory sources, min/max (NaN and order rules), sqrt, a compare
+# mask, truncating conversions (in range and NaN) and single<->double. Results
+# go to scratch and stay in registers: the xmm write-back at ret is checked too.
+    .globl t_sse_single
+t_sse_single:
+    mov edi, [esp+4]
+    mov eax, 1234567
+    cvtsi2ss xmm0, eax
+    mov dword ptr [edi+64], -98765
+    cvtsi2ss xmm1, dword ptr [edi+64]
+    movss xmm2, xmm0
+    addss xmm2, xmm1
+    movss dword ptr [edi], xmm2
+    movss xmm3, xmm0
+    mulss xmm3, xmm1
+    movss dword ptr [edi+4], xmm3
+    movss xmm4, xmm0
+    subss xmm4, dword ptr [edi+4]
+    movss dword ptr [edi+8], xmm4
+    movss xmm5, xmm0
+    divss xmm5, xmm1
+    movss dword ptr [edi+12], xmm5
+    movss xmm6, xmm0
+    minss xmm6, xmm1
+    movss dword ptr [edi+16], xmm6
+    movss xmm7, xmm1
+    maxss xmm7, xmm0
+    movss dword ptr [edi+20], xmm7
+    sqrtss xmm6, xmm0
+    movss dword ptr [edi+24], xmm6
+    cvttss2si eax, xmm3
+    mov [edi+28], eax
+    cvttss2si ecx, dword ptr [edi]
+    mov [edi+32], ecx
+    xorps xmm7, xmm7
+    divss xmm7, xmm7
+    movss xmm6, xmm0
+    minss xmm6, xmm7
+    movss dword ptr [edi+36], xmm6
+    cvttss2si edx, xmm7
+    mov [edi+40], edx
+    movss xmm6, xmm0
+    cmpltss xmm6, xmm1
+    movss dword ptr [edi+44], xmm6
+    cvtss2sd xmm6, xmm0
+    movsd qword ptr [edi+48], xmm6
+    cvtsd2ss xmm6, xmm6
+    movss dword ptr [edi+56], xmm6
+    ret
+
+# SSE packed single: four lanes built in scratch, mul/add/div (one lane divides
+# by zero) and a compare mask, register and memory sources.
+    .globl t_sse_packed_single
+t_sse_packed_single:
+    mov edi, [esp+4]
+    mov dword ptr [edi+64], 0x40400000
+    mov dword ptr [edi+68], 0xc0a00000
+    mov dword ptr [edi+72], 0x3f000000
+    mov dword ptr [edi+76], 0x41200000
+    movups xmm0, xmmword ptr [edi+64]
+    mov dword ptr [edi+80], 0x3f800000
+    mov dword ptr [edi+84], 0x40000000
+    mov dword ptr [edi+88], 0x00000000
+    mov dword ptr [edi+92], 0xbf800000
+    movups xmm1, xmmword ptr [edi+80]
+    movaps xmm2, xmm0
+    mulps xmm2, xmm1
+    movups xmmword ptr [edi], xmm2
+    movaps xmm3, xmm0
+    addps xmm3, xmmword ptr [edi+80]
+    movups xmmword ptr [edi+16], xmm3
+    movaps xmm4, xmm0
+    divps xmm4, xmm1
+    movups xmmword ptr [edi+32], xmm4
+    movaps xmm5, xmm0
+    cmpleps xmm5, xmm1
+    movups xmmword ptr [edi+48], xmm5
+    ret
+
 # SSE2 double arithmetic: packed and scalar add/sub/mul/div, results to scratch.
 # movapd is reg-reg only (no alignment need); loads/stores use movdqu.
     .globl t_sse_fp

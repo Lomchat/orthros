@@ -162,6 +162,23 @@ export async function installAotBatch(url: string, filter?: string): Promise<Aot
 }
 
 /** External modules take precedence over JIT modules at dispatch. */
+/**
+ * The guest process the installed batch was translated for is gone (process
+ * relay, game switch): drop v86's external registrations and this state so the
+ * next process starts without foreign translations and from the first slot.
+ * The next load_bundle schedules the install again if the server publishes one.
+ */
+export function resetAotBatchForProcess(): void {
+    cancelAotAutoInstall();
+    const v = v86Exports();
+    try { v?.ex.jit_clear_external_modules?.(); } catch (e) { Logger.warn(LogCategory.SYSTEM, `[AOT] clearing external modules failed: ${e}`); }
+    if (v?.ex.jit_set_external_first) v.ex.jit_set_external_first(0);
+    aotBatchState.nextSlot = 0;
+    aotBatchState.pages = 0; aotBatchState.entries = 0; aotBatchState.bytes = 0;
+    aotBatchState.guardExits = 0; aotBatchState.slowExits = 0; aotBatchState.slowExitHist.clear();
+    aotBatchState.autoUrl = null; aotBatchState.lastError = null;
+}
+
 export function setAotExternalFirst(on: boolean): boolean {
     const v = v86Exports();
     if (!v?.ex.jit_set_external_first) return false;

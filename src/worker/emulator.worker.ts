@@ -87,7 +87,7 @@ import { SabIoSource } from "./runtime/filesystem/sab-io-source";
 import { loadWgbIntegrity } from "./runtime/filesystem/wgb-integrity";
 import { UnpackDecoder } from "@orthros/formats/unpack";
 import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
-import { scheduleAotAutoInstall, cancelAotAutoInstall, setAotAutoEnabled } from './core/cpu/aot-batch';
+import { scheduleAotAutoInstall, cancelAotAutoInstall, setAotAutoEnabled, resetAotBatchForProcess } from './core/cpu/aot-batch';
 import { HotProfilePersistence } from "./runtime/filesystem/hot-profile-persistence";
 import { exportContainer } from "./runtime/filesystem/save-export";
 import { resolveGameId, gameIdToContainerDir } from "@orthros/formats/wgb/container-id";
@@ -1364,6 +1364,9 @@ const prepareFullGameSwitch = async (): Promise<void> => {
 
   resetHeapSlab();
   await system.reset();
+  // Translations installed for the dead process must not outlive it: a child
+  // loaded at the same base would dispatch into code translated from another image.
+  resetAotBatchForProcess();
   gameSessionActive = false;
   bootMark("system-reset-done");
 };

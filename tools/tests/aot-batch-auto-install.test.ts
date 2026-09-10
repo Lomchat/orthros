@@ -3,6 +3,7 @@ import {
     aotBatchState,
     cancelAotAutoInstall,
     installAotBatch,
+    resetAotBatchForProcess,
     scheduleAotAutoInstall,
     setAotAutoEnabled,
     setAotAutoPollMs,
@@ -25,8 +26,10 @@ function fakeV86(flags: { value: number }) {
     const registered: Array<[number, number, number, number]> = [];
     const table: Array<[number, unknown]> = [];
     let externalFirst = 0;
+    const cleared = { count: 0 };
     const ex = {
         jit_register_external_module: (index: number, addr: number, f: number, state: number) => { registered.push([index, addr, f, state]); return 1; },
+        jit_clear_external_modules: () => { cleared.count++; const n = registered.length; registered.length = 0; return n; },
         jit_external_module_first_index: () => 4096,
         jit_external_module_slots: () => 4096,
         jit_get_current_state_flags: () => flags.value,
@@ -40,7 +43,7 @@ function fakeV86(flags: { value: number }) {
         wasm_memory: new WebAssembly.Memory({ initial: 1 }),
         wm: { exports: ex, wasm_table: { set: (i: number, fn: unknown) => { table.push([i, fn]); } } },
     };
-    return { cpu, ex, registered, table, externalFirst: () => externalFirst };
+    return { cpu, ex, registered, table, cleared, externalFirst: () => externalFirst };
 }
 
 function mockFetch(published: boolean): { calls: string[] } {
@@ -174,5 +177,27 @@ describe("AOT batch automatic install", () => {
         const r = await installAotBatch("/apps/bfme.wgb.aot-bridge", "0.5:1");
         expect(r).toEqual({ pages: 1, entries: 2, failed: 0, bytes: PAGE_WASM.byteLength });
         expect(v.registered.map((x) => x[1])).toEqual([0x402000, 0x402020]);
+    });
+
+    test("a process reset drops the installed batch and v86's registrations", async () => {
+        const flags = { value: 0xb };
+        const v = fakeV86(flags);
+        setAotExportsProvider(() => ({ cpu: v.cpu, ex: v.ex }));
+        mockFetch(true);
+        const ok = await installAotBatch("/apps/bfme.wgb.aot-bridge");
+        expect(ok?.pages).toBe(1);
+        v.ex.jit_set_external_first(1);
+        resetAotBatchForProcess();
+        expect(v.cleared.count).toBe(1);
+        expect(v.registered.length).toBe(0);
+        expect(v.externalFirst()).toBe(0);
+        expect(aotBatchState.pages).toBe(0);
+        expect(aotBatchState.entries).toBe(0);
+        expect(aotBatchState.nextSlot).toBe(0);
+        expect(aotBatchState.autoUrl).toBeNull();
+        // The next process installs again from the first external slot.
+        const again = await installAotBatch("/apps/bfme.wgb.aot-bridge");
+        expect(again?.pages).toBe(1);
+        expect(v.registered[0]![0]).toBe(4096);
     });
 });

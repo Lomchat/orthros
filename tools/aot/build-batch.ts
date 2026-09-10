@@ -92,6 +92,36 @@ if (hotPagesPath && topPages > 0) {
     console.log(`hot pages: keeping ${hotSet.size} of ${hp.top?.length ?? 0}`);
 }
 
+// The executable's own pages, as the loader maps them (section bytes, zero
+// beyond the raw data). Live bytes differ from these where the loader or an HLE
+// patch wrote to the page, and are absent in another process mapped at the same
+// base (a launcher relayed to this executable): the manifest digests every
+// translated page of the image so the installer registers a page only into the
+// process it was translated from.
+function peImage(bytes: Uint8Array): { imageBase: number; sections: Array<{ va: number; vsize: number; raw: number; rawSize: number }> } {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const pe = dv.getUint32(0x3c, true);
+    const count = dv.getUint16(pe + 6, true);
+    const optSize = dv.getUint16(pe + 20, true);
+    const imageBase = dv.getUint32(pe + 24 + 28, true);
+    const sections: Array<{ va: number; vsize: number; raw: number; rawSize: number }> = [];
+    for (let i = 0; i < count; i++) {
+        const s = pe + 24 + optSize + i * 40;
+        sections.push({ vsize: dv.getUint32(s + 8, true), va: dv.getUint32(s + 12, true), rawSize: dv.getUint32(s + 16, true), raw: dv.getUint32(s + 20, true) });
+    }
+    return { imageBase, sections };
+}
+function imagePageBytes(bytes: Uint8Array, img: ReturnType<typeof peImage>, pageVa: number): Uint8Array | null {
+    const rva = pageVa - img.imageBase;
+    const s = img.sections.find((x) => rva >= x.va && rva < x.va + Math.max(x.vsize, x.rawSize));
+    if (!s) return null;
+    const out = new Uint8Array(0x1000);
+    const off = rva - s.va;
+    const avail = Math.max(0, Math.min(0x1000, s.rawSize - off));
+    if (avail > 0) out.set(bytes.subarray(s.raw + off, s.raw + off + avail));
+    return out;
+}
+
 const decoder = await CapstoneDecoder.open(exe);
 // --extra-image <file> --extra-base 0x...: a raw image of code that is not in
 // the executable (Orthros's runtime x86 bodies in THUNK_CODE, dumped by the
@@ -224,6 +254,24 @@ const manifest = {
     // elsewhere in the region after the dump do not invalidate it.
     regions: await (async () => {
         const out: Array<{ base: number; size: number; sha256: string }> = [];
+        {
+            const exeBytes = new Uint8Array(await Bun.file(exe).arrayBuffer());
+            const img = peImage(exeBytes);
+            const inExtra = (a: number): boolean => extras.some((e) => a >= e.region.base && a < e.region.base + e.region.size);
+            const used = new Set<number>();
+            for (const f of functions) {
+                if (inExtra(f.entry)) continue;
+                for (let a = f.entry & ~0xfff; a < f.entry + Math.max(f.extent, 1); a += 0x1000) used.add(a);
+            }
+            let digested = 0;
+            for (const pg of [...used].sort((a, b) => a - b)) {
+                const slice = imagePageBytes(exeBytes, img, pg);
+                if (!slice) continue;
+                out.push({ base: pg, size: slice.byteLength, sha256: new Bun.CryptoHasher("sha256").update(slice).digest("hex") });
+                digested++;
+            }
+            console.log(`image pages digested: ${digested} of ${used.size} used (base 0x${img.imageBase.toString(16)})`);
+        }
         for (const e of extras) {
             const bytes = new Uint8Array(await Bun.file(extraSpecs.find((sp) => sp.base === e.region.base)!.file).arrayBuffer());
             const used = new Set<number>();

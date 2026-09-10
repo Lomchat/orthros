@@ -20,6 +20,8 @@
  *   sample               print the sensors without acting
  *   shot NAME            page screenshot (canvas may be black on SwiftShader)
  *   harness NAME [JSON…] any harness service command (report, stubs, textures…)
+ *   cpuprofile MS [TOP]  Worker CPU profile: self-time per subsystem + hottest guest pages (jit_<page>)
+ *   hotp-export PATH     write the session's hot-page profile (HOTP) to PATH (input of coverage-c / build-batch --profile)
  *   texlist              current D3D9 textures, largest first (the UI's own sheets stand out)
  *   tex N                decode texture-store slot N to /tmp/nav-tex-N.png (readable as an image)
  *   uimap                capture one frame: every draw as screen rect + atlas rect (MVP-projected)
@@ -216,6 +218,37 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         continue;
     }
     if (cmd === "sample") { state = await delta(bench, state, 1, "sample"); continue; }
+    if (cmd === "hotp-export") {
+        // hotp-export PATH: write the session's hot-page profile (HOTP image) to PATH — the input
+        // of coverage-c.ts / build-batch.ts --profile for a title that has no sidecar yet.
+        const path = argText.trim();
+        const b64 = await bench.evalPage<string | null>(`__BS__.harness.dbgCall("jitHotProfileExport")`, 60_000).catch(() => null);
+        if (path && typeof b64 === "string" && b64.length > 0) {
+            const bytes = Buffer.from(b64, "base64");
+            await Bun.write(path, bytes);
+            console.log(JSON.stringify({ step: `hotp-export ${path}`, bytes: bytes.length, stats: await bench.dbg("jitHotProfileStats").catch(() => null) }));
+        } else {
+            console.log(JSON.stringify({ step: `hotp-export ${path}`, error: path ? `export returned ${JSON.stringify(b64).slice(0, 80)}` : "missing path" }));
+        }
+        continue;
+    }
+    if (cmd === "cpuprofile") {
+        // cpuprofile MS [TOP]: sample the Worker's CPU for MS and print self-time share per subsystem
+        // (guest jit-code / aot-code / worker-js / v86 / …) and the hottest functions — compiled
+        // guest pages carry their `jit_<page>` name, so a battle's cost is attributed to guest
+        // pages, which a thunk census (JS boundary only) cannot see.
+        const [msText, topText] = argText.split(/\s+/);
+        const ms = Math.max(1000, Number(msText) || 15_000);
+        const top = Math.max(5, Number(topText) || 30);
+        const p: any = await bench.profileWorker(ms, top).catch((e) => ({ error: String(e) }));
+        const out = p?.error ? p : {
+            durationMs: p.durationMs, totalSamples: p.totalSamples, buckets: p.buckets,
+            top: (p.top ?? []).slice(0, top).map((t: any) => ({ fn: t.fn, pct: t.pct, samples: t.samples })),
+            inclusive: (p.inclusive ?? []).slice(0, 12).map((t: any) => ({ fn: t.fn, pct: t.pct })),
+        };
+        console.log(JSON.stringify({ step: `cpuprofile ${ms}`, result: out }).slice(0, 6000));
+        continue;
+    }
     if (cmd === "harness") {
         // harness NAME [JSON args]: any harness service command (textures, dumpTexture, report, stubs…).
         const [name, ...rest2] = argText.split(/\s+/);

@@ -106,8 +106,12 @@ const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|fcmov[a-z]+|salc|lahf|pushf[d]?|popf[d]?|into|loop[a-z]*)$/;
 
+/** SSE arithmetic, moves and conversions leave EFLAGS alone; only the comis
+ *  family (a flag producer) writes them. */
+const SSE_NO_FLAGS = /^((add|sub|mul|div|min|max|sqrt|cmp[a-z]+)(pd|ps|sd|ss)|movss|cvtsi2ss|cvtsi2sd|cvttss2si|cvttsd2si|cvtss2sd|cvtsd2ss)$/;
+
 function preservesFlags(m: string): boolean {
-    return FLAG_PRESERVING.has(m) || (x87Kind(m) !== null && !FLAG_PRODUCER.has(m) && !/^fcmov/.test(m));
+    return FLAG_PRESERVING.has(m) || SSE_NO_FLAGS.test(m) || (x87Kind(m) !== null && !FLAG_PRODUCER.has(m) && !/^fcmov/.test(m));
 }
 
 const LOOP_LIMIT = 100_000;
@@ -813,6 +817,7 @@ const SSE2_INT = new Set([
     "psrlq", "psllq", "psubd", "paddd",
     "andpd", "andps", "orpd", "orps", "xorpd", "xorps",
     "pand", "pandn", "por", "pxor",
+    "movss", "cvtsi2ss", "cvtsi2sd", "cvttss2si", "cvttsd2si", "cvtss2sd", "cvtsd2ss",
 ]);
 
 interface Sse2Helpers {
@@ -836,29 +841,50 @@ const SSE_FP_ARITH: Record<string, string> = { add: "+", sub: "-", mul: "*", div
 function emitSseFp(mnemonic: string, ops: string[], insn: Insn, i: number, lines: string[], h: Sse2Helpers): string | void | false {
     // Suffix pd/ps/sd/ss decides element type and lane count; the stem is an
     // arithmetic op or a cmpXX predicate. Returns false if not one of these.
-    const m = /^(add|sub|mul|div|cmp([a-z]+))(pd|ps|sd|ss)$/.exec(mnemonic);
+    const m = /^(add|sub|mul|div|min|max|sqrt|cmp([a-z]+))(pd|ps|sd|ss)$/.exec(mnemonic);
     if (!m) return false;
-    const suffix = m[3]!;
+    const stem = m[1]!, suffix = m[3]!;
     const isDouble = suffix === "pd" || suffix === "sd";
     const scalar = suffix === "sd" || suffix === "ss";
-    if (!isDouble) return `unsupported: ${mnemonic}`; // ps/ss added when a target needs them
     const pred = m[2] ? SSE_FP_PRED[m[2]] : null;
-    if (m[1]!.startsWith("cmp") && !pred) return `unsupported: ${mnemonic}`;
-    const arith = !m[2] ? SSE_FP_ARITH[m[1]!] : null;
+    if (stem.startsWith("cmp") && !pred) return `unsupported: ${mnemonic}`;
+    const arith = !m[2] ? SSE_FP_ARITH[stem] : null;
 
     const dOp = h.parseOperand(ops[0] ?? ""); const sOp = h.parseOperand(ops[1] ?? "");
     if (!dOp || dOp.kind !== "xmm" || !sOp) return `${mnemonic} ${ops.join(", ")}`;
-    // Source double lanes (lane 0 low, lane 1 high) as C double expressions.
-    let s0: string, s1: string;
-    if (sOp.kind === "xmm") { s0 = `f64u(xl${sOp.index})`; s1 = `f64u(xh${sOp.index})`; }
-    else if (sOp.kind === "mem") { h.guardMem(lines, sOp, insn.addr, i); s0 = `f64u(LD64(${sOp.addr}))`; s1 = `f64u(LD64((${sOp.addr}) + 8u))`; }
-    else return `${mnemonic} ${ops.join(", ")}`;
-    const d0 = `f64u(xl${dOp.index})`, d1 = `f64u(xh${dOp.index})`;
-    const lane = (dv: string, sv: string): string =>
-        pred ? `${pred(dv, sv)} ? ~(uint64_t)0 : (uint64_t)0` : `u64d(${dv} ${arith} ${sv})`;
-    if (scalar) lines.push(`{ double da = ${d0}, sa = ${s0}; xl${dOp.index} = ${lane("da", "sa")}; }`);
-    else lines.push(`{ double da0 = ${d0}, da1 = ${d1}, sa0 = ${s0}, sa1 = ${s1}; xl${dOp.index} = ${lane("da0", "sa0")}; xh${dOp.index} = ${lane("da1", "sa1")}; }`);
-    lines.push(`FPU_DIRTY = 1u;`);
+    const d = dOp.index;
+    // One lane's new bits: the operation's value, or a compare's all-ones/zero
+    // mask. min/max return the second operand when either is NaN or both are
+    // equal (v86's sse_min/sse_max); sqrt reads the source only.
+    const bits = isDouble ? "u64d" : "u32f";
+    const lane = (dv: string, sv: string): string => {
+        if (pred) return `(${pred(dv, sv)} ? ${isDouble ? "~(uint64_t)0" : "0xffffffffu"} : ${isDouble ? "(uint64_t)0" : "0u"})`;
+        if (stem === "min") return `${bits}(${dv} < ${sv} ? ${dv} : ${sv})`;
+        if (stem === "max") return `${bits}(${dv} > ${sv} ? ${dv} : ${sv})`;
+        if (stem === "sqrt") return `${bits}(${isDouble ? "__builtin_sqrt" : "__builtin_sqrtf"}(${sv}))`;
+        return `${bits}(${dv} ${arith} ${sv})`;
+    };
+    if (isDouble) {
+        // Source double lanes (lane 0 low, lane 1 high) as C double expressions.
+        let s0: string, s1: string;
+        if (sOp.kind === "xmm") { s0 = `f64u(xl${sOp.index})`; s1 = `f64u(xh${sOp.index})`; }
+        else if (sOp.kind === "mem") { h.guardMem(lines, sOp, insn.addr, i); s0 = `f64u(LD64(${sOp.addr}))`; s1 = `f64u(LD64((${sOp.addr}) + 8u))`; }
+        else return `${mnemonic} ${ops.join(", ")}`;
+        if (scalar) lines.push(`{ double da = f64u(xl${d}), sa = ${s0}; xl${d} = ${lane("da", "sa")}; }`);
+        else lines.push(`{ double da0 = f64u(xl${d}), da1 = f64u(xh${d}), sa0 = ${s0}, sa1 = ${s1}; xl${d} = ${lane("da0", "sa0")}; xh${d} = ${lane("da1", "sa1")}; }`);
+    } else {
+        // Single lanes: bits 0-31 and 32-63 of the low word, then of the high word.
+        const src: string[] = [];
+        if (sOp.kind === "xmm") { const s = sOp.index; src.push(`f32u((uint32_t)xl${s})`, `f32u((uint32_t)(xl${s} >> 32))`, `f32u((uint32_t)xh${s})`, `f32u((uint32_t)(xh${s} >> 32))`); }
+        else if (sOp.kind === "mem") { h.guardMem(lines, sOp, insn.addr, i); const a = sOp.addr; src.push(`f32u(LD32(${a}))`, `f32u(LD32((${a}) + 4u))`, `f32u(LD32((${a}) + 8u))`, `f32u(LD32((${a}) + 12u))`); }
+        else return `${mnemonic} ${ops.join(", ")}`;
+        if (scalar) lines.push(`{ float da = f32u((uint32_t)xl${d}), sa = ${src[0]}; xl${d} = (xl${d} & ~0xffffffffull) | (uint64_t)${lane("da", "sa")}; }`);
+        else lines.push(`{ float da0 = f32u((uint32_t)xl${d}), da1 = f32u((uint32_t)(xl${d} >> 32)), da2 = f32u((uint32_t)xh${d}), da3 = f32u((uint32_t)(xh${d} >> 32)), sa0 = ${src[0]}, sa1 = ${src[1]}, sa2 = ${src[2]}, sa3 = ${src[3]};`
+            + ` xl${d} = (uint64_t)${lane("da0", "sa0")} | ((uint64_t)${lane("da1", "sa1")} << 32); xh${d} = (uint64_t)${lane("da2", "sa2")} | ((uint64_t)${lane("da3", "sa3")} << 32); }`);
+    }
+    // The lane locals now differ from reg_xmm: written back (and the SIMD
+    // context marked dirty) at the next call or exit, as every xmm write is.
+    lines.push(`xdirty = 1u;`);
     return;
 }
 
@@ -877,6 +903,54 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         if (dst.kind === "reg32" && src && src.kind === "xmm") { lines.push(`${REG32[dst.index!]} = (uint32_t)xl${src.index};`); return; }
         if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST32(${a}, (uint32_t)xl${src.index});`); return; }
         return `movd ${ops.join(", ")}`;
+    }
+    if (mnemonic === "movss") {
+        // Scalar single: from an xmm the other three lanes are kept, from
+        // memory the register is zero-extended; to memory the low lane is stored.
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`xl${dst.index} = (xl${dst.index} & ~0xffffffffull) | (xl${src.index} & 0xffffffffull);`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = (uint64_t)LD32(${a}); xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST32(${a}, (uint32_t)xl${src.index});`); return; }
+        return `movss ${ops.join(", ")}`;
+    }
+    if (mnemonic === "movsd") {
+        // Scalar double (the xmm form; the string move never gets here): from an
+        // xmm the high lane is kept, from memory it is zeroed; to memory the low lane is stored.
+        if (dst.kind === "xmm" && src && src.kind === "xmm") { lines.push(`xl${dst.index} = xl${src.index};`); dirty(); return; }
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = LD64(${a}); xh${dst.index} = 0u;`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, xl${src.index});`); return; }
+        return `movsd ${ops.join(", ")}`;
+    }
+    if (mnemonic === "cvtsi2ss" || mnemonic === "cvtsi2sd") {
+        // Integer to float, to nearest as v86 converts (MXCSR rounding is not modelled there either).
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const sv = src.kind === "reg32" ? `(int32_t)${REG32[src.index!]}` : src.kind === "mem" ? `(int32_t)LD32(${guard(src)})` : null;
+        if (sv === null) return `${mnemonic} ${ops.join(", ")}`;
+        if (mnemonic === "cvtsi2ss") lines.push(`xl${dst.index} = (xl${dst.index} & ~0xffffffffull) | (uint64_t)u32f((float)${sv});`);
+        else lines.push(`xl${dst.index} = u64d((double)${sv});`);
+        dirty(); return;
+    }
+    if (mnemonic === "cvttss2si" || mnemonic === "cvttsd2si") {
+        // Truncating conversion; NaN or out of range yields the integer indefinite.
+        if (dst.kind !== "reg32" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const single = mnemonic === "cvttss2si";
+        let fv: string;
+        if (src.kind === "xmm") fv = single ? `f32u((uint32_t)xl${src.index})` : `f64u(xl${src.index})`;
+        else if (src.kind === "mem") { const a = guard(src); fv = single ? `f32u(LD32(${a}))` : `f64u(LD64(${a}))`; }
+        else return `${mnemonic} ${ops.join(", ")}`;
+        lines.push(`{ double cv = ${fv}; ${REG32[dst.index!]} = (cv >= -2147483648.0 && cv < 2147483648.0) ? (uint32_t)(int32_t)cv : 0x80000000u; }`);
+        return;
+    }
+    if (mnemonic === "cvtss2sd" || mnemonic === "cvtsd2ss") {
+        // Between single and double in the low lane; the high lane is kept.
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const toDouble = mnemonic === "cvtss2sd";
+        let sv: string;
+        if (src.kind === "xmm") sv = toDouble ? `f32u((uint32_t)xl${src.index})` : `f64u(xl${src.index})`;
+        else if (src.kind === "mem") { const a = guard(src); sv = toDouble ? `f32u(LD32(${a}))` : `f64u(LD64(${a}))`; }
+        else return `${mnemonic} ${ops.join(", ")}`;
+        if (toDouble) lines.push(`xl${dst.index} = u64d((double)${sv});`);
+        else lines.push(`xl${dst.index} = (xl${dst.index} & ~0xffffffffull) | (uint64_t)u32f((float)${sv});`);
+        dirty(); return;
     }
     if (mnemonic === "movq") {
         // Low 64 bits; writing an xmm from mem/xmm zero-extends the high lane.
@@ -926,6 +1000,14 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         if (sl === null) return `pandn ${ops.join(", ")}`;
         const sh = src.kind === "xmm" ? `xh${src.index}` : `LD64((a0) + 8u)`;
         lines.push(`{ uint64_t sl = ${sl}, sh = ${sh}; xl${dst.index} = (~xl${dst.index}) & sl; xh${dst.index} = (~xh${dst.index}) & sh; }`);
+        dirty(); return;
+    }
+    if ((mnemonic === "xorps" || mnemonic === "xorpd" || mnemonic === "pxor") && src.kind === "xmm" && src.index === dst.index) {
+        // Zeroing idiom, as an opaque zero: an invalid operation on it later
+        // (0/0, sqrt of a negative) then runs on the hardware, which yields the
+        // negative default NaN like v86, instead of being folded by clang into
+        // the positive canonical NaN.
+        lines.push(`{ uint64_t z = 0u; __asm__("" : "+r"(z)); xl${dst.index} = z; xh${dst.index} = z; }`);
         dirty(); return;
     }
     const b = bit[mnemonic];
@@ -1256,7 +1338,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 if (typeof r === "string") return reject(r);
                 if (r !== false) continue;
             }
-            if (SSE2_INT.has(mnemonic)) {
+            if (SSE2_INT.has(mnemonic) || (mnemonic === "movsd" && /xmm/.test(operand))) {
                 const r = emitSse2(mnemonic, ops, insn, i, lines, { parseOperand, guardMem, guardExit });
                 if (typeof r === "string") return reject(r);
                 continue;
