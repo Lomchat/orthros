@@ -208,8 +208,9 @@ export function parseOperand(text: string): Operand | null {
     const imm = /^(-?)(0x[0-9a-f]+|\d+)$/i.exec(t);
     // Number() does not parse a signed hexadecimal literal.
     if (imm) return { kind: "imm", value: (imm[1] ? -Number(imm[2]) : Number(imm[2])) | 0 };
-    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10, XMMWORD: 16 };
-    const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE|XMMWORD)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
+    // capstone spells the 80-bit x87 operand `xword ptr`.
+    const widths: Record<string, number> = { BYTE: 1, WORD: 2, DWORD: 4, QWORD: 8, TBYTE: 10, XWORD: 10, XMMWORD: 16 };
+    const mem = /^(?:(BYTE|WORD|DWORD|QWORD|TBYTE|XWORD|XMMWORD)\s+PTR\s+)?(?:([a-z]{2}):)?\[(.+)\]$/i.exec(t);
     if (mem) {
         const width = mem[1] ? widths[mem[1].toUpperCase()]! : 4;
         const info = parseAddress(mem[3]!, mem[2] ? mem[2].toLowerCase() : null);

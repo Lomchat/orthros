@@ -397,9 +397,37 @@ x87_fxam:
     fstp st(0)
     ret
 
+# 80-bit loads and stores: a constant with a 64-bit mantissa is pushed and
+# stored raw (byte-identical), relaxed f64 slots are canonicalised on fstp
+# m80 (normal, denormal, quiet NaN, -0, +inf), an f64 read of the raw slot
+# exits to the interpreter, and the x87 indefinite QNaN round-trips.
+    .globl x87_m80
+x87_m80:
+    mov edi, [esp+4]
+    fld tbyte ptr [pi2_80]
+    fstp tbyte ptr [edi]
+    fld qword ptr [c1]
+    fstp tbyte ptr [edi+10]
+    fld qword ptr [denorm]
+    fstp tbyte ptr [edi+20]
+    fld qword ptr [nanv]
+    fstp tbyte ptr [edi+30]
+    fld qword ptr [negzero]
+    fstp tbyte ptr [edi+40]
+    fld qword ptr [infv]
+    fstp tbyte ptr [edi+50]
+    fld tbyte ptr [pi2_80]
+    fstp qword ptr [edi+60]
+    fld tbyte ptr [nan80]
+    fstp tbyte ptr [edi+68]
+    ret
+
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25
+infv:   .quad 0x7ff0000000000000
+pi2_80: .byte 0x35,0xc2,0x68,0x21,0xa2,0xda,0x0f,0xc9,0xff,0x3f
+nan80:  .byte 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xc0,0xff,0xff
 negzero: .quad 0x8000000000000000
 denorm:  .quad 0x0000000000000001
 c3:     .float 2.5

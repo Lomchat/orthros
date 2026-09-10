@@ -58,6 +58,27 @@ static inline uint32_t x87_to_i32(double r) {
 static inline uint64_t x87_to_i64(double r) {
     return (r != r || r >= 9223372036854775808.0 || r < -9223372036854775808.0) ? 0x8000000000000000ull : (uint64_t)(int64_t)r;
 }
+/* Relaxed f64 bits to the true 80-bit form, as v86 canonicalises a slot it
+ * stores with fstp m80 (F80::of_f64_strict): explicit integer bit, rebias
+ * 1023 -> 16383, denormals normalised, NaN payload and quiet bit kept. Two
+ * pure functions (no address-taken local: the module has no shadow stack). */
+static inline uint64_t x87_f64_to_f80_m(uint64_t src) {
+    uint32_t exp = (uint32_t)(src >> 52) & 0x7ffu;
+    uint64_t mant = src & 0xfffffffffffffull;
+    if (exp == 0u && mant == 0ull) return 0ull;
+    if (exp == 0x7ffu) return mant == 0ull ? 0x8000000000000000ull : 0x8000000000000000ull | (((mant >> 51) & 1ull) << 62) | ((mant & 0x7ffffffffffffull) << 11);
+    if (exp == 0u) return 0x8000000000000000ull | ((mant << ((uint32_t)__builtin_clzll(mant) - 11u)) << 11);
+    return 0x8000000000000000ull | (mant << 11);
+}
+static inline uint32_t x87_f64_to_f80_se(uint64_t src) {
+    uint32_t sign = (uint32_t)(src >> 63) << 15;
+    uint32_t exp = (uint32_t)(src >> 52) & 0x7ffu;
+    uint64_t mant = src & 0xfffffffffffffull;
+    if (exp == 0u && mant == 0ull) return sign;
+    if (exp == 0x7ffu) return sign | 0x7fffu;
+    if (exp == 0u) return sign | (uint32_t)(15361 - (int32_t)((uint32_t)__builtin_clzll(mant) - 12u));
+    return sign | (exp + 15360u);
+}
 `;
 
 const FAST = new Set([
@@ -78,7 +99,8 @@ export function x87Kind(mnemonic: string, operand?: string): "fast" | "slow" | n
     if (!FAST.has(mnemonic)) return "slow";
     if (operand !== undefined) {
         const o = operand.toLowerCase();
-        if (o.includes("tbyte")) return "slow";
+        // m80 (capstone: `xword ptr`) is only modelled as a raw load and store.
+        if (o.includes("tbyte") || o.includes("xword")) return mnemonic === "fld" || mnemonic === "fstp" ? "fast" : "slow";
         // fistp m64 is a helper in the JIT too.
         if ((mnemonic === "fst" || mnemonic === "fstp") && o.includes("qword") && !o.includes("[")) return "slow";
     }
@@ -160,6 +182,13 @@ export function emitX87(
         }
         const op = mem(t);
         if (typeof op === "string") return op;
+        if (op.width === 10 && mnemonic === "fld") {
+            // m80: pushed as the true F80 it encodes, no canonical form, as
+            // v86's helper does; a later f64 read of that slot exits (the
+            // slot is not relaxed), a raw copy or store of it is exact.
+            lines.push(`X87_PUSH(LD64(${op.addr}), LD16(${op.addr} + 8u));`);
+            return { producer: false };
+        }
         const v = memF64(op, mnemonic === "fild");
         if (v === null) return `${mnemonic} width ${op.width}`;
         lines.push(`X87_PUSH(u64d(${v}), 0x7ffeu);`);
@@ -175,6 +204,13 @@ export function emitX87(
         }
         const op = mem(t);
         if (typeof op === "string") return op;
+        if (op.width === 10) {
+            // fstp m80 stores the slot's 80-bit image; a relaxed slot is
+            // canonicalised first, as v86's store does.
+            if (mnemonic !== "fstp") return `${mnemonic} width ${op.width}`;
+            lines.push(`{ uint64_t m = FPU_ST_M(top); uint32_t t = FPU_ST_T(top); if (t == 0x7ffeu) { t = x87_f64_to_f80_se(m); m = x87_f64_to_f80_m(m); } ST64(${op.addr}, m); ST16(${op.addr} + 8u, t); }`, `X87_POP();`);
+            return { producer: false };
+        }
         lines.push(`if (!X87_OK(top)) { ${slow} }`);
         if (op.width === 4) lines.push(`ST32(${op.addr}, u32f((float)f64u(FPU_ST_M(top))));`);
         else if (op.width === 8) lines.push(`ST64(${op.addr}, FPU_ST_M(top));`);
