@@ -932,6 +932,29 @@ t_sse_cvt:
     ldmxcsr dword ptr [edi+328]
     ret
 
+# The D1 forms with an implicit count of one, as a 96-bit shift left: shl
+# then two rcl through the carry, on memory; plus rol/ror/rcr by one.
+    .globl t_rcl_one
+t_rcl_one:
+    mov edi, [esp+4]
+    mov dword ptr [edi], 0x80000001
+    mov dword ptr [edi+4], 0xc0000003
+    mov dword ptr [edi+8], 0x00000007
+    shl dword ptr [edi], 1
+    rcl dword ptr [edi+4], 1
+    rcl dword ptr [edi+8], 1
+    setc byte ptr [edi+12]
+    mov eax, 0x80000001
+    stc
+    rcr eax, 1
+    mov [edi+16], eax
+    setc byte ptr [edi+20]
+    rol eax, 1
+    mov [edi+24], eax
+    ror dword ptr [edi+4], 1
+    seto byte ptr [edi+28]
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.

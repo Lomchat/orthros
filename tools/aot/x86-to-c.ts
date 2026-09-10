@@ -1955,8 +1955,8 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // current flags, CF out is the bit rotated out, OF is CF^MSB
                 // (rcl) or the two top bits of the result (rcr); ZF/SF/PF keep
                 // the current flags and a masked count of zero changes nothing.
-                if (!srcText) return reject(`${mnemonic} missing source`);
-                const src = parseOperand(srcText);
+                // capstone prints the D0/D1 forms without their implicit count of one.
+                const src = srcText ? parseOperand(srcText) : { kind: "imm" as const, value: 1 };
                 if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
                 guardMem(lines, dst, insn.addr, i);
                 const a = readExpr(dst), b = readExpr(src);
@@ -1990,8 +1990,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 // Rotates write CF, and OF (defined for a count of one, computed
                 // that way for any count); ZF/SF/PF keep whatever the current
                 // flags hold, and a masked count of zero leaves every flag alone.
-                if (!srcText) return reject(`${mnemonic} missing source`);
-                const src = parseOperand(srcText);
+                const src = srcText ? parseOperand(srcText) : { kind: "imm" as const, value: 1 };
                 if (!src) return reject(`operand: ${mnemonic} ${srcText}`);
                 guardMem(lines, dst, insn.addr, i);
                 const a = readExpr(dst), b = readExpr(src);
