@@ -1712,6 +1712,14 @@ export const dbg = {
         console.log(`[dbg][release-kinds][JSON] ${JSON.stringify(result)}`);
         return result;
     },
+    /** Per-bucket guest allocator occupancy (HEAP, SURFACE, THUNK_*): bump frontier,
+     *  live bytes, free-list size — what a late "allocation failed" HRESULT comes from. */
+    memBuckets(): unknown {
+        const p: any = System.getInstance().process;
+        const m = p?.memory;
+        if (!m?.getBucketStats) return null;
+        return { buckets: m.getBucketStats(), currentBytes: m.getStats?.()?.currentBytes ?? null };
+    },
     fastmemStats(): any {
         const w = wasm(); if (!w?.fastmem_get_generation) return null;
         const sourceNames = [
