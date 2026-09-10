@@ -99,6 +99,9 @@ const FLAG_PRESERVING = new Set([
     "movsb", "movsw", "movsd", "stosb", "stosw", "stosd", "cld", "std", "xlatb",
     "rep movsb", "rep movsw", "rep movsd", "rep stosb", "rep stosw", "rep stosd",
     "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
+    "movlpd", "movhpd", "movlps", "movhps", "movhlps", "movlhps",
+    "unpcklpd", "unpckhpd", "unpcklps", "unpckhps", "shufpd", "pshufd",
+    "pextrw", "pinsrw", "pmovmskb", "paddq", "psubq", "pcmpeqd",
     "psrlq", "psllq", "psubd", "paddd", "andpd", "andps", "orpd", "orps",
     "xorpd", "xorps", "pand", "pandn", "por", "pxor",
 ]);
@@ -817,6 +820,9 @@ function isFlagConsumer(m: string): boolean {
  *  so a context switch saves it. */
 const SSE2_INT = new Set([
     "movq", "movd", "movapd", "movaps", "movdqa", "movups", "movdqu",
+    "movlpd", "movhpd", "movlps", "movhps", "movhlps", "movlhps",
+    "unpcklpd", "unpckhpd", "unpcklps", "unpckhps", "shufpd", "pshufd",
+    "pextrw", "pinsrw", "pmovmskb", "paddq", "psubq", "pcmpeqd",
     "psrlq", "psllq", "psubd", "paddd",
     "andpd", "andps", "orpd", "orps", "xorpd", "xorps",
     "pand", "pandn", "por", "pxor",
@@ -961,6 +967,106 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`xl${dst.index} = LD64(${a}); xh${dst.index} = 0u;`); dirty(); return; }
         if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, xl${src.index});`); return; }
         return `movq ${ops.join(", ")}`;
+    }
+    if (mnemonic === "movlpd" || mnemonic === "movlps" || mnemonic === "movhpd" || mnemonic === "movhps") {
+        // One 64-bit half moved between memory and an xmm, the other half kept
+        // (the pd/ps spellings are the same bits).
+        const half = mnemonic === "movlpd" || mnemonic === "movlps" ? "xl" : "xh";
+        if (dst.kind === "xmm" && src && src.kind === "mem") { const a = guard(src); lines.push(`${half}${dst.index} = LD64(${a});`); dirty(); return; }
+        if (dst.kind === "mem" && src && src.kind === "xmm") { const a = guard(dst); lines.push(`ST64(${a}, ${half}${src.index});`); return; }
+        return `${mnemonic} ${ops.join(", ")}`;
+    }
+    if (mnemonic === "movhlps" || mnemonic === "movlhps") {
+        // Register halves: movhlps copies the source's high half into the
+        // destination's low half, movlhps the source's low half into the high.
+        if (dst.kind !== "xmm" || !src || src.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        if (mnemonic === "movhlps") lines.push(`xl${dst.index} = xh${src.index};`);
+        else lines.push(`xh${dst.index} = xl${src.index};`);
+        dirty(); return;
+    }
+    // The 128-bit source of the interleave/shuffle/packed-64 forms, as two
+    // 64-bit halves (xmm lanes or memory), read before the destination changes.
+    const src128 = (): [string, string] | null => {
+        if (!src) return null;
+        if (src.kind === "xmm") return [`xl${src.index}`, `xh${src.index}`];
+        if (src.kind === "mem") { const a = guard(src); return [`LD64(${a})`, `LD64((${a}) + 8u)`]; }
+        return null;
+    };
+    if (mnemonic === "unpcklpd" || mnemonic === "unpckhpd") {
+        // Interleave doubles: low keeps dst.lo | src.lo, high takes dst.hi | src.hi.
+        if (dst.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        if (mnemonic === "unpcklpd") lines.push(`{ uint64_t s0 = ${s[0]}; xh${dst.index} = s0; }`);
+        else lines.push(`{ uint64_t s1 = ${s[1]}; xl${dst.index} = xh${dst.index}; xh${dst.index} = s1; }`);
+        dirty(); return;
+    }
+    if (mnemonic === "unpcklps" || mnemonic === "unpckhps") {
+        // Interleave singles from the low (or high) halves: d0 s0 d1 s1.
+        if (dst.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        const lo = mnemonic === "unpcklps";
+        lines.push(`{ uint64_t dv = ${lo ? `xl${dst.index}` : `xh${dst.index}`}, sv = ${lo ? s[0] : s[1]};`
+            + ` xl${dst.index} = (dv & 0xffffffffull) | (sv << 32); xh${dst.index} = (dv >> 32) | (sv & 0xffffffff00000000ull); }`);
+        dirty(); return;
+    }
+    if (mnemonic === "shufpd") {
+        // Low lane from dst (imm bit 0 picks its high), high lane from src (bit 1).
+        const imm = h.parseOperand(ops[2] ?? "");
+        if (dst.kind !== "xmm" || !imm || imm.kind !== "imm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        const v = imm.value! & 3;
+        lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = ${v & 1 ? `xh${dst.index}` : `xl${dst.index}`}; xh${dst.index} = ${v & 2 ? "s1" : "s0"}; }`);
+        dirty(); return;
+    }
+    if (mnemonic === "pshufd") {
+        // Each destination dword picks source dword (imm >> 2i) & 3.
+        const imm = h.parseOperand(ops[2] ?? "");
+        if (dst.kind !== "xmm" || !imm || imm.kind !== "imm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        const sel = (k: number): string => { const j = (imm.value! >> (2 * k)) & 3; return j < 2 ? `(uint32_t)(s0 >> ${32 * j}u)` : `(uint32_t)(s1 >> ${32 * (j - 2)}u)`; };
+        lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = (uint64_t)${sel(0)} | ((uint64_t)${sel(1)} << 32); xh${dst.index} = (uint64_t)${sel(2)} | ((uint64_t)${sel(3)} << 32); }`);
+        dirty(); return;
+    }
+    if (mnemonic === "pextrw") {
+        // Word (imm & 7) of the source, zero-extended into a 32-bit register.
+        const imm = h.parseOperand(ops[2] ?? "");
+        if (dst.kind !== "reg32" || !src || src.kind !== "xmm" || !imm || imm.kind !== "imm") return `${mnemonic} ${ops.join(", ")}`;
+        const k = imm.value! & 7;
+        lines.push(`${REG32[dst.index!]} = (uint32_t)((${k < 4 ? `xl${src.index}` : `xh${src.index}`} >> ${16 * (k & 3)}u) & 0xffffu);`);
+        return;
+    }
+    if (mnemonic === "pinsrw") {
+        // Low 16 bits of a register or a word in memory into word (imm & 7).
+        const imm = h.parseOperand(ops[2] ?? "");
+        if (dst.kind !== "xmm" || !src || !imm || imm.kind !== "imm") return `${mnemonic} ${ops.join(", ")}`;
+        const sv = src.kind === "reg32" ? `(${REG32[src.index!]} & 0xffffu)` : src.kind === "mem" ? `LD16(${guard(src)})` : null;
+        if (sv === null) return `${mnemonic} ${ops.join(", ")}`;
+        const k = imm.value! & 7, half = k < 4 ? `xl${dst.index}` : `xh${dst.index}`, sh = 16 * (k & 3);
+        lines.push(`${half} = (${half} & ~(0xffffull << ${sh})) | ((uint64_t)${sv} << ${sh});`);
+        dirty(); return;
+    }
+    if (mnemonic === "pmovmskb") {
+        // The sign bit of each of the 16 bytes, byte 0 in bit 0.
+        if (dst.kind !== "reg32" || !src || src.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        lines.push(`{ uint32_t m = 0u; for (int k = 0; k < 8; k++) m |= (uint32_t)((xl${src.index} >> (8 * k + 7)) & 1u) << k | (uint32_t)((xh${src.index} >> (8 * k + 7)) & 1u) << (8 + k); ${REG32[dst.index!]} = m; }`);
+        return;
+    }
+    if (mnemonic === "paddq" || mnemonic === "psubq") {
+        // Packed 64-bit add/sub over the two lanes.
+        if (dst.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        const op = mnemonic === "paddq" ? "+" : "-";
+        lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = xl${dst.index} ${op} s0; xh${dst.index} = xh${dst.index} ${op} s1; }`);
+        dirty(); return;
+    }
+    if (mnemonic === "pcmpeqd") {
+        // Per dword, all ones when equal.
+        if (dst.kind !== "xmm") return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        lines.push(`{ uint64_t dl = xl${dst.index}, dh = xh${dst.index}, s0 = ${s[0]}, s1 = ${s[1]};`
+            + ` xl${dst.index} = ((uint32_t)dl == (uint32_t)s0 ? 0xffffffffull : 0ull) | ((uint32_t)(dl >> 32) == (uint32_t)(s0 >> 32) ? 0xffffffff00000000ull : 0ull);`
+            + ` xh${dst.index} = ((uint32_t)dh == (uint32_t)s1 ? 0xffffffffull : 0ull) | ((uint32_t)(dh >> 32) == (uint32_t)(s1 >> 32) ? 0xffffffff00000000ull : 0ull); }`);
+        dirty(); return;
     }
     // 128-bit move (aligned/unaligned/packed-double/packed-int all identical here).
     if (mnemonic === "movapd" || mnemonic === "movaps" || mnemonic === "movdqa" || mnemonic === "movups" || mnemonic === "movdqu") {

@@ -655,6 +655,92 @@ t_shld:
     shrd dword ptr [edi+36], edx, 3
     ret
 
+# Half-register SSE moves: movlpd/movhpd/movlps/movhps between memory and an
+# xmm keep the other half; movhlps/movlhps move halves between registers. The
+# 32 bytes at [edi] are read back as the two full registers.
+    .globl t_sse_lohi
+t_sse_lohi:
+    mov edi, [esp+4]
+    mov dword ptr [edi+64], 0x11223344
+    mov dword ptr [edi+68], 0x55667788
+    mov dword ptr [edi+72], 0x99aabbcc
+    mov dword ptr [edi+76], 0xddeeff00
+    movups xmm0, [edi+64]
+    movlpd xmm1, qword ptr [edi+72]
+    movhpd xmm1, qword ptr [edi+64]
+    movlps xmm2, qword ptr [edi+64]
+    movhps xmm2, qword ptr [edi+72]
+    movhlps xmm3, xmm0
+    movlhps xmm3, xmm1
+    movlpd qword ptr [edi], xmm1
+    movhpd qword ptr [edi+8], xmm1
+    movhps qword ptr [edi+16], xmm2
+    movlps qword ptr [edi+24], xmm2
+    movups [edi+32], xmm3
+    movups [edi+48], xmm1
+    ret
+
+# Interleaves, shuffles, word insert/extract, byte sign mask, packed-64
+# add/sub and dword compare: pure bit moves whose results are stored as whole
+# registers at [edi], [edi+16] ... and in eax/ecx/edx.
+    .globl t_sse_unpck
+t_sse_unpck:
+    mov edi, [esp+4]
+    mov dword ptr [edi+128], 0x11223344
+    mov dword ptr [edi+132], 0x55667788
+    mov dword ptr [edi+136], 0x99aabbcc
+    mov dword ptr [edi+140], 0xddeeff00
+    mov dword ptr [edi+144], 0x01020304
+    mov dword ptr [edi+148], 0x05060708
+    mov dword ptr [edi+152], 0x99aabbcc
+    mov dword ptr [edi+156], 0x8d0e0f10
+    movups xmm0, [edi+128]
+    movups xmm1, [edi+144]
+    movapd xmm2, xmm0
+    unpcklpd xmm2, xmm1
+    movups [edi], xmm2
+    movapd xmm2, xmm0
+    unpckhpd xmm2, xmm1
+    movups [edi+16], xmm2
+    movapd xmm2, xmm0
+    unpcklpd xmm2, xmm2
+    movups [edi+32], xmm2
+    movapd xmm2, xmm0
+    unpckhpd xmm2, xmmword ptr [edi+144]
+    movups [edi+48], xmm2
+    movaps xmm2, xmm0
+    unpcklps xmm2, xmm1
+    movups [edi+64], xmm2
+    movaps xmm2, xmm0
+    unpckhps xmm2, xmm1
+    movups [edi+80], xmm2
+    movapd xmm2, xmm0
+    shufpd xmm2, xmm1, 1
+    movups [edi+96], xmm2
+    movapd xmm2, xmm0
+    shufpd xmm2, xmm1, 2
+    movups [edi+112], xmm2
+    pshufd xmm3, xmm0, 0x1b
+    movups [edi+160], xmm3
+    pshufd xmm3, xmmword ptr [edi+144], 0x4e
+    movups [edi+176], xmm3
+    pextrw eax, xmm0, 3
+    pextrw ecx, xmm1, 7
+    pinsrw xmm3, eax, 5
+    pinsrw xmm3, word ptr [edi+130], 0
+    movups [edi+192], xmm3
+    pmovmskb edx, xmm1
+    movapd xmm4, xmm0
+    paddq xmm4, xmm1
+    movups [edi+208], xmm4
+    movapd xmm4, xmm0
+    psubq xmm4, xmmword ptr [edi+144]
+    movups [edi+224], xmm4
+    movapd xmm4, xmm0
+    pcmpeqd xmm4, xmm1
+    movups [edi+240], xmm4
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.
