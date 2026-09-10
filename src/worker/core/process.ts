@@ -51,6 +51,10 @@ export class MemoryManager {
 
     private bucketState: Map<RegionKind, BucketState> = new Map();
     private reservedAddresses: Set<number> = new Set();
+    // HEAP-kind blocks placed in SURFACE once the HEAP window was full (never
+    // registered as regions, like every HEAP block); counted for the log cap.
+    private spilledHeap: Set<number> = new Set();
+    private heapSpills = 0;
 
     // [DIAG] Large-allocation (≥64KB) lifecycle log. VirtualAlloc-class blocks are
     // rare, so a long ring spans the whole session — unlike the 4K generic
@@ -139,14 +143,32 @@ export class MemoryManager {
         const aligned = this.alignUp(size, minAlign);
         const finalKind = kind ?? 'HEAP';
         const finalPerms = perms ?? 'rw';
-        const bucketKind = this.resolveBucketKind(finalKind);
+        let bucketKind = this.resolveBucketKind(finalKind);
 
         const bucket = this.bucketState.get(bucketKind);
         if (!bucket) {
             throw new Error(`MemoryManager: bucket ${bucketKind} is not available`);
         }
 
-        const addr = this.allocateInBucket(bucket, aligned, minAlign, bucketKind);
+        let addr: number;
+        try {
+            addr = this.allocateInBucket(bucket, aligned, minAlign, bucketKind);
+        } catch (e) {
+            // The HEAP window is a layout choice of ours, not a limit the guest knows:
+            // Windows keeps serving heap and VirtualAlloc from anywhere below 2 GB. A
+            // full window spills into SURFACE, the bucket that grows to the end of RAM;
+            // the block is tracked by its real bucket so free() returns it there.
+            const spill = bucketKind === 'HEAP' ? this.bucketState.get('SURFACE') : undefined;
+            if (!spill) throw e;
+            addr = this.allocateInBucket(spill, aligned, minAlign, 'SURFACE');
+            bucketKind = 'SURFACE';
+            this.spilledHeap.add(addr);
+            if (this.heapSpills++ < 8) {
+                Logger.warn(LogCategory.SYSTEM,
+                    `[MemoryManager] HEAP window full (${e instanceof Error ? e.message : e}); ` +
+                    `0x${aligned.toString(16)} bytes spilled to SURFACE at 0x${addr.toString(16)}`);
+            }
+        }
 
         // [DIAG/SAFETY] Double-hand-out detector: the allocator must never return an
         // address that is still recorded live. A real heap never hands out a busy block;
@@ -269,9 +291,10 @@ export class MemoryManager {
         if (size === undefined) return;
 
         // HEAP allocs are not registered in addressSpace.regions (skipped in alloc),
-        // so skip releaseRegion for them to avoid O(n) scan of a non-existent entry.
+        // so skip releaseRegion for them to avoid O(n) scan of a non-existent entry;
+        // a HEAP block spilled into SURFACE was not registered either.
         const bucketKind = this.allocBucket.get(ptr);
-        if (bucketKind !== 'HEAP') {
+        if (bucketKind !== 'HEAP' && !this.spilledHeap.delete(ptr)) {
             this.addressSpace.releaseRegion(ptr);
         }
         this.currentBytes -= size;
