@@ -56,11 +56,15 @@ export interface X86Context {
     eip: number; eflags: number;
 }
 
-export type ThunkImplementation = (
+export type ThunkImplementation = ((
     ctx: X86Context,
     memory: Uint8Array,
     args: number[]
-) => number | Promise<number> | ThunkResult | Promise<ThunkResult>;
+) => number | Promise<number> | ThunkResult | Promise<ThunkResult>) & {
+    /** The implementation is this constant: its stub returns it in place
+     *  (see ThunkGenerator.declareConstantReturn) and is never dispatched. */
+    constantReturn?: number;
+};
 
 export type FastPathImplementation = (
     cpu: any,
@@ -3104,6 +3108,9 @@ export class ThunkDispatcher {
     }
 
     register(dllName: string, functionName: string, impl: ThunkImplementation): void {
+        if (typeof impl.constantReturn === 'number') {
+            this.thunkGenerator.declareConstantReturn(dllName, functionName, impl.constantReturn);
+        }
         const stub = this.findStubsByName(dllName, functionName)[0];
 
         if (stub) {

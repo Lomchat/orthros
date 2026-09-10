@@ -9,6 +9,8 @@ export interface ThunkStub {
     argCount?: number;  // Number of arguments (for reading stack)
     /** Bytes callee pops on RET (for ESP checks). Use when decoration differs from params (e.g. _AIL_file_read@8). */
     stackCleanupBytes?: number;
+    /** The stub is the leaf `MOV EAX, value ; RET N`: it never reaches the dispatcher. */
+    constantReturn?: number;
 }
 
 /** Size of the shared "missing import" trap stub (UD2) – must be 16-byte aligned like other stubs */
@@ -45,6 +47,18 @@ export class ThunkGenerator {
     private normalizedNameToStubs: Map<string, ThunkStub[]> = new Map();
     /** Data exports: dll:name -> guest memory address. No thunk stub generated; IAT points directly to data. */
     private dataExportAddresses: Map<string, number> = new Map();
+    /** Exports whose implementation is a constant (dll:name -> value): their stub
+     *  returns it in place instead of trapping, so the call never leaves generated
+     *  code. Declared before the stub is generated (module registration). */
+    private constantReturns: Map<string, number> = new Map();
+
+    declareConstantReturn(dllName: string, exportName: string, value: number): void {
+        this.constantReturns.set(buildQualifiedThunkKey(dllName, exportName), value >>> 0);
+    }
+
+    private static constantLeaf(value: number): number[] {
+        return [0xB8, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >>> 24) & 0xFF];
+    }
 
     private appendStubIndex(index: Map<string, ThunkStub[]>, key: string, stub: ThunkStub): void {
         const existing = index.get(key);
@@ -151,6 +165,7 @@ export class ThunkGenerator {
 
             const stubAddress = this.currentAddress;
             const functionId = this.nextFunctionId++;
+            const constant = this.constantReturns.get(fullKey);
 
             // Stub format for 32-bit protected mode (16 bytes aligned):
             // B8 ID ID ID ID       - MOV EAX, functionId (5 bytes)
@@ -158,18 +173,23 @@ export class ThunkGenerator {
             // EF                   - OUT DX, EAX (1 byte)
             // C2 NN NN / C3        - RET N (3 bytes) or RET (1 byte)
             // Padding              - NOP padding
+            // A constant-return export is the leaf MOV EAX, value ; RET N (no port write).
 
-            codeChunks.push(
-                0xB8,
-                functionId & 0xFF,
-                (functionId >> 8) & 0xFF,
-                (functionId >> 16) & 0xFF,
-                (functionId >> 24) & 0xFF,
+            if (constant !== undefined) {
+                codeChunks.push(...ThunkGenerator.constantLeaf(constant));
+            } else {
+                codeChunks.push(
+                    0xB8,
+                    functionId & 0xFF,
+                    (functionId >> 8) & 0xFF,
+                    (functionId >> 16) & 0xFF,
+                    (functionId >> 24) & 0xFF,
 
-                0xBA, 0x77, 0xB0, 0x00, 0x00,
+                    0xBA, 0x77, 0xB0, 0x00, 0x00,
 
-                0xEF
-            );
+                    0xEF
+                );
+            }
 
             // cdecl: caller cleans stack, use C3 (RET)
             // stdcall: callee cleans stack, use C2 NN NN (RET N). Prefer stackCleanupBytes when decoration is wrong.
@@ -202,6 +222,7 @@ export class ThunkGenerator {
                 dllName,
                 functionName: exportName,
                 functionId,
+                constantReturn: constant,
                 argCount: info.argCount,
                 stackCleanupBytes: isStdcall ? bytesToPop : 0,
             };
@@ -246,11 +267,14 @@ export class ThunkGenerator {
                 `[ThunkGenerator] allocateOneStub requires argCount or stackCleanupBytes for stdcall: ${dllName}:${exportName}`
             );
         }
-        const codeChunks: number[] = [
-            0xB8, functionId & 0xFF, (functionId >> 8) & 0xFF, (functionId >> 16) & 0xFF, (functionId >> 24) & 0xFF,
-            0xBA, 0x77, 0xB0, 0x00, 0x00,
-            0xEF,
-        ];
+        const constant = this.constantReturns.get(buildQualifiedThunkKey(dllName, exportName));
+        const codeChunks: number[] = constant !== undefined
+            ? ThunkGenerator.constantLeaf(constant)
+            : [
+                0xB8, functionId & 0xFF, (functionId >> 8) & 0xFF, (functionId >> 16) & 0xFF, (functionId >> 24) & 0xFF,
+                0xBA, 0x77, 0xB0, 0x00, 0x00,
+                0xEF,
+            ];
         if (isStdcall) {
             if (bytesToPop && bytesToPop > 0) {
                 codeChunks.push(0xC2, bytesToPop & 0xFF, (bytesToPop >> 8) & 0xFF);
@@ -267,6 +291,7 @@ export class ThunkGenerator {
             dllName,
             functionName: exportName,
             functionId,
+            constantReturn: constant,
             argCount,
             // Cache cdecl as 0 so ThunkDispatcher never falls back to argCount * 4.
             stackCleanupBytes: isStdcall ? bytesToPop : 0,
