@@ -54,6 +54,10 @@ export interface LaunchEmulatorOptions {
      * compression. Directly-created compressed resources remain supported.
      */
     compressedTexturePolicy?: "advertise" | "prefer-uncompressed";
+    /** Guest memory sizes in bytes, over the bundle manifest's (64 MB … 2 GB
+     *  of RAM): an engine whose live set outgrows a 1 GB guest needs the
+     *  address space Windows gave it, not a bigger fixed heap window. */
+    memory?: { ram?: number; vram?: number };
 }
 
 /** Resolutions offered when an entry declares `resolutions: true`. */
