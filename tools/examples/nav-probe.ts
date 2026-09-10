@@ -22,6 +22,7 @@
  *   harness NAME [JSON…] any harness service command (report, stubs, textures…)
  *   cpuprofile MS [TOP]  Worker CPU profile: self-time per subsystem + hottest guest pages (jit_<page>)
  *   hotp-export PATH     write the session's hot-page profile (HOTP) to PATH (input of coverage-c / build-batch --profile)
+ *   hresults [N]         last N failed graphics HRESULTs (caller + args) — names a "Direct3D error" crash
  *   texlist              current D3D9 textures, largest first (the UI's own sheets stand out)
  *   tex N                decode texture-store slot N to /tmp/nav-tex-N.png (readable as an image)
  *   uimap                capture one frame: every draw as screen rect + atlas rect (MVP-projected)
@@ -81,6 +82,8 @@ async function stallDump(b: BenchSession, label: string): Promise<void> {
     out.threads = r?.threads;
     out.lastThunks = (r?.lastThunks ?? []).slice(-12);
     out.stubs = r?.stubs;
+    // A "Game crash" dialog quoting a Direct3D HRESULT is explained by this ring, not by the stubs.
+    out.graphicsHresultFailures = (r?.graphicsHresultFailures ?? []).slice(-10);
     await b.dbg("hotPages", true).catch(() => null);
     await b.dbg("schedulerPerf", true).catch(() => null);
     const eips: string[] = [];
@@ -218,6 +221,16 @@ while (performance.now() - startedAt < 3 * 3600 * 1000) {
         continue;
     }
     if (cmd === "sample") { state = await delta(bench, state, 1, "sample"); continue; }
+    if (cmd === "hresults") {
+        // hresults [N]: the last N failed graphics HRESULTs (d3d9/d3dx9/…) with caller and arguments,
+        // from the Worker's bounded ring — what a "Direct3D error" crash dialog refers to.
+        const n = Math.max(1, Number(argText) || 12);
+        const rep: any = await bench.evalPage(`__BS__.harness.__runSteps([{ cmd: "report", args: [] }])`, 60_000).catch((e) => ({ error: String(e) }));
+        const r = rep?.steps?.[0]?.result ?? rep;
+        const ring = r?.graphicsHresultFailures ?? [];
+        console.log(JSON.stringify({ step: `hresults ${n}`, total: ring.length, last: ring.slice(-n) }).slice(0, 6000));
+        continue;
+    }
     if (cmd === "hotp-export") {
         // hotp-export PATH: write the session's hot-page profile (HOTP image) to PATH — the input
         // of coverage-c.ts / build-batch.ts --profile for a title that has no sidecar yet.
