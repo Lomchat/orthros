@@ -4,8 +4,12 @@
  */
 
 export const KERNEL_EVENT_HANDLE_BASE = 0x30000;
-export const EVENT_TABLE_SLOTS = 2048;
-export const OFF_HC_EVENT_TABLE = 0x1448;
+/** The whole KERNEL handle window (0x30000..0x3FFFF, stride 4). Sizes both the event mirror
+ *  (u8 per slot) and the mutex mirror (u32 per slot), both in guest RAM behind a page pointer:
+ *  a fixed 2048-slot in-page table left every event created after the 2048th kernel object
+ *  invisible to the WASM fast paths. */
+export const EVENT_TABLE_SLOTS = 16384;
+export const OFF_HC_EVENT_MIRROR_PTR = 0x1C58;
 export const OFF_HC_EVENT_STARVATION_COUNTER = 0x1C48;
 export const OFF_HC_EVENT_STARVATION_LIMIT = 0x1C4C;
 

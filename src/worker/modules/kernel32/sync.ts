@@ -21,6 +21,8 @@ import {
 } from './srw-lock';
 import { namedObjects } from './named-objects';
 import { csLeaveFastStats, csLeaveSlowStats } from './cs-stats';
+import { hypercallDataManager } from '../../core/cpu/hypercall-data';
+import { eventSlotForKernelHandle } from '../../core/cpu/hypercall-event-mirror';
 
 const syncModule = (() => {
     const exports: Record<string, ThunkImplementation> = {};
@@ -523,6 +525,14 @@ const syncModule = (() => {
         } else {
             // No waiters — fully release
             csLeaveSlowStats.free++;
+            if (lockSem === 0) {
+                csLeaveSlowStats.semZero++;
+            } else {
+                if (lockSem > csLeaveSlowStats.semMax) csLeaveSlowStats.semMax = lockSem;
+                if (eventSlotForKernelHandle(lockSem) === null) csLeaveSlowStats.semOutOfRange++;
+                else if (hypercallDataManager.readEventMirrorState(lockSem) === null) csLeaveSlowStats.semUnmirrored++;
+                else csLeaveSlowStats.semMirrored++;
+            }
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_LOCKCOUNT) >>> 0, 0xffffffff);
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_RECURSION) >>> 0, 0);
             Mem.writeUint32((lpCriticalSection + CS_OFFSET_OWNER) >>> 0, 0);

@@ -18,7 +18,7 @@ import {
     EVT_MANUAL,
     EVT_HAS_WAITERS,
     EVT_PENDING_WAKE,
-    OFF_HC_EVENT_TABLE,
+    OFF_HC_EVENT_MIRROR_PTR,
     OFF_HC_EVENT_STARVATION_COUNTER,
     OFF_HC_EVENT_STARVATION_LIMIT,
     OFF_HC_MUTEX_MIRROR_PTR,
@@ -470,6 +470,8 @@ export class HypercallDataManager {
     private readonly eventMirrorShadow = new Uint8Array(EVENT_TABLE_SLOTS);
     // Mutex mirror lives in guest RAM (2048 × u32); pointer stored at OFF_HC_MUTEX_MIRROR_PTR.
     private mutexMirrorAddr = 0;
+    // Event mirror lives in guest RAM too (EVENT_TABLE_SLOTS × u8); pointer at OFF_HC_EVENT_MIRROR_PTR.
+    private eventMirrorAddr = 0;
     private readonly mutexMirrorShadow = new Uint32Array(EVENT_TABLE_SLOTS);
     // EAGL token-dispatch config block (guest RAM); pointer at OFF_HC_EAGL_TOKEN_CFG_PTR.
     private eaglTokenCfgAddr = 0;
@@ -595,6 +597,9 @@ export class HypercallDataManager {
             // Do not rewrite the live mutex table from mutexMirrorShadow here:
             // WASM and guest inline stubs mutate it without updating that shadow.
         }
+        if (this.eventMirrorAddr !== 0) {
+            this.view.setUint32(this.hpBase + OFF_HC_EVENT_MIRROR_PTR, this.eventMirrorAddr, true);
+        }
         if (this.eaglTokenCfgAddr !== 0) {
             this.view.setUint32(this.hpBase + OFF_HC_EAGL_TOKEN_CFG_PTR, this.eaglTokenCfgAddr, true);
         }
@@ -639,16 +644,18 @@ export class HypercallDataManager {
      *  would clobber a pending fast-path signal with the stale shadow (lost wakeup). On a real
      *  reset (clearEventMirrors) pass false so everything is zeroed. */
     private writeEventMirrorState(preserveLiveSignals = false): void {
-        if (!this.view) return;
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (!this.eventMirrorAddr || !mem) return;
         const SIG = EVT_SIGNALED | EVT_PENDING_WAKE;
+        const base = this.eventMirrorAddr;
         for (let slot = 0; slot < EVENT_TABLE_SLOTS; slot++) {
             const shadow = this.eventMirrorShadow[slot]!;
             let out = shadow;
             if (preserveLiveSignals) {
-                const live = this.view.getUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot);
+                const live = mem[base + slot]!;
                 out = (shadow & ~SIG) | (live & SIG);
             }
-            this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, out);
+            mem[base + slot] = out;
         }
     }
 
@@ -718,6 +725,36 @@ export class HypercallDataManager {
             return u32[(this.mutexMirrorAddr >>> 2) + slot]!;
         }
         return this.mutexMirrorShadow[slot] ?? 0;
+    }
+
+    /** A/B kill-switch, same channel as __noMutexMirror: the table is never allocated, the page
+     *  pointer stays 0, and every WASM event fast path declines to JS. */
+    private eventMirrorDisabled(): boolean {
+        return (globalThis as any).__noEventMirror === true;
+    }
+
+    /** Allocate the guest-RAM event mirror (EVENT_TABLE_SLOTS × u8) and publish its pointer.
+     *  The shadow keeps every registration made before this succeeds, and is flushed here. */
+    ensureEventMirrorAlloc(): number {
+        if (this.eventMirrorDisabled()) return 0;
+        if (this.eventMirrorAddr) return this.eventMirrorAddr;
+        const mem = System.getInstance().process?.memory;
+        if (!mem) return 0;
+        const addr = mem.alloc(EVENT_TABLE_SLOTS) >>> 0;
+        if (!addr) return 0;
+        this.eventMirrorAddr = addr;
+        this.refreshViews();
+        if (this.view && this.hpBase !== 0) {
+            this.view.setUint32(this.hpBase + OFF_HC_EVENT_MIRROR_PTR, addr, true);
+        }
+        this.writeEventMirrorState();
+        return addr;
+    }
+
+    private writeEventMirrorSlot(slot: number): void {
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (!this.eventMirrorAddr || !mem) return;
+        mem[this.eventMirrorAddr + slot] = this.eventMirrorShadow[slot]!;
     }
 
     registerMutexMirror(handle: number, ownerThreadId: number | null, recursion: number): void {
@@ -796,6 +833,7 @@ export class HypercallDataManager {
     registerEventMirror(handle: number, manualReset: boolean, initialState: boolean): void {
         const slot = this.eventSlotForHandle(handle);
         if (slot === null) return;
+        this.ensureEventMirrorAlloc();
 
         let flags = EVT_VALID;
         if (manualReset) flags |= EVT_MANUAL;
@@ -804,10 +842,7 @@ export class HypercallDataManager {
             if (manualReset) flags |= EVT_PENDING_WAKE;
         }
         this.eventMirrorShadow[slot] = flags;
-
-        this.refreshViews();
-        if (!this.view || this.hpBase === 0) return;
-        this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, flags);
+        this.writeEventMirrorSlot(slot);
     }
 
     unregisterEventMirror(handle: number): void {
@@ -815,9 +850,7 @@ export class HypercallDataManager {
         if (slot === null) return;
 
         this.eventMirrorShadow[slot] = 0;
-        this.refreshViews();
-        if (!this.view || this.hpBase === 0) return;
-        this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, 0);
+        this.writeEventMirrorSlot(slot);
     }
 
     /** Live mirror flags for a slot. The WASM SetEvent fast-path (handle_set_event) writes
@@ -826,9 +859,9 @@ export class HypercallDataManager {
      *  on this (not eventMirrorShadow), or the JS write clobbers the WASM-set signal → lost
      *  wakeup → deadlock. Falls back to the shadow only before the WASM view exists. */
     private liveEventFlags(slot: number): number {
-        this.refreshViews();
-        if (this.view && this.hpBase !== 0) {
-            return this.view.getUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot);
+        const mem = System.getInstance().process?.getCurrentMemory?.();
+        if (this.eventMirrorAddr && mem) {
+            return mem[this.eventMirrorAddr + slot]!;
         }
         return this.eventMirrorShadow[slot] ?? 0;
     }
@@ -847,10 +880,7 @@ export class HypercallDataManager {
             flags &= ~(EVT_SIGNALED | EVT_PENDING_WAKE);
         }
         this.eventMirrorShadow[slot] = flags;
-
-        this.refreshViews();
-        if (!this.view || this.hpBase === 0) return;
-        this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, flags);
+        this.writeEventMirrorSlot(slot);
     }
 
     clearEventMirrorPendingWake(handle: number): void {
@@ -862,10 +892,7 @@ export class HypercallDataManager {
 
         flags &= ~EVT_PENDING_WAKE;
         this.eventMirrorShadow[slot] = flags;
-
-        this.refreshViews();
-        if (!this.view || this.hpBase === 0) return;
-        this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, flags);
+        this.writeEventMirrorSlot(slot);
     }
 
     setEventMirrorHasWaiters(handle: number, hasWaiters: boolean): void {
@@ -878,10 +905,7 @@ export class HypercallDataManager {
         if (hasWaiters) flags |= EVT_HAS_WAITERS;
         else flags &= ~EVT_HAS_WAITERS;
         this.eventMirrorShadow[slot] = flags;
-
-        this.refreshViews();
-        if (!this.view || this.hpBase === 0) return;
-        this.view.setUint8(this.hpBase + OFF_HC_EVENT_TABLE + slot, flags);
+        this.writeEventMirrorSlot(slot);
     }
 
     readEventMirrorState(handle: number): { signaled: boolean; manualReset: boolean; pendingWake: boolean } | null {
@@ -1087,6 +1111,7 @@ export class HypercallDataManager {
 
         this.slabControlAddr = 0;
         this.mutexMirrorAddr = 0;
+        this.eventMirrorAddr = 0;
         this.eaglTokenCfgAddr = 0;
         this.flsAllocatedShadow.fill(0);
         this.flsValuesShadow.fill(0);
