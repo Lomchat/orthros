@@ -5,7 +5,8 @@
  * long loop has much time and few entries, so the pages that dominate a
  * phase can stay with the JIT for ever. With JIT modules named jit_<page>
  * in profiles, this tool reads the PLAY-PROFILE / GAME-PROFILE lines a
- * harness log carries, sums the share of each JIT page, keeps the pages at or
+ * harness log carries (or nav-probe's `cpuprofile` JSON lines), sums the
+ * share of each JIT page, keeps the pages at or
  * above --min-pct, and writes every accepted candidate function whose entry
  * lies on those pages — one address per line for build-batch --entries-file.
  *
@@ -29,6 +30,19 @@ const share = new Map<number, number>();
 for (const log of logs) {
     const text = await Bun.file(log).text();
     for (const line of text.split("\n")) {
+        if (line.startsWith('{"step":"cpuprofile')) {
+            // nav-probe's `cpuprofile` action: {"step":"cpuprofile MS","result":{"top":[{"fn":"jit_<page>","pct":N},...]}}
+            try {
+                const top = (JSON.parse(line) as { result?: { top?: Array<{ fn: string; pct: number }> } }).result?.top ?? [];
+                for (const t of top) {
+                    const m = /^jit_([0-9a-f]+)(?:_\d+)?$/.exec(t.fn);
+                    if (!m) continue;
+                    const page = parseInt(m[1]!, 16) >>> 12;
+                    share.set(page, (share.get(page) ?? 0) + Number(t.pct));
+                }
+            } catch { /* the action caps its line; a truncated one is skipped */ }
+            continue;
+        }
         if (!/(PLAY|GAME)-PROFILE/.test(line)) continue;
         const top = /top=\[([^\]]*)\]/.exec(line)?.[1] ?? "";
         for (const item of top.split(",")) {
