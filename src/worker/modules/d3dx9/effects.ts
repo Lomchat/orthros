@@ -98,9 +98,7 @@ function writeZeros(ptr: number, bytes: number): boolean {
 
 export function createEffectExports(process: Process): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
-    // The compatibility effect renders nothing: every method left on this
-    // default is a constant the stub returns in place.
-    const ok: ThunkImplementation = Object.assign(() => D3D_OK, { constantReturn: D3D_OK });
+    const ok = () => D3D_OK;
     const stateFor = (args: number[]) => effectStates.get(args[0] >>> 0);
 
     exports['ID3DXEffect_QueryInterface'] = (_ctx, _mem, args) => {
