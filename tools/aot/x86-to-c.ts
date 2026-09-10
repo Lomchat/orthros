@@ -84,7 +84,7 @@ const COND_BRANCH = new Set([
 /** Flag producers a consumer can read. `sahf` and the fcomi family carry the
  *  x87 compare result into EFLAGS. */
 const FLAG_PRODUCER = new Set(["cmp", "test", "sub", "add", "and", "or", "xor", "inc", "dec", "neg",
-    "shl", "shr", "sar", "adc", "sbb", "imul", "mul",
+    "shl", "shr", "sar", "shld", "shrd", "adc", "sbb", "imul", "mul",
     "bt", "bts", "btr", "btc", "popfd", "rol", "ror", "rcl", "rcr", "stc", "clc", "cmc",
     "repe cmpsb", "repe cmpsw", "repe cmpsd",
     "repne scasb", "repne scasw", "repne scasd", "repe scasb", "repe scasw", "repe scasd",
@@ -1806,6 +1806,34 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     if (isCaptured) liveFlagSites++;
                     continue;
                 }
+            }
+            else if (mnemonic === "shld" || mnemonic === "shrd") {
+                // Double-precision shifts, 32-bit operands only. CF is the last
+                // bit shifted out of the destination; OF is defined for a count
+                // of one (shld: CF ^ sign of the result, and clear for any
+                // other count; shrd: sign change, computed that way for any
+                // count); a masked count of zero leaves every flag alone.
+                const cntText = ops[2] ?? null;
+                if (!srcText || !cntText) return reject(`${mnemonic} operands: ${operand}`);
+                const src = parseOperand(srcText), cnt = parseOperand(cntText);
+                if (!src || !cnt) return reject(`operand: ${mnemonic} ${operand}`);
+                if (operandWidth(dst) !== 4 || operandWidth(src) !== 4) return reject(`${mnemonic} on a ${operandWidth(dst) * 8}-bit operand`);
+                if (cnt.kind !== "imm" && !(cnt.kind === "reg8lo" && cnt.index === 1)) return reject(`${mnemonic} count ${cntText}`);
+                guardMem(lines, dst, insn.addr, i);
+                const a = readExpr(dst), b = readExpr(src), cexpr = readExpr(cnt);
+                if (a === null || b === null || cexpr === null) return reject(`read: ${mnemonic}`);
+                const wr = writeStmt(dst, "fr");
+                if (!wr) return reject(`write: ${mnemonic}`);
+                const body = mnemonic === "shld"
+                    ? `uint32_t r = (az << c) | (bz >> (32u - c)); uint32_t cfo = (az >> (32u - c)) & 1u; uint32_t of = c == 1u ? (cfo ^ (r >> 31)) & 1u : 0u;`
+                    : `uint32_t r = (az >> c) | (bz << (32u - c)); uint32_t cfo = (az >> (c - 1u)) & 1u; uint32_t of = ((r ^ az) >> 31) & 1u;`;
+                lines.push(`{ uint32_t c = (${cexpr}) & 31u;`
+                    + ` uint32_t cur = fk ? x86_flags_now(fk, fa, fb, fr, fc) : (((uint32_t)FLAGS_CHANGED & 1u) ? (uint32_t)get_eflags() : (uint32_t)FLAGS);`
+                    + ` if (c) { uint32_t az = ${a}; uint32_t bz = ${b}; ${body} fr = r;`
+                    + ` fa = cfo | ((__builtin_parity(fr & 0xffu) == 0) << 2) | ((fr == 0u) << 6) | ((fr >> 31) << 7) | (of << 11); ${wr} } else { fa = cur & 0x8d5u; } fk = 8u; }`);
+                kinds.set(i, "raw");
+                if (isCaptured) liveFlagSites++;
+                continue;
             }
             else if (mnemonic === "inc" || mnemonic === "dec") {
                 const a = readExpr(dst);

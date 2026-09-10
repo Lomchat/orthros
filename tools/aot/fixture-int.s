@@ -616,6 +616,45 @@ t_sse_cmp:
     mov [edi+16], ecx
     ret
 
+# shld/shrd: double-precision shifts by an immediate and by CL, counts 1 (OF
+# defined), 5, 12 and 0 (flags kept: CF set by stc must survive); CF/OF/SF/ZF/PF
+# are read back through setcc into scratch.
+    .globl t_shld
+t_shld:
+    mov edi, [esp+4]
+    mov eax, 0x80000001
+    mov edx, 0xf0f0f0f0
+    shld eax, edx, 1
+    mov [edi], eax
+    setc byte ptr [edi+4]
+    seto byte ptr [edi+5]
+    mov eax, 0x12345678
+    mov ecx, 5
+    shld eax, edx, cl
+    mov [edi+8], eax
+    setc byte ptr [edi+12]
+    sets byte ptr [edi+13]
+    mov eax, 0x00000001
+    mov edx, 0xdeadbeef
+    shrd eax, edx, 1
+    mov [edi+16], eax
+    setc byte ptr [edi+20]
+    seto byte ptr [edi+21]
+    setz byte ptr [edi+22]
+    mov eax, 0x87654321
+    mov cl, 12
+    shrd eax, edx, cl
+    mov [edi+24], eax
+    setc byte ptr [edi+28]
+    setp byte ptr [edi+29]
+    mov ecx, 0
+    stc
+    shld eax, edx, cl
+    setc byte ptr [edi+30]
+    mov [edi+32], eax
+    shrd dword ptr [edi+36], edx, 3
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.
