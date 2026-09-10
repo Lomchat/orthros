@@ -46,6 +46,9 @@ const reasons = new Map<string, number>();
 { const i = process.argv.indexOf("--size-budget"); if (i >= 0 && process.argv[i + 1]) setSizeBudget(Number(process.argv[i + 1])); }
 
 const accepted: Array<{ entry: number; instructions: number; blocks: number; liveFlagSites: number }> = [];
+// Every rejected entry with its exact reason, so a hot page from a profile can
+// be traced to the function the translator refused there.
+const rejected: Array<{ entry: number; reason: string }> = [];
 let inText = 0;
 const t0 = performance.now();
 for (const [k, entry] of entries.entries()) {
@@ -59,6 +62,7 @@ for (const [k, entry] of entries.entries()) {
         // Normalise the reason so operands do not split the tally.
         const key = lastRejection.replace(/0x[0-9a-f]+/g, "0x…").replace(/\b(e[abcd]x|e[sd]i|e[bs]p)\b/g, "r").slice(0, 60);
         reasons.set(key, (reasons.get(key) ?? 0) + 1);
+        rejected.push({ entry, reason: lastRejection.slice(0, 120) });
     }
 }
 accepted.sort((a, b) => b.instructions - a.instructions);
@@ -70,8 +74,8 @@ for (const [reason, n] of [...reasons.entries()].sort((a, b) => b[1] - a[1]).sli
     console.log(`  ${String(n).padStart(6)}  ${reason}`);
 }
 if (out) {
-    await Bun.write(out, JSON.stringify({ exe, profile: profilePath, accepted }, null, 1));
-    console.log(`wrote ${accepted.length} candidates to ${out}`);
+    await Bun.write(out, JSON.stringify({ exe, profile: profilePath, accepted, rejected }, null, 1));
+    console.log(`wrote ${accepted.length} candidates (${rejected.length} rejected) to ${out}`);
 }
 // The decode service holds stdout open; close it or the process never exits.
 decoder.close();
