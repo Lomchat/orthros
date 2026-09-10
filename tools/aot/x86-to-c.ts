@@ -111,6 +111,7 @@ const FLAG_PRESERVING = new Set([
     "psllw", "psrlw", "psraw", "pslld", "psrld", "psrad", "pslldq", "psrldq",
     "punpcklbw", "punpckhbw", "punpcklwd", "punpckhwd", "punpckldq", "punpckhdq",
     "punpcklqdq", "punpckhqdq", "packuswb", "packsswb", "packssdw",
+    "cvtsd2si", "cvtss2si", "cvtdq2pd", "cvtdq2ps", "cvtps2dq", "cvttps2dq", "cvtpd2dq", "cvttpd2dq",
 ]);
 const SETCC = /^set(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
 const CMOVCC = /^cmov(e|z|ne|nz|l|nge|le|ng|g|nle|ge|nl|b|nae|c|be|na|a|nbe|ae|nb|nc|s|ns|p|pe|np|po|o|no)$/;
@@ -847,6 +848,7 @@ const SSE2_INT = new Set([
     "psllw", "psrlw", "psraw", "pslld", "psrld", "psrad", "pslldq", "psrldq",
     "punpcklbw", "punpckhbw", "punpcklwd", "punpckhwd", "punpckldq", "punpckhdq",
     "punpcklqdq", "punpckhqdq", "packuswb", "packsswb", "packssdw",
+    "cvtsd2si", "cvtss2si", "cvtdq2pd", "cvtdq2ps", "cvtps2dq", "cvttps2dq", "cvtpd2dq", "cvttpd2dq",
     "psrlq", "psllq", "psubd", "paddd",
     "andpd", "andps", "orpd", "orps", "xorpd", "xorps",
     "pand", "pandn", "por", "pxor",
@@ -928,6 +930,14 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
     // Bounds-check a memory operand once, leaving its address in a0.
     const guard = (op: Operand): string => { h.guardMem(lines, op, insn.addr, i); return op.addr!; };
     const dirty = () => lines.push(`xdirty = 1u;`);
+    // A 128-bit source as two 64-bit halves (xmm lanes or memory), read before
+    // the destination changes.
+    const src128 = (): [string, string] | null => {
+        if (!src) return null;
+        if (src.kind === "xmm") return [`xl${src.index}`, `xh${src.index}`];
+        if (src.kind === "mem") { const a = guard(src); return [`LD64(${a})`, `LD64((${a}) + 8u)`]; }
+        return null;
+    };
 
     if (mnemonic === "movd") {
         // 32-bit lane <-> GP register or memory. Writing an xmm zero-extends.
@@ -973,6 +983,38 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         lines.push(`{ double cv = ${fv}; ${REG32[dst.index!]} = (cv >= -2147483648.0 && cv < 2147483648.0) ? (uint32_t)(int32_t)cv : 0x80000000u; }`);
         return;
     }
+    if (mnemonic === "cvtsd2si" || mnemonic === "cvtss2si") {
+        // Rounded per MXCSR RC (bits 13-14), as v86's sse_integer_round; NaN
+        // or out of range yields the integer indefinite.
+        if (dst.kind !== "reg32" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const single = mnemonic === "cvtss2si";
+        let fv: string;
+        if (src.kind === "xmm") fv = single ? `f32u((uint32_t)xl${src.index})` : `f64u(xl${src.index})`;
+        else if (src.kind === "mem") { const a = guard(src); fv = single ? `f32u(LD32(${a}))` : `f64u(LD64(${a}))`; }
+        else return `${mnemonic} ${ops.join(", ")}`;
+        lines.push(`{ double cv = x87_round_rc((double)${fv}, ((uint32_t)MXCSR >> 13) & 3u); ${REG32[dst.index!]} = (cv >= -2147483648.0 && cv < 2147483648.0) ? (uint32_t)(int32_t)cv : 0x80000000u; }`);
+        return;
+    }
+    if (mnemonic === "cvtdq2pd" || mnemonic === "cvtdq2ps") {
+        // Signed dwords to doubles (the low two) or to singles (all four), exact.
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        if (mnemonic === "cvtdq2pd") lines.push(`{ uint64_t s0 = ${s[0]}; xl${dst.index} = u64d((double)(int32_t)(uint32_t)s0); xh${dst.index} = u64d((double)(int32_t)(uint32_t)(s0 >> 32)); }`);
+        else lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = (uint64_t)u32f((float)(int32_t)(uint32_t)s0) | ((uint64_t)u32f((float)(int32_t)(uint32_t)(s0 >> 32)) << 32); xh${dst.index} = (uint64_t)u32f((float)(int32_t)(uint32_t)s1) | ((uint64_t)u32f((float)(int32_t)(uint32_t)(s1 >> 32)) << 32); }`);
+        dirty(); return;
+    }
+    if (mnemonic === "cvtps2dq" || mnemonic === "cvttps2dq" || mnemonic === "cvtpd2dq" || mnemonic === "cvttpd2dq") {
+        // Packed float/double to dwords, rounded per MXCSR or truncated; the
+        // double forms leave the high half zero.
+        if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
+        const s = src128(); if (!s) return `${mnemonic} ${ops.join(", ")}`;
+        const trunc = mnemonic.startsWith("cvtt"), dbl = mnemonic.includes("pd");
+        const rnd = (v: string) => trunc ? `__builtin_trunc(${v})` : `x87_round_rc(${v}, ((uint32_t)MXCSR >> 13) & 3u)`;
+        const toI = (v: string) => `((uint64_t)(uint32_t)({ double cv = ${rnd(v)}; (cv >= -2147483648.0 && cv < 2147483648.0) ? (uint32_t)(int32_t)cv : 0x80000000u; }))`;
+        if (dbl) lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = ${toI("f64u(s0)")} | (${toI("f64u(s1)")} << 32); xh${dst.index} = 0u; }`);
+        else lines.push(`{ uint64_t s0 = ${s[0]}, s1 = ${s[1]}; xl${dst.index} = ${toI("(double)f32u((uint32_t)s0)")} | (${toI("(double)f32u((uint32_t)(s0 >> 32))")} << 32); xh${dst.index} = ${toI("(double)f32u((uint32_t)s1)")} | (${toI("(double)f32u((uint32_t)(s1 >> 32))")} << 32); }`);
+        dirty(); return;
+    }
     if (mnemonic === "cvtss2sd" || mnemonic === "cvtsd2ss") {
         // Between single and double in the low lane; the high lane is kept.
         if (dst.kind !== "xmm" || !src) return `${mnemonic} ${ops.join(", ")}`;
@@ -1008,14 +1050,6 @@ function emitSse2(mnemonic: string, ops: string[], insn: Insn, i: number, lines:
         else lines.push(`xh${dst.index} = xl${src.index};`);
         dirty(); return;
     }
-    // The 128-bit source of the interleave/shuffle/packed-64 forms, as two
-    // 64-bit halves (xmm lanes or memory), read before the destination changes.
-    const src128 = (): [string, string] | null => {
-        if (!src) return null;
-        if (src.kind === "xmm") return [`xl${src.index}`, `xh${src.index}`];
-        if (src.kind === "mem") { const a = guard(src); return [`LD64(${a})`, `LD64((${a}) + 8u)`]; }
-        return null;
-    };
     // Packed integer lanes over the two 64-bit halves: x and y are one lane of
     // the destination and the source (masked to the lane), the table gives the
     // lane's new value; the loop is unrolled by clang.

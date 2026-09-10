@@ -861,6 +861,77 @@ t_cpuid:
     mov [edi+24], ecx
     ret
 
+# Rounded SSE conversions: cvtsd2si/cvtss2si to nearest-even (2.5 -> 2,
+# 3.5 -> 4, -2.5 -> -2), then under a floor rounding mode set by ldmxcsr,
+# NaN and out of range to the integer indefinite; cvtdq2pd/cvtdq2ps exact;
+# packed rounded and truncated conversions.
+    .globl t_sse_cvt
+t_sse_cvt:
+    mov edi, [esp+4]
+    mov dword ptr [edi+256], 0x00000000
+    mov dword ptr [edi+260], 0x40040000
+    mov dword ptr [edi+264], 0x00000000
+    mov dword ptr [edi+268], 0x400c0000
+    mov dword ptr [edi+272], 0x00000000
+    mov dword ptr [edi+276], 0xc0040000
+    mov dword ptr [edi+280], 0x00000000
+    mov dword ptr [edi+284], 0x7ff80000
+    mov dword ptr [edi+288], 0x00000000
+    mov dword ptr [edi+292], 0x41e00000
+    mov dword ptr [edi+296], 0x40200000
+    mov dword ptr [edi+300], 0x40600000
+    mov dword ptr [edi+304], 0xc0200000
+    mov dword ptr [edi+308], 0x4f000000
+    mov dword ptr [edi+312], 0xfffffff9
+    mov dword ptr [edi+316], 0x00000007
+    mov dword ptr [edi+320], 0x80000000
+    mov dword ptr [edi+324], 0x7fffffff
+    cvtsd2si eax, qword ptr [edi+256]
+    mov [edi], eax
+    cvtsd2si eax, qword ptr [edi+264]
+    mov [edi+4], eax
+    cvtsd2si eax, qword ptr [edi+272]
+    mov [edi+8], eax
+    cvtsd2si eax, qword ptr [edi+280]
+    mov [edi+12], eax
+    cvtsd2si eax, qword ptr [edi+288]
+    mov [edi+16], eax
+    cvtss2si eax, dword ptr [edi+296]
+    mov [edi+20], eax
+    cvtss2si eax, dword ptr [edi+304]
+    mov [edi+24], eax
+    movsd xmm0, qword ptr [edi+256]
+    cvtsd2si ecx, xmm0
+    mov [edi+28], ecx
+    movups xmm1, [edi+296]
+    cvtps2dq xmm2, xmm1
+    movups [edi+32], xmm2
+    cvttps2dq xmm2, xmm1
+    movups [edi+48], xmm2
+    movups xmm3, [edi+256]
+    cvtpd2dq xmm2, xmm3
+    movups [edi+64], xmm2
+    cvttpd2dq xmm2, xmm3
+    movups [edi+80], xmm2
+    movups xmm4, [edi+312]
+    cvtdq2pd xmm2, xmm4
+    movups [edi+96], xmm2
+    cvtdq2ps xmm2, xmm4
+    movups [edi+112], xmm2
+    stmxcsr dword ptr [edi+328]
+    mov eax, [edi+328]
+    or eax, 0x2000
+    mov [edi+332], eax
+    ldmxcsr dword ptr [edi+332]
+    cvtsd2si eax, qword ptr [edi+256]
+    mov [edi+128], eax
+    cvtsd2si eax, qword ptr [edi+272]
+    mov [edi+132], eax
+    cvtps2dq xmm2, xmm1
+    movups [edi+144], xmm2
+    ldmxcsr dword ptr [edi+328]
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.
