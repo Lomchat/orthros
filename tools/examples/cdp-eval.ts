@@ -14,6 +14,9 @@ const ws = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = (e) => rej(e); });
 const reply = new Promise<string>((res) => { ws.onmessage = (m) => { const d = JSON.parse(String(m.data)); if (d.id === 1) res(JSON.stringify(d.result?.result?.value ?? d.result ?? d.error)); }; });
 ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true } }));
-const out = await Promise.race([reply, new Promise<string>((res) => setTimeout(() => res('"timeout"'), 60000))]);
-console.log(out.slice(0, 6000));
+const out = await Promise.race([reply, new Promise<string>((res) => setTimeout(() => res('"timeout"'), 120000))]);
+// A fourth argument writes the whole result there (a base64 memory dump, say); stdout stays short.
+const outFile = process.argv[4];
+if (outFile) { await Bun.write(outFile, out); console.log(JSON.stringify({ wrote: outFile, chars: out.length })); }
+else console.log(out.slice(0, 6000));
 ws.close();
