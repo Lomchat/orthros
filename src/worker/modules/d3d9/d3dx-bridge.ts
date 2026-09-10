@@ -4,7 +4,7 @@
 
 import { resolveSurfaceInfo, resolveTextureInfo, surfaceMeta, D3D_OK, D3DERR_INVALIDCALL } from './resource-registry';
 import { decodeD3DTextureToRgba8, d3dFormatBpp } from '../../backends/webgpu/shared/texture-formats';
-import { D3DFMT_DXT1, decodeDxtToRgba, encodeRgbaToDxt1, isDxtFormat } from '../../backends/webgpu/shared/dxt';
+import { decodeDxtToRgba, encodeRgbaToDxt, isDxtFormat } from '../../backends/webgpu/shared/dxt';
 
 const D3DX_FILTER_LINEAR = 3;
 
@@ -267,7 +267,7 @@ export function d3dxLoadSurfaceFromMemory(
         return D3DERR_INVALIDCALL;
     }
 
-    if (destMeta.format === D3DFMT_DXT1) {
+    if (isDxtFormat(destMeta.format)) {
         // The decoded buffer is already cropped to srcRect; present it as a
         // tightly-packed image so the generic RGBA compositor can preserve any
         // destination pixels outside destRect before recompressing the surface.
@@ -369,11 +369,11 @@ export function d3dxLoadSurfaceFromRgba(
         return D3DERR_INVALIDCALL;
     }
 
-    if (destMeta.format === D3DFMT_DXT1) {
+    if (isDxtFormat(destMeta.format)) {
         const direct = dest.face < 0 ? dest.device.getTextureLevelPixels(dest.texturePtr, dest.level) : null;
         if (!direct) return D3DERR_INVALIDCALL;
         const composed = new Uint8Array(dest.width * dest.height * 4);
-        decodeDxtToRgba(D3DFMT_DXT1, direct.data, direct.pitch, dest.width, dest.height, composed);
+        decodeDxtToRgba(destMeta.format, direct.data, direct.pitch, dest.width, dest.height, composed);
         const useLinear = filter === D3DX_FILTER_LINEAR;
         const sourcePixel = (px: number, py: number, channel: number) =>
             rgba[((srcRect.top + py) * srcWidth + srcRect.left + px) * 4 + channel];
@@ -395,7 +395,7 @@ export function d3dxLoadSurfaceFromRgba(
             }
         }
         const encoded = new Uint8Array(direct.data.length);
-        if (!encodeRgbaToDxt1(composed, dest.width, dest.height, encoded, direct.pitch)) return D3DERR_INVALIDCALL;
+        if (!encodeRgbaToDxt(destMeta.format, composed, dest.width, dest.height, encoded, direct.pitch)) return D3DERR_INVALIDCALL;
         return dest.device.setTextureLevelPixels(dest.texturePtr, dest.level, encoded, direct.pitch)
             ? D3D_OK : D3DERR_INVALIDCALL;
     }
@@ -548,15 +548,12 @@ export function d3dxFilterTexture(texturePtr: number, srcLevel: number, _filter:
         const target = device.getTextureLevelPixels(texturePtr, level + 1);
         if (!target) return D3DERR_INVALIDCALL;
         let encoded: Uint8Array;
-        if (meta.format === D3DFMT_DXT1) {
+        if (isDxtFormat(meta.format)) {
             encoded = new Uint8Array(target.data.length);
-            if (!encodeRgbaToDxt1(dstRgba, dstW, dstH, encoded, target.pitch)) {
+            if (!encodeRgbaToDxt(meta.format, dstRgba, dstW, dstH, encoded, target.pitch)) {
                 return D3DERR_INVALIDCALL;
             }
         } else {
-            // DXT2-5 need their own alpha encoders. Never write RGBA bytes into
-            // block-compressed storage; fail cleanly until those codecs exist.
-            if (isDxtFormat(meta.format)) return D3DERR_INVALIDCALL;
             const bpp = d3dFormatBpp(meta.format);
             if (!bpp || (bpp & 7) !== 0) return D3DERR_INVALIDCALL;
             const bytesPerPixel = bpp >>> 3;

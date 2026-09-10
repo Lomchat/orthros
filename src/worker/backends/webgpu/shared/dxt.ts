@@ -184,6 +184,134 @@ export function encodeRgbaToDxt1(
     return true;
 }
 
+/**
+ * BC2 (DXT2/3, explicit 4-bit alpha) and BC3 (DXT4/5, interpolated alpha)
+ * encoders: an 8-byte alpha sub-block followed by a BC1-style colour block
+ * that decoders read in four-colour mode whatever the endpoint order, so
+ * alpha never steals a colour slot. Colour quality is the BC1 range fit above.
+ * DXT2/DXT4 store premultiplied colour; the caller passes what it holds.
+ */
+export function encodeRgbaToDxtAlpha(
+    rgba: Uint8Array,
+    width: number,
+    height: number,
+    dst: Uint8Array,
+    dstPitch: number,
+    interpolatedAlpha: boolean,
+): boolean {
+    if (width <= 0 || height <= 0 || rgba.length < width * height * 4) return false;
+    const bw = blocksWide(width);
+    const bh = blocksHigh(height);
+    if (dstPitch < bw * 16 || dst.length < dstPitch * bh) return false;
+
+    const block = new Uint8Array(16 * 4);
+    const alphaPal = new Uint8Array(8);
+    for (let by = 0; by < bh; by++) {
+        for (let bx = 0; bx < bw; bx++) {
+            let minR = 255, minG = 255, minB = 255, minA = 255;
+            let maxR = 0, maxG = 0, maxB = 0, maxA = 0;
+            for (let ty = 0; ty < 4; ty++) {
+                const sy = Math.min(height - 1, by * 4 + ty);
+                for (let tx = 0; tx < 4; tx++) {
+                    const sx = Math.min(width - 1, bx * 4 + tx);
+                    const src = (sy * width + sx) * 4;
+                    const p = (ty * 4 + tx) * 4;
+                    const r = rgba[src], g = rgba[src + 1], b = rgba[src + 2], a = rgba[src + 3];
+                    block[p] = r; block[p + 1] = g; block[p + 2] = b; block[p + 3] = a;
+                    minR = Math.min(minR, r); minG = Math.min(minG, g); minB = Math.min(minB, b); minA = Math.min(minA, a);
+                    maxR = Math.max(maxR, r); maxG = Math.max(maxG, g); maxB = Math.max(maxB, b); maxA = Math.max(maxA, a);
+                }
+            }
+            const out = by * dstPitch + bx * 16;
+
+            if (!interpolatedAlpha) {
+                // Two 4-bit alphas per byte, low nibble first; decoders scale by 17.
+                for (let i = 0; i < 8; i++) {
+                    const lo = (block[i * 8 + 3] + 8) / 17 | 0;
+                    const hi = (block[i * 8 + 7] + 8) / 17 | 0;
+                    dst[out + i] = lo | (hi << 4);
+                }
+            } else {
+                // Eight-entry palette between the block's extreme alphas (a0 > a1
+                // form: six interpolants; equal extremes fall into the a0 <= a1 form,
+                // whose 0/255 slots are unused here).
+                const a0 = maxA, a1 = minA;
+                alphaPal[0] = a0; alphaPal[1] = a1;
+                if (a0 > a1) {
+                    for (let i = 1; i < 7; i++) alphaPal[i + 1] = ((7 - i) * a0 + i * a1 + 3) / 7 | 0;
+                } else {
+                    for (let i = 1; i < 5; i++) alphaPal[i + 1] = ((5 - i) * a0 + i * a1 + 2) / 5 | 0;
+                    alphaPal[6] = 0; alphaPal[7] = 255;
+                }
+                let lo = 0, hi = 0;
+                for (let i = 0; i < 16; i++) {
+                    const a = block[i * 4 + 3];
+                    let best = 0, bestError = 256;
+                    for (let k = 0; k < 8; k++) {
+                        const e = Math.abs(a - alphaPal[k]);
+                        if (e < bestError) { bestError = e; best = k; }
+                    }
+                    if (i < 8) lo |= best << (3 * i); else hi |= best << (3 * (i - 8));
+                }
+                dst[out] = a0; dst[out + 1] = a1;
+                dst[out + 2] = lo & 0xff; dst[out + 3] = lo >>> 8 & 0xff; dst[out + 4] = lo >>> 16 & 0xff;
+                dst[out + 5] = hi & 0xff; dst[out + 6] = hi >>> 8 & 0xff; dst[out + 7] = hi >>> 16 & 0xff;
+            }
+
+            // Colour block: every texel counts (alpha lives above); four-colour palette.
+            let c0 = packRgb565(maxR, maxG, maxB);
+            let c1 = packRgb565(minR, minG, minB);
+            if (c0 < c1) [c0, c1] = [c1, c0];
+            const p0 = unpackRgb565(c0);
+            const p1 = unpackRgb565(c1);
+            const palette: Array<[number, number, number]> = [p0, p1, [
+                (2 * p0[0] + p1[0] + 1) / 3 | 0,
+                (2 * p0[1] + p1[1] + 1) / 3 | 0,
+                (2 * p0[2] + p1[2] + 1) / 3 | 0,
+            ], [
+                (p0[0] + 2 * p1[0] + 1) / 3 | 0,
+                (p0[1] + 2 * p1[1] + 1) / 3 | 0,
+                (p0[2] + 2 * p1[2] + 1) / 3 | 0,
+            ]];
+            let selectors = 0;
+            for (let i = 0; i < 16; i++) {
+                const p = i * 4;
+                let best = 0, bestError = Number.POSITIVE_INFINITY;
+                for (let candidate = 0; candidate < 4; candidate++) {
+                    const colour = palette[candidate]!;
+                    const dr = block[p] - colour[0];
+                    const dg = block[p + 1] - colour[1];
+                    const db = block[p + 2] - colour[2];
+                    const error = dr * dr * 0.29703665 + dg * dg + db * db * 0.10078278;
+                    if (error < bestError) { bestError = error; best = candidate; }
+                }
+                selectors |= best << (i * 2);
+            }
+            const c = out + 8;
+            dst[c] = c0 & 0xff; dst[c + 1] = c0 >>> 8;
+            dst[c + 2] = c1 & 0xff; dst[c + 3] = c1 >>> 8;
+            dst[c + 4] = selectors & 0xff; dst[c + 5] = selectors >>> 8 & 0xff;
+            dst[c + 6] = selectors >>> 16 & 0xff; dst[c + 7] = selectors >>> 24 & 0xff;
+        }
+    }
+    return true;
+}
+
+/** Encode RGBA8 into any DXT format this backend writes; false for a format without an encoder. */
+export function encodeRgbaToDxt(
+    format: number,
+    rgba: Uint8Array,
+    width: number,
+    height: number,
+    dst: Uint8Array,
+    dstPitch = dxtRowPitch(format, width),
+): boolean {
+    if (format === D3DFMT_DXT1) return encodeRgbaToDxt1(rgba, width, height, dst, dstPitch);
+    if (format === D3DFMT_DXT2 || format === D3DFMT_DXT3) return encodeRgbaToDxtAlpha(rgba, width, height, dst, dstPitch, false);
+    if (format === D3DFMT_DXT4 || format === D3DFMT_DXT5) return encodeRgbaToDxtAlpha(rgba, width, height, dst, dstPitch, true);
+    return false;
+}
+
 /** Map a DXT FourCC to its native WebGPU BC texture format. */
 export function dxtToBcGpuFormat(format: number): GPUTextureFormat {
     switch (format) {

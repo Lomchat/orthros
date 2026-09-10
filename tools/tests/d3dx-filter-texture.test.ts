@@ -4,7 +4,9 @@ import { textureMeta } from "../../src/worker/modules/d3d9/resource-registry";
 import { resourceToDevice } from "../../src/worker/modules/d3d9/shared-state";
 import {
     D3DFMT_DXT1,
+    D3DFMT_DXT5,
     decodeDxtToRgba,
+    encodeRgbaToDxt,
     encodeRgbaToDxt1,
 } from "../../src/worker/backends/webgpu/shared/dxt";
 
@@ -60,6 +62,42 @@ describe("D3DXFilterTexture", () => {
             expect(decoded[0]).toBeGreaterThan(200);
             expect(decoded[1]).toBeLessThan(40);
             expect(decoded[2]).toBeLessThan(40);
+        }
+    });
+
+    test("builds a DXT5 mip chain, alpha included", () => {
+        const baseRgba = new Uint8Array(4 * 4 * 4);
+        for (let i = 0; i < 16; i++) baseRgba.set([32, 200, 64, 96], i * 4);
+        const levels = new Map<number, { data: Uint8Array; pitch: number; width: number; height: number }>();
+        const base = new Uint8Array(16);
+        expect(encodeRgbaToDxt(D3DFMT_DXT5, baseRgba, 4, 4, base, 16)).toBe(true);
+        levels.set(0, { data: base, pitch: 16, width: 4, height: 4 });
+        levels.set(1, { data: new Uint8Array(16), pitch: 16, width: 2, height: 2 });
+        levels.set(2, { data: new Uint8Array(16), pitch: 16, width: 1, height: 1 });
+
+        const committed: number[] = [];
+        const device = {
+            getTextureLevelPixels: (_texture: number, level: number) => levels.get(level) ?? null,
+            setTextureLevelPixels: (_texture: number, level: number, data: Uint8Array, pitch: number) => {
+                const target = levels.get(level)!;
+                expect(pitch).toBe(target.pitch);
+                target.data.set(data);
+                committed.push(level);
+                return true;
+            },
+        };
+        textureMeta.set(TEXTURE, { width: 4, height: 4, levels: 3, usage: 0, pool: 1, format: D3DFMT_DXT5 });
+        resourceToDevice.set(TEXTURE, device as any);
+
+        expect(d3dxFilterTexture(TEXTURE, 0xffffffff, 0xffffffff)).toBe(0);
+        expect(committed).toEqual([1, 2]);
+        for (const level of [1, 2]) {
+            const stored = levels.get(level)!;
+            const decoded = new Uint8Array(stored.width * stored.height * 4);
+            decodeDxtToRgba(D3DFMT_DXT5, stored.data, stored.pitch, stored.width, stored.height, decoded);
+            expect(Math.abs(decoded[0] - 32)).toBeLessThanOrEqual(12);
+            expect(decoded[1]).toBeGreaterThan(180);
+            expect(Math.abs(decoded[3] - 96)).toBeLessThanOrEqual(4);
         }
     });
 });
