@@ -741,6 +741,106 @@ t_sse_unpck:
     movups [edi+240], xmm4
     ret
 
+# Packed integer SSE2: every lane form the translator models, applied to two
+# constant registers (bytes around the signed and unsigned limits) and stored
+# whole at [edi + 16 i]; shifts by immediate, by register count and past the
+# lane width; interleaves, saturating packs and byte shifts of the register.
+    .macro PI op, off
+    movdqa xmm2, xmm0
+    \op xmm2, xmm1
+    movups [edi+\off], xmm2
+    .endm
+    .macro PS op, cnt, off
+    movdqa xmm2, xmm0
+    \op xmm2, \cnt
+    movups [edi+\off], xmm2
+    .endm
+    .globl t_sse_pint
+t_sse_pint:
+    mov edi, [esp+4]
+    mov dword ptr [edi+1024], 0x7f80ff01
+    mov dword ptr [edi+1028], 0x80017fff
+    mov dword ptr [edi+1032], 0x12345678
+    mov dword ptr [edi+1036], 0xfedcba98
+    mov dword ptr [edi+1040], 0x7f7f0102
+    mov dword ptr [edi+1044], 0x8000ffff
+    mov dword ptr [edi+1048], 0x00010002
+    mov dword ptr [edi+1052], 0x7ffe8001
+    mov dword ptr [edi+1056], 3
+    mov dword ptr [edi+1060], 0
+    mov dword ptr [edi+1064], 0
+    mov dword ptr [edi+1068], 0
+    mov dword ptr [edi+1072], 17
+    mov dword ptr [edi+1076], 0
+    mov dword ptr [edi+1080], 0
+    mov dword ptr [edi+1084], 0
+    movups xmm0, [edi+1024]
+    movups xmm1, [edi+1040]
+    movups xmm3, [edi+1056]
+    movups xmm4, [edi+1072]
+    PI paddb, 0
+    PI psubb, 16
+    PI paddw, 32
+    PI psubw, 48
+    PI paddsb, 64
+    PI psubsb, 80
+    PI paddsw, 96
+    PI psubsw, 112
+    PI paddusb, 128
+    PI psubusb, 144
+    PI paddusw, 160
+    PI psubusw, 176
+    PI pmullw, 192
+    PI pmulhw, 208
+    PI pmulhuw, 224
+    PI pcmpgtb, 240
+    PI pcmpgtw, 256
+    PI pcmpgtd, 272
+    PI pcmpeqb, 288
+    PI pcmpeqw, 304
+    PI pavgb, 320
+    PI pavgw, 336
+    PI pmaxsw, 352
+    PI pminsw, 368
+    PI pmaxub, 384
+    PI pminub, 400
+    PI pmaddwd, 416
+    PI psadbw, 432
+    PS psllw, 3, 448
+    PS psrlw, 5, 464
+    PS psraw, 7, 480
+    PS pslld, 9, 496
+    PS psrld, 11, 512
+    PS psrad, 13, 528
+    PS psllw, xmm3, 544
+    PS psraw, xmm4, 560
+    PS psrld, xmm3, 576
+    PS psrad, xmm4, 592
+    PS pslldq, 3, 608
+    PS psrldq, 5, 624
+    PS pslldq, 16, 640
+    PI punpcklbw, 656
+    PI punpckhbw, 672
+    PI punpcklwd, 688
+    PI punpckhwd, 704
+    PI punpckldq, 720
+    PI punpckhdq, 736
+    PI punpcklqdq, 752
+    PI punpckhqdq, 768
+    PI packuswb, 784
+    PI packsswb, 800
+    PI packssdw, 816
+    movdqa xmm2, xmm0
+    paddw xmm2, xmmword ptr [edi+1040]
+    movups [edi+832], xmm2
+    movdqa xmm2, xmm0
+    punpcklbw xmm2, xmmword ptr [edi+1040]
+    movups [edi+848], xmm2
+    movdqa xmm2, xmm0
+    psraw xmm2, xmmword ptr [edi+1072]
+    movups [edi+864], xmm2
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.
