@@ -146,6 +146,8 @@ describe("msvcr90 ABI closure", () => {
         expect(typeof exports["_encode_pointer"]).toBe("function");
         expect(typeof exports["_lock"]).toBe("function");
         expect(exports["_encode_pointer"](null as any, new Uint8Array(0), [0x12345])).toBe(0x12345);
-        expect(exports["_lock"](null as any, new Uint8Array(0), [0])).toBe(0);
+        // _lock reads its lock word in THUNK_DATA through the guest memory accessor; without a
+        // process it is only checked for presence here (its semantics have their own tests).
+        expect(typeof exports["_unlock"]).toBe("function");
     });
 });

@@ -48,10 +48,13 @@ export class MemoryEventBuffer {
 
     getRecent(n: number): MemoryEvent[] {
         const result: MemoryEvent[] = [];
-        const start = this.count < RING_BUFFER_SIZE ? 0 : this.writeIndex;
+        // The newest event sits just below the write index whether or not the
+        // ring has wrapped; before the first wrap the slots above it are empty.
+        const start = this.writeIndex;
         for (let i = 0; i < Math.min(n, this.count); i++) {
             const idx = (start - 1 - i + RING_BUFFER_SIZE) % RING_BUFFER_SIZE;
-            result.push(this.events[idx]);
+            const e = this.events[idx];
+            if (e) result.push(e);
         }
         return result.reverse();
     }

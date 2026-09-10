@@ -140,6 +140,21 @@ export class Mem {
             this.checkWatch(address, size);
         }
 
+        // Outside the guest's memory nothing is mapped, validator or not: a wild
+        // pointer must fail the access, not throw out of a bulk copy.
+        if (address < 0 || size < 0 || address + size > mem.length) {
+            reportMemoryFault({
+                address,
+                size,
+                perms,
+                region: this.getRegion?.(address),
+                accessType,
+                context,
+                reason: "Mem accessor range outside guest memory",
+            });
+            return null;
+        }
+
         // Validate range if validator is available
         if (this.validateRange && !this.validateRange(address, size, perms)) {
             const region = this.getRegion?.(address);

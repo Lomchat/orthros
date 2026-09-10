@@ -5,45 +5,45 @@
 import { Mem } from '../../core/memory/mem-accessor';
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
 
+const bits = new DataView(new ArrayBuffer(4));
 export function u32AsFloat(value: number): number {
-    const view = new DataView(new ArrayBuffer(4));
-    view.setUint32(0, value >>> 0, true);
-    return view.getFloat32(0, true);
+    bits.setUint32(0, value >>> 0, true);
+    return bits.getFloat32(0, true);
 }
+
+// A matrix or vector is one validated range, not one access per element: these
+// run tens of times per frame and the per-access check dominated the call.
+const matrixBytes = new Uint8Array(64);
+const vecBytes = new Uint8Array(12);
+const vecView = new Float32Array(vecBytes.buffer);
 
 function readMatrix(addr: number): Float32Array | null {
     if (!addr) return null;
+    const bytes = Mem.readBytes(addr, 64);
+    if (!bytes) return null;
     const out = new Float32Array(16);
-    for (let i = 0; i < 16; i++) {
-        const v = Mem.readFloat32(addr + i * 4);
-        if (v === null) return null;
-        out[i] = v;
-    }
+    new Uint8Array(out.buffer).set(bytes);
     return out;
 }
 
 function writeMatrix(addr: number, m: Float32Array): boolean {
     if (!addr) return false;
-    for (let i = 0; i < 16; i++) {
-        if (!Mem.writeFloat32(addr + i * 4, m[i])) return false;
-    }
-    return true;
+    matrixBytes.set(new Uint8Array(m.buffer, m.byteOffset, 64));
+    return Mem.writeBytes(addr, matrixBytes) === 64;
 }
 
 function readVec3(addr: number): [number, number, number] | null {
     if (!addr) return null;
-    const x = Mem.readFloat32(addr);
-    const y = Mem.readFloat32(addr + 4);
-    const z = Mem.readFloat32(addr + 8);
-    if (x === null || y === null || z === null) return null;
-    return [x, y, z];
+    const bytes = Mem.readBytes(addr, 12);
+    if (!bytes) return null;
+    vecBytes.set(bytes);
+    return [vecView[0]!, vecView[1]!, vecView[2]!];
 }
 
 function writeVec3(addr: number, x: number, y: number, z: number): boolean {
     if (!addr) return false;
-    return Mem.writeFloat32(addr, x)
-        && Mem.writeFloat32(addr + 4, y)
-        && Mem.writeFloat32(addr + 8, z);
+    vecView[0] = x; vecView[1] = y; vecView[2] = z;
+    return Mem.writeBytes(addr, vecBytes) === 12;
 }
 
 function readVec4(addr: number): [number, number, number, number] | null {
