@@ -22,11 +22,20 @@ Un slot est « relâché » ssi `sign_exponent == 0x7FFE` ; `mantissa` contient
 alors les bits IEEE-754 binary64 bruts. Tout autre `sign_exponent` est un vrai
 F80 (arithmétique f64 dans le fork, mais encodage 80 bits). Un module traduit :
 
-- ne lit un slot en f64 que si son tag vaut `0x7FFE` ; sinon il **sort** vers
-  le dispatcher à l'adresse de l'instruction (le JIT, lui, appelle le helper
-  F80) ;
-- n'écrit jamais un payload f64 sous un autre tag ; l'écriture d'un résultat
-  arithmétique dans un slot déjà relâché peut se limiter à la mantisse.
+- lit un slot relâché comme ses bits f64, et un vrai F80 par la conversion
+  `F80::to_f64` du fork reproduite en C (`x87_f80_to_f64` : NaN avec bit
+  quiet et charge utile, dénormaux F80 ramenés à zéro, sous-normaux f64 avec
+  le décalage masqué de v86) — c'est exactement ce que font les helpers du
+  fork (`add`/`sub`/`mul`/`div`, `partial_cmp`, `to_f32`, `to_i32`,
+  `fpu_store_m64`) pour un opérande non relâché, l'arithmétique F80 y étant
+  du f64 ;
+- écrit tout résultat arithmétique relâché (mantisse **et** tag `0x7FFE`,
+  macro `X87_ST`) : la source peut avoir été un vrai F80 ;
+- `fchs`/`fabs` retournent le signe là où il est (bit 63 d'un slot relâché,
+  bit 15 du mot signe/exposant d'un vrai F80), comme `neg`/`abs` du fork ;
+- **sort** vers le dispatcher avant toute lecture d'un slot **vide**
+  (`fpu_stack_empty`) : la faute de pile et le NaN indéfini sont à
+  l'interpréteur ; `fxam` sort aussi sur un slot non relâché (classes F80).
 
 Chargements mémoire (`fld m32/m64`, `fild`) : convertir en f64, écrire
 `{bits, 0x7FFE}`. Stockages (`fst(p) m32/m64`) : `m64` = mantisse brute ;

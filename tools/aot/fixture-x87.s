@@ -422,10 +422,52 @@ x87_m80:
     fstp tbyte ptr [edi+68]
     ret
 
+# Consumers of a true F80 slot (pushed raw by fld m80): stores as double and
+# single, arithmetic with a relaxed operand, fchs/fabs on the raw encoding,
+# compares, integer conversion, sqrt, and the indefinite QNaN stored as double
+# (payload and quiet bit as v86's to_f64 keeps them).
+    .globl x87_f80ops
+x87_f80ops:
+    mov edi, [esp+4]
+    fld tbyte ptr [pi2_80]
+    fst qword ptr [edi]
+    fst dword ptr [edi+8]
+    fld1
+    faddp st(1), st
+    fstp qword ptr [edi+16]
+    fld tbyte ptr [pi2_80]
+    fchs
+    fstp qword ptr [edi+24]
+    fld tbyte ptr [pi2_80]
+    fchs
+    fabs
+    fst qword ptr [edi+32]
+    fld qword ptr [c1]
+    fcompp
+    fnstsw ax
+    mov [edi+40], ax
+    fld tbyte ptr [pi2_80]
+    fmul qword ptr [c1]
+    fistp dword ptr [edi+44]
+    fld tbyte ptr [pi2_80]
+    fsqrt
+    fstp qword ptr [edi+48]
+    fld tbyte ptr [nan80]
+    fstp qword ptr [edi+56]
+    fld tbyte ptr [pi2_80]
+    fld qword ptr [c2]
+    fcomip st, st(1)
+    setb byte ptr [edi+64]
+    fstp st(0)
+    fld tbyte ptr [tiny80]
+    fstp qword ptr [edi+72]
+    ret
+
     .balign 16
 c1:     .double 3.5
 c2:     .double -1.25
 infv:   .quad 0x7ff0000000000000
+tiny80: .byte 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0xf0,0x3b
 pi2_80: .byte 0x35,0xc2,0x68,0x21,0xa2,0xda,0x0f,0xc9,0xff,0x3f
 nan80:  .byte 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xc0,0xff,0xff
 negzero: .quad 0x8000000000000000

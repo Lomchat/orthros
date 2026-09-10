@@ -45,6 +45,30 @@ static inline float f32u(uint32_t w) { fbits b; b.w = w; return b.f; }
 static inline uint32_t u32f(float f) { fbits b; b.f = f; return b.w; }
 #define X87_SLOT(i) ((top + (i)) & 7u)
 #define X87_OK(s) (FPU_ST_T(s) == 0x7ffeu)
+/* A true F80 slot as the f64 bits v86 computes with (F80::to_f64): NaN keeps
+ * its quiet bit and payload, F80 denormals flush to zero, f64 subnormals keep
+ * v86's masked shift. Every consumer reads a slot through X87_LD and writes
+ * its result relaxed with X87_ST, so a raw m80 load or a value left by the
+ * interpreter never forces an exit. */
+static inline uint64_t x87_f80_to_f64(uint64_t m, uint32_t se) {
+    uint64_t sign = (uint64_t)(se >> 15) << 63;
+    int32_t exp = (int32_t)(se & 0x7fffu);
+    if (exp == 0 && m == 0ull) return sign;
+    if (exp == 0x7fff) {
+        if (m == 0x8000000000000000ull) return sign | (0x7ffull << 52);
+        return sign | (0x7ffull << 52) | (((m >> 62) & 1ull) << 51) | (((m & 0x3fffffffffffffffull) >> 11) & 0x7ffffffffffffull);
+    }
+    if (exp == 0) return sign;
+    int32_t e = exp - 16383 + 1023;
+    if (e >= 0x7ff) return sign | (0x7ffull << 52);
+    if (e <= 0) { int32_t shift = 1 - e; if (shift >= 64) return sign; return sign | (m >> ((uint32_t)(11 + shift) & 63u)); }
+    return sign | ((uint64_t)e << 52) | ((m & 0x7fffffffffffffffull) >> 11);
+}
+#define X87_LD(s) (X87_OK(s) ? FPU_ST_M(s) : x87_f80_to_f64(FPU_ST_M(s), (uint32_t)FPU_ST_T(s)))
+#define X87_ST(s, v) do { FPU_ST_M(s) = (v); FPU_ST_T(s) = (uint16_t)0x7ffeu; } while (0)
+/* Reading an empty slot is a stack fault (v86 supplies the indefinite NaN and
+ * sets IE): the interpreter's, so the block exits before it. */
+#define X87_EMPTY(s) ((fempty >> (s)) & 1u)
 #define X87_PUSH(m, t) do { top = (top - 1u) & 7u; fempty &= ~(1u << top); FPU_ST_M(top) = (m); FPU_ST_T(top) = (uint16_t)(t); } while (0)
 #define X87_POP() do { fempty |= (1u << top); top = (top + 1u) & 7u; } while (0)
 #define X87_ROUND(r) (((((uint32_t)FPU_CW) >> 8) & 3u) == 0u ? (double)(float)(r) : (r))
@@ -211,9 +235,9 @@ export function emitX87(
             lines.push(`{ uint64_t m = FPU_ST_M(top); uint32_t t = FPU_ST_T(top); if (t == 0x7ffeu) { t = x87_f64_to_f80_se(m); m = x87_f64_to_f80_m(m); } ST64(${op.addr}, m); ST16(${op.addr} + 8u, t); }`, `X87_POP();`);
             return { producer: false };
         }
-        lines.push(`if (!X87_OK(top)) { ${slow} }`);
-        if (op.width === 4) lines.push(`ST32(${op.addr}, u32f((float)f64u(FPU_ST_M(top))));`);
-        else if (op.width === 8) lines.push(`ST64(${op.addr}, FPU_ST_M(top));`);
+        lines.push(`if (X87_EMPTY(top)) { ${slow} }`);
+        if (op.width === 4) lines.push(`ST32(${op.addr}, u32f((float)f64u(X87_LD(top))));`);
+        else if (op.width === 8) lines.push(`ST64(${op.addr}, X87_LD(top));`);
         else return `${mnemonic} width ${op.width}`;
         if (mnemonic === "fstp") lines.push(`X87_POP();`);
         return { producer: false };
@@ -222,10 +246,10 @@ export function emitX87(
         const op = mem(ops[0] ?? "");
         if (typeof op === "string") return op;
         if (op.width !== 2 && op.width !== 4 && op.width !== 8) return `${mnemonic} width ${op.width}`;
-        lines.push(`if (!X87_OK(top)) { ${slow} }`);
+        lines.push(`if (X87_EMPTY(top)) { ${slow} }`);
         const rounded = mnemonic === "fisttp"
-            ? `__builtin_trunc(f64u(FPU_ST_M(top)))`
-            : `x87_round_rc(f64u(FPU_ST_M(top)), (((uint32_t)FPU_CW) >> 10) & 3u)`;
+            ? `__builtin_trunc(f64u(X87_LD(top)))`
+            : `x87_round_rc(f64u(X87_LD(top)), (((uint32_t)FPU_CW) >> 10) & 3u)`;
         if (op.width === 8) lines.push(`ST64(${op.addr}, x87_to_i64(${rounded}));`);
         else if (op.width === 4) lines.push(`ST32(${op.addr}, x87_to_i32(${rounded}));`);
         else lines.push(`{ int32_t w = (int32_t)x87_to_i32(${rounded}); if (w < -0x8000 || w > 0x7fff) w = -0x8000; ST16(${op.addr}, (uint32_t)w); }`);
@@ -248,14 +272,14 @@ export function emitX87(
         if (ops.length <= 1 && single !== null) {
             if (!pop && ops.length === 0) return `${mnemonic} without operands`;
             const d = pop ? single : 0, s = pop ? 0 : single;
-            lines.push(`{ uint32_t sd = X87_SLOT(${d}u), ss = X87_SLOT(${s}u); if (!(X87_OK(sd) && X87_OK(ss))) { ${slow} } double x = f64u(FPU_ST_M(sd)), y = f64u(FPU_ST_M(ss)); FPU_ST_M(sd) = u64d(X87_ROUND(${combine("x", "y")})); }`);
+            lines.push(`{ uint32_t sd = X87_SLOT(${d}u), ss = X87_SLOT(${s}u); if (X87_EMPTY(sd) || X87_EMPTY(ss)) { ${slow} } double x = f64u(X87_LD(sd)), y = f64u(X87_LD(ss)); X87_ST(sd, u64d(X87_ROUND(${combine("x", "y")}))); }`);
             if (pop) lines.push(`X87_POP();`);
             return { producer: false };
         }
         if (ops.length === 2) {
             const d = stIndex(ops[0]!), s = stIndex(ops[1]!);
             if (d === null || s === null || (d !== 0 && s !== 0)) return `${mnemonic} ${ops.join(", ")}`;
-            lines.push(`{ uint32_t sd = X87_SLOT(${d}u), ss = X87_SLOT(${s}u); if (!(X87_OK(sd) && X87_OK(ss))) { ${slow} } double x = f64u(FPU_ST_M(sd)), y = f64u(FPU_ST_M(ss)); FPU_ST_M(sd) = u64d(X87_ROUND(${combine("x", "y")})); }`);
+            lines.push(`{ uint32_t sd = X87_SLOT(${d}u), ss = X87_SLOT(${s}u); if (X87_EMPTY(sd) || X87_EMPTY(ss)) { ${slow} } double x = f64u(X87_LD(sd)), y = f64u(X87_LD(ss)); X87_ST(sd, u64d(X87_ROUND(${combine("x", "y")}))); }`);
             if (pop) lines.push(`X87_POP();`);
             return { producer: false };
         }
@@ -264,43 +288,47 @@ export function emitX87(
         if (typeof m === "string") return m;
         const v = memF64(m, integer);
         if (v === null) return `${mnemonic} width ${m.width}`;
-        lines.push(`{ if (!X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)), y = ${v}; FPU_ST_M(top) = u64d(X87_ROUND(${combine("x", "y")})); }`);
+        lines.push(`{ if (X87_EMPTY(top)) { ${slow} } double x = f64u(X87_LD(top)), y = ${v}; X87_ST(top, u64d(X87_ROUND(${combine("x", "y")}))); }`);
         return { producer: false };
     }
 
     if (mnemonic === "fchs" || mnemonic === "fabs") {
-        lines.push(`if (!X87_OK(top)) { ${slow} }`);
-        lines.push(mnemonic === "fchs" ? `FPU_ST_M(top) ^= 0x8000000000000000ull;` : `FPU_ST_M(top) &= 0x7fffffffffffffffull;`);
+        // The sign lives in bit 63 of a relaxed slot's f64 bits, in bit 15 of a
+        // true F80's sign/exponent word (v86's neg/abs keep the encoding).
+        lines.push(`if (X87_EMPTY(top)) { ${slow} }`);
+        lines.push(mnemonic === "fchs"
+            ? `if (X87_OK(top)) FPU_ST_M(top) ^= 0x8000000000000000ull; else FPU_ST_T(top) = (uint16_t)((uint32_t)FPU_ST_T(top) ^ 0x8000u);`
+            : `if (X87_OK(top)) FPU_ST_M(top) &= 0x7fffffffffffffffull; else FPU_ST_T(top) = (uint16_t)((uint32_t)FPU_ST_T(top) & 0x7fffu);`);
         return { producer: false };
     }
     if (mnemonic === "fsqrt") {
         // f64.sqrt is correctly rounded, like the relaxed helper's f64 sqrt.
-        lines.push(`{ if (!X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)); FPU_ST_M(top) = u64d(X87_ROUND(__builtin_sqrt(x))); }`);
+        lines.push(`{ if (X87_EMPTY(top)) { ${slow} } double x = f64u(X87_LD(top)); X87_ST(top, u64d(X87_ROUND(__builtin_sqrt(x)))); }`);
         return { producer: false };
     }
     if (mnemonic === "fsin" || mnemonic === "fcos") {
         // v86: the f64 function of the interpreter's libm (imported from it),
         // C2 cleared, no range reduction check.
-        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } FPU_ST_M(top) = u64d(x87_${mnemonic.slice(1)}(f64u(FPU_ST_M(top))));`
+        lines.push(`{ if ((fempty >> top) & 1u) { ${slow} } X87_ST(top, u64d(x87_${mnemonic.slice(1)}(f64u(X87_LD(top)))));`
             + ` FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x400u); }`);
         return { producer: false };
     }
     if (mnemonic === "fsincos") {
         // v86: ST(0) = sin, then cos pushed (C1 cleared by the push), C2 cleared.
-        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } double x = f64u(FPU_ST_M(top)); FPU_ST_M(top) = u64d(x87_sin(x));`
+        lines.push(`{ if ((fempty >> top) & 1u) { ${slow} } double x = f64u(X87_LD(top)); X87_ST(top, u64d(x87_sin(x)));`
             + ` X87_PUSH(u64d(x87_cos(x)), 0x7ffeu); FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x600u); }`);
         return { producer: false };
     }
     if (mnemonic === "fptan") {
         // v86: ST(0) = tan, then 1.0 pushed (C1 cleared by the push), C2 cleared.
-        lines.push(`{ if (((fempty >> top) & 1u) || !X87_OK(top)) { ${slow} } FPU_ST_M(top) = u64d(x87_tan(f64u(FPU_ST_M(top))));`
+        lines.push(`{ if ((fempty >> top) & 1u) { ${slow} } X87_ST(top, u64d(x87_tan(f64u(X87_LD(top)))));`
             + ` X87_PUSH(0x3ff0000000000000ull, 0x7ffeu); FPU_SW = (uint16_t)((uint32_t)FPU_SW & ~0x600u); }`);
         return { producer: false };
     }
     if (mnemonic === "fpatan") {
         // v86: ST(1) = atan2(ST(1), ST(0)), then pop.
-        lines.push(`{ uint32_t s1 = (top + 1u) & 7u; if (((fempty >> top) & 1u) || ((fempty >> s1) & 1u) || !X87_OK(top) || !X87_OK(s1)) { ${slow} }`
-            + ` FPU_ST_M(s1) = u64d(x87_atan2(f64u(FPU_ST_M(s1)), f64u(FPU_ST_M(top)))); X87_POP(); }`);
+        lines.push(`{ uint32_t s1 = (top + 1u) & 7u; if (((fempty >> top) & 1u) || ((fempty >> s1) & 1u)) { ${slow} }`
+            + ` X87_ST(s1, u64d(x87_atan2(f64u(X87_LD(s1)), f64u(X87_LD(top))))); X87_POP(); }`);
         return { producer: false };
     }
     if (mnemonic === "fxam") {
@@ -341,7 +369,7 @@ export function emitX87(
         const eflags = mnemonic.includes("comi") || mnemonic.endsWith("compi");
         const pops = mnemonic.endsWith("pp") ? 2 : (mnemonic.endsWith("p") || mnemonic.endsWith("compi")) ? 1 : 0;
         let y: string;
-        let check = `X87_OK(top)`;
+        let empty = `X87_EMPTY(top)`;
         if (mnemonic === "ftst") y = "0.0";
         else if (mnemonic.startsWith("fi")) {
             const m = mem(ops[0] ?? "");
@@ -354,8 +382,8 @@ export function emitX87(
             const si = stIndex(last);
             if (si !== null) {
                 if (ops.length === 2 && stIndex(ops[0]!) !== 0) return `${mnemonic} ${ops.join(", ")}`;
-                y = `f64u(FPU_ST_M(X87_SLOT(${si}u)))`;
-                check = `(X87_OK(top) && X87_OK(X87_SLOT(${si}u)))`;
+                y = `f64u(X87_LD(X87_SLOT(${si}u)))`;
+                empty = `(X87_EMPTY(top) || X87_EMPTY(X87_SLOT(${si}u)))`;
             } else {
                 const m = mem(last);
                 if (typeof m === "string") return m;
@@ -364,11 +392,11 @@ export function emitX87(
                 y = v;
             }
         }
-        lines.push(`if (!${check}) { ${slow} }`);
+        lines.push(`if (${empty}) { ${slow} }`);
         if (eflags) {
-            lines.push(`{ double x = f64u(FPU_ST_M(top)), y = ${y}; fa = X87_CMP(x, y, 1u, 64u, 69u); FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | fa); FLAGS_CHANGED = 0; }`);
+            lines.push(`{ double x = f64u(X87_LD(top)), y = ${y}; fa = X87_CMP(x, y, 1u, 64u, 69u); FLAGS = (int32_t)(((uint32_t)FLAGS & ~0x8d5u) | fa); FLAGS_CHANGED = 0; }`);
         } else {
-            lines.push(`{ double x = f64u(FPU_ST_M(top)), y = ${y}; FPU_SW = (uint16_t)(((uint32_t)FPU_SW & ~0x4700u) | X87_CMP(x, y, 0x100u, 0x4000u, 0x4500u)); }`);
+            lines.push(`{ double x = f64u(X87_LD(top)), y = ${y}; FPU_SW = (uint16_t)(((uint32_t)FPU_SW & ~0x4700u) | X87_CMP(x, y, 0x100u, 0x4000u, 0x4500u)); }`);
         }
         for (let k = 0; k < pops; k++) lines.push(`X87_POP();`);
         return { producer: eflags };
