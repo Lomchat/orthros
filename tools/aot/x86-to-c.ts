@@ -119,6 +119,11 @@ const OTHER_FLAG_READER = /^(set[a-z]+|cmov[a-z]+|fcmov[a-z]+|salc|lahf|pushf[d]
 /** SSE arithmetic, moves and conversions leave EFLAGS alone; only the comis
  *  family (a flag producer) writes them. */
 const SSE_NO_FLAGS = /^((add|sub|mul|div|min|max|sqrt|cmp[a-z]+)(pd|ps|sd|ss)|movss|cvtsi2ss|cvtsi2sd|cvttss2si|cvttsd2si|cvtss2sd|cvtsd2ss)$/;
+/** Instructions the interpreter runs for a translation: a slow exit at the
+ *  instruction and a native resume right behind it. The x87 forms x87Kind
+ *  marks slow, and cpuid, an initialisation-time query never in a loop. */
+const INTERP_ONLY = new Set(["cpuid"]);
+function interpSlow(m: string, operand?: string): boolean { return INTERP_ONLY.has(m) || x87Kind(m, operand) === "slow"; }
 
 function preservesFlags(m: string): boolean {
     return FLAG_PRESERVING.has(m) || SSE_NO_FLAGS.test(m) || (x87Kind(m) !== null && !FLAG_PRODUCER.has(m) && !/^fcmov/.test(m));
@@ -1285,9 +1290,9 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                     leaders.add(after); resumes.add(after); work.push(after);
                     break;
                 }
-                // An x87 instruction the translation hands to the interpreter
+                // An instruction the translation hands to the interpreter
                 // ends its block: the dispatcher resumes right behind it.
-                if (x87Kind(mnemonic, operand) === "slow") {
+                if (interpSlow(mnemonic, operand)) {
                     const after = pc + insn.size;
                     leaders.add(after); resumes.add(after); work.push(after);
                     break;
@@ -1335,7 +1340,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
             if (pc > maxEnd) maxEnd = pc;
             const m = insn.mnemonic;
             if (m === "ret" || m === "retn" || m === "jmp" || m === "call" || COND_BRANCH.has(m)) break;
-            if (x87Kind(m, insn.operand) === "slow" || m === "int3") break;
+            if (interpSlow(m, insn.operand) || m === "int3") break;
             if (leaders.has(pc)) break;
         }
         blocks.set(start, { start, insns: body });
@@ -1391,7 +1396,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
         const s: number[] = [];
         const m = term.mnemonic;
         const edge = (a: number): void => { if (indexOf.has(a)) s.push(a); };
-        if (m === "ret" || m === "retn" || m === "call" || m === "out" || m === "int3" || x87Kind(m, term.operand) === "slow") { /* ends at an entry */ }
+        if (m === "ret" || m === "retn" || m === "call" || m === "out" || m === "int3" || interpSlow(m, term.operand)) { /* ends at an entry */ }
         else if (m === "jmp") { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); }
         else if (COND_BRANCH.has(m)) { const t = directTarget(term.operand); if (t !== null && inImage(t)) edge(t); edge(term.addr + term.size); }
         else edge(term.addr + term.size);
@@ -1487,7 +1492,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 continue;
             }
             const xk = x87Kind(mnemonic, operand);
-            if (xk === "slow") break;
+            if (xk === "slow" || INTERP_ONLY.has(mnemonic)) break;
             if (mnemonic === "sahf") {
                 lines.push(`fa = (eax >> 8) & 0xffu; fk = 6u;`);
                 kinds.set(i, "sahf");
@@ -2217,7 +2222,7 @@ export async function translateFunctionC(decoder: CapstoneDecoder, entry: number
                 lines.push(`cnt += ${n}u;`, `if (${cond}) { ${backEdge}b = ${taken}; continue; }`, `b = ${fall}; continue;`);
             }
         }
-        else if (x87Kind(term.mnemonic, term.operand) === "slow" || term.mnemonic === "int3") {
+        else if (interpSlow(term.mnemonic, term.operand) || term.mnemonic === "int3") {
             // The interpreter runs this one instruction; the block after it is
             // an entry, so the translation is re-entered right behind (int3
             // padding has no block after it: the interpreter owns what follows).

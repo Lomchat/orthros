@@ -841,6 +841,26 @@ t_sse_pint:
     movups [edi+864], xmm2
     ret
 
+# cpuid runs in the interpreter (slow exit at the instruction, native resume
+# behind it); the vendor string and the feature words are stored, and the
+# flags set before it must survive the round trip.
+    .globl t_cpuid
+t_cpuid:
+    mov edi, [esp+4]
+    xor eax, eax
+    cpuid
+    mov [edi], ebx
+    mov [edi+4], edx
+    mov [edi+8], ecx
+    mov [edi+12], eax
+    mov eax, 1
+    stc
+    cpuid
+    setc byte ptr [edi+16]
+    mov [edi+20], edx
+    mov [edi+24], ecx
+    ret
+
 # lahf after add (nibble carry), sub (nibble borrow), inc, dec, and, a negative
 # result and a sahf round trip: AH must carry SF:ZF:0:AF:0:PF:1:CF exactly as
 # v86 materialises its lazy flags, auxiliary carry included.
