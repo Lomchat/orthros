@@ -14,6 +14,7 @@ import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
 import { Seh, EXC } from '../win32/seh.js';
+import { Com } from '../win32/com.js';
 
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
@@ -70,10 +71,13 @@ export class Vm {
     this.exitProcessThunk = this.api.thunkFor('orthros.dll', '__exit_process');
     this.seh = new Seh(this);
     this.GuestCrash = GuestCrash;
+    this.com = new Com(this);
+    this.traceCom = !!opts.logKinds?.includes('com');
     if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); for (let i = 0; i < this.api.thunks.length; i++) this.jit.markFast(i, `${this.api.thunks[i].dll}!${this.api.thunks[i].name}`, this.api.thunks[i].def); }
     registerBuiltins(this.api, this);
     this.apiTraceNames = new Array(64).fill(null);
     this.apiTraceRets = new Uint32Array(64);
+    this.apiTraceTids = new Uint32Array(64);
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
@@ -244,7 +248,7 @@ export class Vm {
     if (def) {
       if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
       const tp = this.apiTracePos++ & 63;
-      this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp);
+      this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
       const r = def.fn(ctx);
       if (def.noreturn) return;
       cpu.eip = this.mem.read32(sp);
@@ -318,6 +322,25 @@ export class Vm {
     throw new GuestCrash(this.crashReport(thread, `deadlock: all threads blocked (${reason})`));
   }
 
+  /** One line per guest thread: state, wait reason, EIP, return addresses on the stack, last API call. */
+  threadsReport() {
+    const proc = this.proc, mem = this.mem;
+    const lines = [`threads (${proc.threads.length}):`];
+    for (const t of proc.threads) {
+      const cpu = t.cpu;
+      const rets = [];
+      for (let a = cpu.esp; a < cpu.esp + 0x800 && rets.length < 10; a += 4) {
+        if (!proc.vmem.isCommitted(a, 4)) break;
+        const v = mem.read32(a);
+        if (proc.moduleByAddr(v) && v > 0x1000 && (mem.read8(v - 5) === 0xe8 || mem.read8(v - 2) === 0xff || mem.read8(v - 3) === 0xff || mem.read8(v - 6) === 0xff)) rets.push(proc.symbolize(v));
+      }
+      let last = '';
+      for (let i = 63; i >= 0; i--) { const k = (this.apiTracePos + i) & 63; if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
+      lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${t.blockReason}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}`);
+    }
+    return lines.join('\n');
+  }
+
   crashReport(thread, reason) {
     const cpu = thread.cpu, mem = this.mem, proc = this.proc;
     const h = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
@@ -345,6 +368,7 @@ export class Vm {
     }
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);
+    if (proc.threads.length > 1) lines.push(this.threadsReport());
     return lines.join('\n');
   }
 }

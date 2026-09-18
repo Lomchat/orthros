@@ -53,6 +53,8 @@ export class WindowManager {
     this.focus = 0; this.active = 0; this.capture = 0; this.foreground = 0;
     this.cursor = { x: this.screen.width >> 1, y: this.screen.height >> 1 };
     this.keyState = new Uint8Array(256);
+    /** @type {((ev: any) => void)[]} */
+    this.rawListeners = [];
     this.showCursorCount = 0;
     this.dirty = false;
     this.lastPresent = -1;
@@ -212,6 +214,8 @@ export class WindowManager {
   }
 
   inputEvent(ev) {
+    if (ev.type === 'mousemove' && ev.dx === undefined) { ev.dx = ev.x - this.cursor.x; ev.dy = ev.y - this.cursor.y; }
+    for (const l of this.rawListeners) l(ev); // raw input consumers (DirectInput devices)
     switch (ev.type) {
       case 'mousemove': {
         this.cursor = { x: ev.x, y: ev.y };

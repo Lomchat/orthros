@@ -43,3 +43,21 @@ Les accès à un registre x87 vide (dépassement/sous-dépassement de pile) prod
 
 ## D010 — 2026-09-18 — Outillage
 Node 24 (tests `node --test`, serveur), Playwright + Chromium headless (harnais), clang-18/lld-18 (oracle natif, PE de test compilés sans CRT), python3 (générateurs de tests). Le serveur n'a pas de GPU exploitable (Matrox G200) : le headless valide la correction (SwiftShader), la perf se mesure sur un vrai client.
+
+## D015 — 2026-09-18 — Chemins rapides d'API en WASM (FAST_TABLE)
+Le jeu appelle certaines API triviales des millions de fois (`timeGetTime`, `GetTickCount`, `InterlockedIncrement`…) : à ~1 µs le passage par JS, la calibration CPU du jeu (~20 M d'appels) coûtait des minutes. Le dispatcher WASM consulte une table d'un octet par thunk : les API marquées « rapides » sont exécutées en WASM (lecture de KUSER_SHARED, arithmétique) sans sortir vers JS ; le reste garde la sortie THUNK (D004). Le marquage est fait par l'`ApiRegistry` (hook `onThunk`), donc générique. Les appels rapides ne comptent pas dans `apiCalls` ni dans la trace des derniers appels.
+
+## D016 — 2026-09-18 — SEH par continuation
+Un handler MSVC (`_except_handler3`, `__CxxFrameHandler`) peut ne jamais revenir (goto non local vers `__except` après `RtlUnwind`). Le dispatch n'est donc pas une boucle JS qui appelle chaque handler : le handler est *entré* avec une adresse de retour vers un thunk interne (`__seh_return`) dont le côté JS lit la disposition et continue (frame suivant, ou reprise depuis le CONTEXT). `RtlUnwind` appelle les handlers en mode déroulement via `callGuest` (ils reviennent toujours), place son CONTEXT et ses frames **sous l'ESP courant** (les locals du handler C++ appelant sont vivants), fixe FS:[0] à la frame cible et revient normalement avec EAX = valeur de retour — équivalent au `ZwContinue` de NT sur x86 (TargetIp = adresse de retour). Un saut vers l'adresse 0 est une violation d'accès (pas une sortie « code 0 »).
+
+## D017 — 2026-09-18 — CRT intégrée et DLL natives chargées telles quelles
+`msvcr71.dll`/`msvcp71.dll`/`mfc71.dll` du dossier du jeu sont chargées **natives** (elles sont dans le dossier, l'ordre de recherche Windows les préfère) : leur code x86 tourne dans le JIT comme le jeu. L'implémentation intégrée `msvcrt.dll` (cdecl, `_except_handler3`, `_CxxThrowException`, qsort par rappel invité, math via `retDouble`) sert aux binaires qui importent la CRT système (dbghelp, PE de test). Pas de réécriture de la CRT du jeu.
+
+## D018 — 2026-09-18 — Sémantique des jokers Win32 dans FindFirstFile
+`*.` doit lister les noms sans extension (le jeu énumère ainsi ses sous-dossiers d'archives), `*.*` tout, `abc.*` aussi `abc`, `?` ne franchit pas un point. Implémentation de la sémantique `FsRtlIsNameInExpression` avec les jetons DOS (`DOS_STAR`, `DOS_QM`, `DOS_DOT`) que `FindFirstFile` produit, au lieu d'une simple regex glob.
+
+## D019 — 2026-09-18 — GDI+ : images = surfaces 32 bits ARGB en mémoire invité
+Le format mémoire de `PixelFormat32bppARGB` est celui de nos surfaces GDI (B,G,R,A) : `LockBits` en 32 bits rend directement le tampon de l'image (pas de copie), les autres formats passent par une conversion dans un tampon du heap. Les images créées sur un `scan0` de l'appelant restent liées à ce tampon (relecture avant lecture, réécriture après écriture). Décodeurs JPEG (base + progressif, suréchantillonnage « fancy » identique à libjpeg, YCbCr en virgule fixe) et PNG (tous types, Adam7) écrits de zéro et validés contre PIL (tolérance 3/255 pour le JPEG : IDCT entière ≠ flottante).
+
+## D020 — 2026-09-18 — COM : vtables de thunks, objets en mémoire invité, méthodes JS
+Une interface COM = une vtable allouée une fois dans le heap invité dont chaque entrée est un thunk d'API (`com.dll!Interface::Method`, argc = 1 + arguments) ; un objet = un bloc invité `[vtable, marqueur, id]` associé à une implémentation JS. `QueryInterface`/`AddRef`/`Release` sont génériques (chaîne d'héritage + `iids` supplémentaires déclarés par l'implémentation), les méthodes absentes sont tracées une fois et renvoient `E_NOTIMPL`. DirectInput, DirectSound et Direct3D 8 sont bâtis dessus ; `CoCreateInstance` résout les CLSID enregistrés (DirectSound). L'ordre des méthodes vient des en-têtes publics du SDK.
