@@ -19,6 +19,6 @@ for src in tools/pe/*.c; do
   extra=""
   case "$name" in bench*) extra="-O2 -mno-sse -mfpmath=387" ;; esac
   clang $CFLAGS $extra -c -o $OUT/$name.obj "$src"
-  lld-link /nologo /subsystem:$sub /entry:start /nodefaultlib /out:$exe $OUT/$name.obj $OUT/kernel32.lib $OUT/user32.lib $OUT/gdi32.lib $OUT/gdiplus.lib $OUT/dsound.lib $OUT/dinput8.lib $OUT/d3d8.lib
+  lld-link /nologo /subsystem:$sub /entry:start /nodefaultlib /out:$exe $OUT/$name.obj $OUT/kernel32.lib $OUT/user32.lib $OUT/gdi32.lib $OUT/gdiplus.lib $OUT/dsound.lib $OUT/dinput8.lib $OUT/d3d8.lib $OUT/d3d9.lib
   echo "built $exe"
 done

@@ -24,6 +24,7 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 const q = new URLSearchParams({ manifest: name, headless: '1' });
 if (opt('log')) q.set('log', opt('log'));
 if (args.includes('--interp')) q.set('interp', '1');
+if (args.includes('--dump-shaders')) q.set('dump', '1');
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 const t0 = Date.now();
 let lastShot = 0, shot = 0;

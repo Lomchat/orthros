@@ -87,7 +87,7 @@ export function ffVertexShader(k) {
   const lines = ['#version 300 es', 'precision highp float;'];
   for (const a of L.attrs) lines.push(`in ${a.type === 'float' && a.comps === 1 ? 'float' : a.type === 'float' ? 'vec' + a.comps : 'vec4'} a_${a.name};`);
   lines.push('uniform mat4 u_world[4]; uniform mat4 u_view; uniform mat4 u_proj; uniform mat4 u_texmat[8];');
-  lines.push('uniform vec4 u_viewport; uniform vec2 u_depthRange;'); // x,y,w,h ; minZ,maxZ (for RHW)
+  lines.push('uniform vec4 u_viewport; uniform vec2 u_depthRange; uniform float u_flipY;'); // x,y,w,h ; minZ,maxZ (for RHW) ; -1 when rendering into a texture
   lines.push('uniform vec4 u_matDiffuse, u_matAmbient, u_matSpecular, u_matEmissive; uniform float u_matPower; uniform vec4 u_ambient;');
   lines.push('struct Light { int type; vec4 diffuse; vec4 specular; vec4 ambient; vec3 position; vec3 direction; float range; float falloff; vec3 atten; float theta; float phi; };');
   lines.push(`uniform Light u_lights[${MAX_LIGHTS}]; uniform int u_numLights;`);
@@ -103,7 +103,7 @@ export function ffVertexShader(k) {
     lines.push('  float ndcX = ((p.x - u_viewport.x) / u_viewport.z) * 2.0 - 1.0;');
     lines.push('  float ndcY = 1.0 - ((p.y - u_viewport.y) / u_viewport.w) * 2.0;');
     lines.push('  float w = 1.0 / rhw;');
-    lines.push('  gl_Position = vec4(ndcX * w, ndcY * w, (p.z * 2.0 - 1.0) * w, w);');
+    lines.push('  gl_Position = vec4(ndcX * w, ndcY * u_flipY * w, (p.z * 2.0 - 1.0) * w, w);');
     lines.push('  vec3 posView = vec3(0.0); vec3 nView = vec3(0.0, 0.0, 1.0);');
     lines.push(`  v_color0 = ${has('diffuse') ? colorIn('diffuse') : 'vec4(1.0)'}; v_color1 = ${has('specular') ? colorIn('specular') : 'vec4(0.0)'};`);
     lines.push('  v_fog = v_color1.a;'); // fog factor from specular alpha for pre-transformed vertices
@@ -124,7 +124,7 @@ export function ffVertexShader(k) {
     lines.push('  vec3 nView = mat3(u_view) * nWorld;');
     if (k.normalize || true) lines.push('  nView = length(nView) > 0.0 ? normalize(nView) : nView;');
     lines.push('  vec4 clip = u_proj * posView4;');
-    lines.push('  gl_Position = vec4(clip.x, -clip.y, clip.z * 2.0 - clip.w, clip.w);');
+    lines.push('  gl_Position = vec4(clip.x, clip.y * u_flipY, clip.z * 2.0 - clip.w, clip.w);');
     // colors
     const dif = has('diffuse') ? colorIn('diffuse') : 'vec4(1.0)', spc = has('specular') ? colorIn('specular') : 'vec4(0.0)';
     if (k.lighting) {
@@ -266,7 +266,7 @@ export function translateVertexShader(code, layout) {
   const inputs = new Set();
   for (const s of layout.streams.values()) for (const a of s.attrs) inputs.add(a.reg);
   for (const r of inputs) lines.push(`in vec4 a_v${r};`);
-  lines.push('uniform vec4 u_vc[96]; uniform vec4 u_viewport;');
+  lines.push('uniform vec4 u_vc[96]; uniform vec4 u_viewport; uniform float u_flipY;');
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`out vec4 v_tex${i};`);
   const body = [];
@@ -335,7 +335,7 @@ export function translateVertexShader(code, layout) {
       default: body.push(`  // unsupported vs op ${op}`);
     }
   }
-  body.push('  gl_Position = vec4(oPos.x, -oPos.y, oPos.z * 2.0 - oPos.w, oPos.w);');
+  body.push('  gl_Position = vec4(oPos.x, oPos.y * u_flipY, oPos.z * 2.0 - oPos.w, oPos.w);');
   body.push('  v_color0 = oD0; v_color1 = oD1; v_fog = oFog.x; gl_PointSize = oPts.x;');
   for (let k = 0; k < MAX_STAGES; k++) body.push(`  v_tex${k} = oT${k};`);
   lines.push('void main() {', ...body, '}');

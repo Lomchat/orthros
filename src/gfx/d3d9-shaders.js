@@ -71,7 +71,7 @@ export function translateVertexShader9(code) {
   }
   if (major < 2 && inputs.size === 0) for (let r = 0; r < 16; r++) inputs.set(r, 'v' + r); // no dcl: fall back to register names
   for (const [r, n] of inputs) lines.push(`in vec4 a_${n}; // v${r}`);
-  lines.push('uniform vec4 u_vc[256]; uniform ivec4 u_vci[16]; uniform bool u_vcb[16]; uniform vec4 u_viewport;');
+  lines.push('uniform vec4 u_vc[256]; uniform ivec4 u_vci[16]; uniform bool u_vcb[16]; uniform vec4 u_viewport; uniform float u_flipY;');
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`out vec4 v_tex${i};`);
   const body = [];
@@ -170,7 +170,7 @@ export function translateVertexShader9(code) {
       default: body.push(`  // unsupported vs op ${op}`);
     }
   }
-  body.push('  gl_Position = vec4(oPos.x, -oPos.y, oPos.z * 2.0 - oPos.w, oPos.w);');
+  body.push('  gl_Position = vec4(oPos.x, oPos.y * u_flipY, oPos.z * 2.0 - oPos.w, oPos.w);');
   body.push('  v_color0 = oD0; v_color1 = oD1; v_fog = oFog.x; gl_PointSize = oPts.x;');
   for (let k = 0; k < MAX_STAGES; k++) body.push(`  v_tex${k} = oT${k};`);
   lines.push('void main() {', ...body, '}');

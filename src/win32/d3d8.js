@@ -110,7 +110,7 @@ export function d3dCore(vm) {
     }
     ensureMem(proc) { if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
     free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
-    ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
+    ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     GetDevice(c) { return Resource.prototype.GetDevice.call(this, c); }
     SetPrivateData(c) { return Resource.prototype.SetPrivateData.call(this, c); }
@@ -224,8 +224,10 @@ export function d3dCore(vm) {
 
   // ---------------------------------------------------------------- device
   const MAX_STAGES = 8, MAX_STREAMS = 16, MAX_LIGHTS = 8;
-  const RS_DEFAULTS = { 7: 1 /* ZENABLE TRUE when depth */, 8: 3 /* FILLMODE SOLID */, 9: 2 /* SHADEMODE GOURAUD */, 14: 1 /* ZWRITEENABLE */, 15: 0, 16: 0, 19: 2 /* SRCBLEND ONE */, 20: 1 /* DESTBLEND ZERO */, 22: 3 /* CULLMODE CCW */, 23: 4 /* ZFUNC LESSEQUAL */, 24: 0, 25: 8 /* ALPHAFUNC ALWAYS */, 26: 1, 27: 0, 28: 1 /* SPECULARENABLE? FALSE */, 29: 0, 34: 0, 35: 0, 36: 0, 37: 0, 38: 0, 137: 1 /* LIGHTING */, 139: 0, 140: 1 /* COLORVERTEX */, 141: 0, 143: 0, 144: 0, 145: 1, 146: 0, 147: 2, 148: 1, 149: 1, 150: 0, 154: 1, 155: 0, 158: 0xf /* COLORWRITEENABLE */, 168: 0, 171: 1 /* BLENDOP ADD */ };
-  const TSS_DEFAULTS = (stage) => ({ 1: stage === 0 ? 4 : 1 /* COLOROP MODULATE / DISABLE */, 2: 2 /* COLORARG1 TEXTURE */, 3: 0 /* COLORARG2 CURRENT... 1? */, 4: stage === 0 ? 2 : 1 /* ALPHAOP SELECTARG1 / DISABLE */, 5: 2, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: stage, 13: 1 /* ADDRESSU WRAP */, 14: 1, 15: 0, 16: 1 /* MAGFILTER POINT */, 17: 1, 18: 0, 19: 0, 20: 0, 21: 1, 22: 0, 23: 0, 24: 0, 25: 1, 26: 1 });
+  // D3DRS_* defaults (public documentation): floats stored as their bit patterns
+  const F1 = 0x3f800000, F64 = 0x42800000;
+  const RS_DEFAULTS = { 7: 1 /* ZENABLE */, 8: 3 /* FILLMODE SOLID */, 9: 2 /* SHADEMODE GOURAUD */, 14: 1 /* ZWRITEENABLE */, 15: 0, 16: 1 /* LASTPIXEL */, 19: 2 /* SRCBLEND ONE */, 20: 1 /* DESTBLEND ZERO */, 22: 3 /* CULLMODE CCW */, 23: 4 /* ZFUNC LESSEQUAL */, 24: 0, 25: 8 /* ALPHAFUNC ALWAYS */, 26: 0, 27: 0, 28: 0 /* FOGENABLE */, 29: 0 /* SPECULARENABLE */, 34: 0, 35: 0, 36: 0, 37: F1, 38: F1, 47: 0, 48: 0, 52: 0, 53: 1, 54: 1, 55: 1, 56: 8, 57: 0, 58: 0xffffffff, 59: 0xffffffff, 60: 0xffffffff, 128: 0, 129: 0, 130: 0, 131: 0, 132: 0, 133: 0, 134: 0, 135: 0, 136: 1 /* CLIPPING */, 137: 1 /* LIGHTING */, 139: 0, 140: 0, 141: 1 /* COLORVERTEX */, 142: 1 /* LOCALVIEWER */, 143: 0, 145: 1, 146: 2, 147: 0, 148: 0, 151: 0, 152: 0, 154: F1, 155: F1, 156: 0, 157: 0, 161: 1, 162: 0xffffffff, 165: 0, 166: F64, 167: 0, 168: 0xf /* COLORWRITEENABLE */, 170: 0, 171: 1 /* BLENDOP ADD */, 174: 0, 175: 0, 176: 0, 185: 0, 186: 1, 187: 1, 188: 1, 189: 8, 190: 0xf, 191: 0xf, 192: 0xf, 193: 0xffffffff, 194: 0, 195: 0, 206: 0, 207: 2, 208: 1, 209: 1 };
+  const TSS_DEFAULTS = (stage) => ({ 1: stage === 0 ? 4 : 1 /* COLOROP MODULATE / DISABLE */, 2: 2 /* COLORARG1 TEXTURE */, 3: 1 /* COLORARG2 CURRENT */, 4: stage === 0 ? 2 : 1 /* ALPHAOP SELECTARG1 / DISABLE */, 5: 2, 6: 1, 7: 0, 8: 0, 9: 0, 10: 0, 11: stage, 13: 1 /* ADDRESSU WRAP */, 14: 1, 15: 0, 16: 1 /* MAGFILTER POINT */, 17: 1, 18: 0, 19: 0, 20: 0, 21: 1, 22: 0, 23: 0, 24: 0, 25: 1, 26: 1, 27: 1, 28: 1 });
   class Device {
     constructor(c, d3d, adapter, devType, hFocus, behavior, pp) {
       this.proc = c.proc; this.d3d = d3d; this.adapter = adapter; this.devType = devType; this.hFocus = hFocus; this.behavior = behavior; this.com = com; this.vm = vm;
