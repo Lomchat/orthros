@@ -114,6 +114,7 @@ export class WebGLDevice {
     this.fvfCache = new Map();
     this.frameDraws = 0;
     this.dumpShaders = !!opts.dumpShaders;
+    this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     gl.bindVertexArray(this.vao);
     this.reset(dev);
   }
@@ -215,6 +216,7 @@ export class WebGLDevice {
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
       const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
       if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`);
+      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
     } else gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
     return { w: f.w, h: f.h, fbo: true };
@@ -246,9 +248,10 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- frame
   beginScene() { this.frameDraws = 0; }
   endScene() {}
-  present() { this.gl.flush(); }
+  present() { this.gl.flush(); this.frame++; if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)`); } if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.log(`d3d-webgl: capture frame ${this.frame}`); } }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
+    if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
     const { h, fbo } = this.bindTarget();
     const v = dev.viewport;
     const gy = (y, hh) => (fbo ? y : h - y - hh);
@@ -362,6 +365,10 @@ export class WebGLDevice {
     gl.useProgram(P.prog);
     const U = P.u;
     if (U('u_flipY')) gl.uniform1f(U('u_flipY'), fbo ? -1 : 1);
+    if (this.capturing) {
+      const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}` : '').filter(Boolean).join(' ');
+      this.log(`d3d-webgl: [cap] ${fbo ? 'FBO' : 'screen'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+    }
     for (let i = 0; i < 4; i++) { const l = U(`u_world[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
     if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
     if (U('u_proj')) gl.uniformMatrix4fv(U('u_proj'), false, dev.transforms.get(TS_PROJECTION) ?? IDENTITY);
@@ -510,6 +517,7 @@ export class WebGLDevice {
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     if (!this.bindAttributes(P, info.L)) return;
+    if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count}`);
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
     this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`);
@@ -536,9 +544,10 @@ export class WebGLDevice {
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
+    if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV}`);
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++;
-    void minIdx; void numV;
+    void minIdx;
   }
   drawPrimitiveUP(type, count, data, stride) {
     const gl = this.gl;
@@ -548,6 +557,7 @@ export class WebGLDevice {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
     gl.bufferData(gl.ARRAY_BUFFER, this.mem.bytes(data, n * stride), gl.STREAM_DRAW);
     if (!this.bindAttributes(P, info.L, { stride })) return;
+    if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++;
   }
@@ -562,6 +572,7 @@ export class WebGLDevice {
     if (!this.bindAttributes(P, info.L, { stride })) return;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.upIbo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.mem.bytes(idx, n * (short ? 2 : 4)), gl.STREAM_DRAW);
+    if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++;
   }
@@ -571,5 +582,5 @@ export class WebGLDevice {
 export function createWebGLBackend(canvas, log) {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
-  return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS }); } };
+  return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME }); } };
 }
