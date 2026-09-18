@@ -142,3 +142,13 @@ test('dx.exe: DirectSound buffers/cursors, DirectInput keyboard+mouse, Direct3D 
   assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
   assert.equal(vm.proc.unknownImports.size, 0);
 });
+
+test('bench.exe: JIT region consolidation into multi-function modules keeps results identical', { skip: skip('bench.exe') }, () => {
+  const { vm } = boot('bench.exe', { jit: true });
+  vm.jit.consolidateEvery = 4;
+  const code = vm.run();
+  assert.equal(code, 0);
+  const out = vm.stdout.join('');
+  for (const [k, v] of [['int', '49965701'], ['sieve', '000245c5'], ['memory', '213a0000'], ['string', '00fa0000'], ['fpu', '000007d1']]) assert.ok(out.includes(`${k} 0x${v}`), `${k} checksum in\n${out}`);
+  assert.ok(vm.jit.stats.consolidations >= 5, `consolidations: ${vm.jit.stats.consolidations}`);
+});

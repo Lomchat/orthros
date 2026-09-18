@@ -3,8 +3,10 @@
 import { EXIT, ST } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
 import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
-import { translateRegion } from './translate.js';
+import { translateRegion, buildRegionModule } from './translate.js';
 import './translate-x87.js';
+
+const CONSOLIDATE_EVERY = 128;
 
 export class Jit {
   /**
@@ -30,9 +32,11 @@ export class Jit {
     };
     /** @type {Array<{entry: number, start: number, end: number, blocks: any[], fnIdx: number}>} */
     this.regions = [];
+    this.pending = []; // regions still living in their own single-function module
+    this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0 };
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
@@ -51,6 +55,7 @@ export class Jit {
     this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
     this.mem.fill(SMC_BITMAP_BASE, 0x10000, 0);
     this.regions = [];
+    this.pending = [];
     this.byEntry.clear();
     this.pageRegions.clear();
   }
@@ -92,7 +97,8 @@ export class Jit {
   // ------------------------------------------------------------------ translation
   translate(eip) {
     const t0 = performance.now();
-    const { bytes, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false });
+    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false });
+    const bytes = buildRegionModule([code]);
     let inst;
     try {
       inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), this.imports);
@@ -101,11 +107,14 @@ export class Jit {
     }
     if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
     const fnIdx = this.nextFn++;
-    this.table.set(fnIdx, inst.exports.region);
+    this.table.set(fnIdx, inst.exports.r0);
     let start = Infinity, end = 0;
     for (const b of blocks) { start = Math.min(start, b.eip); end = Math.max(end, b.end); }
-    const region = { entry: eip, start, end, blocks, fnIdx };
+    const region = { entry: eip, start, end, blocks, fnIdx, code };
     this.regions.push(region);
+    this.stats.live = this.regions.length;
+    this.pending.push(region);
+    if (this.pending.length >= this.consolidateEvery) this.consolidate();
     this.byEntry.set(eip, region);
     for (const b of blocks) this.hashInsert(b.eip, fnIdx, b.index);
     // mark code pages for SMC detection
@@ -119,12 +128,32 @@ export class Jit {
     return region;
   }
 
+  /**
+   * Pack the pending single-function modules into one module: V8 keeps ~50 KB of metadata per
+   * instance, so thousands of one-region instances exhaust the JS heap. The packed functions
+   * replace the table entries; the old instances become garbage.
+   */
+  consolidate() {
+    const live = this.pending.filter((r) => r.code && this.byEntry.get(r.entry) === r);
+    this.pending = [];
+    if (!live.length) return;
+    const t0 = performance.now();
+    let inst;
+    try { inst = new WebAssembly.Instance(new WebAssembly.Module(buildRegionModule(live.map((r) => r.code))), this.imports); }
+    catch (e) { if (this.opts.log) this.opts.log(`jit: consolidation failed: ${e.message}`); return; }
+    live.forEach((r, i) => { if (this.byEntry.get(r.entry) === r) this.table.set(r.fnIdx, inst.exports['r' + i]); r.code = null; });
+    this.stats.consolidations = (this.stats.consolidations ?? 0) + 1;
+    this.stats.translateMs += performance.now() - t0;
+  }
+
   /** Invalidate translations overlapping [addr, addr+len). */
   invalidate(addr, len) {
     const p0 = addr >>> 12, p1 = (addr + len - 1) >>> 12;
     const victims = new Set();
     for (let p = p0; p <= p1; p++) { const s = this.pageRegions.get(p); if (s) for (const r of s) victims.add(r); }
+    if (victims.size) this.stats.invalidations++;
     for (const r of victims) this.dropRegion(r);
+    this.stats.dropped += victims.size;
   }
   dropRegion(r) {
     for (const b of r.blocks) this.hashRemove(b.eip);
