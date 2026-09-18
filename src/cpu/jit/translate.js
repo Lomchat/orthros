@@ -109,6 +109,17 @@ export function translateRegion(mem, entry, opts = {}) {
   return em.run(entry);
 }
 
+/** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
+export function buildRegionModule(codes) {
+  const m = new ModuleBuilder();
+  m.importMemory('env', 'memory', 32768, 32768);
+  m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
+  m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
+  m.importFunc('env', 'fallback', [T.i32], [T.i32]);
+  codes.forEach((code, i) => { const f = m.func([T.i32, T.i32], [T.i32], LOCAL_TYPES, { buf: code, len: code.length }, 'r' + i); m.exportFunc('r' + i, f); });
+  return m.build();
+}
+
 class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
@@ -154,14 +165,8 @@ class Emitter {
     c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
     c.i32(0);
     // module
-    const m = new ModuleBuilder();
-    m.importMemory('env', 'memory', 32768, 32768);
-    m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
-    m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
-    m.importFunc('env', 'fallback', [T.i32], [T.i32]);
-    const f = m.func([T.i32, T.i32], [T.i32], LOCAL_TYPES, c, 'region');
-    m.exportFunc('region', f);
-    return { bytes: m.build(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats };
+    // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
+    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats };
   }
 
   // ------------------------------------------------------------------ state <-> locals

@@ -117,7 +117,7 @@ export async function main(argv) {
       vm.progressEvery = o.progress * 1000; vm.progressAt = performance.now() + vm.progressEvery;
       vm.onProgress = (t) => {
         const top = vm.profile ? [...vm.profile].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${vm.proc.symbolize(k << 6)} ${(100 * v / vm.slices).toFixed(0)}%`).join(', ') : '';
-        console.log(`[progress] t=${((performance.now() - t0) / 1000).toFixed(0)}s heap=${(process.memoryUsage().heapUsed / 1048576).toFixed(0)}MB api=${vm.apiCalls} slices=${vm.slices} regions=${vm.jit?.stats.regions} thread=${t.id} eip=${vm.proc.symbolize(t.cpu.eip)} threads=${vm.proc.threads.length} ${top}`);
+        console.log(`[progress] t=${((performance.now() - t0) / 1000).toFixed(0)}s heap=${(process.memoryUsage().heapUsed / 1048576).toFixed(0)}MB api=${vm.apiCalls} slices=${vm.slices} regions=${vm.jit?.stats.regions}/live ${vm.jit?.stats.live} inval=${vm.jit?.stats.invalidations}/${vm.jit?.stats.dropped} thread=${t.id} eip=${vm.proc.symbolize(t.cpu.eip)} threads=${vm.proc.threads.length} ${top}`);
         if (vm.profile) vm.profile.clear(); vm.slices = 0;
       };
     }

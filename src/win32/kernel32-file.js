@@ -357,7 +357,55 @@ export function registerKernel32File(api, vm) {
     const n = Math.min(v.length, c.arg(4) - 1); mem.writeCString(c.arg(3), v.slice(0, n)); return n;
   }];
   K.GetPrivateProfileIntA = [4, (c) => { const v = iniGet(iniRead(c, c.str(3) ?? ''), c.str(0) ?? '', c.str(1) ?? ''); return v === null ? c.arg(2) : (parseInt(v, 10) | 0) >>> 0; }];
-  K.WritePrivateProfileStringA = [4, (c) => { vm.warn(`WritePrivateProfileString(${c.str(3)}) ignored`); return 1; }];
+  const iniWrite = (c, path, text) => {
+    const full = c.proc.path(path);
+    const f = vm.vfs.open(full, { write: true, create: true, truncate: true });
+    if (!f) return false;
+    const bytes = new Uint8Array(text.length); for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+    f.write(0, bytes); f.truncate(bytes.length); f.close();
+    return true;
+  };
+  /** section == null: delete the section; key == null: delete the key; else set (or append) key=value */
+  const iniSet = (text, section, key, value) => {
+    const lines = text.length ? text.split(/\r?\n/) : [];
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const isHdr = (l) => l.trim().startsWith('[');
+    const hdrName = (l) => l.trim().slice(1, l.trim().indexOf(']')).toLowerCase();
+    let start = lines.findIndex((l) => isHdr(l) && hdrName(l) === section.toLowerCase());
+    let end = start < 0 ? -1 : lines.findIndex((l, i) => i > start && isHdr(l)); if (start >= 0 && end < 0) end = lines.length;
+    if (key === null) { if (start >= 0) lines.splice(start, end - start); return lines.join('\r\n') + '\r\n'; }
+    if (start < 0) { if (value === null) return text; if (lines.length && lines[lines.length - 1].trim() !== '') lines.push(''); lines.push(`[${section}]`, `${key}=${value}`); return lines.join('\r\n') + '\r\n'; }
+    const idx = lines.findIndex((l, i) => i > start && i < end && !isHdr(l) && l.indexOf('=') > 0 && l.slice(0, l.indexOf('=')).trim().toLowerCase() === key.toLowerCase());
+    if (value === null) { if (idx >= 0) lines.splice(idx, 1); }
+    else if (idx >= 0) lines[idx] = `${key}=${value}`;
+    else lines.splice(end, 0, `${key}=${value}`);
+    return lines.join('\r\n') + '\r\n';
+  };
+  K.WritePrivateProfileStringA = [4, (c) => {
+    const section = c.str(0), key = c.str(1), value = c.str(2), file = c.str(3);
+    if (!file || !section) return c.fail(E.INVALID_PARAMETER);
+    const text = iniSet(iniRead(c, file), section, key, value);
+    if (!iniWrite(c, file, text)) return c.fail(E.ACCESS_DENIED);
+    vm.log('file', `ini write ${file} [${section}] ${key}=${value}`);
+    return 1;
+  }];
+  K.WritePrivateProfileStringW = [4, (c) => K.WritePrivateProfileStringA[1]({ ...c, str: (i) => c.wstr(i) })];
+  K.GetPrivateProfileSectionA = [4, (c) => {
+    const text = iniRead(c, c.str(3) ?? ''), section = (c.str(0) ?? '').toLowerCase();
+    let cur = '', out = '';
+    for (const raw of text.split(/\r?\n/)) { const line = raw.trim(); if (line.startsWith('[')) { cur = line.slice(1, line.indexOf(']')).toLowerCase(); continue; } if (cur === section && line && !line.startsWith(';')) out += line + '\0'; }
+    const max = c.arg(2); if (max < 2) return 0;
+    const s = out.slice(0, max - 2); mem.writeCString(c.arg(1), s); mem.write8(c.arg(1) + s.length + 1, 0);
+    return s.length;
+  }];
+  K.GetPrivateProfileSectionNamesA = [3, (c) => {
+    const text = iniRead(c, c.str(2) ?? '');
+    let out = '';
+    for (const raw of text.split(/\r?\n/)) { const line = raw.trim(); if (line.startsWith('[')) out += line.slice(1, line.indexOf(']')) + '\0'; }
+    const max = c.arg(1); if (max < 2) return 0;
+    const s = out.slice(0, max - 2); mem.writeCString(c.arg(0), s); mem.write8(c.arg(0) + s.length + 1, 0);
+    return s.length;
+  }];
   K.GetProfileIntA = [3, (c) => c.arg(2)];
   K.GetProfileStringA = [5, (c) => { const v = c.str(2) ?? ''; mem.writeCString(c.arg(3), v, c.arg(4)); return v.length; }];
 
