@@ -226,10 +226,10 @@ export function registerDirectSound(api, vm) {
     }
     GetCaps(c) {
       const p = c.arg(1); if (!p || mem.read32(p) < 96) return DSERR_INVALIDPARAM;
+      // a software-mixing device (like every modern Windows driver): no hardware buffers, no hardware memory
       mem.fill(p + 4, 92, 0);
-      mem.write32(p + 4, 0x1 | 0x20 | 0x40 | 0x80 | 0x100 | 0x400); // PRIMARYMONO|STEREO|8BIT|16BIT|CONTINUOUSRATE|SECONDARY*
+      mem.write32(p + 4, 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x100 | 0x200 | 0x400 | 0x800); // PRIMARY MONO|STEREO|8BIT|16BIT, CONTINUOUSRATE, SECONDARY MONO|STEREO|8BIT|16BIT
       mem.write32(p + 8, 100); mem.write32(p + 12, 200000); mem.write32(p + 16, 1);
-      mem.write32(p + 76, 0x7fffffff); mem.write32(p + 80, 0x7fffffff); // free hw memory
       return DS_OK;
     }
     DuplicateSoundBuffer(c) {

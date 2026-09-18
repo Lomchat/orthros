@@ -223,7 +223,7 @@ export function registerDirect3D8(api, vm) {
   const TSS_DEFAULTS = (stage) => ({ 1: stage === 0 ? 4 : 1 /* COLOROP MODULATE / DISABLE */, 2: 2 /* COLORARG1 TEXTURE */, 3: 0 /* COLORARG2 CURRENT... 1? */, 4: stage === 0 ? 2 : 1 /* ALPHAOP SELECTARG1 / DISABLE */, 5: 2, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: stage, 13: 1 /* ADDRESSU WRAP */, 14: 1, 15: 0, 16: 1 /* MAGFILTER POINT */, 17: 1, 18: 0, 19: 0, 20: 0, 21: 1, 22: 0, 23: 0, 24: 0, 25: 1, 26: 1 });
   class Device {
     constructor(c, d3d, adapter, devType, hFocus, behavior, pp) {
-      this.proc = c.proc; this.d3d = d3d; this.adapter = adapter; this.devType = devType; this.hFocus = hFocus; this.behavior = behavior;
+      this.proc = c.proc; this.d3d = d3d; this.adapter = adapter; this.devType = devType; this.hFocus = hFocus; this.behavior = behavior; this.com = com; this.vm = vm;
       this.readPresentParams(pp);
       this.gfx = null;
       this.resetState();

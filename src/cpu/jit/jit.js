@@ -165,6 +165,9 @@ export class Jit {
    * Same contract as Interp.run(): runs until an exit. maxInsns bounds the budget.
    * @param {{ stopAt?: number, maxInsns?: number }} opts
    */
+  /** instructions left from the last run()'s budget (negative after a time slice) */
+  remaining() { return this.mem.readS32(this.cpu.base + ST.ICOUNT); }
+
   run(opts = {}) {
     const cpu = this.cpu;
     const stopAt = opts.stopAt ?? -1;

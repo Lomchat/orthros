@@ -7,6 +7,7 @@ import { Vfs, MemBackend, normalizeWin } from '../../vfs/vfs.js';
 import { HttpBackend } from '../../vfs/http-backend.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
+import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
 let lastFlush = 0, running = false, stopped = false;
@@ -56,6 +57,7 @@ async function start(m) {
   const clock = new RealClock();
   const ctl = new Int32Array(m.ctl), inputRing = new Int32Array(m.inputRing), audioRing = new Float32Array(m.audioRing);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d: m.canvas2d, canvasGl: m.canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  try { host.gfx = createWebGLBackend(m.canvasGl, (msg) => log('gfx', msg)); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();
   const root = new MemBackend();
