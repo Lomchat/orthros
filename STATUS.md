@@ -1,33 +1,36 @@
 # STATUS — Orthros
 
-**Palier courant : M1 CPU — atteint le 2026-09-18 ; M2 (loader PE + Win32 minimal) démarre.**
+**Palier courant : M2 Loader + Win32 minimal — atteint le 2026-09-18 ; M3 (JIT x86→WASM) démarre.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
-- M1 : décodeur x86-32 complet (1 octet, 0F, groupes, x87, MMX/SSE/SSE2/SSE3 partiel) et
-  interpréteur de référence (`src/cpu/interp*.js`), validés contre l'**oracle natif** :
-  `make test` régénère 6 suites × 1500 cas aléatoires (alu, stack, branch, string, x87, sse)
-  assemblés par llvm-mc, exécutés sur le CPU du serveur (`build/oracle`, ELF 32 bits sans libc),
-  et compare registres/drapeaux/mémoire/état x87/XMM/MMX. **0 écart** sur les 6 suites, et 0 écart
-  sur 24 000 cas supplémentaires avec d'autres seeds (`tools/probe.mjs` pour le détail).
-- Fidélité x87 : précision simple (PC=24) exacte y compris modes d'arrondi dirigés (termes d'erreur
-  exacts TwoSum/TwoProduct), FPREM/FPREM1 exacts (quotient BigInt), réponses masquées
-  (indéfini, débordement/sous-dépassement de pile, FCMOV sur registre vide).
+- M1 : décodeur x86-32 complet et interpréteur de référence validés contre l'**oracle natif**
+  (6 suites × 1500 cas aléatoires, 0 écart ; 0 écart sur 24 000 cas supplémentaires).
+- M2 : chargeur PE32 (sections, relocations, imports/exports/forwarders, TLS, ressources),
+  espace d'adressage (VirtualAlloc & co), heaps, handles, processus/threads avec TEB/PEB/KUSER,
+  thunks d'API (sortie vers JS à chaque appel d'import, D004), ordonnanceur green-threads (D003),
+  rapports de crash (désassemblage, pile, trace des derniers appels API).
+  Builtins : kernel32 (~300 fonctions), user32 (fenêtres, classes, messages, timers, entrées,
+  modes d'affichage, ressources), gdi32 (DC, objets, blits/ROPs, DIB sections, texte bitmap).
+  Trois PE de test compilés sans CRT (clang + lld-link) passent : `hello.exe` (WriteFile, heap, TLS,
+  VirtualAlloc, fichiers), `window.exe` (fenêtre GDI, WM_PAINT, timers, souris/clavier, GetPixel,
+  frame présentée au host), `threads.exe` (CreateThread, sections critiques, événements, Sleep).
 
 ## Limites connues (documentées, acceptées en v1)
-- x87 émulé en f64 : PC=64 non reproduit (tolérance 1 ulp), arrondi dirigé en PC=53 non reproduit,
-  transcendantales à ~1e-13 près, payload des NaN non conservé. Reste partiel FPREM (écart
-  d'exposant ≥ 64) : N implémentation-dépendant → non testé.
-- Pas de faute de page (mémoire identité 2 Go) ; pas de vérification des sélecteurs de segment.
-- MMX stocké séparément des registres x87 (pas d'aliasing).
+- x87 en f64 (voir D011). Pas de faute de page. MMX non aliasé sur x87.
+- SEH (RaiseException/RtlUnwind/faults → handlers FS:[0]) pas encore dispatché : prévu en M4
+  dès que le jeu (ou msvcr71) en a besoin.
+- GDI : police bitmap intégrée seulement (le navigateur pourra rasteriser via Canvas2D plus tard),
+  régions rectangulaires, pas de dialogues/menus réels.
 
 ## Blocages
 - Aucun.
 
 ## Prochaine action
-- M2 : chargeur PE32 (`src/loader/pe.js`), thunks d'import, kernel32 minimal (WriteFile, ExitProcess,
-  GetStdHandle…), un PE compilé par clang/lld-link sans CRT qui écrit sur stdout, puis un PE avec
-  fenêtre GDI.
+- M3 : recompilateur dynamique x86→WebAssembly (`src/cpu/jit/`) : émetteur de bytecode WASM,
+  traduction par blocs/régions avec registres en locals, drapeaux paresseux, table funcref partagée
+  pour le chaînage, gestion du code auto-modifiant ; même suite de conformité que M1 ; bench ≥ 10×
+  l'interpréteur.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - (vide)
