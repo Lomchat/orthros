@@ -152,3 +152,16 @@ test('bench.exe: JIT region consolidation into multi-function modules keeps resu
   for (const [k, v] of [['int', '49965701'], ['sieve', '000245c5'], ['memory', '213a0000'], ['string', '00fa0000'], ['fpu', '000007d1']]) assert.ok(out.includes(`${k} 0x${v}`), `${k} checksum in\n${out}`);
   assert.ok(vm.jit.stats.consolidations >= 5, `consolidations: ${vm.jit.stats.consolidations}`);
 });
+
+test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback path', { skip: skip('dx9.exe') }, () => {
+  const { vm } = boot('dx9.exe', { jit: true });
+  const code = vm.run();
+  assert.equal(code, 0);
+  const out = Object.fromEntries(vm.stdout.join('').trim().split('\n').map((l) => l.split('=')));
+  assert.deepEqual([out.adapters, out.modew, out.modefmt, out.maxtex, out.vsver, out.psver, out.numrts], ['1', '800', '22', '4096', '0xfffe0200', '0xffff0200', '4']);
+  assert.ok(Number(out.modecount) > 10, 'display modes enumerated per format');
+  for (const k of ['checktype', 'checkfmt', 'checkds', 'device', 'tex', 'lockrect', 'unlockrect', 'surflevel', 'decl', 'setdecl', 'vb', 'vblock', 'vbunlock', 'stream', 'begin', 'clear', 'rs_cull', 'settex', 'sampler', 'draw', 'end', 'present', 'backbuffer', 'offscreen', 'rtdata', 'offlock']) assert.equal(out[k], '0x00000000', k);
+  assert.deepEqual([out.levels, out.surfw, out.surfms, out.bbw, out.bbh], ['1', '8', '0', '320', '240'], 'DX9 surface descriptors');
+  assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
+  assert.equal(vm.proc.unknownImports.size, 0);
+});

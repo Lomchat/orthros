@@ -56,3 +56,14 @@ test('browser host: dx.exe clears the Direct3D back buffer through WebGL2', { sk
   assert.equal(r.pixel(500, 400), 0x000000, 'outside the device window');
   assert.ok(r.logs.some((l) => l.includes('CreateDevice') && l.includes('backend yes')), 'WebGL backend attached');
 });
+
+test('browser host: dx9.exe renders a textured triangle through the WebGL2 backend and reads it back', { skip, timeout: 60000 }, async () => {
+  const r = await runManifest('test-dx9', 20);
+  assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.pixel(60, 60), 0x00ff00, 'green texture modulated by white diffuse inside the triangle');
+  assert.equal(r.pixel(300, 200), 0x0000ff, 'clear color outside the triangle');
+  const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
+  assert.match(text, /px_tri=0x0000ff00/, 'GetRenderTargetData reads the rendered pixels back into guest memory');
+  assert.match(text, /px_clear=0x000000ff/);
+});

@@ -57,6 +57,7 @@ async function start(m) {
   const clock = new RealClock();
   const ctl = new Int32Array(m.ctl), inputRing = new Int32Array(m.inputRing), audioRing = new Float32Array(m.audioRing);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d: m.canvas2d, canvasGl: m.canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders;
   try { host.gfx = createWebGLBackend(m.canvasGl, (msg) => log('gfx', msg)); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();

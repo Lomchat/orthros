@@ -1,0 +1,1 @@
+{ "name": "Test: dx9.exe", "folder": "../build/pe", "exe": "dx9.exe", "args": "", "mount": "C:\\Test", "display": { "width": 800, "height": 600 } }
