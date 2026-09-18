@@ -259,6 +259,7 @@ export class WindowManager {
       case 'keydown': case 'keyup': {
         const down = ev.type === 'keydown';
         const vk = ev.vk & 0xff;
+        if (down) this.lastKeyVk = vk;
         const wasDown = (this.keyState[vk] & 0x80) !== 0;
         if (down) { if (!wasDown) this.keyState[vk] ^= 1; this.keyState[vk] |= 0x80; } else this.keyState[vk] &= 1;
         // generic modifier state
@@ -276,8 +277,12 @@ export class WindowManager {
         break;
       }
       case 'char': {
-        const w = this.windows.get(this.focus);
-        if (w) this.post(w, WM.CHAR, ev.code, 1);
+        // The host knows the character the key produced (layout aware). Like Windows, WM_CHAR only comes out of
+        // TranslateMessage: attach the character to the pending WM_KEYDOWN instead of posting a second message.
+        if (this.lastKeyVk === undefined) break;
+        this.pendingChars ??= [];
+        this.pendingChars.push({ vk: this.lastKeyVk, code: ev.code });
+        if (this.pendingChars.length > 64) this.pendingChars.shift();
         break;
       }
       case 'focus': {
@@ -851,7 +856,9 @@ export function registerUser32(api, vm) {
     const p = c.arg(0); const msg = mem.read32(p + 4);
     if (msg !== WM.KEYDOWN && msg !== WM.SYSKEYDOWN) return 0;
     const vk = mem.read32(p + 8), lParam = mem.read32(p + 12);
-    const ch = vkToChar(vk, wm().keyState);
+    // prefer the character the host attached to this key press (keyboard layout of the user), else the US mapping
+    const pc = wm().pendingChars, i = pc ? pc.findIndex((e) => e.vk === vk) : -1;
+    const ch = i >= 0 ? pc.splice(i, 1)[0].code : vkToChar(vk, wm().keyState);
     if (ch === null) return 0;
     const w = win(mem.read32(p));
     if (w) wm().post(w, msg === WM.SYSKEYDOWN ? WM.SYSCHAR : WM.CHAR, ch, lParam);

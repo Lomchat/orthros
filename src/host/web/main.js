@@ -37,7 +37,7 @@ async function start(name) {
   const opts = { headless, interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), noCull: params.get('nocull') === '1' };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
-  if (!headless) setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
+  if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
 }
 
 function resizeTo(w, h) {
@@ -61,7 +61,7 @@ function onWorkerMessage(m) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; break;
-    case 'stats': state.stats = m; renderHud(); break;
+    case 'stats': state.stats = m; if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } renderHud(); break;
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
@@ -98,7 +98,16 @@ function push(type, a, b, c) {
   Atomics.notify(ctl, CTL.WAKE);
   state.worker?.postMessage({ type: 'wake' });
 }
-window.orthrosInput = { push, EV };
+/** Type a string as key down / char / key up events (letters, digits, space), for scripted runs. */
+function typeText(text) {
+  for (const ch of text) {
+    const code = /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : /[0-9]/.test(ch) ? 'Digit' + ch : ch === ' ' ? 'Space' : null;
+    if (!code) continue;
+    const vk = vkOf({ code }), scan = SCAN[code] ?? 0;
+    push(EV.KEYDOWN, vk, scan, 0); push(EV.CHAR, ch.charCodeAt(0), 0, 0); push(EV.KEYUP, vk, scan, 0);
+  }
+}
+window.orthrosInput = { push, EV, typeText };
 
 function canvasPos(e) {
   const r = $('c2d').getBoundingClientRect();

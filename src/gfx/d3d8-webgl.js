@@ -357,7 +357,7 @@ export class WebGLDevice {
     p = this.compile(vsSrc, fsSrc, key, attrNames);
     p.vs = L.shader; p.ps = ps;
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
-    if (this.programs.size === 0 && this.dumpShaders) this.log(`d3d-webgl: VS\n${vsSrc}\nFS\n${fsSrc}`);
+    if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} GLSL\nVS\n${vsSrc}\nFS\n${fsSrc}`);
     this.programs.set(key, p);
     return { p, L, stages, lighting, fog, lightTypes, ps };
   }
