@@ -251,7 +251,19 @@ export function d3dCore(vm) {
       if (!this.pp.width) this.pp.width = displayMode().width;
       if (!this.pp.height) this.pp.height = displayMode().height;
       if (!this.pp.format || this.pp.format === FMT.UNKNOWN) this.pp.format = FMT.X8R8G8B8;
-      if (!this.pp.windowed) vm.wm?.setDisplayMode?.(this.pp.width, this.pp.height, this.pp.format === FMT.R5G6B5 ? 16 : 32);
+      this.applyDisplayMode();
+    }
+    /** A fullscreen device owns the display mode: switch to the back buffer size, restore when leaving fullscreen. */
+    applyDisplayMode() {
+      const wm = vm.wm;
+      if (!wm?.setDisplayMode) return;
+      if (!this.pp.windowed) {
+        wm.setDisplayMode(this.pp.width, this.pp.height, this.pp.format === FMT.R5G6B5 ? 16 : 32, true); this.modeOwned = true;
+        // like the runtime, cover the screen with the device window (its client area receives the mouse in screen coordinates)
+        const w = wm.windows.get(this.pp.hwnd || this.hFocus);
+        if (w && !w.desktop && (w.rect.l !== 0 || w.rect.t !== 0 || w.rect.r - w.rect.l !== this.pp.width || w.rect.b - w.rect.t !== this.pp.height)) wm.setWindowPos(w, 0, 0, this.pp.width, this.pp.height, 0x10 /* SWP_NOACTIVATE */);
+      }
+      else if (this.modeOwned) { wm.setDisplayMode(0, 0, 32, false); this.modeOwned = false; }
     }
     createBackBuffers(c) {
       this.backBuffers = [];
@@ -275,7 +287,7 @@ export function d3dCore(vm) {
       this.palettes = new Map(); this.currentPalette = 0;
       this.sceneDepth = 0;
     }
-    destroy() { this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); }
+    destroy() { this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
     TestCooperativeLevel() { return D3D_OK; }
     GetAvailableTextureMem() { return 256 * 1024 * 1024; }
@@ -305,7 +317,8 @@ export function d3dCore(vm) {
       else vm.host?.onPresent?.(this);
       if (vm.host?.frameHook) vm.host.frameHook(this);
       if (this.pp.interval !== 0x80000000 && this.pp.interval !== 0 && vm.host?.vsyncWait) vm.host.vsyncWait();
-      if (this.backBuffers.length > 1 && this.pp.swap !== 3) this.backBuffers.push(this.backBuffers.shift());
+      // back buffer surfaces keep their identity across Present (GetBackBuffer(0) stays the render target);
+      // a flipping chain rotates the contents, which the backend does on its side
       return D3D_OK;
     }
     GetBackBuffer(c) { const b = this.backBuffers[c.arg(1)], pp = c.arg(3); if (!b || !pp) return D3DERR_INVALIDCALL; mem.write32(pp, b.ptrOf(c)); return D3D_OK; }

@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M4 atteint le 2026-09-18 ; M5 en cours — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (`build/shots/bfme-vanilla-final.png`, ~37 fps sous SwiftShader), libellés des boutons rendus depuis la correction du sens des faces ; reste : navigation souris, capture de preuve finale.**
+**Palier courant : M5 atteint le 2026-09-18 — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (800×600 plein écran, ~37 fps sous SwiftShader), libellés compris, et un clic scripté sur OPTIONS ouvre l'écran des options complet (preuves : `build/proof/m5-menu.png`, `build/proof/m5-options.png`, reproductibles par `node tools/headless.mjs bfme-vanilla --seconds 215 --shots 1 --input "190:click:338,573"`). M6 en cours.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -62,7 +62,7 @@
 ## Blocages
 - Aucun.
 
-## M5 (en cours)
+## M5 (atteint)
 - `src/win32/d3d9.js` : couche Direct3D 9 complète sur le cœur D3D partagé (déclarations de sommets, états
   d'échantillonneur, objets shaders vs/ps 1.x–2.x, state blocks, swap chain, requêtes, StretchRect/ColorFill/
   UpdateSurface, relecture `GetRenderTargetData`) ; `src/gfx/d3d9-shaders.js` : traduction SM 1.x–2.x avec `dcl`.
@@ -73,11 +73,19 @@
   `tests/browser.test.js` vérifie un triangle texturé DX9 et sa relecture pixel.
 - Sens des faces corrigé (D024, `frontFace(CW)` à l'écran) : les libellés des boutons, tracés avec `D3DCULL_CW`,
   étaient éliminés ; `dx9.exe` teste désormais un triangle horaire visible et un anti-horaire éliminé.
-- En cours : navigation souris dans le menu (clic sur un bouton → sous-menu) et capture de preuve.
+- Images complètes uniquement (D025) : tampons arrière en FBO + trames explicites (`ImageBitmap`) vers la page ;
+  device plein écran → mode d'affichage 800×600 et fenêtre en (0,0) (les clics arrivent aux bonnes coordonnées).
+- Navigation souris : clic scripté sur OPTIONS → écran des options rendu en entier (~250 appels de dessin par image,
+  ~24 fps sous SwiftShader, p99 84 ms — à mesurer sur GPU réel pour M7).
+
+## M6 (en cours)
+- Objectif : partie jouable 10 minutes (SOLO PLAY → escarmouche), audio via l'AudioWorklet, entrées, sauvegardes.
+- En cours : navigation scriptée SOLO PLAY → lancement d'une partie, pour exercer le rendu 3D (shaders SM2, formats
+  de textures, cibles de rendu) et corriger la fidélité au fil des écrans.
 
 ## Prochaine action
-- M5 : vérifier la navigation souris (`tools/headless.mjs bfme-vanilla --input "t:click:x,y"`) jusqu'à un sous-menu,
-  corriger ce que le jeu exerce (textures, shaders, blending), capturer la preuve PNG du menu et clore M5.
+- M6 : enchaîner les clics scriptés jusqu'au lancement d'une escarmouche (captures chaque seconde pour repérer les
+  boutons), corriger ce que le jeu exerce en 3D, puis vérifier audio (sortie AudioWorklet) et sauvegardes (OPFS).
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)

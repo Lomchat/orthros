@@ -25,9 +25,9 @@ async function start(name) {
   state.status = 'starting'; state.manifest = name;
   $('menu').classList.add('hidden'); $('stage').classList.remove('hidden');
   if ($('hudToggle').checked) $('hud').style.display = 'block';
-  const c2d = $('c2d'), gl = $('gl');
+  // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
+  state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer');
   resizeTo(manifest.display.width, manifest.display.height);
-  const off2d = c2d.transferControlToOffscreen(), offGl = gl.transferControlToOffscreen();
   const ctlSab = new SharedArrayBuffer(CTL.SIZE * 4), inputSab = new SharedArrayBuffer(IN_RING * 4), audioSab = new SharedArrayBuffer(AUDIO_RING_FRAMES * 2 * 4);
   state.ctl = new Int32Array(ctlSab); state.inputRing = new Int32Array(inputSab);
   const worker = new Worker('/src/host/web/worker.js', { type: 'module' });
@@ -35,7 +35,7 @@ async function start(name) {
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
   const opts = { headless, interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), noCull: params.get('nocull') === '1' };
-  worker.postMessage({ type: 'start', name, manifest, tree, canvas2d: off2d, canvasGl: offGl, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts }, [off2d, offGl]);
+  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless) setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
 }
@@ -44,6 +44,7 @@ function resizeTo(w, h) {
   state.mode = { width: w, height: h };
   const frame = $('frame');
   frame.style.width = w + 'px'; frame.style.height = h + 'px';
+  for (const id of ['c2d', 'gl']) { const c = $(id); if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } }
   fit();
 }
 function fit() {
@@ -61,6 +62,7 @@ function onWorkerMessage(m) {
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; break;
     case 'stats': state.stats = m; renderHud(); break;
+    case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
     case 'cursor': $('c2d').style.cursor = m.visible ? 'default' : 'none'; break;
