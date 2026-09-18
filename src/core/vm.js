@@ -67,6 +67,7 @@ export class Vm {
       __exit_thread: [0, (ctx) => this.exitThread(ctx.thread, ctx.cpu.eax), { noreturn: true }],
       __exit_process: [0, (ctx) => this.exitProcess(ctx.cpu.eax), { noreturn: true }],
       __seh_return: [0, (ctx) => this.seh.onHandlerReturn(ctx), { noreturn: true }],
+      __mm_timer: [0, (ctx) => this.mmTimerTick(ctx), { noreturn: true }],
     });
     this.returnThunk = this.api.thunkFor('orthros.dll', '__return');
     this.exitThreadThunk = this.api.thunkFor('orthros.dll', '__exit_thread');
@@ -170,6 +171,24 @@ export class Vm {
     }
   }
 
+  /** Multimedia timer thread body: run due timeSetEvent callbacks, then sleep until the next one. */
+  mmTimerTick(ctx) {
+    const thread = ctx.thread, proc = this.proc;
+    const now = this.clock.now();
+    for (const t of proc.timers.slice()) {
+      if (t.kind !== 'mm' || t.due > now) continue;
+      if (t.periodic) { t.due += t.elapse; if (t.due < now) t.due = now + t.elapse; }
+      else { const i = proc.timers.indexOf(t); if (i >= 0) proc.timers.splice(i, 1); }
+      if (t.mode & 0x10) { const o = proc.handles.getAs(t.proc, 'event'); if (o) o.signaled = true; }
+      else if (t.mode & 0x20) { const o = proc.handles.getAs(t.proc, 'event'); if (o) { o.signaled = true; this.sched.wakeBlocked(); o.signaled = false; } }
+      else if (t.proc) this.callGuest(thread, t.proc, [t.id, 0, t.user, 0, 0]);
+    }
+    let next = Infinity;
+    for (const t of proc.timers) if (t.kind === 'mm' && t.due < next) next = t.due;
+    const wait = next === Infinity ? 0xffffffff : Math.max(1, Math.ceil(next - this.clock.now()));
+    this.sched.block(thread, () => { const n = this.clock.now(); return proc.timers.some((x) => x.kind === 'mm' && x.due <= n); }, wait, 'mmtimer');
+  }
+
   exitProcess(code) { throw new ProcessExit(code >>> 0); }
 
   exitThread(thread, code) {
@@ -199,10 +218,23 @@ export class Vm {
     thread.state = TS.RUNNING;
     const exec = this.exec;
     const cpu = thread.cpu;
+    // the instruction budget of a slice persists across API calls (API-dense code must yield too)
+    let budget = SLICE_INSNS;
+    const sliceEnd = () => {
+      this.clock.tick?.(0.5);
+      this.slices++;
+      if (this.profile) { const k = cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
+      if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
+      if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
+      budget = SLICE_INSNS;
+      if (opts.slice) { thread.state = TS.READY; return true; }
+      return false;
+    };
     try {
       for (;;) {
         exec.cpu = cpu;
-        const exit = exec.run({ stopAt: until, maxInsns: SLICE_INSNS });
+        const exit = exec.run({ stopAt: until, maxInsns: budget });
+        budget = exec.remaining();
         switch (exit) {
           case EXIT.HALT:
             if (until >= 0 && cpu.eip === until) return cpu.eax;
@@ -211,14 +243,10 @@ export class Vm {
             this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
             if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
+            if (budget <= 0 && sliceEnd()) return 0;
             break;
           case EXIT.TIMESLICE:
-            this.clock.tick?.(0.5);
-            this.slices++;
-            if (this.profile) { const k = cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
-            if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
-            if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
-            if (opts.slice) { thread.state = TS.READY; return 0; }
+            if (sliceEnd()) return 0;
             break;
           case EXIT.FAULT:
             this.onFault(thread);

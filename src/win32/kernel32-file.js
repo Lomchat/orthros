@@ -29,6 +29,7 @@ export function registerKernel32File(api, vm) {
   const consoleWrite = (kind, bytes) => {
     const s = decodeBytes(bytes, 0);
     vm.stdout.push(s);
+    if (vm.stdout.length > 4096) vm.stdout.splice(0, vm.stdout.length - 2048); // bounded console history
     if (vm.onStdout) vm.onStdout(s, kind);
     else if (kind === 'err') (vm.onStderr ?? globalThis.process?.stderr?.write?.bind(globalThis.process.stderr))?.(s);
   };

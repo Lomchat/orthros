@@ -68,6 +68,7 @@ export class BrowserHost {
     this.lastFrameAt = 0;
     this.frameTimes = [];
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
+    this.frameHook = () => { if (!this.display.glActive) { this.display.glActive = true; this.post({ type: 'gl', active: true }); } this.framePresented(); };
   }
   /** Drain the shared input ring into the local queue. */
   pump() {

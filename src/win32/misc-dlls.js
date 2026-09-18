@@ -11,6 +11,8 @@ const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MM
  * @param {import('./api.js').ApiRegistry} api
  * @param {import('../core/vm.js').Vm} vm
  */
+import { TS } from './process.js';
+
 export function registerMiscDlls(api, vm) {
   const mem = vm.mem;
 
@@ -25,7 +27,13 @@ export function registerMiscDlls(api, vm) {
   W.timeSetEvent = [5, (c) => {
     const delay = Math.max(c.arg(0), 1), fn = c.arg(2), user = c.arg(3), flags = c.arg(4);
     const id = c.proc.nextMmTimer = (c.proc.nextMmTimer ?? 0x100) + 1;
-    c.proc.timers.push({ kind: 'mm', id, elapse: delay, due: vm.clock.now() + delay, proc: fn, user, periodic: (flags & 1) !== 0, thread: c.thread });
+    c.proc.timers.push({ kind: 'mm', id, elapse: delay, due: vm.clock.now() + delay, proc: fn, user, periodic: (flags & 1) !== 0, mode: flags & 0x30, thread: c.thread });
+    // callbacks run on a dedicated timer thread (like the multimedia timer thread of Windows)
+    if (!c.proc.mmThread || c.proc.mmThread.state === TS.DONE) {
+      const t = c.proc.createThread({ start: api.thunkFor('orthros.dll', '__mm_timer'), param: 0, stackSize: 0x10000 });
+      t.name = 'mmtimer'; t.priority = 15;
+      c.proc.mmThread = t;
+    } else vm.sched.wakeBlocked();
     return id;
   }];
   W.timeKillEvent = [1, (c) => { const n = c.proc.timers.length; c.proc.timers = c.proc.timers.filter((t) => !(t.kind === 'mm' && t.id === c.arg(0))); return n !== c.proc.timers.length ? MMSYSERR_NOERROR : 96; }];

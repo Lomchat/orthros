@@ -134,13 +134,16 @@ export class Interp {
     let budget = opts.maxInsns ?? Infinity;
     cpu.exit = EXIT.NONE;
     while (budget-- > 0) {
-      if (cpu.eip === stopAt) { cpu.exit = EXIT.HALT; return EXIT.HALT; }
+      if (cpu.eip === stopAt) { cpu.exit = EXIT.HALT; this.lastRemaining = budget; return EXIT.HALT; }
       const r = this.step();
-      if (r !== EXIT.NONE) return r;
+      if (r !== EXIT.NONE) { this.lastRemaining = budget; return r; }
     }
+    this.lastRemaining = 0;
     cpu.exit = EXIT.TIMESLICE;
     return EXIT.TIMESLICE;
   }
+  /** instructions left from the last run()'s budget */
+  remaining() { return this.lastRemaining ?? 0; }
 
   // ------------------------------------------------------------------ operand access
   /** Linear address of a memory operand. */
