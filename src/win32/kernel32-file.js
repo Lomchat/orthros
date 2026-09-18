@@ -30,7 +30,7 @@ export function registerKernel32File(api, vm) {
     const s = decodeBytes(bytes, 0);
     vm.stdout.push(s);
     if (vm.onStdout) vm.onStdout(s, kind);
-    else if (kind === 'err') process.stderr?.write?.(s);
+    else if (kind === 'err') (vm.onStderr ?? globalThis.process?.stderr?.write?.bind(globalThis.process.stderr))?.(s);
   };
   K.WriteConsoleA = [5, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.console) return c.fail(E.INVALID_HANDLE); consoleWrite(f.console, mem.bytes(c.arg(1), c.arg(2))); c.out32(3, c.arg(2)); return 1; }];
   K.WriteConsoleW = [5, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.console) return c.fail(E.INVALID_HANDLE); const s = mem.readWString(c.arg(1), c.arg(2)); vm.stdout.push(s); vm.onStdout?.(s, f.console); c.out32(3, c.arg(2)); return 1; }];
