@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M4 — atteint le 2026-09-18 (le jeu démarre et appelle `Direct3DCreate9`) ; M5 (menu rendu) commence : Direct3D 9 → WebGL2.**
+**Palier courant : M4 atteint le 2026-09-18 ; M5 en cours — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (`build/shots/bfme-vanilla-final.png`, ~37 fps sous SwiftShader), reste : libellés des boutons absents, entrées souris, capture de preuve finale.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -61,6 +61,18 @@
 
 ## Blocages
 - Aucun.
+
+## M5 (en cours)
+- `src/win32/d3d9.js` : couche Direct3D 9 complète sur le cœur D3D partagé (déclarations de sommets, états
+  d'échantillonneur, objets shaders vs/ps 1.x–2.x, state blocks, swap chain, requêtes, StretchRect/ColorFill/
+  UpdateSurface, relecture `GetRenderTargetData`) ; `src/gfx/d3d9-shaders.js` : traduction SM 1.x–2.x avec `dcl`.
+- Backend WebGL2 commun DX8/DX9 (`src/gfx/d3d8-webgl.js`) : orientation par cible (D024), diagnostics
+  (erreurs GL, dump GLSL `--dump-shaders`, capture d'une image `--capture N`).
+- Preuve : `node tools/headless.mjs bfme-vanilla --seconds 300` → le jeu crée un device 800×600 plein écran,
+  ~30 appels de dessin par image, menu principal visible (fond 3D, logo, cadre des boutons, survol) ;
+  `tests/browser.test.js` vérifie un triangle texturé DX9 et sa relecture pixel.
+- En cours : les libellés des boutons (texte) ne s'affichent pas depuis la correction d'orientation ; capture
+  d'image en cours d'analyse.
 
 ## Prochaine action
 - M5 : couche **Direct3D 9** (`src/win32/d3d9.js`, vtables DX9, déclarations de sommets, états d'échantillonneur,
