@@ -10,6 +10,7 @@ import { registerGdiplus } from './gdiplus.js';
 import { registerDirectInput } from './dinput8.js';
 import { registerDirectSound } from './dsound.js';
 import { registerDirect3D8 } from './d3d8.js';
+import { registerDirect3D9 } from './d3d9.js';
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -27,6 +28,7 @@ export function registerBuiltins(api, vm) {
   registerDirectInput(api, vm);
   registerDirectSound(api, vm);
   registerDirect3D8(api, vm);
+  registerDirect3D9(api, vm);
   // Pseudo module bases (HMODULE values) for builtin DLLs: distinct, stable, outside guest allocations.
   let base = 0x7c800000;
   const seen = new Set();
