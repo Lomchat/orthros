@@ -110,3 +110,35 @@ test('gdiplus.exe: GDI+ image loading (PNG/JPEG), LockBits, HBITMAP export, alph
   assert.equal(out['cpx(2,0)'], '0xff0a0000', 'clone');
   assert.equal(vm.proc.unknownImports.size, 0);
 });
+
+test('dx.exe: DirectSound buffers/cursors, DirectInput keyboard+mouse, Direct3D 8 device/resources', { skip: skip('dx.exe') }, () => {
+  const { vm, host } = boot('dx.exe', { jit: true });
+  const base = 2850; // virtual ms consumed by the DirectSound sleeps before the DirectInput part
+  host.at(base + 20, { type: 'keydown', vk: 0x41, scan: 0x1e });
+  host.at(base + 50, { type: 'mousemove', x: 100, y: 100 });
+  host.at(base + 80, { type: 'mousemove', x: 110, y: 105 });
+  host.at(base + 81, { type: 'mousedown', button: 0, x: 110, y: 105 });
+  const code = vm.run();
+  assert.equal(code, 0);
+  const out = Object.fromEntries(vm.stdout.join('').trim().split('\n').map((l) => l.split('=')));
+  // DirectSound: 44.1 kHz 16-bit stereo, play cursor follows the virtual clock
+  for (const k of ['dscreate', 'coop', 'primary', 'setformat', 'secondary', 'lock', 'unlock', 'play', 'playloop', 'setfreq', 'stop', 'setvol']) assert.equal(out[k], '0x00000000', k);
+  assert.equal(out.lockbytes, '176400');
+  assert.deepEqual([out.pos250, out.status250], ['44100', '0x00000011'], '250 ms of playback');
+  assert.deepEqual([out.posend, out.statusend], ['0', '0x00000010'], 'non-looping buffer stops at its end');
+  assert.deepEqual([out.posloop, out.statusloop], ['88200', '0x00000015'], 'looping wraps');
+  assert.equal(out.posfreq, '97020', 'frequency change halves the advance rate');
+  assert.equal(out.vol, '0xfffffda8', 'volume -600');
+  // DirectInput
+  assert.equal(out.key_a, '0x00000080', 'DIK_A pressed');
+  assert.deepEqual([out.mx, out.my, out.mb0], ['10', '5', '0x00000080'], 'relative mouse motion and button');
+  assert.equal(out.msevents, '5');
+  assert.equal(out.ev0, '0x0000fed4', 'first buffered event: X axis, -300');
+  // Direct3D 8
+  assert.deepEqual([out.adapters, out.modew, out.modefmt, out.maxtex, out.vsver], ['1', '800', '22', '4096', '0xfffe0101']);
+  for (const k of ['checktype', 'checkfmt', 'device', 'tex', 'lockrect', 'unlockrect', 'surflevel', 'vb', 'vblock', 'vbunlock', 'begin', 'clear', 'rs', 'settex', 'stream', 'fvf', 'draw', 'end', 'present', 'backbuffer']) assert.equal(out[k], '0x00000000', k);
+  assert.deepEqual([out.levels, out.pitch, out.surfw, out.surfsize, out.surfpix], ['7', '256', '64', '16384', '0xffff0000'], 'texture levels and surface access');
+  assert.deepEqual([out.bbw, out.bbh], ['320', '240']);
+  assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
+  assert.equal(vm.proc.unknownImports.size, 0);
+});
