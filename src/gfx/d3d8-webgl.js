@@ -366,7 +366,8 @@ export class WebGLDevice {
     const U = P.u;
     if (U('u_flipY')) gl.uniform1f(U('u_flipY'), fbo ? -1 : 1);
     if (this.capturing) {
-      const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}` : '').filter(Boolean).join(' ');
+      const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
+      const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
       this.log(`d3d-webgl: [cap] ${fbo ? 'FBO' : 'screen'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
     }
     for (let i = 0; i < 4; i++) { const l = U(`u_world[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
@@ -517,7 +518,13 @@ export class WebGLDevice {
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     if (!this.bindAttributes(P, info.L)) return;
-    if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count}`);
+    if (this.capturing) {
+      const st = this.dev.streams[0], vb = this.comImpl(st.vb);
+      const stride = st.stride || info.L.layout.stride || 0;
+      const vtx = (i) => { if (!vb) return '?'; const a = vb.mem + (st.offset ?? 0) + (start + i) * stride; const L = info.L.layout; const dif = L.attrs?.find((x) => x.name === 'diffuse'), t0 = L.attrs?.find((x) => x.name === 'tex0'); return Array.from({ length: 3 }, (_, k) => this.mem.readF32(a + 4 * k).toFixed(1)).join(',') + (dif ? ' c=' + (this.mem.read32(a + dif.offset) >>> 0).toString(16) : '') + (t0 ? ' uv=' + this.mem.readF32(a + t0.offset).toFixed(3) + ',' + this.mem.readF32(a + t0.offset + 4).toFixed(3) : ''); };
+      const nv = Math.min(12, this.vertexCount(type, count));
+      this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')}`);
+    }
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
     this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`);
