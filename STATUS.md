@@ -36,7 +36,16 @@
   **DirectSound 8** (tampons en mémoire invité, curseurs pilotés par l'horloge, notifications, mixage
   flottant pour l'hôte) et la couche **Direct3D 8** (énumération d'un adaptateur DX8 générique, device qui
   suit tout l'état du pipeline, textures/surfaces/VB/IB en mémoire invité avec Lock/Unlock, backend
-  branchable pour M5). Tests : 23 (conformité, JIT, PE dont `gdiplus.exe` et `dx.exe`, codecs).
+  branchable pour M5). **Hôte navigateur** : serveur COOP/COEP avec requêtes Range et listing JSON du dossier,
+  page (canvases 2D + WebGL2 transférés à un worker, anneau d'entrées en SharedArrayBuffer, HUD perf,
+  AudioWorklet alimenté par un anneau flottant), worker qui pompe la VM par tranches coopératives
+  (`vm.runFor`, D021 : attentes déroulées), VFS HTTP-range avec cache de blocs, profil utilisateur en mémoire
+  miroir OPFS, harnais Playwright headless (`tools/headless.mjs`, captures PNG). **Backend Direct3D 8 → WebGL2**
+  (`src/gfx/d3d8-webgl.js` + `d3d8-shaders.js`) : génération GLSL du pipeline fixe (transformations, éclairage,
+  étages de texture, brouillard, test alpha), traduction vs1.1 / ps1.x, textures (dont DXT décodé ou S3TC),
+  VB/IB, cibles de rendu FBO, états de mélange/profondeur/stencil. Preuve : `tests/browser.test.js` fait tourner
+  `window.exe` (GDI → canvas 2D) et `dx.exe` (Clear D3D → canvas WebGL) dans Chromium headless et vérifie les pixels.
+  Tests : 25 (conformité, JIT, PE dont `gdiplus.exe` et `dx.exe`, codecs, navigateur).
 
 ## Limites connues (documentées, acceptées en v1)
 - x87 en f64 (voir D011). Pas de faute de page. MMX non aliasé sur x87.
@@ -45,9 +54,9 @@
 - SEH : dispositions 0/1 seulement (pas de handlers imbriqués « nested exception »), pas de vectored handlers.
 
 ## Blocages
-- Aucun. Point d'attention : la suite de benchmarks de première exécution du jeu dure plusieurs minutes
-  sous le JIT (~0,6–0,8 G instr/s) — à mesurer sur toute sa longueur ; les résultats sont ensuite
-  persistés dans `Options.ini`, donc payés une fois.
+- Après la suite de benchmarks (~80 s sous le JIT) et l'initialisation de Miles (DirectSound), le processus
+  Node gonfle jusqu'à l'épuisement du tas JS pendant le chargement du jeu (aucun appel d'API visible en boucle) :
+  diagnostic en cours par instantané de tas (`--heapsnapshot-near-heap-limit`).
 
 ## Prochaine action
 - M4 : laisser la suite de benchmarks se terminer, vérifier l'écriture d'`Options.ini`, continuer les traces
