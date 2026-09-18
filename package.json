@@ -1,0 +1,17 @@
+{
+  "name": "orthros",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Browser runtime that executes unmodified Win32 games: x86-32 -> WebAssembly dynamic recompiler + Win32/DirectX reimplementation on top of browser APIs.",
+  "scripts": {
+    "test": "node --test 'tests/**/*.test.js'",
+    "serve": "node src/host/server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
