@@ -114,6 +114,7 @@ export class WebGLDevice {
     this.fvfCache = new Map();
     this.frameDraws = 0;
     this.dumpShaders = !!opts.dumpShaders;
+    this.noCull = !!opts.noCull;
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     gl.bindVertexArray(this.vao);
     this.reset(dev);
@@ -366,7 +367,7 @@ export class WebGLDevice {
     const U = P.u;
     if (U('u_flipY')) gl.uniform1f(U('u_flipY'), fbo ? -1 : 1);
     if (this.capturing) {
-      const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
+      const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } if (!this.dumpedTex && l.width === 256 && l.height === 32) { this.dumpedTex = true; const rows = []; for (let y = 0; y < l.height; y++) { let r = ''; for (let x = 0; x < 128; x++) { const p = l.mem + y * l.pitch + x * 2 * 4; const a = u8[p + 3], c = u8[p] | u8[p + 1] | u8[p + 2]; r += a > 128 ? '#' : a > 0 ? '+' : c ? '.' : ' '; } rows.push(r); } const p0 = l.mem + 4 * l.pitch + 8 * 4; this.log(`d3d-webgl: [cap] atlas 256x32 (alpha #/+, color .) sample px=${(this.mem.read32(p0) >>> 0).toString(16)}\n${rows.join('\n')}`); } return `,alpha>0:${nz}/opaque:${opaque}`; };
       const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
       this.log(`d3d-webgl: [cap] ${fbo ? 'FBO' : 'screen'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
     }
@@ -446,11 +447,11 @@ export class WebGLDevice {
       gl.enable(gl.STENCIL_TEST);
       const ref = this.rs(RS.STENCILREF, 0), mask = this.rs(RS.STENCILMASK, 0xffffffff);
       if (dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0)) {
-        // the y flip mirrors the winding: D3D clockwise (front) faces are GL back faces
-        gl.stencilFuncSeparate(gl.BACK, this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
-        gl.stencilOpSeparate(gl.BACK, this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
-        gl.stencilFuncSeparate(gl.FRONT, this.cmp(this.rs(RS9.CCW_STENCILFUNC, 8)), ref, mask);
-        gl.stencilOpSeparate(gl.FRONT, this.stencilOp(this.rs(RS9.CCW_STENCILFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILZFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILPASS, 1)));
+        // frontFace (below) makes GL front faces the D3D clockwise ones, so the CCW_* states are GL back
+        gl.stencilFuncSeparate(gl.FRONT, this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
+        gl.stencilOpSeparate(gl.FRONT, this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
+        gl.stencilFuncSeparate(gl.BACK, this.cmp(this.rs(RS9.CCW_STENCILFUNC, 8)), ref, mask);
+        gl.stencilOpSeparate(gl.BACK, this.stencilOp(this.rs(RS9.CCW_STENCILFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILZFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILPASS, 1)));
       } else {
         gl.stencilFunc(this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
         gl.stencilOp(this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
@@ -471,9 +472,13 @@ export class WebGLDevice {
     } else gl.disable(gl.BLEND);
     const cw = this.rs(RS.COLORWRITEENABLE, 0xf);
     gl.colorMask((cw & 1) !== 0, (cw & 2) !== 0, (cw & 4) !== 0, (cw & 8) !== 0);
+    // Winding: a D3D front face is clockwise as seen on the screen. Clip space is shared, so GL window
+    // space keeps that visual orientation on the screen (D3D front = GL clockwise) and mirrors it on
+    // y-flipped texture targets. With frontFace set that way, D3DCULL_CCW culls GL back faces.
+    gl.frontFace(fbo ? gl.CCW : gl.CW);
     const cull = this.rs(RS.CULLMODE, 3);
-    if (cull === 1) gl.disable(gl.CULL_FACE);
-    else { gl.enable(gl.CULL_FACE); gl.frontFace(gl.CCW); gl.cullFace((cull === 2) !== fbo ? gl.FRONT : gl.BACK); } /* D3D clockwise (y down) = GL front faces; texture targets are y-flipped */
+    if (cull === 1 || this.noCull) gl.disable(gl.CULL_FACE);
+    else { gl.enable(gl.CULL_FACE); gl.cullFace(cull === 3 ? gl.BACK : gl.FRONT); }
   }
   cmp(f) { const gl = this.gl; return [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS][f] ?? gl.ALWAYS; }
   stencilOp(o) { const gl = this.gl; return [gl.KEEP, gl.KEEP, gl.ZERO, gl.REPLACE, gl.INCR, gl.DECR, gl.INVERT, gl.INCR_WRAP, gl.DECR_WRAP][o] ?? gl.KEEP; }
@@ -551,7 +556,12 @@ export class WebGLDevice {
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
-    if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV}`);
+    if (this.capturing) {
+      const st = dev.streams[0], vb = this.comImpl(st.vb), stride = st.stride || info.L.layout.stride || 0, short = ib.fmt === FMT.INDEX16;
+      const idx = (i) => short ? this.mem.read16(ib.mem + 2 * (start + i)) : this.mem.read32(ib.mem + 4 * (start + i));
+      const vtx = (i) => { if (!vb) return '?'; const a = vb.mem + (st.offset ?? 0) + (baseVertex + idx(i)) * stride; const L = info.L.layout; const dif = L.attrs?.find((x) => x.name === 'diffuse'); return `i${idx(i)}:` + Array.from({ length: 2 }, (_, k) => this.mem.readF32(a + 4 * k).toFixed(1)).join(',') + (dif ? ' c=' + (this.mem.read32(a + dif.offset) >>> 0).toString(16) : ''); };
+      this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}]`);
+    }
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++;
     void minIdx;
@@ -589,5 +599,5 @@ export class WebGLDevice {
 export function createWebGLBackend(canvas, log) {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
-  return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME }); } };
+  return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, noCull: globalThis.ORTHROS_NO_CULL }); } };
 }

@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M4 atteint le 2026-09-18 ; M5 en cours — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (`build/shots/bfme-vanilla-final.png`, ~37 fps sous SwiftShader), reste : libellés des boutons absents, entrées souris, capture de preuve finale.**
+**Palier courant : M4 atteint le 2026-09-18 ; M5 en cours — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (`build/shots/bfme-vanilla-final.png`, ~37 fps sous SwiftShader), libellés des boutons rendus depuis la correction du sens des faces ; reste : navigation souris, capture de preuve finale.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -71,13 +71,13 @@
 - Preuve : `node tools/headless.mjs bfme-vanilla --seconds 300` → le jeu crée un device 800×600 plein écran,
   ~30 appels de dessin par image, menu principal visible (fond 3D, logo, cadre des boutons, survol) ;
   `tests/browser.test.js` vérifie un triangle texturé DX9 et sa relecture pixel.
-- En cours : les libellés des boutons (texte) ne s'affichent pas depuis la correction d'orientation ; capture
-  d'image en cours d'analyse.
+- Sens des faces corrigé (D024, `frontFace(CW)` à l'écran) : les libellés des boutons, tracés avec `D3DCULL_CW`,
+  étaient éliminés ; `dx9.exe` teste désormais un triangle horaire visible et un anti-horaire éliminé.
+- En cours : navigation souris dans le menu (clic sur un bouton → sous-menu) et capture de preuve.
 
 ## Prochaine action
-- M5 : couche **Direct3D 9** (`src/win32/d3d9.js`, vtables DX9, déclarations de sommets, états d'échantillonneur,
-  objets shaders vs/ps 2.0) sur le backend WebGL2 existant (états, ressources, génération GLSL) ; faire tourner le
-  jeu dans Chromium headless via `tools/headless.mjs bfme-vanilla` jusqu'au menu et capturer la preuve PNG.
+- M5 : vérifier la navigation souris (`tools/headless.mjs bfme-vanilla --input "t:click:x,y"`) jusqu'à un sous-menu,
+  corriger ce que le jeu exerce (textures, shaders, blending), capturer la preuve PNG du menu et clore M5.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)

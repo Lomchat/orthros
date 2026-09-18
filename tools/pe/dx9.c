@@ -73,20 +73,23 @@ void __stdcall start(void) {
   D3DVERTEXELEMENT9 elems[] = { { 0, 0, 3, 0, 9, 0 }, { 0, 16, 4, 0, 10, 0 }, { 0, 20, 1, 0, 5, 0 }, { 0xff, 0, 17, 0, 0, 0 } };
   void* decl = 0; line(out, "decl", C2(dev, 86, elems, &decl), 1);
   line(out, "setdecl", C1(dev, 87, decl), 1);
-  // vertex buffer: a big triangle covering the top-left half of the 320x240 target, textured (green) * diffuse white
-  void* vb = 0; line(out, "vb", C6(dev, 26, 3 * sizeof(VERTEX), 0, 0, 1, &vb, 0), 1);
+  // vertex buffer: a big triangle covering the top-left half of the 320x240 target, textured (green) * diffuse white,
+  // wound clockwise on screen (a D3D front face), then a counterclockwise one over the bottom-right half that
+  // D3DCULL_CCW must cull
+  void* vb = 0; line(out, "vb", C6(dev, 26, 6 * sizeof(VERTEX), 0, 0, 1, &vb, 0), 1);
   VERTEX* v = 0; line(out, "vblock", C4(vb, 11, 0, 0, &v, 0), 1);
   v[0].x = 0; v[0].y = 0; v[1].x = 320; v[1].y = 0; v[2].x = 0; v[2].y = 240;
-  for (int i = 0; i < 3; i++) { v[i].z = 0.5f; v[i].rhw = 1.0f; v[i].color = 0xffffffff; v[i].u = (i == 1) ? 1.0f : 0.0f; v[i].v = (i == 2) ? 1.0f : 0.0f; }
+  v[3].x = 320; v[3].y = 240; v[4].x = 320; v[4].y = 0; v[5].x = 0; v[5].y = 240;
+  for (int i = 0; i < 6; i++) { v[i].z = 0.5f; v[i].rhw = 1.0f; v[i].color = 0xffffffff; v[i].u = (i % 3 == 1) ? 1.0f : 0.0f; v[i].v = (i % 3 == 2) ? 1.0f : 0.0f; }
   line(out, "vbunlock", C0(vb, 12), 1);
   line(out, "stream", C4(dev, 100, 0, vb, 0, sizeof(VERTEX)), 1);
   line(out, "begin", C0(dev, 41), 1);
   line(out, "clear", ((FCLEAR)VT(dev)[43])(dev, 0, 0, 3, 0xff0000ff, 1.0f, 0), 1);
-  line(out, "rs_cull", C2(dev, 57, 22, 1), 1);
+  line(out, "rs_cull", C2(dev, 57, 22, 3), 1);
   line(out, "rs_light", C2(dev, 57, 137, 0), 1);
   line(out, "settex", C2(dev, 65, 0, tex), 1);
   line(out, "sampler", C3(dev, 69, 0, 6, 2), 1);
-  line(out, "draw", C3(dev, 81, 4, 0, 1), 1);
+  line(out, "draw", C3(dev, 81, 4, 0, 2), 1);
   line(out, "end", C0(dev, 42), 1);
   line(out, "present", C4(dev, 17, 0, 0, 0, 0), 1);
   void* bb = 0; line(out, "backbuffer", C4(dev, 18, 0, 0, 0, &bb), 1);
