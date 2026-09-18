@@ -29,5 +29,11 @@ Le cœur tourne dans un worker (WebGL2 via OffscreenCanvas, `Atomics.wait` pour 
 ## D009 — 2026-09-18 — Overrides de DLL génériques via manifest
 Le dossier de la cible contient un `dsound.dll` tiers (wrapper) ; l'ordre de recherche Windows le chargerait avant l'implémentation intégrée. Mécanisme générique : `manifest.json` → `dllOverrides: { "dsound": "builtin" | "native" }`. C'est un flag de compat universel, pas du code spécifique au jeu.
 
+## D011 — 2026-09-18 — Politique d'exactitude x87 en f64
+Ce qui est exact : PC=53 en arrondi au plus près (le résultat f64 est le même que le 80 bits arrondi à 53), PC=24 dans tous les modes d'arrondi (via termes d'erreur exacts TwoSum/TwoProduct), conversions entières, FPREM/FPREM1 (écart d'exposant < 64), comparaisons, réponses masquées. Ce qui ne l'est pas : PC=64 (mantisse 64 bits impossible en f64), arrondi dirigé en PC=53, transcendantales (Math.* ≈ 1e-13 relatif), payload des NaN. Justification : un jeu MSVC de 2004 tourne en PC=53 (CRT) ou PC=24 (Direct3D sans FPU_PRESERVE) et en arrondi au plus près sauf autour de `_ftol` (FISTP avec RC=trunc, exact chez nous). Les cas non exacts sont couverts par une tolérance dans les tests de conformité, pas ignorés.
+
+## D012 — 2026-09-18 — Générateur de conformité : llvm-mc + snippets aléatoires + drapeaux indéfinis masqués
+Les cas sont assemblés par llvm-mc (encodages sûrs), les branches sont encodées à la main pour rester dans le snippet, et chaque cas porte un masque des drapeaux définis par l'ISA (les drapeaux « undefined » du SDM ne sont pas comparés). Les fautes natives (#DE…) sont comparées sur l'EIP fautif et l'état au moment de la faute, en ignorant la mémoire sous ESP (le noyau y écrit le signal frame).
+
 ## D010 — 2026-09-18 — Outillage
 Node 24 (tests `node --test`, serveur), Playwright + Chromium headless (harnais), clang-18/lld-18 (oracle natif, PE de test compilés sans CRT), python3 (générateurs de tests). Le serveur n'a pas de GPU exploitable (Matrox G200) : le headless valide la correction (SwiftShader), la perf se mesure sur un vrai client.
