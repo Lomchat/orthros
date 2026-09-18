@@ -41,6 +41,11 @@ export class Thread {
     this.suspendCount = 0;
     this.exitCode = 0x103; // STILL_ACTIVE
     this.onStack = 0; // nesting count of dispatch loops running this thread
+    this.topLevel = false; // running as a top-level slice (blocking calls unwind, see sched.js)
+    this.wait = null; // parked wait { cond, deadline, reason }
+    this.wakeResult = undefined; // result handed to the re-executed blocking call
+    this.resuming = false; // re-executing an API call after a parked wait (handlers skip side effects done before blocking)
+    this.yieldRequested = false;
     this.baseDepth = -1;
     this.priority = 0;
     this.name = '';

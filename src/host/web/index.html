@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orthros</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #frame { position: relative; }
+  #frame canvas { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
+  #gl { pointer-events: none; }
+  #hud { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.6); padding: 6px 10px; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none; display: none; }
+  #menu { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #111; }
+  #menu button { font: 15px system-ui; padding: 8px 18px; cursor: pointer; }
+  #log { position: absolute; left: 8px; bottom: 8px; right: 8px; max-height: 30%; overflow: auto; background: rgba(0,0,0,.7); font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; display: none; padding: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="menu">
+  <h2>Orthros</h2>
+  <div id="games"></div>
+  <div><label><input type="checkbox" id="hudToggle" checked> perf HUD</label> <label><input type="checkbox" id="logToggle"> log</label></div>
+</div>
+<div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas></div></div>
+<div id="hud"></div>
+<div id="log"></div>
+<script type="module" src="/src/host/web/main.js"></script>
+</body>
+</html>

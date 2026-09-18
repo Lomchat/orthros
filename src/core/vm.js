@@ -9,12 +9,14 @@ import { decode, fmtInsn } from '../cpu/decoder.js';
 import { ApiRegistry, CC_STDCALL } from '../win32/api.js';
 import { Ctx } from '../win32/ctx.js';
 import { Process, TS } from '../win32/process.js';
-import { Scheduler } from './sched.js';
+import { Scheduler, WaitUnwind } from './sched.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
+
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
@@ -101,19 +103,52 @@ export class Vm {
     return proc;
   }
 
-  /** Run the process to completion. Returns the exit code. */
+  /** Run the process to completion (blocking). Returns the exit code. */
   run() {
+    for (;;) { const r = this.runFor(Infinity); if (r.state === 'exited') return r.code; }
+  }
+
+  /**
+   * Incremental run: execute thread slices until `untilMs` (performance.now() based) or until the
+   * process exits or has nothing to do for a while. Between calls the JS stack is clean (all guest
+   * state is in memory), so a browser worker can return to its event loop to present frames.
+   * @returns {{ state: 'running' } | { state: 'sleep', until: number } | { state: 'idle' } | { state: 'exited', code: number }}
+   */
+  runFor(untilMs) {
     const proc = this.proc;
     const main = proc.threads[0];
     try {
-      // DllMain(PROCESS_ATTACH) + TLS callbacks for native DLLs, dependencies first (load order)
-      for (const mod of proc.moduleList) if (mod !== proc.exe && !mod.attached) this.attachModule(main, mod);
-      for (const cb of proc.exe.tls?.callbacks ?? []) this.callGuest(main, cb, [proc.exe.base, 1, 0]);
-      this.runThread(main, {});
-      // main thread returned/exited without ExitProcess: process ends with its exit code
-      return this.finish(main.exitCode === 0x103 ? main.cpu.eax : main.exitCode);
+      if (!this.started) {
+        this.started = true;
+        // DllMain(PROCESS_ATTACH) + TLS callbacks for native DLLs, dependencies first (load order)
+        for (const mod of proc.moduleList) if (mod !== proc.exe && !mod.attached) this.attachModule(main, mod);
+        for (const cb of proc.exe.tls?.callbacks ?? []) this.callGuest(main, cb, [proc.exe.base, 1, 0]);
+      }
+      // top-level scheduler loop: every thread runs in slices at depth 1 (see sched.js)
+      for (;;) {
+        const t = this.sched.pickRunnable(null);
+        if (t) {
+          this.runThread(t, { slice: true, top: true });
+          this.sched.wakeBlocked();
+          if (untilMs !== Infinity && performance.now() >= untilMs) return { state: 'running' };
+          continue;
+        }
+        if (proc.threads.every((x) => x.state === TS.DONE)) break;
+        if (untilMs !== Infinity && this.host?.cooperative) {
+          // cooperative host (browser worker): hand the wait back to the event loop when it is long
+          if (this.host.pump) this.host.pump();
+          if (this.sched.wakeBlocked()) continue;
+          const wake = this.sched.nextWake();
+          if (wake === Infinity) return { state: 'idle' };
+          const delay = wake - this.clock.now();
+          if (delay > 2) return { state: 'sleep', until: performance.now() + delay };
+        }
+        this.sched.idle();
+      }
+      // every thread returned/exited without ExitProcess: the process ends with the main thread's code
+      return { state: 'exited', code: this.finish(main.exitCode === 0x103 ? main.cpu.eax : (main.exitCode ?? 0)) };
     } catch (e) {
-      if (e instanceof ProcessExit) return this.finish(e.code);
+      if (e instanceof ProcessExit) return { state: 'exited', code: this.finish(e.code) };
       throw e;
     }
   }
@@ -160,6 +195,7 @@ export class Vm {
     thread.onStack++;
     if (base) thread.baseDepth = this.depth;
     this.depth++;
+    if (opts.top) thread.topLevel = true;
     thread.state = TS.RUNNING;
     const exec = this.exec;
     const cpu = thread.cpu;
@@ -173,7 +209,8 @@ export class Vm {
             throw new GuestCrash(this.crashReport(thread, 'HLT executed'));
           case EXIT.THUNK:
             this.dispatchThunk(thread, cpu.exitArg);
-            if (opts.slice && thread.state !== TS.RUNNING) return 0;
+            if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
+            if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
             break;
           case EXIT.TIMESLICE:
             this.clock.tick?.(0.5);
@@ -182,7 +219,6 @@ export class Vm {
             if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
             if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
             if (opts.slice) { thread.state = TS.READY; return 0; }
-            if (this.depth === 1) { thread.state = TS.READY; this.sched.yieldFrom(thread); thread.state = TS.RUNNING; }
             break;
           case EXIT.FAULT:
             this.onFault(thread);
@@ -203,6 +239,7 @@ export class Vm {
     } finally {
       this.depth--;
       thread.onStack--;
+      if (opts.top) thread.topLevel = false;
       this.current = prev;
       if (thread.state === TS.RUNNING && thread.onStack === 0 && !(thread.state === TS.DONE)) thread.state = thread.state === TS.DONE ? TS.DONE : TS.READY;
     }
@@ -234,6 +271,9 @@ export class Vm {
     return r;
   }
 
+  /** Can a blocking API call on this thread be unwound (parked) instead of nesting? Only at top level, outside callbacks. */
+  canUnwind(thread) { return thread.topLevel && this.depth === 1 && thread.callbackDepth === 0 && this.current === thread; }
+
   // ------------------------------------------------------------------ API dispatch
   dispatchThunk(thread, idx) {
     const t = this.api.thunk(idx);
@@ -249,7 +289,16 @@ export class Vm {
       if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
       const tp = this.apiTracePos++ & 63;
       this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
-      const r = def.fn(ctx);
+      let r;
+      try { r = def.fn(ctx); }
+      catch (e) {
+        if (!(e instanceof WaitUnwind)) throw e;
+        // park the thread: roll the call back to the thunk so it re-executes once woken
+        cpu.esp = sp; cpu.eip = t.addr;
+        thread.state = TS.BLOCKED; thread.wait = e.wait; thread.blockReason = e.wait.reason; thread.wakeAt = e.wait.deadline;
+        return;
+      }
+      if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
       if (def.noreturn) return;
       cpu.eip = this.mem.read32(sp);
       cpu.esp = (sp + 4 + (def.cc === CC_STDCALL ? def.argc * 4 : 0)) >>> 0;
@@ -350,7 +399,7 @@ export class Vm {
     lines.push('code:');
     let a = cpu.eip;
     for (let i = 0; i < 8; i++) {
-      try { const insn = decode(mem, a); lines.push(`  ${h(a)}  ${Buffer.from(mem.bytes(a, insn.len)).toString('hex').padEnd(20)} ${fmtInsn(insn)}`); a = insn.next; }
+      try { const insn = decode(mem, a); lines.push(`  ${h(a)}  ${hex(mem.bytes(a, insn.len)).padEnd(20)} ${fmtInsn(insn)}`); a = insn.next; }
       catch (e) { lines.push(`  ${h(a)}  ?? ${e.message}`); break; }
     }
     lines.push('stack:');

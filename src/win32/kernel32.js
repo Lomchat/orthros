@@ -211,7 +211,7 @@ export function registerKernel32(api, vm) {
   K.SuspendThread = [1, (c) => {
     const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread');
     if (!t) return c.fail(E.INVALID_HANDLE);
-    const prev = t.suspendCount++;
+    const prev = c.thread.resuming ? t.suspendCount : t.suspendCount++;
     if (t === c.thread) { vm.sched.block(t, () => t.suspendCount === 0, INFINITE, 'suspended'); }
     else if (t.state === TS.READY) t.state = TS.SUSPENDED;
     return prev;
@@ -295,7 +295,7 @@ export function registerKernel32(api, vm) {
   K.OpenEventA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'event') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
   K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; return 1; }];
   K.ResetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = false; return 1; }];
-  K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.yieldFrom(c.thread); o.signaled = false; return 1; }];
+  K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.wakeBlocked(); if (!o.manual) { /* one waiter consumed it on wake */ } o.signaled = false; return 1; }];
   K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
   K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
   K.OpenMutexA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'mutex') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
@@ -343,7 +343,7 @@ export function registerKernel32(api, vm) {
   K.WaitForMultipleObjectsEx = [5, (c) => waitMany(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), c.arg(4) !== 0)];
   K.SignalObjectAndWait = [4, (c) => {
     const s = waitObject(c, c.arg(0));
-    if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++;
+    if (!c.thread.resuming) { if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++; }
     return waitOne(c, c.arg(1), c.arg(2), c.arg(3) !== 0);
   }];
 
