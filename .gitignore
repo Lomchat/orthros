@@ -1,0 +1,7 @@
+node_modules/
+build/
+*.log
+.playwright/
+/artifacts/
+/tests/generated/
+__pycache__/
