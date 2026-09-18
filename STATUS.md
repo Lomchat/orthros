@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M3 JIT — atteint le 2026-09-18 ; M4 (le jeu démarre) en cours : le jeu atteint sa suite de benchmarks de première exécution.**
+**Palier courant : M4 — atteint le 2026-09-18 (le jeu démarre et appelle `Direct3DCreate9`) ; M5 (menu rendu) commence : Direct3D 9 → WebGL2.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -24,13 +24,19 @@
   Les 3 PE de test tournent sous le JIT. Invalidation de code sur SMC/VirtualFree/VirtualProtect/
   FlushInstructionCache/UnmapViewOfFile.
 
-- M4 (en cours) : lanceur `node src/host/cli.js manifests/<jeu>.json` (dossier du jeu monté en lecture seule,
+- **M4 (atteint)** : lanceur `node src/host/cli.js manifests/<jeu>.json` (dossier du jeu monté en lecture seule,
   profil utilisateur sur disque, registre amorcé par le manifest et persisté dans `registry.json`, profil CPU,
   liste automatique des imports inconnus). Le jeu charge sa CRT native (D017), crée sa fenêtre, lit le
   registre (`Language`, `UserDataLeafName` observés → amorçables), affiche son splash via **GDI+** réel
   (décodeurs JPEG/PNG/DEFLATE écrits de zéro, D019), énumère et ouvre toutes ses archives (jokers DOS, D018),
   lance sa **calibration CPU** puis sa **suite de benchmarks** (première exécution sans `Options.ini`) ; les
-  exceptions C++ sont dispatchées et rattrapées via le SEH par continuation (D016). Chemins rapides d'API
+  exceptions C++ sont dispatchées et rattrapées via le SEH par continuation (D016). Ensuite il charge ses
+  archives, écrit `Options.ini`, initialise Miles (DirectSound : tampons, notifications, thread de mixage, timers
+  multimédia), DirectInput (clavier acquis), puis appelle **`Direct3DCreate9`** (traçé : « first Direct3D call »)
+  et quitte proprement (code 1, boîte « DirectX Error ») faute de Direct3D — **critère M4 rempli**, ~92 s de
+  bout en bout sous Node (`node src/host/cli.js manifests/bfme-vanilla.json --seconds 300`). Corrections
+  majeures de cette phase : tas Win32 en mémoire invité (plus d'objet JS par bloc), table de hachage JIT 2^20 +
+  réinsertion (D023), regroupement des modules WASM (D022), attentes déroulées (D021). Chemins rapides d'API
   en WASM (D015). **COM** générique (vtables de thunks en mémoire invité, D020) avec **DirectInput 8**
   (clavier/souris sur le flux d'entrées du gestionnaire de fenêtres, données immédiates et tamponnées),
   **DirectSound 8** (tampons en mémoire invité, curseurs pilotés par l'horloge, notifications, mixage
@@ -54,14 +60,39 @@
 - SEH : dispositions 0/1 seulement (pas de handlers imbriqués « nested exception »), pas de vectored handlers.
 
 ## Blocages
-- Après la suite de benchmarks (~80 s sous le JIT) et l'initialisation de Miles (DirectSound), le processus
-  Node gonfle jusqu'à l'épuisement du tas JS pendant le chargement du jeu (aucun appel d'API visible en boucle) :
-  diagnostic en cours par instantané de tas (`--heapsnapshot-near-heap-limit`).
+- Aucun.
 
 ## Prochaine action
-- M4 : laisser la suite de benchmarks se terminer, vérifier l'écriture d'`Options.ini`, continuer les traces
-  jusqu'au premier appel D3D (`Direct3DCreate8`) ; implémenter au fur et à mesure ce qui manque (DirectSound,
-  DirectInput, IStream…). Puis M5 : Direct3D 8 → WebGL2, capture headless du menu.
+- M5 : couche **Direct3D 9** (`src/win32/d3d9.js`, vtables DX9, déclarations de sommets, états d'échantillonneur,
+  objets shaders vs/ps 2.0) sur le backend WebGL2 existant (états, ressources, génération GLSL) ; faire tourner le
+  jeu dans Chromium headless via `tools/headless.mjs bfme-vanilla` jusqu'au menu et capturer la preuve PNG.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
-- (vide)
+- `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)
+- `oleaut32.dll!CreateErrorInfo` (référencé par lotrbfme.exe, 0 appel)
+- `kernel32.dll!MoveFileW` (référencé par msvcr71.dll, 0 appel)
+- `kernel32.dll!RemoveDirectoryW` (référencé par msvcr71.dll, 0 appel)
+- `kernel32.dll!ReadConsoleW` (référencé par msvcr71.dll, 0 appel)
+- `kernel32.dll!PeekNamedPipe` (référencé par msvcr71.dll, 0 appel)
+- `kernel32.dll!ReadConsoleInputW` (référencé par msvcr71.dll, 0 appel)
+- `kernel32.dll!CreatePipe` (référencé par msvcr71.dll, 0 appel)
+- `imm32.dll!ImmGetCandidateListCountW` (référencé par lotrbfme.exe, 0 appel)
+- `imm32.dll!ImmGetCandidateListW` (référencé par lotrbfme.exe, 0 appel)
+- `winmm.dll!waveOutGetID` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInClose` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInPrepareHeader` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInAddBuffer` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInReset` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInUnprepareHeader` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!waveInStart` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!midiOutLongMsg` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!midiOutShortMsg` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!midiOutReset` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!midiOutPrepareHeader` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!auxGetDevCapsA` (référencé par mss32.dll, 0 appel)
+- `winmm.dll!midiOutUnprepareHeader` (référencé par mss32.dll, 0 appel)
+- `avifil32.dll!AVIFileCreateStreamA` (référencé par lotrbfme.exe, 0 appel)
+- `avifil32.dll!AVIFileOpen` (référencé par lotrbfme.exe, 0 appel)
+- `avifil32.dll!AVIFileReadData` (référencé par lotrbfme.exe, 0 appel)
+- `avifil32.dll!AVIMakeCompressedStream` (référencé par lotrbfme.exe, 0 appel)
+- `avifil32.dll!AVIStreamWrite` (référencé par lotrbfme.exe, 0 appel)

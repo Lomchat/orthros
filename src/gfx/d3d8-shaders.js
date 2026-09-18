@@ -266,7 +266,7 @@ export function translateVertexShader(code, layout) {
   const inputs = new Set();
   for (const s of layout.streams.values()) for (const a of s.attrs) inputs.add(a.reg);
   for (const r of inputs) lines.push(`in vec4 a_v${r};`);
-  lines.push('uniform vec4 u_c[96]; uniform vec4 u_viewport;');
+  lines.push('uniform vec4 u_vc[96]; uniform vec4 u_viewport;');
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`out vec4 v_tex${i};`);
   const body = [];
@@ -280,7 +280,7 @@ export function translateVertexShader(code, layout) {
     switch (type) {
       case 0: name = `r${n}`; break;
       case 1: name = inputs.has(n) ? `a_v${n}` : 'vec4(0.0)'; break;
-      case 2: name = (tok & 0x2000) ? `u_c[clamp(${n} + a0, 0, 95)]` : `u_c[${n}]`; break;
+      case 2: name = (tok & 0x2000) ? `u_vc[clamp(${n} + a0, 0, 95)]` : `u_vc[${n}]`; break;
       case 3: name = 'vec4(float(a0))'; break;
       case 4: name = ['oPos', 'oFog', 'oPts'][n] ?? 'oPos'; break;
       case 5: name = `oD${n}`; break;
@@ -353,7 +353,7 @@ export function translatePixelShader(code, env) {
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
   for (let i = 0; i < 6; i++) lines.push(env.cube[i] ? `uniform samplerCube u_cube${i};` : `uniform sampler2D u_tex${i};`);
-  lines.push('uniform vec4 u_c[8]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform vec4 u_bumpEnv[8];');
+  lines.push('uniform vec4 u_pc[8]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
   const body = ['  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0);', '  vec4 c0 = u_c[0], c1 = u_c[1], c2 = u_c[2], c3 = u_c[3], c4 = u_c[4], c5 = u_c[5], c6 = u_c[6], c7 = u_c[7];'];
   for (let i = 0; i < 6; i++) body.push(`  vec4 t${i} = v_tex${i};`);
@@ -362,7 +362,7 @@ export function translatePixelShader(code, env) {
   const reg = (tok, isSrc) => {
     const type = (tok >> 28) & 7, n = tok & 0x7ff;
     let name;
-    switch (type) { case 0: name = `r${n}`; break; case 1: name = `v_color${n}`; break; case 2: name = defs.has(n) ? `c${n}` : `u_c[${n}]`; break; case 3: name = `t${n}`; break; default: name = 'vec4(0.0)'; }
+    switch (type) { case 0: name = `r${n}`; break; case 1: name = `v_color${n}`; break; case 2: name = defs.has(n) ? `c${n}` : `u_pc[${n}]`; break; case 3: name = `t${n}`; break; default: name = 'vec4(0.0)'; }
     if (!isSrc) return name;
     let e = `${name}.${swizzle(tok)}`;
     const mod = (tok >> 24) & 0xf;
