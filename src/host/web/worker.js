@@ -85,13 +85,15 @@ async function start(m) {
   pump();
 }
 
-let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map();
+let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map(), lastFallbacks = 0, lastFbHist = new Map();
+const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0 }; // how the worker spends its time between slices
 function pump() {
   if (!running || stopped) return;
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
   let r;
+  const tRun = performance.now();
   try {
-    r = vm.runFor(performance.now() + 12);
+    r = vm.runFor(tRun + 12);
   } catch (e) {
     running = false;
     const report = e instanceof GuestCrash ? e.report : String(e.stack || e);
@@ -101,18 +103,21 @@ function pump() {
   }
   host.renderAudio(vm);
   const now = performance.now();
+  pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const ft = host.frameTimes.slice().sort((a, b) => a - b);
     const p = (q) => (ft.length ? ft[Math.min(ft.length - 1, Math.floor(q * ft.length))] : 0);
-    post({ type: 'stats', apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height } : null, unknownImports: vm.proc.unknownImports.size, audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, topApi: vm.apiHist ? [...vm.apiHist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height } : null, unknownImports: vm.proc.unknownImports.size, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: vm.apiHist ? [...vm.apiHist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (vm.apiHist) lastHist = new Map(vm.apiHist);
-    lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0;
+    lastFallbacks = vm.jit?.stats.fallbackSteps ?? 0; if (vm.jit?.fallbackHist) lastFbHist = new Map(vm.jit.fallbackHist);
+    pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0;
+    lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
   }
   if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code }); flushProfile(true); return; }
-  if (r.state === 'sleep') setTimeout(pump, Math.max(0, r.until - performance.now()));
-  else if (r.state === 'idle') setTimeout(pump, 30);
+  if (r.state === 'sleep') { const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; setTimeout(pump, ms); }
+  else if (r.state === 'idle') { pumpStats.idles++; setTimeout(pump, 30); }
   else channel.port2.postMessage(0);
 }
 

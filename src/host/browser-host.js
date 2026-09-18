@@ -129,13 +129,16 @@ export class BrowserHost {
     if (avail < 0) avail = 0;
     if (!this.chunk) this.chunk = new Float32Array(512 * 2);
     let peak = this.audioPeak ?? 0;
+    const t0 = performance.now(); let rendered = 0;
     while (avail < aheadFrames) {
+      rendered += 512;
       audio.render(this.chunk, 512, AUDIO_RATE);
       for (let i = 0; i < 512; i++) { const idx = ((w + i) % cap) * 2; const l = this.chunk[2 * i], r = this.chunk[2 * i + 1]; this.audioRing[idx] = l; this.audioRing[idx + 1] = r; const a = Math.max(Math.abs(l), Math.abs(r)); if (a > peak) peak = a; }
       w = (w + 512) | 0; avail += 512;
       Atomics.store(ctl, CTL.AUDIO_WRITE, w);
     }
     this.audioPeak = peak; // highest sample level since the last stats report (proves the mixer produces sound)
+    if (rendered) { this.audioMs = (this.audioMs ?? 0) + (performance.now() - t0); this.audioFrames = (this.audioFrames ?? 0) + rendered; }
     if ((this.audioDiag = (this.audioDiag ?? 0) + 1) % 500 === 1 && [...audio.buffers].some((b) => b.playing && !b.primary)) vm.log('audio', `mixer: peak ${peak.toFixed(3)} queued ${avail} frames; buffers ${[...audio.buffers].map((b) => `${b.primary ? 'P' : 'S'}:${b.playing ? 'play' : 'stop'}/${b.looping ? 'loop' : 'once'} pos ${b.pos}/${b.size} vol ${b.volume} freq ${b.freq}`).join(' | ')}`);
   }
 }

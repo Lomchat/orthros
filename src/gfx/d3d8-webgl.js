@@ -174,6 +174,7 @@ export class WebGLDevice {
     const gl = this.gl;
     this.stats.uploads++;
     if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); return; }
+    if (level === 0 && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s);
     if (isDxt(s.fmt) && this.s3tc) {
       const ext = this.s3tc;
       const glf = s.fmt === FMT.DXT1 ? ext.COMPRESSED_RGBA_S3TC_DXT1_EXT : s.fmt === FMT.DXT2 || s.fmt === FMT.DXT3 ? ext.COMPRESSED_RGBA_S3TC_DXT3_EXT : ext.COMPRESSED_RGBA_S3TC_DXT5_EXT;
@@ -183,6 +184,16 @@ export class WebGLDevice {
     const rgba = surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+  }
+  /** Diagnostic: flag textures that look like an engine's "missing texture" placeholder (mostly magenta). */
+  checkPlaceholder(s) {
+    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch);
+    let magenta = 0; const n = s.width * s.height;
+    for (let i = 0; i < n * 4; i += 4) if (rgba[i] > 200 && rgba[i + 1] < 80 && rgba[i + 2] > 200) magenta++;
+    if (magenta < n * 0.3) return;
+    this.placeholderLogs = (this.placeholderLogs ?? 0) + 1;
+    const t = s.owner;
+    this.log(`d3d-webgl: placeholder-looking texture #${t?.id ?? s.id} ${s.width}x${s.height} fmt ${s.fmt} (${Math.round(magenta * 100 / n)}% magenta) levels ${t?.levels?.length} usage 0x${(t?.usage ?? 0).toString(16)} pool ${t?.pool} locks ${t?.lockCount ?? 0} updated ${t?.updatedFrom ? 'yes' : 'no'} created at ${t?.origin ?? '?'}`);
   }
   glBuffer(b, kind) {
     const gl = this.gl;
@@ -390,7 +401,7 @@ export class WebGLDevice {
     if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1);
     if (this.capturing) {
       const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } if (!this.dumpedTex && l.width === 256 && l.height === 32) { this.dumpedTex = true; const rows = []; for (let y = 0; y < l.height; y++) { let r = ''; for (let x = 0; x < 128; x++) { const p = l.mem + y * l.pitch + x * 2 * 4; const a = u8[p + 3], c = u8[p] | u8[p + 1] | u8[p + 2]; r += a > 128 ? '#' : a > 0 ? '+' : c ? '.' : ' '; } rows.push(r); } const p0 = l.mem + 4 * l.pitch + 8 * 4; this.log(`d3d-webgl: [cap] atlas 256x32 (alpha #/+, color .) sample px=${(this.mem.read32(p0) >>> 0).toString(16)}\n${rows.join('\n')}`); } return `,alpha>0:${nz}/opaque:${opaque}`; };
-      const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
+      const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
       this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
     }
     for (let i = 0; i < 4; i++) { const l = U(`u_world[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }

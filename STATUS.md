@@ -80,8 +80,16 @@
 
 ## M6 (en cours)
 - Objectif : partie jouable 10 minutes (SOLO PLAY → escarmouche), audio via l'AudioWorklet, entrées, sauvegardes.
-- En cours : navigation scriptée SOLO PLAY → lancement d'une partie, pour exercer le rendu 3D (shaders SM2, formats
-  de textures, cibles de rendu) et corriger la fidélité au fil des écrans.
+- Navigation scriptée SOLO PLAY → SKIRMISH → création de profil (saisie clavier) → START GAME : **la partie se lance**,
+  carte 3D rendue (terrain, forteresse, arbres, unités, HUD) en fonctions fixes (détail « Very Low »), ~17 fps sous
+  SwiftShader. Défauts visibles : quelques unités en magenta uni (texture manquante ?), enquête en cours (détecteur de
+  textures « placeholder » + origine de création).
+- Audio : le jeu diffuse sa musique (D026 — curseurs DirectSound pilotés par l'horloge) ; l'AudioWorklet consomme en
+  temps réel (mixeur ~2 ms/s). Coût observé : quand Miles décode le flux (x86 émulé), les fps du menu tombent de 40 à
+  ~20 — mesure des replis interpréteur (SSE/MMX) en cours pour M7.
+- Saisie clavier : `WM_CHAR` uniquement via `TranslateMessage` (le nom de profil n'est plus dupliqué).
+- Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil (miroir OPFS hors
+  headless, à vérifier en page réelle).
 
 ## Prochaine action
 - M6 : enchaîner les clics scriptés jusqu'au lancement d'une escarmouche (captures chaque seconde pour repérer les
