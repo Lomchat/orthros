@@ -33,6 +33,7 @@ export class Jit {
     /** @type {Array<{entry: number, start: number, end: number, blocks: any[], fnIdx: number}>} */
     this.regions = [];
     this.pending = []; // regions still living in their own single-function module
+    this.blockMap = new Map(); // block eip -> { region, block } for every live region (re-insertion after hash eviction)
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
     this.nextFn = 0;
@@ -56,6 +57,7 @@ export class Jit {
     this.mem.fill(SMC_BITMAP_BASE, 0x10000, 0);
     this.regions = [];
     this.pending = [];
+    this.blockMap.clear();
     this.byEntry.clear();
     this.pageRegions.clear();
   }
@@ -97,6 +99,12 @@ export class Jit {
   // ------------------------------------------------------------------ translation
   translate(eip) {
     const t0 = performance.now();
+    // already translated (its hash entry was evicted): re-insert instead of retranslating
+    const known = this.blockMap.get(eip);
+    if (known) { this.hashInsert(eip, known.region.fnIdx, known.block); this.stats.reinserts = (this.stats.reinserts ?? 0) + 1; return known.region; }
+    // translation storm diagnostic: thousands of new regions per second means code is being retranslated
+    if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
+    if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false });
     const bytes = buildRegionModule([code]);
     let inst;
@@ -116,7 +124,7 @@ export class Jit {
     this.pending.push(region);
     if (this.pending.length >= this.consolidateEvery) this.consolidate();
     this.byEntry.set(eip, region);
-    for (const b of blocks) this.hashInsert(b.eip, fnIdx, b.index);
+    for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     // mark code pages for SMC detection
     for (let p = start >>> 12; p <= (end - 1) >>> 12; p++) {
       this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] |= 1 << (p & 7);
@@ -156,7 +164,7 @@ export class Jit {
     this.stats.dropped += victims.size;
   }
   dropRegion(r) {
-    for (const b of r.blocks) this.hashRemove(b.eip);
+    for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
     for (let p = r.start >>> 12; p <= (r.end - 1) >>> 12; p++) {

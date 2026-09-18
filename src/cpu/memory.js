@@ -16,8 +16,10 @@ export const WASM_PAGE = 0x10000;
 //   0x7ffde000  TEBs (downwards, one page per thread), 0x7ffdf000 PEB, 0x7ffe0000 KUSER_SHARED_DATA
 export const PRIVATE_BASE = 0x7fc00000;
 export const PRIVATE_END = 0x80000000;
-export const JIT_HASH_BASE = 0x7fc40000;
-export const JIT_HASH_BITS = 16;
+// EIP -> (function, block) hash table of the JIT: 2^20 entries of 16 bytes just below the thunks
+// (the user address space ends at JIT_HASH_BASE)
+export const JIT_HASH_BITS = 20;
+export const JIT_HASH_BASE = 0x7fb00000 - (16 << JIT_HASH_BITS);
 export const SMC_BITMAP_BASE = 0x7fd40000;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
 // Import thunks: each imported symbol gets a slot here; jumping/calling into this region is

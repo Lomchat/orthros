@@ -1,6 +1,7 @@
 // Virtual address space bookkeeping (the guest memory itself is always present, see D002).
 // Tracks reservations/commits at page granularity so VirtualAlloc/VirtualFree/VirtualQuery
 // and the loader/heaps/stacks can share the 2 GB space without overlapping.
+import { JIT_HASH_BASE } from '../cpu/memory.js';
 import { PAGE_SIZE, THUNK_BASE, PRIVATE_BASE } from '../cpu/memory.js';
 
 export const PAGE_NOACCESS = 0x01, PAGE_READONLY = 0x02, PAGE_READWRITE = 0x04, PAGE_WRITECOPY = 0x08;
@@ -13,7 +14,7 @@ const STATE_FREE = 0, STATE_RESERVED = 1, STATE_COMMITTED = 2;
 
 export class VMem {
   /** @param {number} [top] end of the usable address space */
-  constructor(top = THUNK_BASE) {
+  constructor(top = JIT_HASH_BASE) {
     this.top = top;
     this.pages = top / PAGE_SIZE;
     /** page state */

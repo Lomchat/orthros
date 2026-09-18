@@ -67,3 +67,6 @@ Le modèle « threads verts imbriqués » (D003) affamait le thread principal : 
 
 ## D022 — 2026-09-18 — Regroupement des régions JIT en modules multi-fonctions
 Un module WASM par région (D013) coûte ~50 Ko de métadonnées V8 par instance (feedback vectors, tables, func refs…) : le chargement du jeu traduit ~20 000 régions en une minute et le tas JS explosait (4 Go). Chaque région est d'abord compilée seule (exécution immédiate), puis toutes les 128 régions les corps de fonction conservés sont ré-émis dans **un** module de 128 fonctions dont les exports remplacent les entrées de la table funcref ; les instances individuelles deviennent collectables. Coût : une seconde compilation par région (Liftoff, quelques dizaines de ms par lot), re-tiering TurboFan des fonctions chaudes.
+
+## D023 — 2026-09-18 — Table de hachage EIP du JIT : 2^20 entrées, réinsertion au lieu de retraduction
+La table EIP→(fonction, bloc) de 64 K entrées était pleine dès ~3 300 régions (≈20 blocs chacune) : chaque éviction faisait retraduire le bloc à sa prochaine exécution, d'où une tempête de traductions (20 000 régions en quelques secondes) et l'explosion mémoire. La table occupe désormais 16 Mo (2^20 entrées) juste sous les thunks (l'espace utilisateur s'arrête à `JIT_HASH_BASE`), et une carte des blocs vivants permet de **réinsérer** une entrée évincée sans retraduire.
