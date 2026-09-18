@@ -206,6 +206,21 @@ export class WindowManager {
     return null;
   }
 
+  /**
+   * Switch the display mode (ChangeDisplaySettings, or a fullscreen Direct3D device): resizes the host
+   * display and the desktop window, then broadcasts WM_DISPLAYCHANGE. Zero sizes restore the default.
+   */
+  setDisplayMode(w, h, bpp = 32, fullscreen = false) {
+    const d = this.host?.display;
+    if (d && d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; }
+    if (!w || !h) { w = d?.defaultWidth ?? this.screen.width; h = d?.defaultHeight ?? this.screen.height; }
+    if (d) d.setMode(w, h, bpp, fullscreen);
+    this.screen = { width: w, height: h, bpp };
+    this.desktop.rect = { l: 0, t: 0, r: w, b: h }; this.desktop.client = { l: 0, t: 0, r: w, b: h };
+    this.vm.log('win', `display mode ${w}x${h}x${bpp}${fullscreen ? ' fullscreen' : ''}`);
+    for (const x of this.zorder) this.post(x, WM.DISPLAYCHANGE, bpp, (h << 16) | w);
+  }
+
   mkFlags() {
     let f = 0;
     if (this.keyState[VK.LBUTTON] & 0x80) f |= 1; if (this.keyState[VK.RBUTTON] & 0x80) f |= 2; if (this.keyState[VK.SHIFT] & 0x80) f |= 4;
@@ -232,6 +247,7 @@ export class WindowManager {
         if (ev.type === 'mousedown') this.activate(this.topLevel(w), true);
         const base = [WM.LBUTTONDOWN, WM.RBUTTONDOWN, WM.MBUTTONDOWN][ev.button] ?? WM.LBUTTONDOWN;
         const msg = ev.type === 'mousedown' ? (ev.dbl ? base + 2 : base) : base + 1;
+        this.vm.log('input', `mouse ${ev.type} button ${ev.button} at ${ev.x},${ev.y} -> hwnd=${w.hwnd.toString(16)} msg=${msg.toString(16)} client ${ev.x - w.client.l},${ev.y - w.client.t}${this.capture ? ' (captured)' : ''}`);
         this.post(w, msg, this.mkFlags(), ((ev.y - w.client.t) & 0xffff) << 16 | ((ev.x - w.client.l) & 0xffff));
         break;
       }
@@ -1306,11 +1322,7 @@ function enumDisplaySettings(c, wm, wide) {
 
 function changeDisplaySettings(c, wm, devmode, flags) {
   const mem = c.mem;
-  if (!devmode) { // restore
-    const d = wm.host?.display;
-    if (d) { d.setMode(d.defaultWidth ?? d.width, d.defaultHeight ?? d.height, 32, false); wm.screen = { width: d.width, height: d.height, bpp: 32 }; }
-    return 0;
-  }
+  if (!devmode) { wm.setDisplayMode(0, 0, 32, false); return 0; } // restore the default mode
   const size = mem.read16(devmode + 36);
   const wide = size >= 200;
   const bppOff = wide ? 168 : 104;
@@ -1319,11 +1331,8 @@ function changeDisplaySettings(c, wm, devmode, flags) {
   const w = fields & 0x80000 ? mem.read32(devmode + bppOff + 4) : wm.screen.width;
   const h = fields & 0x100000 ? mem.read32(devmode + bppOff + 8) : wm.screen.height;
   if (flags & 2) return 0; // CDS_TEST
-  const d = wm.host?.display;
-  if (d) { if (d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; } d.setMode(w, h, bpp, (flags & 4) !== 0); }
-  wm.screen = { width: w, height: h, bpp };
   c.vm.log('win', `ChangeDisplaySettings ${w}x${h}x${bpp} flags=${flags.toString(16)}`);
-  for (const x of wm.zorder) wm.post(x, WM.DISPLAYCHANGE, bpp, (h << 16) | w);
+  wm.setDisplayMode(w, h, bpp, (flags & 4) !== 0);
   return 0;
 }
 

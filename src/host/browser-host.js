@@ -1,7 +1,9 @@
-// Browser host (runs inside the worker): display over OffscreenCanvas (2D layer for GDI
-// surfaces, WebGL2 layer for Direct3D), input from the page through a SharedArrayBuffer ring,
-// audio through a float ring consumed by an AudioWorklet, cooperative waits (the worker returns
-// to its event loop between slices so the canvases get presented).
+// Browser host (runs inside the worker): display over worker-owned OffscreenCanvases (2D layer for
+// GDI surfaces, WebGL2 layer for Direct3D) whose complete frames are handed to the page as
+// ImageBitmaps, input from the page through a SharedArrayBuffer ring, audio through a float ring
+// consumed by an AudioWorklet, cooperative waits (the worker returns to its event loop between
+// slices). Frames are explicit on purpose: a placeholder canvas committed automatically at the end
+// of a worker task showed half-drawn or missing frames under load.
 export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
 export const EV = { MOUSEMOVE: 1, MOUSEDOWN: 2, MOUSEUP: 3, WHEEL: 4, KEYDOWN: 5, KEYUP: 6, CHAR: 7, FOCUS: 8 };
@@ -16,7 +18,7 @@ export class BrowserDisplay {
     this.frames = 0; this.title = ''; this.cursorVisible = true;
     this.modes = [[640, 480], [800, 600], [1024, 768], [1152, 864], [1280, 720], [1280, 800], [1280, 960], [1280, 1024], [1366, 768], [1440, 900], [1600, 900], [1600, 1200], [1680, 1050], [1920, 1080], [1920, 1200]];
     this.ctx = canvas2d.getContext('2d', { alpha: false });
-    this.image = null; this.row = null;
+    this.desk = null; this.row = null; // full desktop image on the 2D layer (transferToImageBitmap blanks the canvas)
     this.glActive = false;
     this.resize(width, height);
   }
@@ -25,23 +27,33 @@ export class BrowserDisplay {
     if (this.canvas2d.width !== w || this.canvas2d.height !== h) { this.canvas2d.width = w; this.canvas2d.height = h; }
     if (this.canvasGl.width !== w || this.canvasGl.height !== h) { this.canvasGl.width = w; this.canvasGl.height = h; }
     this.ctx = this.canvas2d.getContext('2d', { alpha: false });
-    this.ctx.fillStyle = '#000'; this.ctx.fillRect(0, 0, w, h);
+    this.desk = new ImageData(w, h); new Uint32Array(this.desk.data.buffer).fill(0xff000000);
+    this.row = new Uint32Array(w);
     this.host.post({ type: 'mode', width: w, height: h, fullscreen: this.fullscreen });
   }
-  /** Present a GDI surface region at (x, y) on the 2D layer. */
+  /** Present a GDI surface region at (x, y) on the 2D layer: update the desktop image, hand a frame to the page. */
   present(surface, x, y, w = surface.width, h = surface.height) {
-    if (w <= 0 || h <= 0) return;
-    if (!this.image || this.image.width !== w || this.image.height !== h) { this.image = new ImageData(w, h); this.row = new Uint32Array(w); }
-    const px = new Uint32Array(this.image.data.buffer);
-    const row = this.row;
-    for (let yy = 0; yy < h; yy++) {
-      surface.readRow(yy, 0, w, row);
-      const o = yy * w;
-      for (let i = 0; i < w; i++) { const c = row[i]; px[o + i] = 0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff); } // 0x00RRGGBB -> ABGR bytes R,G,B,A
+    const W = this.width, H = this.height;
+    const x0 = Math.max(0, x), y0 = Math.max(0, y), x1 = Math.min(W, x + w), y1 = Math.min(H, y + h);
+    if (x1 <= x0 || y1 <= y0) return;
+    const px = new Uint32Array(this.desk.data.buffer);
+    const row = this.row, cw = x1 - x0;
+    for (let yy = y0; yy < y1; yy++) {
+      surface.readRow(yy - y, x0 - x, cw, row);
+      const o = yy * W + x0;
+      for (let i = 0; i < cw; i++) { const c = row[i]; px[o + i] = 0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff); } // 0x00RRGGBB -> ABGR bytes R,G,B,A
     }
-    this.ctx.putImageData(this.image, x, y);
+    this.ctx.putImageData(this.desk, 0, 0);
+    const bitmap = this.canvas2d.transferToImageBitmap();
+    this.host.post({ type: 'frame', layer: '2d', bitmap }, [bitmap]);
     this.frames++;
     this.host.framePresented();
+  }
+  /** Hand the Direct3D frame just presented (blitted into the GL canvas) to the page. */
+  presentGl() {
+    const bitmap = this.canvasGl.transferToImageBitmap();
+    this.host.post({ type: 'frame', layer: 'gl', bitmap }, [bitmap]);
+    if (!this.glActive) { this.glActive = true; this.host.post({ type: 'gl', active: true }); }
   }
   setMode(width, height, bpp, fullscreen) {
     this.fullscreen = fullscreen; this.bpp = bpp || 32;
@@ -68,7 +80,7 @@ export class BrowserHost {
     this.lastFrameAt = 0;
     this.frameTimes = [];
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
-    this.frameHook = () => { if (!this.display.glActive) { this.display.glActive = true; this.post({ type: 'gl', active: true }); } this.framePresented(); };
+    this.frameHook = () => { this.display.presentGl(); this.framePresented(); };
   }
   /** Drain the shared input ring into the local queue. */
   pump() {

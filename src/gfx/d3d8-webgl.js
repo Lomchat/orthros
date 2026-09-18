@@ -124,6 +124,8 @@ export class WebGLDevice {
     this.dev = dev;
     const c = gl.canvas;
     if (c.width !== dev.pp.width || c.height !== dev.pp.height) { c.width = dev.pp.width; c.height = dev.pp.height; }
+    for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
+    this.fbos.clear();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, dev.pp.width, dev.pp.height);
@@ -198,13 +200,19 @@ export class WebGLDevice {
   }
 
   // ---------------------------------------------------------------- render targets
+  /**
+   * Bind the current render target. Every target is a framebuffer object, including the back buffers: the
+   * default framebuffer only ever receives complete frames (blitted by present), so a worker yield in the
+   * middle of a frame never shows a partially drawn picture. Back buffers keep the screen orientation
+   * (GL rows bottom-up); texture targets are rendered y-flipped (`flip`) so their rows match D3D order.
+   */
   bindTarget() {
     const gl = this.gl, dev = this.dev;
-    const rt = dev.renderTarget;
-    if (!rt || dev.backBuffers.includes(rt)) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); return { w: dev.pp.width, h: dev.pp.height, fbo: false }; }
+    const rt = dev.renderTarget ?? dev.backBuffers[0];
+    const back = dev.backBuffers.includes(rt);
     let f = this.fbos.get(rt.id);
     if (!f) {
-      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null };
+      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null, back };
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
@@ -217,21 +225,21 @@ export class WebGLDevice {
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
       const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
       if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`);
-      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${rt.owner ? 'texture level ' + rt.level : 'surface'}`);
+      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
     } else gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
-    return { w: f.w, h: f.h, fbo: true };
+    return { w: f.w, h: f.h, flip: !back };
   }
   setRenderTarget() {}
   readbackSurface(s) {
     const gl = this.gl, dev = this.dev;
     const prev = dev.renderTarget; dev.renderTarget = s;
-    const { w, h, fbo } = this.bindTarget();
+    const { w, h, flip } = this.bindTarget();
     const rgba = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     dev.renderTarget = prev;
     const base = s.ensureMem(dev.proc), u8 = this.mem.u8;
-    for (let y = 0; y < h; y++) { const src = (fbo ? y : h - 1 - y) * w * 4; /* texture targets are rendered y-flipped (rows match D3D); the screen is bottom-up */ let o = base + y * s.pitch; for (let x = 0; x < w; x++, o += 4) { const i = src + x * 4; u8[o] = rgba[i + 2]; u8[o + 1] = rgba[i + 1]; u8[o + 2] = rgba[i]; u8[o + 3] = rgba[i + 3]; } }
+    for (let y = 0; y < h; y++) { const src = (flip ? y : h - 1 - y) * w * 4; /* texture targets are rendered y-flipped (rows match D3D); back buffers are bottom-up */ let o = base + y * s.pitch; for (let x = 0; x < w; x++, o += 4) { const i = src + x * 4; u8[o] = rgba[i + 2]; u8[o + 1] = rgba[i + 1]; u8[o + 2] = rgba[i]; u8[o + 3] = rgba[i + 3]; } }
   }
   readbackFrontBuffer(s) { const b = this.dev.backBuffers[0]; this.readbackSurface(b); if (b.mem && b.fmt === s.fmt) this.mem.copy(s.ensureMem(this.dev.proc), b.mem, Math.min(b.bytes, s.bytes)); }
   copyRects(src, dst, rects, n, points) {
@@ -249,13 +257,27 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- frame
   beginScene() { this.frameDraws = 0; }
   endScene() {}
-  present() { this.gl.flush(); this.frame++; if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)`); } if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.log(`d3d-webgl: capture frame ${this.frame}`); } }
+  present() {
+    const gl = this.gl, dev = this.dev;
+    const prev = dev.renderTarget; dev.renderTarget = dev.backBuffers[0];
+    const { w, h } = this.bindTarget();
+    dev.renderTarget = prev;
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (dev.backBuffers.length > 1 && dev.pp.swap !== 3) { // flipping chain: rotate the contents, not the surfaces
+      const ids = dev.backBuffers.map((b) => b.id), first = this.fbos.get(ids[0]);
+      for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
+      if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
+    }
+    gl.flush(); this.frame++; if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)`); } if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.log(`d3d-webgl: capture frame ${this.frame}`); } }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
     if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
-    const { h, fbo } = this.bindTarget();
+    const { h, flip } = this.bindTarget();
     const v = dev.viewport;
-    const gy = (y, hh) => (fbo ? y : h - y - hh);
+    const gy = (y, hh) => (flip ? y : h - y - hh);
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(v.x, gy(v.y, v.h), v.w, v.h);
     let mask = 0;
@@ -358,18 +380,18 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- state application
   applyState(P, info) {
     const gl = this.gl, dev = this.dev;
-    const { h, fbo } = this.bindTarget();
+    const { h, flip } = this.bindTarget();
     const v = dev.viewport;
-    gl.viewport(v.x, fbo ? v.y : h - v.y - v.h, v.w, v.h);
+    gl.viewport(v.x, flip ? v.y : h - v.y - v.h, v.w, v.h);
     gl.depthRange(v.minZ, v.maxZ);
-    if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) { const s = dev.scissor; gl.enable(gl.SCISSOR_TEST); gl.scissor(s.l, fbo ? s.t : h - s.b, Math.max(0, s.r - s.l), Math.max(0, s.b - s.t)); } else gl.disable(gl.SCISSOR_TEST);
+    if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) { const s = dev.scissor; gl.enable(gl.SCISSOR_TEST); gl.scissor(s.l, flip ? s.t : h - s.b, Math.max(0, s.r - s.l), Math.max(0, s.b - s.t)); } else gl.disable(gl.SCISSOR_TEST);
     gl.useProgram(P.prog);
     const U = P.u;
-    if (U('u_flipY')) gl.uniform1f(U('u_flipY'), fbo ? -1 : 1);
+    if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1);
     if (this.capturing) {
       const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } if (!this.dumpedTex && l.width === 256 && l.height === 32) { this.dumpedTex = true; const rows = []; for (let y = 0; y < l.height; y++) { let r = ''; for (let x = 0; x < 128; x++) { const p = l.mem + y * l.pitch + x * 2 * 4; const a = u8[p + 3], c = u8[p] | u8[p + 1] | u8[p + 2]; r += a > 128 ? '#' : a > 0 ? '+' : c ? '.' : ' '; } rows.push(r); } const p0 = l.mem + 4 * l.pitch + 8 * 4; this.log(`d3d-webgl: [cap] atlas 256x32 (alpha #/+, color .) sample px=${(this.mem.read32(p0) >>> 0).toString(16)}\n${rows.join('\n')}`); } return `,alpha>0:${nz}/opaque:${opaque}`; };
       const texs = info.stages.map((st, i) => st.bound ? `${i}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
-      this.log(`d3d-webgl: [cap] ${fbo ? 'FBO' : 'screen'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+      this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
     }
     for (let i = 0; i < 4; i++) { const l = U(`u_world[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
     if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
@@ -475,7 +497,7 @@ export class WebGLDevice {
     // Winding: a D3D front face is clockwise as seen on the screen. Clip space is shared, so GL window
     // space keeps that visual orientation on the screen (D3D front = GL clockwise) and mirrors it on
     // y-flipped texture targets. With frontFace set that way, D3DCULL_CCW culls GL back faces.
-    gl.frontFace(fbo ? gl.CCW : gl.CW);
+    gl.frontFace(flip ? gl.CCW : gl.CW);
     const cull = this.rs(RS.CULLMODE, 3);
     if (cull === 1 || this.noCull) gl.disable(gl.CULL_FACE);
     else { gl.enable(gl.CULL_FACE); gl.cullFace(cull === 3 ? gl.BACK : gl.FRONT); }
@@ -597,7 +619,7 @@ export class WebGLDevice {
 
 /** Host-side factory: `host.gfx = createWebGLBackend(canvas, log)`. */
 export function createWebGLBackend(canvas, log) {
-  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
+  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
   return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, noCull: globalThis.ORTHROS_NO_CULL }); } };
 }

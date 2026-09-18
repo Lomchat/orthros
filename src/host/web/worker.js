@@ -12,7 +12,7 @@ import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
-const post = (m) => self.postMessage(m);
+const post = (m, transfer) => self.postMessage(m, transfer);
 const log = (kind, msg) => post({ type: 'log', kind, msg });
 
 const PROFILE_DIRS = ['Temp', 'AppData', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow', 'Documents', 'Desktop', 'Saved Games'];
@@ -56,9 +56,11 @@ async function start(m) {
   const manifest = m.manifest;
   const clock = new RealClock();
   const ctl = new Int32Array(m.ctl), inputRing = new Int32Array(m.inputRing), audioRing = new Float32Array(m.audioRing);
-  host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d: m.canvas2d, canvasGl: m.canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
+  const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
+  host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
   globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull;
-  try { host.gfx = createWebGLBackend(m.canvasGl, (msg) => log('gfx', msg)); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
+  try { host.gfx = createWebGLBackend(canvasGl, (msg) => log('gfx', msg)); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();
   const root = new MemBackend();

@@ -116,7 +116,7 @@ export function registerDirect3D9(api, vm) {
       if (!this.pp.width) this.pp.width = displayMode().width;
       if (!this.pp.height) this.pp.height = displayMode().height;
       if (!this.pp.format || this.pp.format === FMT.UNKNOWN) this.pp.format = FMT.X8R8G8B8;
-      if (!this.pp.windowed) vm.wm?.setDisplayMode?.(this.pp.width, this.pp.height, this.pp.format === FMT.R5G6B5 ? 16 : 32);
+      this.applyDisplayMode();
     }
     resetState() {
       super.resetState();
