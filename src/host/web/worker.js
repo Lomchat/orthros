@@ -105,9 +105,9 @@ function pump() {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const ft = host.frameTimes.slice().sort((a, b) => a - b);
     const p = (q) => (ft.length ? ft[Math.min(ft.length - 1, Math.floor(q * ft.length))] : 0);
-    post({ type: 'stats', apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height } : null, unknownImports: vm.proc.unknownImports.size, audioBuffers: vm.audio?.buffers.size ?? 0, topApi: vm.apiHist ? [...vm.apiHist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height } : null, unknownImports: vm.proc.unknownImports.size, audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, topApi: vm.apiHist ? [...vm.apiHist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (vm.apiHist) lastHist = new Map(vm.apiHist);
-    lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented;
+    lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0;
     flushProfile();
   }
   if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code }); flushProfile(true); return; }

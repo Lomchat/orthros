@@ -11,7 +11,8 @@ const name = args.find((a) => !a.startsWith('--'));
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds)
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, args] = e.split(':'); return { t: Number(t), kind, args: (args || '').split(',').map(Number), done: false }; });
+// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string>
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); return { t: Number(t), kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; });
 if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
 fs.mkdirSync(out, { recursive: true });
 
@@ -29,6 +30,7 @@ if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
+if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 const t0 = Date.now();
 let lastShot = 0, shot = 0;
@@ -36,7 +38,7 @@ const status = () => page.evaluate(() => ({ status: window.orthros.status, stats
 for (;;) {
   const s = await status();
   const t = (Date.now() - t0) / 1000;
-  if (s.stats) console.log(`[t=${t.toFixed(0)}s] ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}`);
+  if (s.stats) console.log(`[t=${t.toFixed(0)}s] ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}`);
   for (const ev of inputs) {
     if (ev.done || t < ev.t) continue;
     ev.done = true;
@@ -47,6 +49,7 @@ for (;;) {
       else if (kind === 'click') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEDOWN, 0, args[0], args[1]); push(EV.MOUSEUP, 0, args[0], args[1]); }
       else if (kind === 'rclick') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEDOWN, 1, args[0], args[1]); push(EV.MOUSEUP, 1, args[0], args[1]); }
       else if (kind === 'key') { push(EV.KEYDOWN, args[0], args[1] || 0, 0); push(EV.KEYUP, args[0], args[1] || 0, 0); }
+      else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f }).catch(() => page.screenshot({ path: f })); console.log(`[shot] ${f}`); }

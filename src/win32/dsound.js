@@ -42,20 +42,22 @@ export function registerDirectSound(api, vm) {
     constructor() {
       this.buffers = new Set();
       this.format = { tag: 1, channels: 2, rate: 22050, bits: 16, align: 4, avg: 88200 };
-      this.audioClock = null; // seconds rendered by the host mixer (null: headless, VM clock drives cursors)
       vm.audio = this;
     }
-    /** Render `frames` stereo float frames at `rate` into `out` (interleaved), advancing the buffers. */
+    /**
+     * Render `frames` stereo float frames at `rate` into `out` (interleaved). Play cursors are driven by
+     * the VM clock (see tick), not by what the host consumed: the game must see real-time cursors even
+     * when the browser's audio output is suspended or throttled; each buffer keeps its own mix position
+     * that follows the cursor.
+     */
     render(out, frames, rate = DEVICE_RATE) {
       out.fill(0, 0, frames * 2);
-      const dt = frames / rate;
-      for (const b of this.buffers) if (b.playing) b.mixInto(out, frames, rate);
-      this.audioClock = (this.audioClock ?? 0) + dt;
-      for (const b of this.buffers) b.checkNotifications();
+      this.tick();
+      for (const b of this.buffers) if (b.playing && b.size) b.mixInto(out, frames, rate); // the primary buffer has no storage: it *is* the mix
       return out;
     }
-    /** Headless: advance cursors from the VM clock. */
-    tick() { if (this.audioClock === null) for (const b of this.buffers) if (b.playing) b.advanceTo(vm.clock.now() / 1000); }
+    /** Advance play cursors to the VM clock. */
+    tick() { const now = vm.clock.now() / 1000; for (const b of this.buffers) if (b.playing) b.advanceTo(now); }
   }
   const audio = () => vm.audio ?? new Audio();
   const signalEvent = (h) => { const o = vm.proc.handles.getAs(h, 'event'); if (o) o.signaled = true; };
@@ -69,6 +71,7 @@ export function registerDirectSound(api, vm) {
       this.playing = false; this.looping = false;
       this.pos = 0; // play cursor in bytes (fractional frames kept in posFrac)
       this.posFrac = 0;
+      this.mixPos = null; // mixer read position in frames (fractional); null = snap to the play cursor
       this.lastTime = 0; // VM clock seconds at last headless advance
       this.volume = 0; this.pan = 0; this.freq = fmt.rate;
       this.locks = 0; this.notifies = [];
@@ -84,7 +87,7 @@ export function registerDirectSound(api, vm) {
     get bytesPerSec() { return this.fmt.align * this.freq; }
     /** advance the play cursor by `frames` sample frames of this buffer */
     advanceFrames(frames) {
-      if (!this.playing) return;
+      if (!this.playing || !this.size) return;
       let p = this.pos + frames * this.fmt.align;
       if (p >= this.size) { if (this.looping) p %= this.size; else { p = 0; this.playing = false; this.onStop(); } }
       this.pos = p;
@@ -117,13 +120,21 @@ export function registerDirectSound(api, vm) {
       this.notifyPos = this.pos;
       return DS_OK;
     }
-    /** mix this buffer into a stereo float stream (linear resampling, volume/pan applied) */
+    /**
+     * Mix this buffer into a stereo float stream (linear resampling, volume/pan applied). The mix position
+     * follows the play cursor: it advances with the frames rendered and is re-synchronised to the cursor
+     * when it drifts (output suspended, or the app moved the cursor).
+     */
     mixInto(out, frames, rate) {
+      if (!this.size) return;
       const f = this.fmt, step = this.freq / rate;
       const gain = dbToGain(this.volume), gl = gain * (this.pan > 0 ? dbToGain(-this.pan) : 1), gr = gain * (this.pan < 0 ? dbToGain(this.pan) : 1);
       const base = this.mem, size = this.size, align = f.align;
       const totalFrames = Math.floor(size / align);
-      let frame = this.pos / align + this.posFrac;
+      const cursor = this.pos / align + this.posFrac;
+      if (this.mixPos !== null) { let lag = cursor - this.mixPos; if (this.looping) lag = ((lag % totalFrames) + totalFrames) % totalFrames; if (lag < 0 || lag > this.freq * 0.25) this.mixPos = null; }
+      if (this.mixPos === null) this.mixPos = cursor;
+      let frame = this.mixPos;
       const sample = (fi, ch) => {
         const a = base + (fi % totalFrames) * align + (f.channels === 1 ? 0 : ch) * (f.bits >> 3);
         if (f.tag === WAVE_FORMAT_IEEE_FLOAT) return mem.readF32(a);
@@ -131,16 +142,13 @@ export function registerDirectSound(api, vm) {
       };
       for (let i = 0; i < frames; i++) {
         const fi = Math.floor(frame), t = frame - fi;
-        if (fi >= totalFrames && !this.looping) { this.pos = 0; this.posFrac = 0; this.playing = false; this.onStop(); return; }
+        if (fi >= totalFrames && !this.looping) break; // the cursor logic (advanceTo) stops the buffer
         const l0 = sample(fi, 0), l1 = sample(fi + 1, 0);
         const r0 = f.channels > 1 ? sample(fi, 1) : l0, r1 = f.channels > 1 ? sample(fi + 1, 1) : l1;
         out[2 * i] += (l0 + (l1 - l0) * t) * gl; out[2 * i + 1] += (r0 + (r1 - r0) * t) * gr;
         frame += step;
       }
-      const whole = Math.floor(frame);
-      this.posFrac = frame - whole;
-      this.pos = (this.looping ? whole % totalFrames : Math.min(whole, totalFrames)) * align;
-      if (!this.looping && whole >= totalFrames) { this.pos = 0; this.playing = false; this.onStop(); }
+      this.mixPos = this.looping ? frame % totalFrames : frame;
     }
     // ---- IDirectSoundBuffer
     GetCaps(c) { const p = c.arg(1); if (!p || mem.read32(p) < 20) return DSERR_INVALIDPARAM; mem.write32(p + 4, this.flags | DSBCAPS_LOCSOFTWARE); mem.write32(p + 8, this.size); mem.write32(p + 12, 0); mem.write32(p + 16, 0); return DS_OK; }
@@ -174,10 +182,11 @@ export function registerDirectSound(api, vm) {
       const flags = c.arg(3);
       if (this.primary) { this.playing = true; this.looping = true; return DS_OK; }
       this.looping = (flags & DSBPLAY_LOOPING) !== 0;
-      if (!this.playing) { this.playing = true; this.lastTime = vm.clock.now() / 1000; this.notifyPos = this.pos; }
+      if (!this.playing) { this.playing = true; this.lastTime = vm.clock.now() / 1000; this.notifyPos = this.pos; this.mixPos = null; }
+      if ((this.diag = (this.diag ?? 0) + 1) <= 4) vm.log('audio', `dsound: play ${this.size} bytes ${this.looping ? 'looping' : 'once'} volume ${this.volume} freq ${this.freq} pos ${this.pos} nonzero ${this.nonZero()}`);
       return DS_OK;
     }
-    SetCurrentPosition(c) { const p = c.arg(1); if (p >= this.size) return DSERR_INVALIDPARAM; this.pos = p - (p % this.fmt.align); this.posFrac = 0; this.notifyPos = this.pos; return DS_OK; }
+    SetCurrentPosition(c) { const p = c.arg(1); if (p >= this.size) return DSERR_INVALIDPARAM; this.pos = p - (p % this.fmt.align); this.posFrac = 0; this.mixPos = null; this.notifyPos = this.pos; return DS_OK; }
     SetFormat(c) {
       if (!this.primary) return DSERR_INVALIDCALL;
       if (this.ds.coop < DSSCL_PRIORITY) return DSERR_PRIOLEVELNEEDED;
@@ -191,7 +200,13 @@ export function registerDirectSound(api, vm) {
     SetPan(c) { if (!(this.flags & DSBCAPS_CTRLPAN)) return DSERR_CONTROLUNAVAIL; const v = c.sarg(1); if (v > 10000 || v < -10000) return DSERR_INVALIDPARAM; this.pan = v; return DS_OK; }
     SetFrequency(c) { if (!(this.flags & DSBCAPS_CTRLFREQUENCY)) return DSERR_CONTROLUNAVAIL; const v = c.arg(1); if (v && (v < 100 || v > 200000)) return DSERR_INVALIDPARAM; this.cursor(); this.freq = v || this.fmt.rate; return DS_OK; }
     Stop() { if (this.primary) return DS_OK; this.cursor(); if (this.playing) { this.playing = false; this.onStop(); } return DS_OK; }
-    Unlock() { if (this.locks > 0) this.locks--; return DS_OK; }
+    Unlock(c) {
+      if (this.locks > 0) this.locks--;
+      if ((this.unlockDiag = (this.unlockDiag ?? 0) + 1) <= 6 || this.unlockDiag % 500 === 0) vm.log('audio', `dsound: unlock ${c.arg(2)}+${c.arg(4)} bytes at ${(c.arg(1) - this.mem) >>> 0} (playing ${this.playing} pos ${this.pos}) nonzero ${this.nonZero()}`);
+      return DS_OK;
+    }
+    /** Diagnostic: number of non-zero bytes in a 4 KB sample spread over the buffer. */
+    nonZero() { let n = 0; const u8 = mem.u8, step = Math.max(1, this.size >> 12); for (let i = 0; i < this.size; i += step) if (u8[this.mem + i] !== 0 && !(this.fmt.bits === 8 && u8[this.mem + i] === 0x80)) n++; return n; }
     Restore() { return DS_OK; }
     SetFX() { return DSERR_CONTROLUNAVAIL; }
     AcquireResources() { return DS_OK; }
