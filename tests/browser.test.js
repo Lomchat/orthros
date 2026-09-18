@@ -62,7 +62,7 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
   assert.equal(r.exitCode, 0);
   assert.equal(r.pixel(60, 60), 0x00ff00, 'green texture modulated by white diffuse inside the triangle');
-  assert.equal(r.pixel(300, 200), 0x0000ff, 'clear color outside the triangle');
+  assert.equal(r.pixel(300, 200), 0x0000ff, 'clear color: the counterclockwise triangle is culled by D3DCULL_CCW');
   const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
   assert.match(text, /px_tri=0x0000ff00/, 'GetRenderTargetData reads the rendered pixels back into guest memory');
   assert.match(text, /px_clear=0x000000ff/);
