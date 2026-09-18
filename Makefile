@@ -11,7 +11,7 @@ CASES ?= 1500
 all: test
 
 # Unit tests + CPU conformance (conformance suites are generated on demand by the native oracle).
-test: gen test-unit
+test: gen pe-tests test-unit
 
 test-unit:
 	node --test 'tests/**/*.test.js'
@@ -31,6 +31,10 @@ gen: $(foreach s,$(SUITES),$(GEN)/$(s).results.bin)
 $(GEN)/%.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle
 	@mkdir -p $(GEN)
 	python3 tools/gen/gen_cases.py --suite $* --count $(CASES) --out $(GEN)
+
+# ---- CRT-free Win32 test programs (clang + lld-link, no SDK)
+pe-tests:
+	@sh tools/pe/build.sh
 
 serve:
 	node src/host/server.js
