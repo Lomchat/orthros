@@ -158,7 +158,7 @@ export function d3dCore(vm) {
     GetLevelCount() { return this.levels.length; }
     GetLevelDesc(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.GetDesc({ arg: (i) => (i === 1 ? c.arg(2) : 0) }); }
     GetSurfaceLevel(c) { const l = this.levels[c.arg(1)]; const pp = c.arg(2); if (!l || !pp) return D3DERR_INVALIDCALL; mem.write32(pp, l.ptrOf(c)); return D3D_OK; }
-    LockRect(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.lock(c, c.arg(2), c.arg(3), c.arg(4)); }
+    LockRect(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; this.lockCount = (this.lockCount ?? 0) + 1; return l.lock(c, c.arg(2), c.arg(3), c.arg(4)); }
     UnlockRect(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.unlock(); }
     AddDirtyRect() { this.levels[0].dirty = true; return D3D_OK; }
     SetAutoGenFilterType() { return D3D_OK; }
@@ -355,7 +355,7 @@ export function d3dCore(vm) {
       dst.dirty = true;
       return D3D_OK;
     }
-    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type) return D3DERR_INVALIDCALL; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } } return D3D_OK; }
+    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type) return D3DERR_INVALIDCALL; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
     GetFrontBuffer(c) { const s = com.implAt(c.arg(1)); if (!(s instanceof Surface)) return D3DERR_INVALIDCALL; if (this.gfx?.readbackFrontBuffer) this.gfx.readbackFrontBuffer(s); else { const b = this.backBuffers[0]; if (b.mem && b.fmt === s.fmt) mem.copy(s.ensureMem(c.proc), b.mem, Math.min(b.bytes, s.bytes)); } return D3D_OK; }
     SetRenderTarget(c) { const rt = c.arg(1) ? com.implAt(c.arg(1)) : null, ds = c.arg(2) ? com.implAt(c.arg(2)) : null; if (c.arg(1) && !(rt instanceof Surface)) return D3DERR_INVALIDCALL; if (rt) { this.renderTarget = rt; this.viewport = { x: 0, y: 0, w: rt.width, h: rt.height, minZ: 0, maxZ: 1 }; } this.depthTarget = c.arg(2) ? ds : null; this.gfx?.setRenderTarget?.(this.renderTarget, this.depthTarget); return D3D_OK; }
     GetRenderTarget(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; mem.write32(pp, this.renderTarget.ptrOf(c)); return D3D_OK; }

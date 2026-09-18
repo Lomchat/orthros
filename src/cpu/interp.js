@@ -97,6 +97,7 @@ export class Interp {
       return EXIT.FAULT;
     }
     if (this.trace) this.trace(insn);
+    this.lastOp = insn.op;
     const h = H[insn.op];
     try {
       if (h === null) throw new CpuFault(6, eip, `unimplemented ${fmtInsn(insn)}`);

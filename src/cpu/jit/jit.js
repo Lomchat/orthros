@@ -37,7 +37,8 @@ export class Jit {
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0 };
+    this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
@@ -182,6 +183,8 @@ export class Jit {
     cpu.eip = eip;
     cpu.exit = EXIT.NONE;
     const r = this.interp.step();
+    this.stats.fallbackSteps = (this.stats.fallbackSteps ?? 0) + 1;
+    if (this.fallbackHist) { const op = this.interp.lastOp; this.fallbackHist.set(op, (this.fallbackHist.get(op) ?? 0) + 1); }
     if (r !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return r; }
     return 0;
   }

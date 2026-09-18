@@ -150,6 +150,7 @@ export function registerDirect3D9(api, vm) {
       if (!TEXTURE_FORMATS.has(fmt) && !DEPTH_FORMATS.has(fmt) && !BACKBUFFER_FORMATS.has(fmt)) { mem.write32(pp, 0); vm.log('gfx', `d3d9: CreateTexture unsupported format ${fmt}`); return D3DERR_INVALIDCALL; }
       const t = new Texture(this, w, h, usage & 0x400 /* AUTOGENMIPMAP */ ? 1 : levels, usage, fmt, pool);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
+      t.origin = c.proc.symbolize(c.retAddr);
       t.iids = [IID.IDirect3DResource9, IID.IDirect3DBaseTexture9];
       for (const l of t.levels) l.iids = [IID.IDirect3DSurface9, IID.IDirect3DResource9];
       mem.write32(pp, t.ptr = com.create(c.proc, 'IDirect3DTexture9', t));
