@@ -13,6 +13,7 @@ import { Scheduler } from './sched.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
+import { Seh, EXC } from '../win32/seh.js';
 
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
@@ -45,22 +46,34 @@ export class Vm {
     this.depth = 0;
     this.current = null;
     this.logKinds = new Set(opts.logKinds ?? ['loader', 'warn', 'crash']);
+    this.traceApi = this.logKinds.has('api') || this.logKinds.has('all');
     this.logFn = opts.log ?? ((kind, msg) => console.log(`[${kind}] ${msg}`));
     this.apiTrace = new Array(64).fill(null);
     this.apiTracePos = 0;
     this.apiCalls = 0;
     this.stdout = [];
     this.onStdout = null;
+    this.deadline = 0; // host time limit (ms, performance.now based) checked at timeslice/thunk boundaries
+    this.apiHist = opts.apiHist ? new Map() : null;
+    this.profile = opts.profile ? new Map() : null; // eip>>6 -> timeslice samples
+    this.progressAt = 0; this.progressEvery = 0; this.onProgress = null;
+    this.slices = 0;
     // Internal thunks (pseudo-DLL "orthros")
     this.api.define('orthros.dll', {
       __return: [0, () => 0, { noreturn: true }],
       __exit_thread: [0, (ctx) => this.exitThread(ctx.thread, ctx.cpu.eax), { noreturn: true }],
       __exit_process: [0, (ctx) => this.exitProcess(ctx.cpu.eax), { noreturn: true }],
+      __seh_return: [0, (ctx) => this.seh.onHandlerReturn(ctx), { noreturn: true }],
     });
     this.returnThunk = this.api.thunkFor('orthros.dll', '__return');
     this.exitThreadThunk = this.api.thunkFor('orthros.dll', '__exit_thread');
     this.exitProcessThunk = this.api.thunkFor('orthros.dll', '__exit_process');
+    this.seh = new Seh(this);
+    this.GuestCrash = GuestCrash;
+    if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); for (let i = 0; i < this.api.thunks.length; i++) this.jit.markFast(i, `${this.api.thunks[i].dll}!${this.api.thunks[i].name}`, this.api.thunks[i].def); }
     registerBuiltins(this.api, this);
+    this.apiTraceNames = new Array(64).fill(null);
+    this.apiTraceRets = new Uint32Array(64);
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
@@ -74,6 +87,7 @@ export class Vm {
     const proc = (this.proc = new Process(this, opts));
     const bytes = opts.exeBytes ?? this.vfs.readFile(proc.exePath);
     if (!bytes) throw new Error(`exe not found: ${proc.exePath}`);
+    if (this.jit) this.jit.setProcessConsts(proc.processHeap.handle);
     const exe = proc.loadModule(proc.exePath.slice(proc.exePath.lastIndexOf('\\') + 1), { forExe: true, path: proc.exePath, bytes });
     proc.exe = exe;
     this.mem.write32(0x7ffdf000 + 8, exe.base); // PEB.ImageBaseAddress
@@ -138,6 +152,7 @@ export class Vm {
     const prev = this.current;
     const base = thread.onStack === 0;
     this.current = thread;
+    this.lastThread = thread;
     thread.onStack++;
     if (base) thread.baseDepth = this.depth;
     this.depth++;
@@ -158,6 +173,10 @@ export class Vm {
             break;
           case EXIT.TIMESLICE:
             this.clock.tick?.(0.5);
+            this.slices++;
+            if (this.profile) { const k = cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
+            if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
+            if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
             if (opts.slice) { thread.state = TS.READY; return 0; }
             if (this.depth === 1) { thread.state = TS.READY; this.sched.yieldFrom(thread); thread.state = TS.RUNNING; }
             break;
@@ -196,6 +215,7 @@ export class Vm {
     const cpu = thread.cpu;
     const saved = [cpu.eip, cpu.esp, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp, cpu.eflags];
     if (opts.ecx !== undefined) cpu.ecx = opts.ecx; // __thiscall
+    if (opts.ebp !== undefined) cpu.ebp = opts.ebp; // SEH filter/finally fragments
     for (let i = args.length - 1; i >= 0; i--) cpu.push32(args[i] >>> 0);
     cpu.push32(this.returnThunk);
     cpu.eip = addr >>> 0;
@@ -219,9 +239,12 @@ export class Vm {
     const ctx = this.ctx.bind(thread, def);
     const sp = cpu.esp;
     this.apiCalls++;
+    if ((sp & 3) && !this.warnedMisaligned) { this.warnedMisaligned = true; this.warn(`misaligned ESP ${sp.toString(16)} at API call ${t.dll}!${t.name}\n` + this.crashReport(thread, 'misaligned stack')); }
+    if (this.apiHist) { const k = `${t.dll}!${t.name}`; this.apiHist.set(k, (this.apiHist.get(k) ?? 0) + 1); }
     if (def) {
-      if (this.logKinds.has('api') || this.logKinds.has('all')) this.logFn('api', this.fmtCall(t, ctx, def.argc));
-      this.apiTrace[this.apiTracePos++ & 63] = { name: `${t.dll}!${t.name}`, ret: this.mem.read32(sp), args: this.argsOf(ctx, Math.min(def.argc, 6)) };
+      if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
+      const tp = this.apiTracePos++ & 63;
+      this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp);
       const r = def.fn(ctx);
       if (def.noreturn) return;
       cpu.eip = this.mem.read32(sp);
@@ -236,10 +259,10 @@ export class Vm {
     this.proc.unknownImports.set(key, info);
     const argc = this.api.signatures.get(t.name);
     if (info.calls <= 3) this.warn(`unimplemented ${key} called from ${this.proc.symbolize(this.mem.read32(sp))}` + (argc === undefined ? ' (unknown signature: assuming 0 args, stdcall)' : ` (${argc} args)`));
-    this.apiTrace[this.apiTracePos++ & 63] = { name: key + ' [stub]', ret: this.mem.read32(sp), args: this.argsOf(ctx, 4) };
+    { const tp = this.apiTracePos++ & 63; this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); }
     cpu.eip = this.mem.read32(sp);
     cpu.esp = (sp + 4 + (argc ?? 0) * 4) >>> 0;
-    cpu.eax = 0;
+    cpu.eax = (this.api.stubReturns.get(t.dll) ?? 0) >>> 0;
   }
 
   argsOf(ctx, n) { const a = []; for (let i = 0; i < n; i++) a.push(ctx.arg(i)); return a; }
@@ -258,8 +281,17 @@ export class Vm {
 
   onFault(thread) {
     const fault = this.exec.lastFault;
-    // Guest SEH could be dispatched here (M4+). For now: crash.
-    throw new GuestCrash(this.crashReport(thread, `fault ${fault ? fault.message : thread.cpu.exitArg}`));
+    const cpu = thread.cpu;
+    const vec = cpu.exitArg;
+    const precise = !(fault instanceof WebAssembly.RuntimeError) && !(fault instanceof RangeError);
+    if (precise && this.mem.read32(thread.teb) !== 0xffffffff) {
+      const map = { 0: [EXC.INT_DIVIDE_BY_ZERO, []], 6: [EXC.ILLEGAL_INSTRUCTION, []], 13: [EXC.ACCESS_VIOLATION, [0, 0xffffffff]], 14: [EXC.ACCESS_VIOLATION, [0, fault?.faultAddr ?? 0]], 3: [EXC.BREAKPOINT, []], 4: [EXC.INT_OVERFLOW, []], 5: [EXC.ARRAY_BOUNDS, []] };
+      const [code, params] = map[vec] ?? [EXC.ILLEGAL_INSTRUCTION, []];
+      cpu.exit = EXIT.NONE;
+      this.seh.raise(thread, code, 0, cpu.eip, params);
+      return;
+    }
+    throw new GuestCrash(this.crashReport(thread, `fault ${fault ? fault.message : vec}${precise ? '' : ' (imprecise: WASM trap inside a JIT region)'}`));
   }
 
   onBreak(thread) {
@@ -269,13 +301,18 @@ export class Vm {
     thread.cpu.exit = EXIT.NONE;
   }
 
-  /** RaiseException: structured exception handling is not dispatched yet (M4). */
+  /** RaiseException from guest code: dispatch through the SEH chain (continuation based, see seh.js). */
   raiseException(ctx, code, flags, nargs, argsPtr) {
-    return new GuestCrash(this.crashReport(ctx.thread, `RaiseException(0x${(code >>> 0).toString(16)}) from ${this.proc.symbolize(ctx.retAddr)}`));
+    const params = [];
+    for (let i = 0; i < Math.min(nargs, 15); i++) params.push(this.mem.read32(argsPtr + 4 * i));
+    const cpu = ctx.cpu;
+    // the exception address is the caller's return address; ESP as seen by the caller
+    const addr = ctx.retAddr;
+    cpu.esp = (ctx.sp + 4 + 16) >>> 0;
+    this.seh.raise(ctx.thread, code, flags & 1, addr, params, { eip: addr });
+    return null; // handled: RaiseException never returns normally (state set by the dispatcher)
   }
-  rtlUnwind(ctx) {
-    throw new GuestCrash(this.crashReport(ctx.thread, 'RtlUnwind: SEH unwinding not implemented yet'));
-  }
+  rtlUnwind(ctx) { this.seh.rtlUnwind(ctx); }
 
   deadlock(thread, reason) {
     throw new GuestCrash(this.crashReport(thread, `deadlock: all threads blocked (${reason})`));
@@ -302,8 +339,9 @@ export class Vm {
     }
     lines.push('recent API calls:');
     for (let i = 0; i < 64; i++) {
-      const e = this.apiTrace[(this.apiTracePos + i) & 63];
-      if (e) lines.push(`  ${e.name}(${e.args.map((v) => h(v)).join(', ')}) from ${proc.symbolize(e.ret)}`);
+      const k = (this.apiTracePos + i) & 63;
+      const t = this.apiTraceNames[k];
+      if (t) lines.push(`  ${t.dll}!${t.name}${t.def ? '' : ' [stub]'} from ${proc.symbolize(this.apiTraceRets[k])}`);
     }
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);

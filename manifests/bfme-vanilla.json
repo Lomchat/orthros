@@ -1,0 +1,14 @@
+{
+  "name": "The Battle for Middle-earth",
+  "folder": "/srv/bfme/game-source/bfme-vanilla",
+  "exe": "lotrbfme.exe",
+  "args": "",
+  "mount": "C:\\Game",
+  "saveDir": "../build/saves/bfme-vanilla",
+  "display": { "width": 1024, "height": 768 },
+  "dllOverrides": {},
+  "env": {},
+  "registry": {
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\The Battle for Middle-earth": {}
+  }
+}

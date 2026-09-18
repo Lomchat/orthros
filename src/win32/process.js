@@ -138,6 +138,8 @@ export class Process {
     this.initPeb();
     this.initKuser();
     this.processHeap = this.createHeap({ tag: 'process' });
+    const mk = (kind) => this.handles.create({ type: 'file', console: kind, pos: 0 });
+    this.stdHandles = [mk('in'), mk('out'), mk('err')];
   }
 
   initPeb() {

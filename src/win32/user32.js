@@ -1193,6 +1193,9 @@ export function registerUser32(api, vm) {
   U.CreateMDIWindowA = [10, () => 0];
   U.TileWindows = [5, () => 0]; U.CascadeWindows = [5, () => 0];
   U.SetTimerQueueTimer = [7, () => 0];
+  U.IsWindowUnicode = [1, () => 0];
+  U.IsHungAppWindow = [1, () => 0];
+  U.GetWindowLongPtrA = U.GetWindowLongA; U.SetWindowLongPtrA = U.SetWindowLongA;
 
   api.define('user32.dll', U);
 }

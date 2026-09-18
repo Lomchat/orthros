@@ -3,11 +3,17 @@
 // per Jit instance with the same emitter used for translated regions.
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST, EXIT, F } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
 
 export const EXIT_TRANSLATE = 7;
 export const HASH_ENTRY = 16; // eip u32, fnIdx u32, block u32, pad
 export const HASH_PROBES = 4;
+// Fast-path API table: one byte per thunk index (id of a WASM implementation, 0 = none), and a
+// small block of per-process constants used by those implementations.
+export const FAST_TABLE = JIT_SCRATCH_BASE;
+export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
+export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15 });
+export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15 };
 
 // Lazy flag op kinds (kind << 2 | sizeLog2)
 export const LZ = Object.freeze({ NONE: 0, ADD: 1, SUB: 2, LOGIC: 3, INC: 4, DEC: 5, NEG: 6, SHL: 7, SHR: 8, SAR: 9, MUL: 10, IMUL: 11, SHLD: 12, BSF: 13 });
@@ -145,6 +151,71 @@ export function buildRuntime() {
     m.exportFunc('round24', idx);
   }
 
+  // ---- fastApi(fid, state) -> 1 if handled (registers/stack updated as a stdcall return), else 0
+  let fastApiIdx;
+  {
+    const c = new Code();
+    const [FID, STATE, SP, TEB, A0, A1, A2, TM] = [0, 1, 2, 3, 4, 5, 6, 7];
+    c.get(STATE).i32load(ST.GPR + 16).set(SP);
+    c.get(STATE).i32load(ST.FS_BASE).set(TEB);
+    c.get(SP).i32load(4).set(A0); c.get(SP).i32load(8).set(A1); c.get(SP).i32load(12).set(A2);
+    // stdcall return helper: eax = value on stack, pop return address + argc*4
+    const ret = (argc) => { c.i32store(ST.GPR); c.get(STATE).get(SP).i32load(0).i32store(ST.EIP); c.get(STATE).get(SP).i32(4 + 4 * argc).add().i32store(ST.GPR + 16); c.i32(1).return_(); };
+    const notHandled = c.block();
+    const N = 16;
+    const labels = new Array(N);
+    for (let i = N - 1; i >= 0; i--) labels[i] = c.block();
+    c.get(FID).br_table(labels, notHandled);
+    for (let k = 0; k < N; k++) {
+      c.end();
+      switch (k) {
+        case 0: c.br(notHandled); break;
+        case 1: c.get(STATE).get(TEB).i32load(0x34); ret(0); break; // GetLastError
+        case 2: c.get(TEB).get(A0).i32store(0x34); c.get(STATE).i32(0); ret(1); break; // SetLastError
+        case 3: // TlsGetValue(i) i<64: last error = 0
+          c.get(A0).i32(64).ge_u().br_if(notHandled);
+          c.get(TEB).i32(0).i32store(0x34);
+          c.get(STATE).get(TEB).get(A0).i32(2).shl().add().i32load(0xe10); ret(1); break;
+        case 4: c.get(A0).i32(64).ge_u().br_if(notHandled); c.get(TEB).get(A0).i32(2).shl().add().get(A1).i32store(0xe10); c.get(STATE).i32(1); ret(2); break; // TlsSetValue
+        case 5: { // EnterCriticalSection: owner == tid -> recursion; free -> take; else JS
+          const own = c.block();
+          c.get(A0).i32load(12).get(TEB).i32load(0x24).eq().br_if(own);
+          c.get(A0).i32load(4).i32(-1).ne().br_if(notHandled);
+          c.get(A0).i32(0).i32store(4); c.get(A0).i32(1).i32store(8); c.get(A0).get(TEB).i32load(0x24).i32store(12); c.get(STATE).i32(0); ret(1);
+          c.end(); void own;
+          c.get(A0).get(A0).i32load(8).i32(1).add().i32store(8); c.get(A0).get(A0).i32load(4).i32(1).add().i32store(4); c.get(STATE).i32(0); ret(1); break;
+        }
+        case 6: { // LeaveCriticalSection
+          c.get(A0).get(A0).i32load(8).i32(1).sub().tee(TM).i32store(8);
+          c.get(A0).get(A0).i32load(4).i32(1).sub().i32store(4);
+          c.get(TM).i32(0).le_s(); const i = c.if_(); c.get(A0).i32(0).i32store(12); c.get(A0).i32(-1).i32store(4); c.get(A0).i32(0).i32store(8); c.end(); void i;
+          c.get(STATE).i32(0); ret(1); break;
+        }
+        case 7: { // TryEnterCriticalSection
+          const own = c.block(); const fail = c.block();
+          c.get(A0).i32load(12).get(TEB).i32load(0x24).eq().br_if(own);
+          c.get(A0).i32load(4).i32(-1).ne().br_if(fail);
+          c.get(A0).i32(0).i32store(4); c.get(A0).i32(1).i32store(8); c.get(A0).get(TEB).i32load(0x24).i32store(12); c.get(STATE).i32(1); ret(1);
+          c.end(); void fail; c.get(STATE).i32(0); ret(1);
+          c.end(); void own;
+          c.get(A0).get(A0).i32load(8).i32(1).add().i32store(8); c.get(A0).get(A0).i32load(4).i32(1).add().i32store(4); c.get(STATE).i32(1); ret(1); break;
+        }
+        case 8: c.get(A0).get(A0).i32load(0).i32(1).add().tee(TM).i32store(0); c.get(STATE).get(TM); ret(1); break;
+        case 9: c.get(A0).get(A0).i32load(0).i32(1).sub().tee(TM).i32store(0); c.get(STATE).get(TM); ret(1); break;
+        case 10: c.get(A0).i32load(0).set(TM); c.get(A0).get(A1).i32store(0); c.get(STATE).get(TM); ret(2); break;
+        case 11: c.get(A0).i32load(0).set(TM); c.get(A0).get(TM).get(A1).add().i32store(0); c.get(STATE).get(TM); ret(2); break;
+        case 12: { c.get(A0).i32load(0).set(TM); c.get(TM).get(A2).eq(); const i = c.if_(); c.get(A0).get(A1).i32store(0); c.end(); void i; c.get(STATE).get(TM); ret(3); break; }
+        case 13: c.get(STATE).get(TEB).i32load(0x24); ret(0); break;
+        case 14: c.get(STATE).get(TEB).i32load(0x20); ret(0); break;
+        case 15: c.get(STATE).i32(PROC_CONSTS).i32load(0); ret(0); break;
+      }
+    }
+    c.end(); // notHandled
+    c.i32(0);
+    fastApiIdx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32], c, 'fastApi');
+    m.exportFunc('fastApi', fastApiIdx);
+  }
+
   // ---- run(eip, state, stopAt) -> exit code
   {
     const c = new Code();
@@ -152,10 +223,16 @@ export function buildRuntime() {
     const L = c.loop();
     // stopAt
     c.get(EIP).get(STOP).eq(); const i0 = c.if_(); c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.HALT).i32store(ST.EXIT); c.i32(EXIT.HALT).return_(); c.end(); void i0;
-    // thunk region
+    // thunk region: fast path or exit
     c.get(EIP).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); const i1 = c.if_();
+    c.get(EIP).i32(THUNK_BASE).sub().i32(THUNK_SIZE).div_u().set(IDX);
+    c.get(IDX).i32load8u(FAST_TABLE).tee(E);
+    const fast = c.if_();
+    c.get(E).get(STATE).call(fastApiIdx);
+    const handled = c.if_(); c.get(STATE).i32load(ST.EIP).set(EIP); c.br(L); c.end(); void handled;
+    c.end(); void fast;
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.THUNK).i32store(ST.EXIT);
-    c.get(STATE).get(EIP).i32(THUNK_BASE).sub().i32(THUNK_SIZE).div_u().i32store(ST.EXIT_ARG); c.i32(EXIT.THUNK).return_(); c.end(); void i1;
+    c.get(STATE).get(IDX).i32store(ST.EXIT_ARG); c.i32(EXIT.THUNK).return_(); c.end(); void i1;
     // budget
     c.get(STATE).i32load(ST.ICOUNT).i32(0).le_s(); const i2 = c.if_(); c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.TIMESLICE).i32store(ST.EXIT); c.i32(EXIT.TIMESLICE).return_(); c.end(); void i2;
     // hash lookup with linear probing

@@ -111,8 +111,8 @@ export function registerKernel32(api, vm) {
   K.IsBadCodePtr = [1, (c) => (c.proc.vmem.isCommitted(c.arg(0), 1) ? 0 : 1)];
   K.IsBadStringPtrA = [2, (c) => (c.proc.vmem.isCommitted(c.arg(0), 1) ? 0 : 1)];
   K.IsBadHugeReadPtr = K.IsBadReadPtr; K.IsBadHugeWritePtr = K.IsBadWritePtr;
-  K.RaiseException = [4, (c) => { throw vm.raiseException(c, c.arg(0), c.arg(1), c.arg(2), c.arg(3)); }];
-  K.RtlUnwind = [4, (c) => vm.rtlUnwind(c)];
+  K.RaiseException = [4, (c) => { vm.raiseException(c, c.arg(0), c.arg(1), c.arg(2), c.arg(3)); }, { noreturn: true }];
+  K.RtlUnwind = [4, (c) => vm.seh.rtlUnwind(c)];
   K.FatalAppExitA = [2, (c) => { vm.warn(`FatalAppExit: ${c.str(1)}`); vm.exitProcess(1); }, { noreturn: true }];
   K.FatalExit = [1, (c) => vm.exitProcess(c.arg(0)), { noreturn: true }];
   K.GetVersion = [0, () => 0x0a280105];
@@ -542,6 +542,57 @@ export function registerKernel32(api, vm) {
   }];
   K.GetTimeZoneInformation = [1, (c) => { const p = c.arg(0); mem.fill(p, 172, 0); mem.writeWString(p + 4, 'Coordinated Universal Time', 32); mem.writeWString(p + 88, 'Coordinated Universal Time', 32); return 0; }];
   K.GetSystemTimes = [3, (c) => { c.out64(0, 0n); c.out64(1, 0n); c.out64(2, BigInt(Math.floor(vm.clock.now() * 10000))); return 1; }];
+
+  // ---------------------------------------------------------------- toolhelp32 snapshots
+  K.CreateToolhelp32Snapshot = [2, (c) => {
+    const flags = c.arg(0);
+    const snap = { type: 'snapshot', modules: [], i: 0, pi: 0, ti: 0 };
+    if (flags & 0x18) snap.modules = c.proc.moduleList.slice();
+    return c.proc.handles.create(snap);
+  }];
+  const modEntry = (c, p, m, wide) => {
+    mem.write32(p, wide ? 1064 : 548); mem.write32(p + 4, 1); mem.write32(p + 8, c.proc.pid); mem.write32(p + 12, 1); mem.write32(p + 16, 1);
+    mem.write32(p + 20, m.base); mem.write32(p + 24, m.size); mem.write32(p + 28, m.base);
+    if (wide) { mem.writeWString(p + 32, m.name, 256); mem.writeWString(p + 544, c.proc.moduleFileName(m), 260); } else { mem.writeCString(p + 32, m.name, 256); mem.writeCString(p + 288, c.proc.moduleFileName(m), 260); }
+  };
+  K.Module32First = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || !s.modules.length) return c.fail(E.NO_MORE_FILES); s.i = 1; modEntry(c, c.arg(1), s.modules[0], false); return 1; }];
+  K.Module32Next = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || s.i >= s.modules.length) return c.fail(E.NO_MORE_FILES); modEntry(c, c.arg(1), s.modules[s.i++], false); return 1; }];
+  K.Module32FirstW = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || !s.modules.length) return c.fail(E.NO_MORE_FILES); s.i = 1; modEntry(c, c.arg(1), s.modules[0], true); return 1; }];
+  K.Module32NextW = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || s.i >= s.modules.length) return c.fail(E.NO_MORE_FILES); modEntry(c, c.arg(1), s.modules[s.i++], true); return 1; }];
+  const procEntry = (c, p) => { mem.write32(p, 296); mem.write32(p + 4, 1); mem.write32(p + 8, c.proc.pid); mem.write32(p + 12, 0); mem.write32(p + 16, 0); mem.write32(p + 20, c.proc.threads.length); mem.write32(p + 24, 4); mem.write32(p + 28, 8); mem.write32(p + 32, 0); mem.writeCString(p + 36, c.proc.exe.name, 260); };
+  K.Process32First = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s) return c.fail(E.INVALID_HANDLE); s.pi = 1; procEntry(c, c.arg(1)); return 1; }];
+  K.Process32Next = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || s.pi >= 1) return c.fail(E.NO_MORE_FILES); s.pi = 1; procEntry(c, c.arg(1)); return 1; }];
+  const threadEntry = (c, p, t) => { mem.write32(p, 28); mem.write32(p + 4, 1); mem.write32(p + 8, t.id); mem.write32(p + 12, c.proc.pid); mem.write32(p + 16, t.priority + 8); mem.write32(p + 20, 0); mem.write32(p + 24, 0); };
+  K.Thread32First = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s) return c.fail(E.INVALID_HANDLE); s.ti = 1; threadEntry(c, c.arg(1), c.proc.threads[0]); return 1; }];
+  K.Thread32Next = [2, (c) => { const s = c.proc.handles.getAs(c.arg(0), 'snapshot'); if (!s || s.ti >= c.proc.threads.length) return c.fail(E.NO_MORE_FILES); threadEntry(c, c.arg(1), c.proc.threads[s.ti++]); return 1; }];
+  K.Heap32ListFirst = [2, (c) => c.fail(E.NO_MORE_FILES)];
+  K.Heap32ListNext = [2, (c) => c.fail(E.NO_MORE_FILES)];
+  K.Toolhelp32ReadProcessMemory = [5, (c) => { mem.copy(c.arg(2), c.arg(1), c.arg(3)); c.out32(4, c.arg(3)); return 1; }];
+
+  // Fiber-local storage (Vista+; the CRT probes for it): implemented on top of TLS slots
+  K.FlsAlloc = [1, (c) => K.TlsAlloc[1](c)];
+  K.FlsFree = [1, (c) => K.TlsFree[1](c)];
+  K.FlsGetValue = [1, (c) => K.TlsGetValue[1](c)];
+  K.FlsSetValue = [2, (c) => K.TlsSetValue[1](c)];
+
+  // Undecorated aliases, W variants, comm/console stubs
+  K.lstrcpy = [2, (c) => { mem.writeCString(c.arg(0), mem.readCString(c.arg(1))); return c.arg(0); }];
+  K.lstrcpyn = [3, (c) => { mem.writeCString(c.arg(0), mem.readCString(c.arg(1)), c.arg(2)); return c.arg(0); }];
+  K.lstrcat = [2, (c) => { const d = mem.readCString(c.arg(0)); mem.writeCString(c.arg(0), d + mem.readCString(c.arg(1))); return c.arg(0); }];
+  K.lstrcmp = [2, (c) => { const a = mem.readCString(c.arg(0)), b = mem.readCString(c.arg(1)); return (a < b ? -1 : a > b ? 1 : 0) >>> 0; }];
+  K.lstrcmpi = [2, (c) => { const a = mem.readCString(c.arg(0)).toLowerCase(), b = mem.readCString(c.arg(1)).toLowerCase(); return (a < b ? -1 : a > b ? 1 : 0) >>> 0; }];
+  K.lstrlen = [1, (c) => (c.arg(0) ? mem.readCString(c.arg(0)).length : 0)];
+  K.GetDateFormatW = [6, (c) => { const d = new Date(vm.clock.wall()); const s = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  K.GetTimeFormatW = [6, (c) => { const d = new Date(vm.clock.wall()); const s = `${d.getUTCHours() % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCHours() < 12 ? 'AM' : 'PM'}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  K.GetStringTypeExW = [5, (c) => { const s = c.sarg(3) < 0 ? mem.readWString(c.arg(2)) : mem.readWString(c.arg(2), c.arg(3)); for (let i = 0; i < s.length; i++) mem.write16(c.arg(4) + 2 * i, 0); return 1; }];
+  for (const n of ['SetCommState', 'GetCommState', 'SetupComm', 'PurgeComm', 'SetCommTimeouts', 'GetCommTimeouts', 'SetCommMask', 'GetCommMask', 'WaitCommEvent', 'GetCommConfig', 'SetCommConfig', 'ClearCommError', 'EscapeCommFunction', 'TransmitCommChar', 'GetCommModemStatus', 'SetNamedPipeHandleState', 'ReadConsoleInputA', 'PeekConsoleInputA', 'SetConsoleCursorInfo', 'GetConsoleCursorInfo', 'SetConsoleScreenBufferSize', 'SetConsoleWindowInfo', 'WriteConsoleOutputA', 'ReadConsoleOutputA', 'FillConsoleOutputCharacterA', 'FillConsoleOutputAttribute', 'SetConsoleCursorPosition', 'WriteConsoleOutputCharacterA', 'ScrollConsoleScreenBufferA']) K[n] = [api.signatures.get(n), (c) => c.fail(E.INVALID_HANDLE)];
+  K.GetNumberOfConsoleInputEvents = [2, (c) => { c.out32(1, 0); return 1; }];
+  K.GetLargestConsoleWindowSize = [1, () => (25 << 16) | 80];
+  K.CreateProcessA = [10, (c) => { vm.warn(`CreateProcess(${c.str(0) ?? c.str(1)}) refused`); return c.fail(E.ACCESS_DENIED); }];
+  K.CreateProcessW = [10, (c) => { vm.warn(`CreateProcess(${c.wstr(0) ?? c.wstr(1)}) refused`); return c.fail(E.ACCESS_DENIED); }];
+  K.WinExec = [2, (c) => { vm.warn(`WinExec(${c.str(0)}) refused`); return 2; }];
+  K.GetLogicalProcessorInformation = [2, (c) => c.fail(E.INSUFFICIENT_BUFFER)];
+  K.GetSystemDefaultLangID2 = K.GetVersion;
 
   api.define('kernel32.dll', K);
   registerKernel32File(api, vm);

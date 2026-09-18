@@ -49,3 +49,5 @@ MultiByteToWideChar@24
 WideCharToMultiByte@32
 lstrlenA@4
 GetSystemInfo@4
+RaiseException@16
+RtlUnwind@16
