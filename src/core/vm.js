@@ -12,6 +12,7 @@ import { Process, TS } from '../win32/process.js';
 import { Scheduler } from './sched.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
+import { Jit } from '../cpu/jit/jit.js';
 
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
@@ -36,7 +37,8 @@ export class Vm {
     this.mem = new GuestMemory();
     this.api = new ApiRegistry();
     this.interp = new Interp(this.mem, null);
-    this.exec = this.interp; // executor: { run(opts) } bound to a cpu via .cpu
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { smc: true, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null });
+    this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     this.sched = new Scheduler(this);
     this.proc = null;
@@ -165,6 +167,9 @@ export class Vm {
           case EXIT.BREAK:
             this.onBreak(thread);
             break;
+          case EXIT.SMC:
+            this.invalidateCode(cpu.exitArg, 1);
+            break;
           default:
             throw new GuestCrash(this.crashReport(thread, `unexpected exit ${exit}`));
         }
@@ -245,8 +250,14 @@ export class Vm {
   }
 
   // ------------------------------------------------------------------ faults & diagnostics
+  /** Code at [addr, addr+len) changed: drop cached decodes / translations. */
+  invalidateCode(addr, len) {
+    this.interp.invalidate(addr, len);
+    if (this.jit) this.jit.invalidate(addr, len);
+  }
+
   onFault(thread) {
-    const fault = this.interp.lastFault;
+    const fault = this.exec.lastFault;
     // Guest SEH could be dispatched here (M4+). For now: crash.
     throw new GuestCrash(this.crashReport(thread, `fault ${fault ? fault.message : thread.cpu.exitArg}`));
   }

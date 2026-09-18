@@ -16,7 +16,9 @@ for src in tools/pe/*.c; do
   if [ "$exe" -nt "$src" ] && [ "$exe" -nt tools/pe/win.h ]; then continue; fi
   sub=console
   case "$name" in window*|gdi*) sub=windows ;; esac
-  clang $CFLAGS -c -o $OUT/$name.obj "$src"
+  extra=""
+  case "$name" in bench*) extra="-O2 -mno-sse -mfpmath=387" ;; esac
+  clang $CFLAGS $extra -c -o $OUT/$name.obj "$src"
   lld-link /nologo /subsystem:$sub /entry:start /nodefaultlib /out:$exe $OUT/$name.obj $OUT/kernel32.lib $OUT/user32.lib $OUT/gdi32.lib
   echo "built $exe"
 done

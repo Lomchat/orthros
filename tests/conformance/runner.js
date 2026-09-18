@@ -209,7 +209,9 @@ export function runSuite(dir, suite, makeExec, opts = {}) {
   const c = new Conformance(dir, suite);
   const exec = makeExec(c.mem, c.cpu);
   const failures = [];
+  let skipped = 0;
   for (let i = 0; i < c.count; i++) {
+    if (opts.skip && opts.skip(i, c)) { skipped++; continue; }
     const { end } = c.load(i);
     c.cpu.eip = CODE;
     let exit;
@@ -223,5 +225,12 @@ export function runSuite(dir, suite, makeExec, opts = {}) {
     const d = c.compare(i, exit);
     if (d) failures.push({ i, asm: c.meta[i].asm, diff: d });
   }
-  return { total: c.count, failures };
+  return { total: c.count - skipped, failures, skipped };
+}
+
+/** True when the oracle result of case i shows an x87 stack fault (SF bit in FSW). */
+export function isStackFaultCase(i, c) {
+  if (!c.meta[i].fpu) return false;
+  const rv = new DataView(c.results.buffer, c.results.byteOffset + i * RESULT_SIZE, RESULT_SIZE);
+  return (rv.getUint16(48 + 2, true) & 0x41) !== 0;
 }

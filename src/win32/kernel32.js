@@ -368,11 +368,11 @@ export function registerKernel32(api, vm) {
   K.VirtualFree = [3, (c) => {
     const addr = c.arg(0), size = c.arg(1), type = c.arg(2);
     const vmem = c.proc.vmem;
-    if (type & MEM_RELEASE) { if (!vmem.release(addr)) return c.fail(E.INVALID_ADDRESS); return 1; }
-    if (type & MEM_DECOMMIT) { vmem.decommit(addr, size); return 1; }
+    if (type & MEM_RELEASE) { const q = vmem.query(addr); if (!vmem.release(addr)) return c.fail(E.INVALID_ADDRESS); vm.invalidateCode(addr, q.size || 0x1000); return 1; }
+    if (type & MEM_DECOMMIT) { vmem.decommit(addr, size); vm.invalidateCode(addr, size || 0x1000); return 1; }
     return c.fail(E.INVALID_PARAMETER);
   }];
-  K.VirtualProtect = [4, (c) => { const o = c.proc.vmem.protect(c.arg(0), c.arg(1), c.arg(2)); if (o < 0) return c.fail(E.INVALID_ADDRESS); c.out32(3, o); return 1; }];
+  K.VirtualProtect = [4, (c) => { const o = c.proc.vmem.protect(c.arg(0), c.arg(1), c.arg(2)); if (o < 0) return c.fail(E.INVALID_ADDRESS); c.out32(3, o); if (c.arg(2) & 0xf0) vm.invalidateCode(c.arg(0), c.arg(1)); return 1; }];
   K.VirtualQuery = [3, (c) => {
     const q = c.proc.vmem.query(c.arg(0)); const p = c.arg(1);
     mem.write32(p, q.base); mem.write32(p + 4, q.allocBase); mem.write32(p + 8, q.allocProtect ?? 0); mem.write32(p + 12, q.size);
@@ -381,7 +381,7 @@ export function registerKernel32(api, vm) {
   }];
   K.VirtualLock = [2, () => 1];
   K.VirtualUnlock = [2, () => 1];
-  K.FlushInstructionCache = [3, (c) => { vm.invalidateCode?.(c.arg(1), c.arg(2)); return 1; }];
+  K.FlushInstructionCache = [3, (c) => { vm.invalidateCode(c.arg(1), c.arg(2) || 0x1000); return 1; }];
   K.ReadProcessMemory = [5, (c) => { mem.copy(c.arg(2), c.arg(1), c.arg(3)); c.out32(4, c.arg(3)); return 1; }];
   K.WriteProcessMemory = [5, (c) => { mem.copy(c.arg(1), c.arg(2), c.arg(3)); c.out32(4, c.arg(3)); return 1; }];
   K.GlobalMemoryStatus = [1, (c) => {

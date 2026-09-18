@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M2 Loader + Win32 minimal — atteint le 2026-09-18 ; M3 (JIT x86→WASM) démarre.**
+**Palier courant : M3 JIT — atteint le 2026-09-18 ; M4 (le jeu démarre) commence.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -16,6 +16,14 @@
   VirtualAlloc, fichiers), `window.exe` (fenêtre GDI, WM_PAINT, timers, souris/clavier, GetPixel,
   frame présentée au host), `threads.exe` (CreateThread, sections critiques, événements, Sleep).
 
+- M3 : recompilateur dynamique x86→WebAssembly (`src/cpu/jit/`, voir D013) : émetteur binaire WASM,
+  runtime (dispatcher + helper de drapeaux + `round24`), traducteur de régions (ISA entière complète,
+  chaînes avec `memory.copy/fill`, x87 natif), repli interpréteur pour le reste (SSE, transcendantales,
+  formes rares). Même conformité que M1 via le JIT (6 suites, 0 écart). **Bench : 65,8× l'interpréteur**
+  (`node tools/bench.mjs`) — phases entier 87–136×, chaînes 39×, x87 56× ; ~0,8 G instr/s sur le serveur.
+  Les 3 PE de test tournent sous le JIT. Invalidation de code sur SMC/VirtualFree/VirtualProtect/
+  FlushInstructionCache/UnmapViewOfFile.
+
 ## Limites connues (documentées, acceptées en v1)
 - x87 en f64 (voir D011). Pas de faute de page. MMX non aliasé sur x87.
 - SEH (RaiseException/RtlUnwind/faults → handlers FS:[0]) pas encore dispatché : prévu en M4
@@ -27,10 +35,9 @@
 - Aucun.
 
 ## Prochaine action
-- M3 : recompilateur dynamique x86→WebAssembly (`src/cpu/jit/`) : émetteur de bytecode WASM,
-  traduction par blocs/régions avec registres en locals, drapeaux paresseux, table funcref partagée
-  pour le chaînage, gestion du code auto-modifiant ; même suite de conformité que M1 ; bench ≥ 10×
-  l'interpréteur.
+- M4 : lanceur CLI (`orthros run <dossier>` avec manifest), SEH (RaiseException/RtlUnwind, chaîne FS:[0]),
+  stub `Direct3DCreate8` traçant, lancer `lotrbfme.exe` en boucle et corriger la fidélité jusqu'au
+  premier appel D3D ; imports inconnus listés ci-dessous automatiquement.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - (vide)

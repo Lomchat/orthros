@@ -307,7 +307,7 @@ export function registerKernel32File(api, vm) {
     m.views.push(base); return base;
   }];
   K.MapViewOfFileEx = [6, (c) => K.MapViewOfFile[1](c)];
-  K.UnmapViewOfFile = [1, (c) => { c.proc.vmem.release(c.arg(0)); return 1; }];
+  K.UnmapViewOfFile = [1, (c) => { const q = c.proc.vmem.query(c.arg(0)); c.proc.vmem.release(c.arg(0)); vm.invalidateCode(c.arg(0), q.size || 0x1000); return 1; }];
   K.FlushViewOfFile = [2, () => 1];
 
   // INI files

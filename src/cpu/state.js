@@ -89,7 +89,7 @@ export const EXIT = Object.freeze({
 });
 
 // Thread state slots are carved out of the private region.
-export const THREAD_STATES_BASE = PRIVATE_BASE + 0x10000;
+export const THREAD_STATES_BASE = PRIVATE_BASE;
 export const MAX_THREADS = 256;
 
 /**
