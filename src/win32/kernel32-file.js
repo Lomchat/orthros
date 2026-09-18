@@ -62,7 +62,7 @@ export function registerKernel32File(api, vm) {
         if (st) c.setLastError(E.ALREADY_EXISTS);
         break;
       case OPEN_EXISTING:
-        if (!st) return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE;
+        if (!st) { vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}) FAILED not found`); return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE; }
         f = vm.vfs.open(wp, { write });
         break;
       case OPEN_ALWAYS:
@@ -78,7 +78,9 @@ export function registerKernel32File(api, vm) {
     }
     if (!f) {
       const parent = wp.slice(0, wp.lastIndexOf('\\'));
-      return c.fail(vm.vfs.stat(parent) ? (write ? E.ACCESS_DENIED : E.FILE_NOT_FOUND) : E.PATH_NOT_FOUND) | INVALID_HANDLE;
+      const err = vm.vfs.stat(parent) ? (write ? E.ACCESS_DENIED : E.FILE_NOT_FOUND) : E.PATH_NOT_FOUND;
+      vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}, disp ${disposition}) FAILED error ${err}`);
+      return c.fail(err) | INVALID_HANDLE;
     }
     const h = c.proc.handles.create({ type: 'file', file: f, path: wp, pos: 0, write, close() { f.close(); } });
     vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}) -> ${h}`);
@@ -250,7 +252,33 @@ export function registerKernel32File(api, vm) {
   }];
 
   // FindFirstFile family
-  const globToRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+  // Win32 wildcard semantics (FsRtlIsNameInExpression with the DOS tokens FindFirstFile produces):
+  //   DOS_STAR (`*` before a dot) matches up to the final dot of the name, DOS_QM (`?`) matches one
+  //   character or nothing at a dot/end, DOS_DOT (`.`) matches a dot or the end of the name.
+  //   So `*.` lists names without extension, `*.*` lists everything, `abc.*` also matches `abc`.
+  const DOS_STAR = '<', DOS_QM = '>', DOS_DOT = '"';
+  const translate = (g) => {
+    if (g === '*.*') return '*';
+    let e = '';
+    for (let i = 0; i < g.length; i++) {
+      const c = g[i];
+      e += c === '.' ? DOS_DOT : c === '?' ? DOS_QM : c === '*' && g[i + 1] === '.' ? DOS_STAR : c.toLowerCase();
+    }
+    return e;
+  };
+  const matchExpr = (name, i, e, j) => {
+    for (;;) {
+      if (j === e.length) return i === name.length;
+      const t = e[j];
+      if (t === '*') { for (let k = i; k <= name.length; k++) if (matchExpr(name, k, e, j + 1)) return true; return false; }
+      if (t === DOS_STAR) { const d = name.lastIndexOf('.'); const lim = d >= i ? d : name.length; for (let k = i; k <= lim; k++) if (matchExpr(name, k, e, j + 1)) return true; return false; }
+      if (t === DOS_QM) { if (i === name.length || name[i] === '.') { while (e[j] === DOS_QM) j++; continue; } i++; j++; continue; }
+      if (t === DOS_DOT) { if (i === name.length) { j++; continue; } if (name[i] === '.') { i++; j++; continue; } return false; }
+      if (i < name.length && name[i].toLowerCase() === t) { i++; j++; continue; }
+      return false;
+    }
+  };
+  const globToRe = (g) => { const e = translate(g); return { test: (name) => matchExpr(name, 0, e, 0) }; };
   const writeFindData = (p, e, wide) => {
     mem.fill(p, wide ? 592 : 320, 0);
     mem.write32(p, e.isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -273,11 +301,12 @@ export function registerKernel32File(api, vm) {
     } else {
       const list = vm.vfs.readdir(dir);
       if (!list) return c.fail(E.PATH_NOT_FOUND) | INVALID_HANDLE;
-      const re = globToRe(glob === '*.*' ? '*' : glob);
+      const re = globToRe(glob);
       entries = [];
       if (re.test('.')) entries.push({ name: '.', size: 0, isDir: true, mtime: 0 }, { name: '..', size: 0, isDir: true, mtime: 0 });
       for (const e of list) if (re.test(e.name)) entries.push(e);
     }
+    vm.log('file', `find ${full} -> ${entries.length ? entries.map((e) => e.name).join(', ') : 'nothing'}`);
     if (!entries.length) return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE;
     writeFindData(c.arg(1), entries[0], wide);
     return c.proc.handles.create({ type: 'find', entries, i: 1 });

@@ -1,0 +1,21 @@
+LIBRARY gdiplus.dll
+EXPORTS
+GdiplusStartup@12
+GdiplusShutdown@4
+GdipCreateBitmapFromFile@8
+GdipGetImageWidth@8
+GdipGetImageHeight@8
+GdipGetImagePixelFormat@8
+GdipBitmapLockBits@20
+GdipBitmapUnlockBits@8
+GdipDisposeImage@4
+GdipCreateHBITMAPFromBitmap@12
+GdipCreateFromHDC@8
+GdipDrawImageI@16
+GdipDrawImageRectI@24
+GdipDeleteGraphics@4
+GdipBitmapGetPixel@16
+GdipCreateBitmapFromScan0@24
+GdipCloneImage@8
+GdipGetImagePaletteSize@8
+GdipGetImageGraphicsContext@8

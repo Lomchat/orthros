@@ -55,6 +55,20 @@ export class Ctx {
   out16(i, v) { const a = this.arg(i); if (a) this.mem.write16(a, v & 0xffff); }
   out64(i, v) { const a = this.arg(i); if (a) this.mem.write64(a, BigInt.asUintN(64, BigInt(v))); }
 
+  /** Return a double in ST(0) (cdecl/stdcall functions returning double/float). */
+  retDouble(v) {
+    const cpu = this.cpu;
+    cpu.fpuTop = (cpu.fpuTop - 1) & 7;
+    cpu.setSt(0, v);
+    cpu.fpuTw |= 1 << cpu.fpuTop;
+  }
+  /** Pop the x87 stack (for functions taking their argument in ST(0)). */
+  popFpu() {
+    const cpu = this.cpu;
+    cpu.fpuTw &= ~(1 << cpu.fpuTop);
+    cpu.fpuTop = (cpu.fpuTop + 1) & 7;
+  }
+
   /** Log helper (API trace). */
   log(...a) { this.vm.log('api', ...a); }
 }

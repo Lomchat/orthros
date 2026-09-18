@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
-import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES } from './runtime.js';
+import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
 import { translateRegion } from './translate.js';
 import './translate-x87.js';
 
@@ -38,6 +38,14 @@ export class Jit {
     this.pageRegions = new Map(); // page -> Set(region)
     this.clearTables();
   }
+
+  /** Mark a thunk slot as having a WASM fast path (called for every created thunk). */
+  markFast(idx, key, def) {
+    const fid = def ? FAST_NAMES[key] : undefined;
+    this.mem.u8[FAST_TABLE + idx] = fid ?? 0;
+  }
+  /** Per-process constants used by fast paths. */
+  setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }
 
   clearTables() {
     this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
@@ -191,6 +199,11 @@ export class Jit {
         continue;
       }
       this.materialize();
+      if (r === EXIT.NONE) { // a region returned EIP 0 (jump/call/ret to address 0): access violation
+        this.lastFault = { message: 'jump to address 0', vector: 14, faultAddr: 0 };
+        cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
+        return EXIT.FAULT;
+      }
       if (r === EXIT.FAULT && !this.lastFault) this.lastFault = { message: `fault ${cpu.exitArg} at ${cpu.eip.toString(16)}`, vector: cpu.exitArg };
       return r;
     }

@@ -27,6 +27,9 @@ export class ApiRegistry {
     /** Signature database for unknown imports (name -> argc), so stubs can clean the stack. */
     this.signatures = new Map();
     this.unknown = new Map(); // "dll!name" -> call count
+    this.onThunk = null; // (idx, 'dll!name', def) callback when a thunk slot is created
+    /** default return value of tracing stubs per DLL (GpStatus GenericError for gdiplus, E_NOTIMPL for COM-style DLLs) */
+    this.stubReturns = new Map([['gdiplus.dll', 1], ['ole32.dll', 0x80004001], ['oleaut32.dll', 0x80004001], ['d3d8.dll', 0], ['dsound.dll', 0x80004001], ['ddraw.dll', 0x80004001], ['dinput8.dll', 0x80004001], ['quartz.dll', 0x80004001], ['avifil32.dll', 0x80004001]]);
   }
 
   /** Normalize a DLL name: lowercase, ensure .dll suffix, strip path. */
@@ -89,6 +92,7 @@ export class ApiRegistry {
     if (THUNK_BASE + idx * THUNK_SIZE >= THUNK_END) throw new Error('thunk table exhausted');
     this.thunks.push({ dll: n, name, def, addr: THUNK_BASE + idx * THUNK_SIZE });
     this.thunkIndex.set(key, idx);
+    if (this.onThunk) this.onThunk(idx, key, def);
     return this.thunks[idx].addr;
   }
 

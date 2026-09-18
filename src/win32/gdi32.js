@@ -496,6 +496,11 @@ export function registerGdi32(api, vm) {
   G.PolyBezierTo = [3, (c) => G.PolylineTo[1](c)];
   G.BeginPath = [1, () => 1]; G.EndPath = [1, () => 1]; G.StrokePath = [1, () => 1]; G.FillPath = [1, () => 1]; G.CloseFigure = [1, () => 1];
   G.SetWorldTransform = [2, () => 1]; G.ModifyWorldTransform = [3, () => 1]; G.GetWorldTransform = [2, () => 1];
+  G.GetCharABCWidthsI = [5, (c) => { const dc = dcOf(c, c.arg(0)); const sc = dc ? fontScale(c, dc) : 1; for (let i = 0; i < c.arg(2); i++) { const p = c.arg(4) + 12 * i; mem.write32(p, 0); mem.write32(p + 4, 8 * sc); mem.write32(p + 8, 0); } return 1; }];
+  G.GetGlyphIndicesW = [5, (c) => { for (let i = 0; i < c.arg(2); i++) mem.write16(c.arg(3) + 2 * i, mem.read16(c.arg(1) + 2 * i)); return c.arg(2); }];
+  G.GetTextExtentPointI = [4, (c) => { const dc = dcOf(c, c.arg(0)); const sc = dc ? fontScale(c, dc) : 1; mem.write32(c.arg(3), 8 * sc * c.arg(2)); mem.write32(c.arg(3) + 4, textHeight(sc)); return 1; }];
+  G.SetDIBColorTable = [4, (c) => { const dc = dcOf(c, c.arg(0)); const bm = dc ? obj(c, dc.bitmap) : null; if (!bm?.surface?.palette) return 0; const n = c.arg(2); for (let i = 0; i < n; i++) { const e = c.arg(3) + 4 * i; const idx = c.arg(1) + i; if (idx < bm.surface.palette.length) bm.surface.palette[idx] = (mem.u8[e + 2] << 16) | (mem.u8[e + 1] << 8) | mem.u8[e]; } return n; }];
+  G.GetDIBColorTable = [4, (c) => { const dc = dcOf(c, c.arg(0)); const bm = dc ? obj(c, dc.bitmap) : null; if (!bm?.surface?.palette) return 0; const n = c.arg(2); for (let i = 0; i < n; i++) { const p = bm.surface.palette[(c.arg(1) + i) % bm.surface.palette.length]; mem.write32(c.arg(3) + 4 * i, ((p >> 16) & 0xff) | (p & 0xff00) | ((p & 0xff) << 16)); } return n; }];
 
   api.define('gdi32.dll', G);
 }
