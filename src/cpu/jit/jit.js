@@ -1,0 +1,198 @@
+// JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
+// WASM dispatcher, and exposes the same run() interface as the interpreter.
+import { EXIT, ST } from '../state.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
+import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES } from './runtime.js';
+import { translateRegion } from './translate.js';
+import './translate-x87.js';
+
+export class Jit {
+  /**
+   * @param {import('../memory.js').GuestMemory} mem
+   * @param {import('../interp.js').Interp} interp fallback interpreter (shares the memory)
+   * @param {{ smc?: boolean, log?: (msg: string) => void }} [opts]
+   */
+  constructor(mem, interp, opts = {}) {
+    this.mem = mem;
+    this.interp = interp;
+    this.opts = opts;
+    this.cpu = null;
+    this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
+    const rtModule = new WebAssembly.Module(buildRuntime());
+    this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table } }).exports;
+    this.imports = {
+      env: {
+        memory: mem.memory,
+        flags: this.runtime.flags,
+        round24: this.runtime.round24,
+        fallback: (eip) => this.fallback(eip),
+      },
+    };
+    /** @type {Array<{entry: number, start: number, end: number, blocks: any[], fnIdx: number}>} */
+    this.regions = [];
+    this.byEntry = new Map();
+    this.nextFn = 0;
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0 };
+    this.lastFault = null;
+    this.boundaries = null; // extra region boundaries (tests)
+    this.pageRegions = new Map(); // page -> Set(region)
+    this.clearTables();
+  }
+
+  clearTables() {
+    this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
+    this.mem.fill(SMC_BITMAP_BASE, 0x10000, 0);
+    this.regions = [];
+    this.byEntry.clear();
+    this.pageRegions.clear();
+  }
+
+  /** Drop every translation (e.g. between conformance cases). */
+  reset() { this.clearTables(); }
+
+  // ------------------------------------------------------------------ hash table
+  hashInsert(eip, fnIdx, block) {
+    const m = this.mem;
+    let idx = Math.imul(eip, 0x9e3779b1) >>> (32 - JIT_HASH_BITS);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      const e = JIT_HASH_BASE + ((idx + p) & ((1 << JIT_HASH_BITS) - 1)) * HASH_ENTRY;
+      const cur = m.read32(e);
+      if (cur === 0 || cur === eip) { m.write32(e, eip); m.write32(e + 4, fnIdx); m.write32(e + 8, block); return; }
+    }
+    // evict the first slot
+    const e = JIT_HASH_BASE + (idx & ((1 << JIT_HASH_BITS) - 1)) * HASH_ENTRY;
+    m.write32(e, eip); m.write32(e + 4, fnIdx); m.write32(e + 8, block);
+  }
+  hashRemove(eip) {
+    const m = this.mem;
+    const idx = Math.imul(eip, 0x9e3779b1) >>> (32 - JIT_HASH_BITS);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      const e = JIT_HASH_BASE + ((idx + p) & ((1 << JIT_HASH_BITS) - 1)) * HASH_ENTRY;
+      if (m.read32(e) === eip) { m.write32(e, 0); return; }
+    }
+  }
+  hashLookup(eip) {
+    const m = this.mem;
+    const idx = Math.imul(eip, 0x9e3779b1) >>> (32 - JIT_HASH_BITS);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      const e = JIT_HASH_BASE + ((idx + p) & ((1 << JIT_HASH_BITS) - 1)) * HASH_ENTRY;
+      if (m.read32(e) === eip) return { fnIdx: m.read32(e + 4), block: m.read32(e + 8) };
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------ translation
+  translate(eip) {
+    const t0 = performance.now();
+    const { bytes, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false });
+    let inst;
+    try {
+      inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), this.imports);
+    } catch (e) {
+      throw new Error(`JIT module for ${eip.toString(16)} failed: ${e.message}`);
+    }
+    if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
+    const fnIdx = this.nextFn++;
+    this.table.set(fnIdx, inst.exports.region);
+    let start = Infinity, end = 0;
+    for (const b of blocks) { start = Math.min(start, b.eip); end = Math.max(end, b.end); }
+    const region = { entry: eip, start, end, blocks, fnIdx };
+    this.regions.push(region);
+    this.byEntry.set(eip, region);
+    for (const b of blocks) this.hashInsert(b.eip, fnIdx, b.index);
+    // mark code pages for SMC detection
+    for (let p = start >>> 12; p <= (end - 1) >>> 12; p++) {
+      this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] |= 1 << (p & 7);
+      let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
+    }
+    this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
+    this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
+    if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);
+    return region;
+  }
+
+  /** Invalidate translations overlapping [addr, addr+len). */
+  invalidate(addr, len) {
+    const p0 = addr >>> 12, p1 = (addr + len - 1) >>> 12;
+    const victims = new Set();
+    for (let p = p0; p <= p1; p++) { const s = this.pageRegions.get(p); if (s) for (const r of s) victims.add(r); }
+    for (const r of victims) this.dropRegion(r);
+  }
+  dropRegion(r) {
+    for (const b of r.blocks) this.hashRemove(b.eip);
+    this.byEntry.delete(r.entry);
+    const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
+    for (let p = r.start >>> 12; p <= (r.end - 1) >>> 12; p++) {
+      const s = this.pageRegions.get(p);
+      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] &= ~(1 << (p & 7)); } }
+    }
+    this.table.set(r.fnIdx, null);
+  }
+
+  // ------------------------------------------------------------------ fallback
+  fallback(eip) {
+    const cpu = this.cpu;
+    this.interp.cpu = cpu;
+    this.materialize();
+    cpu.eip = eip;
+    cpu.exit = EXIT.NONE;
+    const r = this.interp.step();
+    if (r !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return r; }
+    return 0;
+  }
+
+  /** Fold pending lazy flags into EFLAGS. */
+  materialize() {
+    const cpu = this.cpu;
+    const m = this.mem, b = cpu.base;
+    const op = m.read32(b + ST.LZ_OP);
+    if (op) {
+      cpu.eflags = materializeFlags(op, m.read32(b + ST.LZ_RES), m.read32(b + ST.LZ_SRC1), m.read32(b + ST.LZ_SRC2), cpu.eflags);
+      m.write32(b + ST.LZ_OP, 0);
+    }
+  }
+
+  // ------------------------------------------------------------------ execution
+  /**
+   * Same contract as Interp.run(): runs until an exit. maxInsns bounds the budget.
+   * @param {{ stopAt?: number, maxInsns?: number }} opts
+   */
+  run(opts = {}) {
+    const cpu = this.cpu;
+    const stopAt = opts.stopAt ?? -1;
+    const m = this.mem;
+    m.write32(cpu.base + ST.ICOUNT, Math.min(opts.maxInsns ?? 1e9, 0x7fffffff));
+    m.write32(cpu.base + ST.LZ_OP, 0);
+    cpu.exit = EXIT.NONE;
+    for (;;) {
+      let r;
+      try {
+        r = this.runtime.run(cpu.eip, cpu.base, stopAt >>> 0);
+      } catch (e) {
+        // WASM trap: treat as a memory fault at an unknown instruction inside the current region
+        this.materialize();
+        this.lastFault = e;
+        cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
+        return EXIT.FAULT;
+      }
+      if (r === EXIT_TRANSLATE) {
+        const eip = cpu.eip;
+        if (eip >= THUNK_BASE && eip < THUNK_END) { cpu.exit = EXIT.THUNK; cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0; return EXIT.THUNK; }
+        this.stats.misses++;
+        try {
+          this.translate(eip);
+        } catch (e) {
+          // translation failure (e.g. undecodable): run one instruction in the interpreter
+          this.interp.cpu = cpu;
+          this.materialize();
+          const s = this.interp.step();
+          if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
+        }
+        continue;
+      }
+      this.materialize();
+      if (r === EXIT.FAULT && !this.lastFault) this.lastFault = { message: `fault ${cpu.exitArg} at ${cpu.eip.toString(16)}`, vector: cpu.exitArg };
+      return r;
+    }
+  }
+}

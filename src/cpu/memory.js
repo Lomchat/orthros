@@ -8,13 +8,22 @@ export const GUEST_SPACE = 0x80000000; // 2 GB user space (0x00000000 - 0x7FFFFF
 export const PAGE_SIZE = 0x1000;
 export const WASM_PAGE = 0x10000;
 
-// Emulator-private region at the top of user space (never handed to the guest allocator).
-export const PRIVATE_BASE = 0x7ff00000;
+// Emulator-private region at the top of user space (never handed to the guest allocator):
+//   0x7fc00000  thread CPU states (256 x 0x400)
+//   0x7fc40000  JIT block hash table (65536 x 16 bytes)
+//   0x7fd40000  self-modifying-code page bitmap (1 bit per 4 KB page of the 2 GB space)
+//   0x7fd50000  JIT scratch
+//   0x7ffde000  TEBs (downwards, one page per thread), 0x7ffdf000 PEB, 0x7ffe0000 KUSER_SHARED_DATA
+export const PRIVATE_BASE = 0x7fc00000;
 export const PRIVATE_END = 0x80000000;
+export const JIT_HASH_BASE = 0x7fc40000;
+export const JIT_HASH_BITS = 16;
+export const SMC_BITMAP_BASE = 0x7fd40000;
+export const JIT_SCRATCH_BASE = 0x7fd50000;
 // Import thunks: each imported symbol gets a slot here; jumping/calling into this region is
 // how guest code reaches host (JS) implementations.
-export const THUNK_BASE = 0x7fe00000;
-export const THUNK_END = 0x7ff00000;
+export const THUNK_BASE = 0x7fb00000;
+export const THUNK_END = 0x7fc00000;
 export const THUNK_SIZE = 16;
 
 export class GuestMemory {

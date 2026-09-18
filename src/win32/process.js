@@ -6,6 +6,7 @@ import { Heap } from './heap.js';
 import { PeImage, mapImage } from '../loader/pe.js';
 import { ApiRegistry } from './api.js';
 import { normalizeWin } from '../vfs/vfs.js';
+import { THUNK_BASE, THUNK_SIZE } from '../cpu/memory.js';
 
 export const PEB_ADDR = 0x7ffdf000;
 export const TEB0_ADDR = 0x7ffde000;
@@ -319,7 +320,7 @@ export class Process {
   resolveExport(dep, name, ordinal, from = null) {
     if (dep.builtin) {
       const addr = name !== null ? this.api.thunkFor(dep.name, name) : this.api.thunkForOrdinal(dep.name, ordinal);
-      const t = this.api.thunk((addr - 0x7fe00000) / 16);
+      const t = this.api.thunk((addr - THUNK_BASE) / THUNK_SIZE);
       if (!t.def) this.noteUnknown(dep.name, name ?? `#${ordinal}`, from);
       return addr;
     }
