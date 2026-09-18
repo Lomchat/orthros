@@ -279,7 +279,7 @@ export class WebGLDevice {
     for (let i = 0; i < MAX_STAGES; i++) {
       const colorOp = this.tss(i, TSS.COLOROP, i === 0 ? TOP.MODULATE : TOP.DISABLE);
       const info = this.stageInfo(i);
-      stages.push({ colorOp, colorArg1: this.tss(i, TSS.COLORARG1, 2), colorArg2: this.tss(i, TSS.COLORARG2, 1), colorArg0: this.tss(i, TSS.COLORARG0, 1), alphaOp: this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE), alphaArg1: this.tss(i, TSS.ALPHAARG1, 2), alphaArg2: this.tss(i, TSS.ALPHAARG2, 1), alphaArg0: this.tss(i, TSS.ALPHAARG0, 1), resultTemp: this.tss(i, TSS.RESULTARG, 1) === 5, cube: info.cube, projected: (info.ttff & 0x100) !== 0, bound: info.bound, tci: info.tci, ttff: info.ttff });
+      stages.push({ colorOp, colorArg1: this.tss(i, TSS.COLORARG1, 2), colorArg2: this.tss(i, TSS.COLORARG2, 1), colorArg0: this.tss(i, TSS.COLORARG0, 1), alphaOp: this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE), alphaArg1: this.tss(i, TSS.ALPHAARG1, 2), alphaArg2: this.tss(i, TSS.ALPHAARG2, 1), alphaArg0: this.tss(i, TSS.ALPHAARG0, 1), resultTemp: this.tss(i, TSS.RESULTARG, 1) === 5, cube: info.cube, projected: (info.ttff & 0x100) !== 0, bound: info.bound, tex: info.tex, tci: info.tci, ttff: info.ttff });
       if (colorOp === TOP.DISABLE) break;
     }
     const ps = dev.pixelShaders.get(dev.pixelShader);
@@ -497,6 +497,6 @@ export function createWebGLBackend(canvas, log) {
   if (!gl) return null;
   return {
     gl,
-    createDevice(dev) { dev.com = dev.proc?.vm?.com ?? dev.com; return new WebGLDevice(gl, dev, { log }); },
+    createDevice(dev) { return new WebGLDevice(gl, dev, { log }); },
   };
 }

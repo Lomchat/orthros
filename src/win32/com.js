@@ -85,7 +85,7 @@ export class Com {
     this.mem.write32(ptr + 8, this.nextId);
     const obj = { ptr, iface, impl, refs: 1, id: this.nextId++, proc };
     this.objects.set(ptr, obj);
-    impl.com = obj;
+    impl.comObject = obj;
     return ptr;
   }
 
