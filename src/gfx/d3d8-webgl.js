@@ -101,6 +101,7 @@ export class WebGLDevice {
     this.gl = gl; this.dev = dev; this.mem = dev.proc.mem;
     this.log = opts.log ?? (() => {});
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
+    if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.programs = new Map();
     this.textures = new Map(); // resource id -> { tex, target }
