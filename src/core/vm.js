@@ -30,6 +30,9 @@ export class GuestCrash extends Error {
 
 const SLICE_INSNS = 100000;
 
+/** Returned by an API handler that transferred control to a guest procedure (see Vm.tailCallGuest). */
+export const TAIL_CALL = Symbol('tail-call');
+
 export class Vm {
   /**
    * @param {{ vfs: import('../vfs/vfs.js').Vfs, clock?: any, host?: any, log?: (kind: string, msg: string) => void, logKinds?: string[] }} opts
@@ -64,12 +67,14 @@ export class Vm {
     // Internal thunks (pseudo-DLL "orthros")
     this.api.define('orthros.dll', {
       __return: [0, () => 0, { noreturn: true }],
+      __callback_return: [0, (ctx) => this.onCallbackReturn(ctx), { noreturn: true }],
       __exit_thread: [0, (ctx) => this.exitThread(ctx.thread, ctx.cpu.eax), { noreturn: true }],
       __exit_process: [0, (ctx) => this.exitProcess(ctx.cpu.eax), { noreturn: true }],
       __seh_return: [0, (ctx) => this.seh.onHandlerReturn(ctx), { noreturn: true }],
       __mm_timer: [0, (ctx) => this.mmTimerTick(ctx), { noreturn: true }],
     });
     this.returnThunk = this.api.thunkFor('orthros.dll', '__return');
+    this.callbackReturnThunk = this.api.thunkFor('orthros.dll', '__callback_return');
     this.exitThreadThunk = this.api.thunkFor('orthros.dll', '__exit_thread');
     this.exitProcessThunk = this.api.thunkFor('orthros.dll', '__exit_process');
     this.seh = new Seh(this);
@@ -169,6 +174,17 @@ export class Vm {
       const r = this.callGuest(thread, mod.entry, [mod.base, 1, 0]);
       if (!r) this.warn(`${mod.name}: DllMain returned FALSE`);
     }
+  }
+
+  /** The last `n` API calls (oldest first) as "dll!name from site" strings — diagnostics. */
+  recentApiCalls(n = 16) {
+    const out = [];
+    for (let i = 64 - n; i < 64; i++) {
+      const k = (this.apiTracePos + i) & 63;
+      const t = this.apiTraceNames[k];
+      if (t) out.push(`${t.dll}!${t.name}${t.def ? '' : ' [stub]'} from ${this.proc.symbolize(this.apiTraceRets[k])}`);
+    }
+    return out;
   }
 
   /** Multimedia timer thread body: run due timeSetEvent callbacks, then sleep until the next one. */
@@ -299,6 +315,37 @@ export class Vm {
     return r;
   }
 
+  /**
+   * Guest-level callback (D028): from an API handler, transfer control to a guest procedure without a
+   * JS frame in between — the API call's own return is completed later by the `__callback_return`
+   * thunk (EIP/ESP restored from the recorded continuation, EAX = the procedure's result, then
+   * `after(eax)` runs). Because the JS stack stays flat, a blocking wait inside the callback can be
+   * unwound and parked like any top-level wait. The handler must return the value of this call.
+   * @param {import('../win32/ctx.js').Ctx} c the API call context (ESP at the return address)
+   * @param {number} proc guest procedure (stdcall)
+   * @param {number[]} args
+   * @param {{ argBytes: number, after?: (eax: number) => void }} o bytes of API arguments to pop on return
+   */
+  tailCallGuest(c, proc, args, o) {
+    const thread = c.thread, cpu = thread.cpu;
+    const sp = cpu.esp;
+    (thread.continuations ??= []).push({ sp, argBytes: o.argBytes, after: o.after ?? null });
+    for (let i = args.length - 1; i >= 0; i--) cpu.push32(args[i] >>> 0);
+    cpu.push32(this.callbackReturnThunk);
+    cpu.eip = proc >>> 0;
+    return TAIL_CALL;
+  }
+  onCallbackReturn(ctx) {
+    const thread = ctx.thread, cpu = thread.cpu;
+    const ks = thread.continuations ?? [];
+    while (ks.length && ks[ks.length - 1].sp < cpu.esp) ks.pop(); // frames abandoned by a non-local exit
+    const k = ks.pop();
+    if (!k || k.sp !== cpu.esp) throw new GuestCrash(this.crashReport(thread, `callback return without a matching continuation (esp ${cpu.esp.toString(16)})`));
+    cpu.eip = this.mem.read32(k.sp);
+    cpu.esp = (k.sp + 4 + k.argBytes) >>> 0;
+    if (k.after) { const r = k.after(cpu.eax); if (r !== undefined) cpu.eax = r >>> 0; }
+  }
+
   /** Can a blocking API call on this thread be unwound (parked) instead of nesting? Only at top level, outside callbacks. */
   canUnwind(thread) { return thread.topLevel && this.depth === 1 && thread.callbackDepth === 0 && this.current === thread; }
 
@@ -327,7 +374,7 @@ export class Vm {
         return;
       }
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
-      if (def.noreturn) return;
+      if (r === TAIL_CALL || def.noreturn) return;
       cpu.eip = this.mem.read32(sp);
       cpu.esp = (sp + 4 + (def.cc === CC_STDCALL ? def.argc * 4 : 0)) >>> 0;
       if (r !== undefined) cpu.eax = r >>> 0;
@@ -438,11 +485,7 @@ export class Vm {
       lines.push(`  ${h(sa)}: ${h(v)}  ${proc.moduleByAddr(v) || this.api.nameOf(v) ? proc.symbolize(v) : ''}`);
     }
     lines.push('recent API calls:');
-    for (let i = 0; i < 64; i++) {
-      const k = (this.apiTracePos + i) & 63;
-      const t = this.apiTraceNames[k];
-      if (t) lines.push(`  ${t.dll}!${t.name}${t.def ? '' : ' [stub]'} from ${proc.symbolize(this.apiTraceRets[k])}`);
-    }
+    for (const l of this.recentApiCalls(64)) lines.push('  ' + l);
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);
     if (proc.threads.length > 1) lines.push(this.threadsReport());

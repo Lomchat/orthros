@@ -22,6 +22,7 @@ const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_L
 const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.P8, FMT.A4L4, FMT.X4R4G4B4, FMT.R8G8B8, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]);
 const MAX_SAMPLERS = 16, MAX_RTS = 4;
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
+const checkTrail = []; // last CheckDeviceFormat calls (args + verdict), kept for the placeholder-texture diagnostic
 const fmtName = (f) => (f > 0x20000000 ? String.fromCharCode(f & 0xff, (f >> 8) & 0xff, (f >> 16) & 0xff, f >>> 24) : String(f));
 
 /**
@@ -151,6 +152,7 @@ export function registerDirect3D9(api, vm) {
       const t = new Texture(this, w, h, usage & 0x400 /* AUTOGENMIPMAP */ ? 1 : levels, usage, fmt, pool);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
       t.origin = c.proc.symbolize(c.retAddr);
+      if (w * h <= 16) t.apiTrail = [...checkTrail, ...vm.recentApiCalls(24)]; // tiny textures are often an engine's stand-in for a failed load: keep the context
       t.iids = [IID.IDirect3DResource9, IID.IDirect3DBaseTexture9];
       for (const l of t.levels) l.iids = [IID.IDirect3DSurface9, IID.IDirect3DResource9];
       mem.write32(pp, t.ptr = com.create(c.proc, 'IDirect3DTexture9', t));
@@ -382,7 +384,11 @@ export function registerDirect3D9(api, vm) {
         : (usage & 0x400 /* AUTOGENMIPMAP */) ? (TEXTURE_FORMATS.has(fmt) ? S_OK : D3DERR_NOTAVAILABLE)
         : (rtype === RTYPE.TEXTURE || rtype === RTYPE.CUBETEXTURE || rtype === RTYPE.VOLUMETEXTURE) ? (TEXTURE_FORMATS.has(fmt) ? D3D_OK : D3DERR_NOTAVAILABLE)
         : (rtype === RTYPE.SURFACE) ? (TEXTURE_FORMATS.has(fmt) || BACKBUFFER_FORMATS.has(fmt) || DEPTH_FORMATS.has(fmt) ? D3D_OK : D3DERR_NOTAVAILABLE) : undefined;
-      if (hr !== undefined) { if (hr !== D3D_OK && hr !== S_OK) { const k = `${usage}/${rtype}/${fmt}`; if (!checkedFormats.has(k)) { checkedFormats.add(k); vm.log('gfx', `d3d9: CheckDeviceFormat usage 0x${usage.toString(16)} rtype ${rtype} fmt ${fmtName(fmt)} -> not available`); } } return hr; }
+      if (hr !== undefined) {
+        checkTrail.push(`CheckDeviceFormat(adapterFmt ${fmtName(c.arg(3))}, usage 0x${usage.toString(16)}, rtype ${rtype}, fmt ${fmtName(fmt)}) -> ${hr === D3D_OK || hr === S_OK ? 'ok' : 'not available'}`); if (checkTrail.length > 8) checkTrail.shift();
+        if (hr !== D3D_OK && hr !== S_OK) { const k = `${usage}/${rtype}/${fmt}`; if (!checkedFormats.has(k)) { checkedFormats.add(k); vm.log('gfx', `d3d9: CheckDeviceFormat usage 0x${usage.toString(16)} rtype ${rtype} fmt ${fmtName(fmt)} -> not available`); } }
+        return hr;
+      }
       return TEXTURE_FORMATS.has(fmt) || fmt === FMT.VERTEXDATA || fmt === FMT.INDEX16 || fmt === FMT.INDEX32 ? D3D_OK : D3DERR_NOTAVAILABLE;
     }
     CheckDeviceMultiSampleType(c) { const ms = c.arg(5), pq = c.arg(6); if (pq) mem.write32(pq, ms <= 1 ? 1 : 0); return ms <= 1 ? D3D_OK : D3DERR_NOTAVAILABLE; }

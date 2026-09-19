@@ -193,7 +193,7 @@ export class WebGLDevice {
     if (magenta < n * 0.3) return;
     this.placeholderLogs = (this.placeholderLogs ?? 0) + 1;
     const t = s.owner;
-    this.log(`d3d-webgl: placeholder-looking texture #${t?.id ?? s.id} ${s.width}x${s.height} fmt ${s.fmt} (${Math.round(magenta * 100 / n)}% magenta) levels ${t?.levels?.length} usage 0x${(t?.usage ?? 0).toString(16)} pool ${t?.pool} locks ${t?.lockCount ?? 0} updated ${t?.updatedFrom ? 'yes' : 'no'} created at ${t?.origin ?? '?'}`);
+    this.log(`d3d-webgl: placeholder-looking texture #${t?.id ?? s.id} ${s.width}x${s.height} fmt ${s.fmt} (${Math.round(magenta * 100 / n)}% magenta) levels ${t?.levels?.length} usage 0x${(t?.usage ?? 0).toString(16)} pool ${t?.pool} locks ${t?.lockCount ?? 0} updated ${t?.updatedFrom ? 'yes' : 'no'} created at ${t?.origin ?? '?'}${t?.apiTrail ? '\n  API calls before creation:\n  ' + t.apiTrail.join('\n  ') : ''}`);
   }
   glBuffer(b, kind) {
     const gl = this.gl;

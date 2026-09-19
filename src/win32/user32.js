@@ -864,9 +864,27 @@ export function registerUser32(api, vm) {
     if (w) wm().post(w, msg === WM.SYSKEYDOWN ? WM.SYSCHAR : WM.CHAR, ch, lParam);
     return 1;
   }];
-  U.DispatchMessageA = [1, (c) => { const p = c.arg(0); return wm().dispatch({ hwnd: mem.read32(p), msg: mem.read32(p + 4), wParam: mem.read32(p + 8), lParam: mem.read32(p + 12) }); }];
+  // Message delivery to a guest window procedure is a guest-level call (D028, Vm.tailCallGuest): no JS frame
+  // stays between the caller and the procedure, so a blocking wait inside the procedure can be parked.
+  const guestProcOf = (w, msg) => (w && typeof w.wndProc === 'number' && !(w.destroyed && msg !== WM.NCDESTROY) ? w.wndProc : 0);
+  U.DispatchMessageA = [1, (c) => {
+    const p = c.arg(0);
+    const m = { hwnd: mem.read32(p), msg: mem.read32(p + 4), wParam: mem.read32(p + 8), lParam: mem.read32(p + 12) };
+    const w = wm();
+    if (m.msg === WM.TIMER && m.lParam) return vm.tailCallGuest(c, m.lParam, [m.hwnd, WM.TIMER, m.wParam, w.tick()], { argBytes: 4 });
+    const win_ = w.windows.get(m.hwnd), proc = guestProcOf(win_, m.msg);
+    if (!proc) return w.dispatch(m);
+    const after = m.msg === WM.PAINT ? () => { if (win_.invalid && !rectEmpty(win_.invalid)) win_.invalid = null; w.present(); } : null;
+    return vm.tailCallGuest(c, proc, [win_.hwnd, m.msg, m.wParam, m.lParam], { argBytes: 4, after });
+  }];
   U.DispatchMessageW = U.DispatchMessageA;
-  const sendMessage = (c) => { const w = win(c.arg(0)); if (!w) { if (c.arg(0) === 0xffff) { for (const x of [...wm().zorder]) wm().send(x, c.arg(1), c.arg(2), c.arg(3)); return 0; } return 0; } return wm().send(w, c.arg(1), c.arg(2), c.arg(3)); };
+  const sendMessage = (c) => {
+    const w = win(c.arg(0));
+    if (!w) { if (c.arg(0) === 0xffff) { for (const x of [...wm().zorder]) wm().send(x, c.arg(1), c.arg(2), c.arg(3)); return 0; } return 0; }
+    const proc = guestProcOf(w, c.arg(1));
+    if (proc) return vm.tailCallGuest(c, proc, [w.hwnd, c.arg(1), c.arg(2), c.arg(3)], { argBytes: 16 });
+    return wm().send(w, c.arg(1), c.arg(2), c.arg(3));
+  };
   U.SendMessageA = [4, sendMessage]; U.SendMessageW = [4, sendMessage];
   U.SendMessageTimeoutA = [7, (c) => { const r = sendMessage(c); c.out32(6, r); return 1; }];
   U.SendMessageTimeoutW = U.SendMessageTimeoutA;
@@ -877,7 +895,7 @@ export function registerUser32(api, vm) {
   U.PostThreadMessageA = [4, (c) => { const t = c.proc.thread(c.arg(0)); if (!t) return c.fail(E.INVALID_PARAMETER); wm().post(null, c.arg(1), c.arg(2), c.arg(3), t); return 1; }];
   U.PostThreadMessageW = U.PostThreadMessageA;
   U.PostQuitMessage = [1, (c) => { wm().queueOf(c.thread).quit = c.arg(0); }];
-  U.CallWindowProcA = [5, (c) => { const proc = c.arg(0); const w = win(c.arg(1)); if (!proc) return 0; const name = api.nameOf(proc); if (name) { if (!w) return 0; return wm().defWindowProc(w, c.arg(2), c.arg(3), c.arg(4)); } return vm.callGuest(c.thread, proc, [c.arg(1), c.arg(2), c.arg(3), c.arg(4)]); }];
+  U.CallWindowProcA = [5, (c) => { const proc = c.arg(0); const w = win(c.arg(1)); if (!proc) return 0; const name = api.nameOf(proc); if (name) { if (!w) return 0; return wm().defWindowProc(w, c.arg(2), c.arg(3), c.arg(4)); } return vm.tailCallGuest(c, proc, [c.arg(1), c.arg(2), c.arg(3), c.arg(4)], { argBytes: 20 }); }];
   U.CallWindowProcW = U.CallWindowProcA;
   U.GetMessagePos = [0, () => ((wm().cursor.y & 0xffff) << 16 | (wm().cursor.x & 0xffff)) >>> 0];
   U.GetMessageTime = [0, () => wm().tick()];
