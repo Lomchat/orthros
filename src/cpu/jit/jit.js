@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
-import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
 import { translateRegion, buildRegionModule } from './translate.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -14,7 +14,7 @@ export class Jit {
   /**
    * @param {import('../memory.js').GuestMemory} mem
    * @param {import('../interp.js').Interp} interp fallback interpreter (shares the memory)
-   * @param {{ smc?: boolean, log?: (msg: string) => void }} [opts]
+   * @param {{ smc?: boolean, chain?: boolean, log?: (msg: string) => void, warn?: (msg: string) => void }} [opts]
    */
   constructor(mem, interp, opts = {}) {
     this.mem = mem;
@@ -27,11 +27,18 @@ export class Jit {
     this.imports = {
       env: {
         memory: mem.memory,
+        table: this.table,
         flags: this.runtime.flags,
         round24: this.runtime.round24,
         fallback: (eip) => this.fallback(eip),
       },
     };
+    // Region chaining needs WASM tail calls (return_call_indirect); without them regions always
+    // return to the dispatcher (slower transitions, same semantics).
+    const tailCalls = supportsReturnCall();
+    this.chaining = opts.chain !== false && tailCalls;
+    if (!tailCalls && opts.warn) opts.warn('jit: return_call_indirect not supported by this engine, region chaining disabled');
+    if (opts.log) opts.log(`jit: region chaining ${this.chaining ? 'on' : 'off'}`);
     /** @type {Array<{entry: number, start: number, end: number, blocks: any[], fnIdx: number}>} */
     this.regions = [];
     this.pending = []; // regions still living in their own single-function module
@@ -39,7 +46,7 @@ export class Jit {
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -108,7 +115,7 @@ export class Jit {
     // translation storm diagnostic: thousands of new regions per second means code is being retranslated
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
-    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false });
+    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining });
     const bytes = buildRegionModule([code]);
     let inst;
     try {
@@ -210,24 +217,34 @@ export class Jit {
   /** instructions left from the last run()'s budget (negative after a time slice) */
   remaining() { return this.mem.readS32(this.cpu.base + ST.ICOUNT); }
 
+  /** Fold the thread's chained-transition counter into the stats. */
+  harvest(base) {
+    const n = this.mem.u32[(base + ST.TRANSITIONS) >>> 2];
+    if (n) { this.stats.chained += n; this.mem.u32[(base + ST.TRANSITIONS) >>> 2] = 0; }
+  }
+
   run(opts = {}) {
     const cpu = this.cpu;
     const stopAt = opts.stopAt ?? -1;
     const m = this.mem;
     m.write32(cpu.base + ST.ICOUNT, Math.min(opts.maxInsns ?? 1e9, 0x7fffffff));
     m.write32(cpu.base + ST.LZ_OP, 0);
+    m.write32(cpu.base + ST.STOP_AT, stopAt >>> 0); // 0xffffffff when unused: never a jump target
     cpu.exit = EXIT.NONE;
     for (;;) {
       let r;
       try {
-        r = this.runtime.run(cpu.eip, cpu.base, stopAt >>> 0);
+        r = this.runtime.run(cpu.eip, cpu.base);
       } catch (e) {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
+        // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
+        this.harvest(cpu.base);
         this.materialize();
         this.lastFault = e;
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
       }
+      this.harvest(cpu.base);
       if (r === EXIT_TRANSLATE) {
         const eip = cpu.eip;
         if (eip >= THUNK_BASE && eip < THUNK_END) { cpu.exit = EXIT.THUNK; cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0; return EXIT.THUNK; }

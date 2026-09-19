@@ -1,23 +1,30 @@
 // x86-32 -> WebAssembly region translator.
 //
 // A region is a set of basic blocks reachable from an entry point through direct branches (within
-// a budget). It becomes one WASM function `(block, state) -> nextEip|0` whose body is a dispatch
-// loop over the blocks: guest registers live in locals for the whole region, flags are kept lazily
-// (op kind + operands), and every exit (cross-region jump, API thunk, fault, timeslice) writes the
-// state back to the thread state block. Instructions without a native translation are executed
-// by the reference interpreter through the `fallback` import (registers flushed around the call).
+// a budget). It becomes one WASM function `(block, state, eax..edi, eflags, lzop, lzres, lza, lzb,
+// fs) -> nextEip|0` whose body is a dispatch loop over the blocks: guest registers live in locals
+// for the whole region (the parameters *are* those locals), flags are kept lazily (op kind +
+// operands). A direct jump whose target is already translated tail-calls the target region with
+// the live locals (region chaining; the dispatcher is bypassed); every other exit (untranslated
+// target, API thunk, fault, timeslice, stopAt) writes the state back to the thread state block and
+// returns to the dispatcher. Instructions without a native translation are executed by the
+// reference interpreter through the `fallback` import (registers flushed around the call).
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { LZ } from './runtime.js';
-import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE } from '../memory.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES } from './runtime.js';
+import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
 
-// Locals
+// Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
 const L_TA = 16, L_TV = 17, L_T2 = 18, L_T3 = 19, L_T4 = 20, L_T5 = 21, L_T6 = 22, L_T7 = 23;
 const L_I64A = 24, L_I64B = 25, L_F64A = 26, L_F64B = 27, L_TOP = 28, L_T8 = 29;
 const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
-const LOCAL_TYPES = [...Array(22).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128]; // indices 2..32
+const L_FIRST_DECLARED = 16;
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128]; // indices 16..32
+if (LOCAL_TYPES.length !== L_V2 + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+// Type index of the region signature inside a region module (declared first by buildRegionModule)
+const REGION_TYPE = 0;
 // Imports (function indices)
 const IMP_FLAGS = 0, IMP_ROUND24 = 1, IMP_FALLBACK = 2;
 
@@ -113,11 +120,13 @@ export function translateRegion(mem, entry, opts = {}) {
 /** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
 export function buildRegionModule(codes) {
   const m = new ModuleBuilder();
+  if (m.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
   m.importMemory('env', 'memory', 32768, 32768);
+  m.importTable('env', 'table', 1024, undefined); // shared funcref table (chained tail calls)
   m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
   m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
   m.importFunc('env', 'fallback', [T.i32], [T.i32]);
-  codes.forEach((code, i) => { const f = m.func([T.i32, T.i32], [T.i32], LOCAL_TYPES, { buf: code, len: code.length }, 'r' + i); m.exportFunc('r' + i, f); });
+  codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length }, 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }
 
@@ -129,6 +138,7 @@ class Emitter {
     this.lz = null;
     this.smc = opts.smc !== false;
     this.x87 = opts.x87 !== false;
+    this.chain = opts.chain !== false;
     this.stats = { native: 0, fallback: 0 };
   }
 
@@ -138,7 +148,8 @@ class Emitter {
     this.blocks = blocks;
     this.byEip = byEip;
     const c = this.c;
-    this.reloadAll();
+    // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
+    c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
     this.dispatchL = c.loop();
@@ -157,6 +168,7 @@ class Emitter {
     c.unreachable();
     c.end(); // dispatch loop
     c.end(); // exitJmpL: jump exit (tV = target eip)
+    if (this.chain) this.emitChain();
     this.flushAll();
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     c.get(L_TV).return_();
@@ -170,7 +182,42 @@ class Emitter {
     return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats };
   }
 
+  /**
+   * Region chaining (target eip in L_TV): when the target is ordinary guest code (not an API
+   * thunk), not the stop address, the budget is not exhausted and the target is already
+   * translated (same hash table / probe sequence as the dispatcher in runtime.js), tail-call its
+   * region with the live locals: registers and the lazy flags travel as parameters, only the x87
+   * TOP cache goes through the state block. Falls through (to the flush + return path) otherwise.
+   */
+  emitChain() {
+    const c = this.c;
+    const noChain = c.block();
+    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u().br_if(noChain);
+    c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq().br_if(noChain);
+    c.get(L_STATE).i32load(ST.ICOUNT).i32(0).le_s().br_if(noChain);
+    // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
+    const found = c.block();
+    c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      c.get(L_T2); if (p) c.i32(p).add();
+      c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
+      c.i32load(0).get(L_TV).eq().br_if(found);
+    }
+    c.br(noChain);
+    c.end(); // found
+    // EIP of the region being entered: a trap inside the chained callee reports the callee's
+    // entry (same imprecision as the dispatcher path); registers are not written back
+    c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+    c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP);
+    c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS);
+    c.get(L_TA).i32load(8); // block index in the target region
+    for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
+    c.get(L_TA).i32load(4).return_call_indirect(REGION_TYPE, 0);
+    c.end(); // noChain
+  }
+
   // ------------------------------------------------------------------ state <-> locals
+  /** Reload every cached local from the state block (after JS may have changed it). */
   reloadAll() {
     const c = this.c;
     for (let i = 0; i < 8; i++) c.get(L_STATE).i32load(ST.GPR + 4 * i).set(L_REG + i);
@@ -194,9 +241,17 @@ class Emitter {
   }
 
   // ------------------------------------------------------------------ exits & jumps
-  /** exit the region jumping to the eip on the stack */
-  exitToStack() { this.c.set(L_TV).br(this.exitJmpL); }
-  exitTo(eip) { this.c.i32(eip).set(L_TV).br(this.exitJmpL); }
+  /**
+   * Charge n instructions to the budget without checking it: the dispatcher (or the chain guard)
+   * checks ST.ICOUNT at the next region entry, so a loop made only of cross-region edges still
+   * ends with a time slice.
+   */
+  charge(n) {
+    if (n > 0) this.c.get(L_STATE).get(L_STATE).i32load(ST.ICOUNT).i32(n).sub().i32store(ST.ICOUNT);
+  }
+  /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
+  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); this.c.br(this.exitJmpL); }
+  exitTo(eip, n = this.insnIdx) { this.c.i32(eip).set(L_TV); this.charge(n); this.c.br(this.exitJmpL); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
@@ -217,7 +272,7 @@ class Emitter {
     if (b) {
       this.budget(n, target);
       this.c.i32(b.index).set(L_BLK).br(this.dispatchL);
-    } else this.exitTo(target);
+    } else this.exitTo(target, n);
   }
 
   // ------------------------------------------------------------------ registers & operands
@@ -365,7 +420,8 @@ class Emitter {
   emitBlock(b, nextBlock) {
     this.lz = null; // unknown at block entry
     this.topKnown = false;
-    for (const insn of b.insns) this.emitInsn(insn, b);
+    this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
+    for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
     // block end
     const n = b.insns.length;
     switch (b.term) {
