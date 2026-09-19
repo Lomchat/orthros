@@ -157,8 +157,7 @@ test('the instruction budget still ends a chained loop with time slices', () => 
     if (r !== EXIT.TIMESLICE) break;
     slices++;
     assert.ok(EJ.jit.remaining() <= 0, 'budget exhausted at the time slice');
-    void EJ.cpu.eflags; // flags stay lazy across the slice; reading EFLAGS folds the pending operation
-    assert.equal(EJ.mem.read32(EJ.cpu.base + ST.LZ_OP), 0, 'lazy flags fold when EFLAGS are read');
+    assert.equal(EJ.mem.read32(EJ.cpu.base + ST.LZ_OP), 0, 'lazy flags materialized at the time slice');
     assert.ok(slices < N, 'runaway');
   }
   assert.equal(r, EXIT.HALT);
