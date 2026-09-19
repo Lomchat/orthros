@@ -32,6 +32,7 @@ const SLICE_INSNS = 100000;
 
 /** Returned by an API handler that transferred control to a guest procedure (see Vm.tailCallGuest). */
 export const TAIL_CALL = Symbol('tail-call');
+const APIBG_QUIET = new Set(['Sleep', 'WaitForSingleObject', 'WaitForMultipleObjects', 'ReleaseMutex', 'EnterCriticalSection', 'LeaveCriticalSection', 'QueryPerformanceCounter', 'GetTickCount', 'timeGetTime', 'SetEvent', 'ResetEvent', 'InterlockedIncrement', 'InterlockedDecrement', 'InterlockedExchange', 'GetCurrentThreadId', 'TlsGetValue', 'IDirectSoundBuffer::GetCurrentPosition', 'IDirectSoundBuffer::Lock', 'IDirectSoundBuffer::Unlock', 'IDirectSoundBuffer::GetStatus']);
 const API_TRACE_LEN = 1024; // ring of recent API calls (crash reports, diagnostics); power of two
 
 export class Vm {
@@ -365,7 +366,7 @@ export class Vm {
     if (this.apiHist) { const k = `${t.dll}!${t.name}`; this.apiHist.set(k, (this.apiHist.get(k) ?? 0) + 1); }
     if (def) {
       if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
-      else if (this.traceApiBg && thread !== this.proc.threads[0]) this.logFn('apibg', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)}`); // background threads only (loaders, audio): far fewer calls
+      else if (this.traceApiBg && thread !== this.proc.threads[0] && !APIBG_QUIET.has(t.name)) this.logFn('apibg', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)}`); // background threads only (loaders, audio), without the timing/sync chatter
       const tp = this.apiTracePos++ & (API_TRACE_LEN - 1);
       this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
       let r;

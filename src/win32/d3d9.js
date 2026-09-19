@@ -150,7 +150,7 @@ export function registerDirect3D9(api, vm) {
       if (!pp || !w || !h) return D3DERR_INVALIDCALL;
       if (!TEXTURE_FORMATS.has(fmt) && !DEPTH_FORMATS.has(fmt) && !BACKBUFFER_FORMATS.has(fmt)) { mem.write32(pp, 0); vm.log('gfx', `d3d9: CreateTexture unsupported format ${fmt}`); return D3DERR_INVALIDCALL; }
       const t = new Texture(this, w, h, usage & 0x400 /* AUTOGENMIPMAP */ ? 1 : levels, usage, fmt, pool);
-      vm.log('tex', `CreateTexture ${w}x${h} ${fmtName(fmt)} levels ${levels} usage 0x${usage.toString(16)} pool ${pool} [t${c.thread.id}] from ${c.proc.symbolize(c.retAddr)}`);
+      vm.log('tex', `CreateTexture #${t.id} ${w}x${h} ${fmtName(fmt)} levels ${levels} usage 0x${usage.toString(16)} pool ${pool} [t${c.thread.id}] from ${c.proc.symbolize(c.retAddr)}`);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
       t.origin = c.proc.symbolize(c.retAddr);
       if (w * h <= 16) t.apiTrail = [...checkTrail, ...vm.recentApiCalls(120, c.thread.id)]; // tiny textures are often an engine's stand-in for a failed load: keep this thread's context
