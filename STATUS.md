@@ -93,6 +93,10 @@
   **En partie (escarmouche, carte 3D, ~250 appels de dessin/image) : 3 → 28-30 fps, p99 ≈ 47 ms sous SwiftShader**
   (`node tools/headless.mjs bfme-vanilla --seconds 330 --pump --fallback --input …`), replis restants 13 k/s
   (transcendantes x87, PUSH/POP de segment).
+- Harnais headless : entrées scriptées relatives à la première image Direct3D (`+35:click:…`), détecteur de blocage
+  (worker muet > 15 s → pause CDP du worker et pile d'appels). Il a révélé un interblocage d'attentes imbriquées dans
+  la WndProc (clic SKIRMISH), corrigé par les rappels au niveau invité (D028 : `DispatchMessage`/`SendMessage`/
+  `CallWindowProc` sautent dans la WndProc sans frame JS, retour par le thunk `__callback_return`).
 - Saisie clavier : `WM_CHAR` uniquement via `TranslateMessage` (le nom de profil n'est plus dupliqué).
 - Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil (miroir OPFS hors
   headless, à vérifier en page réelle).
