@@ -1,6 +1,6 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
-import { EXIT, ST } from '../state.js';
+import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
 import { translateRegion, buildRegionModule } from './translate.js';
@@ -9,6 +9,17 @@ import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
+
+/** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
+function foldLazyFlags(cpu) {
+  const m = cpu.mem, b = cpu.base;
+  const op = m.read32(b + ST.LZ_OP);
+  if (!op) return;
+  const ef = materializeFlags(op, m.read32(b + ST.LZ_RES), m.read32(b + ST.LZ_SRC1), m.read32(b + ST.LZ_SRC2), m.read32(b + ST.EFLAGS));
+  m.write32(b + ST.LZ_OP, 0);
+  m.write32(b + ST.EFLAGS, ef >>> 0);
+}
+CpuState.foldLazyFlags = foldLazyFlags;
 
 export class Jit {
   /**
@@ -116,7 +127,7 @@ export class Jit {
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining });
-    const bytes = buildRegionModule([code]);
+    const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
     let inst;
     try {
       inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), this.imports);
@@ -157,7 +168,7 @@ export class Jit {
     if (!live.length) return;
     const t0 = performance.now();
     let inst;
-    try { inst = new WebAssembly.Instance(new WebAssembly.Module(buildRegionModule(live.map((r) => r.code))), this.imports); }
+    try { inst = new WebAssembly.Instance(new WebAssembly.Module(buildRegionModule(live.map((r) => r.code), live.map((r) => 'r_' + r.entry.toString(16)))), this.imports); }
     catch (e) { if (this.opts.log) this.opts.log(`jit: consolidation failed: ${e.message}`); return; }
     live.forEach((r, i) => { if (this.byEntry.get(r.entry) === r) this.table.set(r.fnIdx, inst.exports['r' + i]); r.code = null; });
     this.stats.consolidations = (this.stats.consolidations ?? 0) + 1;
@@ -199,15 +210,8 @@ export class Jit {
   }
 
   /** Fold pending lazy flags into EFLAGS. */
-  materialize() {
-    const cpu = this.cpu;
-    const m = this.mem, b = cpu.base;
-    const op = m.read32(b + ST.LZ_OP);
-    if (op) {
-      cpu.eflags = materializeFlags(op, m.read32(b + ST.LZ_RES), m.read32(b + ST.LZ_SRC1), m.read32(b + ST.LZ_SRC2), cpu.eflags);
-      m.write32(b + ST.LZ_OP, 0);
-    }
-  }
+  /** Fold the pending lazy flag operation of the current thread into EFLAGS (normally lazy: CpuState's getter does it on demand). */
+  materialize() { foldLazyFlags(this.cpu); }
 
   // ------------------------------------------------------------------ execution
   /**
@@ -239,12 +243,11 @@ export class Jit {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
         this.harvest(cpu.base);
-        this.materialize();
         this.lastFault = e;
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
       }
-      this.harvest(cpu.base);
+      this.harvest(cpu.base); // EFLAGS stay lazy in memory: CpuState.eflags folds them when JS reads them
       if (r === EXIT_TRANSLATE) {
         const eip = cpu.eip;
         if (eip >= THUNK_BASE && eip < THUNK_END) { cpu.exit = EXIT.THUNK; cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0; return EXIT.THUNK; }
@@ -254,13 +257,11 @@ export class Jit {
         } catch (e) {
           // translation failure (e.g. undecodable): run one instruction in the interpreter
           this.interp.cpu = cpu;
-          this.materialize();
           const s = this.interp.step();
           if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
         }
         continue;
       }
-      this.materialize();
       if (r === EXIT.NONE) { // a region returned EIP 0 (jump/call/ret to address 0): access violation
         this.lastFault = { message: 'jump to address 0', vector: 14, faultAddr: 0 };
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;

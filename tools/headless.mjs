@@ -97,6 +97,10 @@ async function profileWorker(seconds) {
   // aggregate by file
   const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
   console.log('[profile] by file:'); for (const [f, c] of [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${f}`);
+  // hottest JIT regions (region functions are named r_<entry eip> in the module name section)
+  const regions = [...self].filter(([k]) => k.startsWith('r_')).map(([k, c]) => [k.split(' ')[0].slice(2), c]).sort((a, b) => b[1] - a[1]);
+  const regionTotal = regions.reduce((acc, [, c]) => acc + c, 0);
+  if (regions.length) { console.log(`[profile] guest code: ${(100 * regionTotal / total).toFixed(1)}% in ${regions.length} regions; hottest:`); for (const [eip, c] of regions.slice(0, 20)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  region ${eip}`); }
 }
 for (;;) {
   const s = await status();
