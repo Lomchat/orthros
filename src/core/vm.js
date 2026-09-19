@@ -255,7 +255,7 @@ export class Vm {
             this.onBreak(thread);
             break;
           case EXIT.SMC:
-            this.invalidateCode(cpu.exitArg, 1);
+            this.invalidateCode(cpu.exitArg, 16);
             break;
           default:
             throw new GuestCrash(this.crashReport(thread, `unexpected exit ${exit}`));

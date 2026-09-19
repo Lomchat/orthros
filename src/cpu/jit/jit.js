@@ -5,6 +5,8 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BI
 import { buildRuntime, materializeFlags, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
 import { translateRegion, buildRegionModule } from './translate.js';
 import './translate-x87.js';
+import './translate-sse-float.js';
+import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
 

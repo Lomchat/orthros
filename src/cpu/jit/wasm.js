@@ -93,6 +93,142 @@ export class Code extends ByteWriter {
   v128load(off = 0) { this.byte(0xfd).u(0).u(4).u(off >>> 0); return this; }
   v128store(off = 0) { this.byte(0xfd).u(11).u(4).u(off >>> 0); return this; }
 
+  // ---- SIMD (prefix 0xfd + unsigned-LEB128 id; ids >= 0x80 are two bytes)
+  /** SIMD opcode without immediates */
+  simd(id) { this.byte(0xfd).u(id); return this; }
+  /** SIMD memory opcode: memarg = u(alignLog2) u(offset) */
+  simdmem(id, align, off) { this.byte(0xfd).u(id).u(align).u(off >>> 0); return this; }
+  /** SIMD lane memory opcode: memarg then one lane byte (stack: addr, v128) */
+  simdlanemem(id, align, off, lane) { this.byte(0xfd).u(id).u(align).u(off >>> 0).byte(lane); return this; }
+  /** SIMD lane opcode: one raw lane byte */
+  simdlane(id, lane) { this.byte(0xfd).u(id).byte(lane); return this; }
+  // memory forms
+  v128load8x8s(off = 0) { return this.simdmem(0x01, 3, off); }
+  v128load8x8u(off = 0) { return this.simdmem(0x02, 3, off); }
+  v128load16x4s(off = 0) { return this.simdmem(0x03, 3, off); }
+  v128load16x4u(off = 0) { return this.simdmem(0x04, 3, off); }
+  v128load32x2s(off = 0) { return this.simdmem(0x05, 3, off); }
+  v128load32x2u(off = 0) { return this.simdmem(0x06, 3, off); }
+  v128load8splat(off = 0) { return this.simdmem(0x07, 0, off); }
+  v128load16splat(off = 0) { return this.simdmem(0x08, 1, off); }
+  v128load32splat(off = 0) { return this.simdmem(0x09, 2, off); }
+  v128load64splat(off = 0) { return this.simdmem(0x0a, 3, off); }
+  v128load8lane(off, lane) { return this.simdlanemem(0x54, 0, off, lane); }
+  v128load16lane(off, lane) { return this.simdlanemem(0x55, 1, off, lane); }
+  v128load32lane(off, lane) { return this.simdlanemem(0x56, 2, off, lane); }
+  v128load64lane(off, lane) { return this.simdlanemem(0x57, 3, off, lane); }
+  v128store8lane(off, lane) { return this.simdlanemem(0x58, 0, off, lane); }
+  v128store16lane(off, lane) { return this.simdlanemem(0x59, 1, off, lane); }
+  v128store32lane(off, lane) { return this.simdlanemem(0x5a, 2, off, lane); }
+  v128store64lane(off, lane) { return this.simdlanemem(0x5b, 3, off, lane); }
+  v128load32zero(off = 0) { return this.simdmem(0x5c, 2, off); }
+  v128load64zero(off = 0) { return this.simdmem(0x5d, 3, off); }
+  // constants / shuffles
+  /** v128.const: 16 raw bytes (little-endian lane order) */
+  v128const(bytes16) { if (bytes16.length !== 16) throw new Error('v128const needs 16 bytes'); this.byte(0xfd).u(0x0c).bytes(bytes16); return this; }
+  /** i8x16.shuffle: 16 lane indices 0..31 (16..31 select from the second operand) */
+  i8x16shuffle(lanes16) { if (lanes16.length !== 16) throw new Error('i8x16shuffle needs 16 lanes'); this.byte(0xfd).u(0x0d).bytes(lanes16); return this; }
+  i8x16swizzle() { return this.simd(0x0e); }
+  // splats
+  i8x16splat() { return this.simd(0x0f); } i16x8splat() { return this.simd(0x10); } i32x4splat() { return this.simd(0x11); }
+  i64x2splat() { return this.simd(0x12); } f32x4splat() { return this.simd(0x13); } f64x2splat() { return this.simd(0x14); }
+  // extract / replace lanes
+  i8x16extractlane_s(l) { return this.simdlane(0x15, l); } i8x16extractlane_u(l) { return this.simdlane(0x16, l); } i8x16replacelane(l) { return this.simdlane(0x17, l); }
+  i16x8extractlane_s(l) { return this.simdlane(0x18, l); } i16x8extractlane_u(l) { return this.simdlane(0x19, l); } i16x8replacelane(l) { return this.simdlane(0x1a, l); }
+  i32x4extractlane(l) { return this.simdlane(0x1b, l); } i32x4replacelane(l) { return this.simdlane(0x1c, l); }
+  i64x2extractlane(l) { return this.simdlane(0x1d, l); } i64x2replacelane(l) { return this.simdlane(0x1e, l); }
+  f32x4extractlane(l) { return this.simdlane(0x1f, l); } f32x4replacelane(l) { return this.simdlane(0x20, l); }
+  f64x2extractlane(l) { return this.simdlane(0x21, l); } f64x2replacelane(l) { return this.simdlane(0x22, l); }
+  // compares (all-ones / zero lane masks)
+  i8x16eq() { return this.simd(0x23); } i8x16ne() { return this.simd(0x24); } i8x16lt_s() { return this.simd(0x25); } i8x16lt_u() { return this.simd(0x26); }
+  i8x16gt_s() { return this.simd(0x27); } i8x16gt_u() { return this.simd(0x28); } i8x16le_s() { return this.simd(0x29); } i8x16le_u() { return this.simd(0x2a); }
+  i8x16ge_s() { return this.simd(0x2b); } i8x16ge_u() { return this.simd(0x2c); }
+  i16x8eq() { return this.simd(0x2d); } i16x8ne() { return this.simd(0x2e); } i16x8lt_s() { return this.simd(0x2f); } i16x8lt_u() { return this.simd(0x30); }
+  i16x8gt_s() { return this.simd(0x31); } i16x8gt_u() { return this.simd(0x32); } i16x8le_s() { return this.simd(0x33); } i16x8le_u() { return this.simd(0x34); }
+  i16x8ge_s() { return this.simd(0x35); } i16x8ge_u() { return this.simd(0x36); }
+  i32x4eq() { return this.simd(0x37); } i32x4ne() { return this.simd(0x38); } i32x4lt_s() { return this.simd(0x39); } i32x4lt_u() { return this.simd(0x3a); }
+  i32x4gt_s() { return this.simd(0x3b); } i32x4gt_u() { return this.simd(0x3c); } i32x4le_s() { return this.simd(0x3d); } i32x4le_u() { return this.simd(0x3e); }
+  i32x4ge_s() { return this.simd(0x3f); } i32x4ge_u() { return this.simd(0x40); }
+  f32x4eq() { return this.simd(0x41); } f32x4ne() { return this.simd(0x42); } f32x4lt() { return this.simd(0x43); }
+  f32x4gt() { return this.simd(0x44); } f32x4le() { return this.simd(0x45); } f32x4ge() { return this.simd(0x46); }
+  f64x2eq() { return this.simd(0x47); } f64x2ne() { return this.simd(0x48); } f64x2lt() { return this.simd(0x49); }
+  f64x2gt() { return this.simd(0x4a); } f64x2le() { return this.simd(0x4b); } f64x2ge() { return this.simd(0x4c); }
+  i64x2eq() { return this.simd(0xd6); } i64x2ne() { return this.simd(0xd7); } i64x2lt_s() { return this.simd(0xd8); }
+  i64x2gt_s() { return this.simd(0xd9); } i64x2le_s() { return this.simd(0xda); } i64x2ge_s() { return this.simd(0xdb); }
+  // bitwise
+  v128not() { return this.simd(0x4d); } v128and() { return this.simd(0x4e); }
+  /** v128.andnot(a, b) = a & ~b (first operand and-not second) */
+  v128andnot() { return this.simd(0x4f); }
+  v128or() { return this.simd(0x50); } v128xor() { return this.simd(0x51); }
+  /** v128.bitselect(v1, v2, mask): mask bits set select v1 */
+  v128bitselect() { return this.simd(0x52); }
+  v128anytrue() { return this.simd(0x53); }
+  // conversions
+  f32x4demote_f64x2_zero() { return this.simd(0x5e); } f64x2promote_low_f32x4() { return this.simd(0x5f); }
+  i32x4trunc_sat_f32x4_s() { return this.simd(0xf8); } i32x4trunc_sat_f32x4_u() { return this.simd(0xf9); }
+  f32x4convert_i32x4_s() { return this.simd(0xfa); } f32x4convert_i32x4_u() { return this.simd(0xfb); }
+  i32x4trunc_sat_f64x2_s_zero() { return this.simd(0xfc); } i32x4trunc_sat_f64x2_u_zero() { return this.simd(0xfd); }
+  f64x2convert_low_i32x4_s() { return this.simd(0xfe); } f64x2convert_low_i32x4_u() { return this.simd(0xff); }
+  // i8x16
+  i8x16abs() { return this.simd(0x60); } i8x16neg() { return this.simd(0x61); } i8x16popcnt() { return this.simd(0x62); }
+  i8x16alltrue() { return this.simd(0x63); } i8x16bitmask() { return this.simd(0x64); }
+  i8x16narrow_i16x8_s() { return this.simd(0x65); } i8x16narrow_i16x8_u() { return this.simd(0x66); }
+  i8x16shl() { return this.simd(0x6b); } i8x16shr_s() { return this.simd(0x6c); } i8x16shr_u() { return this.simd(0x6d); }
+  i8x16add() { return this.simd(0x6e); } i8x16add_sat_s() { return this.simd(0x6f); } i8x16add_sat_u() { return this.simd(0x70); }
+  i8x16sub() { return this.simd(0x71); } i8x16sub_sat_s() { return this.simd(0x72); } i8x16sub_sat_u() { return this.simd(0x73); }
+  i8x16min_s() { return this.simd(0x76); } i8x16min_u() { return this.simd(0x77); } i8x16max_s() { return this.simd(0x78); } i8x16max_u() { return this.simd(0x79); }
+  i8x16avgr_u() { return this.simd(0x7b); }
+  // float rounding
+  f32x4ceil() { return this.simd(0x67); } f32x4floor() { return this.simd(0x68); } f32x4trunc() { return this.simd(0x69); } f32x4nearest() { return this.simd(0x6a); }
+  f64x2ceil() { return this.simd(0x74); } f64x2floor() { return this.simd(0x75); } f64x2trunc() { return this.simd(0x7a); } f64x2nearest() { return this.simd(0x94); }
+  // pairwise extending adds
+  i16x8extadd_pairwise_i8x16_s() { return this.simd(0x7c); } i16x8extadd_pairwise_i8x16_u() { return this.simd(0x7d); }
+  i32x4extadd_pairwise_i16x8_s() { return this.simd(0x7e); } i32x4extadd_pairwise_i16x8_u() { return this.simd(0x7f); }
+  // i16x8
+  i16x8abs() { return this.simd(0x80); } i16x8neg() { return this.simd(0x81); } i16x8q15mulr_sat_s() { return this.simd(0x82); }
+  i16x8alltrue() { return this.simd(0x83); } i16x8bitmask() { return this.simd(0x84); }
+  i16x8narrow_i32x4_s() { return this.simd(0x85); } i16x8narrow_i32x4_u() { return this.simd(0x86); }
+  i16x8extend_low_i8x16_s() { return this.simd(0x87); } i16x8extend_high_i8x16_s() { return this.simd(0x88); }
+  i16x8extend_low_i8x16_u() { return this.simd(0x89); } i16x8extend_high_i8x16_u() { return this.simd(0x8a); }
+  i16x8shl() { return this.simd(0x8b); } i16x8shr_s() { return this.simd(0x8c); } i16x8shr_u() { return this.simd(0x8d); }
+  i16x8add() { return this.simd(0x8e); } i16x8add_sat_s() { return this.simd(0x8f); } i16x8add_sat_u() { return this.simd(0x90); }
+  i16x8sub() { return this.simd(0x91); } i16x8sub_sat_s() { return this.simd(0x92); } i16x8sub_sat_u() { return this.simd(0x93); }
+  i16x8mul() { return this.simd(0x95); }
+  i16x8min_s() { return this.simd(0x96); } i16x8min_u() { return this.simd(0x97); } i16x8max_s() { return this.simd(0x98); } i16x8max_u() { return this.simd(0x99); }
+  i16x8avgr_u() { return this.simd(0x9b); }
+  i16x8extmul_low_i8x16_s() { return this.simd(0x9c); } i16x8extmul_high_i8x16_s() { return this.simd(0x9d); }
+  i16x8extmul_low_i8x16_u() { return this.simd(0x9e); } i16x8extmul_high_i8x16_u() { return this.simd(0x9f); }
+  // i32x4
+  i32x4abs() { return this.simd(0xa0); } i32x4neg() { return this.simd(0xa1); } i32x4alltrue() { return this.simd(0xa3); } i32x4bitmask() { return this.simd(0xa4); }
+  i32x4extend_low_i16x8_s() { return this.simd(0xa7); } i32x4extend_high_i16x8_s() { return this.simd(0xa8); }
+  i32x4extend_low_i16x8_u() { return this.simd(0xa9); } i32x4extend_high_i16x8_u() { return this.simd(0xaa); }
+  i32x4shl() { return this.simd(0xab); } i32x4shr_s() { return this.simd(0xac); } i32x4shr_u() { return this.simd(0xad); }
+  i32x4add() { return this.simd(0xae); } i32x4sub() { return this.simd(0xb1); } i32x4mul() { return this.simd(0xb5); }
+  i32x4min_s() { return this.simd(0xb6); } i32x4min_u() { return this.simd(0xb7); } i32x4max_s() { return this.simd(0xb8); } i32x4max_u() { return this.simd(0xb9); }
+  i32x4dot_i16x8_s() { return this.simd(0xba); }
+  i32x4extmul_low_i16x8_s() { return this.simd(0xbc); } i32x4extmul_high_i16x8_s() { return this.simd(0xbd); }
+  i32x4extmul_low_i16x8_u() { return this.simd(0xbe); } i32x4extmul_high_i16x8_u() { return this.simd(0xbf); }
+  // i64x2
+  i64x2abs() { return this.simd(0xc0); } i64x2neg() { return this.simd(0xc1); } i64x2alltrue() { return this.simd(0xc3); } i64x2bitmask() { return this.simd(0xc4); }
+  i64x2extend_low_i32x4_s() { return this.simd(0xc7); } i64x2extend_high_i32x4_s() { return this.simd(0xc8); }
+  i64x2extend_low_i32x4_u() { return this.simd(0xc9); } i64x2extend_high_i32x4_u() { return this.simd(0xca); }
+  i64x2shl() { return this.simd(0xcb); } i64x2shr_s() { return this.simd(0xcc); } i64x2shr_u() { return this.simd(0xcd); }
+  i64x2add() { return this.simd(0xce); } i64x2sub() { return this.simd(0xd1); } i64x2mul() { return this.simd(0xd5); }
+  i64x2extmul_low_i32x4_s() { return this.simd(0xdc); } i64x2extmul_high_i32x4_s() { return this.simd(0xdd); }
+  i64x2extmul_low_i32x4_u() { return this.simd(0xde); } i64x2extmul_high_i32x4_u() { return this.simd(0xdf); }
+  // f32x4
+  f32x4abs() { return this.simd(0xe0); } f32x4neg() { return this.simd(0xe1); } f32x4sqrt() { return this.simd(0xe3); }
+  f32x4add() { return this.simd(0xe4); } f32x4sub() { return this.simd(0xe5); } f32x4mul() { return this.simd(0xe6); } f32x4div() { return this.simd(0xe7); }
+  /** IEEE min/max: NaN-propagating, -0 < +0 (NOT x86 MINPS/MAXPS; use pmin/pmax with swapped operands) */
+  f32x4min() { return this.simd(0xe8); } f32x4max() { return this.simd(0xe9); }
+  /** pmin(a, b) = b < a ? b : a ; pmax(a, b) = a < b ? b : a */
+  f32x4pmin() { return this.simd(0xea); } f32x4pmax() { return this.simd(0xeb); }
+  // f64x2
+  f64x2abs() { return this.simd(0xec); } f64x2neg() { return this.simd(0xed); } f64x2sqrt() { return this.simd(0xef); }
+  f64x2add() { return this.simd(0xf0); } f64x2sub() { return this.simd(0xf1); } f64x2mul() { return this.simd(0xf2); } f64x2div() { return this.simd(0xf3); }
+  f64x2min() { return this.simd(0xf4); } f64x2max() { return this.simd(0xf5); }
+  f64x2pmin() { return this.simd(0xf6); } f64x2pmax() { return this.simd(0xf7); }
+
   // ---- constants
   i32(v) { this.byte(0x41).s(v | 0); return this; }
   i64(v) { this.byte(0x42).s64(v); return this; }

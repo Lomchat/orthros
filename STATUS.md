@@ -85,8 +85,11 @@
   SwiftShader. Défauts visibles : quelques unités en magenta uni (texture manquante ?), enquête en cours (détecteur de
   textures « placeholder » + origine de création).
 - Audio : le jeu diffuse sa musique (D026 — curseurs DirectSound pilotés par l'horloge) ; l'AudioWorklet consomme en
-  temps réel (mixeur ~2 ms/s). Coût observé : quand Miles décode le flux (x86 émulé), les fps du menu tombent de 40 à
-  ~20 — mesure des replis interpréteur (SSE/MMX) en cours pour M7.
+  temps réel (mixeur ~2 ms/s).
+- **SSE/SSE2/SSE3/MMX traduits en WASM SIMD (D027)** : les ~2 M replis/s vectoriels ont disparu (2 k/s restants :
+  PUSH/POP de segment, transcendantes x87) ; menu avec audio 20 → 39,5 fps ; bench phase SSE 2 989 ms (interpréteur)
+  → 16 ms (JIT) ; ~4 500 cas oracle supplémentaires (`sse` étendue, `verify_float/int/mech`) verts sur les deux
+  exécuteurs ; trois corrections de fidélité de l'interpréteur (EMMS/TOP, FTZ sur MIN/MAX, propagation des NaN).
 - Saisie clavier : `WM_CHAR` uniquement via `TranslateMessage` (le nom de profil n'est plus dupliqué).
 - Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil (miroir OPFS hors
   headless, à vérifier en page réelle).
