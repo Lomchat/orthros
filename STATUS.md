@@ -108,6 +108,11 @@
 - **Stabilité 10 min en partie (Very Low, headless SwiftShader)** : `--seconds 840` → en jeu de 230 s à 840 s sans
   blocage ni plantage, 19 000 images, 25-34 fps, p99 40-50 ms (`build/shots7`, run hl57) ; entrées en jeu acceptées
   (clic, clic droit, Échap, déplacement au bord).
+- **M7 (démarré)** — mesures en jeu (Very Low, SwiftShader, `--profile 290:20`) : avant = 28-30 fps, `bufferSubData`
+  16 % du temps worker ; après envoi partiel des tampons (plage verrouillée), emplacements d'uniformes résolus une fois
+  par programme (noms constants) et mémoïsation du programme par version d'état du device : **35-37 fps, p99 38 ms**,
+  `bufferSubData` 0,4 %. Reste : dispatcher WASM de régions 10 % (chaînage par appels terminaux en cours),
+  `dispatchThunk` 7 % (histogramme d'API par index maintenant), code invité 45 %.
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
   tranche, chemin d'appel d'API plus court, envois de tampons de sommets groupés.

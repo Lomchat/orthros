@@ -63,7 +63,7 @@ export class Vm {
     this.stdout = [];
     this.onStdout = null;
     this.deadline = 0; // host time limit (ms, performance.now based) checked at timeslice/thunk boundaries
-    this.apiHist = opts.apiHist ? new Map() : null;
+    this.apiHistCounts = opts.apiHist ? new Uint32Array(4096) : null; // calls per thunk index (no per-call string work); see apiHist()
     this.profile = opts.profile ? new Map() : null; // eip>>6 -> timeslice samples
     this.progressAt = 0; this.progressEvery = 0; this.onProgress = null;
     this.slices = 0;
@@ -177,6 +177,14 @@ export class Vm {
       const r = this.callGuest(thread, mod.entry, [mod.base, 1, 0]);
       if (!r) this.warn(`${mod.name}: DllMain returned FALSE`);
     }
+  }
+
+  /** Call counts per API as a Map "dll!name" -> count (null when the histogram is disabled). */
+  apiHist() {
+    if (!this.apiHistCounts) return null;
+    const m = new Map();
+    for (let i = 0; i < this.apiHistCounts.length; i++) { const n = this.apiHistCounts[i]; if (!n) continue; const t = this.api.thunk(i); if (t) m.set(`${t.dll}!${t.name}`, n); }
+    return m;
   }
 
   /** The last `n` API calls (oldest first) as "dll!name from site" strings, optionally of one thread — diagnostics. */
@@ -363,7 +371,7 @@ export class Vm {
     const sp = cpu.esp;
     this.apiCalls++;
     if ((sp & 3) && !this.warnedMisaligned) { this.warnedMisaligned = true; this.warn(`misaligned ESP ${sp.toString(16)} at API call ${t.dll}!${t.name}\n` + this.crashReport(thread, 'misaligned stack')); }
-    if (this.apiHist) { const k = `${t.dll}!${t.name}`; this.apiHist.set(k, (this.apiHist.get(k) ?? 0) + 1); }
+    if (this.apiHistCounts) { if (idx >= this.apiHistCounts.length) { const n = new Uint32Array(Math.max(idx + 1, this.apiHistCounts.length * 2)); n.set(this.apiHistCounts); this.apiHistCounts = n; } this.apiHistCounts[idx]++; }
     if (def) {
       if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
       else if (this.traceApiBg && thread !== this.proc.threads[0] && !APIBG_QUIET.has(t.name)) this.logFn('apibg', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)}`); // background threads only (loaders, audio), without the timing/sync chatter
