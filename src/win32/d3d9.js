@@ -19,7 +19,7 @@ const USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2;
 const DISPLAY_FORMATS = new Set([FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A2R10G10B10]);
 const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A2R10G10B10]);
 const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_LOCKABLE, FMT.D15S1, FMT.D24X4S4, 82 /* D24FS8 */]);
-const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.P8, FMT.A4L4, FMT.X4R4G4B4, FMT.R8G8B8, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]);
+const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.P8, FMT.A4L4, FMT.X4R4G4B4, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]); // no R8G8B8: like every real Direct3D 9 driver, 24-bit textures are not offered (applications keep a conversion path for that)
 const MAX_SAMPLERS = 16, MAX_RTS = 4;
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
 const checkTrail = []; // last CheckDeviceFormat calls (args + verdict), kept for the placeholder-texture diagnostic
@@ -150,9 +150,10 @@ export function registerDirect3D9(api, vm) {
       if (!pp || !w || !h) return D3DERR_INVALIDCALL;
       if (!TEXTURE_FORMATS.has(fmt) && !DEPTH_FORMATS.has(fmt) && !BACKBUFFER_FORMATS.has(fmt)) { mem.write32(pp, 0); vm.log('gfx', `d3d9: CreateTexture unsupported format ${fmt}`); return D3DERR_INVALIDCALL; }
       const t = new Texture(this, w, h, usage & 0x400 /* AUTOGENMIPMAP */ ? 1 : levels, usage, fmt, pool);
+      vm.log('tex', `CreateTexture ${w}x${h} ${fmtName(fmt)} levels ${levels} usage 0x${usage.toString(16)} pool ${pool} [t${c.thread.id}] from ${c.proc.symbolize(c.retAddr)}`);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
       t.origin = c.proc.symbolize(c.retAddr);
-      if (w * h <= 16) t.apiTrail = [...checkTrail, ...vm.recentApiCalls(24)]; // tiny textures are often an engine's stand-in for a failed load: keep the context
+      if (w * h <= 16) t.apiTrail = [...checkTrail, ...vm.recentApiCalls(120, c.thread.id)]; // tiny textures are often an engine's stand-in for a failed load: keep this thread's context
       t.iids = [IID.IDirect3DResource9, IID.IDirect3DBaseTexture9];
       for (const l of t.levels) l.iids = [IID.IDirect3DSurface9, IID.IDirect3DResource9];
       mem.write32(pp, t.ptr = com.create(c.proc, 'IDirect3DTexture9', t));

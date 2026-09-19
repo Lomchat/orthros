@@ -23,6 +23,7 @@ export function writeGuid(mem, a, s) {
 export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
+    this.failedOnce = new Set(); // interface::method=hresult already reported
     this.vm = vm;
     this.mem = vm.mem;
     this.api = vm.api;
@@ -138,6 +139,10 @@ export class Com {
     }
     if (this.vm.traceCom) { const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16)); this.vm.log('com', `${iface.name}::${m.name}(${args.join(', ')}) from ${ctx.proc.symbolize(ctx.retAddr)}`); }
     const r = fn.call(obj.impl, ctx, obj);
+    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) { // failed HRESULT: traced once per method/value (fidelity diagnostics)
+      const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;
+      if (!this.failedOnce.has(k)) { this.failedOnce.add(k); this.vm.log('gfx', `com: ${iface.name}::${m.name} -> 0x${(r >>> 0).toString(16)} (first from ${ctx.proc.symbolize(ctx.retAddr)})`); }
+    }
     return r === undefined ? S_OK : r;
   }
 

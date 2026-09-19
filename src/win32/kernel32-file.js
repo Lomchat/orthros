@@ -95,6 +95,7 @@ export function registerKernel32File(api, vm) {
   K._lread = [3, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.file) return 0xffffffff; const d = f.file.read(f.pos, c.arg(2)); mem.writeBytes(c.arg(1), d); f.pos += d.length; return d.length; }];
   K._llseek = [3, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.file) return 0xffffffff; const m = c.arg(2); f.pos = m === 0 ? c.sarg(1) : m === 1 ? f.pos + c.sarg(1) : f.file.size() + c.sarg(1); return f.pos; }];
 
+  let this_shortReads = 0;
   K.ReadFile = [5, (c) => {
     const f = fileOf(c, c.arg(0));
     if (!f) return c.fail(E.INVALID_HANDLE);
@@ -106,9 +107,10 @@ export function registerKernel32File(api, vm) {
     const n = c.arg(2);
     const d = f.file.read(pos, n);
     if (d.length) mem.writeBytes(c.arg(1), d);
-    if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); const np = pos + d.length; mem.write32(ovl + 8, np >>> 0); mem.write32(ovl + 12, Math.floor(np / 4294967296)); }
-    else f.pos = pos + d.length;
+    if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay
+    f.pos = pos + d.length; // a synchronous handle's file pointer follows the read even when the offset came from OVERLAPPED
     c.out32(3, d.length);
+    if (d.length < n && (this_shortReads = (this_shortReads ?? 0) + 1) <= 8) vm.log('file', `short read ${f.path ?? '?'} at ${pos} (${n} requested, ${d.length} read, size ${f.file.size?.() ?? '?'})`);
     if (d.length === 0 && n > 0 && ovl) return c.fail(E.HANDLE_EOF);
     return 1;
   }];
@@ -306,6 +308,10 @@ export function registerKernel32File(api, vm) {
       entries = [];
       if (re.test('.')) entries.push({ name: '.', size: 0, isDir: true, mtime: 0 }, { name: '..', size: 0, isDir: true, mtime: 0 });
       for (const e of list) if (re.test(e.name)) entries.push(e);
+      // NTFS enumeration order: names compared upcased, code unit by code unit (applications depend on it,
+      // e.g. archive precedence decided by the order of *.big files)
+      const key = (n) => (n === '.' ? '' : n === '..' ? '\u0001' : n.toUpperCase());
+      entries.sort((a, b) => { const x = key(a.name), y = key(b.name); return x < y ? -1 : x > y ? 1 : 0; });
     }
     vm.log('file', `find ${full} -> ${entries.length ? entries.map((e) => e.name).join(', ') : 'nothing'}`);
     if (!entries.length) return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE;
