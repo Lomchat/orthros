@@ -100,7 +100,12 @@ async function profileWorker(seconds) {
   // hottest JIT regions (region functions are named r_<entry eip> in the module name section)
   const regions = [...self].filter(([k]) => k.startsWith('r_')).map(([k, c]) => [k.split(' ')[0].slice(2), c]).sort((a, b) => b[1] - a[1]);
   const regionTotal = regions.reduce((acc, [, c]) => acc + c, 0);
-  if (regions.length) { console.log(`[profile] guest code: ${(100 * regionTotal / total).toFixed(1)}% in ${regions.length} regions; hottest:`); for (const [eip, c] of regions.slice(0, 20)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  region ${eip}`); }
+  if (regions.length) {
+    console.log(`[profile] guest code: ${(100 * regionTotal / total).toFixed(1)}% in ${regions.length} regions; hottest:`); for (const [eip, c] of regions.slice(0, 20)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  region ${eip}`);
+    // instruction mix of the hottest regions (decoded by the worker from guest memory)
+    await page.evaluate((eips) => { window.orthros.regions = null; window.orthros.worker?.postMessage({ type: 'regions', eips }); }, regions.slice(0, 12).map(([eip]) => eip));
+    for (let i = 0; i < 50; i++) { const txt = await page.evaluate(() => window.orthros.regions); if (txt) { console.log('[profile] instruction mix:\n' + txt); break; } await page.waitForTimeout(100); }
+  }
 }
 for (;;) {
   const s = await status();

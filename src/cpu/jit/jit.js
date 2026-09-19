@@ -243,11 +243,16 @@ export class Jit {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
         this.harvest(cpu.base);
+        this.materialize();
         this.lastFault = e;
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
       }
-      this.harvest(cpu.base); // EFLAGS stay lazy in memory: CpuState.eflags folds them when JS reads them
+      this.harvest(cpu.base);
+      // Flags are folded eagerly at every exit to JS: leaving them pending in memory while JS runs made the
+      // game's startup spin in an SEH continuation loop (root cause not isolated; the on-demand fold in
+      // CpuState.eflags stays as a safety net).
+      this.materialize();
       if (r === EXIT_TRANSLATE) {
         const eip = cpu.eip;
         if (eip >= THUNK_BASE && eip < THUNK_END) { cpu.exit = EXIT.THUNK; cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0; return EXIT.THUNK; }

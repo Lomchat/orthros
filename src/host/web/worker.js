@@ -8,6 +8,8 @@ import { HttpBackend } from '../../vfs/http-backend.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
+import { decode, OP_NAMES } from '../../cpu/decoder.js';
+import { HANDLERS } from '../../cpu/jit/translate.js';
 
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
 let lastFlush = 0, running = false, stopped = false;
@@ -122,6 +124,25 @@ function pump() {
   else channel.port2.postMessage(0);
 }
 
+/** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
+function regionMix(eips) {
+  const lines = [], overall = new Map(); let total = 0;
+  for (const eipHex of eips) {
+    const eip = parseInt(eipHex, 16);
+    const r = vm.jit?.byEntry.get(eip);
+    if (!r) { lines.push(`region ${eipHex}: not live`); continue; }
+    const hist = new Map(); let n = 0, bytes = 0, fb = 0;
+    for (const b of r.blocks) {
+      let a = b.eip;
+      while (a < b.end) { let insn; try { insn = decode(vm.mem, a); } catch { break; } const name = OP_NAMES[insn.op]; hist.set(name, (hist.get(name) ?? 0) + 1); overall.set(name, (overall.get(name) ?? 0) + 1); n++; total++; bytes += insn.len; a = insn.next; if (!HANDLERS[insn.op]) fb++; }
+    }
+    const top = [...hist].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ');
+    lines.push(`region ${eipHex} (${vm.proc.symbolize(eip)}): ${r.blocks.length} blocks, ${n} insns, ${bytes} bytes, ${fb} interpreter fallbacks — ${top}`);
+  }
+  lines.push(`overall (${total} insns): ` + [...overall].sort((x, y) => y[1] - x[1]).slice(0, 24).map(([k, v]) => `${k} ${(100 * v / Math.max(1, total)).toFixed(1)}%`).join(', '));
+  return lines.join('\n');
+}
+
 function stop(reason) { stopped = true; running = false; flushProfile(true); post({ type: 'exit', code: -1, reason }); }
 
 self.onmessage = (e) => {
@@ -129,6 +150,7 @@ self.onmessage = (e) => {
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) channel.port2.postMessage(0); }
   else if (m.type === 'stop') stop('stop requested');
+  else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
   else if (m.type === 'report') post({ type: 'report', text: vm ? vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
 };
 void IN_RING; void AUDIO_RING_FRAMES;

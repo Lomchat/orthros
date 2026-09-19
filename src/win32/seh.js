@@ -61,7 +61,7 @@ export class Seh {
     this.writeContext(cpu, ctx);
     this.writeRecord(rec, code, flags, addr, params);
     thread.seh = { rec, ctx, frame: m.read32(thread.teb), code, flags, addr, depth: (thread.seh?.depth ?? 0) + 1, spBase: (rec - 0x40) >>> 0 };
-    this.vm.log('seh', `exception ${code.toString(16)} at ${this.vm.proc.symbolize(addr)} (thread ${thread.id}), first frame ${m.read32(thread.teb).toString(16)}`);
+    this.sehLog( `exception ${code.toString(16)} at ${this.vm.proc.symbolize(addr)} (thread ${thread.id}), first frame ${m.read32(thread.teb).toString(16)}`);
     return this.next(thread);
   }
 
@@ -81,10 +81,13 @@ export class Seh {
       sp -= 4; m.write32(sp, this.returnThunk);
       cpu.esp = sp;
       cpu.eip = handler;
-      this.vm.log('seh', `  -> handler ${this.vm.proc.symbolize(handler)} for frame ${s.frame.toString(16)}`);
+      this.sehLog( `  -> handler ${this.vm.proc.symbolize(handler)} for frame ${s.frame.toString(16)}`);
       return true;
     }
   }
+
+  /** 'seh' log capped at 80 lines per process (an exception storm would otherwise flood the console). */
+  sehLog(msg) { if ((this.logCount = (this.logCount ?? 0) + 1) <= 80) this.vm.log('seh', msg); }
 
   /** __seh_return: a handler returned with a disposition in EAX. */
   onHandlerReturn(ctx) {
@@ -93,7 +96,7 @@ export class Seh {
     if (!s) { this.vm.warn('SEH: handler returned without dispatch state'); return; }
     cpu.esp = (ctx.sp + 4 + 16) >>> 0; // pop our return address + 4 args (cdecl)
     if (disp === 0) { // ExceptionContinueExecution
-      this.vm.log('seh', `  <- continue execution at ${m.read32(s.ctx + 0xb8).toString(16)}`);
+      this.sehLog( `  <- continue execution at ${m.read32(s.ctx + 0xb8).toString(16)}`);
       this.readContext(cpu, s.ctx);
       thread.seh = null;
       return;
@@ -116,7 +119,7 @@ export class Seh {
       // EXCEPTION_POINTERS { rec, ctx } on the stack; call the filter (stdcall, 1 arg)
       const ep = (s.spBase - 8) >>> 0;
       m.write32(ep, s.rec); m.write32(ep + 4, s.ctx);
-      this.vm.log('seh', `  -> unhandled exception filter ${this.vm.proc.symbolize(filter)}`);
+      this.sehLog( `  -> unhandled exception filter ${this.vm.proc.symbolize(filter)}`);
       const r = this.vm.callGuest(thread, filter, [ep]) | 0;
       if (r === -1) { this.readContext(cpu, s.ctx); thread.seh = null; return true; }
       if (r === 1) { this.vm.warn(`unhandled exception ${s.code.toString(16)} at ${this.vm.proc.symbolize(s.addr)}: filter requested termination`); this.vm.exitProcess(s.code); }
@@ -150,7 +153,7 @@ export class Seh {
     while (frame !== CHAIN_END && frame !== target && guard++ < 10000) {
       if (!this.vm.proc.vmem.isCommitted(frame, 8)) { this.vm.warn(`RtlUnwind: bad frame ${frame.toString(16)}`); break; }
       const handler = m.read32(frame + 4), prev = m.read32(frame);
-      this.vm.log('seh', `  unwind frame ${frame.toString(16)} handler ${this.vm.proc.symbolize(handler)}`);
+      this.sehLog( `  unwind frame ${frame.toString(16)} handler ${this.vm.proc.symbolize(handler)}`);
       // handlers may be builtin thunks: callGuest handles both
       const savedEsp = cpu.esp;
       cpu.esp = (ctxAddr - 0x40) >>> 0;

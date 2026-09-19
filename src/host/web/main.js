@@ -71,6 +71,7 @@ function onWorkerMessage(m) {
     case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); break;
     case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); break;
     case 'report': state.report = m.text; log('crash', m.text); break;
+    case 'regions': state.regions = m.text; break;
   }
 }
 
