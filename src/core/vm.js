@@ -32,6 +32,7 @@ const SLICE_INSNS = 100000;
 
 /** Returned by an API handler that transferred control to a guest procedure (see Vm.tailCallGuest). */
 export const TAIL_CALL = Symbol('tail-call');
+const API_TRACE_LEN = 1024; // ring of recent API calls (crash reports, diagnostics); power of two
 
 export class Vm {
   /**
@@ -53,8 +54,9 @@ export class Vm {
     this.current = null;
     this.logKinds = new Set(opts.logKinds ?? ['loader', 'warn', 'crash']);
     this.traceApi = this.logKinds.has('api') || this.logKinds.has('all');
+    this.traceApiBg = opts.logKinds?.includes('apibg') ?? false;
     this.logFn = opts.log ?? ((kind, msg) => console.log(`[${kind}] ${msg}`));
-    this.apiTrace = new Array(64).fill(null);
+    this.apiTrace = new Array(API_TRACE_LEN).fill(null);
     this.apiTracePos = 0;
     this.apiCalls = 0;
     this.stdout = [];
@@ -83,9 +85,9 @@ export class Vm {
     this.traceCom = !!opts.logKinds?.includes('com');
     if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); for (let i = 0; i < this.api.thunks.length; i++) this.jit.markFast(i, `${this.api.thunks[i].dll}!${this.api.thunks[i].name}`, this.api.thunks[i].def); }
     registerBuiltins(this.api, this);
-    this.apiTraceNames = new Array(64).fill(null);
-    this.apiTraceRets = new Uint32Array(64);
-    this.apiTraceTids = new Uint32Array(64);
+    this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
+    this.apiTraceRets = new Uint32Array(API_TRACE_LEN);
+    this.apiTraceTids = new Uint32Array(API_TRACE_LEN);
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
@@ -176,15 +178,16 @@ export class Vm {
     }
   }
 
-  /** The last `n` API calls (oldest first) as "dll!name from site" strings — diagnostics. */
-  recentApiCalls(n = 16) {
+  /** The last `n` API calls (oldest first) as "dll!name from site" strings, optionally of one thread — diagnostics. */
+  recentApiCalls(n = 16, tid = 0) {
     const out = [];
-    for (let i = 64 - n; i < 64; i++) {
-      const k = (this.apiTracePos + i) & 63;
+    for (let i = 0; i < API_TRACE_LEN && out.length < n; i++) {
+      const k = (this.apiTracePos - 1 - i) & (API_TRACE_LEN - 1);
       const t = this.apiTraceNames[k];
-      if (t) out.push(`${t.dll}!${t.name}${t.def ? '' : ' [stub]'} from ${this.proc.symbolize(this.apiTraceRets[k])}`);
+      if (!t || (tid && this.apiTraceTids[k] !== tid)) continue;
+      out.push(`${t.dll}!${t.name}${t.def ? '' : ' [stub]'} from ${this.proc.symbolize(this.apiTraceRets[k])}${tid ? '' : ` [t${this.apiTraceTids[k]}]`}`);
     }
-    return out;
+    return out.reverse();
   }
 
   /** Multimedia timer thread body: run due timeSetEvent callbacks, then sleep until the next one. */
@@ -362,7 +365,8 @@ export class Vm {
     if (this.apiHist) { const k = `${t.dll}!${t.name}`; this.apiHist.set(k, (this.apiHist.get(k) ?? 0) + 1); }
     if (def) {
       if (this.traceApi) this.logFn('api', this.fmtCall(t, ctx, def.argc));
-      const tp = this.apiTracePos++ & 63;
+      else if (this.traceApiBg && thread !== this.proc.threads[0]) this.logFn('apibg', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)}`); // background threads only (loaders, audio): far fewer calls
+      const tp = this.apiTracePos++ & (API_TRACE_LEN - 1);
       this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
       let r;
       try { r = def.fn(ctx); }
@@ -387,7 +391,7 @@ export class Vm {
     this.proc.unknownImports.set(key, info);
     const argc = this.api.signatures.get(t.name);
     if (info.calls <= 3) this.warn(`unimplemented ${key} called from ${this.proc.symbolize(this.mem.read32(sp))}` + (argc === undefined ? ' (unknown signature: assuming 0 args, stdcall)' : ` (${argc} args)`));
-    { const tp = this.apiTracePos++ & 63; this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); }
+    { const tp = this.apiTracePos++ & (API_TRACE_LEN - 1); this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id; }
     cpu.eip = this.mem.read32(sp);
     cpu.esp = (sp + 4 + (argc ?? 0) * 4) >>> 0;
     cpu.eax = (this.api.stubReturns.get(t.dll) ?? 0) >>> 0;
@@ -459,7 +463,7 @@ export class Vm {
         if (proc.moduleByAddr(v) && v > 0x1000 && (mem.read8(v - 5) === 0xe8 || mem.read8(v - 2) === 0xff || mem.read8(v - 3) === 0xff || mem.read8(v - 6) === 0xff)) rets.push(proc.symbolize(v));
       }
       let last = '';
-      for (let i = 63; i >= 0; i--) { const k = (this.apiTracePos + i) & 63; if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
+      for (let i = API_TRACE_LEN - 1; i >= 0; i--) { const k = (this.apiTracePos + i) & (API_TRACE_LEN - 1); if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
       lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${t.blockReason}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}`);
     }
     return lines.join('\n');
