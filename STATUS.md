@@ -113,7 +113,10 @@
   par programme (noms constants) et mémoïsation du programme par version d'état du device : **35-37 fps, p99 38 ms**,
   `bufferSubData` 0,4 %. Puis chaînage des régions par appels terminaux (D029) : dispatcher 10 % → 1,8 %, p99 33 ms,
   fps moyen 35 (worker saturé : profil plat — `dispatchThunk` 3,7 %, `applyState` 2,9 %, `u` 2,5 %, `programUncached`
-  2,4 %, `materialize` 2,2 %, `surfaceToRgba` 2,1 %, COM 1,9 %).
+  2,4 %, `materialize` 2,2 %, `surfaceToRgba` 2,1 %, COM 1,9 %). Tentative de drapeaux paresseux côté JS (repli à la
+  lecture d'EFLAGS) abandonnée : le démarrage du jeu partait en boucle de continuation SEH — cause non isolée, repli
+  eager conservé. Outils : régions nommées `r_<eip>` dans les profils, mix d'instructions des régions chaudes.
+- Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
   tranche, chemin d'appel d'API plus court, envois de tampons de sommets groupés.
