@@ -8,6 +8,27 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SC
 export const EXIT_TRANSLATE = 7;
 export const HASH_ENTRY = 16; // eip u32, fnIdx u32, block u32, pad
 export const HASH_PROBES = 4;
+// Region function signature: (block, state, eax, ecx, edx, ebx, esp, ebp, esi, edi, eflags,
+// lzop, lzres, lza, lzb, fs) -> nextEip|0. The parameters double as the region's locals 0..15
+// (see translate.js), so a region can hand its live register file to the next one with a tail
+// call (region chaining) without going through the state block.
+export const REGION_PARAMS = Object.freeze(Array(16).fill(T.i32));
+export const REGION_RESULTS = Object.freeze([T.i32]);
+/** State-block offsets of the 14 register/flag arguments that follow (block, state). */
+export const REGION_ARG_OFFSETS = Object.freeze([...Array.from({ length: 8 }, (_, i) => ST.GPR + 4 * i), ST.EFLAGS, ST.LZ_OP, ST.LZ_RES, ST.LZ_SRC1, ST.LZ_SRC2, ST.FS_BASE]);
+
+/** Does this engine accept `return_call_indirect` (WASM tail calls)? Region chaining needs it. */
+export function supportsReturnCall() {
+  try {
+    const m = new ModuleBuilder();
+    m.importTable('env', 'table', 1, undefined);
+    const t = m.type([T.i32], [T.i32]);
+    const c = new Code();
+    c.get(0).i32(0).return_call_indirect(t, 0);
+    m.func([T.i32], [T.i32], [], c, 'f');
+    return WebAssembly.validate(m.build());
+  } catch { return false; }
+}
 // Fast-path API table: one byte per thunk index (id of a WASM implementation, 0 = none), and a
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
@@ -50,13 +71,14 @@ export function materializeFlags(op, res, a, b, ef) {
 
 /**
  * Build the runtime module bytes. Imports: env.memory, env.table.
- * Exports: run(eip, state, stopAt) -> exit code; flags(op,res,a,b,ef) -> ef; round24(x, rc) -> x'
+ * Exports: run(eip, state) -> exit code (halts at ST.STOP_AT); flags(op,res,a,b,ef) -> ef;
+ * round24(x, rc) -> x'
  */
 export function buildRuntime() {
   const m = new ModuleBuilder();
   m.importMemory('env', 'memory', 32768, 32768);
   m.importTable('env', 'table', 1024, undefined);
-  const regionType = m.type([T.i32, T.i32], [T.i32]);
+  const regionType = m.type(REGION_PARAMS, REGION_RESULTS);
 
   // ---- flags(op, res, a, b, ef) -> ef
   {
@@ -216,10 +238,11 @@ export function buildRuntime() {
     m.exportFunc('fastApi', fastApiIdx);
   }
 
-  // ---- run(eip, state, stopAt) -> exit code
+  // ---- run(eip, state) -> exit code
   {
     const c = new Code();
     const [EIP, STATE, STOP, E, IDX, PROBE] = [0, 1, 2, 3, 4, 5];
+    c.get(STATE).i32load(ST.STOP_AT).set(STOP);
     const L = c.loop();
     // stopAt
     c.get(EIP).get(STOP).eq(); const i0 = c.if_(); c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.HALT).i32store(ST.EXIT); c.i32(EXIT.HALT).return_(); c.end(); void i0;
@@ -247,13 +270,15 @@ export function buildRuntime() {
     // miss
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT_TRANSLATE).i32store(ST.EXIT); c.i32(EXIT_TRANSLATE).return_();
     c.end(); // found
-    // call region: (block, state) via table[fnIdx]
-    c.get(E).i32load(8).get(STATE).get(E).i32load(4).call_indirect(regionType, 0).tee(EIP);
+    // call region: (block, state, registers/flags from the state block) via table[fnIdx]
+    c.get(E).i32load(8).get(STATE);
+    for (const off of REGION_ARG_OFFSETS) c.get(STATE).i32load(off);
+    c.get(E).i32load(4).call_indirect(regionType, 0).tee(EIP);
     c.eqz(); const i3 = c.if_(); c.get(STATE).i32load(ST.EXIT).return_(); c.end(); void i3;
     c.br(L);
     c.end(); // loop
     c.i32(0);
-    const idx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32], c, 'run');
+    const idx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32], c, 'run');
     m.exportFunc('run', idx);
   }
   return m.build();

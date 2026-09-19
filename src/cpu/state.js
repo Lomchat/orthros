@@ -23,7 +23,9 @@
 //   0x0C0  MXCSR
 //   0x100  XMM[8]     16 bytes each
 //   0x180  MM[8]      8 bytes each (kept separately from FPR, see D005)
-//   0x1C0  ICOUNT     u32 instructions executed (low), 0x1C4 high (interpreter statistics)
+//   0x1C0  ICOUNT     s32 instruction budget left for the current run() (JIT/interpreter)
+//   0x1C4  STOP_AT    EIP at which the JIT dispatcher must halt (0xffffffff when unused)
+//   0x1C8  TRANSITIONS u32 region-to-region chained transitions since the last harvest (JIT stats)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
 
@@ -50,6 +52,8 @@ export const ST = Object.freeze({
   XMM: 0x100,
   MM: 0x180,
   ICOUNT: 0x1c0,
+  STOP_AT: 0x1c4,
+  TRANSITIONS: 0x1c8,
   SIZE: 0x400,
 });
 
