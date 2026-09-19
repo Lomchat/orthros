@@ -90,6 +90,9 @@
   PUSH/POP de segment, transcendantes x87) ; menu avec audio 20 → 39,5 fps ; bench phase SSE 2 989 ms (interpréteur)
   → 16 ms (JIT) ; ~4 500 cas oracle supplémentaires (`sse` étendue, `verify_float/int/mech`) verts sur les deux
   exécuteurs ; trois corrections de fidélité de l'interpréteur (EMMS/TOP, FTZ sur MIN/MAX, propagation des NaN).
+  **En partie (escarmouche, carte 3D, ~250 appels de dessin/image) : 3 → 28-30 fps, p99 ≈ 47 ms sous SwiftShader**
+  (`node tools/headless.mjs bfme-vanilla --seconds 330 --pump --fallback --input …`), replis restants 13 k/s
+  (transcendantes x87, PUSH/POP de segment).
 - Saisie clavier : `WM_CHAR` uniquement via `TranslateMessage` (le nom de profil n'est plus dupliqué).
 - Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil (miroir OPFS hors
   headless, à vérifier en page réelle).
