@@ -87,7 +87,7 @@ for (;;) {
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
-  if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f }).catch(() => page.screenshot({ path: f })); console.log(`[shot] ${f}`); }
+  if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
   if (t >= seconds) { console.log(`[end] time limit ${seconds}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })); await page.waitForTimeout(500); const r = await page.evaluate(() => window.orthros.report); if (r) console.log(r); break; }
   await page.waitForTimeout(1000);
