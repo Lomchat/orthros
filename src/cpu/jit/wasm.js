@@ -367,6 +367,14 @@ export class ModuleBuilder {
       }
       section(10, s);
     }
+    // custom "name" section (function names only): profilers and stack traces show them instead of wasm-function[i]
+    const named = this.funcs.map((f, i) => [this.importedFuncs + i, f.name]).filter(([, n]) => n);
+    if (named.length) {
+      const s = new ByteWriter(); s.str('name');
+      const sub = new ByteWriter(); sub.u(named.length); for (const [idx, n] of named) { sub.u(idx); sub.str(n); }
+      s.byte(1); s.sized(sub);
+      section(0, s);
+    }
     return w.finish();
   }
 }

@@ -100,6 +100,9 @@ export const MAX_THREADS = 256;
  * Thin accessor over a thread state block living in guest memory.
  */
 export class CpuState {
+  /** installed by the JIT: folds the pending lazy flag operation of `cpu` into EFLAGS (see Jit) */
+  static foldLazyFlags = null;
+
   /**
    * @param {import('./memory.js').GuestMemory} mem
    * @param {number} base byte offset of the state block
@@ -138,8 +141,9 @@ export class CpuState {
 
   get eip() { return this.mem.u32[(this.base + ST.EIP) / 4]; }
   set eip(v) { this.mem.u32[(this.base + ST.EIP) / 4] = v >>> 0; }
-  get eflags() { return this.mem.u32[(this.base + ST.EFLAGS) / 4]; }
-  set eflags(v) { this.mem.u32[(this.base + ST.EFLAGS) / 4] = v >>> 0; }
+  /** EFLAGS; a lazy flag operation left pending by the JIT (ST.LZ_OP != 0) is folded in on read and cancelled on write. */
+  get eflags() { if (this.mem.u32[(this.base + ST.LZ_OP) / 4]) CpuState.foldLazyFlags?.(this); return this.mem.u32[(this.base + ST.EFLAGS) / 4]; }
+  set eflags(v) { this.mem.u32[(this.base + ST.LZ_OP) / 4] = 0; this.mem.u32[(this.base + ST.EFLAGS) / 4] = v >>> 0; }
 
   get fsBase() { return this.mem.u32[(this.base + ST.FS_BASE) / 4]; }
   set fsBase(v) { this.mem.u32[(this.base + ST.FS_BASE) / 4] = v >>> 0; }

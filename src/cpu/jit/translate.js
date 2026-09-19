@@ -118,7 +118,7 @@ export function translateRegion(mem, entry, opts = {}) {
 }
 
 /** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
-export function buildRegionModule(codes) {
+export function buildRegionModule(codes, names = null) {
   const m = new ModuleBuilder();
   if (m.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
   m.importMemory('env', 'memory', 32768, 32768);
@@ -126,7 +126,7 @@ export function buildRegionModule(codes) {
   m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
   m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
   m.importFunc('env', 'fallback', [T.i32], [T.i32]);
-  codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length }, 'r' + i); m.exportFunc('r' + i, f); });
+  codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }
 
