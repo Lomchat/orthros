@@ -149,7 +149,7 @@ test('bench.exe: JIT region consolidation into multi-function modules keeps resu
   const code = vm.run();
   assert.equal(code, 0);
   const out = vm.stdout.join('');
-  for (const [k, v] of [['int', '49965701'], ['sieve', '000245c5'], ['memory', '213a0000'], ['string', '00fa0000'], ['fpu', '000007d1']]) assert.ok(out.includes(`${k} 0x${v}`), `${k} checksum in\n${out}`);
+  for (const [k, v] of [['int', '49965701'], ['sieve', '000245c5'], ['memory', '213a0000'], ['string', '00fa0000'], ['fpu', '000007d1'], ['sse', 'd4fd7eca']]) assert.ok(out.includes(`${k} 0x${v}`), `${k} checksum in\n${out}`);
   assert.ok(vm.jit.stats.consolidations >= 5, `consolidations: ${vm.jit.stats.consolidations}`);
 });
 

@@ -3,7 +3,7 @@
 CLANG ?= clang
 BUILD := build
 GEN := tests/generated
-SUITES := alu stack branch string x87 sse
+SUITES := alu stack branch string x87 sse verify_float verify_mech verify_int
 CASES ?= 1500
 
 .PHONY: all test test-unit tools gen serve headless clean

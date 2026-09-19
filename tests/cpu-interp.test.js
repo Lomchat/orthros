@@ -8,7 +8,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 
 const DIR = new URL('./generated/', import.meta.url).pathname;
-const SUITES = ['alu', 'stack', 'branch', 'string', 'x87', 'sse'];
+const SUITES = ['alu', 'stack', 'branch', 'string', 'x87', 'sse', 'verify_float', 'verify_int', 'verify_mech'];
 const SHOW = +(process.env.SHOW_FAILURES || 8);
 
 for (const suite of SUITES) {

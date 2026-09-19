@@ -82,8 +82,23 @@ function toInt32(I, v, trunc) {
 // ---------------------------------------------------------------------------------------------
 // Packed float arithmetic
 
-// kind: 'ps' 4xf32, 'pd' 2xf64, 'ss' 1xf32 (rest from dest), 'sd' 1xf64
-function fpBin(kind, fn) {
+// x86 NaN rule for SSE arithmetic: a NaN result comes from the first (destination) operand when it is
+// a NaN (quieted), else from the second, else it is the "real indefinite" negative QNaN. JS arithmetic
+// canonicalises NaNs, so the result bits are rebuilt from the operand bits.
+const isNan32 = (u) => (u & 0x7fffffff) > 0x7f800000;
+function nan32(au, bu) { return isNan32(au) ? (au | 0x00400000) >>> 0 : isNan32(bu) ? (bu | 0x00400000) >>> 0 : 0xffc00000; }
+function storeF32Lane(V, i, r, au, bu) { if (r === r) V.f32[i] = r; else V.u32[i] = nan32(au, bu); }
+function storeF64Lane(V, i, r, alo, ahi, blo, bhi) {
+  if (r === r) { V.f64[i] = r; return; }
+  const aNan = (ahi & 0x7fffffff) > 0x7ff00000 || ((ahi & 0x7fffffff) === 0x7ff00000 && alo !== 0);
+  const bNan = (bhi & 0x7fffffff) > 0x7ff00000 || ((bhi & 0x7fffffff) === 0x7ff00000 && blo !== 0);
+  if (aNan) { V.u32[2 * i] = alo; V.u32[2 * i + 1] = (ahi | 0x00080000) >>> 0; } else if (bNan) { V.u32[2 * i] = blo; V.u32[2 * i + 1] = (bhi | 0x00080000) >>> 0; } else { V.u32[2 * i] = 0; V.u32[2 * i + 1] = 0xfff80000; }
+}
+// kind: 'ps' 4xf32, 'pd' 2xf64, 'ss' 1xf32 (rest from dest), 'sd' 1xf64. mode: 'bin' (two operands),
+// 'select' (MIN/MAX: one operand is returned unchanged — no NaN quieting, no FTZ on the result) or
+// 'unary' (SQRT/RCP/RSQRT: only the source operand feeds the NaN rule).
+function fpBin(kind, fn, mode = 'bin') {
+  const select = mode === 'select', unary = mode === 'unary';
   return (I, insn) => {
     const d = insn.ops[0], s = insn.ops[1];
     load(I, d, A, 16);
@@ -93,10 +108,18 @@ function fpBin(kind, fn) {
     R.u8.set(A.u8);
     if (kind === 'ps' || kind === 'ss') {
       const n = kind === 'ps' ? 4 : 1;
-      for (let i = 0; i < n; i++) R.f32[i] = ftzOut(I, Math.fround(fn(dazIn(I, A.f32[i]), dazIn(I, B.f32[i]))));
+      for (let i = 0; i < n; i++) {
+        const a = dazIn(I, A.f32[i]), b = dazIn(I, B.f32[i]);
+        if (select) { if (a !== a || b !== b) R.u32[i] = B.u32[i]; else R.f32[i] = fn(a, b); }
+        else storeF32Lane(R, i, ftzOut(I, Math.fround(fn(a, b))), unary ? B.u32[i] : A.u32[i], B.u32[i]);
+      }
     } else {
       const n = kind === 'pd' ? 2 : 1;
-      for (let i = 0; i < n; i++) R.f64[i] = ftzOutD(I, fn(dazInD(I, A.f64[i]), dazInD(I, B.f64[i])));
+      for (let i = 0; i < n; i++) {
+        const a = dazInD(I, A.f64[i]), b = dazInD(I, B.f64[i]);
+        if (select) { if (a !== a || b !== b) { R.u32[2 * i] = B.u32[2 * i]; R.u32[2 * i + 1] = B.u32[2 * i + 1]; } else R.f64[i] = fn(a, b); }
+        else storeF64Lane(R, i, ftzOutD(I, fn(a, b)), unary ? B.u32[2 * i] : A.u32[2 * i], unary ? B.u32[2 * i + 1] : A.u32[2 * i + 1], B.u32[2 * i], B.u32[2 * i + 1]);
+      }
     }
     store(I, d, R, 16);
   };
@@ -105,19 +128,23 @@ const add = (a, b) => a + b, sub = (a, b) => a - b, mul = (a, b) => a * b, div =
 const min = (a, b) => (a < b ? a : b), max = (a, b) => (a > b ? a : b);
 const sqrt = (a, b) => Math.sqrt(b);
 for (const [k, fn] of [['ADD', add], ['SUB', sub], ['MUL', mul], ['DIV', div], ['MIN', min], ['MAX', max], ['SQRT', sqrt]]) {
-  H[OP[k + 'PS']] = fpBin('ps', fn); H[OP[k + 'PD']] = fpBin('pd', fn);
-  H[OP[k + 'SS']] = fpBin('ss', fn); H[OP[k + 'SD']] = fpBin('sd', fn);
+  const mode = k === 'MIN' || k === 'MAX' ? 'select' : k === 'SQRT' ? 'unary' : 'bin';
+  H[OP[k + 'PS']] = fpBin('ps', fn, mode); H[OP[k + 'PD']] = fpBin('pd', fn, mode);
+  H[OP[k + 'SS']] = fpBin('ss', fn, mode); H[OP[k + 'SD']] = fpBin('sd', fn, mode);
 }
-H[OP.RCPPS] = fpBin('ps', (a, b) => 1 / b);
-H[OP.RCPSS] = fpBin('ss', (a, b) => 1 / b);
-H[OP.RSQRTPS] = fpBin('ps', (a, b) => 1 / Math.sqrt(b));
-H[OP.RSQRTSS] = fpBin('ss', (a, b) => 1 / Math.sqrt(b));
-H[OP.ADDSUBPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); for (let i = 0; i < 4; i++) R.f32[i] = Math.fround(i & 1 ? A.f32[i] + B.f32[i] : A.f32[i] - B.f32[i]); store(I, insn.ops[0], R, 16); };
-H[OP.ADDSUBPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); R.f64[0] = A.f64[0] - B.f64[0]; R.f64[1] = A.f64[1] + B.f64[1]; store(I, insn.ops[0], R, 16); };
-H[OP.HADDPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); R.f32[0] = Math.fround(A.f32[0] + A.f32[1]); R.f32[1] = Math.fround(A.f32[2] + A.f32[3]); R.f32[2] = Math.fround(B.f32[0] + B.f32[1]); R.f32[3] = Math.fround(B.f32[2] + B.f32[3]); store(I, insn.ops[0], R, 16); };
-H[OP.HSUBPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); R.f32[0] = Math.fround(A.f32[0] - A.f32[1]); R.f32[1] = Math.fround(A.f32[2] - A.f32[3]); R.f32[2] = Math.fround(B.f32[0] - B.f32[1]); R.f32[3] = Math.fround(B.f32[2] - B.f32[3]); store(I, insn.ops[0], R, 16); };
-H[OP.HADDPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); R.f64[0] = A.f64[0] + A.f64[1]; R.f64[1] = B.f64[0] + B.f64[1]; store(I, insn.ops[0], R, 16); };
-H[OP.HSUBPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); R.f64[0] = A.f64[0] - A.f64[1]; R.f64[1] = B.f64[0] - B.f64[1]; store(I, insn.ops[0], R, 16); };
+H[OP.RCPPS] = fpBin('ps', (a, b) => 1 / b, 'unary');
+H[OP.RCPSS] = fpBin('ss', (a, b) => 1 / b, 'unary');
+H[OP.RSQRTPS] = fpBin('ps', (a, b) => 1 / Math.sqrt(b), 'unary');
+H[OP.RSQRTSS] = fpBin('ss', (a, b) => 1 / Math.sqrt(b), 'unary');
+// SSE3 horizontal / alternating forms: same NaN rule, the "first operand" being the left lane of each pair
+const f32pair = (i, X, xi, Y, yi, sub) => storeF32Lane(R, i, Math.fround(sub ? X.f32[xi] - Y.f32[yi] : X.f32[xi] + Y.f32[yi]), X.u32[xi], Y.u32[yi]);
+const f64pair = (i, X, xi, Y, yi, sub) => storeF64Lane(R, i, sub ? X.f64[xi] - Y.f64[yi] : X.f64[xi] + Y.f64[yi], X.u32[2 * xi], X.u32[2 * xi + 1], Y.u32[2 * yi], Y.u32[2 * yi + 1]);
+H[OP.ADDSUBPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); for (let i = 0; i < 4; i++) f32pair(i, A, i, B, i, !(i & 1)); store(I, insn.ops[0], R, 16); };
+H[OP.ADDSUBPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); f64pair(0, A, 0, B, 0, true); f64pair(1, A, 1, B, 1, false); store(I, insn.ops[0], R, 16); };
+H[OP.HADDPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); f32pair(0, A, 0, A, 1, false); f32pair(1, A, 2, A, 3, false); f32pair(2, B, 0, B, 1, false); f32pair(3, B, 2, B, 3, false); store(I, insn.ops[0], R, 16); };
+H[OP.HSUBPS] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); f32pair(0, A, 0, A, 1, true); f32pair(1, A, 2, A, 3, true); f32pair(2, B, 0, B, 1, true); f32pair(3, B, 2, B, 3, true); store(I, insn.ops[0], R, 16); };
+H[OP.HADDPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); f64pair(0, A, 0, A, 1, false); f64pair(1, B, 0, B, 1, false); store(I, insn.ops[0], R, 16); };
+H[OP.HSUBPD] = (I, insn) => { load(I, insn.ops[0], A, 16); load(I, insn.ops[1], B, 16); f64pair(0, A, 0, A, 1, true); f64pair(1, B, 0, B, 1, true); store(I, insn.ops[0], R, 16); };
 
 // bitwise
 function bitop(fn) {

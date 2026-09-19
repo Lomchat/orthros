@@ -659,6 +659,6 @@ H[OP.FXSAVE] = (I, insn) => fxsave(I, I.ea(insn.ops[0]));
 H[OP.FXRSTOR] = (I, insn) => fxrstor(I, I.ea(insn.ops[0]));
 H[OP.LDMXCSR] = (I, insn) => { I.cpu.mxcsr = I.mem.read32(I.ea(insn.ops[0])) & 0xffff; };
 H[OP.STMXCSR] = (I, insn) => { I.mem.write32(I.ea(insn.ops[0]), I.cpu.mxcsr); };
-H[OP.EMMS] = (I) => { const x = x87(I); x.tw = 0; };
+H[OP.EMMS] = (I) => { const x = x87(I); x.tw = 0; x.top = 0; }; // like every MMX instruction, EMMS resets TOP
 
 export { X87, x87, INDEFINITE, roundEven };

@@ -162,13 +162,22 @@ export class Conformance {
         const m = 0x4500;
         if ((cpu.fpuSw & m) !== (fsw & m)) diffs.push(`fpu sw(cc): got ${h(cpu.fpuSw & m)} want ${h(fsw & m)}`);
       }
-      for (let k = 0; k < 8; k++) {
-        const phys = (top + k) & 7;
-        if (!((tw >> phys) & 1)) continue; // empty
-        const want = f80ToF64(rv.getBigUint64(fx + 32 + 16 * k, true), rv.getUint16(fx + 40 + 16 * k, true));
-        const got = cpu.fpr(phys);
-        if (!fpEqual(got, want, meta.tol)) diffs.push(`st(${k}): got ${got} want ${want}`);
+      // MMX cases: the MM registers are compared separately (below) and are not aliased onto the
+      // x87 FPRs in the emulator (DECISIONS D005), so only TOP/TW/CW are compared here.
+      if (!meta.mmx) {
+        for (let k = 0; k < 8; k++) {
+          const phys = (top + k) & 7;
+          if (!((tw >> phys) & 1)) continue; // empty
+          const want = f80ToF64(rv.getBigUint64(fx + 32 + 16 * k, true), rv.getUint16(fx + 40 + 16 * k, true));
+          const got = cpu.fpr(phys);
+          if (!fpEqual(got, want, meta.tol)) diffs.push(`st(${k}): got ${got} want ${want}`);
+        }
       }
+    }
+    if (meta.mxcsr) {
+      // bits 0-5 are the sticky exception flags: hardware sets them, the emulator never does
+      const want = rv.getUint32(fx + 24, true) & ~0x3f;
+      if ((cpu.mxcsr & ~0x3f) !== want) diffs.push(`mxcsr: got ${h(cpu.mxcsr & ~0x3f)} want ${h(want)}`);
     }
     if (meta.xmm) {
       for (let k = 0; k < 8; k++) {
@@ -178,9 +187,11 @@ export class Conformance {
       }
     }
     if (meta.mmx) {
+      // FXSAVE stores ST(i) = physical (TOP + i) & 7 at slot i: MM k (physical) is slot (k - TOP) & 7
+      const mmTop = (rv.getUint16(fx + 2, true) >> 11) & 7;
       for (let k = 0; k < 8; k++) {
         const g = mem.read64(cpu.mmAddr(k));
-        const w = rv.getBigUint64(fx + 32 + 16 * k, true);
+        const w = rv.getBigUint64(fx + 32 + 16 * ((k - mmTop) & 7), true);
         if (g !== w) diffs.push(`mm${k}: got ${g.toString(16)} want ${w.toString(16)}`);
       }
     }
