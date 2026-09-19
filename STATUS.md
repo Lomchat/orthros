@@ -93,6 +93,18 @@
   **En partie (escarmouche, carte 3D, ~250 appels de dessin/image) : 3 → 28-30 fps, p99 ≈ 47 ms sous SwiftShader**
   (`node tools/headless.mjs bfme-vanilla --seconds 330 --pump --fallback --input …`), replis restants 13 k/s
   (transcendantes x87, PUSH/POP de segment).
+- Fidélité (trouvée par les traces) : mutex abandonnés à la sortie d'un thread (le rechargement du shell après un
+  changement de détail attendait indéfiniment), `CreateProcess` → ERROR_FILE_NOT_FOUND quand l'image n'existe pas
+  (les « TextureAssetBuilder.exe/assetCacheBuilder.exe » invoqués par le jeu sont absents du dossier), ordre NTFS de
+  `FindFirstFile`, `ReadFile` avec OVERLAPPED (décalages intacts, pointeur avancé), formats D3D 32/33/35/36/81, R8G8B8
+  non annoncé comme les pilotes réels.
+- **Défaut connu (enquête bornée)** : quelques types d'unités sont rendus avec la texture « manquante » 1×1 magenta
+  que le moteur génère lui-même (site `lotrbfme.exe+0x9ffd9b`, sans aucune lecture de fichier avant — recherche de nom
+  infructueuse), aussi bien en détail Very Low (partie) qu'en détail High (menu 3D). Aucun HRESULT en échec, aucune
+  lecture courte, ordre d'archives conforme, formats acceptés ; 3 textures sur ~1 500. À reprendre avec une trace des
+  recherches de noms si le jeu expose un moyen générique (journal du moteur).
+- Détail « High » : le menu principal devient une scène 3D (~2 000 appels de dessin/image, 4-6 fps sous SwiftShader,
+  726 textures ≈ 150 Mo) et le renderer headless a fini par mourir (mémoire, à mesurer sur GPU réel) — piste M7.
 - Harnais headless : entrées scriptées relatives à la première image Direct3D (`+35:click:…`), détecteur de blocage
   (worker muet > 15 s → pause CDP du worker et pile d'appels). Il a révélé un interblocage d'attentes imbriquées dans
   la WndProc (clic SKIRMISH), corrigé par les rappels au niveau invité (D028 : `DispatchMessage`/`SendMessage`/
