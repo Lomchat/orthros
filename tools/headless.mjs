@@ -66,11 +66,43 @@ async function dumpWorkerStacks(reason) {
     await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
   }
 }
-const status = () => page.evaluate(() => ({ status: window.orthros.status, stats: window.orthros.stats, statsAt: window.orthros.statsAt, exitCode: window.orthros.exitCode, crash: window.orthros.crash }));
+const status = () => page.evaluate(() => ({ status: window.orthros.status, stats: window.orthros.stats, statsAt: window.orthros.statsAt, memoryMB: window.orthros.memoryMB, exitCode: window.orthros.exitCode, crash: window.orthros.crash }));
+// --profile <start>:<seconds> — CPU-profile the worker (V8 sampling profiler through CDP) and print the top self-time functions
+const profileOpt = opt('profile') ? opt('profile').split(':').map(Number) : null;
+let profileState = profileOpt ? 'armed' : 'off';
+async function workerSession() {
+  const cdp = await browser.newBrowserCDPSession();
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  const ti = targetInfos.find((x) => (x.type === 'worker' || x.type === 'shared_worker') && /worker\.js/.test(x.url));
+  if (!ti) throw new Error('worker target not found');
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: ti.targetId, flatten: false });
+  let nextId = 1; const pending = new Map();
+  cdp.on('Target.receivedMessageFromTarget', (e) => { if (e.sessionId !== sessionId) return; const m = JSON.parse(e.message); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
+  const send = (method, params = {}, timeout = 20000) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); setTimeout(() => { if (pending.has(id)) { pending.delete(id); resolve(null); } }, timeout); cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id, method, params }) }).catch(() => resolve(null)); });
+  return { cdp, sessionId, send, close: () => cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {}) };
+}
+async function profileWorker(seconds) {
+  const s = await workerSession();
+  await s.send('Profiler.enable'); await s.send('Profiler.setSamplingInterval', { interval: 500 }); await s.send('Profiler.start');
+  console.log(`[profile] sampling the worker for ${seconds}s`);
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  const r = await s.send('Profiler.stop', {}, 60000);
+  await s.close();
+  const p = r?.result?.profile; if (!p) { console.log('[profile] no profile returned'); return; }
+  const byId = new Map(p.nodes.map((n) => [n.id, n])); const self = new Map(); let total = 0;
+  const counts = new Map(); for (const s of p.samples) counts.set(s, (counts.get(s) ?? 0) + 1);
+  for (const [id, c] of counts) { const n = byId.get(id); const cf = n.callFrame; const key = `${cf.functionName || '(anonymous)'} ${cf.url.replace(/^.*\/src\//, 'src/')}:${cf.lineNumber + 1}`; self.set(key, (self.get(key) ?? 0) + c); total += c; }
+  const top = [...self].sort((a, b) => b[1] - a[1]).slice(0, 30);
+  console.log(`[profile] ${total} samples; top self time:`); for (const [k, c] of top) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${k}`);
+  // aggregate by file
+  const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
+  console.log('[profile] by file:'); for (const [f, c] of [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${f}`);
+}
 for (;;) {
   const s = await status();
   const t = (Date.now() - t0) / 1000;
-  if (s.stats) console.log(`[t=${t.toFixed(0)}s] ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.audioFrames ? ` mix=${(s.stats.audioFrames / 1000).toFixed(1)}kf/s,${s.stats.audioMs.toFixed(0)}ms/s` : ''}${s.stats.fallbacksPerSec ? ` fb=${(s.stats.fallbacksPerSec / 1000).toFixed(0)}k/s` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}${s.stats.topFallback && args.includes('--fallback') ? `\n    fallback/s: ${s.stats.topFallback}` : ''}${s.stats.pump && args.includes('--pump') ? `\n    pump: ${s.stats.pump}` : ''}`);
+  if (s.stats) console.log(`[t=${t.toFixed(0)}s] ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.audioFrames ? ` mix=${(s.stats.audioFrames / 1000).toFixed(1)}kf/s,${s.stats.audioMs.toFixed(0)}ms/s` : ''}${s.stats.fallbacksPerSec ? ` fb=${(s.stats.fallbacksPerSec / 1000).toFixed(0)}k/s` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}${s.stats.topFallback && args.includes('--fallback') ? `\n    fallback/s: ${s.stats.topFallback}` : ''}${s.stats.pump && args.includes('--pump') ? `\n    pump: ${s.stats.pump}` : ''}${s.memoryMB ? ` mem=${s.memoryMB}MB` : ''}`);
+  if (profileState === 'armed' && t >= profileOpt[0]) { profileState = 'running'; profileWorker(profileOpt[1]).then(() => { profileState = 'done'; }).catch((e) => console.log('[profile] failed:', e.message)); }
   if (s.status === 'running' && s.statsAt && Date.now() - s.statsAt > 15000 && !hangDumped) { hangDumped = true; await dumpWorkerStacks(`no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)}s`).catch((e) => console.log('[hang] dump failed:', e.message)); }
   if (firstFrameAt === null && s.stats?.d3d?.frames > 0) { firstFrameAt = t; console.log(`[input] first Direct3D frame at ${t.toFixed(0)}s`); }
   for (const ev of inputs) {
