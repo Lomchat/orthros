@@ -260,6 +260,8 @@ export class Process {
   removeThread(t) {
     t.state = TS.DONE;
     this.usedSlots[t.slot] = 0;
+    // mutexes still owned by the thread become abandoned: the next waiter acquires them with WAIT_ABANDONED
+    for (const o of this.handles.map.values()) if (o && o.type === 'mutex' && o.owner === t.id) { o.owner = 0; o.count = 0; o.abandoned = true; }
     // keep the object for handle lookups (exit code), release its stack
     this.vmem.release(t.stackRegion);
   }

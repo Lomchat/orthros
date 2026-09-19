@@ -588,8 +588,15 @@ export function registerKernel32(api, vm) {
   for (const n of ['SetCommState', 'GetCommState', 'SetupComm', 'PurgeComm', 'SetCommTimeouts', 'GetCommTimeouts', 'SetCommMask', 'GetCommMask', 'WaitCommEvent', 'GetCommConfig', 'SetCommConfig', 'ClearCommError', 'EscapeCommFunction', 'TransmitCommChar', 'GetCommModemStatus', 'SetNamedPipeHandleState', 'ReadConsoleInputA', 'PeekConsoleInputA', 'SetConsoleCursorInfo', 'GetConsoleCursorInfo', 'SetConsoleScreenBufferSize', 'SetConsoleWindowInfo', 'WriteConsoleOutputA', 'ReadConsoleOutputA', 'FillConsoleOutputCharacterA', 'FillConsoleOutputAttribute', 'SetConsoleCursorPosition', 'WriteConsoleOutputCharacterA', 'ScrollConsoleScreenBufferA']) K[n] = [api.signatures.get(n), (c) => c.fail(E.INVALID_HANDLE)];
   K.GetNumberOfConsoleInputEvents = [2, (c) => { c.out32(1, 0); return 1; }];
   K.GetLargestConsoleWindowSize = [1, () => (25 << 16) | 80];
-  K.CreateProcessA = [10, (c) => { vm.warn(`CreateProcess(${c.str(0) ?? c.str(1)}) refused`); return c.fail(E.ACCESS_DENIED); }];
-  K.CreateProcessW = [10, (c) => { vm.warn(`CreateProcess(${c.wstr(0) ?? c.wstr(1)}) refused`); return c.fail(E.ACCESS_DENIED); }];
+  const refuseProcess = (c, app, cmd, cwd) => {
+    // like Windows, a missing image is ERROR_FILE_NOT_FOUND; an existing one is refused (no child processes)
+    const image = app ?? (cmd ?? '').trim().replace(/^"([^"]*)".*$/, '$1').split(' ')[0];
+    const exists = image && !!vm.vfs.stat(c.proc.path(image));
+    vm.warn(`CreateProcess(app=${app ?? '-'}, cmd=${cmd ?? '-'}, cwd=${cwd ?? c.proc.cwd}, flags=0x${c.arg(5).toString(16)}) ${exists ? 'refused (child processes are not supported)' : 'failed: image not found'} from ${c.proc.symbolize(c.retAddr)}`);
+    return c.fail(exists ? E.ACCESS_DENIED : E.FILE_NOT_FOUND);
+  };
+  K.CreateProcessA = [10, (c) => refuseProcess(c, c.str(0), c.str(1), c.str(7))];
+  K.CreateProcessW = [10, (c) => refuseProcess(c, c.wstr(0), c.wstr(1), c.wstr(7))];
   K.WinExec = [2, (c) => { vm.warn(`WinExec(${c.str(0)}) refused`); return 2; }];
   K.GetLogicalProcessorInformation = [2, (c) => c.fail(E.INSUFFICIENT_BUFFER)];
   K.GetSystemDefaultLangID2 = K.GetVersion;
