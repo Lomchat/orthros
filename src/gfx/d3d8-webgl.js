@@ -91,6 +91,10 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
   return out;
 }
 
+// constant uniform names (template strings built per draw would defeat the location cache)
+const names = (p, n) => Array.from({ length: n }, (_, i) => `${p}[${i}]`);
+const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
+
 export class WebGLDevice {
   /**
    * @param {WebGL2RenderingContext} gl
@@ -137,7 +141,12 @@ export class WebGLDevice {
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
-  bufferUpdated(b) { b.dirty = true; }
+  /** A locked range was written: remember the union of dirty bytes so the upload can be partial. */
+  bufferUpdated(b, start = 0, size = b.length) {
+    const end = Math.min(b.length, start + size);
+    if (!b.dirtyRange) b.dirtyRange = [start, end]; else { if (start < b.dirtyRange[0]) b.dirtyRange[0] = start; if (end > b.dirtyRange[1]) b.dirtyRange[1] = end; }
+    b.dirty = true;
+  }
   destroyResource(r) {
     const gl = this.gl;
     const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); }
@@ -203,10 +212,9 @@ export class WebGLDevice {
     if (!g) { g = { buf: gl.createBuffer(), size: 0 }; this.buffers.set(b.id, g); b.dirty = true; }
     if (b.dirty) {
       gl.bindBuffer(target, g.buf);
-      const data = this.mem.bytes(b.mem, b.length);
-      if (g.size !== b.length) { gl.bufferData(target, data, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW); g.size = b.length; }
-      else gl.bufferSubData(target, 0, data);
-      b.dirty = false; this.stats.uploads++;
+      if (g.size !== b.length) { gl.bufferData(target, this.mem.bytes(b.mem, b.length), b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW); g.size = b.length; }
+      else { const [s, e] = b.dirtyRange ?? [0, b.length]; if (e > s) gl.bufferSubData(target, s, this.mem.bytes(b.mem + s, e - s)); }
+      b.dirty = false; b.dirtyRange = null; this.stats.uploads++;
     }
     return g;
   }
@@ -334,6 +342,13 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- programs
   program() {
     const dev = this.dev;
+    if (this.lastProgram && this.lastProgramVersion === dev.stateVersion && this.lastProgramDev === dev) return this.lastProgram; // nothing that feeds the key changed since the last draw
+    const r = this.programUncached();
+    this.lastProgram = r; this.lastProgramVersion = dev.stateVersion; this.lastProgramDev = dev;
+    return r;
+  }
+  programUncached() {
+    const dev = this.dev;
     const L = this.currentLayout();
     const rhw = !!L.layout.rhw;
     const lighting = this.rs(RS.LIGHTING, 1) !== 0 && !rhw && !L.code;
@@ -384,8 +399,10 @@ export class WebGLDevice {
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { this.stats.errors++; this.log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`); }
     gl.deleteShader(vs); gl.deleteShader(fs);
     this.stats.programs++;
-    const uniforms = new Map();
-    const u = (name) => { let l = uniforms.get(name); if (l === undefined) { l = gl.getUniformLocation(prog, name); uniforms.set(name, l); } return l; };
+    const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
+    const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
+    const u = (name) => { let l = loc[name]; if (l === undefined) { l = gl.getUniformLocation(prog, name); loc[name] = l; } return l; };
     return { prog, u, attrNames, key };
   }
 
@@ -405,10 +422,10 @@ export class WebGLDevice {
       const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
       this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
     }
-    for (let i = 0; i < 4; i++) { const l = U(`u_world[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
+    for (let i = 0; i < 4; i++) { const l = U(U_WORLD[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
     if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
     if (U('u_proj')) gl.uniformMatrix4fv(U('u_proj'), false, dev.transforms.get(TS_PROJECTION) ?? IDENTITY);
-    for (let i = 0; i < MAX_STAGES; i++) { const l = U(`u_texmat[${i}]`); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY); }
+    for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_TEXMAT[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY); }
     if (U('u_viewport')) gl.uniform4f(U('u_viewport'), v.x, v.y, v.w, v.h);
     if (U('u_depthRange')) gl.uniform2f(U('u_depthRange'), v.minZ, v.maxZ);
     if (info.lighting) {
@@ -444,9 +461,9 @@ export class WebGLDevice {
     if (dev.api9) {
       if (U('u_vci[0]')) gl.uniform4iv(U('u_vci[0]'), dev.vsConstI);
       if (U('u_pci[0]')) gl.uniform4iv(U('u_pci[0]'), dev.psConstI);
-      for (let i = 0; i < 16; i++) { const a = U(`u_vcb[${i}]`); if (a) gl.uniform1i(a, dev.vsConstB[i]); const b = U(`u_pcb[${i}]`); if (b) gl.uniform1i(b, dev.psConstB[i]); }
+      for (let i = 0; i < 16; i++) { const a = U(U_VCB[i]); if (a) gl.uniform1i(a, dev.vsConstB[i]); const b = U(U_PCB[i]); if (b) gl.uniform1i(b, dev.psConstB[i]); }
     }
-    for (let i = 0; i < MAX_STAGES; i++) { const l = U(`u_bumpEnv[${i}]`); if (l) gl.uniform4f(l, asFloat(this.tss(i, TSS.BUMPENVMAT00, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT01, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT10, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT11, 0))); }
+    for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_BUMPENV[i]); if (l) gl.uniform4f(l, asFloat(this.tss(i, TSS.BUMPENVMAT00, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT01, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT10, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT11, 0))); }
     // textures + samplers
     for (let i = 0; i < info.stages.length; i++) {
       const st = info.stages[i];
