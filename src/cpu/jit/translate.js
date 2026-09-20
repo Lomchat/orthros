@@ -599,8 +599,8 @@ function binArith(kind, opEmit, store = true) {
     loadDst(E, d); E.c.set(L_LZA);
     E.loadOp(s); E.c.set(L_LZB);
     E.c.get(L_LZA).get(L_LZB); opEmit(E.c); maskTo(E, size); E.c.set(L_LZRES);
+    E.setLazy(kind, size); // before the store: an SMC exit inside storeOpFrom flushes a coherent lazy state
     if (store) E.storeOpFrom(d, L_LZRES, insn);
-    E.setLazy(kind, size);
   };
 }
 HANDLERS[OP.ADD] = binArith(LZ.ADD, (c) => c.add());
