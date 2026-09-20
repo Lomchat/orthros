@@ -56,10 +56,25 @@ export class Scheduler {
       if (t.pendingExit) { this.wake(t, false); any = true; continue; }
       let ok;
       try { ok = t.wait.cond(); } catch (e) { this.vm.warn(`wait condition threw: ${e.message}`); ok = true; }
-      if (ok) { this.wake(t, true); any = true; }
+      if (ok) { if (t.wait.claim) { t.wakeValue = t.wait.claim(true); this.vm.proc.syncTrace?.(`wake t${t.id} [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}] -> ${t.wakeValue}`); } this.wake(t, true); any = true; }
       else if (now >= t.wait.deadline) { this.wake(t, false); any = true; }
     }
     return any;
+  }
+
+  /**
+   * A synchronization object was released or signaled: hand it to a parked waiter right away, before the
+   * signaling thread can take it back (Windows satisfies waits at signal time; a releaser that immediately
+   * re-acquires never starves a waiter). Only claim-carrying waits (mutex/event/semaphore/critical section)
+   * are considered; plain sleeps and message waits wake at the next scheduling point as before.
+   */
+  signal() {
+    for (const t of this.threads) {
+      if (t.state !== TS.BLOCKED || !t.wait?.claim || t.pendingExit) continue;
+      let ok;
+      try { ok = t.wait.cond(); } catch (e) { ok = false; }
+      if (ok) { t.wakeValue = t.wait.claim(true); this.vm.proc.syncTrace?.(`signal t${t.id} [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}] -> ${t.wakeValue}`); this.wake(t, true); }
+    }
   }
 
   wake(t, ok) {
@@ -73,24 +88,27 @@ export class Scheduler {
    * @param {() => boolean} cond
    * @param {number} timeoutMs (INFINITE for no timeout)
    * @param {string} reason
+   * @param {(() => any)=} claim runs as soon as cond holds — at the wake-up, before any other thread runs — to
+   *   take the awaited object (mutex ownership, auto-reset event, semaphore count) exactly like the Windows kernel
+   *   satisfies a wait at signal time; its value is left in `thread.wakeValue` for the re-executed call.
    * @returns {boolean} true if cond became true, false on timeout
    */
-  block(thread, cond, timeoutMs, reason) {
-    if (thread.wakeResult !== undefined) { // re-executed call after an unwound wait
+  block(thread, cond, timeoutMs, reason, claim) {
+    if (thread.wakeResult !== undefined) { // re-executed call after an unwound wait: the recorded outcome
       const r = thread.wakeResult;
       thread.wakeResult = undefined; thread.resuming = false;
       thread.state = TS.RUNNING;
       return r;
     }
     const clock = this.vm.clock;
-    if (cond()) return true;
+    if (cond()) { thread.wakeValue = claim ? claim(false) : undefined; return true; }
     const deadline = timeoutMs === INFINITE ? Infinity : clock.now() + timeoutMs;
     if (clock.now() >= deadline) return false;
-    if (this.vm.canUnwind(thread)) throw new WaitUnwind({ cond, deadline, reason });
+    if (this.vm.canUnwind(thread)) throw new WaitUnwind({ cond, deadline, reason, claim });
     // Nested context: run the others on top of this JS frame until the condition holds.
     let idleSince = -1;
     for (;;) {
-      if (cond()) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; return true; }
+      if (cond()) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; thread.wakeValue = claim ? claim(false) : undefined; return true; }
       if (clock.now() >= deadline) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; return false; }
       if (thread.pendingExit) { thread.state = TS.RUNNING; return false; }
       thread.state = TS.BLOCKED;

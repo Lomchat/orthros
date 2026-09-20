@@ -56,6 +56,10 @@ export class Vm {
     this.logKinds = new Set(opts.logKinds ?? ['loader', 'warn', 'crash']);
     this.traceApi = this.logKinds.has('api') || this.logKinds.has('all');
     this.traceApiBg = opts.logKinds?.includes('apibg') ?? false;
+    // 'apisite': the first calls of every (thread, call site) pair with arguments and result — a bounded trace of
+    // how each thread uses the API (handles, timeouts, results) without the volume of a full trace.
+    this.traceApiSite = opts.logKinds?.includes('apisite') ? new Map() : null;
+    this.traceApiSiteMax = 6;
     this.logFn = opts.log ?? ((kind, msg) => console.log(`[${kind}] ${msg}`));
     this.apiTrace = new Array(API_TRACE_LEN).fill(null);
     this.apiTracePos = 0;
@@ -387,6 +391,11 @@ export class Vm {
         return;
       }
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
+      if (this.traceApiSite) {
+        const key = this.mem.read32(sp) + thread.id * 0x100000000;
+        const n = this.traceApiSite.get(key) ?? 0;
+        if (n < this.traceApiSiteMax) { this.traceApiSite.set(key, n + 1); this.logFn('apisite', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)}${n === this.traceApiSiteMax - 1 ? ' (site quiet from now on)' : ''}`); }
+      }
       if (r === TAIL_CALL || def.noreturn) return;
       cpu.eip = this.mem.read32(sp);
       cpu.esp = (sp + 4 + (def.cc === CC_STDCALL ? def.argc * 4 : 0)) >>> 0;
@@ -474,8 +483,21 @@ export class Vm {
       let last = '';
       for (let i = API_TRACE_LEN - 1; i >= 0; i--) { const k = (this.apiTracePos + i) & (API_TRACE_LEN - 1); if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
       const ss = t.sleepStats ? ` sleeps(0/≤2ms/long)=${t.sleepStats.zero}/${t.sleepStats.short}/${t.sleepStats.long} throttled=${t.sleepStats.throttled ?? 0}` : '';
-      lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${t.blockReason}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
+      lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}${t.wait ? '' : ' nested'}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''}${t.callbackDepth ? ` cb=${t.callbackDepth}` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
     }
+    // synchronization objects (mutexes/events/semaphores) and the last ownership transitions
+    const sync = [];
+    for (const [h, o] of proc.handles.map) {
+      if (!o) continue;
+      if (o.type === 'mutex') sync.push(`0x${h.toString(16)} mutex owner=${o.owner ? 't' + o.owner : '-'} count=${o.count}${o.abandoned ? ' abandoned' : ''}${o.name ? ` "${o.name}"` : ''}`);
+      else if (o.type === 'event') sync.push(`0x${h.toString(16)} event ${o.manual ? 'manual' : 'auto'} ${o.signaled ? 'signaled' : 'reset'}${o.name ? ` "${o.name}"` : ''}`);
+      else if (o.type === 'semaphore') sync.push(`0x${h.toString(16)} semaphore ${o.count}/${o.max}${o.name ? ` "${o.name}"` : ''}`);
+    }
+    if (sync.length) lines.push(`sync objects (${sync.length}):\n  ` + sync.slice(-48).join('\n  '));
+    const st = proc.syncTraceLines();
+    if (st.length) lines.push('sync transitions (oldest first):\n  ' + st.join('\n  '));
+    const cs = proc.syncTraceLines('cs');
+    if (cs.length) lines.push('critical-section hand-offs (oldest first):\n  ' + cs.join('\n  '));
     return lines.join('\n');
   }
 

@@ -44,6 +44,11 @@ DLLIMPORT HANDLE WINAPI CreateThread(void*, DWORD, DWORD (WINAPI*)(void*), void*
 DLLIMPORT DWORD WINAPI WaitForSingleObject(HANDLE, DWORD);
 DLLIMPORT HANDLE WINAPI CreateEventA(void*, BOOL, BOOL, const char*);
 DLLIMPORT BOOL WINAPI SetEvent(HANDLE);
+DLLIMPORT BOOL WINAPI ResetEvent(HANDLE);
+DLLIMPORT HANDLE WINAPI CreateMutexA(void*, BOOL, const char*);
+DLLIMPORT BOOL WINAPI ReleaseMutex(HANDLE);
+DLLIMPORT HANDLE WINAPI CreateSemaphoreA(void*, LONG, LONG, const char*);
+DLLIMPORT BOOL WINAPI ReleaseSemaphore(HANDLE, LONG, LONG*);
 DLLIMPORT void WINAPI InitializeCriticalSection(void*);
 DLLIMPORT void WINAPI EnterCriticalSection(void*);
 DLLIMPORT void WINAPI LeaveCriticalSection(void*);

@@ -8,6 +8,8 @@ import { ApiRegistry } from './api.js';
 import { normalizeWin } from '../vfs/vfs.js';
 import { THUNK_BASE, THUNK_SIZE } from '../cpu/memory.js';
 
+const SYNC_TRACE_LEN = 256; // ring of mutex ownership transitions (diagnostics)
+
 export const PEB_ADDR = 0x7ffdf000;
 export const TEB0_ADDR = 0x7ffde000;
 export const KUSER_SHARED = 0x7ffe0000;
@@ -44,7 +46,7 @@ export class Thread {
     this.topLevel = false; // running as a top-level slice (blocking calls unwind, see sched.js)
     this.wait = null; // parked wait { cond, deadline, reason }
     this.wakeResult = undefined; // result handed to the re-executed blocking call
-    this.resuming = false; // re-executing an API call after a parked wait (handlers skip side effects done before blocking)
+    this.wakeValue = undefined; // what the wait's claim took at wake-up time (wait result code)
     this.yieldRequested = false;
     this.baseDepth = -1;
     this.priority = 0;
@@ -60,6 +62,10 @@ export class Thread {
     this.pendingExit = false;
   }
 
+  /** Re-executing an API call after a parked wait (handlers skip side effects done before blocking). Lives in the
+   *  CPU state so the JIT's inline API fast paths (EnterCriticalSection...) defer to the JavaScript handler. */
+  get resuming() { return this.cpu.resuming; }
+  set resuming(v) { this.cpu.resuming = v; }
   get lastError() { return this.proc.mem.read32(this.teb + 0x34); }
   set lastError(v) { this.proc.mem.write32(this.teb + 0x34, v >>> 0); }
   get tlsArray() { return this.teb + TEB_TLS_ARRAY; }
@@ -257,13 +263,28 @@ export class Process {
 
   thread(tid) { return this.threads.find((t) => t.id === tid) ?? null; }
 
+  /** Ring of the last mutex ownership transitions (diagnostics: who acquired/released/abandoned what). */
+  syncTrace(msg, ring = 'sync') {
+    const rings = this.syncTraceRings ??= new Map();
+    let r = rings.get(ring);
+    if (!r) rings.set(ring, (r = { buf: new Array(SYNC_TRACE_LEN).fill(null), pos: 0 }));
+    r.buf[r.pos++ & (SYNC_TRACE_LEN - 1)] = msg;
+  }
+  syncTraceLines(ring = 'sync') {
+    const r = this.syncTraceRings?.get(ring); if (!r) return [];
+    const out = [];
+    for (let i = 0; i < SYNC_TRACE_LEN; i++) { const m = r.buf[(r.pos + i) & (SYNC_TRACE_LEN - 1)]; if (m) out.push(m); }
+    return out;
+  }
+
   removeThread(t) {
     t.state = TS.DONE;
     this.usedSlots[t.slot] = 0;
     // mutexes still owned by the thread become abandoned: the next waiter acquires them with WAIT_ABANDONED
-    for (const o of this.handles.map.values()) if (o && o.type === 'mutex' && o.owner === t.id) { o.owner = 0; o.count = 0; o.abandoned = true; }
+    for (const o of this.handles.map.values()) if (o && o.type === 'mutex' && o.owner === t.id) { o.owner = 0; o.count = 0; o.abandoned = true; this.syncTrace(`mutex 0x${o.handle.toString(16)} abandoned by exiting t${t.id}`); }
     // keep the object for handle lookups (exit code), release its stack
     this.vmem.release(t.stackRegion);
+    this.vm.sched.signal(); // joiners of this thread, waiters of the abandoned mutexes
   }
 
   // ------------------------------------------------------------------ modules

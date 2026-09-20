@@ -28,7 +28,12 @@ export function isSignaled(obj, thread) {
 export function consumeSignal(obj, thread) {
   switch (obj.type) {
     case 'event': if (!obj.manual) obj.signaled = false; return WAIT_OBJECT_0;
-    case 'mutex': { const ab = obj.abandoned ? WAIT_ABANDONED : WAIT_OBJECT_0; obj.abandoned = false; obj.owner = thread.id; obj.count++; return ab; }
+    case 'mutex': {
+      const ab = obj.abandoned ? WAIT_ABANDONED : WAIT_OBJECT_0;
+      if (obj.owner !== 0 && obj.owner !== thread.id) thread.proc.syncTrace(`mutex 0x${obj.handle.toString(16)} TAKEN by t${thread.id} while owned by t${obj.owner} (count ${obj.count})`);
+      else if (ab) thread.proc.syncTrace(`mutex 0x${obj.handle.toString(16)} acquired abandoned by t${thread.id}`);
+      obj.abandoned = false; obj.owner = thread.id; obj.count++; return ab;
+    }
     case 'semaphore': obj.count--; return WAIT_OBJECT_0;
     case 'timer': if (!obj.manual) obj.signaled = false; return WAIT_OBJECT_0;
     default: return WAIT_OBJECT_0;
@@ -277,10 +282,15 @@ export function registerKernel32(api, vm) {
   K.SetCriticalSectionSpinCount = [2, (c) => { const p = c.arg(0); const o = mem.read32(p + 20); mem.write32(p + 20, c.arg(1)); return o; }];
   K.DeleteCriticalSection = [1, (c) => { const p = c.arg(0); mem.write32(p + 4, 0xffffffff); mem.write32(p + 8, 0); mem.write32(p + 12, 0); }];
   K.EnterCriticalSection = [1, (c) => {
-    const p = c.arg(0), tid = c.thread.id;
-    if (mem.read32(p + 12) === tid) { mem.write32(p + 8, mem.read32(p + 8) + 1); mem.write32(p + 4, mem.read32(p + 4) + 1); return; }
-    if (mem.readS32(p + 4) !== -1) vm.sched.block(c.thread, () => mem.readS32(p + 4) === -1, INFINITE, 'critsec');
-    mem.write32(p + 4, 0); mem.write32(p + 8, 1); mem.write32(p + 12, tid);
+    const p = c.arg(0), tid = c.thread.id, proc = c.proc, ret = c.retAddr; // (the claim runs at wake-up, outside this call context)
+    // a re-executed call was given the section at wake-up (claim below): the owner check would look recursive
+    if (!c.thread.resuming && mem.read32(p + 12) === tid) { mem.write32(p + 8, mem.read32(p + 8) + 1); mem.write32(p + 4, mem.read32(p + 4) + 1); return; }
+    if (c.thread.resuming) c.proc.syncTrace(`critsec 0x${p.toString(16)} re-executed by t${tid} (wakeResult=${c.thread.wakeResult}) lock=${mem.readS32(p + 4)} owner=t${mem.read32(p + 12)}`, 'cs');
+    const detail = () => `critsec 0x${p.toString(16)} lock=${mem.readS32(p + 4)} rec=${mem.read32(p + 8)} owner=t${mem.read32(p + 12)}`;
+    vm.sched.block(c.thread, () => mem.readS32(p + 4) === -1, INFINITE, detail, (atWake) => {
+      if (atWake) proc.syncTrace(`critsec 0x${p.toString(16)} handed to t${tid} (parked from ${proc.symbolize(ret)})`, 'cs');
+      mem.write32(p + 4, 0); mem.write32(p + 8, 1); mem.write32(p + 12, tid);
+    });
   }];
   K.TryEnterCriticalSection = [1, (c) => {
     const p = c.arg(0), tid = c.thread.id;
@@ -294,7 +304,7 @@ export function registerKernel32(api, vm) {
     const rec = mem.read32(p + 8) - 1;
     mem.write32(p + 8, rec);
     mem.write32(p + 4, mem.read32(p + 4) - 1);
-    if (rec <= 0) { mem.write32(p + 12, 0); mem.write32(p + 4, 0xffffffff); mem.write32(p + 8, 0); }
+    if (rec <= 0) { if (mem.read32(p + 12) !== c.thread.id) c.proc.syncTrace(`critsec 0x${p.toString(16)} left by t${c.thread.id} but owned by t${mem.read32(p + 12)}`, 'cs'); mem.write32(p + 12, 0); mem.write32(p + 4, 0xffffffff); mem.write32(p + 8, 0); vm.sched.signal(); }
   }];
 
   // Interlocked (single JS thread: plain memory ops)
@@ -310,16 +320,21 @@ export function registerKernel32(api, vm) {
   K.CreateEventA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }))];
   K.CreateEventW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }))];
   K.OpenEventA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'event') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
-  K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; return 1; }];
+  K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.signal(); return 1; }];
   K.ResetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = false; return 1; }];
   K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.wakeBlocked(); if (!o.manual) { /* one waiter consumed it on wake */ } o.signaled = false; return 1; }];
   K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
   K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
   K.OpenMutexA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'mutex') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
-  K.ReleaseMutex = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'mutex'); if (!o) return c.fail(E.INVALID_HANDLE); if (o.owner !== c.thread.id) return c.fail(288); if (--o.count === 0) o.owner = 0; return 1; }];
+  K.ReleaseMutex = [1, (c) => {
+    const o = c.proc.handles.getAs(c.arg(0), 'mutex'); if (!o) return c.fail(E.INVALID_HANDLE);
+    if (o.owner !== c.thread.id) { c.proc.syncTrace(`mutex 0x${o.handle.toString(16)} release by t${c.thread.id} REFUSED (owner t${o.owner})`); return c.fail(288); }
+    if (--o.count === 0) { o.owner = 0; vm.sched.signal(); }
+    return 1;
+  }];
   K.CreateSemaphoreA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
   K.CreateSemaphoreW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
-  K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); return 1; }];
+  K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); vm.sched.signal(); return 1; }];
   K.CreateWaitableTimerA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'timer', manual: c.arg(1) !== 0, signaled: false, due: Infinity, period: 0 }))];
   K.SetWaitableTimer = [6, (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE);
@@ -331,15 +346,19 @@ export function registerKernel32(api, vm) {
   }];
   K.CancelWaitableTimer = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE); o.due = Infinity; c.proc.timers = c.proc.timers.filter((t) => t.timer !== o); return 1; }];
 
+  // Waits claim their object at wake-up time (sched.block `claim`): a released mutex goes to the parked waiter
+  // before the releasing thread can take it back, and never to a second thread in between.
   const waitOne = (c, h, ms, alertable) => {
     const o = waitObject(c, h);
     if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
     if (o === c.thread) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
+    const t = c.thread;
     const to = ms === INFINITE ? INFINITE : ms;
-    const ok = isSignaled(o, c.thread) || vm.sched.block(c.thread, () => isSignaled(o, c.thread) || (alertable && c.thread.apcQueue.length > 0), to, 'wait:' + o.type);
-    if (alertable && c.thread.apcQueue.length) { runApcs(c); if (!isSignaled(o, c.thread)) return 0xc0; }
+    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, 'wait:' + o.type,
+      () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
+    if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
-    return consumeSignal(o, c.thread);
+    return t.wakeValue;
   };
   const runApcs = (c) => { while (c.thread.apcQueue.length) { const a = c.thread.apcQueue.shift(); vm.callGuest(c.thread, a.fn, [a.arg]); } };
   K.WaitForSingleObject = [2, (c) => waitOne(c, c.arg(0), c.arg(1), false)];
@@ -349,18 +368,22 @@ export function registerKernel32(api, vm) {
     for (let i = 0; i < n; i++) { const o = waitObject(c, mem.read32(ph + 4 * i)); if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; } objs.push(o); }
     const t = c.thread;
     const ready = () => (all ? objs.every((o) => isSignaled(o, t)) : objs.findIndex((o) => isSignaled(o, t)) >= 0);
-    const ok = ready() || vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany');
-    if (alertable && t.apcQueue.length) { runApcs(c); if (!ready()) return 0xc0; }
+    const claim = () => {
+      if (!ready()) return 0xc0; // alertable wake-up for APCs
+      if (all) { let r = WAIT_OBJECT_0; for (const o of objs) { const rr = consumeSignal(o, t); if (rr === WAIT_ABANDONED) r = WAIT_ABANDONED; } return r; }
+      const i = objs.findIndex((o) => isSignaled(o, t));
+      return consumeSignal(objs[i], t) + i;
+    };
+    const ok = vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany', claim);
+    if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
-    if (all) { let r = WAIT_OBJECT_0; for (const o of objs) { const rr = consumeSignal(o, t); if (rr === WAIT_ABANDONED) r = WAIT_ABANDONED; } return r; }
-    const i = objs.findIndex((o) => isSignaled(o, t));
-    return consumeSignal(objs[i], t) + i;
+    return t.wakeValue;
   };
   K.WaitForMultipleObjects = [4, (c) => waitMany(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), false)];
   K.WaitForMultipleObjectsEx = [5, (c) => waitMany(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), c.arg(4) !== 0)];
   K.SignalObjectAndWait = [4, (c) => {
     const s = waitObject(c, c.arg(0));
-    if (!c.thread.resuming) { if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++; }
+    if (!c.thread.resuming) { if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++; vm.sched.signal(); }
     return waitOne(c, c.arg(1), c.arg(2), c.arg(3) !== 0);
   }];
 
