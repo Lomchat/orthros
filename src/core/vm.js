@@ -473,7 +473,7 @@ export class Vm {
       }
       let last = '';
       for (let i = API_TRACE_LEN - 1; i >= 0; i--) { const k = (this.apiTracePos + i) & (API_TRACE_LEN - 1); if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
-      const ss = t.sleepStats ? ` sleeps(0/≤2ms/long)=${t.sleepStats.zero}/${t.sleepStats.short}/${t.sleepStats.long}` : '';
+      const ss = t.sleepStats ? ` sleeps(0/≤2ms/long)=${t.sleepStats.zero}/${t.sleepStats.short}/${t.sleepStats.long} throttled=${t.sleepStats.throttled ?? 0}` : '';
       lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${t.blockReason}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
     }
     return lines.join('\n');
