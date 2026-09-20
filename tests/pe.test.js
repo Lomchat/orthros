@@ -86,6 +86,20 @@ test('threads.exe: CreateThread, critical sections, events, Sleep, waits', { ski
   assert.equal(code, 0);
 });
 
+test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off, single wake-ups, handshake, abandonment)', { skip: skip('sync.exe') }, () => {
+  for (const jit of [true, false]) {
+    const { vm } = boot('sync.exe', { jit });
+    const code = vm.run();
+    assert.equal(vm.stdout.join(''),
+      'mutex_handoff=1\nmutex_join=0\nmutex_violations=0\nmutex_release_failures=0\n' +
+      'cs_handoff=1\ncs_join=0\ncs_violations=0\n' +
+      'event_first=1\nevent_second=2\nsem_first=1\nsem_second=2\n' +
+      'handshake=1\nhandshake_bounded=1\nhandshake_join=0\nhandshake_A_free=0\n' +
+      'abandoned=128\n', `executor jit=${jit}`);
+    assert.equal(code, 0);
+  }
+});
+
 test('gdiplus.exe: GDI+ image loading (PNG/JPEG), LockBits, HBITMAP export, alpha drawing', { skip: skip('gdiplus.exe') }, () => {
   const fx = new URL('./fixtures/codec/', import.meta.url).pathname;
   const { vm } = boot('gdiplus.exe', { files: { 'rgb.png': fx + 'rgb.png', 'base.jpg': fx + 'base.jpg' } });

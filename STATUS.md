@@ -127,7 +127,16 @@
   fois/s en jeu (limiteur de cadence / attente active), 18 M d'appels en 5 min ; les autres threads dorment 1-2 ms.
   Le jeu se rythme donc lui-même (~38 fps en jeu, pas une limite CPU) ; mitigation générique : après 32 `Sleep(0)`
   consécutifs sans autre thread prêt, la tranche dort 1 ms (résolution des timers Windows).
-- Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire).
+- **Détail High, menu 3D (D032)** : après ~25 s la scène du menu change (écran de chargement rendu par un thread dédié) ;
+  le thread principal restait en livelock (`WaitForSingleObject(A, 1)`/`ReleaseMutex` à 1,2 M itérations/s : il ne voyait
+  jamais le mutex tenu par le thread de chargement). Corrigé génériquement : attentes satisfaites à l'instant du signal
+  (revendication au réveil, transfert à `ReleaseMutex`/`LeaveCriticalSection`/`SetEvent`/`ReleaseSemaphore`/sortie de
+  thread) + drapeau `RESUMING` qui écarte les chemins rapides WASM d'API pendant la ré-exécution d'un appel garé
+  (sans lui, `EnterCriticalSection` inline comptait une récursion et la section restait tenue : blocage au démarrage).
+  Programme de test `sync.exe` (7 scénarios) ajouté aux tests PE. La seconde scène du shell (forteresse) s'affiche.
+- Démarrage : la phase mono-thread initiale dure ~75 s (500-800 MIPS, 1-2 M replis/s en code x87) — à profiler (M7).
+- Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire) — run de 9 min
+  en cours avec les correctifs D032.
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
   tranche, chemin d'appel d'API plus court, envois de tampons de sommets groupés.

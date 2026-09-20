@@ -184,6 +184,8 @@ export function buildRuntime() {
     // stdcall return helper: eax = value on stack, pop return address + argc*4
     const ret = (argc) => { c.i32store(ST.GPR); c.get(STATE).get(SP).i32load(0).i32store(ST.EIP); c.get(STATE).get(SP).i32(4 + 4 * argc).add().i32store(ST.GPR + 16); c.i32(1).return_(); };
     const notHandled = c.block();
+    // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
+    c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
     const N = 16;
     const labels = new Array(N);
     for (let i = N - 1; i >= 0; i--) labels[i] = c.block();

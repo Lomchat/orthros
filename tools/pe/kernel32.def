@@ -51,3 +51,8 @@ lstrlenA@4
 GetSystemInfo@4
 RaiseException@16
 RtlUnwind@16
+ResetEvent@4
+CreateMutexA@12
+ReleaseMutex@4
+CreateSemaphoreA@16
+ReleaseSemaphore@12

@@ -26,6 +26,8 @@
 //   0x1C0  ICOUNT     s32 instruction budget left for the current run() (JIT/interpreter)
 //   0x1C4  STOP_AT    EIP at which the JIT dispatcher must halt (0xffffffff when unused)
 //   0x1C8  TRANSITIONS u32 region-to-region chained transitions since the last harvest (JIT stats)
+//   0x1CC  RESUMING   u32 1 while the thread re-executes an API call after a parked wait (the JIT's inline API
+//                     fast paths step aside so the JavaScript handler receives the recorded wait result)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
 
@@ -54,6 +56,7 @@ export const ST = Object.freeze({
   ICOUNT: 0x1c0,
   STOP_AT: 0x1c4,
   TRANSITIONS: 0x1c8,
+  RESUMING: 0x1cc,
   SIZE: 0x400,
 });
 
@@ -152,6 +155,8 @@ export class CpuState {
 
   get exit() { return this.mem.u32[(this.base + ST.EXIT) / 4]; }
   set exit(v) { this.mem.u32[(this.base + ST.EXIT) / 4] = v >>> 0; }
+  get resuming() { return this.mem.u32[(this.base + ST.RESUMING) / 4] !== 0; }
+  set resuming(v) { this.mem.u32[(this.base + ST.RESUMING) / 4] = v ? 1 : 0; }
   get exitArg() { return this.mem.u32[(this.base + ST.EXIT_ARG) / 4]; }
   set exitArg(v) { this.mem.u32[(this.base + ST.EXIT_ARG) / 4] = v >>> 0; }
 

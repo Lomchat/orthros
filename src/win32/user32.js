@@ -913,11 +913,14 @@ export function registerUser32(api, vm) {
     const objs = []; for (let i = 0; i < n; i++) { const o = waitObject(c, mem.read32(ph + 4 * i)); if (!o) return WAIT_FAILED; objs.push(o); }
     const t = c.thread;
     const ready = () => (n > 0 && (all ? objs.every((o) => isSignaled(o, t)) : objs.some((o) => isSignaled(o, t)))) || wm().hasMessage(t, 0, 0, 0);
-    const ok = ready() || vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait');
+    const claim = () => {
+      const i = objs.findIndex((o) => isSignaled(o, t));
+      if (i >= 0 && (!all || objs.every((o) => isSignaled(o, t)))) { if (all) objs.forEach((o) => consumeSignal(o, t)); else consumeSignal(objs[i], t); return WAIT_OBJECT_0 + (all ? 0 : i); }
+      return WAIT_OBJECT_0 + n; // a message
+    };
+    const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim);
     if (!ok) return WAIT_TIMEOUT;
-    const i = objs.findIndex((o) => isSignaled(o, t));
-    if (i >= 0 && (!all || objs.every((o) => isSignaled(o, t)))) { if (all) objs.forEach((o) => consumeSignal(o, t)); else consumeSignal(objs[i], t); return WAIT_OBJECT_0 + (all ? 0 : i); }
-    return WAIT_OBJECT_0 + n;
+    return t.wakeValue;
   }];
   U.MsgWaitForMultipleObjectsEx = [5, (c) => U.MsgWaitForMultipleObjects[1](c)];
 
