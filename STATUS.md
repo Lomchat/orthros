@@ -134,9 +134,16 @@
   thread) + drapeau `RESUMING` qui écarte les chemins rapides WASM d'API pendant la ré-exécution d'un appel garé
   (sans lui, `EnterCriticalSection` inline comptait une récursion et la section restait tenue : blocage au démarrage).
   Programme de test `sync.exe` (7 scénarios) ajouté aux tests PE. La seconde scène du shell (forteresse) s'affiche.
-- Démarrage : la phase mono-thread initiale dure ~75 s (500-800 MIPS, 1-2 M replis/s en code x87) — à profiler (M7).
-- Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire) — run de 9 min
-  en cours avec les correctifs D032.
+- Démarrage : la phase mono-thread initiale (~60-75 s à 500-800 MIPS, 1-2 M replis/s de F2XM1+FSCALE) est la **suite de
+  benchmarks de première exécution** du jeu (absence d'`Options.ini`) ; le harnais headless repartait d'un profil vide à
+  chaque run. Nouvelle option `--profile-dir <dossier>` (profil chargé au démarrage, réécrit à la fin) : au second run le
+  jeu atteint Direct3D à 26 s (au lieu de ~100 s) et le menu à ~70 s (au lieu de ~125 s). Les transcendantes x87 en WASM
+  natif (en cours) accéléreront le benchmark lui-même (et son verdict de détail par défaut).
+- **Détail High, 9 min headless (D032)** : la seconde scène du shell (forteresse, ~1 500 appels de dessin/image) se charge
+  (~60 s sous SwiftShader) et tourne de 245 s à 540 s sans blocage ni plantage (`build/shots15`, run hl83) — le
+  « plantage après ~5 min » précédent était le livelock ci-dessus vu de l'extérieur. 6-14 fps, p99 ≈ 500 ms sous
+  SwiftShader (rasterisation logicielle de 1 500 dessins : à mesurer sur GPU réel ; replis interpréteur 50-90 k/s à
+  identifier — transcendantes x87 en cours de traduction native).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
   tranche, chemin d'appel d'API plus court, envois de tampons de sommets groupés.

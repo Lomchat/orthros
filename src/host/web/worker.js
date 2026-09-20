@@ -53,6 +53,20 @@ async function flushProfile(force = false) {
   }
 }
 
+/** Every profile file as { path (original case, '/'-separated), data (base64) } — the headless harness saves them. */
+function profileDump() {
+  if (!profile) return [];
+  const out = [];
+  for (const [key, f] of profile.files) {
+    const parts = key.split('/');
+    const path = parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/');
+    let bin = ''; const d = f.data.subarray(0, f.len);
+    for (let i = 0; i < d.length; i += 0x8000) bin += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000));
+    out.push({ path, data: btoa(bin) });
+  }
+  return out;
+}
+
 async function start(m) {
   manifestName = m.name;
   const manifest = m.manifest;
@@ -72,6 +86,12 @@ async function start(m) {
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
   if (!m.opts.headless) await loadProfile(profile);
+  // a harness-provided profile (headless runs: `--profile-dir`), base64 files with '/'-separated paths
+  for (const f of m.opts.profileFiles ?? []) {
+    const parts = f.path.split('/');
+    for (let i = 1; i < parts.length; i++) profile.mkdir(parts.slice(0, i).join('/'));
+    profile.open(f.path, { create: true }).write(0, Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0)));
+  }
   vfs.mount('C:\\Users\\Player', profile);
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
@@ -151,6 +171,7 @@ self.onmessage = (e) => {
   else if (m.type === 'wake') { if (running && !stopped) channel.port2.postMessage(0); }
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
+  else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
   else if (m.type === 'report') post({ type: 'report', text: vm ? vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
 };
 void IN_RING; void AUDIO_RING_FRAMES;

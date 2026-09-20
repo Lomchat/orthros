@@ -35,6 +35,27 @@ if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
+// --profile-dir <dir>: the game's user profile (C:\\Users\\Player: Options.ini, saves...) is loaded from this host
+// directory and written back at the end, so a second run skips the first-run setup (benchmarks) and keeps its settings.
+const profileDir = opt('profile-dir');
+if (profileDir) {
+  const files = [];
+  const walk = (dir, rel) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = rel ? rel + '/' + e.name : e.name; if (e.isDirectory()) walk(path.join(dir, e.name), p); else files.push({ path: p, data: fs.readFileSync(path.join(dir, e.name)).toString('base64') }); } };
+  walk(profileDir, '');
+  console.log(`[profile] ${files.length} file(s) loaded from ${profileDir}`);
+  await page.addInitScript((f) => { window.__orthrosProfile = f; }, files);
+}
+async function saveProfile() {
+  if (!profileDir) return;
+  try {
+    await page.evaluate(() => { window.orthros.profile = null; window.orthros.worker?.postMessage({ type: 'profile-dump' }); });
+    let files = null;
+    for (let i = 0; i < 50 && !files; i++) { files = await page.evaluate(() => window.orthros.profile); if (!files) await page.waitForTimeout(100); }
+    if (!files) { console.log('[profile] no profile received'); return; }
+    for (const f of files) { const p = path.join(profileDir, f.path); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(f.data, 'base64')); }
+    console.log(`[profile] ${files.length} file(s) saved to ${profileDir}`);
+  } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
+}
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 const t0 = Date.now();
 let lastShot = 0, shot = 0, hangDumped = false;
@@ -130,7 +151,7 @@ for (;;) {
   }
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
-  if (t >= seconds) { console.log(`[end] time limit ${seconds}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })); await page.waitForTimeout(500); const r = await page.evaluate(() => window.orthros.report); if (r) console.log(r); break; }
+  if (t >= seconds) { console.log(`[end] time limit ${seconds}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })); await page.waitForTimeout(500); const r = await page.evaluate(() => window.orthros.report); if (r) console.log(r); await saveProfile(); break; }
   await page.waitForTimeout(1000);
 }
 const f = path.join(out, `${name}-final.png`);
