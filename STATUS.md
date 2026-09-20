@@ -123,6 +123,10 @@
   verify_mech / sse vertes (88 tests + 2 todo documentant des écarts préexistants : bits IE/ES du mot d'état sur
   comparaison non ordonnée, arrondi PC=24 sur demi-ulp exact) ; en jeu 37 → 37,8 fps, p99 31-32 ms ; le code invité
   reste ~50 % du worker (logique du jeu elle-même), le reste : dispatch d'API 5 %, ordonnanceur/horloge ~9 %, GL 10 %.
+- Constat (statistiques de Sleep par thread) : le thread principal du jeu appelle `Sleep(0)` + `timeGetTime` ~100 000
+  fois/s en jeu (limiteur de cadence / attente active), 18 M d'appels en 5 min ; les autres threads dorment 1-2 ms.
+  Le jeu se rythme donc lui-même (~38 fps en jeu, pas une limite CPU) ; mitigation générique : après 32 `Sleep(0)`
+  consécutifs sans autre thread prêt, la tranche dort 1 ms (résolution des timers Windows).
 - Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
