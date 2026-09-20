@@ -66,10 +66,17 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
   if (isDxt(fmt)) return decodeDxt(fmt, mem.bytes(addr, surfaceBytes(fmt, w, h)), w, h);
   const out = new Uint8Array(w * h * 4);
   const u8 = mem.u8;
+  let out32 = null;
   for (let y = 0; y < h; y++) {
     let s = addr + y * pitch, o = y * w * 4;
     switch (fmt) {
-      case FMT.A8R8G8B8: case FMT.X8R8G8B8: for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = fmt === FMT.X8R8G8B8 ? 255 : u8[s + 3]; } break;
+      case FMT.A8R8G8B8: case FMT.X8R8G8B8: {
+        if ((s & 3) === 0) { // whole-pixel swizzle B,G,R,A -> R,G,B,A on 32-bit lanes
+          const src = mem.u32, dst = out32 ?? (out32 = new Uint32Array(out.buffer)); const alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0;
+          for (let x = 0, si = s >> 2, oi = o >> 2; x < w; x++, si++, oi++) { const p = src[si]; dst[oi] = ((p & 0xff00ff00) | ((p & 0xff) << 16) | ((p >>> 16) & 0xff) | alpha) >>> 0; }
+        } else for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = fmt === FMT.X8R8G8B8 ? 255 : u8[s + 3]; }
+        break;
+      }
       case FMT.A8B8G8R8: case 33: for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s + 2]; out[o + 3] = fmt === 33 ? 255 : u8[s + 3]; } break;
       case FMT.R8G8B8: for (let x = 0; x < w; x++, s += 3, o += 4) { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = 255; } break;
       case FMT.R5G6B5: for (let x = 0; x < w; x++, s += 2, o += 4) { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 11) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 63) * 255 / 63 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = 255; } break;
@@ -93,6 +100,9 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
 
 // constant uniform names (template strings built per draw would defeat the location cache)
 const names = (p, n) => Array.from({ length: n }, (_, i) => `${p}[${i}]`);
+const LIGHT_U = Array.from({ length: 8 }, (_, n) => Object.fromEntries(['type', 'diffuse', 'specular', 'ambient', 'position', 'direction', 'range', 'falloff', 'atten', 'theta', 'phi'].map((k) => [k, `u_lights[${n}].${k}`])));
+const TEX_U = { tex: names('u_tex', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), cube: names('u_cube', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), vol: names('u_vol', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')) };
+let blendOpsCache = null; const BLEND_OPS = (gl) => blendOpsCache ?? (blendOpsCache = [gl.FUNC_ADD, gl.FUNC_ADD, gl.FUNC_SUBTRACT, gl.FUNC_REVERSE_SUBTRACT, gl.MIN, gl.MAX]);
 const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
 
 export class WebGLDevice {
@@ -112,6 +122,8 @@ export class WebGLDevice {
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
     this.samplers = []; for (let i = 0; i < 20; i++) this.samplers.push(gl.createSampler());
+    this.samplerState = Array.from({ length: 20 }, () => ({})); // last parameters applied to each sampler object
+    this.invalidateGlState();
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
     this.stats = { draws: 0, programs: 0, uploads: 0, errors: 0 };
@@ -131,6 +143,7 @@ export class WebGLDevice {
     if (c.width !== dev.pp.width || c.height !== dev.pp.height) { c.width = dev.pp.width; c.height = dev.pp.height; }
     for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
     this.fbos.clear();
+    this.invalidateGlState();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, dev.pp.width, dev.pp.height);
@@ -283,7 +296,7 @@ export class WebGLDevice {
     const { w, h } = this.bindTarget();
     dev.renderTarget = prev;
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
     gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (dev.backBuffers.length > 1 && dev.pp.swap !== 3) { // flipping chain: rotate the contents, not the surfaces
@@ -298,6 +311,7 @@ export class WebGLDevice {
     const { h, flip } = this.bindTarget();
     const v = dev.viewport;
     const gy = (y, hh) => (flip ? y : h - y - hh);
+    this.invalidateGlState(); // masks/scissor are set directly below
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(v.x, gy(v.y, v.h), v.w, v.h);
     let mask = 0;
@@ -410,92 +424,115 @@ export class WebGLDevice {
   applyState(P, info) {
     const gl = this.gl, dev = this.dev;
     const { h, flip } = this.bindTarget();
-    const v = dev.viewport;
-    gl.viewport(v.x, flip ? v.y : h - v.y - v.h, v.w, v.h);
-    gl.depthRange(v.minZ, v.maxZ);
-    if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) { const s = dev.scissor; gl.enable(gl.SCISSOR_TEST); gl.scissor(s.l, flip ? s.t : h - s.b, Math.max(0, s.r - s.l), Math.max(0, s.b - s.t)); } else gl.disable(gl.SCISSOR_TEST);
-    gl.useProgram(P.prog);
+    const v = dev.viewport, gs = this.gs;
+    const vy = flip ? v.y : h - v.y - v.h;
+    if (gs.vpx !== v.x || gs.vpy !== vy || gs.vpw !== v.w || gs.vph !== v.h) { gl.viewport(v.x, vy, v.w, v.h); gs.vpx = v.x; gs.vpy = vy; gs.vpw = v.w; gs.vph = v.h; }
+    if (gs.dzn !== v.minZ || gs.dzf !== v.maxZ) { gl.depthRange(v.minZ, v.maxZ); gs.dzn = v.minZ; gs.dzf = v.maxZ; }
+    if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) {
+      const sc = dev.scissor, sx = sc.l, sy = flip ? sc.t : h - sc.b, sw = Math.max(0, sc.r - sc.l), sh = Math.max(0, sc.b - sc.t);
+      this.glEnable(gl.SCISSOR_TEST, true);
+      if (gs.scx !== sx || gs.scy !== sy || gs.scw !== sw || gs.sch !== sh) { gl.scissor(sx, sy, sw, sh); gs.scx = sx; gs.scy = sy; gs.scw = sw; gs.sch = sh; }
+    } else this.glEnable(gl.SCISSOR_TEST, false);
+    if (gs.prog !== P.prog) { gl.useProgram(P.prog); gs.prog = P.prog; }
     const U = P.u;
-    if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1);
-    if (this.capturing) {
-      const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } if (!this.dumpedTex && l.width === 256 && l.height === 32) { this.dumpedTex = true; const rows = []; for (let y = 0; y < l.height; y++) { let r = ''; for (let x = 0; x < 128; x++) { const p = l.mem + y * l.pitch + x * 2 * 4; const a = u8[p + 3], c = u8[p] | u8[p + 1] | u8[p + 2]; r += a > 128 ? '#' : a > 0 ? '+' : c ? '.' : ' '; } rows.push(r); } const p0 = l.mem + 4 * l.pitch + 8 * 4; this.log(`d3d-webgl: [cap] atlas 256x32 (alpha #/+, color .) sample px=${(this.mem.read32(p0) >>> 0).toString(16)}\n${rows.join('\n')}`); } return `,alpha>0:${nz}/opaque:${opaque}`; };
-      const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
-      this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+    const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, l: -1, lt: -1, ls: -1, s: -1, c: -1 });
+    if (pv.flip !== flip) { pv.flip = flip; if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1); }
+    if (this.capturing) this.captureDraw(P, info, v, flip);
+    // uniform groups, uploaded only when their source changed since this program last saw it
+    if (pv.t !== dev.transformVersion) {
+      pv.t = dev.transformVersion;
+      for (let i = 0; i < 4; i++) { const l = U(U_WORLD[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
+      if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
+      if (U('u_proj')) gl.uniformMatrix4fv(U('u_proj'), false, dev.transforms.get(TS_PROJECTION) ?? IDENTITY);
+      for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_TEXMAT[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY); }
     }
-    for (let i = 0; i < 4; i++) { const l = U(U_WORLD[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
-    if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
-    if (U('u_proj')) gl.uniformMatrix4fv(U('u_proj'), false, dev.transforms.get(TS_PROJECTION) ?? IDENTITY);
-    for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_TEXMAT[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY); }
-    if (U('u_viewport')) gl.uniform4f(U('u_viewport'), v.x, v.y, v.w, v.h);
-    if (U('u_depthRange')) gl.uniform2f(U('u_depthRange'), v.minZ, v.maxZ);
-    if (info.lighting) {
+    if (pv.vp !== dev.viewportVersion) {
+      pv.vp = dev.viewportVersion;
+      if (U('u_viewport')) gl.uniform4f(U('u_viewport'), v.x, v.y, v.w, v.h);
+      if (U('u_depthRange')) gl.uniform2f(U('u_depthRange'), v.minZ, v.maxZ);
+    }
+    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== dev.transformVersion || pv.ls !== dev.stateVersion)) {
+      pv.l = dev.lightVersion; pv.lt = dev.transformVersion; pv.ls = dev.stateVersion;
       const m = dev.material;
       gl.uniform4fv(U('u_matDiffuse'), m.subarray(0, 4)); gl.uniform4fv(U('u_matAmbient'), m.subarray(4, 8)); gl.uniform4fv(U('u_matSpecular'), m.subarray(8, 12)); gl.uniform4fv(U('u_matEmissive'), m.subarray(12, 16)); gl.uniform1f(U('u_matPower'), m[16]);
       gl.uniform4fv(U('u_ambient'), colorToVec(this.rs(RS.AMBIENT, 0), this.tmp.v4));
       let n = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
-      for (const i of [...dev.lightEnabled].sort((a, b) => a - b)) {
+      if (this.lightOrderVersion !== dev.lightVersion) { this.lightOrder = [...dev.lightEnabled].sort((a, b) => a - b); this.lightOrderVersion = dev.lightVersion; }
+      for (const i of this.lightOrder) {
         const l = dev.lights.get(i); if (!l || n >= MAX_LIGHTS) continue;
-        const pre = `u_lights[${n}]`;
-        gl.uniform1i(U(pre + '.type'), l[0] | 0);
-        gl.uniform4fv(U(pre + '.diffuse'), l.subarray(1, 5)); gl.uniform4fv(U(pre + '.specular'), l.subarray(5, 9)); gl.uniform4fv(U(pre + '.ambient'), l.subarray(9, 13));
+        const LU = LIGHT_U[n];
+        gl.uniform1i(U(LU.type), l[0] | 0);
+        gl.uniform4fv(U(LU.diffuse), l.subarray(1, 5)); gl.uniform4fv(U(LU.specular), l.subarray(5, 9)); gl.uniform4fv(U(LU.ambient), l.subarray(9, 13));
         const px = l[13], py = l[14], pz = l[15];
-        gl.uniform3f(U(pre + '.position'), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
+        gl.uniform3f(U(LU.position), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
         const dx = l[16], dy = l[17], dz = l[18];
-        gl.uniform3f(U(pre + '.direction'), view[0] * dx + view[4] * dy + view[8] * dz, view[1] * dx + view[5] * dy + view[9] * dz, view[2] * dx + view[6] * dy + view[10] * dz);
-        gl.uniform1f(U(pre + '.range'), l[19]); gl.uniform1f(U(pre + '.falloff'), l[20]);
-        gl.uniform3f(U(pre + '.atten'), l[21], l[22], l[23]); gl.uniform1f(U(pre + '.theta'), l[24]); gl.uniform1f(U(pre + '.phi'), l[25]);
+        gl.uniform3f(U(LU.direction), view[0] * dx + view[4] * dy + view[8] * dz, view[1] * dx + view[5] * dy + view[9] * dz, view[2] * dx + view[6] * dy + view[10] * dz);
+        gl.uniform1f(U(LU.range), l[19]); gl.uniform1f(U(LU.falloff), l[20]);
+        gl.uniform3f(U(LU.atten), l[21], l[22], l[23]); gl.uniform1f(U(LU.theta), l[24]); gl.uniform1f(U(LU.phi), l[25]);
         n++;
       }
       gl.uniform1i(U('u_numLights'), n);
     }
-    if (U('u_fog')) gl.uniform4f(U('u_fog'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
-    if (U('u_fogParams')) gl.uniform4f(U('u_fogParams'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
-    if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(this.rs(RS.FOGCOLOR, 0), this.tmp.v4));
-    if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(this.rs(RS.TEXTUREFACTOR, 0xffffffff), this.tmp.v4));
-    if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), (this.rs(RS.ALPHAREF, 0) & 0xff) / 255);
-    if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), this.rsF(RS.POINTSIZE) || 1);
-    // shader constants (vertex and pixel constants have distinct uniform names)
-    if (U('u_vc[0]')) gl.uniform4fv(U('u_vc[0]'), dev.vsConst);
-    if (U('u_pc[0]')) gl.uniform4fv(U('u_pc[0]'), dev.psConst);
-    if (dev.api9) {
-      if (U('u_vci[0]')) gl.uniform4iv(U('u_vci[0]'), dev.vsConstI);
-      if (U('u_pci[0]')) gl.uniform4iv(U('u_pci[0]'), dev.psConstI);
-      for (let i = 0; i < 16; i++) { const a = U(U_VCB[i]); if (a) gl.uniform1i(a, dev.vsConstB[i]); const b = U(U_PCB[i]); if (b) gl.uniform1i(b, dev.psConstB[i]); }
+    if (pv.s !== dev.stateVersion) {
+      pv.s = dev.stateVersion;
+      if (U('u_fog')) gl.uniform4f(U('u_fog'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
+      if (U('u_fogParams')) gl.uniform4f(U('u_fogParams'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
+      if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(this.rs(RS.FOGCOLOR, 0), this.tmp.v4));
+      if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(this.rs(RS.TEXTUREFACTOR, 0xffffffff), this.tmp.v4));
+      if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), (this.rs(RS.ALPHAREF, 0) & 0xff) / 255);
+      if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), this.rsF(RS.POINTSIZE) || 1);
+      for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_BUMPENV[i]); if (l) gl.uniform4f(l, asFloat(this.tss(i, TSS.BUMPENVMAT00, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT01, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT10, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT11, 0))); }
     }
-    for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_BUMPENV[i]); if (l) gl.uniform4f(l, asFloat(this.tss(i, TSS.BUMPENVMAT00, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT01, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT10, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT11, 0))); }
+    if (pv.c !== dev.constVersion) {
+      pv.c = dev.constVersion;
+      // shader constants (vertex and pixel constants have distinct uniform names)
+      if (U('u_vc[0]')) gl.uniform4fv(U('u_vc[0]'), dev.vsConst);
+      if (U('u_pc[0]')) gl.uniform4fv(U('u_pc[0]'), dev.psConst);
+      if (dev.api9) {
+        if (U('u_vci[0]')) gl.uniform4iv(U('u_vci[0]'), dev.vsConstI);
+        if (U('u_pci[0]')) gl.uniform4iv(U('u_pci[0]'), dev.psConstI);
+        for (let i = 0; i < 16; i++) { const a = U(U_VCB[i]); if (a) gl.uniform1i(a, dev.vsConstB[i]); const b = U(U_PCB[i]); if (b) gl.uniform1i(b, dev.psConstB[i]); }
+      }
+    }
     // textures + samplers
     for (let i = 0; i < info.stages.length; i++) {
       const st = info.stages[i];
       if (!st.bound) continue;
-      const l = U(st.cube ? `u_cube${i}` : st.volume ? `u_vol${i}` : `u_tex${i}`);
+      const l = U(st.cube ? TEX_U.cube[i] : st.volume ? TEX_U.vol[i] : TEX_U.tex[i]);
       if (!l) continue;
       const g = this.glTexture(st.tex);
-      gl.activeTexture(gl.TEXTURE0 + i);
-      gl.bindTexture(g.target, g.tex);
-      gl.uniform1i(l, i);
-      const smp = this.samplers[i];
+      if (gs.tex[i] !== g.tex) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
+      if (gs.texUnit[i] !== P.prog) { gl.uniform1i(l, i); gs.texUnit[i] = P.prog; }
+      const smp = this.samplers[i], ss = this.samplerState[i];
       const wrap = (m) => (m === 2 ? gl.MIRRORED_REPEAT : m === 3 || m === 4 || m === 5 ? gl.CLAMP_TO_EDGE : gl.REPEAT);
-      gl.samplerParameteri(smp, gl.TEXTURE_WRAP_S, wrap(this.samp(i, SAMP.ADDRESSU, 1)));
-      gl.samplerParameteri(smp, gl.TEXTURE_WRAP_T, wrap(this.samp(i, SAMP.ADDRESSV, 1)));
-      gl.samplerParameteri(smp, gl.TEXTURE_WRAP_R, wrap(this.samp(i, SAMP.ADDRESSW, 1)));
+      const ws = wrap(this.samp(i, SAMP.ADDRESSU, 1)), wt = wrap(this.samp(i, SAMP.ADDRESSV, 1)), wr = wrap(this.samp(i, SAMP.ADDRESSW, 1));
+      if (ss.ws !== ws) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_S, ws); ss.ws = ws; }
+      if (ss.wt !== wt) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_T, wt); ss.wt = wt; }
+      if (ss.wr !== wr) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_R, wr); ss.wr = wr; }
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
       const levels = st.cube ? st.tex.faces[0].length : st.tex.levels.length;
-      gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, mag >= 2 ? gl.LINEAR : gl.NEAREST);
+      const magF = mag >= 2 ? gl.LINEAR : gl.NEAREST;
+      if (ss.mag !== magF) { gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, magF); ss.mag = magF; }
       const minF = levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST);
-      gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, minF);
-      if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, min === 3 || mag === 3 ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1);
-      gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0);
-      gl.bindSampler(i, smp);
+      if (ss.min !== minF) { gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, minF); ss.min = minF; }
+      if (this.aniso) { const an = min === 3 || mag === 3 ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1; if (ss.aniso !== an) { gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an); ss.aniso = an; } }
+      const maxLod = levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0;
+      if (ss.maxLod !== maxLod) { gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod); ss.maxLod = maxLod; }
+      if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
     }
     // depth / stencil
-    if (this.rs(RS.ZENABLE, 1)) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(this.cmp(this.rs(RS.ZFUNC, 4))); } else gl.disable(gl.DEPTH_TEST);
-    gl.depthMask(this.rs(RS.ZWRITEENABLE, 1) !== 0);
+    const zEnable = this.rs(RS.ZENABLE, 1) !== 0;
+    this.glEnable(gl.DEPTH_TEST, zEnable);
+    if (zEnable) { const f = this.cmp(this.rs(RS.ZFUNC, 4)); if (gs.depthFunc !== f) { gl.depthFunc(f); gs.depthFunc = f; } }
+    const zw = this.rs(RS.ZWRITEENABLE, 1) !== 0; if (gs.depthMask !== zw) { gl.depthMask(zw); gs.depthMask = zw; }
     const zbias = dev.api9 ? -this.rsF(RS9.DEPTHBIAS) * 2e6 : -this.rs(RS.ZBIAS, 0);
     const slope = dev.api9 ? this.rsF(RS9.SLOPESCALEDEPTHBIAS) : 0;
-    if (zbias || slope) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(slope, zbias); } else gl.disable(gl.POLYGON_OFFSET_FILL);
-    if (this.rs(RS.STENCILENABLE, 0)) {
-      gl.enable(gl.STENCIL_TEST);
+    this.glEnable(gl.POLYGON_OFFSET_FILL, !!(zbias || slope));
+    if ((zbias || slope) && (gs.poSlope !== slope || gs.poBias !== zbias)) { gl.polygonOffset(slope, zbias); gs.poSlope = slope; gs.poBias = zbias; }
+    const stencil = this.rs(RS.STENCILENABLE, 0) !== 0;
+    this.glEnable(gl.STENCIL_TEST, stencil);
+    if (stencil) { // rare: not cached
       const ref = this.rs(RS.STENCILREF, 0), mask = this.rs(RS.STENCILMASK, 0xffffffff);
       if (dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0)) {
         // frontFace (below) makes GL front faces the D3D clockwise ones, so the CCW_* states are GL back
@@ -507,29 +544,46 @@ export class WebGLDevice {
         gl.stencilFunc(this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
         gl.stencilOp(this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
       }
-      gl.stencilMask(this.rs(RS.STENCILWRITEMASK, 0xffffffff));
-    } else gl.disable(gl.STENCIL_TEST);
+      gl.stencilMask(this.rs(RS.STENCILWRITEMASK, 0xffffffff)); gs.stencilMask = undefined;
+    }
     // blending
-    if (this.rs(RS.ALPHABLENDENABLE, 0)) {
-      gl.enable(gl.BLEND);
+    const blend = this.rs(RS.ALPHABLENDENABLE, 0) !== 0;
+    this.glEnable(gl.BLEND, blend);
+    if (blend) {
       let src = this.rs(RS.SRCBLEND, 2), dst = this.rs(RS.DESTBLEND, 1);
       if (src === 12) { src = 5; dst = 6; } else if (src === 13) { src = 6; dst = 5; }
-      const op = [gl.FUNC_ADD, gl.FUNC_ADD, gl.FUNC_SUBTRACT, gl.FUNC_REVERSE_SUBTRACT, gl.MIN, gl.MAX];
-      if (dev.api9 && this.rs(RS9.SEPARATEALPHABLENDENABLE, 0)) {
-        gl.blendFuncSeparate(this.blend(src), this.blend(dst), this.blend(this.rs(RS9.SRCBLENDALPHA, 2)), this.blend(this.rs(RS9.DESTBLENDALPHA, 1)));
-        gl.blendEquationSeparate(op[this.rs(RS.BLENDOP, 1)] ?? gl.FUNC_ADD, op[this.rs(RS9.BLENDOPALPHA, 1)] ?? gl.FUNC_ADD);
-      } else { gl.blendFunc(this.blend(src), this.blend(dst)); gl.blendEquation(op[this.rs(RS.BLENDOP, 1)] ?? gl.FUNC_ADD); }
-      if (dev.api9) { const c = colorToVec(this.rs(RS9.BLENDFACTOR, 0xffffffff), this.tmp.v4); gl.blendColor(c[0], c[1], c[2], c[3]); }
-    } else gl.disable(gl.BLEND);
-    const cw = this.rs(RS.COLORWRITEENABLE, 0xf);
-    gl.colorMask((cw & 1) !== 0, (cw & 2) !== 0, (cw & 4) !== 0, (cw & 8) !== 0);
+      const sep = dev.api9 && this.rs(RS9.SEPARATEALPHABLENDENABLE, 0) !== 0;
+      const sa = sep ? this.rs(RS9.SRCBLENDALPHA, 2) : src, da = sep ? this.rs(RS9.DESTBLENDALPHA, 1) : dst;
+      const bop = this.rs(RS.BLENDOP, 1), bopA = sep ? this.rs(RS9.BLENDOPALPHA, 1) : bop;
+      if (gs.bs !== src || gs.bd !== dst || gs.bsa !== sa || gs.bda !== da) { gl.blendFuncSeparate(this.blend(src), this.blend(dst), this.blend(sa), this.blend(da)); gs.bs = src; gs.bd = dst; gs.bsa = sa; gs.bda = da; }
+      if (gs.bop !== bop || gs.bopA !== bopA) { gl.blendEquationSeparate(BLEND_OPS(gl)[bop] ?? gl.FUNC_ADD, BLEND_OPS(gl)[bopA] ?? gl.FUNC_ADD); gs.bop = bop; gs.bopA = bopA; }
+      if (dev.api9) { const bf = this.rs(RS9.BLENDFACTOR, 0xffffffff); if (gs.bf !== bf) { const c = colorToVec(bf, this.tmp.v4); gl.blendColor(c[0], c[1], c[2], c[3]); gs.bf = bf; } }
+    }
+    const cw = this.rs(RS.COLORWRITEENABLE, 0xf) & 0xf;
+    if (gs.cw !== cw) { gl.colorMask((cw & 1) !== 0, (cw & 2) !== 0, (cw & 4) !== 0, (cw & 8) !== 0); gs.cw = cw; }
     // Winding: a D3D front face is clockwise as seen on the screen. Clip space is shared, so GL window
     // space keeps that visual orientation on the screen (D3D front = GL clockwise) and mirrors it on
     // y-flipped texture targets. With frontFace set that way, D3DCULL_CCW culls GL back faces.
-    gl.frontFace(flip ? gl.CCW : gl.CW);
+    const ff = flip ? gl.CCW : gl.CW; if (gs.ff !== ff) { gl.frontFace(ff); gs.ff = ff; }
     const cull = this.rs(RS.CULLMODE, 3);
-    if (cull === 1 || this.noCull) gl.disable(gl.CULL_FACE);
-    else { gl.enable(gl.CULL_FACE); gl.cullFace(cull === 3 ? gl.BACK : gl.FRONT); }
+    const cullOn = !(cull === 1 || this.noCull);
+    this.glEnable(gl.CULL_FACE, cullOn);
+    if (cullOn) { const cf = cull === 3 ? gl.BACK : gl.FRONT; if (gs.cf !== cf) { gl.cullFace(cf); gs.cf = cf; } }
+  }
+  /** enable/disable a GL capability through the state cache */
+  glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
+  /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
+  invalidateGlState() {
+    this.gs = { en: {}, tex: new Array(16).fill(null), texUnit: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
+    for (const ss of this.samplerState) for (const k in ss) ss[k] = undefined;
+    for (let i = 0; i < 16; i++) this.gl.disableVertexAttribArray(i); // known state: nothing enabled
+    this.attribMask = 0;
+  }
+  captureDraw(P, info, v, flip) {
+    const gl = this.gl; void gl;
+    const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
+    const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
+    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
   }
   cmp(f) { const gl = this.gl; return [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS][f] ?? gl.ALWAYS; }
   stencilOp(o) { const gl = this.gl; return [gl.KEEP, gl.KEEP, gl.ZERO, gl.REPLACE, gl.INCR, gl.DECR, gl.INVERT, gl.INCR_WRAP, gl.DECR_WRAP][o] ?? gl.KEEP; }
@@ -541,7 +595,7 @@ export class WebGLDevice {
     const attrType = (a) => (a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT);
     const normalized = (a) => a.type === 'color' || a.type === 'ubyte4n' || a.type === 'shortn' || a.type === 'ushortn';
     const nameOf = (a) => (L.code && L.dx9 ? 'a_' + (a.sem ?? FVF_SEM[a.name] ?? a.name) : L.code ? 'a_v' + a.reg : 'a_' + a.name);
-    const used = new Set();
+    let used = 0; // bitmask of attribute locations bound by this draw
     const bindStream = (n, attrs, declStride) => {
       const s = up ?? dev.streams[n];
       let stride, base;
@@ -550,14 +604,16 @@ export class WebGLDevice {
       for (const a of attrs) {
         const loc = P.attrNames.indexOf(nameOf(a));
         if (loc < 0) continue;
-        gl.enableVertexAttribArray(loc);
+        if (!(this.attribMask & (1 << loc))) gl.enableVertexAttribArray(loc);
         gl.vertexAttribPointer(loc, a.comps, attrType(a), normalized(a), stride, base + a.offset + baseVertex * stride);
-        used.add(loc);
+        used |= 1 << loc;
       }
     };
     if (L.layout.streams) { for (const [n, st] of L.layout.streams) bindStream(n, st.attrs, st.stride); }
     else bindStream(0, L.layout.attrs, L.layout.stride);
-    for (let i = 0; i < 16; i++) if (!used.has(i)) gl.disableVertexAttribArray(i);
+    const stale = this.attribMask & ~used; // previously enabled attributes not used by this draw
+    if (stale) for (let i = 0; i < 16; i++) if (stale & (1 << i)) gl.disableVertexAttribArray(i);
+    this.attribMask = used;
     return true;
   }
   glMode(type) { const gl = this.gl; return [0, gl.POINTS, gl.LINES, gl.LINE_STRIP, gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][type] ?? gl.TRIANGLES; }
