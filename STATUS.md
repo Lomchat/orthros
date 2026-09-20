@@ -119,6 +119,10 @@
 - Hôte graphique (suite) : groupes d'uniformes versionnés (transformations, lumières, viewport, constantes, états),
   cache d'état GL (enable/blend/depth/cull/masks/viewport/scissor, samplers, attributs) → 37,6 fps, **p99 29 ms**,
   `d3d8-webgl.js` 13,4 % → 9,6 % du worker ; conversion 32 bits des textures A8R8G8B8 par mots.
+- **Pile x87 en locaux WASM (D030)** : bench phase fpu 270 → 70 ms (3,8×), `round24` sorti du profil, suites x87 /
+  verify_mech / sse vertes (88 tests + 2 todo documentant des écarts préexistants : bits IE/ES du mot d'état sur
+  comparaison non ordonnée, arrondi PC=24 sur demi-ulp exact) ; en jeu 37 → 37,8 fps, p99 31-32 ms ; le code invité
+  reste ~50 % du worker (logique du jeu elle-même), le reste : dispatch d'API 5 %, ordonnanceur/horloge ~9 %, GL 10 %.
 - Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par

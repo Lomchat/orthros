@@ -6,7 +6,7 @@
 // Conventions (see translate.js): `E` is the Emitter, `E.c` the Code writer; GPRs live in
 // locals L_REG+r; every guest store goes through L_TA and is followed by E.smcCheck(insn);
 // any MM register access mirrors interp-sse.js opAddr (FPU tag word = 0xff, TOP = 0).
-import { L_STATE, L_REG, L_TA, L_TOP, L_V0, L_V1, L_V2 } from './translate.js';
+import { L_STATE, L_REG, L_TA, L_FTW, L_V0, L_V1, L_V2 } from './translate.js';
 import { OT } from '../decoder.js';
 import { ST } from '../state.js';
 
@@ -59,13 +59,15 @@ export function xmmStoreHigh(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); 
 
 /**
  * Side effect of any MM register access (interp-sse.js opAddr): all x87 tags valid, TOP = 0.
- * L_TOP is the cached TOP local (flushed by flushAll), the tag word lives in memory.
+ * A region with an MM operand is an x87 region (translate.js touchesFpu), so the cached stack is
+ * re-based on TOP = 0 (E.x87SetTop0) and the tag word local set; the memory form is kept for
+ * completeness should a non-x87 region ever call this.
  */
 export function mmTouch(E) {
   const c = E.c;
-  c.i32(0).set(L_TOP);
-  c.get(L_STATE).i32(0xff).i32store16(ST.FPU_TW);
-  E.topKnown = false;
+  E.x87SetTop0();
+  if (E.usesX87) { c.i32(0xff).set(L_FTW); E.stValid = 0xff; }
+  else c.get(L_STATE).i32(0xff).i32store16(ST.FPU_TW);
 }
 
 /** Push MM r zero-extended to a v128 (lanes 8..15 zero) — with the mmTouch side effect. */
