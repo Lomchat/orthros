@@ -116,6 +116,9 @@
   2,4 %, `materialize` 2,2 %, `surfaceToRgba` 2,1 %, COM 1,9 %). Tentative de drapeaux paresseux côté JS (repli à la
   lecture d'EFLAGS) abandonnée : le démarrage du jeu partait en boucle de continuation SEH — cause non isolée, repli
   eager conservé. Outils : régions nommées `r_<eip>` dans les profils, mix d'instructions des régions chaudes.
+- Hôte graphique (suite) : groupes d'uniformes versionnés (transformations, lumières, viewport, constantes, états),
+  cache d'état GL (enable/blend/depth/cull/masks/viewport/scissor, samplers, attributs) → 37,6 fps, **p99 29 ms**,
+  `d3d8-webgl.js` 13,4 % → 9,6 % du worker ; conversion 32 bits des textures A8R8G8B8 par mots.
 - Régression connue à surveiller : plantage du renderer headless en détail High après ~5 min (mémoire).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
