@@ -70,7 +70,7 @@ function onWorkerMessage(m) {
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); break;
     case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); break;
-    case 'report': state.report = m.text; log('crash', m.text); break;
+    case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
   }
 }

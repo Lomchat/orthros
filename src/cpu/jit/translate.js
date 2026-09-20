@@ -9,6 +9,8 @@
 // target, API thunk, fault, timeslice, stopAt) writes the state back to the thread state block and
 // returns to the dispatcher. Instructions without a native translation are executed by the
 // reference interpreter through the `fallback` import (registers flushed around the call).
+// Regions containing x87/MMX instructions ("x87 regions") also keep the x87 register stack,
+// tag word and precision control in locals between entry and the exits (translate-x87.js).
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
@@ -20,9 +22,25 @@ const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 1
 const L_TA = 16, L_TV = 17, L_T2 = 18, L_T3 = 19, L_T4 = 20, L_T5 = 21, L_T6 = 22, L_T7 = 23;
 const L_I64A = 24, L_I64B = 25, L_F64A = 26, L_F64B = 27, L_TOP = 28, L_T8 = 29;
 const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
+// x87 register stack cached in locals (x87 regions only, see Emitter.usesX87): L_ST0+i holds
+// ST(i) (logical order, physical slot (L_TOP+i)&7), L_FTW the abridged tag word in the same
+// logical order (bit i = ST(i) non-empty; ST.FPU_TW keeps the physical order, bit s = slot s),
+// L_FPC the control word's PC/RC bits (cw & 0xf00).
+const L_ST0 = 33, L_FTW = 41, L_FPC = 42;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128]; // indices 16..32
-if (LOCAL_TYPES.length !== L_V2 + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32]; // indices 16..42
+if (LOCAL_TYPES.length !== L_FPC + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+// Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
+// mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
+// MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
+// region" and caches the register stack in locals; other regions are translated as before.
+const FPU_OPS = new Set(Object.keys(OP).filter((n) => n[0] === 'F').map((n) => OP[n]));
+FPU_OPS.add(OP.EMMS);
+function touchesFpu(insn) {
+  if (FPU_OPS.has(insn.op)) return true;
+  for (const o of insn.ops) if (o.t === OT.MM) return true;
+  return false;
+}
 // Type index of the region signature inside a region module (declared first by buildRegionModule)
 const REGION_TYPE = 0;
 // Imports (function indices)
@@ -147,9 +165,13 @@ class Emitter {
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.blocks = blocks;
     this.byEip = byEip;
+    /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
+    this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
+    // (plus the whole x87 stack in x87 regions)
     c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
+    if (this.usesX87) this.loadX87();
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
     this.dispatchL = c.loop();
@@ -187,7 +209,8 @@ class Emitter {
    * thunk), not the stop address, the budget is not exhausted and the target is already
    * translated (same hash table / probe sequence as the dispatcher in runtime.js), tail-call its
    * region with the live locals: registers and the lazy flags travel as parameters, only the x87
-   * TOP cache goes through the state block. Falls through (to the flush + return path) otherwise.
+   * state (TOP, and the cached stack of an x87 region) goes through the state block. Falls
+   * through (to the flush + return path) otherwise.
    */
   emitChain() {
     const c = this.c;
@@ -208,7 +231,7 @@ class Emitter {
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-    c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP);
+    this.flushFpu();
     c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS);
     c.get(L_TA).i32load(8); // block index in the target region
     for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
@@ -228,6 +251,7 @@ class Emitter {
     c.get(L_STATE).i32load(ST.LZ_SRC2).set(L_LZB);
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
+    if (this.usesX87) this.loadX87();
   }
   flushAll() {
     const c = this.c;
@@ -237,7 +261,88 @@ class Emitter {
     c.get(L_STATE).get(L_LZRES).i32store(ST.LZ_RES);
     c.get(L_STATE).get(L_LZA).i32store(ST.LZ_SRC1);
     c.get(L_STATE).get(L_LZB).i32store(ST.LZ_SRC2);
+    this.flushFpu();
+  }
+
+  // ------------------------------------------------------------------ x87 stack cache
+  // Inside a block the x87 handlers do not move the locals on push/pop: they keep a static shift
+  // (`stShift`, 0 at block entry) such that ST(i) lives in local L_ST0 + ((i + stShift) & 7) and
+  // the real TOP is (L_TOP + stShift) & 7. The shift is materialized (x87Normalize: one rotation
+  // of the locals, one update of L_TOP) only where the code leaves the block: exits, branches to
+  // other blocks, fallbacks, TOP resets. A balanced block (fld ... fstp) never moves a local.
+  /** Local holding ST(i) under the pending static shift. */
+  stLocal(i) { return L_ST0 + ((i + this.stShift) & 7); }
+  /** Bit of ST(i) in L_FTW under the pending static shift. */
+  stTagBit(i) { return 1 << ((i + this.stShift) & 7); }
+  /** Push the physical slot number of ST(i): (L_TOP + stShift + i) & 7 (L_TOP is always 0..7). */
+  pushStPhys(i) { const c = this.c; const k = (this.stShift + i) & 7; c.get(L_TOP); if (k) c.i32(k).add().i32(7).and(); }
+  /**
+   * Materialize the pending shift: rotate the locals so that L_ST0+i holds ST(i) again, rotate
+   * the logical tag word the same way and make L_TOP the real TOP. Returns the shift that was
+   * pending: a conditional exit path restores `stShift` afterwards so that the fallthrough path
+   * keeps its (unrotated) state.
+   */
+  x87Normalize() {
+    const s = this.stShift;
+    if (!s) return 0;
+    const c = this.c;
+    for (let i = 0; i < 8; i++) c.get(L_ST0 + ((i + s) & 7)); // through the operand stack: no temporary
+    for (let i = 7; i >= 0; i--) c.set(L_ST0 + i);
+    c.get(L_FTW).i32(s).shr_u().get(L_FTW).i32(8 - s).shl().or().i32(0xff).and().set(L_FTW); // rotr8 by s
+    c.get(L_TOP).i32(s).add().i32(7).and().set(L_TOP);
+    this.stShift = 0;
+    return s;
+  }
+  /** L_FTW <- tag word of the state block rotated to L_TOP-relative order (bit j = slot (L_TOP+j)&7). */
+  loadX87Tags() {
+    const c = this.c;
+    c.get(L_STATE).i32load16u(ST.FPU_TW).tee(L_T3).get(L_TOP).shr_u().get(L_T3).i32(8).get(L_TOP).sub().shl().or().i32(0xff).and().set(L_FTW);
+  }
+  /** state block tag word <- L_FTW rotated back to physical order (shift 0). */
+  flushX87Tags() {
+    const c = this.c;
+    c.get(L_STATE).get(L_FTW).get(L_TOP).shl().get(L_FTW).i32(8).get(L_TOP).sub().shr_u().or().i32(0xff).and().i32store16(ST.FPU_TW);
+  }
+  /** Push the address of the physical slot of ST(i) given L_T3 = L_TOP << 3 (ST.FPR added by the memarg). */
+  stSlot(i) { const c = this.c; c.get(L_STATE).get(L_T3); if (i) c.i32(8 * i).add().i32(63).and(); c.add(); }
+  /** L_ST0..7 <- FPR[(L_TOP+i)&7] (shift 0, L_TOP current; clobbers L_T3). */
+  loadX87Regs() {
+    this.c.get(L_TOP).i32(3).shl().set(L_T3);
+    for (let i = 0; i < 8; i++) { this.stSlot(i); this.c.f64load(ST.FPR).set(L_ST0 + i); }
+  }
+  /** FPR[(L_TOP+i)&7] <- L_ST0..7 (shift 0; clobbers L_T3). */
+  flushX87Regs() {
+    this.c.get(L_TOP).i32(3).shl().set(L_T3);
+    for (let i = 0; i < 8; i++) { this.stSlot(i); this.c.get(L_ST0 + i).f64store(ST.FPR); }
+  }
+  /** x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block. */
+  loadX87() {
+    const c = this.c;
+    this.loadX87Tags();
+    c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC);
+    this.loadX87Regs();
+  }
+  /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
+  flushFpu() {
+    const c = this.c;
+    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); }
     c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP);
+  }
+  /**
+   * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
+   * physical registers: when TOP is not already 0 the values are written back with the old TOP
+   * and reloaded with TOP = 0 (a rotation of the 8 locals by a run-time amount).
+   */
+  x87SetTop0() {
+    const c = this.c;
+    if (!this.usesX87) { c.i32(0).set(L_TOP); return; }
+    this.x87Normalize();
+    c.get(L_TOP);
+    const i = c.if_();
+    this.flushX87Regs(); this.flushX87Tags();
+    c.i32(0).set(L_TOP);
+    this.loadX87Regs(); this.loadX87Tags();
+    c.end(); void i;
   }
 
   // ------------------------------------------------------------------ exits & jumps
@@ -249,13 +354,17 @@ class Emitter {
   charge(n) {
     if (n > 0) this.c.get(L_STATE).get(L_STATE).i32load(ST.ICOUNT).i32(n).sub().i32store(ST.ICOUNT);
   }
+  // Every exit / branch first materializes the x87 static shift (x87Normalize) and restores it
+  // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
+  // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
-  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); this.c.br(this.exitJmpL); }
-  exitTo(eip, n = this.insnIdx) { this.c.i32(eip).set(L_TV); this.charge(n); this.c.br(this.exitJmpL); }
+  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
+  exitTo(eip, n = this.insnIdx) { this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
-    c.i32(eip).set(L_TV).i32(code).set(L_T2).br(this.exitCodeL);
+    c.i32(eip).set(L_TV).i32(code).set(L_T2);
+    const s = this.x87Normalize(); c.br(this.exitCodeL); this.stShift = s;
   }
   /** Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. */
   budget(n, eip) {
@@ -269,10 +378,11 @@ class Emitter {
   /** Jump to a guest address: intra-region branch or exit. `n` instructions consumed for the budget. */
   jumpTo(target, n) {
     const b = this.byEip.get(target);
-    if (b) {
-      this.budget(n, target);
-      this.c.i32(b.index).set(L_BLK).br(this.dispatchL);
-    } else this.exitTo(target, n);
+    if (!b) { this.exitTo(target, n); return; }
+    const s = this.x87Normalize(); // blocks are entered with shift 0
+    this.budget(n, target);
+    this.c.i32(b.index).set(L_BLK).br(this.dispatchL);
+    this.stShift = s;
   }
 
   // ------------------------------------------------------------------ registers & operands
@@ -419,7 +529,8 @@ class Emitter {
   // ------------------------------------------------------------------ blocks
   emitBlock(b, nextBlock) {
     this.lz = null; // unknown at block entry
-    this.topKnown = false;
+    this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
+    this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
     // block end
@@ -432,7 +543,7 @@ class Emitter {
         // fallthrough (terminators already emitted their taken path)
         if (b.term === TERM_CALL) return; // call emitted its own jump
         const ft = b.fallthrough;
-        if (nextBlock && nextBlock.eip === ft) { this.budget(n, ft); return; } // natural fallthrough into the next block's code
+        if (nextBlock && nextBlock.eip === ft) { this.x87Normalize(); this.budget(n, ft); return; } // natural fallthrough into the next block's code
         this.jumpTo(ft, n);
         return;
       }
@@ -451,6 +562,7 @@ class Emitter {
     this.stats.fallback++;
     const c = this.c;
     this.materialize();
+    this.x87Normalize();
     this.flushAll();
     c.get(L_STATE).i32(insn.addr).i32store(ST.EIP);
     c.i32(insn.addr).call(IMP_FALLBACK).tee(L_T2);
@@ -459,7 +571,7 @@ class Emitter {
     c.end(); void i;
     this.reloadAll();
     this.lz = { kind: LZ.NONE, sz: 2 };
-    this.topKnown = false;
+    this.stValid = 0;
     // did the instruction branch?
     c.get(L_STATE).i32load(ST.EIP).i32(insn.next).ne();
     const j = c.if_();
@@ -1098,4 +1210,4 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, MASK, SIGN, BITS };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, MASK, SIGN, BITS, touchesFpu };

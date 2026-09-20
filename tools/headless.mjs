@@ -24,7 +24,7 @@ const port = server.address().port;
 const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
-page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread)\]/.test(t) || args.includes('--verbose')) console.log(t); });
+page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang)\]/.test(t) || args.includes('--verbose')) console.log(t); });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 page.on('crash', () => console.log('[pageerror] page crashed (renderer died)'));
 browser.on('disconnected', () => console.log('[pageerror] browser disconnected'));

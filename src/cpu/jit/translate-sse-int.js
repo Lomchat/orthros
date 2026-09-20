@@ -11,7 +11,7 @@
 //
 // Reference semantics: src/cpu/interp-sse.js (bit-exact target, checked by tests/generated/sse).
 // XMM/MM registers stay memory-resident in the thread state; nothing here touches EFLAGS.
-import { HANDLERS, L_STATE, L_REG, L_TA, L_TV, L_I64A, L_FS, L_TOP, L_V0, L_V1 } from './translate.js';
+import { HANDLERS, L_STATE, L_REG, L_TA, L_TV, L_I64A, L_FS, L_FTW, L_V0, L_V1 } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, SEG } from '../state.js';
 import { T } from './wasm.js';
@@ -252,9 +252,9 @@ HANDLERS[OP.PMOVMSKB] = (E, insn) => {
 // EMMS resets the stack top; only the tag word value differs from mmTouch).
 HANDLERS[OP.EMMS] = (E) => {
   const c = E.c;
-  c.i32(0).set(L_TOP);
-  c.get(L_STATE).i32(0).i32store16(ST.FPU_TW);
-  E.topKnown = false;
+  E.x87SetTop0(); // re-bases the cached stack of an x87 region (EMMS makes one)
+  if (E.usesX87) { c.i32(0).set(L_FTW); E.stValid = 0; }
+  else c.get(L_STATE).i32(0).i32store16(ST.FPU_TW);
 };
 
 // ------------------------------------------------------------------ MASKMOVQ / MASKMOVDQU
