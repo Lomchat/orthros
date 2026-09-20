@@ -233,7 +233,7 @@ export function registerKernel32(api, vm) {
   K.SetThreadContext = [2, () => 0];
   K.OpenThread = [3, (c) => { const t = c.proc.thread(c.arg(2)); return t ? c.proc.handles.create(t) : c.fail(E.INVALID_PARAMETER); }];
   K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread) ? 1 : 0)];
-  K.Sleep = [1, (c) => { const ms = c.arg(0); if (ms === 0) vm.sched.yieldFrom(c.thread); else vm.sched.block(c.thread, () => false, ms === INFINITE ? INFINITE : ms, 'sleep'); }];
+  K.Sleep = [1, (c) => { const ms = c.arg(0); const st = c.thread.sleepStats ??= { zero: 0, short: 0, long: 0 }; if (ms === 0) st.zero++; else if (ms <= 2) st.short++; else st.long++; if (ms === 0) vm.sched.yieldFrom(c.thread); else vm.sched.block(c.thread, () => false, ms === INFINITE ? INFINITE : ms, 'sleep'); }];
   K.SleepEx = [2, (c) => { const ms = c.arg(0); if (ms === 0) vm.sched.yieldFrom(c.thread); else vm.sched.block(c.thread, () => false, ms === INFINITE ? INFINITE : ms, 'sleep'); return 0; }];
   K.QueueUserAPC = [3, (c) => { const t = c.proc.handles.getAs(c.arg(1), 'thread'); if (!t) return 0; t.apcQueue.push({ fn: c.arg(0), arg: c.arg(2) }); return 1; }];
 
