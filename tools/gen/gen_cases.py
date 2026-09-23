@@ -3365,6 +3365,8 @@ def suite_corpus(g, n):
                     if m['base'] == 4:
                         # ESP-based: ESP stays high in scratch (a native fault's signal frame is written below it)
                         esp = c.regs[4] if c.regs[4] is not None else SCRATCH + (rng.randrange(0x500, 0x700) & ~3)
+                        if size >= 16 and c.regs[4] is None:
+                            esp -= (esp + m['disp'] + idx_v * m['scale']) & 15  # an aligned m128 (legacy SSE)
                         ea = esp + m['disp'] + idx_v * m['scale'] - SCRATCH
                         if 0 <= ea <= MEM_SIZE - max(16, size):
                             c.fix(4, esp)
