@@ -168,3 +168,40 @@ test('flags consumed at block entry (every lazy kind and size) match the interpr
     assert.deepEqual(snapshot(EJ), want, `seed ${seed}: time slices`);
   }
 });
+
+test('returns to call sites of the same region stay in the region and match the interpreter', () => {
+  // main: mov ecx, 300 ; L: call f ; add eax, ebx ; push 7 ; call g4 ; call g ; dec ecx ; jnz L ;
+  //       push X ; ret (a return to a non-call site) ; X: hlt
+  // f: add ebx, 3 ; call g ; ret        g: xor eax, ebx ; rol eax, 5 ; ret        g4: add ebx, [esp+4] ; ret 4
+  const bytes = [], fix = [], at = {};
+  const imm32 = (v) => bytes.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff);
+  const label = (n) => { at[n] = CODE + bytes.length; };
+  const call = (n) => { bytes.push(0xe8); fix.push([bytes.length, n, 'rel']); imm32(0); };
+  bytes.push(0xb9); imm32(300);
+  label('L'); call('f'); bytes.push(0x01, 0xd8, 0x6a, 7); call('g4'); call('g'); bytes.push(0x49, 0x0f, 0x85); fix.push([bytes.length, 'L', 'rel']); imm32(0);
+  bytes.push(0x68); fix.push([bytes.length, 'X', 'abs']); imm32(0); bytes.push(0xc3);
+  label('X'); bytes.push(0xf4);
+  label('f'); bytes.push(0x83, 0xc3, 3); call('g'); bytes.push(0xc3);
+  label('g'); bytes.push(0x31, 0xd8, 0xc1, 0xc0, 5, 0xc3);
+  label('g4'); bytes.push(0x03, 0x5c, 0x24, 0x04, 0xc2, 4, 0);
+  for (const [o, n, kind] of fix) {
+    const v = kind === 'abs' ? at[n] : at[n] - (CODE + o + 4);
+    bytes[o] = v & 0xff; bytes[o + 1] = (v >> 8) & 0xff; bytes[o + 2] = (v >> 16) & 0xff; bytes[o + 3] = (v >>> 24) & 0xff;
+  }
+  const code = Uint8Array.from(bytes);
+  const EI = makeExec(false);
+  EI.load(code, 0);
+  assert.equal(EI.run(at.X, 1e7), EXIT.HALT);
+  const want = snapshot(EI);
+  const EJ = makeExec(true);
+  EJ.load(code, 0);
+  assert.equal(EJ.run(at.X, 1e7), EXIT.HALT);
+  assert.deepEqual(snapshot(EJ), want, 'whole run');
+  assert.ok(EJ.jit.stats.chained < 50, `returns chained back into the region: ${EJ.jit.stats.chained}`);
+  for (const slice of [3, 11]) {
+    EJ.load(code, 0);
+    let r, k = 0;
+    while ((r = EJ.run(at.X, slice)) === EXIT.TIMESLICE) assert.ok(++k < 1e6, 'runaway');
+    assert.deepEqual(snapshot(EJ), want, `slices of ${slice}`);
+  }
+});
