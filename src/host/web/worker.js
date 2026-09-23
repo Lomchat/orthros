@@ -14,7 +14,7 @@ import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS } from '../../cpu/jit/translate.js';
 import { MATH_KERNELS } from '../../cpu/jit/runtime.js';
 
-let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null;
+let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null;
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
@@ -92,7 +92,7 @@ async function start(m) {
   const store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + manifestName) : null;
   if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs`);
   const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store });
-  gameStore = store;
+  gameStore = store; gameFilesStats = gameFiles.stats;
   vfs.mount(manifest.mount, gameFiles);
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
@@ -229,7 +229,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (gameFilesStats ? `[report] game files over HTTP: ${gameFilesStats.requests} requests, ${(gameFilesStats.bytes / 1048576).toFixed(0)} MiB, ${gameFilesStats.ms.toFixed(0)} ms${gameStore ? `; block store: ${gameStore.stats.hits} hits, ${gameStore.stats.puts} blocks added` : ''}\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };
