@@ -265,7 +265,9 @@
   aux lancements suivants (3e lancement : 0 requête). Un préchargement asynchrone des blocs suivants a été essayé
   (A/B au menu) : −9 % de temps synchrone pour +50 % d'octets transférés (accès surtout aléatoires dans les
   archives) — abandonné. Un run concurrent avec rendu SwiftShader sur la machine
-  dégrade la mesure (p99 46 ms) : les mesures se font seules. Le menu 3D est la scène lourde
+  dégrade la mesure (p99 46 ms) : les mesures se font seules. **30 min de partie** (même protocole, 2026-09-24) :
+  69 201 images en 1 802 s = 38,4 fps ; p50 26,0 ms, p90 28,4, p99 30,6, max 121 ms ; 0,31 % > 33 ms, 9 > 50 ms ;
+  aucun plantage. Le menu 3D est la scène lourde
   (~17 k appels d'API, 1 700 draws et 25-37 M instructions par image).
 - **Réglages mesurés en jeu** : régions de 48 blocs (24 : −16 %, 96 : = ; un chaînage coûte ~6 ns, ~10 ns entre
   régions x87, ~7 M/s au menu) ; boucles imbriquées structurées −13 % (V8, D044) : désactivées.
