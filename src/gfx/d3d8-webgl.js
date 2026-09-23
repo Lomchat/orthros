@@ -17,6 +17,8 @@ const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const asFloat = (v) => { u32[0] = v >>> 0; return f32[0]; };
 const colorToVec = (c, out = new Float32Array(4)) => { out[0] = ((c >> 16) & 0xff) / 255; out[1] = ((c >> 8) & 0xff) / 255; out[2] = (c & 0xff) / 255; out[3] = ((c >>> 24) & 0xff) / 255; return out; };
 const IDENTITY = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+/** First n floats equal (NaN placeholders never match: fresh caches always upload). */
+const sameF32 = (a, b, n) => { for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
 const isDxt = (f) => f === FMT.DXT1 || f === FMT.DXT2 || f === FMT.DXT3 || f === FMT.DXT4 || f === FMT.DXT5;
 /** FVF attribute name -> DX9 semantic name (shaders used together with SetFVF) */
 const FVF_SEM = { pos: semName(0, 0), blendweight: semName(1, 0), blendindices: semName(2, 0), normal: semName(3, 0), psize: semName(4, 0), diffuse: semName(10, 0), specular: semName(10, 1) };
@@ -121,8 +123,7 @@ export class WebGLDevice {
     this.textures = new Map(); // resource id -> { tex, target }
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
-    this.samplers = []; for (let i = 0; i < 20; i++) this.samplers.push(gl.createSampler());
-    this.samplerState = Array.from({ length: 20 }, () => ({})); // last parameters applied to each sampler object
+    this.samplerPool = new Map(); // parameter combination -> WebGLSampler
     this.invalidateGlState();
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
@@ -527,26 +528,33 @@ export class WebGLDevice {
     const viewVersion = info.lighting ? Math.max(tsv.get(TS_VIEW) ?? 0, tall) : 0;
     if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion || pv.ls !== dev.stateVersion)) {
       pv.l = dev.lightVersion; pv.lt = viewVersion; pv.ls = dev.stateVersion;
+      // each block is compared with what this program last received (a light or material re-sent per object is
+      // usually the same one): only the slots that really changed reach GL
+      const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(17).fill(NaN), amb: -1, n: -1, slots: [] });
       const m = dev.material;
-      gl.uniform4fv(U('u_matDiffuse'), m.subarray(0, 4)); gl.uniform4fv(U('u_matAmbient'), m.subarray(4, 8)); gl.uniform4fv(U('u_matSpecular'), m.subarray(8, 12)); gl.uniform4fv(U('u_matEmissive'), m.subarray(12, 16)); gl.uniform1f(U('u_matPower'), m[16]);
-      gl.uniform4fv(U('u_ambient'), colorToVec(this.rs(RS.AMBIENT, 0), this.tmp.v4));
+      if (!sameF32(lv.mat, m, 17)) { lv.mat.set(m.subarray(0, 17)); gl.uniform4fv(U('u_matDiffuse'), m.subarray(0, 4)); gl.uniform4fv(U('u_matAmbient'), m.subarray(4, 8)); gl.uniform4fv(U('u_matSpecular'), m.subarray(8, 12)); gl.uniform4fv(U('u_matEmissive'), m.subarray(12, 16)); gl.uniform1f(U('u_matPower'), m[16]); }
+      const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
       let n = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
       if (this.lightOrderVersion !== dev.lightVersion) { this.lightOrder = [...dev.lightEnabled].sort((a, b) => a - b); this.lightOrderVersion = dev.lightVersion; }
       for (const i of this.lightOrder) {
         const l = dev.lights.get(i); if (!l || n >= MAX_LIGHTS) continue;
-        const LU = LIGHT_U[n];
-        gl.uniform1i(U(LU.type), l[0] | 0);
-        gl.uniform4fv(U(LU.diffuse), l.subarray(1, 5)); gl.uniform4fv(U(LU.specular), l.subarray(5, 9)); gl.uniform4fv(U(LU.ambient), l.subarray(9, 13));
-        const px = l[13], py = l[14], pz = l[15];
-        gl.uniform3f(U(LU.position), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
-        const dx = l[16], dy = l[17], dz = l[18];
-        gl.uniform3f(U(LU.direction), view[0] * dx + view[4] * dy + view[8] * dz, view[1] * dx + view[5] * dy + view[9] * dz, view[2] * dx + view[6] * dy + view[10] * dz);
-        gl.uniform1f(U(LU.range), l[19]); gl.uniform1f(U(LU.falloff), l[20]);
-        gl.uniform3f(U(LU.atten), l[21], l[22], l[23]); gl.uniform1f(U(LU.theta), l[24]); gl.uniform1f(U(LU.phi), l[25]);
+        const slot = lv.slots[n] ?? (lv.slots[n] = { data: new Float32Array(26).fill(NaN), view: -1 });
+        if (slot.view !== viewVersion || !sameF32(slot.data, l, 26)) {
+          slot.view = viewVersion; slot.data.set(l.subarray(0, 26));
+          const LU = LIGHT_U[n];
+          gl.uniform1i(U(LU.type), l[0] | 0);
+          gl.uniform4fv(U(LU.diffuse), l.subarray(1, 5)); gl.uniform4fv(U(LU.specular), l.subarray(5, 9)); gl.uniform4fv(U(LU.ambient), l.subarray(9, 13));
+          const px = l[13], py = l[14], pz = l[15];
+          gl.uniform3f(U(LU.position), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
+          const dx = l[16], dy = l[17], dz = l[18];
+          gl.uniform3f(U(LU.direction), view[0] * dx + view[4] * dy + view[8] * dz, view[1] * dx + view[5] * dy + view[9] * dz, view[2] * dx + view[6] * dy + view[10] * dz);
+          gl.uniform1f(U(LU.range), l[19]); gl.uniform1f(U(LU.falloff), l[20]);
+          gl.uniform3f(U(LU.atten), l[21], l[22], l[23]); gl.uniform1f(U(LU.theta), l[24]); gl.uniform1f(U(LU.phi), l[25]);
+        }
         n++;
       }
-      gl.uniform1i(U('u_numLights'), n);
+      if (lv.n !== n) { lv.n = n; gl.uniform1i(U('u_numLights'), n); }
     }
     if (pv.s !== dev.stateVersion) {
       // any render/stage state change bumps stateVersion: compare the raw state words with what this program last
@@ -590,21 +598,23 @@ export class WebGLDevice {
       const g = this.glTexture(st.tex);
       if (gs.tex[i] !== g.tex) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
       if (gs.texUnit[i] !== P.prog) { gl.uniform1i(l, i); gs.texUnit[i] = P.prog; }
-      const smp = this.samplers[i], ss = this.samplerState[i];
-      const wrap = (m) => (m === 2 ? gl.MIRRORED_REPEAT : m === 3 || m === 4 || m === 5 ? gl.CLAMP_TO_EDGE : gl.REPEAT);
-      const ws = wrap(this.samp(i, SAMP.ADDRESSU, 1)), wt = wrap(this.samp(i, SAMP.ADDRESSV, 1)), wr = wrap(this.samp(i, SAMP.ADDRESSW, 1));
-      if (ss.ws !== ws) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_S, ws); ss.ws = ws; }
-      if (ss.wt !== wt) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_T, wt); ss.wt = wt; }
-      if (ss.wr !== wr) { gl.samplerParameteri(smp, gl.TEXTURE_WRAP_R, wr); ss.wr = wr; }
+      // sampler objects are pooled by parameter combination: switching settings is one bindSampler
+      const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
       const levels = st.cube ? st.tex.faces[0].length : st.tex.levels.length;
-      const magF = mag >= 2 ? gl.LINEAR : gl.NEAREST;
-      if (ss.mag !== magF) { gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, magF); ss.mag = magF; }
-      const minF = levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST);
-      if (ss.min !== minF) { gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, minF); ss.min = minF; }
-      if (this.aniso) { const an = min === 3 || mag === 3 ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1; if (ss.aniso !== an) { gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an); ss.aniso = an; } }
+      const an = this.aniso && (min === 3 || mag === 3) ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1;
       const maxLod = levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0;
-      if (ss.maxLod !== maxLod) { gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod); ss.maxLod = maxLod; }
+      const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + maxLod * 0x200000;
+      let smp = this.samplerPool.get(skey);
+      if (!smp) {
+        smp = gl.createSampler(); this.samplerPool.set(skey, smp);
+        const wrap = (m) => (m === 2 ? gl.MIRRORED_REPEAT : m === 3 || m === 4 || m === 5 ? gl.CLAMP_TO_EDGE : gl.REPEAT);
+        gl.samplerParameteri(smp, gl.TEXTURE_WRAP_S, wrap(au)); gl.samplerParameteri(smp, gl.TEXTURE_WRAP_T, wrap(av)); gl.samplerParameteri(smp, gl.TEXTURE_WRAP_R, wrap(aw));
+        gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, mag >= 2 ? gl.LINEAR : gl.NEAREST);
+        gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST));
+        if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an);
+        gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod);
+      }
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
     }
     // depth / stencil
@@ -620,19 +630,25 @@ export class WebGLDevice {
     if ((zbias || slope) && (gs.poSlope !== slope || gs.poBias !== zbias)) { gl.polygonOffset(slope, zbias); gs.poSlope = slope; gs.poBias = zbias; }
     const stencil = this.rs(RS.STENCILENABLE, 0) !== 0;
     this.glEnable(gl.STENCIL_TEST, stencil);
-    if (stencil) { // rare: not cached
-      const ref = this.rs(RS.STENCILREF, 0), mask = this.rs(RS.STENCILMASK, 0xffffffff);
-      if (dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0)) {
-        // frontFace (below) makes GL front faces the D3D clockwise ones, so the CCW_* states are GL back
-        gl.stencilFuncSeparate(gl.FRONT, this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
-        gl.stencilOpSeparate(gl.FRONT, this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
-        gl.stencilFuncSeparate(gl.BACK, this.cmp(this.rs(RS9.CCW_STENCILFUNC, 8)), ref, mask);
-        gl.stencilOpSeparate(gl.BACK, this.stencilOp(this.rs(RS9.CCW_STENCILFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILZFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILPASS, 1)));
-      } else {
-        gl.stencilFunc(this.cmp(this.rs(RS.STENCILFUNC, 8)), ref, mask);
-        gl.stencilOp(this.stencilOp(this.rs(RS.STENCILFAIL, 1)), this.stencilOp(this.rs(RS.STENCILZFAIL, 1)), this.stencilOp(this.rs(RS.STENCILPASS, 1)));
+    if (stencil) { // cached as one key: some games set up stencil for every draw
+      const ref = this.rs(RS.STENCILREF, 0), mask = this.rs(RS.STENCILMASK, 0xffffffff), wmask = this.rs(RS.STENCILWRITEMASK, 0xffffffff);
+      const two = dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0);
+      const f = this.rs(RS.STENCILFUNC, 8), o1 = this.rs(RS.STENCILFAIL, 1), o2 = this.rs(RS.STENCILZFAIL, 1), o3 = this.rs(RS.STENCILPASS, 1);
+      const key = two ? `${f},${o1},${o2},${o3},${ref},${mask},${wmask}|${this.rs(RS9.CCW_STENCILFUNC, 8)},${this.rs(RS9.CCW_STENCILFAIL, 1)},${this.rs(RS9.CCW_STENCILZFAIL, 1)},${this.rs(RS9.CCW_STENCILPASS, 1)}` : `${f},${o1},${o2},${o3},${ref},${mask},${wmask}`;
+      if (gs.stencil !== key) {
+        gs.stencil = key;
+        if (two) {
+          // frontFace (below) makes GL front faces the D3D clockwise ones, so the CCW_* states are GL back
+          gl.stencilFuncSeparate(gl.FRONT, this.cmp(f), ref, mask);
+          gl.stencilOpSeparate(gl.FRONT, this.stencilOp(o1), this.stencilOp(o2), this.stencilOp(o3));
+          gl.stencilFuncSeparate(gl.BACK, this.cmp(this.rs(RS9.CCW_STENCILFUNC, 8)), ref, mask);
+          gl.stencilOpSeparate(gl.BACK, this.stencilOp(this.rs(RS9.CCW_STENCILFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILZFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILPASS, 1)));
+        } else {
+          gl.stencilFunc(this.cmp(f), ref, mask);
+          gl.stencilOp(this.stencilOp(o1), this.stencilOp(o2), this.stencilOp(o3));
+        }
+        gl.stencilMask(wmask);
       }
-      gl.stencilMask(this.rs(RS.STENCILWRITEMASK, 0xffffffff)); gs.stencilMask = undefined;
     }
     // blending
     const blend = this.rs(RS.ALPHABLENDENABLE, 0) !== 0;
@@ -663,7 +679,6 @@ export class WebGLDevice {
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
   invalidateGlState() {
     this.gs = { en: {}, tex: new Array(16).fill(null), texUnit: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
-    for (const ss of this.samplerState) for (const k in ss) ss[k] = undefined;
     if (this.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } // the default VAO (cached ones keep their state)
   }
   captureDraw(P, info, v, flip) {

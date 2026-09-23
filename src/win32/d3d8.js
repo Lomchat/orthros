@@ -182,6 +182,7 @@ export function d3dCore(vm) {
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
       this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
+      if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
       return D3D_OK;
     }
     unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
