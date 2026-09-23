@@ -27,9 +27,10 @@ const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
 // logical order (bit i = ST(i) non-empty; ST.FPU_TW keeps the physical order, bit s = slot s),
 // L_FPC the control word's PC/RC bits (cw & 0xf00).
 const L_ST0 = 33, L_FTW = 41, L_FPC = 42;
+const L_F64C = 43; // f64 temporary (x87 results kept apart from their operands)
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32]; // indices 16..42
-if (LOCAL_TYPES.length !== L_FPC + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64]; // indices 16..43
+if (LOCAL_TYPES.length !== L_F64C + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -50,7 +51,8 @@ const IMP_FLAGS = 0, IMP_ROUND24 = 1, IMP_FALLBACK = 2;
 const IMP_MATH = 3;
 const IMP_EXP2M1 = IMP_MATH, IMP_LOG2 = IMP_MATH + 1, IMP_LOG2P1 = IMP_MATH + 2, IMP_SCALB = IMP_MATH + 3;
 const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8, IMP_NAN2 = IMP_MATH + 9;
-if (MATH_KERNELS.length !== 10 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2') throw new Error('math kernel import layout mismatch');
+const IMP_ARITH24 = IMP_MATH + 10, IMP_F32RC = IMP_MATH + 11;
+if (MATH_KERNELS.length !== 12 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
 const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
@@ -1217,4 +1219,4 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };

@@ -333,8 +333,8 @@ export function registerGdi32(api, vm) {
   G.SetPixelFormat = [3, () => 1];
   G.DescribePixelFormat = [4, (c) => { const p = c.arg(3); if (p && c.arg(2) >= 40) { mem.fill(p, 40, 0); mem.write16(p, 40); mem.write16(p + 2, 1); mem.write32(p + 4, 0x25); mem.write8(p + 8, 0); mem.write8(p + 9, 32); mem.write8(p + 23, 24); mem.write8(p + 24, 8); } return 1; }];
   G.SwapBuffers = [1, () => 1];
-  G.GetDeviceGammaRamp = [2, (c) => { const p = c.arg(1); for (let i = 0; i < 256; i++) { const v = i * 257; mem.write16(p + 2 * i, v); mem.write16(p + 512 + 2 * i, v); mem.write16(p + 1024 + 2 * i, v); } return 1; }];
-  G.SetDeviceGammaRamp = [2, () => 1];
+  G.GetDeviceGammaRamp = [2, (c) => { const p = c.arg(1); if (vm.gammaRamp) { mem.writeBytes(p, vm.gammaRamp); return 1; } for (let i = 0; i < 256; i++) { const v = i * 257; mem.write16(p + 2 * i, v); mem.write16(p + 512 + 2 * i, v); mem.write16(p + 1024 + 2 * i, v); } return 1; }];
+  G.SetDeviceGammaRamp = [2, (c) => { if (!c.arg(1)) return 0; const ramp = mem.bytes(c.arg(1), 1536).slice(); vm.gammaRamp = ramp; vm.d3dDevice?.gfx?.setGamma?.(ramp); return 1; }];
 
   // ---------------------------------------------------------------- drawing
   G.SetPixel = [4, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0xffffffff; const p = dev(dc, c.sarg(1), c.sarg(2)); const k = dc.clip; if (p.x >= k.l && p.x < k.r && p.y >= k.t && p.y < k.b) { dc.surface.setPixel(p.x, p.y, crToRgb(c.arg(3))); touched(dc); } return c.arg(3) & 0xffffff; }];

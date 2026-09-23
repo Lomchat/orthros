@@ -12,7 +12,7 @@
 // conversions and FRNDINT.
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
 // the interpreter and FNSTENV/FXAM, not checked.
-import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_ROUND24, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2 } from './translate.js';
+import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import { T } from './wasm.js';
@@ -27,8 +27,6 @@ const FLT_MIN_NORMAL = 2 ** -126;
 // largest magnitude that f32.demote rounds (to nearest) without overflowing to infinity:
 // FLT_MAX + half an ulp (the tie rounds up to 2^128 as FLT_MAX's mantissa is odd)
 const F32_ROUND_LIMIT = 2 ** 128 - 2 ** 103;
-/** f64 denormal threshold and the exact scaling that normalizes a denormal (round24To) */
-const DBL_MIN_NORMAL = 2 ** -1022, TWO_54 = 2 ** 54, TWO_M54 = 2 ** -54;
 
 // ---- helpers (E = Emitter)
 // ST(i) is local E.stLocal(i) = L_ST0 + ((i + E.stShift) & 7): push/pop/FINCSTP/FDECSTP only
@@ -75,48 +73,30 @@ function pop(E) {
 /** rc (0 nearest, 1 down, 2 up, 3 trunc) from the cached control word bits */
 function pushRC(E) { E.c.get(L_FPC).i32(10).shr_u(); }
 /**
- * L_F64B <- round24(L_F64B, rc), `pushRc` emitting the rounding mode. round24 rounds the raw
- * mantissa field of the f64, which is only the significand for a normal value: an f64 denormal
- * is a normal extended value (the x87 exponent range is wider) and its significand must be
- * rounded to 24 bits as the interpreter does (roundMant24 normalizes first): 3 2^-1074 stays
- * 3 2^-1074 (it went to 0 on the raw field). The denormal is scaled by 2^54 (exact, normal),
- * rounded, and scaled back (exact: at most 24 significant bits at 2^-1074 or above).
+ * f64 result on the stack -> rounded per precision control; the operands are still in L_F64A and
+ * L_F64B (FSQRT: L_F64A), `op` numbers the operation (arith's: 0 add, 1 mul, 4 sub, 5 subr, 6 div,
+ * 7 divr; 8 sqrt). 24-bit mode, round to nearest, result in the normal float range and not exactly
+ * on a 24-bit midpoint: f32.demote/f64.promote inline (bit-identical to exact rounding there).
+ * Every other 24-bit case (directed rounding, midpoints, zero/denormal/huge/inf/nan results) goes
+ * through the arith24 kernel, which redoes the operation with its exact error term: the same result
+ * as the interpreter, without double-rounding artefacts (fpmath-round.js).
  */
-function round24To(E, pushRc) {
+function roundPC(E, op) {
   const c = E.c;
-  c.get(L_F64B).f64abs().f64c(DBL_MIN_NORMAL).f64lt();
-  const den = c.if_();
-  c.get(L_F64B).f64c(TWO_54).f64mul(); pushRc(); c.call(IMP_ROUND24).f64c(TWO_M54).f64mul().set(L_F64B);
-  c.else_();
-  c.get(L_F64B); pushRc(); c.call(IMP_ROUND24).set(L_F64B);
-  c.end(); void den;
-}
-/**
- * f64 on stack -> rounded per precision control. 24-bit mode: f32.demote/f64.promote inline when
- * rounding to nearest and the magnitude is in the normal f32 range (bit-identical to round24
- * there); zero is unchanged; denormal-range, huge, inf/nan values and directed rounding go
- * through the round24 import (keeps the f64 exponent range, as the interpreter does; f64
- * denormals are normalized around it, round24To).
- */
-function roundPC(E) {
-  const c = E.c;
-  c.set(L_F64B);
+  c.set(L_F64C);
   c.get(L_FPC).i32(0x300).and().eqz();
   const pc = c.if_();
   c.get(L_FPC).eqz();
-  const nearest = c.if_();
-  c.get(L_F64B).f64abs().f64c(FLT_MIN_NORMAL).f64ge().get(L_F64B).f64abs().f64c(F32_ROUND_LIMIT).f64lt().and();
-  const inRange = c.if_();
-  c.get(L_F64B).f32demote().f64promote().set(L_F64B);
+  c.get(L_F64C).f64abs().f64c(FLT_MIN_NORMAL).f64ge().and();
+  c.get(L_F64C).f64abs().f64c(F32_ROUND_LIMIT).f64lt().and();
+  c.get(L_F64C).i64reinterpret_f64().i64(0x1fffffffn).i64and().i64(0x10000000n).i64ne().and();
+  const fast = c.if_();
+  c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.else_();
-  c.get(L_F64B).f64c(0).f64ne();
-  const nonZero = c.if_(); round24To(E, () => c.i32(0)); c.end(); void nonZero;
-  c.end(); void inRange;
-  c.else_();
-  round24To(E, () => pushRC(E));
-  c.end(); void nearest;
+  c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op); pushRC(E); c.call(IMP_ARITH24).set(L_F64C);
+  c.end(); void fast;
   c.end(); void pc;
-  c.get(L_F64B);
+  c.get(L_F64C);
 }
 /** f64 on stack -> rounded to integer per RC (or trunc) */
 function roundRC(E, trunc) {
@@ -194,11 +174,11 @@ function fstore(E, insn, doPop) {
   E.eaTo(o);
   loadST(E, 0); c.set(L_F64A);
   if (o.size === 4) {
-    // directed rounding to single: round24 then demote (exact for normal values)
+    // nearest: f32.demote (IEEE, exact); directed rounding: the f32rc kernel (float denormals and overflow included)
+    c.get(L_TA);
     pushRC(E); c.set(L_T4);
-    c.get(L_T4);
-    const i = c.if_(); c.get(L_F64A).get(L_T4).call(IMP_ROUND24).set(L_F64A); c.end(); void i;
-    c.get(L_TA).get(L_F64A).f32demote().f32store(0, 0);
+    c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i;
+    c.f32store(0, 0);
   } else c.get(L_TA).get(L_F64A).f64store(0, 0);
   // pop before the SMC check: its exit resumes at insn.next with the instruction completed
   if (doPop) pop(E);
@@ -259,7 +239,7 @@ function arith(op, doPop, integer) {
       case 6: c.get(L_F64A).get(L_F64B).f64div(); break;
       default: c.get(L_F64B).get(L_F64A).f64div(); break;
     }
-    roundPC(E);
+    roundPC(E, op);
     storeSTStack(E, dst);
     if (doPop) pop(E);
   };
@@ -303,7 +283,7 @@ HANDLERS[OP.FABS] = (E) => { loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); };
 HANDLERS[OP.FSQRT] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
-  c.get(L_F64A).f64sqrt(); roundPC(E); c.set(E.stLocal(0));
+  c.get(L_F64A).f64sqrt(); roundPC(E, 8); c.set(E.stLocal(0));
   nanOutcome(E, L_F64A, L_F64A, E.stLocal(0));
   tagValid(E, 0);
 };

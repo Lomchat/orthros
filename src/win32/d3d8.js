@@ -5,6 +5,8 @@
 // (`vm.host.gfx`) that receives state changes and draw calls. Without a backend (headless Node)
 // everything is tracked and counted so traces and tests can observe the game's rendering.
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_INVALIDARG, E_OUTOFMEMORY, E_NOTIMPL } from './com.js';
+import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
+import { makeDC } from './gdi32.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -124,8 +126,29 @@ export function d3dCore(vm) {
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, RTYPE.SURFACE); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.dev.api9 ? 0 : this.bytes); mem.write32(p + 20, 0); mem.write32(p + 24, this.width); mem.write32(p + 28, this.height); return D3D_OK; } // DX8: Size at +16; DX9: MultiSampleType/Quality at +16/+20
     LockRect(c) { return this.lock(c, c.arg(1), c.arg(2), c.arg(3)); }
     UnlockRect() { return this.unlock(); }
-    GetDC(c) { c.out32(1, 0); return D3DERR_INVALIDCALL; }
-    ReleaseDC() { return D3DERR_INVALIDCALL; }
+    /**
+     * IDirect3DSurface9::GetDC: a GDI device context drawing straight into the surface memory (the formats D3D9
+     * allows: X8R8G8B8/A8R8G8B8, R5G6B5, X1R5G5B5/A1R5G5B5); the surface counts as locked until ReleaseDC.
+     */
+    GetDC(c) {
+      const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL;
+      mem.write32(p, 0);
+      const bpp = this.fmt === FMT.X8R8G8B8 || this.fmt === FMT.A8R8G8B8 ? 32 : this.fmt === FMT.R5G6B5 || this.fmt === FMT.X1R5G5B5 || this.fmt === FMT.A1R5G5B5 ? 16 : 0;
+      if (!bpp || this.locked) return D3DERR_INVALIDCALL;
+      if ((this.usage & USAGE_RENDERTARGET) || this.dev.backBuffers?.includes(this)) this.dev.gfx?.readbackSurface?.(this);
+      const base = this.ensureMem(c.proc);
+      const surf = new GdiSurface(mem, base, this.width, this.height, this.pitch, bpp, { masks: this.fmt === FMT.R5G6B5 ? [0xf800, 0x7e0, 0x1f] : undefined });
+      this.gdiDC = makeDC(c.proc, surf, { memory: true });
+      this.locked = true; this.lockFlags = 0;
+      this.trace(c, 'GetDC');
+      mem.write32(p, this.gdiDC.handle);
+      return D3D_OK;
+    }
+    ReleaseDC(c) {
+      if (!this.gdiDC || c.arg(1) !== this.gdiDC.handle) return D3DERR_INVALIDCALL;
+      c.proc.handles.map.delete(this.gdiDC.handle); this.gdiDC = null;
+      return this.unlock();
+    }
     SetPriority() { return 0; }
     GetPriority() { return 0; }
     PreLoad() {}
@@ -247,6 +270,7 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DDevice8];
       this.createBackBuffers(c);
       this.gfx = vm.host?.gfx?.createDevice?.(this) ?? null;
+      if (vm.gammaRamp) this.gfx?.setGamma?.(vm.gammaRamp); // SetDeviceGammaRamp before the device existed
     }
     readPresentParams(pp) {
       const p = pp;
