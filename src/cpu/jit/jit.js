@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
 import { translateRegion, buildRegionModule } from './translate.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -44,6 +44,8 @@ export class Jit {
         fallback: (eip) => this.fallback(eip),
       },
     };
+    // transcendental kernels (pure WASM functions of the runtime module: no JS on the path, D004)
+    for (const [name] of MATH_KERNELS) this.imports.env[name] = this.runtime[name];
     // Region chaining needs WASM tail calls (return_call_indirect); without them regions always
     // return to the dispatcher (slower transitions, same semantics).
     const tailCalls = supportsReturnCall();
@@ -142,8 +144,6 @@ export class Jit {
     const region = { entry: eip, start, end, blocks, fnIdx, code };
     this.regions.push(region);
     this.stats.live = this.regions.length;
-    this.pending.push(region);
-    if (this.pending.length >= this.consolidateEvery) this.consolidate();
     this.byEntry.set(eip, region);
     for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     // mark code pages for SMC detection
@@ -151,6 +151,11 @@ export class Jit {
       this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] |= 1 << (p & 7);
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
+    // consolidation only after the region is registered: consolidate() keeps the pending regions
+    // that byEntry still maps, so the one triggering it must already be there (or it would keep
+    // its single-function instance forever)
+    this.pending.push(region);
+    if (this.pending.length >= this.consolidateEvery) this.consolidate();
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
     this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
     if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);

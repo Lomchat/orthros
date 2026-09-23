@@ -34,7 +34,7 @@ const results = {};
 if (which !== 'jit') { results.interp = runOnce(false); console.log('interp:', Math.round(results.interp.total), 'ms; phases', results.interp.ms.join('/'), 'ms;', results.interp.sums.join(' ')); }
 if (which !== 'interp') { results.jit = runOnce(true); console.log('jit   :', Math.round(results.jit.total), 'ms; phases', results.jit.ms.join('/'), 'ms;', results.jit.sums.join(' ')); console.log('jit stats:', JSON.stringify(results.jit.stats)); }
 if (results.interp && results.jit) {
-  const names = ['int', 'sieve', 'memory', 'string', 'fpu', 'sse'];
+  const names = ['int', 'sieve', 'memory', 'string', 'fpu', 'sse', 'trans'];
   console.log('speedup total: ' + (results.interp.total / results.jit.total).toFixed(1) + 'x; per phase: ' + names.map((n, i) => `${n} ${(results.interp.ms[i] / Math.max(results.jit.ms[i], 1)).toFixed(1)}x`).join(', '));
   if (results.interp.sums.join() !== results.jit.sums.join()) console.log('CHECKSUM MISMATCH');
 }

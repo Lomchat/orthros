@@ -239,9 +239,13 @@ export function runSuite(dir, suite, makeExec, opts = {}) {
   return { total: c.count - skipped, failures, skipped };
 }
 
-/** True when the oracle result of case i shows an x87 stack fault (SF bit in FSW). */
+/**
+ * True when the oracle result of case i shows an x87 stack fault (SF bit in FSW). IE alone is
+ * not a stack fault (invalid operands: FSQRT of a negative, FYL2X of 0/inf/negative, FIST out
+ * of range, SNaN operands...): those cases run like any other.
+ */
 export function isStackFaultCase(i, c) {
   if (!c.meta[i].fpu) return false;
   const rv = new DataView(c.results.buffer, c.results.byteOffset + i * RESULT_SIZE, RESULT_SIZE);
-  return (rv.getUint16(48 + 2, true) & 0x41) !== 0;
+  return (rv.getUint16(48 + 2, true) & 0x40) !== 0;
 }

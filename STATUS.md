@@ -93,6 +93,18 @@
   **En partie (escarmouche, carte 3D, ~250 appels de dessin/image) : 3 → 28-30 fps, p99 ≈ 47 ms sous SwiftShader**
   (`node tools/headless.mjs bfme-vanilla --seconds 330 --pump --fallback --input …`), replis restants 13 k/s
   (transcendantes x87, PUSH/POP de segment).
+- **Transcendantes x87 traduites nativement** (F2XM1, FSCALE, FYL2X, FYL2XP1, FSIN, FCOS, FSINCOS, FPTAN, FPATAN) :
+  noyaux WASM purs écrits de zéro dans le module runtime (`src/cpu/jit/fpmath-exp.js` exp2m1/log2/log2p1/scalb,
+  `fpmath-trig.js` sin/cos/tan avec réduction Cody-Waite + Payne-Hanek, `fpmath-atan.js` atan2 ; constantes par
+  `tools/gen_fpmath_exp.py`, `gen_pi_bits.py`, `gen_atan_table.py`), importés par les régions comme `round24`
+  (WASM → WASM, D004). Précision ≤ 1 ulp vs référence exacte (exp/log), ≤ 0,5 ulp vs V8 (sin/cos), tan ≤ 1,6 ulp,
+  atan2 ≤ 1 ulp ; 13-20 ns par appel ; FSINCOS par un noyau `sincos` à réduction unique (23 ns au lieu de 44) ;
+  FSCALE arrondi une seule fois comme le matériel (l'interpréteur arrondit deux fois dans les dénormalisés, corrigé
+  côté noyau seulement). Sémantique de l'interpréteur reproduite (C2 hors domaine |x| ≥ 2^63 avec ST
+  inchangé, IE + indéfini sur NaN, pas d'arrondi PC, C1 non modélisé). Suites oracle `x87` (1 237 cas, les cas IE
+  sans SF ne sont plus sautés) et `verify_trans` (1 500 cas, coins matériels des transcendantes) : 0 écart, replis
+  restants FLD/FSTP m80, FXAM, FPREM/FPREM1, FXTRACT. Bench phase `trans` (9 M transcendantes) : 1 510 → 288 ms
+  (interpréteur 8 962 ms), 9 M replis → 0.
 - Fidélité (trouvée par les traces) : mutex abandonnés à la sortie d'un thread (le rechargement du shell après un
   changement de détail attendait indéfiniment), `CreateProcess` → ERROR_FILE_NOT_FOUND quand l'image n'existe pas
   (les « TextureAssetBuilder.exe/assetCacheBuilder.exe » invoqués par le jeu sont absents du dossier), ordre NTFS de
@@ -137,13 +149,17 @@
 - Démarrage : la phase mono-thread initiale (~60-75 s à 500-800 MIPS, 1-2 M replis/s de F2XM1+FSCALE) est la **suite de
   benchmarks de première exécution** du jeu (absence d'`Options.ini`) ; le harnais headless repartait d'un profil vide à
   chaque run. Nouvelle option `--profile-dir <dossier>` (profil chargé au démarrage, réécrit à la fin) : au second run le
-  jeu atteint Direct3D à 26 s (au lieu de ~100 s) et le menu à ~70 s (au lieu de ~125 s). Les transcendantes x87 en WASM
-  natif (en cours) accéléreront le benchmark lui-même (et son verdict de détail par défaut).
+  jeu atteint Direct3D à 26 s (au lieu de ~100 s) et le menu à ~70 s (au lieu de ~125 s). Les transcendantes x87 en
+  WASM natif (voir ci-dessus) ne raccourcissent pas cette phase : la suite de benchmarks est bornée en temps (chaque
+  test tourne pendant une fenêtre fixe), le score monte (+31 % et +47 % de MIPS dans les deux fenêtres qui
+  repliaient FSIN/FCOS puis F2XM1/FSCALE, 0 repli pendant tout le démarrage) mais `threads=3` arrive à 74-75 s et
+  Direct3D à 83-84 s avant comme après ; `--profile-dir`/`--opfs` reste le seul moyen de sauter ces ~75 s.
 - **Détail High, 9 min headless (D032)** : la seconde scène du shell (forteresse, ~1 500 appels de dessin/image) se charge
   (~60 s sous SwiftShader) et tourne de 245 s à 540 s sans blocage ni plantage (`build/shots15`, run hl83) — le
   « plantage après ~5 min » précédent était le livelock ci-dessus vu de l'extérieur. 6-14 fps, p99 ≈ 500 ms sous
   SwiftShader (rasterisation logicielle de 1 500 dessins : à mesurer sur GPU réel ; replis interpréteur 50-90 k/s à
-  identifier — transcendantes x87 en cours de traduction native).
+  identifier — les transcendantes x87 sont maintenant natives, à re-mesurer ; au menu il reste PUSH/POP de segment
+  ~880/s chacun, FXAM et XLAT ~79/s, FPREM ~39/s).
 - Profil CPU du worker (menu, 37 fps) : `dispatchThunk` 15 %, `clock.now` + `performance.now` 20 %, `bufferSubData`
   8 %, ordonnanceur 13 %, code invité (WASM) 17 % seulement → l'hôte domine ; pistes M7 : horloge mise en cache par
   tranche, chemin d'appel d'API plus court, envois de tampons de sommets groupés.

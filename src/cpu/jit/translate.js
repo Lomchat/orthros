@@ -14,7 +14,7 @@
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -43,8 +43,14 @@ function touchesFpu(insn) {
 }
 // Type index of the region signature inside a region module (declared first by buildRegionModule)
 const REGION_TYPE = 0;
-// Imports (function indices)
+// Imports (function indices, positional: the order of the importFunc calls in buildRegionModule)
 const IMP_FLAGS = 0, IMP_ROUND24 = 1, IMP_FALLBACK = 2;
+// transcendental kernels of the runtime module (MATH_KERNELS order): 3 exp2m1, 4 log2, 5 log2p1,
+// 6 scalb, 7 sin, 8 cos, 9 tan, 10 atan2, 11 sincos
+const IMP_MATH = 3;
+const IMP_EXP2M1 = IMP_MATH, IMP_LOG2 = IMP_MATH + 1, IMP_LOG2P1 = IMP_MATH + 2, IMP_SCALB = IMP_MATH + 3;
+const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8;
+if (MATH_KERNELS.length !== 9 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
 const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
@@ -144,6 +150,7 @@ export function buildRegionModule(codes, names = null) {
   m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
   m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
   m.importFunc('env', 'fallback', [T.i32], [T.i32]);
+  for (const [name, params, results] of MATH_KERNELS) m.importFunc('env', name, params, results);
   codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }
@@ -1210,4 +1217,4 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, MASK, SIGN, BITS, touchesFpu };

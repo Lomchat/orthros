@@ -4,6 +4,25 @@
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST, EXIT, F } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
+import { addExpKernels } from './fpmath-exp.js';
+import { addTrigKernels } from './fpmath-trig.js';
+import { addAtanKernels } from './fpmath-atan.js';
+
+/**
+ * Transcendental kernels of the runtime module, in the order the region modules import them
+ * (translate.js IMP_* constants follow this list after flags/round24/fallback): name -> [params, results].
+ */
+export const MATH_KERNELS = Object.freeze([
+  ['exp2m1', [T.f64], [T.f64]], // 2^x - 1 (F2XM1)
+  ['log2', [T.f64], [T.f64]], // log2 x (FYL2X)
+  ['log2p1', [T.f64], [T.f64]], // log2(1 + x) (FYL2XP1)
+  ['scalb', [T.f64, T.f64], [T.f64]], // a 2^trunc(b) with the interpreter's FSCALE special cases
+  ['sin', [T.f64], [T.f64]], // FSIN / FSINCOS
+  ['cos', [T.f64], [T.f64]], // FCOS / FSINCOS
+  ['tan', [T.f64], [T.f64]], // FPTAN
+  ['atan2', [T.f64, T.f64], [T.f64]], // atan2(y, x) (FPATAN: y = ST(1), x = ST(0))
+  ['sincos', [T.f64], [T.f64, T.f64]], // (sin x, cos x) from one range reduction (FSINCOS)
+]);
 
 export const EXIT_TRANSLATE = 7;
 export const HASH_ENTRY = 16; // eip u32, fnIdx u32, block u32, pad
@@ -72,13 +91,20 @@ export function materializeFlags(op, res, a, b, ef) {
 /**
  * Build the runtime module bytes. Imports: env.memory, env.table.
  * Exports: run(eip, state) -> exit code (halts at ST.STOP_AT); flags(op,res,a,b,ef) -> ef;
- * round24(x, rc) -> x'
+ * round24(x, rc) -> x'; the transcendental kernels of MATH_KERNELS (pure WASM, fpmath-*.js).
  */
 export function buildRuntime() {
   const m = new ModuleBuilder();
   m.importMemory('env', 'memory', 32768, 32768);
   m.importTable('env', 'table', 1024, undefined);
   const regionType = m.type(REGION_PARAMS, REGION_RESULTS);
+
+  // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
+  // defined here once, imported by every region module like round24 (WASM -> WASM, D004)
+  {
+    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m) };
+    for (const [name] of MATH_KERNELS) m.exportFunc(name, k[name]);
+  }
 
   // ---- flags(op, res, a, b, ef) -> ef
   {
