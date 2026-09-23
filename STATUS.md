@@ -299,7 +299,9 @@
   dossier contenant dx9.exe, setup.exe et uninstall.exe).
 - Textures magenta : le jeu lance `TextureAssetBuilder.exe` / `assetCacheBuilder.exe` depuis son dossier (absents) et
   cherche des textures en fichiers libres (`trwagontraveled*`) sans les trouver — pas d'écart d'émulation identifiable
-  (l'interpréteur de référence reproduit le même comportement) : classé données/outils absents du dossier.
+  (l'interpréteur de référence reproduit le même comportement ; avec le chargement non threadé du jeu, option
+  `IsThreadedLoad = no` d'Options.ini, les mêmes unités restent magenta : pas une course du thread de chargement) :
+  classé données/outils absents du dossier.
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente.
