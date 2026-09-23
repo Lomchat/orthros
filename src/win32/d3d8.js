@@ -395,7 +395,9 @@ export function d3dCore(vm) {
     GetLightEnable(c) { c.out32(2, this.lightEnabled.has(c.arg(1)) ? 1 : 0); return D3D_OK; }
     SetClipPlane(c) { const p = c.arg(2); const v = new Float32Array(4); for (let i = 0; i < 4; i++) v[i] = mem.readF32(p + 4 * i); this.clipPlanes.set(c.arg(1), v); this.gfx?.setClipPlane?.(c.arg(1), v); return D3D_OK; }
     GetClipPlane(c) { const v = this.clipPlanes.get(c.arg(1)), p = c.arg(2); for (let i = 0; i < 4; i++) mem.writeF32(p + 4 * i, v ? v[i] : 0); return D3D_OK; }
-    SetRenderState(c) { this.stateVersion++; const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
+    // redundant state sets (same value) are the common case in engines: they must not invalidate the program memo
+    // nor re-upload the state uniforms
+    SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
     BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
     EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; c.out32(1, id); return D3D_OK; }
@@ -406,9 +408,9 @@ export function d3dCore(vm) {
     SetClipStatus() { return D3D_OK; }
     GetClipStatus(c) { const p = c.arg(1); if (p) { mem.write32(p, 0); mem.write32(p + 4, 0); } return D3D_OK; }
     GetTexture(c) { const st = c.arg(1), pp = c.arg(2); if (st >= MAX_STAGES || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
-    SetTexture(c) { this.stateVersion++; const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
+    SetTexture(c) { const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
     GetTextureStageState(c) { const st = c.arg(1); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; c.out32(3, this.tss[st].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetTextureStageState(c) { this.stateVersion++; const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
+    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
     ValidateDevice(c) { c.out32(1, 1); return D3D_OK; }
     GetInfo() { return S_FALSE; }
     SetPaletteEntries(c) { const n = c.arg(1), p = c.arg(2); const pal = new Uint32Array(256); for (let i = 0; i < 256; i++) pal[i] = mem.read32(p + 4 * i); this.palettes.set(n, pal); return D3D_OK; }
