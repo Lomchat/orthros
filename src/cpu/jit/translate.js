@@ -314,6 +314,8 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 /** profiling translations: flags helper calls per x86 opcode (u32 per OP value) */
 export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
+/** offset from PROF_OPS_BASE of the unchained-transition counters (thunk, stop, budget, miss) */
+export const NOCHAIN_PROF = 0x8000;
 
 class Emitter {
   constructor(mem, opts) {
@@ -449,9 +451,12 @@ class Emitter {
   emitChain() {
     const c = this.c;
     const noChain = c.block();
-    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u().br_if(noChain);
-    c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq().hint(false).br_if(noChain);
-    c.get(L_ICOUNT).i32(0).le_s().hint(false).br_if(noChain); // (L_ICOUNT was written back before this chain attempt)
+    // profiling translations count why a transition is not chained (PROF_OPS_BASE + NOCHAIN_PROF: thunk, stop, budget, miss)
+    const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
+    c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; } // (L_ICOUNT was written back before this chain attempt)
+    // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
+    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
+    c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
@@ -460,6 +465,7 @@ class Emitter {
       c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
       c.i32load(0).get(L_TV).eq().br_if(found);
     }
+    why(3);
     c.br(noChain);
     c.end(); // found
     if (this.prof) { c.get(L_TA).i32load(4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; if (this.usesX87) this.count(PF.chainFromX87); }
