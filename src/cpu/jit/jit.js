@@ -202,6 +202,34 @@ export class Jit {
     this.stats.translateMs += performance.now() - t0;
   }
 
+  /**
+   * Debugging aid: report which translated code writes into [addr, addr + len) — the pages are flagged in the
+   * SMC map, so a store there leaves its region (EXIT.SMC) and watchHit() records the writer (distinct resume
+   * EIPs, at most `max` hits per page). Pages that hold translated code are not watched.
+   */
+  watchWrites(addr, len, label, max = 64) {
+    this.watches ??= new Map();
+    for (let p = addr >>> 12; p <= (addr + len - 1) >>> 12; p++) {
+      if (this.mem.u8[SMC_MAP_BASE + p]) continue;
+      this.mem.u8[SMC_MAP_BASE + p] = 2;
+      this.watches.set(p, { label, hits: 0, max, sites: new Map() });
+    }
+  }
+  unwatch(label) {
+    if (!this.watches) return [];
+    const report = [];
+    for (const [p, w] of this.watches) if (w.label === label) { if (this.mem.u8[SMC_MAP_BASE + p] === 2) this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); report.push(...w.sites); }
+    return report;
+  }
+  /** SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). */
+  watchHit(addr, eip) {
+    const p = addr >>> 12, w = this.watches?.get(p);
+    if (!w) return false;
+    w.sites.set(eip, (w.sites.get(eip) ?? 0) + 1);
+    if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); this.watchDone?.(w); }
+    return true;
+  }
+
   /** Invalidate translations overlapping [addr, addr+len). */
   invalidate(addr, len) {
     const p0 = addr >>> 12, p1 = (addr + len - 1) >>> 12;

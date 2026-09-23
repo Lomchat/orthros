@@ -2,7 +2,7 @@
 // shader models 1.x–2.x (DX9 conventions: dcl-declared inputs/samplers, semantic-named
 // attributes `a_s<usage>_<index>`, 256/32 float constants, integer/bool constants, static flow
 // control) to GLSL ES 3.00. Public documentation of the token format only.
-import { MAX_STAGES, D3D_TO_GL_POSITION, fragmentTail } from './d3d8-shaders.js';
+import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail } from './d3d8-shaders.js';
 
 export const DECLTYPE = { FLOAT1: 0, FLOAT2: 1, FLOAT3: 2, FLOAT4: 3, D3DCOLOR: 4, UBYTE4: 5, SHORT2: 6, SHORT4: 7, UBYTE4N: 8, SHORT2N: 9, SHORT4N: 10, USHORT2N: 11, USHORT4N: 12, UDEC3: 13, DEC3N: 14, FLOAT16_2: 15, FLOAT16_4: 16, UNUSED: 17 };
 export const USAGE = { POSITION: 0, BLENDWEIGHT: 1, BLENDINDICES: 2, NORMAL: 3, PSIZE: 4, TEXCOORD: 5, TANGENT: 6, BINORMAL: 7, TESSFACTOR: 8, POSITIONT: 9, COLOR: 10, FOG: 11, DEPTH: 12, SAMPLE: 13 };
@@ -65,7 +65,7 @@ function* instructions(code) {
 
 /** Translate a DX9 vertex shader (vs_1_1 or vs_2_x with dcl inputs) to GLSL. */
 export function translateVertexShader9(code) {
-  const lines = ['#version 300 es', 'precision highp float;'];
+  const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
   const inputs = new Map(); // v# -> attribute name
   const version = code[0] & 0xffff, major = version >> 8;
   // pass 1: declarations
