@@ -213,10 +213,17 @@
   API en fin de run ; `--corpus` (formes d'instructions du code traduit).
 - **CPU** (D036/D037) : suite de conformité `corpus` (762 formes réellement exécutées par le jeu, 7 134 cas ; 35 670 à 60 cas/forme)
   → 3 bugs x87 du JIT (arrondis dirigés en PC=24, FST m32 dirigé) et 2 de l'interpréteur corrigés ; noyaux WASM `arith24`/`f32rc`.
+- **Détail High** : le sol était entièrement noir — le pixel shader ps_1_1 du terrain commence par `def c3, 0,0,0,0` et
+  l'analyseur SM 1.x prenait ces zéros pour des instructions (D038). Corrigé : terrain, architecture et décor du menu 3D
+  s'affichent correctement. Tables `ctype`/casse de la CRT native corrigées (chaînes comptées, D039). Cache de VAO et
+  suppression des envois GL redondants (D040 ; écran Options : 10,4 appels GL/draw mesurés avant).
 - Défauts restants en partie (détail Very Low) :
-  - **3 textures « magenta »** : ce sont des textures 1×1 créées *pendant le rendu* (création paresseuse) juste après
-    `CheckDeviceFormat(R8G8B8) → non disponible` puis `A8R8G8B8 → ok` : vraisemblablement le proxy d'une texture chargée en
-    arrière-plan qui n'est jamais remplacé. Enquête en cours (trace de tous les threads au moment de la création).
+  - **3 textures « magenta »** (drapeaux des porte-étendards en partie ; en High, quelques soldats du menu) : le moteur crée
+    via son D3DX lié statiquement une texture 1×1 remplie de magenta (sa texture « manquante ») puis, pour ces textures-là,
+    ne tente *aucun* chargement (ni recherche de fichier, ni lecture d'archive — traces `apiburst`), alors que les autres
+    proxies sont suivis d'une recherche puis d'une vraie texture. Déterministe (mêmes ressources avec le VFS HTTP et le VFS
+    Node), CPU conforme sur toutes les formes d'instructions du jeu (suite `corpus`). Test différentiel interpréteur/JIT en
+    cours ; hypothèse restante : données absentes du dossier (outils `TextureAssetBuilder`/`assetCacheBuilder` introuvables).
   - **Sol de la forteresse** en aplats gris : le draw échantillonne une zone « bande sombre » de l'atlas 256×128 que le moteur
     compose lui-même (un seul `LockRect`) ; mapping (UV, mips, matrices) vérifié correct côté Orthros. Peut-être la même cause
     (tuile manquante/remplacée dans l'atlas).
