@@ -11,6 +11,7 @@ import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS } from '../../cpu/jit/translate.js';
+import { MATH_KERNELS } from '../../cpu/jit/runtime.js';
 
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
 let lastFlush = 0, running = false, stopped = false;
@@ -156,6 +157,8 @@ function pump() {
 }
 
 /** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
+/** region function imports by index (translate.js IMP_*: flags helper, round24, interpreter fallback, then the math kernels) */
+const IMPORT_NAMES = ['flags', 'round24', 'fallback', ...MATH_KERNELS.map(([n]) => n)];
 function regionMix(eips) {
   const lines = [], overall = new Map(); let total = 0;
   for (const eipHex of eips) {
@@ -168,7 +171,8 @@ function regionMix(eips) {
       while (a < b.end) { let insn; try { insn = decode(vm.mem, a); } catch { break; } const name = OP_NAMES[insn.op]; hist.set(name, (hist.get(name) ?? 0) + 1); overall.set(name, (overall.get(name) ?? 0) + 1); n++; total++; bytes += insn.len; a = insn.next; if (!HANDLERS[insn.op]) fb++; }
     }
     const top = [...hist].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ');
-    lines.push(`region ${eipHex} (${vm.proc.symbolize(eip)}): ${r.blocks.length} blocks, ${n} insns, ${bytes} bytes, ${fb} interpreter fallbacks — ${top}`);
+    const calls = new Map(); const rc = r.calls ?? []; for (let i = 0; i < rc.length; i += 2) { const k = `${IMPORT_NAMES[rc[i]] ?? 'f' + rc[i]}@${rc[i + 1] >= 0 ? OP_NAMES[rc[i + 1]] : 'end'}`; calls.set(k, (calls.get(k) ?? 0) + 1); }
+    lines.push(`region ${eipHex} (${vm.proc.symbolize(eip)}): ${r.blocks.length} blocks, ${n} insns, ${bytes} bytes, ${fb} interpreter fallbacks, calls ${calls.size ? [...calls].map(([k, v]) => `${k}x${v}`).join(' ') : 'none'} — ${top}`);
   }
   lines.push(`overall (${total} insns): ` + [...overall].sort((x, y) => y[1] - x[1]).slice(0, 24).map(([k, v]) => `${k} ${(100 * v / Math.max(1, total)).toFixed(1)}%`).join(', '));
   return lines.join('\n');
