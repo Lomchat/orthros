@@ -28,9 +28,12 @@ const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
 // L_FPC the control word's PC/RC bits (cw & 0xf00).
 const L_ST0 = 33, L_FTW = 41, L_FPC = 42;
 const L_F64C = 43; // f64 temporary (x87 results kept apart from their operands)
+// the instruction budget (ST.ICOUNT) cached in a local for the whole region: decremented in a register at every
+// block transition, written back to the state block only when the region is left (exit, chain)
+const L_ICOUNT = 44;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64]; // indices 16..43
-if (LOCAL_TYPES.length !== L_F64C + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32]; // indices 16..44
+if (LOCAL_TYPES.length !== L_ICOUNT + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -180,6 +183,7 @@ class Emitter {
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
     c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
+    c.get(L_STATE).i32load(ST.ICOUNT).set(L_ICOUNT);
     if (this.usesX87) this.loadX87();
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
@@ -199,11 +203,13 @@ class Emitter {
     c.unreachable();
     c.end(); // dispatch loop
     c.end(); // exitJmpL: jump exit (tV = target eip)
+    c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
     if (this.chain) this.emitChain();
     this.flushAll();
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     c.get(L_TV).return_();
     c.end(); // exitCodeL: exit with code (tV = eip, t2 = code)
+    c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
     this.flushAll();
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
@@ -226,7 +232,7 @@ class Emitter {
     const noChain = c.block();
     c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u().br_if(noChain);
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq().br_if(noChain);
-    c.get(L_STATE).i32load(ST.ICOUNT).i32(0).le_s().br_if(noChain);
+    c.get(L_ICOUNT).i32(0).le_s().br_if(noChain); // (L_ICOUNT was written back before this chain attempt)
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
@@ -361,7 +367,7 @@ class Emitter {
    * ends with a time slice.
    */
   charge(n) {
-    if (n > 0) this.c.get(L_STATE).get(L_STATE).i32load(ST.ICOUNT).i32(n).sub().i32store(ST.ICOUNT);
+    if (n > 0) this.c.get(L_ICOUNT).i32(n).sub().set(L_ICOUNT);
   }
   // Every exit / branch first materializes the x87 static shift (x87Normalize) and restores it
   // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
@@ -378,8 +384,7 @@ class Emitter {
   /** Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. */
   budget(n, eip) {
     const c = this.c;
-    c.get(L_STATE).get(L_STATE).i32load(ST.ICOUNT).i32(n).sub().tee(L_T3).i32store(ST.ICOUNT);
-    c.get(L_T3).i32(0).le_s();
+    c.get(L_ICOUNT).i32(n).sub().tee(L_ICOUNT).i32(0).le_s();
     const i = c.if_();
     this.exitCode(EXIT.TIMESLICE, eip);
     c.end(); void i;
@@ -576,6 +581,7 @@ class Emitter {
     c.get(L_STATE).i32(insn.addr).i32store(ST.EIP);
     c.i32(insn.addr).call(IMP_FALLBACK).tee(L_T2);
     const i = c.if_();
+    c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
     c.i32(0).return_(); // exit code already stored by the host
     c.end(); void i;
     this.reloadAll();
