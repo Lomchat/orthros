@@ -50,6 +50,51 @@ function program(seed, n) {
   return { code: Uint8Array.from(bytes), exit };
 }
 
+/**
+ * Flags live across block boundaries: every block ends with a random flag-setting instruction (cmp/add/
+ * test/and/inc/dec at 8, 16 and 32 bits, and kinds without an inline path: shl, neg, imul, bt) followed
+ * by a jcc, and the successors start by consuming those flags (jcc on any condition, setcc, cmovcc,
+ * adc/sbb, inc: CF preserved) before anything else writes them.
+ */
+function flagsProgram(seed, n) {
+  const R = rng(seed), pick = (m) => Math.floor(R() * m);
+  const bytes = [], fix = [], at = [];
+  const imm32 = (v) => bytes.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff);
+  const rel = (target) => { fix.push([bytes.length, target]); imm32(0); };
+  const near = (k) => Math.max(0, Math.min(n - 1, k + pick(7) - 4));
+  const SETTERS = [
+    () => bytes.push(0x3c, pick(256)), () => { bytes.push(0x66, 0x3d, pick(256), pick(256)); }, () => { bytes.push(0x3d); imm32((R() * 2 ** 32) | 0); }, // cmp al/ax/eax, imm
+    () => bytes.push(0x00, 0xc3), () => bytes.push(0x66, 0x01, 0xc3), () => bytes.push(0x01, 0xc3), // add bl,al / bx,ax / ebx,eax
+    () => bytes.push(0xa8, pick(256)), () => bytes.push(0x66, 0xa9, pick(256), pick(256)), () => bytes.push(0x21, 0xc3), // test al / test ax / and ebx,eax
+    () => bytes.push(0xfe, 0xcb), () => bytes.push(0x66, 0x47), () => bytes.push(0x47), () => bytes.push(0x4f), // dec bl, inc di, inc edi, dec edi
+    () => bytes.push(0xc1, 0xe3, 1 + pick(31)), () => bytes.push(0xf7, 0xdb), () => bytes.push(0x0f, 0xaf, 0xd8), () => bytes.push(0x0f, 0xba, 0xe0, pick(32)), // shl, neg, imul, bt
+  ];
+  for (let k = 0; k < n; k++) {
+    at[k] = CODE + bytes.length;
+    switch (pick(6)) { // consumer of the predecessor's flags
+      case 0: bytes.push(0x0f, 0x80 + pick(16)); rel(k === n - 1 ? 'exit' : k + 1 + pick(Math.min(4, n - 1 - k))); break; // jcc (a block of its own; forward: no fuel-free cycle)
+      case 1: bytes.push(0x0f, 0x90 + pick(16), 0xc2); break; // setcc dl
+      case 2: bytes.push(0x0f, 0x40 + pick(16), 0xd9); break; // cmovcc ebx, ecx
+      case 3: bytes.push(0x81, 0xd3); imm32(pick(0x10000)); break; // adc ebx, imm
+      case 4: bytes.push(0x81, 0xd9); imm32(pick(0x10000)); break; // sbb ecx, imm
+      default: bytes.push(0x42); // inc edx (keeps CF)
+    }
+    bytes.push(0x4e, 0x0f, 0x84); rel('exit');
+    bytes.push(0x05); imm32((R() * 0x100000000) | 0);
+    bytes.push(0xc1, 0xc0, 1 + pick(31), 0x31, 0xc3, 0x01, 0xd9, 0x31, 0xd7); // rol eax ; xor ebx,eax ; add ecx,ebx ; xor edi,edx
+    SETTERS[pick(SETTERS.length)]();
+    bytes.push(0x0f, 0x80 + pick(16)); rel(R() < 0.7 ? near(k) : pick(n));
+    if (R() < 0.25 || k === n - 1) { bytes.push(0xe9); rel(near(k)); }
+  }
+  const exit = CODE + bytes.length;
+  bytes.push(0xf4);
+  for (const [o, t] of fix) {
+    const v = (t === 'exit' ? exit : at[t]) - (CODE + o + 4);
+    bytes[o] = v & 0xff; bytes[o + 1] = (v >> 8) & 0xff; bytes[o + 2] = (v >> 16) & 0xff; bytes[o + 3] = (v >>> 24) & 0xff;
+  }
+  return { code: Uint8Array.from(bytes), exit };
+}
+
 function makeExec(useJit) {
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
@@ -103,4 +148,23 @@ test('random control flow: whole runs and time-sliced runs match the interpreter
     loops += EJ.jit.stats.regions; dispatches += EJ.jit.stats.fallbackSteps;
   }
   assert.equal(dispatches, 0, 'no interpreter fallback');
+});
+
+test('flags consumed at block entry (every lazy kind and size) match the interpreter', () => {
+  for (let seed = 100; seed < 160; seed++) {
+    const n = 4 + (seed * 5) % 40;
+    const { code, exit } = flagsProgram(seed, n);
+    const EI = makeExec(false);
+    EI.load(code, 2000);
+    assert.equal(EI.run(exit, 1e7), EXIT.HALT, `seed ${seed}: interpreter`);
+    const want = snapshot(EI);
+    const EJ = makeExec(true);
+    EJ.load(code, 2000);
+    assert.equal(EJ.run(exit, 1e7), EXIT.HALT, `seed ${seed}: jit`);
+    assert.deepEqual(snapshot(EJ), want, `seed ${seed}: whole run`);
+    EJ.load(code, 2000);
+    let r, k = 0;
+    while ((r = EJ.run(exit, 23)) === EXIT.TIMESLICE) assert.ok(++k < 1e6, 'runaway');
+    assert.deepEqual(snapshot(EJ), want, `seed ${seed}: time slices`);
+  }
 });

@@ -23,11 +23,6 @@ const INDEFINITE_BITS = 0xfff8000000000000n;
 const TWO_63 = 2 ** 63;
 /** FYL2XP1 tiny-argument scaling (see the handler): threshold and exact scale factors */
 const YL2XP1_TINY = 2 ** -1000, TWO_600 = 2 ** 600, TWO_M600 = 2 ** -600;
-const FLT_MIN_NORMAL = 2 ** -126;
-const DBL_MIN_NORMAL = 2 ** -1022, DBL_MAX_FINITE = 1.7976931348623157e308;
-// largest magnitude that f32.demote rounds (to nearest) without overflowing to infinity:
-// FLT_MAX + half an ulp (the tie rounds up to 2^128 as FLT_MAX's mantissa is odd)
-const F32_ROUND_LIMIT = 2 ** 128 - 2 ** 103;
 
 // ---- helpers (E = Emitter)
 // ST(i) is local E.stLocal(i) = L_ST0 + ((i + E.stShift) & 7): push/pop/FINCSTP/FDECSTP only
@@ -87,26 +82,26 @@ function roundPC(E, op) {
   c.set(L_F64C);
   c.get(L_FPC).i32(0x300).and().eqz();
   const pc = c.if_();
-  // fast when rounding to nearest and the result is 0 (exact: nothing to round) or in the normal float range off a midpoint
+  // fast when rounding to nearest (L_FPC == 0 once PC is 24-bit) and the result is off a 24-bit midpoint and
+  // either in [2^-126, 2^127) (the float normal range, below the magnitudes that could round up to 2^128) or zero
+  // (exact: nothing to round); tested on the bit pattern (high word: sign, exponent, top of the significand)
   c.get(L_FPC).eqz();
-  c.get(L_F64C).f64abs().f64c(FLT_MIN_NORMAL).f64ge();
-  c.get(L_F64C).f64abs().f64c(F32_ROUND_LIMIT).f64lt().and();
-  c.get(L_F64C).i64reinterpret_f64().i64(0x1fffffffn).i64and().i64(0x10000000n).i64ne().and();
-  c.get(L_F64C).f64c(0).f64eq().or();
+  c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).ne().and();
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u();
+  c.get(L_I64A).i64(1n).i64shl().i64eqz().or();
   c.and();
-  const fast = c.if_();
+  const fast = c.hint(true).if_();
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.else_();
   // directed rounding (down / up / toward zero) of an f64-normal result that is not on the 24-bit grid: the exact
   // value lies strictly between the same two grid points, so masking the low 29 significand bits (plus one 24-bit
   // step away from zero for down-negative / up-positive) is exact; on-grid, zero-adjacent, denormal, infinite and
   // NaN results take the exact kernel
+  // (L_I64A = the result's bits; exponent field in [1, 2046]: f64 normal)
   c.get(L_FPC).i32(0xc00).and();
-  c.get(L_F64C).f64abs().f64c(DBL_MIN_NORMAL).f64ge().and();
-  c.get(L_F64C).f64abs().f64c(DBL_MAX_FINITE).f64le().and();
-  c.get(L_F64C).i64reinterpret_f64().i64(0x1fffffffn).i64and().i64eqz().eqz().and();
-  const directed = c.if_();
-  c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u().and();
+  c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0).ne().and();
+  const directed = c.hint(true).if_();
   // step = (rc == down && negative) || (rc == up && positive) ? 2^29 : 0 ; rc = L_FPC >> 10 (1 down, 2 up, 3 zero)
   c.get(L_I64A).i64(~0x1fffffffn).i64and();
   c.get(L_FPC).i32(0xc00).and().i32(0x400).eq().get(L_I64A).i64(0n).i64lt_s().and();
@@ -341,7 +336,7 @@ function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
 function nanOutcome(E, a, b, res, otherwise = null) {
   const c = E.c;
   c.get(res).get(res).f64ne();
-  const nan = c.if_();
+  const nan = c.hint(false).if_();
   c.get(a).get(b).call(IMP_NAN2);
   const ie = c.if_(); raise(E, 0); c.end(); void ie;
   c.set(res);
@@ -419,14 +414,14 @@ HANDLERS[OP.FPATAN] = (E) => {
 function trigArg(E, store, oor, compute) {
   const c = E.c;
   c.get(L_F64A).get(L_F64A).f64ne();
-  const nan = c.if_();
+  const nan = c.hint(false).if_();
   setCC(E, 0, 0, 0);
   c.get(L_F64A).get(L_F64A).call(IMP_NAN2);
   const ie = c.if_(); raise(E, 0); c.end(); void ie;
   store(c);
   c.else_();
   c.get(L_F64A).f64abs().f64c(TWO_63).f64ge();
-  const big = c.if_();
+  const big = c.hint(false).if_();
   c.get(L_F64A).f64abs().f64c(Infinity).f64eq();
   const inf = c.if_();
   setCC(E, 0, 0, 0); raise(E, 0); indefinite(c); store(c);
