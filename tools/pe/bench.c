@@ -127,6 +127,52 @@ __attribute__((target("mmx,sse,sse2"))) static unsigned phase_sse(float* f, unsi
   return fsum + (isum << 1) + (msum << 2);
 }
 
+// x87 transcendentals (inline asm, Intel syntax: no CRT to emit them from C). Each loop keeps
+// acc / x / dx on the register stack, applies one kernel to a copy of x and steps x by dx:
+//   exp: the classic e^x = 2^(x log2 e) sequence FLDL2E FMUL FLD FRNDINT FSUB FXCH F2XM1 FLD1 FADD
+//        FSCALE FSTP (two transcendentals per iteration), then FSIN, FCOS, FSINCOS, FPTAN, FPATAN
+//        (atan2(x, 1)), FYL2X (x log2 x) and FYL2XP1 (x log2(1 + x)); 1e6 iterations each on
+//        ranges inside each instruction's domain (|x| < 2^63, x > 0, |x| < 1 - sqrt(2)/2).
+#define TRANS_LOOP(body, count, in, out) do { int cnt_ = (count); __asm__ volatile( \
+    ".intel_syntax noprefix\n" \
+    "fld qword ptr [esi+8]\n" /* dx */ \
+    "fld qword ptr [esi]\n"   /* x */ \
+    "fldz\n"                  /* acc */ \
+    "1:\n" \
+    "fld st(1)\n"             /* copy of x */ \
+    body \
+    "faddp st(1), st\n"       /* acc += result */ \
+    "fxch st(1)\n" \
+    "fadd st, st(2)\n"        /* x += dx */ \
+    "fxch st(1)\n" \
+    "dec ecx\n" \
+    "jnz 1b\n" \
+    "fstp qword ptr [edi]\n" \
+    "fstp st(0)\n" \
+    "fstp st(0)\n" \
+    ".att_syntax prefix\n" \
+    : "+c"(cnt_) : "S"(in), "D"(out) : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)", "cc", "memory"); } while (0)
+static unsigned phase_trans(void) {
+  const int N = 1000000;
+  double in[2], s[8];
+  in[0] = -0.5; in[1] = 1e-6;
+  TRANS_LOOP("fldl2e\n fmulp st(1), st\n fld st(0)\n frndint\n fsub st(1), st\n fxch st(1)\n f2xm1\n fld1\n faddp st(1), st\n fscale\n fstp st(1)\n", N, in, &s[0]);
+  in[0] = -2.0; in[1] = 6e-6;
+  TRANS_LOOP("fsin\n", N, in, &s[1]);
+  TRANS_LOOP("fcos\n", N, in, &s[2]);
+  TRANS_LOOP("fsincos\n faddp st(1), st\n", N, in, &s[3]);
+  TRANS_LOOP("fld1\n fpatan\n", N, in, &s[4]);
+  in[0] = -1.0; in[1] = 2.4e-6;
+  TRANS_LOOP("fptan\n fstp st(0)\n", N, in, &s[5]);
+  in[0] = 0.5; in[1] = 2e-6;
+  TRANS_LOOP("fld st(0)\n fyl2x\n", N, in, &s[6]);
+  in[0] = -0.25; in[1] = 5e-7;
+  TRANS_LOOP("fld st(0)\n fyl2xp1\n", N, in, &s[7]);
+  unsigned h = 0;
+  for (int i = 0; i < 8; i++) h = h * 1000003u + (unsigned)(int)(s[i] * 100.0);
+  return h;
+}
+
 void __stdcall start(void) {
   HANDLE out = GetStdHandle((DWORD)-11);
   unsigned char* sieve = (unsigned char*)VirtualAlloc(0, 2000000, 0x3000, 4);
@@ -148,6 +194,8 @@ void __stdcall start(void) {
   DWORD t5 = GetTickCount();
   put(out, "sse "); puthex(out, phase_sse(f, u));
   DWORD t6 = GetTickCount();
-  put(out, "ms "); puthex(out, t1 - t0); put(out, "ms "); puthex(out, t2 - t1); put(out, "ms "); puthex(out, t3 - t2); put(out, "ms "); puthex(out, t4 - t3); put(out, "ms "); puthex(out, t5 - t4); put(out, "ms "); puthex(out, t6 - t5);
+  put(out, "trans "); puthex(out, phase_trans());
+  DWORD t7 = GetTickCount();
+  put(out, "ms "); puthex(out, t1 - t0); put(out, "ms "); puthex(out, t2 - t1); put(out, "ms "); puthex(out, t3 - t2); put(out, "ms "); puthex(out, t4 - t3); put(out, "ms "); puthex(out, t5 - t4); put(out, "ms "); puthex(out, t6 - t5); put(out, "ms "); puthex(out, t7 - t6);
   ExitProcess(0);
 }

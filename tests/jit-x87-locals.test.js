@@ -78,6 +78,16 @@ class Asm {
   fistpD(a) { return this.abs([0xdb], 3, a); }
   fsin() { return this.emit(0xd9, 0xfe); }
   fcos() { return this.emit(0xd9, 0xff); }
+  fsincos() { return this.emit(0xd9, 0xfb); }
+  fptan() { return this.emit(0xd9, 0xf2); }
+  fpatan() { return this.emit(0xd9, 0xf3); }
+  f2xm1() { return this.emit(0xd9, 0xf0); }
+  fyl2x() { return this.emit(0xd9, 0xf1); }
+  fyl2xp1() { return this.emit(0xd9, 0xf9); }
+  fscale() { return this.emit(0xd9, 0xfd); }
+  frndint() { return this.emit(0xd9, 0xfc); }
+  fldl2e() { return this.emit(0xd9, 0xea); }
+  fsubStSt0(i) { return this.emit(0xdc, 0xe8 + i); } // fsub st(i), st
   fsqrt() { return this.emit(0xd9, 0xfa); }
   fchs() { return this.emit(0xd9, 0xe0); }
   fxam() { return this.emit(0xd9, 0xe5); }
@@ -188,17 +198,113 @@ test('time-slice exits inside an x87 loop flush and reload the cached stack', ()
   assert.deepEqual(snapshot(EJ), snapshot(EI));
 });
 
-test('an interpreter fallback (FSIN) in the middle of a native x87 sequence', () => {
+/** |a - b| within `ulps` units of the last place of b (b finite, non-zero) */
+function closeUlps(a, b, ulps = 2) {
+  if (Number.isNaN(a) || Number.isNaN(b)) return Number.isNaN(a) && Number.isNaN(b);
+  if (a === b) return true;
+  const ulp = 2 ** (Math.floor(Math.log2(Math.abs(b))) - 52);
+  return Math.abs(a - b) <= ulps * ulp;
+}
+/**
+ * Run `code` on both executors and compare the snapshots, allowing the x87 registers and the
+ * doubles stored at `slots` (offsets in the data page) to differ by `ulps` (transcendental
+ * results: the interpreter uses Math.*, the JIT its own kernels, both about 1 ulp from the truth).
+ */
+function bothClose(code, data, stopAt, slots, ulps = 2) {
+  const EI = makeExec(false), EJ = makeExec(true);
+  load(EI, code, data); load(EJ, code, data);
+  assert.equal(EI.run(stopAt), EXIT.HALT);
+  assert.equal(EJ.run(stopAt), EXIT.HALT);
+  const si = snapshot(EI), sj = snapshot(EJ);
+  for (let k = 0; k < 8; k++) assert.ok(closeUlps(sj.fpr[k], si.fpr[k], ulps), `fpr[${k}]: jit ${sj.fpr[k]} interp ${si.fpr[k]}`);
+  for (const o of slots) assert.ok(closeUlps(EJ.mem.readF64(DATA + o), EI.mem.readF64(DATA + o), ulps), `[D+${o}]: jit ${EJ.mem.readF64(DATA + o)} interp ${EI.mem.readF64(DATA + o)}`);
+  const rest = (s, E) => { const m = Buffer.from(E.mem.bytes(DATA, 128)); for (const o of slots) m.fill(0, o, o + 8); return { ...s, fpr: undefined, mem: m.toString('hex') }; };
+  assert.deepEqual(rest(sj, EJ), rest(si, EI));
+  return { EI, EJ };
+}
+
+test('FSIN / FCOS are translated natively inside an x87 sequence (no fallback)', () => {
   // fld1 ; fld [D] ; fsin ; fadd st0, st1 ; fxch ; fsqrt ; fld [D+8] ; fcos ; faddp ; fstp [D+16] ; fstp [D+24] ; hlt
   const a = new Asm(CODE);
   a.fld1().fldQ(DATA).fsin().faddSt0St(1).fxch(1).fsqrt().fldQ(DATA + 8).fcos().faddp().fstpQ(DATA + 16).fstpQ(DATA + 24);
   a.label('end').hlt();
   const end = a.labels.get('end');
-  const { EJ } = both(a.finish(), [[0, 0.7], [8, 2.5]], end);
-  assert.equal(EJ.mem.readF64(DATA + 16), 1 + Math.cos(2.5));
-  assert.equal(EJ.mem.readF64(DATA + 24), Math.sin(0.7) + 1);
-  assert.equal(EJ.jit.stats.fallbackSteps, 2, 'FSIN and FCOS fell back');
+  const { EJ } = bothClose(a.finish(), [[0, 0.7], [8, 2.5]], end, [16, 24]);
+  assert.ok(closeUlps(EJ.mem.readF64(DATA + 16), 1 + Math.cos(2.5)), 'cos');
+  assert.ok(closeUlps(EJ.mem.readF64(DATA + 24), Math.sin(0.7) + 1), 'sin');
+  assert.equal(EJ.jit.stats.fallbackSteps, 0, 'FSIN and FCOS are native');
   assert.equal(EJ.cpu.fpuTw, 0);
+});
+
+test('transcendentals in one block: exp sequence (F2XM1/FSCALE), FYL2X, FYL2XP1, FPATAN, FPTAN, FSINCOS', () => {
+  // the classic e^x: fld x ; fldl2e ; fmulp ; fld st ; frndint ; fsub st1, st ; fxch ; f2xm1 ; fld1 ; faddp ; fscale ; fstp st1 ; fstp [D+8]
+  const a = new Asm(CODE);
+  a.fldQ(DATA).fldl2e().fmulp().fldSt(0).frndint().fsubStSt0(1).fxch(1).f2xm1().fld1().faddp().fscale().fstpSt(1).fstpQ(DATA + 8);
+  a.fldQ(DATA + 16).fldQ(DATA + 24).fyl2x().fstpQ(DATA + 32); // y log2 x
+  a.fldQ(DATA + 16).fldQ(DATA + 40).fyl2xp1().fstpQ(DATA + 48); // y log2(1 + z)
+  a.fldQ(DATA + 16).fldQ(DATA + 24).fpatan().fstpQ(DATA + 56); // atan2(y, x)
+  a.fldQ(DATA).fptan().fstpQ(DATA + 64).fstpQ(DATA + 72); // 1.0 then tan x
+  a.fldQ(DATA).fsincos().fstpQ(DATA + 80).fstpQ(DATA + 88); // cos x then sin x
+  a.label('end').hlt();
+  const end = a.labels.get('end');
+  const x = 0.8, y = 3.25, z = 0.21, w = 2.75;
+  const { EJ } = bothClose(a.finish(), [[0, x], [16, y], [24, w], [40, z]], end, [8, 32, 48, 56, 72, 80, 88], 4);
+  const r = (o) => EJ.mem.readF64(DATA + o);
+  assert.ok(closeUlps(r(8), Math.exp(x), 4), `exp: ${r(8)}`);
+  assert.ok(closeUlps(r(32), y * Math.log2(w), 4), `fyl2x: ${r(32)}`);
+  assert.ok(closeUlps(r(48), y * Math.log2(1 + z), 4), `fyl2xp1: ${r(48)}`);
+  assert.ok(closeUlps(r(56), Math.atan2(y, w), 4), `fpatan: ${r(56)}`);
+  assert.equal(r(64), 1);
+  assert.ok(closeUlps(r(72), Math.tan(x), 4), `fptan: ${r(72)}`);
+  assert.ok(closeUlps(r(80), Math.cos(x), 4), `fsincos cos: ${r(80)}`);
+  assert.ok(closeUlps(r(88), Math.sin(x), 4), `fsincos sin: ${r(88)}`);
+  assert.equal(EJ.jit.stats.fallbackSteps, 0, 'everything native');
+  assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
+});
+
+test('FSIN/FCOS/FSINCOS/FPTAN out of range (|x| >= 2^63): C2 set, ST(0) kept, no push, the block continues', () => {
+  // fld [D] ; fsincos ; fld1 ; faddp ; fstp [D+8] ; fnstsw [D+16] ; fld [D] ; fptan ; fstp [D+24] ; fnstsw [D+32] ;
+  // fld [D] ; fsin ; fcos ; fstp [D+40] ; fnstsw [D+48] ; fld1 ; fstp [D+56] ; hlt
+  for (const big of [2 ** 63, 1e300, -Infinity]) {
+    const a = new Asm(CODE);
+    a.fldQ(DATA).fsincos().fld1().faddp().fstpQ(DATA + 8).fnstswM(DATA + 16);
+    a.fldQ(DATA).fptan().fstpQ(DATA + 24).fnstswM(DATA + 32);
+    a.fldQ(DATA).fsin().fcos().fstpQ(DATA + 40).fnstswM(DATA + 48);
+    a.fld1().fstpQ(DATA + 56);
+    a.label('end').hlt();
+    const end = a.labels.get('end');
+    const { EJ } = both(a.finish(), [[0, big]], end);
+    assert.equal(EJ.mem.readF64(DATA + 8), big + 1, 'FSINCOS left ST(0) alone and pushed nothing');
+    assert.equal(EJ.mem.read16(DATA + 16) & 0x4700, 1 << 10, 'C2 after FSINCOS');
+    assert.equal(EJ.mem.readF64(DATA + 24), big, 'FPTAN left ST(0) alone and pushed nothing');
+    assert.equal(EJ.mem.readF64(DATA + 40), big);
+    assert.equal(EJ.mem.read16(DATA + 48) & 0x4700, 1 << 10, 'C2 after FSIN/FCOS');
+    assert.equal(EJ.mem.readF64(DATA + 56), 1, 'the instructions after the out-of-range exit ran');
+    assert.equal(EJ.jit.stats.fallbackSteps, 0);
+    assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
+  }
+});
+
+test('FSIN/FSINCOS/FPTAN of a NaN: IE raised, C0-C3 cleared, indefinite results', () => {
+  // fld [D] ; fsincos ; fstp [D+8] ; fstp [D+16] ; fnstsw [D+24] ; fld [D] ; fptan ; fstp [D+32] ; fstp [D+40] ;
+  // fld [D] ; fsin ; fstp [D+48] ; fnstsw [D+56] ; hlt
+  const a = new Asm(CODE);
+  a.fldQ(DATA).fsincos().fstpQ(DATA + 8).fstpQ(DATA + 16).fnstswM(DATA + 24);
+  a.fldQ(DATA).fptan().fstpQ(DATA + 32).fstpQ(DATA + 40);
+  a.fldQ(DATA).fsin().fstpQ(DATA + 48).fnstswM(DATA + 56);
+  a.label('end').hlt();
+  const end = a.labels.get('end');
+  const EI = makeExec(false), EJ = makeExec(true);
+  for (const E of [EI, EJ]) { load(E, a.finish(), [[0, NaN]]); E.cpu.fpuSw = 0x4700; } // C0/C2/C3 set beforehand
+  assert.equal(EI.run(end), EXIT.HALT);
+  assert.equal(EJ.run(end), EXIT.HALT);
+  for (const E of [EI, EJ]) {
+    for (const o of [8, 16, 32, 40, 48]) assert.ok(Number.isNaN(E.mem.readF64(DATA + o)), `[D+${o}] is the indefinite`);
+    assert.equal(E.mem.read16(DATA + 24) & 0x4781, 0x81, 'IE | ES, condition codes cleared');
+    assert.equal(E.mem.read16(DATA + 56) & 0x4781, 0x81);
+    assert.equal(E.cpu.fpuTop, 0); assert.equal(E.cpu.fpuTw, 0);
+  }
+  assert.equal(EJ.jit.stats.fallbackSteps, 0);
 });
 
 test('FXCH / FSTP st(i) / FLD st(i) / FFREE / FINCSTP permutations with tags via FNSTENV and FXAM', () => {

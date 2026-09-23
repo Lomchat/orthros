@@ -2278,6 +2278,419 @@ def suite_verify_mech(g, n):
     return g
 
 
+# ======================================================================================
+# verify_trans: the x87 transcendentals (F2XM1, FSCALE, FYL2X, FYL2XP1, FSIN, FCOS, FSINCOS,
+# FPTAN, FPATAN) against the native FPU at the documented domain edges and special values, the
+# condition codes compared (fpucc: C0/C2/C3; C1 is the rounding-direction bit, not emulated).
+# Facts measured on the oracle machine (AMD EPYC 7402P) that shape the cases:
+#   - the hardware trig reduction carries ~66 bits of pi: its absolute error grows like
+#     1.3e-21 |x|, so values are only comparable at 1e-13 for |x| <~ 1e7 (sin/cos) and away from
+#     the poles of tan (|x| <= 100, reduced argument >= 1e-6). At 2^62 or 2^63 - 1024 the hardware
+#     value is meaningless: those cases only check that a value in [-1, 1] was produced (C2 = 0,
+#     the push happened) by comparing |result| with 1 and dropping it;
+#   - +-inf trig arguments raise IE and give the indefinite (with the push for FSINCOS/FPTAN);
+#     the emulator takes the C2 path instead: verify_trans_known;
+#   - a QNaN argument propagates without IE on hardware (the emulator raises IE): the exception
+#     bits are not compared here, verify_trans_known exposes them through FNSTSW;
+#   - C0/C3 are preserved by the hardware transcendentals (undefined by the SDM) while the
+#     emulator's trig clears them: the initial condition codes are 0 in every case so both agree;
+#   - F2XM1 outside [-1, 1] and FYL2XP1 outside its domain are undefined (this CPU returns ST(0)
+#     unchanged for F2XM1): not generated (F2XM1 outside the domain is in verify_trans_known);
+#   - the classic exp idiom stays within 2.2e-14 of the hardware for |x| <= 200 (the FMUL by
+#     log2 e is rounded to 53 bits on both sides when PC = 53, to 64 bits on hardware otherwise).
+
+TRANS_TOL = 1e-13
+# e^x (ST(0) = x): x log2 e split into an integer n and f in [-0.5, 0.5], 2^f = F2XM1 + 1, FSCALE by n
+TRANS_EXP_IDIOM = 'fldl2e; fmulp st(1), st; fld st(0); frndint; fsub st(1), st; fxch st(1); f2xm1; fld1; faddp st(1), st; fscale; fstp st(1)'
+# 2^ST(0), same split (x^y = 2^(y log2 x) after FYL2X)
+TRANS_POW2_IDIOM = 'fld st(0); frndint; fsub st(1), st; fxch st(1); f2xm1; fld1; faddp st(1), st; fscale; fstp st(1)'
+
+
+def ulps_away(x, n):
+    """x moved by n ulps along the real line (n > 0: toward +inf), clamped to +-inf."""
+    u = struct.unpack('<Q', struct.pack('<d', x))[0]
+    o = -(u & ((1 << 63) - 1)) if u >> 63 else u
+    o = max(-0x7ff0000000000000, min(0x7ff0000000000000, o + n))
+    u = o if o >= 0 else (1 << 63) | (-o)
+    return struct.unpack('<d', struct.pack('<Q', u))[0]
+
+
+def trans_state(g, c, values, need_free=0):
+    """x87 state with ST(0..k-1) = values (k = len(values)), random TOP, random extra valid
+    registers below them (at most 8 - need_free valid in total) and the control-word distribution
+    of rnd_fpu_state (default, single precision with any RC, extended, double with directed RC)."""
+    rng = g.rng
+    top = rng.randrange(0, 8)
+    k = len(values)
+    nvalid = rng.randrange(k, 9 - need_free)
+    valid_mask = 0
+    vals = [0.0] * 8
+    for i in range(nvalid):
+        valid_mask |= 1 << ((top + i) & 7)
+        vals[i] = values[i] if i < k else rnd_double(rng)
+    r = rng.random()
+    if r < 0.6:
+        fcw = 0x027f
+    elif r < 0.78:
+        fcw = rng.choice([0x007f, 0x047f, 0x087f, 0x0c7f])
+    elif r < 0.9:
+        fcw = 0x037f
+    else:
+        fcw = rng.choice([0x067f, 0x0a7f, 0x0e7f, 0x127f])
+    c.fx = default_fx(rng, top=top, valid_mask=valid_mask, values=vals, fcw=fcw)
+    c.cmp['fpu'] = True
+
+
+def suite_verify_trans(g, n):
+    rng = g.rng
+    inf, nan = float('inf'), float('nan')
+    MIN_DEN, MIN_NORM, MAX = 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308
+    PIO2 = math.pi / 2
+    # FYL2XP1 domain: -(1 - sqrt(2)/2) <= x <= sqrt(2) - 1
+    LO, HI = -(1 - math.sqrt(2) / 2), math.sqrt(2) - 1
+
+    def sgn():
+        return rng.choice([1.0, -1.0])
+
+    def logu(lo, hi):
+        return 10.0 ** rng.uniform(lo, hi)
+
+    def denormal():
+        return math.ldexp(float(rng.randrange(1, 1 << 52)), -1074) * sgn()
+
+    def full_bits(lo, hi):
+        """uniform in [lo, hi] with the low 20 mantissa bits re-randomized (any 53-bit pattern)."""
+        v = rng.uniform(lo, hi)
+        b = struct.unpack('<Q', struct.pack('<d', v))[0] ^ rng.getrandbits(20)
+        return struct.unpack('<d', struct.pack('<Q', b))[0]
+
+    def near(x, span=8):
+        return ulps_away(x, rng.randrange(-span, span + 1))
+
+    def y_value():
+        k = rng.random()
+        if k < 0.45:
+            return rnd_double(rng)
+        if k < 0.7:
+            return rng.choice([0.0, -0.0, inf, -inf, nan, 1.0, -1.0, 1e300, -1e300, MIN_DEN, -MIN_DEN, MIN_NORM, 2.0, 0.5, -3.0])
+        return sgn() * logu(-300, 300)
+
+    def t_f2xm1(c):
+        k = rng.random()
+        if k < 0.3:
+            x = rng.uniform(-1, 1)
+        elif k < 0.45:
+            x = full_bits(-1, 1)
+        elif k < 0.57:
+            x = rng.choice([0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 0.25, -0.75, 1 - 2 ** -53, -(1 - 2 ** -53), 1 - 2 ** -52,
+                            2 ** -52, -2 ** -52, 2 ** -27, -2 ** -27, 2 ** -30, 2 ** -1022])
+        elif k < 0.7:
+            x = sgn() * logu(-300, 0)
+        elif k < 0.8:
+            x = denormal()
+        elif k < 0.9:
+            x = sgn() * (1 - logu(-16, -3))
+        elif k < 0.95:
+            x = sgn() * MIN_NORM
+        else:
+            x = nan
+        trans_state(g, c, [x])
+        g.add(c, 'f2xm1', fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_fscale(c):
+        ka = rng.random()
+        if ka < 0.35:
+            a = rnd_double(rng)
+        elif ka < 0.5:
+            a = math.ldexp(sgn() * full_bits(0.5, 1), rng.randrange(-1073, 1025))
+        elif ka < 0.62:
+            a = denormal()
+        elif ka < 0.75:
+            a = rng.choice([0.0, -0.0, inf, -inf, nan, MIN_DEN, -MIN_DEN, MIN_NORM, -MIN_NORM, MAX, -MAX, 1e300, 1e-300, 1.0, -1.0, 1.5, 3.0])
+        else:
+            a = sgn() * logu(-308, 308)
+        kb = rng.random()
+        if kb < 0.25:
+            b = float(rng.randrange(-1100, 1101))
+        elif kb < 0.4:
+            b = rng.uniform(-1100, 1100)
+        elif kb < 0.55:
+            b = rng.choice([0.0, -0.0, inf, -inf, nan, 0.9, -0.9, 0.5, -0.5, 1.0, -1.0, 1e300, -1e300, 2.0 ** 63, -(2.0 ** 63),
+                            2.0 ** 31, -(2.0 ** 31), 1023.0, 1024.0, -1022.0, -1074.0, -1075.0, 2000.0, -2000.0, 2100.0, -2100.0, 1e10, -1e10])
+        elif a == 0 or not math.isfinite(a):
+            b = float(rng.randrange(-1100, 1101))
+        else:
+            # cross the denormal / overflow boundaries of the f64 range: the exponent of a 2^b lands
+            # in [-1080, -1020] or [1010, 1030] (a = m 2^ea, m in [0.5, 1))
+            ea = math.frexp(abs(a))[1]
+            target = rng.choice([rng.randrange(-1080, -1019), rng.randrange(1010, 1031)])
+            b = float(target - ea) + rng.choice([0.0, 0.0, rng.uniform(-0.99, 0.99)])
+        trans_state(g, c, [a, b])
+        g.add(c, 'fscale', fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_fyl2x(c):
+        k = rng.random()
+        if k < 0.15:
+            x = 2.0 ** rng.randrange(-1074, 1024)
+        elif k < 0.25:
+            x = abs(denormal())
+        elif k < 0.3:
+            x = 1.0
+        elif k < 0.42:
+            x = ulps_away(1.0, rng.choice([1, -1, 2, -2, 3, -3, rng.randrange(-64, 65), rng.randrange(-(1 << 20), 1 << 20), rng.randrange(-(1 << 40), 1 << 40)]))
+        elif k < 0.5:
+            x = logu(200, 308.2)
+        elif k < 0.65:
+            x = logu(-323, 308)
+        elif k < 0.75:
+            x = full_bits(0.5, 2)
+        elif k < 0.85:
+            x = rng.choice([math.sqrt(2), math.sqrt(0.5)]) * (1 + sgn() * logu(-16, -6))
+        elif k < 0.95:
+            x = rng.choice([0.0, -0.0, inf, nan, -1.0, -inf, -MIN_DEN, -0.5, MIN_DEN, MIN_NORM, MAX])
+        else:
+            x = near(rng.choice([math.sqrt(2), math.sqrt(0.5), 2.0, 0.5, 4.0]), 3)
+        trans_state(g, c, [x, y_value()])
+        g.add(c, 'fyl2x', fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_fyl2xp1(c):
+        k = rng.random()
+        if k < 0.3:
+            x = rng.uniform(LO, HI)
+        elif k < 0.42:
+            x = min(max(full_bits(LO, HI), LO), HI)
+        elif k < 0.55:
+            x = sgn() * logu(-300, math.log10(0.29))
+        elif k < 0.63:
+            x = denormal()
+        elif k < 0.75:
+            x = rng.choice([0.0, -0.0, LO, HI, 2 ** -52, -2 ** -52, 2 ** -53, -2 ** -53, MIN_DEN, -MIN_DEN, MIN_NORM, -MIN_NORM,
+                            0.25, -0.25, 2 ** -27, -2 ** -27, 0.4, -0.29])
+        elif k < 0.85:
+            e = rng.choice([LO, HI])
+            x = ulps_away(e, rng.randrange(0, 6) * (1 if e < 0 else -1))   # the edges, inward
+        elif k < 0.95:
+            x = rng.choice([LO, HI]) * logu(-8, 0)
+        else:
+            x = nan
+        trans_state(g, c, [x, y_value()])
+        g.add(c, 'fyl2xp1', fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_trig(c):
+        op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
+        two = op in ('fsincos', 'fptan')
+        tan = op == 'fptan'
+        asm, need_free = op, 1 if two else 0
+        k = rng.random()
+        if k < 0.18:
+            x = rng.uniform(-10, 10)
+        elif k < 0.28:
+            x = rng.uniform(-100, 100) if tan else rng.uniform(-1e6, 1e6)
+        elif k < 0.34:
+            x = rng.uniform(-10, 10) if tan else rng.uniform(-1e7, 1e7)
+        elif k < 0.48:
+            # near m pi/2 (the poles of tan excluded: even m and |x| <= 100 for fptan)
+            if tan:
+                m = 2 * rng.randrange(1, 32)
+            else:
+                m = rng.choice([rng.randrange(1, 64), rng.randrange(1, 1000), rng.randrange(1000, 1 << 20)])
+            x = sgn() * near(m * PIO2, 8)
+        elif k < 0.58:
+            x = rng.choice([0.0, -0.0, MIN_DEN, -MIN_DEN, MIN_NORM, 1e-300, -1e-300, 2 ** -27, -(2 ** -27), 2 ** -26, -(2 ** -26), 2 ** -25,
+                            math.pi / 4, -math.pi / 4, math.pi / 2, -math.pi / 2, math.pi, -math.pi, 2 * math.pi, 3 * math.pi / 2, 1e-10, 0.5, 1.0, -1.0])
+            if tan and abs(x) in (math.pi / 2, 3 * math.pi / 2):
+                x = math.pi
+        elif k < 0.64:
+            x = denormal()
+        elif k < 0.76:
+            # out of range: C2 set, ST(0) unchanged, no push (also read back through FNSTSW)
+            x = rng.choice([2.0 ** 63, -(2.0 ** 63), ulps_away(2.0 ** 63, rng.randrange(1, 100)), 1e300, -1e300, MAX, -MAX, 2.0 ** 64, 1e19, -1e20])
+            if rng.random() < 0.5:
+                asm = f'{op}; fnstsw ax; and eax, 0x4500'
+        elif k < 0.86:
+            # largest arguments below 2^63: a value must be produced (C2 = 0, the push done); the
+            # hardware value is meaningless there (see the header), so only |v| <= 1 is checked
+            x = sgn() * rng.choice([2.0 ** 62, 2.0 ** 63 - 1024, ulps_away(2.0 ** 63, -rng.randrange(1, 64)), 2.0 ** 61 * 1.5, 1e18, 3e17])
+            if tan:
+                asm = 'fptan; fstp st(1)'
+            elif op == 'fsincos':
+                asm = 'fsincos; fabs; fld1; fcompp; fnstsw ax; and eax, 0x4500; mov edx, eax; fabs; fld1; fcompp; fnstsw ax; and eax, 0x4500'
+                need_free = 2
+            else:
+                asm = f'{op}; fabs; fld1; fcompp; fnstsw ax; and eax, 0x4500'
+                need_free = 1
+        elif k < 0.92:
+            x = nan
+        else:
+            x = sgn() * logu(-8, 1 if tan else 6)
+        trans_state(g, c, [x], need_free)
+        g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_fpatan(c):
+        def mag():
+            k = rng.random()
+            if k < 0.35:
+                return logu(-300, 300)
+            if k < 0.55:
+                return rng.uniform(0, 10)
+            if k < 0.65:
+                return abs(denormal())
+            if k < 0.8:
+                return rng.choice([0.0, inf, 1.0, MIN_DEN, MIN_NORM, MAX, 1e300, 1e-300, 2.0, 0.5])
+            return logu(-3, 3)
+
+        k = rng.random()
+        if k < 0.6:
+            x, y = sgn() * mag(), sgn() * mag()
+        elif k < 0.75:
+            # |y/x| near the table boundaries m/8 (m = 1..8; 1/8 is also the k = 0 threshold)
+            t = rng.randrange(1, 9) / 8
+            if rng.random() < 0.8:
+                t *= 1 + sgn() * logu(-16, -3)
+            base = sgn() * mag()
+            if not math.isfinite(base) or base == 0:
+                base = sgn() * 3.0
+            if rng.random() < 0.5:
+                x, y = base, base * t * sgn()
+            else:
+                y, x = base, base * t * sgn()
+        elif k < 0.85:
+            base = sgn() * mag()
+            if not math.isfinite(base):
+                base = 2.0
+            x, y = base, near(base, 4) * sgn()   # |y| ~ |x|
+        elif k < 0.93:
+            x, y = rng.choice([nan, sgn() * mag()]), rng.choice([nan, sgn() * mag()])
+        else:
+            x, y = rng.choice([0.0, -0.0, inf, -inf]), rng.choice([0.0, -0.0, inf, -inf, 2.0, -2.0])
+        trans_state(g, c, [x, y])
+        g.add(c, 'fpatan', fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    def t_seq(c):
+        form = rng.random()
+        if form < 0.15:
+            x = rng.choice([rng.uniform(-200, 200), rng.uniform(-5, 5), 0.0, -0.0, 1.0, -1.0, 1e-10, -1e-10, 100.0, -100.0, MIN_DEN, 0.5, -0.5])
+            trans_state(g, c, [x], 2)
+            asm = TRANS_EXP_IDIOM
+        elif form < 0.27:
+            # x^y = 2^(y log2 x), |y log2 x| <= ~700
+            x = rng.choice([logu(-10, 10), 2.0, 10.0, 0.5, 1.0, 1e-5, 1e5])
+            y = rng.choice([rng.uniform(-8, 8), 0.5, -0.5, 2.0, -3.0, 0.0, 10.0, 20.0])
+            trans_state(g, c, [x, y], 2)
+            asm = 'fyl2x; ' + TRANS_POW2_IDIOM
+        elif form < 0.37:
+            x = rng.choice([logu(-300, 300), 1.0, 2.0, 0.5, MIN_DEN, MAX, 1e-300, 3.0, 10.0])
+            trans_state(g, c, [x], 1)
+            asm = rng.choice(['fld1; fxch st(1); fyl2x', 'fldln2; fxch st(1); fyl2x', 'fldlg2; fxch st(1); fyl2x'])
+        elif form < 0.47:
+            x = rng.uniform(-10, 10)
+            trans_state(g, c, [x], 1)
+            asm = rng.choice(['fsincos; fdivp st(1), st', 'fptan; fstp st(0)', 'fptan; fdivrp st(1), st'])
+        elif form < 0.57:
+            x = rng.choice([rng.uniform(-10, 10), rng.uniform(-1e6, 1e6), 0.0, MIN_DEN])
+            trans_state(g, c, [x], 1)
+            asm = rng.choice(['fld st(0); fsin; fxch st(1); fcos', 'fld st(0); fcos; fxch st(1); fsin', 'fsin; fsin', 'fcos; fsin; fcos'])
+        elif form < 0.67:
+            x = sgn() * rng.choice([logu(-300, 300), rng.uniform(0, 10), 0.0, inf, 1.0, MIN_DEN])
+            trans_state(g, c, [x], 1)
+            asm = rng.choice(['fld1; fpatan', 'fld1; fxch st(1); fpatan'])
+        elif form < 0.77:
+            x = rng.uniform(-1, 1)
+            trans_state(g, c, [x], 1)
+            asm = rng.choice(['f2xm1; fld1; faddp st(1), st', 'fchs; f2xm1', 'fabs; f2xm1; fsqrt'])
+        elif form < 0.85:
+            a, b = rnd_double(rng), float(rng.randrange(-1100, 1100))
+            trans_state(g, c, [a, b])
+            asm = rng.choice(['fscale; fstp st(1)', 'fxch st(1); fscale', 'fscale; fscale'])
+        elif form < 0.93:
+            # out-of-range trig inside a longer block: the JIT leaves the region on the C2 path and
+            # resumes at the next instruction, with the pending stack shift materialized
+            x = rng.choice([2.0 ** 63, -(2.0 ** 63), 1e300, ulps_away(2.0 ** 63, 3)])
+            op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
+            trans_state(g, c, [x, 5.0], 2)
+            asm = rng.choice([f'fld st(0); {op}; fstp st(1)', f'{op}; fld1; faddp st(1), st', f'fxch st(1); fxch st(1); {op}; fstp st(1)',
+                              f'{op}; fnstsw ax; and eax, 0x4500; fstp st(0)'])
+        else:
+            # two-operand ops under a pending stack shift (pushes earlier in the block)
+            x, y = abs(rnd_double(rng)) + 1e-300, rnd_double(rng)
+            trans_state(g, c, [x, y], 2)
+            asm = rng.choice(['fld st(1); fld st(1); fyl2x', 'fld st(0); fld st(2); fpatan', 'fld st(1); fscale', 'fld st(1); fld st(1); fyl2xp1'])
+            if asm.endswith('fyl2xp1'):
+                x = rng.uniform(LO, HI)
+                trans_state(g, c, [x, y], 2)
+        g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True)
+
+    templates = [(4, t_f2xm1), (4, t_fscale), (5, t_fyl2x), (4, t_fyl2xp1), (8, t_trig), (5, t_fpatan), (4, t_seq)]
+    weights = [w for w, _ in templates]
+    for _ in range(n):
+        rng.choices(templates, weights=weights)[0][1](Case())
+    return g
+
+
+def suite_verify_trans_known(g, n):
+    """Measured gaps of the x87 transcendentals (interpreter and JIT alike) against the oracle
+    machine, kept out of the default suites; `tag` names the gap:
+      trig-inf: FSIN/FCOS/FSINCOS/FPTAN of +-inf raise IE and give the indefinite (FSINCOS/FPTAN
+        still push); the emulator takes the |x| >= 2^63 path (C2 = 1, ST(0) unchanged, no push);
+      trig-qnan-ie: a QNaN argument propagates without IE on hardware, the emulator raises IE;
+      masked-es: masked exceptions set only their flag on hardware (ES is for unmasked ones), the
+        emulator sets ES too;
+      fscale-denormal-double-rounding: results in the denormal range reached through the 2^-1000
+        scaling step are rounded twice by the emulator (e.g. 1.25 2^-74 by -1001: 0 instead of
+        2^-1074);
+      f2xm1-outside-domain: undefined by the SDM; this CPU returns ST(0) unchanged, the emulator
+        2^x - 1."""
+    rng = g.rng
+    inf, nan = float('inf'), float('nan')
+
+    def full_bits(lo, hi):
+        v = rng.uniform(lo, hi)
+        b = struct.unpack('<Q', struct.pack('<d', v))[0] ^ rng.getrandbits(20)
+        return struct.unpack('<d', struct.pack('<Q', b))[0]
+
+    def t_trig_inf(c):
+        op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
+        trans_state(g, c, [rng.choice([inf, -inf])], 1)
+        g.add(c, op, fpu=True, tol=TRANS_TOL, fpucc=True, tag='trig-inf')
+
+    def t_trig_qnan(c):
+        op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
+        trans_state(g, c, [nan], 1)
+        g.add(c, f'{op}; fnstsw ax; and eax, 0x80ff', fpu=True, tol=TRANS_TOL, tag='trig-qnan-ie')
+
+    def t_es(c):
+        form = rng.random()
+        if form < 0.4:
+            trans_state(g, c, [0.0, 0.0])
+            asm = 'fyl2x; fnstsw ax; and eax, 0x80ff'
+        elif form < 0.7:
+            trans_state(g, c, [-1.0])
+            asm = 'fsqrt; fnstsw ax; and eax, 0x80ff'
+        else:
+            trans_state(g, c, [0.0, inf])
+            asm = 'fscale; fnstsw ax; and eax, 0x80ff'
+        g.add(c, asm, fpu=True, tol=TRANS_TOL, tag='masked-es')
+
+    def t_fscale_denormal(c):
+        if rng.random() < 0.2:
+            a, b = 1.25 * 2.0 ** -74, -1001.0
+        else:
+            a = math.ldexp(full_bits(1, 2), rng.randrange(-90, -60)) * rng.choice([1.0, -1.0])
+            b = -float(1001 + rng.randrange(0, 30)) - rng.choice([0.0, rng.random()])
+        trans_state(g, c, [a, b], 0)
+        g.add(c, 'fscale', fpu=True, tol=None, tag='fscale-denormal-double-rounding')
+
+    def t_f2xm1_outside(c):
+        x = rng.choice([1.5, -1.5, 3.0, -3.0, 10.0, -70.0, rng.uniform(1, 60), rng.uniform(-60, -1)])
+        trans_state(g, c, [x])
+        g.add(c, 'f2xm1', fpu=True, tol=TRANS_TOL, tag='f2xm1-outside-domain')
+
+    templates = [(3, t_trig_inf), (2, t_trig_qnan), (2, t_es), (3, t_fscale_denormal), (1, t_f2xm1_outside)]
+    weights = [w for w, _ in templates]
+    for _ in range(n):
+        rng.choices(templates, weights=weights)[0][1](Case())
+    return g
+
 
 SUITES = {
     'alu': suite_alu,
@@ -2290,6 +2703,8 @@ SUITES = {
     'verify_float': suite_verify_float,
     'verify_float_known': suite_verify_float_known,
     'verify_mech': suite_verify_mech,
+    'verify_trans': suite_verify_trans,
+    'verify_trans_known': suite_verify_trans_known,
 }
 
 
