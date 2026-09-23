@@ -73,6 +73,7 @@ function onWorkerMessage(m) {
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'profile': state.profile = m.files; break;
+    case 'frames': state.frames = m.text; log('frames', m.text); break;
   }
 }
 

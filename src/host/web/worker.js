@@ -172,6 +172,7 @@ self.onmessage = (e) => {
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
+  else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') post({ type: 'report', text: vm ? vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
 };
 void IN_RING; void AUDIO_RING_FRAMES;

@@ -78,7 +78,8 @@ export class BrowserHost {
     this.exitCode = null;
     this.framesPresented = 0;
     this.lastFrameAt = 0;
-    this.frameTimes = [];
+    this.frameTimes = []; // rolling window for the live stats
+    this.frameLog = []; // every frame since start as (presented at ms, frame time ms) pairs — whole-run percentiles
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
     this.frameHook = () => { this.display.presentGl(); this.framePresented(); };
   }
@@ -113,10 +114,21 @@ export class BrowserHost {
   }
   pollInput() { this.pump(); return this.inputQueue.length ? this.inputQueue.splice(0) : null; }
   onExit(code) { this.exitCode = code; this.post({ type: 'exit', code }); }
+  /** Frame-time percentiles over the frames presented after `fromMs` (performance.now() based). */
+  frameStats(fromMs = 0) {
+    const dts = [];
+    for (let i = 0; i < this.frameLog.length; i += 2) if (this.frameLog[i] >= fromMs) dts.push(this.frameLog[i + 1]);
+    if (!dts.length) return null;
+    dts.sort((a, b) => a - b);
+    const q = (x) => dts[Math.min(dts.length - 1, Math.floor(x * dts.length))];
+    const over33 = dts.filter((d) => d > 33).length;
+    const span = (this.frameLog[this.frameLog.length - 2] - fromMs) / 1000;
+    return { frames: dts.length, seconds: span, fps: dts.length / span, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1], over33, over50: dts.filter((d) => d > 50).length };
+  }
   framePresented() {
     this.framesPresented++;
     const now = performance.now();
-    if (this.lastFrameAt) { this.frameTimes.push(now - this.lastFrameAt); if (this.frameTimes.length > 600) this.frameTimes.shift(); }
+    if (this.lastFrameAt) { const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); }
     this.lastFrameAt = now;
   }
   /** Fill the audio ring up to `aheadFrames` using the VM mixer. */
