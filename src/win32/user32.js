@@ -7,6 +7,7 @@ import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit, dc
 import { allocSurface, freeSurface } from '../gfx/gdi/surface.js';
 import { clipRect, rectEmpty } from '../gfx/gdi/raster.js';
 import { parseCursorFile } from '../gfx/gdi/cursor.js';
+import { caseMap, decodeBytes, encodeString } from './strings.js';
 import { formatPrintf } from './wsprintf.js';
 import { findResource } from '../loader/pe.js';
 import { isSignaled, consumeSignal, waitObject, allocString } from './kernel32.js';
@@ -1157,7 +1158,7 @@ export function registerUser32(api, vm) {
    */
   const drawTextA = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;
-    const n = c.sarg(2); let s = wide ? (n < 0 ? mem.readWString(c.arg(1)) : mem.readWString(c.arg(1), n)) : (n < 0 ? mem.readCString(c.arg(1)) : mem.readCString(c.arg(1), n));
+    const n = c.sarg(2); let s = wide ? (n < 0 ? mem.readWString(c.arg(1)) : mem.readWStringN(c.arg(1), n)) : (n < 0 ? mem.readCString(c.arg(1)) : mem.readCStringN(c.arg(1), n));
     const r = readRect(c.arg(3)); const fmt = c.arg(4);
     const { engine, font } = dcFont(vm, c.proc, dc);
     const width = (t) => engine.extent(font, t, dc.charExtra ?? 0).w;
@@ -1203,8 +1204,8 @@ export function registerUser32(api, vm) {
   U.DrawTextExA = [6, (c) => drawTextA(c, false)];
   U.DrawTextExW = [6, (c) => drawTextA(c, true)];
   const tabbed = (c, dc, s) => { const { engine, font } = dcFont(vm, c.proc, dc); const tab = font.aveCharWidth * 8 || 64; let out = ''; for (const ch of s) { if (ch === '\t') { const w = engine.extent(font, out).w; const next = (Math.floor(w / tab) + 1) * tab; while (engine.extent(font, out).w < next) out += ' '; } else out += ch; } return { engine, font, text: out }; };
-  U.TabbedTextOutA = [8, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCString(c.arg(3), c.arg(4))); const ox = dc.ox + dc.vpOrg.x - dc.wndOrg.x, oy = dc.oy + dc.vpOrg.y - dc.wndOrg.y; const adv = engine.advances(font, text); if (dc.surface) engine.draw(dc.surface, dc.clip, c.sarg(1) + ox, c.sarg(2) + oy, text, font, dc.textColor, adv, dc.bkMode === 2 ? dc.bkColor : null); if (dc.window) wm().touch(dc.window); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
-  U.GetTabbedTextExtentA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCString(c.arg(1), c.arg(2))); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
+  U.TabbedTextOutA = [8, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCStringN(c.arg(3), c.arg(4))); const ox = dc.ox + dc.vpOrg.x - dc.wndOrg.x, oy = dc.oy + dc.vpOrg.y - dc.wndOrg.y; const adv = engine.advances(font, text); if (dc.surface) engine.draw(dc.surface, dc.clip, c.sarg(1) + ox, c.sarg(2) + oy, text, font, dc.textColor, adv, dc.bkMode === 2 ? dc.bkColor : null); if (dc.window) wm().touch(dc.window); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
+  U.GetTabbedTextExtentA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCStringN(c.arg(1), c.arg(2))); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
 
   // ---------------------------------------------------------------- rects / misc
   U.SetRect = [5, (c) => { writeRect(c.arg(0), { l: c.sarg(1), t: c.sarg(2), r: c.sarg(3), b: c.sarg(4) }); return 1; }];
@@ -1222,12 +1223,12 @@ export function registerUser32(api, vm) {
   U.wsprintfW = [0, (c) => { const s = formatPrintf(c, mem.readWString(c.arg(1)), c.sp + 12, { wide: true }); mem.writeWString(c.arg(0), s, 1024); return Math.min(s.length, 1023); }, { cc: CC_CDECL }];
   U.wvsprintfA = [3, (c) => { const s = formatPrintf(c, mem.readCString(c.arg(1)), c.arg(2)); mem.writeCString(c.arg(0), s, 1024); return Math.min(s.length, 1023); }];
   U.wvsprintfW = [3, (c) => { const s = formatPrintf(c, mem.readWString(c.arg(1)), c.arg(2), { wide: true }); mem.writeWString(c.arg(0), s, 1024); return Math.min(s.length, 1023); }];
-  U.CharUpperA = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return String.fromCharCode(a).toUpperCase().charCodeAt(0); mem.writeCString(a, mem.readCString(a).toUpperCase()); return a; }];
-  U.CharLowerA = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return String.fromCharCode(a).toLowerCase().charCodeAt(0); mem.writeCString(a, mem.readCString(a).toLowerCase()); return a; }];
-  U.CharUpperW = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return String.fromCharCode(a).toUpperCase().charCodeAt(0); mem.writeWString(a, mem.readWString(a).toUpperCase()); return a; }];
-  U.CharLowerW = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return String.fromCharCode(a).toLowerCase().charCodeAt(0); mem.writeWString(a, mem.readWString(a).toLowerCase()); return a; }];
-  U.CharUpperBuffA = [2, (c) => { const s = mem.readCString(c.arg(0), c.arg(1)); mem.writeBytes(c.arg(0), [...s.toUpperCase()].map((x) => x.charCodeAt(0) & 0xff)); return s.length; }];
-  U.CharLowerBuffA = [2, (c) => { const s = mem.readCString(c.arg(0), c.arg(1)); mem.writeBytes(c.arg(0), [...s.toLowerCase()].map((x) => x.charCodeAt(0) & 0xff)); return s.length; }];
+  U.CharUpperA = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return encodeString(caseMap(decodeBytes(Uint8Array.of(a & 0xff)), true, 0)).bytes[0]; mem.writeBytes(a, encodeString(caseMap(decodeBytes(mem.bytes(a, mem.readCString(a).length)), true, 0)).bytes); return a; }];
+  U.CharLowerA = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return encodeString(caseMap(decodeBytes(Uint8Array.of(a & 0xff)), false, 0)).bytes[0]; mem.writeBytes(a, encodeString(caseMap(decodeBytes(mem.bytes(a, mem.readCString(a).length)), false, 0)).bytes); return a; }];
+  U.CharUpperW = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return caseMap(String.fromCharCode(a), true).charCodeAt(0); mem.writeWString(a, caseMap(mem.readWString(a), true)); return a; }];
+  U.CharLowerW = [1, (c) => { const a = c.arg(0); if (a < 0x10000) return caseMap(String.fromCharCode(a), false).charCodeAt(0); mem.writeWString(a, caseMap(mem.readWString(a), false)); return a; }];
+  U.CharUpperBuffA = [2, (c) => { const n = c.arg(1); mem.writeBytes(c.arg(0), encodeString(caseMap(decodeBytes(mem.bytes(c.arg(0), n)), true, 0)).bytes); return n; }];
+  U.CharLowerBuffA = [2, (c) => { const n = c.arg(1); mem.writeBytes(c.arg(0), encodeString(caseMap(decodeBytes(mem.bytes(c.arg(0), n)), false, 0)).bytes); return n; }];
   U.CharNextA = [1, (c) => (mem.read8(c.arg(0)) ? c.arg(0) + 1 : c.arg(0))];
   U.CharPrevA = [2, (c) => (c.arg(1) > c.arg(0) ? c.arg(1) - 1 : c.arg(0))];
   U.CharNextW = [1, (c) => (mem.read16(c.arg(0)) ? c.arg(0) + 2 : c.arg(0))];

@@ -22,3 +22,14 @@ test('vs_1_1 (DX8): def constants are local values', () => {
   assert.match(glsl, /vec4 c5 = vec4\(1\.000000e\+0, 2\.000000e\+0, 3\.000000e\+0, 4\.000000e\+0\);/);
   assert.match(glsl, /oPos = c5\.xyzw;/);
 });
+
+test('ps_1_1: a co-issued instruction reads the registers of before its pair; constants clamp to [-1, 1]', () => {
+  // ps_1_1 ; mov r0.rgb, c0 ; +mov r0.a, r0.b   (the co-issued mov must see r0 before the rgb write)
+  const code = new Uint32Array([0xffff0101, 0x1, 0x80070000, 0xa0e40000, 0x40000001, 0x80080000, 0x80aa0000, 0xffff]);
+  assert.equal(disasmShader9(code), 'ps_1_1\nmov r0.xyz, c0\n+mov r0.w, r0.z');
+  const glsl = translatePixelShader9(code, { cube: [], projected: [], fog: 0 }).glsl;
+  const lines = glsl.split('\n');
+  const snap = lines.findIndex((l) => /vec4 co0 = r\[0\];/.test(l)), rgb = lines.findIndex((l) => /r\[0\]\.xyz = /.test(l)), a = lines.findIndex((l) => /r\[0\]\.w = .*co0\.zzzz/.test(l));
+  assert.ok(snap >= 0 && rgb > snap && a > rgb, glsl);
+  assert.match(glsl, /clamp\(u_pc\[0\], -1\.0, 1\.0\)/);
+});

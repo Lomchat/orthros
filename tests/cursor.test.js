@@ -72,3 +72,13 @@ test('ttf: family and Windows metrics from a minimal sfnt header', () => {
   assert.equal(f.unitsPerEm, 2048);
   assert.deepEqual([f.winAscent, f.winDescent, f.avgCharWidth, f.weight], [1854, 434, 904, 700]);
 });
+
+test('strings: Windows case mapping keeps lengths and code pages; CP1252 undefined slots round-trip', async () => {
+  const { caseMap, decodeBytes, encodeString } = await import('../src/win32/strings.js');
+  const all = Uint8Array.from({ length: 256 }, (_, i) => i);
+  const up = encodeString(caseMap(decodeBytes(all), true, 0)).bytes;
+  assert.equal(up.length, 256, 'no length change (ß stays ß)');
+  assert.equal(up[0x61], 0x41); assert.equal(up[0xdf], 0xdf); assert.equal(up[0xb5], 0xb5, 'µ has no ANSI capital');
+  assert.equal(up[0xff], 0x9f, 'ÿ -> Ÿ (0x9F in CP1252)'); assert.equal(up[0x9a], 0x8a, 'š -> Š');
+  assert.deepEqual(Array.from(encodeString(decodeBytes(all)).bytes), Array.from(all), 'CP1252 round trip of every byte');
+});

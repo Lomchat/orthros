@@ -92,7 +92,7 @@ export function registerMiscDlls(api, vm) {
   api.define('ole32.dll', O);
   const OA = {};
   OA.SysAllocString = [1, (c) => bstrAlloc(c, c.arg(0) ? mem.readWString(c.arg(0)) : '')];
-  OA.SysAllocStringLen = [2, (c) => bstrAlloc(c, c.arg(0) ? mem.readWString(c.arg(0), c.arg(1)).padEnd(0) : '\0'.repeat(c.arg(1)))];
+  OA.SysAllocStringLen = [2, (c) => bstrAlloc(c, c.arg(0) ? mem.readWStringN(c.arg(0), c.arg(1)) : '\0'.repeat(c.arg(1)))];
   OA.SysAllocStringByteLen = [2, (c) => { const n = c.arg(1); const p = c.proc.processHeap.alloc(n + 6); mem.write32(p, n); if (c.arg(0)) mem.copy(p + 4, c.arg(0), n); mem.write16(p + 4 + n, 0); return p + 4; }];
   OA.SysFreeString = [1, (c) => { if (c.arg(0)) c.proc.processHeap.free_(c.arg(0) - 4); }];
   OA.SysStringLen = [1, (c) => (c.arg(0) ? mem.read32(c.arg(0) - 4) / 2 : 0)];

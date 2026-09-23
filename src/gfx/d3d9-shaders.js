@@ -58,7 +58,7 @@ function* instructions(code) {
     const n = len || (op === 81 || op === 48 ? 5 : op === 47 ? 2 : 0);
     if (n) { for (let k = 0; k < n; k++) args.push(code[j + k] >>> 0); j += n; }
     else { while (j < code.length && (code[j] >>> 31) === 1) { args.push(code[j] >>> 0); j++; } }
-    yield { op, ctrl, args };
+    yield { op, ctrl, args, coissue: (t & 0x40000000) !== 0 };
     i = j;
   }
 }
@@ -206,12 +206,15 @@ export function translatePixelShader9(code, env) {
     if (bias) return `texture(u_tex${n}, (${coordExpr}).xy, (${coordExpr}).w)`;
     return `texture(u_tex${n}, (${coordExpr}).xy)`;
   };
+  // ps 1.x constants hold values in [-1, 1] (what the hardware reads after SetPixelShaderConstant / def)
+  const constRef = (n) => { const c = consts.has(n) ? `c${n}` : `u_pc[${n & 31}]`; return sm2 ? c : `clamp(${c}, -1.0, 1.0)`; };
   const regName = (tok) => {
     const type = regType(tok), n = tok & 0x7ff;
-    switch (type) { case 0: return `r[${n & 31}]`; case 1: return `v_color${n & 1}`; case 2: return consts.has(n) ? `c${n}` : `u_pc[${n & 31}]`; case 3: return `t${n & 7}`; case 8: return 'oC0'; case 9: return 'vec4(oDepth)'; case 7: return `vec4(u_pci[${n & 15}])`; case 14: return `vec4(u_pcb[${n & 15}] ? 1.0 : 0.0)`; default: return 'vec4(0.0)'; }
+    switch (type) { case 0: return `r[${n & 31}]`; case 1: return `v_color${n & 1}`; case 2: return constRef(n); case 3: return `t${n & 7}`; case 8: return 'oC0'; case 9: return 'vec4(oDepth)'; case 7: return `vec4(u_pci[${n & 15}])`; case 14: return `vec4(u_pcb[${n & 15}] ? 1.0 : 0.0)`; default: return 'vec4(0.0)'; }
   };
+  let coRead = null; // co-issued instruction: registers it reads that the previous instruction writes -> snapshot name
   const src = (tok) => {
-    const name = regName(tok);
+    const name = coRead?.get(regName(tok)) ?? regName(tok);
     let e = `${name}.${swizzle(tok)}`;
     const mod = (tok >> 24) & 0xf;
     switch (mod) { case 1: e = `(-${e})`; break; case 2: e = `(${e} - 0.5)`; break; case 3: e = `(0.5 - ${e})`; break; case 4: e = `(${e} * 2.0 - 1.0)`; break; case 5: e = `(1.0 - ${e} * 2.0)`; break; case 6: e = `(1.0 - ${e})`; break; case 7: e = `(${e} * 2.0)`; break; case 8: e = `(${e} * -2.0)`; break; case 9: e = `(${e} / (${name}).z)`; break; case 10: e = `(${e} / (${name}).w)`; break; case 11: e = `abs(${e})`; break; case 12: e = `(-abs(${e}))`; break; case 13: e = `(1.0 - ${e})`; break; }
@@ -230,9 +233,19 @@ export function translatePixelShader9(code, env) {
     return `  ${d.name}.${d.mask} = (${e}).${d.mask};`;
   };
   const cmpOp = ['', '>', '==', '>=', '<', '!=', '<='];
+  let prev = null; // { dst name, body index } of the last instruction (co-issue pairs execute together)
+  let coN = 0;
   for (const ins of instructions(code)) {
     const { op, args, ctrl } = ins;
     if (op === 31 || op === 0 || op === 0xfffd) continue;
+    // a co-issued instruction (+) reads its sources before the paired one writes: snapshot the shared register
+    coRead = null;
+    if (ins.coissue && prev && args.length > 1 && args.slice(1).some((a) => regName(a) === prev.name)) {
+      const snap = `co${coN++}`;
+      body.splice(prev.at, 0, `  vec4 ${snap} = ${prev.name};`);
+      coRead = new Map([[prev.name, snap]]);
+    }
+    prev = args.length && op !== 81 && op !== 48 && op !== 47 ? { name: regName(args[0]), at: body.length } : null;
     if (op === 81) { const n = args[0] & 0x7ff; consts.set(n, true); body.push(`  vec4 c${n} = vec4(${[1, 2, 3, 4].map((k) => lit(asFloat(args[k]))).join(', ')});`); continue; }
     if (op === 48) { body.push(`  ivec4 ci${args[0] & 15} = ivec4(${args[1] | 0}, ${args[2] | 0}, ${args[3] | 0}, ${args[4] | 0});`); continue; }
     if (op === 47) continue;
@@ -336,7 +349,7 @@ export function disasmShader9(code) {
     if (ins.op === 31) { lines.push(`dcl${ps ? '' : '_' + (ins.args[0] & 0x1f) + '_' + ((ins.args[0] >> 16) & 0xf)} ${dst(ins.args[1])}`); continue; }
     if (!ins.args.length) { lines.push(name); continue; }
     const a = [dst(ins.args[0]), ...ins.args.slice(1).map(src)];
-    lines.push(`${(ins.ctrl ?? 0) & 0x40 ? '+' : ''}${name}${ins.op === 41 || ins.op === 45 ? '_c' + (ins.ctrl & 7) : ''} ${a.join(', ')}`);
+    lines.push(`${ins.coissue ? '+' : ''}${name}${ins.op === 41 || ins.op === 45 ? '_c' + (ins.ctrl & 7) : ''} ${a.join(', ')}`);
   }
   return lines.join('\n');
 }

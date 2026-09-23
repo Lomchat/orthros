@@ -1,6 +1,6 @@
 // kernel32.dll part 2: files, directories, environment, code pages and locale, console output.
 import { E } from './errors.js';
-import { decodeBytes, encodeString, CP_UTF8 } from './strings.js';
+import { decodeBytes, encodeString, CP_UTF8, caseMap } from './strings.js';
 import { msToFiletime, filetimeToMs, allocString, allocWString } from './kernel32.js';
 import { normalizeWin } from '../vfs/vfs.js';
 
@@ -34,7 +34,7 @@ export function registerKernel32File(api, vm) {
     else if (kind === 'err') (vm.onStderr ?? globalThis.process?.stderr?.write?.bind(globalThis.process.stderr))?.(s);
   };
   K.WriteConsoleA = [5, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.console) return c.fail(E.INVALID_HANDLE); consoleWrite(f.console, mem.bytes(c.arg(1), c.arg(2))); c.out32(3, c.arg(2)); return 1; }];
-  K.WriteConsoleW = [5, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.console) return c.fail(E.INVALID_HANDLE); const s = mem.readWString(c.arg(1), c.arg(2)); vm.stdout.push(s); vm.onStdout?.(s, f.console); c.out32(3, c.arg(2)); return 1; }];
+  K.WriteConsoleW = [5, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.console) return c.fail(E.INVALID_HANDLE); const s = mem.readWStringN(c.arg(1), c.arg(2)); vm.stdout.push(s); vm.onStdout?.(s, f.console); c.out32(3, c.arg(2)); return 1; }];
   K.ReadConsoleA = [5, (c) => { c.out32(3, 0); return 1; }];
 
   // ---------------------------------------------------------------- files
@@ -480,25 +480,26 @@ export function registerKernel32File(api, vm) {
     if (c >= 48 && c <= 57) t |= 4;
     if (c === 32 || (c >= 9 && c <= 13)) t |= 8;
     if (c === 32 || c === 9) t |= 0x40;
-    if (c < 32 || c === 127) t |= 0x20;
+    if (c < 32 || (c >= 127 && c < 0xa0)) t |= 0x20; // C0 and C1 controls
     if ((c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)) t |= 0x10;
     if ((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)) t |= 0x80;
-    if (c > 127 && !(t & 0x100)) t |= 0x10;
+    if (c >= 0xa0 && !(t & 0x100) && c !== 0xa0) t |= 0x10; // symbols and punctuation beyond ASCII (NBSP is a space)
+    if (c === 0xa0) t |= 0x48;
     return t;
   };
   K.GetStringTypeA = [5, (c) => { const s = c.sarg(3) < 0 ? mem.readCString(c.arg(2)) : decodeBytes(mem.bytes(c.arg(2), c.arg(3)), 0); for (let i = 0; i < s.length; i++) mem.write16(c.arg(4) + 2 * i, c.arg(1) === 1 ? ctype1(s[i]) : 0); return 1; }];
   K.GetStringTypeExA = [5, (c) => K.GetStringTypeA[1](c)];
-  K.GetStringTypeW = [4, (c) => { const s = c.sarg(2) < 0 ? mem.readWString(c.arg(1)) : mem.readWString(c.arg(1), c.arg(2)); for (let i = 0; i < s.length; i++) mem.write16(c.arg(3) + 2 * i, c.arg(0) === 1 ? ctype1(s[i]) : 0); return 1; }];
-  const lcmap = (c, s, flags) => {
+  K.GetStringTypeW = [4, (c) => { const s = c.sarg(2) < 0 ? mem.readWString(c.arg(1)) : mem.readWStringN(c.arg(1), c.arg(2)); for (let i = 0; i < s.length; i++) mem.write16(c.arg(3) + 2 * i, c.arg(0) === 1 ? ctype1(s[i]) : 0); return 1; }];
+  const lcmap = (c, s, flags, cp = null) => {
     let r = s;
-    if (flags & 0x100) r = r.toLowerCase();
-    if (flags & 0x200) r = r.toUpperCase();
+    if (flags & 0x100) r = caseMap(r, false, cp);
+    if (flags & 0x200) r = caseMap(r, true, cp);
     return r;
   };
   K.LCMapStringA = [6, (c) => {
     const flags = c.arg(1), src = c.arg(2), n = c.sarg(3), dst = c.arg(4), dn = c.arg(5);
     const s = n < 0 ? mem.readCString(src) : decodeBytes(mem.bytes(src, n), 0);
-    const r = lcmap(c, s, flags);
+    const r = lcmap(c, s, flags, 0);
     const { bytes } = encodeString(r, 0);
     const out = n < 0 ? bytes.length + 1 : bytes.length;
     if (dn === 0) return out;
@@ -508,7 +509,7 @@ export function registerKernel32File(api, vm) {
   }];
   K.LCMapStringW = [6, (c) => {
     const flags = c.arg(1), src = c.arg(2), n = c.sarg(3), dst = c.arg(4), dn = c.arg(5);
-    const s = n < 0 ? mem.readWString(src) : mem.readWString(src, n);
+    const s = n < 0 ? mem.readWString(src) : mem.readWStringN(src, n);
     const r = lcmap(c, s, flags);
     const out = n < 0 ? r.length + 1 : r.length;
     if (dn === 0) return out;
@@ -518,7 +519,7 @@ export function registerKernel32File(api, vm) {
   }];
   const compareStr = (a, b, flags) => { if (flags & 1) { a = a.toLowerCase(); b = b.toLowerCase(); } return a < b ? 1 : a > b ? 3 : 2; };
   K.CompareStringA = [6, (c) => { const a = c.sarg(3) < 0 ? mem.readCString(c.arg(2)) : decodeBytes(mem.bytes(c.arg(2), c.arg(3)), 0); const b = c.sarg(5) < 0 ? mem.readCString(c.arg(4)) : decodeBytes(mem.bytes(c.arg(4), c.arg(5)), 0); return compareStr(a, b, c.arg(1)); }];
-  K.CompareStringW = [6, (c) => { const a = c.sarg(3) < 0 ? mem.readWString(c.arg(2)) : mem.readWString(c.arg(2), c.arg(3)); const b = c.sarg(5) < 0 ? mem.readWString(c.arg(4)) : mem.readWString(c.arg(4), c.arg(5)); return compareStr(a, b, c.arg(1)); }];
+  K.CompareStringW = [6, (c) => { const a = c.sarg(3) < 0 ? mem.readWString(c.arg(2)) : mem.readWStringN(c.arg(2), c.arg(3)); const b = c.sarg(5) < 0 ? mem.readWString(c.arg(4)) : mem.readWStringN(c.arg(4), c.arg(5)); return compareStr(a, b, c.arg(1)); }];
   const LOCALE = { 0x1: '0409', 0x2: 'English', 0x3: 'ENU', 0x4: 'English (United States)', 0x5: '0409', 0x6: 'United States', 0x7: 'USA', 0x8: 'United States', 0x9: 'English', 0xa: 'English', 0xb: '0409', 0xc: 'English (United States)', 0xe: '$', 0xf: ',', 0x10: '.', 0x11: '1', 0x12: ';', 0x13: '.', 0x14: '2', 0x15: '3', 0x16: '0', 0x17: '0', 0x19: '2', 0x1a: '1', 0x1b: '0', 0x1c: '/', 0x1d: ':', 0x1f: 'M/d/yyyy', 0x20: 'dddd, MMMM dd, yyyy', 0x1003: 'h:mm:ss tt', 0x21: '0', 0x22: '0', 0x23: '0', 0x24: '0', 0x25: '0', 0x28: 'AM', 0x29: 'PM', 0x1004: '1252', 0x1006: '850', 0x1009: '0', 0x1011: '1', 0x1012: '1', 0x1000: 'M/d/yyyy', 0x1001: 'English', 0x1002: 'United States', 0x5a: '0', 0x5b: '0', 0x5c: 'eng', 0x5d: 'USA', 0x1000e: ',', 0x1000f: '.', 0x59: '1', 0x2a: 'Monday', 0x2b: 'Tuesday', 0x2c: 'Wednesday', 0x2d: 'Thursday', 0x2e: 'Friday', 0x2f: 'Saturday', 0x30: 'Sunday', 0x38: 'January', 0x39: 'February', 0x3a: 'March', 0x3b: 'April', 0x3c: 'May', 0x3d: 'June', 0x3e: 'July', 0x3f: 'August', 0x40: 'September', 0x41: 'October', 0x42: 'November', 0x43: 'December', 0x31: 'Mon', 0x32: 'Tue', 0x33: 'Wed', 0x34: 'Thu', 0x35: 'Fri', 0x36: 'Sat', 0x37: 'Sun', 0x44: 'Jan', 0x45: 'Feb', 0x46: 'Mar', 0x47: 'Apr', 0x48: 'May', 0x49: 'Jun', 0x4a: 'Jul', 0x4b: 'Aug', 0x4c: 'Sep', 0x4d: 'Oct', 0x4e: 'Nov', 0x4f: 'Dec' };
   const localeInfo = (c, wide) => {
     const type = c.arg(1) & 0xffff;

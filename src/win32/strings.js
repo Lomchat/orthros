@@ -6,8 +6,10 @@ const CP1252_HIGH = [
   0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd,
   0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178,
 ];
+// the five undefined slots (0x81, 0x8D, 0x8F, 0x90, 0x9D) round-trip as U+0081... like Windows does
+for (let i = 0; i < 32; i++) if (CP1252_HIGH[i] === 0xfffd) CP1252_HIGH[i] = 0x80 + i;
 const CP1252_REVERSE = new Map();
-for (let i = 0; i < 32; i++) if (CP1252_HIGH[i] !== 0xfffd) CP1252_REVERSE.set(CP1252_HIGH[i], 0x80 + i);
+for (let i = 0; i < 32; i++) CP1252_REVERSE.set(CP1252_HIGH[i], 0x80 + i);
 
 export const CP_ACP = 0, CP_OEMCP = 1, CP_UTF8 = 65001;
 
@@ -41,5 +43,22 @@ export function encodeString(s, cp = CP_ACP, defaultChar = 0x3f) {
   return { bytes: out, lossy };
 }
 
-export function upperA(s) { return s.toUpperCase(); }
-export function lowerA(s) { return s.toLowerCase(); }
+export function upperA(s) { return caseMap(s, true, CP_ACP); }
+export function lowerA(s) { return caseMap(s, false, CP_ACP); }
+
+/**
+ * Windows case mapping (LCMapString LCMAP_UPPER/LOWERCASE, CharUpper/CharLower): character by character, the
+ * length never changes ('ß' stays 'ß', not 'SS') and, for ANSI strings (`cp` given), a character whose mapping
+ * the code page cannot represent is left as it is ('µ' stays 'µ').
+ */
+export function caseMap(s, upper, cp = null) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    let m = upper ? ch.toUpperCase() : ch.toLowerCase();
+    if (m.length !== 1) m = ch;
+    else if (cp !== null) { const c = m.charCodeAt(0); if (!(c < 0x80 || (c >= 0xa0 && c <= 0xff) || ((cp === 0 || cp === 1 || cp === 1252) && CP1252_REVERSE.has(c)))) m = ch; }
+    out += m;
+  }
+  return out;
+}

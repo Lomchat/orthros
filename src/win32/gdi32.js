@@ -458,8 +458,8 @@ export function registerGdi32(api, vm) {
     if (ucp) dc.cur = { x: ha === 2 ? lx - w : ha === 6 ? lx : lx + w, y: ly };
     touched(dc);
   };
-  G.TextOutA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), ansi(mem.readCString(c.arg(3), c.arg(4)))); return 1; }];
-  G.TextOutW = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), mem.readWString(c.arg(3), c.arg(4))); return 1; }];
+  G.TextOutA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), ansi(mem.readCStringN(c.arg(3), c.arg(4)))); return 1; }];
+  G.TextOutW = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), mem.readWStringN(c.arg(3), c.arg(4))); return 1; }];
   let glyphIndexWarned = false;
   const extTextOut = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;
@@ -476,9 +476,9 @@ export function registerGdi32(api, vm) {
   G.ExtTextOutA = [8, (c) => extTextOut(c, false)];
   G.ExtTextOutW = [8, (c) => extTextOut(c, true)];
   const textExtent = (c, s) => { const dc = dcOf(c, c.arg(0)); if (!dc || !c.arg(3)) return 0; const e = engine().extent(realFont(c, dc), s, dc.charExtra ?? 0); mem.write32(c.arg(3), e.w); mem.write32(c.arg(3) + 4, e.h); return 1; };
-  G.GetTextExtentPoint32A = [4, (c) => textExtent(c, ansi(mem.readCString(c.arg(1), c.arg(2))))];
+  G.GetTextExtentPoint32A = [4, (c) => textExtent(c, ansi(mem.readCStringN(c.arg(1), c.arg(2))))];
   G.GetTextExtentPointA = G.GetTextExtentPoint32A;
-  G.GetTextExtentPoint32W = [4, (c) => textExtent(c, mem.readWString(c.arg(1), c.arg(2)))];
+  G.GetTextExtentPoint32W = [4, (c) => textExtent(c, mem.readWStringN(c.arg(1), c.arg(2)))];
   G.GetTextExtentPointW = G.GetTextExtentPoint32W;
   const textExtentEx = (c, s) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;
@@ -489,8 +489,8 @@ export function registerGdi32(api, vm) {
     if (c.arg(6)) { mem.write32(c.arg(6), x); mem.write32(c.arg(6) + 4, r.height); }
     return 1;
   };
-  G.GetTextExtentExPointA = [7, (c) => textExtentEx(c, ansi(mem.readCString(c.arg(1), c.arg(2))))];
-  G.GetTextExtentExPointW = [7, (c) => textExtentEx(c, mem.readWString(c.arg(1), c.arg(2)))];
+  G.GetTextExtentExPointA = [7, (c) => textExtentEx(c, ansi(mem.readCStringN(c.arg(1), c.arg(2))))];
+  G.GetTextExtentExPointW = [7, (c) => textExtentEx(c, mem.readWStringN(c.arg(1), c.arg(2)))];
   const charWidths = (c, wide) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = realFont(c, dc); for (let i = c.arg(1); i <= c.arg(2); i++) mem.write32(c.arg(3) + 4 * (i - c.arg(1)), engine().advance(r, wide ? i : ansiCode(i))); return 1; };
   G.GetCharWidthA = [4, (c) => charWidths(c, false)]; G.GetCharWidth32A = G.GetCharWidthA;
   G.GetCharWidthW = [4, (c) => charWidths(c, true)]; G.GetCharWidth32W = G.GetCharWidthW;
