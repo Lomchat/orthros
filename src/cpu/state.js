@@ -29,6 +29,7 @@
 //   0x1CC  RESUMING   u32 1 while the thread re-executes an API call after a parked wait (the JIT's inline API
 //                     fast paths step aside so the JavaScript handler receives the recorded wait result)
 //   0x1D0  PROF[16]   u32 transition counters of profiling translations (see Jit opts.profile / JIT_PROF)
+//   0x210  EXIT_LEN   u32 length of the range written by the instruction that left with EXIT.SMC (0: 16 bytes)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
 
@@ -59,6 +60,7 @@ export const ST = Object.freeze({
   TRANSITIONS: 0x1c8,
   RESUMING: 0x1cc,
   PROF: 0x1d0,
+  EXIT_LEN: 0x210,
   SIZE: 0x400,
 });
 

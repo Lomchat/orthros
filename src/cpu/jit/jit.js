@@ -222,10 +222,15 @@ export class Jit {
     return report;
   }
   /** SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). */
-  watchHit(addr, eip) {
-    const p = addr >>> 12, w = this.watches?.get(p);
+  watchHit(addr, eip, len = 16, thread = null) {
+    if (!this.watches) return false;
+    let p = addr >>> 12, w = null;
+    for (const last = (addr + len - 1) >>> 12; p <= last && !(w = this.watches.get(p)); p++);
     if (!w) return false;
-    w.sites.set(eip, (w.sites.get(eip) ?? 0) + 1);
+    // the writer's resume EIP, with the first words of its stack (a memcpy's return address)
+    let key = eip;
+    if (thread) { const sp = thread.cpu.esp; key = [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }
+    w.sites.set(key, (w.sites.get(key) ?? 0) + 1);
     if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); this.watchDone?.(w); }
     return true;
   }

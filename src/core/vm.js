@@ -1,7 +1,7 @@
 // The virtual machine: guest memory, process, executor (interpreter; JIT later), API dispatch
 // loop, guest callbacks, crash reports. See DECISIONS.md D003/D004.
 import { GuestMemory } from '../cpu/memory.js';
-import { EXIT, F } from '../cpu/state.js';
+import { EXIT, F, ST } from '../cpu/state.js';
 import { Interp } from '../cpu/interp.js';
 import '../cpu/interp-x87.js';
 import '../cpu/interp-sse.js';
@@ -293,10 +293,13 @@ export class Vm {
           case EXIT.BREAK:
             this.onBreak(thread);
             break;
-          case EXIT.SMC:
-            if (this.jit?.watchHit(cpu.exitArg, cpu.eip)) break; // write watch (debugging), not code
-            this.invalidateCode(cpu.exitArg, 16);
+          case EXIT.SMC: {
+            const lenAt = cpu.base + ST.EXIT_LEN, len = this.mem.read32(lenAt) || 16; // a string store's range, else 16 bytes
+            this.mem.write32(lenAt, 0);
+            if (this.jit?.watchHit(cpu.exitArg, cpu.eip, len, thread)) break; // write watch (debugging), not code
+            this.invalidateCode(cpu.exitArg, len);
             break;
+          }
           default:
             throw new GuestCrash(this.crashReport(thread, `unexpected exit ${exit}`));
         }

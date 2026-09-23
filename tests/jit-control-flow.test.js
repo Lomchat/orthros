@@ -321,3 +321,29 @@ test('push / pop of segment registers match the interpreter (selector only, uppe
   assert.deepEqual(J, I);
   assert.equal(I.s.regs[0], '0xaabb002b', 'DS (0x2b) through ES, the upper half of the reused slot kept');
 });
+
+test('code rewritten by string stores (rep movsb / stosb, single movsd) is retranslated', () => {
+  // main: call F ; mov ebx, eax ; <copy F2 over F> ; call F ; hlt       F: mov eax, 1 ; ret      F2 (data): mov eax, 2 ; ret
+  const F = CODE + 0x100, F2 = DATA + 0x100;
+  for (const copy of [
+    [0xbe, ...le(F2), 0xbf, ...le(F), 0xb9, 6, 0, 0, 0, 0xfc, 0xf3, 0xa4], // mov esi, F2 ; mov edi, F ; mov ecx, 6 ; cld ; rep movsb
+    [0xbe, ...le(F2), 0xbf, ...le(F), 0xfc, 0xa5, 0xa5], // two movsd
+    [0xbf, ...le(F + 1), 0xb0, 0x02, 0xfc, 0xaa], // mov edi, F+1 ; mov al, 2 ; stosb   (the immediate of mov eax, 1)
+  ]) {
+    const main = [0xe8, ...le(F - (CODE + 5)), 0x89, 0xc3, ...copy];
+    const at = main.length; main.push(0xe8, ...le(F - (CODE + at + 5)), 0xf4);
+    const code = new Uint8Array(0x110); code.set(main, 0); code.set([0xb8, 1, 0, 0, 0, 0xc3], 0x100);
+    const EJ = makeExec(true);
+    EJ.load(code, 0);
+    EJ.mem.writeBytes(F2, Uint8Array.from([0xb8, 2, 0, 0, 0, 0xc3, 0x90, 0x90]));
+    // as the VM does: an SMC exit invalidates the written range (EXIT_ARG, EXIT_LEN) and resumes
+    let r, smc = 0;
+    while ((r = EJ.run(CODE + main.length - 1, 1e6)) === EXIT.SMC) {
+      const len = EJ.mem.read32(EJ.cpu.base + ST.EXIT_LEN) || 16; EJ.mem.write32(EJ.cpu.base + ST.EXIT_LEN, 0);
+      EJ.jit.invalidate(EJ.cpu.exitArg, len); smc++;
+    }
+    assert.equal(r, EXIT.HALT);
+    assert.ok(smc >= 1, 'the string store left with SMC');
+    assert.deepEqual([EJ.cpu.ebx, EJ.cpu.eax], [1, 2], `copy ${copy.map((b) => b.toString(16)).join(' ')}`);
+  }
+});

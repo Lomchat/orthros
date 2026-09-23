@@ -190,7 +190,7 @@ export function d3dCore(vm) {
       return D3D_OK;
     }
     unlock() {
-      if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt}: ${sites.length ? sites.map(([eip, n]) => `${vm.proc.symbolize(eip)} x${n}`).join(', ') : 'no translated writer'}`); this.watchKey = null; }
+      if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt}: ${sites.length ? sites.map(([k, n]) => `${String(k).split('/').map((h) => vm.proc.symbolize(typeof k === 'number' ? k : parseInt(h, 16))).join(' < ')} x${n}`).join(', ') : 'no translated writer'}`); this.watchKey = null; }
       if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
   }
   class Texture extends Resource {

@@ -721,6 +721,29 @@ class Emitter {
     throw new Error('storeOp: bad operand');
   }
   /**
+   * After a string store (MOVS/STOS, single or repeated) from the EDI saved in local `start` to the current
+   * EDI, either direction: exit with SMC (the instruction completed, EXIT_LEN = the range length) when a page
+   * of the range holds translated code.
+   */
+  smcRange(start, insn) {
+    if (!this.smc) return;
+    const c = this.c;
+    c.get(start).get(L_REG + 7).ne();
+    const any = c.if_();
+    c.get(start).get(L_REG + 7).get(start).get(L_REG + 7).lt_u().select().i32(4).sub().set(L_TA); // lo (an element either side)
+    c.get(start).get(L_REG + 7).get(start).get(L_REG + 7).gt_u().select().i32(4).add().set(L_T5); // hi
+    c.get(L_TA).i32(12).shr_u().set(L_TV);
+    const done = c.block(); const lp = c.loop();
+    c.get(L_TV).i32load8u(SMC_MAP_BASE);
+    const hit = c.hint(false).if_();
+    c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG); c.get(L_STATE).get(L_T5).get(L_TA).sub().i32store(ST.EXIT_LEN);
+    this.exitCode(EXIT.SMC, insn.next);
+    c.end(); void hit;
+    c.get(L_TV).i32(1).add().tee(L_TV).i32(12).shl().get(L_T5).lt_u().br_if(lp);
+    c.end(); c.end(); void done;
+    c.end(); void any;
+  }
+  /**
    * After a store through L_TA: exit with SMC if the page holds translated code (one byte per page). Stores
    * addressed by ESP alone (the stack: locals and arguments without a frame pointer) are not checked, like
    * PUSH: stacks do not hold code.
@@ -1568,7 +1591,9 @@ function strOp(kind) {
       }
     };
     const isCmp = kind === 'scas' || kind === 'cmps';
-    if (!insn.rep) { body(); if (isCmp) E.lz = { kind: LZ.SUB, sz: SZLOG[size] }; return; }
+    const writes = kind === 'movs' || kind === 'stos';
+    if (writes) c.get(L_REG + 7).set(L_T6); // EDI before: the written range is checked for translated code afterwards
+    if (!insn.rep) { body(); if (isCmp) E.lz = { kind: LZ.SUB, sz: SZLOG[size] }; if (writes) E.smcRange(L_T6, insn); return; }
     if (isCmp) E.materialize();
     // fast path: rep movs/stos forward with size 4/1 -> memory.copy/fill when non-overlapping-backwards
     if (kind === 'stos' && !isCmp) {
@@ -1590,6 +1615,7 @@ function strOp(kind) {
       const lp2 = c.loop(); c.get(L_REG + 1).eqz(); const ex2 = c.if_(); c.else_(); body(); c.get(L_REG + 1).i32(1).sub().set(L_REG + 1); c.br(lp2); c.end(); void ex2; c.end();
       c.end(); void fast;
       E.lz = null;
+      E.smcRange(L_T6, insn);
       return;
     }
     if (kind === 'movs') {
@@ -1605,6 +1631,7 @@ function strOp(kind) {
       const lp2 = c.loop(); c.get(L_REG + 1).eqz(); const ex2 = c.if_(); c.else_(); body(); c.get(L_REG + 1).i32(1).sub().set(L_REG + 1); c.br(lp2); c.end(); void ex2; c.end();
       c.end(); void fast;
       E.lz = null;
+      E.smcRange(L_T6, insn);
       return;
     }
     // generic rep loop (lods/scas/cmps)
