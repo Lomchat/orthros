@@ -81,6 +81,48 @@ function termOf(insn) {
   }
 }
 
+/** Direct in-region branch target of a block's last instruction (JMP/JCC/LOOP/CALL rel), or -1. */
+function branchTarget(insn) {
+  const o = insn.ops[0];
+  if (!o || o.t !== OT.REL) return -1;
+  switch (insn.op) {
+    case OP.JMP: case OP.JCC: case OP.LOOP: case OP.LOOPE: case OP.LOOPNE: case OP.JECXZ: return o.v;
+    case OP.CALL: return insn.opsize === 2 ? o.v & 0xffff : o.v;
+    default: return -1;
+  }
+}
+
+/**
+ * Control-flow layout of a region: the blocks (address order) grouped into top-level units, each a
+ * single block or a structured loop [first, last] spanning a back edge's target to its latest source.
+ * Only disjoint loops are structured (the shortest first: innermost loops are the hot ones); the
+ * other back edges go through the dispatcher.
+ */
+function planUnits(blocks, byEip) {
+  const last = new Map(); // header index -> latest back-edge source
+  for (const b of blocks) {
+    const t = b.insns.length ? byEip.get(branchTarget(b.insns[b.insns.length - 1])) : null;
+    if (t && t.index <= b.index) last.set(t.index, Math.max(last.get(t.index) ?? -1, b.index));
+  }
+  const taken = new Uint8Array(blocks.length), loopEnd = new Map();
+  for (const [h, e] of [...last].sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]))) {
+    let free = true;
+    for (let i = h; i <= e && free; i++) free = !taken[i];
+    if (!free) continue;
+    taken.fill(1, h, e + 1);
+    loopEnd.set(h, e);
+  }
+  const units = [], unitOf = new Int32Array(blocks.length);
+  for (let i = 0; i < blocks.length;) {
+    const e = loopEnd.get(i);
+    const u = { first: i, last: e ?? i, loop: e !== undefined, label: null, inner: null };
+    for (let k = u.first; k <= u.last; k++) unitOf[k] = units.length;
+    units.push(u);
+    i = u.last + 1;
+  }
+  return { units, unitOf };
+}
+
 /**
  * Discover the blocks of a region.
  * @returns {{ blocks: Array<{eip:number, insns:any[], end:number, term:number, index:number}>, byEip: Map<number, any> }}
@@ -160,6 +202,10 @@ export function buildRegionModule(codes, names = null) {
   return m.build();
 }
 
+/** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch'];
+const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
+
 class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
@@ -169,6 +215,7 @@ class Emitter {
     this.smc = opts.smc !== false;
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
+    this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     this.stats = { native: 0, fallback: 0 };
   }
 
@@ -189,15 +236,36 @@ class Emitter {
     this.exitJmpL = c.block();
     this.dispatchL = c.loop();
     const def = c.block();
-    // labels[i] for block i: block n-1 is outermost, block 0 innermost, so that the i-th `end`
-    // closes labels[i] and block i's code follows it.
-    const labels = new Array(blocks.length);
-    for (let i = blocks.length - 1; i >= 0; i--) labels[i] = c.block();
-    this.labels = labels;
-    c.get(L_BLK).br_table(labels, def);
-    for (let i = 0; i < blocks.length; i++) {
-      c.end(); // closes labels[i]
-      this.emitBlock(blocks[i], i + 1 < blocks.length ? blocks[i + 1] : null);
+    // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
+    // `end` closes labels[u] and unit u's code follows it; a forward branch to the first block of a
+    // later unit is a plain `br` to that unit's label
+    const { units, unitOf } = planUnits(blocks, byEip);
+    this.units = units;
+    this.unitOf = unitOf;
+    const labels = new Array(units.length);
+    for (let u = units.length - 1; u >= 0; u--) labels[u] = c.block();
+    for (let u = 0; u < units.length; u++) units[u].label = labels[u];
+    c.get(L_BLK).br_table(blocks.map((b) => labels[unitOf[b.index]]), def);
+    const next = (i) => (i + 1 < blocks.length ? blocks[i + 1] : null);
+    for (const u of units) {
+      c.end(); // closes u.label: the unit's code follows
+      if (!u.loop) { this.emitBlock(blocks[u.first], next(u.first)); continue; }
+      // structured loop: entered with L_BLK = -1 (fallthrough / forward branch into the header) or
+      // by the dispatcher with L_BLK = the target block, dispatched again here among the loop's
+      // blocks (L_BLK back to -1). Back edges to the header branch to the loop label directly.
+      // L_BLK holds a block of this loop only between its `set` and this dispatch (any stale value
+      // is outside the loop and lands on the header through the default); the -1 written on the
+      // ordinary entries only keeps the iterations on the br_if fast path.
+      u.loopL = c.loop();
+      u.inner = [];
+      for (let k = u.last; k >= u.first; k--) u.inner[k - u.first] = c.block();
+      c.get(L_BLK).i32(-1).eq().br_if(u.inner[0]);
+      c.get(L_BLK).i32(u.first).sub().i32(-1).set(L_BLK).br_table(u.inner, u.inner[0]);
+      for (let k = u.first; k <= u.last; k++) {
+        c.end(); // closes u.inner[k - first]
+        this.emitBlock(blocks[k], next(k));
+      }
+      c.end(); // loop
     }
     c.end(); // def
     c.unreachable();
@@ -243,6 +311,7 @@ class Emitter {
     }
     c.br(noChain);
     c.end(); // found
+    if (this.prof) { c.get(L_TA).i32load(4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; }
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
@@ -366,6 +435,9 @@ class Emitter {
    * checks ST.ICOUNT at the next region entry, so a loop made only of cross-region edges still
    * ends with a time slice.
    */
+  count(k) {
+    if (this.prof) this.c.get(L_STATE).get(L_STATE).i32load(ST.PROF + 4 * k).i32(1).add().i32store(ST.PROF + 4 * k);
+  }
   charge(n) {
     if (n > 0) this.c.get(L_ICOUNT).i32(n).sub().set(L_ICOUNT);
   }
@@ -374,7 +446,7 @@ class Emitter {
   // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
-  exitTo(eip, n = this.insnIdx) { this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
@@ -393,9 +465,22 @@ class Emitter {
   jumpTo(target, n) {
     const b = this.byEip.get(target);
     if (!b) { this.exitTo(target, n); return; }
+    const c = this.c;
+    const t = b.index, us = this.units[this.unitOf[this.cur]], ut = this.units[this.unitOf[t]];
     const s = this.x87Normalize(); // blocks are entered with shift 0
-    this.budget(n, target);
-    this.c.i32(b.index).set(L_BLK).br(this.dispatchL);
+    if (t > this.cur) {
+      // forward: no budget check (every cycle contains a backward edge, which checks it)
+      this.count(PF.forward);
+      this.charge(n);
+      if (ut === us) c.br(us.inner[t - us.first]);
+      else if (ut.first === t) { if (ut.loop) c.i32(-1).set(L_BLK); c.br(ut.label); }
+      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
+    } else {
+      this.count(PF.backward);
+      this.budget(n, target);
+      if (ut === us && us.loop) { if (t !== us.first) c.i32(t).set(L_BLK); c.br(us.loopL); }
+      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
+    }
     this.stShift = s;
   }
 
@@ -546,6 +631,7 @@ class Emitter {
     this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
     this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
+    this.cur = b.index;
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
     // block end
     const n = b.insns.length;
@@ -557,7 +643,14 @@ class Emitter {
         // fallthrough (terminators already emitted their taken path)
         if (b.term === TERM_CALL) return; // call emitted its own jump
         const ft = b.fallthrough;
-        if (nextBlock && nextBlock.eip === ft) { this.x87Normalize(); this.budget(n, ft); return; } // natural fallthrough into the next block's code
+        if (nextBlock && nextBlock.eip === ft) { // natural fallthrough into the next block's code
+          this.count(PF.fallthrough);
+          this.x87Normalize();
+          this.charge(n);
+          const un = this.units[this.unitOf[nextBlock.index]];
+          if (un.loop && un.first === nextBlock.index) this.c.i32(-1).set(L_BLK); // entering a structured loop
+          return;
+        }
         this.jumpTo(ft, n);
         return;
       }
@@ -1089,6 +1182,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
   const t = insn.ops[0];
   if (t.t === OT.REL) { E.jumpTo(t.v, b.insns.length); return; }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
+  E.count(PF.indirect);
   E.exitToStack();
 };
 HANDLERS[OP.JCC] = (E, insn, b) => {
@@ -1108,12 +1202,14 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   E.loadOp(t); c.set(L_T4);
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
+  E.count(PF.indirect);
   E.exitToStack();
 };
 HANDLERS[OP.RET] = (E, insn) => {
   const c = E.c; const size = insn.opsize;
   c.get(L_REG + 4); if (size === 2) c.i32load16u(0); else c.i32load(0, 0); c.set(L_TV);
   c.get(L_REG + 4).i32(size + (insn.ops.length ? insn.ops[0].v : 0)).add().set(L_REG + 4);
+  E.count(PF.ret);
   c.get(L_TV);
   E.exitToStack();
 };

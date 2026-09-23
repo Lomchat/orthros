@@ -28,6 +28,7 @@
 //   0x1C8  TRANSITIONS u32 region-to-region chained transitions since the last harvest (JIT stats)
 //   0x1CC  RESUMING   u32 1 while the thread re-executes an API call after a parked wait (the JIT's inline API
 //                     fast paths step aside so the JavaScript handler receives the recorded wait result)
+//   0x1D0  PROF[16]   u32 transition counters of profiling translations (see Jit opts.profile / JIT_PROF)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
 
@@ -57,6 +58,7 @@ export const ST = Object.freeze({
   STOP_AT: 0x1c4,
   TRANSITIONS: 0x1c8,
   RESUMING: 0x1cc,
+  PROF: 0x1d0,
   SIZE: 0x400,
 });
 
