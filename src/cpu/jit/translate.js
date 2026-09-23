@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP } from './runtime.js';
-import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
+import { THUNK_BASE, THUNK_END, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
@@ -677,11 +677,17 @@ class Emitter {
     if (o.t === OT.MEM) { c.get(L_TA).get(src); this.storeMem(o.size); this.smcCheck(insn); return; }
     throw new Error('storeOp: bad operand');
   }
-  /** After a store through L_TA: exit with SMC if the page holds translated code. */
+  /**
+   * After a store through L_TA: exit with SMC if the page holds translated code (one byte per page). Stores
+   * addressed by ESP alone (the stack: locals and arguments without a frame pointer) are not checked, like
+   * PUSH: stacks do not hold code.
+   */
   smcCheck(insn) {
     if (!this.smc || !insn) return;
+    const m = insn.ops.find((o) => o.t === OT.MEM);
+    if (m && m.base === 4 && m.index < 0 && !m.a16 && m.seg !== SEG.FS && m.seg !== SEG.GS) return;
     const c = this.c;
-    c.get(L_TA).i32(15).shr_u().i32load8u(SMC_BITMAP_BASE).i32(1).get(L_TA).i32(12).shr_u().i32(7).and().shl().and();
+    c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE);
     const i = c.hint(false).if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
     this.exitCode(EXIT.SMC, insn.next);

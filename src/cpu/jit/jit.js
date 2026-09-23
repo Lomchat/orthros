@@ -1,7 +1,7 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
@@ -84,7 +84,7 @@ export class Jit {
 
   clearTables() {
     this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
-    this.mem.fill(SMC_BITMAP_BASE, 0x10000, 0);
+    this.mem.fill(SMC_MAP_BASE, 0x80000, 0);
     this.regions = [];
     this.pending = [];
     this.blockMap.clear();
@@ -170,7 +170,7 @@ export class Jit {
     for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     // mark code pages for SMC detection
     for (const p of region.pages) {
-      this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] |= 1 << (p & 7);
+      this.mem.u8[SMC_MAP_BASE + p] = 1;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
     // consolidation only after the region is registered: consolidate() keeps the pending regions
@@ -217,7 +217,7 @@ export class Jit {
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
-      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] &= ~(1 << (p & 7)); } }
+      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] = 0; } }
     }
     this.table.set(r.fnIdx, null);
     this.byFn.delete(r.fnIdx);
