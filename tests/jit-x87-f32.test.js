@@ -13,6 +13,8 @@ import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
+/** random programs per test (X87_SEEDS=3000 for a longer stress run) */
+const SEEDS = Number(process.env.X87_SEEDS ?? 400);
 const F32S = DATA, F64S = DATA + 0x100, OUT = DATA + 0x200;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
 const F32_VALUES = [0, -0, 1, -1, 0.1, 3.0000002, 1e-38, 1.17549435e-38, 1e-45, -2.5e-42, 3.4028235e38, -1e38, 2 ** -100, 2 ** 100, 12345.678, -0.75, Infinity, -Infinity, NaN, 1.5, 7, 1e20, 1e-20, 65504];
@@ -165,9 +167,9 @@ function exec(useJit, code, cw, slice = 1e6) {
 
 test('x87 under 24-bit precision (f32 shadows, exact fallbacks) and the other modes: random sequences match the interpreter', () => {
   let shadowExits = 0;
-  for (let seed = 1; seed <= 400; seed++) {
+  for (let seed = 1; seed <= SEEDS; seed++) {
     const code = program(seed);
-    for (const cw of [0x007f, 0x027f, 0x037f, 0x047f, 0x0c7f]) {
+    for (const cw of [0x007f, 0x027f, 0x037f, 0x047f, 0x087f, 0x0c7f]) {
       const want = exec(false, code, cw), got = exec(true, code, cw);
       assert.deepEqual({ out: got.out, sw: got.sw, top: got.top }, { out: want.out, sw: want.sw, top: want.top }, `seed ${seed} cw ${cw.toString(16)}`);
       if (cw === 0x007f && got.jit.stats.regions > 2) shadowExits++;
@@ -204,7 +206,7 @@ test('time slices ending on a backward edge with a pending x87 shift and float r
 });
 
 test('x87 float values across loops and conditional branches: random programs match the interpreter', () => {
-  for (let seed = 1; seed <= 400; seed++) {
+  for (let seed = 1; seed <= SEEDS; seed++) {
     const code = loopProgram(seed);
     for (const cw of [0x007f, 0x027f, 0x0c7f]) {
       // short time slices: budget exits on every back edge (with a pending x87 shift and float registers)
