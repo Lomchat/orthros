@@ -85,7 +85,7 @@ async function start(m) {
   vfs.mount(manifest.mount, new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256 }));
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
-  if (!m.opts.headless) await loadProfile(profile);
+  if (!m.opts.headless || m.opts.opfs) await loadProfile(profile);
   // a harness-provided profile (headless runs: `--profile-dir`), base64 files with '/'-separated paths
   for (const f of m.opts.profileFiles ?? []) {
     const parts = f.path.split('/');
