@@ -5,6 +5,7 @@
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
 import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
+import { StateTable } from './state-table.js';
 
 const IID = {
   IDirect3D9: '81bdcbca-64d4-426d-ae8d-ad0147f4275c', IDirect3DDevice9: 'd0223b96-bf7a-43fd-92bd-a43b0d82b9eb', IDirect3DResource9: '05eec05d-8f7d-4362-b999-d1baf357c704',
@@ -123,7 +124,7 @@ export function registerDirect3D9(api, vm) {
     }
     resetState() {
       super.resetState();
-      this.samplers = Array.from({ length: MAX_SAMPLERS + 4 }, () => new Map(Object.entries(SAMP_DEFAULTS).map(([k, v]) => [+k, v])));
+      this.samplers = Array.from({ length: MAX_SAMPLERS + 4 }, () => new StateTable(16, Object.entries(SAMP_DEFAULTS).map(([k, v]) => [+k, v])));
       this.fvf = 0; this.vertexDecl = null; this.vsObj = null; this.psObj = null;
       this.vsConst = new Float32Array(256 * 4); this.psConst = new Float32Array(32 * 4);
       this.vsConstI = new Int32Array(16 * 4); this.psConstI = new Int32Array(16 * 4); this.vsConstB = new Uint8Array(16); this.psConstB = new Uint8Array(16);
