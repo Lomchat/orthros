@@ -102,3 +102,13 @@ DLLIMPORT HBITMAP WINAPI CreateDIBSection(HDC, const BITMAPINFO*, UINT, void**, 
 DLLIMPORT BOOL WINAPI Rectangle(HDC, int, int, int, int);
 DLLIMPORT BOOL WINAPI TextOutA(HDC, int, int, const char*, int);
 DLLIMPORT int WINAPI GetDeviceCaps(HDC, int);
+typedef HANDLE HFONT;
+typedef struct { LONG cx, cy; } SIZE;
+typedef struct { LONG tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading, tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY; BYTE tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar, tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet; } TEXTMETRICA;
+DLLIMPORT HFONT WINAPI CreateFontA(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, const char*);
+DLLIMPORT BOOL WINAPI GetTextMetricsA(HDC, TEXTMETRICA*);
+DLLIMPORT BOOL WINAPI GetTextExtentPoint32A(HDC, const char*, int, SIZE*);
+DLLIMPORT COLORREF WINAPI SetTextColor(HDC, COLORREF);
+DLLIMPORT int WINAPI SetBkMode(HDC, int);
+DLLIMPORT BOOL WINAPI GetCharWidth32A(HDC, UINT, UINT, int*);
+DLLIMPORT int WINAPI DrawTextA(HDC, const char*, int, RECT*, UINT);

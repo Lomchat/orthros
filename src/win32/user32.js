@@ -3,10 +3,10 @@
 // (src/gfx/gdi) onto per-window client surfaces which are presented by the host display.
 import { E } from './errors.js';
 import { INFINITE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED } from '../core/sched.js';
-import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit } from './gdi32.js';
+import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit, dcFont } from './gdi32.js';
 import { allocSurface, freeSurface } from '../gfx/gdi/surface.js';
 import { clipRect, rectEmpty } from '../gfx/gdi/raster.js';
-import { drawText, textWidth, textHeight } from '../gfx/gdi/font.js';
+import { parseCursorFile } from '../gfx/gdi/cursor.js';
 import { formatPrintf } from './wsprintf.js';
 import { findResource } from '../loader/pe.js';
 import { isSignaled, consumeSignal, waitObject, allocString } from './kernel32.js';
@@ -949,7 +949,12 @@ export function registerUser32(api, vm) {
   U.ClipCursor = [1, (c) => { wm().clip = c.arg(0) ? readRect(c.arg(0)) : null; return 1; }];
   U.GetClipCursor = [1, (c) => { writeRect(c.arg(0), wm().clip ?? { l: 0, t: 0, r: wm().screen.width, b: wm().screen.height }); return 1; }];
   U.ShowCursor = [1, (c) => { const w = wm(); w.showCursorCount += c.arg(0) ? 1 : -1; vm.host?.display?.showCursor?.(w.showCursorCount >= 0); return w.showCursorCount >>> 0; }];
-  U.SetCursor = [1, (c) => { const p = wm().cursorHandle; wm().cursorHandle = c.arg(0); return p; }];
+  U.SetCursor = [1, (c) => {
+    const p = wm().cursorHandle, h = c.arg(0);
+    wm().cursorHandle = h;
+    if (h !== p) { const o = h ? c.proc.handles.getAs(h, 'gdi') : null; if (o?.kind === 'cursor') vm.host?.display?.setCursor?.(o.image ? h : 'sys' + (o.id || 32512), o.image ?? null, o.id || 32512); else if (!h) vm.host?.display?.showCursor?.(false); }
+    return p;
+  }];
   U.GetCursor = [0, () => wm().cursorHandle];
   U.GetCursorInfo = [1, (c) => { const p = c.arg(0); mem.write32(p + 4, wm().showCursorCount >= 0 ? 1 : 0); mem.write32(p + 8, wm().cursorHandle); mem.write32(p + 12, wm().cursor.x); mem.write32(p + 16, wm().cursor.y); return 1; }];
   U.MapVirtualKeyA = [2, (c) => mapVirtualKey(c.arg(0), c.arg(1))];
@@ -1014,8 +1019,17 @@ export function registerUser32(api, vm) {
   U.LoadIconW = U.LoadIconA;
   U.LoadCursorA = [2, (c) => pseudoIcon(c, 'cursor', c.arg(1))];
   U.LoadCursorW = U.LoadCursorA;
-  U.LoadCursorFromFileA = [1, (c) => pseudoIcon(c, 'cursor', 0)];
-  U.LoadCursorFromFileW = U.LoadCursorFromFileA;
+  /** A cursor from a .cur/.ani file: its frames and animation (gfx/gdi/cursor.js), shown by the host on SetCursor. */
+  const cursorFromFile = (c, name) => {
+    if (!name) return c.fail(E.FILE_NOT_FOUND);
+    const bytes = vm.vfs.readFile(c.proc.path(name));
+    if (!bytes) return c.fail(E.FILE_NOT_FOUND);
+    const image = parseCursorFile(bytes);
+    if (!image) { vm.warn(`LoadCursorFromFile(${name}): unrecognized cursor file`); return pseudoIcon(c, 'cursor', 32512); }
+    return c.proc.handles.create({ type: 'gdi', kind: 'cursor', id: 0, image, file: name });
+  };
+  U.LoadCursorFromFileA = [1, (c) => cursorFromFile(c, c.str(0))];
+  U.LoadCursorFromFileW = [1, (c) => cursorFromFile(c, c.wstr(0))];
   U.CreateCursor = [7, (c) => pseudoIcon(c, 'cursor', 0)];
   U.CreateIcon = [7, (c) => pseudoIcon(c, 'icon', 0)];
   U.CreateIconIndirect = [1, (c) => pseudoIcon(c, 'icon', 0)];
@@ -1037,7 +1051,8 @@ export function registerUser32(api, vm) {
     if (flags & 0x10) { // LR_LOADFROMFILE
       const name = wide ? c.wstr(1) : c.str(1);
       if (type === 0) { const data = vm.vfs.readFile(c.proc.path(name ?? '')); if (data) return bitmapFromBmp(c, data); return 0; }
-      return pseudoIcon(c, type === 1 ? 'icon' : 'cursor', 0);
+      if (type === 2) return cursorFromFile(c, name);
+      return pseudoIcon(c, 'icon', 0);
     }
     if (type === 0) return loadBitmapRes(c, c.arg(0), c.arg(1) < 0x10000 ? c.arg(1) : wide ? mem.readWString(c.arg(1)) : mem.readCString(c.arg(1)));
     return pseudoIcon(c, type === 1 ? 'icon' : 'cursor', c.arg(1));
@@ -1135,35 +1150,61 @@ export function registerUser32(api, vm) {
   U.FrameRect = [3, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = readRect(c.arg(1)); const col = wm().brushColor(c.arg(2)); if (col === null) return 1; const ox = dc.ox, oy = dc.oy; fillRect(dc.surface, dc.clip, r.l + ox, r.t + oy, r.r + ox, r.t + oy + 1, col); fillRect(dc.surface, dc.clip, r.l + ox, r.b + oy - 1, r.r + ox, r.b + oy, col); fillRect(dc.surface, dc.clip, r.l + ox, r.t + oy, r.l + ox + 1, r.b + oy, col); fillRect(dc.surface, dc.clip, r.r + ox - 1, r.t + oy, r.r + ox, r.b + oy, col); if (dc.window) wm().touch(dc.window); return 1; }];
   U.InvertRect = [2, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = readRect(c.arg(1)); for (let y = r.t; y < r.b; y++) for (let x = r.l; x < r.r; x++) { const X = x + dc.ox, Y = y + dc.oy; if (X >= dc.clip.l && X < dc.clip.r && Y >= dc.clip.t && Y < dc.clip.b) dc.surface.setPixel(X, Y, ~dc.surface.getPixel(X, Y) & 0xffffff); } return 1; }];
   U.DrawEdge = [4, () => 1]; U.DrawFrameControl = [4, () => 1]; U.DrawFocusRect = [2, () => 1]; U.DrawStateA = [10, () => 1];
+  /**
+   * DrawText(Ex): lines split on CR/LF (or one line with DT_SINGLELINE), word wrapping (DT_WORDBREAK), '&' mnemonic
+   * prefixes (unless DT_NOPREFIX), tab expansion, horizontal and single-line vertical alignment, DT_CALCRECT, clipping
+   * to the rectangle unless DT_NOCLIP. Returns the text height (the offset of its bottom with DT_VCENTER/DT_BOTTOM).
+   */
   const drawTextA = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;
-    const n = c.sarg(2); const s = wide ? (n < 0 ? mem.readWString(c.arg(1)) : mem.readWString(c.arg(1), n)) : (n < 0 ? mem.readCString(c.arg(1)) : mem.readCString(c.arg(1), n));
+    const n = c.sarg(2); let s = wide ? (n < 0 ? mem.readWString(c.arg(1)) : mem.readWString(c.arg(1), n)) : (n < 0 ? mem.readCString(c.arg(1)) : mem.readCString(c.arg(1), n));
     const r = readRect(c.arg(3)); const fmt = c.arg(4);
-    const f = c.proc.handles.getAs(dc.font, 'gdi'); const sc = f?.scale ?? 1;
-    const lines = fmt & 0x20 ? [s] : s.split(/\r?\n/);
-    const lh = textHeight(sc);
-    let totalH = lines.length * lh, maxW = Math.max(...lines.map((l) => textWidth(l, sc)), 0);
-    if (fmt & 0x400) { writeRect(c.arg(3), { l: r.l, t: r.t, r: r.l + maxW, b: r.t + totalH }); return totalH; }
-    let y = r.t;
-    if (fmt & 0x4 && fmt & 0x20) y = r.t + ((r.b - r.t - lh) >> 1);
-    else if (fmt & 0x8 && fmt & 0x20) y = r.b - lh;
-    const clip = fmt & 0x100 ? dc.clip : clipRect(dc.clip, { l: r.l + dc.ox, t: r.t + dc.oy, r: r.r + dc.ox, b: r.b + dc.oy });
-    for (const line of lines) {
-      let x = r.l;
-      const w = textWidth(line, sc);
-      if (fmt & 1) x = r.l + ((r.r - r.l - w) >> 1); else if (fmt & 2) x = r.r - w;
-      drawText(dc.surface, clip, x + dc.ox, y + dc.oy, line, dc.textColor, sc, dc.bkMode === 2 ? dc.bkColor : null);
-      y += lh;
+    const { engine, font } = dcFont(vm, c.proc, dc);
+    const width = (t) => engine.extent(font, t, dc.charExtra ?? 0).w;
+    if (!(fmt & 0x800)) s = s.replace(/&(&?)/g, (m, amp) => amp); // DT_NOPREFIX clear: "&x" -> "x", "&&" -> "&"
+    if (fmt & 0x40) { const tab = font.aveCharWidth * 8 || 64; s = s.split(/(\r\n|\n|\r)/).map((line) => { let out = ''; for (const ch of line) { if (ch === '\t') { const w = width(out); const next = (Math.floor(w / tab) + 1) * tab; while (width(out) < next) out += ' '; } else out += ch; } return out; }).join(''); }
+    let lines = fmt & 0x20 ? [s.replace(/\r\n|\n|\r/g, ' ')] : s.split(/\r\n|\n|\r/);
+    const boxW = r.r - r.l;
+    if ((fmt & 0x10) && !(fmt & 0x20)) { // DT_WORDBREAK: greedy wrap at spaces, words wider than the box on their own line
+      const wrapped = [];
+      for (const line of lines) {
+        const words = line.split(/( +)/); let cur = '';
+        for (const w of words) {
+          if (!w) continue;
+          const tryLine = cur + w;
+          if (cur && width(tryLine.replace(/ +$/, '')) > boxW && /\S/.test(w)) { wrapped.push(cur.replace(/ +$/, '')); cur = w; }
+          else cur = tryLine;
+        }
+        wrapped.push(cur.replace(/ +$/, ''));
+      }
+      lines = wrapped;
     }
+    const lh = font.height + (fmt & 0x200 ? font.externalLeading : 0);
+    const totalH = lines.length * lh;
+    const widths = lines.map(width), maxW = Math.max(0, ...widths);
+    if (fmt & 0x400) { writeRect(c.arg(3), { l: r.l, t: r.t, r: (fmt & 0x20) || (fmt & 0x10) ? r.l + maxW : r.l + maxW, b: r.t + totalH }); return totalH; }
+    let y = r.t;
+    if ((fmt & 0x20) && (fmt & 0x4)) y = r.t + ((r.b - r.t - lh) >> 1);
+    else if ((fmt & 0x20) && (fmt & 0x8)) y = r.b - lh;
+    const ox = dc.ox + dc.vpOrg.x - dc.wndOrg.x, oy = dc.oy + dc.vpOrg.y - dc.wndOrg.y;
+    const clip = fmt & 0x100 ? dc.clip : clipRect(dc.clip, { l: r.l + ox, t: r.t + oy, r: r.r + ox, b: r.b + oy });
+    const top = y;
+    lines.forEach((line, i) => {
+      let x = r.l;
+      if (fmt & 1) x = r.l + ((boxW - widths[i]) >> 1); else if (fmt & 2) x = r.r - widths[i];
+      if (dc.surface) engine.draw(dc.surface, clip, x + ox, y + oy, line, font, dc.textColor, engine.advances(font, line, dc.charExtra ?? 0), dc.bkMode === 2 ? dc.bkColor : null);
+      y += lh;
+    });
     if (dc.window) wm().touch(dc.window);
-    return totalH;
+    return (fmt & 0xc) && (fmt & 0x20) ? y - r.t : y - top;
   };
   U.DrawTextA = [5, (c) => drawTextA(c, false)];
   U.DrawTextW = [5, (c) => drawTextA(c, true)];
   U.DrawTextExA = [6, (c) => drawTextA(c, false)];
   U.DrawTextExW = [6, (c) => drawTextA(c, true)];
-  U.TabbedTextOutA = [8, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const s = mem.readCString(c.arg(3), c.arg(4)); drawText(dc.surface, dc.clip, c.sarg(1) + dc.ox, c.sarg(2) + dc.oy, s, dc.textColor, 1, null); return (textHeight(1) << 16) | textWidth(s, 1); }];
-  U.GetTabbedTextExtentA = [5, (c) => { const s = mem.readCString(c.arg(1), c.arg(2)); return (textHeight(1) << 16) | textWidth(s, 1); }];
+  const tabbed = (c, dc, s) => { const { engine, font } = dcFont(vm, c.proc, dc); const tab = font.aveCharWidth * 8 || 64; let out = ''; for (const ch of s) { if (ch === '\t') { const w = engine.extent(font, out).w; const next = (Math.floor(w / tab) + 1) * tab; while (engine.extent(font, out).w < next) out += ' '; } else out += ch; } return { engine, font, text: out }; };
+  U.TabbedTextOutA = [8, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCString(c.arg(3), c.arg(4))); const ox = dc.ox + dc.vpOrg.x - dc.wndOrg.x, oy = dc.oy + dc.vpOrg.y - dc.wndOrg.y; const adv = engine.advances(font, text); if (dc.surface) engine.draw(dc.surface, dc.clip, c.sarg(1) + ox, c.sarg(2) + oy, text, font, dc.textColor, adv, dc.bkMode === 2 ? dc.bkColor : null); if (dc.window) wm().touch(dc.window); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
+  U.GetTabbedTextExtentA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const { engine, font, text } = tabbed(c, dc, mem.readCString(c.arg(1), c.arg(2))); return ((font.height & 0xffff) << 16) | (engine.extent(font, text).w & 0xffff); }];
 
   // ---------------------------------------------------------------- rects / misc
   U.SetRect = [5, (c) => { writeRect(c.arg(0), { l: c.sarg(1), t: c.sarg(2), r: c.sarg(3), b: c.sarg(4) }); return 1; }];

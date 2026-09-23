@@ -19,7 +19,7 @@ const USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2;
 const DISPLAY_FORMATS = new Set([FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A2R10G10B10]);
 const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A2R10G10B10]);
 const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_LOCKABLE, FMT.D15S1, FMT.D24X4S4, 82 /* D24FS8 */]);
-const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.P8, FMT.A4L4, FMT.X4R4G4B4, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]); // no R8G8B8: like every real Direct3D 9 driver, 24-bit textures are not offered (applications keep a conversion path for that)
+const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 const MAX_SAMPLERS = 16, MAX_RTS = 4;
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
 const checkTrail = []; // last CheckDeviceFormat calls (args + verdict), kept for the placeholder-texture diagnostic
@@ -171,12 +171,17 @@ export function registerDirect3D9(api, vm) {
       const src = surfaceOf(c.arg(1)), rect = c.arg(2), dst = surfaceOf(c.arg(3)), pt = c.arg(4);
       if (!src || !dst || src.fmt !== dst.fmt) return D3DERR_INVALIDCALL;
       const sb = src.ensureMem(c.proc), db = dst.ensureMem(c.proc);
-      const bpp = surfacePitch(src.fmt, 1);
       const l = rect ? mem.readS32(rect) : 0, t = rect ? mem.readS32(rect + 4) : 0, r = rect ? mem.readS32(rect + 8) : src.width, b = rect ? mem.readS32(rect + 12) : src.height;
       const dx = pt ? mem.readS32(pt) : 0, dy = pt ? mem.readS32(pt + 4) : 0;
       const w = Math.min(r - l, dst.width - dx), h = Math.min(b - t, dst.height - dy);
-      for (let y = 0; y < h; y++) mem.copy(db + (dy + y) * dst.pitch + dx * bpp, sb + (t + y) * src.pitch + l * bpp, w * bpp);
+      if (w <= 0 || h <= 0) return D3DERR_INVALIDCALL;
+      // block-compressed formats copy rows of 4x4 blocks (rectangles are block aligned, sizes rounded up to whole blocks)
+      const block = src.fmt === FMT.DXT1 || src.fmt === FMT.DXT2 || src.fmt === FMT.DXT3 || src.fmt === FMT.DXT4 || src.fmt === FMT.DXT5 ? 4 : 1;
+      const unit = block === 4 ? (src.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(src.fmt, 1);
+      const rows = Math.ceil(h / block), cols = Math.ceil(w / block);
+      for (let y = 0; y < rows; y++) mem.copy(db + ((dy / block | 0) + y) * dst.pitch + (dx / block | 0) * unit, sb + ((t / block | 0) + y) * src.pitch + (l / block | 0) * unit, cols * unit);
       dst.dirty = true; this.gfx?.surfaceUpdated?.(dst);
+      dst.trace?.(c, `UpdateSurface from #${src.id} (${src.width}x${src.height} fmt ${src.fmt}${src.history?.length ? ', last ' + src.history[src.history.length - 1].what : ''}) rect ${l},${t},${r},${b} to ${dx},${dy}`);
       return D3D_OK;
     }
     GetRenderTargetData(c) { const rt = surfaceOf(c.arg(1)), dst = surfaceOf(c.arg(2)); if (!rt || !dst || rt.fmt !== dst.fmt) return D3DERR_INVALIDCALL; if (this.gfx?.readbackSurface) this.gfx.readbackSurface(rt); if (rt.mem) mem.copy(dst.ensureMem(c.proc), rt.mem, Math.min(rt.bytes, dst.bytes)); return D3D_OK; }

@@ -18,7 +18,7 @@ const MODE_FORMATS = [FMT.X8R8G8B8, FMT.R5G6B5];
 const DISPLAY_FORMATS = new Set([FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5]);
 const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5]);
 const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_LOCKABLE, FMT.D15S1, FMT.D24X4S4]);
-const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.P8, FMT.A4L4, FMT.X4R4G4B4]); // no R8G8B8: like every real Direct3D 9 driver, 24-bit textures are not offered (applications keep a conversion path for that)
+const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 
 /** bytes of one row / total bytes for a surface of this format */
 export function surfacePitch(fmt, w) {
@@ -110,6 +110,9 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DSurface8];
     }
     ensureMem(proc) { if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
+    trace(c, what) { const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
+    historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
     free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
     ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
@@ -140,6 +143,7 @@ export function d3dCore(vm) {
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
+      this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       return D3D_OK;
     }
     unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }

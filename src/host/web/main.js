@@ -34,7 +34,7 @@ async function start(name) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), noCull: params.get('nocull') === '1', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0) };
+  const opts = { headless, interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', noCull: params.get('nocull') === '1', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0) };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
@@ -66,15 +66,38 @@ function onWorkerMessage(m) {
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
-    case 'cursor': $('c2d').style.cursor = m.visible ? 'default' : 'none'; break;
+    case 'cursor': state.cursorVisible = m.visible; applyCursor(); break;
+    case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
+    case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); break;
     case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
+    case 'corpus': state.corpus = m.text; break;
     case 'profile': state.profile = m.files; break;
     case 'frames': state.frames = m.text; log('frames', m.text); break;
+    case 'dump': { const u8 = new Uint8Array(m.data); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); (state.dumps ??= []).push({ name: m.name, data: btoa(bin) }); break; } // frame-capture PNGs, collected by the headless harness
   }
+}
+
+/** Windows system cursor ids (IDC_*) as CSS cursors */
+const SYSTEM_CURSORS = { 32512: 'default', 32513: 'text', 32514: 'wait', 32515: 'crosshair', 32516: 'default', 32642: 'nwse-resize', 32643: 'nesw-resize', 32644: 'ew-resize', 32645: 'ns-resize', 32646: 'move', 32648: 'not-allowed', 32649: 'pointer', 32650: 'progress', 32651: 'help' };
+/** Show the guest cursor on the frame (inherited by both canvases): hidden, a system cursor, or an animated image cursor. */
+function applyCursor() {
+  clearTimeout(state.cursorTimer);
+  const frame = $('frame');
+  $('c2d').style.cursor = '';
+  if (state.cursorVisible === false) { frame.style.cursor = 'none'; return; }
+  const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
+  if (!def) { frame.style.cursor = SYSTEM_CURSORS[cur?.system] ?? 'default'; return; }
+  let step = 0;
+  const show = () => {
+    const s = def.steps[step % def.steps.length];
+    frame.style.cursor = def.frames[s.frame];
+    if (def.steps.length > 1) { step++; state.cursorTimer = setTimeout(show, Math.max(16, s.ms)); }
+  };
+  show();
 }
 
 function log(kind, msg) {

@@ -133,6 +133,7 @@ export class WebGLDevice {
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
+    this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
     gl.bindVertexArray(this.vao);
     this.reset(dev);
   }
@@ -280,8 +281,9 @@ export class WebGLDevice {
     const mem = this.mem, dev = this.dev;
     if ((src.usage & 1) && !src.mem) this.readbackSurface(src);
     const sb = src.ensureMem(dev.proc), db = dst.ensureMem(dev.proc);
-    const bpp = surfacePitch(src.fmt, 1);
-    const copy = (sx, sy, w, h, dx, dy) => { for (let y = 0; y < h; y++) mem.copy(db + (dy + y) * dst.pitch + dx * bpp, sb + (sy + y) * src.pitch + sx * bpp, w * bpp); };
+    // DXT surfaces are copied as rows of 4x4 blocks
+    const block = isDxt(src.fmt) ? 4 : 1, unit = block === 4 ? (src.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(src.fmt, 1);
+    const copy = (sx, sy, w, h, dx, dy) => { if (w <= 0 || h <= 0) return; const rows = Math.ceil(h / block), cols = Math.ceil(w / block); for (let y = 0; y < rows; y++) mem.copy(db + ((dy / block | 0) + y) * dst.pitch + (dx / block | 0) * unit, sb + ((sy / block | 0) + y) * src.pitch + (sx / block | 0) * unit, cols * unit); };
     if (!rects || !n) copy(0, 0, Math.min(src.width, dst.width), Math.min(src.height, dst.height), 0, 0);
     else for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = mem.readS32(r), t = mem.readS32(r + 4), rr = mem.readS32(r + 8), b = mem.readS32(r + 12); const dx = points ? mem.readS32(points + 8 * i) : 0, dy = points ? mem.readS32(points + 8 * i + 4) : 0; copy(l, t, Math.min(rr - l, dst.width - dx), Math.min(b - t, dst.height - dy), dx, dy); }
     dst.dirty = true;
@@ -383,7 +385,8 @@ export class WebGLDevice {
     if (lighting) for (const i of [...dev.lightEnabled].sort((a, b) => a - b)) { const l = dev.lights.get(i); if (l) lightTypes.push(l[0] | 0); }
     const layoutKey = L.layout.dx9 ? 'd' + [...L.layout.streams.entries()].map(([n, s]) => n + ':' + s.attrs.map((a) => a.name + '@' + a.offset + a.type + a.comps).join(',')).join('|') : 'f' + (dev.api9 ? dev.fvf : dev.vertexShader);
     const vsKey = L.code ? `vs${L.dx9 ? 9 : 8}:${L.shader.handle}:${layoutKey}` : `ff:${layoutKey}:${lighting ? 1 : 0}:${lightTypes.join(',')}:${this.rs(RS.COLORVERTEX, 1)}:${this.rs(RS.DIFFUSEMATERIALSOURCE, 1)}:${this.rs(RS.SPECULARMATERIALSOURCE, 2)}:${this.rs(RS.AMBIENTMATERIALSOURCE, 0)}:${this.rs(RS.EMISSIVEMATERIALSOURCE, 0)}:${this.rs(RS.SPECULARENABLE, 0)}:${this.rs(RS.LOCALVIEWER, 1)}:${fog === -1 ? vertexMode : 0}:${this.rs(RS.RANGEFOGENABLE, 0)}:${stages.map((s) => `${s.tci}/${s.ttff}`).join(',')}:${this.rs(RS.VERTEXBLEND, 0)}`;
-    const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't')).join('')}:${fog}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}`).join(';')}:${this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
+    const alphaTest = this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0; // applies after pixel shaders too
+    const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't')).join('')}:${fog}:${alphaTest}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}`).join(';')}:${alphaTest}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
     const key = vsKey + '|' + fsKey;
     let p = this.programs.get(key);
     if (p) return { p, L, stages, lighting, fog, lightTypes, ps };
@@ -394,8 +397,8 @@ export class WebGLDevice {
       vsSrc = ffVertexShader({ layout: L.layout, lighting, lights: lightTypes, colorVertex: this.rs(RS.COLORVERTEX, 1) !== 0, diffuseSrc: this.rs(RS.DIFFUSEMATERIALSOURCE, 1), specularSrc: this.rs(RS.SPECULARMATERIALSOURCE, 2), ambientSrc: this.rs(RS.AMBIENTMATERIALSOURCE, 0), emissiveSrc: this.rs(RS.EMISSIVEMATERIALSOURCE, 0), specularEnable: this.rs(RS.SPECULARENABLE, 0) !== 0, localViewer: this.rs(RS.LOCALVIEWER, 1) !== 0, normalize: this.rs(RS.NORMALIZENORMALS, 0) !== 0, fogVertex: fog === -1 && !rhw ? vertexMode : 0, rangeFog: this.rs(RS.RANGEFOGENABLE, 0) !== 0, stages, rhw, blend: this.rs(RS.VERTEXBLEND, 0) ? (L.layout.blend || 1) + 1 : 0, pointSize: true });
       attrNames = L.layout.attrs.map((a) => 'a_' + a.name);
     }
-    const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog };
-    const fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest: this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
+    const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
+    const fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     p = this.compile(vsSrc, fsSrc, key, attrNames);
     p.vs = L.shader; p.ps = ps;
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
@@ -534,7 +537,9 @@ export class WebGLDevice {
     this.glEnable(gl.DEPTH_TEST, zEnable);
     if (zEnable) { const f = this.cmp(this.rs(RS.ZFUNC, 4)); if (gs.depthFunc !== f) { gl.depthFunc(f); gs.depthFunc = f; } }
     const zw = this.rs(RS.ZWRITEENABLE, 1) !== 0; if (gs.depthMask !== zw) { gl.depthMask(zw); gs.depthMask = zw; }
-    const zbias = dev.api9 ? -this.rsF(RS9.DEPTHBIAS) * 2e6 : -this.rs(RS.ZBIAS, 0);
+    // D3D9 DEPTHBIAS is added to the depth value itself; GL counts units of the smallest resolvable step (2^-24 on our
+    // 24-bit depth buffers), same sign. D3D8 ZBIAS 0..16: a higher bias draws in front (toward the viewer).
+    const zbias = dev.api9 ? this.rsF(RS9.DEPTHBIAS) * 16777216 : -this.rs(RS.ZBIAS, 0);
     const slope = dev.api9 ? this.rsF(RS9.SLOPESCALEDEPTHBIAS) : 0;
     this.glEnable(gl.POLYGON_OFFSET_FILL, !!(zbias || slope));
     if ((zbias || slope) && (gs.poSlope !== slope || gs.poBias !== zbias)) { gl.polygonOffset(slope, zbias); gs.poSlope = slope; gs.poBias = zbias; }
@@ -590,8 +595,34 @@ export class WebGLDevice {
   captureDraw(P, info, v, flip) {
     const gl = this.gl; void gl;
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
+    if (this.dump) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
     const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
-    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+  }
+  /** Frame capture: a texture's level 0 as a PNG (render-target textures are read back from their FBO). */
+  dumpTexture(t) {
+    const l = t.levels?.[0] ?? t.faces?.[0]?.[0]; if (!l) return;
+    const name = `f${this.frame}-tex${t.id}-${l.width}x${l.height}-fmt${t.fmt}${t.usage & 1 ? '-rt' : ''}`;
+    if (l.history?.length) this.log(`d3d-webgl: [cap] texture #${t.id} level 0 history:\n  ${l.historyText().join('\n  ')}`);
+    if (l.mem && !(t.usage & 1)) {
+      const levels = t.levels ?? [l];
+      levels.forEach((m, i) => { if (m.mem && m.width * m.height >= 4) this.dump(name + (i ? `-mip${i}` : ''), m.width, m.height, surfaceToRgba(this.mem, m.fmt ?? t.fmt, m.mem, m.width, m.height, m.pitch)); });
+      return;
+    }
+    const f = this.fbos.get(l.id); if (!f) return;
+    const gl = this.gl, rgba = new Uint8Array(f.w * f.h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); gl.readPixels(0, 0, f.w, f.h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    this.bindTarget(); // restore the current target
+    this.dump(name, f.w, f.h, rgba); // texture targets are stored with D3D row order already
+  }
+  /** Frame capture: the current render target after a draw (`--capture-draws`). */
+  dumpTarget(what) {
+    if (!this.dump || !this.captureDraws) return;
+    const gl = this.gl, { w, h, flip } = this.bindTarget(), rgba = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    if (!flip) { const row = w * 4, tmp = new Uint8Array(row); for (let y = 0; y < h >> 1; y++) { const a = y * row, b = (h - 1 - y) * row; tmp.set(rgba.subarray(a, a + row)); rgba.copyWithin(a, b, b + row); rgba.set(tmp, b); } }
+    for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
+    this.dump(`f${this.frame}-draw${String(this.frameDraws).padStart(4, '0')}-${what}`, w, h, rgba);
   }
   cmp(f) { const gl = this.gl; return [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS][f] ?? gl.ALWAYS; }
   stencilOp(o) { const gl = this.gl; return [gl.KEEP, gl.KEEP, gl.ZERO, gl.REPLACE, gl.INCR, gl.DECR, gl.INVERT, gl.INCR_WRAP, gl.DECR_WRAP][o] ?? gl.KEEP; }
@@ -647,6 +678,7 @@ export class WebGLDevice {
     }
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
+    if (this.capturing) this.dumpTarget('dp');
     this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`);
     if (this.stats.draws <= 2) this.debugDraw(P, info);
   }
@@ -675,10 +707,17 @@ export class WebGLDevice {
       const st = dev.streams[0], vb = this.comImpl(st.vb), stride = st.stride || info.L.layout.stride || 0, short = ib.fmt === FMT.INDEX16;
       const idx = (i) => short ? this.mem.read16(ib.mem + 2 * (start + i)) : this.mem.read32(ib.mem + 4 * (start + i));
       const vtx = (i) => { if (!vb) return '?'; const a = vb.mem + (st.offset ?? 0) + (baseVertex + idx(i)) * stride; const L = info.L.layout; const dif = L.attrs?.find((x) => x.name === 'diffuse'); return `i${idx(i)}:` + Array.from({ length: 2 }, (_, k) => this.mem.readF32(a + 4 * k).toFixed(1)).join(',') + (dif ? ' c=' + (this.mem.read32(a + dif.offset) >>> 0).toString(16) : ''); };
-      this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}]`);
+      // texture coordinate ranges over the vertices referenced by the draw (flat-looking surfaces: degenerate UVs?)
+      const uvr = []; const L = info.L.layout;
+      for (const a of (L.attrs ?? []).filter((x) => x.name.startsWith('tex'))) { const sn = [...(L.streams?.entries() ?? [[0, { attrs: L.attrs }]])].find(([, s2]) => s2.attrs.includes(a))?.[0] ?? 0; const s2 = dev.streams[sn], vb2 = this.comImpl(s2?.vb); if (!vb2 || a.type !== 'float') continue; const str = s2.stride || L.stride || 0; let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity; const nIdx = Math.min(this.vertexCount(type, count), 30000); for (let i = 0; i < nIdx; i++) { const p = vb2.mem + (s2.offset ?? 0) + (baseVertex + idx(i)) * str + a.offset; const u = this.mem.readF32(p), v = a.comps > 1 ? this.mem.readF32(p + 4) : 0; if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; } uvr.push(`${a.name}=[${u0.toFixed(3)}..${u1.toFixed(3)} x ${v0.toFixed(3)}..${v1.toFixed(3)}]`); }
+      // full attribute dump of the first vertices (stream 0, float attributes) for offline checks
+      let vdump = '';
+      if (L.attrs && vb) { const str0 = st.stride || L.stride || 0; for (let i = 0; i < Math.min(6, this.vertexCount(type, count)); i++) { const a0 = vb.mem + (st.offset ?? 0) + (baseVertex + idx(i)) * str0; vdump += ` v${i}(i${idx(i)})=` + L.attrs.map((a) => a.name + ':' + (a.type === 'float' ? Array.from({ length: a.comps }, (_, k) => +this.mem.readF32(a0 + a.offset + 4 * k).toPrecision(6)).join(',') : (this.mem.read32(a0 + a.offset) >>> 0).toString(16))).join(' '); } }
+      this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]`);
     }
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++;
+    if (this.capturing) this.dumpTarget('dip');
     void minIdx;
   }
   drawPrimitiveUP(type, count, data, stride) {
@@ -692,6 +731,7 @@ export class WebGLDevice {
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++;
+    if (this.capturing) this.dumpTarget('dpup');
   }
   drawIndexedPrimitiveUP(type, minIdx, numV, count, idx, ifmt, data, stride) {
     const gl = this.gl;
@@ -707,12 +747,13 @@ export class WebGLDevice {
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++;
+    if (this.capturing) this.dumpTarget('dipup');
   }
 }
 
 /** Host-side factory: `host.gfx = createWebGLBackend(canvas, log)`. */
-export function createWebGLBackend(canvas, log) {
+export function createWebGLBackend(canvas, log, dump) {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
-  return { gl, createDevice(dev) { return new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, noCull: globalThis.ORTHROS_NO_CULL }); } };
+  return { gl, device: null, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL }); } };
 }

@@ -2,7 +2,7 @@
 // shader models 1.x–2.x (DX9 conventions: dcl-declared inputs/samplers, semantic-named
 // attributes `a_s<usage>_<index>`, 256/32 float constants, integer/bool constants, static flow
 // control) to GLSL ES 3.00. Public documentation of the token format only.
-import { MAX_STAGES } from './d3d8-shaders.js';
+import { MAX_STAGES, D3D_TO_GL_POSITION, fragmentTail } from './d3d8-shaders.js';
 
 export const DECLTYPE = { FLOAT1: 0, FLOAT2: 1, FLOAT3: 2, FLOAT4: 3, D3DCOLOR: 4, UBYTE4: 5, SHORT2: 6, SHORT4: 7, UBYTE4N: 8, SHORT2N: 9, SHORT4N: 10, USHORT2N: 11, USHORT4N: 12, UDEC3: 13, DEC3N: 14, FLOAT16_2: 15, FLOAT16_4: 16, UNUSED: 17 };
 export const USAGE = { POSITION: 0, BLENDWEIGHT: 1, BLENDINDICES: 2, NORMAL: 3, PSIZE: 4, TEXCOORD: 5, TANGENT: 6, BINORMAL: 7, TESSFACTOR: 8, POSITIONT: 9, COLOR: 10, FOG: 11, DEPTH: 12, SAMPLE: 13 };
@@ -170,7 +170,7 @@ export function translateVertexShader9(code) {
       default: body.push(`  // unsupported vs op ${op}`);
     }
   }
-  body.push('  gl_Position = vec4(oPos.x, oPos.y * u_flipY, oPos.z * 2.0 - oPos.w, oPos.w);');
+  body.push(`  gl_Position = ${D3D_TO_GL_POSITION('oPos')};`);
   body.push('  v_color0 = oD0; v_color1 = oD1; v_fog = oFog.x; gl_PointSize = oPts.x;');
   for (let k = 0; k < MAX_STAGES; k++) body.push(`  v_tex${k} = oT${k};`);
   lines.push('void main() {', ...body, '}');
@@ -190,7 +190,7 @@ export function translatePixelShader9(code, env) {
   const samplerKind = new Map(); // s# -> '2d' | 'cube' | 'volume'
   for (const ins of instructions(code)) if (ins.op === 31 && regType(ins.args[1]) === 10) { const t = (ins.args[0] >> 27) & 0xf; samplerKind.set(ins.args[1] & 0xf, t === 3 ? 'cube' : t === 4 ? 'volume' : '2d'); }
   for (let i = 0; i < 16; i++) { const kind = samplerKind.get(i) ?? (env.cube[i] ? 'cube' : env.volume?.[i] ? 'volume' : '2d'); lines.push(kind === 'cube' ? `uniform samplerCube u_cube${i};` : kind === 'volume' ? `uniform sampler3D u_vol${i};` : `uniform sampler2D u_tex${i};`); }
-  lines.push('uniform vec4 u_pc[32]; uniform ivec4 u_pci[16]; uniform bool u_pcb[16]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform vec4 u_bumpEnv[8];');
+  lines.push('uniform vec4 u_pc[32]; uniform ivec4 u_pci[16]; uniform bool u_pcb[16]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform float u_alphaRef; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
   const body = ['  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);', '  vec4 oC0 = vec4(0.0); float oDepth = -1.0;'];
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 t${i} = v_tex${i};`);
@@ -309,10 +309,7 @@ export function translatePixelShader9(code, env) {
     }
   }
   body.push(`  vec4 result = ${sm2 ? 'oC0' : 'r[0]'};`);
-  if (env.fog === -1) body.push('  result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(v_fog, 0.0, 1.0));');
-  else if (env.fog === 1) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(exp(-dd * u_fogParams.z), 0.0, 1.0)); }');
-  else if (env.fog === 2) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; float e = dd * u_fogParams.z; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(exp(-e * e), 0.0, 1.0)); }');
-  else if (env.fog === 3) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp((u_fogParams.y - dd) / max(u_fogParams.y - u_fogParams.x, 1e-6), 0.0, 1.0)); }');
+  body.push(...fragmentTail(env));
   if (body.some((l) => l.includes('oDepth = '))) body.push('  gl_FragDepth = oDepth >= 0.0 ? oDepth : gl_FragCoord.z;');
   body.push('  fragColor = result;');
   lines.push('void main() {', ...body, '}');
