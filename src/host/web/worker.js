@@ -95,6 +95,10 @@ async function start(m) {
   vfs.mount('C:\\Users\\Player', profile);
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
+  // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
+  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length });
+  host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
+  host.onSlowFrame = (dt, d) => log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms`);
   vm.registry = new Registry(); vm.registry.seed(manifest.registry);
   if (profile.files.has('registry.json')) { try { vm.registry.load(JSON.parse(new TextDecoder().decode(profile.open('registry.json').read(0, profile.stat('registry.json').size)))); } catch (e) { log('warn', `bad registry.json: ${e.message}`); } }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);

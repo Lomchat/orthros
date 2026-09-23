@@ -126,8 +126,13 @@
   726 textures ≈ 150 Mo) et le renderer headless a fini par mourir (mémoire, à mesurer sur GPU réel) — piste M7.
 - **Mesure M7 sur 10 min en partie (Very Low, SwiftShader, run hl98, `--frames-from 260`)** : 22 863 images en 601 s =
   **38,1 fps ; p50 26,1 ms, p90 28,9 ms, p99 34,2 ms, max 89 ms ; 1,42 % des images > 33 ms** (324), 20 > 50 ms — un
-  épisode lent vers t = 727 s (30 fps, p99 50 ms sur 500 ms). Le critère p99 ≤ 33 ms est manqué de ~1 ms : prochaine
-  étape, diagnostiquer les images lentes (traduction JIT de nouvelles régions, envois de textures, GC).
+  épisode lent vers t = 727 s (30 fps, p99 50 ms sur 500 ms). Le critère p99 ≤ 33 ms est manqué de ~1 ms.
+  Diagnostic des images lentes (`--log slowframe` : deltas de compteurs par image > 33 ms, run hl99 : 38,0 fps, p99
+  34,3 ms, 1,41 % > 33 ms) : elles arrivent par **rafales de 10-20 s** (t ≈ 475-482, 590-602, 622-642 s) pendant
+  lesquelles le travail par image est inchangé (≈ 6 000 appels d'API, 241 dessins, 30-45 tranches, 0 traduction JIT,
+  0 envoi de texture, présentation 0,1 ms) mais le worker exécute 15-30 % de moins d'instructions et d'appels par
+  seconde : ralentissement de l'hôte (processus GPU SwiftShader à ~950 % de CPU, suites de tests d'un workflow
+  concurrentes) plutôt que travail de l'émulateur — à re-mesurer machine calme.
 - **Stabilité 10 min en partie (Very Low, headless SwiftShader)** : `--seconds 840` → en jeu de 230 s à 840 s sans
   blocage ni plantage, 19 000 images, 25-34 fps, p99 40-50 ms (`build/shots7`, run hl57) ; entrées en jeu acceptées
   (clic, clic droit, Échap, déplacement au bord).
