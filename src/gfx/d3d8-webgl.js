@@ -298,9 +298,12 @@ export class WebGLDevice {
     const prev = dev.renderTarget; dev.renderTarget = dev.backBuffers[0];
     const { w, h } = this.bindTarget();
     dev.renderTarget = prev;
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
-    gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
+    if (this.gammaLut) this.presentGamma(w, h);
+    else {
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (dev.backBuffers.length > 1 && dev.pp.swap !== 3) { // flipping chain: rotate the contents, not the surfaces
       const ids = dev.backBuffers.map((b) => b.id), first = this.fbos.get(ids[0]);
@@ -329,7 +332,47 @@ export class WebGLDevice {
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
   deleteVertexShader(sh) { for (const [k, p] of this.programs) if (p.vs === sh) { this.gl.deleteProgram(p.prog); this.programs.delete(k); } }
   deletePixelShader(sh) { for (const [k, p] of this.programs) if (p.ps === sh) { this.gl.deleteProgram(p.prog); this.programs.delete(k); } }
-  setCursor() {} setGamma() {}
+  setCursor() {}
+  /**
+   * Gamma ramp (SetGammaRamp / SetDeviceGammaRamp): 3 x 256 WORDs. An identity ramp disables the pass; otherwise
+   * present() maps the back buffer through a 256-entry lookup texture on its way to the screen.
+   */
+  setGamma(ramp) {
+    const u16 = new Uint16Array(ramp.buffer, ramp.byteOffset, 768);
+    let identity = true;
+    const lut = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      for (let ch = 0; ch < 3; ch++) { const v = u16[ch * 256 + i] >> 8; lut[i * 4 + ch] = v; if (Math.abs(v - i) > 1) identity = false; }
+      lut[i * 4 + 3] = 255;
+    }
+    this.gammaLut = identity ? null : lut;
+    this.gammaDirty = true;
+  }
+  /** Present through the gamma lookup: back buffer -> intermediate texture -> LUT pass into the default framebuffer. */
+  presentGamma(w, h) {
+    const gl = this.gl, G = this.gamma ?? (this.gamma = {});
+    if (!G.prog) {
+      const vs = '#version 300 es\nout vec2 uv; void main() { vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }';
+      const fs = '#version 300 es\nprecision mediump float; in vec2 uv; uniform sampler2D u_img; uniform sampler2D u_lut; out vec4 o; void main() { vec3 c = texture(u_img, uv).rgb; o = vec4(texture(u_lut, vec2(c.r * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).r, texture(u_lut, vec2(c.g * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).g, texture(u_lut, vec2(c.b * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).b, 1.0); }';
+      G.prog = this.compile(vs, fs, 'gamma', []).prog;
+      G.lut = gl.createTexture(); G.fbo = gl.createFramebuffer(); G.tex = gl.createTexture(); G.w = 0; G.h = 0;
+    }
+    if (this.gammaDirty) { gl.bindTexture(gl.TEXTURE_2D, G.lut); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.gammaLut); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); this.gammaDirty = false; }
+    if (G.w !== w || G.h !== h) { gl.bindTexture(gl.TEXTURE_2D, G.tex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, G.fbo); gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, G.tex, 0); G.w = w; G.h = h; }
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, G.fbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    for (const cap of [gl.BLEND, gl.DEPTH_TEST, gl.STENCIL_TEST, gl.CULL_FACE, gl.SCISSOR_TEST, gl.POLYGON_OFFSET_FILL]) gl.disable(cap);
+    gl.colorMask(true, true, true, true);
+    gl.useProgram(G.prog);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G.tex); gl.bindSampler(0, null);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, G.lut); gl.bindSampler(1, null);
+    gl.uniform1i(gl.getUniformLocation(G.prog, 'u_img'), 0); gl.uniform1i(gl.getUniformLocation(G.prog, 'u_lut'), 1);
+    for (let i = 0; i < 16; i++) gl.disableVertexAttribArray(i);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.invalidateGlState();
+  }
 
   // ---------------------------------------------------------------- state access
   rsF(s) { return asFloat(this.dev.rs.get(s) ?? 0); }

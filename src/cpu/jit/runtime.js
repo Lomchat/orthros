@@ -8,6 +8,7 @@ import { addExpKernels } from './fpmath-exp.js';
 import { addTrigKernels } from './fpmath-trig.js';
 import { addAtanKernels } from './fpmath-atan.js';
 import { addNanKernels } from './fpmath-nan.js';
+import { addRoundKernels } from './fpmath-round.js';
 
 /**
  * Transcendental kernels of the runtime module, in the order the region modules import them
@@ -24,6 +25,8 @@ export const MATH_KERNELS = Object.freeze([
   ['atan2', [T.f64, T.f64], [T.f64]], // atan2(y, x) (FPATAN: y = ST(1), x = ST(0))
   ['sincos', [T.f64], [T.f64, T.f64]], // (sin x, cos x) from one range reduction (FSINCOS)
   ['nan2', [T.f64, T.f64], [T.f64, T.i32]], // x87 NaN-operand rule: (result, raise IE) (fpmath-nan.js)
+  ['arith24', [T.f64, T.f64, T.i32, T.i32], [T.f64]], // exact PC=24 rounding of an operation (fpmath-round.js)
+  ['f32rc', [T.f64, T.i32], [T.f32]], // FST m32 under a directed rounding mode (fpmath-round.js)
 ]);
 
 export const EXIT_TRANSLATE = 7;
@@ -104,7 +107,7 @@ export function buildRuntime() {
   // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
   // defined here once, imported by every region module like round24 (WASM -> WASM, D004)
   {
-    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m) };
+    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m), ...addRoundKernels(m) };
     for (const [name] of MATH_KERNELS) m.exportFunc(name, k[name]);
   }
 

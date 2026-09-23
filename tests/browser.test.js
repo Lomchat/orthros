@@ -61,11 +61,16 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   const r = await runManifest('test-dx9', 20);
   assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
   assert.equal(r.exitCode, 0);
-  assert.equal(r.pixel(60, 60), 0x00ff00, 'green texture modulated by white diffuse inside the triangle');
-  assert.equal(r.pixel(300, 200), 0x0000ff, 'clear color: the counterclockwise triangle is culled by D3DCULL_CCW');
+  // the last Present went through a gamma ramp halving every channel
+  assert.equal(r.pixel(60, 60), 0x007f00, 'green texture modulated by white diffuse inside the triangle, through the gamma ramp');
+  assert.equal(r.pixel(300, 200), 0x00007f, 'clear color: the counterclockwise triangle is culled by D3DCULL_CCW');
   const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
-  assert.match(text, /px_tri=0x0000ff00/, 'GetRenderTargetData reads the rendered pixels back into guest memory');
+  assert.match(text, /px_tri=0x0000ff00/, 'GetRenderTargetData reads the rendered pixels back into guest memory (no gamma)');
   assert.match(text, /px_clear=0x000000ff/);
+  assert.match(text, /px_chk00=0x00000000/, 'texel-aligned checker: exact texel colors (D3D pixel centers)');
+  assert.match(text, /px_chk10=0x00ffffff/);
+  assert.match(text, /px_chk33=0x00000000/);
+  assert.match(text, /px_chk_out=0x0000ff00/, 'the quad covers exactly pixels 100..103');
 });
 
 test('browser host: text.exe measures and draws an outline font through the canvas text engine', { skip, timeout: 60000 }, async () => {

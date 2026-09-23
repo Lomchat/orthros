@@ -3297,6 +3297,9 @@ CORPUS_SKIP = {
     'IN', 'OUT', 'INS', 'OUTS', 'CLI', 'STI', 'HLT', 'CPUID', 'RDTSC', 'RDPMC', 'RDMSR', 'WRMSR', 'SYSENTER', 'SYSEXIT',
     'MOVCR', 'MOVDR', 'LDS', 'LES', 'LFS', 'LGS', 'LSS', 'BOUND', 'ARPL', 'POPF', 'UD2', 'WAIT',
     'FLDENV', 'FNSTENV', 'FRSTOR', 'FNSAVE', 'FXSAVE', 'FXRSTOR', 'ENTER',
+    # approximations whose low bits are model-specific (RCP/RSQRT tables) and FPREM's partial remainders
+    # (exponent differences >= 64, implementation-defined reduction step; covered by the x87 suite)
+    'RCPSS', 'RCPPS', 'RSQRTSS', 'RSQRTPS', 'FPREM', 'FPREM1',
 }
 # EFLAGS defined by each instruction (the SDM's undefined flags are not compared); default ALLF
 CORPUS_FLAGS = {
@@ -3340,8 +3343,8 @@ def suite_corpus(g, n):
         exs = [e for e in f['examples'] if not any(m['a16'] or m['seg'] in (4, 5) or (m['base'] < 0 and m['index'] < 0) or (m['base'] >= 0 and m['base'] == m['index']) for m in e['mem'])]
         if not exs or any(':' in e['text'] and ('fs:' in e['text'] or 'gs:' in e['text']) for e in exs):
             continue
-        if ' ss' in exs[0]['text'] or ' ds' in exs[0]['text'] or ', es' in exs[0]['text'] or ' cs' in exs[0]['text']:
-            continue  # segment register operands
+        if ',o4' in f['key'] or '|o4' in f['key']:
+            continue  # segment register operands (selectors are not loadable in a user-mode snippet)
         for k in range(per_form):
             e = exs[k % len(exs)]
             c = Case()
@@ -3352,16 +3355,27 @@ def suite_corpus(g, n):
                 size = max(1, m['size'] or 4)
                 for _ in range(8):
                     off = rng.randrange(0x40, DATA_LIMIT - max(16, size) - 16)
+                    if size >= 16:
+                        off &= ~15  # legacy SSE m128 operands must be aligned (MOVAPS, ADDPS m128...)
                     idx_v = 0
                     if m['index'] >= 0:
                         if c.regs[m['index']] is None:
                             c.fix(m['index'], rng.randrange(0, 16))
                         idx_v = c.regs[m['index']]
+                    if m['base'] == 4:
+                        # ESP-based: ESP stays high in scratch (a native fault's signal frame is written below it)
+                        esp = c.regs[4] if c.regs[4] is not None else SCRATCH + (rng.randrange(0x500, 0x700) & ~3)
+                        ea = esp + m['disp'] + idx_v * m['scale'] - SCRATCH
+                        if 0 <= ea <= MEM_SIZE - max(16, size):
+                            c.fix(4, esp)
+                            break
+                        if c.regs[4] is not None:
+                            ok = False
+                            break
+                        continue
                     if m['base'] >= 0:
                         want = (SCRATCH + off - m['disp'] - idx_v * m['scale']) & 0xffffffff
                         if c.regs[m['base']] is None or c.regs[m['base']] == want:
-                            if m['base'] == 4 and not (0x100 <= want - SCRATCH <= 0x700):
-                                continue
                             c.fix(m['base'], want)
                             break
                     else:
@@ -3386,6 +3400,14 @@ def suite_corpus(g, n):
                 c.fix(3, SCRATCH + 0x100)
             if op == 'LEAVE':
                 c.fix(5, SCRATCH + rng.randrange(0x400, 0x5f0) & ~3)
+            if op in ('BT', 'BTS', 'BTR', 'BTC') and e['mem']:
+                # register bit offsets address memory beyond the operand (signed bit string): keep it within scratch
+                src = text.split(',')[-1].strip()
+                if src in R32 or src in R16:
+                    r = (R32 if src in R32 else R16).index(src)
+                    if c.regs[r] is not None:
+                        continue
+                    c.fix(r, rng.randrange(-64, 512) & (0xffffffff if src in R32 else 0xffff))
             if op in ('DIV', 'IDIV') and rng.random() < 0.7:
                 c.fix(2, 0 if op == 'DIV' else rng.choice([0, 0xffffffff]))
             if op in ('PUSHA', 'POPA', 'PUSH', 'POP', 'PUSHF'):

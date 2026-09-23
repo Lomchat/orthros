@@ -90,6 +90,18 @@ void __stdcall start(void) {
   line(out, "settex", C2(dev, 65, 0, tex), 1);
   line(out, "sampler", C3(dev, 69, 0, 6, 2), 1);
   line(out, "draw", C3(dev, 81, 4, 0, 2), 1);
+  // texel/pixel alignment (D3D9 rasterization rule: pixel centers on integer coordinates): a 4x4 black/white
+  // checker drawn over pixels 100..103 with the usual -0.5 offset and bilinear filtering must stay exact
+  void* chk = 0; line(out, "chktex", C8(dev, 23, 4, 4, 1, 0, 21, 1, &chk, 0), 1);
+  D3DLOCKED_RECT lc; C4(chk, 19, 0, &lc, 0, 0);
+  for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((DWORD*)((BYTE*)lc.bits + y * lc.pitch))[x] = ((x + y) & 1) ? 0xffffffff : 0xff000000;
+  C1(chk, 20, 0);
+  VERTEX q[4];
+  for (int i = 0; i < 4; i++) { q[i].x = (i & 1) ? 103.5f : 99.5f; q[i].y = (i & 2) ? 103.5f : 99.5f; q[i].z = 0.25f; q[i].rhw = 1.0f; q[i].color = 0xffffffff; q[i].u = (i & 1) ? 1.0f : 0.0f; q[i].v = (i & 2) ? 1.0f : 0.0f; }
+  C2(dev, 65, 0, chk);
+  C3(dev, 69, 0, 5, 2); // MAGFILTER linear (MINFILTER is already linear)
+  line(out, "drawup", C4(dev, 83, 5, 2, q, sizeof(VERTEX)), 1);
+  C2(dev, 65, 0, tex);
   line(out, "end", C0(dev, 42), 1);
   line(out, "present", C4(dev, 17, 0, 0, 0, 0), 1);
   void* bb = 0; line(out, "backbuffer", C4(dev, 18, 0, 0, 0, &bb), 1);
@@ -100,7 +112,16 @@ void __stdcall start(void) {
   D3DLOCKED_RECT lr2; line(out, "offlock", C3(off, 13, &lr2, 0, 0x10), 1);
   line(out, "px_tri", ((DWORD*)((BYTE*)lr2.bits + 60 * lr2.pitch))[60] & 0xffffff, 1);
   line(out, "px_clear", ((DWORD*)((BYTE*)lr2.bits + 200 * lr2.pitch))[300] & 0xffffff, 1);
+  line(out, "px_chk00", ((DWORD*)((BYTE*)lr2.bits + 100 * lr2.pitch))[100] & 0xffffff, 1);
+  line(out, "px_chk10", ((DWORD*)((BYTE*)lr2.bits + 100 * lr2.pitch))[101] & 0xffffff, 1);
+  line(out, "px_chk33", ((DWORD*)((BYTE*)lr2.bits + 103 * lr2.pitch))[103] & 0xffffff, 1);
+  line(out, "px_chk_out", ((DWORD*)((BYTE*)lr2.bits + 104 * lr2.pitch))[104] & 0xffffff, 1);
   C0(off, 14);
+  // gamma ramp halving every channel: applies to what reaches the screen, not to the back buffer
+  WORD ramp[768]; for (int i = 0; i < 256; i++) ramp[i] = ramp[256 + i] = ramp[512 + i] = (WORD)(i * 257 / 2);
+  C3(dev, 21, 0, 0, ramp);
+  line(out, "present2", C4(dev, 17, 0, 0, 0, 0), 1);
+  RELEASE(chk);
   RELEASE(off); RELEASE(bb);
   line(out, "texrefs", RELEASE(tex), 0);
   C2(dev, 65, 0, 0);

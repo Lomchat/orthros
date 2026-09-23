@@ -26,11 +26,18 @@ $(BUILD)/oracle: tools/oracle/oracle.S tools/oracle/oracle.c
 
 # ---- conformance case generation: one .results.bin per suite, regenerated when the generator or
 # the oracle changes.
-gen: $(foreach s,$(SUITES),$(GEN)/$(s).results.bin)
+CORPUS := $(wildcard build/corpus/*.json)
+gen: $(foreach s,$(SUITES),$(GEN)/$(s).results.bin) $(if $(CORPUS),$(GEN)/corpus.results.bin)
 
 $(GEN)/%.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle
 	@mkdir -p $(GEN)
 	python3 tools/gen/gen_cases.py --suite $* --count $(CASES) --out $(GEN)
+
+# instruction-corpus suite: every instruction form recorded from a real program (headless harness
+# --corpus build/corpus/<manifest>.json), 12 random cases per form against the native oracle
+$(GEN)/corpus.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle $(CORPUS)
+	@mkdir -p $(GEN)
+	ORTHROS_CORPUS=$(firstword $(CORPUS)) python3 tools/gen/gen_cases.py --suite corpus --count 12 --out $(GEN)
 
 # ---- CRT-free Win32 test programs (clang + lld-link, no SDK)
 pe-tests:
@@ -39,8 +46,9 @@ pe-tests:
 serve:
 	node src/host/server.js
 
+# headless Chromium run of a manifest (MANIFEST=name, SECONDS=n); see tools/headless.mjs for capture/profiling options
 headless:
-	node src/host/harness/run.js
+	node tools/headless.mjs $(or $(MANIFEST),bfme-vanilla) --seconds $(or $(SECONDS),300)
 
 clean:
 	rm -rf $(BUILD) $(GEN)

@@ -275,6 +275,7 @@ function storeF32(v, rc) {
       if (rc === 1) { if (r > v) r -= d; }
       else if (rc === 2) { if (r < v) r += d; }
       else if (Math.abs(r) > Math.abs(v)) r -= Math.sign(r) * d;
+      if (r === 0) r = v < 0 ? -0 : 0; // a step to zero keeps the sign (-2^-149 + 2^-149 is +0 in IEEE arithmetic)
     }
     return r;
   }
@@ -655,14 +656,18 @@ function trig1(fn) {
 H[OP.FSIN] = trig1(Math.sin);
 H[OP.FCOS] = trig1(Math.cos);
 // FSINCOS / FPTAN push a second value: cos / 1.0, or the same NaN / indefinite on the special paths
+/** A push onto a full stack (ST(7) in use): masked stack overflow, both results are the indefinite (measured). */
+function pushOverflow(x) { if (x.isEmpty(7)) return false; x.setSt(0, INDEFINITE); x.push(INDEFINITE); return true; }
 H[OP.FSINCOS] = (I) => {
   const x = x87(I); const v = x.st(0);
+  if (pushOverflow(x)) return;
   const s = trigSpecial(x, v);
   if (s === null) return;
   if (s === undefined) { x.setSt(0, Math.sin(v)); x.push(Math.cos(v)); } else { x.setSt(0, s); x.push(s); }
 };
 H[OP.FPTAN] = (I) => {
   const x = x87(I); const v = x.st(0);
+  if (pushOverflow(x)) return;
   const s = trigSpecial(x, v);
   if (s === null) return;
   if (s === undefined) { x.setSt(0, Math.tan(v)); x.push(1); } else { x.setSt(0, s); x.push(s); }
