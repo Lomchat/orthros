@@ -13,7 +13,12 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds)
 // kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string>. Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); return { t: Number(t), rel: t.startsWith('+'), kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; });
+// waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
+// (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
+// --capture-at @N captures N seconds after the anchor.
+let afterWait = false;
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps') afterWait = true; return ev; });
+let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
 fs.mkdirSync(out, { recursive: true });
@@ -45,7 +50,7 @@ if (args.includes('--capture-draws')) q.set('capturedraws', '1');
 if (opt('burst-from')) q.set('burstfrom', opt('burst-from')); // --log apiburst: trace the API calls following tiny (stand-in) textures from this resource id on
 // --capture-at <s|+s>: capture the next Direct3D frame at that time (textures as PNG, per-draw state; with
 // --capture-draws also the render target after every draw) into <out>/capture
-const captureAt = opt('capture-at') ? { t: Number(opt('capture-at')), rel: opt('capture-at').startsWith('+'), done: false } : null;
+const captureAt = opt('capture-at') ? { t: Number(opt('capture-at').replace(/^@/, '')), rel: opt('capture-at').startsWith('+'), anchored: opt('capture-at').startsWith('@'), done: false } : null;
 if (opfsDir) q.set('opfs', '1');
 if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame diagnostics only after that time
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
@@ -150,8 +155,15 @@ for (;;) {
   if (s.status === 'running' && s.statsAt && Date.now() - s.statsAt > 15000 && !hangDumped) { hangDumped = true; await dumpWorkerStacks(`no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)}s`).catch((e) => console.log('[hang] dump failed:', e.message)); }
   if (firstFrameAt === null && s.stats?.d3d?.frames > 0) { firstFrameAt = t; console.log(`[input] first Direct3D frame at ${t.toFixed(0)}s`); }
   for (const ev of inputs) {
-    const due = ev.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + ev.t) : ev.t;
-    if (ev.done || t < due) continue;
+    if (ev.done) continue;
+    const due = ev.anchored ? (anchorAt === null ? Infinity : anchorAt + ev.t) : ev.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + ev.t) : ev.t;
+    if (ev.kind === 'waitfps') {
+      if (t < due) break; // events are sequential from here on
+      fpsStreak = (s.stats?.fps ?? 0) > ev.args[0] ? fpsStreak + 1 : 0;
+      if (fpsStreak >= 3) { ev.done = true; anchorAt = t; console.log(`[input] waitfps ${ev.args[0]}: anchor at ${t.toFixed(0)}s`); }
+      break;
+    }
+    if (t < due) continue;
     ev.done = true;
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
     await page.evaluate(({ kind, args }) => {
@@ -163,10 +175,16 @@ for (;;) {
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
-  if (captureAt && !captureAt.done && t >= (captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
-  const dumps = await page.evaluate(() => { const d = window.orthros.dumps; window.orthros.dumps = []; return d ?? []; }).catch(() => []);
-  for (const d of dumps) { const dir = path.join(out, 'capture'); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, d.name + '.png'), Buffer.from(d.data, 'base64')); }
-  if (dumps.length) console.log(`[capture] ${dumps.length} image(s) saved to ${path.join(out, 'capture')}`);
+  if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
+  // captured images, a few per round trip (a whole frame of per-draw PNGs exceeds the maximum string length)
+  let nDumps = 0;
+  for (;;) {
+    const dumps = await page.evaluate(() => (window.orthros.dumps ?? []).splice(0, 8)).catch(() => []);
+    if (!dumps.length) break;
+    for (const d of dumps) { const dir = path.join(out, 'capture'); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, d.name + '.png'), Buffer.from(d.data, 'base64')); }
+    nDumps += dumps.length;
+  }
+  if (nDumps) console.log(`[capture] ${nDumps} image(s) saved to ${path.join(out, 'capture')}`);
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
   if (t >= seconds) {
