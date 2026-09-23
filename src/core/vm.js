@@ -13,6 +13,7 @@ import { Scheduler, WaitUnwind } from './sched.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
+import { DEFER_QUEUE, DEFER_SPEC } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
 
@@ -46,7 +47,7 @@ export class Vm {
     this.mem = new GuestMemory();
     this.api = new ApiRegistry();
     this.interp = new Interp(this.mem, null);
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { smc: true, profile: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     this.sched = new Scheduler(this);
@@ -372,7 +373,30 @@ export class Vm {
   canUnwind(thread) { return thread.topLevel && this.depth === 1 && thread.callbackDepth === 0 && this.current === thread; }
 
   // ------------------------------------------------------------------ API dispatch
+  /**
+   * Run the COM calls the JIT's fast path queued (runtime.js DEFER_SPECS: Direct3D state setters), in
+   * order, before an API call handled in JavaScript observes the device state.
+   */
+  drainDeferred(thread) {
+    const m = this.mem;
+    const n = m.read32(DEFER_QUEUE);
+    if (!n) return;
+    m.write32(DEFER_QUEUE, 0);
+    const ctx = this.ctx;
+    for (let p = DEFER_QUEUE + 16, end = p + n; p < end;) {
+      const idx = m.read32(p), argc = m.read32(p + 4), words = m.read32(DEFER_SPEC + 4 * idx) >>> 8;
+      const def = this.api.thunk(idx).def;
+      ctx.bind(thread, def); ctx.sp = p + 4; // arg(i) reads the recorded arguments
+      this.apiCalls++;
+      if (this.apiHistCounts && idx < this.apiHistCounts.length) this.apiHistCounts[idx]++;
+      def.fn(ctx);
+      p += 4 * (2 + argc + words);
+    }
+    this.deferredCalls = (this.deferredCalls ?? 0) + 1;
+  }
+
   dispatchThunk(thread, idx) {
+    if (this.mem.u32[DEFER_QUEUE >>> 2]) this.drainDeferred(thread);
     const t = this.api.thunk(idx);
     const cpu = thread.cpu;
     if (!t) throw new GuestCrash(this.crashReport(thread, `jump into unknown thunk ${idx}`));

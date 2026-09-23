@@ -177,5 +177,8 @@ test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback
   for (const k of ['checktype', 'checkfmt', 'checkds', 'device', 'tex', 'lockrect', 'unlockrect', 'surflevel', 'decl', 'setdecl', 'vb', 'vblock', 'vbunlock', 'stream', 'begin', 'clear', 'rs_cull', 'settex', 'sampler', 'draw', 'end', 'present', 'backbuffer', 'offscreen', 'rtdata', 'offlock']) assert.equal(out[k], '0x00000000', k);
   assert.deepEqual([out.levels, out.surfw, out.surfms, out.bbw, out.bbh], ['1', '8', '0', '320', '240'], 'DX9 surface descriptors');
   assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
+  for (const k of ['settransform', 'rs_zwrite', 'rs_zwrite2', 'gettransform']) assert.equal(out[k], '0x00000000', k);
+  assert.deepEqual([out.transform5, out.zwrite], ['5', '1'], 'deferred state setters: arguments taken at the call, applied in order before a getter');
+  assert.ok(vm.deferredCalls >= 1, 'state setters went through the deferred call queue');
   assert.equal(vm.proc.unknownImports.size, 0);
 });
