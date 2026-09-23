@@ -177,12 +177,14 @@ function branchTarget(insn) {
 /**
  * Control-flow layout of a region: the blocks (address order) grouped into a tree of units, each a single
  * block or a structured loop [first, last] spanning a back edge's target (its header) to its latest source,
- * whose children are units in turn. Loops are kept shortest first when they nest with every loop kept so
- * far (contain it or are disjoint from it); the back edges of the others go through a dispatcher.
+ * whose children are units in turn. Loops are kept shortest first when they are disjoint from every loop
+ * kept so far or, with `nest`, contain it; the back edges of the others go through a dispatcher. Nesting is
+ * off by default (opts.nestLoops): measured 13% slower in the game (V8 on deep loop nests of large
+ * functions, D044), although exact.
  * Returns the top-level units, the single-block unit of every block and, per block, the loops holding it
  * (outermost first).
  */
-function planUnits(blocks, byEip) {
+function planUnits(blocks, byEip, nest) {
   const n = blocks.length;
   const last = new Map(); // header index -> latest back-edge source
   for (const b of blocks) {
@@ -191,7 +193,7 @@ function planUnits(blocks, byEip) {
   }
   const kept = [];
   for (const [h, e] of [...last].sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]))) {
-    if (kept.every((k) => e < k.first || h > k.last || (h <= k.first && k.last <= e))) kept.push({ first: h, last: e });
+    if (kept.every((k) => e < k.first || h > k.last || (nest && h <= k.first && k.last <= e))) kept.push({ first: h, last: e });
   }
   const blockUnit = new Array(n), pathOf = new Array(n);
   const build = (lo, hi, path) => {
@@ -356,7 +358,7 @@ class Emitter {
     // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
     // `end` closes labels[u] and unit u's code follows it; a forward branch to the first block of a
     // later unit is a plain `br` to that unit's label
-    const { top, blockUnit, pathOf } = planUnits(blocks, byEip);
+    const { top, blockUnit, pathOf } = planUnits(blocks, byEip, !!this.opts.nestLoops);
     this.blockUnit = blockUnit;
     this.pathOf = pathOf;
     // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
@@ -364,7 +366,7 @@ class Emitter {
     if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
     this.fpcKnown = this.fpcAssume !== null ? planFpuModes(blocks, byEip, this.retSites) : null;
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
-    this.emitUnits(top, () => c.get(L_BLK).br_table(blocks.map((b) => (pathOf[b.index][0] ?? blockUnit[b.index]).label), def));
+    this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
     c.unreachable();
     c.end(); // dispatch loop
@@ -405,24 +407,32 @@ class Emitter {
   }
   /**
    * Loop head: entered normally (fallthrough, forward branch to the header, back edge to the header) L_BLK
-   * holds -1 or a block outside the loop, and control goes to the header; a dispatch into the loop (L_BLK = a
-   * block of the loop, set just before the branch) is routed to the child holding it: a nested loop gets
-   * L_BLK unchanged for its own head, a block gets L_BLK = -1 first. L_BLK therefore never holds a block of
-   * a loop outside such a dispatch.
+   * is -1 and control goes to the header; a dispatch into the loop (L_BLK = a block of the loop, set just
+   * before the branch) is routed to the child holding it (see dispatchAmong).
    */
   loopPrologue(u) {
     const c = this.c;
     const normal = c.block();
-    c.get(L_BLK).i32(u.first).sub().tee(L_T2).i32(u.last - u.first + 1).ge_u().hint(true).br_if(normal);
-    const childOf = (j) => { const p = this.pathOf[j], i = p.indexOf(u); return i + 1 < p.length ? p[i + 1] : this.blockUnit[j]; };
-    const direct = u.children.filter((ch) => !ch.loop);
+    c.get(L_BLK).i32(0).lt_s().hint(true).br_if(normal);
+    this.dispatchAmong(u.children, u.first, u.last, u, normal);
+    c.end(); // normal: the header follows
+  }
+  /**
+   * br_table on L_BLK (blocks first..last) to the sibling `units` holding them (children of loop `parent`, or
+   * the top level): a nested loop's label with L_BLK unchanged, a block through a trampoline setting L_BLK to
+   * -1 first — outside a dispatch L_BLK is always -1, so a loop head only tests its sign.
+   */
+  dispatchAmong(units, first, last, parent, def) {
+    const c = this.c;
+    const childOf = (j) => { const p = this.pathOf[j], i = parent ? p.indexOf(parent) : -1; return i + 1 < p.length ? p[i + 1] : this.blockUnit[j]; };
+    const direct = units.filter((ch) => !ch.loop);
     const tramp = new Map();
     for (let k = direct.length - 1; k >= 0; k--) tramp.set(direct[k], c.block());
     const targets = [];
-    for (let j = u.first; j <= u.last; j++) { const ch = childOf(j); targets.push(ch.loop ? ch.label : tramp.get(ch)); }
-    c.get(L_T2).br_table(targets, normal);
+    for (let j = first; j <= last; j++) { const ch = childOf(j); targets.push(ch.loop ? ch.label : tramp.get(ch)); }
+    c.get(L_BLK); if (first) c.i32(first).sub();
+    c.br_table(targets, def);
     for (const ch of direct) { c.end(); c.i32(-1).set(L_BLK).br(ch.label); }
-    c.end(); // normal: the header follows
   }
 
   /**

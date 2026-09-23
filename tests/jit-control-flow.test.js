@@ -98,11 +98,11 @@ function flagsProgram(seed, n) {
   return { code: Uint8Array.from(bytes), exit };
 }
 
-function makeExec(useJit) {
+function makeExec(useJit, opts = {}) {
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
   const I = new Interp(mem, cpu);
-  const jit = useJit ? new Jit(mem, I, { smc: true }) : null;
+  const jit = useJit ? new Jit(mem, I, { smc: true, ...opts }) : null;
   return {
     mem, cpu, jit,
     load(code, fuel) {
@@ -126,17 +126,18 @@ function snapshot(E) {
   return s;
 }
 
-test('random control flow: whole runs and time-sliced runs match the interpreter', () => {
+test('random control flow: whole runs and time-sliced runs match the interpreter (innermost and nested structured loops)', () => {
   let loops = 0, dispatches = 0;
-  for (let seed = 1; seed <= 40; seed++) {
-    const n = 3 + (seed * 7) % 58; // up to 60 blocks: some regions exceed MAX_BLOCKS
-    const { code, exit } = program(seed, n);
+  for (let seed = 1; seed <= 80; seed++) {
+    const nestLoops = seed > 40;
+    const n = 3 + ((seed % 40) * 7) % 58; // up to 60 blocks: some regions exceed MAX_BLOCKS
+    const { code, exit } = program(seed % 40 + 1, n);
     const fuel = 3000;
     const EI = makeExec(false);
     EI.load(code, fuel);
     assert.equal(EI.run(exit, 1e7), EXIT.HALT, `seed ${seed}: interpreter`);
     const want = snapshot(EI);
-    const EJ = makeExec(true);
+    const EJ = makeExec(true, { nestLoops });
     EJ.load(code, fuel);
     assert.equal(EJ.run(exit, 1e7), EXIT.HALT, `seed ${seed}: jit`);
     assert.deepEqual(snapshot(EJ), want, `seed ${seed}: whole run`);
