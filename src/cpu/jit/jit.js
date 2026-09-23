@@ -59,7 +59,7 @@ export class Jit {
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -129,25 +129,35 @@ export class Jit {
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn });
+    const t1 = performance.now();
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
+    const t2 = performance.now();
     let inst;
     try {
-      inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), this.imports);
+      const mod = new WebAssembly.Module(bytes);
+      this.stats.tModule += performance.now() - t2;
+      const t3 = performance.now();
+      inst = new WebAssembly.Instance(mod, this.imports);
+      this.stats.tInstance += performance.now() - t3;
     } catch (e) {
       throw new Error(`JIT module for ${eip.toString(16)} failed: ${e.message}`);
     }
+    this.stats.tEmit += t1 - t0; this.stats.tBuild += t2 - t1;
     if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
     const fnIdx = this.nextFn++;
+    const t4 = performance.now();
     this.table.set(fnIdx, inst.exports.r0);
-    let start = Infinity, end = 0;
-    for (const b of blocks) { start = Math.min(start, b.eip); end = Math.max(end, b.end); }
-    const region = { entry: eip, start, end, blocks, fnIdx, code };
+    this.stats.tTableSet += performance.now() - t4;
+    // the code pages the blocks cover (a region can span distant functions: not every page in between)
+    const pages = new Set();
+    for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code };
     this.regions.push(region);
     this.stats.live = this.regions.length;
     this.byEntry.set(eip, region);
     for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     // mark code pages for SMC detection
-    for (let p = start >>> 12; p <= (end - 1) >>> 12; p++) {
+    for (const p of region.pages) {
       this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] |= 1 << (p & 7);
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
@@ -155,7 +165,7 @@ export class Jit {
     // that byEntry still maps, so the one triggering it must already be there (or it would keep
     // its single-function instance forever)
     this.pending.push(region);
-    if (this.pending.length >= this.consolidateEvery) this.consolidate();
+    if (this.pending.length >= this.consolidateEvery) { const tc = performance.now(); this.consolidate(); this.stats.tConsolidate += performance.now() - tc; }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
     this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
     if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);
@@ -193,7 +203,7 @@ export class Jit {
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
-    for (let p = r.start >>> 12; p <= (r.end - 1) >>> 12; p++) {
+    for (const p of r.pages) {
       const s = this.pageRegions.get(p);
       if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] &= ~(1 << (p & 7)); } }
     }

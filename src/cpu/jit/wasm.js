@@ -3,8 +3,10 @@
 
 export const T = Object.freeze({ i32: 0x7f, i64: 0x7e, f32: 0x7d, f64: 0x7c, v128: 0x7b, funcref: 0x70, empty: 0x40 });
 
+const UTF8 = new TextEncoder();
+
 export class ByteWriter {
-  constructor(cap = 4096) { this.buf = new Uint8Array(cap); this.len = 0; }
+  constructor(cap = 256) { this.buf = new Uint8Array(cap); this.len = 0; }
   ensure(n) { if (this.len + n > this.buf.length) { const nb = new Uint8Array(Math.max(this.buf.length * 2, this.len + n)); nb.set(this.buf.subarray(0, this.len)); this.buf = nb; } }
   byte(b) { this.ensure(1); this.buf[this.len++] = b & 0xff; return this; }
   bytes(arr) { this.ensure(arr.length); this.buf.set(arr, this.len); this.len += arr.length; return this; }
@@ -30,7 +32,7 @@ export class ByteWriter {
   }
   f32(v) { this.ensure(4); new DataView(this.buf.buffer).setFloat32(this.len, v, true); this.len += 4; return this; }
   f64(v) { this.ensure(8); new DataView(this.buf.buffer).setFloat64(this.len, v, true); this.len += 8; return this; }
-  str(s) { const b = new TextEncoder().encode(s); this.u(b.length); this.bytes(b); return this; }
+  str(s) { const b = UTF8.encode(s); this.u(b.length); this.bytes(b); return this; }
   /** append another writer's contents prefixed with its length */
   sized(w) { this.u(w.len); this.bytes(w.buf.subarray(0, w.len)); return this; }
   raw(w) { this.bytes(w.buf.subarray(0, w.len)); return this; }
@@ -42,7 +44,9 @@ export class ByteWriter {
  * objects rather than raw depths.
  */
 export class Code extends ByteWriter {
-  constructor() { super(); this.labels = []; this.hints = []; }
+  constructor(cap) { super(cap); this.labels = []; this.hints = []; }
+  /** empty the builder for another function body (the buffer is kept) */
+  reset() { this.len = 0; this.labels = []; this.hints = []; return this; }
 
   /**
    * Branch hint for the next instruction (an `if` or `br_if`): likely taken or not. Emitted in the
@@ -54,12 +58,13 @@ export class Code extends ByteWriter {
   finish() { const b = super.finish(); b.hints = this.hints; return b; }
 
   // ---- control
-  block(bt = T.empty) { this.byte(0x02).byte(bt); const l = { kind: 'block' }; this.labels.push(l); return l; }
-  loop(bt = T.empty) { this.byte(0x03).byte(bt); const l = { kind: 'loop' }; this.labels.push(l); return l; }
-  if_(bt = T.empty) { this.byte(0x04).byte(bt); const l = { kind: 'if' }; this.labels.push(l); return l; }
+  // a label records its position on the control stack (fixed while it is open): depth is O(1)
+  block(bt = T.empty) { this.byte(0x02).byte(bt); const l = { kind: 'block', at: this.labels.length }; this.labels.push(l); return l; }
+  loop(bt = T.empty) { this.byte(0x03).byte(bt); const l = { kind: 'loop', at: this.labels.length }; this.labels.push(l); return l; }
+  if_(bt = T.empty) { this.byte(0x04).byte(bt); const l = { kind: 'if', at: this.labels.length }; this.labels.push(l); return l; }
   else_() { this.byte(0x05); return this; }
   end() { this.byte(0x0b); this.labels.pop(); return this; }
-  depth(l) { const i = this.labels.lastIndexOf(l); if (i < 0) throw new Error('label not on stack'); return this.labels.length - 1 - i; }
+  depth(l) { if (this.labels[l.at] !== l) throw new Error('label not on stack'); return this.labels.length - 1 - l.at; }
   br(l) { this.byte(0x0c).u(this.depth(l)); return this; }
   br_if(l) { this.byte(0x0d).u(this.depth(l)); return this; }
   br_table(ls, def) { this.byte(0x0e).u(ls.length); for (const l of ls) this.u(this.depth(l)); this.u(this.depth(def)); return this; }
@@ -291,7 +296,12 @@ export class Code extends ByteWriter {
 
 /** Module builder. */
 export class ModuleBuilder {
-  constructor() {
+  /**
+   * @param {object} [headerCache] shared by builders that declare the same types and imports: the
+   *   magic, type and import sections are encoded once into it and reused
+   */
+  constructor(headerCache = null) {
+    this.headerCache = headerCache;
     this.types = []; // [params[], results[]]
     this.typeKeys = new Map();
     this.imports = []; // { module, name, kind, ...}
@@ -332,6 +342,12 @@ export class ModuleBuilder {
     this.funcs.push({ type: this.type(params, results), locals: runs, code, name, hints: code.hints ?? null });
     return idx;
   }
+  /** A builder with the same types and imports (shared, not to be extended) and no functions or exports yet. */
+  fork() {
+    const m = Object.assign(Object.create(ModuleBuilder.prototype), this);
+    m.funcs = []; m.exports = [];
+    return m;
+  }
   exportFunc(name, idx) { this.exports.push({ name, kind: 0, idx }); }
   exportMemory(name, idx = 0) { this.exports.push({ name, kind: 2, idx }); }
   exportTable(name, idx = 0) { this.exports.push({ name, kind: 1, idx }); }
@@ -340,9 +356,16 @@ export class ModuleBuilder {
   memory(min, max) { this.memories.push({ min, max }); return this.memories.length - 1; }
 
   build() {
-    const w = new ByteWriter();
-    w.bytes([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
+    const w = new ByteWriter(1 << 14);
     const section = (id, body) => { w.byte(id); w.sized(body); };
+    const hc = this.headerCache;
+    if (hc?.bytes) w.bytes(hc.bytes);
+    else { this.buildHeader(w, section); if (hc) hc.bytes = w.finish(); }
+    this.buildBody(w, section);
+    return w.finish();
+  }
+  buildHeader(w, section) {
+    w.bytes([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
     // types
     if (this.types.length) {
       const s = new ByteWriter(); s.u(this.types.length);
@@ -360,6 +383,8 @@ export class ModuleBuilder {
       }
       section(2, s);
     }
+  }
+  buildBody(w, section) {
     if (this.funcs.length) { const s = new ByteWriter(); s.u(this.funcs.length); for (const f of this.funcs) s.u(f.type); section(3, s); }
     if (this.tables.length) { const s = new ByteWriter(); s.u(this.tables.length); for (const t of this.tables) { s.byte(0x70); limits(s, t.min, t.max, false); } section(4, s); }
     if (this.memories.length) { const s = new ByteWriter(); s.u(this.memories.length); for (const m of this.memories) limits(s, m.min, m.max, false); section(5, s); }
@@ -370,7 +395,7 @@ export class ModuleBuilder {
     }
     if (this.exports.length) { const s = new ByteWriter(); s.u(this.exports.length); for (const e of this.exports) s.str(e.name).byte(e.kind).u(e.idx); section(7, s); }
     if (this.funcs.length) {
-      const bodies = this.funcs.map((f) => { const b = new ByteWriter(); b.u(f.locals.length); for (const [n, t] of f.locals) b.u(n).byte(t); const at = b.len; b.raw(f.code); b.byte(0x0b); return { b, at }; });
+      const bodies = this.funcs.map((f) => { const b = new ByteWriter(f.code.len + 64); b.u(f.locals.length); for (const [n, t] of f.locals) b.u(n).byte(t); const at = b.len; b.raw(f.code); b.byte(0x0b); return { b, at }; });
       // branch hints (custom section before the code section): offsets from the start of the body (locals included)
       const hinted = this.funcs.map((f, i) => [i, f.hints]).filter(([, h]) => h && h.length);
       if (hinted.length) {
@@ -381,7 +406,7 @@ export class ModuleBuilder {
         }
         section(0, s);
       }
-      const s = new ByteWriter(); s.u(this.funcs.length);
+      const s = new ByteWriter(bodies.reduce((n, { b }) => n + b.len + 5, 8)); s.u(this.funcs.length);
       for (const { b } of bodies) s.sized(b);
       section(10, s);
     }
@@ -393,7 +418,6 @@ export class ModuleBuilder {
       s.byte(1); s.sized(sub);
       section(0, s);
     }
-    return w.finish();
   }
 }
 

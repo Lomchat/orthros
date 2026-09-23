@@ -39,6 +39,7 @@ if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
+if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
 if (args.includes('--capture-draws')) q.set('capturedraws', '1');
 if (opt('burst-from')) q.set('burstfrom', opt('burst-from')); // --log apiburst: trace the API calls following tiny (stand-in) textures from this resource id on
