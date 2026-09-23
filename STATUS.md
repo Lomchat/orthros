@@ -152,8 +152,9 @@
   la WndProc (clic SKIRMISH), corrigé par les rappels au niveau invité (D028 : `DispatchMessage`/`SendMessage`/
   `CallWindowProc` sautent dans la WndProc sans frame JS, retour par le thunk `__callback_return`).
 - Saisie clavier : `WM_CHAR` uniquement via `TranslateMessage` (le nom de profil n'est plus dupliqué).
-- Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil (miroir OPFS hors
-  headless, à vérifier en page réelle).
+- Sauvegardes : le jeu écrit `Options.ini`, `Skirmish.ini`, `<profil>SkirmishStats.ini` dans le profil. **Miroir OPFS
+  vérifié** (`--opfs <user-data-dir>` : contexte navigateur persistant + port fixe, l'OPFS étant par origine) : au second
+  run le jeu retrouve ses réglages et saute sa suite de benchmarks (Direct3D à 25 s, menu à 58 s, `build/shots20`).
 
 ## Prochaine action
 - M6 : enchaîner les clics scriptés jusqu'au lancement d'une escarmouche (captures chaque seconde pour repérer les

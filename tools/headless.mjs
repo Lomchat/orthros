@@ -19,10 +19,15 @@ if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds
 fs.mkdirSync(out, { recursive: true });
 
 const server = createServer();
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
+// OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
+await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server.address().port;
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'] });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const chromeArgs = ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
+// --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
+// Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
+const opfsDir = opt('opfs');
+const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args: chromeArgs, viewport: { width: 1280, height: 900 } }) : await chromium.launch({ args: chromeArgs });
+const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
 page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang)\]/.test(t) || args.includes('--verbose')) console.log(t); });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
@@ -34,6 +39,7 @@ if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
+if (opfsDir) q.set('opfs', '1');
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
 // --profile-dir <dir>: the game's user profile (C:\\Users\\Player: Options.ini, saves...) is loaded from this host
 // directory and written back at the end, so a second run skips the first-run setup (benchmarks) and keeps its settings.
