@@ -5,7 +5,7 @@
 // No oracle here: the interpreter is the reference (validated by tests/cpu-interp.test.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GuestMemory, SMC_BITMAP_BASE } from '../src/cpu/memory.js';
+import { GuestMemory, SMC_MAP_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, ST, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
@@ -68,8 +68,8 @@ function load(code, setup = () => {}, execs = [EI, EJ]) {
     cpu.esp = DATA + 0x1800;
     cpu.eflags = F.RESERVED1 | F.IF | (r() & ARITH);
     cpu.fsBase = 0; cpu.gsBase = 0;
-    mem.u8[SMC_BITMAP_BASE + ((CODE >>> 12) >>> 3)] = 0; // fresh SMC bitmap for the code page
-    mem.u8[SMC_BITMAP_BASE + (((CODE - 0x1000) >>> 12) >>> 3)] = 0;
+    mem.u8[SMC_MAP_BASE + (CODE >>> 12)] = 0; // fresh SMC map for the code page
+    mem.u8[SMC_MAP_BASE + ((CODE - 0x1000) >>> 12)] = 0;
     setup(mem, cpu);
   }
   return CODE + c.length;
