@@ -799,12 +799,54 @@ class Emitter {
       c.get(L_LZOP).get(L_LZRES).get(L_LZA).get(L_LZB).get(L_EFLAGS).call(IMP_FLAGS).set(L_EFLAGS);
       c.i32(0).set(L_LZOP);
       c.end(); void i;
-    } else {
-      this.count(this.lz.kind === -1 ? PF.flagsSlowArm : PF.flagsStatic);
+    } else if (this.lz.kind === -1) {
+      this.count(PF.flagsSlowArm);
       c.get(L_LZOP).get(L_LZRES).get(L_LZA).get(L_LZB).get(L_EFLAGS).call(IMP_FLAGS).set(L_EFLAGS);
+      c.i32(0).set(L_LZOP);
+    } else {
+      this.count(PF.flagsStatic);
+      this.materializeInline(this.lz);
       c.i32(0).set(L_LZOP);
     }
     this.lz = { kind: LZ.NONE, sz: 2 };
+  }
+  /**
+   * L_EFLAGS <- the six arithmetic flags of a lazy state whose kind is known at translation time, inline (the
+   * flags helper's formulas, runtime.js materializeFlags; lazy values already masked to the size): no call.
+   */
+  materializeInline(lz) {
+    const c = this.c, k = lz.kind, bits = 8 << lz.sz, sign = SIGN[1 << lz.sz];
+    c.get(L_EFLAGS).i32(~(F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF)).and();
+    // CF
+    if (k === LZ.SHL) this.pushShlCarry(bits); else this.pushCarry(lz);
+    c.or();
+    // OF (bit 11)
+    if (k === LZ.SHL) { c.get(L_LZRES).i32(sign).and().i32(0).ne(); this.pushShlCarry(bits); c.xor(); }
+    else this.pushOverflowOf(lz);
+    c.i32(11).shl().or();
+    // AF (bit 4)
+    switch (k) {
+      case LZ.ADD: case LZ.SUB: case LZ.ADC: case LZ.SBB: c.get(L_LZA).get(L_LZB).xor().get(L_LZRES).xor().i32(0x10).and().or(); break;
+      case LZ.INC: c.get(L_LZRES).i32(0xf).and().eqz().i32(4).shl().or(); break;
+      case LZ.DEC: c.get(L_LZRES).i32(0xf).and().i32(0xf).eq().i32(4).shl().or(); break;
+      case LZ.NEG: c.get(L_LZA).i32(0xf).and().i32(0).ne().i32(4).shl().or(); break;
+      default: break; // 0
+    }
+    // ZF (bit 6): BSF's is its source being zero (L_LZA), the others' the result being zero
+    if (k === LZ.BSF) c.get(L_LZA).i32(0).ne(); else c.get(L_LZRES).eqz();
+    c.i32(6).shl().or();
+    // SF (bit 7)
+    c.get(L_LZRES).i32(sign).and().i32(0).ne().i32(7).shl().or();
+    // PF (bit 2): even parity of the low byte
+    c.get(L_LZRES).i32(0xff).and().popcnt().i32(1).and().eqz().i32(2).shl().or();
+    c.set(L_EFLAGS);
+  }
+  /** SHL's CF: the last bit shifted out, a >> (bits - count) (count == bits: a & 1; count > bits: 0) */
+  pushShlCarry(bits) {
+    const c = this.c;
+    if (bits === 32) { c.get(L_LZA).i32(32).get(L_LZB).sub().shr_u().i32(1).and(); return; } // count 1..31
+    c.get(L_LZA).i32(bits).get(L_LZB).sub().i32(31).and().shr_u().i32(1).and();
+    c.i32(0).get(L_LZB).i32(bits).le_u().select();
   }
   /** arithmetic flags (FL_*) a later instruction may read, after the instruction being emitted */
   flagsLive() { return this.flagsAfter[this.insnIdx - 1]; }
