@@ -245,17 +245,24 @@
   sans helper, `ret` locaux, budget en local, traduction 2,7× plus rapide ; régions x87 spécialisées sur le mot de
   contrôle, registres x87 en f32 en précision 24 bits, règle NaN matérielle. Appels COM différés pour les setters
   d'état Direct3D (file en mémoire invitée, vidée avant tout appel d'API JS).
-- **Résultats** (menu High, `--gl-discard`) : 8,5 fps / 280 MIPS au début de la journée → 11,7 fps / 405 MIPS après
-  les régions x87 en f32 (le code invité passe de ~76 % à 68 % du worker). bench.exe 1 115 → 682 ms ; transformation
-  de sommets x87 24 bits 86 → 22 ns.
+- **Résultats** (menu High, `--gl-discard`) : 8,5 fps / 280 MIPS au début de la journée → 11,7 fps après les régions
+  x87 en f32 → ~12,3 après la vivacité des flags (D043) ; les mesures suivantes, faites sur une machine moins chargée,
+  donnent 14-15 fps pour le même code (seuls les A/B simultanés sont comparables ; bruit A/A ±2 %). bench.exe
+  1 115 → ~420 ms ; transformation de sommets x87 24 bits 86 → 22 ns.
+- **En partie** (escarmouche High, début de partie) : ~38 fps en CPU seul — la cadence plafond du jeu (D031) — avec
+  ~14 % d'attente ; p99 ≈ 30-35 ms (pics isolés à 55-80 ms sans traduction ni upload). Le menu 3D est la scène lourde
+  (~17 k appels d'API, 1 700 draws et 25-37 M instructions par image).
+- **Réglages mesurés en jeu** : régions de 48 blocs (24 : −16 %, 96 : = ; un chaînage coûte ~6 ns, ~10 ns entre
+  régions x87, ~7 M/s au menu) ; boucles imbriquées structurées −13 % (V8, D044) : désactivées.
 - Constat structurel restant : trop de valeurs vivantes dans les régions (8 registres invités + 5 valeurs de flags
   paresseux + budget + bloc) pour les ~11 registres allouables par V8 : variables de boucle en pile. Tout appel dans
   une région (même sur un chemin froid) fait vider les registres — d'où les sorties vers l'interpréteur pour les cas
   rares plutôt que des appels.
 
 ## Prochaine action
-- Performance : mesurer la file d'appels différés (A/B), puis coût JS du backend GL par draw (`applyState`,
-  clé de programme recalculée) et pression de registres dans les régions.
+- Performance : coût JS du backend GL par draw (~9 µs au menu : `applyState`, `bindAttributes`, dispatch COM), p99 en
+  partie (pics isolés), puis pression de registres dans les régions ; piste lourde : backend Direct3D dans un second
+  worker (le JS Direct3D + GL ≈ 20 % du worker au menu).
 - Élucider les textures proxy jamais remplacées (thread de chargement : fichiers lus, attentes, erreurs) → corriger la fidélité en cause.
 - Mesure réelle sur GPU (critère M7) : `make serve` puis Chrome sur une machine cliente.
 
