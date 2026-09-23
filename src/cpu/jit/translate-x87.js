@@ -134,22 +134,23 @@ function roundPC(E, op) {
   // tests on the bit pattern, each an unlikely branch to the cold block, then f32.demote/f64.promote
   const done = c.block();
   const cold = c.block();
+  c.get(L_F64C).i64reinterpret_f64().set(L_I64A); // (the result's bits, read by the cold path whichever test sends there)
   c.get(L_FPC).hint(false).br_if(cold);
-  c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
+  c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
   c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.br(done);
   c.end(); // cold (L_I64A = the result's bits)
   // zero when rounding to nearest: exact, nothing to round
   c.get(L_FPC).eqz().get(L_I64A).i64(1n).i64shl().i64eqz().and().br_if(done);
-  // directed rounding (down / up / toward zero) of an f64-normal result that is not on the 24-bit grid: the exact
-  // value lies strictly between the same two grid points, so masking the low 29 significand bits (plus one 24-bit
-  // step away from zero for down-negative / up-positive) is exact; on-grid, zero-adjacent, denormal, infinite and
-  // NaN results (and every case the hot path rejected when rounding to nearest) take the exact kernel
-  c.get(L_FPC).i32(0xc00).and();
+  // directed rounding (down / up / toward zero) of an f64-normal result
+  c.get(L_FPC).i32(0xc00).and().i32(0).ne();
   c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u().and();
-  c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0).ne().and();
   const directed = c.hint(true).if_();
+  c.get(L_I64A).wrap().i32(0x1fffffff).and();
+  const offGrid = c.if_();
+  // not on the 24-bit grid: the exact value lies strictly between the same two grid points, so masking the low 29
+  // significand bits (plus one 24-bit step away from zero for down-negative / up-positive) is exact
   // step = (rc == down && negative) || (rc == up && positive) ? 2^29 : 0 ; rc = L_FPC >> 10 (1 down, 2 up, 3 zero)
   c.get(L_I64A).i64(~0x1fffffffn).i64and();
   c.get(L_FPC).i32(0xc00).and().i32(0x400).eq().get(L_I64A).i64(0n).i64lt_s().and();
@@ -157,11 +158,41 @@ function roundPC(E, op) {
   c.extend_u().i64(29n).i64shl().i64add();
   c.f64reinterpret_i64().set(L_F64C);
   c.else_();
+  // on the grid: the result as computed when it is exact — float operands of a product, quotient or square root
+  // (the f64 result is then the exact value or at least 2^-49 relative away from any 24-bit value, farther than the
+  // f64 rounding can move it), or a sum whose TwoSum error term is zero; otherwise the exact kernel
+  pushExactOnGrid(E, op);
+  c.eqz();
+  const inexact = c.if_();
+  c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op); pushRC(E); c.call(IMP_ARITH24).set(L_F64C);
+  c.end(); void inexact;
+  c.end(); void offGrid;
+  c.else_();
+  // zero-adjacent, denormal, infinite and NaN results (and every case the hot path rejected when rounding to nearest)
   c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op); pushRC(E); c.call(IMP_ARITH24).set(L_F64C);
   c.end(); void directed;
   c.end(); // done
   c.end(); void pc;
   c.get(L_F64C);
+}
+/**
+ * i32 1 when the f64 result in L_F64C (on the 24-bit grid) of operation `op` on L_F64A / L_F64B is exact: both
+ * operands floats and a product, quotient or square root, or a sum / difference whose TwoSum error term is zero.
+ */
+function pushExactOnGrid(E, op) {
+  const c = E.c;
+  const isFloat = (l) => { c.get(l).f32demote().f64promote().get(l).f64eq(); };
+  isFloat(L_F64A);
+  if (op !== 8) { isFloat(L_F64B); c.and(); }
+  if (op === 1 || op >= 6) return;
+  // TwoSum: s = x + y computed; err = (x - (s - (s - x))) + (y - (s - x)) with y = B (add), -B (sub), and x = B, y = -A (subr)
+  const [x, y, negY] = op === 0 ? [L_F64A, L_F64B, false] : op === 4 ? [L_F64A, L_F64B, true] : [L_F64B, L_F64A, true];
+  const pushY = () => { c.get(y); if (negY) c.f64neg(); };
+  // bb = s - x (in L_F64B's place would clobber an operand: computed twice instead)
+  const pushBB = () => { c.get(L_F64C).get(x).f64sub(); };
+  c.get(x); c.get(L_F64C); pushBB(); c.f64sub(); c.f64sub(); // x - (s - bb)
+  pushY(); pushBB(); c.f64sub(); // y - bb
+  c.f64add().f64c(0).f64eq().and();
 }
 /** f64 on the stack rounded to an integer by rounding control 0 nearest, 1 down, 2 up, 3 toward zero */
 const ROUND_BY_RC = [(c) => c.f64nearest(), (c) => c.f64floor(), (c) => c.f64ceil(), (c) => c.f64trunc()];
@@ -251,10 +282,16 @@ function fstore(E, insn, doPop) {
     c.get(L_TA).get(L_S32 + slot(E, 0)).f32store(0, 0); // an exact float: no rounding in any mode
   } else if (o.size === 4) {
     loadST(E, 0); c.set(L_F64A);
-    // nearest: f32.demote (IEEE, exact); directed rounding: the f32rc kernel (float denormals and overflow included)
+    // nearest: f32.demote (IEEE, exact); directed rounding: a value that is already a float (every 24-bit precision
+    // result in the float range) is stored as is, anything else through the f32rc kernel (denormals, overflow)
     c.get(L_TA);
     if (E.fpcStatic !== null && (E.fpcStatic & 0xc00) === 0) c.get(L_F64A).f32demote();
-    else { pushRC(E); c.set(L_T4); c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i; }
+    else {
+      c.get(L_F64A).f32demote().tee(L_F32C).f64promote().get(L_F64A).f64eq();
+      const exact = c.if_(T.f32); c.get(L_F32C); c.else_();
+      pushRC(E); c.set(L_T4); c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i;
+      c.end(); void exact;
+    }
     c.f32store(0, 0);
   } else { loadST(E, 0); c.set(L_F64A); c.get(L_TA).get(L_F64A).f64store(0, 0); }
   // pop before the SMC check: its exit resumes at insn.next with the instruction completed
