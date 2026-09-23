@@ -139,6 +139,8 @@ export class WebGLDevice {
     this.frameDraws = 0;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
+    this.glValidate = !!globalThis.ORTHROS_GL_VALIDATE; // (debugging: cached GL state checked against GL, see validateGlState)
+    if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
     gl.bindVertexArray(this.vao);
@@ -772,6 +774,39 @@ export class WebGLDevice {
     this.glEnable(gl.CULL_FACE, cullOn);
     if (cullOn) { const cf = cull === 3 ? gl.BACK : gl.FRONT; if (gs.cf !== cf) { gl.cullFace(cf); gs.cf = cf; } }
   }
+  /**
+   * Debugging (--gl-validate): the cached GL state (this.gs) against the real one, queried from GL — a cache that
+   * disagrees makes draws skip calls they need (wrong texture, blend or target). Mismatches are logged by kind.
+   */
+  validateGlState() {
+    const gl = this.gl, gs = this.gs, bad = [];
+    const check = (what, cached, actual) => { if (cached !== undefined && cached !== actual) bad.push(`${what}: cached ${cached} actual ${actual}`); };
+    const name = (o) => (o === null ? 'null' : o === undefined ? 'undef' : (o.__id ??= (this.nextGlId = (this.nextGlId ?? 0) + 1)));
+    if (gs.prog) check('program', name(gs.prog), name(gl.getParameter(gl.CURRENT_PROGRAM)));
+    if (gs.vao !== undefined) check('vao', name(gs.vao), name(gl.getParameter(gl.VERTEX_ARRAY_BINDING)));
+    if (gs.fbo !== undefined) check('framebuffer', name(gs.fbo), name(gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING)));
+    if (gs.active !== undefined) check('active unit', gs.active, gl.getParameter(gl.ACTIVE_TEXTURE) - gl.TEXTURE0);
+    const active = gl.getParameter(gl.ACTIVE_TEXTURE);
+    for (let i = 0; i < 16; i++) {
+      if (!gs.tex[i] && !gs.smp[i]) continue;
+      gl.activeTexture(gl.TEXTURE0 + i); // (the bindings of unit i are queried through the active unit)
+      if (gs.tex[i]) {
+        const b = [gl.TEXTURE_BINDING_2D, gl.TEXTURE_BINDING_CUBE_MAP, gl.TEXTURE_BINDING_3D].map((q) => gl.getParameter(q));
+        if (!b.includes(gs.tex[i])) bad.push(`texture unit ${i}: cached ${name(gs.tex[i])} actual ${b.map(name).join('/')}`);
+      }
+      if (gs.smp[i]) check(`sampler unit ${i}`, name(gs.smp[i]), name(gl.getParameter(gl.SAMPLER_BINDING)));
+    }
+    gl.activeTexture(active);
+    for (const [cap, on] of Object.entries(gs.en)) check(`enable ${cap}`, on, gl.isEnabled(Number(cap)));
+    if (gs.depthFunc !== undefined) check('depth func', gs.depthFunc, gl.getParameter(gl.DEPTH_FUNC));
+    if (gs.depthMask !== undefined) check('depth mask', gs.depthMask, gl.getParameter(gl.DEPTH_WRITEMASK));
+    if (gs.cw !== undefined) { const m = gl.getParameter(gl.COLOR_WRITEMASK); check('color mask', gs.cw, (m[0] ? 1 : 0) | (m[1] ? 2 : 0) | (m[2] ? 4 : 0) | (m[3] ? 8 : 0)); }
+    if (gs.ff !== undefined) check('front face', gs.ff, gl.getParameter(gl.FRONT_FACE));
+    if (gs.cf !== undefined) check('cull face', gs.cf, gl.getParameter(gl.CULL_FACE_MODE));
+    if (gs.vpw !== undefined) { const v = gl.getParameter(gl.VIEWPORT); check('viewport', `${gs.vpx},${gs.vpy},${gs.vpw},${gs.vph}`, `${v[0]},${v[1]},${v[2]},${v[3]}`); }
+    if (gs.bs !== undefined && gl.isEnabled(gl.BLEND)) check('blend src', this.blend(gs.bs), gl.getParameter(gl.BLEND_SRC_RGB));
+    for (const b of bad) { this.glValidateLogs = (this.glValidateLogs ?? 0) + 1; if (this.glValidateLogs <= 40) this.log(`d3d-webgl: GL state cache mismatch (draw ${this.stats.draws}): ${b}`); }
+  }
   /** enable/disable a GL capability through the state cache */
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
@@ -907,6 +942,7 @@ export class WebGLDevice {
       const nv = Math.min(12, this.vertexCount(type, count));
       this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')}`);
     }
+    if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dp');
@@ -946,6 +982,7 @@ export class WebGLDevice {
       if (L.attrs && vb) { const str0 = st.stride || L.stride || 0; for (let i = 0; i < Math.min(6, this.vertexCount(type, count)); i++) { const a0 = vb.mem + (st.offset ?? 0) + (baseVertex + idx(i)) * str0; vdump += ` v${i}(i${idx(i)})=` + L.attrs.map((a) => a.name + ':' + (a.type === 'float' ? Array.from({ length: a.comps }, (_, k) => +this.mem.readF32(a0 + a.offset + 4 * k).toPrecision(6)).join(',') : (this.mem.read32(a0 + a.offset) >>> 0).toString(16))).join(' '); } }
       this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]`);
     }
+    if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dip');
