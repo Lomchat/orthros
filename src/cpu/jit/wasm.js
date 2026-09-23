@@ -260,6 +260,8 @@ export class Code extends ByteWriter {
   f64trunc() { return this.byte(0x9d); } f64nearest() { return this.byte(0x9e); } f64sqrt() { return this.byte(0x9f); }
   f64add() { return this.byte(0xa0); } f64sub() { return this.byte(0xa1); } f64mul() { return this.byte(0xa2); } f64div() { return this.byte(0xa3); }
   f64min() { return this.byte(0xa4); } f64max() { return this.byte(0xa5); }
+  /** f64.copysign(a, b): magnitude of a with the sign bit of b */
+  f64copysign() { return this.byte(0xa6); }
   f64eq() { return this.byte(0x61); } f64ne() { return this.byte(0x62); } f64lt() { return this.byte(0x63); } f64gt() { return this.byte(0x64); } f64le() { return this.byte(0x65); } f64ge() { return this.byte(0x66); }
   // ---- f32 ops
   f32add() { return this.byte(0x92); } f32sub() { return this.byte(0x93); } f32mul() { return this.byte(0x94); } f32div() { return this.byte(0x95); } f32sqrt() { return this.byte(0x91); }

@@ -10,8 +10,13 @@ import { TS } from '../win32/process.js';
 export const INFINITE = 0xffffffff;
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
 
-export class WaitUnwind extends Error {
-  constructor(wait) { super('wait unwind'); this.wait = wait; }
+/**
+ * Thrown by a blocking API handler at top level to park its thread (see block()). Not an Error
+ * subclass on purpose: an Error captures a stack trace at construction, which costs more than the
+ * whole park/resume path (1.5 % of the worker in a scene with thousands of waits per second).
+ */
+export class WaitUnwind {
+  constructor(wait) { this.wait = wait; }
 }
 
 export class Scheduler {
