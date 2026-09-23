@@ -193,6 +193,12 @@ export function discoverRegion(mem, entry, opts) {
   return { blocks, byEip };
 }
 
+/** the type and import sections, identical in every region module, are encoded once */
+const REGION_HEADER = {};
+let regionTemplate = null;
+/** one emission buffer reused by every translation (grown once instead of from 4 KB per region) */
+let scratchCode = null;
+
 /**
  * Emit a complete region module. Returns { bytes, blocks } where blocks[i] = { eip, index }.
  */
@@ -203,14 +209,18 @@ export function translateRegion(mem, entry, opts = {}) {
 
 /** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
 export function buildRegionModule(codes, names = null) {
-  const m = new ModuleBuilder();
-  if (m.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
-  m.importMemory('env', 'memory', 32768, 32768);
-  m.importTable('env', 'table', 1024, undefined); // shared funcref table (chained tail calls)
-  m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
-  m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
-  m.importFunc('env', 'fallback', [T.i32], [T.i32]);
-  for (const [name, params, results] of MATH_KERNELS) m.importFunc('env', name, params, results);
+  if (!regionTemplate) {
+    const t = new ModuleBuilder(REGION_HEADER);
+    if (t.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
+    t.importMemory('env', 'memory', 32768, 32768);
+    t.importTable('env', 'table', 1024, undefined); // shared funcref table (chained tail calls)
+    t.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
+    t.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
+    t.importFunc('env', 'fallback', [T.i32], [T.i32]);
+    for (const [name, params, results] of MATH_KERNELS) t.importFunc('env', name, params, results);
+    regionTemplate = t;
+  }
+  const m = regionTemplate.fork();
   codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }
@@ -223,7 +233,8 @@ class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
     this.opts = opts;
-    this.c = new Code();
+    this.c = scratchCode ??= new Code(1 << 16);
+    this.c.reset();
     this.lz = null;
     this.smc = opts.smc !== false;
     this.x87 = opts.x87 !== false;

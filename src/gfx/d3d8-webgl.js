@@ -871,5 +871,8 @@ export class WebGLDevice {
 export function createWebGLBackend(canvas, log, dump) {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
+  // benchmark mode (--gl-discard): every GL call is still issued but nothing is rasterized, so a software GPU
+  // (headless SwiftShader) no longer bounds the frame rate and CPU-side changes become measurable
+  if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD);
   return { gl, device: null, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL }); } };
 }
