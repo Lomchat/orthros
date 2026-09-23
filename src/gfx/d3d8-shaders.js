@@ -22,6 +22,13 @@ export const MAX_STAGES = 8, MAX_LIGHTS = 8;
  * (u_flipY = -1), and the D3D8/9 rasterization rule — pixel centers on integer window coordinates, half a pixel
  * up-left of GL's — as a half-pixel shift in NDC (1/width right, 1/height down on the screen).
  */
+/**
+ * Every generated vertex shader declares its position invariant: Direct3D computes the same position for the
+ * same vertices and transforms in every pass (multipass rendering tests depth EQUAL against an earlier pass),
+ * whereas a GLSL compiler may evaluate the same expression differently in different programs (fused
+ * multiply-adds, reassociation) without it — z-fighting streaks between passes.
+ */
+export const VS_INVARIANT = 'invariant gl_Position;';
 export const D3D_TO_GL_POSITION = (p) => `vec4(${p}.x + ${p}.w / u_viewport.z, (${p}.y - ${p}.w / u_viewport.w) * u_flipY, ${p}.z * 2.0 - ${p}.w, ${p}.w)`;
 
 const DECL_REG_NAMES = ['pos', 'blendweight', 'blendindices', 'normal', 'psize', 'diffuse', 'specular', 'tex0', 'tex1', 'tex2', 'tex3', 'tex4', 'tex5', 'tex6', 'tex7', 'pos2', 'normal2'];
@@ -96,7 +103,7 @@ const LIGHT_DIRECTIONAL = 3, LIGHT_POINT = 1, LIGHT_SPOT = 2;
 export function ffVertexShader(k) {
   const L = k.layout;
   const has = (n) => L.attrs.some((a) => a.name === n);
-  const lines = ['#version 300 es', 'precision highp float;'];
+  const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
   for (const a of L.attrs) lines.push(`in ${a.type === 'float' && a.comps === 1 ? 'float' : a.type === 'float' ? 'vec' + a.comps : 'vec4'} a_${a.name};`);
   lines.push('uniform mat4 u_world[4]; uniform mat4 u_view; uniform mat4 u_proj; uniform mat4 u_texmat[8];');
   lines.push('uniform vec4 u_viewport; uniform vec2 u_depthRange; uniform float u_flipY;'); // x,y,w,h ; minZ,maxZ (for RHW) ; -1 when rendering into a texture
@@ -294,7 +301,7 @@ function writeMask(tok) { let s = ''; for (let i = 0; i < 4; i++) if (tok & (1 <
 
 /** Translate a vertex shader 1.x function (Uint32Array of tokens) to a GLSL ES 3.00 vertex shader. */
 export function translateVertexShader(code, layout) {
-  const lines = ['#version 300 es', 'precision highp float;'];
+  const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
   const inputs = new Set();
   for (const s of layout.streams.values()) for (const a of s.attrs) inputs.add(a.reg);
   for (const r of inputs) lines.push(`in vec4 a_v${r};`);

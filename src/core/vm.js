@@ -294,6 +294,7 @@ export class Vm {
             this.onBreak(thread);
             break;
           case EXIT.SMC:
+            if (this.jit?.watchHit(cpu.exitArg, cpu.eip)) break; // write watch (debugging), not code
             this.invalidateCode(cpu.exitArg, 16);
             break;
           default:
