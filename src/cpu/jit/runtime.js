@@ -85,7 +85,8 @@ export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValu
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15 };
 
 // Lazy flag op kinds (kind << 2 | sizeLog2)
-export const LZ = Object.freeze({ NONE: 0, ADD: 1, SUB: 2, LOGIC: 3, INC: 4, DEC: 5, NEG: 6, SHL: 7, SHR: 8, SAR: 9, MUL: 10, IMUL: 11, SHLD: 12, BSF: 13 });
+// ADC/SBB keep (res, a, b): the carry-in is res - a - b (a - b - res), so no fourth value is needed
+export const LZ = Object.freeze({ NONE: 0, ADD: 1, SUB: 2, LOGIC: 3, INC: 4, DEC: 5, NEG: 6, SHL: 7, SHR: 8, SAR: 9, MUL: 10, IMUL: 11, SHLD: 12, BSF: 13, ADC: 14, SBB: 15 });
 
 /** JS mirror of the WASM flags helper (used when leaving WASM with lazy state pending). */
 export function materializeFlags(op, res, a, b, ef) {
@@ -96,6 +97,8 @@ export function materializeFlags(op, res, a, b, ef) {
   switch (kind) {
     case LZ.ADD: cf = res < a ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break;
     case LZ.SUB: cf = a < b ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break;
+    case LZ.ADC: { const cin = ((res - a - b) & mask) !== 0; cf = (cin ? res <= a : res < a) ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
+    case LZ.SBB: { const cin = ((a - b - res) & mask) !== 0; cf = (cin ? a <= b : a < b) ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
     case LZ.LOGIC: break;
     case LZ.INC: cf = b & 1; of = res === sign ? 1 : 0; af = (res & 0xf) === 0 ? 1 : 0; break;
     case LZ.DEC: cf = b & 1; of = res === (sign - 1) >>> 0 ? 1 : 0; af = (res & 0xf) === 0xf ? 1 : 0; break;
@@ -155,7 +158,7 @@ export function buildRuntime() {
     // PF: popcnt(res & 0xff) even
     c.get(RES).i32(0xff).and().popcnt().i32(1).and().eqz(); const ifp = c.if_(); c.get(FL).i32(F.PF).or().set(FL); c.end(); void ifp;
     // kind switch: compute cf/of/af into TMP bits (bit0=cf, bit1=of, bit2=af)
-    const kinds = 14;
+    const kinds = 16;
     const done = c.block();
     const labels = [];
     for (let k = 0; k < kinds; k++) labels.push(c.block());
@@ -192,6 +195,17 @@ export function buildRuntime() {
         case LZ.IMUL: { c.get(B).i32(1).and(); const i = c.if_(); setCF(); setOF(); c.end(); void i; break; }
         case LZ.SHLD: { c.get(A).i32(1).and(); const i = c.if_(); setCF(); c.end(); void i; c.get(B).i32(1).and(); const j = c.if_(); setOF(); c.end(); void j; break; }
         case LZ.BSF: { c.get(FL).i32(~F.ZF).and().set(FL); c.get(A); const i = c.if_(); c.get(FL).i32(F.ZF).or().set(FL); c.end(); void i; break; }
+        case LZ.ADC: case LZ.SBB: {
+          // carry-in = (res - a - b) & mask (ADC) / (a - b - res) & mask (SBB); CF = cin ? x <=u y : x <u y
+          if (k === LZ.ADC) c.get(RES).get(A).sub().get(B).sub(); else c.get(A).get(B).sub().get(RES).sub();
+          c.get(MASK).and();
+          if (k === LZ.ADC) { const i = c.if_(T.i32); c.get(RES).get(A).le_u(); c.else_(); c.get(RES).get(A).lt_u(); c.end(); void i; }
+          else { const i = c.if_(T.i32); c.get(A).get(B).le_u(); c.else_(); c.get(A).get(B).lt_u(); c.end(); void i; }
+          const i = c.if_(); setCF(); c.end(); void i;
+          if (k === LZ.ADC) c.get(A).get(RES).xor().get(B).get(RES).xor().and().get(SIGN).and(); else c.get(A).get(B).xor().get(A).get(RES).xor().and().get(SIGN).and();
+          const j = c.if_(); setOF(); c.end(); void j;
+          afFromXor(); break;
+        }
       }
       c.br(done);
     }

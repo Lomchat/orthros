@@ -233,3 +233,45 @@ test('x87 regions specialized for the control word in force: entered under anoth
     if (cw !== 0x007f) assert.ok(EJ.jit.stats.fpuModeMisses >= 1, 'a specialized region left on a mode mismatch');
   }
 });
+
+test('flags liveness: partial flag writers (rotates, bit tests, inc/dec, clc/stc) mixed with readers and full writers match the interpreter', () => {
+  // straight-line random integer code over eax..edi (esp untouched), with jcc to the next instruction to split blocks
+  const R = rng(4242), pick = (n) => Math.floor(R() * n);
+  const reg = () => [0, 1, 2, 3, 5, 6, 7][pick(7)]; // not esp
+  const modrm = (r, rm) => 0xc0 | (r << 3) | rm;
+  const ops = [
+    () => [0x01 + 8 * [0, 1, 4, 5, 6, 7][pick(6)], modrm(reg(), reg())], // add/or/and/sub/xor/cmp r, r
+    () => [0x85, modrm(reg(), reg())], // test
+    () => [0xf7, modrm(3, reg())], // neg
+    () => [0x40 + reg()], () => [0x48 + reg()], // inc / dec
+    () => [0xc1, modrm(pick(2), reg()), pick(32)], // rol / ror imm
+    () => [0xd3, modrm(pick(2), reg())], // rol / ror cl
+    () => [0xd1, modrm(2 + pick(2), reg())], // rcl / rcr 1
+    () => [0xc1, modrm([4, 5, 7][pick(3)], reg()), pick(32)], // shl / shr / sar imm
+    () => [0xd3, modrm([4, 5, 7][pick(3)], reg())], // shl / shr / sar cl
+    () => [0x0f, 0xba, modrm(4 + pick(4), reg()), pick(32)], // bt / bts / btr / btc imm
+    () => [0x0f, [0xa3, 0xab, 0xb3, 0xbb][pick(4)], modrm(reg(), reg())], // bt* r, r
+    () => [[0xf8, 0xf9, 0xf5][pick(3)]], // clc / stc / cmc
+    () => [0x11 + 8 * pick(2), modrm(reg(), reg())], // adc / sbb
+    () => [0x0f, 0x90 + pick(16), modrm(0, [0, 1, 2, 3][pick(4)])], // setcc r8
+    () => [0x0f, 0x40 + pick(16), modrm(reg(), reg())], // cmovcc
+    () => [0x9f], () => [0x9e], // lahf / sahf
+    () => [0x9c, 0x58 + [0, 1, 2, 3, 5, 6, 7][pick(7)]], // pushf ; pop r
+    () => [0x0f, 0x80 + pick(16), 0, 0, 0, 0], // jcc to the next instruction: a block boundary
+    () => [0x89, modrm(reg(), reg())], // mov (transparent)
+    () => [0x8d, 0x04 | (reg() << 3), (reg() << 3) | [0, 1, 2, 3, 6, 7][pick(6)]], // lea r, [base + index] (transparent)
+  ];
+  for (let seed = 0; seed < 300; seed++) {
+    const bytes = [];
+    for (let i = 0; i < 40; i++) {
+      bytes.push(...ops[pick(ops.length)]());
+    }
+    bytes.push(0x9c, 0x5e, 0xf4); // pushf ; pop esi ; hlt  (every flag observed at the end)
+    const code = Uint8Array.from(bytes), end = CODE + bytes.length - 1;
+    const init = (E) => { E.load(code, 0); const R2 = rng(seed + 1); E.cpu.eax = (R2() * 2 ** 32) >>> 0; E.cpu.ecx = (R2() * 2 ** 32) >>> 0; E.cpu.edx = (R2() * 2 ** 32) >>> 0; E.cpu.ebx = (R2() * 2 ** 32) >>> 0; E.cpu.ebp = (R2() * 2 ** 32) >>> 0; E.cpu.edi = (R2() * 2 ** 32) >>> 0; };
+    const EI = makeExec(false); init(EI); assert.equal(EI.run(end, 1e6), EXIT.HALT);
+    const EJ = makeExec(true); init(EJ); assert.equal(EJ.run(end, 1e6), EXIT.HALT);
+    const st = (E) => { const s = snapshot(E); s.esiFlags = hex(E.cpu.esi & (0x8d5 | 0x400)); return s; };
+    assert.deepEqual(st(EJ), st(EI), `seed ${seed}`);
+  }
+});

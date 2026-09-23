@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP } from './runtime.js';
-import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
@@ -97,6 +97,36 @@ function lazyCondInline(base, kind) {
   }
 }
 
+// ---- arithmetic flags liveness within a block (FL_CF: CF, FL_REST: OF SF ZF AF PF). Instructions that write
+// part of the flags (ROL/ROR, BT*, INC/DEC, CLC/STC) compute and preserve only what a later instruction of the
+// block may still read; at the block end every flag is live (successors, exits). Unknown instructions read all.
+const FL_CF = 1, FL_REST = 2, FL_ALL = 3;
+const FLAGS_NONE = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'XCHG', 'BSWAP', 'NOT', 'PUSH', 'POP', 'PUSHA', 'POPA', 'ENTER', 'LEAVE', 'CBW', 'CWD',
+  'NOP', 'PAUSE', 'CLD', 'STD', 'MOVS', 'STOS', 'LODS', 'XLAT', 'LFENCE', 'MFENCE', 'SFENCE', 'PREFETCH', 'CLFLUSH', 'WAIT', 'EMMS'].map((n) => OP[n]));
+for (const [n, op] of Object.entries(OP)) {
+  if (n.startsWith('F') && !['FCOMI', 'FCOMIP', 'FUCOMI', 'FUCOMIP', 'FCMOVCC'].includes(n)) FLAGS_NONE.add(op); // x87, FXSAVE/FXRSTOR
+  else if (op > OP.EMMS && op < OP.INVALID && !['UCOMISS', 'UCOMISD', 'COMISS', 'COMISD'].includes(n)) FLAGS_NONE.add(op); // MMX / SSE data
+}
+const FLAGS_FULL = new Set(['ADD', 'SUB', 'CMP', 'AND', 'OR', 'XOR', 'TEST', 'NEG', 'MUL', 'IMUL', 'BSF', 'BSR', 'CMPXCHG', 'XADD', 'POPF',
+  'FCOMI', 'FCOMIP', 'FUCOMI', 'FUCOMIP', 'UCOMISS', 'UCOMISD', 'COMISS', 'COMISD'].map((n) => OP[n]));
+/** flags read by condition code cc */
+const ccFlags = (cc) => { const b = cc >> 1; return b === 1 ? FL_CF : b === 3 ? FL_ALL : FL_REST; };
+/** flags live before `insn` given those live after it */
+function flagsLiveBefore(insn, after) {
+  const op = insn.op;
+  if (FLAGS_NONE.has(op)) return after;
+  if (FLAGS_FULL.has(op)) return 0;
+  switch (op) {
+    case OP.ADC: case OP.SBB: return FL_CF; // read CF, write all
+    case OP.SHL: case OP.SHR: case OP.SAR: return shiftCountConst(insn) > 0 ? 0 : FL_ALL; // a CL count of 0 keeps them
+    case OP.INC: case OP.DEC: return after & FL_CF; // CF preserved
+    case OP.ROL: case OP.ROR: return shiftCountConst(insn) > 0 ? after & FL_REST : after; // CF (and OF) written
+    case OP.BT: case OP.BTS: case OP.BTR: case OP.BTC: case OP.CLC: case OP.STC: case OP.SAHF: return after & FL_REST; // CF written
+    case OP.CMC: case OP.RCL: case OP.RCR: return (after & FL_REST) | FL_CF;
+    case OP.JCC: case OP.SETCC: case OP.CMOVCC: case OP.FCMOVCC: return after | ccFlags(insn.cc);
+    default: return FL_ALL;
+  }
+}
 /** Instructions that load the x87 control word (precision / rounding control). */
 const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.FXRSTOR, OP.FNSAVE]);
 
@@ -263,8 +293,10 @@ export function buildRegionModule(codes, names = null) {
 }
 
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
-export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal'];
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm'];
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
+/** profiling translations: flags helper calls per x86 opcode (u32 per OP value) */
+export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
 
 class Emitter {
   constructor(mem, opts) {
@@ -524,7 +556,13 @@ class Emitter {
    * ends with a time slice.
    */
   count(k) {
-    if (this.prof) this.c.get(L_STATE).get(L_STATE).i32load(ST.PROF + 4 * k).i32(1).add().i32store(ST.PROF + 4 * k);
+    if (!this.prof) return;
+    this.c.get(L_STATE).get(L_STATE).i32load(ST.PROF + 4 * k).i32(1).add().i32store(ST.PROF + 4 * k);
+    // flags helper calls are also counted per x86 mnemonic (JIT_PROF_OPS: opcode -> counter at PROF_OPS_BASE)
+    if (k >= PF.flagsNull && k <= PF.flagsSlowArm) {
+      const a = PROF_OPS_BASE + 4 * (this.curOp ?? 0);
+      this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a);
+    }
   }
   charge(n) {
     if (n > 0) this.c.get(L_ICOUNT).i32(n).sub().set(L_ICOUNT);
@@ -658,13 +696,27 @@ class Emitter {
       // runtime: only call when needed
       c.get(L_LZOP);
       const i = c.if_();
+      this.count(PF.flagsNull);
       c.get(L_LZOP).get(L_LZRES).get(L_LZA).get(L_LZB).get(L_EFLAGS).call(IMP_FLAGS).set(L_EFLAGS);
       c.i32(0).set(L_LZOP);
       c.end(); void i;
     } else {
+      this.count(this.lz.kind === -1 ? PF.flagsSlowArm : PF.flagsStatic);
       c.get(L_LZOP).get(L_LZRES).get(L_LZA).get(L_LZB).get(L_EFLAGS).call(IMP_FLAGS).set(L_EFLAGS);
       c.i32(0).set(L_LZOP);
     }
+    this.lz = { kind: LZ.NONE, sz: 2 };
+  }
+  /** arithmetic flags (FL_*) a later instruction may read, after the instruction being emitted */
+  flagsLive() { return this.flagsAfter[this.insnIdx - 1]; }
+  /**
+   * The instruction being emitted defines all six arithmetic flags (FCOMI, COMISS, POPF...): the pending lazy
+   * state is dropped instead of materialized (its values can no longer be observed); L_EFLAGS keeps the
+   * other bits.
+   */
+  discardFlags() {
+    if (this.lz && this.lz.kind === LZ.NONE) return;
+    this.c.i32(0).set(L_LZOP);
     this.lz = { kind: LZ.NONE, sz: 2 };
   }
   /** push CF (0/1) */
@@ -675,6 +727,7 @@ class Emitter {
     if (lz && lz.kind === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); return; }
     if (lz && lz.kind === LZ.LOGIC) { c.i32(0); return; }
     if (lz && (lz.kind === LZ.INC || lz.kind === LZ.DEC)) { c.get(L_LZB).i32(1).and(); return; }
+    if (lz && (lz.kind === LZ.ADC || lz.kind === LZ.SBB || lz.kind === LZ.NEG)) { this.pushCarryOf(lz); return; }
     if (lz === null) { this.pushCondDynamic(2); return; } // CF = condition B
     this.materialize();
     c.get(L_EFLAGS).i32(1).and();
@@ -708,6 +761,19 @@ class Emitter {
     c.end(); // done
     this.lz = null;
   }
+  /**
+   * CF of the lazy kinds ADC/SBB/NEG: NEG: a != 0; ADC: res <u a | cin & res == a; SBB: a <u b | cin & a == b, the
+   * carry-in being (res - a - b) / (a - b - res) masked to the operand size.
+   */
+  pushCarryOf(lz) {
+    const c = this.c;
+    if (lz.kind === LZ.NEG) { c.get(L_LZA).i32(0).ne(); return; }
+    const [x, y] = lz.kind === LZ.ADC ? [L_LZRES, L_LZA] : [L_LZA, L_LZB];
+    c.get(x).get(y).lt_u();
+    if (lz.kind === LZ.ADC) c.get(L_LZRES).get(L_LZA).sub().get(L_LZB).sub(); else c.get(L_LZA).get(L_LZB).sub().get(L_LZRES).sub();
+    if (lz.sz !== 2) c.i32(MASK[1 << lz.sz]).and();
+    c.i32(0).ne().get(x).get(y).eq().and().or();
+  }
   /** push condition cc (0/1) */
   pushCond(cc) {
     const c = this.c;
@@ -723,7 +789,7 @@ class Emitter {
       switch (base) {
         case 2: c.get(L_LZRES).eqz(); done = true; break; // E
         case 4: c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; break; // S
-        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } else if (k === LZ.INC || k === LZ.DEC) { c.get(L_LZB).i32(1).and(); done = true; } break; // B
+        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } else if (k === LZ.INC || k === LZ.DEC) { c.get(L_LZB).i32(1).and(); done = true; } else if (k === LZ.ADC || k === LZ.SBB || k === LZ.NEG) { this.pushCarryOf(lz); done = true; } break; // B
         case 3: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).le_u(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).eqz(); done = true; } break; // BE
         case 6: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.lt_s(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; } break; // L
         case 7: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.le_s(); done = true; } else if (k === LZ.LOGIC) { sx(L_LZRES, lz.sz); c.i32(0).le_s(); done = true; } break; // LE
@@ -748,6 +814,7 @@ class Emitter {
   /** Compute arithmetic flags eagerly from (res in lzRes, a in lzA, b in lzB) with kind, into EFLAGS. */
   eagerFlags(kind, size) {
     const c = this.c;
+    this.count(PF.flagsEager);
     c.i32((kind << 2) | SZLOG[size]).get(L_LZRES).get(L_LZA).get(L_LZB).get(L_EFLAGS).call(IMP_FLAGS).set(L_EFLAGS);
     c.i32(0).set(L_LZOP);
     this.lz = { kind: LZ.NONE, sz: 2 };
@@ -761,6 +828,9 @@ class Emitter {
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.cur = b.index;
+    // flags live after each instruction of the block
+    const live = (this.flagsAfter = new Uint8Array(b.insns.length));
+    for (let i = b.insns.length - 1, l = FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcKnown?.[b.index] ? this.fpcAssume : null;
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
@@ -790,6 +860,7 @@ class Emitter {
   }
 
   emitInsn(insn, b) {
+    this.curOp = insn.op;
     const h = HANDLERS[insn.op];
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
@@ -853,21 +924,16 @@ HANDLERS[OP.XOR] = binArith(LZ.LOGIC, (c) => c.xor());
 HANDLERS[OP.TEST] = binArith(LZ.LOGIC, (c) => c.and(), false);
 
 function adcSbb(isAdc) {
+  // lazy: (res, a, b) with kind ADC/SBB, the carry-in being recoverable from them (see LZ)
   return (E, insn) => {
     const c = E.c; const d = insn.ops[0], s = insn.ops[1]; const size = d.size;
     E.pushCF(); c.set(L_T4);
-    E.materialize();
     loadDst(E, d); c.set(L_LZA);
     E.loadOp(s); c.set(L_LZB);
     if (isAdc) { c.get(L_LZA).get(L_LZB).add().get(L_T4).add(); } else { c.get(L_LZA).get(L_LZB).sub().get(L_T4).sub(); }
     maskTo(E, size); c.set(L_LZRES);
     E.storeOpFrom(d, L_LZRES, insn);
-    // flags: CF = isAdc ? (res <u a) | (cf & (res == a)) : (a <u b) | (cf & (a == b)) ; OF/AF/ZF/SF/PF via helper on ADD/SUB then patch CF
-    E.eagerFlags(isAdc ? LZ.ADD : LZ.SUB, size);
-    c.get(L_EFLAGS).i32(~F.CF).and();
-    if (isAdc) c.get(L_LZRES).get(L_LZA).lt_u().get(L_T4).get(L_LZRES).get(L_LZA).eq().and().or();
-    else c.get(L_LZA).get(L_LZB).lt_u().get(L_T4).get(L_LZA).get(L_LZB).eq().and().or();
-    c.or().set(L_EFLAGS);
+    E.setLazy(isAdc ? LZ.ADC : LZ.SBB, size);
   };
 }
 HANDLERS[OP.ADC] = adcSbb(true);
@@ -875,7 +941,8 @@ HANDLERS[OP.SBB] = adcSbb(false);
 
 HANDLERS[OP.INC] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
-  E.pushCF(); c.set(L_T4);
+  if (E.flagsLive() & FL_CF) E.pushCF(); else c.i32(0); // the preserved CF, when still read
+  c.set(L_T4);
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).add(); maskTo(E, size); c.set(L_LZRES);
   c.get(L_T4).set(L_LZB);
@@ -884,7 +951,8 @@ HANDLERS[OP.INC] = (E, insn) => {
 };
 HANDLERS[OP.DEC] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
-  E.pushCF(); c.set(L_T4);
+  if (E.flagsLive() & FL_CF) E.pushCF(); else c.i32(0);
+  c.set(L_T4);
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).sub(); maskTo(E, size); c.set(L_LZRES);
   c.get(L_T4).set(L_LZB);
@@ -941,7 +1009,9 @@ function rotateOp(kind) {
     const c = E.c; const d = insn.ops[0]; const size = d.size; const bits = BITS[size];
     const cnt = shiftCountConst(insn);
     if (cnt === 0) return;
-    E.materialize();
+    // ROL/ROR write CF and OF and keep the rest: the previous flags only when a later instruction reads them
+    const live = (kind === 'rol' || kind === 'ror') && cnt > 0 ? E.flagsLive() : FL_ALL; // (a CL count of 0 keeps every flag)
+    if (live & FL_REST) E.materialize(); else E.discardFlags();
     const core = (constCnt) => {
       loadDst(E, d); c.set(L_LZA);
       if (constCnt < 0) c.get(L_REG + 1).i32(31).and().set(L_LZB); else c.i32(constCnt).set(L_LZB);
@@ -957,6 +1027,7 @@ function rotateOp(kind) {
         }
         c.set(L_LZRES);
         E.storeOpFrom(d, L_LZRES, insn);
+        if (!live) return; // no flag of this rotate is ever read
         // CF = rol ? res&1 : msb(res); OF = rol ? msb(res)^cf : msb(res)^msb-1(res)  (count==1 defined; we always compute)
         c.get(L_EFLAGS).i32(~(F.CF | F.OF)).and().set(L_EFLAGS);
         if (kind === 'rol') c.get(L_LZRES).i32(1).and().set(L_T3); else c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().set(L_T3);
@@ -1216,7 +1287,7 @@ function bitOp(kind) {
   return (E, insn) => {
     const c = E.c; const d = insn.ops[0], s = insn.ops[1]; const size = d.size; const bits = BITS[size];
     if (d.t === OT.MEM && s.t !== OT.IMM) { E.fallback(insn); return; } // bit-string addressing
-    E.materialize();
+    if (E.flagsLive() & FL_REST) E.materialize(); else E.discardFlags(); // ZF kept (the rest undefined): only if read
     E.loadOp(s); c.i32(bits - 1).and().set(L_T4);
     loadDst(E, d); c.set(L_T5);
     // CF = (v >> off) & 1
@@ -1232,7 +1303,6 @@ function bitOp(kind) {
 HANDLERS[OP.BT] = bitOp(0); HANDLERS[OP.BTS] = bitOp(1); HANDLERS[OP.BTR] = bitOp(2); HANDLERS[OP.BTC] = bitOp(3);
 HANDLERS[OP.BSF] = (E, insn) => {
   const c = E.c; const d = insn.ops[0], s = insn.ops[1];
-  E.materialize();
   E.loadOp(s); c.set(L_T4);
   c.get(L_T4).eqz().set(L_LZA); c.get(L_T4).set(L_LZRES);
   c.get(L_T4);
@@ -1241,7 +1311,6 @@ HANDLERS[OP.BSF] = (E, insn) => {
 };
 HANDLERS[OP.BSR] = (E, insn) => {
   const c = E.c; const d = insn.ops[0], s = insn.ops[1];
-  E.materialize();
   E.loadOp(s); c.set(L_T4);
   c.get(L_T4).eqz().set(L_LZA); c.get(L_T4).set(L_LZRES);
   c.get(L_T4);
@@ -1287,7 +1356,7 @@ HANDLERS[OP.POPA] = (E, insn) => {
 HANDLERS[OP.PUSHF] = (E, insn) => { const c = E.c; E.materialize(); c.get(L_EFLAGS).i32(0x00fcffff).and(); maskTo(E, insn.opsize); c.set(L_TV); pushValue(E, insn.opsize); };
 HANDLERS[OP.POPF] = (E, insn) => {
   const c = E.c; const size = insn.opsize;
-  E.materialize();
+  E.discardFlags(); // every arithmetic flag comes from the stack
   const w = (F.CF | F.PF | F.AF | F.ZF | F.SF | F.DF | F.OF | (1 << 14) | (1 << 18) | (1 << 21)) & (size === 2 ? 0xffff : -1);
   c.get(L_REG + 4); if (size === 2) c.i32load16u(0); else c.i32load(0, 0); c.i32(w).and().set(L_TV);
   c.get(L_REG + 4).i32(size).add().set(L_REG + 4);
@@ -1374,8 +1443,8 @@ HANDLERS[OP.NOP] = () => {};
 HANDLERS[OP.PAUSE] = () => {};
 HANDLERS[OP.WAIT] = () => {};
 HANDLERS[OP.LFENCE] = () => {}; HANDLERS[OP.MFENCE] = () => {}; HANDLERS[OP.SFENCE] = () => {}; HANDLERS[OP.PREFETCH] = () => {}; HANDLERS[OP.CLFLUSH] = () => {};
-HANDLERS[OP.CLC] = (E) => { E.materialize(); E.c.get(L_EFLAGS).i32(~F.CF).and().set(L_EFLAGS); };
-HANDLERS[OP.STC] = (E) => { E.materialize(); E.c.get(L_EFLAGS).i32(F.CF).or().set(L_EFLAGS); };
+HANDLERS[OP.CLC] = (E) => { if (E.flagsLive() & FL_REST) E.materialize(); else E.discardFlags(); E.c.get(L_EFLAGS).i32(~F.CF).and().set(L_EFLAGS); };
+HANDLERS[OP.STC] = (E) => { if (E.flagsLive() & FL_REST) E.materialize(); else E.discardFlags(); E.c.get(L_EFLAGS).i32(F.CF).or().set(L_EFLAGS); };
 HANDLERS[OP.CMC] = (E) => { E.materialize(); E.c.get(L_EFLAGS).i32(F.CF).xor().set(L_EFLAGS); };
 HANDLERS[OP.CLD] = (E) => { E.c.get(L_EFLAGS).i32(~F.DF).and().set(L_EFLAGS); };
 HANDLERS[OP.STD] = (E) => { E.c.get(L_EFLAGS).i32(F.DF).or().set(L_EFLAGS); };
