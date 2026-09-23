@@ -6,6 +6,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { createServer } from '../src/host/server.js';
 import { folderManifest } from '../src/host/manifest.js';
+import { decodePng } from '../src/gfx/codecs/png.js';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -27,7 +28,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
 // --capture-at @N captures N seconds after the anchor.
 let afterWait = false;
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps') afterWait = true; return ev; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -119,6 +120,15 @@ async function dumpWorkerStacks(reason) {
     await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
   }
 }
+/** RGB of the displayed frame at (x, y) (frame coordinates), from a 1-pixel screenshot; null when unavailable. */
+async function pixelAt(x, y) {
+  try {
+    const box = await page.locator('#frame').boundingBox(); if (!box) return null;
+    const png = await page.screenshot({ clip: { x: box.x + x, y: box.y + y, width: 1, height: 1 }, timeout: 5000 });
+    const img = decodePng(new Uint8Array(png));
+    return [img.data[0], img.data[1], img.data[2]];
+  } catch { return null; }
+}
 const status = () => page.evaluate(() => ({ status: window.orthros.status, stats: window.orthros.stats, statsAt: window.orthros.statsAt, memoryMB: window.orthros.memoryMB, exitCode: window.orthros.exitCode, crash: window.orthros.crash }));
 // --profile <start>:<seconds> — CPU-profile the worker (V8 sampling profiler through CDP) and print the top self-time functions
 const profileOpt = opt('profile') ? opt('profile').split(':').map(Number) : null;
@@ -174,6 +184,13 @@ for (;;) {
       if (t < due) break; // events are sequential from here on
       fpsStreak = (s.stats?.fps ?? 0) > ev.args[0] ? fpsStreak + 1 : 0;
       if (fpsStreak >= 3) { ev.done = true; anchorAt = t; console.log(`[input] waitfps ${ev.args[0]}: anchor at ${t.toFixed(0)}s`); }
+      break;
+    }
+    if (ev.kind === 'waitpixel') { // x,y,r,g,b[,tolerance]: until the displayed pixel has that color (what is on screen, whatever the speed)
+      if (t < due) break;
+      const [x, y, r, g, b, tol = 24] = ev.args;
+      const px = await pixelAt(x, y);
+      if (px && Math.abs(px[0] - r) <= tol && Math.abs(px[1] - g) <= tol && Math.abs(px[2] - b) <= tol) { ev.done = true; anchorAt = t; console.log(`[input] waitpixel ${x},${y}: anchor at ${t.toFixed(0)}s`); }
       break;
     }
     if (t < due) continue;
