@@ -24,6 +24,7 @@ const TWO_63 = 2 ** 63;
 /** FYL2XP1 tiny-argument scaling (see the handler): threshold and exact scale factors */
 const YL2XP1_TINY = 2 ** -1000, TWO_600 = 2 ** 600, TWO_M600 = 2 ** -600;
 const FLT_MIN_NORMAL = 2 ** -126;
+const DBL_MIN_NORMAL = 2 ** -1022, DBL_MAX_FINITE = 1.7976931348623157e308;
 // largest magnitude that f32.demote rounds (to nearest) without overflowing to infinity:
 // FLT_MAX + half an ulp (the tie rounds up to 2^128 as FLT_MAX's mantissa is odd)
 const F32_ROUND_LIMIT = 2 ** 128 - 2 ** 103;
@@ -96,7 +97,25 @@ function roundPC(E, op) {
   const fast = c.if_();
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.else_();
+  // directed rounding (down / up / toward zero) of an f64-normal result that is not on the 24-bit grid: the exact
+  // value lies strictly between the same two grid points, so masking the low 29 significand bits (plus one 24-bit
+  // step away from zero for down-negative / up-positive) is exact; on-grid, zero-adjacent, denormal, infinite and
+  // NaN results take the exact kernel
+  c.get(L_FPC).i32(0xc00).and();
+  c.get(L_F64C).f64abs().f64c(DBL_MIN_NORMAL).f64ge().and();
+  c.get(L_F64C).f64abs().f64c(DBL_MAX_FINITE).f64le().and();
+  c.get(L_F64C).i64reinterpret_f64().i64(0x1fffffffn).i64and().i64eqz().eqz().and();
+  const directed = c.if_();
+  c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+  // step = (rc == down && negative) || (rc == up && positive) ? 2^29 : 0 ; rc = L_FPC >> 10 (1 down, 2 up, 3 zero)
+  c.get(L_I64A).i64(~0x1fffffffn).i64and();
+  c.get(L_FPC).i32(0xc00).and().i32(0x400).eq().get(L_I64A).i64(0n).i64lt_s().and();
+  c.get(L_FPC).i32(0xc00).and().i32(0x800).eq().get(L_I64A).i64(0n).i64ge_s().and().or();
+  c.extend_u().i64(29n).i64shl().i64add();
+  c.f64reinterpret_i64().set(L_F64C);
+  c.else_();
   c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op); pushRC(E); c.call(IMP_ARITH24).set(L_F64C);
+  c.end(); void directed;
   c.end(); void fast;
   c.end(); void pc;
   c.get(L_F64C);
