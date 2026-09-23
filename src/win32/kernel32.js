@@ -111,10 +111,10 @@ export function registerKernel32(api, vm) {
   K.OutputDebugStringW = [1, (c) => { vm.log('debug', c.wstr(0) ?? ''); }];
   K.SetUnhandledExceptionFilter = [1, (c) => { const o = c.proc.unhandledFilter ?? 0; c.proc.unhandledFilter = c.arg(0); return o; }];
   K.UnhandledExceptionFilter = [1, () => 1];
-  K.IsBadReadPtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isCommitted(c.arg(0), c.arg(1)) ? 0 : 1)];
-  K.IsBadWritePtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isCommitted(c.arg(0), c.arg(1)) ? 0 : 1)];
-  K.IsBadCodePtr = [1, (c) => (c.proc.vmem.isCommitted(c.arg(0), 1) ? 0 : 1)];
-  K.IsBadStringPtrA = [2, (c) => (c.proc.vmem.isCommitted(c.arg(0), 1) ? 0 : 1)];
+  K.IsBadReadPtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isAccessible(c.arg(0), c.arg(1), false) ? 0 : 1)];
+  K.IsBadWritePtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isAccessible(c.arg(0), c.arg(1), true) ? 0 : 1)];
+  K.IsBadCodePtr = [1, (c) => (c.proc.vmem.isAccessible(c.arg(0), 1, false) ? 0 : 1)];
+  K.IsBadStringPtrA = [2, (c) => (c.proc.vmem.isAccessible(c.arg(0), 1, false) ? 0 : 1)];
   K.IsBadHugeReadPtr = K.IsBadReadPtr; K.IsBadHugeWritePtr = K.IsBadWritePtr;
   K.RaiseException = [4, (c) => { vm.raiseException(c, c.arg(0), c.arg(1), c.arg(2), c.arg(3)); }, { noreturn: true }];
   K.RtlUnwind = [4, (c) => vm.seh.rtlUnwind(c)];

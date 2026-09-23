@@ -107,6 +107,7 @@ export function mapImage(img, mem, vmem, opts) {
     const n = Math.min(s.rawSize, s.virtualSize || s.rawSize);
     if (n > 0 && s.rawPtr + n <= img.bytes.length) mem.writeBytes(base + s.rva, img.bytes.subarray(s.rawPtr, s.rawPtr + n));
   }
+  setSectionProtections(img, vmem, base);
   const mod = {
     name: opts.name.toLowerCase(),
     path: opts.path,
@@ -131,6 +132,23 @@ export function mapImage(img, mem, vmem, opts) {
 }
 
 function alignUp(v, a) { return (v + a - 1) & ~(a - 1); }
+
+/**
+ * Page protections as the Windows loader leaves them: headers read-only, each section by its characteristics
+ * (execute / read / write; writable sections copy-on-write, as a freshly mapped image reports them). Not enforced
+ * on memory accesses: seen by VirtualQuery, VirtualProtect's previous protection and IsBad*Ptr. Images whose
+ * sections are aligned below the page size share pages between sections and stay execute-read-write.
+ */
+function setSectionProtections(img, vmem, base) {
+  if (img.sectionAlign < 0x1000) return;
+  vmem.protect(base, alignUp(Math.max(1, img.sizeOfHeaders), 0x1000), 0x02 /* PAGE_READONLY */);
+  for (const s of img.sections) {
+    const c = s.characteristics >>> 0, x = c & 0x20000000, r = c & 0x40000000, w = c & 0x80000000;
+    const prot = x ? (w ? 0x80 : r ? 0x20 : 0x10) : w ? 0x08 : r ? 0x02 : 0x01; // (EXECUTE_)WRITECOPY / (EXECUTE_)READ / EXECUTE / READONLY / NOACCESS
+    const size = alignUp(Math.max(s.virtualSize, s.rawSize, 1), 0x1000);
+    if (s.rva + size <= img.sizeOfImage + 0xfff) vmem.protect(base + s.rva, size, prot);
+  }
+}
 
 function relocate(mod, mem) {
   const dir = mod.image.dirs[DIR.BASERELOC];
