@@ -185,12 +185,12 @@ export function d3dCore(vm) {
       this.locked = true; this.lockFlags = flags;
       this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
-      if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < 6) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
+      if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
       return D3D_OK;
     }
     unlock() {
-      if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt}: ${sites.length ? sites.map(([k, n]) => `${String(k).split('/').map((h) => vm.proc.symbolize(typeof k === 'number' ? k : parseInt(h, 16))).join(' < ')} x${n}`).join(', ') : 'no translated writer'}`); this.watchKey = null; }
+      if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt} (unlock by t${vm.current?.id}): ${sites.length ? sites.map(([k, n]) => { const [tid, rest] = typeof k === 'number' ? ['', k.toString(16)] : k.split(':'); return `${tid} ${rest.split('/').map((h) => vm.proc.symbolize(parseInt(h, 16))).join(' < ')} x${n}`; }).join(', ') : 'no translated writer'}`); this.watchKey = null; }
       if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
   }
   class Texture extends Resource {

@@ -229,7 +229,7 @@ export class Jit {
     if (!w) return false;
     // the writer's resume EIP, with the first words of its stack (a memcpy's return address)
     let key = eip;
-    if (thread) { const sp = thread.cpu.esp; key = [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }
+    if (thread) { const sp = thread.cpu.esp; key = `t${thread.id}:` + [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }
     w.sites.set(key, (w.sites.get(key) ?? 0) + 1);
     if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); this.watchDone?.(w); }
     return true;
