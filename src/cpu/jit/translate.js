@@ -14,7 +14,7 @@
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE } from './runtime.js';
 import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -92,6 +92,40 @@ function lazyCondInline(base, kind) {
     case 0: return kind === LZ.LOGIC; // O
     default: return false; // P
   }
+}
+
+/** Instructions that load the x87 control word (precision / rounding control). */
+const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.FXRSTOR, OP.FNSAVE]);
+
+/**
+ * Blocks whose x87 precision/rounding control is statically the region's assumed one: every block
+ * entered from outside runs under it (the region entry checks it), and it holds until an instruction
+ * of FPU_MODE_WRITERS; blocks reachable inside the region from such an instruction get the dynamic
+ * (L_FPC-tested) code. Returns known[i] (1 = the assumed mode holds at block entry).
+ */
+function planFpuModes(blocks, byEip, retSites) {
+  const n = blocks.length, known = new Uint8Array(n).fill(1);
+  const succ = blocks.map((b) => {
+    const s = [], last = b.insns[b.insns.length - 1];
+    const add = (eip) => { const t = byEip.get(eip); if (t) s.push(t.index); };
+    if (last) {
+      const t = branchTarget(last);
+      if (t >= 0) add(t);
+      if (b.term === TERM_RET) for (const r of retSites) add(r);
+    }
+    if (b.term === TERM_NONE || b.term === TERM_JCC || b.term === TERM_LOOP) add(b.fallthrough);
+    return s;
+  });
+  const work = [];
+  blocks.forEach((b, i) => { if (b.insns.some((x) => FPU_MODE_WRITERS.has(x.op))) work.push(i); });
+  const seen = new Uint8Array(n);
+  while (work.length) {
+    const i = work.pop();
+    if (seen[i]) continue;
+    seen[i] = 1;
+    for (const j of succ[i]) { known[j] = 0; if (!seen[j]) work.push(j); }
+  }
+  return known;
 }
 
 /** Direct in-region branch target of a block's last instruction (JMP/JCC/LOOP/CALL rel), or -1. */
@@ -240,6 +274,8 @@ class Emitter {
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
+    // x87 precision/rounding control (cw & 0xf00) the region is specialized for (null: tested at run time)
+    this.fpcAssume = opts.fpcAssume ?? null;
     this.stats = { native: 0, fallback: 0 };
   }
 
@@ -250,6 +286,7 @@ class Emitter {
     this.byEip = byEip;
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
+    if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
@@ -258,6 +295,14 @@ class Emitter {
     if (this.usesX87) this.loadX87();
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
+    if (this.fpcAssume !== null) {
+      // specialized for one x87 mode: entered under another one, leave (EIP is the entry's, stored by the
+      // dispatcher / chain) for the dispatcher to replace the region by one tested at run time
+      c.get(L_FPC).i32(this.fpcAssume).ne();
+      const i = c.hint(false).if_();
+      c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
+      c.end(); void i;
+    }
     this.dispatchL = c.loop();
     const def = c.block();
     // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
@@ -268,6 +313,7 @@ class Emitter {
     // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
     this.retSites = blocks.filter((b) => b.term === TERM_CALL && byEip.has(b.fallthrough)).map((b) => b.fallthrough);
     if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
+    this.fpcKnown = this.fpcAssume !== null ? planFpuModes(blocks, byEip, this.retSites) : null;
     this.unitOf = unitOf;
     const labels = new Array(units.length);
     for (let u = units.length - 1; u >= 0; u--) labels[u] = c.block();
@@ -311,7 +357,7 @@ class Emitter {
     c.i32(0);
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
-    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats };
+    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
   }
 
   /**
@@ -690,6 +736,8 @@ class Emitter {
     this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.cur = b.index;
+    /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
+    this.fpcStatic = this.fpcKnown?.[b.index] ? this.fpcAssume : null;
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
     // block end
     const n = b.insns.length;
@@ -725,6 +773,7 @@ class Emitter {
   /** Execute one instruction with the interpreter. */
   fallback(insn) {
     this.stats.fallback++;
+    if (FPU_MODE_WRITERS.has(insn.op)) this.fpcStatic = null;
     const c = this.c;
     this.materialize();
     this.x87Normalize();

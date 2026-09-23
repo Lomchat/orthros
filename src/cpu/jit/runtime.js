@@ -30,6 +30,8 @@ export const MATH_KERNELS = Object.freeze([
 ]);
 
 export const EXIT_TRANSLATE = 7;
+/** a region specialized for one x87 precision/rounding mode was entered under another (see Jit.run) */
+export const EXIT_FPUMODE = 8;
 export const HASH_ENTRY = 16; // eip u32, fnIdx u32, block u32, pad
 export const HASH_PROBES = 4;
 // Region function signature: (block, state, eax, ecx, edx, ebx, esp, ebp, esi, edi, eflags,
@@ -303,7 +305,9 @@ export function buildRuntime() {
     // miss
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT_TRANSLATE).i32store(ST.EXIT); c.i32(EXIT_TRANSLATE).return_();
     c.end(); // found
-    // call region: (block, state, registers/flags from the state block) via table[fnIdx]
+    // call region: (block, state, registers/flags from the state block) via table[fnIdx]; ST.EIP = the
+    // entry (a region specialized for another x87 mode leaves from its entry)
+    c.get(STATE).get(EIP).i32store(ST.EIP);
     c.get(E).i32load(8).get(STATE);
     for (const off of REGION_ARG_OFFSETS) c.get(STATE).i32load(off);
     c.get(E).i32load(4).call_indirect(regionType, 0).tee(EIP);

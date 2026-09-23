@@ -2,10 +2,22 @@
 // x87 microbenchmark for the JIT: ns per iteration of a dot-product loop (FLD m64, FMUL m64,
 // FADDP, two ADDs, DEC/JNZ) in three configurations:
 //   pc53    one region, MSVC default control word (0x027f: 53-bit precision)
-//   pc24    same loop with FLDCW 0x007f (24-bit precision: every result goes through roundPC)
+//   pc24    same loop under control word 0x007f (24-bit precision: every result goes through roundPC);
+//           pc24 gen: the same with the mode tested at run time
 //   chained loop body split across two regions (a region boundary in the middle): every
 //           iteration flushes/reloads the cached x87 stack twice (entry/exit cost of x87 regions)
 // Usage: node tools/x87-bench.mjs [iterations]
+//
+// The control word is set in the thread state before the run (not by an FLDCW inside the timed
+// region): x87 regions are specialized for the precision/rounding control in force when they are
+// translated, as a game's hot code is; `generic` runs the same loop with the mode tested at run time
+// (Jit option fpuSpecialize: false).
+//
+// Transform mode: node tools/x87-bench.mjs xform [vertices]
+//   ns per vertex of a 3D transform loop the way x87 compilers emit it (per output component:
+//   FLD m32, FMUL m32, FLD m32, FMUL m32, FADDP, FLD m32, FMUL m32, FADDP, FADD m32, FSTP m32),
+//   at 24-bit precision (the Direct3D FPU mode) and 53-bit precision; results checked against a
+//   JavaScript reference that rounds like the x87.
 //
 // Transcendental mode: node tools/x87-bench.mjs trans [iterations]
 //   ns per transcendental instruction (F2XM1, FSCALE, FSIN small / 1e6 argument, FCOS, FSINCOS,
@@ -20,7 +32,7 @@
 //   Each case is paired with a base loop (same body without the transcendental) so that the cost of
 //   the instruction itself is the difference; a JS reference sum validates every encoding.
 import { GuestMemory } from '../src/cpu/memory.js';
-import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
+import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
@@ -28,9 +40,10 @@ import { Jit } from '../src/cpu/jit/jit.js';
 import { HANDLERS } from '../src/cpu/jit/translate.js';
 import { OP } from '../src/cpu/decoder.js';
 
-const CODE = 0x20000000, DATA = 0x10000000, VEC_A = DATA + 0x1000, VEC_B = DATA + 0x3000, CW = DATA + 0x10;
+const CODE = 0x20000000, DATA = 0x10000000, VEC_A = DATA + 0x1000, VEC_B = DATA + 0x3000;
 const LEN = 256; // elements per pass (the loop restarts the pointers every LEN elements)
-const MODE = process.argv[2] === 'trans' ? 'trans' : 'dot';
+const MODE = ['trans', 'xform'].includes(process.argv[2]) ? process.argv[2] : 'dot';
+const CW_PC24 = 0x007f, CW_PC53 = 0x027f;
 const ITER = +(process.argv.slice(2).find((a) => /^\d/.test(a)) ?? (MODE === 'trans' ? 1e6 : 2e6));
 
 class Asm {
@@ -48,14 +61,13 @@ class Asm {
 }
 
 /**
- * fldz ; [fldcw [CW]] ; mov ecx, ITER ; mov edx, LEN ; mov esi, A ; mov edi, B
+ * fldz ; mov ecx, ITER ; mov edx, LEN ; mov esi, A ; mov edi, B
  * L: fld [esi] ; fmul [edi] ; faddp ; add esi, 8 ; add edi, 8 ; [M:] dec edx ; jnz K ; mov edx, LEN ; mov esi, A ; mov edi, B
  * K: dec ecx ; jnz L ; fstp [DATA] ; end: hlt
  */
 function program(pc24, split) {
   const a = new Asm(CODE);
   a.emit(0xd9, 0xee);
-  if (pc24) a.emit(0xd9, 0x2d).imm32(CW);
   a.emit(0xb9).imm32(ITER).emit(0xba).imm32(LEN).emit(0xbe).imm32(VEC_A).emit(0xbf).imm32(VEC_B);
   a.label('L').emit(0xdd, 0x06).emit(0xdc, 0x0f).emit(0xde, 0xc1).emit(0x83, 0xc6, 8).emit(0x83, 0xc7, 8);
   if (split) a.jmp('M');
@@ -65,16 +77,16 @@ function program(pc24, split) {
   return { code: a.finish(), end: a.labels.get('end'), M: a.labels.get('M') };
 }
 
-function run(name, pc24, split) {
+function run(name, pc24, split, generic = false) {
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
   const I = new Interp(mem, cpu);
-  const jit = new Jit(mem, I);
+  const jit = new Jit(mem, I, { fpuSpecialize: !generic });
   const { code, end, M } = program(pc24, split);
   cpu.reset();
   mem.writeBytes(CODE, code);
   for (let i = 0; i < LEN; i++) { mem.writeF64(VEC_A + 8 * i, 1 + i * 1e-3); mem.writeF64(VEC_B + 8 * i, 2 - i * 1e-3); }
-  mem.write16(CW, 0x007f);
+  mem.write16(cpu.base + ST.FPU_CW, pc24 ? CW_PC24 : CW_PC53);
   cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
   jit.cpu = cpu;
   jit.boundaries = new Set(split ? [M, end] : [end]);
@@ -84,6 +96,59 @@ function run(name, pc24, split) {
   if (r !== EXIT.HALT) throw new Error(`${name}: exit ${r}`);
   const perIter = (ms * 1e6) / ITER;
   console.log(`${name.padEnd(8)} ${ms.toFixed(0).padStart(5)} ms  ${perIter.toFixed(1).padStart(6)} ns/iter  sum=${mem.readF64(DATA).toPrecision(12)}  regions=${jit.stats.regions} chained=${jit.stats.chained} fallbacks=${jit.stats.fallbackSteps}`);
+}
+
+// ============================================================================================
+// Transform mode
+
+const NV = 64, VIN = DATA + 0x1000, VOUT = DATA + 0x2000, MAT = DATA + 0x3000;
+function xformProgram() {
+  const a = new Asm(CODE);
+  a.emit(0xb9).imm32(ITER).emit(0xba).imm32(NV).emit(0xbe).imm32(VIN).emit(0xbb).imm32(VOUT).emit(0xbf).imm32(MAT);
+  a.label('L');
+  for (let r = 0; r < 3; r++) {
+    a.emit(0xd9, 0x06).emit(0xd8, 0x4f, 4 * r); // fld [esi] ; fmul [edi + 4r]
+    a.emit(0xd9, 0x46, 4).emit(0xd8, 0x4f, 16 + 4 * r).emit(0xde, 0xc1); // fld [esi+4] ; fmul [edi+16+4r] ; faddp
+    a.emit(0xd9, 0x46, 8).emit(0xd8, 0x4f, 32 + 4 * r).emit(0xde, 0xc1); // fld [esi+8] ; fmul [edi+32+4r] ; faddp
+    a.emit(0xd8, 0x47, 48 + 4 * r).emit(0xd9, 0x5b, 4 * r); // fadd [edi+48+4r] ; fstp [ebx+4r]
+  }
+  a.emit(0x83, 0xc6, 12).emit(0x83, 0xc3, 12); // add esi, 12 ; add ebx, 12
+  a.emit(0x4a).jcc(0x5, 'K').emit(0xba).imm32(NV).emit(0xbe).imm32(VIN).emit(0xbb).imm32(VOUT);
+  a.label('K').emit(0x49).jcc(0x5, 'L');
+  a.label('end').emit(0xf4);
+  return { code: a.finish(), end: a.labels.get('end') };
+}
+function xformMode() {
+  console.log(`x87 vertex transform loop, ${ITER} vertices (3 components x 10 x87 instructions + 5 integer instructions per vertex)`);
+  for (const [name, pc24, generic] of [['pc24', true, false], ['pc24 generic', true, true], ['pc53', false, false], ['pc53 generic', false, true]]) {
+    let best = Infinity, ok = true;
+    for (let rep = 0; rep < 3; rep++) {
+      const mem = new GuestMemory();
+      const cpu = new CpuState(mem, THREAD_STATES_BASE);
+      const jit = new Jit(mem, new Interp(mem, cpu), { fpuSpecialize: !generic });
+      const { code, end } = xformProgram();
+      cpu.reset();
+      mem.writeBytes(CODE, code);
+      const m = Array.from({ length: 16 }, (_, i) => Math.fround(0.5 + 0.37 * Math.sin(i + 1)));
+      m.forEach((v, i) => mem.writeF32(MAT + 4 * i, v));
+      for (let i = 0; i < 3 * NV; i++) mem.writeF32(VIN + 4 * i, Math.fround(Math.cos(i) * 10));
+      mem.write16(cpu.base + ST.FPU_CW, pc24 ? CW_PC24 : CW_PC53);
+      cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
+      jit.cpu = cpu; jit.boundaries = new Set([end]);
+      const t0 = performance.now();
+      const r = jit.run({ stopAt: end, maxInsns: 1e9 });
+      best = Math.min(best, performance.now() - t0);
+      if (r !== EXIT.HALT) throw new Error(`xform: exit ${r}`);
+      // reference: every x87 result rounded to 24 bits (pc24) or to double (pc53), stored as float
+      const rnd = pc24 ? Math.fround : (x) => x;
+      for (let v = 0; v < NV && ok; v++) for (let c = 0; c < 3; c++) {
+        const x = mem.readF32(VIN + 12 * v), y = mem.readF32(VIN + 12 * v + 4), z = mem.readF32(VIN + 12 * v + 8);
+        let acc = rnd(x * m[c]); acc = rnd(acc + rnd(y * m[4 + c])); acc = rnd(acc + rnd(z * m[8 + c])); acc = rnd(acc + m[12 + c]);
+        if (Math.fround(acc) !== mem.readF32(VOUT + 12 * v + 4 * c)) { ok = false; console.log(`  MISMATCH vertex ${v} component ${c}: ${mem.readF32(VOUT + 12 * v + 4 * c)} want ${Math.fround(acc)}`); break; }
+      }
+    }
+    console.log(`${name.padEnd(13)} ${best.toFixed(0).padStart(5)} ms  ${((best * 1e6) / ITER).toFixed(1).padStart(6)} ns/vertex${ok ? '' : '  (MISMATCH)'}`);
+  }
 }
 
 // ============================================================================================
@@ -191,9 +256,11 @@ function transMode() {
 }
 
 if (MODE === 'trans') transMode();
+else if (MODE === 'xform') xformMode();
 else {
   console.log(`x87 dot-product loop, ${ITER} iterations (7 instructions each: FLD m64, FMUL m64, FADDP, 2x ADD, DEC, JNZ)`);
   run('pc53', false, false);
   run('pc24', true, false);
+  run('pc24 gen', true, false, true);
   run('chained', false, true);
 }

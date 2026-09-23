@@ -67,7 +67,7 @@ function pop(E) {
   E.stValid &= 0x7f;
 }
 /** rc (0 nearest, 1 down, 2 up, 3 trunc) from the cached control word bits */
-function pushRC(E) { E.c.get(L_FPC).i32(10).shr_u(); }
+function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else E.c.get(L_FPC).i32(10).shr_u(); }
 /**
  * f64 result on the stack -> rounded per precision control; the operands are still in L_F64A and
  * L_F64B (FSQRT: L_F64A), `op` numbers the operation (arith's: 0 add, 1 mul, 4 sub, 5 subr, 6 div,
@@ -79,25 +79,44 @@ function pushRC(E) { E.c.get(L_FPC).i32(10).shr_u(); }
  */
 function roundPC(E, op) {
   const c = E.c;
+  // mode known statically (region specialized for it): 53/64-bit precision rounds nothing; 24-bit precision
+  // with rounding to nearest keeps only the result tests
+  if (E.fpcStatic !== null && (E.fpcStatic & 0x300) !== 0) return;
+  if (E.fpcStatic === 0) {
+    c.set(L_F64C);
+    const done = c.block();
+    const cold = c.block();
+    c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
+    c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
+    c.get(L_F64C).f32demote().f64promote().set(L_F64C);
+    c.br(done);
+    c.end(); // cold: zero is exact, anything else takes the exact kernel
+    c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done);
+    c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op).i32(0).call(IMP_ARITH24).set(L_F64C);
+    c.end(); // done
+    c.get(L_F64C);
+    return;
+  }
   c.set(L_F64C);
   c.get(L_FPC).i32(0x300).and().eqz();
   const pc = c.if_();
-  // fast when rounding to nearest (L_FPC == 0 once PC is 24-bit) and the result is off a 24-bit midpoint and
-  // either in [2^-126, 2^127) (the float normal range, below the magnitudes that could round up to 2^128) or zero
-  // (exact: nothing to round); tested on the bit pattern (high word: sign, exponent, top of the significand)
-  c.get(L_FPC).eqz();
-  c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).ne().and();
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u();
-  c.get(L_I64A).i64(1n).i64shl().i64eqz().or();
-  c.and();
-  const fast = c.hint(true).if_();
+  // hot path: rounding to nearest (L_FPC == 0 once PC is 24-bit), the result off a 24-bit midpoint and in
+  // [2^-126, 2^127) (the float normal range, below the magnitudes that could round up to 2^128): three integer
+  // tests on the bit pattern, each an unlikely branch to the cold block, then f32.demote/f64.promote
+  const done = c.block();
+  const cold = c.block();
+  c.get(L_FPC).hint(false).br_if(cold);
+  c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
-  c.else_();
+  c.br(done);
+  c.end(); // cold (L_I64A = the result's bits)
+  // zero when rounding to nearest: exact, nothing to round
+  c.get(L_FPC).eqz().get(L_I64A).i64(1n).i64shl().i64eqz().and().br_if(done);
   // directed rounding (down / up / toward zero) of an f64-normal result that is not on the 24-bit grid: the exact
   // value lies strictly between the same two grid points, so masking the low 29 significand bits (plus one 24-bit
   // step away from zero for down-negative / up-positive) is exact; on-grid, zero-adjacent, denormal, infinite and
-  // NaN results take the exact kernel
-  // (L_I64A = the result's bits; exponent field in [1, 2046]: f64 normal)
+  // NaN results (and every case the hot path rejected when rounding to nearest) take the exact kernel
   c.get(L_FPC).i32(0xc00).and();
   c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u().and();
   c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0).ne().and();
@@ -111,14 +130,17 @@ function roundPC(E, op) {
   c.else_();
   c.get(L_F64A).get(op === 8 ? L_F64A : L_F64B).i32(op); pushRC(E); c.call(IMP_ARITH24).set(L_F64C);
   c.end(); void directed;
-  c.end(); void fast;
+  c.end(); // done
   c.end(); void pc;
   c.get(L_F64C);
 }
+/** f64 on the stack rounded to an integer by rounding control 0 nearest, 1 down, 2 up, 3 toward zero */
+const ROUND_BY_RC = [(c) => c.f64nearest(), (c) => c.f64floor(), (c) => c.f64ceil(), (c) => c.f64trunc()];
 /** f64 on stack -> rounded to integer per RC (or trunc) */
 function roundRC(E, trunc) {
   const c = E.c;
   if (trunc) { c.f64trunc(); return; }
+  if (E.fpcStatic !== null) { ROUND_BY_RC[E.fpcStatic >> 10](c); return; }
   c.set(L_F64B);
   const done = c.block();
   const l3 = c.block(), l2 = c.block(), l1 = c.block(), l0 = c.block();
@@ -193,8 +215,8 @@ function fstore(E, insn, doPop) {
   if (o.size === 4) {
     // nearest: f32.demote (IEEE, exact); directed rounding: the f32rc kernel (float denormals and overflow included)
     c.get(L_TA);
-    pushRC(E); c.set(L_T4);
-    c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i;
+    if (E.fpcStatic !== null && (E.fpcStatic & 0xc00) === 0) c.get(L_F64A).f32demote();
+    else { pushRC(E); c.set(L_T4); c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i; }
     c.f32store(0, 0);
   } else c.get(L_TA).get(L_F64A).f64store(0, 0);
   // pop before the SMC check: its exit resumes at insn.next with the instruction completed
@@ -477,6 +499,7 @@ HANDLERS[OP.FLDCW] = (E, insn) => {
   const c = E.c;
   c.get(L_STATE); E.ea(insn.ops[0]); c.i32load16u(0).i32(0x1f3f).and().i32(0x40).or().tee(L_TV).i32store16(ST.FPU_CW);
   c.get(L_TV).i32(0xf00).and().set(L_FPC);
+  E.fpcStatic = null; // unknown from here on (tested at run time)
 };
 HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.ea(insn.ops[0]); c.get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); };
 HANDLERS[OP.FNSTSW] = (E, insn) => {
@@ -496,6 +519,7 @@ HANDLERS[OP.FNINIT] = (E) => {
   E.x87SetTop0(); // register contents are kept (as the interpreter does), only re-based on TOP = 0
   c.i32(0).set(L_FTW); E.stValid = 0;
   c.i32(0x300).set(L_FPC);
+  E.fpcStatic = null;
 };
 
 export {};

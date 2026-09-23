@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF } from './translate.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -58,6 +58,10 @@ export class Jit {
     this.blockMap = new Map(); // block eip -> { region, block } for every live region (re-insertion after hash eviction)
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
     this.byEntry = new Map();
+    this.byFn = new Map(); // table index -> live region
+    // block eips of regions that were entered under another x87 mode than the one they were specialized
+    // for: translated from then on with the precision/rounding control tested at run time
+    this.genericFpu = new Set();
     this.nextFn = 0;
     this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
@@ -83,6 +87,8 @@ export class Jit {
     this.blockMap.clear();
     this.byEntry.clear();
     this.pageRegions.clear();
+    this.byFn?.clear();
+    this.genericFpu?.clear();
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -128,7 +134,9 @@ export class Jit {
     // translation storm diagnostic: thousands of new regions per second means code is being retranslated
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
-    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn });
+    // x87 regions are specialized for the precision/rounding control in force when they are first reached
+    const fpcAssume = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume });
     const t1 = performance.now();
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
     const t2 = performance.now();
@@ -151,7 +159,8 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc };
+    this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
     this.byEntry.set(eip, region);
@@ -208,6 +217,7 @@ export class Jit {
       if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_BITMAP_BASE + (p >>> 3)] &= ~(1 << (p & 7)); } }
     }
     this.table.set(r.fnIdx, null);
+    this.byFn.delete(r.fnIdx);
   }
 
   // ------------------------------------------------------------------ fallback
@@ -284,6 +294,14 @@ export class Jit {
           const s = this.interp.step();
           if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
         }
+        continue;
+      }
+      if (r === EXIT_FPUMODE) {
+        // a region specialized for one x87 mode entered under another: replace it by one testing the mode
+        const h = this.hashLookup(cpu.eip), region = h && this.byFn.get(h.fnIdx);
+        if (region) { for (const b of region.blocks) this.genericFpu.add(b.eip); this.dropRegion(region); }
+        else this.genericFpu.add(cpu.eip);
+        this.stats.fpuModeMisses = (this.stats.fpuModeMisses ?? 0) + 1;
         continue;
       }
       if (r === EXIT.NONE) { // a region returned EIP 0 (jump/call/ret to address 0): access violation
