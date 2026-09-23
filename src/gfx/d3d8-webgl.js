@@ -439,20 +439,27 @@ export class WebGLDevice {
     if (pv.flip !== flip) { pv.flip = flip; if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1); }
     if (this.capturing) this.captureDraw(P, info, v, flip);
     // uniform groups, uploaded only when their source changed since this program last saw it
+    // transforms: a slot is re-uploaded to this program only when its own version moved (one SetTransform per draw
+    // must not re-send the view, projection and texture matrices: at 12 k draws/s that was the top GL cost)
+    const tsv = dev.transformSlotVersion, tall = dev.transformAllVersion;
     if (pv.t !== dev.transformVersion) {
       pv.t = dev.transformVersion;
-      for (let i = 0; i < 4; i++) { const l = U(U_WORLD[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_WORLD + i) ?? IDENTITY); }
-      if (U('u_view')) gl.uniformMatrix4fv(U('u_view'), false, dev.transforms.get(TS_VIEW) ?? IDENTITY);
-      if (U('u_proj')) gl.uniformMatrix4fv(U('u_proj'), false, dev.transforms.get(TS_PROJECTION) ?? IDENTITY);
-      for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_TEXMAT[i]); if (l) gl.uniformMatrix4fv(l, false, dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY); }
+      const seen = pv.ts ?? (pv.ts = new Map());
+      const upload = (slot, l) => { if (!l) return; const sv = Math.max(tsv.get(slot) ?? 0, tall); if (seen.get(slot) !== sv) { seen.set(slot, sv); gl.uniformMatrix4fv(l, false, dev.transforms.get(slot) ?? IDENTITY); } };
+      for (let i = 0; i < 4; i++) upload(TS_WORLD + i, U(U_WORLD[i]));
+      upload(TS_VIEW, U('u_view'));
+      upload(TS_PROJECTION, U('u_proj'));
+      for (let i = 0; i < MAX_STAGES; i++) upload(TS_TEXTURE0 + i, U(U_TEXMAT[i]));
     }
     if (pv.vp !== dev.viewportVersion) {
       pv.vp = dev.viewportVersion;
       if (U('u_viewport')) gl.uniform4f(U('u_viewport'), v.x, v.y, v.w, v.h);
       if (U('u_depthRange')) gl.uniform2f(U('u_depthRange'), v.minZ, v.maxZ);
     }
-    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== dev.transformVersion || pv.ls !== dev.stateVersion)) {
-      pv.l = dev.lightVersion; pv.lt = dev.transformVersion; pv.ls = dev.stateVersion;
+    // lights are transformed by the view matrix only: its slot version, not the whole transform group
+    const viewVersion = info.lighting ? Math.max(tsv.get(TS_VIEW) ?? 0, tall) : 0;
+    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion || pv.ls !== dev.stateVersion)) {
+      pv.l = dev.lightVersion; pv.lt = viewVersion; pv.ls = dev.stateVersion;
       const m = dev.material;
       gl.uniform4fv(U('u_matDiffuse'), m.subarray(0, 4)); gl.uniform4fv(U('u_matAmbient'), m.subarray(4, 8)); gl.uniform4fv(U('u_matSpecular'), m.subarray(8, 12)); gl.uniform4fv(U('u_matEmissive'), m.subarray(12, 16)); gl.uniform1f(U('u_matPower'), m[16]);
       gl.uniform4fv(U('u_ambient'), colorToVec(this.rs(RS.AMBIENT, 0), this.tmp.v4));
