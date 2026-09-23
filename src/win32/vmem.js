@@ -150,9 +150,27 @@ export class VMem {
       size: (p1 - p0 + 1) * PAGE_SIZE,
       state: st === STATE_FREE ? MEM_FREE : st === STATE_RESERVED ? MEM_RESERVE : MEM_COMMIT,
       protect: st === STATE_FREE ? PAGE_NOACCESS : pr,
-      allocProtect: st === STATE_FREE ? 0 : PAGE_READWRITE,
+      allocProtect: st === STATE_FREE ? 0 : region && region.tag.startsWith('image:') ? 0x80 /* PAGE_EXECUTE_WRITECOPY */ : PAGE_READWRITE,
       type: st === STATE_FREE ? 0 : region && region.tag.startsWith('image:') ? MEM_IMAGE : MEM_PRIVATE,
     };
+  }
+
+  /**
+   * IsBadReadPtr / IsBadWritePtr: every page of [addr, addr + size) committed and readable (not NOACCESS or GUARD;
+   * executable pages read fine on x86) or, `write`, writable (READWRITE, WRITECOPY and their EXECUTE forms).
+   */
+  isAccessible(addr, size, write) {
+    if (size <= 0) return true;
+    const p0 = this.pageOf(addr >>> 0), p1 = this.pageOf(((addr >>> 0) + size - 1) >>> 0);
+    if (p1 >= this.pages || p1 < p0) return false;
+    for (let p = p0; p <= p1; p++) {
+      if (this.state[p] !== STATE_COMMITTED) return false;
+      const pr = this.prot[p];
+      if (pr & 0x100) return false; // PAGE_GUARD
+      const base = pr & 0xff;
+      if (write ? !(base === 0x04 || base === 0x08 || base === 0x40 || base === 0x80) : base === 0x01 || base === 0) return false;
+    }
+    return true;
   }
 
   isCommitted(addr, size = 1) {
