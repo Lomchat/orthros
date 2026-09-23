@@ -1,26 +1,33 @@
 // Adversarial verification of the native x87 transcendentals (verify_trans lens): the oracle
-// suite tests/generated/verify_trans (tools/gen/gen_cases.py suite_verify_trans: domain edges,
-// special values, condition codes, out-of-range trig, idiom sequences) is run through the
-// interpreter and the JIT, then the two executors are compared bit for bit on what the oracle
-// runner cannot see (signed zeros, NaN class, IE/ES, TOP/tags, exact ulp distance of the
-// results), and the pure-WASM kernels are checked against reference values read off the native
-// FPU (tools/gen/gen_cases.py probes, AMD EPYC 7402P) at the exact corner inputs.
+// suites tests/generated/verify_trans (tools/gen/gen_cases.py suite_verify_trans: domain edges,
+// special values, condition codes, out-of-range trig, idiom sequences) and verify_trans2
+// (suite_verify_trans2, the hardware-truth pass after D034: control words with exceptions
+// unmasked other than the one raised, FLDCW right before the instruction, initial condition
+// codes on every path, NaN sign / significand choices, F2XM1 at 1 +- ulp, FYL2X zero divides,
+// PC / RC on the transcendentals, f64 denormals without DE) are run through the interpreter and
+// the JIT, then the two executors are compared bit for bit on what the oracle runner cannot see
+// (signed zeros, NaN class, IE/ES, TOP/tags, exact ulp distance of the results), and the
+// pure-WASM kernels are checked against reference values read off the native FPU
+// (tools/gen/gen_cases.py probes, AMD EPYC 7402P) at the exact corner inputs. The measured gaps
+// both executors still have (tools/gen/gen_cases.py suite_verify_trans_known, tagged) are
+// reported by a todo test with their per-tag counts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { Conformance, runSuite, CODE, f80ToF64 } from './conformance/runner.js';
 import { Interp } from '../src/cpu/interp.js';
-import '../src/cpu/interp-x87.js';
+import { scalb as scalbInterp } from '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { ModuleBuilder, T } from '../src/cpu/jit/wasm.js';
+import { ModuleBuilder, Code, T } from '../src/cpu/jit/wasm.js';
 import { addExpKernels, INDEFINITE_BITS } from '../src/cpu/jit/fpmath-exp.js';
 import { addTrigKernels } from '../src/cpu/jit/fpmath-trig.js';
 import { addAtanKernels } from '../src/cpu/jit/fpmath-atan.js';
+import { addNanKernels } from '../src/cpu/jit/fpmath-nan.js';
 
 const DIR = new URL('./generated/', import.meta.url).pathname;
-const SUITE = 'verify_trans';
-const HAVE_SUITE = fs.existsSync(`${DIR}${SUITE}.results.bin`);
+const SUITES = ['verify_trans', 'verify_trans2'];
+const haveSuite = (suite) => fs.existsSync(`${DIR}${suite}.results.bin`);
 const SHOW = +(process.env.SHOW_FAILURES || 8);
 const SW_CC = 0x4500, SW_IE_ES = 0x81;
 
@@ -56,92 +63,147 @@ function makeJit(mem, cpu) {
   };
 }
 
-test(`interp conformance: ${SUITE} (oracle, transcendental edges)`, { skip: !HAVE_SUITE && 'run make gen' }, () => {
-  const res = runSuite(DIR, SUITE, makeInterp);
-  if (res.failures.length) console.log(`${SUITE} interp: ${res.failures.length}/${res.total} failures\n${res.failures.slice(0, SHOW).map((f) => `#${f.i} ${f.asm}\n    ${f.diff}`).join('\n')}`);
-  assert.equal(res.failures.length, 0, `${res.failures.length}/${res.total} mismatches (interpreter)`);
-});
+for (const suite of SUITES) {
+  test(`interp conformance: ${suite} (oracle, transcendental edges)`, { skip: !haveSuite(suite) && 'run make gen' }, () => {
+    const res = runSuite(DIR, suite, makeInterp);
+    if (res.failures.length) console.log(`${suite} interp: ${res.failures.length}/${res.total} failures\n${res.failures.slice(0, SHOW).map((f) => `#${f.i} ${f.asm}\n    ${f.diff}`).join('\n')}`);
+    assert.equal(res.failures.length, 0, `${res.failures.length}/${res.total} mismatches (interpreter)`);
+  });
 
-test(`jit conformance: ${SUITE} (oracle, no fallback expected)`, { skip: !HAVE_SUITE && 'run make gen' }, () => {
-  let exec;
-  const res = runSuite(DIR, SUITE, (mem, cpu) => (exec = makeJit(mem, cpu)), { skip: isRealStackFault });
-  if (res.failures.length) console.log(`${SUITE} jit: ${res.failures.length}/${res.total} failures\n${res.failures.slice(0, SHOW).map((f) => `#${f.i} ${f.asm}\n    ${f.diff}`).join('\n')}`);
-  assert.equal(res.failures.length, 0, `${res.failures.length}/${res.total} mismatches (JIT)`);
-  const s = exec.jit.stats;
-  console.log(`[verify-trans] jit: ${res.total} cases, ${res.skipped} skipped, native ${s.native} fallback ${s.fallback}`);
-  assert.equal(s.fallback, 0, 'every transcendental must be translated natively');
-});
+  test(`jit conformance: ${suite} (oracle, no fallback expected)`, { skip: !haveSuite(suite) && 'run make gen' }, () => {
+    let exec;
+    const res = runSuite(DIR, suite, (mem, cpu) => (exec = makeJit(mem, cpu)), { skip: isRealStackFault });
+    if (res.failures.length) console.log(`${suite} jit: ${res.failures.length}/${res.total} failures\n${res.failures.slice(0, SHOW).map((f) => `#${f.i} ${f.asm}\n    ${f.diff}`).join('\n')}`);
+    assert.equal(res.failures.length, 0, `${res.failures.length}/${res.total} mismatches (JIT)`);
+    const s = exec.jit.stats;
+    console.log(`[verify-trans] jit: ${res.total} cases, ${res.skipped} skipped, native ${s.native} fallback ${s.fallback}`);
+    assert.equal(s.fallback, 0, 'every transcendental must be translated natively');
+  });
 
-/** State snapshot after a case: what the oracle runner compares plus the bits it ignores. */
-function snapshot(c, exit) {
-  const cpu = c.cpu;
-  return {
-    exit, eip: cpu.eip, regs: Array.from({ length: 8 }, (_, r) => cpu.reg(r)),
-    top: cpu.fpuTop, tw: cpu.fpuTw, sw: cpu.fpuSw, cw: cpu.fpuCw,
-    fpr: Array.from({ length: 8 }, (_, k) => cpu.fpr(k)),
-  };
+  /**
+   * State snapshot after a case: what the oracle runner compares plus the bits it ignores. The
+   * registers are captured as their 64-bit patterns (BigInt): a plain Array of doubles would let
+   * V8 canonicalize a NaN on some of its store paths (double-element arrays cannot hold the hole
+   * pattern; which path runs depends on the tier and IC state), which showed up as a spurious
+   * 0x7ff8000000000000 vs payload-NaN difference in about one run out of seven (verify_trans2
+   * #952, FSCALE of two NaNs: both executors hold the oracle's bits).
+   */
+  function snapshot(c, exit) {
+    const cpu = c.cpu;
+    return {
+      exit, eip: cpu.eip, regs: Array.from({ length: 8 }, (_, r) => cpu.reg(r)),
+      top: cpu.fpuTop, tw: cpu.fpuTw, sw: cpu.fpuSw, cw: cpu.fpuCw,
+      fprBits: Array.from({ length: 8 }, (_, k) => bitsOf(cpu.fpr(k))),
+      fpr(k) { return fromBits(this.fprBits[k]); },
+    };
+  }
+
+  test(`${suite}: interpreter and JIT agree bit for bit on what the oracle runner ignores`, { skip: !haveSuite(suite) && 'run make gen' }, () => {
+    const ci = new Conformance(DIR, suite), cj = new Conformance(DIR, suite);
+    const ei = makeInterp(ci.mem, ci.cpu), ej = makeJit(cj.mem, cj.cpu);
+    const diffs = [];
+    let n = 0, zeros = 0, maxUlp = 0n, maxUlpAt = null;
+    for (let i = 0; i < ci.count; i++) {
+      if (isRealStackFault(i, ci)) continue;
+      const asm = ci.meta[i].asm;
+      const single = !asm.includes(';');
+      const endI = ci.load(i).end; ci.cpu.eip = CODE; const a = snapshot(ci, ei.run(endI));
+      const endJ = cj.load(i).end; cj.cpu.eip = CODE; const b = snapshot(cj, ej.run(endJ));
+      n++;
+      const d = [];
+      if (a.exit !== b.exit || a.eip !== b.eip) d.push(`exit/eip ${a.exit}@${a.eip.toString(16)} vs ${b.exit}@${b.eip.toString(16)}`);
+      for (let r = 0; r < 8; r++) if (a.regs[r] !== b.regs[r]) d.push(`reg${r} ${a.regs[r].toString(16)} vs ${b.regs[r].toString(16)}`);
+      if (a.top !== b.top) d.push(`top ${a.top} vs ${b.top}`);
+      if (a.tw !== b.tw) d.push(`tags ${a.tw.toString(2)} vs ${b.tw.toString(2)}`);
+      if (a.cw !== b.cw) d.push(`cw ${a.cw.toString(16)} vs ${b.cw.toString(16)}`);
+      // condition codes always; IE/ES for the single-instruction cases (the native arithmetic of a
+      // sequence does not raise ZE/OE like the interpreter does: out of this lens)
+      const m = SW_CC | (single ? SW_IE_ES : 0);
+      if ((a.sw & m) !== (b.sw & m)) d.push(`sw ${(a.sw & m).toString(16)} vs ${(b.sw & m).toString(16)} (mask ${m.toString(16)})`);
+      for (let k = 0; k < 8; k++) {
+        if (!((a.tw >> k) & 1)) continue;
+        const x = a.fpr(k), y = b.fpr(k);
+        // NaN results bit for bit: the indefinite for invalid operands, the propagated (quieted) operand NaN (D034)
+        if (Number.isNaN(x) || Number.isNaN(y)) { if (a.fprBits[k] !== b.fprBits[k]) d.push(`fpr${k} ${x} (0x${a.fprBits[k].toString(16)}) vs ${y} (0x${b.fprBits[k].toString(16)})`); continue; }
+        if (x === 0 || y === 0 || !Number.isFinite(x) || !Number.isFinite(y)) { if (!Object.is(x, y)) d.push(`fpr${k} ${x} (1/x ${1 / x}) vs ${y} (1/y ${1 / y})`); continue; }
+        if (single) {
+          // one kernel against one Math call: a few ulps at most (kernels ~1 ulp, V8 ~1 ulp)
+          const u = ulpDist(x, y);
+          if (u > maxUlp) { maxUlp = u; maxUlpAt = `#${i} ${asm}: ${x} vs ${y}`; }
+          if (u > 8n) d.push(`fpr${k} ${x} vs ${y} (${u} ulp apart)`);
+        } else if (Math.abs(x - y) > 1e-13 * Math.max(1, Math.abs(x), Math.abs(y))) d.push(`fpr${k} ${x} vs ${y}`);
+      }
+      // signs of zero results against the native FPU (the oracle runner's fpEqual treats 0 == -0)
+      const rv = new DataView(ci.results.buffer, ci.results.byteOffset + i * 2624, 2624);
+      const otop = (rv.getUint16(50, true) >> 11) & 7, otw = rv.getUint8(52);
+      for (let k = 0; k < 8; k++) {
+        const phys = (otop + k) & 7;
+        if (!((otw >> phys) & 1)) continue;
+        const want = f80ToF64(rv.getBigUint64(48 + 32 + 16 * k, true), rv.getUint16(48 + 40 + 16 * k, true));
+        if (want !== 0) continue;
+        zeros++;
+        for (const [name, s] of [['interp', a], ['jit', b]]) if (!Object.is(s.fpr(phys), want)) d.push(`${name} st(${k}) ${s.fpr(phys)} (1/x ${1 / s.fpr(phys)}) vs hardware ${want} (1/x ${1 / want})`);
+      }
+      if (d.length) diffs.push(`#${i} ${asm}\n    ${d.join('\n    ')}`);
+    }
+    console.log(`[verify-trans] cross-check interp vs jit: ${n} cases, ${diffs.length} differences; ${zeros} zero results sign-checked against the FPU; max single-instruction distance ${maxUlp} ulp at ${maxUlpAt}`);
+    if (diffs.length) console.log(diffs.slice(0, SHOW).join('\n'));
+    assert.equal(diffs.length, 0);
+  });
 }
 
-test(`${SUITE}: interpreter and JIT agree bit for bit on what the oracle runner ignores`, { skip: !HAVE_SUITE && 'run make gen' }, () => {
-  const ci = new Conformance(DIR, SUITE), cj = new Conformance(DIR, SUITE);
-  const ei = makeInterp(ci.mem, ci.cpu), ej = makeJit(cj.mem, cj.cpu);
-  const diffs = [];
-  let n = 0, zeros = 0, maxUlp = 0n, maxUlpAt = null;
-  for (let i = 0; i < ci.count; i++) {
-    if (isRealStackFault(i, ci)) continue;
-    const asm = ci.meta[i].asm;
-    const single = !asm.includes(';');
-    const endI = ci.load(i).end; ci.cpu.eip = CODE; const a = snapshot(ci, ei.run(endI));
-    const endJ = cj.load(i).end; cj.cpu.eip = CODE; const b = snapshot(cj, ej.run(endJ));
-    n++;
-    const d = [];
-    if (a.exit !== b.exit || a.eip !== b.eip) d.push(`exit/eip ${a.exit}@${a.eip.toString(16)} vs ${b.exit}@${b.eip.toString(16)}`);
-    for (let r = 0; r < 8; r++) if (a.regs[r] !== b.regs[r]) d.push(`reg${r} ${a.regs[r].toString(16)} vs ${b.regs[r].toString(16)}`);
-    if (a.top !== b.top) d.push(`top ${a.top} vs ${b.top}`);
-    if (a.tw !== b.tw) d.push(`tags ${a.tw.toString(2)} vs ${b.tw.toString(2)}`);
-    if (a.cw !== b.cw) d.push(`cw ${a.cw.toString(16)} vs ${b.cw.toString(16)}`);
-    // condition codes always; IE/ES for the single-instruction cases (the native arithmetic of a
-    // sequence does not raise ZE/OE like the interpreter does: out of this lens)
-    const m = SW_CC | (single ? SW_IE_ES : 0);
-    if ((a.sw & m) !== (b.sw & m)) d.push(`sw ${(a.sw & m).toString(16)} vs ${(b.sw & m).toString(16)} (mask ${m.toString(16)})`);
-    for (let k = 0; k < 8; k++) {
-      if (!((a.tw >> k) & 1)) continue;
-      const x = a.fpr[k], y = b.fpr[k];
-      if (Number.isNaN(x) || Number.isNaN(y)) { if (!(Number.isNaN(x) && Number.isNaN(y))) d.push(`fpr${k} ${x} vs ${y}`); continue; }
-      if (x === 0 || y === 0 || !Number.isFinite(x) || !Number.isFinite(y)) { if (!Object.is(x, y)) d.push(`fpr${k} ${x} (1/x ${1 / x}) vs ${y} (1/y ${1 / y})`); continue; }
-      if (single) {
-        // one kernel against one Math call: a few ulps at most (kernels ~1 ulp, V8 ~1 ulp)
-        const u = ulpDist(x, y);
-        if (u > maxUlp) { maxUlp = u; maxUlpAt = `#${i} ${asm}: ${x} vs ${y}`; }
-        if (u > 8n) d.push(`fpr${k} ${x} vs ${y} (${u} ulp apart)`);
-      } else if (Math.abs(x - y) > 1e-13 * Math.max(1, Math.abs(x), Math.abs(y))) d.push(`fpr${k} ${x} vs ${y}`);
-    }
-    // signs of zero results against the native FPU (the oracle runner's fpEqual treats 0 == -0)
-    const rv = new DataView(ci.results.buffer, ci.results.byteOffset + i * 2624, 2624);
-    const otop = (rv.getUint16(50, true) >> 11) & 7, otw = rv.getUint8(52);
-    for (let k = 0; k < 8; k++) {
-      const phys = (otop + k) & 7;
-      if (!((otw >> phys) & 1)) continue;
-      const want = f80ToF64(rv.getBigUint64(48 + 32 + 16 * k, true), rv.getUint16(48 + 40 + 16 * k, true));
-      if (want !== 0) continue;
-      zeros++;
-      for (const [name, s] of [['interp', a], ['jit', b]]) if (!Object.is(s.fpr[phys], want)) d.push(`${name} st(${k}) ${s.fpr[phys]} (1/x ${1 / s.fpr[phys]}) vs hardware ${want} (1/x ${1 / want})`);
-    }
-    if (d.length) diffs.push(`#${i} ${asm}\n    ${d.join('\n    ')}`);
+// The gaps both executors still have against the oracle machine, tagged in
+// tools/gen/gen_cases.py suite_verify_trans_known (generated on demand: python3
+// tools/gen/gen_cases.py --suite verify_trans_known --count 600 --out tests/generated). The
+// todo reports the per-tag failure counts of both executors; it passes only once a tag is fixed
+// in both and removed from the suite. Tags (D034 review): cc-preserved (trig keeps C0/C3),
+// precision-flag (PE / DE / OE / UE), fyl2xp1-outside-domain (x <= -1 gives ST(0) back),
+// unmasked-abort (an unmasked IE / ZE / stack fault aborts the instruction: no result, no
+// push / pop, the SNaN not quieted, ES and B set), stack-overflow-push (FSINCOS / FPTAN with
+// ST(7) occupied: the overflow pre-empts the argument, the indefinite lands in ST(1) too),
+// unmasked-post-computation (PE / OE / UE unmasked: flag + ES with the result written, the
+// exponent wrapped by 24576 for OE / UE).
+const KNOWN = 'verify_trans_known';
+test(`${KNOWN}: per-tag gaps of both executors against the oracle (informational)`, { skip: !haveSuite(KNOWN) && 'not generated', todo: 'measured hardware gaps, not modelled (see suite_verify_trans_known)' }, () => {
+  const meta = JSON.parse(fs.readFileSync(`${DIR}${KNOWN}.meta.json`, 'utf8'));
+  const tags = [...new Set(meta.map((m) => m.tag ?? '-'))];
+  const report = [];
+  let total = 0;
+  const conf = new Conformance(DIR, KNOWN); // the oracle status words, for the SF cases the JIT skips
+  for (const [name, make, opts] of [['interp', makeInterp, {}], ['jit', makeJit, { skip: isRealStackFault }]]) {
+    const res = runSuite(DIR, KNOWN, make, opts);
+    const fail = new Map(), seen = new Map();
+    for (let i = 0; i < meta.length; i++) { if (opts.skip && isRealStackFault(i, conf)) continue; const t = meta[i].tag ?? '-'; seen.set(t, (seen.get(t) ?? 0) + 1); }
+    for (const f of res.failures) { const t = meta[f.i].tag ?? '-'; fail.set(t, (fail.get(t) ?? 0) + 1); }
+    total += res.failures.length;
+    report.push(`${name}: ${res.failures.length}/${res.total} (${res.skipped} SF skipped) ` + tags.map((t) => `${t} ${fail.get(t) ?? 0}/${seen.get(t) ?? 0}`).join(', '));
   }
-  console.log(`[verify-trans] cross-check interp vs jit: ${n} cases, ${diffs.length} differences; ${zeros} zero results sign-checked against the FPU; max single-instruction distance ${maxUlp} ulp at ${maxUlpAt}`);
-  if (diffs.length) console.log(diffs.slice(0, SHOW).join('\n'));
-  assert.equal(diffs.length, 0);
+  console.log(`[verify-trans] ${KNOWN}:\n  ${report.join('\n  ')}`);
+  assert.equal(total, 0, `${KNOWN}: ${total} known gaps remain`);
 });
 
 // ---- the kernels alone, at the corner inputs whose hardware results were read off the oracle
+const KMEM = new WebAssembly.Memory({ initial: 1, maximum: 1 });
 function buildKernels() {
   const m = new ModuleBuilder();
-  const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m) };
+  m.importMemory('env', 'memory', 1, 1);
+  const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m) };
   for (const n of ['exp2m1', 'log2', 'log2p1', 'scalb', 'sin', 'cos', 'tan', 'atan2']) m.exportFunc(n, k[n]);
-  return new WebAssembly.Instance(new WebAssembly.Module(m.build()), {}).exports;
+  // nan2 through memory: the JS -> WASM call boundary quiets SNaNs (as the x87 handlers only ever
+  // read their operands from memory / locals, the kernel is tested the same way), result as bits
+  const c = new Code();
+  c.get(0).f64load(0, 0).get(1).f64load(0, 0).call(k.nan2).set(2).i64reinterpret_f64().get(2);
+  m.exportFunc('nan2_bits', m.func([T.i32, T.i32], [T.i64, T.i32], [T.i32], c, 'nan2_bits'));
+  return new WebAssembly.Instance(new WebAssembly.Module(m.build()), { env: { memory: KMEM } }).exports;
 }
 const K = buildKernels();
+/** nan2(a, b) with the operands written to the kernel memory as bits (BigInt) or values */
+function nan2(a, b) {
+  const dv = new DataView(KMEM.buffer);
+  for (const [off, v] of [[0, a], [8, b]]) { if (typeof v === 'bigint') dv.setBigUint64(off, v, true); else dv.setFloat64(off, v, true); }
+  const [bits, ie] = K.nan2_bits(0, 8);
+  return [BigInt.asUintN(64, bits), ie];
+}
 const INDEFINITE = fromBits(INDEFINITE_BITS);
 /** got within `ulps` units of 2^-52 |want| (ulp@1 convention of the kernel tests; exact for specials) */
 const within = (got, want, ulps, what) => {
@@ -195,7 +257,7 @@ test('kernels at the hardware-probed corners: FSCALE / FPATAN', () => {
     if (Number.isNaN(want)) assert.equal(bitsOf(got), INDEFINITE_BITS, `scalb(${a}, ${b}) = ${got}, want the indefinite`);
     else assert.ok(Object.is(got, want), `scalb(${a}, ${b}) = ${got} (1/x ${1 / got}), want ${want}`);
   }
-  // NaN operands propagate (one NaN: that NaN, payload kept; both: indefinite)
+  // NaN operands of the kernel alone (the FSCALE handler applies the x87 rule through nan2 instead)
   assert.equal(bitsOf(K.scalb(fromBits(0x7ff8000000000123n), 3)), 0x7ff8000000000123n);
   assert.equal(bitsOf(K.scalb(3, fromBits(0x7ff8000000000123n))), 0x7ff8000000000123n);
   assert.equal(bitsOf(K.scalb(NaN, NaN)), INDEFINITE_BITS);
@@ -231,13 +293,37 @@ test('trig kernels at the C2 threshold: every double below 2^63 yields a value, 
   assert.ok(Math.abs(K.sin(2 ** 63 - 1024) - 0.989155581390811) < 1e-14);
 });
 
-test('FSCALE denormal results are rounded once by the kernel (hardware: once; interpreter: twice)', () => {
-  // exact product 1.25 2^-1075 = 0.625 units of 2^-1074 -> hardware rounds up to 1 unit; the
-  // interpreter's 2^-1000 stepping rounds 1.25 2^-1074 to 1 unit first, then halves to a tie
-  // that rounds to 0 (src/cpu/interp-x87.js scalb(), not fixed here); the kernel rounds once
-  assert.equal(K.scalb(1.25 * 2 ** -74, -1001), 5e-324);
-  assert.equal(K.scalb(-1.25 * 2 ** -74, -1001), -5e-324);
-  assert.equal(K.scalb(1.75 * 2 ** -60, -1015), 5e-324); // 0.875 units
-  assert.equal(K.scalb(2 ** -1073, -2), 0); // exactly half a unit: ties to even
-  assert.equal(K.scalb(3 * 2 ** -1074, -1), 1e-323); // 1.5 units -> 2 (even)
+test('FSCALE denormal results are rounded once by the kernel and the interpreter (hardware: once)', () => {
+  // exact product 1.25 2^-1075 = 0.625 units of 2^-1074 -> the hardware rounds up to 1 unit; the
+  // interpreter's former 2^-1000 stepping rounded 1.25 2^-1074 to 1 unit first, then halved to a
+  // tie that rounds to 0; both the kernel and src/cpu/interp-x87.js scalb() now round once
+  for (const [name, f] of [['kernel', K.scalb], ['interpreter', scalbInterp]]) {
+    assert.equal(f(1.25 * 2 ** -74, -1001), 5e-324, name);
+    assert.equal(f(-1.25 * 2 ** -74, -1001), -5e-324, name);
+    assert.equal(f(1.75 * 2 ** -60, -1015), 5e-324, name); // 0.875 units
+    assert.equal(f(2 ** -1073, -2), 0, name); // exactly half a unit: ties to even
+    assert.equal(f(3 * 2 ** -1074, -1), 1e-323, name); // 1.5 units -> 2 (even)
+    assert.equal(f(1.5, -1075), 5e-324, name); assert.equal(f(1.5, 1023), 1.348269851146737e+308, name); assert.equal(f(1.5, 1024), Infinity, name);
+    assert.equal(f(1e-308, -60), 0, name); assert.equal(f(1e308, 1), Infinity, name); assert.equal(f(2 ** -1074, 2200), Infinity, name); assert.equal(f(-1.5, -2200), -0, name);
+  }
+});
+
+// The x87 NaN-operand rule as measured on the hardware (tools/gen/verify_trans_probe.py):
+// nan2(a, b) -> (result, ie)
+test('nan2 kernel: SNaN quieted with IE, QNaN sign and payload kept, larger significand of two (positive on a tie), indefinite otherwise', () => {
+  const sN1 = 0x7ff0000000000001n, sN2 = 0x7ff0000000000002n, nsN1 = 0xfff0000000000001n, qN = 0x7ff8000000000000n, nqN = 0xfff8000000000000n;
+  const q1 = 0x7ff8000000000001n, q2 = 0x7ff8000000000002n, nq1 = 0xfff8000000000001n, nq2 = 0xfff8000000000002n;
+  const table = [ // [a, b, result, ie]
+    [sN1, 3, q1, 1], [3, sN1, q1, 1], [nsN1, 3, 0xfff8000000000001n, 1], [qN, 3, qN, 0], [3, nqN, nqN, 0], [q1, 3, q1, 0], [3, q1, q1, 0],
+    [q1, q2, q2, 0], [q2, q1, q2, 0], [qN, nqN, qN, 0], [nqN, qN, qN, 0], [q1, nq1, q1, 0], [nq1, q1, q1, 0], [nq1, nq2, nq2, 0], [nq2, nq1, nq2, 0], [nqN, nqN, nqN, 0], [nq2, q1, nq2, 0], [q1, nq2, nq2, 0],
+    [sN1, qN, qN, 1], [qN, sN1, qN, 1], [sN2, q1, q1, 1], [q1, sN2, q1, 1], [sN1, sN2, q2, 1], [sN2, sN1, q2, 1], [nsN1, q1, q1, 1], [q1, nsN1, q1, 1],
+    [sN1, 0, q1, 1], [0, sN1, q1, 1], [qN, 0, qN, 0], [qN, Infinity, qN, 0], [Infinity, qN, qN, 0], [-2, q1, q1, 0], [q1, -2, q1, 0], [0, nq1, nq1, 0],
+    [0, 0, INDEFINITE_BITS, 1], [Infinity, -Infinity, INDEFINITE_BITS, 1], [1, 2, INDEFINITE_BITS, 1],
+  ];
+  for (const [a, b, want, ie] of table) {
+    const [r, flag] = nan2(a, b);
+    const tag = `nan2(${typeof a === 'bigint' ? '0x' + a.toString(16) : a}, ${typeof b === 'bigint' ? '0x' + b.toString(16) : b})`;
+    assert.equal(r, want, `${tag} = 0x${r.toString(16)}, want 0x${want.toString(16)}`);
+    assert.equal(flag, ie, `${tag}: IE`);
+  }
 });

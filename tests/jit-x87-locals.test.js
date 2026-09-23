@@ -262,10 +262,10 @@ test('transcendentals in one block: exp sequence (F2XM1/FSCALE), FYL2X, FYL2XP1,
   assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
 });
 
-test('FSIN/FCOS/FSINCOS/FPTAN out of range (|x| >= 2^63): C2 set, ST(0) kept, no push, the block continues', () => {
+test('FSIN/FCOS/FSINCOS/FPTAN out of range (finite |x| >= 2^63): C2 set, ST(0) kept, no push, the block continues', () => {
   // fld [D] ; fsincos ; fld1 ; faddp ; fstp [D+8] ; fnstsw [D+16] ; fld [D] ; fptan ; fstp [D+24] ; fnstsw [D+32] ;
   // fld [D] ; fsin ; fcos ; fstp [D+40] ; fnstsw [D+48] ; fld1 ; fstp [D+56] ; hlt
-  for (const big of [2 ** 63, 1e300, -Infinity]) {
+  for (const big of [2 ** 63, 1e300, -(2 ** 63), -Number.MAX_VALUE]) {
     const a = new Asm(CODE);
     a.fldQ(DATA).fsincos().fld1().faddp().fstpQ(DATA + 8).fnstswM(DATA + 16);
     a.fldQ(DATA).fptan().fstpQ(DATA + 24).fnstswM(DATA + 32);
@@ -285,7 +285,40 @@ test('FSIN/FCOS/FSINCOS/FPTAN out of range (|x| >= 2^63): C2 set, ST(0) kept, no
   }
 });
 
-test('FSIN/FSINCOS/FPTAN of a NaN: IE raised, C0-C3 cleared, indefinite results', () => {
+test('FSIN/FCOS/FSINCOS/FPTAN of +-inf: IE (no ES while masked), C0-C3 cleared, the indefinite pushed twice, the block continues', () => {
+  // fldcw [CW] ; fld [D] ; fsincos ; fld1 ; faddp ; fstp [D+8] ; fnstsw [D+16] ; fld [D] ; fptan ; fstp [D+24] ; fnstsw [D+32] ;
+  // fld [D] ; fsin ; fcos ; fstp [D+40] ; fnstsw [D+48] ; fld1 ; fstp [D+56] ; hlt
+  const CW = DATA + 120;
+  for (const big of [Infinity, -Infinity]) {
+    for (const cw of [0x037f, 0x037e]) { // IE masked / unmasked (ES follows the mask, nothing is delivered)
+      const a = new Asm(CODE);
+      a.fldcw(CW).fldQ(DATA).fsincos().fld1().faddp().fstpQ(DATA + 8).fnstswM(DATA + 16);
+      a.fldQ(DATA).fptan().fstpQ(DATA + 24).fnstswM(DATA + 32);
+      a.fldQ(DATA).fsin().fcos().fstpQ(DATA + 40).fnstswM(DATA + 48);
+      a.fld1().fstpQ(DATA + 56);
+      a.label('end').hlt();
+      const end = a.labels.get('end');
+      const EI = makeExec(false), EJ = makeExec(true);
+      for (const E of [EI, EJ]) { load(E, a.finish(), [[0, big]]); E.cpu.fpuSw = 0x4700; E.mem.write16(CW, cw); } // C0/C2/C3 set beforehand
+      assert.equal(EI.run(end), EXIT.HALT);
+      assert.equal(EJ.run(end), EXIT.HALT);
+      assert.deepEqual(snapshot(EJ), snapshot(EI), `big=${big} cw=${hex(cw)}`);
+      const want = 0x01 | (cw === 0x037e ? 0x80 : 0);
+      for (const E of [EI, EJ]) {
+        const bits = (o) => E.mem.read64(DATA + o);
+        assert.ok(Number.isNaN(E.mem.readF64(DATA + 8)), 'indefinite + 1 is a NaN');
+        assert.equal(bits(24), 0xfff8000000000000n, 'FPTAN pushed the indefinite (popped first)');
+        assert.equal(bits(40), 0xfff8000000000000n, 'FSIN gave the indefinite, FCOS propagated it');
+        assert.equal(E.mem.readF64(DATA + 56), 1, 'the block continued');
+        for (const o of [16, 32, 48]) assert.equal(E.mem.read16(DATA + o) & 0x47ff, want, `[D+${o}]: IE${cw === 0x037e ? ' | ES' : ''}, condition codes cleared, no C2`);
+        assert.equal(E.cpu.fpuTop, 6, 'two indefinites left by the pushes'); assert.equal(E.cpu.fpuTw, 0b11000000);
+      }
+      assert.equal(EJ.jit.stats.fallbackSteps, 0);
+    }
+  }
+});
+
+test('FSIN/FSINCOS/FPTAN of a NaN: a QNaN propagates (sign, payload, no IE), an SNaN raises IE and is quieted; C0-C3 cleared', () => {
   // fld [D] ; fsincos ; fstp [D+8] ; fstp [D+16] ; fnstsw [D+24] ; fld [D] ; fptan ; fstp [D+32] ; fstp [D+40] ;
   // fld [D] ; fsin ; fstp [D+48] ; fnstsw [D+56] ; hlt
   const a = new Asm(CODE);
@@ -294,17 +327,22 @@ test('FSIN/FSINCOS/FPTAN of a NaN: IE raised, C0-C3 cleared, indefinite results'
   a.fldQ(DATA).fsin().fstpQ(DATA + 48).fnstswM(DATA + 56);
   a.label('end').hlt();
   const end = a.labels.get('end');
-  const EI = makeExec(false), EJ = makeExec(true);
-  for (const E of [EI, EJ]) { load(E, a.finish(), [[0, NaN]]); E.cpu.fpuSw = 0x4700; } // C0/C2/C3 set beforehand
-  assert.equal(EI.run(end), EXIT.HALT);
-  assert.equal(EJ.run(end), EXIT.HALT);
-  for (const E of [EI, EJ]) {
-    for (const o of [8, 16, 32, 40, 48]) assert.ok(Number.isNaN(E.mem.readF64(DATA + o)), `[D+${o}] is the indefinite`);
-    assert.equal(E.mem.read16(DATA + 24) & 0x4781, 0x81, 'IE | ES, condition codes cleared');
-    assert.equal(E.mem.read16(DATA + 56) & 0x4781, 0x81);
-    assert.equal(E.cpu.fpuTop, 0); assert.equal(E.cpu.fpuTw, 0);
+  // [input bits, result bits, IE]
+  for (const [input, want, ie] of [[0x7ff8000000000000n, 0x7ff8000000000000n, 0], [0xfff8000000000000n, 0xfff8000000000000n, 0], [0x7ff80000deadbeefn, 0x7ff80000deadbeefn, 0],
+    [0x7ff0000000000001n, 0x7ff8000000000001n, 1], [0xfff0000000000002n, 0xfff8000000000002n, 1]]) {
+    const EI = makeExec(false), EJ = makeExec(true);
+    for (const E of [EI, EJ]) { load(E, a.finish()); E.mem.write64(DATA, input); E.cpu.fpuSw = 0x4700; } // C0/C2/C3 set beforehand
+    assert.equal(EI.run(end), EXIT.HALT);
+    assert.equal(EJ.run(end), EXIT.HALT);
+    assert.deepEqual(snapshot(EJ), snapshot(EI), `input ${input.toString(16)}`);
+    for (const E of [EI, EJ]) {
+      for (const o of [8, 16, 32, 40, 48]) assert.equal(E.mem.read64(DATA + o), want, `[D+${o}] for ${input.toString(16)}`);
+      assert.equal(E.mem.read16(DATA + 24) & 0x47ff, ie, 'IE for an SNaN only, no ES (masked), condition codes cleared');
+      assert.equal(E.mem.read16(DATA + 56) & 0x47ff, ie);
+      assert.equal(E.cpu.fpuTop, 0); assert.equal(E.cpu.fpuTw, 0);
+    }
+    assert.equal(EJ.jit.stats.fallbackSteps, 0);
   }
-  assert.equal(EJ.jit.stats.fallbackSteps, 0);
 });
 
 test('FXCH / FSTP st(i) / FLD st(i) / FFREE / FINCSTP permutations with tags via FNSTENV and FXAM', () => {

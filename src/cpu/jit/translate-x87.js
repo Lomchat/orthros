@@ -12,13 +12,12 @@
 // conversions and FRNDINT.
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
 // the interpreter and FNSTENV/FXAM, not checked.
-import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_ROUND24, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS } from './translate.js';
+import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_ROUND24, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2 } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import { T } from './wasm.js';
 
 const C0 = 1 << 8, C2 = 1 << 10, C3 = 1 << 14, SW_CC = C0 | (1 << 9) | C2 | C3;
-const SW_IE = 1 << 0, SW_ES = 1 << 7;
 /** x87 indefinite QNaN (the interpreter's INDEFINITE) */
 const INDEFINITE_BITS = 0xfff8000000000000n;
 const TWO_63 = 2 ** 63;
@@ -28,6 +27,8 @@ const FLT_MIN_NORMAL = 2 ** -126;
 // largest magnitude that f32.demote rounds (to nearest) without overflowing to infinity:
 // FLT_MAX + half an ulp (the tie rounds up to 2^128 as FLT_MAX's mantissa is odd)
 const F32_ROUND_LIMIT = 2 ** 128 - 2 ** 103;
+/** f64 denormal threshold and the exact scaling that normalizes a denormal (round24To) */
+const DBL_MIN_NORMAL = 2 ** -1022, TWO_54 = 2 ** 54, TWO_M54 = 2 ** -54;
 
 // ---- helpers (E = Emitter)
 // ST(i) is local E.stLocal(i) = L_ST0 + ((i + E.stShift) & 7): push/pop/FINCSTP/FDECSTP only
@@ -74,10 +75,28 @@ function pop(E) {
 /** rc (0 nearest, 1 down, 2 up, 3 trunc) from the cached control word bits */
 function pushRC(E) { E.c.get(L_FPC).i32(10).shr_u(); }
 /**
+ * L_F64B <- round24(L_F64B, rc), `pushRc` emitting the rounding mode. round24 rounds the raw
+ * mantissa field of the f64, which is only the significand for a normal value: an f64 denormal
+ * is a normal extended value (the x87 exponent range is wider) and its significand must be
+ * rounded to 24 bits as the interpreter does (roundMant24 normalizes first): 3 2^-1074 stays
+ * 3 2^-1074 (it went to 0 on the raw field). The denormal is scaled by 2^54 (exact, normal),
+ * rounded, and scaled back (exact: at most 24 significant bits at 2^-1074 or above).
+ */
+function round24To(E, pushRc) {
+  const c = E.c;
+  c.get(L_F64B).f64abs().f64c(DBL_MIN_NORMAL).f64lt();
+  const den = c.if_();
+  c.get(L_F64B).f64c(TWO_54).f64mul(); pushRc(); c.call(IMP_ROUND24).f64c(TWO_M54).f64mul().set(L_F64B);
+  c.else_();
+  c.get(L_F64B); pushRc(); c.call(IMP_ROUND24).set(L_F64B);
+  c.end(); void den;
+}
+/**
  * f64 on stack -> rounded per precision control. 24-bit mode: f32.demote/f64.promote inline when
  * rounding to nearest and the magnitude is in the normal f32 range (bit-identical to round24
  * there); zero is unchanged; denormal-range, huge, inf/nan values and directed rounding go
- * through the round24 import (keeps the f64 exponent range, as the interpreter does).
+ * through the round24 import (keeps the f64 exponent range, as the interpreter does; f64
+ * denormals are normalized around it, round24To).
  */
 function roundPC(E) {
   const c = E.c;
@@ -91,10 +110,10 @@ function roundPC(E) {
   c.get(L_F64B).f32demote().f64promote().set(L_F64B);
   c.else_();
   c.get(L_F64B).f64c(0).f64ne();
-  const nonZero = c.if_(); c.get(L_F64B).i32(0).call(IMP_ROUND24).set(L_F64B); c.end(); void nonZero;
+  const nonZero = c.if_(); round24To(E, () => c.i32(0)); c.end(); void nonZero;
   c.end(); void inRange;
   c.else_();
-  c.get(L_F64B); pushRC(E); c.call(IMP_ROUND24).set(L_F64B);
+  round24To(E, () => pushRC(E));
   c.end(); void nearest;
   c.end(); void pc;
   c.get(L_F64B);
@@ -279,20 +298,88 @@ HANDLERS[OP.FTST] = (E) => { const c = E.c; loadST(E, 0); c.set(L_F64A); c.f64c(
 // ---- unary / stack
 HANDLERS[OP.FCHS] = (E) => { loadST(E, 0); E.c.f64neg(); storeSTStack(E, 0); };
 HANDLERS[OP.FABS] = (E) => { loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); };
-HANDLERS[OP.FSQRT] = (E) => { loadST(E, 0); E.c.f64sqrt(); roundPC(E); storeSTStack(E, 0); };
+// FSQRT of a negative operand is an invalid arithmetic operand (IE, the indefinite); a NaN operand
+// follows the x87 rule (nanOutcome, D034) like the transcendentals; sqrt(-0) = -0
+HANDLERS[OP.FSQRT] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A);
+  c.get(L_F64A).f64sqrt(); roundPC(E); c.set(E.stLocal(0));
+  nanOutcome(E, L_F64A, L_F64A, E.stLocal(0));
+  tagValid(E, 0);
+};
 HANDLERS[OP.FRNDINT] = (E) => { loadST(E, 0); roundRC(E, false); storeSTStack(E, 0); };
 
 // ---- transcendentals: pure-WASM kernels of the runtime module (fpmath-exp.js, fpmath-trig.js,
-// fpmath-atan.js), imported like round24. Same semantics as the interpreter's handlers: results
-// are stored as computed (setSt applies no precision-control rounding: PC only concerns the
-// arithmetic instructions and FSQRT), and C1 is left alone like every other native handler (the
-// interpreter clears it; the JIT keeps only the condition codes it computes).
-HANDLERS[OP.F2XM1] = (E) => { loadST(E, 0); E.c.call(IMP_EXP2M1); storeSTStack(E, 0); };
-HANDLERS[OP.FSCALE] = (E) => { loadST(E, 0); loadST(E, 1); E.c.call(IMP_SCALB); storeSTStack(E, 0); };
+// fpmath-atan.js), imported like round24. Same semantics as the interpreter's handlers (D034):
+// results are stored as computed (setSt applies no precision-control rounding: PC only concerns
+// the arithmetic instructions and FSQRT), and C1 is left alone like every other native handler
+// (the interpreter clears it; the JIT keeps only the condition codes it computes). Exceptions:
+// the kernels return a NaN for a NaN operand or an invalid arithmetic operand, and the handler
+// then takes the rare path through the nan2 kernel (fpmath-nan.js: SNaN -> IE and quieted, QNaN
+// propagated, two NaNs -> the larger significand, no NaN -> IE and the indefinite).
+/** status word |= bits (C2 for an out-of-range trig argument) */
+function orSW(E, bits) { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(bits).or().i32store16(ST.FPU_SW); }
+/**
+ * Raise the exception `bit` (0 IE ... 5 PE) like X87.raise: the flag is set; ES (the summary bit)
+ * only when the exception is unmasked in the control word (mask bit `bit` clear), SDM 8.1.3.
+ */
+function raise(E, bit) {
+  const c = E.c;
+  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(1 << bit).or();
+  c.get(L_STATE).i32load16u(ST.FPU_CW).i32(bit).shr_u().i32(1).and().i32(1).xor().i32(7).shl().or();
+  c.i32store16(ST.FPU_SW);
+}
+function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
+/**
+ * NaN outcome of a kernel result held in local `res` computed from operands `a` and `b` (locals):
+ * when the result is a NaN, nan2(a, b) replaces it by the x87 result (a propagated / quieted
+ * operand NaN, or the indefinite for an invalid arithmetic operand) and tells whether to raise IE;
+ * `otherwise` emits the non-NaN path (e.g. a zero-divide check).
+ */
+function nanOutcome(E, a, b, res, otherwise = null) {
+  const c = E.c;
+  c.get(res).get(res).f64ne();
+  const nan = c.if_();
+  c.get(a).get(b).call(IMP_NAN2);
+  const ie = c.if_(); raise(E, 0); c.end(); void ie;
+  c.set(res);
+  if (otherwise) { c.else_(); otherwise(c); }
+  c.end(); void nan;
+}
+// F2XM1: finite |x| > 1 is undefined by the SDM and leaves ST(0) unchanged on the reference
+// hardware (mirrored, as in the interpreter); +-inf follow the SDM (+inf, -1) through the kernel
+HANDLERS[OP.F2XM1] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A);
+  c.get(L_F64A); c.get(L_F64A).call(IMP_EXP2M1);
+  c.get(L_F64A).f64abs().f64c(1).f64gt().get(L_F64A).f64abs().f64c(Number.MAX_VALUE).f64le().and();
+  c.select().set(E.stLocal(0)); // outside ? x : 2^x - 1
+  nanOutcome(E, L_F64A, L_F64A, E.stLocal(0));
+  tagValid(E, 0);
+};
+// FSCALE: the kernel's special cases (0 * 2^inf, inf * 2^-inf -> NaN) and NaN operands go through nanOutcome
+HANDLERS[OP.FSCALE] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A); loadST(E, 1); c.set(L_F64B);
+  c.get(L_F64A).get(L_F64B).call(IMP_SCALB).set(E.stLocal(0));
+  nanOutcome(E, L_F64A, L_F64B, E.stLocal(0));
+  tagValid(E, 0);
+};
 // ST(1) <- ST(1) * f(ST(0)), pop: the product is the one f64 rounding after the kernel's, as in the
 // interpreter's `b * Math.log2(a)`; FYL2XP1 uses the log2(1 + x) kernel directly (one rounding
-// instead of the interpreter's log1p * LOG2E: closer to the hardware, well inside its tolerance)
-HANDLERS[OP.FYL2X] = (E) => { loadST(E, 1); loadST(E, 0); E.c.call(IMP_LOG2).f64mul(); storeSTStack(E, 1); pop(E); };
+// instead of the interpreter's log1p * LOG2E: closer to the hardware, well inside its tolerance).
+// Invalid operands (x < 0, 0 log2 0, 0 log2 inf, inf log2 1) give a NaN product -> nanOutcome;
+// y log2 0 with a finite non-zero y is a zero divide (ZE, -+inf), y = +-inf is not (SDM, hardware).
+HANDLERS[OP.FYL2X] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A); loadST(E, 1); c.set(L_F64B);
+  c.get(L_F64B).get(L_F64A).call(IMP_LOG2).f64mul().set(E.stLocal(1));
+  nanOutcome(E, L_F64A, L_F64B, E.stLocal(1), (c) => {
+    c.get(L_F64A).f64c(0).f64eq().get(L_F64B).f64abs().f64c(Infinity).f64lt().and();
+    const ze = c.if_(); raise(E, 2); c.end(); void ze;
+  });
+  tagValid(E, 1); pop(E);
+};
 // FYL2XP1 with a denormal x: log2(1 + x) is then itself a denormal double (up to half of its
 // bits lost before the product with y), whereas the hardware keeps it in extended precision:
 // FYL2XP1(5e-324, 1e300) is 7.13e-24 on the hardware (and in the interpreter, whose product
@@ -300,65 +387,79 @@ HANDLERS[OP.FYL2X] = (E) => { loadST(E, 1); loadST(E, 0); E.c.call(IMP_LOG2).f64
 // For |x| < 2^-1000, where log2(1 + x) = x log2e to better than 2^-1000 relative, the kernel is
 // applied to x 2^600 (an exact exponent shift, giving a normal intermediate) and the product is
 // scaled back by 2^-600 (exact unless the final result is denormal): one rounding in the kernel,
-// one in the product, as in the normal-range path. Zeros keep their sign, NaN propagates.
+// one in the product, as in the normal-range path. Zeros keep their sign, NaN -> nanOutcome.
 HANDLERS[OP.FYL2XP1] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
   c.get(L_F64A).f64abs().f64c(YL2XP1_TINY).f64lt().set(L_TV); // tiny flag
-  loadST(E, 1);
+  loadST(E, 1); c.set(L_F64B);
+  c.get(L_F64B);
   c.get(L_F64A).f64c(TWO_600).f64mul().get(L_F64A).get(L_TV).select().call(IMP_LOG2P1).f64mul();
-  c.f64c(TWO_M600).f64c(1).get(L_TV).select().f64mul();
-  storeSTStack(E, 1); pop(E);
+  c.f64c(TWO_M600).f64c(1).get(L_TV).select().f64mul().set(E.stLocal(1));
+  nanOutcome(E, L_F64A, L_F64B, E.stLocal(1));
+  tagValid(E, 1); pop(E);
 };
-HANDLERS[OP.FPATAN] = (E) => { loadST(E, 1); loadST(E, 0); E.c.call(IMP_ATAN2); storeSTStack(E, 1); pop(E); };
-/** status word |= bits (C2 for an out-of-range trig argument; IE | ES for an invalid one) */
-function orSW(E, bits) { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(bits).or().i32store16(ST.FPU_SW); }
-function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
-// FSIN / FCOS, the interpreter's trig(): |x| >= 2^63 (infinities included) -> C2 set, ST(0) kept;
-// else C0-C3 cleared, a NaN argument raises IE and gives the indefinite, else the kernel result.
+// FPATAN: atan2(y, x) never produces a NaN from non-NaN operands; NaN operands -> nanOutcome
+HANDLERS[OP.FPATAN] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A); loadST(E, 1); c.set(L_F64B);
+  c.get(L_F64B).get(L_F64A).call(IMP_ATAN2).set(E.stLocal(1));
+  nanOutcome(E, L_F64A, L_F64B, E.stLocal(1));
+  tagValid(E, 1); pop(E);
+};
+/**
+ * Trig argument classification shared by FSIN/FCOS (trig1) and FSINCOS/FPTAN (trig2), the
+ * interpreter's trigSpecial(), on the argument in L_F64A: a NaN -> C0-C3 cleared, nan2(x, x)
+ * (SNaN: IE and quieted; QNaN propagated); +-inf -> C0-C3 cleared, IE, the indefinite; a finite
+ * |x| >= 2^63 -> C2 set, ST(0) unchanged, no push (`oor`); else C0-C3 cleared and the kernel
+ * (`compute`). `store` consumes the special value left on the stack by the first two paths.
+ */
+function trigArg(E, store, oor, compute) {
+  const c = E.c;
+  c.get(L_F64A).get(L_F64A).f64ne();
+  const nan = c.if_();
+  setCC(E, 0, 0, 0);
+  c.get(L_F64A).get(L_F64A).call(IMP_NAN2);
+  const ie = c.if_(); raise(E, 0); c.end(); void ie;
+  store(c);
+  c.else_();
+  c.get(L_F64A).f64abs().f64c(TWO_63).f64ge();
+  const big = c.if_();
+  c.get(L_F64A).f64abs().f64c(Infinity).f64eq();
+  const inf = c.if_();
+  setCC(E, 0, 0, 0); raise(E, 0); indefinite(c); store(c);
+  c.else_();
+  orSW(E, C2); oor(c);
+  c.end(); void inf;
+  c.else_();
+  setCC(E, 0, 0, 0); compute(c);
+  c.end(); void big;
+  c.end(); void nan;
+}
+// FSIN / FCOS: ST(0) <- the classified result (untouched on the out-of-range path)
 function trig1(kernel) {
   return (E) => {
     const c = E.c;
     loadST(E, 0); c.set(L_F64A);
-    c.get(L_F64A).f64abs().f64c(TWO_63).f64ge();
-    const oor = c.if_(T.f64);
-    orSW(E, C2); c.get(L_F64A); // ST(0) unchanged (re-stored below, its tag was set already)
-    c.else_();
-    setCC(E, 0, 0, 0);
-    c.get(L_F64A).get(L_F64A).f64ne();
-    const nan = c.if_(T.f64);
-    orSW(E, SW_IE | SW_ES); indefinite(c);
-    c.else_();
-    c.get(L_F64A).call(kernel);
-    c.end(); void nan;
-    c.end(); void oor;
-    storeSTStack(E, 0);
+    trigArg(E, (c) => c.set(E.stLocal(0)), () => {}, (c) => c.get(L_F64A).call(kernel).set(E.stLocal(0)));
+    tagValid(E, 0);
   };
 }
 HANDLERS[OP.FSIN] = trig1(IMP_SIN);
 HANDLERS[OP.FCOS] = trig1(IMP_COS);
-// FSINCOS / FPTAN: same checks, then ST(0) <- first result and push the second. The push is a
-// static rotation of the locals, so the out-of-range path (no push) cannot rejoin the block: it
-// sets C2 and leaves the region at the next instruction, like the SMC check does.
+// FSINCOS / FPTAN: ST(0) <- first result (L_F64A) and push the second (L_F64B); both are the same
+// NaN / indefinite on the NaN and infinity paths, as on the hardware. The push is a static
+// rotation of the locals, so the out-of-range path (no push) cannot rejoin the block: it sets C2
+// and leaves the region at the next instruction, like the SMC check does.
 function trig2(insn, E, results) {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
-  c.get(L_F64A).f64abs().f64c(TWO_63).f64ge();
-  const oor = c.if_();
-  orSW(E, C2);
-  E.exitTo(insn.next);
-  c.end(); void oor;
-  setCC(E, 0, 0, 0);
-  c.get(L_F64A).get(L_F64A).f64ne();
-  const nan = c.if_();
-  orSW(E, SW_IE | SW_ES); indefinite(c); c.set(L_F64A); indefinite(c); c.set(L_F64B);
-  c.else_();
-  results(c); // x in L_F64A -> ST(0)'s new value in L_F64A, the pushed value in L_F64B
-  c.end(); void nan;
+  trigArg(E, (c) => c.tee(L_F64A).set(L_F64B), () => E.exitTo(insn.next), results);
   storeST(E, 0, L_F64A);
   push(E); storeST(E, 0, L_F64B);
 }
-// sincos returns (sin, cos): one range reduction for both, bit-identical to the sin / cos kernels
+// sincos returns (sin, cos): one range reduction for both, bit-identical to the sin / cos kernels;
+// `results` (x in L_F64A) leaves ST(0)'s new value in L_F64A and the pushed value in L_F64B
 HANDLERS[OP.FSINCOS] = (E, insn) => trig2(insn, E, (c) => { c.get(L_F64A).call(IMP_SINCOS).set(L_F64B).set(L_F64A); });
 HANDLERS[OP.FPTAN] = (E, insn) => trig2(insn, E, (c) => { c.get(L_F64A).call(IMP_TAN).set(L_F64A); c.f64c(1).set(L_F64B); });
 HANDLERS[OP.FXCH] = (E, insn) => {

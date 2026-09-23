@@ -12,6 +12,7 @@ export const CASE_SIZE = 2688;
 export const RESULT_SIZE = 2624;
 
 const REGN = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
+const nanView = new DataView(new ArrayBuffer(16));
 
 /** 80-bit extended -> f64 (nearest). mant: bigint 64-bit, se: 16-bit sign+exp. */
 export function f80ToF64(mant, se) {
@@ -20,7 +21,13 @@ export function f80ToF64(mant, se) {
   if (exp === 0 && mant === 0n) return sign * 0;
   if (exp === 0x7fff) {
     if ((mant & 0x7fffffffffffffffn) === 0n) return sign * Infinity;
-    return NaN;
+    // NaN: sign, quiet bit (bit 62 -> 51) and the top 51 payload bits are kept, as the emulator's
+    // readF80 does, so that SNaN / negative / payload-carrying operands reach the executors and
+    // NaN results can be compared bit for bit (meta.nanbits)
+    let frac = (mant >> 11n) & 0x000fffffffffffffn;
+    if (frac === 0n) frac = 0x0008000000000000n;
+    nanView.setBigUint64(0, (se & 0x8000 ? 0xfff0000000000000n : 0x7ff0000000000000n) | frac, true);
+    return nanView.getFloat64(0, true);
   }
   // value = mant * 2^(exp - 16383 - 63)
   const e = exp - 16383 - 63;
@@ -162,6 +169,13 @@ export class Conformance {
         const m = 0x4500;
         if ((cpu.fpuSw & m) !== (fsw & m)) diffs.push(`fpu sw(cc): got ${h(cpu.fpuSw & m)} want ${h(fsw & m)}`);
       }
+      // exception flags of the status word under a mask chosen by the generator (e.g. IE | ZE | ES:
+      // the flags the emulator models for a suite; PE / DE / OE / UE are set by the hardware on
+      // inexact, denormal, overflowing and underflowing results, not by the emulator)
+      if (meta.fpuex) {
+        const m = meta.fpuex;
+        if ((cpu.fpuSw & m) !== (fsw & m)) diffs.push(`fpu sw(exceptions): got ${h(cpu.fpuSw & m)} want ${h(fsw & m)} (mask ${h(m)})`);
+      }
       // MMX cases: the MM registers are compared separately (below) and are not aliased onto the
       // x87 FPRs in the emulator (DECISIONS D005), so only TOP/TW/CW are compared here.
       if (!meta.mmx) {
@@ -170,7 +184,7 @@ export class Conformance {
           if (!((tw >> phys) & 1)) continue; // empty
           const want = f80ToF64(rv.getBigUint64(fx + 32 + 16 * k, true), rv.getUint16(fx + 40 + 16 * k, true));
           const got = cpu.fpr(phys);
-          if (!fpEqual(got, want, meta.tol)) diffs.push(`st(${k}): got ${got} want ${want}`);
+          if (!fpEqual(got, want, meta.tol, meta.nanbits)) diffs.push(`st(${k}): got ${got} (${nanBits(got)}) want ${want} (${nanBits(want)})`);
         }
       }
     }
@@ -199,8 +213,11 @@ export class Conformance {
   }
 }
 
-function fpEqual(a, b, tol) {
-  if (Number.isNaN(a) && Number.isNaN(b)) return true;
+/** hex bits of a NaN (for the diagnostics; '' for other values) */
+function nanBits(v) { if (!Number.isNaN(v)) return ''; nanView.setFloat64(0, v, true); return '0x' + nanView.getBigUint64(0, true).toString(16); }
+/** NaN results: equal as a class, or bit for bit (sign, quiet bit, payload) when the suite asks for it (meta.nanbits) */
+function fpEqual(a, b, tol, nanbits = false) {
+  if (Number.isNaN(a) && Number.isNaN(b)) return !nanbits || nanBits(a) === nanBits(b);
   if (Object.is(a, b)) return true;
   if (a === b) return true; // 0 vs -0 handled below
   if (tol === undefined || tol === null) return false;
