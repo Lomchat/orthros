@@ -5,9 +5,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { createServer } from '../src/host/server.js';
+import { folderManifest } from '../src/host/manifest.js';
 
 const args = process.argv.slice(2);
-const name = args.find((a) => !a.startsWith('--'));
+let name = args.find((a) => !a.startsWith('--'));
+// a game folder instead of a manifest name: served with a synthesized manifest, as `orthros run <folder>` does
+let extraManifests = null;
+if (name && (name.includes('/') || name.includes('\\')) && fs.existsSync(name) && fs.statSync(name).isDirectory()) {
+  const m = folderManifest(name);
+  const folderName = path.basename(m.folder).replace(/[^A-Za-z0-9._-]/g, '_') || 'game';
+  extraManifests = new Map([[folderName, m]]);
+  name = folderName;
+}
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
@@ -24,7 +33,7 @@ let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
 fs.mkdirSync(out, { recursive: true });
 
-const server = createServer();
+const server = createServer({ extra: extraManifests });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server.address().port;

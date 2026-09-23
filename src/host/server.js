@@ -6,20 +6,22 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withDefaults } from './manifest.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
 
-export function loadManifests(dir) {
+export function loadManifests(dir, extra = null) {
   const out = new Map();
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith('.json')) continue;
-    const m = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-    const name = f.slice(0, -5);
-    m.folder = path.resolve(dir, m.folder ?? '.');
-    m.mount ??= 'C:\\Game'; m.args ??= ''; m.dllOverrides ??= {}; m.env ??= {}; m.display ??= { width: 1024, height: 768 };
-    out.set(name, m);
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      const m = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      m.folder = path.resolve(dir, m.folder ?? '.');
+      out.set(f.slice(0, -5), withDefaults(m));
+    }
   }
+  for (const [name, m] of extra ?? []) out.set(name, m); // (manifests given by the caller: `orthros run <folder>`)
   return out;
 }
 
@@ -48,7 +50,7 @@ function resolveInsensitive(root, rel) {
 
 export function createServer(opts = {}) {
   const manifestDir = path.resolve(opts.manifests ?? path.join(ROOT, 'manifests'));
-  let manifests = loadManifests(manifestDir);
+  let manifests = loadManifests(manifestDir, opts.extra);
   const trees = new Map();
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
@@ -84,7 +86,7 @@ export function createServer(opts = {}) {
     const p = decodeURIComponent(url.pathname);
     try {
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
-      if (p === '/api/manifests') { manifests = loadManifests(manifestDir); return send(res, 200, JSON.stringify([...manifests].map(([name, m]) => ({ name, title: m.name ?? name, exe: m.exe }))), { 'Content-Type': 'application/json' }); }
+      if (p === '/api/manifests') { manifests = loadManifests(manifestDir, opts.extra); return send(res, 200, JSON.stringify([...manifests].map(([name, m]) => ({ name, title: m.name ?? name, exe: m.exe }))), { 'Content-Type': 'application/json' }); }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined }), { 'Content-Type': 'application/json' }); }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
