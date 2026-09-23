@@ -240,13 +240,14 @@ export function registerKernel32(api, vm) {
   K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread) ? 1 : 0)];
   // Sleep(0) storms: a thread spinning on Sleep(0) (frame limiter, flag polling) with nothing else to run would
   // burn the whole worker; after 32 back-to-back yields within 50 µs of each other it sleeps for 1 ms instead —
-  // the granularity a Windows timer gives Sleep anyway. Any other activity of the thread resets the streak.
+  // the granularity a Windows timer gives Sleep anyway. One other API call between two Sleep(0)s is part of the
+  // pattern (the frame limiter reads timeGetTime each turn: Sleep(0) + timeGetTime = 2 calls); any more resets it.
   const sleep = (c, ms) => {
     const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0 };
     if (ms === 0) {
       st.zero++;
       const now = performance.now();
-      st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 1 ? st.streak + 1 : 0;
+      st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
       st.last = now; st.lastApi = vm.apiCalls;
       if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; vm.sched.block(t, () => false, 1, 'sleep'); return; }
       vm.sched.yieldFrom(t);
