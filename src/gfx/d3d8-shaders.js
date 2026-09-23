@@ -383,15 +383,17 @@ export function translatePixelShader(code, env) {
   for (let i = 0; i < 6; i++) lines.push(env.cube[i] ? `uniform samplerCube u_cube${i};` : `uniform sampler2D u_tex${i};`);
   lines.push('uniform vec4 u_pc[8]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform float u_alphaRef; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
-  const body = ['  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0);', '  vec4 c0 = u_c[0], c1 = u_c[1], c2 = u_c[2], c3 = u_c[3], c4 = u_c[4], c5 = u_c[5], c6 = u_c[6], c7 = u_c[7];'];
+  // constants: the 8 ps 1.x registers hold values in [-1, 1] (def overrides one in the shader)
+  const body = ['  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0);', `  vec4 ${Array.from({ length: 8 }, (_, k) => `c${k} = clamp(u_pc[${k}], -1.0, 1.0)`).join(', ')};`];
   for (let i = 0; i < 6; i++) body.push(`  vec4 t${i} = v_tex${i};`);
   const defs = new Map();
   const sample = (n, coordExpr) => (env.cube[n] ? `texture(u_cube${n}, (${coordExpr}).xyz)` : env.projected[n] ? `textureProj(u_tex${n}, ${coordExpr})` : `texture(u_tex${n}, (${coordExpr}).xy)`);
   const reg = (tok, isSrc) => {
     const type = (tok >> 28) & 7, n = tok & 0x7ff;
     let name;
-    switch (type) { case 0: name = `r${n}`; break; case 1: name = `v_color${n}`; break; case 2: name = defs.has(n) ? `c${n}` : `u_pc[${n}]`; break; case 3: name = `t${n}`; break; default: name = 'vec4(0.0)'; }
+    switch (type) { case 0: name = `r${n}`; break; case 1: name = `v_color${n}`; break; case 2: name = `c${n & 7}`; break; case 3: name = `t${n}`; break; default: name = 'vec4(0.0)'; }
     if (!isSrc) return name;
+    name = coRead?.get(name) ?? name;
     let e = `${name}.${swizzle(tok)}`;
     const mod = (tok >> 24) & 0xf;
     switch (mod) {
@@ -418,7 +420,7 @@ export function translatePixelShader(code, env) {
     if (d.mask === 'xyzw') return `  ${d.name} = ${e};`;
     return `  ${d.name}.${d.mask} = (${e}).${d.mask};`;
   };
-  let i = 1, phase = 0;
+  let i = 1, phase = 0, coRead = null, prevDst = null, coN = 0;
   while (i < code.length) {
     const t = code[i] >>> 0;
     if (t === 0x0000ffff) break;
@@ -427,12 +429,18 @@ export function translatePixelShader(code, env) {
     if (op === 0xfffd) { phase = 1; i++; continue; } // phase
     if (op === 81) { // def c#, 4 floats
       const n = code[i + 1] & 0x7ff; const dv = new DataView(new ArrayBuffer(16)); for (let k = 0; k < 4; k++) dv.setUint32(k * 4, code[i + 2 + k] >>> 0, true);
-      defs.set(n, true); body.push(`  c${n} = vec4(${[0, 1, 2, 3].map((k) => dv.getFloat32(k * 4, true).toExponential(6)).join(', ')});`);
+      defs.set(n, true); body.push(`  c${n & 7} = clamp(vec4(${[0, 1, 2, 3].map((k) => dv.getFloat32(k * 4, true).toExponential(6)).join(', ')}), -1.0, 1.0);`);
       i += 6; continue;
     }
     const args = []; let j = i + 1;
     while (j < code.length && (code[j] >>> 31) === 1) { args.push(code[j] >>> 0); j++; }
     i = j;
+    // co-issued instruction (+, bit 30): its sources are read before the paired instruction writes
+    coRead = null;
+    if ((t & 0x40000000) && prevDst && args.slice(1).some((a) => reg(a, false) === prevDst.name)) {
+      const snap = `co${coN++}`; body.splice(prevDst.at, 0, `  vec4 ${snap} = ${prevDst.name};`); coRead = new Map([[prevDst.name, snap]]);
+    }
+    prevDst = args.length ? { name: reg(args[0], false), at: body.length } : null;
     const d = args.length ? dstInfo(args[0]) : null;
     const s = args.slice(1).map((a) => reg(a, true));
     const dn = d ? (args[0] & 0x7ff) : 0;

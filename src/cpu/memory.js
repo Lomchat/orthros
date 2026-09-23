@@ -93,6 +93,18 @@ export class GuestMemory {
     for (let i = a; i < end; i++) s += String.fromCharCode(this.u8[i]);
     return s;
   }
+  /** Exactly `n` bytes as a Latin-1 string, NULs included (counted-length API arguments). */
+  readCStringN(a, n) {
+    a >>>= 0; let s = '';
+    for (let i = 0; i < n; i++) s += String.fromCharCode(this.u8[a + i]);
+    return s;
+  }
+  /** Exactly `n` UTF-16 units, NULs included (counted-length API arguments: a count is not a terminator). */
+  readWStringN(a, n) {
+    a >>>= 0; let s = '';
+    for (let i = 0; i < n; i++) s += String.fromCharCode(this.dv.getUint16(a + 2 * i, true));
+    return s;
+  }
   /** NUL-terminated UTF-16LE string. @param {number} a @param {number} [max] chars */
   readWString(a, max = 0x10000) {
     a >>>= 0;
