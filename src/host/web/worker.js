@@ -8,6 +8,7 @@ import { HttpBackend } from '../../vfs/http-backend.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
+import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS } from '../../cpu/jit/translate.js';
 
@@ -213,7 +214,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '';
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };

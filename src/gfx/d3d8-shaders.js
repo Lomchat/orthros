@@ -124,13 +124,16 @@ export function ffVertexShader(k) {
       for (let i = 0; i < n; i++) { lines.push(`  wp += (u_world[${i}] * vec4(a_pos, 1.0)) * ${wexpr(i)};`); if (has('normal')) lines.push(`  wn += (mat3(u_world[${i}]) * a_normal) * ${wexpr(i)};`); }
       lines.push('  vec4 posWorld = wp;');
       lines.push(has('normal') ? '  vec3 nWorld = wn;' : '  vec3 nWorld = vec3(0.0, 0.0, 1.0);');
+      lines.push('  vec4 posView4 = u_view * posWorld; vec3 posView = posView4.xyz;');
+      lines.push('  vec3 nView = mat3(u_view) * nWorld;');
     } else {
       lines.push('  vec4 posWorld = u_world[0] * vec4(a_pos, 1.0);');
-      lines.push(has('normal') ? '  vec3 nWorld = mat3(u_world[0]) * a_normal;' : '  vec3 nWorld = vec3(0.0, 0.0, 1.0);');
+      lines.push('  vec4 posView4 = u_view * posWorld; vec3 posView = posView4.xyz;');
+      // normals go to camera space through the inverse transpose of world x view (D3D's rule: a scaled world matrix
+      // shortens them, only D3DRS_NORMALIZENORMALS restores unit length)
+      lines.push(has('normal') && k.lighting ? '  vec3 nView = transpose(inverse(mat3(u_view) * mat3(u_world[0]))) * a_normal;' : has('normal') ? '  vec3 nView = mat3(u_view) * mat3(u_world[0]) * a_normal;' : '  vec3 nView = vec3(0.0, 0.0, 1.0);');
     }
-    lines.push('  vec4 posView4 = u_view * posWorld; vec3 posView = posView4.xyz;');
-    lines.push('  vec3 nView = mat3(u_view) * nWorld;');
-    if (k.normalize || true) lines.push('  nView = length(nView) > 0.0 ? normalize(nView) : nView;');
+    if (k.normalize) lines.push('  nView = length(nView) > 0.0 ? normalize(nView) : nView;');
     lines.push('  vec4 clip = u_proj * posView4;');
     lines.push(`  gl_Position = ${D3D_TO_GL_POSITION('clip')};`);
     // colors
@@ -267,7 +270,9 @@ export function ffFragmentShader(k) {
     } else lines.push('  tex = vec4(0.0, 0.0, 0.0, 1.0);');
     if (st.colorOp === TOP.BUMPENVMAP || st.colorOp === TOP.BUMPENVMAPLUMINANCE) { lines.push(`  vec2 bump${i} = tex.xy * 2.0 - 1.0;`); continue; }
     const dst = st.resultTemp ? 'temp' : 'current';
-    lines.push(`  { vec3 c = ${op(st.colorOp, st.colorArg1, st.colorArg2, st.colorArg0, false)}; float a = ${st.alphaOp === TOP.DISABLE ? 'current.a' : op(st.alphaOp, st.alphaArg1, st.alphaArg2, st.alphaArg0, true)}; ${dst} = clamp(vec4(c, a), 0.0, 1.0); }`);
+    // DOTPRODUCT3 as the color operation replicates its result into alpha as well (the alpha operation is ignored)
+    const alphaExpr = st.colorOp === TOP.DOTPRODUCT3 ? 'c.r' : st.alphaOp === TOP.DISABLE ? 'current.a' : op(st.alphaOp, st.alphaArg1, st.alphaArg2, st.alphaArg0, true);
+    lines.push(`  { vec3 c = ${op(st.colorOp, st.colorArg1, st.colorArg2, st.colorArg0, false)}; float a = ${alphaExpr}; ${dst} = clamp(vec4(c, a), 0.0, 1.0); }`);
   }
   lines.push('  vec4 result = current;');
   if (k.specular) lines.push('  result.rgb += specular.rgb;');

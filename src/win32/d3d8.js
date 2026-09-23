@@ -23,6 +23,17 @@ const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_L
 const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 
 /** bytes of one row / total bytes for a surface of this format */
+/** Distinct values each render / stage state took (end-of-run report: which pipeline features a game uses). */
+function noteState(dev, group, s, v) {
+  const m = dev.stateUse ??= new Map(); const k = `${group}:${s}`;
+  let set = m.get(k); if (!set) m.set(k, (set = new Set()));
+  if (set.size < 12) set.add(v >>> 0);
+}
+/** Readable summary of noteState: "rs:<state>=v1,v2 ..." sorted by state. */
+export function stateUseReport(dev) {
+  if (!dev?.stateUse) return '';
+  return [...dev.stateUse].sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true })).map(([k, set]) => `${k}=${[...set].map((v) => (v > 0xffff ? '0x' + v.toString(16) : v)).join(',')}`).join('\n  ');
+}
 const f32b = new Float32Array(1), u32b = new Uint32Array(f32b.buffer);
 /** Bit pattern of a float32 (exact comparison of matrices: -0 vs 0 and NaN payloads count as changes). */
 function f32bits(v) { f32b[0] = v; return u32b[0]; }
@@ -438,7 +449,7 @@ export function d3dCore(vm) {
     GetClipPlane(c) { const v = this.clipPlanes.get(c.arg(1)), p = c.arg(2); for (let i = 0; i < 4; i++) mem.writeF32(p + 4 * i, v ? v[i] : 0); return D3D_OK; }
     // redundant state sets (same value) are the common case in engines: they must not invalidate the program memo
     // nor re-upload the state uniforms
-    SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
+    SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; this.rs.set(s, v); noteState(this, 'rs', s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
     BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
     EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; c.out32(1, id); return D3D_OK; }
@@ -451,7 +462,7 @@ export function d3dCore(vm) {
     GetTexture(c) { const st = c.arg(1), pp = c.arg(2); if (st >= MAX_STAGES || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
     SetTexture(c) { const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
     GetTextureStageState(c) { const st = c.arg(1); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; c.out32(3, this.tss[st].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
+    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; noteState(this, 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
     ValidateDevice(c) { c.out32(1, 1); return D3D_OK; }
     GetInfo() { return S_FALSE; }
     SetPaletteEntries(c) { const n = c.arg(1), p = c.arg(2); const pal = new Uint32Array(256); for (let i = 0; i < 256; i++) pal[i] = mem.read32(p + 4 * i); this.palettes.set(n, pal); return D3D_OK; }
