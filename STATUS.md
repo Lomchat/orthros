@@ -222,11 +222,16 @@
     via son D3DX lié statiquement une texture 1×1 remplie de magenta (sa texture « manquante ») puis, pour ces textures-là,
     ne tente *aucun* chargement (ni recherche de fichier, ni lecture d'archive — traces `apiburst`), alors que les autres
     proxies sont suivis d'une recherche puis d'une vraie texture. Déterministe (mêmes ressources avec le VFS HTTP et le VFS
-    Node), CPU conforme sur toutes les formes d'instructions du jeu (suite `corpus`). Test différentiel interpréteur/JIT en
-    cours ; hypothèse restante : données absentes du dossier (outils `TextureAssetBuilder`/`assetCacheBuilder` introuvables).
-  - **Sol de la forteresse** en aplats gris : le draw échantillonne une zone « bande sombre » de l'atlas 256×128 que le moteur
-    compose lui-même (un seul `LockRect`) ; mapping (UV, mips, matrices) vérifié correct côté Orthros. Peut-être la même cause
-    (tuile manquante/remplacée dans l'atlas).
+    Node), CPU conforme sur toutes les formes d'instructions du jeu (suite `corpus`), et **l'interpréteur de référence se
+    comporte exactement comme le JIT** (même proxy, même suite d'appels — test différentiel CLI `--interp`). Hypothèse restante :
+    données absentes du dossier (outils `TextureAssetBuilder`/`assetCacheBuilder` introuvables).
+  - **Sol de la forteresse en Very Low** en aplats gris : le draw échantillonne une zone « bande sombre » de l'atlas 256×128
+    que le moteur compose lui-même sur le CPU (à partir de copies internes, sans verrou de lecture sur des textures) ; mapping
+    (UV, mips, matrices) vérifié correct côté Orthros. **En détail High le même sol est correct** (pavage clair et herbe,
+    `build/shots52`) : pas de bug d'émulation établi, point classé.
+- **Partie en détail High** (headless, SwiftShader ~5 fps) : terrain, forteresse, arbres, unités corrects ; restent les
+  drapeaux magenta. Scénario d'entrées : `tools/scenarios/bfme-skirmish-high.txt` (le menu 3D High est interactif plus tard
+  et un premier clic passe son animation d'entrée).
 
 ## Prochaine action
 - Élucider les textures proxy jamais remplacées (thread de chargement : fichiers lus, attentes, erreurs) → corriger la fidélité en cause.
