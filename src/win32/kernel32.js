@@ -114,7 +114,18 @@ export function registerKernel32(api, vm) {
   K.IsBadReadPtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isAccessible(c.arg(0), c.arg(1), false) ? 0 : 1)];
   K.IsBadWritePtr = [2, (c) => (c.arg(1) === 0 ? 0 : c.proc.vmem.isAccessible(c.arg(0), c.arg(1), true) ? 0 : 1)];
   K.IsBadCodePtr = [1, (c) => (c.proc.vmem.isAccessible(c.arg(0), 1, false) ? 0 : 1)];
-  K.IsBadStringPtrA = [2, (c) => (c.proc.vmem.isAccessible(c.arg(0), 1, false) ? 0 : 1)];
+  // IsBadStringPtr: readable up to the terminating NUL or `max` characters (probed page by page, as Windows reads them)
+  const badString = (c, unit) => {
+    const vmem = c.proc.vmem, mem = c.mem; let p = c.arg(0) >>> 0; const max = c.arg(1) >>> 0;
+    if (max === 0) return 0;
+    for (let n = 0; n < max; n++, p += unit) {
+      if ((n === 0 || (p & 0xfff) < unit) && !vmem.isAccessible(p, unit, false)) return 1;
+      if ((unit === 1 ? mem.u8[p] : mem.read16(p)) === 0) return 0;
+    }
+    return 0;
+  };
+  K.IsBadStringPtrA = [2, (c) => badString(c, 1)];
+  K.IsBadStringPtrW = [2, (c) => badString(c, 2)];
   K.IsBadHugeReadPtr = K.IsBadReadPtr; K.IsBadHugeWritePtr = K.IsBadWritePtr;
   K.RaiseException = [4, (c) => { vm.raiseException(c, c.arg(0), c.arg(1), c.arg(2), c.arg(3)); }, { noreturn: true }];
   K.RtlUnwind = [4, (c) => vm.seh.rtlUnwind(c)];
