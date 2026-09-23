@@ -181,9 +181,9 @@ export class WebGLDevice {
     const cube = !!t.faces, volume = !!t.depth;
     const target = cube ? gl.TEXTURE_CUBE_MAP : volume ? gl.TEXTURE_3D : gl.TEXTURE_2D;
     let g = this.textures.get(t.id);
-    if (!g) { g = { tex: gl.createTexture(), target }; this.textures.set(t.id, g); gl.bindTexture(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
+    if (!g) { g = { tex: gl.createTexture(), target }; this.textures.set(t.id, g); this.bindForUpload(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
     if (volume) {
-      for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty) continue; gl.bindTexture(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
+      for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty) continue; this.bindForUpload(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
       return g;
     }
     const faces = cube ? t.faces : [t.levels ?? []];
@@ -193,12 +193,22 @@ export class WebGLDevice {
       for (let i = 0; i < lv.length; i++) {
         const s = lv[i];
         if (!s.dirty && s.uploaded) continue;
-        if (!bound) { gl.bindTexture(target, g.tex); bound = true; }
+        if (!bound) { this.bindForUpload(target, g.tex); bound = true; }
         this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s, g, f * 32 + i);
         s.dirty = false; s.uploaded = true;
       }
     }
     return g;
+  }
+  /**
+   * Bind a texture to upload into it: on the active unit, whose cached binding (gs.tex) is updated — a draw must
+   * not skip rebinding its own texture on a unit an upload has changed.
+   */
+  bindForUpload(target, tex) {
+    const gs = this.gs;
+    if (gs.active === undefined) { this.gl.activeTexture(this.gl.TEXTURE0); gs.active = 0; }
+    this.gl.bindTexture(target, tex);
+    gs.tex[gs.active] = tex;
   }
   volumeToRgba(fmt, l) { const out = new Uint8Array(l.width * l.height * l.depth * 4); for (let z = 0; z < l.depth; z++) out.set(surfaceToRgba(this.mem, fmt, l.mem + z * l.slice, l.width, l.height, l.pitch), z * l.width * l.height * 4); return out; }
   /** Upload a surface into `level` of the bound texture; `g.alloc[slot]` records the levels already specified (GL texture record). */
@@ -669,7 +679,7 @@ export class WebGLDevice {
       if (!l) continue;
       const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
       const g = this.glTexture(tex);
-      if (gs.tex[i] !== g.tex) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
+      if (gs.tex[i] !== g.tex) { if (gs.active !== i) { gl.activeTexture(gl.TEXTURE0 + i); gs.active = i; } gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
       // sampler objects are pooled by parameter combination: switching settings is one bindSampler
       const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
