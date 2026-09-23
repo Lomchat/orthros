@@ -28,7 +28,7 @@ export const SIGNATURES = {
   GlobalFree: 1, GlobalHandle: 1, GlobalLock: 1, GlobalMemoryStatus: 1, GlobalMemoryStatusEx: 1, GlobalReAlloc: 3, GlobalSize: 1, GlobalUnlock: 1,
   HeapAlloc: 3, HeapCompact: 2, HeapCreate: 3, HeapDestroy: 1, HeapFree: 3, HeapReAlloc: 4, HeapSize: 3, HeapValidate: 3, HeapWalk: 2,
   InitializeCriticalSection: 1, InitializeCriticalSectionAndSpinCount: 2, InterlockedCompareExchange: 3, InterlockedDecrement: 1, InterlockedExchange: 2,
-  InterlockedExchangeAdd: 2, InterlockedIncrement: 1, IsBadCodePtr: 1, IsBadReadPtr: 2, IsBadStringPtrA: 2, IsBadWritePtr: 2, IsDBCSLeadByte: 1,
+  InterlockedExchangeAdd: 2, InterlockedIncrement: 1, IsBadCodePtr: 1, IsBadReadPtr: 2, IsBadStringPtrA: 2, IsBadStringPtrW: 2, IsBadWritePtr: 2, IsDBCSLeadByte: 1,
   IsDBCSLeadByteEx: 2, IsDebuggerPresent: 0, IsProcessorFeaturePresent: 1, IsValidCodePage: 1, IsValidLocale: 2, LCMapStringA: 6, LCMapStringW: 6,
   LeaveCriticalSection: 1, LoadLibraryA: 1, LoadLibraryW: 1, LoadLibraryExA: 3, LoadLibraryExW: 3, LoadResource: 2, LocalAlloc: 2, LocalFileTimeToFileTime: 2,
   LocalFree: 1, LocalLock: 1, LocalReAlloc: 3, LocalSize: 1, LocalUnlock: 1, LockFile: 5, LockResource: 1, MapViewOfFile: 5, MoveFileA: 2, MoveFileExA: 3,
