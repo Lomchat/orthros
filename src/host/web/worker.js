@@ -140,6 +140,7 @@ function pump() {
     return;
   }
   host.renderAudio(vm);
+  host.audioHook ??= () => host.renderAudio(vm);
   const now = performance.now();
   pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (now - statsAt > 500) {
