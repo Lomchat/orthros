@@ -158,6 +158,22 @@ export class WebGLDevice {
     gl.colorMask(true, true, true, true); gl.depthMask(true); gl.stencilMask(0xff);
     gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   }
+  /**
+   * The WebGL context was lost and restored: every GL object is gone. The records are dropped so that programs,
+   * textures, buffers, VAOs and targets are recreated on use and resources re-uploaded from guest memory (render
+   * target contents are lost, as with a lost Direct3D device: the game redraws them).
+   */
+  contextRestored() {
+    const gl = this.gl;
+    this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null;
+    this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
+    this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
+    this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
+    this.invalidateGlState(); gl.bindVertexArray(this.vao);
+    this.reset(this.dev);
+    this.log('d3d-webgl: context restored, resources recreated on use');
+  }
   destroy() { const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programs.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
@@ -180,10 +196,10 @@ export class WebGLDevice {
     const gl = this.gl;
     const cube = !!t.faces, volume = !!t.depth;
     const target = cube ? gl.TEXTURE_CUBE_MAP : volume ? gl.TEXTURE_3D : gl.TEXTURE_2D;
-    let g = this.textures.get(t.id);
-    if (!g) { g = { tex: gl.createTexture(), target }; this.textures.set(t.id, g); this.bindForUpload(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
+    let g = this.textures.get(t.id), fresh = false;
+    if (!g) { fresh = true; g = { tex: gl.createTexture(), target }; this.textures.set(t.id, g); this.bindForUpload(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
     if (volume) {
-      for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty) continue; this.bindForUpload(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
+      for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty && !fresh) continue; this.bindForUpload(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
       return g;
     }
     const faces = cube ? t.faces : [t.levels ?? []];
@@ -192,7 +208,7 @@ export class WebGLDevice {
       const lv = faces[f];
       for (let i = 0; i < lv.length; i++) {
         const s = lv[i];
-        if (!s.dirty && s.uploaded) continue;
+        if (!s.dirty && s.uploaded && !fresh) continue; // (a new GL texture — first use, or after a context loss — takes every level)
         if (!bound) { this.bindForUpload(target, g.tex); bound = true; }
         this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s, g, f * 32 + i);
         s.dirty = false; s.uploaded = true;
@@ -973,5 +989,10 @@ export function createWebGLBackend(canvas, log, dump) {
   // benchmark mode (--gl-discard): every GL call is still issued but nothing is rasterized, so a software GPU
   // (headless SwiftShader) no longer bounds the frame rate and CPU-side changes become measurable
   if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD);
-  return { gl, device: null, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL }); } };
+  // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
+  // (preventDefault); the device then recreates its GL objects
+  canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); backend.device?.contextRestored(); });
+  const backend = { gl, device: null, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL }); } };
+  return backend;
 }

@@ -51,7 +51,8 @@ export class BrowserDisplay {
   }
   /** Hand the Direct3D frame just presented (blitted into the GL canvas) to the page. */
   presentGl() {
-    const bitmap = this.canvasGl.transferToImageBitmap();
+    let bitmap;
+    try { bitmap = this.canvasGl.transferToImageBitmap(); } catch { return; } // (WebGL context lost: no frame until it is restored)
     this.host.post({ type: 'frame', layer: 'gl', bitmap }, [bitmap]);
     if (!this.glActive) { this.glActive = true; this.host.post({ type: 'gl', active: true }); }
   }

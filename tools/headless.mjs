@@ -64,6 +64,9 @@ if (args.includes('--capture-draws')) q.set('capturedraws', '1');
 if (opt('burst-from')) q.set('burstfrom', opt('burst-from')); // --log apiburst: trace the API calls following tiny (stand-in) textures from this resource id on
 // --capture-at <s|+s>: capture the next Direct3D frame at that time (textures as PNG, per-draw state; with
 // --capture-draws also the render target after every draw) into <out>/capture
+// --lose-context-at <s>: lose the WebGL context at that time and restore it 0.5 s later (recovery test)
+const loseContextAt = opt('lose-context-at') ? Number(opt('lose-context-at')) : null;
+let contextLost = false;
 const captureAt = opt('capture-at') ? { t: Number(opt('capture-at').replace(/^@/, '')), rel: opt('capture-at').startsWith('+'), anchored: opt('capture-at').startsWith('@'), done: false } : null;
 if (opfsDir) q.set('opfs', '1');
 if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame diagnostics only after that time
@@ -208,6 +211,7 @@ for (;;) {
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
+  if (loseContextAt !== null && !contextLost && t >= loseContextAt) { contextLost = true; console.log(`[input] WebGL context loss at ${t.toFixed(0)}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'loseContext', ms: 500 })); }
   if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
   // captured images, a few per round trip (a whole frame of per-draw PNGs exceeds the maximum string length)
   let nDumps = 0;

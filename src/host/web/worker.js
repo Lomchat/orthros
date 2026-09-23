@@ -225,6 +225,10 @@ self.onmessage = (e) => {
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; log('gfx', `d3d-webgl: capture requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
+  else if (m.type === 'loseContext') { // (testing: WebGL context loss and restoration)
+    const ext = host?.gfx?.gl.getExtension('WEBGL_lose_context');
+    if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), m.ms ?? 500); } else log('warn', 'WEBGL_lose_context unavailable');
+  }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
