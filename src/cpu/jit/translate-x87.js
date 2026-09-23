@@ -57,15 +57,20 @@ function f32Off(part, addr) {
   return !(addr >= lo && addr < hi);
 }
 /**
- * Set the tag bit of ST(i)'s physical slot. Skipped when a store earlier in the block already
- * set it (E.stValid, reset at block entry, after fallbacks and by every op that clears tags);
- * `record` = false for a conditional store (FCMOVCC) whose bit is not known afterwards.
+ * Mark ST(i)'s physical slot valid: a static change (E.tagSet, applied where the block is left, see
+ * Emitter.applyTags); skipped when a store earlier in the block already did (E.stValid, reset at block
+ * entry, after fallbacks and by every op that clears tags). `record` = false for a conditional store
+ * (FCMOVcc, inside its `if`): a run-time update, the pending changes having been applied before the `if`.
  */
 function tagValid(E, i, record = true) {
   if (E.stValid & (1 << i)) return;
-  E.c.get(L_FTW).i32(E.stTagBit(i)).or().set(L_FTW);
-  if (record) E.stValid |= 1 << i;
+  const bit = E.stTagBit(i);
+  if (!record) { E.c.get(L_FTW).i32(bit).or().set(L_FTW); return; }
+  E.tagSet |= bit; E.tagClr &= ~bit;
+  E.stValid |= 1 << i;
 }
+/** Mark ST(i)'s physical slot empty (static, see tagValid). */
+function tagEmpty(E, i) { const bit = E.stTagBit(i); E.tagClr |= bit; E.tagSet &= ~bit; E.stValid &= ~(1 << i); }
 /** store local `local` into ST(i) and mark it valid */
 function storeST(E, i, local = L_F64A) { E.c.get(local).set(stW(E, i)); tagValid(E, i); }
 /** f64 on the stack -> ST(i), marked valid */
@@ -87,9 +92,8 @@ function rotateDown(E) {
 function push(E) { rotateUp(E); }
 /** clear the tag of ST(0), TOP++ (the popped value stays in its physical slot, now ST(7)) */
 function pop(E) {
-  E.c.get(L_FTW).i32(~E.stTagBit(0)).and().set(L_FTW);
+  tagEmpty(E, 0);
   rotateDown(E);
-  E.stValid &= 0x7f;
 }
 /** rc (0 nearest, 1 down, 2 up, 3 trunc) from the cached control word bits */
 function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else E.c.get(L_FPC).i32(10).shr_u(); }
@@ -296,49 +300,40 @@ const F32_OP = { 0: (c) => c.f32add(), 1: (c) => c.f32mul(), 4: (c) => c.f32sub(
  * 24-bit mode, round to nearest, both operands exact floats (L_F32A = ST(dst) or ST(0), L_F32B = the
  * other): the f32 operation is the x87 result (one IEEE rounding to 24 bits) unless it over/underflows the
  * float range, where the x87's wider exponent differs. Such results (exponent field 0 or 255) take the
- * cold path: an exact zero stays (a sum is exact at zero; a product or quotient only with a zero
- * dividend/factor or an infinite divisor), anything else is redone by the exact arith24 kernel; a result
- * that is not a float (huge, tiny, NaN payload) cannot live in the shadow: the instruction completes with
- * it in the f64 local and the region is left at the next instruction (f32Deopt). Result in L_F32C.
+ * cold path, which keeps the exact cases inline — a zero (a sum is exact at zero; a product or quotient
+ * only with a zero dividend/factor or an infinite divisor), an infinity coming from an infinite operand —
+ * and leaves everything else (NaN rule, overflow and underflow into the x87 range) to the interpreter
+ * (stepExit): no call in the region, whose values V8 would otherwise spill on the hot path. Result in L_F32C.
  */
-function arithF32(E, insn, op, dst, doPop) {
+function arithF32(E, insn, op) {
   const c = E.c;
   const [x, y] = op === 5 || op === 7 ? [L_F32B, L_F32A] : [L_F32A, L_F32B];
   c.get(x).get(y); F32_OP[op === 5 || op === 7 ? op - 1 : op](c); c.set(L_F32C);
   const done = c.block();
   c.get(L_F32C).i32reinterpret_f32().i32(23).shr_u().i32(0xff).and().i32(1).sub().i32(254).lt_u().hint(true).br_if(done);
-  // cold: a NaN result follows the x87 rule (operand NaN, larger significand, or IE and the indefinite): interpreter
-  c.get(L_F32C).get(L_F32C).f32ne();
-  const nan = c.if_(); E.stepExit(insn); c.end(); void nan;
-  // exact zero?
+  // cold: exact zero?
   c.get(L_F32C).f32c(0).f32eq();
   if (op === 1) c.get(L_F32A).f32c(0).f32eq().get(L_F32B).f32c(0).f32eq().or().and();
   else if (op >= 6) c.get(x).f32c(0).f32eq().get(y).f32abs().f32c(Infinity).f32eq().or().and();
   c.br_if(done);
-  c.get(L_F32A).f64promote().get(L_F32B).f64promote().i32(op).i32(0).call(IMP_ARITH24).set(L_F64C);
-  f32OrDeopt(E, insn, dst, doPop, done);
+  // an infinite result from an infinite operand (a dividend for a quotient) is exact
+  c.get(L_F32C).f32abs().f32c(Infinity).f32eq();
+  if (op >= 6) c.get(x).f32abs(); else c.get(L_F32A).f32abs().get(L_F32B).f32abs().f32max();
+  c.f32c(Infinity).f32eq().and().br_if(done);
+  E.stepExit(insn);
   c.end(); // done
 }
 /**
- * L_F64C (an x87 24-bit result) -> L_F32C and `br done` when it is a float; otherwise the instruction
- * completes with it in ST(dst)'s f64 local and leaves the region at the next instruction (the static
- * state of the fallthrough is restored after emitting that exit).
- */
-function f32OrDeopt(E, insn, dst, doPop, done) {
-  const c = E.c;
-  c.get(L_F64C).f32demote().tee(L_F32C).f64promote().i64reinterpret_f64().get(L_F64C).i64reinterpret_f64().i64eq().br_if(done);
-  const saved = [E.stShift, E.stValid, E.f32Mask];
-  c.get(L_F64C).set(stW(E, dst)); tagValid(E, dst);
-  if (doPop) pop(E);
-  E.exitTo(insn.next);
-  [E.stShift, E.stValid, E.f32Mask] = saved;
-}
-/**
  * 24-bit mode, round to nearest, f64 operands in L_F64A/L_F64B and their f64 result on the stack: the
- * rounded result as a float in L_F32C (roundPC's tests; zero exact; otherwise arith24, a non-float result
- * leaving the region as in arithF32).
+ * rounded result as a float in L_F32C. Hot path: roundPC's tests (off a 24-bit midpoint, in the float
+ * normal range), f32.demote. A midpoint is frequent (a sum of floats one exponent apart, a product by a
+ * small integer) and still exact when both operands are floats: the f64 result is then the exact value
+ * or its correct rounding to 53 >= 2 * 24 + 2 bits, which rounds correctly to 24 bits (double rounding is
+ * innocuous for + - * /). In the cold path a zero or an infinity from an infinite operand is exact too;
+ * anything else (a midpoint from a non-float operand, a result outside the float range) is left to the
+ * interpreter as in arithF32.
  */
-function roundF32(E, insn, op, dst, doPop) {
+function roundF32(E, insn) {
   const c = E.c;
   c.set(L_F64C);
   const done = c.block();
@@ -350,10 +345,11 @@ function roundF32(E, insn, op, dst, doPop) {
   c.end(); // cold
   c.get(L_F64C).f32demote().set(L_F32C);
   c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // zero: exact
-  c.get(L_F64C).get(L_F64C).f64ne();
-  const nan = c.if_(); E.stepExit(insn); c.end(); void nan; // NaN: the x87 rule, in the interpreter
-  c.get(L_F64A).get(L_F64B).i32(op).i32(0).call(IMP_ARITH24).set(L_F64C);
-  f32OrDeopt(E, insn, dst, doPop, done);
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u();
+  c.get(L_F64A).f32demote().f64promote().get(L_F64A).f64eq().and();
+  c.get(L_F64B).f32demote().f64promote().get(L_F64B).f64eq().and().br_if(done);
+  c.get(L_F64C).f64abs().f64c(Infinity).f64eq().get(L_F64A).f64abs().get(L_F64B).f64abs().f64max().f64c(Infinity).f64eq().and().br_if(done);
+  E.stepExit(insn);
   c.end(); // done
 }
 function arith(op, doPop, integer) {
@@ -368,7 +364,7 @@ function arith(op, doPop, integer) {
         c.get(L_S32 + slot(E, d)).set(L_F32A);
         if (o.t === OT.ST) c.get(L_S32 + slot(E, o.r)); else { E.ea(o); c.f32load(0, 0); }
         c.set(L_F32B);
-        arithF32(E, insn, op, d, doPop);
+        arithF32(E, insn, op);
         c.get(L_F32C); storeST32Stack(E, d);
         if (doPop) pop(E);
         return;
@@ -394,7 +390,7 @@ function arith(op, doPop, integer) {
       case 6: c.get(L_F64A).get(L_F64B).f64div(); break;
       default: c.get(L_F64B).get(L_F64A).f64div(); break;
     }
-    if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op, dst, doPop); c.get(L_F32C); storeST32Stack(E, dst); }
+    if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
       roundPC(E, op); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
@@ -619,8 +615,7 @@ HANDLERS[OP.FXCH] = (E, insn) => {
 };
 HANDLERS[OP.FFREE] = (E, insn) => {
   const r = insn.ops[0].r;
-  E.c.get(L_FTW).i32(~E.stTagBit(r)).and().set(L_FTW);
-  E.stValid &= ~(1 << r);
+  tagEmpty(E, r);
 };
 HANDLERS[OP.FINCSTP] = (E) => rotateDown(E);
 HANDLERS[OP.FDECSTP] = (E) => rotateUp(E);
@@ -640,6 +635,7 @@ HANDLERS[OP.FNSTSW] = (E, insn) => {
 HANDLERS[OP.FNCLEX] = (E) => { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x80ff).and().i32store16(ST.FPU_SW); };
 HANDLERS[OP.FCMOVCC] = (E, insn) => {
   const c = E.c; const i = insn.ops[0].r;
+  E.applyTags(); // the tag update below is conditional (run time)
   E.pushCond(insn.cc);
   toF64(E, 0); // conditionally overwritten: the f64 local must hold the current value on both paths
   const t = c.if_(); loadST(E, i); c.set(stW(E, 0)); tagValid(E, 0, false); c.end(); void t;

@@ -517,9 +517,10 @@ class Emitter {
    * must not write the shadows again, into locals the rotation has moved.
    */
   x87Normalize() {
-    const saved = { shift: this.stShift, f32: this.f32Mask };
+    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr };
     this.materializeF32();
     this.f32Mask = 0;
+    this.applyTags();
     const s = this.stShift;
     if (!s) return saved;
     const c = this.c;
@@ -531,7 +532,23 @@ class Emitter {
     return saved;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
-  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; }
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; }
+  /**
+   * Tag word changes of the block are static (tagSet / tagClr: bits of L_FTW in its current order, i.e.
+   * stTagBit positions): a push marks its slot valid and a pop empty without code; the pending changes are
+   * applied in one operation where L_FTW is read or the block is left (x87Normalize), or before a
+   * conditional tag update (FCMOVcc).
+   */
+  applyTags() {
+    const set = this.tagSet, clr = this.tagClr;
+    if (!set && !clr) return;
+    const c = this.c;
+    c.get(L_FTW);
+    if (clr) c.i32(~clr & 0xff).and();
+    if (set) c.i32(set).or();
+    c.set(L_FTW);
+    this.tagSet = this.tagClr = 0;
+  }
   /**
    * f32Mask bit k: the value of x87 local L_ST0+k lives in its f32 shadow L_S32+k (an exact float; the f64
    * local is stale). Every exit, branch and fallback goes through x87Normalize, which first writes the
@@ -947,6 +964,7 @@ class Emitter {
     this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
     this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
+    this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.cur = b.index;
     // flags live after each instruction of the block
@@ -1003,6 +1021,7 @@ class Emitter {
     this.lz = { kind: LZ.NONE, sz: 2 };
     this.stValid = 0;
     this.f32Mask = 0; // x87 values reloaded as f64
+    this.tagSet = this.tagClr = 0; // (applied by x87Normalize before the flush, the tag word reloaded)
     // did the instruction branch?
     c.get(L_STATE).i32load(ST.EIP).i32(insn.next).ne();
     const j = c.if_();
@@ -1660,5 +1679,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C };
+export { L_S32, L_F32A, L_F32B, L_F32C, Emitter };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
