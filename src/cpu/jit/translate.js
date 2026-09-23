@@ -1376,14 +1376,22 @@ function pushValue(E, size) { // value in L_TV
 }
 HANDLERS[OP.PUSH] = (E, insn) => {
   const c = E.c; const s = insn.ops[0]; const size = insn.opsize;
-  if (s.t === OT.SEG) { E.fallback(insn); return; }
+  if (s.t === OT.SEG) { // 16-bit store of the selector, the upper bytes of the slot untouched (as the interpreter)
+    c.get(L_REG + 4).i32(size).sub().set(L_REG + 4);
+    c.get(L_REG + 4).get(L_STATE).i32load16u(ST.SEG + 2 * s.r).i32store16(0);
+    return;
+  }
   if (s.t === OT.IMM) c.i32(s.size === 1 ? (s.v << 24) >> 24 : s.v | 0); else E.loadOp(s);
   c.set(L_TV);
   pushValue(E, size);
 };
 HANDLERS[OP.POP] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = insn.opsize;
-  if (d.t === OT.SEG) { E.fallback(insn); return; }
+  if (d.t === OT.SEG) { // the selector only (flat model: no descriptor load, as the interpreter)
+    c.get(L_STATE).get(L_REG + 4).i32load16u(0).i32store16(ST.SEG + 2 * d.r);
+    c.get(L_REG + 4).i32(size).add().set(L_REG + 4);
+    return;
+  }
   c.get(L_REG + 4); if (size === 2) c.i32load16u(0); else c.i32load(0, 0); c.set(L_TV);
   c.get(L_REG + 4).i32(size).add().set(L_REG + 4);
   if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA).get(L_TV); E.storeMem(size); E.smcCheck(insn); } else E.storeRegFrom(size, d.r, L_TV);

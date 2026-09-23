@@ -308,3 +308,15 @@ test('every condition after every flag writer on boundary values, in the same bl
     assert.equal(EJ.cpu.ebx & mask, EI.cpu.ebx & mask, `writer ${w.map((b) => b.toString(16)).join(' ')} on ${v.toString(16)}${split ? ' (reader in the next block)' : ''}`);
   }
 });
+
+test('push / pop of segment registers match the interpreter (selector only, upper bytes of the slot kept)', () => {
+  // push 0xaabbccdd ; pop eax ; push ds ; pop es ; push es ; pop eax ; push ss ; pop ds ; push fs ; pop gs ; push gs ; pop ecx ; hlt
+  // (the slot reused by `push ds` still holds 0xaabbccdd: its upper half must survive the 16-bit store)
+  const code = Uint8Array.from([0x68, 0xdd, 0xcc, 0xbb, 0xaa, 0x58, 0x1e, 0x07, 0x06, 0x58, 0x16, 0x1f, 0x0f, 0xa0, 0x0f, 0xa9, 0x0f, 0xa8, 0x59, 0xf4]);
+  const end = CODE + code.length - 1;
+  const segs = (E) => [0, 1, 2, 3, 4, 5].map((i) => E.mem.read16(E.cpu.base + ST.SEG + 2 * i));
+  const run = (jit) => { const E = makeExec(jit); E.load(code, 0); [0x23, 0x1b, 0x23, 0x2b, 0x3b, 0x33].forEach((v, i) => E.mem.write16(E.cpu.base + ST.SEG + 2 * i, v)); assert.equal(E.run(end, 1e6), EXIT.HALT); return { s: snapshot(E), segs: segs(E) }; };
+  const I = run(false), J = run(true);
+  assert.deepEqual(J, I);
+  assert.equal(I.s.regs[0], '0xaabb002b', 'DS (0x2b) through ES, the upper half of the reused slot kept');
+});
