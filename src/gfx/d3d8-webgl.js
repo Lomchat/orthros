@@ -164,7 +164,7 @@ export class WebGLDevice {
   destroyResource(r) {
     const gl = this.gl;
     const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); }
-    const b = this.buffers.get(r.id); if (b) { gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
+    const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
     for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); } }
   }
@@ -227,6 +227,7 @@ export class WebGLDevice {
     if (!g) { g = { buf: gl.createBuffer(), size: 0 }; this.buffers.set(b.id, g); b.dirty = true; }
     if (b.dirty) {
       gl.bindBuffer(target, g.buf);
+      if (kind === 'ib' && this.curVao) this.curVao.ib = g.buf; // an element array binding is state of the bound VAO
       if (g.size !== b.length) { gl.bufferData(target, this.mem.bytes(b.mem, b.length), b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW); g.size = b.length; }
       else { const [s, e] = b.dirtyRange ?? [0, b.length]; if (e > s) gl.bufferSubData(target, s, this.mem.bytes(b.mem + s, e - s)); }
       b.dirty = false; b.dirtyRange = null; this.stats.uploads++;
@@ -248,7 +249,7 @@ export class WebGLDevice {
     let f = this.fbos.get(rt.id);
     if (!f) {
       f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null, back };
-      gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, rt.owner.faces ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + rt.face : gl.TEXTURE_2D, g.tex, rt.level);
@@ -262,7 +263,7 @@ export class WebGLDevice {
       if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`);
       if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
-    } else gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
+    } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
     return { w: f.w, h: f.h, flip: !back };
   }
   setRenderTarget() {}
@@ -304,13 +305,32 @@ export class WebGLDevice {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
       gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); this.gs.fbo = null;
     if (dev.backBuffers.length > 1 && dev.pp.swap !== 3) { // flipping chain: rotate the contents, not the surfaces
       const ids = dev.backBuffers.map((b) => b.id), first = this.fbos.get(ids[0]);
       for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
-    gl.flush(); this.frame++; if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)`); } if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.log(`d3d-webgl: capture frame ${this.frame}`); } }
+    gl.flush(); this.frame++;
+    if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
+    if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
+  }
+  /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
+  startGlCount() {
+    const gl = this.gl, counts = this.glCallCounts = new Map();
+    for (const k of Object.getOwnPropertyNames(Object.getPrototypeOf(gl))) {
+      const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(gl), k);
+      if (typeof d?.value !== 'function' || k === 'constructor') continue;
+      const f = d.value;
+      gl[k] = function (...a) { counts.set(k, (counts.get(k) ?? 0) + 1); return f.apply(gl, a); };
+    }
+  }
+  stopGlCount() {
+    const gl = this.gl, counts = this.glCallCounts; this.glCallCounts = null;
+    for (const k of Object.keys(gl)) if (typeof gl[k] === 'function') delete gl[k];
+    let total = 0; for (const v of counts.values()) total += v;
+    return `${total} (${(total / Math.max(1, this.frameDraws)).toFixed(1)}/draw): ` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+  }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
     if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
@@ -330,8 +350,8 @@ export class WebGLDevice {
   }
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTexture() {} setTextureStageState() {} setSamplerState() {}
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
-  deleteVertexShader(sh) { for (const [k, p] of this.programs) if (p.vs === sh) { this.gl.deleteProgram(p.prog); this.programs.delete(k); } }
-  deletePixelShader(sh) { for (const [k, p] of this.programs) if (p.ps === sh) { this.gl.deleteProgram(p.prog); this.programs.delete(k); } }
+  deleteVertexShader(sh) { for (const [k, p] of this.programs) if (p.vs === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
+  deletePixelShader(sh) { for (const [k, p] of this.programs) if (p.ps === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
   setCursor() {}
   /**
    * Gamma ramp (SetGammaRamp / SetDeviceGammaRamp): 3 x 256 WORDs. An identity ramp disables the pass; otherwise
@@ -369,7 +389,7 @@ export class WebGLDevice {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G.tex); gl.bindSampler(0, null);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, G.lut); gl.bindSampler(1, null);
     gl.uniform1i(gl.getUniformLocation(G.prog, 'u_img'), 0); gl.uniform1i(gl.getUniformLocation(G.prog, 'u_lut'), 1);
-    for (let i = 0; i < 16; i++) gl.disableVertexAttribArray(i);
+    gl.bindVertexArray(this.vao); // the default VAO has no attribute enabled
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.invalidateGlState();
   }
@@ -529,14 +549,26 @@ export class WebGLDevice {
       gl.uniform1i(U('u_numLights'), n);
     }
     if (pv.s !== dev.stateVersion) {
+      // any render/stage state change bumps stateVersion: compare the raw state words with what this program last
+      // received so an unrelated change (a blend mode, a texture op) does not re-send identical uniforms
       pv.s = dev.stateVersion;
-      if (U('u_fog')) gl.uniform4f(U('u_fog'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
-      if (U('u_fogParams')) gl.uniform4f(U('u_fogParams'), this.rsF(RS.FOGSTART), this.rsF(RS.FOGEND), this.rsF(RS.FOGDENSITY), 0);
-      if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(this.rs(RS.FOGCOLOR, 0), this.tmp.v4));
-      if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(this.rs(RS.TEXTUREFACTOR, 0xffffffff), this.tmp.v4));
-      if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), (this.rs(RS.ALPHAREF, 0) & 0xff) / 255);
-      if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), this.rsF(RS.POINTSIZE) || 1);
-      for (let i = 0; i < MAX_STAGES; i++) { const l = U(U_BUMPENV[i]); if (l) gl.uniform4f(l, asFloat(this.tss(i, TSS.BUMPENVMAT00, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT01, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT10, 0)), asFloat(this.tss(i, TSS.BUMPENVMAT11, 0))); }
+      const sv = pv.sv ?? (pv.sv = {});
+      const fs = this.rs(RS.FOGSTART, 0), fe = this.rs(RS.FOGEND, 0), fd = this.rs(RS.FOGDENSITY, 0);
+      if (sv.fs !== fs || sv.fe !== fe || sv.fd !== fd) {
+        sv.fs = fs; sv.fe = fe; sv.fd = fd;
+        if (U('u_fog')) gl.uniform4f(U('u_fog'), asFloat(fs), asFloat(fe), asFloat(fd), 0);
+        if (U('u_fogParams')) gl.uniform4f(U('u_fogParams'), asFloat(fs), asFloat(fe), asFloat(fd), 0);
+      }
+      const fc = this.rs(RS.FOGCOLOR, 0); if (sv.fc !== fc) { sv.fc = fc; if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(fc, this.tmp.v4)); }
+      const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff); if (sv.tf !== tf) { sv.tf = tf; if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(tf, this.tmp.v4)); }
+      const ar = this.rs(RS.ALPHAREF, 0) & 0xff; if (sv.ar !== ar) { sv.ar = ar; if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), ar / 255); }
+      const ps = this.rs(RS.POINTSIZE, 0); if (sv.ps !== ps) { sv.ps = ps; if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), asFloat(ps) || 1); }
+      for (let i = 0; i < MAX_STAGES; i++) {
+        const l = U(U_BUMPENV[i]); if (!l) continue;
+        const a = this.tss(i, TSS.BUMPENVMAT00, 0), b = this.tss(i, TSS.BUMPENVMAT01, 0), c = this.tss(i, TSS.BUMPENVMAT10, 0), d = this.tss(i, TSS.BUMPENVMAT11, 0);
+        const k = 'b' + i; const prev = sv[k];
+        if (!prev || prev[0] !== a || prev[1] !== b || prev[2] !== c || prev[3] !== d) { sv[k] = [a, b, c, d]; gl.uniform4f(l, asFloat(a), asFloat(b), asFloat(c), asFloat(d)); }
+      }
     }
     if (pv.c !== dev.constVersion) {
       pv.c = dev.constVersion;
@@ -632,8 +664,7 @@ export class WebGLDevice {
   invalidateGlState() {
     this.gs = { en: {}, tex: new Array(16).fill(null), texUnit: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
     for (const ss of this.samplerState) for (const k in ss) ss[k] = undefined;
-    for (let i = 0; i < 16; i++) this.gl.disableVertexAttribArray(i); // known state: nothing enabled
-    this.attribMask = 0;
+    if (this.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } // the default VAO (cached ones keep their state)
   }
   captureDraw(P, info, v, flip) {
     const gl = this.gl; void gl;
@@ -654,7 +685,7 @@ export class WebGLDevice {
     }
     const f = this.fbos.get(l.id); if (!f) return;
     const gl = this.gl, rgba = new Uint8Array(f.w * f.h * 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); gl.readPixels(0, 0, f.w, f.h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; gl.readPixels(0, 0, f.w, f.h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     this.bindTarget(); // restore the current target
     this.dump(name, f.w, f.h, rgba); // texture targets are stored with D3D row order already
   }
@@ -672,31 +703,58 @@ export class WebGLDevice {
   blend(b) { const gl = this.gl; return [gl.ZERO, gl.ZERO, gl.ONE, gl.SRC_COLOR, gl.ONE_MINUS_SRC_COLOR, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.DST_ALPHA, gl.ONE_MINUS_DST_ALPHA, gl.DST_COLOR, gl.ONE_MINUS_DST_COLOR, gl.SRC_ALPHA_SATURATE, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_COLOR, gl.ONE_MINUS_CONSTANT_COLOR][b] ?? gl.ONE; }
 
   /** Bind vertex attributes for the current layout from the device's streams (or a UP buffer). */
+  /**
+   * Bind the vertex attributes of the current layout from the device's streams (or a UP buffer) through a cached
+   * vertex array object: one VAO per (program, stream buffers, strides, base offsets), so a draw that repeats a known
+   * combination costs one bindVertexArray instead of a buffer bind, enable/disable and pointer call per attribute.
+   */
   bindAttributes(P, L, up = null, baseVertex = 0) {
     const gl = this.gl, dev = this.dev;
-    const attrType = (a) => (a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT);
-    const normalized = (a) => a.type === 'color' || a.type === 'ubyte4n' || a.type === 'shortn' || a.type === 'ushortn';
-    const nameOf = (a) => (L.code && L.dx9 ? 'a_' + (a.sem ?? FVF_SEM[a.name] ?? a.name) : L.code ? 'a_v' + a.reg : 'a_' + a.name);
-    let used = 0; // bitmask of attribute locations bound by this draw
-    const bindStream = (n, attrs, declStride) => {
-      const s = up ?? dev.streams[n];
-      let stride, base;
-      if (up) { gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo); stride = up.stride; base = 0; }
-      else { const vb = this.comImpl(s.vb); if (!vb) return; gl.bindBuffer(gl.ARRAY_BUFFER, this.glBuffer(vb, 'vb').buf); stride = s.stride || declStride; base = s.offset ?? 0; }
-      for (const a of attrs) {
-        const loc = P.attrNames.indexOf(nameOf(a));
-        if (loc < 0) continue;
-        if (!(this.attribMask & (1 << loc))) gl.enableVertexAttribArray(loc);
-        gl.vertexAttribPointer(loc, a.comps, attrType(a), normalized(a), stride, base + a.offset + baseVertex * stride);
-        used |= 1 << loc;
+    const vaos = this.vaos ?? (this.vaos = new Map());
+    if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; }
+    const streams = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]];
+    let key = up ? `${P.vid}|up${up.stride}` : `${P.vid}`;
+    const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
+    for (const [n, st] of streams) {
+      if (up) { bound.push([n, st.attrs, up.stride, 0, this.upVbo, -1]); continue; }
+      const s = dev.streams[n], vb = this.comImpl(s?.vb);
+      if (!vb) continue;
+      const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+      const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
+      key += `|${vb.id}:${stride}:${base}`;
+      bound.push([n, st.attrs, stride, base, buf, vb.id]);
+    }
+    let v = vaos.get(key);
+    if (!v) {
+      if (vaos.size >= 8192) this.dropVaos();
+      v = { vao: gl.createVertexArray(), ib: null, key, bufs: bound.map((b) => b[5]).filter((x) => x >= 0), P };
+      vaos.set(key, v); P.vaoKeys.push(key);
+      for (const id of v.bufs) { let set = (this.vaosByBuf ??= new Map()).get(id); if (!set) this.vaosByBuf.set(id, (set = new Set())); set.add(key); }
+      gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
+      const attrType = (a) => (a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT);
+      const normalized = (a) => a.type === 'color' || a.type === 'ubyte4n' || a.type === 'shortn' || a.type === 'ushortn';
+      const nameOf = (a) => (L.code && L.dx9 ? 'a_' + (a.sem ?? FVF_SEM[a.name] ?? a.name) : L.code ? 'a_v' + a.reg : 'a_' + a.name);
+      for (const [, attrs, stride, base, buf] of bound) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        for (const a of attrs) {
+          const loc = P.attrNames.indexOf(nameOf(a));
+          if (loc < 0) continue;
+          gl.enableVertexAttribArray(loc);
+          gl.vertexAttribPointer(loc, a.comps, attrType(a), normalized(a), stride, base + a.offset);
+        }
       }
-    };
-    if (L.layout.streams) { for (const [n, st] of L.layout.streams) bindStream(n, st.attrs, st.stride); }
-    else bindStream(0, L.layout.attrs, L.layout.stride);
-    const stale = this.attribMask & ~used; // previously enabled attributes not used by this draw
-    if (stale) for (let i = 0; i < 16; i++) if (stale & (1 << i)) gl.disableVertexAttribArray(i);
-    this.attribMask = used;
+    } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
+    this.curVao = v;
     return true;
+  }
+  /** Bind an index buffer into the current VAO (element array bindings are VAO state). */
+  bindIndices(buf) { if (this.curVao.ib !== buf) { this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, buf); this.curVao.ib = buf; } }
+  /** Forget cached VAOs (all, or those of one buffer resource / one program). */
+  dropVaos(bufId, P) {
+    const keys = bufId !== undefined ? [...(this.vaosByBuf?.get(bufId) ?? [])] : P ? P.vaoKeys ?? [] : [...(this.vaos?.keys() ?? [])];
+    for (const k of keys) { const v = this.vaos.get(k); if (!v) continue; if (this.gs.vao === v.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } this.gl.deleteVertexArray(v.vao); this.vaos.delete(k); }
+    if (bufId !== undefined) this.vaosByBuf?.delete(bufId);
+    if (bufId === undefined && !P) this.vaosByBuf?.clear();
   }
   glMode(type) { const gl = this.gl; return [0, gl.POINTS, gl.LINES, gl.LINE_STRIP, gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][type] ?? gl.TRIANGLES; }
   vertexCount(type, prims) { switch (type) { case PT.POINTLIST: return prims; case PT.LINELIST: return prims * 2; case PT.LINESTRIP: return prims + 1; case PT.TRIANGLELIST: return prims * 3; default: return prims + 2; } }
@@ -744,7 +802,7 @@ export class WebGLDevice {
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.glBuffer(ib, 'ib').buf);
+    this.bindIndices(this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
     if (this.capturing) {
       const st = dev.streams[0], vb = this.comImpl(st.vb), stride = st.stride || info.L.layout.stride || 0, short = ib.fmt === FMT.INDEX16;
@@ -785,7 +843,7 @@ export class WebGLDevice {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
     gl.bufferData(gl.ARRAY_BUFFER, this.mem.bytes(data, (minIdx + numV) * stride), gl.STREAM_DRAW);
     if (!this.bindAttributes(P, info.L, { stride })) return;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.upIbo);
+    this.bindIndices(this.upIbo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.mem.bytes(idx, n * (short ? 2 : 4)), gl.STREAM_DRAW);
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);

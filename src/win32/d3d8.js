@@ -23,6 +23,10 @@ const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_L
 const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 
 /** bytes of one row / total bytes for a surface of this format */
+const f32b = new Float32Array(1), u32b = new Uint32Array(f32b.buffer);
+/** Bit pattern of a float32 (exact comparison of matrices: -0 vs 0 and NaN payloads count as changes). */
+function f32bits(v) { f32b[0] = v; return u32b[0]; }
+
 export function surfacePitch(fmt, w) {
   switch (fmt) {
     case FMT.DXT1: return Math.max(1, (w + 3) >> 2) * 8;
@@ -401,7 +405,16 @@ export function d3dCore(vm) {
     Clear(c) { const n = c.arg(1), rects = c.arg(2), flags = c.arg(3), color = c.arg(4), z = c.argF32(5), stencil = c.arg(6); this.gfx?.clear?.(n, rects, flags, color, z, stencil); if (!this.gfx) this.clears = (this.clears ?? 0) + 1; return D3D_OK; }
     touchTransform(st) { this.transformSlotVersion.set(st, ++this.transformVersion); }
     touchAllTransforms() { this.transformAllVersion = ++this.transformVersion; }
-    SetTransform(c) { const st = c.arg(1), p = c.arg(2); this.touchTransform(st); if (!p) return D3DERR_INVALIDCALL; const m = new Float32Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(p + 4 * i); this.transforms.set(st, m); this.gfx?.setTransform?.(st, m); return D3D_OK; }
+    SetTransform(c) {
+      const st = c.arg(1), p = c.arg(2);
+      if (!p) return D3DERR_INVALIDCALL;
+      // games re-send the same view/projection before every object: an identical matrix changes nothing
+      const cur = this.transforms.get(st);
+      if (cur) { let same = true; for (let i = 0; i < 16; i++) if ((mem.read32(p + 4 * i) >>> 0) !== f32bits(cur[i])) { same = false; break; } if (same) return D3D_OK; }
+      this.touchTransform(st);
+      const m = new Float32Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(p + 4 * i);
+      this.transforms.set(st, m); this.gfx?.setTransform?.(st, m); return D3D_OK;
+    }
     GetTransform(c) { const m = this.transforms.get(c.arg(1)), p = c.arg(2); if (!p) return D3DERR_INVALIDCALL; for (let i = 0; i < 16; i++) mem.writeF32(p + 4 * i, m ? m[i] : (i % 5 === 0 ? 1 : 0)); return D3D_OK; }
     MultiplyTransform(c) { const st = c.arg(1), p = c.arg(2); this.touchTransform(st); const a = this.transforms.get(st) ?? Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); const b = new Float32Array(16); for (let i = 0; i < 16; i++) b[i] = mem.readF32(p + 4 * i); const r = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += b[i * 4 + k] * a[k * 4 + j]; r[i * 4 + j] = s; } this.transforms.set(st, r); this.gfx?.setTransform?.(st, r); return D3D_OK; }
     SetViewport(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.viewport = { x: mem.read32(p), y: mem.read32(p + 4), w: mem.read32(p + 8), h: mem.read32(p + 12), minZ: mem.readF32(p + 16), maxZ: mem.readF32(p + 20) }; this.gfx?.setViewport?.(this.viewport); return D3D_OK; }
