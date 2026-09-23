@@ -278,12 +278,34 @@
   une région (même sur un chemin froid) fait vider les registres — d'où les sorties vers l'interpréteur pour les cas
   rares plutôt que des appels.
 
+## Backend, fichiers, audio, lancement générique (2026-09-23, fin de journée)
+- **Programmes GL par signature numérique** : quand un état de la clé de programme change (bascules d'états entre
+  draws en partie), les entrées de la clé sont relues comme entiers et retrouvées par hachage ; les chaînes de clé ne
+  sont construites que pour une combinaison nouvelle. Profil en partie : `programUncached` 4,3 % + annexes → 1,6 % ;
+  backend WebGL 17,2 % → 10,1 % du worker.
+- **Appels GL par image en partie** : 2 573 (5,8/draw) ; `uniform1i` des échantillonneurs posés une fois au link (108/image
+  en moins), `activeTexture` seulement quand l'unité change. **Bug corrigé** : les téléversements de textures liaient la
+  texture sur l'unité active sans mettre à jour le cache de liaisons — un draw suivant pouvait échantillonner la texture
+  téléversée. Re-téléversements en `texSubImage2D` (plus de réallocation), diagnostic « placeholder » limité au premier
+  téléversement (il reconvertissait deux textures dynamiques 128×128 ~50 fois/s).
+- **Magasin OPFS des fichiers du jeu** (`src/vfs/opfs-store.js`) : blocs lus une fois gardés dans le stockage privé
+  du navigateur, relus de façon synchrone (3e lancement : 0 requête HTTP). Préchargement asynchrone essayé et abandonné
+  (+50 % d'octets pour −9 % de temps synchrone).
+- **Audio** : avance du tampon de sortie adaptative (93 → 280 ms selon les sous-alimentations, retour après 30 s calmes),
+  mixage avant les attentes imbriquées ; au menu High, sous-alimentations après la création du tampon du jeu 12 400 →
+  1 800 en 220 s ; en partie quasi nulles.
+- **`orthros run <dossier>`** (`bin/orthros.mjs`, `src/host/manifest.js`) : sert un dossier de jeu quelconque avec un
+  manifeste synthétisé par règles génériques ; le harnais headless et la CLI Node acceptent un dossier (vérifié avec un
+  dossier contenant dx9.exe, setup.exe et uninstall.exe).
+- Textures magenta : le jeu lance `TextureAssetBuilder.exe` / `assetCacheBuilder.exe` depuis son dossier (absents) et
+  cherche des textures en fichiers libres (`trwagontraveled*`) sans les trouver — pas d'écart d'émulation identifiable
+  (l'interpréteur de référence reproduit le même comportement) : classé données/outils absents du dossier.
+
 ## Prochaine action
-- Performance : coût JS du backend GL par draw (~9 µs au menu : `applyState`, `bindAttributes`, dispatch COM), p99 en
-  partie (pics isolés), puis pression de registres dans les régions ; piste lourde : backend Direct3D dans un second
-  worker (le JS Direct3D + GL ≈ 20 % du worker au menu).
-- Élucider les textures proxy jamais remplacées (thread de chargement : fichiers lus, attentes, erreurs) → corriger la fidélité en cause.
-- Mesure réelle sur GPU (critère M7) : `make serve` puis Chrome sur une machine cliente.
+- Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente.
+- Performance CPU : pression de registres dans les régions ; coût du chaînage entre régions x87 (vidage/rechargement
+  de la pile) ; les mesures en jeu exigent des runs seuls (bruit A/A jusqu'à 3,7 % sur la machine partagée).
+- Premier lancement sur réseau réel : téléchargement de fond de tout le dossier vers le magasin OPFS (à évaluer).
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)
