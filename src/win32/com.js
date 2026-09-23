@@ -129,7 +129,10 @@ export class Com {
       case 1: return this.addRef(obj);
       case 2: return this.release(obj);
     }
-    const fn = obj.impl[m.name];
+    // the method resolved once per object (a property lookup by name is megamorphic across implementations)
+    const fns = obj.fns ?? (obj.fns = []);
+    let fn = fns[index];
+    if (fn === undefined) fn = fns[index] = obj.impl[m.name] ?? null;
     if (typeof fn !== 'function') {
       const key = `${iface.name}::${m.name}`;
       if (!this.tracedMissing.has(key)) { this.tracedMissing.add(key); this.vm.warn(`COM: ${key} not implemented (called from ${ctx.proc.symbolize(ctx.retAddr)})`); }
