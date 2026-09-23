@@ -106,7 +106,7 @@ const LIGHT_U = Array.from({ length: 8 }, (_, n) => Object.fromEntries(['type', 
 const TEX_U = { tex: names('u_tex', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), cube: names('u_cube', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), vol: names('u_vol', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')) };
 let blendOpsCache = null; const BLEND_OPS = (gl) => blendOpsCache ?? (blendOpsCache = [gl.FUNC_ADD, gl.FUNC_ADD, gl.FUNC_SUBTRACT, gl.FUNC_REVERSE_SUBTRACT, gl.MIN, gl.MAX]);
 /** program signature inputs: render states with the defaults programUncached reads them with (pairs state, default) */
-const SIG_RS = [RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMODE, 0, RS.FOGVERTEXMODE, 0, RS.COLORVERTEX, 1, RS.DIFFUSEMATERIALSOURCE, 1, RS.SPECULARMATERIALSOURCE, 2,
+const SIG_RS = [RS.SHADEMODE, 2, RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMODE, 0, RS.FOGVERTEXMODE, 0, RS.COLORVERTEX, 1, RS.DIFFUSEMATERIALSOURCE, 1, RS.SPECULARMATERIALSOURCE, 2,
   RS.AMBIENTMATERIALSOURCE, 0, RS.EMISSIVEMATERIALSOURCE, 0, RS.SPECULARENABLE, 0, RS.LOCALVIEWER, 1, RS.NORMALIZENORMALS, 0, RS.RANGEFOGENABLE, 0, RS.VERTEXBLEND, 0,
   RS.ALPHATESTENABLE, 0, RS.ALPHAFUNC, 8];
 /** stage states of the signature besides COLOROP / ALPHAOP / TEXCOORDINDEX, whose defaults depend on the stage (pairs state, default) */
@@ -125,6 +125,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.firstVertexConvention();
     this.programs = new Map();
     this.textures = new Map(); // resource id -> { tex, target }
     this.buffers = new Map(); // resource id -> { buf, size }
@@ -165,9 +166,15 @@ export class WebGLDevice {
    * textures, buffers, VAOs and targets are recreated on use and resources re-uploaded from guest memory (render
    * target contents are lost, as with a lost Direct3D device: the game redraws them).
    */
+  /** Flat shading takes the first vertex's colors in Direct3D, the last one's in GL unless WEBGL_provoking_vertex says otherwise. */
+  firstVertexConvention() {
+    const ext = this.gl.getExtension('WEBGL_provoking_vertex');
+    if (ext) ext.provokingVertexWEBGL(ext.FIRST_VERTEX_CONVENTION_WEBGL);
+  }
   contextRestored() {
     const gl = this.gl;
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.firstVertexConvention();
     this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null;
     this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
@@ -548,7 +555,9 @@ export class WebGLDevice {
     const vsKey = L.code ? `vs${L.dx9 ? 9 : 8}:${L.shader.handle}:${layoutKey}` : `ff:${layoutKey}:${lighting ? 1 : 0}:${lightTypes.join(',')}:${this.rs(RS.COLORVERTEX, 1)}:${this.rs(RS.DIFFUSEMATERIALSOURCE, 1)}:${this.rs(RS.SPECULARMATERIALSOURCE, 2)}:${this.rs(RS.AMBIENTMATERIALSOURCE, 0)}:${this.rs(RS.EMISSIVEMATERIALSOURCE, 0)}:${this.rs(RS.SPECULARENABLE, 0)}:${this.rs(RS.LOCALVIEWER, 1)}:${this.rs(RS.NORMALIZENORMALS, 0)}:${fog === -1 ? vertexMode : 0}:${this.rs(RS.RANGEFOGENABLE, 0)}:${stages.map((s) => `${s.tci}/${s.ttff}`).join(',')}:${this.rs(RS.VERTEXBLEND, 0)}`;
     const alphaTest = this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0; // applies after pixel shaders too
     const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't')).join('')}:${fog}:${alphaTest}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}`).join(';')}:${alphaTest}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
-    const key = vsKey + '|' + fsKey;
+    // D3DSHADE_FLAT: the colors of a triangle's first vertex (flat varyings; the first-vertex convention is set once)
+    const flat = this.rs(RS.SHADEMODE, 2) === 1;
+    const key = vsKey + '|' + fsKey + (flat ? '|flat' : '');
     let p = this.programs.get(key);
     if (p) return { p, L, stages, lighting, fog, lightTypes, ps };
     let vsSrc, attrNames;
@@ -559,7 +568,8 @@ export class WebGLDevice {
       attrNames = L.layout.attrs.map((a) => 'a_' + a.name);
     }
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
-    const fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
+    let fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
+    if (flat) { vsSrc = vsSrc.replace('out vec4 v_color0; out vec4 v_color1;', 'flat out vec4 v_color0; flat out vec4 v_color1;'); fsSrc = fsSrc.replace('in vec4 v_color0; in vec4 v_color1;', 'flat in vec4 v_color0; flat in vec4 v_color1;'); }
     p = this.compile(vsSrc, fsSrc, key, attrNames);
     p.vs = L.shader; p.ps = ps;
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
