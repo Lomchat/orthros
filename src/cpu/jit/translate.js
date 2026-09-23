@@ -64,6 +64,8 @@ const SZLOG = [0, 0, 1, 0, 2];
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 
 export const MAX_BLOCKS = 48;
+/** at most this many call-return sites compared inline at a RET (more: the RET leaves the region) */
+const MAX_RET_SITES = 16;
 export const MAX_INSNS = 400;
 
 /** Terminator classes */
@@ -214,7 +216,7 @@ export function buildRegionModule(codes, names = null) {
 }
 
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
-export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch'];
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal'];
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 
 class Emitter {
@@ -252,6 +254,9 @@ class Emitter {
     // later unit is a plain `br` to that unit's label
     const { units, unitOf } = planUnits(blocks, byEip);
     this.units = units;
+    // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
+    this.retSites = blocks.filter((b) => b.term === TERM_CALL && byEip.has(b.fallthrough)).map((b) => b.fallthrough);
+    if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
     this.unitOf = unitOf;
     const labels = new Array(units.length);
     for (let u = units.length - 1; u >= 0; u--) labels[u] = c.block();
@@ -1251,6 +1256,12 @@ HANDLERS[OP.RET] = (E, insn) => {
   const c = E.c; const size = insn.opsize;
   c.get(L_REG + 4); if (size === 2) c.i32load16u(0); else c.i32load(0, 0); c.set(L_TV);
   c.get(L_REG + 4).i32(size + (insn.ops.length ? insn.ops[0].v : 0)).add().set(L_REG + 4);
+  // returning to a call site of this region (a callee inlined into the caller's region): intra-region jump
+  // instead of leaving the region and chaining back into it
+  for (const site of E.retSites) {
+    c.get(L_TV).i32(site).eq();
+    const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+  }
   E.count(PF.ret);
   c.get(L_TV);
   E.exitToStack();
