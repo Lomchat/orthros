@@ -5,6 +5,7 @@ import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin } from '../../vfs/vfs.js';
 import { HttpBackend } from '../../vfs/http-backend.js';
+import { OpfsBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
@@ -13,7 +14,7 @@ import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS } from '../../cpu/jit/translate.js';
 import { MATH_KERNELS } from '../../cpu/jit/runtime.js';
 
-let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
+let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null;
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
@@ -37,9 +38,10 @@ async function loadProfile(mem) {
 }
 
 async function flushProfile(force = false) {
-  if (!opfsDir || !profile) return;
   const now = Date.now();
   if (!force && now - lastFlush < 2000) return;
+  gameStore?.flush(); // (the game file block store's index)
+  if (!opfsDir || !profile) { lastFlush = now; return; }
   const dirty = [...profile.files].filter(([, f]) => f.mtime > lastFlush);
   lastFlush = now;
   for (const [key, f] of dirty) {
@@ -86,7 +88,12 @@ async function start(m) {
   const root = new MemBackend();
   vfs.mount('C:\\', root);
   for (const d of ['Windows', 'Windows/System32', 'Windows/Temp', 'Users', 'Users/Player', 'Program Files', 'Program Files/Common Files', 'Game']) root.mkdir(d);
-  vfs.mount(manifest.mount, new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256 }));
+  // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs)
+  const store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + manifestName) : null;
+  if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs`);
+  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store });
+  gameStore = store;
+  vfs.mount(manifest.mount, gameFiles);
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
   if (!m.opts.headless || m.opts.opfs) await loadProfile(profile);
@@ -100,9 +107,9 @@ async function start(m) {
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
-  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length });
+  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024) });
   host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
-  host.onSlowFrame = (dt, d) => log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms`);
+  host.onSlowFrame = (dt, d) => log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms io ${d.ioReq}/${d.ioKB}KB/${d.ioMs}ms`);
   vm.registry = new Registry(); vm.registry.seed(manifest.registry);
   if (profile.files.has('registry.json')) { try { vm.registry.load(JSON.parse(new TextDecoder().decode(profile.open('registry.json').read(0, profile.stat('registry.json').size)))); } catch (e) { log('warn', `bad registry.json: ${e.message}`); } }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
@@ -222,7 +229,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '');
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };

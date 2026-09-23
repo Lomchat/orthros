@@ -105,6 +105,12 @@ const names = (p, n) => Array.from({ length: n }, (_, i) => `${p}[${i}]`);
 const LIGHT_U = Array.from({ length: 8 }, (_, n) => Object.fromEntries(['type', 'diffuse', 'specular', 'ambient', 'position', 'direction', 'range', 'falloff', 'atten', 'theta', 'phi'].map((k) => [k, `u_lights[${n}].${k}`])));
 const TEX_U = { tex: names('u_tex', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), cube: names('u_cube', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), vol: names('u_vol', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')) };
 let blendOpsCache = null; const BLEND_OPS = (gl) => blendOpsCache ?? (blendOpsCache = [gl.FUNC_ADD, gl.FUNC_ADD, gl.FUNC_SUBTRACT, gl.FUNC_REVERSE_SUBTRACT, gl.MIN, gl.MAX]);
+/** program signature inputs: render states with the defaults programUncached reads them with (pairs state, default) */
+const SIG_RS = [RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMODE, 0, RS.FOGVERTEXMODE, 0, RS.COLORVERTEX, 1, RS.DIFFUSEMATERIALSOURCE, 1, RS.SPECULARMATERIALSOURCE, 2,
+  RS.AMBIENTMATERIALSOURCE, 0, RS.EMISSIVEMATERIALSOURCE, 0, RS.SPECULARENABLE, 0, RS.LOCALVIEWER, 1, RS.NORMALIZENORMALS, 0, RS.RANGEFOGENABLE, 0, RS.VERTEXBLEND, 0,
+  RS.ALPHATESTENABLE, 0, RS.ALPHAFUNC, 8];
+/** stage states of the signature besides COLOROP / ALPHAOP / TEXCOORDINDEX, whose defaults depend on the stage (pairs state, default) */
+const SIG_TSS = [TSS.COLORARG1, 2, TSS.COLORARG2, 1, TSS.COLORARG0, 1, TSS.ALPHAARG1, 2, TSS.ALPHAARG2, 1, TSS.ALPHAARG0, 1, TSS.RESULTARG, 1, TSS.TEXTURETRANSFORMFLAGS, 0];
 const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
 
 export class WebGLDevice {
@@ -199,6 +205,7 @@ export class WebGLDevice {
     const gl = this.gl;
     this.stats.uploads++;
     this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + s.width * s.height * 4;
+    { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
     if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); return; }
     if (level === 0 && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s);
     if (isDxt(s.fmt) && this.s3tc) {
@@ -351,8 +358,8 @@ export class WebGLDevice {
   }
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTexture() {} setTextureStageState() {} setSamplerState() {}
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
-  deleteVertexShader(sh) { for (const [k, p] of this.programs) if (p.vs === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
-  deletePixelShader(sh) { for (const [k, p] of this.programs) if (p.ps === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
+  deleteVertexShader(sh) { this.progBySig?.clear(); for (const [k, p] of this.programs) if (p.vs === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
+  deletePixelShader(sh) { this.progBySig?.clear(); for (const [k, p] of this.programs) if (p.ps === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
   setCursor() {}
   /**
    * Gamma ramp (SetGammaRamp / SetDeviceGammaRamp): 3 x 256 WORDs. An identity ramp disables the pass; otherwise
@@ -426,9 +433,61 @@ export class WebGLDevice {
     // nothing that feeds the key changed since the last draw (programVersion: the states of the key only; the
     // stages' texture objects are read from the device at bind time)
     if (this.lastProgram && this.lastProgramVersion === dev.programVersion && this.lastProgramDev === dev) return this.lastProgram;
-    const r = this.programUncached();
+    // the key inputs as integers: a combination seen before (states toggled back and forth between draws) is found by
+    // hash and array comparison, without building the key strings again
+    const sig = this.sigBuf ?? (this.sigBuf = new Int32Array(512));
+    const n = this.programSignature(sig);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < n; i++) h = Math.imul(h ^ sig[i], 0x01000193);
+    const bySig = this.progBySig ?? (this.progBySig = new Map());
+    let list = bySig.get(h), r = null;
+    if (list) for (const e of list) { if (e.dev !== dev || e.n !== n) continue; let i = 0; while (i < n && e.sig[i] === sig[i]) i++; if (i === n) { r = e.info; break; } }
+    if (!r) {
+      r = this.programUncached();
+      if (!list) bySig.set(h, (list = []));
+      list.push({ dev, n, sig: sig.slice(0, n), info: r });
+    }
     this.lastProgram = r; this.lastProgramVersion = dev.programVersion; this.lastProgramDev = dev;
     return r;
+  }
+  /**
+   * Every input of programUncached as integers into `sig` (the same reads, defaults and stage loop; objects by
+   * identity): equal signatures give the same program and draw info. Returns the length.
+   */
+  programSignature(sig) {
+    const dev = this.dev;
+    let n = 0;
+    sig[n++] = dev.api9 ? 1 : 0;
+    if (dev.api9) { sig[n++] = this.objId(dev.vertexDecl); sig[n++] = dev.fvf | 0; sig[n++] = this.objId(dev.vsObj); }
+    else { sig[n++] = dev.vertexShader | 0; sig[n++] = this.objId(dev.vertexShaders.get(dev.vertexShader)); }
+    const ps = dev.api9 ? dev.psObj : dev.pixelShaders.get(dev.pixelShader);
+    sig[n++] = this.objId(ps);
+    for (let k = 0; k < SIG_RS.length; k += 2) sig[n++] = this.rs(SIG_RS[k], SIG_RS[k + 1]) | 0;
+    const nStages = ps && dev.api9 ? 16 : MAX_STAGES;
+    for (let i = 0; i < nStages; i++) {
+      const texPtr = dev.textures[i], tex = texPtr ? this.comImpl(texPtr) : null;
+      sig[n++] = tex ? (tex.faces ? 2 : tex.depth ? 3 : 1) : 0;
+      const colorOp = i < MAX_STAGES ? this.tss(i, TSS.COLOROP, i === 0 ? TOP.MODULATE : TOP.DISABLE) : TOP.DISABLE;
+      sig[n++] = colorOp;
+      sig[n++] = this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE);
+      sig[n++] = this.tss(i, TSS.TEXCOORDINDEX, i);
+      for (let k = 0; k < SIG_TSS.length; k += 2) sig[n++] = this.tss(i, SIG_TSS[k], SIG_TSS[k + 1]) | 0;
+      if (!ps && colorOp === TOP.DISABLE) break;
+    }
+    if (this.rs(RS.LIGHTING, 1) !== 0) { // (the enabled lights' types, in index order)
+      const order = [...dev.lightEnabled].sort((a, b) => a - b);
+      sig[n++] = order.length;
+      for (const i of order) { const l = dev.lights.get(i); sig[n++] = l ? (l[0] | 0) : -1; }
+    }
+    return n;
+  }
+  /** a small integer per object (program signatures compare shaders and declarations by identity) */
+  objId(o) {
+    if (!o) return 0;
+    const ids = this.objIds ?? (this.objIds = new WeakMap());
+    let id = ids.get(o);
+    if (!id) ids.set(o, (id = (this.nextObjId = (this.nextObjId ?? 0) + 1)));
+    return id;
   }
   programUncached() {
     const dev = this.dev;

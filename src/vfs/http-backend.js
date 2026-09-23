@@ -9,7 +9,8 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void }} [opts]
+   *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    */
   constructor(baseUrl, tree, opts = {}) {
     this.base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
@@ -17,6 +18,7 @@ export class HttpBackend {
     this.cache = new Map(); // key "path#block" -> Uint8Array (insertion order = LRU)
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
     this.onFetch = opts.onFetch ?? null;
+    this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
   }
 
@@ -54,7 +56,7 @@ export class HttpBackend {
     const r = this.lookup(rel);
     if (!r || r.dir) return null;
     if (opts.write || opts.create || opts.truncate) return null; // read-only mount
-    return new HttpFile(this, r.path, r.file.size);
+    return new HttpFile(this, r.path, r.file.size, r.file.mtime ?? 0);
   }
   mkdir() { return false; }
   unlink() { return false; }
@@ -77,10 +79,14 @@ export class HttpBackend {
     return xhr.status === 200 ? data.subarray(start, end) : data;
   }
 
-  block(path, size, index, readAhead) {
+  block(path, size, index, readAhead, mtime = 0) {
     const key = `${path}#${index}`;
     let b = this.cache.get(key);
     if (b) { this.cache.delete(key); this.cache.set(key, b); return b; }
+    // persistent store (the key names the file version: size and mtime of the listing)
+    const skey = (i) => `${path}#${size}#${mtime}#${i}`;
+    b = this.store?.get(skey(index));
+    if (b) { this.cache.set(key, b); this.evict(); return b; }
     // fetch this block plus up to `readAhead` following blocks in one request
     const start = index * BLOCK;
     const n = Math.max(1, Math.min(readAhead, Math.ceil((size - start) / BLOCK)));
@@ -90,14 +96,16 @@ export class HttpBackend {
       const k = `${path}#${index + i}`;
       const slice = data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK));
       this.cache.set(k, slice);
+      this.store?.put(skey(index + i), slice);
     }
-    while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); }
+    this.evict();
     return this.cache.get(key);
   }
+  evict() { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } }
 }
 
 class HttpFile {
-  constructor(backend, path, size) { this.b = backend; this.path = path; this.len = size; this.lastEnd = -1; }
+  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; }
   size() { return this.len; }
   read(off, len) {
     const end = Math.min(off + len, this.len);
@@ -108,7 +116,7 @@ class HttpFile {
     let pos = off;
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
-      const blk = this.b.block(this.path, this.len, bi, sequential ? 4 : 1);
+      const blk = this.b.block(this.path, this.len, bi, sequential ? 4 : 1, this.mtime);
       const n = Math.min(end - pos, blk.length - bo);
       if (n <= 0) break;
       out.set(blk.subarray(bo, bo + n), pos - off);
