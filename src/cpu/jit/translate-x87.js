@@ -86,10 +86,13 @@ function roundPC(E, op) {
   c.set(L_F64C);
   c.get(L_FPC).i32(0x300).and().eqz();
   const pc = c.if_();
+  // fast when rounding to nearest and the result is 0 (exact: nothing to round) or in the normal float range off a midpoint
   c.get(L_FPC).eqz();
-  c.get(L_F64C).f64abs().f64c(FLT_MIN_NORMAL).f64ge().and();
+  c.get(L_F64C).f64abs().f64c(FLT_MIN_NORMAL).f64ge();
   c.get(L_F64C).f64abs().f64c(F32_ROUND_LIMIT).f64lt().and();
   c.get(L_F64C).i64reinterpret_f64().i64(0x1fffffffn).i64and().i64(0x10000000n).i64ne().and();
+  c.get(L_F64C).f64c(0).f64eq().or();
+  c.and();
   const fast = c.if_();
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.else_();
