@@ -509,29 +509,34 @@ class Emitter {
   /** Push the physical slot number of ST(i): (L_TOP + stShift + i) & 7 (L_TOP is always 0..7). */
   pushStPhys(i) { const c = this.c; const k = (this.stShift + i) & 7; c.get(L_TOP); if (k) c.i32(k).add().i32(7).and(); }
   /**
-   * Materialize the pending shift: rotate the locals so that L_ST0+i holds ST(i) again, rotate
-   * the logical tag word the same way and make L_TOP the real TOP. Returns the shift that was
-   * pending: a conditional exit path restores `stShift` afterwards so that the fallthrough path
-   * keeps its (unrotated) state.
+   * Materialize the pending shift: write the f32 shadows back, rotate the locals so that L_ST0+i holds
+   * ST(i) again, rotate the logical tag word the same way and make L_TOP the real TOP. Returns the static
+   * state that was pending (shift, f32 mask): a conditional exit path restores it afterwards (x87Restore)
+   * so that the fallthrough path keeps its unrotated locals and f32 values. Code emitted after it on the
+   * same path sees shift 0 and no shadow: a second normalization there (the budget exit of a back edge)
+   * must not write the shadows again, into locals the rotation has moved.
    */
   x87Normalize() {
+    const saved = { shift: this.stShift, f32: this.f32Mask };
     this.materializeF32();
+    this.f32Mask = 0;
     const s = this.stShift;
-    if (!s) return 0;
+    if (!s) return saved;
     const c = this.c;
     for (let i = 0; i < 8; i++) c.get(L_ST0 + ((i + s) & 7)); // through the operand stack: no temporary
     for (let i = 7; i >= 0; i--) c.set(L_ST0 + i);
     c.get(L_FTW).i32(s).shr_u().get(L_FTW).i32(8 - s).shl().or().i32(0xff).and().set(L_FTW); // rotr8 by s
     c.get(L_TOP).i32(s).add().i32(7).and().set(L_TOP);
     this.stShift = 0;
-    return s;
+    return saved;
   }
+  /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; }
   /**
    * f32Mask bit k: the value of x87 local L_ST0+k lives in its f32 shadow L_S32+k (an exact float; the f64
    * local is stale). Every exit, branch and fallback goes through x87Normalize, which first writes the
-   * shadows back (promote, exact) without clearing the mask: when emitted on a conditional path the
-   * fallthrough keeps its f32 values, and at the end of a block the mask is dropped anyway (0 at block
-   * entry).
+   * shadows back (promote, exact); an exit on a conditional path restores the mask afterwards (the
+   * fallthrough keeps its f32 values), and at the end of a block the mask is dropped anyway (0 at block entry).
    */
   materializeF32() {
     for (let m = this.f32Mask, k = 0; m; m >>= 1, k++) if (m & 1) this.c.get(L_S32 + k).f64promote().set(L_ST0 + k);
@@ -611,13 +616,13 @@ class Emitter {
   // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
   // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
-  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.stShift = s; }
+  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
     c.i32(eip).set(L_TV).i32(code).set(L_T2);
-    const s = this.x87Normalize(); c.br(this.exitCodeL); this.stShift = s;
+    const s = this.x87Normalize(); c.br(this.exitCodeL); this.x87Restore(s);
   }
   /**
    * Leave the region before `insn` (none of its effects applied) for the interpreter to execute it: the
@@ -661,7 +666,7 @@ class Emitter {
       if (common) { if (t !== common.first) { this.count(PF.dispatch); c.i32(t).set(L_BLK); } c.br(common.loopL); }
       else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
-    this.stShift = s;
+    this.x87Restore(s);
   }
 
   // ------------------------------------------------------------------ registers & operands

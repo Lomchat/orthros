@@ -292,9 +292,8 @@ function storeF32(v, rc) {
 function roundEven(v) {
   const f = Math.floor(v);
   const d = v - f;
-  if (d < 0.5) return f === 0 && v < 0 ? -0 : f;
-  if (d > 0.5) return f + 1;
-  return f % 2 === 0 ? f : f + 1;
+  const r = d < 0.5 ? f : d > 0.5 ? f + 1 : f % 2 === 0 ? f : f + 1;
+  return r === 0 && (v < 0 || Object.is(v, -0)) ? -0 : r; // a zero keeps the operand's sign (-0.5 -> -0, IEEE)
 }
 
 function isSignalingNaN(v) {

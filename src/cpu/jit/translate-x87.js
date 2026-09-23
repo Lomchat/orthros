@@ -43,7 +43,19 @@ function toF64(E, i) { const k = slot(E, i); if ((E.f32Mask >> k) & 1) { E.c.get
 /** f32 on the stack (an exact float) -> ST(i) held in the f32 shadow, marked valid */
 function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32Mask |= 1 << k; tagValid(E, i); }
 /** 24-bit precision, round to nearest, known statically: register values may be kept as floats */
-function f32Mode(E) { return E.fpcStatic === 0; }
+function f32Mode(E) { return E.fpcStatic === 0 && !globalThis.ORTHROS_NO_F32; }
+/**
+ * debugging: parts of the float representation turned off (globalThis.ORTHROS_F32_OFF = 'arith,round,m32,const');
+ * 'part@lo:hi' (hex) keeps the part only for instructions in [lo, hi)
+ */
+function f32Off(part, addr) {
+  const opts = (globalThis.ORTHROS_F32_OFF ?? '').split(',');
+  if (opts.includes(part)) return true;
+  const r = opts.find((s) => s.startsWith(part + '@'));
+  if (!r) return false;
+  const [lo, hi] = r.slice(part.length + 1).split(':').map((x) => parseInt(x, 16));
+  return !(addr >= lo && addr < hi);
+}
 /**
  * Set the tag bit of ST(i)'s physical slot. Skipped when a store earlier in the block already
  * set it (E.stValid, reset at block entry, after fallbacks and by every op that clears tags);
@@ -216,7 +228,7 @@ HANDLERS[OP.FLD] = (E, insn) => {
   const o = insn.ops[0];
   if (o.t === OT.MEM && o.size === 10) { E.fallback(insn); return; }
   // 24-bit mode: a float operand (or a register held as one) stays a float
-  if (f32Mode(E) && o.t === OT.MEM && o.size === 4) { E.ea(o); E.c.f32load(0, 0); push(E); storeST32Stack(E, 0); return; }
+  if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.ea(o); E.c.f32load(0, 0); push(E); storeST32Stack(E, 0); return; }
   if (o.t === OT.ST && isF32(E, o.r)) { E.c.get(L_S32 + slot(E, o.r)); push(E); storeST32Stack(E, 0); return; }
   loadFpOperand(E, o); // value on the WASM stack survives the rotation of the locals
   push(E); storeSTStack(E, 0);
@@ -271,8 +283,8 @@ HANDLERS[OP.FISTP] = (E, insn) => istore(E, insn, true, false);
 HANDLERS[OP.FISTTP] = (E, insn) => istore(E, insn, true, true);
 
 // ---- constants
-const constant = (v) => (E) => {
-  if (f32Mode(E) && Math.fround(v) === v) { E.c.f32c(v); push(E); storeST32Stack(E, 0); return; }
+const constant = (v) => (E, insn) => {
+  if (f32Mode(E) && !f32Off('const', insn.addr) && Math.fround(v) === v) { E.c.f32c(v); push(E); storeST32Stack(E, 0); return; }
   E.c.f64c(v); push(E); storeSTStack(E, 0);
 };
 HANDLERS[OP.FLD1] = constant(1); HANDLERS[OP.FLDZ] = constant(0); HANDLERS[OP.FLDPI] = constant(Math.PI);
@@ -348,7 +360,7 @@ function arith(op, doPop, integer) {
   return (E, insn) => {
     const c = E.c;
     let dst = 0;
-    if (f32Mode(E) && !integer) {
+    if (f32Mode(E) && !integer && !f32Off('arith')) {
       // the operands as floats when both are: ST registers held in f32 shadows, m32
       const two = insn.ops.length === 2 && insn.ops[0].t === OT.ST && insn.ops[1].t === OT.ST;
       const d = two ? insn.ops[0].r : 0, o = two ? insn.ops[1] : insn.ops[insn.ops.length - 1];
@@ -382,7 +394,7 @@ function arith(op, doPop, integer) {
       case 6: c.get(L_F64A).get(L_F64B).f64div(); break;
       default: c.get(L_F64B).get(L_F64A).f64div(); break;
     }
-    if (f32Mode(E)) { roundF32(E, insn, op, dst, doPop); c.get(L_F32C); storeST32Stack(E, dst); }
+    if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op, dst, doPop); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
       roundPC(E, op); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the

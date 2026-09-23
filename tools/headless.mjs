@@ -44,6 +44,8 @@ if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
+if (args.includes('--no-f32')) q.set('nof32', '1'); // debugging: x87 registers never kept as floats
+if (opt('f32-off')) q.set('f32off', opt('f32-off')); // debugging: float parts off (arith,round,m32,const; part@lo:hi keeps it in [lo, hi))
 if (opt('watch-tex')) q.set('watchtex', opt('watch-tex')); // <fmt>:<w>x<h>: report the code writing into such surfaces (debugging)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]

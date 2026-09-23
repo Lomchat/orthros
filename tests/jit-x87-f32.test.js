@@ -24,7 +24,7 @@ function rng(seed) {
 }
 
 /** A random x87 sequence keeping the stack depth in 1..7; ends by storing every register as m64 and FNSTSW AX. */
-function program(seed) {
+function program(seed, limit = 40) {
   const R = rng(seed), pick = (n) => Math.floor(R() * n);
   const b = [];
   let depth = 0;
@@ -39,10 +39,10 @@ function program(seed) {
     }
     depth++;
   };
-  for (let n = 0; n < 40; n++) {
+  for (let n = 0; n < limit; n++) {
     if (depth === 0 || (depth < 7 && R() < 0.3)) { push(); continue; }
     const r = pick(8), op = [0, 1, 4, 5, 6, 7][pick(6)];
-    switch (pick(12)) {
+    switch (pick(13)) {
       case 0: case 1: b.push(0xd8, (op << 3) | 5, ...m32()); break; // fop m32
       case 2: b.push(0xdc, (op << 3) | 5, ...m64()); break; // fop m64
       case 3: b.push(0xd8, 0xc0 | (op << 3) | pick(depth)); break; // fop st(0), st(i)
@@ -53,6 +53,22 @@ function program(seed) {
       case 8: b.push(0xd9, [0x15, 0x1d][pick(2)], ...le(OUT + 0x100 + 4 * (r & 3))); if (b[b.length - 5] === 0x1d) depth--; break; // fst / fstp m32
       case 9: if (depth >= 2) { b.push(0xdd, 0xd8 + 1 + pick(depth - 1)); depth--; } break; // fstp st(i)
       case 10: b.push(0xe9, 0, 0, 0, 0); break; // jmp to the next instruction: a block boundary
+      case 11: switch (pick(14)) { // integer / double stores, compares, misc
+        case 0: b.push(0xdb, 0x15, ...le(OUT + 0x110 + 4 * (r & 3))); break; // fist m32
+        case 1: b.push(0xdb, 0x1d, ...le(OUT + 0x110 + 4 * (r & 3))); depth--; break; // fistp m32
+        case 2: b.push(0xdf, 0x15, ...le(OUT + 0x110 + 2 * (r & 3))); break; // fist m16
+        case 3: b.push(0xdb, 0x0d, ...le(OUT + 0x110 + 4 * (r & 3))); depth--; break; // fisttp m32
+        case 4: b.push(0xdd, 0x15, ...le(OUT + 0x100 + 8 * (r & 1))); break; // fst m64
+        case 5: b.push(0xd9, 0xfa); break; // fsqrt
+        case 6: b.push(0xd9, 0xfc); break; // frndint
+        case 7: if (depth >= 2) { b.push(0xd8, 0xd8 + 1 + pick(depth - 1)); depth--; } break; // fcomp st(i)
+        case 8: if (depth >= 2) { b.push(0xdb, 0xf0 + 1 + pick(depth - 1)); } break; // fcomi st, st(i)
+        case 9: if (depth >= 2) { b.push(0xdf, 0xe8 + 1 + pick(depth - 1)); depth--; } break; // fucomip st, st(i)
+        case 10: b.push(0xdf, 0xe0); break; // fnstsw ax
+        case 11: if (depth >= 2) b.push(0xda + pick(2), 0xc0 + 8 * pick(4) + 1 + pick(depth - 1)); break; // fcmovcc st, st(i)
+        case 12: b.push(0xd9, 0xe4); break; // ftst
+        default: if (depth >= 2) { b.push(0xde, 0xd9); depth -= 2; } break; // fcompp
+      } break;
       default: b.push(0xd8, 0xd0 + pick(depth)); break; // fcom st(i)
     }
   }
@@ -61,7 +77,69 @@ function program(seed) {
   return Uint8Array.from(b);
 }
 
-function exec(useJit, code, cw) {
+/**
+ * Loops and forward branches over float values: `mov ecx, n` / body / `dec ecx` / `jnz` (a WASM loop in the
+ * region), the body made of stack-neutral chunks: operations at a fixed depth, a push ... pop pair around a
+ * nested chunk, and a compare (FCOM + FNSTSW + SAHF or FCOMI) with a Jcc over a nested chunk. Stores go
+ * to the output area and to the float table the loads read (values carried through memory across iterations).
+ */
+function loopProgram(seed) {
+  const R = rng(seed), pick = (n) => Math.floor(R() * n);
+  const m32 = () => le(F32S + 4 * pick(F32_VALUES.length)), m64 = () => le(F64S + 8 * pick(F64_VALUES.length));
+  const st32 = () => (R() < 0.5 ? m32() : le(OUT + 0x100 + 4 * pick(4)));
+  const arithOp = () => [0, 1, 4, 5, 6, 7][pick(6)];
+  const neutral = (depth) => {
+    const op = arithOp();
+    switch (pick(12)) {
+      case 0: case 1: return [0xd8, (op << 3) | 5, ...m32()]; // fop m32
+      case 2: return [0xdc, (op << 3) | 5, ...m64()]; // fop m64
+      case 3: return [0xd8, 0xc0 | (op << 3) | pick(depth)]; // fop st(0), st(i)
+      case 4: return [0xdc, 0xc0 | (op << 3) | pick(depth)]; // fop st(i), st(0)
+      case 5: return [0xd9, [0xe0, 0xe1][pick(2)]]; // fchs / fabs
+      case 6: return depth >= 2 ? [0xd9, 0xc8 + 1 + pick(depth - 1)] : [0xd9, 0xe0]; // fxch st(i)
+      case 7: return [0xd9, 0x15, ...st32()]; // fst m32
+      case 8: return depth >= 2 ? [0xdd, 0xd0 + 1 + pick(depth - 1)] : [0xd9, 0xe1]; // fst st(i)
+      case 9: return [0xd9, [0xfa, 0xfc][pick(2)]]; // fsqrt / frndint
+      case 10: return [0xdb, 0x15, ...le(OUT + 0x110 + 4 * pick(4))]; // fist m32
+      default: return [0xd8, 0xd0 + pick(depth)]; // fcom st(i)
+    }
+  };
+  const chunk = (depth, level) => {
+    const b = [];
+    for (let n = 1 + pick(4); n > 0; n--) {
+      const k = level < 3 ? pick(6) : 0;
+      if (k <= 2 || (k === 3 && depth >= 7)) { b.push(...neutral(depth)); continue; }
+      if (k === 3) { // push, nested chunk, pop
+        switch (pick(4)) { case 0: case 1: b.push(0xd9, 0x05, ...m32()); break; case 2: b.push(0xd9, [0xe8, 0xee][pick(2)]); break; default: b.push(0xd9, 0xc0 + pick(depth)); }
+        b.push(...chunk(depth + 1, level + 1));
+        if (R() < 0.5) b.push(0xd9, 0x1d, ...st32()); else b.push(0xde, 0xc1 | (arithOp() << 3)); // fstp m32 / fopp st(1), st(0)
+        continue;
+      }
+      // compare, Jcc over a nested chunk
+      if (depth >= 2 && R() < 0.5) b.push(0xdb, [0xf0, 0xe8][pick(2)] + 1 + pick(depth - 1)); // fcomi / fucomi st, st(i)
+      else b.push(0xd8, 0xd0 + pick(depth), 0xdf, 0xe0, 0x9e); // fcom st(i) ; fnstsw ax ; sahf
+      const body = chunk(depth, level + 1);
+      if (body.length > 127) { b.push(...body); continue; }
+      b.push(0x72 + [0, 1, 2, 3, 4, 5, 8, 9][pick(8)], body.length, ...body); // jb/jae/jz/jnz/jbe/ja/jp/jnp
+    }
+    return b;
+  };
+  const b = [];
+  const depth = 1 + pick(4);
+  for (let i = 0; i < depth; i++) b.push(0xd9, 0x05, ...m32());
+  for (let loops = 1 + pick(2); loops > 0; loops--) {
+    b.push(0xb9, ...le(1 + pick(4))); // mov ecx, n
+    const body = chunk(depth, 0);
+    b.push(...body, 0x49); // dec ecx
+    b.push(0x0f, 0x85, ...le(-(body.length + 1 + 6))); // jnz body
+  }
+  for (let i = 0; i < depth; i++) b.push(0xdd, 0x1d, ...le(OUT + 8 * i)); // fstp m64
+  b.push(0xdf, 0xe0, 0xf4); // fnstsw ax ; hlt
+  return Uint8Array.from(b);
+}
+
+/** Run `code` under the interpreter or the JIT (time slices of `slice` instructions: budget exits everywhere). */
+function exec(useJit, code, cw, slice = 1e6) {
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
   const I = new Interp(mem, cpu);
@@ -74,7 +152,11 @@ function exec(useJit, code, cw) {
   cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
   const end = CODE + code.length - 1;
   let r, jit = null;
-  if (useJit) { jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu; jit.boundaries = new Set([end]); r = jit.run({ stopAt: end, maxInsns: 1e6 }); }
+  if (useJit) {
+    jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu; jit.boundaries = new Set([end]);
+    let n = 0;
+    do r = jit.run({ stopAt: end, maxInsns: slice }); while (r === EXIT.TIMESLICE && ++n < 1e6);
+  }
   else r = I.run({ stopAt: end, maxInsns: 1e6 });
   assert.equal(r, EXIT.HALT);
   // status word: TOP and the condition codes C0 C2 C3 (the JIT leaves C1 and the exception flags to the interpreter)
@@ -92,4 +174,42 @@ test('x87 under 24-bit precision (f32 shadows, exact fallbacks) and the other mo
     }
   }
   assert.ok(shadowExits > 0, 'some sequences left their region on a result that is not a float');
+});
+
+test('time slices ending on a backward edge with a pending x87 shift and float registers keep the stack', () => {
+  // fld b ; fld a ; mov ecx, 40 ; top: fld1 ; jmp next ; next: faddp st(1), st ; dec ecx ; jnz top ; fstp m64 x2 ; hlt
+  // the back edge leaves its block with ST(0) in an f32 shadow and the pop not yet applied to the locals: a budget
+  // exit there must write the stack back once (it rewrote the shadow over ST(1) after the rotation)
+  const body = [0xd9, 0xe8, 0xe9, 0, 0, 0, 0, 0xde, 0xc1, 0x49];
+  const code = Uint8Array.from([0xd9, 0x05, ...le(F32S + 4 * 14), 0xd9, 0x05, ...le(F32S + 4 * 19), 0xb9, ...le(40), ...body, 0x0f, 0x85, ...le(-(body.length + 6)),
+    0xdd, 0x1d, ...le(OUT), 0xdd, 0x1d, ...le(OUT + 8), 0xdf, 0xe0, 0xf4]);
+  const want = exec(false, code, 0x007f);
+  for (let slice = 1; slice <= 16; slice++) {
+    const mem = new GuestMemory();
+    const cpu = new CpuState(mem, THREAD_STATES_BASE);
+    const I = new Interp(mem, cpu);
+    cpu.reset();
+    mem.fill(DATA, 0x400, 0);
+    F32_VALUES.forEach((v, i) => mem.writeF32(F32S + 4 * i, v));
+    mem.writeBytes(CODE, code);
+    mem.write16(cpu.base + ST.FPU_CW, 0x007f);
+    cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
+    const end = CODE + code.length - 1;
+    const jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu; jit.boundaries = new Set([end]);
+    let r, n = 0;
+    do r = jit.run({ stopAt: end, maxInsns: slice }); while (r === EXIT.TIMESLICE && ++n < 10000);
+    assert.equal(r, EXIT.HALT);
+    assert.equal(Buffer.from(mem.bytes(OUT, 0x10)).toString('hex'), want.out.slice(0, 32), `slice ${slice}`);
+  }
+});
+
+test('x87 float values across loops and conditional branches: random programs match the interpreter', () => {
+  for (let seed = 1; seed <= 400; seed++) {
+    const code = loopProgram(seed);
+    for (const cw of [0x007f, 0x027f, 0x0c7f]) {
+      // short time slices: budget exits on every back edge (with a pending x87 shift and float registers)
+      const want = exec(false, code, cw), got = exec(true, code, cw, seed % 3 ? 1 + (seed % 23) : 1e6);
+      assert.deepEqual({ out: got.out, sw: got.sw, top: got.top }, { out: want.out, sw: want.sw, top: want.top }, `seed ${seed} cw ${cw.toString(16)}`);
+    }
+  }
 });
