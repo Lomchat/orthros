@@ -61,6 +61,26 @@ export function supportsReturnCall() {
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
 export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
+/**
+ * Deferred COM calls: state setters of the Direct3D devices (they always succeed and their effect is
+ * only observable through other device calls) are recorded by the WASM fast path in a queue in guest
+ * memory and return D3D_OK at once; the VM runs the queued calls, in order, before any API call handled
+ * in JavaScript (Vm.drainDeferred). DEFER_SPEC[thunk] = argc (stack arguments, `this` included) |
+ * pointer argument index << 4 | words of the structure it points to << 8 (copied into the record,
+ * the argument then points at the copy); records: thunk index, argc, arguments, structure.
+ */
+export const FID_DEFER = 16;
+export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
+export const DEFER_QUEUE = JIT_SCRATCH_BASE + 0x60000; // +0 bytes used, records from +16
+export const DEFER_CAP = 0x3fff0;
+const deferSpecs = (iface, list) => Object.fromEntries(list.map(([m, argc, ptr = 15, words = 0]) => [`${iface}::${m}`, argc | (ptr << 4) | (words << 8)]));
+export const DEFER_SPECS = {
+  ...deferSpecs('IDirect3DDevice9', [['SetRenderState', 3], ['SetTextureStageState', 4], ['SetSamplerState', 4], ['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3],
+    ['SetMaterial', 2, 1, 17], ['SetStreamSource', 5], ['SetIndices', 2], ['SetTexture', 3], ['SetFVF', 2], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetVertexDeclaration', 2],
+    ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetRenderState', 3], ['SetTextureStageState', 4], ['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3], ['SetMaterial', 2, 1, 17],
+    ['SetStreamSource', 4], ['SetIndices', 3], ['SetTexture', 3], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+};
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15 };
 
@@ -212,7 +232,7 @@ export function buildRuntime() {
   let fastApiIdx;
   {
     const c = new Code();
-    const [FID, STATE, SP, TEB, A0, A1, A2, TM] = [0, 1, 2, 3, 4, 5, 6, 7];
+    const [FID, STATE, IDX, SP, TEB, A0, A1, A2, TM, N, P] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     c.get(STATE).i32load(ST.GPR + 16).set(SP);
     c.get(STATE).i32load(ST.FS_BASE).set(TEB);
     c.get(SP).i32load(4).set(A0); c.get(SP).i32load(8).set(A1); c.get(SP).i32load(12).set(A2);
@@ -221,11 +241,11 @@ export function buildRuntime() {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const N = 16;
-    const labels = new Array(N);
-    for (let i = N - 1; i >= 0; i--) labels[i] = c.block();
+    const NF = 17;
+    const labels = new Array(NF);
+    for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
-    for (let k = 0; k < N; k++) {
+    for (let k = 0; k < NF; k++) {
       c.end();
       switch (k) {
         case 0: c.br(notHandled); break;
@@ -267,11 +287,40 @@ export function buildRuntime() {
         case 13: c.get(STATE).get(TEB).i32load(0x24); ret(0); break;
         case 14: c.get(STATE).get(TEB).i32load(0x20); ret(0); break;
         case 15: c.get(STATE).i32(PROC_CONSTS).i32load(0); ret(0); break;
+        case FID_DEFER: { // record the call (see DEFER_SPEC): TM = spec, N = argc, P = record address, A0 = size
+          c.get(IDX).i32(2).shl().i32load(DEFER_SPEC).set(TM);
+          c.get(TM).i32(15).and().set(N);
+          c.get(N).get(TM).i32(8).shr_u().add().i32(2).add().i32(2).shl().set(A0);
+          c.i32(DEFER_QUEUE).i32load(0).tee(A1).get(A0).add().i32(DEFER_CAP).gt_u().br_if(notHandled); // full: JavaScript drains, then handles it
+          c.get(A1).i32(DEFER_QUEUE + 16).add().set(P);
+          c.get(P).get(IDX).i32store(0); c.get(P).get(N).i32store(4);
+          c.i32(0).set(A2);
+          const copy = c.block(); const lp = c.loop();
+          c.get(A2).get(N).ge_u().br_if(copy);
+          c.get(P).get(A2).i32(2).shl().add().get(SP).get(A2).i32(2).shl().add().i32load(4).i32store(8);
+          c.get(A2).i32(1).add().set(A2); c.br(lp);
+          c.end(); c.end(); void copy;
+          // the structure behind the pointer argument, copied after the arguments
+          c.get(TM).i32(8).shr_u();
+          const struct = c.if_();
+          c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
+          c.get(TEB);
+          const nonNull = c.if_();
+          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(TM).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
+          c.get(A2).get(TM).i32store(8);
+          c.end(); void nonNull;
+          c.end(); void struct;
+          c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
+          // stdcall return, D3D_OK
+          c.get(STATE).i32(0).i32store(ST.GPR); c.get(STATE).get(SP).i32load(0).i32store(ST.EIP);
+          c.get(STATE).get(SP).i32(4).add().get(N).i32(2).shl().add().i32store(ST.GPR + 16); c.i32(1).return_();
+          break;
+        }
       }
     }
     c.end(); // notHandled
     c.i32(0);
-    fastApiIdx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32], c, 'fastApi');
+    fastApiIdx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32], c, 'fastApi');
     m.exportFunc('fastApi', fastApiIdx);
   }
 
@@ -288,7 +337,7 @@ export function buildRuntime() {
     c.get(EIP).i32(THUNK_BASE).sub().i32(THUNK_SIZE).div_u().set(IDX);
     c.get(IDX).i32load8u(FAST_TABLE).tee(E);
     const fast = c.if_();
-    c.get(E).get(STATE).call(fastApiIdx);
+    c.get(E).get(STATE).get(IDX).call(fastApiIdx);
     const handled = c.if_(); c.get(STATE).i32load(ST.EIP).set(EIP); c.br(L); c.end(); void handled;
     c.end(); void fast;
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.THUNK).i32store(ST.EXIT);

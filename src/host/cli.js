@@ -129,7 +129,7 @@ export async function main(argv) {
     else { console.log(`\n[orthros] host error: ${e.stack}`); }
   }
   saveRegistry();
-  if (vm.jit) console.log(`[orthros] jit: ${JSON.stringify(vm.jit.stats)}`);
+  if (vm.jit) console.log(`[orthros] jit: ${JSON.stringify(vm.jit.stats)}${vm.deferredCalls ? ` deferred COM call batches: ${vm.deferredCalls}` : ''}`);
   if (vm.apiHistCounts) console.log('[orthros] top API calls: ' + [...vm.apiHist()].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${k}=${v}`).join(' '));
   if (vm.profile) { const total = vm.slices || 1; console.log(`[orthros] profile: ${vm.slices} slices of 100k instructions (~${(vm.slices / 10).toFixed(0)}M instructions)`); for (const [k, v] of [...vm.profile].sort((a, b) => b[1] - a[1]).slice(0, 20)) console.log(`  ${(100 * v / total).toFixed(1).padStart(5)}%  ${vm.proc.symbolize(k << 6)}`); }
   console.log(`[orthros] modules: ${vm.proc?.moduleList.map((m) => m.name).join(', ')}`);

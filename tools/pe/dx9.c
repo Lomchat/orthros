@@ -89,6 +89,17 @@ void __stdcall start(void) {
   line(out, "rs_light", C2(dev, 57, 137, 0), 1);
   line(out, "settex", C2(dev, 65, 0, tex), 1);
   line(out, "sampler", C3(dev, 69, 0, 6, 2), 1);
+  // state setters may be deferred by the runtime: the matrix is taken at the call (a later change of the
+  // caller's copy does not apply) and a getter sees every earlier set, in order
+  float wm[16], gm[16]; for (int i = 0; i < 16; i++) wm[i] = (float)i;
+  line(out, "settransform", C2(dev, 44, 256, wm), 1);
+  wm[5] = 99.0f;
+  line(out, "rs_zwrite", C2(dev, 57, 14, 0), 1);
+  line(out, "rs_zwrite2", C2(dev, 57, 14, 1), 1);
+  line(out, "gettransform", C2(dev, 45, 256, gm), 1);
+  line(out, "transform5", (unsigned)gm[5], 0);
+  DWORD zw = 7; C2(dev, 58, 14, &zw); line(out, "zwrite", zw, 0);
+  { float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }; C2(dev, 44, 256, id); }
   line(out, "draw", C3(dev, 81, 4, 0, 2), 1);
   // texel/pixel alignment (D3D9 rasterization rule: pixel centers on integer coordinates): a 4x4 black/white
   // checker drawn over pixels 100..103 with the usual -0.5 offset and bilinear filtering must stay exact
