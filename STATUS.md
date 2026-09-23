@@ -256,7 +256,16 @@
 - **En partie** (escarmouche High, début de partie) : ~38 fps en CPU seul — la cadence plafond du jeu (D031) — avec
   ~14 % d'attente. Mesure du 2026-09-23 (`--gl-discard --frames-from 660`, 341 s de partie) : **38,3 fps, p50 26,0 ms,
   p90 27,8, p99 31,1, max 56 ms ; 0,50 % des images > 33 ms**. Les images lentes n'ont ni traduction ni upload :
-  ce sont les bouffées de logique du jeu (seule une exécution plus rapide du code invité les réduit). Le menu 3D est la scène lourde
+  ce sont les bouffées de logique du jeu (seule une exécution plus rapide du code invité les réduit).
+  **Critère M7 sur 10 min de partie (2026-09-23, run seul sur la machine, scénario de jeu
+  `tools/scenarios/bfme-skirmish-high-play.txt` : sélection de la citadelle, recrutement, portes, défilement de
+  caméra ; `--gl-discard --frames-from 700`) : 25 009 images en 651 s = 38,4 fps ; p50 26,1 ms, p90 27,8, p99 30,0,
+  max 58 ms ; 0,29 % > 33 ms, 6 > 50 ms — p99 ≤ 33 ms tenu côté CPU.** Les pires images contiennent une lecture
+  HTTP synchrone de 4 Mio (lecture anticipée d'un lecteur séquentiel, ~25 ms) ; le magasin OPFS supprime ces lectures
+  aux lancements suivants (3e lancement : 0 requête). Un préchargement asynchrone des blocs suivants a été essayé
+  (A/B au menu) : −9 % de temps synchrone pour +50 % d'octets transférés (accès surtout aléatoires dans les
+  archives) — abandonné. Un run concurrent avec rendu SwiftShader sur la machine
+  dégrade la mesure (p99 46 ms) : les mesures se font seules. Le menu 3D est la scène lourde
   (~17 k appels d'API, 1 700 draws et 25-37 M instructions par image).
 - **Réglages mesurés en jeu** : régions de 48 blocs (24 : −16 %, 96 : = ; un chaînage coûte ~6 ns, ~10 ns entre
   régions x87, ~7 M/s au menu) ; boucles imbriquées structurées −13 % (V8, D044) : désactivées.

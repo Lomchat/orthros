@@ -194,29 +194,37 @@ export class WebGLDevice {
         const s = lv[i];
         if (!s.dirty && s.uploaded) continue;
         if (!bound) { gl.bindTexture(target, g.tex); bound = true; }
-        this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s);
+        this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s, g, f * 32 + i);
         s.dirty = false; s.uploaded = true;
       }
     }
     return g;
   }
   volumeToRgba(fmt, l) { const out = new Uint8Array(l.width * l.height * l.depth * 4); for (let z = 0; z < l.depth; z++) out.set(surfaceToRgba(this.mem, fmt, l.mem + z * l.slice, l.width, l.height, l.pitch), z * l.width * l.height * 4); return out; }
-  uploadLevel(target, level, s) {
+  /** Upload a surface into `level` of the bound texture; `g.alloc[slot]` records the levels already specified (GL texture record). */
+  uploadLevel(target, level, s, g, slot) {
     const gl = this.gl;
     this.stats.uploads++;
     this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + s.width * s.height * 4;
     { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
-    if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); return; }
-    if (level === 0 && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s);
+    const alloc = g.alloc ?? (g.alloc = []);
+    if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); alloc[slot] = 'rgba8'; return; }
+    if (level === 0 && !alloc[slot] && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s); // (first upload only)
+    // a level already specified in the same format is updated in place (no reallocation of GPU storage)
     if (isDxt(s.fmt) && this.s3tc) {
       const ext = this.s3tc;
       const glf = s.fmt === FMT.DXT1 ? ext.COMPRESSED_RGBA_S3TC_DXT1_EXT : s.fmt === FMT.DXT2 || s.fmt === FMT.DXT3 ? ext.COMPRESSED_RGBA_S3TC_DXT3_EXT : ext.COMPRESSED_RGBA_S3TC_DXT5_EXT;
-      gl.compressedTexImage2D(target, level, glf, s.width, s.height, 0, this.mem.bytes(s.mem, surfaceBytes(s.fmt, s.width, s.height)));
+      const data = this.mem.bytes(s.mem, surfaceBytes(s.fmt, s.width, s.height));
+      if (alloc[slot] === glf) gl.compressedTexSubImage2D(target, level, 0, 0, s.width, s.height, glf, data);
+      else gl.compressedTexImage2D(target, level, glf, s.width, s.height, 0, data);
+      alloc[slot] = glf;
       return;
     }
     const rgba = surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    if (alloc[slot] === 'rgba8') gl.texSubImage2D(target, level, 0, 0, s.width, s.height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    else gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    alloc[slot] = 'rgba8';
   }
   /** Diagnostic: flag textures that look like an engine's "missing texture" placeholder (mostly magenta). */
   checkPlaceholder(s) {
