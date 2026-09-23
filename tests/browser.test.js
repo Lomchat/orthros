@@ -67,3 +67,20 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.match(text, /px_tri=0x0000ff00/, 'GetRenderTargetData reads the rendered pixels back into guest memory');
   assert.match(text, /px_clear=0x000000ff/);
 });
+
+test('browser host: text.exe measures and draws an outline font through the canvas text engine', { skip, timeout: 60000 }, async () => {
+  const r = await runManifest('test-text', 20);
+  assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
+  const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
+  const v = Object.fromEntries([...text.matchAll(/(\w+)=(-?\d+)/g)].map((m) => [m[1], Number(m[2])]));
+  assert.ok(v.tm_height >= 20 && v.tm_height <= 26, `cell height of a -20 font: ${v.tm_height}`);
+  assert.equal(v.tm_height, v.tm_ascent + v.tm_descent);
+  assert.equal(v.tm_internal, v.tm_height - 20, 'internal leading = cell - em');
+  assert.ok(v.tm_pitch & 6, 'TrueType/vector font');
+  assert.equal(v.extent_cy, v.tm_height);
+  assert.ok(v.extent_cx > 80 && v.extent_cx < 160, `extent of "Hello, World": ${v.extent_cx}`);
+  assert.ok(v.width_W > 2 * v.width_i, `proportional widths W=${v.width_W} i=${v.width_i}`);
+  assert.ok(v.px_black > 20 && v.px_gray > 20, `antialiased glyphs (black ${v.px_black}, gray ${v.px_gray})`);
+  assert.ok(Math.abs(v.px_right - (4 + v.extent_cx)) <= 3, `ink ends near the measured extent (${v.px_right} vs ${4 + v.extent_cx})`);
+  assert.ok(v.drawtext_h >= 2 * v.tm_height, `DrawText word wrap: ${v.drawtext_h}`);
+});

@@ -3290,6 +3290,127 @@ def suite_verify_trans_known(g, n):
     return g
 
 
+# ---- corpus: instruction forms recorded from real programs (worker `insnCorpus`, harness --corpus) ---------------
+CORPUS_SKIP = {
+    # control flow, system, segment and environment-dependent instructions (not comparable in a snippet)
+    'JMP', 'JMPF', 'JCC', 'CALL', 'CALLF', 'RET', 'RETF', 'LOOP', 'LOOPE', 'LOOPNE', 'JECXZ', 'INT', 'INT3', 'INTO', 'IRET',
+    'IN', 'OUT', 'INS', 'OUTS', 'CLI', 'STI', 'HLT', 'CPUID', 'RDTSC', 'RDPMC', 'RDMSR', 'WRMSR', 'SYSENTER', 'SYSEXIT',
+    'MOVCR', 'MOVDR', 'LDS', 'LES', 'LFS', 'LGS', 'LSS', 'BOUND', 'ARPL', 'POPF', 'UD2', 'WAIT',
+    'FLDENV', 'FNSTENV', 'FRSTOR', 'FNSAVE', 'FXSAVE', 'FXRSTOR', 'ENTER',
+}
+# EFLAGS defined by each instruction (the SDM's undefined flags are not compared); default ALLF
+CORPUS_FLAGS = {
+    'AND': ALLF & ~AF, 'OR': ALLF & ~AF, 'XOR': ALLF & ~AF, 'TEST': ALLF & ~AF,
+    'MUL': CF | OF | DF, 'IMUL': CF | OF | DF, 'DIV': DF, 'IDIV': DF,
+    'SHL': CF | PF | ZF | SF | DF, 'SHR': CF | PF | ZF | SF | DF, 'SAR': CF | PF | ZF | SF | DF,
+    'SHLD': CF | PF | ZF | SF | DF, 'SHRD': CF | PF | ZF | SF | DF,
+    'ROL': ALLF & ~OF, 'ROR': ALLF & ~OF, 'RCL': ALLF & ~OF, 'RCR': ALLF & ~OF,
+    'BT': CF | ZF | DF, 'BTS': CF | ZF | DF, 'BTR': CF | ZF | DF, 'BTC': CF | ZF | DF,
+    'BSF': ZF | DF, 'BSR': ZF | DF, 'DAA': ALLF & ~OF, 'DAS': ALLF & ~OF, 'AAA': CF | AF | DF, 'AAS': CF | AF | DF,
+    'AAM': SF | ZF | PF | DF, 'AAD': SF | ZF | PF | DF,
+}
+FPU_TRANS = {'F2XM1', 'FYL2X', 'FYL2XP1', 'FPTAN', 'FPATAN', 'FSIN', 'FCOS', 'FSINCOS', 'FSCALE', 'FPREM', 'FPREM1', 'FXTRACT'}
+CORPUS_FILE = os.environ.get('ORTHROS_CORPUS', 'build/corpus/bfme-vanilla.json')
+
+
+def rnd_lanes(rng):
+    """16 bytes of SSE data: float lanes (plausible values) or raw bits."""
+    k = rng.random()
+    if k < 0.4:
+        return b''.join(struct.pack('<f', max(-3e38, min(3e38, rnd_double(rng)))) for _ in range(4))
+    if k < 0.6:
+        return b''.join(struct.pack('<d', rnd_double(rng)) for _ in range(2))
+    return bytes(rng.getrandbits(8) for _ in range(16))
+
+
+def suite_corpus(g, n):
+    """Every recorded instruction form (up to 4 encodings each), `n` cases per form spread over its encodings.
+    Memory operands are relocated into scratch by choosing base/index register values; the rest of the state
+    is random (with a valid x87 stack and plausible SSE lanes)."""
+    rng = g.rng
+    if not os.path.exists(CORPUS_FILE):
+        print(f'corpus: {CORPUS_FILE} missing (run tools/headless.mjs ... --corpus {CORPUS_FILE})')
+        return
+    corpus = json.load(open(CORPUS_FILE))
+    per_form = max(1, n)
+    for f in corpus['forms']:
+        op = f['op']
+        if op in CORPUS_SKIP:
+            continue
+        exs = [e for e in f['examples'] if not any(m['a16'] or m['seg'] in (4, 5) or (m['base'] < 0 and m['index'] < 0) or (m['base'] >= 0 and m['base'] == m['index']) for m in e['mem'])]
+        if not exs or any(':' in e['text'] and ('fs:' in e['text'] or 'gs:' in e['text']) for e in exs):
+            continue
+        if ' ss' in exs[0]['text'] or ' ds' in exs[0]['text'] or ', es' in exs[0]['text'] or ' cs' in exs[0]['text']:
+            continue  # segment register operands
+        for k in range(per_form):
+            e = exs[k % len(exs)]
+            c = Case()
+            text = e['text']
+            ok = True
+            is_lea = op in ('LEA', 'NOP', 'PREFETCH', 'CLFLUSH')
+            for m in ([] if is_lea else e['mem']):
+                size = max(1, m['size'] or 4)
+                for _ in range(8):
+                    off = rng.randrange(0x40, DATA_LIMIT - max(16, size) - 16)
+                    idx_v = 0
+                    if m['index'] >= 0:
+                        if c.regs[m['index']] is None:
+                            c.fix(m['index'], rng.randrange(0, 16))
+                        idx_v = c.regs[m['index']]
+                    if m['base'] >= 0:
+                        want = (SCRATCH + off - m['disp'] - idx_v * m['scale']) & 0xffffffff
+                        if c.regs[m['base']] is None or c.regs[m['base']] == want:
+                            if m['base'] == 4 and not (0x100 <= want - SCRATCH <= 0x700):
+                                continue
+                            c.fix(m['base'], want)
+                            break
+                    else:
+                        ea = (m['disp'] + idx_v * m['scale']) & 0xffffffff
+                        if SCRATCH <= ea < SCRATCH + DATA_LIMIT:
+                            break
+                        if c.regs[m['index']] is not None:
+                            ok = False
+                            break
+                else:
+                    ok = False
+                if not ok:
+                    break
+            if not ok:
+                continue
+            # implicit operands
+            if op in ('MOVS', 'STOS', 'LODS', 'SCAS', 'CMPS'):
+                c.fix(6, SCRATCH + rng.randrange(0x180, 0x300)); c.fix(7, SCRATCH + rng.randrange(0x380, 0x500))
+                c.fix(1, rng.randrange(0, 17))
+                c.df = rng.random() < 0.3
+            if op == 'XLAT':
+                c.fix(3, SCRATCH + 0x100)
+            if op == 'LEAVE':
+                c.fix(5, SCRATCH + rng.randrange(0x400, 0x5f0) & ~3)
+            if op in ('DIV', 'IDIV') and rng.random() < 0.7:
+                c.fix(2, 0 if op == 'DIV' else rng.choice([0, 0xffffffff]))
+            if op in ('PUSHA', 'POPA', 'PUSH', 'POP', 'PUSHF'):
+                pass  # ESP defaults to the scratch stack
+            cmp = {}
+            mask = CORPUS_FLAGS.get(op, ALLF)
+            if op.startswith('F') and op not in ('FXSAVE', 'FXRSTOR'):
+                top, nvalid = rnd_fpu_state(g, c)
+                cmp['fpu'] = True
+                if op in FPU_TRANS:
+                    cmp['tol'] = 1e-9
+                elif op in ('FCOM', 'FCOMP', 'FCOMPP', 'FUCOM', 'FUCOMP', 'FUCOMPP', 'FTST', 'FXAM', 'FICOM', 'FICOMP'):
+                    cmp['fpucc'] = True
+            elif op == 'EMMS' or ' mm' in text or text.split(' ')[0].startswith('p') and 'xmm' not in text and 'mm' in text:
+                c.fx = default_fx(rng, values=[rnd_double(rng) for _ in range(8)], xmm=[rnd_lanes(rng) for _ in range(8)])
+                # MM values: random bit patterns in the FPR mantissa slots
+                for i in range(8):
+                    struct.pack_into('<QH', c.fx, 32 + 16 * i, rng.getrandbits(64), 0xffff)
+                cmp['mmx'] = True; cmp['fpu'] = True
+            elif 'xmm' in text or op.startswith('CVT') or op in ('LDMXCSR', 'STMXCSR'):
+                c.fx = default_fx(rng, xmm=[rnd_lanes(rng) for _ in range(8)])
+                cmp['xmm'] = True; cmp['mxcsr'] = True
+            g.add_raw(c, f'corpus {text}', bytes.fromhex(e['hex']), mask, **cmp)
+
+
 SUITES = {
     'alu': suite_alu,
     'stack': suite_stack,
@@ -3304,6 +3425,7 @@ SUITES = {
     'verify_trans': suite_verify_trans,
     'verify_trans2': suite_verify_trans2,
     'verify_trans_known': suite_verify_trans_known,
+    'corpus': suite_corpus,
 }
 
 

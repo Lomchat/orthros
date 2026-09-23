@@ -8,7 +8,7 @@ import { HttpBackend } from '../../vfs/http-backend.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
-import { decode, OP_NAMES } from '../../cpu/decoder.js';
+import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS } from '../../cpu/jit/translate.js';
 
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '';
@@ -75,8 +75,10 @@ async function start(m) {
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
   const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
-  globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull;
-  try { host.gfx = createWebGLBackend(canvasGl, (msg) => log('gfx', msg)); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
+  globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_CAPTURE_DRAWS = !!m.opts.captureDraws; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull;
+  // frame capture (--capture N): images (bound textures, render target after draws) encoded as PNG for the harness
+  const dump = (name, w, h, rgba) => { try { const c = new OffscreenCanvas(w, h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, w * h * 4), w, h), 0, 0); c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()).then((ab) => post({ type: 'dump', name, data: ab }, [ab])); } catch (e) { log('warn', `dump ${name} failed: ${e.message}`); } };
+  try { host.gfx = createWebGLBackend(canvasGl, (msg) => log('gfx', msg), dump); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();
   const root = new MemBackend();
@@ -167,6 +169,36 @@ function regionMix(eips) {
   return lines.join('\n');
 }
 
+/**
+ * Instruction corpus: the distinct instruction forms (mnemonic, operand kinds and sizes, addressing shape, prefixes)
+ * found in the translated regions, each with a few concrete encodings — input of the `corpus` conformance suite
+ * (tools/gen/gen_cases.py), which replays them against the native CPU with random operands.
+ */
+function insnCorpus() {
+  const forms = new Map();
+  const opKey = (o) => o.t === OT.MEM ? `m${o.size}${o.base >= 0 ? 'b' : ''}${o.index >= 0 ? 'i' : ''}${o.seg >= 0 ? 's' + o.seg : ''}${o.a16 ? 'a16' : ''}` : o.t === OT.REG ? `r${o.size}` : o.t === OT.IMM ? `i${o.size ?? ''}` : o.t === OT.XMM ? 'x' : o.t === OT.MM ? 'mm' : o.t === OT.ST ? (o.r ? 'sti' : 'st0') : 'o' + o.t;
+  let insns = 0;
+  for (const r of vm.jit?.byEntry.values() ?? []) {
+    for (const b of r.blocks) {
+      let a = b.eip;
+      while (a < b.end) {
+        let insn; try { insn = decode(vm.mem, a); } catch { break; }
+        insns++;
+        const key = `${OP_NAMES[insn.op]}${insn.cc !== undefined && insn.cc >= 0 ? '.' + insn.cc : ''}|${insn.opsize ?? ''}|${insn.lock ? 'L' : ''}${insn.rep ? 'R' + insn.rep : ''}|${insn.ops.map(opKey).join(',')}`;
+        let f = forms.get(key);
+        if (!f) forms.set(key, (f = { key, op: OP_NAMES[insn.op], count: 0, examples: [] }));
+        f.count++;
+        if (f.examples.length < 4) {
+          const bytes = Array.from(vm.mem.bytes(a, insn.len), (x) => x.toString(16).padStart(2, '0')).join('');
+          if (!f.examples.some((e) => e.hex === bytes)) f.examples.push({ hex: bytes, text: fmtInsn(insn), mem: insn.ops.filter((o) => o.t === OT.MEM).map((o) => ({ base: o.base, index: o.index, scale: o.scale, disp: o.disp, size: o.size, seg: o.seg, a16: !!o.a16 })) });
+        }
+        a = insn.next;
+      }
+    }
+  }
+  return JSON.stringify({ insns, forms: [...forms.values()].sort((x, y) => y.count - x.count) });
+}
+
 function stop(reason) { stopped = true; running = false; flushProfile(true); post({ type: 'exit', code: -1, reason }); }
 
 self.onmessage = (e) => {
@@ -174,9 +206,15 @@ self.onmessage = (e) => {
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) channel.port2.postMessage(0); }
   else if (m.type === 'stop') stop('stop requested');
+  else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; log('gfx', `d3d-webgl: capture requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
+  else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
-  else if (m.type === 'report') post({ type: 'report', text: vm ? vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
+  else if (m.type === 'report') {
+    const hist = vm?.apiHist();
+    const apis = hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '';
+    post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
+  }
 };
 void IN_RING; void AUDIO_RING_FRAMES;

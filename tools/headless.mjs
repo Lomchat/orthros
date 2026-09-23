@@ -39,6 +39,10 @@ if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
+if (args.includes('--capture-draws')) q.set('capturedraws', '1');
+// --capture-at <s|+s>: capture the next Direct3D frame at that time (textures as PNG, per-draw state; with
+// --capture-draws also the render target after every draw) into <out>/capture
+const captureAt = opt('capture-at') ? { t: Number(opt('capture-at')), rel: opt('capture-at').startsWith('+'), done: false } : null;
 if (opfsDir) q.set('opfs', '1');
 if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame diagnostics only after that time
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
@@ -156,12 +160,18 @@ for (;;) {
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
+  if (captureAt && !captureAt.done && t >= (captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
+  const dumps = await page.evaluate(() => { const d = window.orthros.dumps; window.orthros.dumps = []; return d ?? []; }).catch(() => []);
+  for (const d of dumps) { const dir = path.join(out, 'capture'); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, d.name + '.png'), Buffer.from(d.data, 'base64')); }
+  if (dumps.length) console.log(`[capture] ${dumps.length} image(s) saved to ${path.join(out, 'capture')}`);
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
   if (t >= seconds) {
     console.log(`[end] time limit ${seconds}s`);
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
+    // --corpus <file>: distinct instruction forms of the translated code (input of the `corpus` conformance suite)
+    if (opt('corpus')) { await page.evaluate(() => { window.orthros.corpus = null; window.orthros.worker?.postMessage({ type: 'corpus' }); }); for (let i = 0; i < 100; i++) { const c = await page.evaluate(() => window.orthros.corpus); if (c) { fs.mkdirSync(path.dirname(opt('corpus')), { recursive: true }); fs.writeFileSync(opt('corpus'), c); const j = JSON.parse(c); console.log(`[corpus] ${j.forms.length} forms from ${j.insns} instructions -> ${opt('corpus')}`); break; } await page.waitForTimeout(200); } }
     await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })); await page.waitForTimeout(500); const r = await page.evaluate(() => window.orthros.report); if (r) console.log(r); await saveProfile(); break; }
   await page.waitForTimeout(1000);
 }

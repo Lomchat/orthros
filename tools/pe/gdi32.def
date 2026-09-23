@@ -13,3 +13,9 @@ CreateDIBSection@24
 Rectangle@20
 TextOutA@20
 GetDeviceCaps@8
+CreateFontA@56
+GetTextMetricsA@8
+GetTextExtentPoint32A@16
+SetTextColor@8
+SetBkMode@8
+GetCharWidth32A@16

@@ -12,6 +12,13 @@ export const TA = { DIFFUSE: 0, CURRENT: 1, TEXTURE: 2, TFACTOR: 3, SPECULAR: 4,
 export const TS_WORLD = 256, TS_VIEW = 2, TS_PROJECTION = 3, TS_TEXTURE0 = 16;
 export const MAX_STAGES = 8, MAX_LIGHTS = 8;
 
+/**
+ * Clip-space position from a D3D vertex pipeline to GL: z from [0, w] to [-w, w], y mirrored on texture targets
+ * (u_flipY = -1), and the D3D8/9 rasterization rule — pixel centers on integer window coordinates, half a pixel
+ * up-left of GL's — as a half-pixel shift in NDC (1/width right, 1/height down on the screen).
+ */
+export const D3D_TO_GL_POSITION = (p) => `vec4(${p}.x + ${p}.w / u_viewport.z, (${p}.y - ${p}.w / u_viewport.w) * u_flipY, ${p}.z * 2.0 - ${p}.w, ${p}.w)`;
+
 const DECL_REG_NAMES = ['pos', 'blendweight', 'blendindices', 'normal', 'psize', 'diffuse', 'specular', 'tex0', 'tex1', 'tex2', 'tex3', 'tex4', 'tex5', 'tex6', 'tex7', 'pos2', 'normal2'];
 
 /**
@@ -100,8 +107,9 @@ export function ffVertexShader(k) {
     // pre-transformed: screen space x,y (pixel centers), z in [0,1], 1/w
     lines.push('  vec4 p = a_pos;');
     lines.push('  float rhw = p.w == 0.0 ? 1.0 : p.w;');
-    lines.push('  float ndcX = ((p.x - u_viewport.x) / u_viewport.z) * 2.0 - 1.0;');
-    lines.push('  float ndcY = 1.0 - ((p.y - u_viewport.y) / u_viewport.w) * 2.0;');
+    // D3D8/9 pixel centers sit on integer screen coordinates, GL's on half-integers: +0.5 keeps the coverage and texel mapping
+    lines.push('  float ndcX = ((p.x + 0.5 - u_viewport.x) / u_viewport.z) * 2.0 - 1.0;');
+    lines.push('  float ndcY = 1.0 - ((p.y + 0.5 - u_viewport.y) / u_viewport.w) * 2.0;');
     lines.push('  float w = 1.0 / rhw;');
     lines.push('  gl_Position = vec4(ndcX * w, ndcY * u_flipY * w, (p.z * 2.0 - 1.0) * w, w);');
     lines.push('  vec3 posView = vec3(0.0); vec3 nView = vec3(0.0, 0.0, 1.0);');
@@ -124,7 +132,7 @@ export function ffVertexShader(k) {
     lines.push('  vec3 nView = mat3(u_view) * nWorld;');
     if (k.normalize || true) lines.push('  nView = length(nView) > 0.0 ? normalize(nView) : nView;');
     lines.push('  vec4 clip = u_proj * posView4;');
-    lines.push('  gl_Position = vec4(clip.x, clip.y * u_flipY, clip.z * 2.0 - clip.w, clip.w);');
+    lines.push(`  gl_Position = ${D3D_TO_GL_POSITION('clip')};`);
     // colors
     const dif = has('diffuse') ? colorIn('diffuse') : 'vec4(1.0)', spc = has('specular') ? colorIn('specular') : 'vec4(0.0)';
     if (k.lighting) {
@@ -177,6 +185,24 @@ export function ffVertexShader(k) {
 
 // ------------------------------------------------------------------ fixed-function fragment shader
 const CMP_GLSL = { 1: 'false', 2: 'a < r', 3: 'a == r', 4: 'a <= r', 5: 'a > r', 6: 'a != r', 7: 'a >= r', 8: 'true' };
+
+/**
+ * End of every pixel pipeline (fixed function or shader, the stages after the pixel shader in D3D8/9): alpha test
+ * (8-bit comparison against D3DRS_ALPHAREF), then fog blending. Table fog measures eye distance (w) when the
+ * projection is perspective ("W-friendly"), device depth z otherwise; vertex fog uses the interpolated factor.
+ * Expects `vec4 result` and the uniforms u_alphaRef, u_fogColor, u_fogParams (start, end, density).
+ * @param {{ alphaTest?: number, fog: number }} k
+ */
+export function fragmentTail(k) {
+  const out = [];
+  if (k.alphaTest && k.alphaTest !== 8) out.push(`  { float a = floor(clamp(result.a, 0.0, 1.0) * 255.0 + 0.5); float r = floor(u_alphaRef * 255.0 + 0.5); if (!(${CMP_GLSL[k.alphaTest] ?? 'true'})) discard; }`);
+  const dist = 'float d = gl_FragCoord.w != 1.0 ? 1.0 / gl_FragCoord.w : gl_FragCoord.z;';
+  if (k.fog === -1) out.push('  result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(v_fog, 0.0, 1.0));');
+  else if (k.fog === 1) out.push(`  { ${dist} float f = exp(-d * u_fogParams.z); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }`);
+  else if (k.fog === 2) out.push(`  { ${dist} float e = d * u_fogParams.z; float f = exp(-e * e); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }`);
+  else if (k.fog === 3) out.push(`  { ${dist} float f = (u_fogParams.y - d) / max(u_fogParams.y - u_fogParams.x, 1e-6); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }`);
+  return out;
+}
 
 /**
  * @param {{ stages: Array<{ colorOp: number, colorArg1: number, colorArg2: number, colorArg0: number, alphaOp: number, alphaArg1: number, alphaArg2: number, alphaArg0: number, resultTemp: boolean, cube: boolean, projected: boolean, bound: boolean }>, alphaTest: number|0, specular: boolean, fog: number (table mode 0 none / 1 exp / 2 exp2 / 3 linear) | -1 for vertex fog, texEnabled: boolean }} k
@@ -245,11 +271,7 @@ export function ffFragmentShader(k) {
   }
   lines.push('  vec4 result = current;');
   if (k.specular) lines.push('  result.rgb += specular.rgb;');
-  if (k.alphaTest) lines.push(`  { float a = result.a; float r = u_alphaRef; if (!(${CMP_GLSL[k.alphaTest] ?? 'true'})) discard; }`);
-  if (k.fog === -1) lines.push('  result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(v_fog, 0.0, 1.0));');
-  else if (k.fog === 1) lines.push('  { float d = gl_FragCoord.z / gl_FragCoord.w; float f = exp(-d * u_fogParams.z); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }');
-  else if (k.fog === 2) lines.push('  { float d = gl_FragCoord.z / gl_FragCoord.w; float e = d * u_fogParams.z; float f = exp(-e * e); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }');
-  else if (k.fog === 3) lines.push('  { float d = gl_FragCoord.z / gl_FragCoord.w; float f = (u_fogParams.y - d) / max(u_fogParams.y - u_fogParams.x, 1e-6); result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(f, 0.0, 1.0)); }');
+  lines.push(...fragmentTail(k));
   lines.push('  fragColor = result;');
   lines.push('}');
   return lines.join('\n');
@@ -335,7 +357,7 @@ export function translateVertexShader(code, layout) {
       default: body.push(`  // unsupported vs op ${op}`);
     }
   }
-  body.push('  gl_Position = vec4(oPos.x, oPos.y * u_flipY, oPos.z * 2.0 - oPos.w, oPos.w);');
+  body.push(`  gl_Position = ${D3D_TO_GL_POSITION('oPos')};`);
   body.push('  v_color0 = oD0; v_color1 = oD1; v_fog = oFog.x; gl_PointSize = oPts.x;');
   for (let k = 0; k < MAX_STAGES; k++) body.push(`  v_tex${k} = oT${k};`);
   lines.push('void main() {', ...body, '}');
@@ -353,7 +375,7 @@ export function translatePixelShader(code, env) {
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
   for (let i = 0; i < 6; i++) lines.push(env.cube[i] ? `uniform samplerCube u_cube${i};` : `uniform sampler2D u_tex${i};`);
-  lines.push('uniform vec4 u_pc[8]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform vec4 u_bumpEnv[8];');
+  lines.push('uniform vec4 u_pc[8]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform float u_alphaRef; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
   const body = ['  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0);', '  vec4 c0 = u_c[0], c1 = u_c[1], c2 = u_c[2], c3 = u_c[3], c4 = u_c[4], c5 = u_c[5], c6 = u_c[6], c7 = u_c[7];'];
   for (let i = 0; i < 6; i++) body.push(`  vec4 t${i} = v_tex${i};`);
@@ -449,10 +471,7 @@ export function translatePixelShader(code, env) {
   }
   void phase;
   body.push('  vec4 result = r0;');
-  if (env.fog === -1) body.push('  result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(v_fog, 0.0, 1.0));');
-  else if (env.fog === 1) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(exp(-dd * u_fogParams.z), 0.0, 1.0)); }');
-  else if (env.fog === 2) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; float e = dd * u_fogParams.z; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp(exp(-e * e), 0.0, 1.0)); }');
-  else if (env.fog === 3) body.push('  { float dd = gl_FragCoord.z / gl_FragCoord.w; result.rgb = mix(u_fogColor.rgb, result.rgb, clamp((u_fogParams.y - dd) / max(u_fogParams.y - u_fogParams.x, 1e-6), 0.0, 1.0)); }');
+  body.push(...fragmentTail(env));
   body.push('  fragColor = result;');
   lines.push('void main() {', ...body, '}');
   return lines.join('\n');

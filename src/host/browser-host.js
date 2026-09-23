@@ -62,6 +62,24 @@ export class BrowserDisplay {
   }
   setTitle(t) { this.title = t; this.host.post({ type: 'title', title: t }); }
   showCursor(v) { if (this.cursorVisible !== v) { this.cursorVisible = v; this.host.post({ type: 'cursor', visible: v }); } }
+  /**
+   * The guest's current cursor (SetCursor): a system cursor id (IDC_*) or an image cursor (frames + animation
+   * steps, see gfx/gdi/cursor.js). Image frames are encoded once per cursor as PNG and defined on the page, which
+   * shows them as an animated CSS cursor.
+   */
+  setCursor(key, image, systemId) {
+    if (this.cursorKey === key) return;
+    this.cursorKey = key;
+    if (!image) { this.host.post({ type: 'cursor-set', system: systemId ?? 32512 }); return; }
+    this.cursorDefs ??= new Map();
+    if (this.cursorDefs.has(key)) { this.host.post({ type: 'cursor-set', id: key }); return; }
+    this.cursorDefs.set(key, true);
+    const enc = image.frames.map((f) => { const c = new OffscreenCanvas(f.w, f.h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(f.rgba.buffer, f.rgba.byteOffset, f.w * f.h * 4), f.w, f.h), 0, 0); return c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()); });
+    Promise.all(enc).then((pngs) => {
+      this.host.post({ type: 'cursor-def', id: key, frames: image.frames.map((f, i) => ({ png: pngs[i], hotX: f.hotX, hotY: f.hotY })), steps: image.steps });
+      if (this.cursorKey === key) this.host.post({ type: 'cursor-set', id: key });
+    }).catch(() => {});
+  }
 }
 
 export class BrowserHost {

@@ -25,3 +25,4 @@ FillRect@12
 LoadCursorA@8
 GetSystemMetrics@4
 SetWindowTextA@8
+DrawTextA@20
