@@ -295,7 +295,7 @@ export function buildRegionModule(codes, names = null) {
 }
 
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
-export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm'];
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87'];
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 /** profiling translations: flags helper calls per x86 opcode (u32 per OP value) */
 export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
@@ -421,7 +421,7 @@ class Emitter {
     }
     c.br(noChain);
     c.end(); // found
-    if (this.prof) { c.get(L_TA).i32load(4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; }
+    if (this.prof) { c.get(L_TA).i32load(4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; if (this.usesX87) this.count(PF.chainFromX87); }
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);

@@ -423,9 +423,11 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- programs
   program() {
     const dev = this.dev;
-    if (this.lastProgram && this.lastProgramVersion === dev.stateVersion && this.lastProgramDev === dev) return this.lastProgram; // nothing that feeds the key changed since the last draw
+    // nothing that feeds the key changed since the last draw (programVersion: the states of the key only; the
+    // stages' texture objects are read from the device at bind time)
+    if (this.lastProgram && this.lastProgramVersion === dev.programVersion && this.lastProgramDev === dev) return this.lastProgram;
     const r = this.programUncached();
-    this.lastProgram = r; this.lastProgramVersion = dev.stateVersion; this.lastProgramDev = dev;
+    this.lastProgram = r; this.lastProgramVersion = dev.programVersion; this.lastProgramDev = dev;
     return r;
   }
   programUncached() {
@@ -595,13 +597,14 @@ export class WebGLDevice {
       if (!st.bound) continue;
       const l = U(st.cube ? TEX_U.cube[i] : st.volume ? TEX_U.vol[i] : TEX_U.tex[i]);
       if (!l) continue;
-      const g = this.glTexture(st.tex);
+      const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
+      const g = this.glTexture(tex);
       if (gs.tex[i] !== g.tex) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
       if (gs.texUnit[i] !== P.prog) { gl.uniform1i(l, i); gs.texUnit[i] = P.prog; }
       // sampler objects are pooled by parameter combination: switching settings is one bindSampler
       const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
-      const levels = st.cube ? st.tex.faces[0].length : st.tex.levels.length;
+      const levels = st.cube ? tex.faces[0].length : tex.levels.length;
       const an = this.aniso && (min === 3 || mag === 3) ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1;
       const maxLod = levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0;
       const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + maxLod * 0x200000;
@@ -684,6 +687,7 @@ export class WebGLDevice {
   captureDraw(P, info, v, flip) {
     const gl = this.gl; void gl;
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
+    for (let i = 0; i < info.stages.length; i++) info.stages[i].tex = this.comImpl(this.dev.textures[i]); // (capture: the textures bound now)
     if (this.dump) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
     const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
     this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)}${this.rs(RS.STENCILENABLE, 0) ? `[f${this.rs(RS.STENCILFUNC, 8)} ref${this.rs(RS.STENCILREF, 0)} m${(this.rs(RS.STENCILMASK, 0xffffffff) >>> 0).toString(16)} wm${(this.rs(RS.STENCILWRITEMASK, 0xffffffff) >>> 0).toString(16)} ops${this.rs(RS.STENCILFAIL, 1)}/${this.rs(RS.STENCILZFAIL, 1)}/${this.rs(RS.STENCILPASS, 1)}${this.dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0) ? ` ccw:f${this.rs(RS9.CCW_STENCILFUNC, 8)} ops${this.rs(RS9.CCW_STENCILFAIL, 1)}/${this.rs(RS9.CCW_STENCILZFAIL, 1)}/${this.rs(RS9.CCW_STENCILPASS, 1)}` : ''}]` : ''} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
