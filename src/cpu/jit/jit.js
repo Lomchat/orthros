@@ -3,7 +3,7 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
-import { translateRegion, buildRegionModule } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF } from './translate.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
 import './translate-sse-int.js';
@@ -128,7 +128,7 @@ export class Jit {
     // translation storm diagnostic: thousands of new regions per second means code is being retranslated
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
-    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining });
+    const { code, blocks, stats } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn });
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
     let inst;
     try {
@@ -230,6 +230,10 @@ export class Jit {
   harvest(base) {
     const n = this.mem.u32[(base + ST.TRANSITIONS) >>> 2];
     if (n) { this.stats.chained += n; this.mem.u32[(base + ST.TRANSITIONS) >>> 2] = 0; }
+    if (this.opts.profile) {
+      const p = (this.stats.prof ??= Object.fromEntries(JIT_PROF.map((k) => [k, 0])));
+      JIT_PROF.forEach((k, i) => { const a = (base + ST.PROF + 4 * i) >>> 2; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
+    }
   }
 
   run(opts = {}) {
