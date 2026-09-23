@@ -254,10 +254,16 @@
   donnent 14-15 fps pour le même code (seuls les A/B simultanés sont comparables ; bruit A/A ±2 %). bench.exe
   1 115 → ~420 ms ; transformation de sommets x87 24 bits 86 → 22 ns.
 - **En partie** (escarmouche High, début de partie) : ~38 fps en CPU seul — la cadence plafond du jeu (D031) — avec
-  ~14 % d'attente ; p99 ≈ 30-35 ms (pics isolés à 55-80 ms sans traduction ni upload). Le menu 3D est la scène lourde
+  ~14 % d'attente. Mesure du 2026-09-23 (`--gl-discard --frames-from 660`, 341 s de partie) : **38,3 fps, p50 26,0 ms,
+  p90 27,8, p99 31,1, max 56 ms ; 0,50 % des images > 33 ms**. Les images lentes n'ont ni traduction ni upload :
+  ce sont les bouffées de logique du jeu (seule une exécution plus rapide du code invité les réduit). Le menu 3D est la scène lourde
   (~17 k appels d'API, 1 700 draws et 25-37 M instructions par image).
 - **Réglages mesurés en jeu** : régions de 48 blocs (24 : −16 %, 96 : = ; un chaînage coûte ~6 ns, ~10 ns entre
   régions x87, ~7 M/s au menu) ; boucles imbriquées structurées −13 % (V8, D044) : désactivées.
+- **Appels dans les régions** (D045) : chemins f32 du x87 sans appel, étiquettes x87 statiques, aiguillage des flags
+  sur toutes les sortes en ligne. Restent en jeu : `flags` pour BT*/ROL/CMPS et INC/DEC après SHL (~150 000 appels/s),
+  `arith24`/`f32rc` dans les régions x87 en mode FPU inconnu (décodeur MP3 de Miles). Le profil `--profile` liste les
+  appels de chaque région chaude (import@instruction).
 - Constat structurel restant : trop de valeurs vivantes dans les régions (8 registres invités + 5 valeurs de flags
   paresseux + budget + bloc) pour les ~11 registres allouables par V8 : variables de boucle en pile. Tout appel dans
   une région (même sur un chemin froid) fait vider les registres — d'où les sorties vers l'interpréteur pour les cas
