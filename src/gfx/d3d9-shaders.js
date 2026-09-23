@@ -53,7 +53,10 @@ function* instructions(code) {
     if (op === 0xfffd) { yield { op, args: [] }; i++; continue; }
     const args = [];
     let j = i + 1;
-    if (len) { for (let k = 0; k < len; k++) args.push(code[j + k] >>> 0); j += len; }
+    // SM 1.x has no length field: parameter tokens are recognized by bit 31, except the raw values of def/defi
+    // (4 floats / ints, often 0) and defb (a bool)
+    const n = len || (op === 81 || op === 48 ? 5 : op === 47 ? 2 : 0);
+    if (n) { for (let k = 0; k < n; k++) args.push(code[j + k] >>> 0); j += n; }
     else { while (j < code.length && (code[j] >>> 31) === 1) { args.push(code[j] >>> 0); j++; } }
     yield { op, ctrl, args };
     i = j;
@@ -310,8 +313,30 @@ export function translatePixelShader9(code, env) {
   }
   body.push(`  vec4 result = ${sm2 ? 'oC0' : 'r[0]'};`);
   body.push(...fragmentTail(env));
-  if (body.some((l) => l.includes('oDepth = '))) body.push('  gl_FragDepth = oDepth >= 0.0 ? oDepth : gl_FragCoord.z;');
+  if (body.some((l) => /^\s+oDepth = /.test(l))) body.push('  gl_FragDepth = oDepth >= 0.0 ? oDepth : gl_FragCoord.z;'); // only shaders that write depth (texdepth / oDepth)
   body.push('  fragColor = result;');
   lines.push('void main() {', ...body, '}');
   return { glsl: lines.join('\n'), samplers: samplerKind };
+}
+
+// ------------------------------------------------------------------ disassembly (diagnostics: --dump-shaders)
+const OPN = { 0: 'nop', 1: 'mov', 2: 'add', 3: 'sub', 4: 'mad', 5: 'mul', 6: 'rcp', 7: 'rsq', 8: 'dp3', 9: 'dp4', 10: 'min', 11: 'max', 12: 'slt', 13: 'sge', 14: 'exp', 15: 'log', 16: 'lit', 17: 'dst', 18: 'lrp', 19: 'frc', 20: 'm4x4', 21: 'm4x3', 22: 'm3x4', 23: 'm3x3', 24: 'm3x2', 25: 'call', 26: 'callnz', 27: 'loop', 28: 'ret', 29: 'endloop', 30: 'label', 31: 'dcl', 32: 'pow', 33: 'crs', 34: 'sgn', 35: 'abs', 36: 'nrm', 37: 'sincos', 38: 'rep', 39: 'endrep', 40: 'if', 41: 'ifc', 42: 'else', 43: 'endif', 44: 'break', 45: 'breakc', 46: 'mova', 47: 'defb', 48: 'defi', 64: 'texcoord', 65: 'texkill', 66: 'tex', 67: 'texbem', 68: 'texbeml', 69: 'texreg2ar', 70: 'texreg2gb', 71: 'texm3x2pad', 72: 'texm3x2tex', 73: 'texm3x3pad', 74: 'texm3x3tex', 76: 'texm3x3spec', 77: 'texm3x3vspec', 78: 'expp', 79: 'logp', 80: 'cnd', 81: 'def', 82: 'texreg2rgb', 83: 'texdp3tex', 84: 'texm3x2depth', 85: 'texdp3', 86: 'texm3x3', 87: 'texdepth', 88: 'cmp', 89: 'bem', 90: 'dp2add', 91: 'dsx', 92: 'dsy', 93: 'texldd', 94: 'setp', 95: 'texldl', 96: 'breakp', 0xfffd: 'phase' };
+const RTN = ['r', 'v', 'c', 't', 'o', 'oD', 'oT', 'i', 'oC', 'oDepth', 's', 'c', 'c', 'c', 'b', 'aL', 'h', 'misc', 'l', 'p'];
+const SRCMOD = ['', '-', '_bias', '-_bias', '_bx2', '-_bx2', '1-', '_x2', '-_x2', '_dz', '_dw', '_abs', '-_abs', '!'];
+/** Human-readable listing of SM 1.x-2.x bytecode (register names follow the pixel/vertex conventions). */
+export function disasmShader9(code) {
+  const version = code[0] >>> 0, ps = (version >>> 16) === 0xffff;
+  const lines = [`${ps ? 'ps' : 'vs'}_${(version >> 8) & 0xff}_${version & 0xff}`];
+  const reg = (tok) => { const t = regType(tok), n = tok & 0x7ff; if (!ps && t === 3) return 'a0'; if (!ps && t === 4) return ['oPos', 'oFog', 'oPts'][n] ?? 'o?'; return RTN[t] + (t === 9 ? '' : n); };
+  const src = (tok) => { const m = (tok >> 24) & 0xf, sw = swizzle(tok); const r = reg(tok) + (sw === 'xyzw' ? '' : '.' + (new Set(sw).size === 1 ? sw[0] : sw)); return m === 1 || m === 3 || m === 5 || m === 8 || m === 12 ? SRCMOD[m][0] + r + SRCMOD[m].slice(1) : m === 6 ? '1-' + r : r + (SRCMOD[m] ?? ''); };
+  const dst = (tok) => { const mask = writeMask(tok), mod = (tok >> 20) & 0xf, sh = (tok >> 24) & 0xf; return `${reg(tok)}${mask === 'xyzw' ? '' : '.' + mask}${mod & 1 ? '_sat' : ''}${sh ? (sh > 7 ? '_d' + (1 << (16 - sh)) : '_x' + (1 << sh)) : ''}`; };
+  for (const ins of instructions(code)) {
+    const name = OPN[ins.op] ?? `op${ins.op}`;
+    if (ins.op === 81) { lines.push(`def ${reg(ins.args[0])}, ${[1, 2, 3, 4].map((k) => +asFloat(ins.args[k]).toPrecision(6)).join(', ')}`); continue; }
+    if (ins.op === 31) { lines.push(`dcl${ps ? '' : '_' + (ins.args[0] & 0x1f) + '_' + ((ins.args[0] >> 16) & 0xf)} ${dst(ins.args[1])}`); continue; }
+    if (!ins.args.length) { lines.push(name); continue; }
+    const a = [dst(ins.args[0]), ...ins.args.slice(1).map(src)];
+    lines.push(`${(ins.ctrl ?? 0) & 0x40 ? '+' : ''}${name}${ins.op === 41 || ins.op === 45 ? '_c' + (ins.ctrl & 7) : ''} ${a.join(', ')}`);
+  }
+  return lines.join('\n');
 }

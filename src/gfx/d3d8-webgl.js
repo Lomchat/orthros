@@ -6,7 +6,7 @@
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, translateVertexShader, translatePixelShader, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
-import { translateVertexShader9, translatePixelShader9, semName } from './d3d9-shaders.js';
+import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -445,7 +445,7 @@ export class WebGLDevice {
     p = this.compile(vsSrc, fsSrc, key, attrNames);
     p.vs = L.shader; p.ps = ps;
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
-    if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} GLSL\nVS\n${vsSrc}\nFS\n${fsSrc}`);
+    if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} key=${key}${L.code ? `\nD3D VS\n${disasmShader9(L.code)}` : ''}${ps ? `\nD3D PS\n${disasmShader9(ps.code)}` : ''}\nGLSL VS\n${vsSrc}\nGLSL FS\n${fsSrc}`);
     this.programs.set(key, p);
     return { p, L, stages, lighting, fog, lightTypes, ps };
   }
@@ -640,7 +640,7 @@ export class WebGLDevice {
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
     if (this.dump) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
     const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
-    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)}${this.rs(RS.STENCILENABLE, 0) ? `[f${this.rs(RS.STENCILFUNC, 8)} ref${this.rs(RS.STENCILREF, 0)} m${(this.rs(RS.STENCILMASK, 0xffffffff) >>> 0).toString(16)} wm${(this.rs(RS.STENCILWRITEMASK, 0xffffffff) >>> 0).toString(16)} ops${this.rs(RS.STENCILFAIL, 1)}/${this.rs(RS.STENCILZFAIL, 1)}/${this.rs(RS.STENCILPASS, 1)}${this.dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0) ? ` ccw:f${this.rs(RS9.CCW_STENCILFUNC, 8)} ops${this.rs(RS9.CCW_STENCILFAIL, 1)}/${this.rs(RS9.CCW_STENCILZFAIL, 1)}/${this.rs(RS9.CCW_STENCILPASS, 1)}` : ''}]` : ''} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
   }
   /** Frame capture: a texture's level 0 as a PNG (render-target textures are read back from their FBO). */
   dumpTexture(t) {
