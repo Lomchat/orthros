@@ -239,6 +239,7 @@ test('flags liveness: partial flag writers (rotates, bit tests, inc/dec, clc/stc
   const R = rng(4242), pick = (n) => Math.floor(R() * n);
   const reg = () => [0, 1, 2, 3, 5, 6, 7][pick(7)]; // not esp
   const modrm = (r, rm) => 0xc0 | (r << 3) | rm;
+  const EDGE = [0, 1, 2, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x10000, 0x7fffffff, 0x80000000, 0xffffffff, 0xfffffffe, 0x80000001, 0x7ffffffe, 0x7e, 0x81, 0xfe, 0x7ffe, 0x8001];
   const ops = [
     () => [0x01 + 8 * [0, 1, 4, 5, 6, 7][pick(6)], modrm(reg(), reg())], // add/or/and/sub/xor/cmp r, r
     () => [0x85, modrm(reg(), reg())], // test
@@ -259,6 +260,14 @@ test('flags liveness: partial flag writers (rotates, bit tests, inc/dec, clc/stc
     () => [0x9c, 0x58 + [0, 1, 2, 3, 5, 6, 7][pick(7)]], // pushf ; pop r
     () => [0x0f, 0x80 + pick(16), 0, 0, 0, 0], // jcc to the next instruction: a block boundary
     () => [0x89, modrm(reg(), reg())], // mov (transparent)
+    () => { const v = EDGE[pick(EDGE.length)]; return [0xb8 + reg(), v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24]; }, // mov r, edge value
+    () => { const v = EDGE[pick(EDGE.length)]; return [0xb8 + reg(), v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24]; },
+    () => { // edge value, a flag writer on it, then a condition read at once (setcc / cmovcc / jcc)
+      const r = reg(), v = EDGE[pick(EDGE.length)], w = [[0x40 + r], [0x48 + r], [0xf7, modrm(3, r)], [0x83, modrm(0, r), 1], [0x83, modrm(5, r), 1], [0xd1, modrm(5, r)], [0xd1, modrm(7, r)],
+        [0xd1, modrm(4, r)], [0x83, modrm(2, r), 0], [0x83, modrm(3, r), 0], [0x85, modrm(r, r)], [0x0f, 0xaf, modrm(r, r)], [0xc1, modrm(pick(2), r), 1 + pick(31)]][pick(13)];
+      const rd = [[0x0f, 0x90 + pick(16), modrm(0, [0, 1, 2, 3][pick(4)])], [0x0f, 0x40 + pick(16), modrm(reg(), reg())], [0x0f, 0x80 + pick(16), 0, 0, 0, 0]][pick(3)];
+      return [0xb8 + r, v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24, ...w, ...rd];
+    },
     () => [0x8d, 0x04 | (reg() << 3), (reg() << 3) | [0, 1, 2, 3, 6, 7][pick(6)]], // lea r, [base + index] (transparent)
   ];
   for (let seed = 0; seed < 300; seed++) {
@@ -273,5 +282,29 @@ test('flags liveness: partial flag writers (rotates, bit tests, inc/dec, clc/stc
     const EJ = makeExec(true); init(EJ); assert.equal(EJ.run(end, 1e6), EXIT.HALT);
     const st = (E) => { const s = snapshot(E); s.esiFlags = hex(E.cpu.esi & (0x8d5 | 0x400)); return s; };
     assert.deepEqual(st(EJ), st(EI), `seed ${seed}`);
+  }
+});
+
+test('every condition after every flag writer on boundary values, in the same block and across a block boundary, matches the interpreter', () => {
+  const EDGE = [0, 1, 2, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x7fffffff, 0x80000000, 0xffffffff, 0x80000001, 0x7ffffffe, 0x7e, 0xfe, 0x8001];
+  // writers on eax (ecx = 3 as a second operand / shift count)
+  const WRITERS = [[0x40], [0x48], [0xfe, 0xc0], [0x66, 0x48], [0xf7, 0xd8], [0xf6, 0xd8], [0x83, 0xc0, 0x01], [0x83, 0xe8, 0x01], [0x04, 0x01], [0x66, 0x2d, 0x01, 0x00],
+    [0x83, 0xd0, 0x00], [0x83, 0xd8, 0x00], [0x01, 0xc8], [0x29, 0xc8], [0x85, 0xc0], [0x84, 0xc0], [0xd1, 0xe8], [0xd1, 0xf8], [0xd1, 0xe0], [0xc1, 0xe8, 0x03], [0xc0, 0xf8, 0x03],
+    [0xd3, 0xe8], [0x0f, 0xaf, 0xc1], [0xf7, 0xe1], [0x0f, 0xa4, 0xc8, 0x03], [0x3c, 0x80], [0x66, 0x3d, 0x00, 0x80]];
+  for (const w of WRITERS) for (const v of EDGE) for (const split of [false, true]) {
+    const bytes = [];
+    for (let cc = 0; cc < 16; cc++) {
+      // stc/clc give adc/sbb a known carry-in; setcc into cl, accumulated in ebx
+      bytes.push(0xb8, v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24, 0xb9, 3, 0, 0, 0, cc & 1 ? 0xf9 : 0xf8, ...w);
+      if (split) bytes.push(0x0f, 0x80 + ((cc + 5) & 15), 0, 0, 0, 0); // jcc to the next instruction: the reader starts a block
+      bytes.push(0x0f, 0x90 + cc, 0xc1, 0xd1, 0xe3, 0x09, 0xcb); // setcc cl ; shl ebx, 1 ; or ebx, ecx
+    }
+    bytes.push(0xf4);
+    const code = Uint8Array.from(bytes), end = CODE + bytes.length - 1;
+    const EI = makeExec(false); EI.load(code, 0); EI.cpu.ebx = 0; assert.equal(EI.run(end, 1e6), EXIT.HALT);
+    const EJ = makeExec(true); EJ.load(code, 0); EJ.cpu.ebx = 0; assert.equal(EJ.run(end, 1e6), EXIT.HALT);
+    // mul/imul define only CF/OF (the others are undefined and differ between the executors): their conditions are O, B (and negations)
+    const mask = (w[0] === 0x0f && w[1] === 0xaf) || (w[0] === 0xf7 && w[1] === 0xe1) ? 0b1111 << 12 : 0xffff;
+    assert.equal(EJ.cpu.ebx & mask, EI.cpu.ebx & mask, `writer ${w.map((b) => b.toString(16)).join(' ')} on ${v.toString(16)}${split ? ' (reader in the next block)' : ''}`);
   }
 });

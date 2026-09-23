@@ -86,14 +86,16 @@ function termOf(insn) {
   }
 }
 
+// Lazy kinds whose CF / OF Emitter.pushCond computes inline (the same formulas as the flags helper); ZF, SF and PF
+// come from the result for every kind. SHL (CF/OF depend on the count in a way not worth inlining) is left to the helper.
+const CF_INLINE = new Set([LZ.ADD, LZ.SUB, LZ.LOGIC, LZ.INC, LZ.DEC, LZ.NEG, LZ.ADC, LZ.SBB, LZ.SHR, LZ.SAR, LZ.MUL, LZ.IMUL, LZ.SHLD, LZ.BSF]);
+const OF_INLINE = CF_INLINE;
 /** Whether Emitter.pushCond computes condition `base` (cc >> 1) inline for lazy kind `kind` (no flags helper). */
 function lazyCondInline(base, kind) {
   switch (base) {
-    case 2: case 4: return true; // E, S: from the result
-    case 1: return kind === LZ.SUB || kind === LZ.ADD || kind === LZ.LOGIC || kind === LZ.INC || kind === LZ.DEC; // B
-    case 3: case 6: case 7: return kind === LZ.SUB || kind === LZ.LOGIC; // BE, L, LE
-    case 0: return kind === LZ.LOGIC; // O
-    default: return false; // P
+    case 2: case 4: case 5: return true; // E, S, P: from the result
+    case 1: case 3: return CF_INLINE.has(kind); // B, BE
+    default: return OF_INLINE.has(kind); // O, L, LE
   }
 }
 
@@ -761,6 +763,35 @@ class Emitter {
     c.end(); // done
     this.lz = null;
   }
+  /** CF (0/1) of a lazy kind of CF_INLINE (the flags helper's formulas, lazy values already masked to the size) */
+  pushCarry(lz) {
+    const c = this.c;
+    switch (lz.kind) {
+      case LZ.SUB: c.get(L_LZA).get(L_LZB).lt_u(); return;
+      case LZ.ADD: c.get(L_LZRES).get(L_LZA).lt_u(); return;
+      case LZ.LOGIC: case LZ.BSF: c.i32(0); return;
+      case LZ.INC: case LZ.DEC: case LZ.IMUL: c.get(L_LZB).i32(1).and(); return;
+      case LZ.SHR: case LZ.SAR: c.get(L_LZA).get(L_LZB).i32(1).sub().shr_u().i32(1).and(); return;
+      case LZ.MUL: c.get(L_LZA).i32(0).ne(); return;
+      case LZ.SHLD: c.get(L_LZA).i32(1).and(); return;
+      default: this.pushCarryOf(lz); // ADC, SBB, NEG
+    }
+  }
+  /** OF (0/1) of a lazy kind of OF_INLINE */
+  pushOverflowOf(lz) {
+    const c = this.c, sign = SIGN[1 << lz.sz];
+    switch (lz.kind) {
+      case LZ.ADD: case LZ.ADC: c.get(L_LZA).get(L_LZRES).xor().get(L_LZB).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return;
+      case LZ.SUB: case LZ.SBB: c.get(L_LZA).get(L_LZB).xor().get(L_LZA).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return;
+      case LZ.LOGIC: case LZ.SAR: case LZ.BSF: c.i32(0); return;
+      case LZ.INC: c.get(L_LZRES).i32(sign | 0).eq(); return;
+      case LZ.DEC: c.get(L_LZRES).i32((sign - 1) | 0).eq(); return;
+      case LZ.NEG: c.get(L_LZA).i32(sign | 0).eq(); return;
+      case LZ.SHR: c.get(L_LZA).i32(sign).and().i32(0).ne(); return;
+      case LZ.MUL: c.get(L_LZA).i32(0).ne(); return;
+      default: c.get(L_LZB).i32(1).and(); // IMUL, SHLD
+    }
+  }
   /**
    * CF of the lazy kinds ADC/SBB/NEG: NEG: a != 0; ADC: res <u a | cin & res == a; SBB: a <u b | cin & a == b, the
    * carry-in being (res - a - b) / (a - b - res) masked to the operand size.
@@ -794,6 +825,19 @@ class Emitter {
         case 6: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.lt_s(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; } break; // L
         case 7: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.le_s(); done = true; } else if (k === LZ.LOGIC) { sx(L_LZRES, lz.sz); c.i32(0).le_s(); done = true; } break; // LE
         case 0: if (k === LZ.LOGIC) { c.i32(0); done = true; } break; // O
+      }
+      if (!done && lazyCondInline(base, k)) {
+        // generic inline evaluation from the lazy values
+        const zf = () => c.get(L_LZRES).eqz(), sf = () => c.get(L_LZRES).i32(sign).and().i32(0).ne();
+        switch (base) {
+          case 0: this.pushOverflowOf(lz); break;
+          case 1: this.pushCarry(lz); break;
+          case 3: this.pushCarry(lz); zf(); c.or(); break;
+          case 5: c.get(L_LZRES).i32(0xff).and().popcnt().i32(1).and().eqz(); break; // PF: even parity of the low byte
+          case 6: sf(); this.pushOverflowOf(lz); c.xor(); break;
+          case 7: sf(); this.pushOverflowOf(lz); c.xor(); zf(); c.or(); break;
+        }
+        done = true;
       }
     }
     if (!done) {
