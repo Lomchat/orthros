@@ -375,11 +375,11 @@ test('chained entries into an inner block of an x87 region, from x87 and non-x87
   assert.ok(EJ.jit.stats.regions >= 3);
 });
 
-// Pre-existing divergence (not introduced by the locals change, same with the old round24 path):
-// in 24-bit precision mode the interpreter rounds the exact result once (error term of the f64
-// operation), the JIT rounds the f64 result again, which differs when the f64 result sits
-// exactly on a 24-bit midpoint. Documented as a todo, not a regression.
-test('PC=24 round-to-nearest of an f64 result that is exactly a 24-bit midpoint (double rounding)', { todo: 'pre-existing: JIT ignores the error term of the f64 operation' }, () => {
+// Double rounding in 24-bit precision mode: the interpreter rounds the exact result once (error term
+// of the f64 operation); the JIT used to round the f64 result again, which differed when the f64
+// result sits exactly on a 24-bit midpoint. The arith24 kernel now does the same as the interpreter
+// (DECISIONS D037).
+test('PC=24 round-to-nearest of an f64 result that is exactly a 24-bit midpoint (double rounding)', () => {
   const CW24 = DATA + 120;
   const a = new Asm(CODE);
   a.fldcw(CW24).fldQ(DATA).faddQ(DATA + 8).fstpQ(DATA + 32);
