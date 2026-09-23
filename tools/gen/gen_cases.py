@@ -2288,14 +2288,25 @@ def suite_verify_mech(g, n):
 #     the poles of tan (|x| <= 100, reduced argument >= 1e-6). At 2^62 or 2^63 - 1024 the hardware
 #     value is meaningless: those cases only check that a value in [-1, 1] was produced (C2 = 0,
 #     the push happened) by comparing |result| with 1 and dropping it;
-#   - +-inf trig arguments raise IE and give the indefinite (with the push for FSINCOS/FPTAN);
-#     the emulator takes the C2 path instead: verify_trans_known;
-#   - a QNaN argument propagates without IE on hardware (the emulator raises IE): the exception
-#     bits are not compared here, verify_trans_known exposes them through FNSTSW;
+#   - exceptions (D034, tools/gen/verify_trans_probe.py): +-inf trig arguments raise IE and give
+#     the indefinite (c000000000000000:ffff; FSINCOS/FPTAN push it twice), a QNaN operand
+#     propagates with its sign and payload without IE, an SNaN raises IE and is quieted, two NaN
+#     operands give the one with the larger significand (the positive one on a tie), a NaN made
+#     from non-NaN operands (0 log2 0, 0 * 2^inf, 0 log2(1 + inf)...) is IE + the indefinite,
+#     FYL2X(0, finite y != 0) is ZE (not with y = +-inf), and a masked exception never sets ES.
+#     The single-instruction cases compare the NaN bit patterns (nanbits) and IE | ZE | ES
+#     (fpuex = 0x85; PE / DE / OE / UE are set by the hardware on inexact, denormal, over- and
+#     underflowing results and not modelled), some also read FNSTSW into EAX (& 0x85, or
+#     & 0x80ff where the result is exact and the operands normal);
 #   - C0/C3 are preserved by the hardware transcendentals (undefined by the SDM) while the
-#     emulator's trig clears them: the initial condition codes are 0 in every case so both agree;
-#   - F2XM1 outside [-1, 1] and FYL2XP1 outside its domain are undefined (this CPU returns ST(0)
-#     unchanged for F2XM1): not generated (F2XM1 outside the domain is in verify_trans_known);
+#     emulator's trig clears them: the initial condition codes are 0 in every case so both agree
+#     (verify_trans_known: cc-preserved);
+#   - F2XM1 outside [-1, 1] is undefined by the SDM: this CPU returns ST(0) unchanged for every
+#     finite |x| > 1 and follows the SDM for +-inf (+inf, -1); mirrored by the emulator and
+#     generated. FYL2XP1 outside its domain: x <= -1 gives ST(0) back on this CPU, not mirrored
+#     (verify_trans_known: fyl2xp1-outside-domain), x > sqrt(2) - 1 is computed normally;
+#   - FSCALE results in the denormal range are rounded once (the interpreter used to round twice
+#     through its 2^-1000 stepping): generated with an exact comparison;
 #   - the classic exp idiom stays within 2.2e-14 of the hardware for |x| <= 200 (the FMUL by
 #     log2 e is rounded to 53 bits on both sides when PC = 53, to 64 bits on hardware otherwise).
 
@@ -2373,7 +2384,26 @@ def suite_verify_trans(g, n):
             return rnd_double(rng)
         if k < 0.7:
             return rng.choice([0.0, -0.0, inf, -inf, nan, 1.0, -1.0, 1e300, -1e300, MIN_DEN, -MIN_DEN, MIN_NORM, 2.0, 0.5, -3.0])
+        if k < 0.74:
+            return rng.choice(NAN_INPUTS)
         return sgn() * logu(-300, 300)
+
+    def nan_bits(bits):
+        return struct.unpack('<d', struct.pack('<Q', bits))[0]
+    SNAN = nan_bits(0x7ff0000000000001)
+    # NaN operands: the canonical QNaN, an SNaN (IE, quieted), a negative QNaN (the indefinite), payloads, a negative SNaN
+    NAN_INPUTS = [nan, SNAN, nan_bits(0xfff8000000000000), nan_bits(0x7ff80000deadbeef), nan_bits(0xfff0000000000002), nan_bits(0x7ff8000000000001), nan_bits(0xfff8000000000002)]
+    EXC = 0x85  # IE | ZE | ES compared in the status word (meta fpuex)
+    FLAGS = '; fnstsw ax; and eax, 0x85'  # the modelled exception flags and ES into EAX (no TOP, no condition codes)
+    # every flag and ES: for exact results of normal operands only (PE / DE / OE / UE are not modelled)
+    FLAGS_ALL = '; fnstsw ax; and eax, 0x80ff'
+
+    def flags_for(ops):
+        """FLAGS_ALL when the hardware result is exact and no flag but IE / ZE can be raised: no
+        denormal operand (DE), no 1e300 scale (OE / UE / PE); else the modelled flags only"""
+        if any(not math.isnan(v) and ((v != 0 and abs(v) < MIN_NORM) or abs(v) == 1e300) for v in ops):
+            return FLAGS
+        return FLAGS_ALL
 
     def t_f2xm1(c):
         k = rng.random()
@@ -2388,14 +2418,18 @@ def suite_verify_trans(g, n):
             x = sgn() * logu(-300, 0)
         elif k < 0.8:
             x = denormal()
-        elif k < 0.9:
+        elif k < 0.88:
             x = sgn() * (1 - logu(-16, -3))
-        elif k < 0.95:
+        elif k < 0.91:
             x = sgn() * MIN_NORM
+        elif k < 0.95:
+            x = rng.choice(NAN_INPUTS)
         else:
-            x = nan
+            # outside [-1, 1]: ST(0) unchanged on this CPU (finite), +-inf per the SDM
+            x = rng.choice([1.5, -1.5, 3.0, -3.0, 10.0, -70.0, 1024.0, -1100.0, 1e300, -1e300, inf, -inf, ulps_away(1.0, 1), ulps_away(-1.0, -1),
+                            rng.uniform(1, 60), rng.uniform(-60, -1), sgn() * logu(0, 300)])
         trans_state(g, c, [x])
-        g.add(c, 'f2xm1', fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, 'f2xm1' + (FLAGS if rng.random() < 0.15 else ''), fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_fscale(c):
         ka = rng.random()
@@ -2407,6 +2441,8 @@ def suite_verify_trans(g, n):
             a = denormal()
         elif ka < 0.75:
             a = rng.choice([0.0, -0.0, inf, -inf, nan, MIN_DEN, -MIN_DEN, MIN_NORM, -MIN_NORM, MAX, -MAX, 1e300, 1e-300, 1.0, -1.0, 1.5, 3.0])
+        elif ka < 0.79:
+            a = rng.choice(NAN_INPUTS)
         else:
             a = sgn() * logu(-308, 308)
         kb = rng.random()
@@ -2417,6 +2453,8 @@ def suite_verify_trans(g, n):
         elif kb < 0.55:
             b = rng.choice([0.0, -0.0, inf, -inf, nan, 0.9, -0.9, 0.5, -0.5, 1.0, -1.0, 1e300, -1e300, 2.0 ** 63, -(2.0 ** 63),
                             2.0 ** 31, -(2.0 ** 31), 1023.0, 1024.0, -1022.0, -1074.0, -1075.0, 2000.0, -2000.0, 2100.0, -2100.0, 1e10, -1e10])
+        elif kb < 0.59:
+            b = rng.choice(NAN_INPUTS)
         elif a == 0 or not math.isfinite(a):
             b = float(rng.randrange(-1100, 1101))
         else:
@@ -2426,7 +2464,7 @@ def suite_verify_trans(g, n):
             target = rng.choice([rng.randrange(-1080, -1019), rng.randrange(1010, 1031)])
             b = float(target - ea) + rng.choice([0.0, 0.0, rng.uniform(-0.99, 0.99)])
         trans_state(g, c, [a, b])
-        g.add(c, 'fscale', fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, 'fscale' + (FLAGS if rng.random() < 0.15 else ''), fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_fyl2x(c):
         k = rng.random()
@@ -2446,12 +2484,14 @@ def suite_verify_trans(g, n):
             x = full_bits(0.5, 2)
         elif k < 0.85:
             x = rng.choice([math.sqrt(2), math.sqrt(0.5)]) * (1 + sgn() * logu(-16, -6))
-        elif k < 0.95:
+        elif k < 0.93:
             x = rng.choice([0.0, -0.0, inf, nan, -1.0, -inf, -MIN_DEN, -0.5, MIN_DEN, MIN_NORM, MAX])
+        elif k < 0.96:
+            x = rng.choice(NAN_INPUTS)
         else:
             x = near(rng.choice([math.sqrt(2), math.sqrt(0.5), 2.0, 0.5, 4.0]), 3)
         trans_state(g, c, [x, y_value()])
-        g.add(c, 'fyl2x', fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, 'fyl2x' + (FLAGS if rng.random() < 0.15 else ''), fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_fyl2xp1(c):
         k = rng.random()
@@ -2469,12 +2509,14 @@ def suite_verify_trans(g, n):
         elif k < 0.85:
             e = rng.choice([LO, HI])
             x = ulps_away(e, rng.randrange(0, 6) * (1 if e < 0 else -1))   # the edges, inward
-        elif k < 0.95:
+        elif k < 0.93:
             x = rng.choice([LO, HI]) * logu(-8, 0)
+        elif k < 0.97:
+            x = rng.choice(NAN_INPUTS)
         else:
-            x = nan
+            x = rng.choice([inf, 0.4, 3.0, 1e300])  # above the domain: computed normally (+inf: +-inf, 0 * inf invalid)
         trans_state(g, c, [x, y_value()])
-        g.add(c, 'fyl2xp1', fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, 'fyl2xp1' + (FLAGS if rng.random() < 0.15 else ''), fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_trig(c):
         op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
@@ -2519,12 +2561,20 @@ def suite_verify_trans(g, n):
             else:
                 asm = f'{op}; fabs; fld1; fcompp; fnstsw ax; and eax, 0x4500'
                 need_free = 1
-        elif k < 0.92:
-            x = nan
+        elif k < 0.9:
+            # NaN: propagated (SNaN: IE, quieted), C0-C3 cleared, FSINCOS/FPTAN push it twice
+            x = rng.choice(NAN_INPUTS)
+            if rng.random() < 0.5:
+                asm = op + FLAGS_ALL
+        elif k < 0.95:
+            # +-inf: IE (no ES: masked), the indefinite, FSINCOS/FPTAN push it twice, C2 = 0
+            x = rng.choice([inf, -inf])
+            if rng.random() < 0.5:
+                asm = op + FLAGS_ALL
         else:
             x = sgn() * logu(-8, 1 if tan else 6)
         trans_state(g, c, [x], need_free)
-        g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_fpatan(c):
         def mag():
@@ -2560,11 +2610,11 @@ def suite_verify_trans(g, n):
                 base = 2.0
             x, y = base, near(base, 4) * sgn()   # |y| ~ |x|
         elif k < 0.93:
-            x, y = rng.choice([nan, sgn() * mag()]), rng.choice([nan, sgn() * mag()])
+            x, y = rng.choice([nan, sgn() * mag()] + NAN_INPUTS), rng.choice([nan, sgn() * mag()] + NAN_INPUTS)
         else:
             x, y = rng.choice([0.0, -0.0, inf, -inf]), rng.choice([0.0, -0.0, inf, -inf, 2.0, -2.0])
         trans_state(g, c, [x, y])
-        g.add(c, 'fpatan', fpu=True, tol=TRANS_TOL, fpucc=True)
+        g.add(c, 'fpatan' + (FLAGS if rng.random() < 0.15 else ''), fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
 
     def t_seq(c):
         form = rng.random()
@@ -2604,8 +2654,9 @@ def suite_verify_trans(g, n):
             asm = rng.choice(['fscale; fstp st(1)', 'fxch st(1); fscale', 'fscale; fscale'])
         elif form < 0.93:
             # out-of-range trig inside a longer block: the JIT leaves the region on the C2 path and
-            # resumes at the next instruction, with the pending stack shift materialized
-            x = rng.choice([2.0 ** 63, -(2.0 ** 63), 1e300, ulps_away(2.0 ** 63, 3)])
+            # resumes at the next instruction, with the pending stack shift materialized (+-inf: the
+            # IE / indefinite path pushes and stays in the block)
+            x = rng.choice([2.0 ** 63, -(2.0 ** 63), 1e300, ulps_away(2.0 ** 63, 3), inf, -inf])  # +-inf: IE and the pushes stay in the block
             op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
             trans_state(g, c, [x, 5.0], 2)
             asm = rng.choice([f'fld st(0); {op}; fstp st(1)', f'{op}; fld1; faddp st(1), st', f'fxch st(1); fxch st(1); {op}; fstp st(1)',
@@ -2620,7 +2671,456 @@ def suite_verify_trans(g, n):
                 trans_state(g, c, [x, y], 2)
         g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True)
 
-    templates = [(4, t_f2xm1), (4, t_fscale), (5, t_fyl2x), (4, t_fyl2xp1), (8, t_trig), (5, t_fpatan), (4, t_seq)]
+    def t_exc(c):
+        """Exception bits through FNSTSW (& 0x80ff for exact results): invalid arithmetic operands (IE, the indefinite),
+        FYL2X zero divides (ZE), FSQRT of a negative (the arithmetic group's IE: masked, so no ES),
+        NaN operands of the two-operand instructions (SNaN: IE + quieted; sign, payload and the
+        larger-significand choice compared through nanbits)."""
+        form = rng.random()
+        y = None
+        if form < 0.3:
+            op = 'fyl2x'
+            x, y = rng.choice([(0.0, 0.0), (-0.0, 0.0), (0.0, -0.0), (inf, 0.0), (inf, -0.0), (1.0, inf), (1.0, -inf), (-1.0, 5.0), (-inf, 5.0), (-2.5, -inf), (-MIN_DEN, 1.0),
+                               (0.0, 5.0), (0.0, -5.0), (-0.0, 5.0), (-0.0, -5.0), (0.0, inf), (0.0, -inf), (-0.0, -inf), (0.0, 1e300), (0.0, MIN_DEN), (0.0, -MIN_NORM),
+                               (inf, 5.0), (inf, -5.0), (inf, inf), (inf, -inf), (1.0, 5.0), (1.0, -5.0), (1.0, 0.0), (2.0, 0.0), (0.5, 0.0), (2.0, -0.0), (-1.0, 0.0), (-inf, inf)])
+        elif form < 0.42:
+            op = 'fyl2xp1'
+            x, y = rng.choice([(0.0, inf), (-0.0, inf), (0.0, -inf), (-0.0, -inf), (inf, 0.0), (inf, -0.0), (inf, 5.0), (inf, -5.0), (inf, inf), (0.1, inf), (-0.1, inf), (-0.1, -inf),
+                               (0.0, 5.0), (-0.0, -5.0), (0.0, 0.0), (-0.0, 0.0), (MIN_DEN, inf), (-MIN_DEN, -inf)])
+        elif form < 0.6:
+            op = 'fscale'
+            x, y = rng.choice([(0.0, inf), (-0.0, inf), (inf, -inf), (-inf, -inf), (inf, inf), (-inf, inf), (3.0, inf), (-3.0, inf), (0.0, -inf), (-0.0, -inf), (3.0, -inf), (-3.0, -inf),
+                               (inf, 5.0), (-inf, -5.0), (0.0, 5.0), (-0.0, -5.0), (5.0, 0.0), (5.0, -0.0), (1.5, 1e300), (1.5, -1e300), (MIN_DEN, inf), (MAX, -inf)])
+        elif form < 0.68:
+            op = 'fsqrt'
+            x = rng.choice([-1.0, -inf, -MIN_DEN, -0.0, -1e300, SNAN, nan_bits(0xfff8000000000005)])
+        else:
+            op = rng.choice(['fscale', 'fyl2x', 'fyl2xp1', 'fpatan'])
+            plain = [3.0, 0.0, -0.0, inf, -inf, 0.25, -2.0] if op != 'fyl2xp1' else [3.0, 0.0, -0.0, inf, 0.25]
+            x, y = rng.choice(NAN_INPUTS + plain), rng.choice(NAN_INPUTS + plain)
+            if not (math.isnan(x) or math.isnan(y)):
+                x = rng.choice(NAN_INPUTS)
+        ops = [x] if y is None else [x, y]
+        asm = op + flags_for(ops) if rng.random() < 0.7 else op
+        trans_state(g, c, ops)
+        g.add(c, asm, fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=EXC)
+
+    def t_fscale_denormal(c):
+        """results in the denormal range reached through large negative scales: rounded once
+        (exact comparison; the interpreter's former 2^-1000 stepping rounded twice)"""
+        if rng.random() < 0.2:
+            a, b = 1.25 * 2.0 ** -74, -1001.0
+        else:
+            a = math.ldexp(full_bits(1, 2), rng.randrange(-90, -60)) * sgn()
+            b = -float(1001 + rng.randrange(0, 30)) - rng.choice([0.0, rng.random()])
+        trans_state(g, c, [a, b], 0)
+        g.add(c, 'fscale', fpu=True, tol=None, fpucc=True, nanbits=True, fpuex=EXC)
+
+    templates = [(4, t_f2xm1), (4, t_fscale), (5, t_fyl2x), (4, t_fyl2xp1), (8, t_trig), (5, t_fpatan), (4, t_seq), (4, t_exc), (2, t_fscale_denormal)]
+    weights = [w for w, _ in templates]
+    for _ in range(n):
+        rng.choices(templates, weights=weights)[0][1](Case())
+    return g
+
+
+# verify_trans2: the x87 transcendentals against the native FPU on the facts measured after D034
+# by the hardware-truth verification (tools/gen/verify_trans_probe.py, sections 'unmasked
+# exceptions', 'two NaNs: sign', 'C bits on the exception paths', 'PC / RC'), i.e. what
+# verify_trans does not exercise: control words with exceptions UNMASKED (the generator of
+# verify_trans only ever masks all six), initial condition codes, FLDCW before the instruction,
+# FNSTSW readbacks after exact operations, NaN payload / sign choices of every combination.
+# Facts (AMD EPYC 7402P):
+#   - ES is set only when the exception being raised is unmasked in the control word: with the
+#     OTHER exceptions unmasked (any subset of DE/ZE/OE/UE/PE while IE is raised, any subset of
+#     IE/DE/OE/UE/PE while ZE is raised, all six on an exact operation or a QNaN operand) the flag
+#     is set, ES stays clear and the result is written as when masked. When the raised exception
+#     itself is unmasked the hardware ABORTS the instruction (no result, no push/pop, an SNaN not
+#     even quieted; ES set) and delivers #MF at the next waiting FPU instruction: not modelled by
+#     the emulator, which writes the masked response (verify_trans_known: unmasked-abort);
+#   - the mask is read at execution time: FLDCW immediately before the instruction rules;
+#   - two NaN operands: the larger significand wins whatever the signs, its own sign is kept
+#     (-qNaN(2) beats +qNaN(1); -qNaN(1) and -qNaN(2) give -qNaN(2)); on a tie the positive one;
+#     the quiet bit takes part (a QNaN beats any SNaN); the NaN rule precedes the domain rule
+#     (FYL2X(-1, QNaN), FSCALE(0, QNaN), FYL2XP1(-2, QNaN) propagate without IE);
+#   - C0/C2/C3 are preserved by F2XM1, FSCALE, FYL2X, FYL2XP1, FPATAN and FSQRT on every path
+#     (normal, invalid, zero divide, NaN, outside the F2XM1 domain); the trig instructions clear
+#     C2 on the NaN / infinity / in-range paths and keep everything on the C2 path (C0 / C3 are
+#     also kept on the other paths: verify_trans_known cc-preserved, so the initial C0/C3 are
+#     0 there and only C1/C2 are pre-set);
+#   - F2XM1 returns ST(0) unchanged for every finite |x| > 1, including 1 + ulp and -1 - ulp
+#     (with PE: only +-0, +-inf and NaN operands leave the flags clear; +-1 are exact but flagged
+#     PE); FYL2X(+-0, y) is ZE with -+inf of the sign of -y for every finite y != 0 (denormal,
+#     huge), IE for y = +-0, no exception with y = +-inf; FYL2XP1(+inf, +-0) is IE,
+#     FYL2XP1(+inf, y) = +-inf, FYL2XP1(+-denormal, +-inf) = +-inf;
+#   - precision control does not apply to the transcendentals (64-bit results under PC = 24 / 53;
+#     FSQRT is rounded); directed rounding of an overflowing / underflowing FSCALE gives the
+#     largest finite f80 / the smallest denormal f80, which read as +-inf / +-0 in f64 like the
+#     emulator's results;
+#   - f64 denormals are f80 normals: no DE, no UE, no PE on exact operations with them (FSCALE,
+#     FSQRT of an even power of two, FYL2X(x, +-0), FPATAN(x > 0, +-0), FABS/FCHS, FADD/FMUL).
+
+T2_C0, T2_C1, T2_C2, T2_C3 = 0x100, 0x200, 0x400, 0x4000
+T2_IE, T2_DE, T2_ZE, T2_OE, T2_UE, T2_PE = 1, 2, 4, 8, 16, 32
+T2_EXC = 0x85
+T2_FLAGS = '; fnstsw ax; and eax, 0x85'
+T2_FLAGS_ALL = '; fnstsw ax; and eax, 0x80ff'
+T2_TRIG = ['fsin', 'fcos', 'fsincos', 'fptan']
+
+
+class Trans2:
+    """Operand pools and state helpers shared by suite_verify_trans2 and the verify_trans_known
+    templates that document the unmasked-exception gaps (same paths, other control words)."""
+
+    def __init__(self, g):
+        self.g = g
+        self.rng = g.rng
+
+    @staticmethod
+    def nb(bits):
+        return struct.unpack('<d', struct.pack('<Q', bits))[0]
+
+    def qnan(self, payload=0, neg=False):
+        return self.nb((0xfff8000000000000 if neg else 0x7ff8000000000000) | payload)
+
+    def snan(self, payload=1, neg=False):
+        return self.nb((0xfff0000000000000 if neg else 0x7ff0000000000000) | (payload or 1))
+
+    PAYLOADS = [0, 1, 2, 3, 0x7ffffffffffff, 0x4000000000000, 0x3ffffffffffff, 0xdeadbeef, 0x123456789ab, 0x800]
+
+    def rnd_nan(self, signaling=None):
+        rng = self.rng
+        p = rng.choice(self.PAYLOADS + [rng.getrandbits(51)])
+        neg = rng.random() < 0.5
+        if signaling is None:
+            signaling = rng.random() < 0.4
+        return self.snan(p, neg) if signaling else self.qnan(p, neg)
+
+    def sgn(self):
+        return self.rng.choice([1.0, -1.0])
+
+    def logu(self, lo, hi):
+        return 10.0 ** self.rng.uniform(lo, hi)
+
+    def full_bits(self, lo, hi):
+        v = self.rng.uniform(lo, hi)
+        b = struct.unpack('<Q', struct.pack('<d', v))[0] ^ self.rng.getrandbits(20)
+        return struct.unpack('<d', struct.pack('<Q', b))[0]
+
+    def denormal(self):
+        return math.ldexp(float(self.rng.randrange(1, 1 << 52)), -1074) * self.sgn()
+
+    def cbits(self, *allowed):
+        """random subset of the given condition-code bits"""
+        return sum(b for b in allowed if self.rng.random() < 0.5)
+
+    def unmask(self, *bits):
+        """control word 0x027f (or a random PC / RC) with the given exception masks cleared"""
+        cw = self.rng.choice([0x027f, 0x027f, 0x027f, 0x037f, 0x007f, 0x067f, 0x0a7f, 0x0e7f, 0x0c7f])
+        for b in bits:
+            cw &= ~b
+        return cw
+
+    def subset(self, *bits):
+        return [b for b in bits if self.rng.random() < 0.6]
+
+    def state(self, c, values, need_free=0, fcw=None, sw=None):
+        """trans_state, then the control word / the condition codes of the status word overridden"""
+        trans_state(self.g, c, values, need_free)
+        if fcw is not None:
+            struct.pack_into('<H', c.fx, 0, fcw)
+        if sw:
+            top = (struct.unpack_from('<H', c.fx, 2)[0] >> 11) & 7
+            struct.pack_into('<H', c.fx, 2, (top << 11) | sw)
+
+    def add(self, c, asm, **kw):
+        kw.setdefault('tol', TRANS_TOL)
+        self.g.add(c, asm, fpu=True, fpucc=True, nanbits=True, fpuex=T2_EXC, **kw)
+
+    # ---- operand pools by path: (op, [ST0, ST1...], need_free)
+    def ie_case(self):
+        """an invalid arithmetic operand or an SNaN -> IE (the flag alone on the hardware: no PE)"""
+        rng, inf = self.rng, float('inf')
+        MIN_DEN = 5e-324
+        other = lambda: rng.choice([5.0, 0.0, inf, self.rnd_nan(False)])
+        k = rng.random()
+        if k < 0.25:
+            op = rng.choice(T2_TRIG)
+            return op, [rng.choice([inf, -inf, self.rnd_nan(True)])], 1 if op in ('fsincos', 'fptan') else 0
+        if k < 0.45:
+            return 'fyl2x', list(rng.choice([(0.0, 0.0), (-0.0, 0.0), (0.0, -0.0), (inf, 0.0), (inf, -0.0), (1.0, inf), (1.0, -inf), (-1.0, 5.0), (-inf, 5.0), (-2.5, -inf), (-MIN_DEN, 1.0),
+                                             (-1.0, 0.0), (-inf, inf), (self.rnd_nan(True), other()), (other(), self.rnd_nan(True))])), 0
+        if k < 0.58:
+            return 'fyl2xp1', list(rng.choice([(0.0, inf), (-0.0, inf), (0.0, -inf), (-0.0, -inf), (inf, 0.0), (inf, -0.0), (-inf, 1.0), (-inf, -inf),
+                                               (self.rnd_nan(True), other()), (other(), self.rnd_nan(True))])), 0
+        if k < 0.72:
+            return 'fscale', list(rng.choice([(0.0, inf), (-0.0, inf), (inf, -inf), (-inf, -inf), (self.rnd_nan(True), other()), (other(), self.rnd_nan(True))])), 0
+        if k < 0.8:
+            return 'fpatan', list(rng.choice([(self.rnd_nan(True), other()), (other(), self.rnd_nan(True))])), 0
+        if k < 0.88:
+            return 'f2xm1', [self.rnd_nan(True)], 0
+        return 'fsqrt', [rng.choice([-1.0, -inf, -MIN_DEN, -1e300, -4.0, self.rnd_nan(True)])], 0
+
+    def ze_case(self):
+        rng = self.rng
+        MIN_DEN, MIN_NORM, MAX = 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308
+        y = rng.choice([5.0, -5.0, MIN_DEN, -MIN_DEN, MIN_NORM, -MIN_NORM, 1e300, -1e300, MAX, -MAX, 1.0, -1.0, self.sgn() * self.logu(-300, 300)])
+        return 'fyl2x', [rng.choice([0.0, -0.0]), y], 0
+
+    def exact_case(self):
+        """no exception at all on the hardware: an exact result, a QNaN operand, or the C2 path"""
+        rng, inf = self.rng, float('inf')
+        MIN_DEN, MIN_NORM, MAX = 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308
+        k = rng.random()
+        if k < 0.12:
+            return 'fscale', [rng.choice([1.5, -3.0, 1.0, 0.75, self.full_bits(1, 2) * self.sgn(), MIN_NORM, 1e-300, -1e300]), float(rng.randrange(-60, 61)) + rng.choice([0.0, 0.0, rng.uniform(-0.99, 0.99)])], 0
+        if k < 0.2:
+            return 'fscale', list(rng.choice([(3.0, inf), (-3.0, inf), (inf, inf), (-inf, inf), (1e-300, -inf), (3.0, -inf), (-3.0, -inf), (MAX, -inf), (0.0, -inf), (-0.0, -inf), (0.0, 5.0), (-0.0, -5.0), (0.0, 0.0), (5.0, 0.0), (5.0, -0.0)])), 0
+        if k < 0.28:
+            return 'fyl2x', [1.0, rng.choice([5.0, -5.0, 0.0, -0.0, 1e300, MIN_DEN])], 0
+        if k < 0.34:
+            return 'fyl2x', [rng.choice([0.0, -0.0]), rng.choice([inf, -inf])], 0
+        if k < 0.42:
+            return 'fpatan', [rng.choice([2.0, 0.5, 1e300, MIN_DEN, inf, 1.0]), rng.choice([0.0, -0.0])], 0
+        if k < 0.47:
+            return 'fpatan', [inf, rng.choice([2.0, -2.0, 1e300, MIN_DEN])], 0
+        if k < 0.6:
+            op = rng.choice(T2_TRIG)
+            return op, [rng.choice([0.0, -0.0])], 1 if op in ('fsincos', 'fptan') else 0
+        if k < 0.68:
+            op = rng.choice(T2_TRIG)
+            x = rng.choice([2.0 ** 63, -(2.0 ** 63), 1e300, MAX, -1e19, self.rnd_nan(False)])
+            # a free slot even on the C2 path: with ST(7) occupied the hardware overflows the stack
+            # before looking at the argument (verify_trans_known: stack-overflow-push)
+            return op, [x], 1 if op in ('fsincos', 'fptan') else 0
+        if k < 0.78:
+            return 'f2xm1', [rng.choice([0.0, -0.0, inf, -inf, self.rnd_nan(False)])], 0
+        if k < 0.85:
+            return 'fsqrt', [rng.choice([0.0, -0.0, 1.0, 4.0, 9.0, 16.0, 0.25, 2.25, 1e4, 2.0 ** -1074, 2.0 ** -1072, 2.0 ** 1022, inf, self.rnd_nan(False)])], 0
+        if k < 0.93:
+            return 'fyl2xp1', list(rng.choice([(0.0, 5.0), (-0.0, 5.0), (0.0, -5.0), (-0.0, -5.0), (0.0, 0.0), (-0.0, -0.0), (inf, 5.0), (inf, -5.0), (inf, inf), (inf, -inf), (MIN_DEN, inf), (-MIN_DEN, inf), (-MIN_DEN, -inf), (self.rnd_nan(False), 5.0), (0.3, self.rnd_nan(False))])), 0
+        op = rng.choice(['fscale', 'fyl2x', 'fyl2xp1', 'fpatan'])
+        return op, [self.rnd_nan(False), self.rnd_nan(False)], 0
+
+    def full_stack(self, c, x, fcw=0x027f, sw=0):
+        """8 valid registers with ST(0) = x (a push overflows)"""
+        rng = self.rng
+        top = rng.randrange(8)
+        vals = [x] + [rnd_double(rng) for _ in range(7)]
+        c.fx = default_fx(rng, top=top, valid_mask=0xff, values=vals, fcw=fcw)
+        struct.pack_into('<H', c.fx, 2, (top << 11) | sw)
+        c.cmp['fpu'] = True
+
+
+def suite_verify_trans2(g, n):
+    rng = g.rng
+    inf = float('inf')
+    MIN_DEN, MIN_NORM, MAX = 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308
+    LO, HI = -(1 - math.sqrt(2) / 2), math.sqrt(2) - 1
+    C0, C1, C2, C3 = T2_C0, T2_C1, T2_C2, T2_C3
+    IE, DE, ZE, OE, UE, PE = T2_IE, T2_DE, T2_ZE, T2_OE, T2_UE, T2_PE
+    FLAGS, FLAGS_ALL, TRIG = T2_FLAGS, T2_FLAGS_ALL, T2_TRIG
+    h = Trans2(g)
+    rnd_nan, sgn, logu, full_bits, denormal, cbits, unmask, subset, state, add = h.rnd_nan, h.sgn, h.logu, h.full_bits, h.denormal, h.cbits, h.unmask, h.subset, h.state, h.add
+    nb = h.nb
+
+    def t_nan_pair(c):
+        """two NaN operands (sign, significand, quiet bit) and a NaN against a domain-invalid partner, every two-operand instruction"""
+        op = rng.choice(['fscale', 'fyl2x', 'fyl2xp1', 'fpatan'])
+        k = rng.random()
+        if k < 0.55:
+            a, b = rnd_nan(), rnd_nan()
+            if rng.random() < 0.3:  # same payload, both signs (or identical)
+                bits = struct.unpack('<Q', struct.pack('<d', a))[0]
+                b = nb(bits ^ (1 << 63) if rng.random() < 0.7 else bits)
+        else:
+            partner = {'fyl2x': [-1.0, 0.0, -0.0, inf, -inf, 1.0, 5.0], 'fscale': [0.0, -0.0, inf, -inf, 5.0], 'fyl2xp1': [-1.0, -2.0, inf, 0.0, -inf, 0.3], 'fpatan': [0.0, -0.0, inf, -inf, 2.0]}[op]
+            a, b = (rnd_nan(), rng.choice(partner)) if rng.random() < 0.5 else (rng.choice(partner), rnd_nan())
+        state(c, [a, b], sw=cbits(C0, C1, C2, C3))
+        add(c, op + (FLAGS_ALL if rng.random() < 0.5 else ''))
+
+    def t_nan_unary(c):
+        op = rng.choice(TRIG + ['f2xm1', 'fsqrt', 'fsin', 'fptan'])
+        two = op in ('fsincos', 'fptan')
+        state(c, [rnd_nan()], 1 if two else 0, sw=cbits(C1, C2) if op in TRIG else cbits(C0, C1, C2, C3))
+        add(c, op + (FLAGS_ALL if rng.random() < 0.5 else ''))
+
+    def t_cc_nontrig(c):
+        """initial condition codes preserved by the non-trig instructions on every path"""
+        sw = cbits(C0, C1, C2, C3) if rng.random() < 0.3 else rng.choice([C0 | C2 | C3, C0 | C1 | C2 | C3, C0 | C3, C2, C0, C3])
+        k = rng.random()
+        if k < 0.2:
+            op, vals = 'f2xm1', [rng.choice([rng.uniform(-1, 1), 1.0, -1.0, 1.5, -1.5, 3.0, 1e300, inf, -inf, 0.0, rnd_nan(), MIN_DEN])]
+        elif k < 0.4:
+            op, vals = 'fscale', list(rng.choice([(1.5, 3.0), (rnd_double(rng), float(rng.randrange(-1100, 1100))), (0.0, inf), (inf, -inf), (3.0, inf), (1.5, 1e300), (1.5, -1e300), (rnd_nan(), 2.0), (2.0, rnd_nan())]))
+        elif k < 0.6:
+            op, vals = 'fyl2x', list(rng.choice([(3.0, 2.0), (logu(-300, 300), rnd_double(rng)), (0.0, 0.0), (0.0, 5.0), (-0.0, -5.0), (-1.0, 5.0), (inf, 0.0), (1.0, inf), (rnd_nan(), 2.0), (2.0, rnd_nan()), (1.0, 5.0), (0.0, inf)]))
+        elif k < 0.75:
+            op, vals = 'fyl2xp1', list(rng.choice([(0.1, 2.0), (rng.uniform(LO, HI), rnd_double(rng)), (0.0, inf), (inf, 0.0), (inf, 5.0), (-inf, 1.0), (rnd_nan(), 2.0), (2.0, rnd_nan()), (0.0, 5.0), (3.0, 1.0)]))
+        elif k < 0.88:
+            op, vals = 'fpatan', list(rng.choice([(1.0, 2.0), (rnd_double(rng), rnd_double(rng)), (0.0, 0.0), (-0.0, 0.0), (inf, inf), (-inf, 2.0), (rnd_nan(), 2.0), (2.0, rnd_nan()), (2.0, 0.0)]))
+        else:
+            op, vals = 'fsqrt', [rng.choice([4.0, 2.0, -1.0, -inf, -0.0, 0.0, inf, rnd_nan(), MIN_DEN, abs(rnd_double(rng))])]
+        state(c, vals, sw=sw)
+        add(c, op + ('; fnstsw ax; and eax, 0x4500' if rng.random() < 0.3 else ''))
+
+    def t_cc_trig(c):
+        """trig: C2 (and C1) pre-set are cleared on the NaN / infinity / in-range paths; every bit is kept on the C2 path"""
+        op = rng.choice(TRIG)
+        two = op in ('fsincos', 'fptan')
+        if rng.random() < 0.55:
+            x = rng.choice([rng.uniform(-10, 10), rng.uniform(-1e6, 1e6), 0.0, -0.0, 1.0, MIN_DEN, inf, -inf, rnd_nan(), math.pi, 1e-300])
+            sw = rng.choice([C2, C2 | C1, C1, C2])
+            need = 1 if two else 0
+        else:
+            x = rng.choice([2.0 ** 63, -(2.0 ** 63), 1e300, -1e300, MAX, 2.0 ** 64, 1e19, ulps_away(2.0 ** 63, rng.randrange(1, 100))])
+            sw = cbits(C0, C1, C2, C3) if rng.random() < 0.5 else rng.choice([C0 | C2 | C3, C0 | C1 | C2 | C3, C0 | C3])
+            need = 1 if two else 0   # a full stack overflows before the C2 test (verify_trans_known: stack-overflow-push)
+        state(c, [x], need, sw=sw)
+        add(c, op + ('; fnstsw ax; and eax, 0x4500' if rng.random() < 0.3 else ''))
+
+    def t_unmasked_other(c):
+        """exceptions unmasked in the control word other than the one raised (or none raised): flag only, no ES, result written"""
+        k = rng.random()
+        if k < 0.4:
+            op, vals, need = h.ie_case()
+            cw = unmask(*subset(DE, ZE, OE, UE, PE))
+        elif k < 0.6:
+            op, vals, need = h.ze_case()
+            cw = unmask(*subset(IE, DE, OE, UE, PE))
+        else:
+            op, vals, need = h.exact_case()
+            cw = unmask(*subset(IE, DE, ZE, OE, UE, PE)) if rng.random() < 0.7 else 0x0240 | rng.choice([0, 0x100, 0x400, 0x800, 0xc00])
+        state(c, vals, need, fcw=cw, sw=cbits(C1, C2) if op in TRIG else cbits(C0, C1, C2, C3))
+        add(c, op + rng.choice(['', FLAGS_ALL, FLAGS_ALL, FLAGS]))
+
+    def t_fldcw(c):
+        """the mask in force is the one loaded by FLDCW right before the instruction (initial control word possibly unmasked)"""
+        k = rng.random()
+        if k < 0.45:
+            op, vals, need = h.ie_case()
+            loaded = unmask(*subset(DE, ZE, OE, UE, PE))
+        elif k < 0.65:
+            op, vals, need = h.ze_case()
+            loaded = unmask(*subset(IE, DE, OE, UE, PE))
+        else:
+            op, vals, need = h.exact_case()
+            loaded = unmask(*subset(IE, DE, ZE, OE, UE, PE))
+        initial = rng.choice([0x027f, 0x027e, 0x027b, 0x0240, 0x037f, 0x007f, unmask(IE, ZE)])
+        state(c, vals, need, fcw=initial)
+        m, _ = g.mem(c, 2)
+        patch_bytes(c, m, struct.pack('<H', loaded))
+        add(c, f'fldcw {m}; {op}' + rng.choice(['', FLAGS_ALL, FLAGS_ALL]))
+
+    def t_f2xm1_edges(c):
+        k = rng.random()
+        if k < 0.5:
+            x = rng.choice([1.0, -1.0, ulps_away(1.0, 1), ulps_away(-1.0, -1), ulps_away(1.0, -1), ulps_away(-1.0, 1), 1.0000001, -1.0000001, 2.0, -2.0, 1.5, -1.5,
+                            2.0 ** 63, 1024.0, -1075.0, inf, -inf, 1e300, -1e300, MAX, -MAX, 1 + 2.0 ** -rng.randrange(1, 53), -1 - 2.0 ** -rng.randrange(1, 53)])
+        elif k < 0.7:
+            x = sgn() * (1 + logu(-16, 300))
+        elif k < 0.85:
+            x = rnd_nan()
+        else:
+            x = rng.choice([0.0, -0.0, MIN_DEN, -MIN_DEN, rng.uniform(-1, 1)])
+        state(c, [x], sw=cbits(C0, C1, C2, C3))
+        exact = math.isnan(x) or x == 0 or not math.isfinite(x)   # +-1 and the outside-domain values are flagged PE
+        add(c, 'f2xm1' + (FLAGS if rng.random() < 0.3 else FLAGS_ALL if exact and rng.random() < 0.5 else ''))
+
+    def t_fyl2x_zero(c):
+        if rng.random() < 0.6:
+            x = rng.choice([0.0, -0.0])
+            y = rng.choice([5.0, -5.0, MIN_DEN, -MIN_DEN, MIN_NORM, -MIN_NORM, 1e300, -1e300, MAX, -MAX, 1.0, -1.0, inf, -inf, 0.0, -0.0, sgn() * logu(-323, 308)])
+        else:
+            x = rng.choice([0.5, 2.0, MIN_DEN, 1e300, 1.0, inf, -1.0, -inf, logu(-300, 300), MAX])
+            y = rng.choice([0.0, -0.0])
+        state(c, [x, y], sw=cbits(C0, C1, C2, C3))
+        add(c, 'fyl2x' + (FLAGS_ALL if rng.random() < 0.6 else ''))
+
+    def t_fyl2xp1_edges(c):
+        k = rng.random()
+        if k < 0.35:
+            x, y = inf, rng.choice([0.0, -0.0, 5.0, -5.0, inf, -inf, MIN_DEN, 1e300])
+            exact = True
+        elif k < 0.55:
+            x, y = rng.choice([MIN_DEN, -MIN_DEN, 0.0, -0.0, 1e-300]), rng.choice([inf, -inf, 0.0, -0.0])
+            exact = True
+        elif k < 0.8:
+            x, y = rng.choice([0.5, 3.0, 7.0, 1e300, MAX, HI * 1.0000001, rng.uniform(HI, 10)]), rng.choice([1.0, -1.0, inf, -inf, 2.0, 0.5])
+            exact = False
+        else:
+            x, y = rng.choice([0.0, -0.0]), rng.choice([5.0, -5.0, 1e300, MIN_DEN, 0.0, -0.0])
+            exact = True
+        state(c, [x, y], sw=cbits(C0, C1, C2, C3))
+        add(c, 'fyl2xp1' + (FLAGS_ALL if exact and rng.random() < 0.6 else ''))
+
+    def t_pc_rc(c):
+        """precision control does not round the transcendentals; directed rounding of FSCALE at the f80 limits reads like the emulator in f64"""
+        fcw = rng.choice([0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f, 0x0f7f])
+        k = rng.random()
+        if k < 0.25:
+            op, vals = 'f2xm1', [rng.choice([rng.uniform(-1, 1), 0.5, -0.5, 1.0, -1.0, full_bits(-1, 1)])]
+        elif k < 0.45:
+            op, vals = rng.choice(TRIG), [rng.choice([rng.uniform(-10, 10), 1.0, 0.5, 3.0, full_bits(-4, 4)])]
+        elif k < 0.6:
+            op, vals = 'fyl2x', [rng.choice([3.0, logu(-300, 300), full_bits(0.5, 2)]), rng.choice([2.0, rnd_double(rng), 1.0])]
+        elif k < 0.7:
+            op, vals = 'fyl2xp1', [rng.uniform(LO, HI), rng.choice([2.0, rnd_double(rng), 1.0])]
+        elif k < 0.8:
+            op, vals = 'fpatan', [rnd_double(rng), rnd_double(rng)]
+        elif k < 0.9:
+            op, vals = 'fscale', [sgn() * rng.choice([1.5, full_bits(1, 2), MAX, MIN_DEN, 1e-300]), rng.choice([1e300, -1e300, 20000.0, -20000.0, 2.0 ** 63, -(2.0 ** 63), 1100.0, -1100.0, 16400.0, -16446.0])]
+        else:
+            op, vals = 'fscale', [sgn() * full_bits(1, 2), float(rng.randrange(-1074, 1024))]
+        need = 1 if op in ('fsincos', 'fptan') else 0
+        state(c, vals, need, fcw=fcw)
+        add(c, op)
+
+    def t_denormal_nodE(c):
+        """f64 denormal operands are normal in f80: exact operations raise nothing (read back through FNSTSW & 0x80ff)"""
+        d = denormal()
+        k = rng.random()
+        if k < 0.3:
+            op, vals = 'fscale', [d, float(rng.randrange(-1100, 1100)) + rng.choice([0.0, 0.0, rng.uniform(-0.99, 0.99)])]
+        elif k < 0.4:
+            op, vals = 'fsqrt', [math.ldexp(1.0, -2 * rng.randrange(400, 538))]
+        elif k < 0.5:
+            op, vals = 'fyl2x', [abs(d), rng.choice([0.0, -0.0])]
+        elif k < 0.6:
+            op, vals = 'fpatan', [abs(d), rng.choice([0.0, -0.0])]
+        elif k < 0.7:
+            op, vals = rng.choice(['fabs', 'fchs', 'fxch st(1)']), [d, rnd_double(rng)]
+        elif k < 0.78:
+            # sums of two denormals (or with the smallest normal) are exact in f64 as in f80
+            op, vals = rng.choice(['fadd st(0), st(1)', 'fsub st(0), st(1)', 'fadd st(1), st(0)', 'faddp st(1), st(0)']), [d, rng.choice([d, denormal(), MIN_NORM, -MIN_NORM, 0.0, -0.0])]
+        elif k < 0.85:
+            # a denormal times a small power of two: exact in f80; the f64 view rounds once on both sides when it leaves the f64 range
+            op, vals = rng.choice(['fmul st(0), st(1)', 'fmulp st(1), st(0)', 'fdiv st(0), st(1)']), [d, rng.choice([2.0, 4.0, -2.0, 0.5, 0.25, 8.0, -0.125])]
+        else:
+            op, vals = 'fscale', [d, rng.choice([inf, -inf, 0.0])]
+        state(c, vals, fcw=rng.choice([0x027f, 0x037f, 0x027f]))
+        add(c, op + FLAGS_ALL, tol=None)
+
+    def t_seq_flags(c):
+        """sticky flags and FNCLEX across a sequence (all masked): IE from the first instruction survives the second, FNCLEX clears IE and ES"""
+        op1, v1, need1 = h.ie_case() if rng.random() < 0.7 else h.ze_case()
+        k = rng.random()
+        if k < 0.35:
+            asm = f'{op1}; fnclex' + FLAGS_ALL
+            vals, need = v1, need1
+        elif k < 0.7:
+            op2, v2, need2 = h.exact_case()
+            pops = 2 if op1 in ('fscale', 'fsincos', 'fptan') else 1   # leave exactly v2 on the stack
+            asm = f'{op1}; ' + 'fstp st(0); ' * pops + op2 + FLAGS
+            vals, need = v1 + v2, max(need1, need2)
+        else:
+            asm = f'fnclex; {op1}' + FLAGS_ALL
+            vals, need = v1, need1
+        sw = (0x80ff & ~0x40) if k >= 0.7 else 0  # every flag and ES pending before FNCLEX (non-waiting, clears them before the op)
+        state(c, vals, need, fcw=0x027f, sw=sw | cbits(C1, C2))
+        add(c, asm)
+
+    templates = [(6, t_nan_pair), (3, t_nan_unary), (5, t_cc_nontrig), (3, t_cc_trig), (6, t_unmasked_other), (3, t_fldcw), (2, t_f2xm1_edges),
+                 (2, t_fyl2x_zero), (2, t_fyl2xp1_edges), (4, t_pc_rc), (3, t_denormal_nodE), (2, t_seq_flags)]
     weights = [w for w, _ in templates]
     for _ in range(n):
         rng.choices(templates, weights=weights)[0][1](Case())
@@ -2628,64 +3128,162 @@ def suite_verify_trans(g, n):
 
 
 def suite_verify_trans_known(g, n):
-    """Measured gaps of the x87 transcendentals (interpreter and JIT alike) against the oracle
-    machine, kept out of the default suites; `tag` names the gap:
-      trig-inf: FSIN/FCOS/FSINCOS/FPTAN of +-inf raise IE and give the indefinite (FSINCOS/FPTAN
-        still push); the emulator takes the |x| >= 2^63 path (C2 = 1, ST(0) unchanged, no push);
-      trig-qnan-ie: a QNaN argument propagates without IE on hardware, the emulator raises IE;
-      masked-es: masked exceptions set only their flag on hardware (ES is for unmasked ones), the
-        emulator sets ES too;
-      fscale-denormal-double-rounding: results in the denormal range reached through the 2^-1000
-        scaling step are rounded twice by the emulator (e.g. 1.25 2^-74 by -1001: 0 instead of
-        2^-1074);
-      f2xm1-outside-domain: undefined by the SDM; this CPU returns ST(0) unchanged, the emulator
-        2^x - 1."""
+    """Remaining measured gaps of the x87 transcendentals (interpreter and JIT alike) against the
+    oracle machine, kept out of the default suites; `tag` names the gap (the former tags trig-inf,
+    trig-qnan-ie, masked-es, fscale-denormal-double-rounding and f2xm1-outside-domain were fixed
+    in D034 and moved into verify_trans):
+      cc-preserved: the hardware trig instructions keep C0/C3 (undefined by the SDM) in range, on
+        NaN and on +-inf; the emulator clears C0-C3 on those paths (C2 out of range keeps them);
+      precision-flag: PE (and DE / OE / UE) on inexact, denormal, over- and underflowing results
+        read through FNSTSW & 0x80ff; the emulator models IE / ZE / SF only;
+      fyl2xp1-outside-domain: x <= -1 is outside the SDM domain; this CPU gives ST(0) back for a
+        finite y (and -inf / -0 for y = +-inf / 0 at x = -1), the emulator y log2(1 + x)
+        (-+inf at x = -1, IE + the indefinite below);
+      unmasked-abort (measured by the hardware-truth verification of D034, verify_trans_probe.py):
+        when the exception being raised (IE or ZE, including a stack fault) is UNMASKED in the
+        control word the hardware aborts the instruction: no result is written, no push / pop, an
+        SNaN operand is not even quieted, the flag and ES are set, C0-C3 as on the masked path;
+        #MF would fire at the next waiting FPU instruction (the snippets end with none, or with
+        the non-waiting FNSTSW / FNCLEX, so the oracle survives). Both executors set the flag
+        and ES like the hardware but then write the masked response (the indefinite / the quieted
+        NaN, the pushes and the pop);
+      stack-overflow-push: FSINCOS / FPTAN with ST(7) occupied (masked): the push overflows
+        before anything else, whatever the argument (in range, |x| >= 2^63, +-inf, NaN): IE | SF
+        | C1, TOP - 1, the indefinite in the new ST(0) AND in ST(1) (the old ST(0) is overwritten
+        too), C2 clear. The interpreter computes first (tan / sincos, or the C2 path with no push
+        at all) and only the pushed value becomes the indefinite; the JIT does not model stack
+        faults (D014, SF cases skipped);
+      unmasked-post-computation: PE / OE / UE unmasked: post-computation exceptions write the
+        result (rounded; the exponent wrapped by -+24576 for OE / UE, so that FSCALE(1.5, 20000)
+        gives 1.5 2^-4576 = 0 in f64 instead of +inf) with the flag and ES; the emulator models
+        none of PE / OE / UE (no ES either, +inf / 0 where the hardware wraps);
+      es-derived: ES is not a stored bit: the hardware evaluates it as (flags & ~masks) != 0
+        whenever the status or control word changes, and FNSTSW / FXSAVE mirror it in bit 15 (B).
+        An FXRSTOR image with ES set and every exception masked reads back without ES; FLDCW
+        unmasking a pending masked flag makes ES | B appear at once (no fault until the next
+        waiting instruction), FLDCW masking it makes ES vanish; an unmasked raise reads back as
+        flag | ES | B. The emulator keeps ES as loaded / as raised and never sets B;
+      mf-not-delivered: with ES set (an unmasked exception pending) the next WAITING x87
+        instruction takes #MF (the oracle records SIGFPE 8 at that instruction, FNSTSW / FNCLEX /
+        FNSTCW are non-waiting and run); the emulator delivers no fault (D034) and executes it."""
     rng = g.rng
     inf, nan = float('inf'), float('nan')
+    h = Trans2(g)
+    IE, DE, ZE, OE, UE, PE = T2_IE, T2_DE, T2_ZE, T2_OE, T2_UE, T2_PE
+    C0, C1, C2, C3 = T2_C0, T2_C1, T2_C2, T2_C3
 
-    def full_bits(lo, hi):
-        v = rng.uniform(lo, hi)
-        b = struct.unpack('<Q', struct.pack('<d', v))[0] ^ rng.getrandbits(20)
-        return struct.unpack('<d', struct.pack('<Q', b))[0]
+    def t_unmasked_abort(c):
+        k = rng.random()
+        if k < 0.6:
+            op, vals, need = h.ie_case()
+            cw = h.unmask(IE, *h.subset(DE, ZE, OE, UE, PE))
+        elif k < 0.8:
+            op, vals, need = h.ze_case()
+            cw = h.unmask(ZE, *h.subset(IE, DE, OE, UE, PE))
+        else:
+            # stack overflow / underflow with IE unmasked: nothing happens but IE | SF | ES (C1 on overflow)
+            op = rng.choice(['fptan', 'fsincos', 'fld1', 'fld st(0)'])
+            if rng.random() < 0.6:
+                h.full_stack(c, rng.choice([1.0, 2.0 ** 63, inf, h.qnan(), 0.5]), fcw=h.unmask(IE))
+            else:
+                op = rng.choice(['fsin', 'fptan', 'fsincos', 'f2xm1', 'fsqrt', 'fyl2x', 'fscale', 'fpatan'])
+                c.fx = default_fx(rng, top=rng.randrange(8), valid_mask=0, fcw=h.unmask(IE))
+                c.cmp['fpu'] = True
+            h.add(c, op + rng.choice(['', T2_FLAGS_ALL, '; fnclex' + T2_FLAGS_ALL]), tag='unmasked-abort')
+            return
+        h.state(c, vals, need, fcw=cw, sw=h.cbits(C1, C2) if op in T2_TRIG else h.cbits(C0, C1, C2, C3))
+        h.add(c, op + rng.choice(['', T2_FLAGS_ALL, T2_FLAGS_ALL, '; fnclex' + T2_FLAGS_ALL]), tag='unmasked-abort')
 
-    def t_trig_inf(c):
+    def t_stack_overflow_push(c):
+        op = rng.choice(['fsincos', 'fptan'])
+        x = rng.choice([1.0, -0.5, rng.uniform(-10, 10), 2.0 ** 63, -1e300, inf, -inf, h.qnan(), h.qnan(1, True), h.snan(), 0.0, -0.0])
+        h.full_stack(c, x, sw=h.cbits(C0, C1, C2, C3))
+        h.add(c, op + rng.choice(['', T2_FLAGS_ALL]), tag='stack-overflow-push')
+
+    def t_unmasked_post(c):
+        k = rng.random()
+        if k < 0.6:
+            op, vals = rng.choice([('fsin', [1.0]), ('fcos', [0.3]), ('fptan', [1.0]), ('fsincos', [2.0]), ('f2xm1', [0.5]), ('f2xm1', [1.0]), ('f2xm1', [1.5]), ('fyl2x', [3.0, 2.0]), ('fyl2x', [8.0, 1.0]),
+                                   ('fpatan', [1.0, 2.0]), ('fyl2xp1', [0.1, 2.0]), ('fyl2xp1', [-1.0, 5.0]), ('fsqrt', [2.0]), ('fsin', [5e-324])])
+            cw = h.unmask(PE, *h.subset(IE, DE, ZE))
+        elif k < 0.8:
+            op, vals = 'fscale', [h.sgn() * rng.choice([1.5, 1e300, 1.0]), rng.choice([20000.0, 16400.0, 1e300, 40000.0])]
+            cw = h.unmask(OE, *h.subset(IE, DE, ZE, PE))
+        else:
+            op, vals = 'fscale', [h.sgn() * rng.choice([1.5, 1e-300, 1.0]), rng.choice([-20000.0, -16400.0, -1e300, -40000.0])]
+            cw = h.unmask(UE, *h.subset(IE, DE, ZE, PE))
+        h.state(c, vals, 1 if op in ('fptan', 'fsincos') else 0, fcw=cw)
+        h.add(c, op + rng.choice(['', T2_FLAGS_ALL]), tag='unmasked-post-computation')
+
+    def t_es_derived(c):
+        RB = '; fnstsw ax; and eax, 0xffff'
+        flag = rng.choice([IE, ZE, PE, IE | PE, DE, OE, UE])
+        k = rng.random()
+        if k < 0.3:
+            # image: flag | ES, everything masked -> ES dropped (FNSTSW and the FXSAVE image; a waiting instruction runs)
+            op, vals, need = h.exact_case()
+            h.state(c, vals, need, fcw=0x027f, sw=0x80 | flag)
+            h.add(c, rng.choice(['fnstsw ax; and eax, 0xffff', op + RB, op]), tag='es-derived')
+        elif k < 0.65:
+            # image: flag (masked); FLDCW unmasks it -> ES | B without a fault (only non-waiting instructions follow)
+            h.state(c, [1.0], 0, fcw=0x027f, sw=flag)
+            m, _ = g.mem(c, 2)
+            patch_bytes(c, m, struct.pack('<H', h.unmask(flag)))
+            h.add(c, f'fldcw {m}' + rng.choice([RB, '; fnstcw word ptr [0x10000300]' + RB]), tag='es-derived')
+        else:
+            # a masked raise, then FLDCW unmasks it -> IE | ES | B in FNSTSW
+            op, vals, need = h.ie_case() if rng.random() < 0.7 else h.ze_case()
+            raised = ZE if op == 'fyl2x' and vals[0] == 0 and math.isfinite(vals[1]) and vals[1] != 0 else IE
+            h.state(c, vals, need, fcw=0x027f)
+            m, _ = g.mem(c, 2)
+            patch_bytes(c, m, struct.pack('<H', h.unmask(raised, *h.subset(DE, OE, UE))))
+            h.add(c, f'{op}; fldcw {m}' + RB, tag='es-derived')
+
+    def t_mf_not_delivered(c):
+        # an unmasked exception pending (raised here, or loaded with FLDCW over a masked flag), then a waiting instruction: #MF on the hardware
+        k = rng.random()
+        op2 = rng.choice(['fld1', 'fsin', 'fadd st(0), st(0)', 'fxch st(1)', 'fstp st(0)', 'fldcw word ptr [0x10000300]', 'fwait', 'fcomp st(1)'])
+        if k < 0.5:
+            op, vals, need = h.ie_case()
+            h.state(c, vals, need, fcw=h.unmask(IE))
+            h.add(c, f'{op}; {op2}', tag='mf-not-delivered')
+        else:
+            h.state(c, [1.0, 2.0], 1, fcw=0x027f, sw=rng.choice([IE, ZE, PE]))
+            m, _ = g.mem(c, 2)
+            patch_bytes(c, m, struct.pack('<H', 0x0240))
+            h.add(c, f'fldcw {m}; {op2}', tag='mf-not-delivered')
+
+    def t_cc(c):
         op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
-        trans_state(g, c, [rng.choice([inf, -inf])], 1)
-        g.add(c, op, fpu=True, tol=TRANS_TOL, fpucc=True, tag='trig-inf')
+        x = rng.choice([rng.uniform(-10, 10), nan, inf, -inf, 0.0, 1.0])
+        trans_state(g, c, [x], 1)
+        struct.pack_into('<H', c.fx, 2, struct.unpack_from('<H', c.fx, 2)[0] | 0x4100)  # C0 | C3 set beforehand
+        g.add(c, op, fpu=True, tol=TRANS_TOL, fpucc=True, tag='cc-preserved')
 
-    def t_trig_qnan(c):
-        op = rng.choice(['fsin', 'fcos', 'fsincos', 'fptan'])
-        trans_state(g, c, [nan], 1)
-        g.add(c, f'{op}; fnstsw ax; and eax, 0x80ff', fpu=True, tol=TRANS_TOL, tag='trig-qnan-ie')
-
-    def t_es(c):
+    def t_pe(c):
         form = rng.random()
-        if form < 0.4:
-            trans_state(g, c, [0.0, 0.0])
-            asm = 'fyl2x; fnstsw ax; and eax, 0x80ff'
-        elif form < 0.7:
-            trans_state(g, c, [-1.0])
-            asm = 'fsqrt; fnstsw ax; and eax, 0x80ff'
+        if form < 0.25:
+            trans_state(g, c, [rng.choice([0.5, -0.5, 0.1, 5e-324])])
+            asm = 'f2xm1'
+        elif form < 0.5:
+            trans_state(g, c, [rng.choice([1.0, 0.3, 1e6, 5e-324])], 1)
+            asm = rng.choice(['fsin', 'fcos', 'fptan', 'fsincos'])
+        elif form < 0.75:
+            a, b = rng.choice([(1.5, 1e300), (1.5, -1e300), (5e-324, 3.0), (1e308, 10.0)])
+            trans_state(g, c, [a, b])
+            asm = 'fscale'
         else:
-            trans_state(g, c, [0.0, inf])
-            asm = 'fscale; fnstsw ax; and eax, 0x80ff'
-        g.add(c, asm, fpu=True, tol=TRANS_TOL, tag='masked-es')
+            trans_state(g, c, [rng.choice([3.0, 5e-324, 1.0000000000000002]), rng.choice([2.0, 1e300])])
+            asm = rng.choice(['fyl2x', 'fyl2xp1', 'fpatan'])
+        g.add(c, asm + '; fnstsw ax; and eax, 0x80ff', fpu=True, tol=TRANS_TOL, tag='precision-flag')
 
-    def t_fscale_denormal(c):
-        if rng.random() < 0.2:
-            a, b = 1.25 * 2.0 ** -74, -1001.0
-        else:
-            a = math.ldexp(full_bits(1, 2), rng.randrange(-90, -60)) * rng.choice([1.0, -1.0])
-            b = -float(1001 + rng.randrange(0, 30)) - rng.choice([0.0, rng.random()])
-        trans_state(g, c, [a, b], 0)
-        g.add(c, 'fscale', fpu=True, tol=None, tag='fscale-denormal-double-rounding')
+    def t_fyl2xp1_outside(c):
+        x = rng.choice([-1.0, -1.5, -2.0, -10.0, -1e300, rng.uniform(-100, -1)])
+        y = rng.choice([1.0, 5.0, -5.0, 0.0, inf, -inf, 1e300])
+        trans_state(g, c, [x, y])
+        g.add(c, 'fyl2xp1', fpu=True, tol=TRANS_TOL, fpucc=True, nanbits=True, fpuex=0x85, tag='fyl2xp1-outside-domain')
 
-    def t_f2xm1_outside(c):
-        x = rng.choice([1.5, -1.5, 3.0, -3.0, 10.0, -70.0, rng.uniform(1, 60), rng.uniform(-60, -1)])
-        trans_state(g, c, [x])
-        g.add(c, 'f2xm1', fpu=True, tol=TRANS_TOL, tag='f2xm1-outside-domain')
-
-    templates = [(3, t_trig_inf), (2, t_trig_qnan), (2, t_es), (3, t_fscale_denormal), (1, t_f2xm1_outside)]
+    templates = [(3, t_cc), (3, t_pe), (2, t_fyl2xp1_outside), (4, t_unmasked_abort), (2, t_stack_overflow_push), (2, t_unmasked_post), (2, t_es_derived), (1, t_mf_not_delivered)]
     weights = [w for w, _ in templates]
     for _ in range(n):
         rng.choices(templates, weights=weights)[0][1](Case())
@@ -2704,6 +3302,7 @@ SUITES = {
     'verify_float_known': suite_verify_float_known,
     'verify_mech': suite_verify_mech,
     'verify_trans': suite_verify_trans,
+    'verify_trans2': suite_verify_trans2,
     'verify_trans_known': suite_verify_trans_known,
 }
 

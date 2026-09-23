@@ -285,15 +285,15 @@ test('FCOMI / FCOM / FTST / FUCOMPP / FCMOVcc results for ordered, equal, NaN an
 });
 
 // Pre-existing divergence (unchanged by the locals change): the JIT does not set the exception
-// summary bits of the status word (IE / ES on an unordered FCOM / FCOMI / FTST, stack faults...);
-// only the condition codes are maintained.
-test('FCOM with a NaN raises IE | ES in the status word', { todo: 'pre-existing: the JIT keeps only the condition codes of the status word' }, () => {
+// flags of the status word for the comparisons (IE on an unordered FCOM / FCOMI / FTST, stack
+// faults...); only the condition codes are maintained. A masked IE sets no ES (D034).
+test('FCOM with a NaN raises IE (no ES while masked) in the status word', { todo: 'pre-existing: the JIT keeps only the condition codes of the status word' }, () => {
   const a = new Asm(CODE);
   a.fldQ(DATA).fld1().fcomSt(1).fnstswAx();
   a.label('end').hlt();
   const EJ = makeExec(true); load(EJ, a.finish(), [[0, NaN]]);
   assert.equal(EJ.run(a.labels.get('end')), EXIT.HALT);
-  assert.equal(EJ.cpu.eax & 0x81, 0x81);
+  assert.equal(EJ.cpu.eax & 0x81, 0x01);
 });
 
 // (5) MMX access with a pending shift and TOP != 0 in the same block (run-time rotation of the

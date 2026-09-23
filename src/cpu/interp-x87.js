@@ -43,7 +43,32 @@ class X87 {
     this.sw = s;
   }
   clearC1() { this.sw = this.sw & ~C1; }
-  raise(bits) { this.sw = this.sw | bits | SW_ES; }
+  /**
+   * Raise exception flags. A masked exception only sets its flag; ES (the error summary) is set
+   * when one of them is unmasked in the control word (mask bits CW[0..5] = IE DE ZE OE UE PE,
+   * SDM 8.1.3); nothing else happens on an unmasked exception (no fault is delivered, D034).
+   */
+  raise(bits) {
+    let sw = this.sw | bits;
+    if (bits & ~this.cw & 0x3f) sw |= SW_ES;
+    this.sw = sw;
+  }
+  /** Result of a one-operand instruction given a NaN operand: an SNaN raises IE and is quieted, a QNaN propagates. */
+  nan1(a) {
+    if (isSignalingNaN(a)) { this.raise(SW_IE); return quietNaN(a); }
+    return a;
+  }
+  /**
+   * Result of a two-operand instruction with at least one NaN operand (x87 rule, SDM 4.8.3.5,
+   * measured in D034): the NaN operand, or with two NaNs the one with the larger significand
+   * (the positive one on a tie), quieted; an SNaN among the operands raises IE.
+   */
+  nan2(a, b) {
+    if (isSignalingNaN(a) || isSignalingNaN(b)) this.raise(SW_IE);
+    if (!Number.isNaN(a)) return quietNaN(b);
+    if (!Number.isNaN(b)) return quietNaN(a);
+    return quietNaN(pickNaN(a, b));
+  }
 
   /** Read ST(i); stack underflow yields indefinite. */
   st(i) {
@@ -277,10 +302,23 @@ function isSignalingNaN(v) {
   return (scratch.getBigUint64(0, true) & 0x0008000000000000n) === 0n;
 }
 
-/** x87 NaN propagation: return a quiet NaN (the operand NaN); payloads are not tracked. */
+/** x87 NaN propagation of the arithmetic instructions: return a quiet NaN (the operand NaN); payloads are not tracked. */
 function propagateNaN(a, b) {
   if (Number.isNaN(a) && Number.isNaN(b)) return INDEFINITE;
   return Number.isNaN(a) ? a : b;
+}
+/** The NaN v with its quiet bit set (sign and payload kept). */
+function quietNaN(v) {
+  scratch.setFloat64(0, v, true);
+  scratch.setBigUint64(0, scratch.getBigUint64(0, true) | 0x0008000000000000n, true);
+  return scratch.getFloat64(0, true);
+}
+/** Of two NaNs, the one with the larger significand (52-bit fraction, quiet bit included); the positive one on a tie. */
+function pickNaN(a, b) {
+  scratch.setFloat64(0, a, true); scratch.setFloat64(8, b, true);
+  const ab = scratch.getBigUint64(0, true), bb = scratch.getBigUint64(8, true);
+  const fa = ab & 0x000fffffffffffffn, fb = bb & 0x000fffffffffffffn;
+  return fa > fb || (fa === fb && ab < 0x8000000000000000n) ? a : b;
 }
 
 /** Read 80-bit extended from memory as f64. */
@@ -290,7 +328,14 @@ export function readF80(mem, a) {
   const sign = se & 0x8000 ? -1 : 1;
   const exp = se & 0x7fff;
   if (exp === 0 && mant === 0n) return sign * 0;
-  if (exp === 0x7fff) return (mant & 0x7fffffffffffffffn) === 0n ? sign * Infinity : NaN;
+  if (exp === 0x7fff) {
+    if ((mant & 0x7fffffffffffffffn) === 0n) return sign * Infinity;
+    // NaN: sign, quiet bit (bit 62 -> 51) and the top 51 payload bits are kept (writeF80 restores them)
+    let frac = (mant >> 11n) & 0x000fffffffffffffn;
+    if (frac === 0n) frac = 0x0008000000000000n; // payload only in the low bits: a quiet NaN
+    scratch.setBigUint64(0, (se & 0x8000 ? 0xfff0000000000000n : 0x7ff0000000000000n) | frac, true);
+    return scratch.getFloat64(0, true);
+  }
   let r = Number(mant);
   let e = exp - 16383 - 63;
   while (e > 1000) { r *= 2 ** 1000; e -= 1000; }
@@ -315,8 +360,7 @@ export function writeF80(mem, a, x) {
       m = (1n << 63n) | (mant << 11n); se = (sign << 15) | (e + 16383);
     }
   } else if (exp === 0x7ff) {
-    m = (1n << 63n) | (mant << 11n); se = (sign << 15) | 0x7fff;
-    if (Number.isNaN(x)) { m = 0xc000000000000000n; se = 0xffff; } // indefinite
+    m = (1n << 63n) | (mant << 11n); se = (sign << 15) | 0x7fff; // infinity, or a NaN with its sign, quiet bit and payload
   } else {
     m = (1n << 63n) | (mant << 11n); se = (sign << 15) | (exp - 1023 + 16383);
   }
@@ -454,24 +498,47 @@ H[OP.FCHS] = (I) => { const x = x87(I); x.clearC1(); x.setSt(0, -x.st(0)); };
 H[OP.FABS] = (I) => { const x = x87(I); x.clearC1(); x.setSt(0, Math.abs(x.st(0))); };
 H[OP.FSQRT] = (I) => {
   const x = x87(I); x.clearC1(); const v = x.st(0);
-  if (v < 0) { x.raise(SW_IE); x.setSt(0, INDEFINITE); }
+  if (Number.isNaN(v)) x.setSt(0, x.nan1(v));
+  else if (v < 0) { x.raise(SW_IE); x.setSt(0, INDEFINITE); }
   else { const r = Math.sqrt(v); const e = ((x.cw >> 8) & 3) === 0 ? sqrtErr(v, r) : 0; x.setSt(0, x.round(r, e > 0 ? 1 : e < 0 ? -1 : 0)); }
 };
 H[OP.FRNDINT] = (I) => { const x = x87(I); x.clearC1(); x.setSt(0, x.rint(x.st(0))); };
+// FSCALE: ST(0) * 2^trunc(ST(1)). 0 * 2^+inf and inf * 2^-inf are invalid (IE, indefinite); the
+// other infinite scales give +-inf / +-0 (SDM table 8-11, hardware D034)
 H[OP.FSCALE] = (I) => {
   const x = x87(I); x.clearC1();
   const a = x.st(0), b = x.st(1);
-  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, propagateNaN(a, b)); return; }
-  let e = Math.trunc(b);
-  if (!Number.isFinite(b)) { x.setSt(0, b > 0 ? (a === 0 ? INDEFINITE : a * Infinity) : (Number.isFinite(a) ? a * 0 : INDEFINITE)); return; }
-  x.setSt(0, scalb(a, e));
+  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, x.nan2(a, b)); return; }
+  if (!Number.isFinite(b)) {
+    const invalid = b > 0 ? a === 0 : !Number.isFinite(a);
+    if (invalid) { x.raise(SW_IE); x.setSt(0, INDEFINITE); } else x.setSt(0, b > 0 ? a * Infinity : a * 0);
+    return;
+  }
+  x.setSt(0, scalb(a, Math.trunc(b)));
 };
+/**
+ * a * 2^e rounded once, like the hardware and the JIT kernel (fpmath-exp.js scalb): the exponent
+ * of the exact result decides between overflow, an exact exponent rewrite and the denormal range,
+ * where the mantissa placed at exponent -1022 is multiplied by one (possibly denormal) power of
+ * two, which is the single correct rounding. Stepping by 2^-1000 would round twice down there
+ * (1.25 2^-74 by 2^-1001: 0 instead of 2^-1074).
+ */
 function scalb(a, e) {
   if (a === 0 || !Number.isFinite(a)) return a;
-  let r = a;
-  while (e > 1000) { r *= 2 ** 1000; e -= 1000; if (!Number.isFinite(r)) return r; }
-  while (e < -1000) { r *= 2 ** -1000; e += 1000; if (r === 0) return r; }
-  return r * 2 ** e;
+  if (e > 2200) e = 2200; else if (e < -2200) e = -2200; // beyond, every finite non-zero double overflows / underflows
+  scratch.setFloat64(0, a, true);
+  let hi = scratch.getUint32(4, true);
+  let be = (hi >>> 20) & 0x7ff;
+  if (be === 0) { scratch.setFloat64(0, a * 2 ** 54, true); hi = scratch.getUint32(4, true); be = (hi >>> 20) & 0x7ff; e -= 54; } // denormal a: normalized (exact)
+  const t = be - 1023 + e; // exponent of the exact result
+  if (t > 1023) return a > 0 ? Infinity : -Infinity;
+  const signMant = hi & 0x800fffff;
+  if (t >= -1022) { scratch.setUint32(4, signMant | ((t + 1023) << 20), true); return scratch.getFloat64(0, true); }
+  scratch.setUint32(4, signMant | (1 << 20), true); // mantissa at exponent -1022 (exact)
+  const m = scratch.getFloat64(0, true);
+  const n = Math.max(t + 1022, -1074); // 2^n: a normal or denormal power of two (n < -1074 gives 0 as well)
+  if (n >= -1022) { scratch.setUint32(0, 0, true); scratch.setUint32(4, (n + 1023) << 20, true); } else { scratch.setBigUint64(0, 1n << BigInt(n + 1074), true); }
+  return m * scratch.getFloat64(0, true);
 }
 H[OP.FXTRACT] = (I) => {
   const x = x87(I); x.clearC1();
@@ -531,33 +598,81 @@ function prem(I, nearest) {
 }
 H[OP.FPREM] = (I) => prem(I, false);
 H[OP.FPREM1] = (I) => prem(I, true);
-H[OP.F2XM1] = (I) => { const x = x87(I); x.clearC1(); const v = x.st(0); x.setSt(0, Math.expm1(v * Math.LN2)); };
-H[OP.FYL2X] = (I) => { const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1); x.setSt(1, b * Math.log2(a)); x.pop(); };
-H[OP.FYL2XP1] = (I) => { const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1); x.setSt(1, b * Math.log1p(a) * Math.LOG2E); x.pop(); };
-function trig(I, fn) {
-  const x = x87(I); const v = x.st(0);
-  if (Math.abs(v) >= 2 ** 63) { x.sw = x.sw | C2; return null; } // out of range: C2=1, ST unchanged
+// ---- transcendentals (exception semantics measured on the hardware, D034; the JIT's
+// translate-x87.js mirrors every rule). A NaN operand follows nan1 / nan2; a NaN produced from
+// non-NaN operands is an invalid arithmetic operand: IE and the indefinite.
+// F2XM1: finite |x| > 1 is undefined by the SDM and leaves ST(0) unchanged on the reference CPU
+// (mirrored); +-inf follow the SDM (+inf -> +inf, -inf -> -1)
+H[OP.F2XM1] = (I) => {
+  const x = x87(I); x.clearC1(); const v = x.st(0);
+  if (Number.isNaN(v)) { x.setSt(0, x.nan1(v)); return; }
+  if (Math.abs(v) > 1 && Number.isFinite(v)) return;
+  x.setSt(0, Math.expm1(v * Math.LN2));
+};
+// FYL2X: y log2 x. Invalid: x < 0, 0 log2 0, 0 log2 inf, inf log2 1 (the products are NaN);
+// y log2 0 with a finite non-zero y is a zero divide (ZE, -+inf), with y = +-inf it is not.
+H[OP.FYL2X] = (I) => {
+  const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1);
+  let r;
+  if (Number.isNaN(a) || Number.isNaN(b)) r = x.nan2(a, b);
+  else {
+    r = b * Math.log2(a);
+    if (Number.isNaN(r)) { x.raise(SW_IE); r = INDEFINITE; }
+    else if (a === 0 && Number.isFinite(b)) x.raise(SW_ZE);
+  }
+  x.setSt(1, r); x.pop();
+};
+// FYL2XP1: y log2(1 + x). Invalid: x < -1 (outside the SDM domain anyway), 0 log2(1 + inf) and inf log2 1
+H[OP.FYL2XP1] = (I) => {
+  const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1);
+  let r;
+  if (Number.isNaN(a) || Number.isNaN(b)) r = x.nan2(a, b);
+  else {
+    r = b * Math.log1p(a) * Math.LOG2E;
+    if (Number.isNaN(r)) { x.raise(SW_IE); r = INDEFINITE; }
+  }
+  x.setSt(1, r); x.pop();
+};
+/**
+ * Classify the argument of FSIN/FCOS/FSINCOS/FPTAN (the JIT's trigArg): a NaN -> C0-C3 cleared,
+ * nan1 (SNaN: IE, quieted; QNaN propagated); +-inf -> C0-C3 cleared, IE, the indefinite; a finite
+ * |x| >= 2^63 -> C2 set, ST(0) unchanged, no push (null); else C0-C3 cleared, compute (undefined).
+ */
+function trigSpecial(x, v) {
+  if (Number.isNaN(v)) { x.setCC(0, 0, 0, 0); return x.nan1(v); }
+  if (!Number.isFinite(v)) { x.setCC(0, 0, 0, 0); x.raise(SW_IE); return INDEFINITE; }
+  if (Math.abs(v) >= 2 ** 63) { x.sw = x.sw | C2; return null; }
   x.setCC(0, 0, 0, 0);
-  if (!Number.isFinite(v)) { x.raise(SW_IE); return INDEFINITE; }
-  return fn(v);
+  return undefined;
 }
-H[OP.FSIN] = (I) => { const x = x87(I); const r = trig(I, Math.sin); if (r !== null) x.setSt(0, r); };
-H[OP.FCOS] = (I) => { const x = x87(I); const r = trig(I, Math.cos); if (r !== null) x.setSt(0, r); };
+function trig1(fn) {
+  return (I) => {
+    const x = x87(I); const v = x.st(0);
+    const s = trigSpecial(x, v);
+    if (s !== null) x.setSt(0, s === undefined ? fn(v) : s);
+  };
+}
+H[OP.FSIN] = trig1(Math.sin);
+H[OP.FCOS] = trig1(Math.cos);
+// FSINCOS / FPTAN push a second value: cos / 1.0, or the same NaN / indefinite on the special paths
 H[OP.FSINCOS] = (I) => {
   const x = x87(I); const v = x.st(0);
-  if (Math.abs(v) >= 2 ** 63) { x.sw = x.sw | C2; return; }
-  x.setCC(0, 0, 0, 0);
-  if (!Number.isFinite(v)) { x.raise(SW_IE); x.setSt(0, INDEFINITE); x.push(INDEFINITE); return; }
-  x.setSt(0, Math.sin(v)); x.push(Math.cos(v));
+  const s = trigSpecial(x, v);
+  if (s === null) return;
+  if (s === undefined) { x.setSt(0, Math.sin(v)); x.push(Math.cos(v)); } else { x.setSt(0, s); x.push(s); }
 };
 H[OP.FPTAN] = (I) => {
   const x = x87(I); const v = x.st(0);
-  if (Math.abs(v) >= 2 ** 63) { x.sw = x.sw | C2; return; }
-  x.setCC(0, 0, 0, 0);
-  if (!Number.isFinite(v)) { x.raise(SW_IE); x.setSt(0, INDEFINITE); x.push(INDEFINITE); return; }
-  x.setSt(0, Math.tan(v)); x.push(1);
+  const s = trigSpecial(x, v);
+  if (s === null) return;
+  if (s === undefined) { x.setSt(0, Math.tan(v)); x.push(1); } else { x.setSt(0, s); x.push(s); }
 };
-H[OP.FPATAN] = (I) => { const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1); x.setSt(1, Math.atan2(b, a)); x.pop(); };
+// FPATAN: atan2(ST(1), ST(0)) is defined for every non-NaN pair (signed zeros and infinities included)
+H[OP.FPATAN] = (I) => {
+  const x = x87(I); x.clearC1(); const a = x.st(0), b = x.st(1);
+  x.setSt(1, Number.isNaN(a) || Number.isNaN(b) ? x.nan2(a, b) : Math.atan2(b, a));
+  x.pop();
+};
 
 // ---- stack / control
 H[OP.FXCH] = (I, insn) => {
@@ -661,4 +776,4 @@ H[OP.LDMXCSR] = (I, insn) => { I.cpu.mxcsr = I.mem.read32(I.ea(insn.ops[0])) & 0
 H[OP.STMXCSR] = (I, insn) => { I.mem.write32(I.ea(insn.ops[0]), I.cpu.mxcsr); };
 H[OP.EMMS] = (I) => { const x = x87(I); x.tw = 0; x.top = 0; }; // like every MMX instruction, EMMS resets TOP
 
-export { X87, x87, INDEFINITE, roundEven };
+export { X87, x87, INDEFINITE, roundEven, scalb };

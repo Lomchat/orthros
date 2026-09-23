@@ -46,11 +46,11 @@ const REGION_TYPE = 0;
 // Imports (function indices, positional: the order of the importFunc calls in buildRegionModule)
 const IMP_FLAGS = 0, IMP_ROUND24 = 1, IMP_FALLBACK = 2;
 // transcendental kernels of the runtime module (MATH_KERNELS order): 3 exp2m1, 4 log2, 5 log2p1,
-// 6 scalb, 7 sin, 8 cos, 9 tan, 10 atan2, 11 sincos
+// 6 scalb, 7 sin, 8 cos, 9 tan, 10 atan2, 11 sincos, 12 nan2
 const IMP_MATH = 3;
 const IMP_EXP2M1 = IMP_MATH, IMP_LOG2 = IMP_MATH + 1, IMP_LOG2P1 = IMP_MATH + 2, IMP_SCALB = IMP_MATH + 3;
-const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8;
-if (MATH_KERNELS.length !== 9 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos') throw new Error('math kernel import layout mismatch');
+const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8, IMP_NAN2 = IMP_MATH + 9;
+if (MATH_KERNELS.length !== 10 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
 const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
@@ -1217,4 +1217,4 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, MASK, SIGN, BITS, touchesFpu };

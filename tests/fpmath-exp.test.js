@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModuleBuilder, Code, T } from '../src/cpu/jit/wasm.js';
 import { addExpKernels, INDEFINITE_BITS, LOG2P1_LO, LOG2P1_HI } from '../src/cpu/jit/fpmath-exp.js';
+import { scalb as scalbInterp } from '../src/cpu/interp-x87.js';
 
 const TOL = 1e-14;
 const ULP1 = 2 ** -52;
@@ -368,7 +369,7 @@ test('log2p1: random sweeps vs Math.log1p / ln2 (tol 1e-14) and vs the exact ref
 });
 
 test('scalb: bit-for-bit against the exact single-rounding reference (specials and random)', () => {
-  // the hardware corner the interpreter's 2^-1000 stepping gets wrong (two roundings -> 0)
+  // the hardware corner a 2^-1000 stepping gets wrong (two roundings -> 0; the interpreter's former algorithm)
   assert.equal(scalb(1.25 * 2 ** -74, -1001), 5e-324);
   assert.equal(scalbRef(1.25 * 2 ** -74, -1001), 5e-324);
   const same = (a, b) => {
@@ -378,6 +379,13 @@ test('scalb: bit-for-bit against the exact single-rounding reference (specials a
   const vals = [0, -0, 1, -1, 1.5, -1.5, 0.1, 3.9, -3.9, 1000, 1001, -1000, -1001, 1024, -1074, -1075, 2000, -2000, 2100, -2100, 1e10, -1e10, 1e300, -1e300, 2 ** 63, -(2 ** 63), 2 ** 64,
     Number.MIN_VALUE, -Number.MIN_VALUE, MIN_NORMAL, 1.0000000000000002 * MIN_NORMAL, Number.MAX_VALUE, -Number.MAX_VALUE, 1e-310, 2.5e-320, Infinity, -Infinity, NaN, fromBits(0x7ff8000000001234n), fromBits(0xfff0000000000001n)];
   for (const a of vals) for (const b of vals) same(a, b);
+  // the interpreter's scalb(a, e) (integer e = trunc(b), no NaN / infinite b: the FSCALE handler
+  // deals with those) is the same single rounding, bit for bit
+  for (const a of vals) for (const b of vals) {
+    if (!Number.isFinite(b)) continue;
+    const got = bitsOf(scalbInterp(a, Math.trunc(b))), want = BigInt.asUintN(64, W.scalb_bits(a, b));
+    assert.equal(got, want, `interpreter scalb(${a}, ${Math.trunc(b)}) = ${fromBits(got)} [${got.toString(16)}], kernel ${fromBits(want)} [${want.toString(16)}]`);
+  }
   // the NaN rule: a's NaN wins over b's NaN? no: both NaN -> indefinite; one NaN -> that one (payload kept)
   assert.equal(W.scalb_bits(fromBits(0x7ff8000000001234n), 3), 0x7ff8000000001234n);
   assert.equal(W.scalb_bits(3, fromBits(0x7ff8000000004321n)), 0x7ff8000000004321n);
