@@ -305,6 +305,22 @@
   `IsThreadedLoad = no` d'Options.ini, les mêmes unités restent magenta : pas une course du thread de chargement) :
   classé données/outils absents du dossier.
 
+## Robustesse et démarrage (2026-09-24)
+- **Bug x87 (arrondi dirigé en précision 24 bits)** : le chemin en ligne (masquage des bits) ne s'exécutait jamais (bits
+  RC combinés à un booléen par un `and` binaire) et lisait des bits périmés ; tout résultat passait par le noyau exact.
+  Corrigé, plus : résultat sur la grille 24 bits exact sans noyau pour des opérandes flottants (×, ÷, √ ; + et − si
+  l'erreur TwoSum est nulle), `FST m32` d'une valeur déjà flottante sans `f32rc`. Profil des 110 premières secondes :
+  `arith24` + `rnd24` + `f32rc` 20 % → hors profil. Tests x87 aléatoires : arrondi vers +∞ ajouté, 3 000 graines ×
+  6 mots de contrôle conformes.
+- **Démarrage** : ~90 s jusqu'au menu 3D en CPU seul, rythmé par des phases chronométrées du jeu (écran de
+  démarrage, boucle de mesure, chargement) : ~18 M appels d'API rapides/s à un moment (verrous de la CRT) ; un
+  trampoline qui les enchaînait sans repasser par le répartiteur n'a rien changé (ni démarrage ni menu) : non gardé.
+- **Protections de pages des images** comme le chargeur Windows (en-têtes en lecture, sections selon leurs
+  caractéristiques) ; `IsBad*Ptr` tient compte des protections ; `IsBadStringPtrA/W` sondent jusqu'au NUL.
+- **Perte du contexte WebGL** (réinitialisation GPU, pilote) : contexte restauré, objets GL recréés et ressources
+  re-téléversées depuis la mémoire invitée ; vérifié avec `--lose-context-at` au menu High.
+- **30 min de partie** : 38,4 fps, p99 30,6 ms, aucun plantage (voir « Performance CPU »).
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente.
 - Performance CPU : pression de registres dans les régions ; coût du chaînage entre régions x87 (vidage/rechargement
