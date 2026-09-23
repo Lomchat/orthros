@@ -295,6 +295,7 @@ export function translateVertexShader(code, layout) {
   body.push('  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0), r6 = vec4(0.0), r7 = vec4(0.0), r8 = vec4(0.0), r9 = vec4(0.0), r10 = vec4(0.0), r11 = vec4(0.0);');
   body.push('  vec4 oPos = vec4(0.0), oD0 = vec4(1.0), oD1 = vec4(0.0), oFog = vec4(1.0), oPts = vec4(1.0); int a0 = 0;');
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 oT${i} = vec4(0.0);`);
+  const defsV = new Set(); // constants defined in the shader (def)
   const reg = (tok, isSrc) => {
     const type = ((tok >> 28) & 7) | (((tok >> 8) & 0x18) ? 0 : 0); // VS1.x: bits 28-30
     const n = tok & 0x7ff;
@@ -302,7 +303,7 @@ export function translateVertexShader(code, layout) {
     switch (type) {
       case 0: name = `r${n}`; break;
       case 1: name = inputs.has(n) ? `a_v${n}` : 'vec4(0.0)'; break;
-      case 2: name = (tok & 0x2000) ? `u_vc[clamp(${n} + a0, 0, 95)]` : `u_vc[${n}]`; break;
+      case 2: name = (tok & 0x2000) ? `u_vc[clamp(${n} + a0, 0, 95)]` : defsV.has(n) ? `c${n}` : `u_vc[${n}]`; break;
       case 3: name = 'vec4(float(a0))'; break;
       case 4: name = ['oPos', 'oFog', 'oPts'][n] ?? 'oPos'; break;
       case 5: name = `oD${n}`; break;
@@ -323,6 +324,11 @@ export function translateVertexShader(code, layout) {
     if (t === 0x0000ffff) break;
     if ((t & 0xffff) === 0xfffe) { i += ((t >> 16) & 0x7fff) + 1; continue; } // comment
     const op = t & 0xffff;
+    if (op === 81) { // def c#, 4 floats: raw values, not recognizable by bit 31
+      const n = code[i + 1] & 0x7ff; const dv = new DataView(new ArrayBuffer(16)); for (let k = 0; k < 4; k++) dv.setUint32(k * 4, code[i + 2 + k] >>> 0, true);
+      body.push(`  vec4 c${n} = vec4(${[0, 1, 2, 3].map((k) => dv.getFloat32(k * 4, true).toExponential(6)).join(', ')});`);
+      defsV.add(n); i += 6; continue;
+    }
     const args = []; let j = i + 1;
     while (j < code.length && (code[j] >>> 31) === 1) { args.push(code[j] >>> 0); j++; }
     i = j;
