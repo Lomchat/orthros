@@ -162,7 +162,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;

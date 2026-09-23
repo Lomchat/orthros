@@ -46,7 +46,7 @@ export class ByteWriter {
 export class Code extends ByteWriter {
   constructor(cap) { super(cap); this.labels = []; this.hints = []; }
   /** empty the builder for another function body (the buffer is kept) */
-  reset() { this.len = 0; this.labels = []; this.hints = []; return this; }
+  reset() { this.len = 0; this.labels = []; this.hints = []; this.callsTo = null; return this; }
 
   /**
    * Branch hint for the next instruction (an `if` or `br_if`): likely taken or not. Emitted in the
@@ -71,7 +71,7 @@ export class Code extends ByteWriter {
   return_() { this.byte(0x0f); return this; }
   unreachable() { this.byte(0x00); return this; }
   nop() { this.byte(0x01); return this; }
-  call(f) { this.byte(0x10).u(f); return this; }
+  call(f) { (this.callsTo ??= []).push(f, this.site ?? -1); this.byte(0x10).u(f); return this; } // callsTo: [function, site] pairs (statistics; site: set by the user)
   call_indirect(type, table = 0) { this.byte(0x11).u(type).u(table); return this; }
   return_call(f) { this.byte(0x12).u(f); return this; }
   return_call_indirect(type, table = 0) { this.byte(0x13).u(type).u(table); return this; }

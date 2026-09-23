@@ -90,6 +90,8 @@ function termOf(insn) {
 // come from the result for every kind. SHL (CF/OF depend on the count in a way not worth inlining) is left to the helper.
 const CF_INLINE = new Set([LZ.ADD, LZ.SUB, LZ.LOGIC, LZ.INC, LZ.DEC, LZ.NEG, LZ.ADC, LZ.SBB, LZ.SHR, LZ.SAR, LZ.MUL, LZ.IMUL, LZ.SHLD, LZ.BSF]);
 const OF_INLINE = CF_INLINE;
+/** highest lazy kind (LZ.SBB) */
+const LZ_KINDS_MAX = Math.max(...Object.values(LZ));
 /** Whether Emitter.pushCond computes condition `base` (cc >> 1) inline for lazy kind `kind` (no flags helper). */
 function lazyCondInline(base, kind) {
   switch (base) {
@@ -384,6 +386,7 @@ class Emitter {
     c.i32(0);
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
+    this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
     return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
   }
 
@@ -831,21 +834,34 @@ class Emitter {
   /**
    * Condition cc when the lazy flag state is unknown at translation time (a block that tests flags
    * set by its predecessors): dispatch on the run-time lazy op (L_LZOP = kind << 2 | size) to an
-   * inline computation for the common kinds (sub/cmp, add, logic, inc/dec, or flags already
-   * materialized); only the other kinds call the flags helper. The lazy state is left as is.
+   * inline computation for every kind pushCond evaluates inline (flags already materialized, and the
+   * lazy kinds of lazyCondInline); lazy ops whose code is identical (ZF of any kind, CF of a subtraction
+   * of any size...) share one arm. Only the other kinds (SHL's CF/OF...) call the flags helper. The lazy
+   * state is left as is.
    */
   pushCondDynamic(cc) {
     const c = this.c, base = cc >> 1;
-    const arms = [{ op: 0, lz: { kind: LZ.NONE, sz: 2 } }];
-    for (const kind of [LZ.SUB, LZ.ADD, LZ.LOGIC, LZ.INC, LZ.DEC]) {
+    // arms by generated code: each candidate lazy op is emitted into a scratch body, identical bytes share an arm
+    const byCode = new Map();
+    const scratch = (this.armScratch ??= new Code());
+    const add = (op, lz) => {
+      scratch.reset(); this.c = scratch; this.lz = lz; this.pushCond(cc); this.c = c;
+      const key = String.fromCharCode.apply(null, scratch.buf.subarray(0, scratch.len));
+      let arm = byCode.get(key);
+      if (!arm) byCode.set(key, (arm = { lz, ops: [] }));
+      arm.ops.push(op);
+    };
+    add(0, { kind: LZ.NONE, sz: 2 });
+    for (let kind = 1; kind <= LZ_KINDS_MAX; kind++) {
       if (!lazyCondInline(base, kind)) continue;
-      for (const sz of [0, 1, 2]) arms.push({ op: (kind << 2) | sz, lz: { kind, sz } });
+      for (const sz of [0, 1, 2]) add((kind << 2) | sz, { kind, sz });
     }
+    const arms = [...byCode.values()];
     const done = c.block(T.i32);
     const slow = c.block();
     for (let k = arms.length - 1; k >= 0; k--) arms[k].label = c.block();
-    const table = new Array(Math.max(...arms.map((a) => a.op)) + 1).fill(slow);
-    for (const a of arms) table[a.op] = a.label;
+    const table = new Array(Math.max(...arms.flatMap((a) => a.ops)) + 1).fill(slow);
+    for (const a of arms) for (const op of a.ops) table[op] = a.label;
     c.get(L_LZOP).br_table(table, slow);
     for (const a of arms) {
       c.end(); // a.label
@@ -973,6 +989,7 @@ class Emitter {
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcKnown?.[b.index] ? this.fpcAssume : null;
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
+    this.c.site = -1; // (call statistics: block-end code)
     // block end
     const n = b.insns.length;
     switch (b.term) {
@@ -998,6 +1015,7 @@ class Emitter {
 
   emitInsn(insn, b) {
     this.curOp = insn.op;
+    this.c.site = insn.op; // (call statistics)
     const h = HANDLERS[insn.op];
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
