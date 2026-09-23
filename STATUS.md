@@ -99,12 +99,19 @@
   `tools/gen_fpmath_exp.py`, `gen_pi_bits.py`, `gen_atan_table.py`), importés par les régions comme `round24`
   (WASM → WASM, D004). Précision ≤ 1 ulp vs référence exacte (exp/log), ≤ 0,5 ulp vs V8 (sin/cos), tan ≤ 1,6 ulp,
   atan2 ≤ 1 ulp ; 13-20 ns par appel ; FSINCOS par un noyau `sincos` à réduction unique (23 ns au lieu de 44) ;
-  FSCALE arrondi une seule fois comme le matériel (l'interpréteur arrondit deux fois dans les dénormalisés, corrigé
-  côté noyau seulement). Sémantique de l'interpréteur reproduite (C2 hors domaine |x| ≥ 2^63 avec ST
-  inchangé, IE + indéfini sur NaN, pas d'arrondi PC, C1 non modélisé). Suites oracle `x87` (1 237 cas, les cas IE
+  FSCALE arrondi une seule fois comme le matériel. Sémantique commune aux deux exécuteurs (C2 hors domaine
+  |x| ≥ 2^63 fini avec ST inchangé, pas d'arrondi PC, C1 non modélisé). Suites oracle `x87` (1 237 cas, les cas IE
   sans SF ne sont plus sautés) et `verify_trans` (1 500 cas, coins matériels des transcendantes) : 0 écart, replis
   restants FLD/FSTP m80, FXAM, FPREM/FPREM1, FXTRACT. Bench phase `trans` (9 M transcendantes) : 1 510 → 288 ms
   (interpréteur 8 962 ms), 9 M replis → 0.
+- **Exceptions x87 fidèles au matériel (D034)** : ES seulement sur exception démasquée, ±inf trigonométrique → IE +
+  indéfini (poussé deux fois par FSINCOS/FPTAN), SNaN → IE + silencieux / QNaN propagé (signe, charge utile, plus
+  grande mantisse de deux NaN), opérandes invalides (0·log2 0, 0·2^∞, √x<0…) → IE + indéfini, FYL2X(0, y) → ZE,
+  F2XM1 hors [-1, 1] → ST(0) inchangé comme ce CPU, FSCALE dénormalisé arrondi une fois dans l'interpréteur aussi,
+  NaN conservés par FLD/FSTP m80. Mesuré par `tools/gen/verify_trans_probe.py`, appliqué à l'identique dans
+  l'interpréteur et le JIT (noyau `nan2`). `verify_trans` (1 500 cas) compare désormais motifs de NaN, IE|ZE|ES et
+  FNSTSW : 0 écart sur les deux exécuteurs ; `verify_trans_known` (300 cas, non imposée) ne garde que C0/C3 conservés
+  par le matériel, PE/DE/OE/UE non modélisés et FYL2XP1 pour x ≤ -1.
 - Fidélité (trouvée par les traces) : mutex abandonnés à la sortie d'un thread (le rechargement du shell après un
   changement de détail attendait indéfiniment), `CreateProcess` → ERROR_FILE_NOT_FOUND quand l'image n'existe pas
   (les « TextureAssetBuilder.exe/assetCacheBuilder.exe » invoqués par le jeu sont absents du dossier), ordre NTFS de
@@ -138,7 +145,10 @@
 - Constat (statistiques de Sleep par thread) : le thread principal du jeu appelle `Sleep(0)` + `timeGetTime` ~100 000
   fois/s en jeu (limiteur de cadence / attente active), 18 M d'appels en 5 min ; les autres threads dorment 1-2 ms.
   Le jeu se rythme donc lui-même (~38 fps en jeu, pas une limite CPU) ; mitigation générique : après 32 `Sleep(0)`
-  consécutifs sans autre thread prêt, la tranche dort 1 ms (résolution des timers Windows).
+  consécutifs sans autre thread prêt, la tranche dort 1 ms (résolution des timers Windows). Le compteur de série
+  n'admettait qu'un seul appel intercalé alors que la boucle en fait deux (`Sleep(0)` + `timeGetTime`) : corrigé,
+  la mitigation se déclenche (58 k fois en 5 min), `Sleep`/`timeGetTime` passent de ~115 k/s chacun à ~39 k/s, le
+  worker dort 13 % du temps (`Atomics.wait`) à fps égal (38-40 fps, p99 29-34 ms, run hl96).
 - **Détail High, menu 3D (D032)** : après ~25 s la scène du menu change (écran de chargement rendu par un thread dédié) ;
   le thread principal restait en livelock (`WaitForSingleObject(A, 1)`/`ReleaseMutex` à 1,2 M itérations/s : il ne voyait
   jamais le mutex tenu par le thread de chargement). Corrigé génériquement : attentes satisfaites à l'instant du signal
