@@ -130,6 +130,7 @@ export class BrowserHost {
   /** Nested waits (inside callbacks) block the worker briefly; woken early by input. */
   waitEvent(ms) {
     const t = Math.min(ms, 50);
+    this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
     Atomics.wait(this.ctl, CTL.WAKE, 0, t);
     this.pump();
   }
@@ -163,10 +164,19 @@ export class BrowserHost {
     const d = {}; for (const k of Object.keys(p)) d[k] = typeof p[k] === 'number' ? Math.round((p[k] - (prev[k] ?? 0)) * 100) / 100 : p[k];
     this.onSlowFrame(dt, d);
   }
-  /** Fill the audio ring up to `aheadFrames` using the VM mixer. */
-  renderAudio(vm, aheadFrames = 4096) {
+  /**
+   * Fill the audio ring ahead of the output using the VM mixer. The lead adapts: every new underrun (the worker was
+   * busy longer than the lead: a translation burst, a loading stall) adds 1024 frames up to 12288 (~280 ms: the ring holds 16384, filled in chunks of 512), and 30 s
+   * without one takes 1024 back down to 4096 (~93 ms).
+   */
+  renderAudio(vm) {
     const audio = vm.audio; if (!audio) return;
     const ctl = this.ctl;
+    const now = performance.now(), under = Atomics.load(ctl, CTL.AUDIO_UNDERRUNS);
+    if (this.audioLead === undefined) { this.audioLead = 4096; this.audioUnderSeen = under; this.audioCalmSince = now; }
+    if (under !== this.audioUnderSeen) { this.audioUnderSeen = under; this.audioLead = Math.min(12288, this.audioLead + 1024); this.audioCalmSince = now; }
+    else if (now - this.audioCalmSince > 30000 && this.audioLead > 4096) { this.audioLead -= 1024; this.audioCalmSince = now; }
+    const aheadFrames = this.audioLead;
     const cap = AUDIO_RING_FRAMES;
     let w = Atomics.load(ctl, CTL.AUDIO_WRITE); const r = Atomics.load(ctl, CTL.AUDIO_READ);
     let avail = (w - r) | 0; // frames queued

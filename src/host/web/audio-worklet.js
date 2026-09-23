@@ -13,7 +13,7 @@ class OrthrosOutput extends AudioWorkletProcessor {
     let rd = Atomics.load(this.ctl, this.R);
     const wr = Atomics.load(this.ctl, this.W);
     let avail = (wr - rd) | 0;
-    if (avail < n) { Atomics.add(this.ctl, this.U, 1); l.fill(0); r.fill(0); return true; }
+    if (avail < n) { if (wr !== 0) Atomics.add(this.ctl, this.U, 1); l.fill(0); r.fill(0); return true; } // (before the first write the game has no sound yet: not an underrun)
     for (let i = 0; i < n; i++) { const idx = ((rd + i) % this.frames) * 2; l[i] = this.ring[idx]; r[i] = this.ring[idx + 1]; }
     rd = (rd + n) | 0;
     Atomics.store(this.ctl, this.R, rd);
