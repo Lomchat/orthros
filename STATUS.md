@@ -124,6 +124,10 @@
   recherches de noms si le jeu expose un moyen générique (journal du moteur).
 - Détail « High » : le menu principal devient une scène 3D (~2 000 appels de dessin/image, 4-6 fps sous SwiftShader,
   726 textures ≈ 150 Mo) et le renderer headless a fini par mourir (mémoire, à mesurer sur GPU réel) — piste M7.
+- **Mesure M7 sur 10 min en partie (Very Low, SwiftShader, run hl98, `--frames-from 260`)** : 22 863 images en 601 s =
+  **38,1 fps ; p50 26,1 ms, p90 28,9 ms, p99 34,2 ms, max 89 ms ; 1,42 % des images > 33 ms** (324), 20 > 50 ms — un
+  épisode lent vers t = 727 s (30 fps, p99 50 ms sur 500 ms). Le critère p99 ≤ 33 ms est manqué de ~1 ms : prochaine
+  étape, diagnostiquer les images lentes (traduction JIT de nouvelles régions, envois de textures, GC).
 - **Stabilité 10 min en partie (Very Low, headless SwiftShader)** : `--seconds 840` → en jeu de 230 s à 840 s sans
   blocage ni plantage, 19 000 images, 25-34 fps, p99 40-50 ms (`build/shots7`, run hl57) ; entrées en jeu acceptées
   (clic, clic droit, Échap, déplacement au bord).
@@ -138,6 +142,14 @@
 - Hôte graphique (suite) : groupes d'uniformes versionnés (transformations, lumières, viewport, constantes, états),
   cache d'état GL (enable/blend/depth/cull/masks/viewport/scissor, samplers, attributs) → 37,6 fps, **p99 29 ms**,
   `d3d8-webgl.js` 13,4 % → 9,6 % du worker ; conversion 32 bits des textures A8R8G8B8 par mots.
+- Hôte graphique (suite, détail High : ~1 500 dessins/image, 17 k dessins/s) : versions de transformation **par
+  emplacement** (une `SetTransform` par objet ne renvoie plus vue, projection et matrices de texture ; les lumières
+  suivent la seule matrice de vue), `SetLight`/`SetMaterial`/`LightEnable` et `SetRenderState`/`SetTextureStageState`/
+  `SetTexture` comparés à la valeur courante (les jeux renvoient les mêmes états avant chaque objet : plus de
+  réinvalidation du programme ni de renvoi des uniformes). `uniformMatrix4fv` 13,5 % → matrice monde seule ; en jeu
+  (Very Low) le worker passe de 12,9 % à 15,4 % de temps libre à fps égal. Sous SwiftShader chaque appel GL coûte
+  ~5 µs : à High, ~16-22 % du worker reste dans les appels GL (attributs de sommets par dessin, uniformes des étages),
+  le code invité en occupe 62-65 % (profil plat, 2 500 régions) — la limite à High est le débit du JIT, pas le rendu.
 - **Pile x87 en locaux WASM (D030)** : bench phase fpu 270 → 70 ms (3,8×), `round24` sorti du profil, suites x87 /
   verify_mech / sse vertes (88 tests + 2 todo documentant des écarts préexistants : bits IE/ES du mot d'état sur
   comparaison non ordonnée, arrondi PC=24 sur demi-ulp exact) ; en jeu 37 → 37,8 fps, p99 31-32 ms ; le code invité
