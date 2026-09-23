@@ -175,34 +175,45 @@ function branchTarget(insn) {
 }
 
 /**
- * Control-flow layout of a region: the blocks (address order) grouped into top-level units, each a
- * single block or a structured loop [first, last] spanning a back edge's target to its latest source.
- * Only disjoint loops are structured (the shortest first: innermost loops are the hot ones); the
- * other back edges go through the dispatcher.
+ * Control-flow layout of a region: the blocks (address order) grouped into a tree of units, each a single
+ * block or a structured loop [first, last] spanning a back edge's target (its header) to its latest source,
+ * whose children are units in turn. Loops are kept shortest first when they nest with every loop kept so
+ * far (contain it or are disjoint from it); the back edges of the others go through a dispatcher.
+ * Returns the top-level units, the single-block unit of every block and, per block, the loops holding it
+ * (outermost first).
  */
 function planUnits(blocks, byEip) {
+  const n = blocks.length;
   const last = new Map(); // header index -> latest back-edge source
   for (const b of blocks) {
     const t = b.insns.length ? byEip.get(branchTarget(b.insns[b.insns.length - 1])) : null;
     if (t && t.index <= b.index) last.set(t.index, Math.max(last.get(t.index) ?? -1, b.index));
   }
-  const taken = new Uint8Array(blocks.length), loopEnd = new Map();
+  const kept = [];
   for (const [h, e] of [...last].sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]))) {
-    let free = true;
-    for (let i = h; i <= e && free; i++) free = !taken[i];
-    if (!free) continue;
-    taken.fill(1, h, e + 1);
-    loopEnd.set(h, e);
+    if (kept.every((k) => e < k.first || h > k.last || (h <= k.first && k.last <= e))) kept.push({ first: h, last: e });
   }
-  const units = [], unitOf = new Int32Array(blocks.length);
-  for (let i = 0; i < blocks.length;) {
-    const e = loopEnd.get(i);
-    const u = { first: i, last: e ?? i, loop: e !== undefined, label: null, inner: null };
-    for (let k = u.first; k <= u.last; k++) unitOf[k] = units.length;
-    units.push(u);
-    i = u.last + 1;
-  }
-  return { units, unitOf };
+  const blockUnit = new Array(n), pathOf = new Array(n);
+  const build = (lo, hi, path) => {
+    const units = [];
+    for (let i = lo; i <= hi;) {
+      let L = null; // the outermost kept loop starting here, other than the enclosing ones
+      for (const k of kept) if (k.first === i && k.last <= hi && !path.some((u) => u.src === k) && (!L || k.last > L.last)) L = k;
+      if (L) {
+        const u = { loop: true, first: L.first, last: L.last, src: L, label: null, loopL: null, children: null };
+        u.children = build(L.first, L.last, [...path, u]);
+        units.push(u);
+        i = L.last + 1;
+      } else {
+        const u = { loop: false, first: i, last: i, label: null };
+        blockUnit[i] = u; pathOf[i] = path;
+        units.push(u);
+        i++;
+      }
+    }
+    return units;
+  };
+  return { top: build(0, n - 1, []), blockUnit, pathOf };
 }
 
 /**
@@ -345,38 +356,15 @@ class Emitter {
     // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
     // `end` closes labels[u] and unit u's code follows it; a forward branch to the first block of a
     // later unit is a plain `br` to that unit's label
-    const { units, unitOf } = planUnits(blocks, byEip);
-    this.units = units;
+    const { top, blockUnit, pathOf } = planUnits(blocks, byEip);
+    this.blockUnit = blockUnit;
+    this.pathOf = pathOf;
     // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
     this.retSites = blocks.filter((b) => b.term === TERM_CALL && byEip.has(b.fallthrough)).map((b) => b.fallthrough);
     if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
     this.fpcKnown = this.fpcAssume !== null ? planFpuModes(blocks, byEip, this.retSites) : null;
-    this.unitOf = unitOf;
-    const labels = new Array(units.length);
-    for (let u = units.length - 1; u >= 0; u--) labels[u] = c.block();
-    for (let u = 0; u < units.length; u++) units[u].label = labels[u];
-    c.get(L_BLK).br_table(blocks.map((b) => labels[unitOf[b.index]]), def);
-    const next = (i) => (i + 1 < blocks.length ? blocks[i + 1] : null);
-    for (const u of units) {
-      c.end(); // closes u.label: the unit's code follows
-      if (!u.loop) { this.emitBlock(blocks[u.first], next(u.first)); continue; }
-      // structured loop: entered with L_BLK = -1 (fallthrough / forward branch into the header) or
-      // by the dispatcher with L_BLK = the target block, dispatched again here among the loop's
-      // blocks (L_BLK back to -1). Back edges to the header branch to the loop label directly.
-      // L_BLK holds a block of this loop only between its `set` and this dispatch (any stale value
-      // is outside the loop and lands on the header through the default); the -1 written on the
-      // ordinary entries only keeps the iterations on the br_if fast path.
-      u.loopL = c.loop();
-      u.inner = [];
-      for (let k = u.last; k >= u.first; k--) u.inner[k - u.first] = c.block();
-      c.get(L_BLK).i32(-1).eq().br_if(u.inner[0]);
-      c.get(L_BLK).i32(u.first).sub().i32(-1).set(L_BLK).br_table(u.inner, u.inner[0]);
-      for (let k = u.first; k <= u.last; k++) {
-        c.end(); // closes u.inner[k - first]
-        this.emitBlock(blocks[k], next(k));
-      }
-      c.end(); // loop
-    }
+    // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
+    this.emitUnits(top, () => c.get(L_BLK).br_table(blocks.map((b) => (pathOf[b.index][0] ?? blockUnit[b.index]).label), def));
     c.end(); // def
     c.unreachable();
     c.end(); // dispatch loop
@@ -395,6 +383,46 @@ class Emitter {
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
+  }
+
+  /**
+   * Emit sibling units: one label per unit, the last unit's outermost, so that the k-th `end` closes the
+   * label of unit k and its code follows (a forward branch to the start of a later sibling is a `br` to its
+   * label); `prologue` runs inside all the labels, before the first unit's code. A loop unit is a WASM loop
+   * whose prologue dispatches among its blocks (loopPrologue).
+   */
+  emitUnits(units, prologue) {
+    const c = this.c, blocks = this.blocks;
+    for (let k = units.length - 1; k >= 0; k--) units[k].label = c.block();
+    prologue();
+    for (const u of units) {
+      c.end(); // u.label: the unit's code follows
+      if (!u.loop) { this.emitBlock(blocks[u.first], u.first + 1 < blocks.length ? blocks[u.first + 1] : null); continue; }
+      u.loopL = c.loop();
+      this.emitUnits(u.children, () => this.loopPrologue(u));
+      c.end(); // loop
+    }
+  }
+  /**
+   * Loop head: entered normally (fallthrough, forward branch to the header, back edge to the header) L_BLK
+   * holds -1 or a block outside the loop, and control goes to the header; a dispatch into the loop (L_BLK = a
+   * block of the loop, set just before the branch) is routed to the child holding it: a nested loop gets
+   * L_BLK unchanged for its own head, a block gets L_BLK = -1 first. L_BLK therefore never holds a block of
+   * a loop outside such a dispatch.
+   */
+  loopPrologue(u) {
+    const c = this.c;
+    const normal = c.block();
+    c.get(L_BLK).i32(u.first).sub().tee(L_T2).i32(u.last - u.first + 1).ge_u().hint(true).br_if(normal);
+    const childOf = (j) => { const p = this.pathOf[j], i = p.indexOf(u); return i + 1 < p.length ? p[i + 1] : this.blockUnit[j]; };
+    const direct = u.children.filter((ch) => !ch.loop);
+    const tramp = new Map();
+    for (let k = direct.length - 1; k >= 0; k--) tramp.set(direct[k], c.block());
+    const targets = [];
+    for (let j = u.first; j <= u.last; j++) { const ch = childOf(j); targets.push(ch.loop ? ch.label : tramp.get(ch)); }
+    c.get(L_T2).br_table(targets, normal);
+    for (const ch of direct) { c.end(); c.i32(-1).set(L_BLK).br(ch.label); }
+    c.end(); // normal: the header follows
   }
 
   /**
@@ -603,19 +631,24 @@ class Emitter {
     const b = this.byEip.get(target);
     if (!b) { this.exitTo(target, n); return; }
     const c = this.c;
-    const t = b.index, us = this.units[this.unitOf[this.cur]], ut = this.units[this.unitOf[t]];
+    const t = b.index, sp = this.pathOf[this.cur], tp = this.pathOf[t];
+    let d = 0; // loops holding both
+    while (d < sp.length && d < tp.length && sp[d] === tp[d]) d++;
     const s = this.x87Normalize(); // blocks are entered with shift 0
     if (t > this.cur) {
-      // forward: no budget check (every cycle contains a backward edge, which checks it)
+      // forward: no budget check (every cycle contains a backward edge, which checks it). The unit holding t
+      // among the children of the innermost common loop (or the top level) is a later sibling of the one
+      // holding the source: its label is in scope; a loop entered elsewhere than at its header dispatches
       this.count(PF.forward);
       this.charge(n);
-      if (ut === us) c.br(us.inner[t - us.first]);
-      else if (ut.first === t) { if (ut.loop) c.i32(-1).set(L_BLK); c.br(ut.label); }
-      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
+      const ct = d < tp.length ? tp[d] : this.blockUnit[t];
+      if (!ct.loop || ct.first === t) c.br(ct.label);
+      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
       this.budget(n, target);
-      if (ut === us && us.loop) { if (t !== us.first) c.i32(t).set(L_BLK); c.br(us.loopL); }
+      const common = d > 0 ? sp[d - 1] : null;
+      if (common) { if (t !== common.first) { this.count(PF.dispatch); c.i32(t).set(L_BLK); } c.br(common.loopL); }
       else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
     this.stShift = s;
@@ -897,9 +930,7 @@ class Emitter {
         if (nextBlock && nextBlock.eip === ft) { // natural fallthrough into the next block's code
           this.count(PF.fallthrough);
           this.x87Normalize();
-          this.charge(n);
-          const un = this.units[this.unitOf[nextBlock.index]];
-          if (un.loop && un.first === nextBlock.index) this.c.i32(-1).set(L_BLK); // entering a structured loop
+          this.charge(n); // (a loop entered by its top sees L_BLK outside its blocks: see loopPrologue)
           return;
         }
         this.jumpTo(ft, n);
