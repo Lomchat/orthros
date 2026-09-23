@@ -6,13 +6,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
-import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
+import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
+import '../src/cpu/interp-x87.js';
+import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 const hex = (v) => '0x' + (v >>> 0).toString(16);
+const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -203,5 +206,30 @@ test('returns to call sites of the same region stay in the region and match the 
     let r, k = 0;
     while ((r = EJ.run(at.X, slice)) === EXIT.TIMESLICE) assert.ok(++k < 1e6, 'runaway');
     assert.deepEqual(snapshot(EJ), want, `slices of ${slice}`);
+  }
+});
+
+test('x87 regions specialized for the control word in force: entered under another mode, replaced by run-time tested code', () => {
+  // fld dword [DATA+0x100] ; fmul dword [DATA+0x104] ; fadd dword [DATA+0x108] ; fstp qword [DATA+0x110] ; fldcw [DATA+0x120] ; fld1 ; fadd dword [DATA+0x104] ; fstp dword [DATA+0x118] ; hlt
+  const bytes = [0xd9, 0x05, ...le(DATA + 0x100), 0xd8, 0x0d, ...le(DATA + 0x104), 0xd8, 0x05, ...le(DATA + 0x108), 0xdd, 0x1d, ...le(DATA + 0x110),
+    0xd9, 0x2d, ...le(DATA + 0x120), 0xd9, 0xe8, 0xd8, 0x05, ...le(DATA + 0x104), 0xd9, 0x1d, ...le(DATA + 0x118), 0xf4];
+  const code = Uint8Array.from(bytes), end = CODE + bytes.length - 1;
+  const setup = (E, cw, cwNew) => {
+    E.load(code, 0);
+    E.mem.writeF32(DATA + 0x100, 1 / 3); E.mem.writeF32(DATA + 0x104, 3.0000002); E.mem.writeF32(DATA + 0x108, 1e-9); E.mem.write16(DATA + 0x120, cwNew);
+    E.mem.write16(E.cpu.base + ST.FPU_CW, cw);
+  };
+  const result = (E) => [E.mem.readF64(DATA + 0x110), E.mem.readF32(DATA + 0x118), E.mem.read16(E.cpu.base + ST.FPU_CW)];
+  for (const [cw, cwNew] of [[0x007f, 0x027f], [0x027f, 0x007f], [0x0c7f, 0x007f], [0x047f, 0x087f]]) {
+    const EI = makeExec(false); setup(EI, cw, cwNew); assert.equal(EI.run(end, 1e6), EXIT.HALT);
+    // translated under `cw`, then run again under the other control words
+    const EJ = makeExec(true); setup(EJ, cw, cwNew); assert.equal(EJ.run(end, 1e6), EXIT.HALT);
+    assert.deepEqual(result(EJ), result(EI), `cw ${cw.toString(16)}`);
+    for (const other of [0x007f, 0x027f, 0x0c7f]) {
+      const EI2 = makeExec(false); setup(EI2, other, cwNew); assert.equal(EI2.run(end, 1e6), EXIT.HALT);
+      setup(EJ, other, cwNew); assert.equal(EJ.run(end, 1e6), EXIT.HALT);
+      assert.deepEqual(result(EJ), result(EI2), `translated under ${cw.toString(16)}, run under ${other.toString(16)}`);
+    }
+    if (cw !== 0x007f) assert.ok(EJ.jit.stats.fpuModeMisses >= 1, 'a specialized region left on a mode mismatch');
   }
 });
