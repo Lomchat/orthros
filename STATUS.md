@@ -230,7 +230,11 @@
     (UV, mips, matrices) vérifié correct côté Orthros. **En détail High le même sol est correct** (pavage clair et herbe,
     `build/shots52`) : pas de bug d'émulation établi, point classé.
 - **Partie en détail High** (headless, SwiftShader ~5 fps) : terrain, forteresse, arbres, unités corrects ; restent les
-  drapeaux magenta. Scénario d'entrées : `tools/scenarios/bfme-skirmish-high.txt` (le menu 3D High est interactif plus tard
+  drapeaux magenta. Régression corrigée le 2026-09-23 : traînées de blocs parasites dans les textures de terrain
+  (DXT1 256×256 composées par le jeu) — une sortie de budget sur un arc arrière réécrivait les registres x87 f32
+  après la rotation de la pile (ST(1) écrasé). Trouvée par bissection en jeu (`--no-f32`, `--f32-off
+  arith,round,m32,const`, plages `part@lo:hi`), couverte par des programmes x87 aléatoires avec boucles et sauts
+  exécutés en tranches de temps courtes. Scénario d'entrées : `tools/scenarios/bfme-skirmish-high.txt` (le menu 3D High est interactif plus tard
   et un premier clic passe son animation d'entrée).
 
 ## Performance CPU (2026-09-23)
