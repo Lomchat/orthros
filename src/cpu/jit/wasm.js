@@ -42,7 +42,16 @@ export class ByteWriter {
  * objects rather than raw depths.
  */
 export class Code extends ByteWriter {
-  constructor() { super(); this.labels = []; }
+  constructor() { super(); this.labels = []; this.hints = []; }
+
+  /**
+   * Branch hint for the next instruction (an `if` or `br_if`): likely taken or not. Emitted in the
+   * module's metadata.code.branch_hint section; the optimizing tier lays out and register-allocates
+   * the unlikely side as deferred code (spills and reloads stay off the hot path).
+   */
+  hint(likely) { this.hints.push(this.len, likely ? 1 : 0); return this; }
+  /** Function body bytes; the branch hints travel with them (`.hints`, pairs offset/direction). */
+  finish() { const b = super.finish(); b.hints = this.hints; return b; }
 
   // ---- control
   block(bt = T.empty) { this.byte(0x02).byte(bt); const l = { kind: 'block' }; this.labels.push(l); return l; }
@@ -320,7 +329,7 @@ export class ModuleBuilder {
     // compress locals into runs
     const runs = [];
     for (const t of locals) { if (runs.length && runs[runs.length - 1][1] === t) runs[runs.length - 1][0]++; else runs.push([1, t]); }
-    this.funcs.push({ type: this.type(params, results), locals: runs, code, name });
+    this.funcs.push({ type: this.type(params, results), locals: runs, code, name, hints: code.hints ?? null });
     return idx;
   }
   exportFunc(name, idx) { this.exports.push({ name, kind: 0, idx }); }
@@ -361,12 +370,19 @@ export class ModuleBuilder {
     }
     if (this.exports.length) { const s = new ByteWriter(); s.u(this.exports.length); for (const e of this.exports) s.str(e.name).byte(e.kind).u(e.idx); section(7, s); }
     if (this.funcs.length) {
-      const s = new ByteWriter(); s.u(this.funcs.length);
-      for (const f of this.funcs) {
-        const b = new ByteWriter(); b.u(f.locals.length); for (const [n, t] of f.locals) b.u(n).byte(t);
-        b.raw(f.code); b.byte(0x0b);
-        s.sized(b);
+      const bodies = this.funcs.map((f) => { const b = new ByteWriter(); b.u(f.locals.length); for (const [n, t] of f.locals) b.u(n).byte(t); const at = b.len; b.raw(f.code); b.byte(0x0b); return { b, at }; });
+      // branch hints (custom section before the code section): offsets from the start of the body (locals included)
+      const hinted = this.funcs.map((f, i) => [i, f.hints]).filter(([, h]) => h && h.length);
+      if (hinted.length) {
+        const s = new ByteWriter(); s.str('metadata.code.branch_hint'); s.u(hinted.length);
+        for (const [i, h] of hinted) {
+          s.u(this.importedFuncs + i).u(h.length >> 1);
+          for (let k = 0; k < h.length; k += 2) s.u(bodies[i].at + h[k]).u(1).byte(h[k + 1]);
+        }
+        section(0, s);
       }
+      const s = new ByteWriter(); s.u(this.funcs.length);
+      for (const { b } of bodies) s.sized(b);
       section(10, s);
     }
     // custom "name" section (function names only): profilers and stack traces show them instead of wasm-function[i]

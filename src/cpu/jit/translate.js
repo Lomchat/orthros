@@ -81,6 +81,17 @@ function termOf(insn) {
   }
 }
 
+/** Whether Emitter.pushCond computes condition `base` (cc >> 1) inline for lazy kind `kind` (no flags helper). */
+function lazyCondInline(base, kind) {
+  switch (base) {
+    case 2: case 4: return true; // E, S: from the result
+    case 1: return kind === LZ.SUB || kind === LZ.ADD || kind === LZ.LOGIC || kind === LZ.INC || kind === LZ.DEC; // B
+    case 3: case 6: case 7: return kind === LZ.SUB || kind === LZ.LOGIC; // BE, L, LE
+    case 0: return kind === LZ.LOGIC; // O
+    default: return false; // P
+  }
+}
+
 /** Direct in-region branch target of a block's last instruction (JMP/JCC/LOOP/CALL rel), or -1. */
 function branchTarget(insn) {
   const o = insn.ops[0];
@@ -198,7 +209,7 @@ export function buildRegionModule(codes, names = null) {
   m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
   m.importFunc('env', 'fallback', [T.i32], [T.i32]);
   for (const [name, params, results] of MATH_KERNELS) m.importFunc('env', name, params, results);
-  codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
+  codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }
 
@@ -299,8 +310,8 @@ class Emitter {
     const c = this.c;
     const noChain = c.block();
     c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u().br_if(noChain);
-    c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq().br_if(noChain);
-    c.get(L_ICOUNT).i32(0).le_s().br_if(noChain); // (L_ICOUNT was written back before this chain attempt)
+    c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq().hint(false).br_if(noChain);
+    c.get(L_ICOUNT).i32(0).le_s().hint(false).br_if(noChain); // (L_ICOUNT was written back before this chain attempt)
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
@@ -457,7 +468,7 @@ class Emitter {
   budget(n, eip) {
     const c = this.c;
     c.get(L_ICOUNT).i32(n).sub().tee(L_ICOUNT).i32(0).le_s();
-    const i = c.if_();
+    const i = c.hint(false).if_();
     this.exitCode(EXIT.TIMESLICE, eip);
     c.end(); void i;
   }
@@ -545,7 +556,7 @@ class Emitter {
     if (!this.smc || !insn) return;
     const c = this.c;
     c.get(L_TA).i32(15).shr_u().i32load8u(SMC_BITMAP_BASE).i32(1).get(L_TA).i32(12).shr_u().i32(7).and().shl().and();
-    const i = c.if_();
+    const i = c.hint(false).if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
     this.exitCode(EXIT.SMC, insn.next);
     c.end(); void i;
@@ -578,13 +589,44 @@ class Emitter {
     if (lz && lz.kind === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); return; }
     if (lz && lz.kind === LZ.LOGIC) { c.i32(0); return; }
     if (lz && (lz.kind === LZ.INC || lz.kind === LZ.DEC)) { c.get(L_LZB).i32(1).and(); return; }
+    if (lz === null) { this.pushCondDynamic(2); return; } // CF = condition B
     this.materialize();
     c.get(L_EFLAGS).i32(1).and();
+  }
+  /**
+   * Condition cc when the lazy flag state is unknown at translation time (a block that tests flags
+   * set by its predecessors): dispatch on the run-time lazy op (L_LZOP = kind << 2 | size) to an
+   * inline computation for the common kinds (sub/cmp, add, logic, inc/dec, or flags already
+   * materialized); only the other kinds call the flags helper. The lazy state is left as is.
+   */
+  pushCondDynamic(cc) {
+    const c = this.c, base = cc >> 1;
+    const arms = [{ op: 0, lz: { kind: LZ.NONE, sz: 2 } }];
+    for (const kind of [LZ.SUB, LZ.ADD, LZ.LOGIC, LZ.INC, LZ.DEC]) {
+      if (!lazyCondInline(base, kind)) continue;
+      for (const sz of [0, 1, 2]) arms.push({ op: (kind << 2) | sz, lz: { kind, sz } });
+    }
+    const done = c.block(T.i32);
+    const slow = c.block();
+    for (let k = arms.length - 1; k >= 0; k--) arms[k].label = c.block();
+    const table = new Array(Math.max(...arms.map((a) => a.op)) + 1).fill(slow);
+    for (const a of arms) table[a.op] = a.label;
+    c.get(L_LZOP).br_table(table, slow);
+    for (const a of arms) {
+      c.end(); // a.label
+      this.lz = a.lz; this.pushCond(cc);
+      c.br(done);
+    }
+    c.end(); // slow: another lazy kind
+    this.lz = { kind: -1, sz: 2 }; this.materialize(); this.pushCond(cc); // flags helper, then EFLAGS
+    c.end(); // done
+    this.lz = null;
   }
   /** push condition cc (0/1) */
   pushCond(cc) {
     const c = this.c;
     const lz = this.lz;
+    if (lz === null) { this.pushCondDynamic(cc); return; }
     const neg = cc & 1;
     const base = cc >> 1;
     const sx = (loc, sz) => { c.get(loc); if (sz === 0) c.extend8_s(); else if (sz === 1) c.extend16_s(); };
@@ -595,7 +637,7 @@ class Emitter {
       switch (base) {
         case 2: c.get(L_LZRES).eqz(); done = true; break; // E
         case 4: c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; break; // S
-        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } break; // B
+        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } else if (k === LZ.INC || k === LZ.DEC) { c.get(L_LZB).i32(1).and(); done = true; } break; // B
         case 3: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).le_u(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).eqz(); done = true; } break; // BE
         case 6: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.lt_s(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; } break; // L
         case 7: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.le_s(); done = true; } else if (k === LZ.LOGIC) { sx(L_LZRES, lz.sz); c.i32(0).le_s(); done = true; } break; // LE
@@ -673,7 +715,7 @@ class Emitter {
     this.flushAll();
     c.get(L_STATE).i32(insn.addr).i32store(ST.EIP);
     c.i32(insn.addr).call(IMP_FALLBACK).tee(L_T2);
-    const i = c.if_();
+    const i = c.hint(false).if_();
     c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
     c.i32(0).return_(); // exit code already stored by the host
     c.end(); void i;
@@ -974,7 +1016,7 @@ function divOp(signed) {
     c.set(L_T4);
     // divide by zero -> #DE
     c.get(L_T4).eqz();
-    const i = c.if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void i;
+    const i = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void i;
     if (size === 4) {
       // dividend edx:eax as i64
       c.get(L_REG + 2).extend_u().i64(32n).i64shl().get(L_REG).extend_u().i64or().set(L_I64A);
@@ -982,25 +1024,25 @@ function divOp(signed) {
         c.get(L_I64A).get(L_T4).extend_s().i64div_s().set(L_I64B);
         // quotient must fit in i32
         c.get(L_I64B).get(L_I64B).wrap().extend_s().i64ne();
-        const j = c.if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
+        const j = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
         c.get(L_I64A).get(L_T4).extend_s().i64rem_s().wrap().set(L_REG + 2);
       } else {
         c.get(L_I64A).get(L_T4).extend_u().i64div_u().set(L_I64B);
         c.get(L_I64B).i64(0xffffffffn).i64gt_u();
-        const j = c.if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
+        const j = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
         c.get(L_I64A).get(L_T4).extend_u().i64rem_u().wrap().set(L_REG + 2);
       }
       c.get(L_I64B).wrap().set(L_REG);
     } else if (size === 2) {
       E.loadReg(2, 2); c.i32(16).shl(); E.loadReg(2, 0); c.or().set(L_T5); // dx:ax
       if (signed) { c.get(L_T5).get(L_T4).div_s().set(L_T6); c.get(L_T6).extend16_s().get(L_T6).ne(); } else { c.get(L_T5).get(L_T4).div_u().set(L_T6); c.get(L_T6).i32(0xffff).gt_u(); }
-      const j = c.if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
+      const j = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
       c.get(L_T5).get(L_T4); if (signed) c.rem_s(); else c.rem_u(); c.set(L_TV); E.storeRegFrom(2, 2, L_TV);
       c.get(L_T6).set(L_TV); E.storeRegFrom(2, 0, L_TV);
     } else {
       E.loadReg(2, 0); if (signed) c.extend16_s(); c.set(L_T5);
       if (signed) { c.get(L_T5).get(L_T4).div_s().set(L_T6); c.get(L_T6).extend8_s().get(L_T6).ne(); } else { c.get(L_T5).get(L_T4).div_u().set(L_T6); c.get(L_T6).i32(0xff).gt_u(); }
-      const j = c.if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
+      const j = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
       c.get(L_T5).get(L_T4); if (signed) c.rem_s(); else c.rem_u(); c.i32(0xff).and().i32(8).shl().get(L_T6).i32(0xff).and().or().set(L_TV);
       E.storeRegFrom(2, 0, L_TV);
     }
