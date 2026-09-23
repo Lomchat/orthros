@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF } from './translate.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -291,9 +291,18 @@ export class Jit {
         } catch (e) {
           // translation failure (e.g. undecodable): run one instruction in the interpreter
           this.interp.cpu = cpu;
+          cpu.exit = EXIT.NONE; // (the state block still holds the dispatcher's exit code)
           const s = this.interp.step();
           if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
         }
+        continue;
+      }
+      if (r === EXIT_STEP) { // an instruction the translation leaves to the interpreter in rare cases
+        this.interp.cpu = cpu;
+        cpu.exit = EXIT.NONE;
+        const s = this.interp.step();
+        this.stats.steps = (this.stats.steps ?? 0) + 1;
+        if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
         continue;
       }
       if (r === EXIT_FPUMODE) {

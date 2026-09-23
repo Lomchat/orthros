@@ -14,7 +14,7 @@
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP } from './runtime.js';
 import { THUNK_BASE, THUNK_END, SMC_BITMAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -31,9 +31,12 @@ const L_F64C = 43; // f64 temporary (x87 results kept apart from their operands)
 // the instruction budget (ST.ICOUNT) cached in a local for the whole region: decremented in a register at every
 // block transition, written back to the state block only when the region is left (exit, chain)
 const L_ICOUNT = 44;
+// 24-bit precision x87 blocks keep register values that are exact floats in f32 locals (L_S32+k shadows
+// L_ST0+k, see Emitter.f32Mask) and compute with f32 arithmetic; L_F32A..C are f32 temporaries
+const L_S32 = 45, L_F32A = 53, L_F32B = 54, L_F32C = 55;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32]; // indices 16..44
-if (LOCAL_TYPES.length !== L_ICOUNT + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32]; // indices 16..55
+if (LOCAL_TYPES.length !== L_F32C + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -440,6 +443,7 @@ class Emitter {
    * keeps its (unrotated) state.
    */
   x87Normalize() {
+    this.materializeF32();
     const s = this.stShift;
     if (!s) return 0;
     const c = this.c;
@@ -449,6 +453,16 @@ class Emitter {
     c.get(L_TOP).i32(s).add().i32(7).and().set(L_TOP);
     this.stShift = 0;
     return s;
+  }
+  /**
+   * f32Mask bit k: the value of x87 local L_ST0+k lives in its f32 shadow L_S32+k (an exact float; the f64
+   * local is stale). Every exit, branch and fallback goes through x87Normalize, which first writes the
+   * shadows back (promote, exact) without clearing the mask: when emitted on a conditional path the
+   * fallthrough keeps its f32 values, and at the end of a block the mask is dropped anyway (0 at block
+   * entry).
+   */
+  materializeF32() {
+    for (let m = this.f32Mask, k = 0; m; m >>= 1, k++) if (m & 1) this.c.get(L_S32 + k).f64promote().set(L_ST0 + k);
   }
   /** L_FTW <- tag word of the state block rotated to L_TOP-relative order (bit j = slot (L_TOP+j)&7). */
   loadX87Tags() {
@@ -500,6 +514,7 @@ class Emitter {
     c.i32(0).set(L_TOP);
     this.loadX87Regs(); this.loadX87Tags();
     c.end(); void i;
+    this.f32Mask = 0; // the f64 locals were written back (x87Normalize) and possibly reloaded
   }
 
   // ------------------------------------------------------------------ exits & jumps
@@ -525,6 +540,15 @@ class Emitter {
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
     c.i32(eip).set(L_TV).i32(code).set(L_T2);
     const s = this.x87Normalize(); c.br(this.exitCodeL); this.stShift = s;
+  }
+  /**
+   * Leave the region before `insn` (none of its effects applied) for the interpreter to execute it: the
+   * rare cases whose exact handling would otherwise put a call in hot code (V8 keeps no register across
+   * a call, so a call even on a cold path costs spills on the hot one). Charges the instructions before it.
+   */
+  stepExit(insn) {
+    this.charge(this.insnIdx - 1);
+    this.exitCode(EXIT_STEP, insn.addr);
   }
   /** Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. */
   budget(n, eip) {
@@ -734,6 +758,7 @@ class Emitter {
     this.lz = null; // unknown at block entry
     this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
     this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
+    this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.cur = b.index;
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
@@ -787,6 +812,7 @@ class Emitter {
     this.reloadAll();
     this.lz = { kind: LZ.NONE, sz: 2 };
     this.stValid = 0;
+    this.f32Mask = 0; // x87 values reloaded as f64
     // did the instruction branch?
     c.get(L_STATE).i32load(ST.EIP).i32(insn.next).ne();
     const j = c.if_();
@@ -1434,4 +1460,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
+export { L_S32, L_F32A, L_F32B, L_F32C };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };

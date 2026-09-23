@@ -128,7 +128,7 @@ class X87 {
     }
     if (Number.isNaN(r)) {
       if (!Number.isNaN(a) && !Number.isNaN(b)) { this.raise(SW_IE); return INDEFINITE; } // inf-inf, 0*inf, 0/0
-      return propagateNaN(a, b);
+      return this.nan2(a, b); // the hardware rule (D034), as for the two-operand transcendentals
     }
     if (!Number.isFinite(r) && Number.isFinite(a) && Number.isFinite(b)) {
       if ((op === 6 && b === 0) || (op === 7 && a === 0)) this.raise(SW_ZE); else this.raise(SW_OE);
@@ -303,11 +303,6 @@ function isSignalingNaN(v) {
   return (scratch.getBigUint64(0, true) & 0x0008000000000000n) === 0n;
 }
 
-/** x87 NaN propagation of the arithmetic instructions: return a quiet NaN (the operand NaN); payloads are not tracked. */
-function propagateNaN(a, b) {
-  if (Number.isNaN(a) && Number.isNaN(b)) return INDEFINITE;
-  return Number.isNaN(a) ? a : b;
-}
 /** The NaN v with its quiet bit set (sign and payload kept). */
 function quietNaN(v) {
   scratch.setFloat64(0, v, true);
@@ -571,7 +566,7 @@ function bigFloorDiv(A, B) {
 function prem(I, nearest) {
   const x = x87(I);
   const a = x.st(0), b = x.st(1);
-  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, propagateNaN(a, b)); x.setCC(0, 0, 0, 0); return; }
+  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, x.nan2(a, b)); x.setCC(0, 0, 0, 0); return; }
   if (!Number.isFinite(a) || b === 0) { x.raise(SW_IE); x.setSt(0, INDEFINITE); x.setCC(0, 0, 0, 0); return; }
   if (!Number.isFinite(b) || a === 0) { x.setSt(0, a); x.setCC(0, 0, 0, 0); return; }
   const A = decompose(a), B = decompose(b);
