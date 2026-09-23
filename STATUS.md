@@ -233,9 +233,30 @@
   drapeaux magenta. Scénario d'entrées : `tools/scenarios/bfme-skirmish-high.txt` (le menu 3D High est interactif plus tard
   et un premier clic passe son animation d'entrée).
 
+## Performance CPU (2026-09-23)
+- **Méthode** : en headless le rendu logiciel (SwiftShader) borne la cadence au détail High — le worker attend dans
+  `bufferSubData`, et un gain CPU ne se voit pas en fps. `--gl-discard` (RASTERIZER_DISCARD : mêmes appels GL, rien
+  de rastérisé) rend la mesure CPU-bound ; les comparaisons se font en **A/B simultanés** (worktree du commit de
+  référence + HEAD, mêmes conditions de charge sur la machine partagée), menu 3D High, moyenne t = 200-265 s.
+  `--jit-profile` compte les transitions (sauts avant/arrière, dispatchs, `ret`, chaînages) ; `--profile s:n` donne
+  le profil CPU du worker et le mix d'instructions des régions chaudes ; `node tools/x87-bench.mjs [xform]`,
+  `node tools/bench.mjs jit` pour les micro-mesures.
+- **JIT** (D041, D042) : flot de contrôle structuré (boucles WASM, sauts avant directs), flags testés en début de bloc
+  sans helper, `ret` locaux, budget en local, traduction 2,7× plus rapide ; régions x87 spécialisées sur le mot de
+  contrôle, registres x87 en f32 en précision 24 bits, règle NaN matérielle. Appels COM différés pour les setters
+  d'état Direct3D (file en mémoire invitée, vidée avant tout appel d'API JS).
+- **Résultats** (menu High, `--gl-discard`) : 8,5 fps / 280 MIPS au début de la journée → 11,7 fps / 405 MIPS après
+  les régions x87 en f32 (le code invité passe de ~76 % à 68 % du worker). bench.exe 1 115 → 682 ms ; transformation
+  de sommets x87 24 bits 86 → 22 ns.
+- Constat structurel restant : trop de valeurs vivantes dans les régions (8 registres invités + 5 valeurs de flags
+  paresseux + budget + bloc) pour les ~11 registres allouables par V8 : variables de boucle en pile. Tout appel dans
+  une région (même sur un chemin froid) fait vider les registres — d'où les sorties vers l'interpréteur pour les cas
+  rares plutôt que des appels.
+
 ## Prochaine action
+- Performance : mesurer la file d'appels différés (A/B), puis coût JS du backend GL par draw (`applyState`,
+  clé de programme recalculée) et pression de registres dans les régions.
 - Élucider les textures proxy jamais remplacées (thread de chargement : fichiers lus, attentes, erreurs) → corriger la fidélité en cause.
-- Détail High (shaders) : capture d'image et vérification du rendu, puis performance (1 500 draws/image).
 - Mesure réelle sur GPU (critère M7) : `make serve` puis Chrome sur une machine cliente.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
