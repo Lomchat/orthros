@@ -183,6 +183,12 @@ export class Vm {
     }
   }
 
+  /**
+   * 'apiburst' log: every API call of `thread` (arguments, result, call site) for the next `n` calls — a detailed trace
+   * of what follows an interesting event (e.g. an engine creating a stand-in texture) without tracing the whole run.
+   */
+  startApiBurst(thread, n = 3000) { if (this.logKinds.has('apiburst') && (this.apiBursts = (this.apiBursts ?? 0) + 1) <= 8) { this.apiBurst = { tid: thread.id, left: n }; this.logFn('apiburst', `---- burst ${this.apiBursts} on t${thread.id}`); } }
+
   /** Call counts per API as a Map "dll!name" -> count (null when the histogram is disabled). */
   apiHist() {
     if (!this.apiHistCounts) return null;
@@ -391,6 +397,7 @@ export class Vm {
         return;
       }
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
+      if (this.apiBurst && this.apiBurst.tid === thread.id && this.apiBurst.left-- > 0 && !APIBG_QUIET.has(t.name)) this.logFn('apiburst', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)} from ${this.proc.symbolize(this.mem.read32(sp))}`);
       if (this.traceApiSite) {
         const key = this.mem.read32(sp) + thread.id * 0x100000000;
         const n = this.traceApiSite.get(key) ?? 0;

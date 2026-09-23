@@ -153,7 +153,7 @@ export function registerDirect3D9(api, vm) {
       vm.log('tex', `CreateTexture #${t.id} ${w}x${h} ${fmtName(fmt)} levels ${levels} usage 0x${usage.toString(16)} pool ${pool} [t${c.thread.id}] from ${c.proc.symbolize(c.retAddr)}`);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
       t.origin = c.proc.symbolize(c.retAddr);
-      if (w * h <= 16) t.apiTrail = [...checkTrail, ...vm.recentApiCalls(120, c.thread.id)]; // tiny textures are often an engine's stand-in for a failed load: keep this thread's context
+      if (w * h <= 16) { t.apiTrail = [...checkTrail, ...vm.recentApiCalls(120, c.thread.id), '-- all threads (without waits and timing calls):', ...vm.recentApiCalls(1024, 0).filter((x) => !/!(Sleep|timeGetTime|WaitForSingleObject|ReleaseMutex|QueryPerformanceCounter|GetTickCount|IDirectSoundBuffer)/.test(x)).slice(-80)]; vm.log('gfx', `tiny texture #${t.id} ${w}x${h} fmt ${fmtName(fmt)} created by t${c.thread.id} from ${c.proc.symbolize(c.retAddr)}`); if (t.id >= (globalThis.ORTHROS_BURST_FROM_ID ?? Infinity)) vm.startApiBurst(c.thread, 4000); } // tiny textures are often an engine's stand-in for a failed load: keep the context
       t.iids = [IID.IDirect3DResource9, IID.IDirect3DBaseTexture9];
       for (const l of t.levels) l.iids = [IID.IDirect3DSurface9, IID.IDirect3DResource9];
       mem.write32(pp, t.ptr = com.create(c.proc, 'IDirect3DTexture9', t));

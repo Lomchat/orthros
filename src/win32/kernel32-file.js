@@ -185,7 +185,7 @@ export function registerKernel32File(api, vm) {
     if (!path) return c.fail(E.INVALID_PARAMETER) | INVALID_HANDLE;
     const wp = c.proc.path(path);
     const st = vm.vfs.stat(wp);
-    if (!st) return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE;
+    if (!st) { vm.log('file', `attributes ${wp} -> not found`); return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE; }
     return st.isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE;
   };
   K.GetFileAttributesA = [1, (c) => attrsOf(c, c.str(0))];

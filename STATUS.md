@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant : M5 atteint le 2026-09-18 — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (800×600 plein écran, ~37 fps sous SwiftShader), libellés compris, et un clic scripté sur OPTIONS ouvre l'écran des options complet (preuves : `build/proof/m5-menu.png`, `build/proof/m5-options.png`, reproductibles par `node tools/headless.mjs bfme-vanilla --seconds 215 --shots 1 --input "190:click:338,573"`). M6 en cours.**
+**Palier courant : M6 quasi atteint (partie jouable 10 min, audio, entrées, sauvegardes), M7 en cours (38 fps, p99 34 ms sous SwiftShader). Historique : M5 atteint le 2026-09-18 — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (800×600 plein écran, ~37 fps sous SwiftShader), libellés compris, et un clic scripté sur OPTIONS ouvre l'écran des options complet (preuves : `build/proof/m5-menu.png`, `build/proof/m5-options.png`, reproductibles par `node tools/headless.mjs bfme-vanilla --seconds 215 --shots 1 --input "190:click:338,573"`). M6 en cours.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -199,9 +199,32 @@
   vérifié** (`--opfs <user-data-dir>` : contexte navigateur persistant + port fixe, l'OPFS étant par origine) : au second
   run le jeu retrouve ses réglages et saute sa suite de benchmarks (Direct3D à 25 s, menu à 58 s, `build/shots20`).
 
+## Rendu (2026-09-23, suite)
+- **Texte avec les vraies polices** (D035) : le jeu extrait et enregistre ses polices (`AddFontResourceExA` : SachaWynterTight,
+  Albertus MT), le moteur de texte GDI les réalise avec des métriques GDI et les rastérise par Canvas2D dans le worker ; menus,
+  écran d'escarmouche, infobulles et HUD affichent maintenant le texte du jeu tel quel (fini la police bitmap 5×7).
+- **Curseurs du jeu** : `LoadCursorFromFileA` (54 curseurs .ani/.cur) → curseur CSS animé sur la page (non visible en headless).
+- Direct3D : règle des centres de pixels D3D8/9 (demi-pixel, texte/UI nets en filtrage bilinéaire — test damier dans `dx9.exe`),
+  alpha test après pixel shaders, brouillard « table » sur la distance œil (w), DEPTHBIAS en unités de profondeur, rampe gamma
+  (`SetGammaRamp`/`SetDeviceGammaRamp`, passe LUT au Present), `GetDC` sur surfaces, `UpdateSurface`/`CopyRects` DXT par blocs,
+  P8 non annoncé (comme les vrais pilotes).
+- Outils : `--capture-at <s|+s> [--capture-draws]` (textures de chaque draw avec tous les niveaux de mip, cible après chaque draw,
+  état complet, premiers sommets, plages d'UV, matrices de texture, historique d'écriture des surfaces) ; histogramme complet des
+  API en fin de run ; `--corpus` (formes d'instructions du code traduit).
+- **CPU** (D036/D037) : suite de conformité `corpus` (762 formes réellement exécutées par le jeu, 7 134 cas ; 35 670 à 60 cas/forme)
+  → 3 bugs x87 du JIT (arrondis dirigés en PC=24, FST m32 dirigé) et 2 de l'interpréteur corrigés ; noyaux WASM `arith24`/`f32rc`.
+- Défauts restants en partie (détail Very Low) :
+  - **3 textures « magenta »** : ce sont des textures 1×1 créées *pendant le rendu* (création paresseuse) juste après
+    `CheckDeviceFormat(R8G8B8) → non disponible` puis `A8R8G8B8 → ok` : vraisemblablement le proxy d'une texture chargée en
+    arrière-plan qui n'est jamais remplacé. Enquête en cours (trace de tous les threads au moment de la création).
+  - **Sol de la forteresse** en aplats gris : le draw échantillonne une zone « bande sombre » de l'atlas 256×128 que le moteur
+    compose lui-même (un seul `LockRect`) ; mapping (UV, mips, matrices) vérifié correct côté Orthros. Peut-être la même cause
+    (tuile manquante/remplacée dans l'atlas).
+
 ## Prochaine action
-- M6 : enchaîner les clics scriptés jusqu'au lancement d'une escarmouche (captures chaque seconde pour repérer les
-  boutons), corriger ce que le jeu exerce en 3D, puis vérifier audio (sortie AudioWorklet) et sauvegardes (OPFS).
+- Élucider les textures proxy jamais remplacées (thread de chargement : fichiers lus, attentes, erreurs) → corriger la fidélité en cause.
+- Détail High (shaders) : capture d'image et vérification du rendu, puis performance (1 500 draws/image).
+- Mesure réelle sur GPU (critère M7) : `make serve` puis Chrome sur une machine cliente.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)

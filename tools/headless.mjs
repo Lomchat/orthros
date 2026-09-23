@@ -40,6 +40,7 @@ if (args.includes('--dump-shaders')) q.set('dump', '1');
 if (opt('capture')) q.set('capture', opt('capture'));
 if (args.includes('--nocull')) q.set('nocull', '1');
 if (args.includes('--capture-draws')) q.set('capturedraws', '1');
+if (opt('burst-from')) q.set('burstfrom', opt('burst-from')); // --log apiburst: trace the API calls following tiny (stand-in) textures from this resource id on
 // --capture-at <s|+s>: capture the next Direct3D frame at that time (textures as PNG, per-draw state; with
 // --capture-draws also the render target after every draw) into <out>/capture
 const captureAt = opt('capture-at') ? { t: Number(opt('capture-at')), rel: opt('capture-at').startsWith('+'), done: false } : null;
