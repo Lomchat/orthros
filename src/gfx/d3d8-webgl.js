@@ -554,6 +554,9 @@ export class WebGLDevice {
     const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
     const u = (name) => { let l = loc[name]; if (l === undefined) { l = gl.getUniformLocation(prog, name); loc[name] = l; } return l; };
+    // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
+    gl.useProgram(prog); this.gs.prog = prog;
+    for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
     return { prog, u, attrNames, key };
   }
 
@@ -667,7 +670,6 @@ export class WebGLDevice {
       const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
       const g = this.glTexture(tex);
       if (gs.tex[i] !== g.tex) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
-      if (gs.texUnit[i] !== P.prog) { gl.uniform1i(l, i); gs.texUnit[i] = P.prog; }
       // sampler objects are pooled by parameter combination: switching settings is one bindSampler
       const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
@@ -748,7 +750,7 @@ export class WebGLDevice {
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
   invalidateGlState() {
-    this.gs = { en: {}, tex: new Array(16).fill(null), texUnit: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
+    this.gs = { en: {}, tex: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
     if (this.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } // the default VAO (cached ones keep their state)
   }
   captureDraw(P, info, v, flip) {
