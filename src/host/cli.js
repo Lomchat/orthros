@@ -15,6 +15,7 @@ import { NodeBackend } from '../vfs/node-backend.js';
 import { RealClock } from '../core/clock.js';
 import { HeadlessHost } from './display.js';
 import { Registry } from '../win32/registry.js';
+import { folderManifest, withDefaults } from './manifest.js';
 
 function parseArgs(argv) {
   const o = { positional: [], log: null, interp: false, seconds: 0, status: null, profile: false, progress: 0 };
@@ -32,28 +33,14 @@ function parseArgs(argv) {
   return o;
 }
 
-/** Load a manifest (json file) or synthesize one for a bare folder (first .exe found). */
+/** Load a manifest (json file) or the folder's manifest (its manifest.json, else synthesized: see manifest.js). */
 export function loadManifest(target) {
-  let manifest, dir;
   if (target.endsWith('.json')) {
-    manifest = JSON.parse(fs.readFileSync(target, 'utf8'));
-    dir = path.resolve(path.dirname(target), manifest.folder ?? '.');
-  } else {
-    dir = path.resolve(target);
-    const m = path.join(dir, 'manifest.json');
-    if (fs.existsSync(m)) manifest = JSON.parse(fs.readFileSync(m, 'utf8'));
-    else {
-      const exe = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.exe'));
-      if (!exe) throw new Error(`no manifest.json and no .exe in ${dir}`);
-      manifest = { exe };
-    }
+    const manifest = withDefaults(JSON.parse(fs.readFileSync(target, 'utf8')));
+    return { manifest, dir: path.resolve(path.dirname(target), manifest.folder ?? '.') };
   }
-  manifest.mount ??= 'C:\\Game';
-  manifest.args ??= '';
-  manifest.dllOverrides ??= {};
-  manifest.env ??= {};
-  manifest.display ??= { width: 1024, height: 768 };
-  return { manifest, dir };
+  const manifest = folderManifest(target);
+  return { manifest, dir: manifest.folder };
 }
 
 /** Build the VFS: game folder read-only under the mount point, writable user dirs in memory. */
