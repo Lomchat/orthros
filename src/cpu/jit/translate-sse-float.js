@@ -97,7 +97,7 @@ function f64ToI32Scalar(E) {
 /** Compare L_F64A (a) with L_F64B (b) into EFLAGS: COMISS/UCOMISS semantics (see interp comis). */
 function compareEflags(E) {
   const c = E.c;
-  E.materialize();
+  E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
   c.get(L_EFLAGS).i32(~(F.ZF | F.PF | F.CF | F.OF | F.SF | F.AF)).and();
   c.get(L_F64A).get(L_F64B).f64lt(); const i1 = c.if_(T.i32); c.i32(F.CF); c.else_();
   c.get(L_F64A).get(L_F64B).f64eq(); const i2 = c.if_(T.i32); c.i32(F.ZF); c.else_();

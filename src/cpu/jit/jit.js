@@ -3,7 +3,8 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_BITMAP_BASE } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
+import { OP_NAMES } from '../decoder.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
 import './translate-sse-int.js';
@@ -256,6 +257,12 @@ export class Jit {
       const p = (this.stats.prof ??= Object.fromEntries(JIT_PROF.map((k) => [k, 0])));
       JIT_PROF.forEach((k, i) => { const a = (base + ST.PROF + 4 * i) >>> 2; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
     }
+  }
+  /** flags helper calls per x86 mnemonic since the last call (profiling translations), sorted */
+  flagsByOp() {
+    const out = [];
+    for (let op = 0; op < OP_NAMES.length; op++) { const a = (PROF_OPS_BASE >>> 2) + op; const n = this.mem.u32[a]; if (n) { out.push([OP_NAMES[op], n]); this.mem.u32[a] = 0; } }
+    return out.sort((x, y) => y[1] - x[1]);
   }
 
   run(opts = {}) {
