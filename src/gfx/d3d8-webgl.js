@@ -196,6 +196,7 @@ export class WebGLDevice {
   uploadLevel(target, level, s) {
     const gl = this.gl;
     this.stats.uploads++;
+    this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + s.width * s.height * 4;
     if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); return; }
     if (level === 0 && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s);
     if (isDxt(s.fmt) && this.s3tc) {

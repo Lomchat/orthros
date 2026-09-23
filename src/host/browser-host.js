@@ -81,7 +81,10 @@ export class BrowserHost {
     this.frameTimes = []; // rolling window for the live stats
     this.frameLog = []; // every frame since start as (presented at ms, frame time ms) pairs — whole-run percentiles
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
-    this.frameHook = () => { this.display.presentGl(); this.framePresented(); };
+    this.frameHook = () => { const t0 = performance.now(); this.display.presentGl(); this.presentMs += performance.now() - t0; this.framePresented(); };
+    this.presentMs = 0;
+    // slow-frame diagnostics: the worker installs `frameProbe()` (counters snapshot) and `onSlowFrame(dt, deltas)`
+    this.frameProbe = null; this.onSlowFrame = null; this.lastProbe = null; this.slowFrameLogs = 0; this.slowFrameFrom = 0;
   }
   /** Drain the shared input ring into the local queue. */
   pump() {
@@ -128,8 +131,19 @@ export class BrowserHost {
   framePresented() {
     this.framesPresented++;
     const now = performance.now();
-    if (this.lastFrameAt) { const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); }
+    if (this.lastFrameAt) { const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); this.probeFrame(dt); }
+    else this.probeFrame(0);
     this.lastFrameAt = now;
+  }
+  /** Snapshot the probe counters every frame; report the deltas of a frame longer than 33 ms (at most 300 reports). */
+  probeFrame(dt) {
+    if (!this.frameProbe) return;
+    const p = this.frameProbe(); p.presentMs = this.presentMs;
+    const prev = this.lastProbe; this.lastProbe = p;
+    if (!prev || dt <= 33 || !this.onSlowFrame || this.slowFrameLogs >= 5000 || performance.now() < (this.slowFrameFrom ?? 0)) return;
+    this.slowFrameLogs++;
+    const d = {}; for (const k of Object.keys(p)) d[k] = typeof p[k] === 'number' ? Math.round((p[k] - (prev[k] ?? 0)) * 100) / 100 : p[k];
+    this.onSlowFrame(dt, d);
   }
   /** Fill the audio ring up to `aheadFrames` using the VM mixer. */
   renderAudio(vm, aheadFrames = 4096) {
