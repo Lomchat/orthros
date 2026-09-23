@@ -731,7 +731,22 @@ export class WebGLDevice {
     const gl = this.gl, dev = this.dev;
     const vaos = this.vaos ?? (this.vaos = new Map());
     if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; }
-    const streams = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]];
+    const streams = L.layout.streamList ?? (L.layout.streamList = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]]);
+    // one stream (the common case): VAOs found by numbers (program -> buffer -> base * 256 + stride), no key string
+    if (!up && streams.length === 1) {
+      const [n, st] = streams[0], s = dev.streams[n], vb = this.comImpl(s?.vb);
+      if (vb) {
+        const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+        const byVb = P.vaoByVb ?? (P.vaoByVb = new Map());
+        const v = byVb.get(vb.id)?.get(base * 256 + stride);
+        if (v && vaos.get(v.key) === v) {
+          this.glBuffer(vb, 'vb'); // uploads pending data
+          if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
+          this.curVao = v;
+          return true;
+        }
+      }
+    }
     let key = up ? `${P.vid}|up${up.stride}` : `${P.vid}`;
     const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
     for (const [n, st] of streams) {
@@ -748,6 +763,7 @@ export class WebGLDevice {
       if (vaos.size >= 8192) this.dropVaos();
       v = { vao: gl.createVertexArray(), ib: null, key, bufs: bound.map((b) => b[5]).filter((x) => x >= 0), P };
       vaos.set(key, v); P.vaoKeys.push(key);
+      if (!up && bound.length === 1 && streams.length === 1) { const [, , stride, base, , id] = bound[0]; const byVb = P.vaoByVb ?? (P.vaoByVb = new Map()); let m = byVb.get(id); if (!m) byVb.set(id, (m = new Map())); m.set(base * 256 + stride, v); }
       for (const id of v.bufs) { let set = (this.vaosByBuf ??= new Map()).get(id); if (!set) this.vaosByBuf.set(id, (set = new Set())); set.add(key); }
       gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
       const attrType = (a) => (a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT);
@@ -771,7 +787,7 @@ export class WebGLDevice {
   /** Forget cached VAOs (all, or those of one buffer resource / one program). */
   dropVaos(bufId, P) {
     const keys = bufId !== undefined ? [...(this.vaosByBuf?.get(bufId) ?? [])] : P ? P.vaoKeys ?? [] : [...(this.vaos?.keys() ?? [])];
-    for (const k of keys) { const v = this.vaos.get(k); if (!v) continue; if (this.gs.vao === v.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } this.gl.deleteVertexArray(v.vao); this.vaos.delete(k); }
+    for (const k of keys) { const v = this.vaos.get(k); if (!v) continue; if (this.gs.vao === v.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } this.gl.deleteVertexArray(v.vao); this.vaos.delete(k); if (bufId !== undefined) v.P?.vaoByVb?.delete(bufId); }
     if (bufId !== undefined) this.vaosByBuf?.delete(bufId);
     if (bufId === undefined && !P) this.vaosByBuf?.clear();
   }
