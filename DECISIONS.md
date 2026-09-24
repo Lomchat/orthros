@@ -181,3 +181,9 @@ choisit ou ajoute la version du mode courant ; (2) en précision 24 bits avec ar
 arrondi en ligne (masquage hors grille, exactitude sur la grille pour des opérandes flottants) et les cas rares
 (zéros en arrondi vers le bas, dénormaux, infinis, NaN, inexacts sur la grille) sortent vers l'interpréteur ;
 `FST(P) m32` sous arrondi dirigé arrondit en ligne à toute précision (arrondi au plus près puis un pas si besoin).
+Essayé puis abandonné : garder aussi les registres en flottants (ombres f32, D042) sous arrondi dirigé — résultat f64
+masqué sans branchement, erreur TwoSum pour les sommes sur la grille. Micro-mesure (`tools/x87-bench.mjs xform`,
+configuration « pc24 chop ») 52,8 → 47,2 ns par sommet, mais chargement d'une partie inchangé (A/B : 72 / 75 s) : code
+plus complexe (deux cas limites trouvés par les tests aléatoires : erreur TwoSum NaN d'une somme infinie, valeur
+24 bits sous 2^-126 que f32.demote arrondit à 2^-126) sans gain mesuré — non gardé. Ce code est limité par la
+latence des passages f64 ↔ entier (~2× le chemin au plus près).
