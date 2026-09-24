@@ -259,8 +259,9 @@ function canvasPos(e) {
     return [Math.round(state.vx), Math.round(state.vy)];
   }
   const r = $('c2d').getBoundingClientRect();
-  const s = state.scale || 1;
-  return [Math.round((e.clientX - r.left) / s), Math.round((e.clientY - r.top) / s)];
+  const s = state.scale || 1, { width: w, height: h } = state.mode;
+  // (clamped: the mouse in the page's margins beside the game is at the game's edge — screen-edge scrolling without pointer lock)
+  return [Math.max(0, Math.min(w - 1, Math.round((e.clientX - r.left) / s))), Math.max(0, Math.min(h - 1, Math.round((e.clientY - r.top) / s)))];
 }
 /**
  * Play mode: fullscreen + pointer lock (the mouse cannot leave the game, screen-edge scrolling works) + keyboard lock
@@ -298,7 +299,7 @@ function vkOf(e) {
 
 function setupInput() {
   const c = $('c2d');
-  c.addEventListener('mousemove', (e) => { const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
+  document.addEventListener('mousemove', (e) => { if (state.status !== 'running') return; const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
   c.addEventListener('mousedown', (e) => { const [x, y] = canvasPos(e); push(EV.MOUSEDOWN, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
   c.addEventListener('mouseup', (e) => { const [x, y] = canvasPos(e); push(EV.MOUSEUP, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -308,8 +309,9 @@ function setupInput() {
   addEventListener('blur', () => push(EV.FOCUS, 0, 0, 0));
   addEventListener('focus', () => push(EV.FOCUS, 1, 0, 0));
   document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } drawSoftCursor(); });
-  if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
+  if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
+  $('hint').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
 }
 
 async function setupAudio(audioSab, ctlSab) {
