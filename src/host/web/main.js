@@ -9,7 +9,27 @@ const headless = params.get('headless') === '1';
 const state = { status: 'menu', stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false, lastX: 0, lastY: 0 };
 window.orthros = state;
 
+/** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
+function showStatus(title, detail = '', report = null, error = false) {
+  const el = $('status');
+  el.classList.remove('hidden'); el.classList.toggle('error', error);
+  el.querySelector('.title').textContent = title; el.querySelector('.detail').textContent = detail;
+  const pre = el.querySelector('pre'); pre.classList.toggle('hidden', !report); pre.textContent = report ?? '';
+}
+function hideStatus() { $('status').classList.add('hidden'); }
+/** What Orthros needs from the browser; the first missing piece, or null. */
+function missingFeature() {
+  if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 'the page is not cross-origin isolated (SharedArrayBuffer unavailable): serve it with Orthros\' server (COOP/COEP headers)';
+  if (typeof OffscreenCanvas === 'undefined' || !new OffscreenCanvas(1, 1).getContext('webgl2')) return 'WebGL 2 is unavailable (hardware acceleration disabled?)';
+  // WASM tail calls (return_call_indirect): a module using one validates only where they are supported
+  const tail = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 4, 4, 1, 112, 0, 1, 10, 9, 1, 7, 0, 65, 0, 19, 0, 0, 11]);
+  if (!WebAssembly.validate(tail)) return 'this browser lacks WebAssembly tail calls: use a recent Chrome';
+  return null;
+}
+
 async function main() {
+  const missing = missingFeature();
+  if (missing) { $('menu').classList.add('hidden'); showStatus('Orthros cannot run here', missing, null, true); return; }
   const list = await (await fetch('/api/manifests')).json();
   const games = $('games');
   for (const g of list) { const b = document.createElement('button'); b.textContent = `${g.title} (${g.exe})`; b.onclick = () => start(g.name); games.appendChild(b); }
@@ -24,6 +44,8 @@ async function start(name) {
   const tree = await (await fetch(`/api/tree/${name}`)).json();
   state.status = 'starting'; state.manifest = name;
   $('menu').classList.add('hidden'); $('stage').classList.remove('hidden');
+  state.title = manifest.name ?? name;
+  if (!headless) showStatus(`Starting ${state.title}…`, 'the first launch reads the game files from the server; later ones start from the browser\'s copy');
   if ($('hudToggle').checked) $('hud').style.display = 'block';
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer');
@@ -64,7 +86,8 @@ function onWorkerMessage(m) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; break;
-    case 'stats': state.stats = m; state.statsAt = Date.now(); if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } renderHud(); break;
+    case 'stats': state.stats = m; state.statsAt = Date.now();
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } renderHud(); break;
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
@@ -72,8 +95,8 @@ function onWorkerMessage(m) {
     case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
-    case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); break;
-    case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); break;
+    case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''} — reload the page to start again`); break;
+    case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
