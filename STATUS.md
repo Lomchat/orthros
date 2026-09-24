@@ -1,6 +1,6 @@
 # STATUS — Orthros
 
-**Palier courant (2026-09-24) : M6 atteint (partie jouable, audio, entrées, sauvegardes ; campagne jusqu'à la carte de la Terre du Milieu). M7 : critère tenu côté CPU sur ce serveur — escarmouche High, 30 min de partie : 38,4 fps, p99 30,6 ms (≤ 33 ms) ; reste la mesure sur un vrai GPU client (`node bin/orthros.mjs run <dossier>`). `orthros run <dossier>` lance un dossier de jeu quelconque sans fichier propre au jeu. Historique : M5 atteint le 2026-09-18 — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (800×600 plein écran, ~37 fps sous SwiftShader), libellés compris, et un clic scripté sur OPTIONS ouvre l'écran des options complet (preuves : `build/proof/m5-menu.png`, `build/proof/m5-options.png`, reproductibles par `node tools/headless.mjs bfme-vanilla --seconds 215 --shots 1 --input "190:click:338,573"`). M6 en cours.**
+**Palier courant (2026-09-24) : M6 atteint (partie jouable, audio, entrées, sauvegardes ; campagne jusqu'à la carte de la Terre du Milieu). M7 : critère tenu côté CPU sur ce serveur — escarmouche High, 30 min de partie : 38,4 fps, p99 30,6 ms (≤ 33 ms) ; reste la mesure sur un vrai GPU client (`node bin/orthros.mjs run <dossier>`). Fin de journée : deux bugs de rendu corrigés (sol des bases en Low/VeryLow, ombres portées au stencil en High), chargement d'une partie 116 → 67 s et démarrage 92 → 75 s (modes FPU, D050), registres XMM en locaux (D049). `orthros run <dossier>` lance un dossier de jeu quelconque sans fichier propre au jeu. Historique : M5 atteint le 2026-09-18 — le menu principal du jeu est rendu par Direct3D 9 → WebGL2 dans Chromium headless (800×600 plein écran, ~37 fps sous SwiftShader), libellés compris, et un clic scripté sur OPTIONS ouvre l'écran des options complet (preuves : `build/proof/m5-menu.png`, `build/proof/m5-options.png`, reproductibles par `node tools/headless.mjs bfme-vanilla --seconds 215 --shots 1 --input "190:click:338,573"`). M6 en cours.**
 
 ## Ce qui marche
 - M0 : outillage (Node 24, Playwright Chromium, clang/lld-18), repo, `make test`, docs.
@@ -403,8 +403,13 @@
   verrouillés en DISCARD mis à jour par `bufferSubData` (orphelinage `bufferData(taille)` possible, exact selon la
   sémantique Direct3D, si des attentes GPU apparaissent) ; temps de compilation des programmes à leur première
   utilisation (ANGLE traduit en HLSL/MSL) ; perte de contexte (gérée) ; mémoire du processus (~1,6-2 Go ici).
-- Performance CPU : pression de registres dans les régions ; coût du chaînage entre régions x87 (vidage/rechargement
-  de la pile) ; les mesures en jeu exigent des runs seuls (bruit A/A jusqu'à 3,7 % sur la machine partagée).
+- Performance CPU : menu 3D High ~18 fps en CPU seul (71 % du temps dans le code invité, réparti sur ~2 600 régions :
+  qualité générale du code des régions — pression de registres, ~7,5 M chaînages/s dont la moitié entre régions x87) ;
+  chargement d'une partie ~70 s en CPU seul, dont la moitié dans une boucle x87 en arrondi vers zéro (limitée par la
+  latence des passages f64 ↔ entier du masquage 24 bits). Les mesures en jeu exigent des A/B simultanés (bruit A/A
+  jusqu'à 3,7 % sur la machine partagée).
+- Unités magenta : textures absentes du dossier de jeu (enquête close, voir plus haut) — à revérifier sur une copie
+  complète du jeu si l'occasion se présente.
 - Premier lancement sur réseau réel : téléchargement de fond de tout le dossier vers le magasin OPFS (à évaluer).
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
