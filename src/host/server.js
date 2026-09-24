@@ -1,7 +1,10 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests manifests/]
+// Usage: node src/host/server.js [--port 8080] [--manifests manifests/] [--default <manifest>] [--telemetry <dir>]
+//   --default: the page starts that game directly (the picker stays reachable with ?menu)
+//   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
+//                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,6 +88,20 @@ export function createServer(opts = {}) {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir }), { 'Content-Type': 'application/json' });
+      if (p === '/api/telemetry' && req.method === 'POST') {
+        if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
+        let body = '', size = 0;
+        req.on('data', (d) => { size += d.length; if (size <= 256 * 1024) body += d; });
+        req.on('end', () => {
+          let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+          if (size > 256 * 1024) return send(res, 413, 'too large');
+          const day = new Date().toISOString().slice(0, 10);
+          fs.appendFile(path.join(opts.telemetryDir, `telemetry-${day}.jsonl`), JSON.stringify({ at: new Date().toISOString(), ...rec }) + '\n', () => {});
+          send(res, 204, '');
+        });
+        return;
+      }
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
       if (p === '/api/manifests') { manifests = loadManifests(manifestDir, opts.extra); return send(res, 200, JSON.stringify([...manifests].map(([name, m]) => ({ name, title: m.name ?? name, exe: m.exe }))), { 'Content-Type': 'application/json' }); }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
@@ -109,7 +126,9 @@ export function createServer(opts = {}) {
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args[args.indexOf('--port') + 1] || 8080) || 8080;
-  const manifests = args.includes('--manifests') ? args[args.indexOf('--manifests') + 1] : undefined;
-  const server = createServer({ manifests });
+  const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
+  const telemetryDir = arg('--telemetry');
+  if (telemetryDir) fs.mkdirSync(telemetryDir, { recursive: true });
+  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

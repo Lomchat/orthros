@@ -151,7 +151,11 @@ export class BrowserHost {
   framePresented() {
     this.framesPresented++;
     const now = performance.now();
-    if (this.lastFrameAt) { const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); this.probeFrame(dt); }
+    if (this.lastFrameAt) {
+      const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); this.probeFrame(dt);
+      const iv = this.interval ??= { max: 0, slow33: 0, slow50: 0 }; // (per stats interval: the live frame-rate display)
+      if (dt > iv.max) iv.max = dt; if (dt > 33.4) iv.slow33++; if (dt > 50) iv.slow50++;
+    }
     else this.probeFrame(0);
     this.lastFrameAt = now;
   }

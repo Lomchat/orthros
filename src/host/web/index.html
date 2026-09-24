@@ -12,7 +12,13 @@
   #softcursor { position: absolute; display: none; pointer-events: none; z-index: 5; image-rendering: pixelated; }
   #hint { position: absolute; right: 8px; bottom: 8px; font: 11px system-ui; color: #777; pointer-events: none; }
   :fullscreen #hint { display: none; }
-  #hud { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.6); padding: 6px 10px; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none; display: none; }
+  #hud { position: absolute; left: 8px; top: 8px; z-index: 30; background: rgba(0,0,0,.62); padding: 6px 10px; border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; color: #ccc; display: none; cursor: pointer; user-select: none; }
+  #hud .fps { font: 700 22px/1.1 ui-monospace, monospace; }
+  #hud .fps small { font-size: 12px; font-weight: 400; color: #aaa; }
+  #hud .good { color: #7ee07e; } #hud .warn { color: #f4c95d; } #hud .bad { color: #ff6b6b; }
+  #hud canvas { display: block; margin: 4px 0 2px; }
+  #hud.collapsed canvas, #hud.collapsed .details { display: none; }
+  #hud .details { white-space: pre; }
   #menu { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #111; }
   #menu button { font: 15px system-ui; padding: 8px 18px; cursor: pointer; }
   #log { position: absolute; left: 8px; bottom: 8px; right: 8px; max-height: 30%; overflow: auto; background: rgba(0,0,0,.7); font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; display: none; padding: 6px; }
@@ -34,7 +40,7 @@
 <div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
 <div id="status" class="hidden"><div class="title"></div><div class="detail"></div><pre class="hidden"></pre></div>
 <div id="hint">F11 / Alt+Enter: fullscreen with mouse capture</div>
-<div id="hud"></div>
+<div id="hud" title="click: compact / detailed"><div class="fps"></div><canvas width="200" height="40"></canvas><div class="details"></div></div>
 <div id="log"></div>
 <script type="module" src="/src/host/web/main.js"></script>
 </body>
