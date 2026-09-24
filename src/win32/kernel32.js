@@ -107,7 +107,7 @@ export function registerKernel32(api, vm) {
   K.IsDebuggerPresent = [0, () => 0];
   K.CheckRemoteDebuggerPresent = [2, (c) => { c.out32(1, 0); return 1; }];
   K.DebugBreak = [0, (c) => { vm.warn('DebugBreak called'); }];
-  K.OutputDebugStringA = [1, (c) => { vm.log('debug', c.str(0) ?? ''); }];
+  K.OutputDebugStringA = [1, (c) => { vm.log('debug', c.str(0) ?? ''); vm.log('debugctx', `${c.str(0) ?? ''} — previous API calls of t${c.thread.id}:\n  ${vm.recentApiCalls(40, c.thread.id).join('\n  ')}`); }];
   K.OutputDebugStringW = [1, (c) => { vm.log('debug', c.wstr(0) ?? ''); }];
   K.SetUnhandledExceptionFilter = [1, (c) => { const o = c.proc.unhandledFilter ?? 0; c.proc.unhandledFilter = c.arg(0); return o; }];
   K.UnhandledExceptionFilter = [1, () => 1];
