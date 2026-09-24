@@ -347,3 +347,30 @@ test('code rewritten by string stores (rep movsb / stosb, single movsd) is retra
     assert.deepEqual([EJ.cpu.ebx, EJ.cpu.eax], [1, 2], `copy ${copy.map((b) => b.toString(16)).join(' ')}`);
   }
 });
+
+// Flags liveness across the blocks of a region (translate.js regionFlagsLiveness): INC keeps CF only when a successor
+// reads it before writing it. A loop `inc ecx ; jmp B` / B: `cmp ; jb`: CF dead at A's end, no flags helper call
+// for the INC; the same loop with `adc ebx, 0` first in B: CF live, carried through the INC (ebx counts the passes).
+test('flags liveness across blocks: INC computes the preserved CF only when a successor reads it', async () => {
+  const { translateRegion, IMP_FLAGS } = await import('../src/cpu/jit/translate.js');
+  const { OP } = await import('../src/cpu/decoder.js');
+  const cases = [
+    { name: 'dead', code: [0x41, 0xeb, 0x00, 0x83, 0xf9, 0x0a, 0x72, 0xf8, 0xf4], incCalls: 0 }, // A: inc ecx ; jmp B / B: cmp ecx,10 ; jb A ; hlt
+    { name: 'live', code: [0xf9, 0x41, 0xeb, 0x00, 0x83, 0xd3, 0x00, 0x83, 0xf9, 0x0a, 0x72, 0xf5, 0xf4], ebx: 10 }, // stc ; A: inc ecx ; jmp B / B: adc ebx,0 ; cmp ecx,10 ; jb A ; hlt
+  ];
+  for (const k of cases) {
+    const code = Uint8Array.from(k.code), exit = CODE + code.length - 1;
+    const EI = makeExec(false); EI.load(code, 0); EI.cpu.ecx = 0; EI.cpu.ebx = 0;
+    assert.equal(EI.run(exit, 1e5), EXIT.HALT);
+    const EJ = makeExec(true); EJ.load(code, 0); EJ.cpu.ecx = 0; EJ.cpu.ebx = 0;
+    assert.equal(EJ.run(exit, 1e5), EXIT.HALT);
+    assert.deepEqual(snapshot(EJ), snapshot(EI), k.name);
+    if (k.ebx !== undefined) assert.equal(EJ.cpu.ebx, k.ebx, `${k.name}: CF carried through the INC across the jump`);
+    if (k.incCalls !== undefined) {
+      const { stats } = translateRegion(EJ.mem, CODE, {});
+      const calls = [];
+      for (let i = 0; i < (stats.calls ?? []).length; i += 2) if (stats.calls[i] === IMP_FLAGS && stats.calls[i + 1] === OP.INC) calls.push(i);
+      assert.equal(calls.length, k.incCalls, `${k.name}: flags helper calls for the INC`);
+    }
+  }
+});
