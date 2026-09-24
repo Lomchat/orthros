@@ -187,3 +187,17 @@ configuration « pc24 chop ») 52,8 → 47,2 ns par sommet, mais chargement d'un
 plus complexe (deux cas limites trouvés par les tests aléatoires : erreur TwoSum NaN d'une somme infinie, valeur
 24 bits sous 2^-126 que f32.demote arrondit à 2^-126) sans gain mesuré — non gardé. Ce code est limité par la
 latence des passages f64 ↔ entier (~2× le chemin au plus près).
+
+## D051 — 2026-09-24 — API rapides exécutées dans les régions
+Les API « rapides » (D015 : GetLastError, TlsGetValue, sections critiques, Interlocked…) étaient traitées en WASM
+par le répartiteur, mais chaque appel restait une sortie de région, un passage dans le répartiteur et une rentrée
+(~30-40 ns). Mesuré (`--jit-profile`, compteurs par API et échantillon des sites d'appel) : jusqu'à 17 M appels/s au
+chargement, presque tous depuis trois `call dword ptr [case]` de l'accès aux données par thread de la CRT et depuis
+le talon d'import `jmp dword ptr [case]` de LeaveCriticalSection de l'allocateur du jeu. **Décision** : quand la case
+(entrée d'import ou variable pointeur de fonction à adresse absolue) contient, à la traduction, la thunk d'une API
+rapide, la région exécute la sémantique de `fastApi` sur ses registres locaux ; à l'exécution, l'appel vérifie que la
+case contient toujours cette thunk et que le thread ne rejoue pas un appel parqué (RESUMING), sinon appel ordinaire ;
+les cas lents (section critique d'un autre thread, index TLS ≥ 64) vont au gestionnaire JavaScript comme avant. Un
+`call` exécuté ainsi ne termine plus son bloc ; un `jmp` de talon revient comme un RET. Mesure : chargement d'une
+partie 60 → 55 s (A/B simultanés), menu neutre. Les appels COM différés (vtables, ~30 k/s) et les appels par registre
+(`call ebp`) passent encore par le répartiteur.
