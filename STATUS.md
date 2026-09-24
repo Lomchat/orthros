@@ -320,6 +320,15 @@
 - **Perte du contexte WebGL** (réinitialisation GPU, pilote) : contexte restauré, objets GL recréés et ressources
   re-téléversées depuis la mémoire invitée ; vérifié avec `--lose-context-at` au menu High.
 - **30 min de partie** : 38,4 fps, p99 30,6 ms, aucun plantage (voir « Performance CPU »).
+- **Versions de région par mode FPU** : une région x87 atteinte sous plusieurs modes (CRT partagée par des threads en
+  24 et 53 bits, décodeur MP3) reçoit une version spécialisée par mode (jusqu'à 3, chaînées depuis la garde d'entrée)
+  au lieu de devenir générique (tests de mode et appels de noyaux dans chaque opération).
+- **Ombrage plat** (`D3DRS_SHADEMODE = FLAT`, utilisé par le jeu) : couleurs `flat` + convention du premier sommet
+  (`WEBGL_provoking_vertex`). Toutes les opérations d'étage de texture utilisées par le jeu sont couvertes.
+- **Validation du cache d'état GL** (`--gl-validate`) : aucun écart sur 5,5 M draws (menu) ; l'outil détecte le bug de
+  liaison de textures corrigé si on le réintroduit.
+- **Campagne** : menus Campagne → Bien → difficulté → carte parcheminée puis carte 3D de la Terre du Milieu (nuages,
+  Mordor) rendues correctement ; vidéo VP6 du menu ouverte depuis `Data\Movies`.
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente.
