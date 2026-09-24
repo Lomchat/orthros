@@ -54,7 +54,7 @@ async function start(name) {
   $('menu').classList.add('hidden'); $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
   if (!headless) showStatus(`Starting ${state.title}…`, 'the first launch reads the game files from the server; later ones start from the browser\'s copy');
-  if ($('hudToggle').checked) $('hud').style.display = 'block';
+  if ($('hudToggle').checked && !headless) $('hud').style.display = 'block'; // (headless: the harness reads the stats; the display would cover part of the frame in its screenshots)
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer');
   resizeTo(manifest.display.width, manifest.display.height);

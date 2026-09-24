@@ -132,18 +132,35 @@ async function start(m) {
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
   post({ type: 'started', firstLaunch: !m.opts.headless && profileFilesRestored === 0 && !(m.opts.profileFiles?.length) });
-  channel.port1.onmessage = () => pump();
+  channel.port1.onmessage = () => { pumpPosted = false; pump(); };
+  host.wake = () => { if (running && !stopped) schedulePump(0); }; // (an asynchronous completion a guest thread waits on)
   pump();
 }
 
 let lastProf = {};
 let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map(), lastFallbacks = 0, lastFbHist = new Map();
 const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0 }; // how the worker spends its time between slices
+let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0;
+/**
+ * The next pump: at once (a message: the event loop still runs in between) or after `ms` (a timer). One pending at a
+ * time — a wake-up (input, an asynchronous completion) replaces a pending timer instead of starting a second chain.
+ */
+let pumpPosted = false, pumpTimer = null;
+function schedulePump(ms) {
+  if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; }
+  if (ms > 0) { pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, ms); return; }
+  if (!pumpPosted) { pumpPosted = true; channel.port2.postMessage(0); }
+}
 function pump() {
   if (!running || stopped) return;
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
   let r;
   const tRun = performance.now();
+  // a slice that does not come back within a second (guest code run from a nested call — DllMain, a callback — is
+  // not cut into slices): what runs, logged each second meanwhile (the page shows no new frame then)
+  vm.progressEvery = 1000; vm.progressAt = tRun + 1000;
+  vm.onProgress ??= (t) => { if ((longSliceLogs = (longSliceLogs ?? 0) + 1) <= 40) log('hang', `worker busy for ${((performance.now() - longSliceStart) / 1000).toFixed(1)} s in one slice: thread ${t.id}${t.callbackDepth ? ` (nested call depth ${t.callbackDepth})` : ''} at ${vm.proc.symbolize(t.cpu.eip)}, VM depth ${vm.depth}; last API calls: ${vm.recentApiCalls(6, t.id).join(', ')}`); };
+  longSliceStart = tRun;
   try {
     r = vm.runFor(tRun + 12);
   } catch (e) {
@@ -182,9 +199,13 @@ function pump() {
     flushProfile();
   }
   if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); return; }
-  if (r.state === 'sleep') { const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; setTimeout(pump, ms); }
-  else if (r.state === 'idle') { pumpStats.idles++; setTimeout(pump, 30); }
-  else channel.port2.postMessage(0);
+  if (r.state === 'sleep') {
+    const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; schedulePump(Math.max(1, ms));
+    // every thread waiting a second or more: what for (a wait Windows would end sooner shows up here)
+    if (ms >= 1000 && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
+  }
+  else if (r.state === 'idle') { pumpStats.idles++; schedulePump(30); }
+  else schedulePump(0);
 }
 
 /** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
@@ -250,7 +271,7 @@ function stop(reason) { stopped = true; running = false; flushProfile(true); pos
 self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
-  else if (m.type === 'wake') { if (running && !stopped) channel.port2.postMessage(0); }
+  else if (m.type === 'wake') { if (running && !stopped) schedulePump(0); }
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; log('gfx', `d3d-webgl: capture requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0) : 'no vm' });
