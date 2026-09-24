@@ -75,7 +75,7 @@ function profileDump() {
 async function start(m) {
   manifestName = m.name;
   const manifest = m.manifest;
-  const clock = new RealClock();
+  const clock = new RealClock(m.opts.timeScale || 1); // (debugging: ?timescale=0.5 shows the guest a machine twice as fast)
   const ctl = new Int32Array(m.ctl), inputRing = new Int32Array(m.inputRing), audioRing = new Float32Array(m.audioRing);
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
   const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
