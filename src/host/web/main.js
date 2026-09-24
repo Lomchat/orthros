@@ -135,7 +135,12 @@ function applyCursor() {
   show();
 }
 
+/** Emulator warnings and graphics failures sent to the server as they happen (the first 60 of a session): what a
+ * player's GPU / browser rejects (a shader, a GL error), an API the game needed, a slow program build. */
+const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
+const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable/i;
 function log(kind, msg) {
+  if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, 4000) });
   const line = `[${kind}] ${msg}`;
   state.logs.push(line); if (state.logs.length > 5000) state.logs.shift();
   if (headless) console.log(line);
