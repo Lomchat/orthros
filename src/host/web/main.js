@@ -152,9 +152,12 @@ function renderHud() {
   const clock = new Date().toLocaleTimeString();
   // no new image for a while: the game is loading (at startup, or between screens) rather than running slowly
   const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
-  const busy = $('busy'), showBusy = !headless && state.status === 'running' && still >= 3;
+  // (a game deactivated with its window — the page lost the focus — pauses, as a fullscreen game does on Windows)
+  const busy = $('busy'), paused = !document.hasFocus(), showBusy = !headless && state.status === 'running' && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
-  if (showBusy) busy.innerHTML = `${state.title ?? 'The game'} is loading… <small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files read ${s.ioMB ?? 0} MB</small>`;
+  if (showBusy) busy.innerHTML = paused ? `${state.title ?? 'The game'} is paused while its window is inactive <small>click the game to resume</small>`
+    : `${state.title ?? 'The game'} is loading… <small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files read ${s.ioMB ?? 0} MB</small>`;
+  if (paused && s.frames > 0) { fpsEl.innerHTML = '<small>paused</small>'; det.textContent = `window inactive\n${clock}`; drawHudGraph(hud.querySelector('canvas')); return; }
   if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { // starting: no frame yet, or the first images then a long wait
     fpsEl.innerHTML = '<small>loading…</small>';
     det.textContent = `files ${s.ioMB ?? 0} MB · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
