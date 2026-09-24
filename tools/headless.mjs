@@ -21,14 +21,14 @@ if (name && (name.includes('/') || name.includes('\\')) && fs.existsSync(name) &
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
-// down/up (left button, for drags), key, text, shot (screenshot now), waitfps)
+// down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
 // kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string>. Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
 // --capture-at @N captures N seconds after the anchor.
 let afterWait = false;
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel') afterWait = true; return ev; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -193,6 +193,16 @@ for (;;) {
       if (fpsStreak >= 3) { ev.done = true; anchorAt = t; console.log(`[input] waitfps ${ev.args[0]}: anchor at ${t.toFixed(0)}s`); }
       break;
     }
+    if (ev.kind === 'waitframe') { // min,max: until Direct3D frames carry that many draws (a loading screen: few; works with --gl-discard)
+      if (t < due) break;
+      const d3d = s.stats?.d3d, prev = ev.prev;
+      if (!d3d || (prev && d3d.frames === prev.frames)) break; // (no new frame in this sample: a slow loading screen)
+      ev.prev = { draws: d3d.draws, frames: d3d.frames };
+      const dpf = prev ? (d3d.draws - prev.draws) / (d3d.frames - prev.frames) : -1;
+      ev.streak = dpf >= ev.args[0] && dpf <= ev.args[1] ? (ev.streak ?? 0) + 1 : 0;
+      if (ev.streak >= 3) { ev.done = true; anchorAt = t; console.log(`[input] waitframe ${ev.args.join(',')}: ${dpf.toFixed(0)} draws/frame, anchor at ${t.toFixed(0)}s`); }
+      break;
+    }
     if (ev.kind === 'waitpixel') { // x,y,r,g,b[,tolerance]: until the displayed pixel has that color (what is on screen, whatever the speed)
       if (t < due) break;
       const [x, y, r, g, b, tol = 24] = ev.args;
@@ -217,7 +227,8 @@ for (;;) {
   }
   if (interpRangeAt && !interpRangeAt.done && t >= (interpRangeAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + interpRangeAt.t) : interpRangeAt.t)) { interpRangeAt.done = true; console.log(`[input] interpreter ranges ${opt('interp-range')} at ${t.toFixed(0)}s`); await page.evaluate((ranges) => window.orthros.worker?.postMessage({ type: 'interpRange', ranges }), opt('interp-range')); }
   if (loseContextAt !== null && !contextLost && t >= loseContextAt) { contextLost = true; console.log(`[input] WebGL context loss at ${t.toFixed(0)}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'loseContext', ms: 500 })); }
-  if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
+  const waitsDone = inputs.every((e) => !e.kind.startsWith('wait') || e.done); // (@N counts from the last anchor of the scenario)
+  if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null || !waitsDone ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
   // captured images, a few per round trip (a whole frame of per-draw PNGs exceeds the maximum string length)
   let nDumps = 0;
   for (;;) {
