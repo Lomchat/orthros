@@ -20,9 +20,11 @@ globalThis.XMLHttpRequest = class {
 };
 
 class MemStore {
-  constructor() { this.m = new Map(); }
+  constructor() { this.m = new Map(); this.failed = false; }
+  get map() { return this.m; }
   get(k) { return this.m.get(k)?.slice() ?? null; }
   put(k, b) { if (!this.m.has(k)) this.m.set(k, b.slice()); }
+  flush() {}
 }
 const tree = (mtime) => ({ dirs: { Data: { files: { 'a.big': { size: FILE.length, mtime } } } }, files: {} });
 
@@ -46,4 +48,24 @@ test('http backend: reads through the block cache and the persistent store', () 
   const b3 = new HttpBackend('/game/x/', tree(6), { store });
   b3.open('Data/a.big').read(0, 16);
   assert.equal(requests.length, n + 1);
+});
+
+test('http backend: the offline copy downloads every block into the store, then nothing is requested', async () => {
+  const realFetch = globalThis.fetch;
+  const fetched = [];
+  globalThis.fetch = async (url, init) => { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range); fetched.push([+a, +b]); return { status: 206, arrayBuffer: async () => FILE.slice(+a, +b + 1).buffer }; };
+  try {
+    const store = new MemStore(), progress = {};
+    const b = new HttpBackend('/game/z/', tree(9), { store });
+    await b.downloadAll(progress);
+    assert.equal(progress.done, true);
+    assert.equal(progress.bytes, FILE.length);
+    assert.equal(store.m.size, 4); // 3 MiB + a partial block
+    const n = requests.length;
+    const b2 = new HttpBackend('/game/z/', tree(9), { store });
+    assert.deepEqual(b2.open('Data/a.big').read(0, FILE.length), FILE);
+    assert.equal(requests.length, n, 'no synchronous request after the offline copy');
+    await b.downloadAll(progress); // already complete: nothing fetched again
+    assert.equal(fetched.length, 1);
+  } finally { globalThis.fetch = realFetch; }
 });

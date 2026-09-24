@@ -2,7 +2,7 @@
 // synchronous and the emulator runs in a worker). The directory tree comes from the server's
 // JSON listing so stat/readdir never hit the network; file data is fetched in blocks kept in a
 // bounded LRU cache with read-ahead for sequential access.
-const BLOCK = 1 << 20; // 1 MiB
+export const BLOCK = 1 << 20; // 1 MiB
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 
 export class HttpBackend {
@@ -72,6 +72,7 @@ export class HttpBackend {
     const t0 = performance.now();
     xhr.send();
     const ms = performance.now() - t0;
+    this.lastSyncFetchAt = performance.now(); // (a background download yields to the game's own reads)
     if (xhr.status !== 206 && xhr.status !== 200) throw new Error(`range request failed: ${xhr.status} ${url}`);
     const data = new Uint8Array(xhr.response);
     this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms;
@@ -100,6 +101,41 @@ export class HttpBackend {
     }
     this.evict();
     return this.cache.get(key);
+  }
+  /**
+   * Offline copy: fetch every block of every file of the listing that the store does not hold yet, in the
+   * background (4 MiB requests, one at a time), pausing while the game reads synchronously. `progress` is updated
+   * ({ bytes, total, done }); stops at `stop()` or when the store fails (quota).
+   */
+  async downloadAll(progress, stop = () => false) {
+    const store = this.store; if (!store || typeof fetch !== 'function') return;
+    const files = [];
+    const walk = (node, rel) => {
+      for (const [n, f] of Object.entries(node.files ?? {})) files.push({ path: rel ? `${rel}/${n}` : n, size: f.size, mtime: f.mtime ?? 0 });
+      for (const [n, d] of Object.entries(node.dirs ?? {})) walk(d, rel ? `${rel}/${n}` : n);
+    };
+    walk(this.tree, '');
+    progress.total = files.reduce((a, f) => a + f.size, 0); progress.bytes = 0; progress.done = false;
+    const PER_REQUEST = 4;
+    for (const f of files) {
+      const blocks = Math.ceil(f.size / BLOCK);
+      for (let b = 0; b < blocks; b += PER_REQUEST) {
+        if (stop() || store.failed) return;
+        const n = Math.min(PER_REQUEST, blocks - b), key = (i) => `${f.path}#${f.size}#${f.mtime}#${i}`;
+        let missing = false; for (let i = b; i < b + n; i++) if (!store.map.has(key(i))) missing = true;
+        const bytes = Math.min(f.size, (b + n) * BLOCK) - b * BLOCK;
+        if (missing) {
+          while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 500) await new Promise((r) => setTimeout(r, 200));
+          const url = this.base + f.path.split('/').map(encodeURIComponent).join('/');
+          let data;
+          try { const r = await fetch(url, { headers: { Range: `bytes=${b * BLOCK}-${b * BLOCK + bytes - 1}` } }); if (r.status !== 206 && r.status !== 200) return; data = new Uint8Array(await r.arrayBuffer()); if (r.status === 200) data = data.subarray(b * BLOCK, b * BLOCK + bytes); } catch { return; }
+          for (let i = b; i < b + n; i++) store.put(key(i), data.subarray((i - b) * BLOCK, Math.min(data.length, (i - b + 1) * BLOCK)));
+        }
+        progress.bytes += bytes;
+      }
+    }
+    store.flush();
+    progress.done = true;
   }
   evict() { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } }
 }
