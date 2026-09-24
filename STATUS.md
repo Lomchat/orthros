@@ -375,6 +375,13 @@
   cache d'état suivait, donc `--gl-validate` ne voyait rien). Les téléversements passent maintenant par une unité
   réservée. Test avec un contexte GL enregistreur (échoue sans la correction). Preuves : `build/proof/low-floor-before.png`,
   `build/proof/low-floor-fixed.png`. La capture compare désormais chaque texture relue du GPU avec la mémoire invitée.
+- **Bug de rendu corrigé : ombres portées absentes en High.** Le jeu dessine des volumes d'ombre au stencil (faces
+  arrière INCR, faces avant DECRSAT, écriture couleur coupée, puis assombrissement là où le compte ≥ 1) avec une
+  référence `STENCILREF = 0x80808080`. Direct3D garde les bits du stencil 8 bits (0x80) ; WebGL prend la référence en
+  entier signé et la borne à [0, 255] : 0x80808080 devenait 0, le test `GREATER 0x80` des volumes n'était jamais vrai.
+  Référence masquée à 8 bits. La citadelle, les tours de porte, les obélisques, les cyprès et les remparts projettent
+  maintenant leurs ombres (`build/proof/high-shadows-before.png`, `build/proof/high-shadows-fixed.png`). Test avec le
+  contexte GL enregistreur.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),

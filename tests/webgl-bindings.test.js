@@ -1,3 +1,4 @@
+// GL state of a draw as GL really receives it (a recording context, independent of the backend's own cache).
 // Texture bindings of a draw as GL really holds them (a recording context, independent of the backend's own cache):
 // uploading a dirty texture while the stages are being bound must not replace a stage bound before it. Seen in a
 // game: stage 0 a terrain atlas, stage 1 a shroud texture updated every frame — the upload of the shroud went
@@ -9,7 +10,9 @@ import { StateTable } from '../src/win32/state-table.js';
 
 function recordingGl() {
   const units = new Map(); let active = 0, next = 1;
+  const calls = [];
   const base = {
+    stencilFunc: (...a) => calls.push(['stencilFunc', ...a]),
     canvas: { width: 800, height: 600 }, drawingBufferWidth: 800, drawingBufferHeight: 600,
     TEXTURE0: 0x84c0, TEXTURE_2D: 0x0de1, MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
     activeTexture: (u) => { active = u - 0x84c0; },
@@ -29,7 +32,7 @@ function recordingGl() {
       return () => ({});
     },
   });
-  return { gl, unitTexture: (u) => units.get(u) };
+  return { gl, unitTexture: (u) => units.get(u), calls };
 }
 
 test('a dirty texture uploaded while a draw binds its stages leaves the earlier stages bound', () => {
@@ -60,4 +63,28 @@ test('a dirty texture uploaded while a draw binds its stages leaves the earlier 
   assert.equal(R.unitTexture(0), glTex(atlas), 'unit 0 still holds stage 0 after the upload of stage 1');
   assert.equal(R.unitTexture(1), glTex(shroud));
   assert.equal(shroud.levels[0].dirty, false, 'the dirty level was uploaded');
+});
+
+test('the stencil reference keeps the low 8 bits (Direct3D), not a clamped value (GL clamps a signed int)', () => {
+  const R = recordingGl();
+  const back = { id: 9, width: 800, height: 600, fmt: 21 };
+  const dev = {
+    api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
+    rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
+    textures: new Array(8).fill(0), com: { implAt: () => null },
+    fvf: 0x142, vertexDecl: null, vsObj: null, psObj: null, lights: new Map(), lightEnabled: new Set(),
+    transforms: new Map(), transformSlotVersion: new Map(), transformVersion: 0, transformAllVersion: 0,
+    viewport: { x: 0, y: 0, w: 800, h: 600, minZ: 0, maxZ: 1 }, backBuffers: [back], renderTarget: back,
+    material: new Float32Array(17), vsConst: new Float32Array(1024), psConst: new Float32Array(128), vsConstI: new Int32Array(64), psConstI: new Int32Array(64),
+    vsConstB: new Uint8Array(16), psConstB: new Uint8Array(16), constVersion: 0, lightVersion: 0, stateVersion: 0,
+  };
+  dev.rs.set(52, 1); // STENCILENABLE
+  dev.rs.set(56, 5); // STENCILFUNC GREATER
+  dev.rs.set(57, 0x80808080); // STENCILREF as a game sets it (a byte replicated)
+  dev.rs.set(58, 0x80808080); // STENCILMASK
+  const W = new WebGLDevice(R.gl, dev, {});
+  const info = W.program(); W.applyState(info.p, info);
+  const f = R.calls.filter((c) => c[0] === 'stencilFunc').pop();
+  assert.ok(f, 'stencilFunc called');
+  assert.equal(f[2], 0x80, 'reference = 0x80808080 & 0xff');
 });

@@ -387,7 +387,7 @@ export class WebGLDevice {
   }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
-    if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
+    if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
     const { h, flip } = this.bindTarget();
     const v = dev.viewport;
     const gy = (y, hh) => (flip ? y : h - y - hh);
@@ -744,7 +744,9 @@ export class WebGLDevice {
     const stencil = this.rs(RS.STENCILENABLE, 0) !== 0;
     this.glEnable(gl.STENCIL_TEST, stencil);
     if (stencil) { // cached as one key: some games set up stencil for every draw
-      const ref = this.rs(RS.STENCILREF, 0), mask = this.rs(RS.STENCILMASK, 0xffffffff), wmask = this.rs(RS.STENCILWRITEMASK, 0xffffffff);
+      // the reference keeps the bits of the 8-bit stencil buffer, as in Direct3D (GL clamps it instead, as a signed int:
+      // a reference of 0x80808080 became 0 — a game's shadow volumes, tested against 0x80, were never counted)
+      const ref = this.rs(RS.STENCILREF, 0) & 0xff, mask = this.rs(RS.STENCILMASK, 0xffffffff), wmask = this.rs(RS.STENCILWRITEMASK, 0xffffffff);
       const two = dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0);
       const f = this.rs(RS.STENCILFUNC, 8), o1 = this.rs(RS.STENCILFAIL, 1), o2 = this.rs(RS.STENCILZFAIL, 1), o3 = this.rs(RS.STENCILPASS, 1);
       const key = two ? `${f},${o1},${o2},${o3},${ref},${mask},${wmask}|${this.rs(RS9.CCW_STENCILFUNC, 8)},${this.rs(RS9.CCW_STENCILFAIL, 1)},${this.rs(RS9.CCW_STENCILZFAIL, 1)},${this.rs(RS9.CCW_STENCILPASS, 1)}` : `${f},${o1},${o2},${o3},${ref},${mask},${wmask}`;
