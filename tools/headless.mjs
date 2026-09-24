@@ -233,6 +233,15 @@ for (;;) {
     ev.done = true;
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
     if (ev.kind === 'shot') { const f = path.join(out, `${name}-step-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f, timeout: 10000 }).then(() => console.log(`[shot] ${f}`), (e) => console.log(`[shot] failed: ${e.message.split('\n')[0]}`)); continue; }
+    // a click holds the button ~100 ms, as a person does (a game polling the button state between two slow frames
+    // would miss a press and release delivered together)
+    if (ev.kind === 'click' || ev.kind === 'rclick') {
+      const b = ev.kind === 'click' ? 0 : 1;
+      await page.evaluate(({ b, x, y }) => { const { push, EV } = window.orthrosInput; push(EV.MOUSEMOVE, x, y, 0); push(EV.MOUSEDOWN, b, x, y); }, { b, x: ev.args[0], y: ev.args[1] });
+      await page.waitForTimeout(100);
+      await page.evaluate(({ b, x, y }) => { const { push, EV } = window.orthrosInput; push(EV.MOUSEUP, b, x, y); }, { b, x: ev.args[0], y: ev.args[1] });
+      continue;
+    }
     await page.evaluate(({ kind, args }) => {
       const { push, EV } = window.orthrosInput;
       if (kind === 'move') push(EV.MOUSEMOVE, args[0], args[1], 0);
