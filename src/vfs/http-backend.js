@@ -16,7 +16,7 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    */
   constructor(baseUrl, tree, opts = {}) {
@@ -29,6 +29,8 @@ export class HttpBackend {
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
     // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
     this.encoded = !!opts.encoded;
+    /** session id sent with the compressed ranges (the server learns the order blocks are needed in, see prefetch) */
+    this.session = opts.session ?? '';
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
   }
@@ -78,9 +80,42 @@ export class HttpBackend {
    * cut over the Internet) is retried after a pause, once per entry of retryWaits, before failing the read.
    */
   /** URL of [start, end) of a file: a compressed range, or the file itself (with a Range header) */
-  rangeUrl(path, start, end) {
+  rangeUrl(path, start, end, background = false) {
     const rel = path.split('/').map(encodeURIComponent).join('/');
-    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}` : this.base + rel;
+    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? '&p=1' : this.session ? '&s=' + this.session : ''}` : this.base + rel;
+  }
+
+  /**
+   * Background prefetch: download the listed blocks ([path, block index], in the order earlier sessions needed them)
+   * that the store does not hold yet, one request at a time (two consecutive blocks at most), yielding while the game
+   * reads synchronously (its reads come first). `progress` gets { bytes, blocks, done }.
+   */
+  async prefetch(list, progress, stop = () => false) {
+    const store = this.store; if (!store || typeof fetch !== 'function') return;
+    progress.bytes = 0; progress.blocks = 0; progress.done = false;
+    for (let k = 0; k < list.length; k++) {
+      if (stop() || store.failed) return;
+      const [p, b] = list[k];
+      const r = this.lookup(p); if (!r || !r.file) continue;
+      const size = r.file.size, mtime = r.file.mtime ?? 0, key = (i) => `${r.path}#${size}#${mtime}#${i}`;
+      if (b * BLOCK >= size || store.map.has(key(b))) continue;
+      const n = k + 1 < list.length && list[k + 1][0] === p && list[k + 1][1] === b + 1 && (b + 1) * BLOCK < size && !store.map.has(key(b + 1)) ? 2 : 1;
+      if (n === 2) k++;
+      while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 300) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
+      const start = b * BLOCK, end = Math.min(size, (b + n) * BLOCK);
+      let data;
+      try {
+        const res = await fetch(this.rangeUrl(r.path, start, end, true), this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } });
+        if (res.status !== 206 && res.status !== 200) continue;
+        data = new Uint8Array(await res.arrayBuffer());
+        if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
+        if (data.length !== end - start) continue;
+      } catch { return; }
+      for (let i = 0; i < n; i++) store.put(key(b + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+      progress.bytes += data.length; progress.blocks += n;
+    }
+    store.flush?.();
+    progress.done = true;
   }
   fetchRange(path, start, end) {
     const url = this.rangeUrl(path, start, end);
