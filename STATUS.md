@@ -331,7 +331,11 @@
   Mordor) rendues correctement ; vidéo VP6 du menu ouverte depuis `Data\Movies`.
 
 ## Prochaine action
-- Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente.
+- Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
+  observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques
+  verrouillés en DISCARD mis à jour par `bufferSubData` (orphelinage `bufferData(taille)` possible, exact selon la
+  sémantique Direct3D, si des attentes GPU apparaissent) ; temps de compilation des programmes à leur première
+  utilisation (ANGLE traduit en HLSL/MSL) ; perte de contexte (gérée) ; mémoire du processus (~1,6-2 Go ici).
 - Performance CPU : pression de registres dans les régions ; coût du chaînage entre régions x87 (vidage/rechargement
   de la pile) ; les mesures en jeu exigent des runs seuls (bruit A/A jusqu'à 3,7 % sur la machine partagée).
 - Premier lancement sur réseau réel : téléchargement de fond de tout le dossier vers le magasin OPFS (à évaluer).
