@@ -23,7 +23,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string>. Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string> | blur | focus (window focus loss / return). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -234,6 +234,7 @@ for (;;) {
       else if (kind === 'rclick') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEDOWN, 1, args[0], args[1]); push(EV.MOUSEUP, 1, args[0], args[1]); }
       else if (kind === 'key') { push(EV.KEYDOWN, args[0], args[1] || 0, 0); push(EV.KEYUP, args[0], args[1] || 0, 0); }
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
+      else if (kind === 'blur' || kind === 'focus') dispatchEvent(new Event(kind)); // the browser window loses / regains the focus (the game is deactivated / reactivated)
     }, { kind: ev.kind, args: ev.args });
   }
   if (interpRangeAt && !interpRangeAt.done && t >= (interpRangeAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + interpRangeAt.t) : interpRangeAt.t)) { interpRangeAt.done = true; console.log(`[input] interpreter ranges ${opt('interp-range')} at ${t.toFixed(0)}s`); await page.evaluate((ranges) => window.orthros.worker?.postMessage({ type: 'interpRange', ranges }), opt('interp-range')); }
