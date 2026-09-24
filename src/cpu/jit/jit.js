@@ -11,7 +11,7 @@ import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
 /** x87-mode versions of a region before it is translated with the mode tested at run time */
-const MAX_FPU_VERSIONS = 3;
+const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the four modes seen for code shared by a game's threads)
 
 /** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
 function foldLazyFlags(cpu) {
