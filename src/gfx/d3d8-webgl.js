@@ -715,6 +715,10 @@ export class WebGLDevice {
       const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
       const levels = st.cube ? tex.faces[0].length : tex.levels.length;
+      if (this.glValidate && (au >= 4 || av >= 4 || aw >= 4 || this.samp(i, SAMP.MIPMAPLODBIAS, 0) !== 0) && (this.approxLogs ??= new Set()).size < 16) { // (--gl-validate: sampler states approximated)
+        const k = `${au},${av},${aw},${this.samp(i, SAMP.MIPMAPLODBIAS, 0)}`;
+        if (!this.approxLogs.has(k)) { this.approxLogs.add(k); this.log(`d3d-webgl: sampler state approximated: address ${au}/${av}/${aw} (4 border, 5 mirror once: clamped) border color ${(this.samp(i, SAMP.BORDERCOLOR, 0) >>> 0).toString(16)}, LOD bias bits 0x${(this.samp(i, SAMP.MIPMAPLODBIAS, 0) >>> 0).toString(16)} (not applied), texture ${tex.width}x${tex.height}`); }
+      }
       const an = this.aniso && (min === 3 || mag === 3) ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1;
       const maxLod = levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0;
       const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + maxLod * 0x200000;
