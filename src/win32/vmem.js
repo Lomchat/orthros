@@ -31,6 +31,8 @@ export class VMem {
   }
 
   pageOf(a) { return (a >>> 0) / PAGE_SIZE | 0; }
+  /** Bytes of address space reserved (diagnostics). */
+  reservedBytes() { let n = 0; for (const r of this.regions.values()) n += r.size; return n; }
 
   /** Is [base, base+size) entirely free? */
   isFree(base, size) {

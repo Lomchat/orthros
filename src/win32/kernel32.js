@@ -400,13 +400,17 @@ export function registerKernel32(api, vm) {
   }];
 
   // ---------------------------------------------------------------- memory
+  // failed allocations are legitimate (callers must handle them) but often the cause of a degraded behaviour: the first
+  // ones are reported with the reserved address space
+  let allocFailures = 0;
+  const allocFailed = (c, what) => { if (++allocFailures <= 8) vm.warn(`${what} failed: out of address space (${(c.proc.vmem.reservedBytes?.() / 2 ** 20 | 0) || '?'} MiB reserved) from ${c.proc.symbolize(c.retAddr)}`); };
   K.VirtualAlloc = [4, (c) => {
     const addr = c.arg(0), size = c.arg(1), type = c.arg(2), prot = c.arg(3);
     const vmem = c.proc.vmem;
     if (size === 0) return c.fail(E.INVALID_PARAMETER);
     if (type & MEM_RESERVE || (type & MEM_COMMIT && (!addr || vmem.query(addr).state === 0x10000))) {
       const base = vmem.reserve(size, addr, 'valloc', { topDown: (type & MEM_TOP_DOWN) !== 0 });
-      if (!base) return c.fail(E.NOT_ENOUGH_MEMORY);
+      if (!base) { allocFailed(c, `VirtualAlloc(0x${addr.toString(16)}, ${size}, 0x${type.toString(16)})`); return c.fail(E.NOT_ENOUGH_MEMORY); }
       if (type & MEM_COMMIT) { vmem.commit(base, base === (addr & ~0xffff) && addr ? addr + size - base : size, prot); mem.fill(base, alignPage(size), 0); }
       return base;
     }
@@ -453,7 +457,7 @@ export function registerKernel32(api, vm) {
   const heapOf = (c, h) => c.proc.handles.getAs(h, 'heap');
   K.HeapCreate = [3, (c) => c.proc.createHeap({ initial: c.arg(1), max: c.arg(2), tag: 'user' }).handle];
   K.HeapDestroy = [1, (c) => { const h = heapOf(c, c.arg(0)); if (!h || h === c.proc.processHeap) return c.fail(E.INVALID_HANDLE); h.destroy(); c.proc.heaps = c.proc.heaps.filter((x) => x !== h); c.proc.handles.map.delete(c.arg(0)); return 1; }];
-  K.HeapAlloc = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.alloc(c.arg(2), (c.arg(1) & 8) !== 0); if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; }];
+  K.HeapAlloc = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.alloc(c.arg(2), (c.arg(1) & 8) !== 0); if (!p) { allocFailed(c, `HeapAlloc(0x${c.arg(0).toString(16)}, ${c.arg(2)})`); c.setLastError(E.NOT_ENOUGH_MEMORY); } return p; }];
   K.HeapFree = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); if (!c.arg(2)) return 1; if (!h.free_(c.arg(2))) { vm.warn(`HeapFree: bad pointer ${c.arg(2).toString(16)} from ${c.proc.symbolize(c.retAddr)}`); return c.fail(E.INVALID_PARAMETER); } return 1; }];
   K.HeapReAlloc = [4, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.realloc(c.arg(2), c.arg(3), (c.arg(1) & 8) !== 0, (c.arg(1) & 0x10) !== 0); if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; }];
   K.HeapSize = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return 0xffffffff; const s = h.size(c.arg(2)); return s < 0 ? 0xffffffff : s; }];

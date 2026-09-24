@@ -125,6 +125,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.uploadUnit = Math.min(gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) || 32, 32) - 1; // (stages and shader samplers use units 0..15; see bindForUpload)
     this.firstVertexConvention();
     this.programs = new Map();
     this.textures = new Map(); // resource id -> { tex, target }
@@ -226,14 +227,16 @@ export class WebGLDevice {
     return g;
   }
   /**
-   * Bind a texture to upload into it: on the active unit, whose cached binding (gs.tex) is updated — a draw must
-   * not skip rebinding its own texture on a unit an upload has changed.
+   * Bind a texture to upload into it, on a unit no stage samples (the last one): uploads happen while a draw binds
+   * its stages (a stage's texture made current, then a later stage's dirty texture uploaded), and an upload through
+   * the active unit replaced the binding of the stage bound just before (the cache followed, so the draw sampled the
+   * uploaded texture on both units).
    */
   bindForUpload(target, tex) {
-    const gs = this.gs;
-    if (gs.active === undefined) { this.gl.activeTexture(this.gl.TEXTURE0); gs.active = 0; }
-    this.gl.bindTexture(target, tex);
-    gs.tex[gs.active] = tex;
+    const gl = this.gl, gs = this.gs, u = this.uploadUnit;
+    if (gs.active !== u) { gl.activeTexture(gl.TEXTURE0 + u); gs.active = u; }
+    gl.bindTexture(target, tex);
+    gs.tex[u] = tex;
   }
   volumeToRgba(fmt, l) { const out = new Uint8Array(l.width * l.height * l.depth * 4); for (let z = 0; z < l.depth; z++) out.set(surfaceToRgba(this.mem, fmt, l.mem + z * l.slice, l.width, l.height, l.pitch), z * l.width * l.height * 4); return out; }
   /** Upload a surface into `level` of the bound texture; `g.alloc[slot]` records the levels already specified (GL texture record). */
@@ -797,7 +800,7 @@ export class WebGLDevice {
     if (gs.fbo !== undefined) check('framebuffer', name(gs.fbo), name(gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING)));
     if (gs.active !== undefined) check('active unit', gs.active, gl.getParameter(gl.ACTIVE_TEXTURE) - gl.TEXTURE0);
     const active = gl.getParameter(gl.ACTIVE_TEXTURE);
-    for (let i = 0; i < 16; i++) {
+    for (const i of [...Array(16).keys(), this.uploadUnit]) {
       if (!gs.tex[i] && !gs.smp[i]) continue;
       gl.activeTexture(gl.TEXTURE0 + i); // (the bindings of unit i are queried through the active unit)
       if (gs.tex[i]) {
@@ -840,6 +843,7 @@ export class WebGLDevice {
     if (l.mem && !(t.usage & 1)) {
       const levels = t.levels ?? [l];
       levels.forEach((m, i) => { if (m.mem && m.width * m.height >= 4) this.dump(name + (i ? `-mip${i}` : ''), m.width, m.height, surfaceToRgba(this.mem, m.fmt ?? t.fmt, m.mem, m.width, m.height, m.pitch)); });
+      if (t.levels && !isDxt(t.fmt)) this.checkTextureCoherence(t);
       return;
     }
     const f = this.fbos.get(l.id); if (!f) return;
@@ -847,6 +851,29 @@ export class WebGLDevice {
     gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; gl.readPixels(0, 0, f.w, f.h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     this.bindTarget(); // restore the current target
     this.dump(name, f.w, f.h, rgba); // texture targets are stored with D3D row order already
+  }
+  /**
+   * Frame capture: each level of the GL texture read back (through a framebuffer) and compared with the texels in
+   * guest memory — a stale or mis-uploaded level shows here (uncompressed 2D textures, levels up to date only).
+   */
+  checkTextureCoherence(t) {
+    const g = this.textures.get(t.id); if (!g || g.target !== this.gl.TEXTURE_2D) return;
+    const gl = this.gl, fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); this.gs.fbo = fbo;
+    const report = [];
+    t.levels.forEach((m, i) => {
+      if (!m.mem || m.dirty || !m.uploaded) return;
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, g.tex, i);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return;
+      const got = new Uint8Array(m.width * m.height * 4); gl.readPixels(0, 0, m.width, m.height, gl.RGBA, gl.UNSIGNED_BYTE, got);
+      const want = surfaceToRgba(this.mem, m.fmt ?? t.fmt, m.mem, m.width, m.height, m.pitch);
+      let bad = 0, first = -1;
+      for (let p = 0; p < got.length; p += 4) if (Math.abs(got[p] - want[p]) > 2 || Math.abs(got[p + 1] - want[p + 1]) > 2 || Math.abs(got[p + 2] - want[p + 2]) > 2 || Math.abs(got[p + 3] - want[p + 3]) > 2) { bad++; if (first < 0) first = p; }
+      if (bad) report.push(`level ${i} ${m.width}x${m.height}: ${bad} texels differ (first at ${(first / 4) % m.width},${Math.floor(first / 4 / m.width)}: gl ${got.slice(first, first + 4).join(',')} mem ${want.slice(first, first + 4).join(',')})`);
+    });
+    gl.deleteFramebuffer(fbo);
+    this.bindTarget(); // (restores the framebuffer binding of the current target)
+    this.log(`d3d-webgl: [cap] texture #${t.id} GL vs guest memory: ${report.length ? report.join('; ') : 'identical'}`);
   }
   /** Frame capture: the current render target after a draw (`--capture-draws`). */
   dumpTarget(what) {
