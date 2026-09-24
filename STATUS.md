@@ -428,8 +428,10 @@
   chargement d'une partie ~55 s en CPU seul, dont la moitié dans une boucle x87 en arrondi vers zéro (limitée par la
   latence des passages f64 ↔ entier du masquage 24 bits). Chaînage : jusqu'à 22 M transitions chaînées/s au démarrage
   (~7 ns chacune, attribuées au répartiteur `run` dans les profils à cause des appels terminaux : ~15-17 % du temps) —
-  pistes : cache de cible par site de sortie au lieu du hachage, moins de paramètres (16 i32 dont ~10 sur la pile),
-  vidage/rechargement x87 limité aux cases utilisées. Les mesures en jeu exigent des A/B simultanés (bruit A/A
+  fait : le budget d'instructions passe en paramètre (au lieu d'un aller-retour mémoire par transition) et TOP n'est plus
+  écrit ni relu par les régions sans x87 (micro-mesure : 25,4 → 23,5 ns par appel/retour chaînés ; menu +1 %) ; piste
+  suivante : passer la pile x87 en paramètres entre régions x87 (~3,8 M transitions/s au menu, chacune vide et recharge
+  8 doubles, les étiquettes et TOP). Les mesures en jeu exigent des A/B simultanés (bruit A/A
   jusqu'à 3,7 % sur la machine partagée).
 - Unités magenta : textures absentes du dossier de jeu (enquête close, voir plus haut) — à revérifier sur une copie
   complète du jeu si l'occasion se présente.

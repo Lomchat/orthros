@@ -43,7 +43,7 @@ export const HASH_PROBES = 4;
 export const REGION_PARAMS = Object.freeze(Array(16).fill(T.i32));
 export const REGION_RESULTS = Object.freeze([T.i32]);
 /** State-block offsets of the 14 register/flag arguments that follow (block, state). */
-export const REGION_ARG_OFFSETS = Object.freeze([...Array.from({ length: 8 }, (_, i) => ST.GPR + 4 * i), ST.EFLAGS, ST.LZ_OP, ST.LZ_RES, ST.LZ_SRC1, ST.LZ_SRC2, ST.FS_BASE]);
+export const REGION_ARG_OFFSETS = Object.freeze([...Array.from({ length: 8 }, (_, i) => ST.GPR + 4 * i), ST.EFLAGS, ST.LZ_OP, ST.LZ_RES, ST.LZ_SRC1, ST.LZ_SRC2, ST.ICOUNT]); // (the budget as the last parameter: see translate.js L_ICOUNT)
 
 /** Does this engine accept `return_call_indirect` (WASM tail calls)? Region chaining needs it. */
 export function supportsReturnCall() {
