@@ -431,6 +431,9 @@
   jusqu'à 3,7 % sur la machine partagée).
 - Unités magenta : textures absentes du dossier de jeu (enquête close, voir plus haut) — à revérifier sur une copie
   complète du jeu si l'occasion se présente.
+- Audio : le mixage suit le temps réel (~44 k images/s) mais se fait dans le worker du jeu, qui le suspend pendant ses
+  longues images (sous-alimentations sous SwiftShader chargé) ; piste : mixer dans l'AudioWorklet directement depuis les
+  tampons DirectSound en mémoire partagée (comme le DMA d'une carte son), curseur de lecture tenu par le fil audio.
 - Premier lancement sur réseau réel : téléchargement de fond de tout le dossier vers le magasin OPFS (à évaluer).
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
