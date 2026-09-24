@@ -120,7 +120,8 @@ function xformProgram() {
 }
 function xformMode() {
   console.log(`x87 vertex transform loop, ${ITER} vertices (3 components x 10 x87 instructions + 5 integer instructions per vertex)`);
-  for (const [name, pc24, generic] of [['pc24', true, false], ['pc24 generic', true, true], ['pc53', false, false], ['pc53 generic', false, true]]) {
+  const CW_CHOP24 = 0x0c7f; // 24-bit precision, rounding toward zero (functions that truncate their FISTPs)
+  for (const [name, pc24, generic, cw] of [['pc24', true, false], ['pc24 generic', true, true], ['pc24 chop', true, false, CW_CHOP24], ['pc24 chop gen', true, true, CW_CHOP24], ['pc53', false, false], ['pc53 generic', false, true]]) {
     let best = Infinity, ok = true;
     for (let rep = 0; rep < 3; rep++) {
       const mem = new GuestMemory();
@@ -132,7 +133,7 @@ function xformMode() {
       const m = Array.from({ length: 16 }, (_, i) => Math.fround(0.5 + 0.37 * Math.sin(i + 1)));
       m.forEach((v, i) => mem.writeF32(MAT + 4 * i, v));
       for (let i = 0; i < 3 * NV; i++) mem.writeF32(VIN + 4 * i, Math.fround(Math.cos(i) * 10));
-      mem.write16(cpu.base + ST.FPU_CW, pc24 ? CW_PC24 : CW_PC53);
+      mem.write16(cpu.base + ST.FPU_CW, cw ?? (pc24 ? CW_PC24 : CW_PC53));
       cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
       jit.cpu = cpu; jit.boundaries = new Set([end]);
       const t0 = performance.now();
@@ -140,7 +141,8 @@ function xformMode() {
       best = Math.min(best, performance.now() - t0);
       if (r !== EXIT.HALT) throw new Error(`xform: exit ${r}`);
       // reference: every x87 result rounded to 24 bits (pc24) or to double (pc53), stored as float
-      const rnd = pc24 ? Math.fround : (x) => x;
+      const chop = (x) => { const t = Math.fround(x); if (Math.abs(t) <= Math.abs(x)) return t; const b = new Float32Array([t]); new Int32Array(b.buffer)[0]--; return b[0]; };
+      const rnd = cw === CW_CHOP24 ? chop : pc24 ? Math.fround : (x) => x;
       for (let v = 0; v < NV && ok; v++) for (let c = 0; c < 3; c++) {
         const x = mem.readF32(VIN + 12 * v), y = mem.readF32(VIN + 12 * v + 4), z = mem.readF32(VIN + 12 * v + 8);
         let acc = rnd(x * m[c]); acc = rnd(acc + rnd(y * m[4 + c])); acc = rnd(acc + rnd(z * m[8 + c])); acc = rnd(acc + m[12 + c]);
