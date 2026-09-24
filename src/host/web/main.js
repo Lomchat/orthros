@@ -92,6 +92,7 @@ function onWorkerMessage(m) {
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
+      if (m.frames !== state.lastFrames) { state.lastFrames = m.frames; state.lastNewFrameAt = Date.now(); }
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
@@ -100,8 +101,8 @@ function onWorkerMessage(m) {
     case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
-    case 'exit': telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null }); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''} — reload the page to start again`); break;
-    case 'crash': telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 20000) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true); break;
+    case 'exit': $('busy').classList.add('hidden'); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''} — reload the page to start again`); break;
+    case 'crash': $('busy').classList.add('hidden'); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -148,7 +149,12 @@ function renderHud() {
   const s = state.stats; if (!s) return;
   const hud = $('hud'), fpsEl = hud.querySelector('.fps'), det = hud.querySelector('.details');
   const clock = new Date().toLocaleTimeString();
-  if (!(s.frames > 0)) { // starting: no frame yet
+  // no new image for a while: the game is loading (at startup, or between screens) rather than running slowly
+  const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
+  const busy = $('busy'), showBusy = !headless && state.status === 'running' && still >= 3;
+  busy.classList.toggle('hidden', !showBusy);
+  if (showBusy) busy.innerHTML = `${state.title ?? 'The game'} is loading… <small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files read ${s.ioMB ?? 0} MB</small>`;
+  if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { // starting: no frame yet, or the first images then a long wait
     fpsEl.innerHTML = '<small>loading…</small>';
     det.textContent = `files ${s.ioMB ?? 0} MB · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
     return;

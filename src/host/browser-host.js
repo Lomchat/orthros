@@ -136,7 +136,7 @@ export class BrowserHost {
     this.pump();
   }
   pollInput() { this.pump(); return this.inputQueue.length ? this.inputQueue.splice(0) : null; }
-  onExit(code) { this.exitCode = code; this.post({ type: 'exit', code }); }
+  onExit(code) { this.exitCode = code; } // (the worker posts the exit, with the failure report)
   /** Frame-time percentiles over the frames presented after `fromMs` (performance.now() based). */
   frameStats(fromMs = 0) {
     const dts = [];

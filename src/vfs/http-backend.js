@@ -4,12 +4,19 @@
 // bounded LRU cache with read-ahead for sequential access.
 export const BLOCK = 1 << 20; // 1 MiB
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
+const RETRY_WAITS = [250, 1000, 2000, 4000, 8000]; // ms before each new attempt of a failed range request
+
+/** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
+function pause(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch { const t = performance.now() + ms; while (performance.now() < t) { /* no Atomics.wait here */ } }
+}
 
 export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    */
   constructor(baseUrl, tree, opts = {}) {
@@ -18,6 +25,7 @@ export class HttpBackend {
     this.cache = new Map(); // key "path#block" -> Uint8Array (insertion order = LRU)
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
     this.onFetch = opts.onFetch ?? null;
+    this.onRetry = opts.onRetry ?? null;
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
   }
@@ -62,22 +70,39 @@ export class HttpBackend {
   unlink() { return false; }
   rename() { return false; }
 
-  /** Fetch [start, end) of a file synchronously. */
+  /**
+   * Fetch [start, end) of a file synchronously. A network error, an error status or a short answer (a connection
+   * cut over the Internet) is retried after a pause, up to RETRY_WAITS.length times, before failing the read.
+   */
   fetchRange(path, start, end) {
     const url = this.base + path.split('/').map(encodeURIComponent).join('/');
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', url, false);
-    xhr.responseType = 'arraybuffer';
-    xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
-    const t0 = performance.now();
-    xhr.send();
-    const ms = performance.now() - t0;
-    this.lastSyncFetchAt = performance.now(); // (a background download yields to the game's own reads)
-    if (xhr.status !== 206 && xhr.status !== 200) throw new Error(`range request failed: ${xhr.status} ${url}`);
-    const data = new Uint8Array(xhr.response);
-    this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms;
-    this.onFetch?.({ url, start, end, ms });
-    return xhr.status === 200 ? data.subarray(start, end) : data;
+    for (let attempt = 0; ; attempt++) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, false);
+      xhr.responseType = 'arraybuffer';
+      xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
+      const t0 = performance.now();
+      let problem = null;
+      try { xhr.send(); } catch (e) { problem = e.message; }
+      const ms = performance.now() - t0;
+      this.lastSyncFetchAt = performance.now(); // (a background download yields to the game's own reads)
+      let data = null;
+      if (!problem && xhr.status !== 206 && xhr.status !== 200) problem = `status ${xhr.status}`;
+      if (!problem) {
+        data = new Uint8Array(xhr.response);
+        if (xhr.status === 200) data = data.subarray(start, end);
+        if (data.length !== end - start) problem = `${data.length} bytes of ${end - start}`;
+      }
+      if (!problem) {
+        this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms;
+        this.onFetch?.({ url, start, end, ms });
+        return data;
+      }
+      this.stats.retries = (this.stats.retries ?? 0) + 1;
+      this.onRetry?.({ url, start, end, problem, attempt });
+      if (attempt >= RETRY_WAITS.length) throw new Error(`range request failed (${problem}) ${url} ${start}-${end}`);
+      pause(RETRY_WAITS[attempt]);
+    }
   }
 
   block(path, size, index, readAhead, mtime = 0) {
