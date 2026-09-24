@@ -466,6 +466,9 @@ class Emitter {
     // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
     c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
+    // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
+    // raises the access violation)
+    c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);

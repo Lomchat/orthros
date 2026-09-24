@@ -367,16 +367,18 @@ export function buildRuntime(opts = {}) {
     c.get(STATE).get(IDX).i32store(ST.EXIT_ARG); c.i32(EXIT.THUNK).return_(); c.end(); void i1;
     // budget
     c.get(STATE).i32load(ST.ICOUNT).i32(0).le_s(); const i2 = c.if_(); c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.TIMESLICE).i32store(ST.EXIT); c.i32(EXIT.TIMESLICE).return_(); c.end(); void i2;
-    // hash lookup with linear probing
+    // hash lookup with linear probing (EIP 0, the key of the empty entries, always misses: see Jit.run)
     c.get(EIP).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(IDX);
     c.i32(0).set(PROBE);
     const found = c.block();
+    const miss = c.block();
+    c.get(EIP).eqz().br_if(miss);
     const probeLoop = c.loop();
     c.get(IDX).get(PROBE).add().i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().set(E);
     c.get(E).i32load(0).get(EIP).eq().br_if(found);
     c.get(PROBE).i32(1).add().tee(PROBE).i32(HASH_PROBES).lt_u().br_if(probeLoop);
     c.end(); // probeLoop
-    // miss
+    c.end(); // miss
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT_TRANSLATE).i32store(ST.EXIT); c.i32(EXIT_TRANSLATE).return_();
     c.end(); // found
     // call region: (block, state, registers/flags from the state block) via table[fnIdx]; ST.EIP = the
