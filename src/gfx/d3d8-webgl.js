@@ -582,6 +582,7 @@ export class WebGLDevice {
   }
   compile(vsSrc, fsSrc, key, attrNames) {
     const gl = this.gl;
+    const t0 = performance.now();
     const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { this.stats.errors++; this.log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(s)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`); } return s; };
     const prog = gl.createProgram();
     const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
@@ -591,6 +592,8 @@ export class WebGLDevice {
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { this.stats.errors++; this.log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`); }
     gl.deleteShader(vs); gl.deleteShader(fs);
     this.stats.programs++;
+    { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
+      if (ms > 100 && (this.slowProgramLogs = (this.slowProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: program built in ${ms.toFixed(0)} ms: VS ${vsSrc.length} chars, FS ${fsSrc.length} chars, key ${key.slice(0, 160)}`); }
     const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
     const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
