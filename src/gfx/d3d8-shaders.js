@@ -223,7 +223,7 @@ export function fragmentTail(k) {
  * @param {{ stages: Array<{ colorOp: number, colorArg1: number, colorArg2: number, colorArg0: number, alphaOp: number, alphaArg1: number, alphaArg2: number, alphaArg0: number, resultTemp: boolean, cube: boolean, projected: boolean, bound: boolean }>, alphaTest: number|0, specular: boolean, fog: number (table mode 0 none / 1 exp / 2 exp2 / 3 linear) | -1 for vertex fog, texEnabled: boolean }} k
  */
 export function ffFragmentShader(k) {
-  const lines = ['#version 300 es', 'precision mediump float; precision mediump sampler2D; precision mediump samplerCube;'];
+  const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube;'];
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
   for (let i = 0; i < MAX_STAGES; i++) lines.push(k.stages[i]?.cube ? `uniform samplerCube u_cube${i};` : `uniform sampler2D u_tex${i};`);
@@ -394,7 +394,7 @@ export function translateVertexShader(code, layout) {
  */
 export function translatePixelShader(code, env) {
   const version = code[0] & 0xffff, minor = version & 0xff, is14 = minor >= 4;
-  const lines = ['#version 300 es', 'precision mediump float; precision mediump sampler2D; precision mediump samplerCube;'];
+  const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube;'];
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
   for (let i = 0; i < 6; i++) lines.push(env.cube[i] ? `uniform samplerCube u_cube${i};` : `uniform sampler2D u_tex${i};`);

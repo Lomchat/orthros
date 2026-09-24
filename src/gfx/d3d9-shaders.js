@@ -187,7 +187,7 @@ export function translateVertexShader9(code) {
 export function translatePixelShader9(code, env) {
   const version = code[0] & 0xffff, major = version >> 8, minor = version & 0xff;
   const is14 = major === 1 && minor >= 4, sm2 = major >= 2;
-  const lines = ['#version 300 es', 'precision mediump float; precision mediump sampler2D; precision mediump samplerCube; precision mediump sampler3D;'];
+  const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube; precision highp sampler3D;'];
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
   const samplerKind = new Map(); // s# -> '2d' | 'cube' | 'volume'
