@@ -26,7 +26,7 @@ const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R
 
 /** bytes of one row / total bytes for a surface of this format */
 /** Distinct values each render / stage state took (end-of-run report: which pipeline features a game uses). */
-function noteState(dev, group, s, v) {
+export function noteState(dev, group, s, v) {
   const m = dev.stateUse ??= new Map(); const k = `${group}:${s}`;
   let set = m.get(k); if (!set) m.set(k, (set = new Set()));
   if (set.size < 12) set.add(v >>> 0);
