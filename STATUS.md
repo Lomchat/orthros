@@ -403,7 +403,9 @@
 - **Contrôle de non-régression en partie** (5 min du scénario de jeu High, `--gl-discard`, runs successifs, machine
   partagée chargée — charge moyenne ~20) : code du matin 37,3 fps, p99 45,6 ms, 3,16 % > 33 ms, max 404 ms ; code du soir
   37,6 fps, p99 44,9 ms, 2,52 % > 33 ms, max 184 ms (partie atteinte 38 s plus tôt). Le p99 au-dessus de 33 ms vient de la
-  charge de la machine (mesures M7 faites seul) ; à refaire seul ou sur la machine cliente.
+  charge de la machine (mesures M7 faites seul) ; à refaire seul ou sur la machine cliente. **15 min de partie** avec tout
+  le code du jour : 33 736 images en 891 s = 37,9 fps, p50 26,1 ms, p90 28,1, p99 40,5 (machine chargée), aucun
+  plantage, 5 avertissements connus.
 - **Messages de débogage du jeu** (`--log debug`, `debugctx` : avec les appels API qui précèdent) : l'avertissement de
   D3DX sur `new(0)` renvoyant NULL vient du gestionnaire mémoire du jeu (notre `HeapAlloc(…, 0)` rend un bloc valide et
   n'est pas appelé à ce moment) ; « Could not find file » suit l'ouverture échouée de `shaders\Shrubs_darken.vso`,
