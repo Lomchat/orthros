@@ -64,12 +64,14 @@ export const ST = Object.freeze({
   SIZE: 0x400,
 });
 
-// Register numbers (x86 encoding order).
 /**
  * Clock of the virtual CPU as software sees it: the time-stamp counter (RDTSC, tied to host time) and the processor
  * speed of the registry (HARDWARE\DESCRIPTION\System\CentralProcessor\0 ~MHz) agree, as on a real machine.
  */
 export const CPU_MHZ = 3000;
+/** Processor brand string: CPUID 0x80000002..4 and the registry ProcessorNameString, as on a real machine. */
+export const CPU_BRAND = `Orthros Virtual CPU @ ${(CPU_MHZ / 1000).toFixed(2)}GHz`;
+// Register numbers (x86 encoding order).
 export const R = Object.freeze({ EAX: 0, ECX: 1, EDX: 2, EBX: 3, ESP: 4, EBP: 5, ESI: 6, EDI: 7 });
 export const REG_NAMES = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
 export const REG16_NAMES = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di'];

@@ -5,7 +5,7 @@
 // faulting instruction.
 
 import { OP, OT, decode, fmtInsn } from './decoder.js';
-import { F, EXIT, SEG, FLAGS_ARITH, CPU_MHZ } from './state.js';
+import { F, EXIT, SEG, FLAGS_ARITH, CPU_MHZ, CPU_BRAND } from './state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE } from './memory.js';
 
 export class CpuFault extends Error {
@@ -937,6 +937,16 @@ export function defaultCpuid(leaf, sub) {
       return [0x06f2, 0x00010800, ecx, edx >>> 0];
     }
     case 2: return [0x605b5001, 0, 0, 0x007a7000];
+    // extended leaves, present on every CPU since the Pentium 4: brand string, L2 cache, address sizes
+    case 0x80000000: return [0x80000008, 0, 0, 0];
+    case 0x80000001: return [0, 0, 1, 1 << 20]; // LAHF/SAHF, XD (no long mode: a 32-bit CPU)
+    case 0x80000002: case 0x80000003: case 0x80000004: {
+      const r = [0, 0, 0, 0], base = (leaf - 0x80000002) * 16;
+      for (let i = 0; i < 16; i++) r[i >> 2] |= (CPU_BRAND.charCodeAt(base + i) || 0) << (8 * (i & 3)); // NUL-padded to 48 bytes
+      return r;
+    }
+    case 0x80000006: return [0, 0, (4096 << 16) | (6 << 12) | 64, 0]; // L2: 4 MB, 8-way, 64-byte lines
+    case 0x80000008: return [0x2020, 0, 0, 0]; // 32-bit physical and linear addresses
     default: return [0, 0, 0, 0];
   }
 }

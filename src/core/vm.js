@@ -2,7 +2,7 @@
 // loop, guest callbacks, crash reports. See DECISIONS.md D003/D004.
 import { GuestMemory } from '../cpu/memory.js';
 import { EXIT, F, ST } from '../cpu/state.js';
-import { Interp } from '../cpu/interp.js';
+import { Interp, defaultCpuid } from '../cpu/interp.js';
 import '../cpu/interp-x87.js';
 import '../cpu/interp-sse.js';
 import { decode, fmtInsn } from '../cpu/decoder.js';
@@ -90,6 +90,14 @@ export class Vm {
     this.GuestCrash = GuestCrash;
     this.com = new Com(this);
     this.traceCom = !!opts.logKinds?.includes('com');
+    if (this.logKinds.has('cpuid')) { // which CPUID leaves software reads (each leaf and call site once)
+      const seen = new Set();
+      this.interp.hooks.cpuid = (I, leaf, sub) => {
+        const r = defaultCpuid(leaf, sub), k = `${leaf}/${sub}/${I.cpu.eip}`;
+        if (!seen.has(k)) { seen.add(k); this.logFn('cpuid', `leaf 0x${(leaf >>> 0).toString(16)} sub ${sub} at ${this.proc?.symbolize(I.cpu.eip) ?? I.cpu.eip.toString(16)} -> ${r.map((x) => '0x' + (x >>> 0).toString(16)).join(' ')}`); }
+        return r;
+      };
+    }
     if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); for (let i = 0; i < this.api.thunks.length; i++) this.jit.markFast(i, `${this.api.thunks[i].dll}!${this.api.thunks[i].name}`, this.api.thunks[i].def); }
     registerBuiltins(this.api, this);
     this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
