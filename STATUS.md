@@ -331,7 +331,13 @@
 - **Validation du cache d'état GL** (`--gl-validate`) : aucun écart sur 5,5 M draws (menu) ; l'outil détecte le bug de
   liaison de textures corrigé si on le réintroduit.
 - **Campagne** : menus Campagne → Bien → difficulté → carte parcheminée puis carte 3D de la Terre du Milieu (nuages,
-  Mordor) rendues correctement ; vidéo VP6 du menu ouverte depuis `Data\Movies`.
+  Mordor), zoom sur les Monts Brumeux avec la consigne « Select the Fellowship and click on Moria » et l'infobulle de la
+  Communauté — rendus correctement, aucun avertissement ; vidéo VP6 du menu ouverte depuis `Data\Movies`.
+- **Appels GL par image en partie** : 2 326 pour 447 draws (5,2/draw ; 5,8 avant : `activeTexture` 170 → 40,
+  `uniform1i` 108 → 33). **Mémoire** : ~2 Go résidents au pic du chargement, ~1,6 Go au menu, stable.
+- **Harnais** : ancres robustes `waitframe:min,max` (draws par image : écran de chargement puis partie, marche avec
+  `--gl-discard`) et `waitpixel` ; `--capture-at @N` compte depuis la dernière ancre ; `--interp-range[-at]` (code
+  interprété par la référence), `--gl-validate`, `--lose-context-at`.
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
