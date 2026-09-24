@@ -76,6 +76,9 @@ export function createServer(opts = {}) {
       if (start > end || start >= st.size) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
       res.writeHead(206, { ...h, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
       if (req.method === 'HEAD') return res.end();
+      // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip plus its transfer time
+      const net = opts.net;
+      if (net) { setTimeout(() => fs.createReadStream(file, { start, end }).pipe(res), net.delayMs + (end - start + 1) / net.bytesPerSec * 1000); return; }
       fs.createReadStream(file, { start, end }).pipe(res);
       return;
     }
