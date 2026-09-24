@@ -130,7 +130,8 @@ function lazyCondInline(base, kind) {
 // block may still read; at the block end every flag is live (successors, exits). Unknown instructions read all.
 const FL_CF = 1, FL_REST = 2, FL_ALL = 3;
 const FLAGS_NONE = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'XCHG', 'BSWAP', 'NOT', 'PUSH', 'POP', 'PUSHA', 'POPA', 'ENTER', 'LEAVE', 'CBW', 'CWD',
-  'NOP', 'PAUSE', 'CLD', 'STD', 'MOVS', 'STOS', 'LODS', 'XLAT', 'LFENCE', 'MFENCE', 'SFENCE', 'PREFETCH', 'CLFLUSH', 'WAIT', 'EMMS'].map((n) => OP[n]));
+  'NOP', 'PAUSE', 'CLD', 'STD', 'MOVS', 'STOS', 'LODS', 'XLAT', 'LFENCE', 'MFENCE', 'SFENCE', 'PREFETCH', 'CLFLUSH', 'WAIT', 'EMMS',
+  'JMP'].map((n) => OP[n])); // (a jump neither reads nor writes them: what its targets read, see regionFlagsLiveness)
 for (const [n, op] of Object.entries(OP)) {
   if (n.startsWith('F') && !['FCOMI', 'FCOMIP', 'FUCOMI', 'FUCOMIP', 'FCMOVCC'].includes(n)) FLAGS_NONE.add(op); // x87, FXSAVE/FXRSTOR
   else if (op > OP.EMMS && op < OP.INVALID && !['UCOMISS', 'UCOMISD', 'COMISS', 'COMISD'].includes(n)) FLAGS_NONE.add(op); // MMX / SSE data
@@ -155,6 +156,41 @@ function flagsLiveBefore(insn, after) {
     default: return FL_ALL;
   }
 }
+/**
+ * Flags live at the end of each block of a region (b.flagsOut), from the blocks it jumps to inside the region: the
+ * union of what they read before writing it (backward dataflow to the least fixpoint). A successor outside the region
+ * or unknown (indirect jumps, returns, calls — the callee or the code after its return may read them — exits) reads
+ * them all. A block whose every successor overwrites the flags first (a JCC after an INC in the next block's CMP...)
+ * no longer computes what its instructions would preserve (INC/DEC keeping CF: a flags helper call).
+ * The flags at such a block end are then those a later instruction overwrites before any read: only an exception
+ * raised in between (its CONTEXT) could see the difference, as within a block already.
+ */
+function regionFlagsLiveness(blocks, byEip) {
+  const succ = blocks.map((b) => {
+    const last = b.insns[b.insns.length - 1];
+    switch (b.term) {
+      case TERM_NONE: return [b.fallthrough];
+      case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
+      case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : null;
+      default: return null; // call, return, indirect jump, exit
+    }
+  }).map((list) => list && list.map((a) => byEip.get(a) ?? null));
+  const liveIn = new Uint8Array(blocks.length);
+  const liveInOf = (b) => { let l = b.flagsOut; for (let i = b.insns.length - 1; i >= 0; i--) l = flagsLiveBefore(b.insns[i], l); return l; };
+  for (const b of blocks) b.flagsOut = 0;
+  for (let changed = true, rounds = 0; changed && rounds < 64; rounds++) {
+    changed = false;
+    for (let k = blocks.length - 1; k >= 0; k--) {
+      const b = blocks[k], sl = succ[k];
+      let out = 0;
+      if (!sl) out = FL_ALL; else for (const t of sl) out |= t ? liveIn[t.index] : FL_ALL;
+      b.flagsOut = out;
+      const li = liveInOf(b);
+      if (li !== liveIn[k]) { liveIn[k] = li; changed = true; }
+    }
+  }
+}
+
 /** Instructions that load the x87 control word (precision / rounding control). */
 const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.FXRSTOR, OP.FNSAVE]);
 
@@ -333,6 +369,7 @@ class Emitter {
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.blocks = blocks;
     this.byEip = byEip;
+    if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
@@ -1073,7 +1110,7 @@ class Emitter {
     this.cur = b.index;
     // flags live after each instruction of the block
     const live = (this.flagsAfter = new Uint8Array(b.insns.length));
-    for (let i = b.insns.length - 1, l = FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
+    for (let i = b.insns.length - 1, l = b.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
