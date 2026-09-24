@@ -61,6 +61,7 @@ export class Seh {
     this.writeContext(cpu, ctx);
     this.writeRecord(rec, code, flags, addr, params);
     thread.seh = { rec, ctx, frame: m.read32(thread.teb), code, flags, addr, depth: (thread.seh?.depth ?? 0) + 1, spBase: (rec - 0x40) >>> 0 };
+    this.remember(thread, code, addr, params);
     this.sehLog( `exception ${code.toString(16)} at ${this.vm.proc.symbolize(addr)} (thread ${thread.id}), first frame ${m.read32(thread.teb).toString(16)}`);
     return this.next(thread);
   }
@@ -85,6 +86,28 @@ export class Seh {
       return true;
     }
   }
+
+  /**
+   * The last exceptions raised (any thread), kept for failure reports: code, address, and for C++ exceptions (MSVC
+   * throw: code 0xe06d7363, parameters magic / object / ThrowInfo) the thrown type's decorated name, read through the
+   * ThrowInfo -> CatchableTypeArray -> CatchableType -> TypeDescriptor chain of the compiler's ABI.
+   */
+  remember(thread, code, addr, params) {
+    let what = '';
+    if (code === EXC.CPP && params.length >= 3) {
+      try {
+        const m = this.mem, vmem = this.vm.proc.vmem, ok = (a, n = 4) => a > 0x10000 && vmem.isCommitted(a, n);
+        const ti = params[2] >>> 0, cta = ok(ti + 12) ? m.read32(ti + 12) : 0, ct = ok(cta + 4) ? m.read32(cta + 4) : 0, td = ok(ct + 4) ? m.read32(ct + 4) : 0;
+        if (ok(td + 8, 1)) what = ` ${m.readCString(td + 8, 96)}`;
+      } catch { /* diagnostics only */ }
+    }
+    (this.recent ??= []).push(`t${thread.id} 0x${(code >>> 0).toString(16)}${what} at ${this.vm.proc.symbolize(addr)}`);
+    if (this.recent.length > 16) this.recent.shift();
+    this.raised = (this.raised ?? 0) + 1;
+  }
+
+  /** Report lines about the exceptions raised so far (see remember). */
+  recentReport() { return this.recent?.length ? `exceptions raised: ${this.raised}, the last ones:\n  ${this.recent.join('\n  ')}` : 'no exception raised'; }
 
   /** 'seh' log capped at 80 lines per process (an exception storm would otherwise flood the console). */
   sehLog(msg) { if ((this.logCount = (this.logCount ?? 0) + 1) <= 80) this.vm.log('seh', msg); }

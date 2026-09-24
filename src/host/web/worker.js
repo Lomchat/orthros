@@ -92,7 +92,7 @@ async function start(m) {
   // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs)
   const store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + manifestName) : null;
   if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs`);
-  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store });
+  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
   gameStore = store; gameFilesStats = gameFiles.stats;
   // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
   if (store && m.opts.offline) { gameFiles.downloadAll(offline, () => stopped).then(() => log('file', `offline copy: ${offline.done ? 'complete' : 'stopped'} (${Math.round(offline.bytes / 1048576)} MiB of ${Math.round(offline.total / 1048576)})`)); }
@@ -168,7 +168,7 @@ function pump() {
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
   }
-  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code }); flushProfile(true); return; }
+  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); return; }
   if (r.state === 'sleep') { const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; setTimeout(pump, ms); }
   else if (r.state === 'idle') { pumpStats.idles++; setTimeout(pump, 30); }
   else channel.port2.postMessage(0);

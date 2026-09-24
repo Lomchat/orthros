@@ -238,7 +238,14 @@ export class Vm {
     this.sched.block(thread, () => { const n = this.clock.now(); return proc.timers.some((x) => x.kind === 'mm' && x.due <= n); }, wait, 'mmtimer');
   }
 
-  exitProcess(code) { throw new ProcessExit(code >>> 0); }
+  exitProcess(code) {
+    // a failure exit (abort, assertion, a filter ending an unhandled exception...): what led to it, for the host
+    if (code !== 0 && !this.exitReport) {
+      try { this.exitReport = this.crashReport(this.current ?? this.proc.threads[0], `process exit with code ${code >>> 0}`) + '\n' + this.seh.recentReport(); }
+      catch (e) { this.exitReport = `exit report failed: ${e.message}`; }
+    }
+    throw new ProcessExit(code >>> 0);
+  }
 
   exitThread(thread, code) {
     thread.exitCode = code >>> 0;
