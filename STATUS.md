@@ -366,6 +366,15 @@
 - **Mini-carte** : correcte (carte parcheminée de la carte, emplacements, unités, trapèze de la caméra). L'aperçu
   `MapPreviews\*.tga` écrit par le jeu est uni brun, avec ou sans rendu : calculé par le processeur à partir des
   données de la carte (aucun appel Direct3D avant l'écriture, `--log filectx`) — sortie du jeu lui-même.
+- **Bug de rendu corrigé : sol des bases en détail Low/VeryLow** (le détail recommandé aux nouveaux joueurs). Le sol
+  pavé de la citadelle s'affichait en gris uni avec des taches claires au lieu des dalles. Capture d'image : même
+  maillage, mêmes coordonnées et même atlas qu'en High ; les taches valaient exactement la couleur de sommet (les deux
+  échantillonneurs lisaient le blanc de la texture de brouillard de guerre), le gris foncé cette couleur × 7/15 (le
+  gris A4R4G4B4 de cette texture). Cause : un draw lie ses étages dans l'ordre et téléverse une texture modifiée en y
+  arrivant ; le téléversement liait la texture sur l'unité active — celle de l'étage lié juste avant, remplacée (le
+  cache d'état suivait, donc `--gl-validate` ne voyait rien). Les téléversements passent maintenant par une unité
+  réservée. Test avec un contexte GL enregistreur (échoue sans la correction). Preuves : `build/proof/low-floor-before.png`,
+  `build/proof/low-floor-fixed.png`. La capture compare désormais chaque texture relue du GPU avec la mémoire invitée.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),
