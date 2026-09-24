@@ -152,3 +152,17 @@ L'objectif final est de lancer n'importe quel dossier de jeu. `bin/orthros.mjs r
 
 ## D048 — 2026-09-24 — Une version de région par mode FPU plutôt qu'une région générique
 Une région x87 est spécialisée pour le mode (précision/arrondi) en vigueur quand elle est traduite (D042). Le code partagé par des threads dans des modes différents — fonctions mathématiques de la CRT, décodeur MP3 de Miles dans un thread en 53 bits alors que le jeu tourne en 24 bits — était retraduit une fois pour toutes avec le mode testé à l'exécution : tests de mode dans chaque opération et appels aux noyaux exacts, dont la seule présence fait vider les registres (D045). Désormais une sortie « mauvais mode » ajoute une **version** de la région spécialisée pour le nouveau mode, chaînée derrière la précédente : la garde d'entrée d'une version, sur un mode différent, lit un emplacement propre à son index de table (zone privée libre sous le brouillon du JIT) et appelle en queue la version suivante avec les paramètres reçus ; la dernière rend la main au JIT, qui ajoute une version (jusqu'à 3, puis la région générique d'avant). Les versions sont traduites depuis la même entrée (blocs identiques, vérifié), seule la première est dans la table de hachage, et une région disparaît avec toutes ses versions (SMC, invalidation). Mesure au menu High (A/B simultanés) : 18,64 → 18,82 fps, dans le bruit — gardé pour sa structure (code spécialisé pour chaque thread, testé sous quatre mots de contrôle alternés).
+
+## D049 — 2026-09-24 — JIT : registres XMM en locaux v128 dans une région
+Les registres XMM vivaient dans le bloc d'état : chaque instruction SSE les relisait et réécrivait en mémoire. Un
+résultat scalaire (`addsd`, `mulsd`, `movlpd` : écriture de 8 octets) relu en entier par l'instruction suivante
+(lecture de 16 octets) met en échec le transfert écriture→lecture du processeur hôte (~12 cycles à chaque fois).
+Mesuré sur la phase « maths » du banc d'essai du premier lancement du jeu (`pow` SSE2 de la CRT) : 2,15 ns par
+instruction SSE contre 0,3-0,5 pour le code entier. **Décision** : les registres XMM nommés par les instructions
+d'une région sont chargés dans des locaux v128 à l'entrée et réécrits aux sorties, aux chaînages et autour des
+replis interpréteur (comme la pile x87, D042) ; les registres atteints seulement implicitement (FXSAVE/FXRSTOR,
+replis) restent dans le bloc d'état. Les écritures partielles deviennent des `i8x16.shuffle`/`replace_lane` sur le
+local. Mesures : `tools/sse-bench.mjs` 107,5 → 23,4 ns par itération (0,47 ns/instruction) ; phase maths du jeu
+524-538 → 820-830 MIPS ; menu 3D High (`--gl-discard`, A/B simultanés ×2) neutre (18,62/18,35 → 18,24/18,28 fps,
+dans le bruit). Pas de passage des XMM en paramètres de chaînage : la paire écriture 16 octets / lecture 16 octets
+entre régions est transférée par le processeur, et 8 paramètres v128 de plus pèseraient sur toutes les régions.

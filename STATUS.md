@@ -343,6 +343,36 @@
   `--gl-discard`) et `waitpixel` ; `--capture-at @N` compte depuis la dernière ancre ; `--interp-range[-at]` (code
   interprété par la référence), `--gl-validate`, `--lose-context-at`.
 
+## Fidélité et performance (2026-09-24, suite)
+- **Horloge et processeur virtuels cohérents** : RDTSC compte à `CPU_MHZ` (3 000) par microseconde comme le `~MHz` du
+  registre (il comptait à 1 GHz) ; CPUID expose les feuilles étendues (0x80000000..8 : chaîne de marque, cache L2,
+  tailles d'adresses — présentes sur tout processeur depuis le Pentium 4) avec la même chaîne de marque que
+  `ProcessorNameString` ; clés `HKLM\Software\Microsoft\Direct3D` et `DirectDraw` créées comme par le runtime DirectX.
+  Le jeu lit ces valeurs au démarrage (`--log cpuid`). Un profil neuf reste recommandé **VeryLow** par le banc d'essai
+  du jeu : la recommandation ne vient pas de ces valeurs (mesure de vitesse du jeu lui-même, non faussée).
+- **Registres XMM en locaux** (D049) : les phases chronométrées du premier lancement montrent une phase à 530 MIPS
+  (maths : `pow` SSE2 de la CRT, sin/cos x87) contre 1 500-4 700 ailleurs ; cause : chaque instruction SSE relisait ses
+  registres en mémoire (écriture 8 octets puis lecture 16 : transfert écriture→lecture en échec). Les XMM vivent
+  maintenant en locaux v128 dans une région : `tools/sse-bench.mjs` 107,5 → 23,4 ns par itération ; phase maths
+  530 → 825 MIPS ; menu High neutre.
+- **Unités magenta, enquête close** : en choisissant la couleur rouge au lieu de « ? » (aléatoire), les chariots et la
+  bannière de la citadelle passent au rouge (couleur du joueur correcte) mais les corps des ouvriers restent magenta :
+  c'est la texture de remplacement du moteur (1×1 magenta, créée par le jeu lui-même) pour des textures absentes. Le
+  moteur les cherche (ex. `cinmrdbnr01`, `trwagontraveled`) dans toutes ses dossiers de fichiers libres après ses
+  archives, sans les trouver. Vérifié côté émulation : processeur (interpréteur de référence identique), octets servis
+  (`tools/vfs-check.mjs` : 3 000 plages, 1,16 Gio comparés, 0 écart), ordre d'énumération des archives (collation NTFS,
+  `_patch222*` après les lettres), échec de `CreateProcess` des outils `TextureAssetBuilder.exe`/`assetCacheBuilder.exe`
+  absents du dossier (FALSE + `ERROR_FILE_NOT_FOUND` comme Windows). Classé : données absentes du dossier.
+- **Mini-carte** : correcte (carte parcheminée de la carte, emplacements, unités, trapèze de la caméra). L'aperçu
+  `MapPreviews\*.tga` écrit par le jeu est uni brun, avec ou sans rendu : calculé par le processeur à partir des
+  données de la carte (aucun appel Direct3D avant l'écriture, `--log filectx`) — sortie du jeu lui-même.
+- **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
+  appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
+  écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),
+  `tools/sse-bench.mjs` ; `tools/jit-dump.mjs` charge les traducteurs x87/SSE (il les montrait en repli).
+- Écart connu non corrigé : `lstrcmp`/`lstrcmpi`/`CompareString` comparent en ordinal (Windows : tri linguistique,
+  minuscules avant majuscules d'une même lettre, tirets et apostrophes à part) — n'affecte que l'ordre de listes triées.
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques

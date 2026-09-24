@@ -85,6 +85,7 @@ export function registerKernel32File(api, vm) {
     }
     const h = c.proc.handles.create({ type: 'file', file: f, path: wp, pos: 0, write, close() { f.close(); } });
     vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}) -> ${h}`);
+    if (write) vm.log('filectx', `open ${wp} for writing by t${c.thread.id}; its previous API calls:\n  ${vm.recentApiCalls(160, c.thread.id).join('\n  ')}`); // (what produced the data about to be written)
     return h;
   };
   K.CreateFileA = [7, (c) => openFile(c, c.str(0), c.arg(1), c.arg(2), c.arg(4), c.arg(5))];
