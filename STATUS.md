@@ -404,6 +404,10 @@
   partagée chargée — charge moyenne ~20) : code du matin 37,3 fps, p99 45,6 ms, 3,16 % > 33 ms, max 404 ms ; code du soir
   37,6 fps, p99 44,9 ms, 2,52 % > 33 ms, max 184 ms (partie atteinte 38 s plus tôt). Le p99 au-dessus de 33 ms vient de la
   charge de la machine (mesures M7 faites seul) ; à refaire seul ou sur la machine cliente.
+- **Messages de débogage du jeu** (`--log debug`, `debugctx` : avec les appels API qui précèdent) : l'avertissement de
+  D3DX sur `new(0)` renvoyant NULL vient du gestionnaire mémoire du jeu (notre `HeapAlloc(…, 0)` rend un bloc valide et
+  n'est pas appelé à ce moment) ; « Could not find file » suit l'ouverture échouée de `shaders\Shrubs_darken.vso`,
+  absent du dossier — données, comme les textures des unités magenta.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),
