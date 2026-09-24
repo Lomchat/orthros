@@ -390,6 +390,13 @@
   `FSTP m32` sous chaque arrondi dirigé à 53/64 bits sur des valeurs limites. Démarrage (même A/B) : première image
   39 → 33 s, menu 3D complet 92 → 75 s ; menu High neutre (18,8 / 18,4 fps). Jusqu'à 4 versions par mode FPU (24/53 bits
   × au plus près/troncature, les quatre modes vus pour du code partagé) : plus aucune région générique en jeu.
+- **API rapides dans les régions** : pendant le chargement, le répartiteur traitait jusqu'à 17 M appels d'API rapides
+  par seconde (sortie de région, répartiteur WASM, retour) — l'accès aux données par thread de la CRT (GetLastError,
+  TlsGetValue, SetLastError) et les sections critiques de l'allocateur du jeu. Un `call dword ptr [slot]` (entrée d'import
+  ou variable pointeur de fonction) ou un talon `jmp dword ptr [slot]` dont la case contient la thunk d'une API rapide à
+  la traduction l'exécute maintenant dans la région (case et RESUMING vérifiés à l'exécution, cas lents vers le
+  gestionnaire JavaScript). Chargement d'une partie 60 → 55 s (A/B simultanés), menu neutre ; restent ~30 k appels COM
+  différés/s par vtable. `--jit-profile` compte les appels rapides par API et échantillonne leurs sites d'appel.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),

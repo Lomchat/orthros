@@ -167,6 +167,14 @@ async function profileWorker(seconds) {
   const top = [...self].sort((a, b) => b[1] - a[1]).slice(0, 30);
   if (process.env.ORTHROS_DUMP_TICKS) for (const n of p.nodes) if (n.positionTicks && /^r_/.test(n.callFrame.functionName)) console.log('[ticks]', n.callFrame.functionName, n.callFrame.url, JSON.stringify(n.positionTicks.slice(0, 20)));
   console.log(`[profile] ${total} samples; top self time:`); for (const [k, c] of top) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${k}`);
+  // callers of the five hottest entries (parent frames in the sampled call tree)
+  const parentOf = new Map(); for (const n of p.nodes) for (const ch of n.children ?? []) parentOf.set(ch, n.id);
+  const keyOf = (n) => `${n.callFrame.functionName || '(anonymous)'} ${n.callFrame.url.replace(/^.*\/src\//, 'src/')}:${n.callFrame.lineNumber + 1}`;
+  for (const [k] of top.slice(0, 5)) {
+    const callers = new Map(); let n0 = 0;
+    for (const [id, c] of counts) { const n = byId.get(id); if (keyOf(n) !== k) continue; const par = byId.get(parentOf.get(id)); const pk = par ? keyOf(par) : '(root)'; callers.set(pk, (callers.get(pk) ?? 0) + c); n0 += c; }
+    console.log(`[profile] callers of ${k.split(' ')[0]}: ${[...callers].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([pk, c]) => `${pk.split(' ')[0]} (${pk.split(' ')[1] ?? ''}) ${(100 * c / n0).toFixed(0)}%`).join(', ')}`);
+  }
   // aggregate by file
   const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
   console.log('[profile] by file:'); for (const [f, c] of [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${f}`);

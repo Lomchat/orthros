@@ -12,7 +12,7 @@ import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
-import { MATH_KERNELS } from '../../cpu/jit/runtime.js';
+import { MATH_KERNELS, FAST_NAMES, FAST_PROF } from '../../cpu/jit/runtime.js';
 
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null;
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
@@ -157,6 +157,12 @@ function pump() {
     // --jit-profile: block transitions per second by kind (intra-region jumps, returns, chaining)
     const prof = vm.jit?.stats.prof;
     if (prof) { log('jitprof', `per s: ${Object.entries(prof).map(([k, v]) => `${k}=${Math.round((v - (lastProf[k] ?? 0)) / dt)}`).join(' ')} chained=${Math.round((vm.jit.stats.chained - (lastProf.chained ?? 0)) / dt)} misses=${Math.round((vm.jit.stats.misses - (lastProf.misses ?? 0)) / dt)} translated=${Math.round((vm.jit.stats.regions - (lastProf.regions ?? 0)) / dt)} steps=${Math.round(((vm.jit.stats.steps ?? 0) - (lastProf.steps ?? 0)) / dt)} fpuModeMisses=${Math.round(((vm.jit.stats.fpuModeMisses ?? 0) - (lastProf.fpuModeMisses ?? 0)) / dt)} api=${Math.round((vm.apiCalls - (lastProf.api ?? 0)) / dt)} unchained(thunk,stop,budget,miss)=${[0, 1, 2, 3].map((k) => { const v = vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); vm.mem.write32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k, 0); return Math.round(v / dt); }).join('/')} flags helper by op/s: ${vm.jit.flagsByOp().slice(0, 10).map(([k, n]) => `${k}=${Math.round(n / dt)}`).join(' ')}`); lastProf = { ...prof, chained: vm.jit.stats.chained, misses: vm.jit.stats.misses, regions: vm.jit.stats.regions, steps: vm.jit.stats.steps ?? 0, fpuModeMisses: vm.jit.stats.fpuModeMisses ?? 0, api: vm.apiCalls }; }
+    if (prof) { // fast-path API calls (handled by the dispatcher in WASM): per API, and their most frequent call sites
+      const u32 = vm.mem.u32, base = FAST_PROF >>> 2, names = Object.entries(FAST_NAMES).reduce((a, [k, v]) => { a[v] ??= k.replace(/^kernel32\.dll!/, ''); return a; }, { 16: 'deferred COM' });
+      const per = []; for (let i = 0; i < 32; i++) { if (u32[base + i]) per.push([names[i] ?? i, u32[base + i]]); u32[base + i] = 0; }
+      const sites = new Map(); for (let i = 0; i < 1024; i++) { const a = u32[base + 0x40 + i]; if (a) sites.set(a, (sites.get(a) ?? 0) + 1); u32[base + 0x40 + i] = 0; }
+      if (per.length) log('jitprof', `fast API calls per s: ${per.sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}=${Math.round(n / dt)}`).join(' ')}; return sites (of the last 1024): ${[...sites].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([a, n]) => { let call = '?'; for (const len of [6, 2, 3, 5, 7, 4]) { try { const i = decode(vm.mem, a - len); if (i.next === a && OP_NAMES[i.op] === 'CALL') { call = fmtInsn(i); break; } } catch {} } return `${vm.proc.symbolize(a)} x${n} [${call}]`; }).join(', ')}`);
+    }
     pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0;
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();

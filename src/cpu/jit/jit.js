@@ -36,7 +36,7 @@ export class Jit {
     this.opts = opts;
     this.cpu = null;
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
-    const rtModule = new WebAssembly.Module(buildRuntime());
+    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile }));
     this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table } }).exports;
     this.imports = {
       env: {
@@ -145,8 +145,9 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
     const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
-    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains });
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi });
     const t1 = performance.now();
+    if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
     const t2 = performance.now();
     let inst;
