@@ -1,6 +1,7 @@
 // Headless harness: starts the server, opens the page in headless Chromium (Playwright), runs a
 // manifest for N seconds, collects the emulator log, HUD stats and periodic screenshots.
-// Usage: node tools/headless.mjs <manifest-name> [--seconds 60] [--shots 10] [--out build/shots] [--log kinds] [--interp]
+// Usage: node tools/headless.mjs <manifest-name | game-folder> [--seconds 60] [--shots 10] [--out build/shots] [--log kinds] [--interp]
+//   --shots S: a screenshot every S seconds (not a count)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -31,7 +32,7 @@ let afterWait = false;
 const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
-if (!name) { console.error('usage: node tools/headless.mjs <manifest> [--seconds N] [--shots N] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
+if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
 fs.mkdirSync(out, { recursive: true });
 
 const server = createServer({ extra: extraManifests });
