@@ -288,6 +288,7 @@ export class WindowManager {
       }
       case 'focus': {
         const w = this.windows.get(this.active);
+        for (const d of this.vm.d3dDevices ?? []) d.onActivate(ev.focused); // (fullscreen Direct3D devices are lost meanwhile)
         if (w) this.send(w, WM.ACTIVATEAPP, ev.focused ? 1 : 0, 0);
         if (!ev.focused) this.keyState.fill(0);
         break;
