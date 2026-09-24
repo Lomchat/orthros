@@ -5,7 +5,7 @@
 // faulting instruction.
 
 import { OP, OT, decode, fmtInsn } from './decoder.js';
-import { F, EXIT, SEG, FLAGS_ARITH } from './state.js';
+import { F, EXIT, SEG, FLAGS_ARITH, CPU_MHZ } from './state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE } from './memory.js';
 
 export class CpuFault extends Error {
@@ -863,7 +863,7 @@ H[OP.CPUID] = (I) => {
   cpu.eax = r[0] >>> 0; cpu.ebx = r[1] >>> 0; cpu.ecx = r[2] >>> 0; cpu.edx = r[3] >>> 0;
 };
 H[OP.RDTSC] = (I) => {
-  const t = I.hooks.rdtsc ? I.hooks.rdtsc(I) : BigInt(Math.floor(performance.now() * 1e6));
+  const t = I.hooks.rdtsc ? I.hooks.rdtsc(I) : BigInt(Math.floor(performance.now() * CPU_MHZ * 1000)); // (CPU_MHZ ticks per microsecond)
   I.cpu.eax = Number(t & 0xffffffffn); I.cpu.edx = Number((t >> 32n) & 0xffffffffn);
 };
 H[OP.RDPMC] = () => { throw new CpuFault(13, 0, 'rdpmc'); };

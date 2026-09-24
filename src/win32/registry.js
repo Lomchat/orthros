@@ -1,5 +1,6 @@
 // Registry emulation (advapi32 Reg* API): an in-memory key tree seeded with generic Windows
 // defaults and the manifest's `registry` section, persisted as JSON in the save directory.
+import { CPU_MHZ } from '../cpu/state.js';
 
 export const HKEY = { CLASSES_ROOT: 0x80000000, CURRENT_USER: 0x80000001, LOCAL_MACHINE: 0x80000002, USERS: 0x80000003, CURRENT_CONFIG: 0x80000005 };
 export const REG = { NONE: 0, SZ: 1, EXPAND_SZ: 2, BINARY: 3, DWORD: 4, MULTI_SZ: 7 };
@@ -77,7 +78,7 @@ export class Registry {
     this.setString('HKEY_CURRENT_USER\\Control Panel\\International', 'Locale', '00000409');
     this.setString('HKEY_CURRENT_USER\\Control Panel\\International', 'sLanguage', 'ENU');
     this.setString('HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', 'ProcessorNameString', 'Orthros x86 CPU');
-    this.setDword('HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', '~MHz', 3000);
+    this.setDword('HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', '~MHz', CPU_MHZ); // (the RDTSC rate)
     this.setString('HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', 'VendorIdentifier', 'GenuineIntel');
     this.setString('HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', 'Identifier', 'x86 Family 6 Model 15 Stepping 2');
     this.setString('HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', 'PROCESSOR_ARCHITECTURE', 'x86');
