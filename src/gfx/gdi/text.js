@@ -95,7 +95,7 @@ export class TextEngine {
           const data = info.offset ? extractFace(bytes, info.offset) : bytes;
           const face = new FontFace(info.family, data.slice().buffer, desc);
           this.pending++;
-          face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; });
+          face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });
         } catch { /* unusable font data: the face falls back to a system family */ }
       }
     }
