@@ -335,6 +335,10 @@
   Communauté — rendus correctement, aucun avertissement ; vidéo VP6 du menu ouverte depuis `Data\Movies`.
 - **Appels GL par image en partie** : 2 326 pour 447 draws (5,2/draw ; 5,8 avant : `activeTexture` 170 → 40,
   `uniform1i` 108 → 33). **Mémoire** : ~2 Go résidents au pic du chargement, ~1,6 Go au menu, stable.
+- **Copie hors ligne** (option : case du menu, `?offline=1`, `--offline`) : tout le dossier du jeu (4 Gio) téléchargé en
+  arrière-plan dans le magasin OPFS pendant la partie (~3 min en local), en cédant la priorité aux lectures du jeu ;
+  lancement suivant jusqu'à une partie : 0 requête HTTP. **Mémoire sur 30 min de menu** : 1 612 → 1 677 Mo résidents
+  après le démarrage (lente montée, scènes du menu 3D qui chargent de nouveaux contenus).
 - **Harnais** : ancres robustes `waitframe:min,max` (draws par image : écran de chargement puis partie, marche avec
   `--gl-discard`) et `waitpixel` ; `--capture-at @N` compte depuis la dernière ancre ; `--interp-range[-at]` (code
   interprété par la référence), `--gl-validate`, `--lose-context-at`.
