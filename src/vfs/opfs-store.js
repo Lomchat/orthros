@@ -56,6 +56,7 @@ export class OpfsBlockStore {
   /** Append `bytes` under `key` (ignored when the store has failed). */
   put(key, bytes) {
     if (this.failed || this.map.has(key)) return;
+    const t0 = performance.now();
     try {
       const n = this.data.write(bytes, { at: this.end });
       if (n !== bytes.length) { this.fail(); return; }
@@ -64,11 +65,14 @@ export class OpfsBlockStore {
       this.stats.puts++; this.stats.bytes += n;
       if (++this.dirty >= 16) this.flush();
     } catch { this.fail(); }
+    this.stats.putMs = (this.stats.putMs ?? 0) + performance.now() - t0;
   }
 
   /** Persist the index (data first, so every indexed block is on disk). */
   flush() {
     if (this.failed || !this.dirty) return;
+    const t0 = performance.now();
+    this.stats.flushes = (this.stats.flushes ?? 0) + 1;
     try {
       this.data.flush();
       const json = new TextEncoder().encode(JSON.stringify([...this.map].map(([k, [off, len]]) => [k, off, len])));
@@ -77,6 +81,7 @@ export class OpfsBlockStore {
       this.indexHandle.flush();
       this.dirty = 0;
     } catch { this.fail(); }
+    this.stats.flushMs = (this.stats.flushMs ?? 0) + performance.now() - t0;
   }
 
   fail() { this.failed = true; }

@@ -100,9 +100,9 @@ async function start(m) {
   // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
   if (store && m.opts.prefetch && !m.opts.offline) {
     fetch(`/api/prefetch/${encodeURIComponent(manifestName)}`).then((r) => (r.ok ? r.json() : [])).then((list) => {
-      prefetch.total = list.length;
+      prefetch.total = list.length; prefetch.t0 = performance.now();
       if (list.length) log('file', `prefetch: ${list.length} blocks learned from earlier sessions`);
-      return gameFiles.prefetch(list, prefetch, () => stopped).then(() => log('file', `prefetch: ${prefetch.done ? 'done' : 'stopped'}, ${prefetch.blocks} blocks (${Math.round(prefetch.bytes / 1048576)} MB) downloaded`));
+      return gameFiles.prefetch(list, prefetch, () => stopped).then(() => log('file', `prefetch: ${prefetch.done ? 'done' : 'stopped'}, ${prefetch.blocks} blocks (${Math.round(prefetch.bytes / 1048576)} MB) downloaded in ${((performance.now() - prefetch.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
     }).catch(() => {});
   }
   if (store && m.opts.offline) { gameFiles.downloadAll(offline, () => stopped).then(() => log('file', `offline copy: ${offline.done ? 'complete' : 'stopped'} (${Math.round(offline.bytes / 1048576)} MiB of ${Math.round(offline.total / 1048576)})`)); }
