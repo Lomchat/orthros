@@ -1,7 +1,7 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
@@ -10,6 +10,8 @@ import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
+/** x87-mode versions of a region before it is translated with the mode tested at run time */
+const MAX_FPU_VERSIONS = 3;
 
 /** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
 function foldLazyFlags(cpu) {
@@ -129,16 +131,20 @@ export class Jit {
   }
 
   // ------------------------------------------------------------------ translation
-  translate(eip) {
+  /**
+   * Translate the region at `eip`. `version` ({ first, fpc }): another version of region `first` specialized for
+   * x87 mode `fpc`, reached only through the entry guard of the previous version (not in the hash table).
+   */
+  translate(eip, version = null) {
     const t0 = performance.now();
     // already translated (its hash entry was evicted): re-insert instead of retranslating
-    const known = this.blockMap.get(eip);
+    const known = version ? null : this.blockMap.get(eip);
     if (known) { this.hashInsert(eip, known.region.fnIdx, known.block); this.stats.reinserts = (this.stats.reinserts ?? 0) + 1; return known.region; }
     // translation storm diagnostic: thousands of new regions per second means code is being retranslated
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
-    const fpcAssume = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
+    const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains });
     const t1 = performance.now();
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
@@ -162,12 +168,15 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, first: version?.first ?? null, versions: null };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
-    this.byEntry.set(eip, region);
-    for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
+    if (fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * fnIdx, 0); // (no next version yet)
+    if (!version) {
+      this.byEntry.set(eip, region);
+      for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
+    }
     // mark code pages for SMC detection
     for (const p of region.pages) {
       this.mem.u8[SMC_MAP_BASE + p] = 1;
@@ -176,7 +185,7 @@ export class Jit {
     // consolidation only after the region is registered: consolidate() keeps the pending regions
     // that byEntry still maps, so the one triggering it must already be there (or it would keep
     // its single-function instance forever)
-    this.pending.push(region);
+    if (!version) this.pending.push(region); // (versions keep their own module: consolidation packs hash-reachable regions)
     if (this.pending.length >= this.consolidateEvery) { const tc = performance.now(); this.consolidate(); this.stats.tConsolidate += performance.now() - tc; }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
     this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
@@ -244,7 +253,15 @@ export class Jit {
     for (const r of victims) this.dropRegion(r);
     this.stats.dropped += victims.size;
   }
+  /** Drop a region with every FPU-mode version of it (the guard of one version may tail-call the next). */
   dropRegion(r) {
+    const family = (r.first ?? r).versions;
+    if (!family) { this.dropOne(r); return; }
+    for (const v of family) this.dropOne(v);
+    (r.first ?? r).versions = null;
+  }
+  dropOne(r) {
+    if (r.fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * r.fnIdx, 0);
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
@@ -348,11 +365,27 @@ export class Jit {
         continue;
       }
       if (r === EXIT_FPUMODE) {
-        // a region specialized for one x87 mode entered under another: replace it by one testing the mode
-        const h = this.hashLookup(cpu.eip), region = h && this.byFn.get(h.fnIdx);
-        if (region) { for (const b of region.blocks) this.genericFpu.add(b.eip); this.dropRegion(region); }
-        else this.genericFpu.add(cpu.eip);
+        // a region specialized for one x87 mode entered under another (code shared by threads in different modes:
+        // the C runtime, a sound decoder): add a version specialized for this mode behind the last one (up to
+        // MAX_FPU_VERSIONS), else replace the region by one testing the mode at run time
         this.stats.fpuModeMisses = (this.stats.fpuModeMisses ?? 0) + 1;
+        const h = this.hashLookup(cpu.eip), first = h && this.byFn.get(h.fnIdx);
+        const mode = this.mem.read16(cpu.base + ST.FPU_CW) & 0xf00;
+        if (first && !first.first && first.fpc !== null && this.chaining && this.opts.fpuVersions !== false) {
+          const versions = (first.versions ??= [first]);
+          if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
+            const v = this.translate(first.entry, { first, fpc: mode });
+            if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip)) {
+              this.mem.write32(JIT_ALT_BASE + 4 * versions[versions.length - 1].fnIdx, v.fnIdx + 1);
+              versions.push(v);
+              this.stats.fpuVersions = (this.stats.fpuVersions ?? 0) + 1;
+              continue;
+            }
+            versions.push(v); // (different blocks: dropped with the family below)
+          }
+        }
+        if (first) { for (const b of first.blocks) this.genericFpu.add(b.eip); this.dropRegion(first); }
+        else this.genericFpu.add(cpu.eip);
         continue;
       }
       if (r === EXIT.NONE) { // a region returned EIP 0 (jump/call/ret to address 0): access violation

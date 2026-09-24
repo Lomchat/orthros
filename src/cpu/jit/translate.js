@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP } from './runtime.js';
-import { THUNK_BASE, THUNK_END, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
+import { THUNK_BASE, THUNK_END, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
@@ -350,10 +350,19 @@ class Emitter {
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
     if (this.fpcAssume !== null) {
-      // specialized for one x87 mode: entered under another one, leave (EIP is the entry's, stored by the
-      // dispatcher / chain) for the dispatcher to replace the region by one tested at run time
+      // specialized for one x87 mode: entered under another one, tail-call the next version of this region (the
+      // same blocks translated for another mode, JIT_ALT_BASE slot of this table index) with the parameters as
+      // received, or leave (EIP is the entry's, stored by the dispatcher / chain) for the JIT to add a version
       c.get(L_FPC).i32(this.fpcAssume).ne();
       const i = c.hint(false).if_();
+      const fnIdx = this.opts.fnIdx ?? -1;
+      if (this.chain && fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) {
+        c.i32(0).i32load(JIT_ALT_BASE + 4 * fnIdx).tee(L_T2);
+        const alt = c.if_();
+        for (let k = 0; k < L_FIRST_DECLARED; k++) c.get(k);
+        c.get(L_T2).i32(1).sub().return_call_indirect(REGION_TYPE, 0);
+        c.end(); void alt;
+      }
       c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
       c.end(); void i;
     }

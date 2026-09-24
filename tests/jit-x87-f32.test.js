@@ -215,3 +215,35 @@ test('x87 float values across loops and conditional branches: random programs ma
     }
   }
 });
+
+test('a region reached under several x87 modes gets a version per mode (up to three), then one testing the mode', () => {
+  const code = program(77);
+  const mem = new GuestMemory();
+  const cpu = new CpuState(mem, THREAD_STATES_BASE);
+  const I = new Interp(mem, cpu);
+  const jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu;
+  const end = CODE + code.length - 1;
+  jit.boundaries = new Set([end]);
+  mem.writeBytes(CODE, code);
+  const runWith = (cw) => {
+    cpu.reset();
+    mem.fill(DATA, 0x400, 0);
+    F32_VALUES.forEach((v, i) => mem.writeF32(F32S + 4 * i, v));
+    F64_VALUES.forEach((v, i) => mem.writeF64(F64S + 8 * i, v));
+    mem.write16(cpu.base + ST.FPU_CW, cw);
+    cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
+    assert.equal(jit.run({ stopAt: end, maxInsns: 1e6 }), EXIT.HALT);
+    return { out: Buffer.from(mem.bytes(OUT, 0x120)).toString('hex'), top: cpu.fpuTop };
+  };
+  for (const cw of [0x007f, 0x027f, 0x007f, 0x0c7f, 0x027f, 0x007f]) {
+    const want = exec(false, code, cw);
+    assert.deepEqual(runWith(cw), { out: want.out, top: want.top }, `cw ${cw.toString(16)}`);
+  }
+  assert.ok(jit.stats.fpuVersions >= 2, 'versions added for the other modes');
+  for (const r of jit.regions) if (r.versions) { assert.ok(r.versions.length <= 3); assert.equal(new Set(r.versions.map((v) => v.fpc)).size, r.versions.length, 'one version per mode'); }
+  assert.equal(jit.genericFpu.size, 0);
+  const want = exec(false, code, 0x037f);
+  assert.deepEqual(runWith(0x037f), { out: want.out, top: want.top }, 'a fourth mode');
+  assert.ok(jit.genericFpu.size > 0, 'a fourth mode: translated with the mode tested at run time');
+  for (const cw of [0x007f, 0x027f]) { const w = exec(false, code, cw); assert.deepEqual(runWith(cw), { out: w.out, top: w.top }, `generic, cw ${cw.toString(16)}`); }
+});
