@@ -70,6 +70,20 @@ test('window.exe: RegisterClass/CreateWindow, WM_PAINT via GDI, timers, input, m
   assert.equal(vm.proc.unknownImports.size, 0);
 });
 
+// a failure exit (non-zero code) leaves a report for the host: the exiting thread, the recent API calls and the last
+// exceptions raised, a C++ exception with its thrown type's name (MSVC ThrowInfo chain, built here in guest memory)
+test('hello.exe: a non-zero exit code leaves a failure report with the last exceptions raised', { skip: skip('hello.exe') }, () => {
+  const { vm } = boot('hello.exe');
+  const m = vm.mem, a = vm.proc.processHeap.alloc(64);
+  const ti = a, cta = a + 16, ct = a + 24, td = a + 36;
+  m.write32(ti + 12, cta); m.write32(cta, 1); m.write32(cta + 4, ct); m.write32(ct + 4, td); m.writeCString(td + 8, '.?AVFailure@@');
+  vm.seh.remember(vm.proc.threads[0], 0xe06d7363, vm.proc.exe.entry, [0x19930520, 0, ti]);
+  assert.equal(vm.run(), 42);
+  assert.match(vm.exitReport, /process exit with code 42 in thread/);
+  assert.match(vm.exitReport, /kernel32\.dll!ExitProcess/);
+  assert.match(vm.exitReport, /exceptions raised: 1, the last ones:\n  t\d+ 0xe06d7363 \.\?AVFailure@@ at /);
+});
+
 test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind', { skip: skip('seh.exe') }, () => {
   for (const jit of [true, false]) {
     const { vm } = boot('seh.exe', { jit });

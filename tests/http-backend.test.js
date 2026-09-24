@@ -8,6 +8,7 @@ import { HttpBackend } from '../src/vfs/http-backend.js';
 const MiB = 1 << 20;
 const FILE = Uint8Array.from({ length: 3 * MiB + 1234 }, (_, i) => (i * 7 + (i >> 11)) & 0xff);
 const requests = [];
+const faults = []; // injected failures of the next requests: 'network' | 'status' | 'short'
 // synchronous XHR stand-in serving FILE for range requests
 globalThis.XMLHttpRequest = class {
   open(method, url) { this.url = url; }
@@ -15,7 +16,9 @@ globalThis.XMLHttpRequest = class {
   send() {
     const [, a, b] = /bytes=(\d+)-(\d+)/.exec(this.range);
     requests.push([this.url, +a, +b]);
-    this.status = 206; this.response = FILE.slice(+a, +b + 1).buffer;
+    const fault = faults.shift();
+    if (fault === 'network') throw new Error('NetworkError');
+    this.status = fault === 'status' ? 502 : 206; this.response = FILE.slice(+a, fault === 'short' ? +a + 100 : +b + 1).buffer;
   }
 };
 
@@ -68,4 +71,15 @@ test('http backend: the offline copy downloads every block into the store, then 
     await b.downloadAll(progress); // already complete: nothing fetched again
     assert.equal(fetched.length, 1);
   } finally { globalThis.fetch = realFetch; }
+});
+
+test('http backend: a failed range request (network error, error status, short answer) is retried, then fails the read', () => {
+  const retries = [];
+  const b = new HttpBackend('/game/r/', tree(1), { retryWaits: [1, 1, 1], onRetry: (r) => retries.push(r.problem) });
+  faults.push('network', 'status', 'short');
+  assert.deepEqual(b.open('Data/a.big').read(5, 10), FILE.subarray(5, 15));
+  assert.deepEqual(retries, ['NetworkError', 'status 502', '100 bytes of 1048576']);
+  faults.push('status', 'status', 'status', 'status');
+  assert.throws(() => b.open('Data/a.big').read(2 * MiB, 10), /range request failed \(status 502\)/);
+  faults.length = 0;
 });
