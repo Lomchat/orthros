@@ -138,6 +138,17 @@ void __stdcall start(void) {
   C2(dev, 65, 0, 0);
   line(out, "vbrefs", RELEASE(vb), 0);
   RELEASE(decl);
+  // Reset (what a game does when it is reactivated): render target 0 is the new back buffer 0, the depth-stencil
+  // surface the automatic one, the other render targets unset
+  line(out, "reset", C1(dev, 16, &pp), 1);
+  void* rt0 = 0; line(out, "getrt0", C2(dev, 38, 0, &rt0), 1);
+  void* bb2 = 0; C4(dev, 18, 0, 0, 0, &bb2);
+  line(out, "rt0isbb", rt0 != 0 && rt0 == bb2, 0);
+  void* rt1 = (void*)1; line(out, "getrt1", C2(dev, 38, 1, &rt1), 1); line(out, "rt1", (DWORD)rt1, 0);
+  void* ds = 0; line(out, "getds", C1(dev, 40, &ds), 1);
+  if (rt0) RELEASE(rt0);
+  if (bb2) RELEASE(bb2);
+  if (ds) RELEASE(ds);
   line(out, "devrelease", RELEASE(dev), 0);
   line(out, "d3drelease", RELEASE(d3d), 0);
   ExitProcess(0);

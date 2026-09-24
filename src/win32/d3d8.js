@@ -362,8 +362,10 @@ export function d3dCore(vm) {
       const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL;
       for (const b of this.backBuffers) b.free(); this.depthStencil?.free();
       this.readPresentParams(pp);
-      this.createBackBuffers(c);
+      // the default state first, then the new back buffers: render target 0 is back buffer 0 again (Direct3D 9: the
+      // other render targets unset), the depth target the automatic depth-stencil surface — the order of CreateDevice
       this.resetState();
+      this.createBackBuffers(c);
       this.gfx?.reset?.(this);
       vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'}`);
       return D3D_OK;
