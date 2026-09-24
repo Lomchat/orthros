@@ -10,6 +10,7 @@ export const WASM_PAGE = 0x10000;
 
 // Emulator-private region at the top of user space (never handed to the guest allocator):
 //   0x7fc00000  thread CPU states (256 x 0x400)
+//   0x7fd00000  JIT: next FPU-mode version of each region (4 bytes per table index)
 //   0x7fd50000  JIT scratch (fast API table, deferred COM calls, profiling counters)
 //   0x7fe00000  self-modifying-code page map (1 byte per 4 KB page of the 2 GB space: nonzero = translated code)
 //   0x7ffde000  TEBs (downwards, one page per thread), 0x7ffdf000 PEB, 0x7ffe0000 KUSER_SHARED_DATA
@@ -21,6 +22,10 @@ export const JIT_HASH_BITS = 20;
 export const JIT_HASH_BASE = 0x7fb00000 - (16 << JIT_HASH_BITS);
 export const SMC_MAP_BASE = 0x7fe00000;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
+// FPU-mode versions of a region: for each table index, the table index + 1 of the next version of the same region
+// (specialized for another x87 mode), 0 for none (see Jit: EXIT_FPUMODE)
+export const JIT_ALT_BASE = 0x7fd00000;
+export const JIT_ALT_SLOTS = (JIT_SCRATCH_BASE - JIT_ALT_BASE) >> 2;
 // Import thunks: each imported symbol gets a slot here; jumping/calling into this region is
 // how guest code reaches host (JS) implementations.
 export const THUNK_BASE = 0x7fb00000;
