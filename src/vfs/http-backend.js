@@ -16,7 +16,7 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[] }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    */
   constructor(baseUrl, tree, opts = {}) {
@@ -26,6 +26,7 @@ export class HttpBackend {
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
     this.onFetch = opts.onFetch ?? null;
     this.onRetry = opts.onRetry ?? null;
+    this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
   }
@@ -72,7 +73,7 @@ export class HttpBackend {
 
   /**
    * Fetch [start, end) of a file synchronously. A network error, an error status or a short answer (a connection
-   * cut over the Internet) is retried after a pause, up to RETRY_WAITS.length times, before failing the read.
+   * cut over the Internet) is retried after a pause, once per entry of retryWaits, before failing the read.
    */
   fetchRange(path, start, end) {
     const url = this.base + path.split('/').map(encodeURIComponent).join('/');
@@ -100,8 +101,8 @@ export class HttpBackend {
       }
       this.stats.retries = (this.stats.retries ?? 0) + 1;
       this.onRetry?.({ url, start, end, problem, attempt });
-      if (attempt >= RETRY_WAITS.length) throw new Error(`range request failed (${problem}) ${url} ${start}-${end}`);
-      pause(RETRY_WAITS[attempt]);
+      if (attempt >= this.retryWaits.length) throw new Error(`range request failed (${problem}) ${url} ${start}-${end}`);
+      pause(this.retryWaits[attempt]);
     }
   }
 
