@@ -62,6 +62,7 @@ if (args.includes('--no-f32')) q.set('nof32', '1'); // debugging: x87 registers 
 if (opt('f32-off')) q.set('f32off', opt('f32-off')); // debugging: float parts off (arith,round,m32,const; part@lo:hi keeps it in [lo, hi))
 if (opt('watch-tex')) q.set('watchtex', opt('watch-tex')); // <fmt>:<w>x<h>: report the code writing into such surfaces (debugging)
 if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('interp-range')); // debugging: lo:hi[,lo:hi] (hex) run by the reference interpreter, the rest by the JIT
+if (opt('encoded') === '0') q.set('encoded', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
@@ -256,6 +257,7 @@ for (;;) {
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
   if (t >= seconds) {
     console.log(`[end] time limit ${seconds}s`);
+    try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.requests) console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`); } catch { /* no stats */ }
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
     // --corpus <file>: distinct instruction forms of the translated code (input of the `corpus` conformance suite)

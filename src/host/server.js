@@ -7,6 +7,7 @@
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
@@ -87,11 +88,56 @@ export function createServer(opts = {}) {
     fs.createReadStream(file).pipe(res);
   };
 
+  /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
+  /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
+  const encodedCache = new Map(); let encodedBytes = 0;
+  const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
+  const sendRangeEncoded = (req, res, file, r) => {
+    let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
+    const rm = /^(\d+)-(\d+)$/.exec(r);
+    if (!rm) return send(res, 400, 'bad range');
+    const start = Number(rm[1]), end = Math.min(Number(rm[2]), st.size);
+    if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
+    const accept = String(req.headers['accept-encoding'] ?? '');
+    const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}`;
+    const reply = (body, encoding) => {
+      netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
+      const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
+      if (encoding) h['Content-Encoding'] = encoding;
+      const go = () => { res.writeHead(200, h); res.end(body); };
+      if (opts.net) setTimeout(go, opts.net.delayMs + body.length / opts.net.bytesPerSec * 1000); else go();
+    };
+    const hit = encodedCache.get(key);
+    if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
+    const buf = Buffer.alloc(end - start);
+    fs.open(file, 'r', (err, fd) => {
+      if (err) return send(res, 500, String(err));
+      fs.read(fd, buf, 0, buf.length, start, (err2, n) => {
+        fs.close(fd, () => {});
+        if (err2 || n !== buf.length) return send(res, 500, String(err2 ?? 'short read'));
+        if (!enc) return reply(buf, null);
+        const t0 = performance.now();
+        const done = (err3, out) => {
+          netStats.encodeMs += performance.now() - t0;
+          // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
+          const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
+          encodedCache.set(key, entry); encodedBytes += entry.body.length;
+          for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
+          reply(entry.body, entry.encoding);
+        };
+        if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+        else zlib.gzip(buf, { level: 4 }, done);
+      });
+    });
+  };
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;
@@ -111,6 +157,11 @@ export function createServer(opts = {}) {
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined }), { 'Content-Type': 'application/json' }); }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) trees.set(m[1], JSON.stringify(listTree(man.folder))); return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
+      // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
+      // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
+      m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
+      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found'); return sendRangeEncoded(req, res, file, url.searchParams.get('r') ?? ''); }
+      if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {

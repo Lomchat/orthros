@@ -16,7 +16,7 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[] }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    */
   constructor(baseUrl, tree, opts = {}) {
@@ -27,6 +27,8 @@ export class HttpBackend {
     this.onFetch = opts.onFetch ?? null;
     this.onRetry = opts.onRetry ?? null;
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
+    // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
+    this.encoded = !!opts.encoded;
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
   }
@@ -75,13 +77,18 @@ export class HttpBackend {
    * Fetch [start, end) of a file synchronously. A network error, an error status or a short answer (a connection
    * cut over the Internet) is retried after a pause, once per entry of retryWaits, before failing the read.
    */
+  /** URL of [start, end) of a file: a compressed range, or the file itself (with a Range header) */
+  rangeUrl(path, start, end) {
+    const rel = path.split('/').map(encodeURIComponent).join('/');
+    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}` : this.base + rel;
+  }
   fetchRange(path, start, end) {
-    const url = this.base + path.split('/').map(encodeURIComponent).join('/');
+    const url = this.rangeUrl(path, start, end);
     for (let attempt = 0; ; attempt++) {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', url, false);
       xhr.responseType = 'arraybuffer';
-      xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
+      if (!this.encoded) xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
       const t0 = performance.now();
       let problem = null;
       try { xhr.send(); } catch (e) { problem = e.message; }
@@ -91,7 +98,7 @@ export class HttpBackend {
       if (!problem && xhr.status !== 206 && xhr.status !== 200) problem = `status ${xhr.status}`;
       if (!problem) {
         data = new Uint8Array(xhr.response);
-        if (xhr.status === 200) data = data.subarray(start, end);
+        if (xhr.status === 200 && !this.encoded) data = data.subarray(start, end);
         if (data.length !== end - start) problem = `${data.length} bytes of ${end - start}`;
       }
       if (!problem) {
@@ -152,9 +159,9 @@ export class HttpBackend {
         const bytes = Math.min(f.size, (b + n) * BLOCK) - b * BLOCK;
         if (missing) {
           while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 500) await new Promise((r) => setTimeout(r, 200));
-          const url = this.base + f.path.split('/').map(encodeURIComponent).join('/');
+          const url = this.rangeUrl(f.path, b * BLOCK, b * BLOCK + bytes);
           let data;
-          try { const r = await fetch(url, { headers: { Range: `bytes=${b * BLOCK}-${b * BLOCK + bytes - 1}` } }); if (r.status !== 206 && r.status !== 200) return; data = new Uint8Array(await r.arrayBuffer()); if (r.status === 200) data = data.subarray(b * BLOCK, b * BLOCK + bytes); } catch { return; }
+          try { const r = await fetch(url, this.encoded ? {} : { headers: { Range: `bytes=${b * BLOCK}-${b * BLOCK + bytes - 1}` } }); if (r.status !== 206 && r.status !== 200) return; data = new Uint8Array(await r.arrayBuffer()); if (r.status === 200 && !this.encoded) data = data.subarray(b * BLOCK, b * BLOCK + bytes); if (data.length !== bytes) return; } catch { return; }
           for (let i = b; i < b + n; i++) store.put(key(i), data.subarray((i - b) * BLOCK, Math.min(data.length, (i - b + 1) * BLOCK)));
         }
         progress.bytes += bytes;

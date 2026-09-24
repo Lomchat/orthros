@@ -83,3 +83,40 @@ test('http backend: a failed range request (network error, error status, short a
   assert.throws(() => b.open('Data/a.big').read(2 * MiB, 10), /range request failed \(status 502\)/);
   faults.length = 0;
 });
+
+// The server's compressed ranges (/gamez/<manifest>/<path>?r=start-end): the exact bytes, zstd or gzip encoded when
+// the client accepts it and it saves enough, plain otherwise; the backend requests them without a Range header.
+test('server: compressed ranges carry the exact bytes (zstd, gzip, identity), and the backend asks for them', async () => {
+  const fs = await import('node:fs'), zlib = await import('node:zlib'), path = await import('node:path'), os = await import('node:os'), http = await import('node:http'), crypto = await import('node:crypto');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-gamez-'));
+  const text = Buffer.from('the same line again and again\n'.repeat(40000)); // compressible
+  const noise = crypto.randomBytes(300000); // incompressible
+  fs.writeFileSync(path.join(dir, 'Text.dat'), text); fs.writeFileSync(path.join(dir, 'noise.bin'), noise);
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const get = async (url, enc) => { const r = await new Promise((res, rej) => http.get(url, { headers: { 'accept-encoding': enc } }, res).on('error', rej)); const parts = []; for await (const d of r) parts.push(d); return { r, body: Buffer.concat(parts) }; };
+    for (const [enc, want] of [['zstd, gzip', 'zstd'], ['gzip', 'gzip'], ['', undefined]]) {
+      const { r, body } = await get(`${base}/gamez/g/text.dat?r=1000-700000`, enc);
+      assert.equal(r.headers['content-encoding'], want, `encoding for "${enc}"`);
+      const plain = want === 'zstd' ? zlib.zstdDecompressSync(body) : want === 'gzip' ? zlib.gunzipSync(body) : body;
+      assert.deepEqual(plain, text.subarray(1000, 700000));
+    }
+    const { r, body } = await get(`${base}/gamez/g/noise.bin?r=5-299999`, 'zstd');
+    assert.equal(r.headers['content-encoding'], undefined, 'incompressible range sent as is');
+    assert.deepEqual(body, noise.subarray(5, 299999));
+    assert.equal((await get(`${base}/gamez/g/noise.bin?r=10-5`, 'zstd')).r.statusCode, 416);
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  // the backend: no Range header, the range in the URL
+  const b = new HttpBackend('/game/x/', tree(1), { encoded: true });
+  const seen = [];
+  const Real = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = class { open(m, url) { this.url = url; } setRequestHeader(k) { seen.push(k); } send() { const [, a, e] = /\?r=(\d+)-(\d+)$/.exec(this.url); this.status = 200; this.response = FILE.slice(+a, +e).buffer; } };
+  try {
+    assert.deepEqual(b.open('Data/a.big').read(MiB - 3, 10), FILE.subarray(MiB - 3, MiB + 7));
+    assert.deepEqual(seen, []);
+  } finally { globalThis.XMLHttpRequest = Real; }
+});
