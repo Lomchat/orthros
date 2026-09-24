@@ -93,7 +93,7 @@ function onWorkerMessage(m) {
   switch (m.type) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
-    case 'started': state.status = 'running'; break;
+    case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
       if (m.frames !== state.lastFrames) { state.lastFrames = m.frames; state.lastNewFrameAt = Date.now(); }
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
@@ -158,7 +158,7 @@ function renderHud() {
   const busy = $('busy'), paused = !document.hasFocus(), showBusy = !headless && state.status === 'running' && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
   if (showBusy) busy.innerHTML = paused ? `${state.title ?? 'The game'} is paused while its window is inactive <small>click the game to resume</small>`
-    : `${state.title ?? 'The game'} is loading… <small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files read ${s.ioMB ?? 0} MB</small>`;
+    : `${state.title ?? 'The game'} is loading…${state.firstLaunch && s.frames < 300 ? '<br><small>first launch in this browser: the game sets itself up and its files come from the server — later launches start much faster</small>' : ''}<br><small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files ${s.ioMB ?? 0} MB${s.prefetchMB ? ` (+${s.prefetchMB} MB ahead)` : ''}</small>`;
   if (paused && s.frames > 0) { fpsEl.innerHTML = '<small>paused</small>'; det.textContent = `window inactive\n${clock}`; drawHudGraph(hud.querySelector('canvas')); return; }
   if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { // starting: no frame yet, or the first images then a long wait
     fpsEl.innerHTML = '<small>loading…</small>';
