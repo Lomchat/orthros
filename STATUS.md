@@ -448,6 +448,17 @@
   ~46 s (profil et blocs en OPFS).
 - JIT : vivacité des drapeaux sur toute la région (INC/DEC ne préservent CF que si un successeur le lit) — gain dans
   le bruit (les appels à l'assistant de drapeaux étaient déjà rares dans les boucles chaudes du démarrage).
+- **Préchargement appris** : le serveur retient l'ordre des blocs lus par les sessions (`--learn`), la page les
+  télécharge en fond vers OPFS pendant que le jeu calcule. Réseau simulé 40 ms / 50 Mbit/s : première image 56 → 49 s,
+  chargement d'une partie 93 → 72 s ; en réel (profil vierge, URL publique) 490 Mo préchargés pendant le premier
+  lancement, le jeu ne lit ensuite que ~50 Mo par le réseau. Coût dans le worker : écritures 1,4 %, fetch 0,6 %, GC 0,5 %.
+- **Entrées** : la souris est suivie sur toute la page, bornée aux bords du jeu (défilement aux bords sans capture) ;
+  bouton « Fullscreen » cliquable ; un relâchement de bouton attend que le jeu ait présenté une image depuis l'appui
+  (≤ 250 ms : un clic plus court qu'une image lente n'est plus perdu — vu au menu 3D High sous SwiftShader) ;
+  GetAsyncKeyState rend le bit 0 (appuyé depuis l'appel précédent).
+- Vérifié : changement de résolution dans Options (Reset 1024x768, rendu à cette taille, retour à 800x600 faute de
+  confirmation, comportement du jeu) ; `tools/startbench.mjs` (premier lancement dans Node, temps CPU) : 72 s / 82 s CPU
+  jusqu'au lancement des outils d'assets, boucles imbriquées structurées neutres (73,8 contre 73,3 s).
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
