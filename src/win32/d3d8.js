@@ -291,6 +291,8 @@ export function d3dCore(vm) {
       this.gamma = null;
       this.iids = [IID_IDirect3DDevice8];
       this.createBackBuffers(c);
+      this.lost = 0; // fullscreen device: 1 lost (application deactivated), 2 not reset yet (reactivated), see onActivate
+      (vm.d3dDevices ??= new Set()).add(this);
       this.gfx = vm.host?.gfx?.createDevice?.(this) ?? null;
       if (vm.gammaRamp) this.gfx?.setGamma?.(vm.gammaRamp); // SetDeviceGammaRamp before the device existed
     }
@@ -345,9 +347,21 @@ export function d3dCore(vm) {
       this.palettes = new Map(); this.currentPalette = 0;
       this.sceneDepth = 0;
     }
-    destroy() { this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
+    /**
+     * The application is deactivated / reactivated (the host window lost / regained the focus; user32 calls this before
+     * sending WM_ACTIVATEAPP, as the runtime watching the focus window does). A fullscreen device is lost meanwhile:
+     * TestCooperativeLevel, Present and Reset report D3DERR_DEVICELOST; once reactivated it waits for Reset
+     * (D3DERR_DEVICENOTRESET). A windowed device is not affected.
+     */
+    onActivate(active) {
+      if (this.pp.windowed) return;
+      if (!active) this.lost = 1;
+      else if (this.lost === 1) this.lost = 2;
+      vm.log('gfx', `d3d: application ${active ? 'reactivated' : 'deactivated'}: device ${['ok', 'lost', 'not reset'][this.lost]}`);
+    }
+    destroy() { vm.d3dDevices?.delete(this); this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
-    TestCooperativeLevel() { return D3D_OK; }
+    TestCooperativeLevel() { return this.lost === 1 ? D3DERR_DEVICELOST : this.lost === 2 ? D3DERR_DEVICENOTRESET : D3D_OK; }
     GetAvailableTextureMem() { return 256 * 1024 * 1024; }
     ResourceManagerDiscardBytes() { return D3D_OK; }
     GetDirect3D(c) { c.out32(1, this.d3d.ptr); com.addRef(com.objectAt(this.d3d.ptr)); return D3D_OK; }
@@ -360,6 +374,8 @@ export function d3dCore(vm) {
     CreateAdditionalSwapChain(c) { c.out32(2, 0); return D3DERR_NOTAVAILABLE; }
     Reset(c) {
       const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL;
+      if (this.lost === 1) return D3DERR_DEVICELOST; // (the application is still inactive)
+      this.lost = 0;
       for (const b of this.backBuffers) b.free(); this.depthStencil?.free();
       this.readPresentParams(pp);
       // the default state first, then the new back buffers: render target 0 is back buffer 0 again (Direct3D 9: the
@@ -371,6 +387,7 @@ export function d3dCore(vm) {
       return D3D_OK;
     }
     Present(c) {
+      if (this.lost) return D3DERR_DEVICELOST;
       this.frames++;
       this.lastPresent = vm.clock.now();
       if (this.gfx) this.gfx.present(this, c.arg(1), c.arg(2), c.arg(3));
@@ -601,5 +618,5 @@ export function registerDirect3D8(api, vm) {
     ValidatePixelShader: [4, () => 0], ValidateVertexShader: [4, () => 0],
     DebugSetMute: [0, () => 0],
   });
-  void S_OK; void E_INVALIDARG; void USAGE_DYNAMIC; void D3DERR_DEVICELOST; void D3DERR_DEVICENOTRESET; void D3DERR_OUTOFVIDEOMEMORY; void D3DERR_INVALIDDEVICE; void D3DERR_UNSUPPORTEDTEXTUREFILTER; void D3DERR_WRONGTEXTUREFORMAT;
+  void S_OK; void E_INVALIDARG; void USAGE_DYNAMIC; void D3DERR_OUTOFVIDEOMEMORY; void D3DERR_INVALIDDEVICE; void D3DERR_UNSUPPORTEDTEXTUREFILTER; void D3DERR_WRONGTEXTUREFORMAT;
 }

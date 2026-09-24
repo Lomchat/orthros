@@ -183,6 +183,21 @@ test('bench.exe: JIT region consolidation into multi-function modules keeps resu
   assert.ok(vm.jit.stats.consolidations >= 5, `consolidations: ${vm.jit.stats.consolidations}`);
 });
 
+test('d3dlost.exe: Direct3D 9 Reset, a fullscreen device lost while the application is inactive', { skip: skip('d3dlost.exe') }, () => {
+  const { vm, host } = boot('d3dlost.exe', { jit: true });
+  // the host window loses the focus at 3 s and regains it at 6 s (fullscreen), then again at 12 s / 13 s (windowed)
+  host.script.push({ at: 3000, ev: { type: 'focus', focused: false } }, { at: 6000, ev: { type: 'focus', focused: true } },
+    { at: 12000, ev: { type: 'focus', focused: false } }, { at: 13000, ev: { type: 'focus', focused: true } });
+  assert.equal(vm.run(), 0);
+  const out = Object.fromEntries(vm.stdout.join('').trim().split('\n').map((l) => l.split('=')));
+  const OK = '0x00000000', LOST = '0x88760868', NOTRESET = '0x88760869';
+  assert.deepEqual([out.device, out.reset, out.getrt0, out.rt0isbb, out.getds, out.getrt1, out.rt1], [OK, OK, OK, '1', OK, '0x88760866', '0'], 'after Reset: render target 0 = back buffer 0, automatic depth-stencil, render target 1 unset');
+  assert.deepEqual([out.resetfs, out.fs_tcl, out.lost_tcl, out.lost_present, out.lost_reset, out.back_tcl, out.back_reset, out.ok_tcl, out.ok_present],
+    [OK, OK, LOST, LOST, LOST, NOTRESET, OK, OK, OK], 'fullscreen: lost while the application is inactive, then waiting for Reset');
+  assert.deepEqual([out.resetwin, out.win_tcl, out.win_present], [OK, OK, OK], 'a windowed device is not lost');
+  assert.deepEqual([out.devrelease, out.d3drelease], ['0', '0']);
+});
+
 test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback path', { skip: skip('dx9.exe') }, () => {
   const { vm } = boot('dx9.exe', { jit: true });
   const code = vm.run();
@@ -193,7 +208,6 @@ test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback
   for (const k of ['checktype', 'checkfmt', 'checkds', 'device', 'tex', 'lockrect', 'unlockrect', 'surflevel', 'decl', 'setdecl', 'vb', 'vblock', 'vbunlock', 'stream', 'begin', 'clear', 'rs_cull', 'settex', 'sampler', 'draw', 'end', 'present', 'backbuffer', 'offscreen', 'rtdata', 'offlock']) assert.equal(out[k], '0x00000000', k);
   assert.deepEqual([out.levels, out.surfw, out.surfms, out.bbw, out.bbh], ['1', '8', '0', '320', '240'], 'DX9 surface descriptors');
   assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
-  assert.deepEqual([out.reset, out.getrt0, out.rt0isbb, out.getds, out.getrt1, out.rt1], ['0x00000000', '0x00000000', '1', '0x00000000', '0x88760866', '0'], 'after Reset: render target 0 = back buffer 0, automatic depth-stencil, render target 1 unset');
   for (const k of ['settransform', 'rs_zwrite', 'rs_zwrite2', 'gettransform']) assert.equal(out[k], '0x00000000', k);
   assert.deepEqual([out.transform5, out.zwrite], ['5', '1'], 'deferred state setters: arguments taken at the call, applied in order before a getter');
   assert.ok(vm.deferredCalls >= 1, 'state setters went through the deferred call queue');
