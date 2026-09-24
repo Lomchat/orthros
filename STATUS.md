@@ -409,7 +409,10 @@
 - **Messages de débogage du jeu** (`--log debug`, `debugctx` : avec les appels API qui précèdent) : l'avertissement de
   D3DX sur `new(0)` renvoyant NULL vient du gestionnaire mémoire du jeu (notre `HeapAlloc(…, 0)` rend un bloc valide et
   n'est pas appelé à ce moment) ; « Could not find file » suit l'ouverture échouée de `shaders\Shrubs_darken.vso`,
-  absent du dossier — données, comme les textures des unités magenta.
+  absent du dossier — données, comme les textures des unités magenta. Le lancement de `TextureAssetBuilder.exe` /
+  `assetCacheBuilder.exe` suit directement l'initialisation du device et le démarrage d'un thread de chargement, sans
+  lecture de dates de fichiers ni de registre juste avant (`--log procctx`) : pas de test de fraîcheur du cache qu'une
+  date mal émulée ferait échouer.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),

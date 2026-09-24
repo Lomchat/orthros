@@ -649,6 +649,7 @@ export function registerKernel32(api, vm) {
     const image = app ?? (cmd ?? '').trim().replace(/^"([^"]*)".*$/, '$1').split(' ')[0];
     const exists = image && !!vm.vfs.stat(c.proc.path(image));
     vm.warn(`CreateProcess(app=${app ?? '-'}, cmd=${cmd ?? '-'}, cwd=${cwd ?? c.proc.cwd}, flags=0x${c.arg(5).toString(16)}) ${exists ? 'refused (child processes are not supported)' : 'failed: image not found'} from ${c.proc.symbolize(c.retAddr)}`);
+    vm.log('procctx', `CreateProcess ${cmd ?? app} — previous API calls of t${c.thread.id}:\n  ${vm.recentApiCalls(80, c.thread.id).join('\n  ')}`); // (what led to it)
     return c.fail(exists ? E.ACCESS_DENIED : E.FILE_NOT_FOUND);
   };
   K.CreateProcessA = [10, (c) => refuseProcess(c, c.str(0), c.str(1), c.str(7))];
