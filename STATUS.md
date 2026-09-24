@@ -55,8 +55,11 @@
 
 ## Limites connues (documentées, acceptées en v1)
 - x87 en f64 (voir D011). Pas de faute de page. MMX non aliasé sur x87.
-- GDI : police bitmap intégrée seulement (le navigateur pourra rasteriser via Canvas2D plus tard),
-  régions rectangulaires, pas de dialogues/menus réels. GDI+ : pas de texte ni d'IStream.
+- GDI : texte avec les polices du jeu rastérisées par Canvas2D (D035) ; régions rectangulaires, pas de dialogues/menus
+  réels. GDI+ : pas de texte ni d'IStream.
+- Direct3D → WebGL2 : adressage BORDER / MIRRORONCE approché par CLAMP, biais de LOD non appliqué (non utilisés par le jeu,
+  signalés par `--gl-validate`).
+- `lstrcmp`/`lstrcmpi`/`CompareString` comparent en ordinal (Windows : tri linguistique).
 - SEH : dispositions 0/1 seulement (pas de handlers imbriqués « nested exception »), pas de vectored handlers.
 
 ## Blocages
