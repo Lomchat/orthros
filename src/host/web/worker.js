@@ -14,6 +14,7 @@ import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
 import { MATH_KERNELS, FAST_NAMES, FAST_PROF } from '../../cpu/jit/runtime.js';
 
+let profileFilesRestored = 0; // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
@@ -32,7 +33,7 @@ async function loadProfile(mem) {
       for await (const [name, h] of dir.entries()) {
         const p = rel ? rel + '/' + name : name;
         if (h.kind === 'directory') { mem.mkdir(p); await walk(h, p); }
-        else { const f = await h.getFile(); const data = new Uint8Array(await f.arrayBuffer()); mem.open(p, { create: true }).write(0, data); }
+        else { const f = await h.getFile(); const data = new Uint8Array(await f.arrayBuffer()); mem.open(p, { create: true }).write(0, data); profileFilesRestored++; }
       }
     };
     await walk(opfsDir, '');
@@ -130,7 +131,7 @@ async function start(m) {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
-  post({ type: 'started' });
+  post({ type: 'started', firstLaunch: !m.opts.headless && profileFilesRestored === 0 && !(m.opts.profileFiles?.length) });
   channel.port1.onmessage = () => pump();
   pump();
 }
