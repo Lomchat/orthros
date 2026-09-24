@@ -170,8 +170,8 @@ function pump() {
 /** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
 /** region function imports by index (translate.js IMP_*: flags helper, round24, interpreter fallback, then the math kernels) */
 const IMPORT_NAMES = ['flags', 'round24', 'fallback', ...MATH_KERNELS.map(([n]) => n)];
-function regionMix(eips) {
-  const lines = [], overall = new Map(); let total = 0;
+function regionMix(eips, list = 0) {
+  const lines = [], overall = new Map(), listed = new Set(); let total = 0;
   for (const eipHex of eips) {
     const eip = parseInt(eipHex, 16);
     const r = vm.jit?.byEntry.get(eip);
@@ -184,6 +184,12 @@ function regionMix(eips) {
     const top = [...hist].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ');
     const calls = new Map(); const rc = r.calls ?? []; for (let i = 0; i < rc.length; i += 2) { const k = `${IMPORT_NAMES[rc[i]] ?? 'f' + rc[i]}@${rc[i + 1] >= 0 ? OP_NAMES[rc[i + 1]] : 'end'}`; calls.set(k, (calls.get(k) ?? 0) + 1); }
     lines.push(`region ${eipHex} (${vm.proc.symbolize(eip)}): ${r.blocks.length} blocks, ${n} insns, ${bytes} bytes, ${fb} interpreter fallbacks, calls ${calls.size ? [...calls].map(([k, v]) => `${k}x${v}`).join(' ') : 'none'} — ${top}`);
+    if (listed.has(eip) || listed.size >= list) continue;
+    listed.add(eip); // listing of the hottest regions: which instruction patterns the translation spends its time on
+    for (const b of [...r.blocks].sort((x, y) => x.eip - y.eip)) {
+      lines.push(`  block ${b.eip.toString(16)}`);
+      for (let a = b.eip; a < b.end;) { let insn; try { insn = decode(vm.mem, a); } catch { break; } lines.push(`    ${a.toString(16)}  ${fmtInsn(insn)}`); a = insn.next; }
+    }
   }
   lines.push(`overall (${total} insns): ` + [...overall].sort((x, y) => y[1] - x[1]).slice(0, 24).map(([k, v]) => `${k} ${(100 * v / Math.max(1, total)).toFixed(1)}%`).join(', '));
   return lines.join('\n');
@@ -227,7 +233,7 @@ self.onmessage = (e) => {
   else if (m.type === 'wake') { if (running && !stopped) channel.port2.postMessage(0); }
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; log('gfx', `d3d-webgl: capture requested at frame ${d.frame + 1}`); } }
-  else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips) : 'no vm' });
+  else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0) : 'no vm' });
   else if (m.type === 'interpRange') { // (debugging: from now on, these code ranges run in the reference interpreter)
     const ranges = String(m.ranges).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16)));
     if (vm?.jit) { vm.jit.opts.interpRanges = ranges; for (const [lo, hi] of ranges) vm.invalidateCode(lo, hi - lo); log('warn', `interpreter ranges on: ${m.ranges}`); }

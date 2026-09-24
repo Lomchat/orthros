@@ -34,9 +34,11 @@ const L_ICOUNT = 44;
 // 24-bit precision x87 blocks keep register values that are exact floats in f32 locals (L_S32+k shadows
 // L_ST0+k, see Emitter.f32Mask) and compute with f32 arithmetic; L_F32A..C are f32 temporaries
 const L_S32 = 45, L_F32A = 53, L_F32B = 54, L_F32C = 55;
+// XMM registers the region names, cached in v128 locals (L_XMM0+r) from entry to the exits (Emitter.xmmMask)
+const L_XMM0 = 56;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32]; // indices 16..55
-if (LOCAL_TYPES.length !== L_F32C + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128)]; // indices 16..63
+if (LOCAL_TYPES.length !== L_XMM0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -342,12 +344,19 @@ class Emitter {
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
+    // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
+    // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through
+    // memory, where an 8-byte store followed by a 16-byte load of the same register defeats store forwarding.
+    // Registers only reached implicitly (FXSAVE/FXRSTOR, interpreter fallbacks) stay in the state block.
+    this.xmmMask = 0;
+    for (const b of blocks) for (const insn of b.insns) for (const o of insn.ops) if (o.t === OT.XMM) this.xmmMask |= 1 << (o.r & 7);
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
     c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
     c.get(L_STATE).i32load(ST.ICOUNT).set(L_ICOUNT);
     if (this.usesX87) this.loadX87();
+    this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
     if (this.fpcAssume !== null) {
@@ -483,6 +492,7 @@ class Emitter {
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     this.flushFpu();
+    this.flushXmm();
     if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS); // (stats)
     c.get(L_TA).i32load(8); // block index in the target region
     for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
@@ -503,6 +513,17 @@ class Emitter {
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
     if (this.usesX87) this.loadX87();
+    this.loadXmm();
+  }
+  /** Load the XMM registers of xmmMask into their locals. */
+  loadXmm() {
+    const c = this.c;
+    for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).v128load(ST.XMM + 16 * r).set(L_XMM0 + r);
+  }
+  /** Write the cached XMM registers back to the state block. */
+  flushXmm() {
+    const c = this.c;
+    for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).get(L_XMM0 + r).v128store(ST.XMM + 16 * r);
   }
   flushAll() {
     const c = this.c;
@@ -513,6 +534,7 @@ class Emitter {
     c.get(L_STATE).get(L_LZA).i32store(ST.LZ_SRC1);
     c.get(L_STATE).get(L_LZB).i32store(ST.LZ_SRC2);
     this.flushFpu();
+    this.flushXmm();
   }
 
   // ------------------------------------------------------------------ x87 stack cache
@@ -1756,4 +1778,4 @@ HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[O
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
 export { L_S32, L_F32A, L_F32B, L_F32C, Emitter };
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };

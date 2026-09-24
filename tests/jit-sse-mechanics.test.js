@@ -298,3 +298,27 @@ test('SSE op in a fallthrough block after JCC', () => {
     void end;
   }
 });
+
+// ---------------------------------------------------------------- XMM registers cached in locals
+test('XMM values cached in locals cross region chains, time slices and interpreter fallbacks', () => {
+  //    mov eax,50
+  // L: addsd xmm0,xmm1 ; mulpd xmm2,xmm3 ; movlpd [edx],xmm0 ; fxsave [ecx] ; movhlps xmm4,xmm2 ; call F
+  //    subsd xmm5,xmm4 ; pshufd xmm6,xmm5,0x4e ; dec eax ; jnz L ; hlt
+  // F: unpcklpd xmm7,xmm0 ; movq xmm1,xmm7 ; movddup xmm3,xmm1 ; movhps xmm2,[edx] ; movlhps xmm3,xmm6
+  //    cvtsi2sd xmm0,eax ; movss xmm5,xmm3 ; ret
+  const code = 'b832000000f20f58c1660f59d3660f13020fae010f12e2e80d000000f20f5cec660f70f54e4875ddf4660f14f8f30f7ecff20f12d90f16120f16def20f2ac0f30f10ebc3';
+  const F = CODE + 0x29, RET = CODE + 0x1c, HLT = CODE + 0x28;
+  const setup = (mem, cpu) => { cpu.ecx = DATA + 0x400; cpu.edx = DATA + 0x100; };
+  for (const slice of [1e6, 37, 5]) {
+    load(code, setup);
+    EI.cpu.eip = CODE;
+    assert.equal(EI.run(HLT + 1, 1e6), EXIT.HALT);
+    EJ.jit.reset(); EJ.I.cache.clear(); EJ.jit.cpu = EJ.cpu; EJ.cpu.eip = CODE;
+    EJ.jit.boundaries = new Set([F, RET, HLT + 1]); // F and the return site start their own regions: chained transitions
+    let r, n = 0;
+    do { r = EJ.jit.run({ stopAt: HLT + 1, maxInsns: slice }); n++; } while (r === EXIT.TIMESLICE && n < 1e5);
+    assert.equal(r, EXIT.HALT, `slice ${slice}: exit ${r}`);
+    assert.deepEqual(snapshot(EJ, [[DATA, 0x800]]), snapshot(EI, [[DATA, 0x800]]), `slice ${slice}`);
+    if (slice > 1000) assert.ok(EJ.jit.stats.chained > 0 || EJ.jit.stats.regions >= 3, 'several regions');
+  }
+});

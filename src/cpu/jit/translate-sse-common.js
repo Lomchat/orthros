@@ -1,12 +1,13 @@
 // Shared helpers for the SSE/SSE2/SSE3/MMX translators (translate-sse*.js). No HANDLERS
-// registrations live here: this module only knows how to move vectors between the thread
-// state block (XMM at ST.XMM, MM at ST.MM — memory-resident, never cached in locals), guest
-// memory and the WASM value stack, and how to build i8x16.shuffle masks from x86 immediates.
+// registrations live here: this module only knows how to move vectors between the XMM registers
+// (v128 locals L_XMM0+r for the whole region, written back to ST.XMM at exits: see Emitter.xmmMask),
+// the MM registers (memory-resident at ST.MM), guest memory and the WASM value stack, and how to
+// build i8x16.shuffle masks from x86 immediates.
 //
 // Conventions (see translate.js): `E` is the Emitter, `E.c` the Code writer; GPRs live in
 // locals L_REG+r; every guest store goes through L_TA and is followed by E.smcCheck(insn);
 // any MM register access mirrors interp-sse.js opAddr (FPU tag word = 0xff, TOP = 0).
-import { L_STATE, L_REG, L_TA, L_FTW, L_V0, L_V1, L_V2 } from './translate.js';
+import { L_STATE, L_REG, L_TA, L_FTW, L_V0, L_V1, L_V2, L_XMM0 } from './translate.js';
 import { OT } from '../decoder.js';
 import { ST } from '../state.js';
 
@@ -23,20 +24,26 @@ export function width(o) { return o.t === OT.MEM ? o.size : o.t === OT.MM ? 8 : 
 
 /** Byte offset of XMM r inside the state block. */
 export function xmmOff(r) { return ST.XMM + 16 * (r & 7); }
+/** Local caching XMM r. */
+export function xmmLocal(r) { return L_XMM0 + (r & 7); }
 /** Byte offset of MM r inside the state block. */
 export function mmOff(r) { return ST.MM + 8 * (r & 7); }
 
 // ------------------------------------------------------------------ XMM
 
 /** Push the v128 value of XMM r. */
-export function xmmLoad(E, r) { E.c.get(L_STATE).v128load(xmmOff(r)); }
+export function xmmLoad(E, r) { E.c.get(xmmLocal(r)); }
 
 /**
- * Store a v128 into XMM r: pushes L_STATE, calls emitValue(E) (which must push exactly one
- * v128), then v128.store at ST.XMM + 16 r.
+ * Store a v128 into XMM r: calls emitValue(E) (which must push exactly one v128) and sets the
+ * register's local.
  * @param {(E: any) => void} emitValue
  */
-export function xmmStore(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.v128store(xmmOff(r)); }
+export function xmmStore(E, r, emitValue) { emitValue(E); E.c.set(xmmLocal(r)); }
+
+/** i8x16.shuffle(old, new) masks: the low `bytes` bytes from new, the rest from old */
+const LOW_MERGE = Object.fromEntries([2, 4, 8].map((n) => [n, Array.from({ length: 16 }, (_, i) => (i < n ? 16 + i : i))]));
+const HIGH_MERGE = Array.from({ length: 16 }, (_, i) => (i < 8 ? i : 16 + i));
 
 /**
  * Store only the low `bytes` (4 or 8) of a v128 into XMM r, preserving the other lanes
@@ -44,16 +51,13 @@ export function xmmStore(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.
  */
 export function xmmStoreLow(E, r, bytes, emitValue) {
   const c = E.c;
-  c.get(L_STATE); emitValue(E);
-  if (bytes === 16) c.v128store(xmmOff(r));
-  else if (bytes === 8) c.v128store64lane(xmmOff(r), 0);
-  else if (bytes === 4) c.v128store32lane(xmmOff(r), 0);
-  else if (bytes === 2) c.v128store16lane(xmmOff(r), 0);
-  else throw new Error(`xmmStoreLow: bad width ${bytes}`);
+  if (bytes === 16) { xmmStore(E, r, emitValue); return; }
+  if (!LOW_MERGE[bytes]) throw new Error(`xmmStoreLow: bad width ${bytes}`);
+  c.get(xmmLocal(r)); emitValue(E); c.i8x16shuffle(LOW_MERGE[bytes]).set(xmmLocal(r));
 }
 
 /** Store the 64-bit lane 1 of a v128 into the high qword of XMM r (MOVHPS/MOVLHPS-style). */
-export function xmmStoreHigh(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.v128store64lane(xmmOff(r) + 8, 1); }
+export function xmmStoreHigh(E, r, emitValue) { const c = E.c; c.get(xmmLocal(r)); emitValue(E); c.i8x16shuffle(HIGH_MERGE).set(xmmLocal(r)); }
 
 // ------------------------------------------------------------------ MMX
 
@@ -162,7 +166,7 @@ export function smcCheckEnd(E, insn, bytes) {
 /** Push lane 0 of operand o as an f32 (XMM register or m32). */
 export function scalarF32(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(L_STATE).f32load(xmmOff(o.r)); return; }
+  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).f32x4extractlane(0); return; }
   if (o.t === OT.MEM) { E.ea(o); c.f32load(0, 0); return; }
   throw new Error('scalarF32: bad operand');
 }
@@ -170,7 +174,7 @@ export function scalarF32(E, o) {
 /** Push lane 0 of operand o as an f64 (XMM register or m64). */
 export function scalarF64(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(L_STATE).f64load(xmmOff(o.r)); return; }
+  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).f64x2extractlane(0); return; }
   if (o.t === OT.MEM) { E.ea(o); c.f64load(0, 0); return; }
   throw new Error('scalarF64: bad operand');
 }
@@ -178,7 +182,7 @@ export function scalarF64(E, o) {
 /** Push lane 0 of operand o as an i32 (XMM register, MM register (mmTouch), or m32). */
 export function scalarI32(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(L_STATE).i32load(xmmOff(o.r)); return; }
+  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).i32x4extractlane(0); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i32load(mmOff(o.r)); return; }
   if (o.t === OT.MEM) { E.ea(o); c.i32load(0, 0); return; }
   throw new Error('scalarI32: bad operand');
@@ -187,20 +191,20 @@ export function scalarI32(E, o) {
 /** Push the low 64 bits of operand o as an i64 (XMM, MM (mmTouch) or m64). */
 export function scalarI64(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(L_STATE).i64load(xmmOff(o.r)); return; }
+  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).i64x2extractlane(0); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i64load(mmOff(o.r)); return; }
   if (o.t === OT.MEM) { E.ea(o); c.i64load(0, 0); return; }
   throw new Error('scalarI64: bad operand');
 }
 
 /** Store an f32 into lane 0 of XMM r (other lanes preserved). emitValue(E) pushes one f32. */
-export function xmmStoreF32(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.f32store(xmmOff(r)); }
+export function xmmStoreF32(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.f32x4replacelane(0).set(xmmLocal(r)); }
 /** Store an f64 into lane 0 of XMM r (lane 1 preserved). emitValue(E) pushes one f64. */
-export function xmmStoreF64(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.f64store(xmmOff(r)); }
+export function xmmStoreF64(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.f64x2replacelane(0).set(xmmLocal(r)); }
 /** Store an i32 into lane 0 of XMM r (other lanes preserved). emitValue(E) pushes one i32. */
-export function xmmStoreI32(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.i32store(xmmOff(r)); }
+export function xmmStoreI32(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.i32x4replacelane(0).set(xmmLocal(r)); }
 /** Store an i64 into the low qword of XMM r (high qword preserved). emitValue(E) pushes one i64. */
-export function xmmStoreI64(E, r, emitValue) { E.c.get(L_STATE); emitValue(E); E.c.i64store(xmmOff(r)); }
+export function xmmStoreI64(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.i64x2replacelane(0).set(xmmLocal(r)); }
 
 // ------------------------------------------------------------------ constants
 

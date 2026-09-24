@@ -165,6 +165,7 @@ async function profileWorker(seconds) {
   const counts = new Map(); for (const s of p.samples) counts.set(s, (counts.get(s) ?? 0) + 1);
   for (const [id, c] of counts) { const n = byId.get(id); const cf = n.callFrame; const key = `${cf.functionName || '(anonymous)'} ${cf.url.replace(/^.*\/src\//, 'src/')}:${cf.lineNumber + 1}`; self.set(key, (self.get(key) ?? 0) + c); total += c; }
   const top = [...self].sort((a, b) => b[1] - a[1]).slice(0, 30);
+  if (process.env.ORTHROS_DUMP_TICKS) for (const n of p.nodes) if (n.positionTicks && /^r_/.test(n.callFrame.functionName)) console.log('[ticks]', n.callFrame.functionName, n.callFrame.url, JSON.stringify(n.positionTicks.slice(0, 20)));
   console.log(`[profile] ${total} samples; top self time:`); for (const [k, c] of top) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${k}`);
   // aggregate by file
   const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
@@ -175,7 +176,7 @@ async function profileWorker(seconds) {
   if (regions.length) {
     console.log(`[profile] guest code: ${(100 * regionTotal / total).toFixed(1)}% in ${regions.length} regions; hottest:`); for (const [eip, c] of regions.slice(0, 20)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  region ${eip}`);
     // instruction mix of the hottest regions (decoded by the worker from guest memory)
-    await page.evaluate((eips) => { window.orthros.regions = null; window.orthros.worker?.postMessage({ type: 'regions', eips }); }, regions.slice(0, 12).map(([eip]) => eip));
+    await page.evaluate(([eips, list]) => { window.orthros.regions = null; window.orthros.worker?.postMessage({ type: 'regions', eips, list }); }, [regions.slice(0, 12).map(([eip]) => eip), Number(opt('profile-list') ?? 0)]); // --profile-list N: instruction listing of the N hottest regions
     for (let i = 0; i < 50; i++) { const txt = await page.evaluate(() => window.orthros.regions); if (txt) { console.log('[profile] instruction mix:\n' + txt); break; } await page.waitForTimeout(100); }
   }
 }
