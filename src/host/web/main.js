@@ -196,7 +196,9 @@ state.session = Math.random().toString(36).slice(2, 10);
 /** One stats message (~0.5 s) as a sample: kept for the display, queued for the server. */
 function recordSample(m) {
   const d3dDraws = m.d3d?.draws ?? 0, prev = state.lastDraws ?? d3dDraws; state.lastDraws = d3dDraws;
-  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
+  // shader programs built since the last sample and the time spent (a first use stalls the frame: ANGLE translates them)
+  const progs = m.d3d?.programs ?? 0, progMs = m.d3d?.programMs ?? 0, pp = state.lastProg ?? { n: progs, ms: progMs }; state.lastProg = { n: progs, ms: progMs };
+  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
   state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);
