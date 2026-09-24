@@ -30,13 +30,18 @@ function missingFeature() {
 async function main() {
   const missing = missingFeature();
   if (missing) { $('menu').classList.add('hidden'); showStatus('Orthros cannot run here', missing, null, true); return; }
+  const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  state.telemetry = !!config.telemetry && !headless;
   const list = await (await fetch('/api/manifests')).json();
   const games = $('games');
   for (const g of list) { const b = document.createElement('button'); b.textContent = `${g.title} (${g.exe})`; b.onclick = () => start(g.name); games.appendChild(b); }
   $('hudToggle').onchange = () => { $('hud').style.display = $('hudToggle').checked && state.status !== 'menu' ? 'block' : 'none'; };
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
-  const auto = params.get('manifest');
+  // the server's default game starts directly (a deployment for players); ?menu shows the picker
+  const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
   if (auto) start(auto);
+  $('hud').onclick = () => { $('hud').classList.toggle('collapsed'); try { localStorage.setItem('orthros.hud', $('hud').classList.contains('collapsed') ? 'compact' : 'full'); } catch { /* no storage */ } };
+  try { if (localStorage.getItem('orthros.hud') === 'compact') $('hud').classList.add('collapsed'); } catch { /* no storage */ }
 }
 
 async function start(name) {
@@ -87,7 +92,7 @@ function onWorkerMessage(m) {
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
-      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } renderHud(); break;
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
@@ -95,8 +100,8 @@ function onWorkerMessage(m) {
     case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
-    case 'exit': state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''} — reload the page to start again`); break;
-    case 'crash': state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true); break;
+    case 'exit': telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null }); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''} — reload the page to start again`); break;
+    case 'crash': telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 20000) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -134,9 +139,73 @@ function log(kind, msg) {
   if (el.style.display !== 'none') { el.textContent += line + '\n'; el.scrollTop = el.scrollHeight; }
 }
 
+/**
+ * Frame-rate display for players (top left; a click switches compact / detailed): the frames shown per second, coloured
+ * against 30 fps, the last minute as a graph (a red mark where a frame took more than 50 ms), the worst frame and the
+ * frames over 33 / 50 ms since the previous update, the emulated CPU and the local time (to report a slowdown).
+ */
 function renderHud() {
   const s = state.stats; if (!s) return;
-  $('hud').textContent = `${state.status}  ${s.fps.toFixed(1)} fps  frame p50 ${s.frameP50.toFixed(1)} ms  p99 ${s.frameP99.toFixed(1)} ms\n${s.mips.toFixed(0)} M instr/s  ${s.apiPerSec.toFixed(0)} api/s  regions ${s.regions}  threads ${s.threads}\n${s.d3d ? `d3d ${s.d3d.w}x${s.d3d.h} frames ${s.d3d.frames} draws ${s.d3d.draws}` : s.firstD3D ? `dx: ${s.firstD3D}` : 'no dx yet'}  unknown imports ${s.unknownImports}`;
+  const hud = $('hud'), fpsEl = hud.querySelector('.fps'), det = hud.querySelector('.details');
+  const clock = new Date().toLocaleTimeString();
+  if (!(s.frames > 0)) { // starting: no frame yet
+    fpsEl.innerHTML = '<small>loading…</small>';
+    det.textContent = `files ${s.ioMB ?? 0} MB · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
+    return;
+  }
+  const f = hudFps(), cls = f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad';
+  fpsEl.innerHTML = `<span class="${cls}">${f.toFixed(1)}</span> <small>fps</small>`;
+  const last = state.samples[state.samples.length - 1];
+  det.textContent = `worst ${Math.round(last?.max ?? 0)} ms · p99 ${Math.round(s.frameP99)} ms · >33ms ${last?.s33 ?? 0}\nCPU ${Math.round(s.mips)} MIPS · ${s.d3d ? `${s.d3d.w}x${s.d3d.h}` : ''} · ${clock}`;
+  drawHudGraph(hud.querySelector('canvas'));
+}
+/** frames per second over the last second (the stats arrive every ~0.5 s) */
+function hudFps() {
+  const a = state.samples, n = a.length; if (!n) return 0;
+  let frames = 0, t = 0; for (let i = n - 1; i >= 0 && t < 1; i--) { frames += a[i].fps * a[i].dt; t += a[i].dt; }
+  return t ? frames / t : 0;
+}
+function drawHudGraph(cv) {
+  const g = cv.getContext('2d'), w = cv.width, h = cv.height, a = state.samples, top = 60;
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(0, 0, w, h);
+  const y = (v) => h - 1 - Math.min(v, top) / top * (h - 2);
+  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, y(30)); g.lineTo(w, y(30)); g.stroke(); g.setLineDash([]);
+  const span = 120, x0 = w - Math.min(a.length, span) * (w / span); // (the last ~60 s)
+  g.strokeStyle = '#8fd18f'; g.beginPath();
+  a.slice(-span).forEach((p, i) => { const x = x0 + i * (w / span); if (i) g.lineTo(x, y(p.fps)); else g.moveTo(x, y(p.fps)); });
+  g.stroke();
+  g.fillStyle = '#ff6b6b';
+  a.slice(-span).forEach((p, i) => { if (p.s50 > 0) g.fillRect(x0 + i * (w / span), 0, 2, 4); });
+}
+
+// ---------------------------------------------------------------- measurements sent to the server (--telemetry)
+state.samples = [];
+state.session = Math.random().toString(36).slice(2, 10);
+/** One stats message (~0.5 s) as a sample: kept for the display, queued for the server. */
+function recordSample(m) {
+  const d3dDraws = m.d3d?.draws ?? 0, prev = state.lastDraws ?? d3dDraws; state.lastDraws = d3dDraws;
+  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
+  state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
+  if (!state.telemetry) return;
+  (state.queue ??= []).push(smp);
+  if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
+}
+function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= []).push({ t: Date.now(), ...ev }); flushTelemetry(); }
+function flushTelemetry() {
+  state.flushTimer = null;
+  const samples = state.queue ?? []; state.queue = [];
+  if (!samples.length && state.envSent) return;
+  const body = { session: state.session, game: state.manifest ?? null, samples };
+  if (!state.envSent) { state.envSent = true; body.env = environment(); }
+  fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).catch(() => {});
+}
+addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
+/** What the measurements depend on: browser, GPU, screen, cores. */
+function environment() {
+  let gpu = null;
+  try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); } catch { /* unknown */ }
+  return { ua: navigator.userAgent, gpu, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}` };
 }
 
 // ---------------------------------------------------------------- input
