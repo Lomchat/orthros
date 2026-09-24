@@ -106,11 +106,12 @@ function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else 
  * through the arith24 kernel, which redoes the operation with its exact error term: the same result
  * as the interpreter, without double-rounding artefacts (fpmath-round.js).
  */
-function roundPC(E, op) {
+function roundPC(E, op, insn) {
   const c = E.c;
   // mode known statically (region specialized for it): 53/64-bit precision rounds nothing; 24-bit precision
   // with rounding to nearest keeps only the result tests
   if (E.fpcStatic !== null && (E.fpcStatic & 0x300) !== 0) return;
+  if (E.fpcStatic !== null && E.fpcStatic !== 0) { roundDirected24(E, op, insn, E.fpcStatic >> 10); return; }
   if (E.fpcStatic === 0) {
     c.set(L_F64C);
     const done = c.block();
@@ -174,6 +175,66 @@ function roundPC(E, op) {
   c.end(); // done
   c.end(); void pc;
   c.get(L_F64C);
+}
+/**
+ * 24-bit precision with a directed rounding (1 down, 2 up, 3 toward zero) known statically — code written to truncate
+ * its FISTPs sets it for whole functions. The f64 result on the stack is rounded without any call: off the 24-bit grid,
+ * masking (plus one step away from zero for down-negative / up-positive) is exact (see the generic path); on the grid,
+ * the result is exact for float operands (pushExactOnGrid); a zero is exact except when rounding down (x - x = -0).
+ * Anything else — inexact on the grid, denormal, infinite or NaN results, zeros rounding down — leaves the region for
+ * the interpreter (stepExit: no call in the region, whose hot paths would otherwise keep no value in a register).
+ */
+function roundDirected24(E, op, insn, rc) {
+  const c = E.c;
+  c.set(L_F64C);
+  c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+  const done = c.block();
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u();
+  const normal = c.hint(true).if_();
+  c.get(L_I64A).wrap().i32(0x1fffffff).and();
+  const offGrid = c.hint(true).if_();
+  c.get(L_I64A).i64(~0x1fffffffn).i64and();
+  if (rc !== 3) { c.get(L_I64A).i64(0n); if (rc === 1) c.i64lt_s(); else c.i64ge_s(); c.extend_u().i64(29n).i64shl().i64add(); }
+  c.f64reinterpret_i64().set(L_F64C);
+  c.else_();
+  pushExactOnGrid(E, op); c.eqz();
+  const inexact = c.hint(false).if_(); E.stepExit(insn); c.end(); void inexact;
+  c.end(); void offGrid;
+  c.else_();
+  if (rc !== 1) c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // (a zero as computed: +0 for x - x)
+  E.stepExit(insn);
+  c.end(); void normal;
+  c.end(); // done
+  c.get(L_F64C);
+}
+/**
+ * f32 of L_F64A rounded by a directed rounding (1 down, 2 up, 3 toward zero): f32.demote rounds to nearest, then one
+ * step (the integer pattern +-1, through zero to the smallest denormal) when it went the wrong way; overflow to
+ * infinity steps back to the largest float when rounding toward zero or away from that infinity. NaNs: as demoted.
+ */
+function pushF32Directed(E, rc) {
+  const c = E.c;
+  c.get(L_F64A).f32demote().tee(L_F32C);
+  if (rc === 3) c.f64promote().f64abs().get(L_F64A).f64abs().f64gt();
+  else if (rc === 1) c.f64promote().get(L_F64A).f64gt();
+  else c.f64promote().get(L_F64A).f64lt();
+  const adj = c.if_(T.f32);
+  c.get(L_F32C).i32reinterpret_f32().set(L_T4);
+  if (rc === 3) c.get(L_T4).i32(1).sub(); // |t| > |v| >= 0: t is not a zero
+  else {
+    // toward -inf (down) or +inf (up): the magnitude shrinks on the side of that infinity's opposite sign, grows on its
+    // own side; from a zero, the smallest denormal of the rounding's sign
+    const away = rc === 1 ? 0x80000001 : 0x00000001;
+    c.get(L_T4).i32(1).sub(); // t on the side where stepping shrinks the magnitude (positive when down, negative when up)
+    c.get(L_T4).i32(1).add(); // t on the other side
+    c.get(L_T4).i32(0).lt_s(); if (rc === 1) c.eqz(); // shrink: up when negative, down when positive
+    c.select();
+    c.i32(away);
+    c.get(L_T4).i32(0x7fffffff).and(); // (select: the step unless t is a zero)
+    c.select();
+  }
+  c.f32reinterpret_i32();
+  c.else_(); c.get(L_F32C); c.end(); void adj;
 }
 /**
  * i32 1 when the f64 result in L_F64C (on the 24-bit grid) of operation `op` on L_F64A / L_F64B is exact: both
@@ -286,6 +347,7 @@ function fstore(E, insn, doPop) {
     // result in the float range) is stored as is, anything else through the f32rc kernel (denormals, overflow)
     c.get(L_TA);
     if (E.fpcStatic !== null && (E.fpcStatic & 0xc00) === 0) c.get(L_F64A).f32demote();
+    else if (E.fpcStatic !== null) pushF32Directed(E, E.fpcStatic >> 10); // (no call: see pushF32Directed)
     else {
       c.get(L_F64A).f32demote().tee(L_F32C).f64promote().get(L_F64A).f64eq();
       const exact = c.if_(T.f32); c.get(L_F32C); c.else_();
@@ -429,7 +491,7 @@ function arith(op, doPop, integer) {
     }
     if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
-      roundPC(E, op); c.set(L_F64C);
+      roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
       c.get(L_F64C).get(L_F64C).f64ne();
@@ -475,10 +537,10 @@ HANDLERS[OP.FCHS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32n
 HANDLERS[OP.FABS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32abs(); storeST32Stack(E, 0); } else { loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); } };
 // FSQRT of a negative operand is an invalid arithmetic operand (IE, the indefinite); a NaN operand
 // follows the x87 rule (nanOutcome, D034) like the transcendentals; sqrt(-0) = -0
-HANDLERS[OP.FSQRT] = (E) => {
+HANDLERS[OP.FSQRT] = (E, insn) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
-  c.get(L_F64A).f64sqrt(); roundPC(E, 8); c.set(stW(E, 0));
+  c.get(L_F64A).f64sqrt(); roundPC(E, 8, insn); c.set(stW(E, 0));
   nanOutcome(E, L_F64A, L_F64A, stW(E, 0));
   tagValid(E, 0);
 };
