@@ -420,6 +420,17 @@
 - Écart connu non corrigé : `lstrcmp`/`lstrcmpi`/`CompareString` comparent en ordinal (Windows : tri linguistique,
   minuscules avant majuscules d'une même lettre, tirets et apostrophes à part) — n'affecte que l'ordre de listes triées.
 
+## Instance de test pour jouer (2026-09-24)
+- **https://orth2.chalco.website** (utilisateur `orthros`, mot de passe dans `/root/.orth2-password`) : le jeu démarre
+  directement (`--default bfme-vanilla`), compteur d'images en haut à gauche (clic : compact / détaillé).
+- Servie depuis une copie figée : worktree `/srv/orthros-live` (commit déployé), service `orthros2.service`
+  (127.0.0.1:8095, utilisateur dynamique), bloc Caddy `orth2.chalco.website` (basic auth, pas de compression sur
+  `/game/*`). Mise à jour : `git -C /srv/orthros-live checkout --detach <commit> && systemctl restart orthros2`.
+- Mesures des joueurs : `/var/lib/private/orthros2/telemetry/telemetry-<date>.jsonl` (échantillons ~0,5 s : fps, pire
+  image, images > 33 / 50 ms, p99, MIPS, API/s, draws, Mo lus, état ; environnement navigateur / GPU en début de session).
+- Vérifié de bout en bout par l'URL publique (Chromium headless, profil vierge) : isolation cross-origin, lecture des
+  fichiers par plages, menu à ~38 fps après ~110 s (premier lancement : banc d'essai du jeu), aucune erreur.
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques
