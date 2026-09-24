@@ -30,7 +30,7 @@ const cw = cwArg >= 0 ? parseInt(args[cwArg + 1], 16) : 0x027f;
 const bytes = Uint8Array.from(src.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
 
 // locals by name (translate.js layout)
-const LOCALS = { 56: 'xmm0', 57: 'xmm1', 58: 'xmm2', 59: 'xmm3', 60: 'xmm4', 61: 'xmm5', 62: 'xmm6', 63: 'xmm7', 0: 'blk', 1: 'state', 10: 'eflags', 11: 'lzop', 12: 'lzres', 13: 'lza', 14: 'lzb', 15: 'fs', 16: 'ta', 17: 'tv', 18: 't2', 19: 't3', 20: 't4', 21: 't5', 22: 't6', 23: 't7', 24: 'i64a', 25: 'i64b', 26: 'f64a', 27: 'f64b', 28: 'top', 29: 't8', 30: 'v0', 31: 'v1', 32: 'v2', 41: 'ftw', 42: 'fpc', 43: 'f64c', 44: 'icount', 53: 'f32a', 54: 'f32b', 55: 'f32c' };
+const LOCALS = { 56: 'xmm0', 57: 'xmm1', 58: 'xmm2', 59: 'xmm3', 60: 'xmm4', 61: 'xmm5', 62: 'xmm6', 63: 'xmm7', 0: 'blk', 1: 'state', 10: 'eflags', 11: 'lzop', 12: 'lzres', 13: 'lza', 14: 'lzb', 15: 'icount', 16: 'ta', 17: 'tv', 18: 't2', 19: 't3', 20: 't4', 21: 't5', 22: 't6', 23: 't7', 24: 'i64a', 25: 'i64b', 26: 'f64a', 27: 'f64b', 28: 'top', 29: 't8', 30: 'v0', 31: 'v1', 32: 'v2', 41: 'ftw', 42: 'fpc', 43: 'f64c', 44: 'fs', 53: 'f32a', 54: 'f32b', 55: 'f32c' };
 const REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
 const localName = (i) => (i >= 2 && i < 10 ? REGS[i - 2] : i >= 33 && i < 41 ? `st${i - 33}` : i >= 45 && i < 53 ? `s32_${i - 45}` : LOCALS[i] ?? `l${i}`);
 

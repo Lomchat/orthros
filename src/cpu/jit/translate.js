@@ -18,7 +18,10 @@ import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNEL
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
-const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
+// the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
+// region to load it back: a store-to-load dependency on every transition); the FS base, constant for a thread, is loaded
+// by the prologue into a declared local
+const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_ICOUNT = 15;
 const L_TA = 16, L_TV = 17, L_T2 = 18, L_T3 = 19, L_T4 = 20, L_T5 = 21, L_T6 = 22, L_T7 = 23;
 const L_I64A = 24, L_I64B = 25, L_F64A = 26, L_F64B = 27, L_TOP = 28, L_T8 = 29;
 const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
@@ -28,9 +31,9 @@ const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
 // L_FPC the control word's PC/RC bits (cw & 0xf00).
 const L_ST0 = 33, L_FTW = 41, L_FPC = 42;
 const L_F64C = 43; // f64 temporary (x87 results kept apart from their operands)
-// the instruction budget (ST.ICOUNT) cached in a local for the whole region: decremented in a register at every
-// block transition, written back to the state block only when the region is left (exit, chain)
-const L_ICOUNT = 44;
+// the instruction budget (ST.ICOUNT, parameter L_ICOUNT) is decremented in a register at every block transition and
+// written back to the state block only when the region returns to the dispatcher; L_FS: the FS base (the TEB)
+const L_FS = 44;
 // 24-bit precision x87 blocks keep register values that are exact floats in f32 locals (L_S32+k shadows
 // L_ST0+k, see Emitter.f32Mask) and compute with f32 arithmetic; L_F32A..C are f32 temporaries
 const L_S32 = 45, L_F32A = 53, L_F32B = 54, L_F32C = 55;
@@ -342,9 +345,8 @@ class Emitter {
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
-    c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
-    c.get(L_STATE).i32load(ST.ICOUNT).set(L_ICOUNT);
-    if (this.usesX87) this.loadX87();
+    c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
@@ -382,8 +384,8 @@ class Emitter {
     c.unreachable();
     c.end(); // dispatch loop
     c.end(); // exitJmpL: jump exit (tV = target eip)
+    if (this.chain) this.emitChain(); // (the budget travels as a parameter)
     c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-    if (this.chain) this.emitChain();
     this.flushAll();
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     c.get(L_TV).return_();
@@ -460,7 +462,7 @@ class Emitter {
     const noChain = c.block();
     // profiling translations count why a transition is not chained (PROF_OPS_BASE + NOCHAIN_PROF: thunk, stop, budget, miss)
     const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
-    c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; } // (L_ICOUNT was written back before this chain attempt)
+    c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; }
     // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
     c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
@@ -499,8 +501,7 @@ class Emitter {
     c.get(L_STATE).i32load(ST.LZ_SRC1).set(L_LZA);
     c.get(L_STATE).i32load(ST.LZ_SRC2).set(L_LZB);
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
-    c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP);
-    if (this.usesX87) this.loadX87();
+    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
     this.loadXmm();
   }
   /** Load the XMM registers of xmmMask into their locals. */
@@ -619,8 +620,7 @@ class Emitter {
   /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
   flushFpu() {
     const c = this.c;
-    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); }
-    c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP);
+    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); } // (other regions never change TOP)
   }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
