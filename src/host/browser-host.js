@@ -97,7 +97,7 @@ export class BrowserHost {
     this.exitCode = null;
     this.framesPresented = 0;
     this.lastFrameAt = 0;
-    this.frameTimes = []; // rolling window for the live stats
+    this.frameTimes = []; this.frameTimesAt = []; // rolling window for the live stats (durations, presentation times)
     this.frameLog = []; // every frame since start as (presented at ms, frame time ms) pairs — whole-run percentiles
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
     this.frameHook = () => { const t0 = performance.now(); this.display.presentGl(); this.presentMs += performance.now() - t0; this.framePresented(); };
@@ -152,7 +152,9 @@ export class BrowserHost {
     this.framesPresented++;
     const now = performance.now();
     if (this.lastFrameAt) {
-      const dt = now - this.lastFrameAt; this.frameTimes.push(dt); if (this.frameTimes.length > 600) this.frameTimes.shift(); this.frameLog.push(now, dt); this.probeFrame(dt);
+      const dt = now - this.lastFrameAt; this.frameTimes.push(dt); this.frameTimesAt.push(now);
+      // (the last 10 s of frames, at most 600: a loading phase's long frames leave the live percentiles once it is over)
+      while (this.frameTimes.length > 600 || (this.frameTimesAt.length && now - this.frameTimesAt[0] > 10000)) { this.frameTimes.shift(); this.frameTimesAt.shift(); } this.frameLog.push(now, dt); this.probeFrame(dt);
       const iv = this.interval ??= { max: 0, slow33: 0, slow50: 0 }; // (per stats interval: the live frame-rate display)
       if (dt > iv.max) iv.max = dt; if (dt > 33.4) iv.slow33++; if (dt > 50) iv.slow50++;
     }
