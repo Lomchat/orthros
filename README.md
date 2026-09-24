@@ -18,4 +18,5 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 `orthros run` n'a besoin d'aucun fichier propre au jeu : l'exécutable principal est choisi par des règles génériques
 (installateurs, désinstalleurs, lanceurs et outils écartés ; nom proche de celui du dossier, puis le plus gros). Un
 `manifest.json` dans le dossier, ou `--exe` / `--args`, imposent un autre choix. Le navigateur garde les fichiers du jeu
-lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas.
+lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « offline
+copy » du menu (ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
