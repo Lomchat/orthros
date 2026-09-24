@@ -382,6 +382,12 @@
   Référence masquée à 8 bits. La citadelle, les tours de porte, les obélisques, les cyprès et les remparts projettent
   maintenant leurs ombres (`build/proof/high-shadows-before.png`, `build/proof/high-shadows-fixed.png`). Test avec le
   contexte GL enregistreur.
+- **Chargement d'une partie 116 → 67 s** (High, CPU seul, A/B simultanés) : 82 % du chargement tenait dans quatre
+  boucles x87 compilées en mode FPU générique — l'une restaure le mot de contrôle de l'appelant avant son `ret` (tout ce
+  qui était atteignable depuis ce FLDCW devenait générique), une autre tourne entièrement en arrondi vers zéro (seul
+  l'arrondi au plus près avait un chemin spécialisé). Transferts gardés au lieu de la propagation, arrondis dirigés en
+  ligne (D050). Test : boucle qui alterne 24/53 bits à chaque tour avec un appel local qui sauve/tronque/restaure ;
+  `FSTP m32` sous chaque arrondi dirigé à 53/64 bits sur des valeurs limites.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),

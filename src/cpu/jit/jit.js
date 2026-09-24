@@ -397,6 +397,7 @@ export class Jit {
             versions.push(v); // (different blocks: dropped with the family below)
           }
         }
+        this.opts.warn?.(`x87 region ${cpu.eip.toString(16)} now tests the FPU mode at run time: entered under mode 0x${mode.toString(16)}, ${first ? `versions for ${(first.versions ?? [first]).map((v) => v.fpc === null ? 'generic' : '0x' + v.fpc.toString(16)).join(', ')}${first.first ? ' (entered through a version)' : ''}` : 'no region found for this address'}`);
         if (first) { for (const b of first.blocks) this.genericFpu.add(b.eip); this.dropRegion(first); }
         else this.genericFpu.add(cpu.eip);
         continue;

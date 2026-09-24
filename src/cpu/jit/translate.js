@@ -136,37 +136,6 @@ function flagsLiveBefore(insn, after) {
 /** Instructions that load the x87 control word (precision / rounding control). */
 const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.FXRSTOR, OP.FNSAVE]);
 
-/**
- * Blocks whose x87 precision/rounding control is statically the region's assumed one: every block
- * entered from outside runs under it (the region entry checks it), and it holds until an instruction
- * of FPU_MODE_WRITERS; blocks reachable inside the region from such an instruction get the dynamic
- * (L_FPC-tested) code. Returns known[i] (1 = the assumed mode holds at block entry).
- */
-function planFpuModes(blocks, byEip, retSites) {
-  const n = blocks.length, known = new Uint8Array(n).fill(1);
-  const succ = blocks.map((b) => {
-    const s = [], last = b.insns[b.insns.length - 1];
-    const add = (eip) => { const t = byEip.get(eip); if (t) s.push(t.index); };
-    if (last) {
-      const t = branchTarget(last);
-      if (t >= 0) add(t);
-      if (b.term === TERM_RET) for (const r of retSites) add(r);
-    }
-    if (b.term === TERM_NONE || b.term === TERM_JCC || b.term === TERM_LOOP) add(b.fallthrough);
-    return s;
-  });
-  const work = [];
-  blocks.forEach((b, i) => { if (b.insns.some((x) => FPU_MODE_WRITERS.has(x.op))) work.push(i); });
-  const seen = new Uint8Array(n);
-  while (work.length) {
-    const i = work.pop();
-    if (seen[i]) continue;
-    seen[i] = 1;
-    for (const j of succ[i]) { known[j] = 0; if (!seen[j]) work.push(j); }
-  }
-  return known;
-}
-
 /** Direct in-region branch target of a block's last instruction (JMP/JCC/LOOP/CALL rel), or -1. */
 function branchTarget(insn) {
   const o = insn.ops[0];
@@ -387,7 +356,6 @@ class Emitter {
     // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
     this.retSites = blocks.filter((b) => b.term === TERM_CALL && byEip.has(b.fallthrough)).map((b) => b.fallthrough);
     if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
-    this.fpcKnown = this.fpcAssume !== null ? planFpuModes(blocks, byEip, this.retSites) : null;
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
     this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
@@ -691,6 +659,22 @@ class Emitter {
     this.charge(this.insnIdx - 1);
     this.exitCode(EXIT_STEP, insn.addr);
   }
+  /**
+   * Every block of a region specialized for an x87 mode runs under that mode: the region entry checks it, and an
+   * in-region transfer made where the mode is not statically known (after an FLDCW/FNINIT/FRSTOR... of the block)
+   * checks it too — when it differs, the transfer leaves the region, whose entry then selects (or adds) the version
+   * for the current mode. The usual pattern, a function restoring the caller's control word before returning,
+   * passes the check and keeps its loops specialized (they used to be translated for a mode tested at run time,
+   * with kernel calls in every x87 operation, as soon as a mode writer could reach them).
+   */
+  fpuModeGuard(target, n) {
+    if (this.fpcAssume === null || this.fpcStatic === this.fpcAssume) return;
+    const c = this.c;
+    c.get(L_FPC).i32(this.fpcAssume).ne();
+    const g = c.hint(false).if_();
+    this.exitTo(target, n);
+    c.end(); void g;
+  }
   /** Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. */
   budget(n, eip) {
     const c = this.c;
@@ -704,6 +688,7 @@ class Emitter {
     const b = this.byEip.get(target);
     if (!b) { this.exitTo(target, n); return; }
     const c = this.c;
+    this.fpuModeGuard(target, n);
     const t = b.index, sp = this.pathOf[this.cur], tp = this.pathOf[t];
     let d = 0; // loops holding both
     while (d < sp.length && d < tp.length && sp[d] === tp[d]) d++;
@@ -1067,7 +1052,7 @@ class Emitter {
     const live = (this.flagsAfter = new Uint8Array(b.insns.length));
     for (let i = b.insns.length - 1, l = FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
-    this.fpcStatic = this.fpcKnown?.[b.index] ? this.fpcAssume : null;
+    this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
     for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
     this.c.site = -1; // (call statistics: block-end code)
     // block end
@@ -1082,6 +1067,7 @@ class Emitter {
         const ft = b.fallthrough;
         if (nextBlock && nextBlock.eip === ft) { // natural fallthrough into the next block's code
           this.count(PF.fallthrough);
+          this.fpuModeGuard(ft, n);
           this.x87Normalize();
           this.charge(n); // (a loop entered by its top sees L_BLK outside its blocks: see loopPrologue)
           return;

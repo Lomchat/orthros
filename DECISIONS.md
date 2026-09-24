@@ -166,3 +166,18 @@ local. Mesures : `tools/sse-bench.mjs` 107,5 → 23,4 ns par itération (0,47 ns
 524-538 → 820-830 MIPS ; menu 3D High (`--gl-discard`, A/B simultanés ×2) neutre (18,62/18,35 → 18,24/18,28 fps,
 dans le bruit). Pas de passage des XMM en paramètres de chaînage : la paire écriture 16 octets / lecture 16 octets
 entre régions est transférée par le processeur, et 8 paramètres v128 de plus pèseraient sur toutes les régions.
+
+## D050 — 2026-09-24 — Mode FPU : gardes sur les transferts plutôt que propagation ; arrondis dirigés sans appel
+Une région x87 est spécialisée pour le mode (précision, arrondi) en vigueur à sa traduction (D042, D048). Deux causes
+laissaient encore du code générique (mode testé à l'exécution, appel d'un noyau dans chaque opération — et un appel
+présent n'importe où fait vider les registres des chemins chauds, D045) dans les boucles de chargement d'une partie :
+(1) le planificateur marquait « mode inconnu » tout bloc atteignable depuis une écriture du mot de contrôle, y compris
+par l'arc approximatif RET → sites de retour de la région : une fonction qui restaure le mot de contrôle de l'appelant
+avant son `ret` rendait génériques ses propres boucles ; (2) une fonction qui passe tout son corps en arrondi vers zéro
+(pour que ses `fistp` tronquent) n'avait de chemin spécialisé qu'en arrondi au plus près. **Décision** : (1) tous les
+blocs d'une région spécialisée sont compilés pour son mode ; un transfert dans la région fait là où le mode n'est pas
+connu statiquement (après FLDCW/FNINIT/FRSTOR… du bloc) le vérifie et, s'il diffère, sort de la région, dont l'entrée
+choisit ou ajoute la version du mode courant ; (2) en précision 24 bits avec arrondi dirigé connu, le résultat est
+arrondi en ligne (masquage hors grille, exactitude sur la grille pour des opérandes flottants) et les cas rares
+(zéros en arrondi vers le bas, dénormaux, infinis, NaN, inexacts sur la grille) sortent vers l'interpréteur ;
+`FST(P) m32` sous arrondi dirigé arrondit en ligne à toute précision (arrondi au plus près puis un pas si besoin).
