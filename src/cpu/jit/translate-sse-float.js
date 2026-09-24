@@ -14,7 +14,7 @@ import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import { T } from './wasm.js';
 import {
-  xmmOff, xmmLoad, xmmStore, xmmStoreLow, mmStore, loadVec, storeVec,
+  xmmOff, xmmLocal, xmmLoad, xmmStore, xmmStoreLow, mmStore, loadVec, storeVec,
   scalarF32, scalarF64, xmmStoreF32, xmmStoreF64,
   pushSplatI32, pushSplatF32, pushSplatF64, pushLowMask,
   elemMask, shufps, shufpd, unpackMask,
@@ -147,11 +147,11 @@ HANDLERS[OP.MOVLPS] = HANDLERS[OP.MOVLPD] = (E, insn) => {
 HANDLERS[OP.MOVHPS] = HANDLERS[OP.MOVHPD] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
   if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); xmmLoad(E, s.r); c.v128store64lane(0, 1); E.smcCheck(insn); return; }
-  c.get(L_STATE); E.ea(s); c.i64load(0, 0).i64store(xmmOff(d.r) + 8);
+  c.get(xmmLocal(d.r)); E.ea(s); c.i64load(0, 0).i64x2replacelane(1).set(xmmLocal(d.r));
 };
 // MOVHLPS: d.q0 = s.q1 ; MOVLHPS: d.q1 = s.q0
-HANDLERS[OP.MOVHLPS] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; c.get(L_STATE).get(L_STATE).i64load(xmmOff(s.r) + 8).i64store(xmmOff(d.r)); };
-HANDLERS[OP.MOVLHPS] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; c.get(L_STATE).get(L_STATE).i64load(xmmOff(s.r)).i64store(xmmOff(d.r) + 8); };
+HANDLERS[OP.MOVHLPS] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; c.get(xmmLocal(d.r)).get(xmmLocal(s.r)).i64x2extractlane(1).i64x2replacelane(0).set(xmmLocal(d.r)); };
+HANDLERS[OP.MOVLHPS] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; c.get(xmmLocal(d.r)).get(xmmLocal(s.r)).i64x2extractlane(0).i64x2replacelane(1).set(xmmLocal(d.r)); };
 
 // SSE3 duplicating moves
 function dupMove(mask) {
@@ -165,7 +165,7 @@ HANDLERS[OP.MOVSLDUP] = dupMove(M_MOVSLDUP);
 HANDLERS[OP.MOVSHDUP] = dupMove(M_MOVSHDUP);
 HANDLERS[OP.MOVDDUP] = (E, insn) => { // Vpd,Wq: low qword of xmm / m64 into both qwords
   const c = E.c; const [d, s] = insn.ops;
-  xmmStore(E, d.r, () => { if (s.t === OT.XMM) c.get(L_STATE).v128load64splat(xmmOff(s.r)); else { E.ea(s); c.v128load64splat(0); } });
+  xmmStore(E, d.r, () => { if (s.t === OT.XMM) c.get(xmmLocal(s.r)).i64x2extractlane(0).i64x2splat(); else { E.ea(s); c.v128load64splat(0); } });
 };
 
 // ------------------------------------------------------------------ packed / scalar arithmetic

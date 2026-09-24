@@ -16,7 +16,7 @@ import { OP, OT } from '../decoder.js';
 import { ST, SEG } from '../state.js';
 import { T } from './wasm.js';
 import {
-  width, xmmOff, mmOff, mmTouch, loadVec, storeVec, smcCheckEnd, xmmStore, scalarI32, scalarI64, pushZero,
+  width, xmmOff, xmmLocal, mmOff, mmTouch, loadVec, storeVec, smcCheckEnd, xmmStore, scalarI32, scalarI64, pushZero,
   elemMask, unpackMask, pshufd, pshuflw, pshufhw, pshufw, pslldqMask, psrldqMask, storeScalar,
 } from './translate-sse-common.js';
 
@@ -93,7 +93,7 @@ HANDLERS[OP.MOVQ] = (E, insn) => {
   if (d.t === OT.MEM) { storeVec(E, d, insn, 8, () => vec(E, s)); return; }
   if (d.t === OT.MM) { put(E, d, insn, 8, () => vec(E, s)); return; }
   // xmm <- low qword of xmm/m64, zero-extended
-  xmmStore(E, d.r, () => { if (s.t === OT.XMM) c.get(L_STATE).v128load64zero(xmmOff(s.r)); else vec(E, s); });
+  xmmStore(E, d.r, () => { if (s.t === OT.XMM) { pushZero(E); c.get(xmmLocal(s.r)).i64x2extractlane(0).i64x2replacelane(0); } else vec(E, s); });
 };
 HANDLERS[OP.MOVQ2DQ] = (E, insn) => { touch(E, insn); xmmStore(E, insn.ops[0].r, () => vec(E, insn.ops[1])); };
 HANDLERS[OP.MOVDQ2Q] = (E, insn) => { touch(E, insn); put(E, insn.ops[0], insn, 8, () => vec(E, insn.ops[1])); };
