@@ -3,16 +3,24 @@
 // used by tests: sleeping just advances time.
 
 export class RealClock {
-  constructor() {
+  /**
+   * @param {number} [scale] guest milliseconds per real millisecond (debugging: below 1 the guest sees a faster
+   *   machine — its time runs slower than the work done — above 1 a slower one)
+   */
+  constructor(scale = 1) {
     this.origin = performance.now();
+    this.scale = scale;
     this.sab = new Int32Array(new SharedArrayBuffer(4));
   }
   /** milliseconds since process start (fractional) */
-  now() { return performance.now() - this.origin; }
+  now() { return this.scale === 1 ? performance.now() - this.origin : (performance.now() - this.origin) * this.scale; }
+  /** real milliseconds for `ms` guest milliseconds */
+  real(ms) { return ms / this.scale; }
   /** wall clock ms since epoch */
   wall() { return Date.now(); }
   sleep(ms) {
     if (ms <= 0) return;
+    ms /= this.scale;
     try { Atomics.wait(this.sab, 0, 0, ms); }
     catch { const end = performance.now() + ms; while (performance.now() < end) { /* spin */ } }
   }

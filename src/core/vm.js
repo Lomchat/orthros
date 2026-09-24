@@ -1,7 +1,7 @@
 // The virtual machine: guest memory, process, executor (interpreter; JIT later), API dispatch
 // loop, guest callbacks, crash reports. See DECISIONS.md D003/D004.
 import { GuestMemory } from '../cpu/memory.js';
-import { EXIT, F, ST } from '../cpu/state.js';
+import { EXIT, F, ST, CPU_MHZ } from '../cpu/state.js';
 import { Interp, defaultCpuid } from '../cpu/interp.js';
 import '../cpu/interp-x87.js';
 import '../cpu/interp-sse.js';
@@ -47,6 +47,7 @@ export class Vm {
     this.mem = new GuestMemory();
     this.api = new ApiRegistry();
     this.interp = new Interp(this.mem, null);
+    if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
     this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
@@ -165,7 +166,7 @@ export class Vm {
           const wake = this.sched.nextWake();
           if (wake === Infinity) return { state: 'idle' };
           const delay = wake - this.clock.now();
-          if (delay > 2) return { state: 'sleep', until: performance.now() + delay };
+          if (delay > 2) return { state: 'sleep', until: performance.now() + (this.clock.real ? this.clock.real(delay) : delay) };
         }
         this.sched.idle();
       }
