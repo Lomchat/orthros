@@ -226,7 +226,8 @@ function planUnits(blocks, byEip, nest) {
  */
 export function discoverRegion(mem, entry, opts) {
   const boundaries = opts.boundaries ?? null;
-  const isBoundary = (a) => (boundaries && boundaries.has(a)) || (a >= THUNK_BASE && a < THUNK_END);
+  const ranges = opts.interpRanges ?? null; // (debugging: code left to the interpreter, never part of a region)
+  const isBoundary = (a) => (boundaries && boundaries.has(a)) || (a >= THUNK_BASE && a < THUNK_END) || (ranges !== null && ranges.some(([lo, hi]) => a >= lo && a < hi));
   const leaders = new Set([entry]);
   const queue = [entry];
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
