@@ -83,3 +83,15 @@ export class OpfsBlockStore {
 
   close() { try { this.flush(); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
 }
+
+/**
+ * The block store's interface in memory, up to `maxBytes` (then new blocks are dropped): pages without OPFS and
+ * harness runs measuring the prefetch without a persistent profile.
+ */
+export class MemBlockStore {
+  constructor(maxBytes = 1 << 30) { this.map = new Map(); this.bytes = 0; this.max = maxBytes; this.failed = false; this.stats = { hits: 0, puts: 0, bytes: 0 }; }
+  get(key) { const b = this.map.get(key); if (b) this.stats.hits++; return b ?? null; }
+  put(key, bytes) { if (this.map.has(key) || this.bytes + bytes.length > this.max) return; this.map.set(key, bytes.slice()); this.bytes += bytes.length; this.stats.puts++; this.stats.bytes += bytes.length; }
+  flush() {}
+  close() {}
+}

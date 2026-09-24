@@ -1,13 +1,15 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests manifests/] [--default <manifest>] [--telemetry <dir>]
+// Usage: node src/host/server.js [--port 8080] [--manifests manifests/] [--default <manifest>] [--telemetry <dir>] [--learn <dir>]
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
+//   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions)
 import http from 'node:http';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { BLOCK as LEARN_BLOCK } from '../vfs/http-backend.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
@@ -88,6 +90,54 @@ export function createServer(opts = {}) {
     fs.createReadStream(file).pipe(res);
   };
 
+  /**
+   * Learned prefetch order, per manifest: the 1 MiB blocks the game read synchronously in earlier sessions, with the
+   * earliest time since its session's first read it was needed ('s' parameter of /gamez requests; prefetch requests,
+   * 'p=1', are not counted). /api/prefetch/<manifest> lists them in that order: a new session downloads them in the
+   * background (network otherwise idle while the game computes) before the game asks for them. Kept in
+   * opts.learnDir/prefetch-<manifest>.json when set.
+   */
+  const learned = new Map(); // manifest -> Map("path#block" -> { t, n })
+  const sessions = new Map(); // session id -> { start, seen: Set }
+  const learnFile = (name) => opts.learnDir && path.join(opts.learnDir, `prefetch-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const learnedOf = (name) => {
+    let m = learned.get(name);
+    if (!m) {
+      m = new Map(); learned.set(name, m);
+      const f = learnFile(name);
+      if (f) try { for (const [k, t, n] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n }); } catch { /* none yet */ }
+    }
+    return m;
+  };
+  let learnDirty = new Set(), learnTimer = null;
+  const learnRead = (name, rel, start, end, sid) => {
+    if (!sid || sid.length > 40) return;
+    const now = Date.now();
+    let ss = sessions.get(sid);
+    if (!ss) {
+      if (sessions.size > 1000) for (const [k, v] of sessions) if (now - v.start > 6 * 3600e3) sessions.delete(k);
+      sessions.set(sid, ss = { start: now, seen: new Set() });
+    }
+    const m = learnedOf(name), t = now - ss.start;
+    for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
+      const k = `${rel}#${b}`;
+      if (ss.seen.has(k)) continue;
+      ss.seen.add(k);
+      const e = m.get(k);
+      if (!e) m.set(k, { t, n: 1 }); else { e.t = Math.min(e.t, t); e.n++; }
+    }
+    if (learnFile(name)) {
+      learnDirty.add(name);
+      learnTimer ??= setTimeout(() => {
+        learnTimer = null;
+        for (const n of learnDirty) { const f = learnFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => [k, v.t, v.n]))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+        learnDirty = new Set();
+      }, 20000);
+      learnTimer.unref?.(); // (does not keep a finished process alive)
+    }
+  };
+  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1))]; });
+
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
@@ -137,7 +187,7 @@ export function createServer(opts = {}) {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true, prefetch: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;
@@ -160,7 +210,15 @@ export function createServer(opts = {}) {
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
       // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found'); return sendRangeEncoded(req, res, file, url.searchParams.get('r') ?? ''); }
+      if (m) {
+        const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found');
+        const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
+        if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
+        return sendRangeEncoded(req, res, file, r);
+      }
+      m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
+      if (m) { if (!manifests.get(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
@@ -181,8 +239,8 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args[args.indexOf('--port') + 1] || 8080) || 8080;
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
-  const telemetryDir = arg('--telemetry');
-  if (telemetryDir) fs.mkdirSync(telemetryDir, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir });
+  const telemetryDir = arg('--telemetry'), learnDir = arg('--learn');
+  for (const d of [telemetryDir, learnDir]) if (d) fs.mkdirSync(d, { recursive: true });
+  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir, learnDir });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

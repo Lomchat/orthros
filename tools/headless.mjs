@@ -37,7 +37,10 @@ fs.mkdirSync(out, { recursive: true });
 
 // --net <ms>:<Mbit/s>: game file range requests answered after that round trip and transfer rate (a player's connection)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
-const server = createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null });
+// --learn <dir>: the server keeps the learned prefetch order there (see server.js); --memprefetch: the page prefetches
+// into memory (no persistent profile needed); --prefetch 0: no prefetch
+if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
+const server = createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn') });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server.address().port;
@@ -62,7 +65,9 @@ if (args.includes('--no-f32')) q.set('nof32', '1'); // debugging: x87 registers 
 if (opt('f32-off')) q.set('f32off', opt('f32-off')); // debugging: float parts off (arith,round,m32,const; part@lo:hi keeps it in [lo, hi))
 if (opt('watch-tex')) q.set('watchtex', opt('watch-tex')); // <fmt>:<w>x<h>: report the code writing into such surfaces (debugging)
 if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('interp-range')); // debugging: lo:hi[,lo:hi] (hex) run by the reference interpreter, the rest by the JIT
-if (opt('encoded') === '0') q.set('encoded', '0'); // plain Range requests instead of the server's compressed ranges
+if (opt('encoded') === '0') q.set('encoded', '0');
+if (args.includes('--memprefetch')) q.set('memprefetch', '1');
+if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)

@@ -120,3 +120,47 @@ test('server: compressed ranges carry the exact bytes (zstd, gzip, identity), an
     assert.deepEqual(seen, []);
   } finally { globalThis.XMLHttpRequest = Real; }
 });
+
+// Learned prefetch: the server records, per session, the blocks read synchronously (not the prefetch requests) with
+// the earliest time they were needed, and lists them in that order; the backend downloads the listed blocks it does
+// not hold into its store in the background, and later reads are served from the store.
+test('learned prefetch: the server orders the blocks sessions needed; the backend downloads them ahead', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os'), http = await import('node:http');
+  const { createServer } = await import('../src/host/server.js');
+  const { MemBlockStore } = await import('../src/vfs/opfs-store.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-learn-'));
+  fs.writeFileSync(path.join(dir, 'a.big'), FILE);
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const learnDir = path.join(dir, 'learn');
+  fs.mkdirSync(learnDir);
+  const server = createServer({ manifests: path.join(dir, 'man'), learnDir });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const get = async (u) => { const r = await new Promise((res, rej) => http.get(base + u, res).on('error', rej)); const parts = []; for await (const d of r) parts.push(d); return Buffer.concat(parts); };
+  try {
+    // session s1 reads block 3 then block 1; session s2 reads block 1 first, then 0 (a prefetch request is not counted)
+    await get(`/gamez/g/a.big?r=${3 * MiB}-${3 * MiB + 10}&s=s1`);
+    await new Promise((r) => setTimeout(r, 30));
+    await get(`/gamez/g/a.big?r=${MiB}-${MiB + 10}&s=s1`);
+    await get(`/gamez/g/a.big?r=${2 * MiB}-${2 * MiB + 10}&p=1`);
+    await get(`/gamez/g/a.big?r=${MiB + 5}-${MiB + 9}&s=s2`);
+    await get(`/gamez/g/a.big?r=0-4&s=s2`);
+    const list = JSON.parse(await get('/api/prefetch/g'));
+    assert.deepEqual(list.map(([, b]) => b).slice(0, 2).sort(), [1, 3], 'both sessions start at t=0: blocks 1 and 3 first');
+    assert.deepEqual(new Set(list.map(([p, b]) => `${p}#${b}`)), new Set(['a.big#0', 'a.big#1', 'a.big#3']), 'the prefetch request was not learned');
+  } finally { server.close(); }
+  // the backend: the listed blocks into the store, in order, then reads without requests
+  const realFetch = globalThis.fetch, fetched = [];
+  globalThis.fetch = async (url) => { const [, a, e] = /\?r=(\d+)-(\d+)/.exec(url); assert.match(url, /&p=1$/); fetched.push([+a, +e]); return { status: 200, arrayBuffer: async () => FILE.slice(+a, +e).buffer }; };
+  try {
+    const store = new MemBlockStore();
+    const b = new HttpBackend('/game/g/', { dirs: {}, files: { 'a.big': { size: FILE.length, mtime: 7 } } }, { store, encoded: true });
+    const progress = {};
+    await b.prefetch([['a.big', 3], ['a.big', 0], ['a.big', 1], ['missing.big', 0]], progress);
+    assert.equal(progress.done, true);
+    assert.deepEqual(fetched, [[3 * MiB, FILE.length], [0, 2 * MiB]], 'block 3 (partial), then blocks 0-1 in one request');
+    const n = requests.length;
+    assert.deepEqual(b.open('a.big').read(MiB - 5, 10), FILE.subarray(MiB - 5, MiB + 5));
+    assert.equal(requests.length, n, 'served from the store');
+  } finally { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }); }
+});

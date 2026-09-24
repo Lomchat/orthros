@@ -33,7 +33,8 @@ async function main() {
   if (missing) { $('menu').classList.add('hidden'); showStatus('Orthros cannot run here', missing, null, true); return; }
   const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   state.telemetry = !!config.telemetry && !headless;
-  state.encodedRanges = !!config.encodedRanges && params.get('encoded') !== '0'; // (compressed game file ranges; ?encoded=0: plain Range requests)
+  state.encodedRanges = !!config.encodedRanges && params.get('encoded') !== '0';
+  state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   const list = await (await fetch('/api/manifests')).json();
   const games = $('games');
   for (const g of list) { const b = document.createElement('button'); b.textContent = `${g.title} (${g.exe})`; b.onclick = () => start(g.name); games.appendChild(b); }
@@ -63,7 +64,7 @@ async function start(name) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges };
+  const opts = { headless, timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, memPrefetch: params.get('memprefetch') === '1', session: state.session };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
@@ -161,7 +162,7 @@ function renderHud() {
   if (paused && s.frames > 0) { fpsEl.innerHTML = '<small>paused</small>'; det.textContent = `window inactive\n${clock}`; drawHudGraph(hud.querySelector('canvas')); return; }
   if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { // starting: no frame yet, or the first images then a long wait
     fpsEl.innerHTML = '<small>loading…</small>';
-    det.textContent = `files ${s.ioMB ?? 0} MB · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
+    det.textContent = `files ${s.ioMB ?? 0} MB${s.prefetchMB ? ` (+${s.prefetchMB} MB ahead)` : ''} · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
     return;
   }
   const f = hudFps(), cls = f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad';
