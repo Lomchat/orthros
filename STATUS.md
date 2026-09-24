@@ -228,7 +228,10 @@
   - **Sol de la forteresse en Very Low** en aplats gris : le draw échantillonne une zone « bande sombre » de l'atlas 256×128
     que le moteur compose lui-même sur le CPU (à partir de copies internes, sans verrou de lecture sur des textures) ; mapping
     (UV, mips, matrices) vérifié correct côté Orthros. **En détail High le même sol est correct** (pavage clair et herbe,
-    `build/shots52`) : pas de bug d'émulation établi, point classé.
+    `build/shots52`) : pas de bug d'émulation établi, point classé. Revu le 2026-09-24 : l'atlas 256×128 (herbe, dallage,
+    zones de fondu, bande sombre) est identique au bit près avec les registres x87 f32 désactivés ; ses routines
+    d'écriture (repérées par `--watch-tex`) sont des routines partagées très chaudes, trop lentes à interpréter
+    (`--interp-range`, même activé juste avant la partie) pour atteindre la partie.
 - **Partie en détail High** (headless, SwiftShader ~5 fps) : terrain, forteresse, arbres, unités corrects ; restent les
   drapeaux magenta. Régression corrigée le 2026-09-23 : traînées de blocs parasites dans les textures de terrain
   (DXT1 256×256 composées par le jeu) — une sortie de budget sur un arc arrière réécrivait les registres x87 f32

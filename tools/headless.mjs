@@ -58,6 +58,7 @@ if (args.includes('--nocull')) q.set('nocull', '1');
 if (args.includes('--no-f32')) q.set('nof32', '1'); // debugging: x87 registers never kept as floats
 if (opt('f32-off')) q.set('f32off', opt('f32-off')); // debugging: float parts off (arith,round,m32,const; part@lo:hi keeps it in [lo, hi))
 if (opt('watch-tex')) q.set('watchtex', opt('watch-tex')); // <fmt>:<w>x<h>: report the code writing into such surfaces (debugging)
+if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('interp-range')); // debugging: lo:hi[,lo:hi] (hex) run by the reference interpreter, the rest by the JIT
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
@@ -65,6 +66,8 @@ if (args.includes('--capture-draws')) q.set('capturedraws', '1');
 if (opt('burst-from')) q.set('burstfrom', opt('burst-from')); // --log apiburst: trace the API calls following tiny (stand-in) textures from this resource id on
 // --capture-at <s|+s>: capture the next Direct3D frame at that time (textures as PNG, per-draw state; with
 // --capture-draws also the render target after every draw) into <out>/capture
+// --interp-range-at <s|+s> with --interp-range: the ranges switch to the interpreter only at that time (hot code during startup)
+const interpRangeAt = opt('interp-range-at') ? { t: Number(opt('interp-range-at').replace(/^\+/, '')), rel: opt('interp-range-at').startsWith('+'), done: false } : null;
 // --lose-context-at <s>: lose the WebGL context at that time and restore it 0.5 s later (recovery test)
 const loseContextAt = opt('lose-context-at') ? Number(opt('lose-context-at')) : null;
 let contextLost = false;
@@ -212,6 +215,7 @@ for (;;) {
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
     }, { kind: ev.kind, args: ev.args });
   }
+  if (interpRangeAt && !interpRangeAt.done && t >= (interpRangeAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + interpRangeAt.t) : interpRangeAt.t)) { interpRangeAt.done = true; console.log(`[input] interpreter ranges ${opt('interp-range')} at ${t.toFixed(0)}s`); await page.evaluate((ranges) => window.orthros.worker?.postMessage({ type: 'interpRange', ranges }), opt('interp-range')); }
   if (loseContextAt !== null && !contextLost && t >= loseContextAt) { contextLost = true; console.log(`[input] WebGL context loss at ${t.toFixed(0)}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'loseContext', ms: 500 })); }
   if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
   // captured images, a few per round trip (a whole frame of per-draw PNGs exceeds the maximum string length)

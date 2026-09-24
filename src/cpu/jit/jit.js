@@ -145,7 +145,7 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
     const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
-    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains });
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains });
     const t1 = performance.now();
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
     const t2 = performance.now();
@@ -344,6 +344,19 @@ export class Jit {
       if (r === EXIT_TRANSLATE) {
         const eip = cpu.eip;
         if (eip >= THUNK_BASE && eip < THUNK_END) { cpu.exit = EXIT.THUNK; cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0; return EXIT.THUNK; }
+        // debugging (--interp-range): code in these ranges runs in the reference interpreter, charged to the budget
+        const ranges = this.opts.interpRanges;
+        if (ranges && ranges.some(([lo, hi]) => eip >= lo && eip < hi)) {
+          this.interp.cpu = cpu;
+          let n = 0, s = EXIT.NONE;
+          const budget = m.read32(cpu.base + ST.ICOUNT) | 0;
+          do { cpu.exit = EXIT.NONE; s = this.interp.step(); n++; } while (s === EXIT.NONE && n < Math.max(1, budget) && ranges.some(([lo, hi]) => cpu.eip >= lo && cpu.eip < hi));
+          m.write32(cpu.base + ST.ICOUNT, budget - n);
+          this.stats.interpRangeSteps = (this.stats.interpRangeSteps ?? 0) + n;
+          if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
+          if ((budget - n) <= 0) { cpu.exit = EXIT.TIMESLICE; return EXIT.TIMESLICE; }
+          continue;
+        }
         this.stats.misses++;
         try {
           this.translate(eip);

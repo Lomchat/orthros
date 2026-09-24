@@ -220,3 +220,20 @@ test('a jump chain longer than MAX_BLOCKS spans several regions and chains throu
   assert.equal(EJ.cpu.edx, n);
   assert.ok(EJ.jit.stats.chained >= EJ.jit.stats.regions - 1, `chained: ${EJ.jit.stats.chained} regions: ${EJ.jit.stats.regions}`);
 });
+
+test('interpreter ranges (debugging): code in a range runs in the interpreter, never inside a region, with the same result', () => {
+  // mov ecx, 300 ; eax = 0 ; loop: add eax, ecx ; [range: sub eax, 3 ; inc edx] ; dec ecx ; jnz loop ; hlt
+  const a = new Asm(CODE);
+  a.movEcxImm(300).movEaxImm(0).label('loop').addEaxEcx().label('r0').subEaxImm8(3).incEdx().label('r1').decEcx().jcc(5, 'loop').label('end').hlt();
+  const code = a.finish(), end = a.labels.get('end'), lo = a.labels.get('r0'), hi = a.labels.get('r1');
+  const EI = makeExec(false); load(EI, code); assert.equal(EI.run(end, []), EXIT.HALT);
+  for (const slice of [1e6, 37]) {
+    const EJ = makeExec(true, { interpRanges: [[lo, hi]] }); load(EJ, code);
+    let r, n = 0;
+    do r = EJ.run(end, [], slice); while (r === EXIT.TIMESLICE && ++n < 1e5);
+    assert.equal(r, EXIT.HALT);
+    assert.deepEqual([EJ.cpu.eax, EJ.cpu.edx], [EI.cpu.eax, EI.cpu.edx], `slice ${slice}`);
+    assert.ok(EJ.jit.stats.interpRangeSteps >= 600, 'the range ran in the interpreter');
+    for (const r2 of EJ.jit.regions) for (const b of r2.blocks) assert.ok(b.end <= lo || b.eip >= hi, 'no block overlapping the range translated');
+  }
+});
