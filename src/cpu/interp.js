@@ -53,6 +53,7 @@ export class Interp {
     this.hooks = {
       cpuid: null, // (I, leaf, sub) => [eax, ebx, ecx, edx]
       rdtsc: null, // (I) => bigint
+      canExecute: null, // (eip) => boolean: committed memory (see executable)
       int: null, // (I, n) => boolean handled
     };
     // Scratch for SIMD/x87 helpers.
@@ -78,6 +79,16 @@ export class Interp {
     return insn;
   }
 
+  /**
+   * Whether code at `eip` can run: not in the first 64 KiB (never mapped on Windows: a call through a null pointer),
+   * inside the guest address space, and in committed memory when the process says so (hooks.canExecute). Anything
+   * else is an access violation at that address, as on Windows (the game's own handlers then see it).
+   */
+  executable(eip) {
+    eip >>>= 0;
+    return eip >= 0x10000 && eip < this.mem.size && (!this.hooks.canExecute || this.hooks.canExecute(eip));
+  }
+
   /** Execute one instruction. Returns the EXIT code (EXIT.NONE to continue). */
   step() {
     const cpu = this.cpu;
@@ -86,6 +97,10 @@ export class Interp {
       cpu.exit = EXIT.THUNK;
       cpu.exitArg = ((eip - THUNK_BASE) / THUNK_SIZE) | 0;
       return EXIT.THUNK;
+    }
+    if ((eip >>> 12) !== this.execPage) { // (checked once per page entered)
+      if (!this.executable(eip)) { cpu.exit = EXIT.FAULT; cpu.exitArg = 14; this.lastFault = new CpuFault(14, eip, `execution at 0x${(eip >>> 0).toString(16)}: no memory there`); return EXIT.FAULT; }
+      this.execPage = eip >>> 12;
     }
     let insn;
     try {

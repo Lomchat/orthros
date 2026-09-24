@@ -29,6 +29,16 @@ static int __cdecl handler_search(EXCEPTION_RECORD* rec, void* frame, CONTEXT* c
   return 1;
 }
 
+// Handler 3: an execution fault (a call through a bad pointer): records the exception, resumes at the caller (the
+// return address the call pushed)
+static DWORD exec_code, exec_addr, exec_info1;
+static int __cdecl handler_exec(EXCEPTION_RECORD* rec, void* frame, CONTEXT* ctx, void* disp) {
+  if (rec->ExceptionFlags & 2) return 1;
+  exec_code = rec->ExceptionCode; exec_addr = (DWORD)rec->ExceptionAddress; exec_info1 = rec->ExceptionInformation[1];
+  ctx->Eip = *(DWORD*)ctx->Esp; ctx->Esp += 4;
+  return 0;
+}
+
 static void install(REG* r, void* handler) {
   r->handler = handler; r->code = 0; r->hits = 0;
   __asm__ volatile("movl %%fs:0, %%eax; movl %%eax, (%0); movl %0, %%fs:0" : : "r"(r) : "eax", "memory");
@@ -53,5 +63,14 @@ void __stdcall start(void) {
   REG* top; __asm__ volatile("movl %%fs:0, %0" : "=r"(top));
   put(out, "top is outer "); puthex(out, top == &outer);
   uninstall(&outer);
+  // 4. calls through bad pointers (null, past the address space, the last byte): access violations at the target
+  REG ex; install(&ex, handler_exec);
+  static const DWORD targets[3] = { 0, 0xfffffff0, 0xffffffff };
+  for (int i = 0; i < 3; i++) {
+    void (*volatile fp)(void) = (void (*)(void))targets[i];
+    exec_code = 0; fp();
+    put(out, "exec code "); puthex(out, exec_code); put(out, "exec addr "); puthex(out, exec_addr); put(out, "exec info "); puthex(out, exec_info1);
+  }
+  uninstall(&ex);
   ExitProcess(q == 77 && inner.code == 0xC0000094 && inner.hits == 101 && top == &outer ? 0 : 1);
 }

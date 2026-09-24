@@ -91,6 +91,7 @@ export class Vm {
     this.GuestCrash = GuestCrash;
     this.com = new Com(this);
     this.traceCom = !!opts.logKinds?.includes('com') || !!opts.logKinds?.includes('comx');
+    this.interp.hooks.canExecute = (a) => !this.proc || this.proc.vmem.isCommitted(a, 1); // (code runs from committed memory only)
     this.traceComQuiet = !opts.logKinds?.includes('com'); // 'comx': without the per-draw calls (see com.js COM_QUIET)
     if (this.logKinds.has('cpuid')) { // which CPUID leaves software reads (each leaf and call site once)
       const seen = new Set();
@@ -490,6 +491,7 @@ export class Vm {
     if (precise && this.mem.read32(thread.teb) !== 0xffffffff) {
       const map = { 0: [EXC.INT_DIVIDE_BY_ZERO, []], 6: [EXC.ILLEGAL_INSTRUCTION, []], 13: [EXC.ACCESS_VIOLATION, [0, 0xffffffff]], 14: [EXC.ACCESS_VIOLATION, [0, fault?.faultAddr ?? 0]], 3: [EXC.BREAKPOINT, []], 4: [EXC.INT_OVERFLOW, []], 5: [EXC.ARRAY_BOUNDS, []] };
       const [code, params] = map[vec] ?? [EXC.ILLEGAL_INSTRUCTION, []];
+      if (vec === 14 && /^(cpu fault #14 )?execution at/.test(fault?.message ?? '') && (this.execFaults = (this.execFaults ?? 0) + 1) <= 8) this.warn(`${fault.message} (thread ${thread.id}, return address on the stack: ${this.proc.symbolize(this.mem.read32(cpu.esp))}): access violation raised`);
       cpu.exit = EXIT.NONE;
       this.seh.raise(thread, code, 0, cpu.eip, params);
       return;

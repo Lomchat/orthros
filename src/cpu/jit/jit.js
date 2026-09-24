@@ -358,6 +358,11 @@ export class Jit {
           if ((budget - n) <= 0) { cpu.exit = EXIT.TIMESLICE; return EXIT.TIMESLICE; }
           continue;
         }
+        if (!this.interp.executable(eip)) { // (no memory there: an access violation at the target, see Interp.executable)
+          this.lastFault = { message: `execution at 0x${(eip >>> 0).toString(16)}: no memory there`, vector: 14, faultAddr: eip >>> 0 };
+          cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
+          return EXIT.FAULT;
+        }
         this.stats.misses++;
         try {
           this.translate(eip);
@@ -404,7 +409,12 @@ export class Jit {
         continue;
       }
       if (r === EXIT.NONE) { // a region returned EIP 0 (jump/call/ret to address 0): access violation
-        this.lastFault = { message: 'jump to address 0', vector: 14, faultAddr: 0 };
+        this.lastFault = { message: 'execution at 0x0: no memory there', vector: 14, faultAddr: 0 };
+        cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
+        return EXIT.FAULT;
+      }
+      if (r === EXIT.HALT && stopAt === -1 && (cpu.eip >>> 0) === 0xffffffff) { // a transfer to 0xffffffff (the unused stop address; a HLT reports its own address): nothing there either
+        this.lastFault = { message: 'execution at 0xffffffff: no memory there', vector: 14, faultAddr: 0xffffffff };
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
       }
