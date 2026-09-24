@@ -6,6 +6,7 @@ import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/host/display.js';
+import { wmOf } from '../src/win32/user32.js';
 
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 
@@ -212,4 +213,32 @@ test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback
   assert.deepEqual([out.transform5, out.zwrite], ['5', '1'], 'deferred state setters: arguments taken at the call, applied in order before a getter');
   assert.ok(vm.deferredCalls >= 1, 'state setters went through the deferred call queue');
   assert.equal(vm.proc.unknownImports.size, 0);
+});
+
+// Host input: a mouse release waits until the game presented a frame after the press (at most 250 ms), so a game
+// sampling the button once per frame sees a click shorter than one of its frames; GetAsyncKeyState bit 0 reports
+// a press since its previous call.
+test('input: a click shorter than a frame still shows the button down for one frame; GetAsyncKeyState bit 0', { skip: skip('window.exe') }, () => {
+  const { vm, host, clock } = boot('window.exe');
+  const wm = wmOf(vm);
+  vm.d3dDevice = { frames: 5, lost: 0 };
+  host.inputQueue.push({ type: 'mousedown', button: 0, x: 10, y: 10 }, { type: 'mouseup', button: 0, x: 10, y: 10 }, { type: 'mousemove', x: 20, y: 20 });
+  wm.pump();
+  assert.equal(wm.keyState[1] & 0x80, 0x80, 'button down seen, release held');
+  assert.equal(wm.cursor.x, 10, 'the move after the held release waits too');
+  wm.pump();
+  assert.equal(wm.keyState[1] & 0x80, 0x80, 'no frame yet: still held');
+  vm.d3dDevice.frames = 6;
+  wm.pump();
+  assert.equal(wm.keyState[1] & 0x80, 0, 'released after a frame');
+  assert.equal(wm.cursor.x, 20);
+  // without a frame, the release goes after 250 ms
+  host.inputQueue.push({ type: 'mousedown', button: 0, x: 1, y: 1 }, { type: 'mouseup', button: 0, x: 1, y: 1 });
+  wm.pump(); assert.equal(wm.keyState[1] & 0x80, 0x80);
+  clock.sleep(300); wm.pump(); assert.equal(wm.keyState[1] & 0x80, 0, 'released after 250 ms without a frame');
+  vm.d3dDevice = null;
+  // GetAsyncKeyState: bit 0 once after a press (here a tap already over), then 0
+  host.inputQueue.push({ type: 'keydown', vk: 0x41, scan: 0x1e }, { type: 'keyup', vk: 0x41, scan: 0x1e });
+  wm.pump();
+  assert.equal(wm.asyncPressed[0x41], 1, 'pressed since the last call');
 });

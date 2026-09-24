@@ -54,6 +54,7 @@ export class WindowManager {
     this.focus = 0; this.active = 0; this.capture = 0; this.foreground = 0;
     this.cursor = { x: this.screen.width >> 1, y: this.screen.height >> 1 };
     this.keyState = new Uint8Array(256);
+    this.asyncPressed = new Uint8Array(256); // keys and buttons pressed since the last GetAsyncKeyState of each (its bit 0)
     /** @type {((ev: any) => void)[]} */
     this.rawListeners = [];
     this.showCursorCount = 0;
@@ -183,11 +184,29 @@ export class WindowManager {
     return true;
   }
 
-  /** Convert host input into posted messages. */
+  /**
+   * Convert host input into posted messages. A mouse button release waits (at most 250 ms) until the game has presented
+   * a frame since the press: a game sampling the button state once per frame would otherwise miss a click shorter than
+   * one of its frames — a person's ~100 ms click during an emulation hitch. Only with a rendering Direct3D device (a
+   * frame count to watch); the events after a held release wait with it (order kept).
+   */
   pump() {
     const evs = this.host?.pollInput?.();
-    if (!evs) return;
-    for (const ev of evs) this.inputEvent(ev);
+    if (evs) (this.pendingInput ??= []).push(...evs);
+    const q = this.pendingInput;
+    if (!q?.length) return;
+    const dev = this.vm.d3dDevice, frames = dev && !dev.lost ? dev.frames : null, now = this.vm.clock.now();
+    let i = 0;
+    for (; i < q.length; i++) {
+      const ev = q[i];
+      if (ev.type === 'mouseup' && frames !== null) {
+        const d = this.pressedAt?.[ev.button];
+        if (d && d.frames === frames && now - d.t < 250) break;
+      }
+      if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
+      this.inputEvent(ev);
+    }
+    q.splice(0, i);
   }
 
   windowAt(x, y) {
@@ -243,6 +262,7 @@ export class WindowManager {
         this.cursor = { x: ev.x, y: ev.y };
         const vk = [VK.LBUTTON, VK.RBUTTON, VK.MBUTTON][ev.button] ?? VK.LBUTTON;
         this.keyState[vk] = ev.type === 'mousedown' ? 0x80 : 0;
+        if (ev.type === 'mousedown') this.asyncPressed[vk] = 1;
         const w = this.capture ? this.windows.get(this.capture) : this.windowAt(ev.x, ev.y);
         if (!w || w.desktop) break;
         if (ev.type === 'mousedown') this.activate(this.topLevel(w), true);
@@ -262,7 +282,7 @@ export class WindowManager {
         const vk = ev.vk & 0xff;
         if (down) this.lastKeyVk = vk;
         const wasDown = (this.keyState[vk] & 0x80) !== 0;
-        if (down) { if (!wasDown) this.keyState[vk] ^= 1; this.keyState[vk] |= 0x80; } else this.keyState[vk] &= 1;
+        if (down) { if (!wasDown) { this.keyState[vk] ^= 1; this.asyncPressed[vk] = 1; } this.keyState[vk] |= 0x80; } else this.keyState[vk] &= 1;
         // generic modifier state
         if (vk === VK.LSHIFT || vk === VK.RSHIFT) this.keyState[VK.SHIFT] = (this.keyState[VK.LSHIFT] | this.keyState[VK.RSHIFT]) & 0x80;
         if (vk === VK.LCONTROL || vk === VK.RCONTROL) this.keyState[VK.CONTROL] = (this.keyState[VK.LCONTROL] | this.keyState[VK.RCONTROL]) & 0x80;
@@ -943,7 +963,8 @@ export function registerUser32(api, vm) {
 
   // ---------------------------------------------------------------- input state
   U.GetKeyState = [1, (c) => { const s = wm().keyState[c.arg(0) & 0xff]; return ((s & 0x80 ? 0x8000 : 0) | (s & 1)) >>> 0; }];
-  U.GetAsyncKeyState = [1, (c) => { wm().pump(); const s = wm().keyState[c.arg(0) & 0xff]; return (s & 0x80 ? 0x8000 : 0) >>> 0; }];
+  // bit 15: down now; bit 0: pressed since the previous GetAsyncKeyState call (a tap between two polls is not lost)
+  U.GetAsyncKeyState = [1, (c) => { const w = wm(); w.pump(); const vk = c.arg(0) & 0xff, s = w.keyState[vk], p = w.asyncPressed[vk]; w.asyncPressed[vk] = 0; return ((s & 0x80 ? 0x8000 : 0) | p) >>> 0; }];
   U.GetKeyboardState = [1, (c) => { mem.writeBytes(c.arg(0), wm().keyState); return 1; }];
   U.SetKeyboardState = [1, (c) => { wm().keyState.set(mem.bytes(c.arg(0), 256)); return 1; }];
   U.GetCursorPos = [1, (c) => { const p = c.arg(0); mem.write32(p, wm().cursor.x); mem.write32(p + 4, wm().cursor.y); return 1; }];
