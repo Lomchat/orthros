@@ -201,3 +201,37 @@ les cas lents (section critique d'un autre thread, index TLS ≥ 64) vont au ges
 `call` exécuté ainsi ne termine plus son bloc ; un `jmp` de talon revient comme un RET. Mesure : chargement d'une
 partie 60 → 55 s (A/B simultanés), menu neutre. Les appels COM différés (vtables, ~30 k/s) et les appels par registre
 (`call ebp`) passent encore par le répartiteur.
+
+## D052 — 2026-09-24 — Perte du device plein écran tant que l'application est inactive
+Le premier essai d'un joueur s'est terminé par une sortie du jeu (code 3) : la fenêtre du navigateur avait perdu puis
+retrouvé le focus pendant le chargement. Reproduit ici (3 fois sur 4 avec `blur` puis `focus`) : le jeu, réactivé,
+appelle Reset ; notre Reset remettait l'état par défaut *après* avoir recréé les tampons arrière, et l'état Direct3D 9
+désassignait toutes les cibles de rendu, d'où un GetRenderTarget(0) en échec et un appel par pointeur invalide. En
+partie, le jeu libère ses ressources à la désactivation et comptait sur un device perdu : tous nos appels réussissaient,
+il continuait à dessiner avec elles (appel par pointeur nul, son gestionnaire de plantage, sortie 666). **Décision** :
+fidélité au runtime — un device plein écran est perdu pendant que l'application est inactive (user32 prévient les
+devices avant d'envoyer WM_ACTIVATEAPP, comme le runtime qui surveille la fenêtre de focus) : TestCooperativeLevel,
+Present et Reset rendent D3DERR_DEVICELOST, puis D3DERR_DEVICENOTRESET une fois réactivée jusqu'au Reset ; un device
+fenêtré n'est pas touché. Reset rétablit l'état par défaut avant de créer les tampons (cible 0 = tampon arrière 0).
+Côté page, la perte de focus du navigateur est la désactivation de l'application (le jeu se met en pause, comme sur
+Windows en plein écran) ; la page l'affiche. Tests : `d3dlost.exe` (état après Reset, cycle de perte scripté).
+
+## D053 — 2026-09-24 — Exécuter à une adresse sans mémoire est une violation d'accès
+Un saut ou un appel vers l'adresse 0 (pointeur nul), au-delà de l'espace invité, vers 0xffffffff (l'adresse d'arrêt
+inutilisée) ou dans de la mémoire non engagée donnait selon le cas un plantage de l'émulateur (trap WASM), un « HLT »,
+ou pire : l'adresse 0 est la clé des entrées vides de la table de hachage des régions, et un saut vers 0 exécutait la
+première région traduite depuis son bloc 0 (le point d'entrée du programme relancé). **Décision** : comme Windows, une
+violation d'accès précise à l'adresse cible (EXCEPTION_ACCESS_VIOLATION, informations [0, adresse]) que les
+gestionnaires du jeu voient : l'interpréteur vérifie la page une fois par page entrée, le JIT avant de traduire (les
+64 premiers Kio, au-delà de l'espace, et la mémoire non engagée selon `vmem` via un crochet du processus) ; l'adresse 0
+n'est plus jamais cherchée dans la table (répartiteur et chaînage). Test : `seh.exe` (appels par pointeurs nul,
+au-delà de l'espace et 0xffffffff sous un gestionnaire, dans les deux exécuteurs).
+
+## D054 — 2026-09-24 — Plages de fichiers compressées pour les joueurs distants
+Sur un réseau réel, chaque bloc manquant est une requête synchrone : le jeu attend. Mesure avec un réseau simulé
+(40 ms, 50 Mbit/s, `--net`) : +31 s au démarrage, +36 s au chargement d'une partie (600 Mo lus), presque rien en
+partie. **Décision** : le serveur sert `/gamez/<manifeste>/<chemin>?r=<début>-<fin>` encodé en zstd (niveau 3, sinon
+gzip selon Accept-Encoding) quand le gain dépasse 8 % (sinon tel quel), avec un cache des plages encodées pour les
+joueurs suivants ; le navigateur décode (Content-Encoding), la page l'utilise dès que `/api/config` le propose
+(`?encoded=0` : requêtes Range). Mesure : 342 Mo envoyés pour 600 Mo lus (57 %), attente réseau −24 %, première image
+72 → 59 s. Caddy ne réencode pas `/gamez/*`. Le magasin OPFS garde les blocs décodés (visites suivantes locales).

@@ -431,6 +431,24 @@
 - Vérifié de bout en bout par l'URL publique (Chromium headless, profil vierge) : isolation cross-origin, lecture des
   fichiers par plages, menu à ~38 fps après ~110 s (premier lancement : banc d'essai du jeu), aucune erreur.
 
+## Retour du premier joueur (2026-09-24, soir)
+- **Session du joueur** (Windows, Chrome 154, Intel Iris Xe, 20 cœurs) : arrêt du jeu (code 3) à 74 s, pendant le
+  premier lancement. Reproduit ici en faisant perdre puis retrouver le focus à la page : **Reset du device** (état par
+  défaut remis après les tampons arrière : cible de rendu 0 perdue) et **perte de device non émulée** (le jeu libère ses
+  ressources à la désactivation et continuait à dessiner) — corrigés (D052) ; les sauts vers une adresse sans mémoire
+  sont des violations d'accès précises (D053). Vérifié : 7/7 chargements avec perte/retour du focus arrivent au menu,
+  deux Alt+Tab en pleine partie (pause puis reprise, image correcte).
+- **Diagnostic à distance** : une sortie avec un code non nul envoie un rapport (état du thread, pile, derniers appels
+  API, dernières exceptions avec le type C++ lancé) et la fin du journal dans l'événement de télémétrie ; les samples
+  portent l'attente réseau (`net` ms, `netReq`).
+- **Page joueur** : bandeau « loading… » tant qu'aucune nouvelle image n'est venue depuis 3 s (au lieu de « 0 fps »),
+  « paused » quand la page n'a pas le focus, bouton Restart après un arrêt ; requêtes de fichiers réessayées (réseau).
+- **Réseau** : plages compressées (D054). Temps mesurés ici : premier lancement ~109 s jusqu'au menu (dont ~60 s de
+  calcul propre au premier lancement du jeu, proportionnel au travail : `?timescale` le montre), lancements suivants
+  ~46 s (profil et blocs en OPFS).
+- JIT : vivacité des drapeaux sur toute la région (INC/DEC ne préservent CF que si un successeur le lit) — gain dans
+  le bruit (les appels à l'assistant de drapeaux étaient déjà rares dans les boucles chaudes du démarrage).
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques
@@ -452,7 +470,11 @@
 - Audio : le mixage suit le temps réel (~44 k images/s) mais se fait dans le worker du jeu, qui le suspend pendant ses
   longues images (sous-alimentations sous SwiftShader chargé) ; piste : mixer dans l'AudioWorklet directement depuis les
   tampons DirectSound en mémoire partagée (comme le DMA d'une carte son), curseur de lecture tenu par le fil audio.
-- Premier lancement sur réseau réel : téléchargement de fond de tout le dossier vers le magasin OPFS (à évaluer).
+- Premier lancement sur réseau réel : plages compressées faites (D054) ; restent les requêtes en série (une à la fois,
+  1-4 Mio) — piste : lectures anticipées asynchrones dans un worker d'E/S (mémoire partagée, attente seulement si le
+  bloc n'est pas encore arrivé).
+- Attendre les mesures du joueur (télémétrie : fps, pires images, attente réseau, GPU réel) avant d'optimiser à
+  l'aveugle.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)
