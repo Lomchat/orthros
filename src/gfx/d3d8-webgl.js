@@ -427,7 +427,7 @@ export class WebGLDevice {
     const gl = this.gl, G = this.gamma ?? (this.gamma = {});
     if (!G.prog) {
       const vs = '#version 300 es\nout vec2 uv; void main() { vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }';
-      const fs = '#version 300 es\nprecision mediump float; in vec2 uv; uniform sampler2D u_img; uniform sampler2D u_lut; out vec4 o; void main() { vec3 c = texture(u_img, uv).rgb; o = vec4(texture(u_lut, vec2(c.r * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).r, texture(u_lut, vec2(c.g * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).g, texture(u_lut, vec2(c.b * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).b, 1.0); }';
+      const fs = '#version 300 es\nprecision highp float; in vec2 uv; uniform sampler2D u_img; uniform sampler2D u_lut; out vec4 o; void main() { vec3 c = texture(u_img, uv).rgb; o = vec4(texture(u_lut, vec2(c.r * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).r, texture(u_lut, vec2(c.g * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).g, texture(u_lut, vec2(c.b * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).b, 1.0); }';
       G.prog = this.compile(vs, fs, 'gamma', []).prog;
       G.lut = gl.createTexture(); G.fbo = gl.createFramebuffer(); G.tex = gl.createTexture(); G.w = 0; G.h = 0;
     }
