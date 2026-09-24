@@ -423,8 +423,11 @@
   utilisation (ANGLE traduit en HLSL/MSL) ; perte de contexte (gérée) ; mémoire du processus (~1,6-2 Go ici).
 - Performance CPU : menu 3D High ~18 fps en CPU seul (71 % du temps dans le code invité, réparti sur ~2 600 régions :
   qualité générale du code des régions — pression de registres, ~7,5 M chaînages/s dont la moitié entre régions x87) ;
-  chargement d'une partie ~70 s en CPU seul, dont la moitié dans une boucle x87 en arrondi vers zéro (limitée par la
-  latence des passages f64 ↔ entier du masquage 24 bits). Les mesures en jeu exigent des A/B simultanés (bruit A/A
+  chargement d'une partie ~55 s en CPU seul, dont la moitié dans une boucle x87 en arrondi vers zéro (limitée par la
+  latence des passages f64 ↔ entier du masquage 24 bits). Chaînage : jusqu'à 22 M transitions chaînées/s au démarrage
+  (~7 ns chacune, attribuées au répartiteur `run` dans les profils à cause des appels terminaux : ~15-17 % du temps) —
+  pistes : cache de cible par site de sortie au lieu du hachage, moins de paramètres (16 i32 dont ~10 sur la pile),
+  vidage/rechargement x87 limité aux cases utilisées. Les mesures en jeu exigent des A/B simultanés (bruit A/A
   jusqu'à 3,7 % sur la machine partagée).
 - Unités magenta : textures absentes du dossier de jeu (enquête close, voir plus haut) — à revérifier sur une copie
   complète du jeu si l'occasion se présente.
