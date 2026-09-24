@@ -14,8 +14,8 @@
 import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP } from './runtime.js';
-import { THUNK_BASE, THUNK_END, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_FS = 15;
@@ -76,7 +76,7 @@ export const MAX_INSNS = 400;
 /** Terminator classes */
 const TERM_NONE = 0, TERM_JMP = 1, TERM_JCC = 2, TERM_CALL = 3, TERM_RET = 4, TERM_INDIRECT = 5, TERM_EXIT = 6, TERM_LOOP = 7;
 
-function termOf(insn) {
+function termOfInsn(insn) {
   switch (insn.op) {
     case OP.JMP: return insn.ops[0].t === OT.REL ? TERM_JMP : TERM_INDIRECT;
     case OP.JCC: return TERM_JCC;
@@ -86,6 +86,25 @@ function termOf(insn) {
     case OP.HLT: case OP.INT3: case OP.INT: case OP.INTO: case OP.UD2: case OP.INVALID: case OP.IRET: case OP.RETF: case OP.JMPF: case OP.CALLF: return TERM_EXIT;
     default: return TERM_NONE;
   }
+}
+
+/**
+ * Fast APIs a region runs inline at a `call dword ptr [slot]` (an import slot or a function-pointer variable at an
+ * absolute address) holding their thunk when the region is translated — the dispatcher's fastApi semantics
+ * (runtime.js), without leaving the region: the C runtime's per-thread data accessor alone calls GetLastError,
+ * TlsGetValue and SetLastError millions of times per second while the game loads. The call checks the slot and the
+ * thread's RESUMING flag at run time and takes the ordinary call otherwise (see HANDLERS[OP.CALL]).
+ */
+const INLINE_FIDS = new Set([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]);
+/** { slot, thunk, fid } for such a call (the slot's current value is an inlinable fast API's thunk), else null */
+function inlineApiOf(mem, insn) {
+  if ((insn.op !== OP.CALL && insn.op !== OP.JMP) || insn.opsize !== 4) return null; // (JMP: an import stub, `jmp [slot]`)
+  const o = insn.ops[0];
+  if (o.t !== OT.MEM || o.base >= 0 || o.index >= 0 || o.seg === SEG.FS || o.seg === SEG.GS || insn.adsize === 2) return null;
+  const slot = o.disp >>> 0, thunk = mem.read32(slot) >>> 0;
+  if (thunk < THUNK_BASE || thunk >= THUNK_END || (thunk - THUNK_BASE) % THUNK_SIZE) return null;
+  const fid = mem.u8[FAST_TABLE + (thunk - THUNK_BASE) / THUNK_SIZE];
+  return INLINE_FIDS.has(fid) ? { slot, thunk, fid } : null;
 }
 
 // Lazy kinds whose CF / OF Emitter.pushCond computes inline (the same formulas as the flags helper); ZF, SF and PF
@@ -203,7 +222,8 @@ export function discoverRegion(mem, entry, opts) {
   const queue = [entry];
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
   let total = 0;
-  const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); decoded.set(a, i); } return i; };
+  const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
+  const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
@@ -1613,6 +1633,21 @@ HANDLERS[OP.LEAVE] = (E, insn) => {
 HANDLERS[OP.JMP] = (E, insn, b) => {
   const t = insn.ops[0];
   if (t.t === OT.REL) { E.jumpTo(t.v, b.insns.length); return; }
+  const api = insn.inlineApi;
+  if (api) { // an import stub `jmp [slot]` to a fast API: run inline, then return (as RET does: to a return site of the region locally)
+    const c = E.c, slow = c.block();
+    c.i32(0).i32load(api.slot).i32(api.thunk).ne().get(L_STATE).i32load(ST.RESUMING).or().hint(false).br_if(slow);
+    emitInlineApi(E, api.fid, slow, true);
+    E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
+    for (const site of E.retSites) {
+      c.get(L_TV).i32(site).eq();
+      const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+    }
+    E.count(PF.ret);
+    c.get(L_TV);
+    E.exitToStack();
+    c.end(); // slow
+  }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
   E.count(PF.indirect);
   E.exitToStack();
@@ -1631,12 +1666,81 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
     E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length);
     return;
   }
+  // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
+  // goes on (see inlineApiOf); otherwise the ordinary call below
+  const api = insn.inlineApi, done = api ? c.block() : null;
+  if (api) {
+    const slow = c.block();
+    c.i32(0).i32load(api.slot).i32(api.thunk).ne().get(L_STATE).i32load(ST.RESUMING).or().hint(false).br_if(slow);
+    emitInlineApi(E, api.fid, slow);
+    E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
+    c.br(done);
+    c.end(); // slow
+  }
   E.loadOp(t); c.set(L_T4);
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
   E.exitToStack();
+  if (api) c.end(); // done: the block continues after the call
 };
+/**
+ * The dispatcher's fast path (runtime.js fastApi) of API `fid` on the register locals: stdcall arguments at [esp]
+ * (no return address pushed), popped; result in eax; `slow` taken for the cases left to the JavaScript handler
+ * (a critical section owned by another thread, a TLS index beyond the TEB's slots).
+ */
+function emitInlineApi(E, fid, slow, viaJmp = false) {
+  const c = E.c, SP = L_REG + 4, AX = L_REG, TEB = L_FS, A = L_T4, T = L_T3;
+  // reached by a jump from an import stub: the caller's return address on top of the stack (into L_TV, popped with the
+  // arguments); called: the arguments at [esp]
+  const base = viaJmp ? 4 : 0;
+  if (viaJmp) c.get(SP).i32load(0).set(L_TV);
+  const arg = (k) => { c.get(SP).i32load(base + 4 * k); };
+  const pop = (n) => { if (base + 4 * n) c.get(SP).i32(base + 4 * n).add().set(SP); };
+  switch (fid) {
+    case 1: c.get(TEB).i32load(0x34).set(AX); pop(0); break; // GetLastError
+    case 2: c.get(TEB); arg(0); c.i32store(0x34); c.i32(0).set(AX); pop(1); break; // SetLastError
+    case 3: // TlsGetValue(i < 64): the last error cleared
+      arg(0); c.tee(A).i32(64).ge_u().br_if(slow);
+      c.get(TEB).i32(0).i32store(0x34);
+      c.get(TEB).get(A).i32(2).shl().add().i32load(0xe10).set(AX); pop(1); break;
+    case 4: // TlsSetValue(i < 64, v)
+      arg(0); c.tee(A).i32(64).ge_u().br_if(slow);
+      c.get(TEB).get(A).i32(2).shl().add(); arg(1); c.i32store(0xe10); c.i32(1).set(AX); pop(2); break;
+    case 5: { // EnterCriticalSection: owned by this thread -> recursion; free -> taken; else the JavaScript handler
+      arg(0); c.set(A);
+      const done = c.block(), own = c.block();
+      c.get(A).i32load(12).get(TEB).i32load(0x24).eq().br_if(own);
+      c.get(A).i32load(4).i32(-1).ne().br_if(slow);
+      c.get(A).i32(0).i32store(4); c.get(A).i32(1).i32store(8); c.get(A).get(TEB).i32load(0x24).i32store(12);
+      c.br(done);
+      c.end(); // own
+      c.get(A).get(A).i32load(8).i32(1).add().i32store(8); c.get(A).get(A).i32load(4).i32(1).add().i32store(4);
+      c.end(); // done
+      c.i32(0).set(AX); pop(1); break;
+    }
+    case 6: { // LeaveCriticalSection
+      arg(0); c.set(A);
+      c.get(A).get(A).i32load(8).i32(1).sub().tee(T).i32store(8);
+      c.get(A).get(A).i32load(4).i32(1).sub().i32store(4);
+      c.get(T).i32(0).le_s(); const i = c.if_(); c.get(A).i32(0).i32store(12); c.get(A).i32(-1).i32store(4); c.get(A).i32(0).i32store(8); c.end(); void i;
+      c.i32(0).set(AX); pop(1); break;
+    }
+    case 8: arg(0); c.set(A); c.get(A).get(A).i32load(0).i32(1).add().tee(AX).i32store(0); pop(1); break; // InterlockedIncrement
+    case 9: arg(0); c.set(A); c.get(A).get(A).i32load(0).i32(1).sub().tee(AX).i32store(0); pop(1); break; // InterlockedDecrement
+    case 10: arg(0); c.set(A); c.get(A).i32load(0).set(T); c.get(A); arg(1); c.i32store(0); c.get(T).set(AX); pop(2); break; // InterlockedExchange
+    case 11: arg(0); c.set(A); c.get(A).i32load(0).set(T); c.get(A).get(T); arg(1); c.add().i32store(0); c.get(T).set(AX); pop(2); break; // ExchangeAdd
+    case 12: { // InterlockedCompareExchange(dest, exchange, comparand)
+      arg(0); c.set(A); c.get(A).i32load(0).set(T);
+      c.get(T); arg(2); c.eq(); const i = c.if_(); c.get(A); arg(1); c.i32store(0); c.end(); void i;
+      c.get(T).set(AX); pop(3); break;
+    }
+    case 13: c.get(TEB).i32load(0x24).set(AX); pop(0); break; // GetCurrentThreadId
+    case 14: c.get(TEB).i32load(0x20).set(AX); pop(0); break; // GetCurrentProcessId
+    case 15: c.i32(0).i32load(PROC_CONSTS).set(AX); pop(0); break; // GetProcessHeap
+    default: throw new Error(`emitInlineApi: fid ${fid}`);
+  }
+}
 HANDLERS[OP.RET] = (E, insn) => {
   const c = E.c; const size = insn.opsize;
   c.get(L_REG + 4); if (size === 2) c.i32load16u(0); else c.i32load(0, 0); c.set(L_TV);

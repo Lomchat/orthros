@@ -72,6 +72,9 @@ export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
 export const FID_DEFER = 16;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 export const DEFER_QUEUE = JIT_SCRATCH_BASE + 0x60000; // +0 bytes used, records from +16
+/** profiling runtime: calls handled by the fast path, u32 per fast API id; at +0x80 a count, at +0x100 a ring of the
+ * last 1024 return addresses (the call sites) */
+export const FAST_PROF = JIT_SCRATCH_BASE + 0xa8100;
 export const DEFER_CAP = 0x3fff0;
 const deferSpecs = (iface, list) => Object.fromEntries(list.map(([m, argc, ptr = 15, words = 0]) => [`${iface}::${m}`, argc | (ptr << 4) | (words << 8)]));
 export const DEFER_SPECS = {
@@ -125,7 +128,7 @@ export function materializeFlags(op, res, a, b, ef) {
  * Exports: run(eip, state) -> exit code (halts at ST.STOP_AT); flags(op,res,a,b,ef) -> ef;
  * round24(x, rc) -> x'; the transcendental kernels of MATH_KERNELS (pure WASM, fpmath-*.js).
  */
-export function buildRuntime() {
+export function buildRuntime(opts = {}) {
   const m = new ModuleBuilder();
   m.importMemory('env', 'memory', 32768, 32768);
   m.importTable('env', 'table', 1024, undefined);
@@ -352,7 +355,13 @@ export function buildRuntime() {
     c.get(IDX).i32load8u(FAST_TABLE).tee(E);
     const fast = c.if_();
     c.get(E).get(STATE).get(IDX).call(fastApiIdx);
-    const handled = c.if_(); c.get(STATE).i32load(ST.EIP).set(EIP); c.br(L); c.end(); void handled;
+    const handled = c.if_();
+    if (opts.profile) {
+      c.get(E).i32(2).shl().get(E).i32(2).shl().i32load(FAST_PROF).i32(1).add().i32store(FAST_PROF);
+      c.i32(0).i32load(FAST_PROF + 0x80).tee(PROBE).i32(1023).and().i32(2).shl().get(STATE).i32load(ST.EIP).i32store(FAST_PROF + 0x100);
+      c.i32(0).get(PROBE).i32(1).add().i32store(FAST_PROF + 0x80);
+    }
+    c.get(STATE).i32load(ST.EIP).set(EIP); c.br(L); c.end(); void handled;
     c.end(); void fast;
     c.get(STATE).get(EIP).i32store(ST.EIP); c.get(STATE).i32(EXIT.THUNK).i32store(ST.EXIT);
     c.get(STATE).get(IDX).i32store(ST.EXIT_ARG); c.i32(EXIT.THUNK).return_(); c.end(); void i1;
