@@ -89,7 +89,8 @@ export class Vm {
     this.seh = new Seh(this);
     this.GuestCrash = GuestCrash;
     this.com = new Com(this);
-    this.traceCom = !!opts.logKinds?.includes('com');
+    this.traceCom = !!opts.logKinds?.includes('com') || !!opts.logKinds?.includes('comx');
+    this.traceComQuiet = !opts.logKinds?.includes('com'); // 'comx': without the per-draw calls (see com.js COM_QUIET)
     if (this.logKinds.has('cpuid')) { // which CPUID leaves software reads (each leaf and call site once)
       const seen = new Set();
       this.interp.hooks.cpuid = (I, leaf, sub) => {

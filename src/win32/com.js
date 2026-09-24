@@ -2,6 +2,9 @@
 // guest blocks [vtable, marker, id] whose methods dispatch to JS implementations. Unimplemented
 // methods are traced (once per method) and return E_NOTIMPL so the caller keeps going.
 import { E } from './errors.js';
+/** 'comx' log kind: the COM trace without the per-draw state setters, draws, buffer locks and reference counting */
+const COM_SITE_MAX = 20; // 'comx': calls logged per (method, call site)
+const COM_QUIET = /^(Set(RenderState|TextureStageState|SamplerState|Texture|Transform|StreamSource|Indices|FVF|VertexShader|PixelShader|VertexDeclaration|Material|Light|VertexShaderConstantF|PixelShaderConstantF|Viewport|SoftwareVertexProcessing|ClipPlane|ScissorRect)|LightEnable|Draw\w*|Get(Transform|RenderState|TextureStageState|Desc|LevelDesc|LevelCount|DeviceCaps|DisplayMode|Direct3D|Type|CurrentPosition|Status|DeviceData|DeviceState)|AddRef|Release|QueryInterface|Lock|Unlock|TestCooperativeLevel|BeginScene|EndScene|Present|Clear)$/;
 
 export const S_OK = 0, S_FALSE = 1, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, E_POINTER = 0x80004003, E_FAIL = 0x80004005, E_INVALIDARG = 0x80070057, E_OUTOFMEMORY = 0x8007000e, CLASS_E_NOAGGREGATION = 0x80040110, REGDB_E_CLASSNOTREG = 0x80040154;
 export const IID_IUnknown = '00000000-0000-0000-c000-000000000046';
@@ -24,6 +27,7 @@ export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
     this.failedOnce = new Set(); // interface::method=hresult already reported
+    this.comSites = new Map(); // 'comx' trace: calls logged per method@site
     this.vm = vm;
     this.mem = vm.mem;
     this.api = vm.api;
@@ -55,6 +59,8 @@ export class Com {
 
   /** Register a CoCreateInstance class. factory(ctx, iid) -> guest object pointer (or null to fail). */
   registerClass(clsid, factory) { this.classes.set(clsid.toLowerCase(), factory); }
+  /** 'comx' trace: true once method@site has been logged COM_SITE_MAX times */
+  comSiteSeen(name, site) { const k = `${name}@${site}`, n = this.comSites.get(k) ?? 0; this.comSites.set(k, n + 1); return n >= COM_SITE_MAX; }
 
   /** Allocate the vtable of an interface once: one API thunk per method. */
   vtableOf(proc, iface) {
@@ -140,7 +146,7 @@ export class Com {
       this.vm.log('com', `${key}(${args.join(', ')}) -> E_NOTIMPL`);
       return obj.impl.notImpl ?? E_NOTIMPL;
     }
-    if (this.vm.traceCom) { const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16)); this.vm.log('com', `${iface.name}::${m.name}(${args.join(', ')}) from ${ctx.proc.symbolize(ctx.retAddr)}`); }
+    if (this.vm.traceCom && !(this.vm.traceComQuiet && (COM_QUIET.test(m.name) || this.comSiteSeen(m.name, ctx.retAddr)))) { const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16)); this.vm.logFn('com', `${iface.name}::${m.name}(${args.join(', ')}) from ${ctx.proc.symbolize(ctx.retAddr)}`); }
     const r = fn.call(obj.impl, ctx, obj);
     if (typeof r === 'number' && (r >>> 0) >= 0x80000000) { // failed HRESULT: traced once per method/value (fidelity diagnostics)
       const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;
