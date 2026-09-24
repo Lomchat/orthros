@@ -216,7 +216,7 @@ test('x87 float values across loops and conditional branches: random programs ma
   }
 });
 
-test('a region reached under several x87 modes gets a version per mode (up to three), then one testing the mode', () => {
+test('a region reached under several x87 modes gets a version per mode (up to four), then one testing the mode', () => {
   const code = program(77);
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
@@ -240,10 +240,13 @@ test('a region reached under several x87 modes gets a version per mode (up to th
     assert.deepEqual(runWith(cw), { out: want.out, top: want.top }, `cw ${cw.toString(16)}`);
   }
   assert.ok(jit.stats.fpuVersions >= 2, 'versions added for the other modes');
-  for (const r of jit.regions) if (r.versions) { assert.ok(r.versions.length <= 3); assert.equal(new Set(r.versions.map((v) => v.fpc)).size, r.versions.length, 'one version per mode'); }
+  for (const r of jit.regions) if (r.versions) { assert.ok(r.versions.length <= 4); assert.equal(new Set(r.versions.map((v) => v.fpc)).size, r.versions.length, 'one version per mode'); }
   assert.equal(jit.genericFpu.size, 0);
+  const w4 = exec(false, code, 0x0e7f);
+  assert.deepEqual(runWith(0x0e7f), { out: w4.out, top: w4.top }, 'a fourth mode');
+  assert.equal(jit.genericFpu.size, 0, 'a fourth mode: a fourth version');
   const want = exec(false, code, 0x037f);
-  assert.deepEqual(runWith(0x037f), { out: want.out, top: want.top }, 'a fourth mode');
-  assert.ok(jit.genericFpu.size > 0, 'a fourth mode: translated with the mode tested at run time');
+  assert.deepEqual(runWith(0x037f), { out: want.out, top: want.top }, 'a fifth mode');
+  assert.ok(jit.genericFpu.size > 0, 'a fifth mode: translated with the mode tested at run time');
   for (const cw of [0x007f, 0x027f]) { const w = exec(false, code, cw); assert.deepEqual(runWith(cw), { out: w.out, top: w.top }, `generic, cw ${cw.toString(16)}`); }
 });

@@ -387,7 +387,9 @@
   qui était atteignable depuis ce FLDCW devenait générique), une autre tourne entièrement en arrondi vers zéro (seul
   l'arrondi au plus près avait un chemin spécialisé). Transferts gardés au lieu de la propagation, arrondis dirigés en
   ligne (D050). Test : boucle qui alterne 24/53 bits à chaque tour avec un appel local qui sauve/tronque/restaure ;
-  `FSTP m32` sous chaque arrondi dirigé à 53/64 bits sur des valeurs limites.
+  `FSTP m32` sous chaque arrondi dirigé à 53/64 bits sur des valeurs limites. Démarrage (même A/B) : première image
+  39 → 33 s, menu 3D complet 92 → 75 s ; menu High neutre (18,8 / 18,4 fps). Jusqu'à 4 versions par mode FPU (24/53 bits
+  × au plus près/troncature, les quatre modes vus pour du code partagé) : plus aucune région générique en jeu.
 - **Diagnostics** : `--profile-list N` (instructions des régions les plus chaudes), `--log comx` (appels COM sans les
   appels par draw, 20 par méthode et site), `--log filectx` (appels API précédant l'ouverture d'un fichier en
   écriture), `--log cpuid`, `tools/vfs-check.mjs <manifeste|dossier>` (exactitude des octets servis),
