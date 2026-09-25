@@ -13,13 +13,19 @@ window.orthros = state;
 function showStatus(title, detail = '', report = null, error = false, restart = false) {
   const el = $('status');
   el.classList.remove('hidden'); el.classList.toggle('error', error);
-  const [b, fresh] = el.querySelectorAll('button'); b.classList.toggle('hidden', !restart); b.onclick = () => location.reload();
+  const [b, fresh, back] = el.querySelectorAll('button'); b.classList.toggle('hidden', !restart); b.onclick = () => location.reload();
+  back.classList.toggle('hidden', !restart || headless); back.onclick = backToGames;
   fresh.classList.toggle('hidden', !restart || !state.manifest || headless);
   fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = 'moving the saved profile aside…'; await setProfileAside(state.manifest).catch(() => {}); location.reload(); };
   el.querySelector('.title').textContent = title; el.querySelector('.detail').textContent = detail;
   const pre = el.querySelector('pre'); pre.classList.toggle('hidden', !report); pre.textContent = report ?? '';
 }
 function hideStatus() { $('status').classList.add('hidden'); }
+/** The game list again (a fresh page: the worker and its memory go with the old one). */
+function backToGames() {
+  const u = new URL(location.href); u.searchParams.delete('manifest'); u.searchParams.set('menu', '');
+  location.href = u.toString();
+}
 /**
  * The game's saved user profile (settings, saves: OPFS directory orthros-<manifest>) moved to orthros-<manifest>-aside-<time>,
  * so the next start begins with a fresh profile (a profile left in a bad state by an interrupted run can make every
@@ -58,23 +64,57 @@ async function main() {
   state.programCache = !!config.programCache && params.get('programs') !== '0';
   state.regionCache = !!config.regionCache && params.get('regions') !== '0'; // (code regions of earlier sessions translated while the game waits; ?regions=0: off) // (GL programs of earlier sessions compiled ahead; ?programs=0: off)
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
-  const list = await (await fetch('/api/manifests')).json();
-  const games = $('games');
-  for (const g of list) { const b = document.createElement('button'); b.textContent = `${g.title} (${g.exe})`; b.onclick = () => start(g.name); games.appendChild(b); }
   $('hudToggle').onchange = () => { $('hud').style.display = $('hudToggle').checked && state.status !== 'menu' ? 'block' : 'none'; };
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
   // the server's default game starts directly (a deployment for players); ?menu shows the picker
   const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
-  if (auto) start(auto);
+  if (auto) start(auto); else await showMenu();
   $('hud').onclick = () => { $('hud').classList.toggle('collapsed'); try { localStorage.setItem('orthros.hud', $('hud').classList.contains('collapsed') ? 'compact' : 'full'); } catch { /* no storage */ } };
   try { if (localStorage.getItem('orthros.hud') === 'compact') $('hud').classList.add('collapsed'); } catch { /* no storage */ }
 }
 
+/** The game list: one card per manifest (its cover, description, size), arrows and Enter to choose. */
+async function showMenu() {
+  const list = (await (await fetch('/api/manifests')).json()).filter((g) => !g.hidden || params.has('all'));
+  let last = null; try { last = localStorage.getItem('orthros.last'); } catch { /* no storage */ }
+  const games = $('games'), cards = [];
+  for (const g of list) {
+    const card = document.createElement('div');
+    card.className = 'card' + (g.available ? '' : ' unavailable'); card.tabIndex = g.available ? 0 : -1; card.dataset.name = g.name;
+    const cover = document.createElement('div'); cover.className = 'cover';
+    if (g.cover) cover.style.backgroundImage = `url(/api/cover/${encodeURIComponent(g.name)})`; else { cover.classList.add('none'); cover.textContent = g.title.slice(0, 1); }
+    const body = document.createElement('div'); body.className = 'body';
+    const h = document.createElement('h3'); h.textContent = g.title;
+    const d = document.createElement('p'); d.textContent = g.description ?? '';
+    const meta = document.createElement('div'); meta.className = 'meta';
+    meta.textContent = g.available ? `${g.exe} · ${g.bytes >= 1e9 ? (g.bytes / 1e9).toFixed(1) + ' GB' : Math.round(g.bytes / 1e6) + ' MB'}` : 'game files not found on the server';
+    const play = document.createElement('button'); play.className = 'play'; play.textContent = 'Play'; play.tabIndex = -1; meta.appendChild(play);
+    body.append(h, d, meta); card.append(cover, body);
+    if (g.name === last) { const b = document.createElement('div'); b.className = 'badge'; b.textContent = 'last played'; card.appendChild(b); }
+    if (g.available) { card.onclick = () => start(g.name); cards.push(card); }
+    games.appendChild(card);
+  }
+  $('menu').classList.remove('hidden');
+  (cards.find((c) => c.dataset.name === last) ?? cards[0])?.focus();
+  $('menu').onkeydown = (e) => {
+    const i = cards.indexOf(document.activeElement);
+    if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); start(cards[i].dataset.name); return; }
+    const cols = Math.max(1, Math.round(games.clientWidth / (cards[0]?.offsetWidth || 1)));
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
+    if (step === undefined || !cards.length) return;
+    e.preventDefault(); cards[Math.min(cards.length - 1, Math.max(0, (i < 0 ? 0 : i + step)))].focus();
+  };
+}
+
 async function start(name) {
+  if (state.status !== 'menu') return;
+  state.status = 'loading';
+  try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
+  if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.set('manifest', name); history.replaceState(null, '', u.toString()); } // (a reload restarts this game)
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   const tree = await (await fetch(`/api/tree/${name}`)).json();
   state.status = 'starting'; state.manifest = name;
-  $('menu').classList.add('hidden'); $('stage').classList.remove('hidden');
+  $('menu').classList.add('hidden'); $('menu').onkeydown = null; $('stage').classList.remove('hidden'); if (!headless) $('hint').classList.remove('hidden');
   state.title = manifest.name ?? name;
   if (!headless) showStatus(`Starting ${state.title}…`, 'the first launch reads the game files from the server; later ones start from the browser\'s copy');
   if ($('hudToggle').checked && !headless) $('hud').style.display = 'block'; // (headless: the harness reads the stats; the display would cover part of the frame in its screenshots)
@@ -351,7 +391,8 @@ function setupInput() {
   document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } $('hint').classList.toggle('hidden', state.pointerLocked); applyCursor(); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
-  $('hint').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
+  $('fsHint').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
+  $('quitHint').addEventListener('click', (e) => { e.preventDefault(); if (state.status !== 'running' || confirm(`Quit ${state.title}? Unsaved progress is lost.`)) backToGames(); });
 }
 
 async function setupAudio(audioSab, ctlSab) {
