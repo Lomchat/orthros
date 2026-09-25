@@ -12,7 +12,7 @@
 // conversions and FRNDINT.
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
 // the interpreter and FNSTENV/FXAM, not checked.
-import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C } from './translate.js';
+import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
 import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
@@ -432,7 +432,7 @@ function arithF32(E, insn, op) {
  * anything else (a midpoint from a non-float operand, a result outside the float range) is left to the
  * interpreter as in arithF32.
  */
-function roundF32(E, insn) {
+function roundF32(E, insn, op) {
   const c = E.c;
   c.set(L_F64C);
   const done = c.block();
@@ -448,8 +448,45 @@ function roundF32(E, insn) {
   c.get(L_F64A).f32demote().f64promote().get(L_F64A).f64eq().and();
   c.get(L_F64B).f32demote().f64promote().get(L_F64B).f64eq().and().br_if(done);
   c.get(L_F64C).f64abs().f64c(Infinity).f64eq().get(L_F64A).f64abs().get(L_F64B).f64abs().f64max().f64c(Infinity).f64eq().and().br_if(done);
+  if (op <= 5) midpointF32(E, op, done);
   E.stepExit(insn);
   c.end(); // done
+}
+/**
+ * roundF32's cold path for a sum, difference or product (op 0, 4, 5, 1) whose f64 result p (L_F64C, bits in L_I64A)
+ * is a 24-bit midpoint inside the float range while an operand is not a float (a multiplier such as 0.9 read as a
+ * double makes it frequent: its repeating significand puts ~9 % of the products of floats exactly on a midpoint).
+ * The exact result's side of p comes from the error of the f64 operation — TwoSum for a sum, Dekker's product with
+ * Veltkamp splitting (no FMA in WebAssembly) for a product, operands kept within 2^±900 so that the splitting
+ * neither overflows nor underflows: p moved one f64 step toward it then rounds to the right float (a zero error
+ * leaves the tie to f32.demote's even rule). Branches to `done` with L_F32C set, else falls through.
+ */
+function midpointF32(E, op, done) {
+  const c = E.c, [A, B, D, Er, G, H] = [L_F64A, L_F64B, L_F64D, L_F64E, L_F64G, L_F64H];
+  c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq();
+  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u().and();
+  for (const x of [A, B]) { c.get(x).f64abs().f64c(2 ** 900).f64lt().and(); c.get(x).f64abs().f64c(2 ** -900).f64gt().and(); }
+  const mid = c.if_();
+  if (op === 1) {
+    const SPLIT = 134217729; // 2^27 + 1
+    c.get(A).f64c(SPLIT).f64mul().set(D); c.get(D).get(D).get(A).f64sub().f64sub().set(D); c.get(A).get(D).f64sub().set(Er); // a = ah + al
+    c.get(B).f64c(SPLIT).f64mul().set(G); c.get(G).get(G).get(B).f64sub().f64sub().set(G); c.get(B).get(G).f64sub().set(H); // b = bh + bl
+    c.get(D).get(G).f64mul().get(L_F64C).f64sub().get(D).get(H).f64mul().f64add().get(Er).get(G).f64mul().f64add().get(Er).get(H).f64mul().f64add().set(D);
+  } else {
+    // p = x + y with (x, y) = (a, b), (a, -b) or (b, -a): bb = p - x; error = (x - (p - bb)) + (y - bb)
+    const x = op === 5 ? B : A, y = op === 5 ? A : B, neg = op !== 0;
+    c.get(L_F64C).get(x).f64sub().set(D);
+    c.get(x).get(L_F64C).get(D).f64sub().f64sub();
+    c.get(y); if (neg) c.f64neg(); c.get(D).f64sub();
+    c.f64add().set(D);
+  }
+  // bits + 1 moves away from zero, - 1 toward it: toward the exact value (error of the same sign as p: away)
+  c.get(L_I64A).i64(1n).i64(-1n).get(D).f64c(0).f64gt().get(L_F64C).f64c(0).f64gt().eq().select().i64add();
+  c.get(L_I64A);
+  c.get(D).f64c(0).f64ne().select();
+  c.f64reinterpret_i64().f32demote().set(L_F32C);
+  c.br(done);
+  c.end(); void mid;
 }
 function arith(op, doPop, integer) {
   return (E, insn) => {
@@ -489,7 +526,7 @@ function arith(op, doPop, integer) {
       case 6: c.get(L_F64A).get(L_F64B).f64div(); break;
       default: c.get(L_F64B).get(L_F64A).f64div(); break;
     }
-    if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn); c.get(L_F32C); storeST32Stack(E, dst); }
+    if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
       roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the

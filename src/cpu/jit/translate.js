@@ -39,9 +39,11 @@ const L_FS = 44;
 const L_S32 = 45, L_F32A = 53, L_F32B = 54, L_F32C = 55;
 // XMM registers the region names, cached in v128 locals (L_XMM0+r) from entry to the exits (Emitter.xmmMask)
 const L_XMM0 = 56;
+// f64 temporaries of the exact-rounding helpers (the error of an f64 sum or product: see translate-x87.js roundF32)
+const L_F64D = 64, L_F64E = 65, L_F64G = 66, L_F64H = 67;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128)]; // indices 16..63
-if (LOCAL_TYPES.length !== L_XMM0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64]; // indices 16..63
+if (LOCAL_TYPES.length !== L_F64H + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -1907,5 +1909,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C, Emitter };
+export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, Emitter };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
