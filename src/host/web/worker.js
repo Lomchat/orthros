@@ -94,7 +94,8 @@ async function start(m) {
   // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs)
   let store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + manifestName) : null;
   if (!store && m.opts.memPrefetch) store = new MemBlockStore(1536 * 1048576); // (harness: prefetch measured without a persistent profile)
-  if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs`);
+  if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
+  if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store: a stored block did not read back as written, fetched again: ${key}`); };
   const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
   gameStore = store; gameFilesStats = gameFiles.stats;
   // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
