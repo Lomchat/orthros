@@ -13,11 +13,32 @@ window.orthros = state;
 function showStatus(title, detail = '', report = null, error = false, restart = false) {
   const el = $('status');
   el.classList.remove('hidden'); el.classList.toggle('error', error);
-  const b = el.querySelector('button'); b.classList.toggle('hidden', !restart); b.onclick = () => location.reload();
+  const [b, fresh] = el.querySelectorAll('button'); b.classList.toggle('hidden', !restart); b.onclick = () => location.reload();
+  fresh.classList.toggle('hidden', !restart || !state.manifest || headless);
+  fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = 'moving the saved profile aside…'; await setProfileAside(state.manifest).catch(() => {}); location.reload(); };
   el.querySelector('.title').textContent = title; el.querySelector('.detail').textContent = detail;
   const pre = el.querySelector('pre'); pre.classList.toggle('hidden', !report); pre.textContent = report ?? '';
 }
 function hideStatus() { $('status').classList.add('hidden'); }
+/**
+ * The game's saved user profile (settings, saves: OPFS directory orthros-<manifest>) moved to orthros-<manifest>-aside-<time>,
+ * so the next start begins with a fresh profile (a profile left in a bad state by an interrupted run can make every
+ * start fail); nothing is deleted. The game file block store is kept.
+ */
+state.setProfileAside = (name) => setProfileAside(name ?? state.manifest); // (window.orthros.setProfileAside(): the same from the console)
+async function setProfileAside(name) {
+  const root = await navigator.storage.getDirectory();
+  let src; try { src = await root.getDirectoryHandle('orthros-' + name); } catch { return; }
+  const dst = await root.getDirectoryHandle(`orthros-${name}-aside-${new Date().toISOString().replace(/[:.]/g, '-')}`, { create: true });
+  const copy = async (from, to) => {
+    for await (const [n, h] of from.entries()) {
+      if (h.kind === 'directory') await copy(h, await to.getDirectoryHandle(n, { create: true }));
+      else { const w = await (await to.getFileHandle(n, { create: true })).createWritable(); await w.write(await h.getFile()); await w.close(); }
+    }
+  };
+  await copy(src, dst);
+  await root.removeEntry('orthros-' + name, { recursive: true });
+}
 /** What Orthros needs from the browser; the first missing piece, or null. */
 function missingFeature() {
   if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 'the page is not cross-origin isolated (SharedArrayBuffer unavailable): serve it with Orthros\' server (COOP/COEP headers)';
@@ -93,7 +114,7 @@ function onWorkerMessage(m) {
   switch (m.type) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
-    case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; break;
+    case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
       if (m.frames !== state.lastFrames) { state.lastFrames = m.frames; state.lastNewFrameAt = Date.now(); }
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
