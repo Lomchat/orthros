@@ -18,6 +18,9 @@ let profileFilesRestored = 0, profileListing = []; // (the listing goes to the p
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
+let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
+/** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
+let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
@@ -82,10 +85,28 @@ async function start(m) {
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
   const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  if (m.opts.jitOpts) try { globalThis.ORTHROS_JIT_OPTS = JSON.parse(m.opts.jitOpts); } catch { /* ignored */ } // (debugging: ?jitopts={"consolidateEvery":...})
   globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_CAPTURE_DRAWS = !!m.opts.captureDraws; globalThis.ORTHROS_LOCK_LOG = (m.opts.log ?? []).includes('lock'); if (m.opts.burstFromId) globalThis.ORTHROS_BURST_FROM_ID = m.opts.burstFromId; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull; globalThis.ORTHROS_JIT_PROFILE = !!m.opts.jitProfile; globalThis.ORTHROS_GL_DISCARD = !!m.opts.glDiscard; globalThis.ORTHROS_WATCH_TEX = m.opts.watchTex || undefined; globalThis.ORTHROS_NO_F32 = !!m.opts.noF32; globalThis.ORTHROS_F32_OFF = m.opts.f32Off || ''; globalThis.ORTHROS_GL_VALIDATE = !!m.opts.glValidate; globalThis.ORTHROS_INTERP_RANGES = m.opts.interpRange || undefined;
   // frame capture (--capture N): images (bound textures, render target after draws) encoded as PNG for the harness
   const dump = (name, w, h, rgba) => { try { const c = new OffscreenCanvas(w, h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, w * h * 4), w, h), 0, 0); c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()).then((ab) => post({ type: 'dump', name, data: ab }, [ab])); } catch (e) { log('warn', `dump ${name} failed: ${e.message}`); } };
   try { host.gfx = createWebGLBackend(canvasGl, (msg) => log('gfx', msg), dump); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
+  // GL programs of earlier sessions, compiled ahead of their first draw (see WebGLDevice.prewarmStep); this session's
+  // new ones are sent back a few seconds after they are built
+  const pcache = host.gfx?.programCache;
+  if (pcache && m.opts.programCache) {
+    const url = `/api/programs/${encodeURIComponent(manifestName)}`;
+    fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => {
+      if (!Array.isArray(list) || !list.length) return;
+      pcache.queue.push(...list);
+      log('gfx', `programs: ${list.length} learned from earlier sessions, compiled ahead${pcache.parallel ? ' (parallel compilation)' : ''}`);
+    }).catch(() => {});
+    programSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: list }) }).catch(() => {});
+  }
+  if (m.opts.regionCache) {
+    const url = `/api/regions/${encodeURIComponent(manifestName)}`;
+    fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated while the game waits`); } }).catch(() => {});
+    regionSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list }) }).catch(() => {});
+  }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();
   const root = new MemBackend();
@@ -121,10 +142,17 @@ async function start(m) {
   vfs.mount('C:\\Users\\Player', profile);
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
+  if (regionSink && vm.jit) vm.jit.learned = [];
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
-  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024) });
+  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '' });
   host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
-  host.onSlowFrame = (dt, d) => log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms io ${d.ioReq}/${d.ioKB}KB/${d.ioMs}ms`);
+  if (m.opts.headless) { longWaitMin = 150; vm.waitLogMin = 80; vm.mainWaits = new Map(); }
+  if (m.opts.apiTimes) vm.apiTimes = new Map(); // (harness --api-times: a clock read per API call, garbage included) // (harness: waits of 150 ms and more reported too) // (harness runs: per-frame API time in the slow-frame lines)
+  host.onSlowFrame = (dt, d) => {
+    // (a frame mostly spent waiting: what the game waited for)
+    if (d.idleMs > 150 && (idleFrameLogs = (idleFrameLogs ?? 0) + 1) <= 10) log('hang', `a ${dt.toFixed(0)} ms frame spent ${d.idleMs} ms waiting; idle: ${d.idleParts}; the main thread's waits in the frame: ${d.mainWaits}; its last API calls:\n  ${vm.recentApiCalls(40, vm.proc.threads[0]?.id).join('\n  ')}\n${vm.threadsReport().split('\nsync objects')[0]}`);
+    log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms io ${d.ioReq}/${d.ioKB}KB/${d.ioMs}ms idle ${d.idleMs}ms held ${d.heldMs}ms programs ${d.programMs}ms api ${d.apiMs}ms [${d.topApis}]`);
+  };
   vm.registry = new Registry(); vm.registry.seed(manifest.registry);
   if (profile.files.has('registry.json')) { try { vm.registry.load(JSON.parse(new TextDecoder().decode(profile.open('registry.json').read(0, profile.stat('registry.json').size)))); } catch (e) { log('warn', `bad registry.json: ${e.message}`); } }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
@@ -141,7 +169,7 @@ async function start(m) {
 let lastProf = {};
 let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map(), lastFallbacks = 0, lastFbHist = new Map();
 const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0 }; // how the worker spends its time between slices
-let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0;
+let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0, longWaitMin = 1000, idleFrameLogs = 0;
 /**
  * The next pump: at once (a message: the event loop still runs in between) or after `ms` (a timer). One pending at a
  * time — a wake-up (input, an asynchronous completion) replaces a pending timer instead of starting a second chain.
@@ -152,8 +180,15 @@ function schedulePump(ms) {
   if (ms > 0) { pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, ms); return; }
   if (!pumpPosted) { pumpPosted = true; channel.port2.postMessage(0); }
 }
+/** The APIs that took the most time since the previous frame (then reset): what a slow frame spent its time in. */
+function takeTopApis() { const top = [...vm.apiTimes].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', '); vm.apiTimes.clear(); return top; }
+let idlePartsPrev = { pump: 0, wait: 0 };
+function takeIdleParts() { const r = `pump gaps ${Math.round(pumpIdleMs - idlePartsPrev.pump)}ms in ${pumpGaps} (max ${Math.round(pumpGapMax)}, last return ${lastPumpReturn}), nested waits ${Math.round((host.waitMs ?? 0) - idlePartsPrev.wait)}ms`; idlePartsPrev = { pump: pumpIdleMs, wait: host.waitMs ?? 0 }; pumpGaps = 0; pumpGapMax = 0; return r; }
+function takeMainWaits() { const r = [...vm.mainWaits].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k} ${v.toFixed(0)}ms`).join(', '); vm.mainWaits.clear(); return r; }
+let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn = ''; // (lastPumpReturn: why the last pump returned) // (time between two pumps: the worker waiting — slow-frame diagnostics)
 function pump() {
   if (!running || stopped) return;
+  if (pumpEndAt) { const g = performance.now() - pumpEndAt; pumpIdleMs += g; pumpGaps++; if (g > pumpGapMax) pumpGapMax = g; }
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
   let r;
   const tRun = performance.now();
@@ -175,6 +210,13 @@ function pump() {
   host.audioHook ??= () => host.renderAudio(vm);
   const now = performance.now();
   pumpStats.runs++; pumpStats.runMs += now - tRun;
+  if (programSink && host.gfx.programCache.learned.length && now - programsPostedAt > 5000) { programsPostedAt = now; programSink(host.gfx.programCache.learned.splice(0)); }
+  if (regionSink && vm.jit?.learned?.length && now - regionsPostedAt > 10000) {
+    regionsPostedAt = now;
+    const list = [];
+    for (const [eip, fpc, t] of vm.jit.learned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) list.push([mod.name.toLowerCase(), eip - mod.base, fpc, t]); }
+    if (list.length) regionSink(list);
+  }
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const hist = vm.apiHist();
@@ -183,7 +225,7 @@ function pump() {
     const iv = host.interval ?? { max: 0, slow33: 0, slow50: 0 }; host.interval = { max: 0, slow33: 0, slow50: 0 };
     // time the game waited on the network for its files since the last report (synchronous range requests: nothing runs meanwhile)
     const netMs = (gameFilesStats?.ms ?? 0) - lastNetMs, netReq = (gameFilesStats?.requests ?? 0) - lastNetReq; lastNetMs = gameFilesStats?.ms ?? 0; lastNetReq = gameFilesStats?.requests ?? 0;
-    post({ type: 'stats', dt, netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round(offline.bytes / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round(offline.total / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', dt, busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round(offline.bytes / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round(offline.total / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (hist) lastHist = hist;
     lastFallbacks = vm.jit?.stats.fallbackSteps ?? 0; if (vm.jit?.fallbackHist) lastFbHist = new Map(vm.jit.fallbackHist);
     // --jit-profile: block transitions per second by kind (intra-region jumps, returns, chaining)
@@ -199,14 +241,33 @@ function pump() {
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
   }
+  pumpEndAt = performance.now(); lastPumpReturn = r.state === 'sleep' ? `sleep ${Math.round(r.until - pumpEndAt)}ms` : r.state;
   if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); return; }
   if (r.state === 'sleep') {
+    if (r.until - pumpEndAt >= 3) prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); // (the wait, used to translate ahead)
     const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; schedulePump(Math.max(1, ms));
     // every thread waiting a second or more: what for (a wait Windows would end sooner shows up here)
-    if (ms >= 1000 && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
+    if (ms >= (longWaitMin ?? 1000) && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
   }
-  else if (r.state === 'idle') { pumpStats.idles++; schedulePump(30); }
+  else if (r.state === 'idle') { pumpStats.idles++; prewarmRegions(8); schedulePump(30); }
   else schedulePump(0);
+}
+
+/**
+ * Translate learned regions for up to `budgetMs` (the game is waiting): after the first frame (the code is in place),
+ * in the order earlier sessions first needed them; entries of modules not loaded (yet) are passed over.
+ */
+function prewarmRegions(budgetMs) {
+  if (!regionQueue || regionPos >= regionQueue.length || !vm.jit || !host.framesPresented) return;
+  const end = performance.now() + budgetMs;
+  const mods = new Map(vm.proc.moduleList.map((x) => [x.name.toLowerCase(), x]));
+  while (regionPos < regionQueue.length && performance.now() < end) {
+    const e = regionQueue[regionPos++];
+    const mod = Array.isArray(e) ? mods.get(e[0]) : null;
+    if (!mod || !Number.isInteger(e[1]) || e[1] < 0 || e[1] >= mod.size) continue;
+    vm.jit.prewarm(mod.base + e[1], e[2] ?? null);
+  }
+  if (regionPos >= regionQueue.length) log('file', `regions: ${vm.jit.stats.prewarmed ?? 0} of ${regionQueue.length} translated ahead in ${Math.round(vm.jit.stats.prewarmMs ?? 0)} ms`);
 }
 
 /** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
@@ -289,7 +350,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses\n` : '') + (gameFilesStats ? `[report] game files over HTTP: ${gameFilesStats.requests} requests, ${(gameFilesStats.bytes / 1048576).toFixed(0)} MiB, ${gameFilesStats.ms.toFixed(0)} ms${gameStore ? `; block store: ${gameStore.stats.hits} hits, ${gameStore.stats.puts} blocks added` : ''}\n` : '') + (host?.gfx?.device?.stats?.programs ? `[report] GL programs built: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (gameFilesStats ? `[report] game files over HTTP: ${gameFilesStats.requests} requests, ${(gameFilesStats.bytes / 1048576).toFixed(0)} MiB, ${gameFilesStats.ms.toFixed(0)} ms${gameStore ? `; block store: ${gameStore.stats.hits} hits, ${gameStore.stats.puts} blocks added` : ''}\n` : '') + (host?.gfx?.device?.stats?.programs ? `[report] GL programs built: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms)\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.hits} used, ${host.gfx.programCache.stale} with other sources\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };

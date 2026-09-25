@@ -36,6 +36,10 @@ export const TAIL_CALL = Symbol('tail-call');
 const APIBG_QUIET = new Set(['Sleep', 'WaitForSingleObject', 'WaitForMultipleObjects', 'ReleaseMutex', 'EnterCriticalSection', 'LeaveCriticalSection', 'QueryPerformanceCounter', 'GetTickCount', 'timeGetTime', 'SetEvent', 'ResetEvent', 'InterlockedIncrement', 'InterlockedDecrement', 'InterlockedExchange', 'GetCurrentThreadId', 'TlsGetValue', 'IDirectSoundBuffer::GetCurrentPosition', 'IDirectSoundBuffer::Lock', 'IDirectSoundBuffer::Unlock', 'IDirectSoundBuffer::GetStatus']);
 const API_TRACE_LEN = 1024; // ring of recent API calls (crash reports, diagnostics); power of two
 
+/** runThread options of a top-level slice, and runFor's frequent results (shared: no object per slice) */
+const TOP_SLICE = Object.freeze({ slice: true, top: true });
+const RUN_RUNNING = Object.freeze({ state: 'running' }), RUN_IDLE = Object.freeze({ state: 'idle' });
+
 export class Vm {
   /**
    * @param {{ vfs: import('../vfs/vfs.js').Vfs, clock?: any, host?: any, log?: (kind: string, msg: string) => void, logKinds?: string[] }} opts
@@ -49,7 +53,7 @@ export class Vm {
     this.interp = new Interp(this.mem, null);
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     this.sched = new Scheduler(this);
@@ -154,9 +158,9 @@ export class Vm {
       for (;;) {
         const t = this.sched.pickRunnable(null);
         if (t) {
-          this.runThread(t, { slice: true, top: true });
+          this.runThread(t, TOP_SLICE);
           this.sched.wakeBlocked();
-          if (untilMs !== Infinity && performance.now() >= untilMs) return { state: 'running' };
+          if (untilMs !== Infinity && performance.now() >= untilMs) return RUN_RUNNING;
           continue;
         }
         if (proc.threads.every((x) => x.state === TS.DONE)) break;
@@ -165,7 +169,7 @@ export class Vm {
           if (this.host.pump) this.host.pump();
           if (this.sched.wakeBlocked()) continue;
           const wake = this.sched.nextWake();
-          if (wake === Infinity) return { state: 'idle' };
+          if (wake === Infinity) return RUN_IDLE;
           const delay = wake - this.clock.now();
           if (delay > 2) return { state: 'sleep', until: performance.now() + (this.clock.real ? this.clock.real(delay) : delay) };
         }
@@ -201,6 +205,9 @@ export class Vm {
    * of what follows an interesting event (e.g. an engine creating a stand-in texture) without tracing the whole run.
    */
   startApiBurst(thread, n = 3000) { if (this.logKinds.has('apiburst') && (this.apiBursts = (this.apiBursts ?? 0) + 1) <= 8) { this.apiBurst = { tid: thread.id, left: n }; this.logFn('apiburst', `---- burst ${this.apiBursts} on t${thread.id}`); } }
+
+  /** Time spent in API handlers (apiTimes: Map name -> ms, reset by the host per frame; diagnostics only). */
+  noteApiTime(t, t0) { const ms = performance.now() - t0; this.apiTimeTotal = (this.apiTimeTotal ?? 0) + ms; if (ms > 0.05) this.apiTimes.set(t.name, (this.apiTimes.get(t.name) ?? 0) + ms); }
 
   /** Call counts per API as a Map "dll!name" -> count (null when the histogram is disabled). */
   apiHist() {
@@ -264,6 +271,17 @@ export class Vm {
    * @param {{ until?: number, slice?: boolean }} opts
    * @returns {number} EAX at `until` (callback return value)
    */
+  /** A thread's slice is over: time accounting, profiling, progress; true when the scheduler takes it back (slice mode). */
+  sliceEnd(thread, opts) {
+    this.clock.tick?.(0.5);
+    this.slices++;
+    if (this.profile) { const k = thread.cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
+    if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
+    if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
+    if (opts.slice) { thread.state = TS.READY; return true; }
+    return false;
+  }
+
   runThread(thread, opts) {
     const until = opts.until ?? -1;
     const prev = this.current;
@@ -279,20 +297,13 @@ export class Vm {
     const cpu = thread.cpu;
     // the instruction budget of a slice persists across API calls (API-dense code must yield too)
     let budget = SLICE_INSNS;
-    const sliceEnd = () => {
-      this.clock.tick?.(0.5);
-      this.slices++;
-      if (this.profile) { const k = cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
-      if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
-      if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
-      budget = SLICE_INSNS;
-      if (opts.slice) { thread.state = TS.READY; return true; }
-      return false;
-    };
+    // (one options object per call, not per exec.run — that runs after every API call; the executors read it on entry)
+    const runOpts = { stopAt: until, maxInsns: 0 };
     try {
       for (;;) {
         exec.cpu = cpu;
-        const exit = exec.run({ stopAt: until, maxInsns: budget });
+        runOpts.maxInsns = budget;
+        const exit = exec.run(runOpts);
         budget = exec.remaining();
         switch (exit) {
           case EXIT.HALT:
@@ -302,10 +313,10 @@ export class Vm {
             this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
             if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
-            if (budget <= 0 && sliceEnd()) return 0;
+            if (budget <= 0) { budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0; }
             break;
           case EXIT.TIMESLICE:
-            if (sliceEnd()) return 0;
+            budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0;
             break;
           case EXIT.FAULT:
             this.onFault(thread);
@@ -436,14 +447,18 @@ export class Vm {
       const tp = this.apiTracePos++ & (API_TRACE_LEN - 1);
       this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
       let r;
+      const tApi = this.apiTimes ? performance.now() : 0; // (diagnostics: time per API within a frame, see apiTimes)
       try { r = def.fn(ctx); }
       catch (e) {
+        if (this.apiTimes) this.noteApiTime(t, tApi);
         if (!(e instanceof WaitUnwind)) throw e;
         // park the thread: roll the call back to the thunk so it re-executes once woken
         cpu.esp = sp; cpu.eip = t.addr;
         thread.state = TS.BLOCKED; thread.wait = e.wait; thread.blockReason = e.wait.reason; thread.wakeAt = e.wait.deadline;
+        if (this.waitLogMin) { thread.blockedAt = this.clock.now(); thread.blockedApi = t.name; thread.blockedFrom = this.mem.read32(sp); } // (diagnostics: long waits, see Scheduler.wake)
         return;
       }
+      if (this.apiTimes) this.noteApiTime(t, tApi);
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
       if (this.apiBurst && this.apiBurst.tid === thread.id && this.apiBurst.left-- > 0 && !APIBG_QUIET.has(t.name)) this.logFn('apiburst', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)} from ${this.proc.symbolize(this.mem.read32(sp))}`);
       if (this.traceApiSite) {

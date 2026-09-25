@@ -55,6 +55,8 @@ async function main() {
   const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   state.telemetry = !!config.telemetry && !headless;
   state.encodedRanges = !!config.encodedRanges && params.get('encoded') !== '0';
+  state.programCache = !!config.programCache && params.get('programs') !== '0';
+  state.regionCache = !!config.regionCache && params.get('regions') !== '0'; // (code regions of earlier sessions translated while the game waits; ?regions=0: off) // (GL programs of earlier sessions compiled ahead; ?programs=0: off)
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   const list = await (await fetch('/api/manifests')).json();
   const games = $('games');
@@ -85,7 +87,7 @@ async function start(name) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, memPrefetch: params.get('memprefetch') === '1', session: state.session };
+  const opts = { headless, timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, apiTimes: params.get('apitimes') === '1', jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', session: state.session };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
@@ -162,6 +164,9 @@ const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
 const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable/i;
 function log(kind, msg) {
   if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, 4000) });
+  // frames of 150 ms and more with what happened during them (translation, program builds, file reads, waits): the
+  // first 150 of a session, to tell a player's hitches apart (a frame without any of these: collection or the GPU)
+  else if (state.telemetry && kind === 'slowframe' && Number(/ ([\d.]+)ms:/.exec(msg)?.[1]) >= 150 && (state.slowSent = (state.slowSent ?? 0) + 1) <= 150) (state.queue ??= []).push({ t: Date.now(), event: 'slow', msg: String(msg).slice(0, 1000) });
   const line = `[${kind}] ${msg}`;
   state.logs.push(line); if (state.logs.length > 5000) state.logs.shift();
   if (headless) console.log(line);
@@ -225,7 +230,9 @@ function recordSample(m) {
   const d3dDraws = m.d3d?.draws ?? 0, prev = state.lastDraws ?? d3dDraws; state.lastDraws = d3dDraws;
   // shader programs built since the last sample and the time spent (a first use stalls the frame: ANGLE translates them)
   const progs = m.d3d?.programs ?? 0, progMs = m.d3d?.programMs ?? 0, pp = state.lastProg ?? { n: progs, ms: progMs }; state.lastProg = { n: progs, ms: progMs };
-  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
+  const jitMs = m.jitMs ?? 0, pj = state.lastJitMs ?? jitMs; state.lastJitMs = jitMs;
+  // (busy: % of the interval the worker spent running the game; jit: ms spent translating code in the interval)
+  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, busy: m.busy ?? null, jit: jitMs - pj, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
   state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);

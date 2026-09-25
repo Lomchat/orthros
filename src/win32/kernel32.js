@@ -360,13 +360,18 @@ export function registerKernel32(api, vm) {
 
   // Waits claim their object at wake-up time (sched.block `claim`): a released mutex goes to the parked waiter
   // before the releasing thread can take it back, and never to a second thread in between.
+  const WAIT_REASONS = {};
   const waitOne = (c, h, ms, alertable) => {
     const o = waitObject(c, h);
     if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
     if (o === c.thread) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
     const t = c.thread;
+    // the common case, an object already available (an uncontended mutex): taken at once, no wait record (block's
+    // own first test, without the closures it needs to park the thread)
+    // (a poll, timeout 0, of an object not signaled: WAIT_TIMEOUT at once, likewise)
+    if (t.wakeResult === undefined && !(alertable && t.apcQueue.length)) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
     const to = ms === INFINITE ? INFINITE : ms;
-    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, 'wait:' + o.type,
+    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, WAIT_REASONS[o.type] ??= 'wait:' + o.type,
       () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
     if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;

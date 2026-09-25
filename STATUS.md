@@ -470,6 +470,26 @@
   confirmation, comportement du jeu) ; `tools/startbench.mjs` (premier lancement dans Node, temps CPU) : 72 s / 82 s CPU
   jusqu'au lancement des outils d'assets, boucles imbriquées structurées neutres (73,8 contre 73,3 s).
 
+## Saccades en partie (2026-09-25)
+- **Retour du joueur** : curseur invisible et souris qui sort de la fenêtre (corrigés, 0d603e2 : SetCursor(NULL)
+  indépendant de ShowCursor, capture du pointeur au clic, curseur dessiné par la page) ; « petits lags de temps en
+  temps, animations, constructions ». Sa télémétrie (Iris Xe) : 33 fps médian en partie, des pointes de 400-1200 ms
+  toutes les ~10 s, sans compilation de programme au même moment.
+- **Déchets et GC** (D055) : un VAO créé pour ~2 % des draws (600/s, tous jetés tous les 8 192) → un VAO par
+  (programme, tampon, pas) ; allocations du worker 1 458 → 540 Mo par minute de partie (adresse du bloc d'état passée
+  en indice de mot : elle était boxée à chaque sortie du JIT ; vues et chaînes par draw supprimées). Les pauses GC de
+  150-400 ms vues sous le harnais sont un artefact de DevTools (Chrome lancé sans DevTools : ≤ 14 ms) — outils
+  ajoutés : `--chrome-trace <début>:<durée>` (événements longs du worker et leur contenu), `--heap-snapshot <t>`,
+  profil d'allocation avec les appelants des fonctions natives, `--api-times` (le temps par API n'est plus mesuré par
+  défaut sous le harnais).
+- **Programmes GL et régions de code appris** (D056) : partie scriptée, images ≥ 100 ms après le début de la partie
+  22 → 15 → 11 (sans / programmes / programmes + régions), dépassement cumulé au-delà de 33 ms 13,8 → 7,8 → 4,5 s,
+  programmes construits au premier draw 119 (974 ms) → 7 (24 ms). La préparation des régions n'utilise que les temps
+  d'attente du jeu (rares ici sur la machine chargée, fréquents sur une machine rapide aux menus).
+- **Télémétrie** : chaque échantillon porte la part de temps du worker occupé (`busy`) et le temps de traduction
+  (`jit`) ; chaque image de 150 ms et plus envoie sa décomposition (traduction, programmes, lectures, attentes) :
+  événement `slow`, les 150 premières par session.
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques
@@ -494,8 +514,9 @@
 - Premier lancement sur réseau réel : plages compressées faites (D054) ; restent les requêtes en série (une à la fois,
   1-4 Mio) — piste : lectures anticipées asynchrones dans un worker d'E/S (mémoire partagée, attente seulement si le
   bloc n'est pas encore arrivé).
-- Attendre les mesures du joueur (télémétrie : fps, pires images, attente réseau, GPU réel) avant d'optimiser à
-  l'aveugle.
+- Saccades : lire les événements `slow` de la prochaine partie du joueur (ce qui reste : traduction de code neuf,
+  lectures, autre) ; pistes : traduction dans un second worker (mémoire partagée, module transféré), budget de
+  préparation hors attente aux menus.
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)

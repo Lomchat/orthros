@@ -341,10 +341,11 @@ export function buildRuntime(opts = {}) {
     m.exportFunc('fastApi', fastApiIdx);
   }
 
-  // ---- run(eip, state) -> exit code
+  // ---- run(eip, state / 4) -> exit code (the state block's word index: a small integer for the JS caller)
   {
     const c = new Code();
     const [EIP, STATE, STOP, E, IDX, PROBE] = [0, 1, 2, 3, 4, 5];
+    c.get(STATE).i32(2).shl().set(STATE);
     c.get(STATE).i32load(ST.STOP_AT).set(STOP);
     const L = c.loop();
     // stopAt

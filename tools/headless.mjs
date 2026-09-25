@@ -37,14 +37,16 @@ fs.mkdirSync(out, { recursive: true });
 
 // --net <ms>:<Mbit/s>: game file range requests answered after that round trip and transfer rate (a player's connection)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
-// --learn <dir>: the server keeps the learned prefetch order there (see server.js); --memprefetch: the page prefetches
+// --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
+// programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
 if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 const server = createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn') });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server.address().port;
-const chromeArgs = ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
+// ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them)
+const chromeArgs = [...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
 const opfsDir = opt('opfs');
@@ -67,6 +69,10 @@ if (opt('watch-tex')) q.set('watchtex', opt('watch-tex')); // <fmt>:<w>x<h>: rep
 if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('interp-range')); // debugging: lo:hi[,lo:hi] (hex) run by the reference interpreter, the rest by the JIT
 if (opt('encoded') === '0') q.set('encoded', '0');
 if (args.includes('--memprefetch')) q.set('memprefetch', '1');
+if (opt('jit-opts')) q.set('jitopts', opt('jit-opts')); // debugging: JIT options as JSON (e.g. {"consolidateEvery":1000000})
+if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API function in the slow-frame lines; adds a clock read per call)
+if (opt('programs') === '0') q.set('programs', '0');
+if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
@@ -161,6 +167,106 @@ async function workerSession() {
   const send = (method, params = {}, timeout = 20000) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); setTimeout(() => { if (pending.has(id)) { pending.delete(id); resolve(null); } }, timeout); cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id, method, params }) }).catch(() => resolve(null)); });
   return { cdp, sessionId, send, close: () => cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {}) };
 }
+// --heap-profile <start>:<seconds>: the worker's allocations over that window (sampling heap profiler), by allocating function
+const heapProfOpt = opt('heap-profile') ? opt('heap-profile').split(':').map(Number) : null;
+let heapProfState = heapProfOpt ? 'armed' : 'off';
+async function heapProfile(seconds) {
+  const s = await workerSession();
+  await s.send('HeapProfiler.enable');
+  await s.send('HeapProfiler.startSampling', { samplingInterval: 32768, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  console.log(`[heapprof] sampling allocations for ${seconds}s`);
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  const r = await s.send('HeapProfiler.stopSampling', {}, 60000);
+  await s.close();
+  const root = r?.result?.profile?.head; if (!root) { console.log('[heapprof] no profile'); return; }
+  const self = new Map(), callers = new Map(); let total = 0;
+  const walk = (n, parent) => {
+    const cf = n.callFrame; const k = `${cf.functionName || '(anonymous)'} ${cf.url.replace(/^.*\/src\//, 'src/')}:${cf.lineNumber + 1}`;
+    if (n.selfSize) { self.set(k, (self.get(k) ?? 0) + n.selfSize); total += n.selfSize; if (parent) { let m = callers.get(k); if (!m) callers.set(k, (m = new Map())); m.set(parent, (m.get(parent) ?? 0) + n.selfSize); } }
+    for (const ch of n.children ?? []) walk(ch, k);
+  };
+  walk(root, null);
+  console.log(`[heapprof] ${(total / 1048576).toFixed(0)} MB allocated (sampled) in ${seconds}s; top allocating functions:`);
+  for (const [k, b] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 24)) {
+    console.log(`  ${(b / 1048576).toFixed(1).padStart(7)} MB  ${k}`);
+    // (a built-in, e.g. subarray or join: its callers)
+    if (/ :0$/.test(k)) for (const [c, cb] of [...(callers.get(k) ?? [])].sort((x, y) => y[1] - x[1]).slice(0, 4)) console.log(`          ${(cb / 1048576).toFixed(1).padStart(6)} MB from ${c}`);
+  }
+}
+// --chrome-trace <start>:<seconds>: a Chrome trace of that window (GC of V8 and Blink, WebGL, the worker's tasks) in
+// <out>/<name>.trace.json; the worker thread's long events (>= 50 ms) are listed with what they contained
+const chromeTraceOpt = opt('chrome-trace') ? opt('chrome-trace').split(':').map(Number) : null;
+let chromeTraceState = chromeTraceOpt ? 'armed' : 'off';
+async function chromeTrace(seconds) {
+  const file = path.join(out, `${name}.trace.json`);
+  await browser.startTracing(page, { path: file, categories: ['v8', 'v8.gc', 'blink_gc', 'disabled-by-default-v8.gc', 'disabled-by-default-blink_gc', 'cppgc', 'disabled-by-default-cppgc', 'v8.wasm', 'disabled-by-default-v8.wasm.detailed'] });
+  console.log(`[trace] recording ${seconds}s`);
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  await browser.stopTracing();
+  const ev = JSON.parse(fs.readFileSync(file, 'utf8')).traceEvents ?? [];
+  const names = new Map(); for (const e of ev) if (e.ph === 'M' && e.name === 'thread_name') names.set(`${e.pid}:${e.tid}`, e.args?.name ?? '');
+  // complete events (X) and B/E pairs, per thread
+  const spans = [], open = new Map();
+  for (const e of ev) {
+    const k = `${e.pid}:${e.tid}`;
+    if (e.ph === 'X' && e.dur !== undefined) spans.push({ k, name: e.name, ts: e.ts, dur: e.dur, args: e.args });
+    else if (e.ph === 'B') { let st = open.get(k); if (!st) open.set(k, (st = [])); st.push(e); }
+    else if (e.ph === 'E') { const b = open.get(k)?.pop(); if (b) spans.push({ k, name: b.name, ts: b.ts, dur: e.ts - b.ts, args: b.args }); }
+  }
+  const workerThreads = new Set([...names].filter(([, n]) => /DedicatedWorker/i.test(n)).map(([k]) => k));
+  const long = spans.filter((s) => workerThreads.has(s.k) && s.dur >= 50000 && /GC|MajorGC|MinorGC|Heap|Mark|Sweep|Finaliz|Oilpan|cppgc|V8\./i.test(s.name)).sort((a, b) => b.dur - a.dur).slice(0, 12);
+  console.log(`[trace] ${ev.length} events, worker threads ${[...workerThreads].map((k) => names.get(k)).join(', ')}; long GC events on the worker:`);
+  for (const L of long) {
+    const inner = spans.filter((s) => s.k === L.k && s !== L && s.ts >= L.ts && s.ts + s.dur <= L.ts + L.dur && s.dur >= 3000).sort((a, b) => b.dur - a.dur).slice(0, 14);
+    console.log(`  ${(L.dur / 1000).toFixed(1)} ms ${L.name}: ${inner.map((s) => `${s.name} ${(s.dur / 1000).toFixed(1)}`).join(' | ')}`);
+  }
+}
+// --heap-snapshot <s>: a heap snapshot of the worker at that time (V8 and Blink objects): the node names with the most
+// instances / bytes and the largest single nodes (a huge table stands out)
+const heapSnapAt = opt('heap-snapshot') ? Number(opt('heap-snapshot')) : null;
+let heapSnapState = heapSnapAt !== null ? 'armed' : 'off';
+async function heapSnapshot() {
+  const s = await workerSession();
+  const chunks = [];
+  s.cdp.on('Target.receivedMessageFromTarget', (e) => { if (e.sessionId !== s.sessionId) return; const m = JSON.parse(e.message); if (m.method === 'HeapProfiler.addHeapSnapshotChunk') chunks.push(m.params.chunk); });
+  await s.send('HeapProfiler.enable');
+  console.log('[heapsnap] taking a snapshot of the worker');
+  await s.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false, exposeInternals: true, captureNumericValue: false }, 600000);
+  await s.close();
+  const snap = JSON.parse(chunks.join(''));
+  fs.writeFileSync(path.join(out, `${name}.heapsnapshot`), chunks.join(''));
+  const f = snap.snapshot.meta.node_fields, types = snap.snapshot.meta.node_types[0], N = f.length, nodes = snap.nodes, str = snap.strings;
+  const iType = f.indexOf('type'), iName = f.indexOf('name'), iSize = f.indexOf('self_size');
+  const byName = new Map(), big = [];
+  for (let i = 0; i < nodes.length; i += N) {
+    const k = `${types[nodes[i + iType]]}:${String(str[nodes[i + iName]]).slice(0, 80)}`, sz = nodes[i + iSize];
+    const e = byName.get(k) ?? { n: 0, b: 0 }; e.n++; e.b += sz; byName.set(k, e);
+    if (sz > 1 << 20) big.push([k, sz]);
+  }
+  console.log(`[heapsnap] ${nodes.length / N} nodes; most instances:`);
+  for (const [k, e] of [...byName].sort((a, b) => b[1].n - a[1].n).slice(0, 25)) console.log(`  ${String(e.n).padStart(8)} x ${(e.b / 1048576).toFixed(1).padStart(7)} MB  ${k}`);
+  console.log('[heapsnap] most bytes:');
+  for (const [k, e] of [...byName].sort((a, b) => b[1].b - a[1].b).slice(0, 15)) console.log(`  ${String(e.n).padStart(8)} x ${(e.b / 1048576).toFixed(1).padStart(7)} MB  ${k}`);
+  console.log('[heapsnap] nodes over 1 MB:'); for (const [k, sz] of big.sort((a, b) => b[1] - a[1]).slice(0, 15)) console.log(`  ${(sz / 1048576).toFixed(1)} MB ${k}`);
+}
+// --heap-at <s>: the worker's JS heap at that time — used / total size and object counts of a few constructors
+const heapAt = opt('heap-at') ? Number(opt('heap-at')) : null;
+let heapDone = false;
+async function heapCensus() {
+  const s = await workerSession();
+  await s.send('Runtime.enable');
+  const u = await s.send('Runtime.getHeapUsage');
+  console.log(`[heap] used ${((u?.result?.usedSize ?? 0) / 1048576).toFixed(0)} MB of ${((u?.result?.totalSize ?? 0) / 1048576).toFixed(0)} MB`);
+  for (const ctor of ['WebAssembly.Instance', 'WebAssembly.Module', 'WebAssembly.Memory', 'Map', 'Set', 'Array', 'Uint8Array', 'Uint32Array', 'Object', 'String', 'Function']) {
+    const proto = await s.send('Runtime.evaluate', { expression: `${ctor}.prototype` });
+    const id = proto?.result?.result?.objectId; if (!id) { console.log(`[heap] ${ctor}: ? ${JSON.stringify(proto).slice(0, 200)}`); continue; }
+    const q = await s.send('Runtime.queryObjects', { prototypeObjectId: id }, 60000);
+    const arr = q?.result?.objects?.objectId;
+    const n = arr ? await s.send('Runtime.callFunctionOn', { objectId: arr, functionDeclaration: 'function () { return this.length; }', returnByValue: true }) : null;
+    console.log(`[heap] ${ctor}: ${n?.result?.result?.value ?? '?'}`);
+  }
+  await s.close();
+}
 async function profileWorker(seconds) {
   const s = await workerSession();
   await s.send('Profiler.enable'); await s.send('Profiler.setSamplingInterval', { interval: 500 }); await s.send('Profiler.start');
@@ -199,7 +305,11 @@ async function profileWorker(seconds) {
 for (;;) {
   const s = await status();
   const t = (Date.now() - t0) / 1000;
-  if (s.stats) console.log(`[t=${t.toFixed(0)}s]${s.statsAt && Date.now() - s.statsAt > 2000 ? ` (no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)} s)` : ''} ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames} io=${s.stats.ioMB ?? 0}MB net=${s.stats.netMs ?? 0}ms/${s.stats.netReq ?? 0}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.audioFrames ? ` mix=${(s.stats.audioFrames / 1000).toFixed(1)}kf/s,${s.stats.audioMs.toFixed(0)}ms/s` : ''}${s.stats.fallbacksPerSec ? ` fb=${(s.stats.fallbacksPerSec / 1000).toFixed(0)}k/s` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}${s.stats.topFallback && args.includes('--fallback') ? `\n    fallback/s: ${s.stats.topFallback}` : ''}${s.stats.pump && args.includes('--pump') ? `\n    pump: ${s.stats.pump}` : ''}${s.memoryMB ? ` mem=${s.memoryMB}MB` : ''}${s.stats.offlineTotalMB ? ` offline=${s.stats.offlineMB}/${s.stats.offlineTotalMB}MB` : ''}`);
+  if (s.stats) console.log(`[t=${t.toFixed(0)}s]${s.statsAt && Date.now() - s.statsAt > 2000 ? ` (no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)} s)` : ''} ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames} io=${s.stats.ioMB ?? 0}MB net=${s.stats.netMs ?? 0}ms/${s.stats.netReq ?? 0}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d/${s.stats.d3d.vaos ?? 0}vao` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.audioFrames ? ` mix=${(s.stats.audioFrames / 1000).toFixed(1)}kf/s,${s.stats.audioMs.toFixed(0)}ms/s` : ''}${s.stats.fallbacksPerSec ? ` fb=${(s.stats.fallbacksPerSec / 1000).toFixed(0)}k/s` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}${s.stats.topFallback && args.includes('--fallback') ? `\n    fallback/s: ${s.stats.topFallback}` : ''}${s.stats.pump && args.includes('--pump') ? `\n    pump: ${s.stats.pump}` : ''}${s.memoryMB ? ` mem=${s.memoryMB}MB` : ''}${s.stats.offlineTotalMB ? ` offline=${s.stats.offlineMB}/${s.stats.offlineTotalMB}MB` : ''}`);
+  if (heapSnapState === 'armed' && t >= heapSnapAt) { heapSnapState = 'running'; heapSnapshot().catch((e) => console.log('[heapsnap] failed:', e.message)); }
+  if (chromeTraceState === 'armed' && t >= chromeTraceOpt[0]) { chromeTraceState = 'running'; chromeTrace(chromeTraceOpt[1]).catch((e) => console.log('[trace] failed:', e.message)); }
+  if (heapProfState === 'armed' && t >= heapProfOpt[0]) { heapProfState = 'running'; heapProfile(heapProfOpt[1]).catch((e) => console.log('[heapprof] failed:', e.message)); }
+  if (heapAt !== null && !heapDone && t >= heapAt) { heapDone = true; heapCensus().catch((e) => console.log('[heap] failed:', e.message)); }
   if (profileState === 'armed' && t >= profileOpt[0]) { profileState = 'running'; profileWorker(profileOpt[1]).then(() => { profileState = 'done'; }).catch((e) => console.log('[profile] failed:', e.message)); }
   // (--hang-after <s>: the worker's call stack when it posts no stats for that long)
   if (s.status === 'running' && s.statsAt && Date.now() - s.statsAt > Number(opt('hang-after', 15)) * 1000 && !hangDumped) { hangDumped = true; await dumpWorkerStacks(`no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)}s`).catch((e) => console.log('[hang] dump failed:', e.message)); }

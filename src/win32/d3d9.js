@@ -3,7 +3,7 @@
 // (vs/ps 1.x–2.x), state blocks, swap chain, queries. Rendering goes through the pluggable
 // backend (`vm.host.gfx`, see gfx/d3d8-webgl.js).
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
-import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState } from './d3d8.js';
+import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 
@@ -182,7 +182,7 @@ export function registerDirect3D9(api, vm) {
       const rows = Math.ceil(h / block), cols = Math.ceil(w / block);
       for (let y = 0; y < rows; y++) mem.copy(db + ((dy / block | 0) + y) * dst.pitch + (dx / block | 0) * unit, sb + ((t / block | 0) + y) * src.pitch + (l / block | 0) * unit, cols * unit);
       dst.dirty = true; this.gfx?.surfaceUpdated?.(dst);
-      dst.trace?.(c, `UpdateSurface from #${src.id} (${src.width}x${src.height} fmt ${src.fmt}${src.history?.length ? ', last ' + src.history[src.history.length - 1].what : ''}) rect ${l},${t},${r},${b} to ${dx},${dy}`);
+      if (tracingResources()) dst.trace?.(c, `UpdateSurface from #${src.id} (${src.width}x${src.height} fmt ${src.fmt}${src.history?.length ? ', last ' + src.history[src.history.length - 1].what : ''}) rect ${l},${t},${r},${b} to ${dx},${dy}`);
       return D3D_OK;
     }
     GetRenderTargetData(c) { const rt = surfaceOf(c.arg(1)), dst = surfaceOf(c.arg(2)); if (!rt || !dst || rt.fmt !== dst.fmt) return D3DERR_INVALIDCALL; if (this.gfx?.readbackSurface) this.gfx.readbackSurface(rt); if (rt.mem) mem.copy(dst.ensureMem(c.proc), rt.mem, Math.min(rt.bytes, dst.bytes)); return D3D_OK; }
@@ -230,7 +230,7 @@ export function registerDirect3D9(api, vm) {
     CreateStateBlock(c) { const type = c.arg(1), pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const r = super.CreateStateBlock({ ...c, arg: (i) => (i === 1 ? type : i === 2 ? 0 : c.arg(i)) }); if (r !== D3D_OK) return r; const id = this.nextSB - 1; mem.write32(pp, com.create(c.proc, 'IDirect3DStateBlock9', new StateBlock(this, id))); return D3D_OK; }
     EndStateBlock(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; const r = super.EndStateBlock({ ...c, out32: () => {} }); if (r !== D3D_OK) return r; const id = this.nextSB - 1; mem.write32(pp, com.create(c.proc, 'IDirect3DStateBlock9', new StateBlock(this, id))); return D3D_OK; }
     GetSamplerState(c) { const s = c.arg(1) === 0x10 ? 16 : c.arg(1); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; c.out32(3, this.samplers[s].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetSamplerState(c) { const s = c.arg(1) === 0x10 ? 16 : c.arg(1), type = c.arg(2), v = c.arg(3); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; if (this.recording) { (this.recording.samp ??= new Map()).set(`${s}:${type}`, v); return D3D_OK; } if (this.samplers[s].get(type) === v) return D3D_OK; noteState(this, 'samp' + s, type, v); this.samplers[s].set(type, v); this.gfx?.setSamplerState?.(s, type, v); return D3D_OK; }
+    SetSamplerState(c) { const s = c.arg(1) === 0x10 ? 16 : c.arg(1), type = c.arg(2), v = c.arg(3); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; if (this.recording) { (this.recording.samp ??= new Map()).set(`${s}:${type}`, v); return D3D_OK; } if (this.samplers[s].get(type) === v) return D3D_OK; noteState(this, SAMP_NOTE_GROUPS[s] ?? 'samp' + s, type, v); this.samplers[s].set(type, v); this.gfx?.setSamplerState?.(s, type, v); return D3D_OK; }
     GetTexture(c) { const st = c.arg(1) === 0x10 ? 16 : c.arg(1), pp = c.arg(2); if (st >= this.textures.length || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
     SetTexture(c) { const st = c.arg(1) === 0x10 ? 16 : c.arg(1), t = c.arg(2); if (st >= this.textures.length) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; } if (this.textures[st] !== t) { if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
     SetScissorRect(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.scissor = { l: mem.readS32(p), t: mem.readS32(p + 4), r: mem.readS32(p + 8), b: mem.readS32(p + 12) }; return D3D_OK; }

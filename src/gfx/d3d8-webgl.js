@@ -18,6 +18,7 @@ const asFloat = (v) => { u32[0] = v >>> 0; return f32[0]; };
 const colorToVec = (c, out = new Float32Array(4)) => { out[0] = ((c >> 16) & 0xff) / 255; out[1] = ((c >> 8) & 0xff) / 255; out[2] = (c & 0xff) / 255; out[3] = ((c >>> 24) & 0xff) / 255; return out; };
 const IDENTITY = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 /** First n floats equal (NaN placeholders never match: fresh caches always upload). */
+const byNumber = (a, b) => a - b;
 const sameF32 = (a, b, n) => { for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
 const isDxt = (f) => f === FMT.DXT1 || f === FMT.DXT2 || f === FMT.DXT3 || f === FMT.DXT4 || f === FMT.DXT5;
 /** FVF attribute name -> DX9 semantic name (shaders used together with SetFVF) */
@@ -122,6 +123,7 @@ export class WebGLDevice {
   constructor(gl, dev, opts = {}) {
     this.gl = gl; this.dev = dev; this.mem = dev.proc.mem;
     this.log = opts.log ?? (() => {});
+    this.pc = opts.programCache ?? null; // (shared by the devices of this GL context, see createWebGLBackend)
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
@@ -135,7 +137,7 @@ export class WebGLDevice {
     this.invalidateGlState();
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
-    this.stats = { draws: 0, programs: 0, uploads: 0, errors: 0 };
+    this.stats = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
     this.tmp = { v4: new Float32Array(4) };
     this.fvfCache = new Map();
     this.frameDraws = 0;
@@ -176,7 +178,7 @@ export class WebGLDevice {
     const gl = this.gl;
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
-    this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null;
+    this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null; this.pc?.ready.clear();
     this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
@@ -191,7 +193,7 @@ export class WebGLDevice {
   /** A locked range was written: remember the union of dirty bytes so the upload can be partial. */
   bufferUpdated(b, start = 0, size = b.length) {
     const end = Math.min(b.length, start + size);
-    if (!b.dirtyRange) b.dirtyRange = [start, end]; else { if (start < b.dirtyRange[0]) b.dirtyRange[0] = start; if (end > b.dirtyRange[1]) b.dirtyRange[1] = end; }
+    if (!b.dirtyRange) { b.dirtyLo = start; b.dirtyHi = end; b.dirtyRange = true; } else { if (start < b.dirtyLo) b.dirtyLo = start; if (end > b.dirtyHi) b.dirtyHi = end; }
     b.dirty = true;
   }
   destroyResource(r) {
@@ -282,9 +284,11 @@ export class WebGLDevice {
     if (b.dirty) {
       gl.bindBuffer(target, g.buf);
       if (kind === 'ib' && this.curVao) this.curVao.ib = g.buf; // an element array binding is state of the bound VAO
-      if (g.size !== b.length) { gl.bufferData(target, this.mem.bytes(b.mem, b.length), b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW); g.size = b.length; }
-      else { const [s, e] = b.dirtyRange ?? [0, b.length]; if (e > s) gl.bufferSubData(target, s, this.mem.bytes(b.mem + s, e - s)); }
-      b.dirty = false; b.dirtyRange = null; this.stats.uploads++;
+      // (uploads read the guest memory through offsets into its one view: no view object per upload; a length of 0
+      // would mean "to the end of the source" to GL)
+      if (g.size !== b.length) { if (b.length > 0) gl.bufferData(target, this.mem.u8, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW, b.mem >>> 0, b.length); else gl.bufferData(target, 0, gl.STATIC_DRAW); g.size = b.length; }
+      else { const s = b.dirtyRange ? b.dirtyLo : 0, e = b.dirtyRange ? b.dirtyHi : b.length; if (e > s) gl.bufferSubData(target, s, this.mem.u8, (b.mem + s) >>> 0, e - s); }
+      b.dirty = false; b.dirtyRange = false; this.stats.uploads++;
     }
     return g;
   }
@@ -302,7 +306,7 @@ export class WebGLDevice {
     const back = dev.backBuffers.includes(rt);
     let f = this.fbos.get(rt.id);
     if (!f) {
-      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null, back };
+      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null, back, flip: !back };
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
@@ -318,7 +322,7 @@ export class WebGLDevice {
       if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
     } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
-    return { w: f.w, h: f.h, flip: !back };
+    return f; // (w, h, flip: read by every draw — the record itself, no object per call)
   }
   setRenderTarget() {}
   readbackSurface(s) {
@@ -366,6 +370,7 @@ export class WebGLDevice {
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
     gl.flush(); this.frame++;
+    if (this.pc?.queue.length) this.prewarmStep();
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
     if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
   }
@@ -521,11 +526,22 @@ export class WebGLDevice {
       if (!ps && colorOp === TOP.DISABLE) break;
     }
     if (this.rs(RS.LIGHTING, 1) !== 0) { // (the enabled lights' types, in index order)
-      const order = [...dev.lightEnabled].sort((a, b) => a - b);
+      const order = this.enabledLights();
       sig[n++] = order.length;
       for (const i of order) { const l = dev.lights.get(i); sig[n++] = l ? (l[0] | 0) : -1; }
     }
     return n;
+  }
+  /** the enabled light indices in increasing order (sorted again only after a light change) */
+  enabledLights() {
+    const dev = this.dev;
+    if (this.lightOrderVersion !== dev.lightVersion || this.lightOrderDev !== dev) {
+      const o = this.lightOrder ??= []; o.length = 0; // (the same array: light data re-sent per object moves the version)
+      for (const i of dev.lightEnabled) o.push(i);
+      if (o.length > 1) o.sort(byNumber);
+      this.lightOrderVersion = dev.lightVersion; this.lightOrderDev = dev;
+    }
+    return this.lightOrder;
   }
   /** a small integer per object (program signatures compare shaders and declarations by identity) */
   objId(o) {
@@ -573,27 +589,47 @@ export class WebGLDevice {
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
     let fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     if (flat) { vsSrc = vsSrc.replace('out vec4 v_color0; out vec4 v_color1;', 'flat out vec4 v_color0; flat out vec4 v_color1;'); fsSrc = fsSrc.replace('in vec4 v_color0; in vec4 v_color1;', 'flat in vec4 v_color0; flat in vec4 v_color1;'); }
-    p = this.compile(vsSrc, fsSrc, key, attrNames);
+    p = this.takePrewarmed(key, vsSrc, fsSrc, attrNames) ?? this.compile(vsSrc, fsSrc, key, attrNames);
     p.vs = L.shader; p.ps = ps;
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
     if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} key=${key}${L.code ? `\nD3D VS\n${disasmShader9(L.code)}` : ''}${ps ? `\nD3D PS\n${disasmShader9(ps.code)}` : ''}\nGLSL VS\n${vsSrc}\nGLSL FS\n${fsSrc}`);
     this.programs.set(key, p);
     return { p, L, stages, lighting, fog, lightTypes, ps };
   }
+  /**
+   * Build a program at its first draw. The build is learned (programCache.learned: the key and sources, sent to the
+   * server by the worker) so that later sessions compile it in the background before it is needed (prewarmStep).
+   */
   compile(vsSrc, fsSrc, key, attrNames) {
-    const gl = this.gl;
     const t0 = performance.now();
-    const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { this.stats.errors++; this.log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(s)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`); } return s; };
+    const p = this.finishProgram(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc);
+    this.stats.programs++;
+    { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
+      if (ms > 100 && (this.slowProgramLogs = (this.slowProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: program built in ${ms.toFixed(0)} ms: VS ${vsSrc.length} chars, FS ${fsSrc.length} chars, key ${key.slice(0, 160)}`); }
+    const pc = this.pc;
+    if (pc && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) });
+    return p;
+  }
+  /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
+  startProgram(vsSrc, fsSrc, attrNames) {
+    const gl = this.gl;
+    const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
     const prog = gl.createProgram();
     const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
     gl.attachShader(prog, vs); gl.attachShader(prog, fs);
     attrNames.forEach((n, i) => gl.bindAttribLocation(prog, i, n));
     gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { this.stats.errors++; this.log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`); }
-    gl.deleteShader(vs); gl.deleteShader(fs);
-    this.stats.programs++;
-    { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
-      if (ms > 100 && (this.slowProgramLogs = (this.slowProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: program built in ${ms.toFixed(0)} ms: VS ${vsSrc.length} chars, FS ${fsSrc.length} chars, key ${key.slice(0, 160)}`); }
+    return { prog, vs, fs };
+  }
+  /** The program record of a started build: link status (compile logs on failure), uniforms, sampler units. */
+  finishProgram(h, key, attrNames, vsSrc, fsSrc) {
+    const gl = this.gl, prog = h.prog;
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      this.stats.errors++;
+      for (const [sh, src] of [[h.vs, vsSrc], [h.fs, fsSrc]]) if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) this.log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(sh)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`);
+      this.log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`);
+    }
+    gl.deleteShader(h.vs); gl.deleteShader(h.fs);
     const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
     const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
@@ -602,6 +638,38 @@ export class WebGLDevice {
     gl.useProgram(prog); this.gs.prog = prog;
     for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
     return { prog, u, attrNames, key };
+  }
+  /**
+   * Programs of earlier sessions (programCache.queue, from the server) compiled ahead of their first draw, a few per
+   * frame: with KHR_parallel_shader_compile the GPU process builds them on its own threads while the game runs (the
+   * loading screens, typically). A draw that needs one takes it when its sources are the ones it would build.
+   */
+  prewarmStep() {
+    const pc = this.pc;
+    for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
+      const e = pc.queue.shift();
+      if (pc.ready.has(e.key) || this.programs.has(e.key) || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs)) continue;
+      pc.ready.set(e.key, { ...this.startProgram(e.vs, e.fs, e.attrs), vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs });
+      pc.started++;
+    }
+  }
+  /** A prewarmed build of `key` with these very sources (taken out of the cache), or null. */
+  takePrewarmed(key, vsSrc, fsSrc, attrNames) {
+    const pc = this.pc, e = pc?.ready.get(key);
+    if (!e) return null;
+    pc.ready.delete(key);
+    if (e.vsSrc === vsSrc && e.fsSrc === fsSrc && e.attrs.length === attrNames.length && e.attrs.every((a, i) => a === attrNames[i])) { pc.hits++; return this.finishProgram(e, key, attrNames, vsSrc, fsSrc); }
+    // (built by another version of the translators: dropped, built again from the current sources)
+    pc.stale++;
+    this.gl.deleteShader(e.vs); this.gl.deleteShader(e.fs); this.gl.deleteProgram(e.prog);
+    return null;
+  }
+
+  /** A transform slot to program uniform `l`, when its version moved since this program last received it (`seen`). */
+  uploadTransform(seen, slot, l, tsv, tall) {
+    if (!l) return;
+    const sv = Math.max(tsv.get(slot) ?? 0, tall);
+    if (seen.get(slot) !== sv) { seen.set(slot, sv); this.gl.uniformMatrix4fv(l, false, this.dev.transforms.get(slot) ?? IDENTITY); }
   }
 
   // ---------------------------------------------------------------- state application
@@ -629,11 +697,10 @@ export class WebGLDevice {
     if (pv.t !== dev.transformVersion) {
       pv.t = dev.transformVersion;
       const seen = pv.ts ?? (pv.ts = new Map());
-      const upload = (slot, l) => { if (!l) return; const sv = Math.max(tsv.get(slot) ?? 0, tall); if (seen.get(slot) !== sv) { seen.set(slot, sv); gl.uniformMatrix4fv(l, false, dev.transforms.get(slot) ?? IDENTITY); } };
-      for (let i = 0; i < 4; i++) upload(TS_WORLD + i, U(U_WORLD[i]));
-      upload(TS_VIEW, U('u_view'));
-      upload(TS_PROJECTION, U('u_proj'));
-      for (let i = 0; i < MAX_STAGES; i++) upload(TS_TEXTURE0 + i, U(U_TEXMAT[i]));
+      for (let i = 0; i < 4; i++) this.uploadTransform(seen, TS_WORLD + i, U(U_WORLD[i]), tsv, tall);
+      this.uploadTransform(seen, TS_VIEW, U('u_view'), tsv, tall);
+      this.uploadTransform(seen, TS_PROJECTION, U('u_proj'), tsv, tall);
+      for (let i = 0; i < MAX_STAGES; i++) this.uploadTransform(seen, TS_TEXTURE0 + i, U(U_TEXMAT[i]), tsv, tall);
     }
     if (pv.vp !== dev.viewportVersion) {
       pv.vp = dev.viewportVersion;
@@ -648,19 +715,18 @@ export class WebGLDevice {
       // usually the same one): only the slots that really changed reach GL
       const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(17).fill(NaN), amb: -1, n: -1, slots: [] });
       const m = dev.material;
-      if (!sameF32(lv.mat, m, 17)) { lv.mat.set(m.subarray(0, 17)); gl.uniform4fv(U('u_matDiffuse'), m.subarray(0, 4)); gl.uniform4fv(U('u_matAmbient'), m.subarray(4, 8)); gl.uniform4fv(U('u_matSpecular'), m.subarray(8, 12)); gl.uniform4fv(U('u_matEmissive'), m.subarray(12, 16)); gl.uniform1f(U('u_matPower'), m[16]); }
+      if (!sameF32(lv.mat, m, 17)) { for (let k = 0; k < 17; k++) lv.mat[k] = m[k]; gl.uniform4fv(U('u_matDiffuse'), m, 0, 4); gl.uniform4fv(U('u_matAmbient'), m, 4, 4); gl.uniform4fv(U('u_matSpecular'), m, 8, 4); gl.uniform4fv(U('u_matEmissive'), m, 12, 4); gl.uniform1f(U('u_matPower'), m[16]); }
       const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
       let n = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
-      if (this.lightOrderVersion !== dev.lightVersion) { this.lightOrder = [...dev.lightEnabled].sort((a, b) => a - b); this.lightOrderVersion = dev.lightVersion; }
-      for (const i of this.lightOrder) {
+      for (const i of this.enabledLights()) {
         const l = dev.lights.get(i); if (!l || n >= MAX_LIGHTS) continue;
         const slot = lv.slots[n] ?? (lv.slots[n] = { data: new Float32Array(26).fill(NaN), view: -1 });
         if (slot.view !== viewVersion || !sameF32(slot.data, l, 26)) {
-          slot.view = viewVersion; slot.data.set(l.subarray(0, 26));
+          slot.view = viewVersion; for (let k = 0; k < 26; k++) slot.data[k] = l[k];
           const LU = LIGHT_U[n];
           gl.uniform1i(U(LU.type), l[0] | 0);
-          gl.uniform4fv(U(LU.diffuse), l.subarray(1, 5)); gl.uniform4fv(U(LU.specular), l.subarray(5, 9)); gl.uniform4fv(U(LU.ambient), l.subarray(9, 13));
+          gl.uniform4fv(U(LU.diffuse), l, 1, 4); gl.uniform4fv(U(LU.specular), l, 5, 4); gl.uniform4fv(U(LU.ambient), l, 9, 4);
           const px = l[13], py = l[14], pz = l[15];
           gl.uniform3f(U(LU.position), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
           const dx = l[16], dy = l[17], dz = l[18];
@@ -690,8 +756,8 @@ export class WebGLDevice {
       for (let i = 0; i < MAX_STAGES; i++) {
         const l = U(U_BUMPENV[i]); if (!l) continue;
         const a = this.tss(i, TSS.BUMPENVMAT00, 0), b = this.tss(i, TSS.BUMPENVMAT01, 0), c = this.tss(i, TSS.BUMPENVMAT10, 0), d = this.tss(i, TSS.BUMPENVMAT11, 0);
-        const k = 'b' + i; const prev = sv[k];
-        if (!prev || prev[0] !== a || prev[1] !== b || prev[2] !== c || prev[3] !== d) { sv[k] = [a, b, c, d]; gl.uniform4f(l, asFloat(a), asFloat(b), asFloat(c), asFloat(d)); }
+        const prev = sv.bump ?? (sv.bump = new Float64Array(4 * MAX_STAGES).fill(NaN)), o = 4 * i;
+        if (prev[o] !== a || prev[o + 1] !== b || prev[o + 2] !== c || prev[o + 3] !== d) { prev[o] = a; prev[o + 1] = b; prev[o + 2] = c; prev[o + 3] = d; gl.uniform4f(l, asFloat(a), asFloat(b), asFloat(c), asFloat(d)); }
       }
     }
     if (pv.c !== dev.constVersion) {
@@ -750,21 +816,22 @@ export class WebGLDevice {
     if ((zbias || slope) && (gs.poSlope !== slope || gs.poBias !== zbias)) { gl.polygonOffset(slope, zbias); gs.poSlope = slope; gs.poBias = zbias; }
     const stencil = this.rs(RS.STENCILENABLE, 0) !== 0;
     this.glEnable(gl.STENCIL_TEST, stencil);
-    if (stencil) { // cached as one key: some games set up stencil for every draw
+    if (stencil) { // cached: some games set up stencil for every draw
       // the reference keeps the bits of the 8-bit stencil buffer, as in Direct3D (GL clamps it instead, as a signed int:
       // a reference of 0x80808080 became 0 — a game's shadow volumes, tested against 0x80, were never counted)
       const ref = this.rs(RS.STENCILREF, 0) & 0xff, mask = this.rs(RS.STENCILMASK, 0xffffffff), wmask = this.rs(RS.STENCILWRITEMASK, 0xffffffff);
       const two = dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0);
       const f = this.rs(RS.STENCILFUNC, 8), o1 = this.rs(RS.STENCILFAIL, 1), o2 = this.rs(RS.STENCILZFAIL, 1), o3 = this.rs(RS.STENCILPASS, 1);
-      const key = two ? `${f},${o1},${o2},${o3},${ref},${mask},${wmask}|${this.rs(RS9.CCW_STENCILFUNC, 8)},${this.rs(RS9.CCW_STENCILFAIL, 1)},${this.rs(RS9.CCW_STENCILZFAIL, 1)},${this.rs(RS9.CCW_STENCILPASS, 1)}` : `${f},${o1},${o2},${o3},${ref},${mask},${wmask}`;
-      if (gs.stencil !== key) {
-        gs.stencil = key;
+      const cf = two ? this.rs(RS9.CCW_STENCILFUNC, 8) : 0, c1 = two ? this.rs(RS9.CCW_STENCILFAIL, 1) : 0, c2 = two ? this.rs(RS9.CCW_STENCILZFAIL, 1) : 0, c3 = two ? this.rs(RS9.CCW_STENCILPASS, 1) : 0;
+      // (compared field by field: a key string built per draw was a top source of garbage, hence of GC pauses)
+      if (gs.sf !== f || gs.so1 !== o1 || gs.so2 !== o2 || gs.so3 !== o3 || gs.sref !== ref || gs.smask !== mask || gs.swmask !== wmask || gs.scf !== cf || gs.sc1 !== c1 || gs.sc2 !== c2 || gs.sc3 !== c3) {
+        gs.sf = f; gs.so1 = o1; gs.so2 = o2; gs.so3 = o3; gs.sref = ref; gs.smask = mask; gs.swmask = wmask; gs.scf = cf; gs.sc1 = c1; gs.sc2 = c2; gs.sc3 = c3;
         if (two) {
           // frontFace (below) makes GL front faces the D3D clockwise ones, so the CCW_* states are GL back
           gl.stencilFuncSeparate(gl.FRONT, this.cmp(f), ref, mask);
           gl.stencilOpSeparate(gl.FRONT, this.stencilOp(o1), this.stencilOp(o2), this.stencilOp(o3));
-          gl.stencilFuncSeparate(gl.BACK, this.cmp(this.rs(RS9.CCW_STENCILFUNC, 8)), ref, mask);
-          gl.stencilOpSeparate(gl.BACK, this.stencilOp(this.rs(RS9.CCW_STENCILFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILZFAIL, 1)), this.stencilOp(this.rs(RS9.CCW_STENCILPASS, 1)));
+          gl.stencilFuncSeparate(gl.BACK, this.cmp(cf), ref, mask);
+          gl.stencilOpSeparate(gl.BACK, this.stencilOp(c1), this.stencilOp(c2), this.stencilOp(c3));
         } else {
           gl.stencilFunc(this.cmp(f), ref, mask);
           gl.stencilOp(this.stencilOp(o1), this.stencilOp(o2), this.stencilOp(o3));
@@ -893,40 +960,63 @@ export class WebGLDevice {
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
     this.dump(`f${this.frame}-draw${String(this.frameDraws).padStart(4, '0')}-${what}`, w, h, rgba);
   }
-  cmp(f) { const gl = this.gl; return [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS][f] ?? gl.ALWAYS; }
-  stencilOp(o) { const gl = this.gl; return [gl.KEEP, gl.KEEP, gl.ZERO, gl.REPLACE, gl.INCR, gl.DECR, gl.INVERT, gl.INCR_WRAP, gl.DECR_WRAP][o] ?? gl.KEEP; }
-  blend(b) { const gl = this.gl; return [gl.ZERO, gl.ZERO, gl.ONE, gl.SRC_COLOR, gl.ONE_MINUS_SRC_COLOR, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.DST_ALPHA, gl.ONE_MINUS_DST_ALPHA, gl.DST_COLOR, gl.ONE_MINUS_DST_COLOR, gl.SRC_ALPHA_SATURATE, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_COLOR, gl.ONE_MINUS_CONSTANT_COLOR][b] ?? gl.ONE; }
+  // (the Direct3D -> GL enum tables are built once per context: these run for every draw)
+  cmp(f) { const gl = this.gl; return (this.cmpTable ??= [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS])[f] ?? gl.ALWAYS; }
+  stencilOp(o) { const gl = this.gl; return (this.stencilOpTable ??= [gl.KEEP, gl.KEEP, gl.ZERO, gl.REPLACE, gl.INCR, gl.DECR, gl.INVERT, gl.INCR_WRAP, gl.DECR_WRAP])[o] ?? gl.KEEP; }
+  blend(b) { const gl = this.gl; return (this.blendTable ??= [gl.ZERO, gl.ZERO, gl.ONE, gl.SRC_COLOR, gl.ONE_MINUS_SRC_COLOR, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.DST_ALPHA, gl.ONE_MINUS_DST_ALPHA, gl.DST_COLOR, gl.ONE_MINUS_DST_COLOR, gl.SRC_ALPHA_SATURATE, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_COLOR, gl.ONE_MINUS_CONSTANT_COLOR])[b] ?? gl.ONE; }
 
-  /** Bind vertex attributes for the current layout from the device's streams (or a UP buffer). */
   /**
    * Bind the vertex attributes of the current layout from the device's streams (or a UP buffer) through a cached
-   * vertex array object: one VAO per (program, stream buffers, strides, base offsets), so a draw that repeats a known
-   * combination costs one bindVertexArray instead of a buffer bind, enable/disable and pointer call per attribute.
+   * vertex array object, so a draw that repeats a known combination costs one bindVertexArray instead of a buffer
+   * bind, enable/disable and pointer call per attribute. One stream (the common case): one VAO per (program, buffer,
+   * stride), found by numbers, whose attribute offsets are re-pointed when the draw's base offset moves (dynamic
+   * buffers filled at a moving position: a VAO per base offset was created for ~2% of all draws, then all of them
+   * dropped every 8192). Several streams or a UP draw: one VAO per (program, buffers, strides, base offsets).
    */
-  bindAttributes(P, L, up = null, baseVertex = 0) {
+  bindAttributes(P, L, upStride = 0, baseVertex = 0) {
     const gl = this.gl, dev = this.dev;
     const vaos = this.vaos ?? (this.vaos = new Map());
     if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; }
     const streams = L.layout.streamList ?? (L.layout.streamList = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]]);
-    // one stream (the common case): VAOs found by numbers (program -> buffer -> base * 256 + stride), no key string
-    if (!up && streams.length === 1) {
-      const [n, st] = streams[0], s = dev.streams[n], vb = this.comImpl(s?.vb);
+    if (!upStride && streams.length === 1) {
+      const s0 = streams[0], s = dev.streams[s0[0]], vb = s ? this.comImpl(s.vb) : null;
       if (vb) {
-        const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+        const stride = s.stride || s0[1].stride, base = (s.offset ?? 0) + baseVertex * stride;
+        const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
         const byVb = P.vaoByVb ?? (P.vaoByVb = new Map());
-        const v = byVb.get(vb.id)?.get(base * 256 + stride);
-        if (v && vaos.get(v.key) === v) {
-          this.glBuffer(vb, 'vb'); // uploads pending data
-          if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
-          this.curVao = v;
-          return true;
+        let m = byVb.get(vb.id), v = m?.get(stride);
+        if (v && vaos.get(v.key) !== v) v = null; // (dropped since)
+        if (!v) {
+          if (vaos.size >= 8192) { this.dropVaos(); m = null; }
+          const key = `${P.vid}|${vb.id}:${stride}`;
+          v = { vao: gl.createVertexArray(), ib: null, key, bufs: [vb.id], P, base: NaN, specs: this.attrSpecs(P, L, s0[1].attrs) };
+          this.stats.vaos++;
+          vaos.set(key, v); P.vaoKeys.push(key);
+          if (!m) byVb.set(vb.id, (m = new Map()));
+          m.set(stride, v);
+          let set = (this.vaosByBuf ??= new Map()).get(vb.id); if (!set) this.vaosByBuf.set(vb.id, (set = new Set())); set.add(key);
+          gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
+          for (let i = 0; i < v.specs.length; i += 5) gl.enableVertexAttribArray(v.specs[i]);
+        } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
+        if (v.base !== base) {
+          const sp = v.specs;
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          for (let i = 0; i < sp.length; i += 5) gl.vertexAttribPointer(sp[i], sp[i + 1], sp[i + 2], sp[i + 3] !== 0, stride, base + sp[i + 4]);
+          v.base = base;
         }
+        this.curVao = v;
+        return true;
       }
     }
-    let key = up ? `${P.vid}|up${up.stride}` : `${P.vid}`;
+    // a UP draw (vertices from memory through the shared upVbo): its VAO found by the stride, no key string per draw
+    if (upStride && streams.length === 1) {
+      const v = P.upVaos?.get(upStride);
+      if (v && vaos.get(v.key) === v) { if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
+    }
+    let key = upStride ? `${P.vid}|up${upStride}` : `${P.vid}`;
     const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
     for (const [n, st] of streams) {
-      if (up) { bound.push([n, st.attrs, up.stride, 0, this.upVbo, -1]); continue; }
+      if (upStride) { bound.push([n, st.attrs, upStride, 0, this.upVbo, -1]); continue; }
       const s = dev.streams[n], vb = this.comImpl(s?.vb);
       if (!vb) continue;
       const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
@@ -938,25 +1028,39 @@ export class WebGLDevice {
     if (!v) {
       if (vaos.size >= 8192) this.dropVaos();
       v = { vao: gl.createVertexArray(), ib: null, key, bufs: bound.map((b) => b[5]).filter((x) => x >= 0), P };
+      this.stats.vaos++;
       vaos.set(key, v); P.vaoKeys.push(key);
-      if (!up && bound.length === 1 && streams.length === 1) { const [, , stride, base, , id] = bound[0]; const byVb = P.vaoByVb ?? (P.vaoByVb = new Map()); let m = byVb.get(id); if (!m) byVb.set(id, (m = new Map())); m.set(base * 256 + stride, v); }
+      if (upStride && streams.length === 1) (P.upVaos ??= new Map()).set(upStride, v);
       for (const id of v.bufs) { let set = (this.vaosByBuf ??= new Map()).get(id); if (!set) this.vaosByBuf.set(id, (set = new Set())); set.add(key); }
       gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
-      const attrType = (a) => (a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT);
-      const normalized = (a) => a.type === 'color' || a.type === 'ubyte4n' || a.type === 'shortn' || a.type === 'ushortn';
-      const nameOf = (a) => (L.code && L.dx9 ? 'a_' + (a.sem ?? FVF_SEM[a.name] ?? a.name) : L.code ? 'a_v' + a.reg : 'a_' + a.name);
       for (const [, attrs, stride, base, buf] of bound) {
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-        for (const a of attrs) {
-          const loc = P.attrNames.indexOf(nameOf(a));
-          if (loc < 0) continue;
-          gl.enableVertexAttribArray(loc);
-          gl.vertexAttribPointer(loc, a.comps, attrType(a), normalized(a), stride, base + a.offset);
-        }
+        const sp = this.attrSpecs(P, L, attrs);
+        for (let i = 0; i < sp.length; i += 5) { gl.enableVertexAttribArray(sp[i]); gl.vertexAttribPointer(sp[i], sp[i + 1], sp[i + 2], sp[i + 3] !== 0, stride, base + sp[i + 4]); }
       }
     } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
     this.curVao = v;
     return true;
+  }
+  /**
+   * The attribute pointers of `attrs` (one stream's layout) for program P, flat: location, components, GL type,
+   * normalized (0/1), offset in the vertex; attributes the program does not read are left out. Cached per program.
+   */
+  attrSpecs(P, L, attrs) {
+    const cache = P.attrSpecs ?? (P.attrSpecs = new Map());
+    let sp = cache.get(attrs);
+    if (sp) return sp;
+    const gl = this.gl, out = [];
+    for (const a of attrs) {
+      const name = L.code && L.dx9 ? 'a_' + (a.sem ?? FVF_SEM[a.name] ?? a.name) : L.code ? 'a_v' + a.reg : 'a_' + a.name;
+      const loc = P.attrNames.indexOf(name);
+      if (loc < 0) continue;
+      const type = a.type === 'color' || a.type === 'ubyte4' || a.type === 'ubyte4n' ? gl.UNSIGNED_BYTE : a.type === 'short' || a.type === 'shortn' ? gl.SHORT : a.type === 'ushortn' ? gl.UNSIGNED_SHORT : a.type === 'half' ? gl.HALF_FLOAT : gl.FLOAT;
+      const norm = a.type === 'color' || a.type === 'ubyte4n' || a.type === 'shortn' || a.type === 'ushortn';
+      out.push(loc, a.comps, type, norm ? 1 : 0, a.offset);
+    }
+    sp = Int32Array.from(out); cache.set(attrs, sp);
+    return sp;
   }
   /** Bind an index buffer into the current VAO (element array bindings are VAO state). */
   bindIndices(buf) { if (this.curVao.ib !== buf) { this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, buf); this.curVao.ib = buf; } }
@@ -967,7 +1071,7 @@ export class WebGLDevice {
     if (bufId !== undefined) this.vaosByBuf?.delete(bufId);
     if (bufId === undefined && !P) this.vaosByBuf?.clear();
   }
-  glMode(type) { const gl = this.gl; return [0, gl.POINTS, gl.LINES, gl.LINE_STRIP, gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][type] ?? gl.TRIANGLES; }
+  glMode(type) { const gl = this.gl; return (this.modeTable ??= [0, gl.POINTS, gl.LINES, gl.LINE_STRIP, gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN])[type] ?? gl.TRIANGLES; }
   vertexCount(type, prims) { switch (type) { case PT.POINTLIST: return prims; case PT.LINELIST: return prims * 2; case PT.LINESTRIP: return prims + 1; case PT.TRIANGLELIST: return prims * 3; default: return prims + 2; } }
 
   /** GL error check after the first draws (diagnostics for the log) */
@@ -992,7 +1096,7 @@ export class WebGLDevice {
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dp');
-    this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`);
+    if (this.stats.draws <= 64) this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`); // (the message is built only while it is checked)
     if (this.stats.draws <= 2) this.debugDraw(P, info);
   }
   /** first-draws diagnostics: viewport, attribute setup, vertex 0, a pixel after the draw */
@@ -1034,14 +1138,16 @@ export class WebGLDevice {
     if (this.capturing) this.dumpTarget('dip');
     void minIdx;
   }
+  /** Upload `n` bytes of guest memory at `addr` into the buffer bound to `target` (the UP draws' shared buffers). */
+  streamData(target, addr, n) { if (n > 0) this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
   drawPrimitiveUP(type, count, data, stride) {
     const gl = this.gl;
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     const n = this.vertexCount(type, count);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.mem.bytes(data, n * stride), gl.STREAM_DRAW);
-    if (!this.bindAttributes(P, info.L, { stride })) return;
+    this.streamData(gl.ARRAY_BUFFER, data, n * stride);
+    if (!this.bindAttributes(P, info.L, stride)) return;
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++;
@@ -1054,10 +1160,10 @@ export class WebGLDevice {
     const n = this.vertexCount(type, count);
     const short = ifmt === FMT.INDEX16;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.mem.bytes(data, (minIdx + numV) * stride), gl.STREAM_DRAW);
-    if (!this.bindAttributes(P, info.L, { stride })) return;
+    this.streamData(gl.ARRAY_BUFFER, data, (minIdx + numV) * stride);
+    if (!this.bindAttributes(P, info.L, stride)) return;
     this.bindIndices(this.upIbo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.mem.bytes(idx, n * (short ? 2 : 4)), gl.STREAM_DRAW);
+    this.streamData(gl.ELEMENT_ARRAY_BUFFER, idx, n * (short ? 2 : 4));
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++;
@@ -1076,6 +1182,9 @@ export function createWebGLBackend(canvas, log, dump) {
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
   canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); backend.device?.contextRestored(); });
-  const backend = { gl, device: null, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL }); } };
+  // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
+  // programs this session had to build at a draw (learned: sent to the server by the worker)
+  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), started: 0, hits: 0, stale: 0 };
+  const backend = { gl, device: null, programCache, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); } };
   return backend;
 }
