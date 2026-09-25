@@ -490,6 +490,26 @@
   (`jit`) ; chaque image de 150 ms et plus envoie sa décomposition (traduction, programmes, lectures, attentes) :
   événement `slow`, les 150 premières par session.
 
+## Second jeu : La Bataille pour la Terre du Milieu II, écran de sélection (2026-09-25, soir)
+- **BFME2** (`manifests/bfme2.json`, dossier `/srv/games/bfme2-109/rom`, exécutable `game.dat`) : menu principal, menu 3D
+  (shell map), escarmouche rendue (terrain, eau, arbres, forteresse, unités, interface), son. Écrit pour lui, en
+  générique : **d3dx9** (toutes les versions `d3dx9_24..43`, D057) — maths, textures depuis fichiers (DDS/TGA/BMP/JPEG/
+  PNG, encodeur DXT), assembleur de shaders, **framework d'effets** (binaires fx_2_0, ID3DXEffect, préshaders) ; **shlwapi** ;
+  MoveFileW, RemoveDirectoryW, GetDiskFreeSpace(Ex)W. Corrections de fidélité trouvées sur ses shaders (blocs de
+  commentaires contenant 0x0000FFFF, adressage relatif vs 1.x, compteurs de boucles `defi`, `mova` masqué, instructions
+  de contrôle à sources seules) et sur ses effets (dimensions des matrices, table des états).
+- **Performance d'une partie** (CPU seul, `--gl-discard`, machine chargée) : ~13 → ~25 fps (runtime des effets, 9421968),
+  puis **40,0 → 32,3 ms de CPU du worker par image** (changements de shader / déclaration comptés seulement s'ils changent
+  vraiment, signature de programme réduite quand les deux étages sont programmables, préshaders compilés en JavaScript).
+  Démarrage : ~56 s jusqu'au menu (second lancement, public), dont ~45 s de calcul du jeu lui-même (code invité à 92 %).
+- **Écran de sélection** : une carte par jeu (image d'accueil du jeu désignée par le manifest, description, taille,
+  dernier joué), flèches/Entrée, « Games » dans le coin et « Back to the games » après une sortie ; orth2 démarre
+  sur cet écran (plus de `--default`).
+- **Mesure** : `--cpu-window a:b` donne le temps CPU du fil du worker par image (lu dans /proc) — stable sous la charge,
+  contrairement aux fps (les A/B simultanés ont un effet de position de ~13 %) ; `--control <fichier>` pilote une
+  session en cours (clics, touches, captures) ; `--pump` donne la part du worker par thread invité (le thread principal
+  du jeu : ~90 %).
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques

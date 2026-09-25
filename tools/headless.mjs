@@ -29,6 +29,8 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
 // --capture-at @N captures N seconds after the anchor.
 let afterWait = false;
+const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
+if (control) fs.writeFileSync(control.file, '');
 const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
@@ -285,7 +287,9 @@ async function profileWorker(seconds) {
   // callers of the five hottest entries (parent frames in the sampled call tree)
   const parentOf = new Map(); for (const n of p.nodes) for (const ch of n.children ?? []) parentOf.set(ch, n.id);
   const keyOf = (n) => `${n.callFrame.functionName || '(anonymous)'} ${n.callFrame.url.replace(/^.*\/src\//, 'src/')}:${n.callFrame.lineNumber + 1}`;
-  for (const [k] of top.slice(0, 5)) {
+  // (ORTHROS_PROFILE_CALLERS=name,name: the callers of those functions too)
+  const extra = (process.env.ORTHROS_PROFILE_CALLERS ?? '').split(',').filter(Boolean);
+  for (const [k] of [...top.slice(0, 5), ...[...self].filter(([k]) => extra.includes(k.split(' ')[0]))]) {
     const callers = new Map(); let n0 = 0;
     for (const [id, c] of counts) { const n = byId.get(id); if (keyOf(n) !== k) continue; const par = byId.get(parentOf.get(id)); const pk = par ? keyOf(par) : '(root)'; callers.set(pk, (callers.get(pk) ?? 0) + c); n0 += c; }
     console.log(`[profile] callers of ${k.split(' ')[0]}: ${[...callers].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([pk, c]) => `${pk.split(' ')[0]} (${pk.split(' ')[1] ?? ''}) ${(100 * c / n0).toFixed(0)}%`).join(', ')}`);
@@ -347,6 +351,23 @@ for (;;) {
   // (--hang-after <s>: the worker's call stack when it posts no stats for that long)
   if (s.status === 'running' && s.statsAt && Date.now() - s.statsAt > Number(opt('hang-after', 15)) * 1000 && !hangDumped) { hangDumped = true; await dumpWorkerStacks(`no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)}s`).catch((e) => console.log('[hang] dump failed:', e.message)); }
   if (firstFrameAt === null && s.stats?.d3d?.frames > 0) { firstFrameAt = t; console.log(`[input] first Direct3D frame at ${t.toFixed(0)}s`); }
+  // --control <file>: commands appended to that file while the game runs ("click:x,y", "rclick:x,y", "move:x,y",
+  // "key:vk", "text:abc", "down:x,y", "up:x,y", "shot", "quit"), executed at once — an interactive session driven from
+  // outside (e.g. `echo click:400,300 >> ctl; echo shot >> ctl`), screenshots reported as [shot] lines
+  if (control) {
+    let size = 0; try { size = fs.statSync(control.file).size; } catch { /* not yet */ }
+    if (size > control.pos) {
+      const fd = fs.openSync(control.file, 'r'), buf = Buffer.alloc(size - control.pos); fs.readSync(fd, buf, 0, buf.length, control.pos); fs.closeSync(fd);
+      const text = control.rest + buf.toString('utf8'); control.pos = size;
+      const lines = text.split('\n'); control.rest = lines.pop();
+      for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
+        if (line === 'quit') { control.quit = true; continue; }
+        const [kind, ...rest] = line.split(':'); const a = rest.join(':');
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+      }
+    }
+    if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
+  }
   for (const ev of inputs) {
     if (ev.done) continue;
     const due = ev.anchored ? (anchorAt === null ? Infinity : anchorAt + ev.t) : ev.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + ev.t) : ev.t;
