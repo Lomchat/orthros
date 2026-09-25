@@ -120,12 +120,18 @@ export class Seh {
       if (v > 0x1000 && proc.moduleByAddr(v) && (m2.read8(v - 5) === 0xe8 || m2.read8(v - 2) === 0xff || m2.read8(v - 3) === 0xff || m2.read8(v - 6) === 0xff)) rets.push(proc.symbolize(v));
     }
     (this.recent ??= []).push(`t${thread.id} 0x${(code >>> 0).toString(16)}${what} at ${this.vm.proc.symbolize(addr)}${rets.length ? ` (stack: ${rets.join(' < ')})` : ''}`);
+    // the first C++ exceptions: what the thread did just before (its API calls, the last file reads of the process) —
+    // later ones are often the program's own error handling
+    if (code === EXC.CPP && (this.cppContexts ??= []).length < 2) {
+      const r = this.vm.recentReads, reads = r ? Array.from({ length: 32 }, (_, k) => r.a[(r.i + k) & 31]).filter(Boolean).slice(-12) : [];
+      this.cppContexts.push(`C++ exception #${this.cppContexts.length + 1} (${what.trim() || 'type unknown'}) — the thread's previous API calls:\n    ${this.vm.recentApiCalls(40, thread.id).join('\n    ')}\n  the last file reads:\n    ${reads.join('\n    ') || '-'}`);
+    }
     if (this.recent.length > 16) this.recent.shift();
     this.raised = (this.raised ?? 0) + 1;
   }
 
   /** Report lines about the exceptions raised so far (see remember). */
-  recentReport() { return this.recent?.length ? `exceptions raised: ${this.raised}, the last ones:\n  ${this.recent.join('\n  ')}` : 'no exception raised'; }
+  recentReport() { return (this.recent?.length ? `exceptions raised: ${this.raised}, the last ones:\n  ${this.recent.join('\n  ')}` : 'no exception raised') + (this.cppContexts?.length ? '\n' + this.cppContexts.join('\n') : ''); }
 
   /** 'seh' log capped at 80 lines per process (an exception storm would otherwise flood the console). */
   sehLog(msg) { if ((this.logCount = (this.logCount ?? 0) + 1) <= 80) this.vm.log('seh', msg); }
