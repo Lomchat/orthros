@@ -544,7 +544,7 @@ export function d3dCore(vm) {
       this.gfx?.createVertexShader?.(sh);
       return D3D_OK;
     }
-    SetVertexShader(c) { this.stateVersion++; this.programVersion++; const h = c.arg(1); if (this.recording) { this.recording.vs = h; return D3D_OK; } this.vertexShader = h; this.gfx?.setVertexShader?.(h, this.vertexShaders.get(h)); return D3D_OK; }
+    SetVertexShader(c) { const h = c.arg(1); if (this.recording) { this.recording.vs = h; return D3D_OK; } if (this.vertexShader !== h) this.programVersion++; this.vertexShader = h; this.gfx?.setVertexShader?.(h, this.vertexShaders.get(h)); return D3D_OK; }
     GetVertexShader(c) { c.out32(1, this.vertexShader); return D3D_OK; }
     DeleteVertexShader(c) { const sh = this.vertexShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.vertexShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deleteVertexShader?.(sh); return D3D_OK; }
     SetVertexShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
@@ -556,7 +556,7 @@ export function d3dCore(vm) {
     SetIndices(c) { const ib = c.arg(1), base = c.arg(2); if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } this.indices.base = base; this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, base); return D3D_OK; }
     GetIndices(c) { c.out32(1, this.indices.ib); if (this.indices.ib) com.addRef(com.objectAt(this.indices.ib)); c.out32(2, this.indices.base); return D3D_OK; }
     CreatePixelShader(c) { const fn = c.arg(1), pp = c.arg(2); if (!fn || !pp) return D3DERR_INVALIDCALL; const code = readShaderTokens(mem, fn); const h = this.nextShader++; const sh = { handle: h, code: Uint32Array.from(code) }; this.pixelShaders.set(h, sh); mem.write32(pp, h); this.gfx?.createPixelShader?.(sh); return D3D_OK; }
-    SetPixelShader(c) { this.stateVersion++; this.programVersion++; const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
+    SetPixelShader(c) { const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } if (this.pixelShader !== h) this.programVersion++; this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
     GetPixelShader(c) { c.out32(1, this.pixelShader); return D3D_OK; }
     DeletePixelShader(c) { const sh = this.pixelShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.pixelShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deletePixelShader?.(sh); return D3D_OK; }
     SetPixelShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }

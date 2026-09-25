@@ -3,7 +3,7 @@
 // device at BeginPass / CommitChanges — render, stage and sampler states, shaders with their constants laid out from
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
-import { shaderInfo, expressionInfo, runPreshader, RSET } from './d3dx9-preshader.js';
+import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
@@ -339,7 +339,8 @@ export function defineEffects(X, vm, h) {
     programOf(prog) {
       const inputs = prog.inputs.map((e) => { const n = this.lookup(e.name, null); return n ? { e, n, plan: this.planOf(n, e.type, e.count, e.set) } : null; }).filter(Boolean);
       let maxReg = 0; for (const i of inputs) maxReg = Math.max(maxReg, i.e.reg + i.e.count);
-      return { prog, inputs, regs: new Float64Array(4 * Math.max(1, maxReg)), out: new Float32Array(4 * 256), versions: null };
+      const regs = new Float64Array(4 * Math.max(1, maxReg));
+      return { prog, inputs, regs, out: new Float32Array(4 * 256), versions: null, run: compilePreshader(prog, regs.length) };
     }
     /** run a program if one of its inputs changed since its last run (outputs kept otherwise) */
     runProgram(P) {
@@ -348,7 +349,7 @@ export function defineEffects(X, vm, h) {
       if (!changed) return P.out;
       P.versions = P.inputs.map((i) => i.n.version ?? 0);
       for (const i of P.inputs) this.fill(i.plan, P.regs, 4 * i.e.reg);
-      runPreshader(P.prog, P.regs, P.out);
+      P.run(P.regs, P.out);
       return P.out;
     }
     /** the shader of state k of a pass (its own bytecode, a referenced parameter's, or an array selector's pick) */
