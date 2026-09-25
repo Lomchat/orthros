@@ -5,10 +5,15 @@
   "args": "",
   "mount": "C:\\Game",
   "saveDir": "../build/saves/bfme-vanilla",
-  "display": { "width": 1024, "height": 768 },
+  "display": {
+    "width": 1024,
+    "height": 768
+  },
   "dllOverrides": {},
   "env": {},
   "registry": {
     "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\The Battle for Middle-earth": {}
-  }
+  },
+  "cover": "englishSplash.jpg",
+  "description": "Real-time strategy in Middle-earth (2004): build fortresses, raise armies of Gondor, Rohan, Isengard or Mordor."
 }

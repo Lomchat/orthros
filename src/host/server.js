@@ -58,7 +58,8 @@ function resolveInsensitive(root, rel) {
 export function createServer(opts = {}) {
   const manifestDir = path.resolve(opts.manifests ?? path.join(ROOT, 'manifests'));
   let manifests = loadManifests(manifestDir, opts.extra);
-  const trees = new Map();
+  const trees = new Map(), treeObjs = new Map();
+  const coverFile = (man) => { if (!man.cover) return null; const f = resolveInsensitive(man.folder, man.cover.replace(/\\/g, '/')); return f && fs.existsSync(f) && fs.statSync(f).isFile() ? f : null; };
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -284,11 +285,29 @@ export function createServer(opts = {}) {
         return;
       }
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
-      if (p === '/api/manifests') { manifests = loadManifests(manifestDir, opts.extra); return send(res, 200, JSON.stringify([...manifests].map(([name, m]) => ({ name, title: m.name ?? name, exe: m.exe }))), { 'Content-Type': 'application/json' }); }
+      if (p === '/api/manifests') {
+        manifests = loadManifests(manifestDir, opts.extra);
+        const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
+        const out = [...manifests].map(([name, m]) => {
+          let bytes = null;
+          try { if (!treeObjs.has(name)) treeObjs.set(name, listTree(m.folder)); bytes = sizeOf(treeObjs.get(name)); } catch { /* folder missing */ }
+          return { name, title: m.name ?? name, exe: m.exe, description: m.description ?? null, hidden: !!m.hidden, cover: !!coverFile(m), bytes, available: bytes !== null };
+        });
+        return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
+      }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
       if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined }), { 'Content-Type': 'application/json' }); }
+      m = /^\/api\/cover\/([^/]+)$/.exec(p);
+      if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
+        const man = manifests.get(m[1]), f = man && coverFile(man);
+        if (!f) return send(res, 404, 'no cover');
+        const ext = path.extname(f).toLowerCase();
+        res.writeHead(200, { 'Content-Type': ext === '.png' ? 'image/png' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin' });
+        fs.createReadStream(f).pipe(res);
+        return;
+      }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) trees.set(m[1], JSON.stringify(listTree(man.folder))); return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listTree(man.folder)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
       // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);

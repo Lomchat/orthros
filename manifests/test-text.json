@@ -1,1 +1,12 @@
-{ "name": "Test: text.exe", "folder": "../build/pe", "exe": "text.exe", "args": "", "mount": "C:\\Test", "display": { "width": 800, "height": 600 } }
+{
+  "name": "Test: text.exe",
+  "folder": "../build/pe",
+  "exe": "text.exe",
+  "args": "",
+  "mount": "C:\\Test",
+  "display": {
+    "width": 800,
+    "height": 600
+  },
+  "hidden": true
+}

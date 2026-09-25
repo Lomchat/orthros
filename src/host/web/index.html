@@ -11,7 +11,8 @@
   #gl { pointer-events: none; }
   #softcursor { position: absolute; display: none; pointer-events: none; z-index: 5; image-rendering: pixelated; }
   #hint { position: absolute; right: 8px; bottom: 8px; font: 12px system-ui; color: #999; cursor: pointer; z-index: 30; padding: 4px 8px; border-radius: 4px; background: rgba(0,0,0,.5); }
-  #hint:hover { color: #eee; background: rgba(60,60,60,.8); }
+  #hint:hover { background: rgba(60,60,60,.8); }
+  #hint span:hover { color: #eee; }
   :fullscreen #hint { display: none; }
   #hud { position: absolute; left: 8px; top: 8px; z-index: 30; background: rgba(0,0,0,.62); padding: 6px 10px; border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; color: #ccc; display: none; cursor: pointer; user-select: none; }
   #hud .fps { font: 700 22px/1.1 ui-monospace, monospace; }
@@ -20,8 +21,28 @@
   #hud canvas { display: block; margin: 4px 0 2px; }
   #hud.collapsed canvas, #hud.collapsed .details { display: none; }
   #hud .details { white-space: pre; }
-  #menu { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #111; }
-  #menu button { font: 15px system-ui; padding: 8px 18px; cursor: pointer; }
+  #menu { position: absolute; inset: 0; overflow: auto; background: radial-gradient(ellipse at 50% -10%, #2b2f3a 0%, #121318 55%, #0b0b0e 100%); }
+  #menu .wrap { max-width: 1100px; margin: 0 auto; padding: 48px 28px 32px; display: flex; flex-direction: column; min-height: calc(100% - 80px); }
+  #menu header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; }
+  #menu h1 { margin: 0; font: 700 34px/1 system-ui, sans-serif; letter-spacing: .5px; color: #f2f2f2; }
+  #menu header span { color: #8a8f9c; font-size: 14px; }
+  #games { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 22px; }
+  .card { position: relative; display: flex; flex-direction: column; background: #1b1d24; border: 1px solid #2c2f39; border-radius: 12px; overflow: hidden; cursor: pointer; outline: none; transition: transform .15s, border-color .15s, box-shadow .15s; }
+  .card:hover, .card:focus-visible { transform: translateY(-3px); border-color: #c9a55a; box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 0 1px #c9a55a55; }
+  .card .cover { aspect-ratio: 16 / 10; background: #101116 center / cover no-repeat; display: flex; align-items: flex-end; }
+  .card .cover.none { background-image: linear-gradient(135deg, #2a2d38, #15161c); align-items: center; justify-content: center; font: 700 42px system-ui; color: #3d4150; }
+  .card .body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .card h3 { margin: 0; font: 600 17px/1.25 system-ui, sans-serif; color: #f0f0f0; }
+  .card p { margin: 0; color: #a3a8b4; font-size: 13px; flex: 1; }
+  .card .meta { display: flex; gap: 10px; align-items: center; color: #6f7482; font: 11px ui-monospace, monospace; margin-top: 6px; }
+  .card .play { margin-left: auto; font: 600 13px system-ui; padding: 7px 18px; border-radius: 7px; border: 0; background: #c9a55a; color: #17140c; cursor: pointer; }
+  .card:hover .play, .card:focus-visible .play { background: #e0bd6e; }
+  .card .badge { position: absolute; top: 10px; left: 10px; font: 600 11px system-ui; padding: 3px 8px; border-radius: 10px; background: rgba(0,0,0,.65); color: #e0bd6e; }
+  .card.unavailable { opacity: .45; cursor: default; }
+  .card.unavailable .play { display: none; }
+  #menu .opts { margin-top: auto; padding-top: 36px; display: flex; flex-wrap: wrap; gap: 18px; color: #8a8f9c; font-size: 12px; }
+  #menu .opts label { cursor: pointer; }
+  #menu .opts .keys { margin-left: auto; }
   #log { position: absolute; left: 8px; bottom: 8px; right: 8px; max-height: 30%; overflow: auto; background: rgba(0,0,0,.7); font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; display: none; padding: 6px; }
   #busy { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 25; background: rgba(0,0,0,.7); padding: 8px 14px; border-radius: 6px; font: 13px/1.5 system-ui, sans-serif; color: #ddd; text-align: center; pointer-events: none; }
   #busy small { font: 11px/1.5 ui-monospace, monospace; color: #999; }
@@ -37,15 +58,15 @@
 </style>
 </head>
 <body>
-<div id="menu">
-  <h2>Orthros</h2>
+<div id="menu" class="hidden"><div class="wrap">
+  <header><h1>Orthros</h1><span>Windows games, run from their own files in your browser</span></header>
   <div id="games"></div>
-  <div><label><input type="checkbox" id="hudToggle" checked> perf HUD</label> <label><input type="checkbox" id="logToggle"> log</label> <label title="downloads the whole game folder into the browser's storage in the background: later launches and loads read nothing from the network"><input type="checkbox" id="offlineToggle"> offline copy</label></div>
-</div>
+  <div class="opts"><label><input type="checkbox" id="hudToggle" checked> performance overlay</label> <label><input type="checkbox" id="logToggle"> log</label> <label title="downloads the whole game folder into the browser's storage in the background: later launches and loads read nothing from the network"><input type="checkbox" id="offlineToggle"> offline copy</label><span class="keys">arrows: choose · Enter: play</span></div>
+</div></div>
 <div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
-<div id="status" class="hidden"><div class="title"></div><div class="detail"></div><button class="hidden">Restart</button><button class="hidden" title="the saved settings and saves are moved aside (kept), the game starts as on its first launch">Restart with a fresh game profile</button><pre class="hidden"></pre></div>
+<div id="status" class="hidden"><div class="title"></div><div class="detail"></div><div><button class="hidden">Restart</button> <button class="hidden" title="the saved settings and saves are moved aside (kept), the game starts as on its first launch">Restart with a fresh game profile</button> <button class="hidden">Back to the games</button></div><pre class="hidden"></pre></div>
 <div id="busy" class="hidden"></div>
-<div id="hint" title="fullscreen, the mouse captured by the game (screen-edge scrolling); Esc held: leave">⛶ Fullscreen (click, or Alt+Enter) · click the game to keep the mouse in it, Esc releases it</div>
+<div id="hint" class="hidden"><span id="fsHint" title="fullscreen, the mouse captured by the game (screen-edge scrolling); Esc held: leave">⛶ Fullscreen (click, or Alt+Enter) · click the game to keep the mouse in it, Esc releases it</span> · <span id="quitHint" title="stop the game and return to the game list">☰ Games</span></div>
 <div id="hud" title="click: compact / detailed"><div class="fps"></div><canvas width="200" height="40"></canvas><div class="details"></div></div>
 <div id="log"></div>
 <script type="module" src="/src/host/web/main.js"></script>
