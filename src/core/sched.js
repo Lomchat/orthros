@@ -83,6 +83,12 @@ export class Scheduler {
   }
 
   wake(t, ok) {
+    if (t.blockedAt !== undefined) { // (diagnostics, vm.waitLogMin: the main thread's long waits)
+      const d = this.vm.clock.now() - t.blockedAt;
+      if (t === this.threads[0] && this.vm.mainWaits) { const k = `${t.blockedApi}@${this.vm.proc.symbolize(t.blockedFrom)}`; this.vm.mainWaits.set(k, (this.vm.mainWaits.get(k) ?? 0) + d); }
+      if (d >= this.vm.waitLogMin && t === this.threads[0]) this.vm.logFn('hang', `main thread waited ${d.toFixed(0)} ms in ${t.blockedApi} [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}] from ${this.vm.proc.symbolize(t.blockedFrom)} (${ok ? 'satisfied' : 'timed out'})`);
+      t.blockedAt = undefined;
+    }
     t.wakeResult = ok; t.resuming = true; t.wait = null; t.wakeAt = Infinity; t.blockReason = null;
     t.state = TS.READY;
   }

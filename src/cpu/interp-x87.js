@@ -299,21 +299,22 @@ function roundEven(v) {
 function isSignalingNaN(v) {
   if (!Number.isNaN(v)) return false;
   scratch.setFloat64(0, v, true);
-  return (scratch.getBigUint64(0, true) & 0x0008000000000000n) === 0n;
+  return (scratch.getUint32(4, true) & 0x00080000) === 0;
 }
 
 /** The NaN v with its quiet bit set (sign and payload kept). */
 function quietNaN(v) {
   scratch.setFloat64(0, v, true);
-  scratch.setBigUint64(0, scratch.getBigUint64(0, true) | 0x0008000000000000n, true);
+  scratch.setUint32(4, scratch.getUint32(4, true) | 0x00080000, true);
   return scratch.getFloat64(0, true);
 }
 /** Of two NaNs, the one with the larger significand (52-bit fraction, quiet bit included); the positive one on a tie. */
 function pickNaN(a, b) {
+  // (32-bit halves: BigInt arithmetic here allocated at every NaN operation)
   scratch.setFloat64(0, a, true); scratch.setFloat64(8, b, true);
-  const ab = scratch.getBigUint64(0, true), bb = scratch.getBigUint64(8, true);
-  const fa = ab & 0x000fffffffffffffn, fb = bb & 0x000fffffffffffffn;
-  return fa > fb || (fa === fb && ab < 0x8000000000000000n) ? a : b;
+  const ha = scratch.getUint32(4, true), hb = scratch.getUint32(12, true), fa = ha & 0xfffff, fb = hb & 0xfffff;
+  const la = scratch.getUint32(0, true), lb = scratch.getUint32(8, true);
+  return fa > fb || (fa === fb && (la > lb || (la === lb && ha < 0x80000000))) ? a : b;
 }
 
 /** Read 80-bit extended from memory as f64. */

@@ -165,6 +165,47 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
   } finally { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Learned GL programs: sessions post the programs they built at a draw; the server lists them by earliest use, and a
+// key posted again with other sources (the translators changed) takes the new sources.
+test('learned programs: listed by first use, new sources replace old ones', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const post = (programs) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs }) });
+  try {
+    assert.deepEqual(await (await fetch(url)).json(), []);
+    assert.equal((await post([{ key: 'b', vs: 'vs-b', fs: 'fs-b', attrs: ['a_pos'], t: 900 }, { key: 'a', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 1200 }, { key: 'bad', vs: 1, fs: 'x', attrs: [] }])).status, 204);
+    assert.equal((await post([{ key: 'a', vs: 'vs-a2', fs: 'fs-a', attrs: [], t: 100 }])).status, 204);
+    const list = await (await fetch(url)).json();
+    assert.deepEqual(list.map((e) => e.key), ['a', 'b'], 'by earliest use, the malformed entry dropped');
+    assert.equal(list[0].vs, 'vs-a2', 'the newer sources');
+    assert.deepEqual(list[1].attrs, ['a_pos']);
+    assert.equal((await fetch(url.replace('/g', '/nope'))).status, 404);
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Learned code regions: sessions post the region entries they translated (module, offset, x87 mode, time); the server
+// lists them by earliest use across sessions, module names folded to lower case, malformed entries dropped.
+test('learned regions: listed by first use across sessions', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-regions-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/regions/g`;
+  const post = (regions) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions }) });
+  try {
+    assert.equal((await post([['Game.exe', 0x1000, 0x200, 500], ['game.exe', 0x2000, null, 100], ['x.dll', -1, null, 1], ['game.exe', 1.5, null, 1]])).status, 204);
+    assert.equal((await post([['GAME.EXE', 0x1000, 0x200, 50]])).status, 204);
+    assert.deepEqual(await (await fetch(url)).json(), [['game.exe', 0x1000, 0x200], ['game.exe', 0x2000, null]]);
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // The OPFS block store (synchronous access handles, faked in memory here): every block carries a checksum written with
 // it; a block that does not read back as written is dropped and reported; an index of the earlier format (no checksums)
 // empties the store.

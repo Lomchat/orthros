@@ -5,7 +5,8 @@
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
-//   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions)
+//   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
+//            the GL programs they built and the code regions they translated (both prepared ahead by later sessions)
 import http from 'node:http';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -138,6 +139,87 @@ export function createServer(opts = {}) {
   };
   const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1))]; });
 
+  /**
+   * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
+   * names, earliest time since the page started), posted by the worker. /api/programs/<manifest> lists them in that
+   * order: a new session compiles them in the background before the game draws with them (no build hitch in a match).
+   * The sources are Orthros' own translations; a key posted again with other sources (translators changed) replaces
+   * them. Kept in opts.learnDir/programs-<manifest>.json when set.
+   */
+  const programsLearned = new Map(); // manifest -> Map(key -> { vs, fs, attrs, t, n })
+  const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const programsOf = (name) => {
+    let m = programsLearned.get(name);
+    if (!m) {
+      m = new Map(); programsLearned.set(name, m);
+      const f = programsFile(name);
+      if (f) try { for (const [k, vs, fs2, attrs, t, n] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { vs, fs: fs2, attrs, t, n }); } catch { /* none yet */ }
+    }
+    return m;
+  };
+  let programsDirty = new Set(), programsTimer = null;
+  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024;
+  const learnPrograms = (name, list) => {
+    const m = programsOf(name);
+    for (const e of Array.isArray(list) ? list : []) {
+      if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
+      if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
+      const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, old = m.get(e.key);
+      if (!old && m.size >= PROGRAMS_MAX) continue;
+      if (old && old.vs === e.vs && old.fs === e.fs) { old.t = Math.min(old.t, t); old.n++; }
+      else m.set(e.key, { vs: e.vs, fs: e.fs, attrs: e.attrs, t: old ? Math.min(old.t, t) : t, n: (old?.n ?? 0) + 1 });
+    }
+    if (programsFile(name)) {
+      programsDirty.add(name);
+      programsTimer ??= setTimeout(() => {
+        programsTimer = null;
+        for (const n of programsDirty) { const f = programsFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...programsOf(n)].map(([k, v]) => [k, v.vs, v.fs, v.attrs, v.t, v.n]))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+        programsDirty = new Set();
+      }, 20000);
+      programsTimer.unref?.();
+    }
+  };
+  const programsList = (name) => [...programsOf(name)].sort((a, b) => a[1].t - b[1].t).map(([key, v]) => ({ key, vs: v.vs, fs: v.fs, attrs: v.attrs }));
+
+  /**
+   * Learned code regions, per manifest: the entries of the regions the JIT translated at a miss (module, offset in it,
+   * x87 mode), with the earliest time since the page started, posted by the worker. /api/regions/<manifest> lists them
+   * in that order: a new session translates them while the game is idle (menus) instead of in the middle of a match.
+   * Kept in opts.learnDir/regions-<manifest>.json when set.
+   */
+  const regionsLearned = new Map(); // manifest -> Map("module:rva:fpc" -> { t, n })
+  const regionsFile = (name) => opts.learnDir && path.join(opts.learnDir, `regions-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const regionsOf = (name) => {
+    let m = regionsLearned.get(name);
+    if (!m) {
+      m = new Map(); regionsLearned.set(name, m);
+      const f = regionsFile(name);
+      if (f) try { for (const [k, t, n] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n }); } catch { /* none yet */ }
+    }
+    return m;
+  };
+  let regionsDirty = new Set(), regionsTimer = null;
+  const REGIONS_MAX = 100000;
+  const learnRegions = (name, list) => {
+    const m = regionsOf(name);
+    for (const e of Array.isArray(list) ? list : []) {
+      if (!Array.isArray(e) || typeof e[0] !== 'string' || e[0].length > 64 || !Number.isInteger(e[1]) || e[1] < 0 || !(e[2] === null || Number.isInteger(e[2]))) continue;
+      const k = `${e[0].toLowerCase()}:${e[1]}:${e[2] ?? ''}`, t = Number.isFinite(e[3]) ? Math.max(0, e[3]) : 1e9, old = m.get(k);
+      if (old) { old.t = Math.min(old.t, t); old.n++; } else if (m.size < REGIONS_MAX) m.set(k, { t, n: 1 });
+    }
+    if (regionsFile(name)) {
+      regionsDirty.add(name);
+      regionsTimer ??= setTimeout(() => {
+        regionsTimer = null;
+        for (const n of regionsDirty) { const f = regionsFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...regionsOf(n)].map(([k, v]) => [k, v.t, v.n]))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+        regionsDirty = new Set();
+      }, 20000);
+      regionsTimer.unref?.();
+    }
+  };
+  /** [module, rva, fpc] by earliest use */
+  const regionsList = (name) => [...regionsOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 40000).map(([k]) => { const [mod, rva, fpc] = k.split(':'); return [mod, Number(rva), fpc === '' ? null : Number(fpc)]; });
+
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
@@ -187,7 +269,7 @@ export function createServer(opts = {}) {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true, prefetch: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;
@@ -216,6 +298,38 @@ export function createServer(opts = {}) {
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
         return sendRangeEncoded(req, res, file, r);
+      }
+      m = /^\/api\/regions\/([^/]+)$/.exec(p);
+      if (m) {
+        if (!manifests.get(m[1])) return send(res, 404, 'no such manifest');
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 8 * 1024 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            learnRegions(m[1], rec?.regions);
+            send(res, 204, '');
+          });
+          return;
+        }
+        return send(res, 200, JSON.stringify(regionsList(m[1])), { 'Content-Type': 'application/json' });
+      }
+      m = /^\/api\/programs\/([^/]+)$/.exec(p);
+      if (m) {
+        if (!manifests.get(m[1])) return send(res, 404, 'no such manifest');
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 8 * 1024 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            learnPrograms(m[1], rec?.programs);
+            send(res, 204, '');
+          });
+          return;
+        }
+        return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
       if (m) { if (!manifests.get(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }

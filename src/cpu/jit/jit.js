@@ -15,12 +15,14 @@ const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the fo
 
 /** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
 function foldLazyFlags(cpu) {
-  const m = cpu.mem, b = cpu.base;
-  const op = m.read32(b + ST.LZ_OP);
+  const m = cpu.mem, b4 = cpu.b4;
+  const op = m.u32[b4 + ST.LZ_OP / 4];
   if (!op) return;
-  const ef = materializeFlags(op, m.read32(b + ST.LZ_RES), m.read32(b + ST.LZ_SRC1), m.read32(b + ST.LZ_SRC2), m.read32(b + ST.EFLAGS));
-  m.write32(b + ST.LZ_OP, 0);
-  m.write32(b + ST.EFLAGS, ef >>> 0);
+  // (signed reads: materializeFlags masks its operands, and a small negative stays a small integer where an unsigned
+  // value of 2^30 and more is boxed into a heap number per call — at every exit to JS, a top source of garbage)
+  const ef = materializeFlags(op, m.i32[b4 + ST.LZ_RES / 4], m.i32[b4 + ST.LZ_SRC1 / 4], m.i32[b4 + ST.LZ_SRC2 / 4], m.i32[b4 + ST.EFLAGS / 4]);
+  m.u32[b4 + ST.LZ_OP / 4] = 0;
+  m.u32[b4 + ST.EFLAGS / 4] = ef;
 }
 CpuState.foldLazyFlags = foldLazyFlags;
 
@@ -65,6 +67,8 @@ export class Jit {
     // block eips of regions that were entered under another x87 mode than the one they were specialized
     // for: translated from then on with the precision/rounding control tested at run time
     this.genericFpu = new Set();
+    /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
+    this.learned = null;
     this.nextFn = 0;
     this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
@@ -135,7 +139,7 @@ export class Jit {
    * Translate the region at `eip`. `version` ({ first, fpc }): another version of region `first` specialized for
    * x87 mode `fpc`, reached only through the entry guard of the previous version (not in the hash table).
    */
-  translate(eip, version = null) {
+  translate(eip, version = null, assume = undefined) {
     const t0 = performance.now();
     // already translated (its hash entry was evicted): re-insert instead of retranslating
     const known = version ? null : this.blockMap.get(eip);
@@ -144,7 +148,7 @@ export class Jit {
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
-    const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
+    const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi });
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
@@ -190,6 +194,7 @@ export class Jit {
     if (this.pending.length >= this.consolidateEvery) { const tc = performance.now(); this.consolidate(); this.stats.tConsolidate += performance.now() - tc; }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
     this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
+    if (this.learned && !version && assume === undefined && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(t0)]);
     if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);
     return region;
   }
@@ -199,6 +204,20 @@ export class Jit {
    * instance, so thousands of one-region instances exhaust the JS heap. The packed functions
    * replace the table entries; the old instances become garbage.
    */
+  /**
+   * Translate the region at `eip` ahead of its first execution (a region earlier sessions reached, see the worker's
+   * region prewarm), for x87 mode `fpc` (null: generic), unless it is already translated or has no memory. False when
+   * nothing was done. A region translated from code that changes later is dropped like any other (SMC detection).
+   */
+  prewarm(eip, fpc) {
+    eip >>>= 0;
+    if (this.blockMap.has(eip) || !this.interp.executable(eip)) return false;
+    const t0 = performance.now();
+    try { this.translate(eip, null, fpc); } catch { return false; } finally { this.stats.prewarmMs = (this.stats.prewarmMs ?? 0) + performance.now() - t0; }
+    this.stats.prewarmed = (this.stats.prewarmed ?? 0) + 1;
+    return true;
+  }
+
   consolidate() {
     const live = this.pending.filter((r) => r.code && this.byEntry.get(r.entry) === r);
     this.pending = [];
@@ -298,15 +317,16 @@ export class Jit {
    * @param {{ stopAt?: number, maxInsns?: number }} opts
    */
   /** instructions left from the last run()'s budget (negative after a time slice) */
-  remaining() { return this.mem.readS32(this.cpu.base + ST.ICOUNT); }
+  remaining() { return this.mem.i32[this.cpu.b4 + ST.ICOUNT / 4]; }
 
   /** Fold the thread's chained-transition counter into the stats. */
-  harvest(base) {
-    const n = this.mem.u32[(base + ST.TRANSITIONS) >>> 2];
-    if (n) { this.stats.chained += n; this.mem.u32[(base + ST.TRANSITIONS) >>> 2] = 0; }
+  /** @param {number} b4 the state block's address / 4 (CpuState.b4) */
+  harvest(b4) {
+    const n = this.mem.u32[b4 + ST.TRANSITIONS / 4];
+    if (n) { this.stats.chained += n; this.mem.u32[b4 + ST.TRANSITIONS / 4] = 0; }
     if (this.opts.profile) {
       const p = (this.stats.prof ??= Object.fromEntries(JIT_PROF.map((k) => [k, 0])));
-      JIT_PROF.forEach((k, i) => { const a = (base + ST.PROF + 4 * i) >>> 2; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
+      JIT_PROF.forEach((k, i) => { const a = b4 + ST.PROF / 4 + i; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
     }
   }
   /** flags helper calls per x86 mnemonic since the last call (profiling translations), sorted */
@@ -319,25 +339,25 @@ export class Jit {
   run(opts = {}) {
     const cpu = this.cpu;
     const stopAt = opts.stopAt ?? -1;
-    const m = this.mem;
-    m.write32(cpu.base + ST.ICOUNT, Math.min(opts.maxInsns ?? 1e9, 0x7fffffff));
-    m.write32(cpu.base + ST.LZ_OP, 0);
-    m.write32(cpu.base + ST.STOP_AT, stopAt >>> 0); // 0xffffffff when unused: never a jump target
+    const m = this.mem, b4 = cpu.b4; // (the state block by its word index, a small integer: see CpuState.b4)
+    m.i32[b4 + ST.ICOUNT / 4] = Math.min(opts.maxInsns ?? 1e9, 0x7fffffff);
+    m.u32[b4 + ST.LZ_OP / 4] = 0;
+    m.i32[b4 + ST.STOP_AT / 4] = stopAt; // -1 (0xffffffff) when unused: never a jump target
     cpu.exit = EXIT.NONE;
     for (;;) {
       let r;
       try {
-        r = this.runtime.run(cpu.eip, cpu.base);
+        r = this.runtime.run(cpu.eip, b4);
       } catch (e) {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
-        this.harvest(cpu.base);
+        this.harvest(b4);
         this.materialize();
         this.lastFault = e;
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
       }
-      this.harvest(cpu.base);
+      this.harvest(b4);
       // Flags are folded eagerly at every exit to JS: leaving them pending in memory while JS runs made the
       // game's startup spin in an SEH continuation loop (root cause not isolated; the on-demand fold in
       // CpuState.eflags stays as a safety net).

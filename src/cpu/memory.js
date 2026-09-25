@@ -54,6 +54,7 @@ export class GuestMemory {
     this.i8 = new Int8Array(b);
     this.dv = new DataView(b);
     this.u32 = new Uint32Array(b);
+    this.i32 = new Int32Array(b);
     this.f32 = new Float32Array(b);
     this.f64 = new Float64Array(b);
   }

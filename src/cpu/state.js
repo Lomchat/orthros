@@ -124,6 +124,9 @@ export class CpuState {
   constructor(mem, base) {
     this.mem = mem;
     this.base = base >>> 0;
+    // the block's address in 32-bit / 64-bit words: small integers for V8 (the address itself, near 2^31, is not one,
+    // and every call it was passed to or returned from boxed it into a new heap number)
+    this.b4 = this.base >>> 2; this.b8 = this.base >>> 3;
     this.reset();
   }
 
@@ -141,8 +144,8 @@ export class CpuState {
   }
 
   // General purpose registers.
-  /** @param {number} i */ reg(i) { return this.mem.u32[(this.base + ST.GPR) / 4 + i]; }
-  /** @param {number} i @param {number} v */ setReg(i, v) { this.mem.u32[(this.base + ST.GPR) / 4 + i] = v >>> 0; }
+  /** @param {number} i */ reg(i) { return this.mem.u32[this.b4 + ST.GPR / 4 + i]; }
+  /** @param {number} i @param {number} v */ setReg(i, v) { this.mem.u32[this.b4 + ST.GPR / 4 + i] = v >>> 0; }
 
   get eax() { return this.reg(0); } set eax(v) { this.setReg(0, v); }
   get ecx() { return this.reg(1); } set ecx(v) { this.setReg(1, v); }
@@ -153,23 +156,23 @@ export class CpuState {
   get esi() { return this.reg(6); } set esi(v) { this.setReg(6, v); }
   get edi() { return this.reg(7); } set edi(v) { this.setReg(7, v); }
 
-  get eip() { return this.mem.u32[(this.base + ST.EIP) / 4]; }
-  set eip(v) { this.mem.u32[(this.base + ST.EIP) / 4] = v >>> 0; }
+  get eip() { return this.mem.u32[this.b4 + ST.EIP / 4]; }
+  set eip(v) { this.mem.u32[this.b4 + ST.EIP / 4] = v >>> 0; }
   /** EFLAGS; a lazy flag operation left pending by the JIT (ST.LZ_OP != 0) is folded in on read and cancelled on write. */
-  get eflags() { if (this.mem.u32[(this.base + ST.LZ_OP) / 4]) CpuState.foldLazyFlags?.(this); return this.mem.u32[(this.base + ST.EFLAGS) / 4]; }
-  set eflags(v) { this.mem.u32[(this.base + ST.LZ_OP) / 4] = 0; this.mem.u32[(this.base + ST.EFLAGS) / 4] = v >>> 0; }
+  get eflags() { if (this.mem.u32[this.b4 + ST.LZ_OP / 4]) CpuState.foldLazyFlags?.(this); return this.mem.u32[this.b4 + ST.EFLAGS / 4]; }
+  set eflags(v) { this.mem.u32[this.b4 + ST.LZ_OP / 4] = 0; this.mem.u32[this.b4 + ST.EFLAGS / 4] = v >>> 0; }
 
-  get fsBase() { return this.mem.u32[(this.base + ST.FS_BASE) / 4]; }
-  set fsBase(v) { this.mem.u32[(this.base + ST.FS_BASE) / 4] = v >>> 0; }
-  get gsBase() { return this.mem.u32[(this.base + ST.GS_BASE) / 4]; }
-  set gsBase(v) { this.mem.u32[(this.base + ST.GS_BASE) / 4] = v >>> 0; }
+  get fsBase() { return this.mem.u32[this.b4 + ST.FS_BASE / 4]; }
+  set fsBase(v) { this.mem.u32[this.b4 + ST.FS_BASE / 4] = v >>> 0; }
+  get gsBase() { return this.mem.u32[this.b4 + ST.GS_BASE / 4]; }
+  set gsBase(v) { this.mem.u32[this.b4 + ST.GS_BASE / 4] = v >>> 0; }
 
-  get exit() { return this.mem.u32[(this.base + ST.EXIT) / 4]; }
-  set exit(v) { this.mem.u32[(this.base + ST.EXIT) / 4] = v >>> 0; }
-  get resuming() { return this.mem.u32[(this.base + ST.RESUMING) / 4] !== 0; }
-  set resuming(v) { this.mem.u32[(this.base + ST.RESUMING) / 4] = v ? 1 : 0; }
-  get exitArg() { return this.mem.u32[(this.base + ST.EXIT_ARG) / 4]; }
-  set exitArg(v) { this.mem.u32[(this.base + ST.EXIT_ARG) / 4] = v >>> 0; }
+  get exit() { return this.mem.u32[this.b4 + ST.EXIT / 4]; }
+  set exit(v) { this.mem.u32[this.b4 + ST.EXIT / 4] = v >>> 0; }
+  get resuming() { return this.mem.u32[this.b4 + ST.RESUMING / 4] !== 0; }
+  set resuming(v) { this.mem.u32[this.b4 + ST.RESUMING / 4] = v ? 1 : 0; }
+  get exitArg() { return this.mem.u32[this.b4 + ST.EXIT_ARG / 4]; }
+  set exitArg(v) { this.mem.u32[this.b4 + ST.EXIT_ARG / 4] = v >>> 0; }
 
   // x87
   get fpuCw() { return this.mem.read16(this.base + ST.FPU_CW); }
@@ -181,14 +184,14 @@ export class CpuState {
   get fpuTop() { return this.mem.read8(this.base + ST.FPU_TOP); }
   set fpuTop(v) { this.mem.write8(this.base + ST.FPU_TOP, v & 7); }
   /** physical register i */
-  fpr(i) { return this.mem.f64[(this.base + ST.FPR) / 8 + (i & 7)]; }
-  setFpr(i, v) { this.mem.f64[(this.base + ST.FPR) / 8 + (i & 7)] = v; }
+  fpr(i) { return this.mem.f64[this.b8 + ST.FPR / 8 + (i & 7)]; }
+  setFpr(i, v) { this.mem.f64[this.b8 + ST.FPR / 8 + (i & 7)] = v; }
   /** ST(i) */
   st(i) { return this.fpr(this.fpuTop + i); }
   setSt(i, v) { this.setFpr(this.fpuTop + i, v); }
 
-  get mxcsr() { return this.mem.u32[(this.base + ST.MXCSR) / 4]; }
-  set mxcsr(v) { this.mem.u32[(this.base + ST.MXCSR) / 4] = v >>> 0; }
+  get mxcsr() { return this.mem.u32[this.b4 + ST.MXCSR / 4]; }
+  set mxcsr(v) { this.mem.u32[this.b4 + ST.MXCSR / 4] = v >>> 0; }
 
   /** byte address of XMM register i */
   xmmAddr(i) { return this.base + ST.XMM + 16 * (i & 7); }

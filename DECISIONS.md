@@ -235,3 +235,32 @@ gzip selon Accept-Encoding) quand le gain dépasse 8 % (sinon tel quel), avec un
 joueurs suivants ; le navigateur décode (Content-Encoding), la page l'utilise dès que `/api/config` le propose
 (`?encoded=0` : requêtes Range). Mesure : 342 Mo envoyés pour 600 Mo lus (57 %), attente réseau −24 %, première image
 72 → 59 s. Caddy ne réencode pas `/gamez/*`. Le magasin OPFS garde les blocs décodés (visites suivantes locales).
+
+## D055 — 2026-09-25 — Un VAO par (programme, tampon, pas) ; moins de déchets par appel
+Un joueur signale de petites saccades en partie. Mesures ici : ~2 % des draws créaient un objet VAO (le décalage de
+base d'un tampon dynamique change à chaque draw et faisait partie de la clé), soit ~600 VAO/s, tous jetés d'un coup
+tous les 8 192 ; et le worker allouait ~1,5 Go par minute de partie (chaînes de clé stencil par draw, vues
+`subarray` par envoi de tampon ou d'uniforme, BigInt des NaN x87, et surtout l'adresse du bloc d'état des threads,
+2^31 − 4 Mio : hors des petits entiers de V8, elle était « boxée » en nombre alloué à chaque appel qui la recevait —
+à chaque sortie du JIT). **Décision** : un seul flux → un VAO par (programme, tampon, pas) dont les pointeurs
+d'attributs sont redirigés quand la base change (5 appels GL au lieu d'un VAO neuf) ; envois GL par décalage dans la
+vue unique de la mémoire invitée (`bufferData/bufferSubData/uniform*fv` avec `srcOffset`), plages sales et verrous en
+nombres, clé stencil comparée champ par champ ; le bloc d'état est désigné par son indice de mot (`CpuState.b4`,
+`b8`), y compris vers le répartiteur WASM (`run(eip, base/4)`). Mesures (même partie, profil d'allocation de 60 s) :
+1 458 → 540 Mo alloués, VAO créés 84 000 → 560. Les longues pauses GC observées sous le harnais (150-400 ms, dans les
+rappels faibles d'Oilpan) viennent de DevTools attaché au worker : le même jeu lancé sans DevTools a des
+mark-compacts ≤ 14 ms. Les mesures de GC se font désormais sans harnais.
+
+## D056 — 2026-09-25 — Programmes GL et régions de code appris, préparés d'avance
+Ce qui reste des saccades en partie quand un bâtiment, une unité ou un effet apparaît pour la première fois : la
+traduction du code neuf (jusqu'à ~300 ms par image, ~0,9 ms par région compilation paresseuse de V8 comprise), la
+compilation des programmes GL à leur premier draw (~60 ms chacun sur le GPU Intel du joueur, ANGLE/D3D11) et la
+lecture des fichiers. **Décision** (même principe que le préchargement appris des blocs de fichiers) : le serveur retient, par jeu,
+les programmes GL que les sessions ont dû construire (clé, sources GLSL, attributs) et les entrées des régions
+traduites (module, décalage, mode x87), avec l'instant de première utilisation. Une nouvelle session compile ces
+programmes pendant le chargement (quelques-uns par image, sans attendre le résultat : `KHR_parallel_shader_compile`)
+et traduit ces régions pendant que le jeu attend (menus : la tranche de sommeil du worker), dans l'ordre où elles
+ont servi. Rien d'appris n'est cru sur parole : un programme préparé n'est pris que si les sources que la session
+construirait sont identiques (sinon il est jeté et reconstruit — traducteurs modifiés), une région préparée est une
+traduction ordinaire du code en mémoire (invalidée par l'écriture de ce code comme les autres), et les adresses sont
+relatives au module chargé. `?programs=0`, `?regions=0` : désactivés.

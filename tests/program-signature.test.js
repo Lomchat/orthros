@@ -33,7 +33,7 @@ test('program signature: program() matches programUncached() over random state c
     api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
     rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
     textures: new Array(16).fill(0), com: { implAt: (p) => textures.get(p) ?? null },
-    fvf: 0x152, vertexDecl: null, vsObj: null, psObj: null, lights, lightEnabled: new Set([0]),
+    fvf: 0x152, vertexDecl: null, vsObj: null, psObj: null, lights, lightEnabled: new Set([0]), lightVersion: 0,
     transforms: new Map(), transformSlotVersion: new Map(),
   };
   const W = new WebGLDevice(mockGl(), dev, {});
@@ -43,7 +43,8 @@ test('program signature: program() matches programUncached() over random state c
   let checked = 0;
   for (let step = 0; step < 3000; step++) {
     // one change; programVersion moves as the Direct3D devices move it: for the states of PROGRAM_RS / PROGRAM_TSS,
-    // textures of another kind, vertex format, lights (any other state changed must not matter to the program)
+    // textures of another kind, vertex format, lights (and lightVersion, as SetLight / LightEnable move it; any other
+    // state changed must not matter to the program)
     let bump = true;
     switch (Math.floor(R() * 7)) {
       case 0: dev.rs.set(pick(rsStates), pick(values)); break;
@@ -55,8 +56,8 @@ test('program signature: program() matches programUncached() over random state c
       }
       case 2: dev.textures[Math.floor(R() * 3)] = pick([0, 0x1000, 0x2000, 0x3000]); break;
       case 3: dev.fvf = pick([0x152, 0x142, 0x1c4, 0x112, 0x2c4]); break;
-      case 4: { const i = Math.floor(R() * 2); if (dev.lightEnabled.has(i)) dev.lightEnabled.delete(i); else dev.lightEnabled.add(i); break; }
-      default: lights.get(Math.floor(R() * 2))[0] = pick([1, 2, 3]); break;
+      case 4: { const i = Math.floor(R() * 2); if (dev.lightEnabled.has(i)) dev.lightEnabled.delete(i); else dev.lightEnabled.add(i); dev.lightVersion++; break; }
+      default: lights.get(Math.floor(R() * 2))[0] = pick([1, 2, 3]); dev.lightVersion++; break;
     }
     if (bump) dev.programVersion++;
     const got = W.program();
@@ -66,4 +67,35 @@ test('program signature: program() matches programUncached() over random state c
   }
   assert.equal(checked, 3000);
   assert.ok(W.programs.size > 20, 'many distinct programs exercised');
+});
+
+// Programs compiled ahead: a device builds a program at a draw and learns it (key, sources); another device given
+// that list compiles it before its first draw and takes it then (no build at the draw) — unless the sources it would
+// build differ (other translators): that one is dropped and built again.
+test('program cache: learned programs compiled ahead are used at the first draw, stale ones rebuilt', () => {
+  const mk = (programCache) => {
+    const dev = {
+      api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
+      rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
+      textures: new Array(16).fill(0), com: { implAt: () => null }, fvf: 0x152, vertexDecl: null, vsObj: null, psObj: null,
+      lights: new Map(), lightEnabled: new Set(), lightVersion: 0, transforms: new Map(), transformSlotVersion: new Map(),
+    };
+    return { dev, W: new WebGLDevice(mockGl(), dev, { programCache }) };
+  };
+  const cache = () => ({ queue: [], ready: new Map(), learned: [], t0: 0, parallel: true, started: 0, hits: 0, stale: 0 });
+  const c1 = cache(), a = mk(c1);
+  const key = a.W.program().p.key;
+  assert.equal(a.W.stats.programs, 1);
+  assert.equal(c1.learned.length, 1); assert.equal(c1.learned[0].key, key);
+  const c2 = cache(), b = mk(c2);
+  c2.queue.push(...c1.learned);
+  b.W.prewarmStep();
+  assert.equal(c2.started, 1); assert.equal(c2.queue.length, 0);
+  assert.equal(b.W.program().p.key, key);
+  assert.equal(b.W.stats.programs, 0, 'no build at the draw'); assert.equal(c2.hits, 1); assert.equal(c2.learned.length, 0, 'nothing new learned');
+  const c3 = cache(), d = mk(c3);
+  c3.queue.push({ ...c1.learned[0], vs: c1.learned[0].vs + '\n// other translator' });
+  d.W.prewarmStep();
+  assert.equal(d.W.program().p.key, key);
+  assert.equal(c3.stale, 1); assert.equal(d.W.stats.programs, 1, 'built from the current sources'); assert.equal(c3.learned.length, 1);
 });

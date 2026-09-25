@@ -27,14 +27,20 @@ const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R
 /** bytes of one row / total bytes for a surface of this format */
 /** Distinct values each render / stage state took (end-of-run report: which pipeline features a game uses). */
 export function noteState(dev, group, s, v) {
-  const m = dev.stateUse ??= new Map(); const k = `${group}:${s}`;
+  // (numeric keys: this runs for every state change — group name and state number joined only for the report)
+  const gid = STATE_GROUPS.get(group) ?? STATE_GROUPS.set(group, STATE_GROUP_NAMES.push(group) - 1).get(group);
+  const m = dev.stateUse ??= new Map(); const k = gid * 0x10000 + (s & 0xffff);
   let set = m.get(k); if (!set) m.set(k, (set = new Set()));
   if (set.size < 12) set.add(v >>> 0);
 }
+const STATE_GROUPS = new Map(), STATE_GROUP_NAMES = [];
+export const TSS_NOTE_GROUPS = Array.from({ length: 8 }, (_, i) => 'tss' + i), SAMP_NOTE_GROUPS = Array.from({ length: 21 }, (_, i) => 'samp' + i);
 /** Readable summary of noteState: "rs:<state>=v1,v2 ..." sorted by state. */
+/** Resources keep a history of their writes (LockRect, UpdateSurface) only for frame captures, which print it. */
+export const tracingResources = () => !!(globalThis.ORTHROS_CAPTURE_FRAME || globalThis.ORTHROS_CAPTURE_DRAWS);
 export function stateUseReport(dev) {
   if (!dev?.stateUse) return '';
-  return [...dev.stateUse].sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true })).map(([k, set]) => `${k}=${[...set].map((v) => (v > 0xffff ? '0x' + v.toString(16) : v)).join(',')}`).join('\n  ');
+  return [...dev.stateUse].map(([k, set]) => [`${STATE_GROUP_NAMES[Math.floor(k / 0x10000)]}:${k % 0x10000}`, set]).sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true })).map(([k, set]) => `${k}=${[...set].map((v) => (v > 0xffff ? '0x' + v.toString(16) : v)).join(',')}`).join('\n  ');
 }
 const f32b = new Float32Array(1), u32b = new Uint32Array(f32b.buffer);
 /** Bit pattern of a float32 (exact comparison of matrices: -0 vs 0 and NaN payloads count as changes). */
@@ -130,7 +136,7 @@ export function d3dCore(vm) {
     }
     ensureMem(proc) { if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
-    trace(c, what) { const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
+    trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
     free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
     ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
@@ -183,7 +189,7 @@ export function d3dCore(vm) {
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
-      this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
+      if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
       if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
@@ -267,8 +273,8 @@ export function d3dCore(vm) {
       this.locked = false; this.dirty = false;
     }
     free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
-    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; mem.write32(pp, this.mem + off); this.locked = true; this.lockRange = [off, size ? Math.min(size, this.length - off) : this.length - off]; this.lockFlags = flags; return D3D_OK; }
-    Unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockRange[0], this.lockRange[1]); } return D3D_OK; }
+    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
+    Unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); } return D3D_OK; }
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, this.type); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.length); if (this.type === RTYPE.VERTEXBUFFER) mem.write32(p + 20, this.fvf); return D3D_OK; }
   }
 
@@ -450,8 +456,10 @@ export function d3dCore(vm) {
       const cur = this.transforms.get(st);
       if (cur) { let same = true; for (let i = 0; i < 16; i++) if ((mem.read32(p + 4 * i) >>> 0) !== f32bits(cur[i])) { same = false; break; } if (same) return D3D_OK; }
       this.touchTransform(st);
-      const m = new Float32Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(p + 4 * i);
-      this.transforms.set(st, m); this.gfx?.setTransform?.(st, m); return D3D_OK;
+      // (updated in place: the device owns its matrices — state blocks keep copies — so no array per call)
+      const m = cur ?? new Float32Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(p + 4 * i);
+      if (!cur) this.transforms.set(st, m);
+      this.gfx?.setTransform?.(st, m); return D3D_OK;
     }
     GetTransform(c) { const m = this.transforms.get(c.arg(1)), p = c.arg(2); if (!p) return D3DERR_INVALIDCALL; for (let i = 0; i < 16; i++) mem.writeF32(p + 4 * i, m ? m[i] : (i % 5 === 0 ? 1 : 0)); return D3D_OK; }
     MultiplyTransform(c) { const st = c.arg(1), p = c.arg(2); this.touchTransform(st); const a = this.transforms.get(st) ?? Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); const b = new Float32Array(16); for (let i = 0; i < 16; i++) b[i] = mem.readF32(p + 4 * i); const r = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += b[i * 4 + k] * a[k * 4 + j]; r[i * 4 + j] = s; } this.transforms.set(st, r); this.gfx?.setTransform?.(st, r); return D3D_OK; }
@@ -480,10 +488,10 @@ export function d3dCore(vm) {
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
     BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
     EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; c.out32(1, id); return D3D_OK; }
-    ApplyStateBlock(c) { this.stateVersion++; this.programVersion++; this.touchAllTransforms(); this.lightVersion++; this.viewportVersion++; this.constVersion++; const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; for (const [s, v] of sb.rs) { this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); } for (const [k, v] of sb.tss) { const [st, ty] = k.split(':').map(Number); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); } for (const [st, t] of sb.textures) { this.textures[st] = t; this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); } for (const [st, m] of sb.transforms) { this.transforms.set(st, m); this.gfx?.setTransform?.(st, m); } if (sb.vs !== undefined) { this.vertexShader = sb.vs; this.gfx?.setVertexShader?.(sb.vs, this.vertexShaders.get(sb.vs)); } if (sb.ps !== undefined) { this.pixelShader = sb.ps; this.gfx?.setPixelShader?.(sb.ps, this.pixelShaders.get(sb.ps)); } return D3D_OK; }
-    CaptureStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; for (const s of sb.rs.keys()) sb.rs.set(s, this.rs.get(s) ?? 0); for (const k of sb.tss.keys()) { const [st, ty] = k.split(':').map(Number); sb.tss.set(k, this.tss[st].get(ty) ?? 0); } for (const st of sb.textures.keys()) sb.textures.set(st, this.textures[st]); for (const st of sb.transforms.keys()) sb.transforms.set(st, this.transforms.get(st)); if (sb.vs !== undefined) sb.vs = this.vertexShader; if (sb.ps !== undefined) sb.ps = this.pixelShader; return D3D_OK; }
+    ApplyStateBlock(c) { this.stateVersion++; this.programVersion++; this.touchAllTransforms(); this.lightVersion++; this.viewportVersion++; this.constVersion++; const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; for (const [s, v] of sb.rs) { this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); } for (const [k, v] of sb.tss) { const [st, ty] = k.split(':').map(Number); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); } for (const [st, t] of sb.textures) { this.textures[st] = t; this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); } for (const [st, m] of sb.transforms) { this.transforms.set(st, m.slice()); this.gfx?.setTransform?.(st, m); } if (sb.vs !== undefined) { this.vertexShader = sb.vs; this.gfx?.setVertexShader?.(sb.vs, this.vertexShaders.get(sb.vs)); } if (sb.ps !== undefined) { this.pixelShader = sb.ps; this.gfx?.setPixelShader?.(sb.ps, this.pixelShaders.get(sb.ps)); } return D3D_OK; }
+    CaptureStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; for (const s of sb.rs.keys()) sb.rs.set(s, this.rs.get(s) ?? 0); for (const k of sb.tss.keys()) { const [st, ty] = k.split(':').map(Number); sb.tss.set(k, this.tss[st].get(ty) ?? 0); } for (const st of sb.textures.keys()) sb.textures.set(st, this.textures[st]); for (const st of sb.transforms.keys()) sb.transforms.set(st, this.transforms.get(st)?.slice()); if (sb.vs !== undefined) sb.vs = this.vertexShader; if (sb.ps !== undefined) sb.ps = this.pixelShader; return D3D_OK; }
     DeleteStateBlock(c) { return this.stateBlocks.delete(c.arg(1)) ? D3D_OK : D3DERR_INVALIDCALL; }
-    CreateStateBlock(c) { const type = c.arg(1), pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const sb = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; if (type === 1 || type === 3) { for (const [s, v] of this.rs) sb.rs.set(s, v); for (let st = 0; st < MAX_STAGES; st++) for (const [ty, v] of this.tss[st]) sb.tss.set(`${st}:${ty}`, v); sb.ps = this.pixelShader; } if (type === 2 || type === 3) { for (const [s, m] of this.transforms) sb.transforms.set(s, m); sb.vs = this.vertexShader; } if (type === 3) for (let st = 0; st < MAX_STAGES; st++) sb.textures.set(st, this.textures[st]); const id = this.nextSB++; this.stateBlocks.set(id, sb); mem.write32(pp, id); return D3D_OK; }
+    CreateStateBlock(c) { const type = c.arg(1), pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const sb = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; if (type === 1 || type === 3) { for (const [s, v] of this.rs) sb.rs.set(s, v); for (let st = 0; st < MAX_STAGES; st++) for (const [ty, v] of this.tss[st]) sb.tss.set(`${st}:${ty}`, v); sb.ps = this.pixelShader; } if (type === 2 || type === 3) { for (const [s, m] of this.transforms) sb.transforms.set(s, m.slice()); sb.vs = this.vertexShader; } if (type === 3) for (let st = 0; st < MAX_STAGES; st++) sb.textures.set(st, this.textures[st]); const id = this.nextSB++; this.stateBlocks.set(id, sb); mem.write32(pp, id); return D3D_OK; }
     SetClipStatus() { return D3D_OK; }
     GetClipStatus(c) { const p = c.arg(1); if (p) { mem.write32(p, 0); mem.write32(p + 4, 0); } return D3D_OK; }
     GetTexture(c) { const st = c.arg(1), pp = c.arg(2); if (st >= MAX_STAGES || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
@@ -491,7 +499,7 @@ export function d3dCore(vm) {
     texKind(ptr) { const t = ptr ? com.implAt(ptr) : null; return !t ? 0 : t.faces ? 2 : t.depth ? 3 : 1; }
     SetTexture(c) { const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
     GetTextureStageState(c) { const st = c.arg(1); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; c.out32(3, this.tss[st].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_TSS.has(ty)) this.programVersion++; noteState(this, 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
+    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_TSS.has(ty)) this.programVersion++; noteState(this, TSS_NOTE_GROUPS[st] ?? 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
     ValidateDevice(c) { c.out32(1, 1); return D3D_OK; }
     GetInfo() { return S_FALSE; }
     SetPaletteEntries(c) { const n = c.arg(1), p = c.arg(2); const pal = new Uint32Array(256); for (let i = 0; i < 256; i++) pal[i] = mem.read32(p + 4 * i); this.palettes.set(n, pal); return D3D_OK; }

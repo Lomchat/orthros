@@ -201,8 +201,9 @@ export class WindowManager {
       const ev = q[i];
       if (ev.type === 'mouseup' && frames !== null) {
         const d = this.pressedAt?.[ev.button];
-        if (d && d.frames === frames && now - d.t < 250) break;
+        if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
       }
+      if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
       if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
       this.inputEvent(ev);
     }
