@@ -112,6 +112,7 @@ const SIG_RS = [RS.SHADEMODE, 2, RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMOD
   RS.ALPHATESTENABLE, 0, RS.ALPHAFUNC, 8];
 /** stage states of the signature besides COLOROP / ALPHAOP / TEXCOORDINDEX, whose defaults depend on the stage (pairs state, default) */
 const SIG_TSS = [TSS.COLORARG1, 2, TSS.COLORARG2, 1, TSS.COLORARG0, 1, TSS.ALPHAARG1, 2, TSS.ALPHAARG2, 1, TSS.ALPHAARG0, 1, TSS.RESULTARG, 1, TSS.TEXTURETRANSFORMFLAGS, 0];
+const U_VC = names('u_vc', 256), U_PC = names('u_pc', 32);
 const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
 
 export class WebGLDevice {
@@ -698,6 +699,29 @@ export class WebGLDevice {
     return null;
   }
 
+  /**
+   * Float constant registers into a program's uniform array: compared with the copy this program last received
+   * (per program: GL keeps uniform values per program), the changed span uploaded. `slot` 0 vertex, 1 pixel.
+   */
+  syncConsts(P, slot, src, NAMES) {
+    const U = P.u, l0 = U(NAMES[0]);
+    if (!l0) return;
+    const cs = P.cs ?? (P.cs = [null, null]);
+    let c = cs[slot];
+    if (!c || c.src !== src) { // (first use, or the device's arrays replaced): everything differs
+      c = cs[slot] = { src, srcU: new Uint32Array(src.buffer, src.byteOffset, src.length), seen: new Uint32Array(src.length) };
+      this.gl.uniform4fv(l0, src); c.seen.set(c.srcU);
+      return;
+    }
+    const a = c.srcU, b = c.seen, n = a.length;
+    let lo = 0; while (lo < n && a[lo] === b[lo]) lo++;
+    if (lo === n) return;
+    let hi = n - 1; while (a[hi] === b[hi]) hi--;
+    const r0 = lo >> 2, r1 = hi >> 2;
+    for (let i = r0 * 4, e = r1 * 4 + 4; i < e; i++) b[i] = a[i];
+    const l = r0 ? U(NAMES[r0]) : l0; // (null: registers past the ones the program uses)
+    if (l) this.gl.uniform4fv(l, src, r0 * 4, (r1 - r0 + 1) * 4);
+  }
   /** A transform slot to program uniform `l`, when its version moved since this program last received it (`seen`). */
   uploadTransform(seen, slot, l, tsv, tall) {
     if (!l) return;
@@ -795,9 +819,10 @@ export class WebGLDevice {
     }
     if (pv.c !== dev.constVersion) {
       pv.c = dev.constVersion;
-      // shader constants (vertex and pixel constants have distinct uniform names)
-      if (U('u_vc[0]')) gl.uniform4fv(U('u_vc[0]'), dev.vsConst);
-      if (U('u_pc[0]')) gl.uniform4fv(U('u_pc[0]'), dev.psConst);
+      // shader constants (vertex and pixel constants have distinct uniform names): only the registers that differ
+      // from what this program last received (effects change a few per draw; the whole vertex array is 4 KB)
+      this.syncConsts(P, 0, dev.vsConst, U_VC);
+      this.syncConsts(P, 1, dev.psConst, U_PC);
       if (dev.api9) {
         if (U('u_vci[0]')) gl.uniform4iv(U('u_vci[0]'), dev.vsConstI);
         if (U('u_pci[0]')) gl.uniform4iv(U('u_pci[0]'), dev.psConstI);
