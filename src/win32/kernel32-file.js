@@ -207,6 +207,8 @@ export function registerKernel32File(api, vm) {
   K.DeleteFileW = [1, (c) => (vm.vfs.unlink(c.proc.path(c.wstr(0) ?? '')) ? 1 : c.fail(E.FILE_NOT_FOUND))];
   K.MoveFileA = [2, (c) => (vm.vfs.rename(c.proc.path(c.str(0) ?? ''), c.proc.path(c.str(1) ?? '')) ? 1 : c.fail(E.FILE_NOT_FOUND))];
   K.MoveFileExA = [3, (c) => (vm.vfs.rename(c.proc.path(c.str(0) ?? ''), c.proc.path(c.str(1) ?? '')) ? 1 : c.fail(E.FILE_NOT_FOUND))];
+  K.MoveFileW = [2, (c) => (vm.vfs.rename(c.proc.path(c.wstr(0) ?? ''), c.proc.path(c.wstr(1) ?? '')) ? 1 : c.fail(E.FILE_NOT_FOUND))];
+  K.MoveFileExW = [3, (c) => (vm.vfs.rename(c.proc.path(c.wstr(0) ?? ''), c.proc.path(c.wstr(1) ?? '')) ? 1 : c.fail(E.FILE_NOT_FOUND))];
   K.CopyFileA = [3, (c) => {
     const src = c.proc.path(c.str(0) ?? ''), dst = c.proc.path(c.str(1) ?? '');
     if (c.arg(2) && vm.vfs.stat(dst)) return c.fail(E.FILE_EXISTS);
@@ -217,6 +219,7 @@ export function registerKernel32File(api, vm) {
   K.CreateDirectoryA = [2, (c) => (vm.vfs.mkdir(c.proc.path(c.str(0) ?? '')) ? 1 : c.fail(vm.vfs.stat(c.proc.path(c.str(0) ?? '')) ? E.ALREADY_EXISTS : E.PATH_NOT_FOUND))];
   K.CreateDirectoryW = [2, (c) => (vm.vfs.mkdir(c.proc.path(c.wstr(0) ?? '')) ? 1 : c.fail(E.ALREADY_EXISTS))];
   K.RemoveDirectoryA = [1, (c) => 1];
+  K.RemoveDirectoryW = [1, (c) => 1];
   K.GetCurrentDirectoryA = [2, (c) => { const s = c.proc.cwd; const n = c.arg(0); if (n <= s.length) return s.length + 1; mem.writeCString(c.arg(1), s); return s.length; }];
   K.GetCurrentDirectoryW = [2, (c) => { const s = c.proc.cwd; const n = c.arg(0); if (n <= s.length) return s.length + 1; mem.writeWString(c.arg(1), s); return s.length; }];
   K.SetCurrentDirectoryA = [1, (c) => { const p = c.proc.path(c.str(0) ?? ''); if (!vm.vfs.stat(p)?.isDir) return c.fail(E.PATH_NOT_FOUND); c.proc.cwd = p; return 1; }];
@@ -246,6 +249,8 @@ export function registerKernel32File(api, vm) {
   K.GetComputerNameA = [2, (c) => { const s = 'ORTHROS'; if (mem.read32(c.arg(1)) <= s.length) return c.fail(E.INSUFFICIENT_BUFFER); mem.writeCString(c.arg(0), s); mem.write32(c.arg(1), s.length); return 1; }];
   K.GetComputerNameW = [2, (c) => { const s = 'ORTHROS'; if (mem.read32(c.arg(1)) <= s.length) return c.fail(E.INSUFFICIENT_BUFFER); mem.writeWString(c.arg(0), s); mem.write32(c.arg(1), s.length); return 1; }];
   K.GetDiskFreeSpaceA = [5, (c) => { c.out32(1, 8); c.out32(2, 512); c.out32(3, 0x400000); c.out32(4, 0x800000); return 1; }];
+  K.GetDiskFreeSpaceW = [5, (c) => { c.out32(1, 8); c.out32(2, 512); c.out32(3, 0x400000); c.out32(4, 0x800000); return 1; }];
+  K.GetDiskFreeSpaceExW = [4, (c) => { const free = 16n * 1024n * 1024n * 1024n; c.out64(1, free); c.out64(2, 4n * free); c.out64(3, free); return 1; }];
   K.GetDiskFreeSpaceExA = [4, (c) => { const free = 16n * 1024n * 1024n * 1024n; c.out64(1, free); c.out64(2, 4n * free); c.out64(3, free); return 1; }];
   K.GetDriveTypeA = [1, (c) => { const s = (c.str(0) ?? '').toUpperCase(); return s.startsWith('C') ? 3 : s.startsWith('D') ? 5 : 1; }];
   K.GetDriveTypeW = [1, (c) => { const s = (c.wstr(0) ?? '').toUpperCase(); return s.startsWith('C') ? 3 : s.startsWith('D') ? 5 : 1; }];

@@ -1,0 +1,24 @@
+{
+  "name": "The Battle for Middle-earth II",
+  "folder": "/srv/games/bfme2-109/rom",
+  "exe": "game.dat",
+  "args": "",
+  "mount": "C:\\Game",
+  "saveDir": "../build/saves/bfme2",
+  "display": {
+    "width": 1024,
+    "height": 768
+  },
+  "dllOverrides": {},
+  "env": {},
+  "registry": {
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II": {
+      "Language": "english",
+      "InstallPath": "C:\\Game\\"
+    },
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe": {
+      "": "C:\\Game\\lotrbfme2.exe",
+      "Path": "C:\\Game"
+    }
+  }
+}
