@@ -277,3 +277,18 @@ droite (l'interpréteur reste la référence, test d'équivalence). Un gestionna
 (objet COM invité) est respecté : les appels passent alors par lui. Aucun format propre au jeu : ce sont les formats
 publics de Direct3D.
 
+
+## D058 — 2026-09-25 — Traduction des régions apprises dans un worker d'arrière-plan
+Les régions apprises (D056) n'étaient traduites que pendant les attentes du jeu, sur le fil du worker du jeu ; au
+chargement il n'y en a presque pas (11,9 s de traduction sur ce fil pendant le chargement de BFME2, 7,7 s pour BFME1).
+**Décision** : la mémoire invitée devient une `WebAssembly.Memory` partagée (sans coût mesuré : 31,3 contre 31,7 ms de CPU
+par image en partie) et un second worker (`src/cpu/jit/bg-translate.js`) traduit ces régions dans l'ordre de leur
+première utilisation, par lots de 48 compilés en un module, deux lots en vol au plus ; le worker du jeu les installe
+(instanciation, table, tables de hachage, carte SMC) entre deux tranches. Sûreté face au jeu qui écrit peut-être le
+code lu au même moment : le traducteur fait un passage de découverte (étendue des blocs), copie ces octets, traduit,
+et ne renvoie la région que si l'étendue et les octets sont identiques après la traduction ; l'installation compare
+encore la copie à la mémoire (sinon : rejet, la région sera traduite normalement à son premier passage). Les indices
+de table sont réservés à la demande (le code d'une région porte son indice pour les versions de mode x87). Mesures :
+traduction sur le fil du jeu pendant le chargement 11,9 → 1,3 s (BFME2), 7,7 → 1,1 s (BFME1) ; ~13 000 régions
+installées, 32 rejetées. `?bgjit=0` : désactivé (retour à la traduction pendant les attentes). Les API du navigateur qui
+refusent les vues sur mémoire partagée (TextDecoder, ImageData) reçoivent une copie.

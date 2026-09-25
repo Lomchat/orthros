@@ -3,6 +3,7 @@
 // address of the same character (ANSI strings are one byte per character here, see GuestMemory.readCString).
 import { E } from './errors.js';
 import { Registry } from './registry.js';
+import { unshared } from './strings.js';
 
 /** Length of the root of `p`: "C:\" 3, "C:" 2, "\\server\share\" up to after the share, "\" 1, relative 0. */
 export function rootLength(p) {
@@ -170,7 +171,7 @@ export function registerShlwapi(api, vm) {
     if (c.arg(3)) mem.write32(c.arg(3), v.type);
     const pSize = c.arg(5), cap = pSize ? mem.read32(pSize) : 0;
     let data = v.data;
-    if (wide && (v.type === 1 || v.type === 2)) { const str = new TextDecoder('latin1').decode(data).replace(/\0+$/, '') + '\0'; data = new Uint8Array(str.length * 2); for (let i = 0; i < str.length; i++) { data[2 * i] = str.charCodeAt(i) & 0xff; data[2 * i + 1] = str.charCodeAt(i) >> 8; } }
+    if (wide && (v.type === 1 || v.type === 2)) { const str = new TextDecoder('latin1').decode(unshared(data)).replace(/\0+$/, '') + '\0'; data = new Uint8Array(str.length * 2); for (let i = 0; i < str.length; i++) { data[2 * i] = str.charCodeAt(i) & 0xff; data[2 * i + 1] = str.charCodeAt(i) >> 8; } }
     if (pSize) mem.write32(pSize, data.length);
     if (c.arg(4)) { if (cap < data.length) return 234; mem.writeBytes(c.arg(4), data); } // (ERROR_MORE_DATA)
     return 0;

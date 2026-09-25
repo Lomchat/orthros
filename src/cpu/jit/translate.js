@@ -311,8 +311,8 @@ export function discoverRegion(mem, entry, opts) {
 }
 
 /** the type and import sections, identical in every region module, are encoded once */
-const REGION_HEADER = {};
-let regionTemplate = null;
+const REGION_HEADER = [{}, {}]; // (per memory kind: unshared, shared)
+const regionTemplate = [null, null];
 /** one emission buffer reused by every translation (grown once instead of from 4 KB per region) */
 let scratchCode = null;
 
@@ -325,19 +325,20 @@ export function translateRegion(mem, entry, opts = {}) {
 }
 
 /** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
-export function buildRegionModule(codes, names = null) {
-  if (!regionTemplate) {
-    const t = new ModuleBuilder(REGION_HEADER);
+export function buildRegionModule(codes, names = null, shared = false) {
+  const key = shared ? 1 : 0; // (the memory import declares whether the guest memory is shared between workers)
+  if (!regionTemplate[key]) {
+    const t = new ModuleBuilder(REGION_HEADER[key]);
     if (t.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
-    t.importMemory('env', 'memory', 32768, 32768);
+    t.importMemory('env', 'memory', 32768, 32768, shared);
     t.importTable('env', 'table', 1024, undefined); // shared funcref table (chained tail calls)
     t.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
     t.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
     t.importFunc('env', 'fallback', [T.i32], [T.i32]);
     for (const [name, params, results] of MATH_KERNELS) t.importFunc('env', name, params, results);
-    regionTemplate = t;
+    regionTemplate[key] = t;
   }
-  const m = regionTemplate.fork();
+  const m = regionTemplate[key].fork();
   codes.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, names?.[i] ?? 'r' + i); m.exportFunc('r' + i, f); });
   return m.build();
 }

@@ -13,9 +13,13 @@ for (let i = 0; i < 32; i++) CP1252_REVERSE.set(CP1252_HIGH[i], 0x80 + i);
 
 export const CP_ACP = 0, CP_OEMCP = 1, CP_UTF8 = 65001;
 
+/** The view itself, or a copy when it lies over shared memory (the guest memory can be shared between workers:
+ * TextDecoder and ImageData refuse such views). */
+export const unshared = (v) => (typeof SharedArrayBuffer !== 'undefined' && v.buffer instanceof SharedArrayBuffer ? v.slice() : v);
+
 /** Bytes (Uint8Array) -> JS string for a code page. */
 export function decodeBytes(bytes, cp = CP_ACP) {
-  if (cp === CP_UTF8) return new TextDecoder('utf-8').decode(bytes);
+  if (cp === CP_UTF8) return new TextDecoder('utf-8').decode(unshared(bytes));
   if (cp === 1200) { let s = ''; for (let i = 0; i + 1 < bytes.length; i += 2) s += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8)); return s; }
   let s = '';
   const win = cp === 0 || cp === 1 || cp === 1252;
