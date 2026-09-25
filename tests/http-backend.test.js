@@ -164,3 +164,41 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
     assert.equal(requests.length, n, 'served from the store');
   } finally { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// The OPFS block store (synchronous access handles, faked in memory here): every block carries a checksum written with
+// it; a block that does not read back as written is dropped and reported; an index of the earlier format (no checksums)
+// empties the store.
+test('block store: checksummed blocks, a damaged block dropped, an earlier-format store emptied', async () => {
+  const { OpfsBlockStore } = await import('../src/vfs/opfs-store.js');
+  class FakeHandle {
+    constructor() { this.b = new Uint8Array(0); }
+    getSize() { return this.b.length; }
+    read(out, { at }) { const n = Math.max(0, Math.min(out.length, this.b.length - at)); out.set(this.b.subarray(at, at + n)); return n; }
+    write(src, { at }) { if (at + src.length > this.b.length) { const nb = new Uint8Array(at + src.length); nb.set(this.b); this.b = nb; } this.b.set(src, at); return src.length; }
+    truncate(n) { this.b = this.b.slice(0, n); }
+    flush() {} close() {}
+  }
+  const files = new Map();
+  const dir = { getFileHandle: async (name) => ({ createSyncAccessHandle: async () => { if (!files.has(name)) files.set(name, new FakeHandle()); return files.get(name); } }) };
+  const realNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value: { storage: { getDirectory: async () => ({ getDirectoryHandle: async () => dir }) } }, configurable: true });
+  try {
+    const a = FILE.slice(0, MiB), b = FILE.slice(MiB, 2 * MiB);
+    let s = await OpfsBlockStore.open('x');
+    s.put('f#1#0#0', a); s.put('f#1#0#1', b); s.flush();
+    s = await OpfsBlockStore.open('x'); // a later run
+    assert.equal(s.resetReason, null);
+    assert.deepEqual(s.get('f#1#0#0'), a);
+    files.get('blocks.bin').b[MiB + 12345] ^= 0x40; // one byte of the second block changes on disk
+    const bad = []; s.onCorrupt = (k) => bad.push(k);
+    assert.equal(s.get('f#1#0#1'), null, 'damaged block not returned');
+    assert.deepEqual(bad, ['f#1#0#1']);
+    assert.equal(s.map.has('f#1#0#1'), false, 'and forgotten (fetched again)');
+    // an index of the earlier format: the store starts over
+    files.get('index.json').b = new TextEncoder().encode(JSON.stringify([['f#1#0#0', 0, MiB]]));
+    s = await OpfsBlockStore.open('x');
+    assert.equal(s.resetReason, 'an earlier format without block checksums');
+    assert.equal(s.map.size, 0);
+    assert.equal(files.get('blocks.bin').getSize(), 0, 'data file emptied');
+  } finally { if (realNav) Object.defineProperty(globalThis, 'navigator', realNav); else delete globalThis.navigator; }
+});

@@ -155,7 +155,9 @@ export class HttpBackend {
     // persistent store (the key names the file version: size and mtime of the listing)
     const skey = (i) => `${path}#${size}#${mtime}#${i}`;
     b = this.store?.get(skey(index));
-    if (b) { this.cache.set(key, b); this.evict(); return b; }
+    // (a stored block must have the block's length: the whole block, or the file's tail for the last one)
+    if (b && b.length === Math.min(BLOCK, size - index * BLOCK)) { this.cache.set(key, b); this.evict(); return b; }
+    if (b) this.store.drop?.(skey(index));
     // fetch this block plus up to `readAhead` following blocks in one request
     const start = index * BLOCK;
     const n = Math.max(1, Math.min(readAhead, Math.ceil((size - start) / BLOCK)));
