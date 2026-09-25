@@ -72,8 +72,45 @@ const ZIGZAG = new Uint8Array([0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11,
 // Float IDCT (separable), accurate and simple.
 const COS = new Float32Array(64);
 for (let x = 0; x < 8; x++) for (let u = 0; u < 8; u++) COS[x * 8 + u] = (u === 0 ? Math.SQRT1_2 : 1) * Math.cos(((2 * x + 1) * u * Math.PI) / 16);
-const tmp = new Float32Array(64);
-function idct(coef, qt, out, outOff, stride) {
+const tmp = new Float32Array(64), rowU = new Int32Array(8), rowV = new Float64Array(8);
+/**
+ * The same transform as idctReference, skipping what is zero (most blocks carry a handful of low frequencies): a block
+ * with only its DC term is flat; rows without coefficients contribute nothing to the column pass, which runs only over
+ * the rows up to the last one that has some. `coef` holds the block at `co`.
+ */
+function idct(coef, co, qt, out, outOff, stride) {
+  let last = -1, acAny = false;
+  for (let y = 0; y < 8; y++) {
+    let any = false;
+    for (let u = 0; u < 8; u++) if (coef[co + y * 8 + u]) { any = true; if (y || u) acAny = true; }
+    if (any) last = y;
+  }
+  if (!acAny) { // (flat: DC * q / 8 + 128 everywhere, as both passes give)
+    const t = Math.fround(coef[co] * qt[0] * COS[0] / 2), v0 = Math.round(t * COS[0] / 2 + 128), v = v0 < 0 ? 0 : v0 > 255 ? 255 : v0;
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) out[outOff + y * stride + x] = v;
+    return;
+  }
+  for (let y = 0; y <= last; y++) {
+    const r = co + y * 8;
+    let n = 0; // (the row's nonzero terms, dequantized, in increasing u: the same sums as the reference)
+    for (let u = 0; u < 8; u++) { const c = coef[r + u]; if (c) { rowU[n] = u; rowV[n] = c * qt[y * 8 + u]; n++; } }
+    for (let x = 0; x < 8; x++) {
+      let s = 0;
+      for (let i = 0; i < n; i++) s += rowV[i] * COS[x * 8 + rowU[i]];
+      tmp[y * 8 + x] = s / 2;
+    }
+  }
+  for (let x = 0; x < 8; x++) {
+    for (let y = 0; y < 8; y++) {
+      let s = 0;
+      for (let v = 0; v <= last; v++) s += tmp[v * 8 + x] * COS[y * 8 + v];
+      const val = Math.round(s / 2 + 128);
+      out[outOff + y * stride + x] = val < 0 ? 0 : val > 255 ? 255 : val;
+    }
+  }
+}
+/** The plain separable float IDCT (reference for tests). */
+export function idctReference(coef, qt, out, outOff, stride) {
   // rows: coef is in natural order (dequantize here)
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
@@ -291,12 +328,7 @@ function outputImage(frame, qts, adobe) {
     const pw = c.bw * 8, ph = c.bh * 8;
     let plane = new Uint8ClampedArray(pw * ph);
     const qt = qts[c.tq];
-    const blk = new Int16Array(64);
-    for (let by = 0; by < c.bh; by++) for (let bx = 0; bx < c.bw; bx++) {
-      const off = (by * c.bw + bx) * 64;
-      blk.set(c.coef.subarray(off, off + 64));
-      idct(blk, qt, plane, by * 8 * pw + bx * 8, pw);
-    }
+    for (let by = 0; by < c.bh; by++) for (let bx = 0; bx < c.bw; bx++) idct(c.coef, (by * c.bw + bx) * 64, qt, plane, by * 8 * pw + bx * 8, pw);
     const fx = hmax / c.h, fy = vmax / c.v;
     if (fx !== 1 || fy !== 1) {
       const dw = Math.ceil(width * c.h / hmax), dh = Math.ceil(height * c.v / vmax); // downsampled component size
@@ -328,3 +360,5 @@ function clamp(v) { return v < 0 ? 0 : v > 255 ? 255 : v | 0; }
 
 /** Quick sniff. */
 export function isJpeg(bytes) { return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff; }
+
+export const idctFast = idct; // (tests)
