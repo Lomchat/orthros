@@ -964,7 +964,8 @@ export class WebGLDevice {
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     if (!flip) { const row = w * 4, tmp = new Uint8Array(row); for (let y = 0; y < h >> 1; y++) { const a = y * row, b = (h - 1 - y) * row; tmp.set(rgba.subarray(a, a + row)); rgba.copyWithin(a, b, b + row); rgba.set(tmp, b); } }
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
-    this.dump(`f${this.frame}-draw${String(this.frameDraws).padStart(4, '0')}-${what}`, w, h, rgba);
+    this.captureSeq = (this.captureSeq ?? 0) + 1; // (a frame may have several scenes: frameDraws restarts at each)
+    this.dump(`f${this.frame}-draw${String(this.captureSeq).padStart(4, '0')}-${what}`, w, h, rgba);
   }
   // (the Direct3D -> GL enum tables are built once per context: these run for every draw)
   cmp(f) { const gl = this.gl; return (this.cmpTable ??= [gl.ALWAYS, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS])[f] ?? gl.ALWAYS; }
