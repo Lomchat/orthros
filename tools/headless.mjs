@@ -75,6 +75,7 @@ if (opt('jit-opts')) q.set('jitopts', opt('jit-opts')); // debugging: JIT option
 if (opt('dbg')) q.set('dbg', opt('dbg')); // (worker debug globals: NAME=value,...)
 if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API function in the slow-frame lines; adds a clock read per call)
 if (opt('programs') === '0') q.set('programs', '0');
+if (opt('bgjit') === '0') q.set('bgjit', '0'); // (learned regions translated on this thread while the game waits, not in a background worker)
 if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background

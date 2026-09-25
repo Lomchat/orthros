@@ -7,6 +7,7 @@ import { defineD3DXMath } from './d3dx9-math.js';
 import { parseImage, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
+import { unshared } from './strings.js';
 
 const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DXERR_INVALIDDATA = 0x88760b59, E_OUTOFMEMORY = 0x8007000e, E_NOTIMPL = 0x80004001;
 const D3DX_DEFAULT = 0xffffffff, D3DX_DEFAULT_NONPOW2 = 0xfffffffe, D3DX_FROM_FILE = 0xfffffffd;
@@ -312,7 +313,7 @@ export function registerD3DX9(api, vm) {
       return text;
     }
     const path = c.proc.path((baseDir ? baseDir + '\\' : '') + name), st = vm.vfs.stat(path);
-    return st ? new TextDecoder('latin1').decode(vm.vfs.open(path).read(0, st.size)) : null;
+    return st ? new TextDecoder('latin1').decode(unshared(vm.vfs.open(path).read(0, st.size))) : null;
   };
   const assemble = (c, text, pDefines, pInclude, ppShader, ppErrors, baseDir) => {
     if (ppShader) mem.write32(ppShader, 0);
@@ -329,7 +330,7 @@ export function registerD3DX9(api, vm) {
   };
   // (src, len, defines, include, flags, ppShader, ppErrors)
   X.D3DXAssembleShader = [7, (c) => { dumpBlob('asm', c.arg(0), c.arg(1)); return assemble(c, mem.readCStringN(c.arg(0), c.arg(1)), c.arg(2), c.arg(3), c.arg(5), c.arg(6), ''); }];
-  const asmFile = (wide) => (c) => { const name = wide ? c.wstr(0) : c.str(0), d = name ? readFile(c, name) : null; if (!d) return D3DXERR_INVALIDDATA; return assemble(c, new TextDecoder('latin1').decode(d), c.arg(1), c.arg(2), c.arg(4), c.arg(5), name.replace(/[\\/][^\\/]*$/, '')); };
+  const asmFile = (wide) => (c) => { const name = wide ? c.wstr(0) : c.str(0), d = name ? readFile(c, name) : null; if (!d) return D3DXERR_INVALIDDATA; return assemble(c, new TextDecoder('latin1').decode(unshared(d)), c.arg(1), c.arg(2), c.arg(4), c.arg(5), name.replace(/[\\/][^\\/]*$/, '')); };
   X.D3DXAssembleShaderFromFileA = [6, asmFile(false)];
   X.D3DXAssembleShaderFromFileW = [6, asmFile(true)];
   // (debugging, Node: ORTHROS_DUMP_D3DX=<dir> keeps the effect and shader-assembly inputs as files)

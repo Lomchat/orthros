@@ -21,6 +21,7 @@ const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned pre
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
+let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
@@ -90,7 +91,7 @@ async function start(m) {
   if (m.opts.jitOpts) try { globalThis.ORTHROS_JIT_OPTS = JSON.parse(m.opts.jitOpts); } catch { /* ignored */ } // (debugging: ?jitopts={"consolidateEvery":...})
   globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_CAPTURE_DRAWS = !!m.opts.captureDraws; globalThis.ORTHROS_LOCK_LOG = (m.opts.log ?? []).includes('lock'); if (m.opts.burstFromId) globalThis.ORTHROS_BURST_FROM_ID = m.opts.burstFromId; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull; globalThis.ORTHROS_JIT_PROFILE = !!m.opts.jitProfile; globalThis.ORTHROS_GL_DISCARD = !!m.opts.glDiscard; globalThis.ORTHROS_WATCH_TEX = m.opts.watchTex || undefined; globalThis.ORTHROS_NO_F32 = !!m.opts.noF32; globalThis.ORTHROS_F32_OFF = m.opts.f32Off || ''; globalThis.ORTHROS_GL_VALIDATE = !!m.opts.glValidate; globalThis.ORTHROS_INTERP_RANGES = m.opts.interpRange || undefined;
   // frame capture (--capture N): images (bound textures, render target after draws) encoded as PNG for the harness
-  const dump = (name, w, h, rgba) => { try { const c = new OffscreenCanvas(w, h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, w * h * 4), w, h), 0, 0); c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()).then((ab) => post({ type: 'dump', name, data: ab }, [ab])); } catch (e) { log('warn', `dump ${name} failed: ${e.message}`); } };
+  const dump = (name, w, h, rgba) => { try { const c = new OffscreenCanvas(w, h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer instanceof ArrayBuffer ? rgba.buffer : rgba.slice().buffer, rgba.buffer instanceof ArrayBuffer ? rgba.byteOffset : 0, w * h * 4), w, h), 0, 0); c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()).then((ab) => post({ type: 'dump', name, data: ab }, [ab])); } catch (e) { log('warn', `dump ${name} failed: ${e.message}`); } };
   try { host.gfx = createWebGLBackend(canvasGl, (msg) => log('gfx', msg), dump); if (!host.gfx) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   // GL programs of earlier sessions, compiled ahead of their first draw (see WebGLDevice.prewarmStep); this session's
   // new ones are sent back a few seconds after they are built
@@ -106,7 +107,7 @@ async function start(m) {
   }
   if (m.opts.regionCache) {
     const url = `/api/regions/${encodeURIComponent(manifestName)}`;
-    fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated while the game waits`); } }).catch(() => {});
+    fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
     regionSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list }) }).catch(() => {});
   }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
@@ -142,9 +143,20 @@ async function start(m) {
     profile.open(f.path, { create: true }).write(0, Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0)));
   }
   vfs.mount('C:\\Users\\Player', profile);
-  vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
+  const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
+  vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
   if (regionSink && vm.jit) vm.jit.learned = [];
+  // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
+  // while the game waits, on this thread)
+  if (vm.jit && bgWanted) {
+    try {
+      bgTranslator = new Worker(new URL('../../cpu/jit/bg-translate.js', import.meta.url), { type: 'module' });
+      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } };
+      bgTranslator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); bgTranslator = null; };
+      vm.jit.attachBackground(bgTranslator);
+    } catch (e) { bgTranslator = null; log('warn', `background translation unavailable: ${e.message}`); }
+  }
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
   host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '' });
   host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
@@ -197,6 +209,7 @@ function takeMainWaits() { const r = [...vm.mainWaits].sort((a, b) => b[1] - a[1
 let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn = ''; // (lastPumpReturn: why the last pump returned) // (time between two pumps: the worker waiting — slow-frame diagnostics)
 function pump() {
   if (!running || stopped) return;
+  if (bgTranslator && regionQueue) feedBackground();
   if (pumpEndAt) { const g = performance.now() - pumpEndAt; pumpIdleMs += g; pumpGaps++; if (g > pumpGapMax) pumpGapMax = g; }
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
   let r;
@@ -266,7 +279,34 @@ function pump() {
  * Translate learned regions for up to `budgetMs` (the game is waiting): after the first frame (the code is in place),
  * in the order earlier sessions first needed them; entries of modules not loaded (yet) are passed over.
  */
+/**
+ * Learned regions to the background translator, in their order of first use, up to two batches in flight (the rest
+ * waits for the answers: installing stays in step with what the other thread produces). Entries of modules not loaded
+ * yet are kept for later.
+ */
+function feedBackground() {
+  if (!bgTranslator || !regionQueue || !vm?.jit) return;
+  const jit = vm.jit;
+  if (bgMods.n !== vm.proc.moduleList.length) { bgMods.n = vm.proc.moduleList.length; bgMods.map = new Map(vm.proc.moduleList.map((x) => [x.name.toLowerCase(), x])); if (regionLater.length) { regionQueue.push(...regionLater); regionLater = []; } }
+  while (jit.bgPending() < 2 && regionPos < regionQueue.length) {
+    const list = [];
+    while (list.length < 48 && regionPos < regionQueue.length) {
+      const e = regionQueue[regionPos++];
+      if (!Array.isArray(e) || !Number.isInteger(e[1]) || e[1] < 0) continue;
+      const mod = bgMods.map.get(e[0]);
+      if (!mod) { if (regionLater.length < 65536) regionLater.push(e); continue; }
+      if (e[1] < mod.size) list.push([mod.base + e[1], e[2] ?? null]);
+    }
+    if (list.length) jit.bgPrewarm(list);
+  }
+  if (regionPos >= regionQueue.length && !jit.bgPending() && !bgDoneLogged && !regionLater.length) {
+    bgDoneLogged = true;
+    const bg = jit.bg;
+    log('file', `regions: ${bg.installed} translated ahead in the background and installed (${Math.round(bg.bgMs)} ms there, ${Math.round(jit.stats.bgInstallMs ?? 0)} ms installing here), ${bg.rejected} dropped (code changed, or translated here first), ${bg.sent - bg.installed - bg.rejected} not translatable; ${regionQueue.length - bg.sent} entries already translated or without code`);
+  }
+}
 function prewarmRegions(budgetMs) {
+  if (bgTranslator) { feedBackground(); return; }
   if (!regionQueue || regionPos >= regionQueue.length || !vm.jit || !host.framesPresented) return;
   const end = performance.now() + budgetMs;
   const mods = new Map(vm.proc.moduleList.map((x) => [x.name.toLowerCase(), x]));

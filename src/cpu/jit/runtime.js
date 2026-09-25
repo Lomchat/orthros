@@ -130,7 +130,7 @@ export function materializeFlags(op, res, a, b, ef) {
  */
 export function buildRuntime(opts = {}) {
   const m = new ModuleBuilder();
-  m.importMemory('env', 'memory', 32768, 32768);
+  m.importMemory('env', 'memory', 32768, 32768, !!opts.shared);
   m.importTable('env', 'table', 1024, undefined);
   const regionType = m.type(REGION_PARAMS, REGION_RESULTS);
 

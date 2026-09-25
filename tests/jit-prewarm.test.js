@@ -1,6 +1,7 @@
 // Regions translated ahead: the JIT records the entries it translated at a miss (with the x87 mode it assumed); a
-// later run given that list translates them before executing anything (Jit.prewarm) and then runs without a miss,
-// with the interpreter's results. A prewarm of an address without memory, or already translated, does nothing.
+// later run given that list translates them before executing anything (Jit.prewarm, or the background worker:
+// bg-translate.js, Jit.bgPrewarm / bgInstall) and then runs without a miss, with the interpreter's results. A prewarm
+// of an address without memory, or already translated, does nothing; a background translation whose code changed is dropped.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -45,4 +46,55 @@ test('regions learned by one run are translated ahead by the next: no miss, same
   assert.equal(runAll(b.jit), EXIT.HALT);
   assert.equal(b.jit.stats.misses, 0, 'every region was ready');
   assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(a.mem.bytes(OUT, 0x300)).toString('hex'));
+});
+
+// ---- the same regions translated by the background worker (bg-translate.js, driven here without a worker)
+import { handleMessage } from '../src/cpu/jit/bg-translate.js';
+function setupShared() {
+  const mem = new GuestMemory({ shared: true }); // (shared: the background worker reads it)
+  const cpu = new CpuState(mem, THREAD_STATES_BASE);
+  cpu.reset();
+  mem.writeBytes(CODE, bytes);
+  [1.1, 3.3, 1.0, 3.0, 2.7].forEach((v, i) => mem.writeF32(DATA + 4 * i, v));
+  mem.write16(CW, 0x027f); mem.write16(CW + 2, 0x007f); mem.write16(CW + 4, 0x0c7f);
+  cpu.eip = CODE; cpu.esp = DATA + 0x8000; cpu.esi = DATA; cpu.edi = OUT; cpu.ebx = CW; cpu.eflags = F.RESERVED1 | F.IF;
+  mem.write16(cpu.base + ST.FPU_CW, 0x007f);
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true, warn: (m) => { throw new Error(m); } });
+  jit.cpu = cpu;
+  const replies = [];
+  jit.attachBackground({ postMessage: (m) => handleMessage(m, (r) => replies.push(r)) });
+  return { mem, cpu, jit, replies };
+}
+
+test('regions translated by the background worker are installed and run like the others', () => {
+  const a = setup();
+  a.jit.learned = [];
+  assert.equal(runAll(a.jit), EXIT.HALT);
+  const b = setupShared();
+  const n = b.jit.bgPrewarm(a.jit.learned.map(([eip, fpc]) => [eip, fpc]));
+  assert.equal(n, a.jit.learned.length);
+  assert.equal(b.replies.length, 1, 'one batch');
+  b.jit.bgInstall(b.replies[0]);
+  assert.equal(b.jit.bg.installed, n);
+  assert.equal(b.jit.bgPending(), 0);
+  assert.equal(runAll(b.jit), EXIT.HALT);
+  assert.equal(b.jit.stats.misses, 0, 'every region was ready');
+  assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(a.mem.bytes(OUT, 0x300)).toString('hex'));
+});
+
+test('a background translation is dropped when its code changed before the install, or was translated meanwhile', () => {
+  const b = setupShared();
+  b.jit.bgPrewarm([[CODE, 0]]);
+  const old = b.mem.read8(CODE + 1);
+  b.mem.write8(CODE + 1, old ^ 1); // (mov ecx, imm32: another loop count)
+  b.jit.bgInstall(b.replies[0]);
+  assert.equal(b.jit.bg.installed, 0);
+  assert.equal(b.jit.bg.rejected, 1);
+  b.mem.write8(CODE + 1, old);
+  b.jit.bgPrewarm([[CODE, 0]]);
+  b.jit.translate(CODE, null, 0); // (a miss translated it first)
+  b.jit.bgInstall(b.replies[1]);
+  assert.equal(b.jit.bg.installed, 0);
+  assert.equal(b.jit.bg.rejected, 2);
+  assert.equal(runAll(b.jit), EXIT.HALT);
 });

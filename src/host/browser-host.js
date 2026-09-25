@@ -75,7 +75,7 @@ export class BrowserDisplay {
     this.cursorDefs ??= new Map();
     if (this.cursorDefs.has(key)) { this.host.post({ type: 'cursor-set', id: key }); return; }
     this.cursorDefs.set(key, true);
-    const enc = image.frames.map((f) => { const c = new OffscreenCanvas(f.w, f.h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(f.rgba.buffer, f.rgba.byteOffset, f.w * f.h * 4), f.w, f.h), 0, 0); return c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()); });
+    const enc = image.frames.map((f) => { const c = new OffscreenCanvas(f.w, f.h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(f.rgba.buffer instanceof ArrayBuffer ? f.rgba.buffer : f.rgba.slice().buffer, f.rgba.buffer instanceof ArrayBuffer ? f.rgba.byteOffset : 0, f.w * f.h * 4), f.w, f.h), 0, 0); return c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()); });
     Promise.all(enc).then((pngs) => {
       this.host.post({ type: 'cursor-def', id: key, frames: image.frames.map((f, i) => ({ png: pngs[i], hotX: f.hotX, hotY: f.hotY })), steps: image.steps });
       if (this.cursorKey === key) this.host.post({ type: 'cursor-set', id: key });

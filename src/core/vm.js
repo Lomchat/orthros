@@ -48,7 +48,7 @@ export class Vm {
     this.vfs = opts.vfs;
     this.clock = opts.clock ?? new RealClock();
     this.host = opts.host ?? null;
-    this.mem = new GuestMemory();
+    this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
     this.api = new ApiRegistry();
     this.interp = new Interp(this.mem, null);
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)

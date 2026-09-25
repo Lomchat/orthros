@@ -38,7 +38,8 @@ export class Jit {
     this.opts = opts;
     this.cpu = null;
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
-    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile }));
+    this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
+    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared }));
     this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table } }).exports;
     this.imports = {
       env: {
@@ -152,7 +153,7 @@ export class Jit {
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi });
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
-    const bytes = buildRegionModule([code], ['r_' + eip.toString(16)]);
+    const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
     const t2 = performance.now();
     let inst;
     try {
@@ -165,11 +166,32 @@ export class Jit {
       throw new Error(`JIT module for ${eip.toString(16)} failed: ${e.message}`);
     }
     this.stats.tEmit += t1 - t0; this.stats.tBuild += t2 - t1;
-    if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
-    const fnIdx = this.nextFn++;
+    const fnIdx = this.reserveFn();
     const t4 = performance.now();
     this.table.set(fnIdx, inst.exports.r0);
     this.stats.tTableSet += performance.now() - t4;
+    const region = this.register(eip, blocks, fnIdx, code, fpc, stats, version);
+    // consolidation only after the region is registered: consolidate() keeps the pending regions
+    // that byEntry still maps, so the one triggering it must already be there (or it would keep
+    // its single-function instance forever)
+    if (!version) this.pending.push(region); // (versions keep their own module: consolidation packs hash-reachable regions)
+    if (this.pending.length >= this.consolidateEvery) { const tc = performance.now(); this.consolidate(); this.stats.tConsolidate += performance.now() - tc; }
+    this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
+    if (this.learned && !version && assume === undefined && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(t0)]);
+    if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);
+    return region;
+  }
+
+  /** A table index for a new region (the table grows by doubling). */
+  reserveFn() {
+    if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
+    return this.nextFn++;
+  }
+  /**
+   * Record a region whose function is at table index `fnIdx`: lookup structures, hash entries of its blocks (not for
+   * an FPU-mode version, reached through its first version's guard), code pages flagged for SMC detection.
+   */
+  register(eip, blocks, fnIdx, code, fpc, stats, version = null) {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
@@ -187,16 +209,61 @@ export class Jit {
       this.mem.u8[SMC_MAP_BASE + p] = 1;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
-    // consolidation only after the region is registered: consolidate() keeps the pending regions
-    // that byEntry still maps, so the one triggering it must already be there (or it would keep
-    // its single-function instance forever)
-    if (!version) this.pending.push(region); // (versions keep their own module: consolidation packs hash-reachable regions)
-    if (this.pending.length >= this.consolidateEvery) { const tc = performance.now(); this.consolidate(); this.stats.tConsolidate += performance.now() - tc; }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
-    this.stats.bytes += bytes.length; this.stats.translateMs += performance.now() - t0;
-    if (this.learned && !version && assume === undefined && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(t0)]);
-    if (this.opts.log) this.opts.log(`jit: region ${eip.toString(16)} blocks=${blocks.length} native=${stats.native} fallback=${stats.fallback} bytes=${bytes.length}`);
     return region;
+  }
+
+  // ------------------------------------------------------------------ background translation
+  /**
+   * Translate ahead in another worker (bg-translate.js) that shares the guest memory: `port` is that worker. Regions
+   * come back compiled, in batches (one module each), and are installed by bgInstall() when their code bytes still
+   * equal the ones translated.
+   */
+  attachBackground(port) {
+    this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
+    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges } });
+  }
+  /** batches sent and not answered yet */
+  bgPending() { return this.bg ? this.bg.inflight.size : 0; }
+  /**
+   * Ask the background worker for regions [eip, x87 mode (null: generic)] not translated yet; table indexes are
+   * reserved now (an answer that is not installed leaves its index unused). Returns how many were sent.
+   */
+  bgPrewarm(list) {
+    const bg = this.bg; if (!bg) return 0;
+    const items = [];
+    for (const [eip0, fpc] of list) {
+      const eip = eip0 >>> 0;
+      if (this.blockMap.has(eip) || !this.interp.executable(eip)) continue;
+      items.push({ eip, fpc: this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : fpc, fnIdx: this.reserveFn() });
+    }
+    if (!items.length) return 0;
+    const id = bg.nextId++;
+    bg.inflight.set(id, items.length); bg.sent += items.length;
+    bg.port.postMessage({ type: 'batch', id, items });
+    return items.length;
+  }
+  /** A batch from the background worker: each region whose bytes are unchanged and not translated meanwhile is installed. */
+  bgInstall(m) {
+    const bg = this.bg; if (!bg || !bg.inflight.has(m.id)) return;
+    bg.inflight.delete(m.id);
+    bg.bgMs += m.ms ?? 0;
+    if (!m.module) return;
+    const t0 = performance.now();
+    let inst;
+    try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
+    const u8 = this.mem.u8;
+    for (const it of m.items) {
+      if (it.k < 0) continue; // (not translatable)
+      // translated here meanwhile (at a miss), or its code changed since the background worker read it
+      let same = !this.blockMap.has(it.eip);
+      for (let i = 0, o = 0; same && i < it.blocks.length; i++) { const b = it.blocks[i]; for (let a = b.eip; a < b.end; a++, o++) if (u8[a] !== it.snap[o]) { same = false; break; } }
+      if (!same) { bg.rejected++; continue; }
+      this.table.set(it.fnIdx, inst.exports['r' + it.k]);
+      this.register(it.eip, it.blocks, it.fnIdx, null, it.fpc, it.stats);
+      bg.installed++;
+    }
+    this.stats.bgInstallMs = (this.stats.bgInstallMs ?? 0) + performance.now() - t0;
   }
 
   /**
@@ -224,7 +291,7 @@ export class Jit {
     if (!live.length) return;
     const t0 = performance.now();
     let inst;
-    try { inst = new WebAssembly.Instance(new WebAssembly.Module(buildRegionModule(live.map((r) => r.code), live.map((r) => 'r_' + r.entry.toString(16)))), this.imports); }
+    try { inst = new WebAssembly.Instance(new WebAssembly.Module(buildRegionModule(live.map((r) => r.code), live.map((r) => 'r_' + r.entry.toString(16)), this.shared)), this.imports); }
     catch (e) { if (this.opts.log) this.opts.log(`jit: consolidation failed: ${e.message}`); return; }
     live.forEach((r, i) => { if (this.byEntry.get(r.entry) === r) this.table.set(r.fnIdx, inst.exports['r' + i]); r.code = null; });
     this.stats.consolidations = (this.stats.consolidations ?? 0) + 1;
