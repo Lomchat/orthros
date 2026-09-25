@@ -243,7 +243,8 @@ export class Vm {
   exitProcess(code) {
     // a failure exit (abort, assertion, a filter ending an unhandled exception...): what led to it, for the host
     if (code !== 0 && !this.exitReport) {
-      try { this.exitReport = this.crashReport(this.current ?? this.proc.threads[0], `process exit with code ${code >>> 0}`) + '\n' + this.seh.recentReport() + (this.recentFiles?.length ? `\nfiles opened last (oldest first):\n  ${this.recentFiles.join('\n  ')}` : ''); }
+      // (the exceptions and files first: the report sent to a server is cut at a size limit)
+      try { this.exitReport = `process exit with code ${code >>> 0}\n` + this.seh.recentReport() + (this.recentFiles?.length ? `\nfiles opened last (oldest first):\n  ${this.recentFiles.join('\n  ')}` : '') + '\n' + this.crashReport(this.current ?? this.proc.threads[0], `process exit with code ${code >>> 0}`); }
       catch (e) { this.exitReport = `exit report failed: ${e.message}`; }
     }
     throw new ProcessExit(code >>> 0);

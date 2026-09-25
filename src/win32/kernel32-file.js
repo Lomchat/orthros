@@ -112,6 +112,7 @@ export function registerKernel32File(api, vm) {
     if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay
     f.pos = pos + d.length; // a synchronous handle's file pointer follows the read even when the offset came from OVERLAPPED
     c.out32(3, d.length);
+    { const r = (vm.recentReads ??= { a: new Array(32), i: 0 }); r.a[r.i++ & 31] = `${f.path ?? '?'} @${pos} ${n}${d.length !== n ? ` -> ${d.length}` : ''} [t${c.thread.id}]`; } // (failure reports)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} -> ${d.length} [t${c.thread.id}]`);
     if (d.length < n && pos + d.length < (f.file.size?.() ?? Infinity) && (this_shortReads = (this_shortReads ?? 0) + 1) <= 16) vm.log('file', `short read ${f.path ?? '?'} at ${pos} (${n} requested, ${d.length} read, size ${f.file.size?.() ?? '?'}) [t${c.thread.id}]`); // short before EOF: a backend problem
     if (d.length === 0 && n > 0 && ovl) return c.fail(E.HANDLE_EOF);
