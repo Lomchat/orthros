@@ -971,11 +971,14 @@ export function registerUser32(api, vm) {
   U.SetCursorPos = [2, (c) => { wm().cursor = { x: c.sarg(0), y: c.sarg(1) }; vm.host?.setCursorPos?.(c.sarg(0), c.sarg(1)); return 1; }];
   U.ClipCursor = [1, (c) => { wm().clip = c.arg(0) ? readRect(c.arg(0)) : null; return 1; }];
   U.GetClipCursor = [1, (c) => { writeRect(c.arg(0), wm().clip ?? { l: 0, t: 0, r: wm().screen.width, b: wm().screen.height }); return 1; }];
-  U.ShowCursor = [1, (c) => { const w = wm(); w.showCursorCount += c.arg(0) ? 1 : -1; vm.host?.display?.showCursor?.(w.showCursorCount >= 0); return w.showCursorCount >>> 0; }];
+  // the cursor shows when the display count is >= 0 and a cursor shape is set (SetCursor(NULL) removes the shape until
+  // the next SetCursor: the two are independent, as in Windows)
+  const cursorShown = (w) => w.showCursorCount >= 0 && !w.cursorRemoved; // (before any SetCursor: the system arrow)
+  U.ShowCursor = [1, (c) => { const w = wm(); w.showCursorCount += c.arg(0) ? 1 : -1; vm.host?.display?.showCursor?.(cursorShown(w)); return w.showCursorCount >>> 0; }];
   U.SetCursor = [1, (c) => {
     const p = wm().cursorHandle, h = c.arg(0);
-    wm().cursorHandle = h;
-    if (h !== p) { const o = h ? c.proc.handles.getAs(h, 'gdi') : null; if (o?.kind === 'cursor') vm.host?.display?.setCursor?.(o.image ? h : 'sys' + (o.id || 32512), o.image ?? null, o.id || 32512); else if (!h) vm.host?.display?.showCursor?.(false); }
+    wm().cursorHandle = h; wm().cursorRemoved = !h;
+    if (h !== p) { const o = h ? c.proc.handles.getAs(h, 'gdi') : null; if (o?.kind === 'cursor') vm.host?.display?.setCursor?.(o.image ? h : 'sys' + (o.id || 32512), o.image ?? null, o.id || 32512); vm.host?.display?.showCursor?.(cursorShown(wm())); }
     return p;
   }];
   U.GetCursor = [0, () => wm().cursorHandle];
