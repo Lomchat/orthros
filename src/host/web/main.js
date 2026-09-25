@@ -143,9 +143,9 @@ function applyCursor() {
   clearTimeout(state.cursorTimer);
   const frame = $('frame');
   $('c2d').style.cursor = '';
-  if (state.cursorVisible === false) { frame.style.cursor = 'none'; return; }
+  if (state.cursorVisible === false) { frame.style.cursor = 'none'; drawSoftCursor(); return; }
   const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
-  if (!def) { frame.style.cursor = SYSTEM_CURSORS[cur?.system] ?? 'default'; return; }
+  if (!def) { frame.style.cursor = state.pointerLocked ? 'none' : SYSTEM_CURSORS[cur?.system] ?? 'default'; drawSoftCursor(); return; }
   let step = 0;
   const show = () => {
     const s = def.steps[step % def.steps.length];
@@ -288,10 +288,18 @@ function canvasPos(e) {
  * Play mode: fullscreen + pointer lock (the mouse cannot leave the game, screen-edge scrolling works) + keyboard lock
  * (Escape reaches the game; holding it leaves fullscreen). The guest cursor is then drawn by the page (#softcursor).
  */
+/**
+ * Capture the mouse (pointer lock): it stays in the game, which gets its moves, the page draws the guest cursor
+ * (#softcursor). With the system's pointer acceleration, as the desktop cursor moves (no unadjustedMovement).
+ */
+async function capturePointer() {
+  if (document.pointerLockElement) return;
+  try { await $('c2d').requestPointerLock(); } catch { /* denied (no gesture, or released a moment ago) */ }
+}
 async function enterPlayMode() {
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch { /* not allowed */ }
   try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable */ }
-  try { await $('c2d').requestPointerLock({ unadjustedMovement: true }); } catch { try { await $('c2d').requestPointerLock(); } catch { /* denied */ } }
+  await capturePointer();
 }
 function drawSoftCursor() {
   const el = $('softcursor');
@@ -321,7 +329,11 @@ function vkOf(e) {
 function setupInput() {
   const c = $('c2d');
   document.addEventListener('mousemove', (e) => { if (state.status !== 'running') return; const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
-  c.addEventListener('mousedown', (e) => { const [x, y] = canvasPos(e); push(EV.MOUSEDOWN, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
+  c.addEventListener('mousedown', (e) => {
+    const [x, y] = canvasPos(e); push(EV.MOUSEDOWN, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault();
+    // a click in the game captures the mouse (it stays in the window; Escape releases it)
+    if (!headless && state.status === 'running' && !state.pointerLocked) capturePointer();
+  });
   c.addEventListener('mouseup', (e) => { const [x, y] = canvasPos(e); push(EV.MOUSEUP, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
   c.addEventListener('wheel', (e) => { const [x, y] = canvasPos(e); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, x, y); e.preventDefault(); }, { passive: false });
@@ -329,7 +341,7 @@ function setupInput() {
   addEventListener('keyup', (e) => { push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
   addEventListener('blur', () => push(EV.FOCUS, 0, 0, 0));
   addEventListener('focus', () => push(EV.FOCUS, 1, 0, 0));
-  document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } drawSoftCursor(); });
+  document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } $('hint').classList.toggle('hidden', state.pointerLocked); applyCursor(); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
   $('hint').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });

@@ -242,3 +242,17 @@ test('input: a click shorter than a frame still shows the button down for one fr
   wm.pump();
   assert.equal(wm.asyncPressed[0x41], 1, 'pressed since the last call');
 });
+
+// The cursor shows when ShowCursor's count is >= 0 and a shape is set: SetCursor(NULL) hides it until the next
+// SetCursor with a cursor (it used to stay hidden for good), independently of the count.
+test('cursor: SetCursor(NULL) hides until the next SetCursor; ShowCursor counts independently', { skip: skip('window.exe') }, () => {
+  const { vm } = boot('window.exe');
+  const shown = []; vm.host.display.showCursor = (v) => shown.push(v); vm.host.display.setCursor = () => {};
+  const call = (name, ...args) => vm.api.lookup('user32.dll', name).fn({ arg: (i) => args[i] >>> 0, proc: vm.proc });
+  const h = vm.proc.handles.create({ type: 'gdi', kind: 'cursor', id: 32512 });
+  call('SetCursor', h); call('SetCursor', 0); call('SetCursor', h);
+  assert.deepEqual(shown, [true, false, true], 'hidden by SetCursor(NULL), shown again by the next cursor');
+  shown.length = 0;
+  call('ShowCursor', 0); call('SetCursor', 0); call('SetCursor', h); call('ShowCursor', 1);
+  assert.deepEqual(shown, [false, false, false, true], 'a negative display count keeps it hidden whatever the shape');
+});
