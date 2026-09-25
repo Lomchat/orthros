@@ -162,7 +162,7 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
 
 /** RGBA8 to raw pixels of `fmt` (uncompressed formats; null when not encodable here). */
 export function fromRgba(fmt, rgba, w, h) {
-  if (isDxt(fmt)) return null;
+  if (isDxt(fmt)) return encodeDxt(fmt, rgba, w, h);
   const pitch = surfacePitch(fmt, w), out = new Uint8Array(surfaceBytes(fmt, w, h));
   const q = (v, bits) => Math.round(v * ((1 << bits) - 1) / 255);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -209,3 +209,47 @@ export function applyColorKey(rgba, key) {
   return rgba;
 }
 export { isDxt };
+
+// ---------------------------------------------------------------- block compression (DXT1/3/5 encoder)
+const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+const from565 = (c) => [((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31];
+/** one color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128 */
+function colorBlock(px, out, o, transparent) {
+  let minL = Infinity, maxL = -Infinity, lo = 0, hi = 0;
+  for (let i = 0; i < 16; i++) { if (transparent && px[4 * i + 3] < 128) continue; const l = px[4 * i] * 2 + px[4 * i + 1] * 4 + px[4 * i + 2]; if (l < minL) { minL = l; lo = i; } if (l > maxL) { maxL = l; hi = i; } }
+  let c0 = to565(px[4 * hi], px[4 * hi + 1], px[4 * hi + 2]), c1 = to565(px[4 * lo], px[4 * lo + 1], px[4 * lo + 2]);
+  const anyTransparent = transparent && [...Array(16).keys()].some((i) => px[4 * i + 3] < 128);
+  if (anyTransparent) { if (c0 > c1) [c0, c1] = [c1, c0]; } // (c0 <= c1: 3 colors + transparent)
+  else { if (c0 < c1) [c0, c1] = [c1, c0]; if (c0 === c1) { if (c1 > 0) c1--; else c0++; } }
+  const a = from565(c0), b = from565(c1);
+  const pal = anyTransparent ? [a, b, a.map((x, k) => (x + b[k]) / 2), null] : [a, b, a.map((x, k) => (2 * x + b[k]) / 3), a.map((x, k) => (x + 2 * b[k]) / 3)];
+  let idx = 0;
+  for (let i = 15; i >= 0; i--) {
+    let best = 0, bd = Infinity;
+    if (anyTransparent && px[4 * i + 3] < 128) best = 3;
+    else for (let k = 0; k < 4; k++) { if (!pal[k]) continue; const d = (pal[k][0] - px[4 * i]) ** 2 + (pal[k][1] - px[4 * i + 1]) ** 2 + (pal[k][2] - px[4 * i + 2]) ** 2; if (d < bd) { bd = d; best = k; } }
+    idx = (idx << 2) | best;
+  }
+  out[o] = c0 & 255; out[o + 1] = c0 >> 8; out[o + 2] = c1 & 255; out[o + 3] = c1 >> 8;
+  out[o + 4] = idx & 255; out[o + 5] = (idx >>> 8) & 255; out[o + 6] = (idx >>> 16) & 255; out[o + 7] = (idx >>> 24) & 255;
+}
+/** RGBA8 (w x h) to DXT1/DXT3/DXT5 blocks */
+export function encodeDxt(fmt, rgba, w, h) {
+  const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2), unit = fmt === FMT.DXT1 ? 8 : 16, out = new Uint8Array(bw * bh * unit);
+  const px = new Uint8Array(64);
+  for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const sx = Math.min(w - 1, bx * 4 + x), sy = Math.min(h - 1, by * 4 + y), s = (sy * w + sx) * 4, d = (y * 4 + x) * 4; px[d] = rgba[s]; px[d + 1] = rgba[s + 1]; px[d + 2] = rgba[s + 2]; px[d + 3] = rgba[s + 3]; }
+    const o = (by * bw + bx) * unit;
+    if (fmt === FMT.DXT1) { colorBlock(px, out, o, true); continue; }
+    if (fmt === FMT.DXT2 || fmt === FMT.DXT3) { for (let i = 0; i < 16; i += 2) out[o + (i >> 1)] = (px[4 * i + 3] >> 4) | ((px[4 * i + 7] >> 4) << 4); }
+    else { // DXT4/5: interpolated alpha
+      let a0 = 0, a1 = 255; for (let i = 0; i < 16; i++) { a0 = Math.max(a0, px[4 * i + 3]); a1 = Math.min(a1, px[4 * i + 3]); }
+      if (a0 === a1) { if (a1 > 0) a1--; else a0++; }
+      const levels = [a0, a1]; for (let k = 1; k < 7; k++) levels.push(((7 - k) * a0 + k * a1) / 7);
+      let bits = 0n; for (let i = 15; i >= 0; i--) { let best = 0, bd = Infinity; for (let k = 0; k < 8; k++) { const d = Math.abs(levels[k] - px[4 * i + 3]); if (d < bd) { bd = d; best = k; } } bits = (bits << 3n) | BigInt(best); }
+      out[o] = a0; out[o + 1] = a1; for (let k = 0; k < 6; k++) out[o + 2 + k] = Number((bits >> BigInt(8 * k)) & 255n);
+    }
+    colorBlock(px, out, o + 8, false);
+  }
+  return out;
+}

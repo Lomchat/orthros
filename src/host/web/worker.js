@@ -85,6 +85,8 @@ async function start(m) {
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
   const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  // (debugging: ?dbg=NAME=value,... sets worker globals, e.g. ORTHROS_FX_BURST=30000)
+  for (const kv of (m.opts.dbg ?? '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
   if (m.opts.jitOpts) try { globalThis.ORTHROS_JIT_OPTS = JSON.parse(m.opts.jitOpts); } catch { /* ignored */ } // (debugging: ?jitopts={"consolidateEvery":...})
   globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_CAPTURE_DRAWS = !!m.opts.captureDraws; globalThis.ORTHROS_LOCK_LOG = (m.opts.log ?? []).includes('lock'); if (m.opts.burstFromId) globalThis.ORTHROS_BURST_FROM_ID = m.opts.burstFromId; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull; globalThis.ORTHROS_JIT_PROFILE = !!m.opts.jitProfile; globalThis.ORTHROS_GL_DISCARD = !!m.opts.glDiscard; globalThis.ORTHROS_WATCH_TEX = m.opts.watchTex || undefined; globalThis.ORTHROS_NO_F32 = !!m.opts.noF32; globalThis.ORTHROS_F32_OFF = m.opts.f32Off || ''; globalThis.ORTHROS_GL_VALIDATE = !!m.opts.glValidate; globalThis.ORTHROS_INTERP_RANGES = m.opts.interpRange || undefined;
   // frame capture (--capture N): images (bound textures, render target after draws) encoded as PNG for the harness

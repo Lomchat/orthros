@@ -70,6 +70,7 @@ if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('in
 if (opt('encoded') === '0') q.set('encoded', '0');
 if (args.includes('--memprefetch')) q.set('memprefetch', '1');
 if (opt('jit-opts')) q.set('jitopts', opt('jit-opts')); // debugging: JIT options as JSON (e.g. {"consolidateEvery":1000000})
+if (opt('dbg')) q.set('dbg', opt('dbg')); // (worker debug globals: NAME=value,...)
 if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API function in the slow-frame lines; adds a clock read per call)
 if (opt('programs') === '0') q.set('programs', '0');
 if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)

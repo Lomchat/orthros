@@ -36,6 +36,26 @@ export function noteState(dev, group, s, v) {
 const STATE_GROUPS = new Map(), STATE_GROUP_NAMES = [];
 export const TSS_NOTE_GROUPS = Array.from({ length: 8 }, (_, i) => 'tss' + i), SAMP_NOTE_GROUPS = Array.from({ length: 21 }, (_, i) => 'samp' + i);
 /** Readable summary of noteState: "rs:<state>=v1,v2 ..." sorted by state. */
+/**
+ * The tokens of a shader in guest memory, up to its end token: comment blocks (constant tables, preshaders — whose
+ * data may contain 0x0000FFFF) are skipped as a whole, instructions by their length (SM 2+) or their parameter tokens
+ * (SM 1.x: bit 31 set; DEF's four values taken as such).
+ */
+export function readShaderTokens(mem, addr, max = 65536) {
+  const out = [mem.read32(addr)];
+  const major = (out[0] >> 8) & 0xff;
+  let p = addr + 4;
+  while (out.length < max) {
+    const t = mem.read32(p);
+    out.push(t); p += 4;
+    if (t === 0x0000ffff) break;
+    if ((t & 0xffff) === 0xfffe) { const n = t >>> 16; for (let i = 0; i < n; i++) out.push(mem.read32(p + 4 * i)); p += 4 * n; continue; }
+    if (major >= 2) { const n = (t >> 24) & 0xf; for (let i = 0; i < n; i++) out.push(mem.read32(p + 4 * i)); p += 4 * n; continue; }
+    if ((t & 0xffff) === 81) { for (let i = 0; i < 5; i++) out.push(mem.read32(p + 4 * i)); p += 20; continue; } // (def: register + 4 floats)
+    while (out.length < max) { const q = mem.read32(p); if (!(q & 0x80000000)) break; out.push(q); p += 4; }
+  }
+  return out;
+}
 /** Resources keep a history of their writes (LockRect, UpdateSurface) only for frame captures, which print it. */
 export const tracingResources = () => !!(globalThis.ORTHROS_CAPTURE_FRAME || globalThis.ORTHROS_CAPTURE_DRAWS);
 export function stateUseReport(dev) {
@@ -516,7 +536,7 @@ export function d3dCore(vm) {
       const decl = c.arg(1), fn = c.arg(2), pp = c.arg(3), usage = c.arg(4);
       if (!decl || !pp) return D3DERR_INVALIDCALL;
       const tokens = []; for (let p = decl; ; p += 4) { const t = mem.read32(p); tokens.push(t); if (t === 0xffffffff || tokens.length > 256) break; }
-      let code = null; if (fn) { code = []; for (let p = fn; ; p += 4) { const t = mem.read32(p); code.push(t); if (t === 0x0000ffff || code.length > 4096) break; } }
+      let code = null; if (fn) code = readShaderTokens(mem, fn);
       const h = (this.nextShader++ << 1) | 0; // even handles: shaders; odd/small values with FVF bits would be FVF codes
       const sh = { handle: h, decl: Uint32Array.from(tokens), code: code ? Uint32Array.from(code) : null, usage };
       this.vertexShaders.set(h, sh);
@@ -535,7 +555,7 @@ export function d3dCore(vm) {
     GetStreamSource(c) { const n = c.arg(1); if (n >= MAX_STREAMS) return D3DERR_INVALIDCALL; const s = this.streams[n]; c.out32(2, s.vb); if (s.vb) com.addRef(com.objectAt(s.vb)); c.out32(3, s.stride); return D3D_OK; }
     SetIndices(c) { const ib = c.arg(1), base = c.arg(2); if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } this.indices.base = base; this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, base); return D3D_OK; }
     GetIndices(c) { c.out32(1, this.indices.ib); if (this.indices.ib) com.addRef(com.objectAt(this.indices.ib)); c.out32(2, this.indices.base); return D3D_OK; }
-    CreatePixelShader(c) { const fn = c.arg(1), pp = c.arg(2); if (!fn || !pp) return D3DERR_INVALIDCALL; const code = []; for (let p = fn; ; p += 4) { const t = mem.read32(p); code.push(t); if (t === 0x0000ffff || code.length > 4096) break; } const h = this.nextShader++; const sh = { handle: h, code: Uint32Array.from(code) }; this.pixelShaders.set(h, sh); mem.write32(pp, h); this.gfx?.createPixelShader?.(sh); return D3D_OK; }
+    CreatePixelShader(c) { const fn = c.arg(1), pp = c.arg(2); if (!fn || !pp) return D3DERR_INVALIDCALL; const code = readShaderTokens(mem, fn); const h = this.nextShader++; const sh = { handle: h, code: Uint32Array.from(code) }; this.pixelShaders.set(h, sh); mem.write32(pp, h); this.gfx?.createPixelShader?.(sh); return D3D_OK; }
     SetPixelShader(c) { this.stateVersion++; this.programVersion++; const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
     GetPixelShader(c) { c.out32(1, this.pixelShader); return D3D_OK; }
     DeletePixelShader(c) { const sh = this.pixelShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.pixelShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deletePixelShader?.(sh); return D3D_OK; }

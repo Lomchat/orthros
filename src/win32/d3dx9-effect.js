@@ -210,7 +210,7 @@ export function defineEffects(X, vm, h) {
     GetTexture(c) { const n = this.param(c.arg(1)); if (!n?.obj || !c.arg(2)) return D3DERR_INVALIDCALL; const p = n.obj.ptr; mem.write32(c.arg(2), p); if (p && com.objectAt(p)) com.addRef(com.objectAt(p)); }
     GetPixelShader(c) { return this.getShaderParam(c); }
     GetVertexShader(c) { return this.getShaderParam(c); }
-    getShaderParam(c) { const n = this.param(c.arg(1)); if (!n || !c.arg(2)) return D3DERR_INVALIDCALL; const idx = this.params.indexOf(n.parent ?? n), el = n.parent ? n.parent.elements.indexOf(n) : 0; const sh = this.shaderAt(`p${idx}:${el}`); mem.write32(c.arg(2), sh?.ptr ?? 0); if (sh?.ptr) com.addRef(com.objectAt(sh.ptr)); }
+    getShaderParam(c) { const n = this.param(c.arg(1)); if (!n || !c.arg(2)) return D3DERR_INVALIDCALL; const idx = this.params.indexOf(n.parent ?? n), el = n.parent ? n.parent.elements.indexOf(n) : 0; const sh = this.paramShader(idx, el); mem.write32(c.arg(2), sh?.ptr ?? 0); if (sh?.ptr) com.addRef(com.objectAt(sh.ptr)); }
     SetArrayRange() { return D3D_OK; }
     SetRawValue(c) {
       const n = this.param(c.arg(1)), src = c.arg(2), off = c.arg(3), bytes = c.arg(4); if (!n?.words || !src) return D3DERR_INVALIDCALL;
@@ -243,7 +243,7 @@ export function defineEffects(X, vm, h) {
       this.saved = (flags & 1) ? null : this.snapshot(c, t, flags);
       return D3D_OK;
     }
-    BeginPass(c) { const ps = this.technique?.passes[c.arg(1)]; if (!ps) return D3DERR_INVALIDCALL; this.pass = ps; this.apply(c, ps, false); }
+    BeginPass(c) { const ps = this.technique?.passes[c.arg(1)]; if (!ps) return D3DERR_INVALIDCALL; this.pass = ps; this.apply(c, ps, false); if (globalThis.ORTHROS_FX_BURST && (vm.fxPasses = (vm.fxPasses ?? 0) + 1) === globalThis.ORTHROS_FX_BURST) vm.startApiBurst(c.thread, 3000); }
     CommitChanges(c) { if (this.pass) this.apply(c, this.pass, true); }
     EndPass() { this.pass = null; }
     End(c) { if (this.saved) this.restore(c, this.saved); this.saved = null; this.pass = null; }
@@ -264,6 +264,19 @@ export function defineEffects(X, vm, h) {
       return h.callMethod(c, this.dev, name, args);
     }
     scratch(c, n) { return (c.proc.fxScratch ??= c.proc.processHeap.alloc(4096)) + n; }
+    /** the shader object with this id (its bytecode in the effect's object table), created once */
+    objectShader(id) {
+      const key = `o${id}`;
+      if (!this.shaders.has(key)) { const data = this.fx.objects.get(id); if (!data || data.length < 8) return null; this.shaders.set(key, { bytes: data, ptr: 0, info: null }); }
+      return this.shaderAt(key);
+    }
+    /** the shader of element `el` of shader parameter `pi` (a resource of its own, else the object its value names) */
+    paramShader(pi, el) {
+      const sh = this.shaderAt(`p${pi}:${el}`);
+      if (sh) return sh;
+      const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n;
+      return leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null;
+    }
     shaderAt(key) {
       const sh = this.shaders.get(key);
       if (!sh) return null;
@@ -289,9 +302,10 @@ export function defineEffects(X, vm, h) {
         const n = this.lookup(ref ?? ex.name, null); if (!n) return null;
         const pi = this.params.indexOf(n);
         const el = ex ? this.evalIndex(ex.prog, n.elements.length || 1) : 0;
-        return this.shaderAt(`p${pi}:${el}`);
+        return this.paramShader(pi, el);
       }
-      return null;
+      const v = ps.states[k].value; // (an object id of the table)
+      return v instanceof Uint32Array && v[0] ? this.objectShader(v[0]) : null;
     }
     evalIndex(prog, count) {
       const inputs = new Float64Array(4 * 256), out = new Float32Array(4);
@@ -392,6 +406,7 @@ export function defineEffects(X, vm, h) {
           case 'lightenable': this.call(c, 'LightEnable', [s.index, this.stateWord(s, key)]); break;
           case 'vs': case 'ps': {
             const sh = this.stateShader(ps, k);
+            if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k} (value ${s.value?.[0]}, ref ${this.refs.get(key) ?? '-'}, expr ${this.exprs.get(key)?.name ?? '-'}, own ${this.shaders.has(key)})`); }
             this.call(c, cls === 'vs' ? 'SetVertexShader' : 'SetPixelShader', [sh?.ptr ?? 0]);
             if (sh) this.bindShader(c, sh);
             break;
