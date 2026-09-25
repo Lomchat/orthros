@@ -99,9 +99,27 @@ export class Seh {
         const m = this.mem, vmem = this.vm.proc.vmem, ok = (a, n = 4) => a > 0x10000 && vmem.isCommitted(a, n);
         const ti = params[2] >>> 0, cta = ok(ti + 12) ? m.read32(ti + 12) : 0, ct = ok(cta + 4) ? m.read32(cta + 4) : 0, td = ok(ct + 4) ? m.read32(ct + 4) : 0;
         if (ok(td + 8, 1)) what = ` ${m.readCString(td + 8, 96)}`;
+        // the thrown object's first printable strings (an exception class often holds its message or a pointer to it)
+        const obj = params[1] >>> 0, texts = [];
+        for (let k = 0; k < 64 && ok(obj + 4 * k); k++) {
+          for (const a of [obj + 4 * k, m.read32(obj + 4 * k) >>> 0]) {
+            if (!ok(a, 4)) continue;
+            const t = m.readCString(a, 160);
+            if (t.length >= 4 && /^[\x20-\x7e\t\r\n]+$/.test(t) && !texts.includes(t)) texts.push(t);
+          }
+          if (texts.length >= 3) break;
+        }
+        if (texts.length) what += ` "${texts.join('" "').replace(/\s+/g, ' ').slice(0, 300)}"`;
       } catch { /* diagnostics only */ }
     }
-    (this.recent ??= []).push(`t${thread.id} 0x${(code >>> 0).toString(16)}${what} at ${this.vm.proc.symbolize(addr)}`);
+    // the return addresses on the stack (who raised it: the caller of the runtime's throw)
+    const rets = [], m2 = this.mem, proc = this.vm.proc;
+    for (let a = thread.cpu.esp; a < thread.cpu.esp + 0x400 && rets.length < 6; a += 4) {
+      if (!proc.vmem.isCommitted(a, 4)) break;
+      const v = m2.read32(a) >>> 0;
+      if (v > 0x1000 && proc.moduleByAddr(v) && (m2.read8(v - 5) === 0xe8 || m2.read8(v - 2) === 0xff || m2.read8(v - 3) === 0xff || m2.read8(v - 6) === 0xff)) rets.push(proc.symbolize(v));
+    }
+    (this.recent ??= []).push(`t${thread.id} 0x${(code >>> 0).toString(16)}${what} at ${this.vm.proc.symbolize(addr)}${rets.length ? ` (stack: ${rets.join(' < ')})` : ''}`);
     if (this.recent.length > 16) this.recent.shift();
     this.raised = (this.raised ?? 0) + 1;
   }

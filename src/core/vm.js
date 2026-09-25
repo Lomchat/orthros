@@ -29,7 +29,7 @@ export class GuestCrash extends Error {
   constructor(report) { super('guest crash\n' + report); this.report = report; }
 }
 
-const SLICE_INSNS = 100000;
+const SLICE_INSNS = Number(globalThis.ORTHROS_SLICE_INSNS ?? globalThis.process?.env?.ORTHROS_SLICE_INSNS) || 100000; // (instructions per thread slice; debugging: other interleavings)
 
 /** Returned by an API handler that transferred control to a guest procedure (see Vm.tailCallGuest). */
 export const TAIL_CALL = Symbol('tail-call');
@@ -243,7 +243,7 @@ export class Vm {
   exitProcess(code) {
     // a failure exit (abort, assertion, a filter ending an unhandled exception...): what led to it, for the host
     if (code !== 0 && !this.exitReport) {
-      try { this.exitReport = this.crashReport(this.current ?? this.proc.threads[0], `process exit with code ${code >>> 0}`) + '\n' + this.seh.recentReport(); }
+      try { this.exitReport = this.crashReport(this.current ?? this.proc.threads[0], `process exit with code ${code >>> 0}`) + '\n' + this.seh.recentReport() + (this.recentFiles?.length ? `\nfiles opened last (oldest first):\n  ${this.recentFiles.join('\n  ')}` : ''); }
       catch (e) { this.exitReport = `exit report failed: ${e.message}`; }
     }
     throw new ProcessExit(code >>> 0);
