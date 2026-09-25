@@ -3,7 +3,7 @@
 // (vs/ps 1.x–2.x), state blocks, swap chain, queries. Rendering goes through the pluggable
 // backend (`vm.host.gfx`, see gfx/d3d8-webgl.js).
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
-import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources } from './d3d8.js';
+import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 
@@ -257,7 +257,7 @@ export function registerDirect3D9(api, vm) {
     CreateVertexShader(c) {
       const fn = c.arg(1), pp = c.arg(2);
       if (!fn || !pp) return D3DERR_INVALIDCALL;
-      const code = []; for (let p = fn; ; p += 4) { const t = mem.read32(p); code.push(t); if (t === 0x0000ffff || code.length > 8192) break; }
+      const code = readShaderTokens(mem, fn);
       const sh = new Shader(this, 'vs', Uint32Array.from(code));
       mem.write32(pp, sh.ptr = com.create(c.proc, 'IDirect3DVertexShader9', sh));
       this.gfx?.createVertexShader?.(sh);
@@ -280,7 +280,7 @@ export function registerDirect3D9(api, vm) {
     CreatePixelShader(c) {
       const fn = c.arg(1), pp = c.arg(2);
       if (!fn || !pp) return D3DERR_INVALIDCALL;
-      const code = []; for (let p = fn; ; p += 4) { const t = mem.read32(p); code.push(t); if (t === 0x0000ffff || code.length > 8192) break; }
+      const code = readShaderTokens(mem, fn);
       const sh = new Shader(this, 'ps', Uint32Array.from(code));
       mem.write32(pp, sh.ptr = com.create(c.proc, 'IDirect3DPixelShader9', sh));
       this.gfx?.createPixelShader?.(sh);

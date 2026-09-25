@@ -1,7 +1,7 @@
 // D3DX 9 (d3dx9_24.dll ... d3dx9_43.dll): the helper library of the DirectX SDK that games ship against — math,
 // texture loading from image files in memory, shader helpers, buffers and the effect framework (d3dx9-effect.js).
 // One implementation answers to every numbered DLL name (the export sets differ only by additions).
-import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
+import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
 import { parseImage, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
@@ -56,7 +56,7 @@ export function registerD3DX9(api, vm) {
   X.D3DXGetDeclLength = [1, (c) => { let n = 0; for (let p = c.arg(0); mem.read16(p) !== 0xff && n < 64; p += 8) n++; return n; }];
   X.D3DXDeclaratorFromFVF = [2, (c) => { const L = fvfLayout(c.arg(0)), p = c.arg(1); let n = 0; for (const a of L.attrs) { const d = p + 8 * n++; mem.write16(d, 0); mem.write16(d + 2, a.offset); mem.write8(d + 4, a.type === 'color' ? 4 : a.comps - 1); mem.write8(d + 5, 0); const [u, i] = FVF_USAGE(a.name); mem.write8(d + 6, u); mem.write8(d + 7, i); } const e = p + 8 * n; mem.write16(e, 0xff); mem.write16(e + 2, 0); mem.write32(e + 4, 17); return D3D_OK; }];
   // shader bytecode helpers (the token stream of vs/ps 1.x-3.0)
-  const shaderTokens = (p) => { const out = []; for (let i = 0; i < 65536; i++) { const t = mem.read32(p + 4 * i); out.push(t); if (t === 0x0000ffff) break; } return out; };
+  const shaderTokens = (p) => readShaderTokens(mem, p);
   const semantics = (p, input) => {
     const t = shaderTokens(p), ps = (t[0] >>> 16) === 0xffff, major = (t[0] >> 8) & 0xff, res = [];
     for (let i = 1; i < t.length && t[i] !== 0x0000ffff;) {
@@ -126,7 +126,6 @@ export function registerD3DX9(api, vm) {
     const w = pick(o.w, fileW), h = kind === 'cube' ? w : pick(o.h, fileH), d = kind === 'volume' ? pick(o.d, fileD) : 1;
     const levels = o.levels === D3DX_FROM_FILE ? im.mips : o.levels === 0 || o.levels === D3DX_DEFAULT ? fullChain(w, h, d) : Math.min(o.levels, fullChain(w, h, d));
     let fmt = pickFormat(o.fmt, im.fmt);
-    if (isDxt(fmt) && (!isDxt(im.fmt) || fmt !== im.fmt || w !== fileW || h !== fileH || o.colorKey)) fmt = FMT.A8R8G8B8; // (no DXT encoder: an uncompressed texture instead)
     const pp = outSlot(c);
     let r;
     if (kind === 'tex') r = callMethod(c, dev, 'CreateTexture', [w, h, levels, o.usage, fmt, o.pool, pp, 0]);
@@ -233,9 +232,6 @@ export function registerD3DX9(api, vm) {
     if (dw <= 0 || dh <= 0) return D3DERR_INVALIDCALL;
     const px = resizeRgba(rgba, rw, rh, dw, dh, (filter & 0xff) === FILTER_POINT || (filter & 0xff) === 1);
     const base = dst.ensureMem(c.proc);
-    if (isDxt(dst.fmt)) { // (whole-surface loads only: decode, patch, no re-encoder — the texel data is written as decoded? keep as is)
-      vm.log('gfx', `d3dx: load into a ${dst.fmt} surface (block compressed) is not supported`); return D3D_OK;
-    }
     const full = dr.l === 0 && dr.t === 0 && dw === dst.width && dh === dst.height;
     const cur = full ? null : toRgba(dst.fmt, mem.bytes(base, dst.bytes), dst.width, dst.height);
     let all = px;
@@ -258,16 +254,17 @@ export function registerD3DX9(api, vm) {
     const dst = surfaceOf(c.arg(0)); if (!dst || !c.arg(7)) return D3DERR_INVALIDCALL;
     const fmt = c.arg(4), pitch = c.arg(5), sr = rectOf(c.arg(7), 0, 0), sw = sr.r - sr.l, sh = sr.b - sr.t;
     if (sw <= 0 || sh <= 0) return D3DERR_INVALIDCALL;
+    // (same format and size, no key: a straight copy of rows — of 4x4 blocks for compressed formats — keeps the data as is)
+    const dr = rectOf(c.arg(2), dst.width, dst.height);
+    if (fmt === dst.fmt && !c.arg(9) && dr.r - dr.l === sw && dr.b - dr.t === sh) {
+      const base = dst.ensureMem(c.proc), dxt = isDxt(fmt), blk = dxt ? 4 : 1, unit = dxt ? (fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(fmt, 1);
+      const rows = Math.ceil(sh / blk), rowBytes = Math.ceil(sw / blk) * unit;
+      for (let y = 0; y < rows; y++) mem.copy(base + ((dr.t / blk | 0) + y) * dst.pitch + (dr.l / blk | 0) * unit, c.arg(3) + ((sr.t / blk | 0) + y) * pitch + (sr.l / blk | 0) * unit, rowBytes);
+      dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
+    }
     let rgba;
     if (isDxt(fmt)) { const bw = Math.ceil(sw / 4), bh = Math.ceil(sh / 4), unit = fmt === FMT.DXT1 ? 8 : 16, raw = new Uint8Array(bw * bh * unit); for (let y = 0; y < bh; y++) raw.set(mem.bytes(c.arg(3) + ((sr.t >> 2) + y) * pitch + (sr.l >> 2) * unit, bw * unit), y * bw * unit); rgba = toRgba(fmt, raw, sw, sh); }
     else { const bpp = surfacePitch(fmt, 1), raw = new Uint8Array(sw * sh * bpp); for (let y = 0; y < sh; y++) raw.set(mem.bytes(c.arg(3) + (sr.t + y) * pitch + sr.l * bpp, sw * bpp), y * sw * bpp); rgba = toRgba(fmt, raw, sw, sh); }
-    // (same format and size, no key: a straight copy keeps compressed data compressed)
-    const dr = rectOf(c.arg(2), dst.width, dst.height);
-    if (fmt === dst.fmt && !c.arg(9) && dr.r - dr.l === sw && dr.b - dr.t === sh && dr.l === 0 && dr.t === 0 && sw === dst.width && sh === dst.height) {
-      const base = dst.ensureMem(c.proc), rows = isDxt(fmt) ? Math.ceil(sh / 4) : sh, rowBytes = isDxt(fmt) ? Math.ceil(sw / 4) * (fmt === FMT.DXT1 ? 8 : 16) : sw * surfacePitch(fmt, 1);
-      for (let y = 0; y < rows; y++) mem.copy(base + y * dst.pitch, c.arg(3) + y * pitch, rowBytes);
-      dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
-    }
     return blitRgba(c, dst, dr, rgba, sw, sh, c.arg(8), c.arg(9));
   }];
   X.D3DXLoadSurfaceFromSurface = [8, (c) => { // (dst, dstPal, dstRect, src, srcPal, srcRect, filter, key)
@@ -291,7 +288,7 @@ export function registerD3DX9(api, vm) {
     if (!chains) return D3D_OK;
     for (const lv of chains) for (let i = src + 1; i < lv.length; i++) {
       const p = lv[i - 1], s = lv[i];
-      if (isDxt(s.fmt) || !p.mem) continue;
+      if (!p.mem) continue;
       const enc = fromRgba(s.fmt, resizeRgba(toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height), p.width, p.height, s.width, s.height, point), s.width, s.height);
       if (enc) fillSurface(c, s, enc);
     }

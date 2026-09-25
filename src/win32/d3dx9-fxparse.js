@@ -32,7 +32,9 @@ export const STATES = (() => {
   for (let i = 0; i < 5; i++) t.push(['material', i]);
   for (let i = 0; i < 13; i++) t.push(['light', i]);
   t.push(['lightenable', 0], ['vs', 0], ['ps', 0]);
-  for (const k of ['vsf', 'vsb', 'vsi', 'vsf1', 'vsf2', 'vsf3', 'vsf4', 'psf', 'psb', 'psi', 'psf1', 'psf2', 'psf3', 'psf4']) t.push(['const', k]);
+  // (VertexShaderConstantF/B/I, VertexShaderConstant, VertexShaderConstant1-4, then the same for pixel shaders: the
+  // texture state lands on operation 0xa4 and the sampler states after it, as the effects' sampler blocks show)
+  for (const k of ['vsf', 'vsb', 'vsi', 'vsf', 'vsf1', 'vsf2', 'vsf3', 'vsf4', 'psf', 'psb', 'psi', 'psf', 'psf1', 'psf2', 'psf3', 'psf4']) t.push(['const', k]);
   t.push(['texture', 0]);
   for (const s of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) t.push(['samp', s]); // ADDRESSU ... DMAPOFFSET
   t.push(['sampler', 0]);
@@ -109,15 +111,21 @@ export function parseEffect(bytes) {
   // strings and resources
   const nStrings = u(p), nRes = u(p + 4);
   p += 8;
-  const strings = new Map();
-  for (let i = 0; i < nStrings; i++) { const id = u(p), n = u(p + 4); let s = ''; for (let k = 0; k < n; k++) { const ch = bytes[p + 8 + k]; if (!ch) break; s += String.fromCharCode(ch); } strings.set(id, s); p += 8 + ((n + 3) & ~3); }
+  // the object table: id -> data (a string's characters, or a shader's bytecode for shader parameters / states)
+  const objects = new Map(), strings = new Map();
+  for (let i = 0; i < nStrings; i++) {
+    const id = u(p), n = u(p + 4), data = bytes.slice(p + 8, p + 8 + n);
+    objects.set(id, data);
+    let s = ''; for (const ch of data) { if (!ch) break; s += String.fromCharCode(ch); } strings.set(id, s);
+    p += 8 + ((n + 3) & ~3);
+  }
   const resources = [];
   for (let i = 0; i < nRes; i++) {
     const technique = u(p), index = u(p + 4), element = u(p + 8), state = u(p + 12), usage = u(p + 16), n = u(p + 20);
     resources.push({ technique, index, element, state, usage, data: bytes.slice(p + 24, p + 24 + n) });
     p += 24 + ((n + 3) & ~3);
   }
-  return { params, techniques, strings, resources, objectCount: nObjects };
+  return { params, techniques, strings, objects, resources, objectCount: nObjects };
 }
 
 /** A readable outline of a parsed effect (diagnostics, tests). */

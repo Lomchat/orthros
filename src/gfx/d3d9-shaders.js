@@ -22,7 +22,7 @@ export function declLayout9(mem, addr) {
     const comps = [1, 2, 3, 4, 4, 4, 2, 4, 4, 2, 4, 2, 4, 3, 3, 2, 4][type] ?? 4;
     const size = [4, 8, 12, 16, 4, 4, 4, 8, 4, 4, 8, 4, 8, 4, 4, 4, 8][type] ?? 16;
     const kind = type === DECLTYPE.D3DCOLOR ? 'color' : type === DECLTYPE.UBYTE4 ? 'ubyte4' : type === DECLTYPE.UBYTE4N ? 'ubyte4n' : type === DECLTYPE.SHORT2 || type === DECLTYPE.SHORT4 ? 'short' : type === DECLTYPE.SHORT2N || type === DECLTYPE.SHORT4N ? 'shortn' : type === DECLTYPE.USHORT2N || type === DECLTYPE.USHORT4N ? 'ushortn' : type === DECLTYPE.FLOAT16_2 || type === DECLTYPE.FLOAT16_4 ? 'half' : 'float';
-    let name = FF_NAMES[usage];
+    let name = index === 0 ? FF_NAMES[usage] : undefined; // (a second position / normal — tweening — keeps its semantic name)
     if (usage === USAGE.COLOR) name = index === 0 ? 'diffuse' : 'specular';
     else if (usage === USAGE.TEXCOORD) name = 'tex' + index;
     if (usage === USAGE.POSITIONT) rhw = true;
