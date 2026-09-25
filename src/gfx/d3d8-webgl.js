@@ -335,6 +335,30 @@ export class WebGLDevice {
     const base = s.ensureMem(dev.proc), u8 = this.mem.u8;
     for (let y = 0; y < h; y++) { const src = (flip ? y : h - 1 - y) * w * 4; /* texture targets are rendered y-flipped (rows match D3D); back buffers are bottom-up */ let o = base + y * s.pitch; for (let x = 0; x < w; x++, o += 4) { const i = src + x * 4; u8[o] = rgba[i + 2]; u8[o + 1] = rgba[i + 1]; u8[o + 2] = rgba[i]; u8[o + 3] = rgba[i + 3]; } }
   }
+  /**
+   * StretchRect between surfaces the GPU holds (render targets, back buffers, texture levels drawn to): a framebuffer
+   * blit, filtered when asked (D3DTEXF_LINEAR). Surfaces never rendered to (their contents in guest memory) return null:
+   * the device copies them on the CPU.
+   */
+  stretchRect(src, sr, dst, dr, filter) {
+    const gl = this.gl, dev = this.dev, mem = this.mem;
+    if (!this.fbos.has(src.id) || (dst.usage & 2)) return null; // (a depth-stencil destination: not a color blit)
+    const prev = dev.renderTarget;
+    dev.renderTarget = src; const fs = this.bindTarget();
+    dev.renderTarget = dst; const fd = this.bindTarget();
+    dev.renderTarget = prev;
+    const rect = (p, w, h) => (p ? [mem.readS32(p), mem.readS32(p + 4), mem.readS32(p + 8), mem.readS32(p + 12)] : [0, 0, w, h]);
+    const [sl, st, srr, sb] = rect(sr, src.width, src.height), [dl, dt, drr, db] = rect(dr, dst.width, dst.height);
+    // D3D rows go down; a back buffer's GL rows go up (flip false), a texture target's match D3D (flip true)
+    const sy0 = fs.flip ? st : fs.h - st, sy1 = fs.flip ? sb : fs.h - sb, dy0 = fd.flip ? dt : fd.h - dt, dy1 = fd.flip ? db : fd.h - db;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fs.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fd.fbo);
+    const scissor = this.gs.en[gl.SCISSOR_TEST]; if (scissor) gl.disable(gl.SCISSOR_TEST);
+    gl.blitFramebuffer(sl, sy0, srr, sy1, dl, dy0, drr, dy1, gl.COLOR_BUFFER_BIT, filter === 2 ? gl.LINEAR : gl.NEAREST);
+    if (scissor) gl.enable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fd.fbo); this.gs.fbo = fd.fbo;
+    this.stats.blits = (this.stats.blits ?? 0) + 1;
+    return 0;
+  }
   readbackFrontBuffer(s) { const b = this.dev.backBuffers[0]; this.readbackSurface(b); if (b.mem && b.fmt === s.fmt) this.mem.copy(s.ensureMem(this.dev.proc), b.mem, Math.min(b.bytes, s.bytes)); }
   copyRects(src, dst, rects, n, points) {
     const mem = this.mem, dev = this.dev;
