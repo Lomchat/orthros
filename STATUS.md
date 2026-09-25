@@ -456,6 +456,16 @@
   bouton « Fullscreen » cliquable ; un relâchement de bouton attend que le jeu ait présenté une image depuis l'appui
   (≤ 250 ms : un clic plus court qu'une image lente n'est plus perdu — vu au menu 3D High sous SwiftShader) ;
   GetAsyncKeyState rend le bit 0 (appuyé depuis l'appel précédent).
+- **Attentes au démarrage** : AddFontResource garait le thread jusqu'au décodage de la police par le navigateur, mais
+  rien ne relançait l'ordonnanceur avant l'échéance de 5 s — ~10 s perdues à chaque lancement (deux polices). Le moteur
+  de texte réveille l'hôte ; le worker n'a plus qu'une relance en attente (un réveil remplace un minuteur au lieu
+  d'ajouter une chaîne : chaque événement d'entrée en ajoutait une). Second lancement : première image 42 → 35 s.
+  Diagnostics `hang` (tranche de plus d'une seconde, tous les threads en attente) et `--hang-after` au harnais.
+- **x87 24 bits** : un produit/somme au milieu 24 bits avec un opérande double (0,9…) est tranché en ligne (erreur
+  exacte TwoSum / Dekker) : 6,85 M pas d'interpréteur → 12 au premier lancement (temps dans le bruit).
+- Partie de 24 min avec deux Alt+Tab (machine chargée par un autre projet, charge ~48) : aucun plantage, 34,6 fps,
+  p99 57 ms ; A/B simultané contre le déploiement d'hier au menu High : 10,70 / 10,78 fps (pas de régression, la
+  machine chargée divise le débit par ~1,7).
 - Vérifié : changement de résolution dans Options (Reset 1024x768, rendu à cette taille, retour à 800x600 faute de
   confirmation, comportement du jeu) ; `tools/startbench.mjs` (premier lancement dans Node, temps CPU) : 72 s / 82 s CPU
   jusqu'au lancement des outils d'assets, boucles imbriquées structurées neutres (73,8 contre 73,3 s).
