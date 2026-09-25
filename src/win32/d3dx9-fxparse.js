@@ -61,7 +61,9 @@ export function parseEffect(bytes) {
     const type = u(p), cls = u(p + 4), name = str(u(p + 8)), semantic = str(u(p + 12)), elements = u(p + 16);
     p += 20;
     const d = { type, cls, name, semantic, elements, rows: 1, cols: 1, members: [], bytes: 0, end: 0 };
-    if (cls <= PC.MATRIX_COLUMNS) { d.cols = u(p); d.rows = u(p + 4); p += 8; d.bytes = 4 * d.rows * d.cols; }
+    // (two dimension words: scalars and vectors give columns then rows (a float3 is 3 x 1), matrices rows then
+    // columns — a float4x3 World reads 4 x 3, its translation row surviving SetMatrixTranspose of a [R|t] matrix)
+    if (cls <= PC.MATRIX_COLUMNS) { if (cls <= PC.VECTOR) { d.cols = u(p); d.rows = u(p + 4); } else { d.rows = u(p); d.cols = u(p + 4); } p += 8; d.bytes = 4 * d.rows * d.cols; }
     else if (cls === PC.STRUCT) { const n = u(p); p += 4; for (let i = 0; i < n; i++) { const m = readType(p - base); d.members.push(m); p = m.end; } d.bytes = d.members.reduce((s, m) => s + m.bytes * Math.max(1, m.elements), 0); }
     else d.bytes = 4; // (objects: one object id per element)
     d.end = p;

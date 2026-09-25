@@ -42,6 +42,8 @@ const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const asFloat = (v) => { u32[0] = v >>> 0; return f32[0]; };
 const lit = (v) => { const s = Number.isFinite(v) ? v.toExponential(8) : v > 0 ? '1e38' : v < 0 ? '-1e38' : '0.0'; return s; };
 
+/** instructions whose parameters are all sources (flow control) */
+const NO_DST_OPS = new Set([25, 26, 27, 28, 29, 30, 38, 39, 40, 41, 42, 43, 44, 45, 96]);
 /** Iterate instructions: yields { op, ctrl, args (parameter tokens incl. relative address tokens), pos } */
 function* instructions(code) {
   let i = 1;
@@ -81,7 +83,7 @@ export function translateVertexShader9(code) {
   body.push('  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);');
   body.push('  vec4 oPos = vec4(0.0), oD0 = vec4(1.0), oD1 = vec4(0.0), oFog = vec4(1.0), oPts = vec4(1.0); ivec4 a0 = ivec4(0); int aL = 0; bvec4 p0 = bvec4(false);');
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 oT${i} = vec4(0.0);`);
-  const consts = new Map();
+  const consts = new Map(), defis = new Set(); // (def / defi registers: local constants)
   const regName = (tok, args, k) => {
     const type = regType(tok), n = tok & 0x7ff;
     const rel = (tok & 0x2000) !== 0;
@@ -89,12 +91,13 @@ export function translateVertexShader9(code) {
     switch (type) {
       case 0: name = `r[${n & 31}]`; break;
       case 1: name = inputs.has(n) ? `a_${inputs.get(n)}` : 'vec4(0.0)'; break;
-      case 2: { let idx = `${n}`; if (rel) { const at = args[k + 1] >>> 0; const addr = regType(at) === 15 ? 'aL' : `a0.${SWZ[(at >> 16) & 3]}`; idx = `clamp(${n} + ${addr}, 0, 255)`; } name = consts.has(n) && !rel ? `c${n}` : `u_vc[${idx}]`; break; }
+      // (relative addressing: vs 2.0+ name the address register in a following token; vs 1.x always use a0.x)
+      case 2: { let idx = `${n}`; if (rel) { const at = args[k + 1] >>> 0; const addr = major < 2 ? 'a0.x' : regType(at) === 15 ? 'aL' : `a0.${SWZ[(at >> 16) & 3]}`; idx = `clamp(${n} + ${addr}, 0, 255)`; } name = consts.has(n) && !rel ? `c${n}` : `u_vc[${idx}]`; break; }
       case 3: name = 'vec4(a0)'; break;
       case 4: name = ['oPos', 'oFog', 'oPts'][n] ?? 'oPos'; break;
       case 5: name = `oD${n & 1}`; break;
       case 6: name = `oT${n & 7}`; break;
-      case 7: name = `vec4(u_vci[${n & 15}])`; break;
+      case 7: name = defis.has(n & 15) ? `vec4(ci${n & 15})` : `vec4(u_vci[${n & 15}])`; break;
       case 14: name = `vec4(u_vcb[${n & 15}] ? 1.0 : 0.0)`; break;
       case 15: name = 'vec4(float(aL))'; break;
       default: name = 'vec4(0.0)';
@@ -106,12 +109,12 @@ export function translateVertexShader9(code) {
     let e = `${name}.${swizzle(tok)}`;
     const mod = (tok >> 24) & 0xf;
     switch (mod) { case 1: e = `(-${e})`; break; case 2: e = `(${e} - 0.5)`; break; case 3: e = `(0.5 - ${e})`; break; case 4: e = `(${e} * 2.0 - 1.0)`; break; case 5: e = `(1.0 - ${e} * 2.0)`; break; case 6: e = `(1.0 - ${e})`; break; case 7: e = `(${e} * 2.0)`; break; case 8: e = `(${e} * -2.0)`; break; case 11: e = `abs(${e})`; break; case 12: e = `(-abs(${e}))`; break; case 13: e = `(1.0 - ${e})`; break; }
-    return { e, skip: rel ? 1 : 0 };
+    return { e, skip: rel && major >= 2 ? 1 : 0 };
   };
   const dst = (tok) => ({ name: regName(tok, [], 0).name, mask: writeMask(tok), sat: ((tok >> 20) & 0xf) === 1, type: regType(tok) });
   const assign = (d, expr) => {
     let e = d.sat ? `clamp(${expr}, 0.0, 1.0)` : expr;
-    if (d.type === 3) return `  a0 = ivec4(floor(${e}));`;
+    if (d.type === 3) return d.mask === 'xyzw' ? `  a0 = ivec4(floor(${e}));` : `  a0.${d.mask} = ivec4(floor(${e})).${d.mask};`;
     if (d.mask === 'xyzw') return `  ${d.name} = ${e};`;
     return `  ${d.name}.${d.mask} = (${e}).${d.mask};`;
   };
@@ -120,10 +123,11 @@ export function translateVertexShader9(code) {
     const { op, args } = ins;
     if (op === 31 || op === 0) continue;
     if (op === 81) { const n = args[0] & 0x7ff; consts.set(n, true); body.push(`  vec4 c${n} = vec4(${[1, 2, 3, 4].map((k) => lit(asFloat(args[k]))).join(', ')});`); continue; }
-    if (op === 48) { body.push(`  ivec4 ci${args[0] & 15} = ivec4(${args[1] | 0}, ${args[2] | 0}, ${args[3] | 0}, ${args[4] | 0});`); continue; }
+    if (op === 48) { defis.add(args[0] & 15); body.push(`  ivec4 ci${args[0] & 15} = ivec4(${args[1] | 0}, ${args[2] | 0}, ${args[3] | 0}, ${args[4] | 0});`); continue; }
     if (op === 47) { body.push(`  bool cb${args[0] & 15} = ${args[1] ? 'true' : 'false'};`); continue; }
-    const d = args.length ? dst(args[0]) : null;
-    const S = []; let k = 1; while (k < args.length) { const s = src(args, k); S.push(s.e); k += 1 + s.skip; }
+    const noDst = NO_DST_OPS.has(op); // (flow control: every parameter is a source)
+    const d = args.length && !noDst ? dst(args[0]) : null;
+    const S = []; let k = noDst ? 0 : 1; while (k < args.length) { const s = src(args, k); S.push(s.e); k += 1 + s.skip; }
     switch (op) {
       case 1: body.push(assign(d, S[0])); break;
       case 2: body.push(assign(d, `${S[0]} + ${S[1]}`)); break;
@@ -158,10 +162,10 @@ export function translateVertexShader9(code) {
       case 35: body.push(assign(d, `abs(${S[0]})`)); break;
       case 36: body.push(assign(d, `vec4(normalize((${S[0]}).xyz), 1.0)`)); break;
       case 37: body.push(assign(d, `vec4(cos((${S[0]}).x), sin((${S[0]}).x), 0.0, 0.0)`)); break;
-      case 46: body.push(`  a0 = ivec4(floor(${S[0]} + 0.5));`); break; // mova
-      case 38: body.push(`  for (int rep${args[0] & 15} = 0; rep${args[0] & 15} < u_vci[${args[0] & 15}].x; rep${args[0] & 15}++) {`); break;
+      case 46: { const m = writeMask(args[0]); body.push(m === 'xyzw' ? `  a0 = ivec4(floor(${S[0]} + 0.5));` : `  a0.${m} = ivec4(floor(${S[0]} + 0.5)).${m};`); break; } // mova (its write mask: another component keeps its value)
+      case 38: { const n = args[0] & 15, I = defis.has(n) ? `ci${n}` : `u_vci[${n}]`; body.push(`  for (int rep${n} = 0; rep${n} < ${I}.x; rep${n}++) {`); break; } // (rep: the count in .x; a defi of that register overrides the constant)
       case 39: body.push('  }'); break;
-      case 27: body.push(`  for (aL = u_vci[${args[1] & 15}].y; aL < u_vci[${args[1] & 15}].y + u_vci[${args[1] & 15}].x; aL += u_vci[${args[1] & 15}].z) {`); break;
+      case 27: { const n = args[1] & 15, I = defis.has(n) ? `ci${n}` : `u_vci[${n}]`; body.push(`  for (aL = ${I}.y; aL < ${I}.y + ${I}.x; aL += ${I}.z) {`); break; }
       case 29: body.push('  }'); break;
       case 40: body.push(`  if (${S[0]}.x != 0.0) {`); break;
       case 41: body.push(`  if ((${S[0]}).x ${cmpOp[ins.ctrl & 7]} (${S[1]}).x) {`); break;
@@ -197,7 +201,7 @@ export function translatePixelShader9(code, env) {
   lines.push('out vec4 fragColor;');
   const body = ['  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);', '  vec4 oC0 = vec4(0.0); float oDepth = -1.0;'];
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 t${i} = v_tex${i};`);
-  const consts = new Map();
+  const consts = new Map(), defis = new Set(); // (def / defi registers: local constants)
   const sample = (n, coordExpr, proj = false, bias = false) => {
     const kind = samplerKind.get(n) ?? (env.cube[n] ? 'cube' : '2d');
     if (kind === 'cube') return `texture(u_cube${n}, (${coordExpr}).xyz)`;
@@ -247,10 +251,11 @@ export function translatePixelShader9(code, env) {
     }
     prev = args.length && op !== 81 && op !== 48 && op !== 47 ? { name: regName(args[0]), at: body.length } : null;
     if (op === 81) { const n = args[0] & 0x7ff; consts.set(n, true); body.push(`  vec4 c${n} = vec4(${[1, 2, 3, 4].map((k) => lit(asFloat(args[k]))).join(', ')});`); continue; }
-    if (op === 48) { body.push(`  ivec4 ci${args[0] & 15} = ivec4(${args[1] | 0}, ${args[2] | 0}, ${args[3] | 0}, ${args[4] | 0});`); continue; }
+    if (op === 48) { defis.add(args[0] & 15); body.push(`  ivec4 ci${args[0] & 15} = ivec4(${args[1] | 0}, ${args[2] | 0}, ${args[3] | 0}, ${args[4] | 0});`); continue; }
     if (op === 47) continue;
-    const d = args.length ? dst(args[0]) : null;
-    const S = args.slice(1).map(src);
+    const noDst = NO_DST_OPS.has(op);
+    const d = args.length && !noDst ? dst(args[0]) : null;
+    const S = (noDst ? args : args.slice(1)).map(src);
     const dn = d ? (args[0] & 0x7ff) : 0;
     switch (op) {
       case 1: body.push(assign(d, S[0])); break;
@@ -286,7 +291,7 @@ export function translatePixelShader9(code, env) {
       case 41: body.push(`  if ((${S[0]}).x ${cmpOp[ctrl & 7]} (${S[1]}).x) {`); break;
       case 42: body.push('  } else {'); break;
       case 43: body.push('  }'); break;
-      case 38: body.push(`  for (int rep${args[0] & 15} = 0; rep${args[0] & 15} < u_pci[${args[0] & 15}].x; rep${args[0] & 15}++) {`); break;
+      case 38: { const n = args[0] & 15, I = defis.has(n) ? `ci${n}` : `u_pci[${n}]`; body.push(`  for (int rep${n} = 0; rep${n} < ${I}.x; rep${n}++) {`); break; }
       case 39: body.push('  }'); break;
       case 44: body.push('  break;'); break;
       case 45: body.push(`  if ((${S[0]}).x ${cmpOp[ctrl & 7]} (${S[1]}).x) break;`); break;
