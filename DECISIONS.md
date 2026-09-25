@@ -264,3 +264,16 @@ ont servi. Rien d'appris n'est cru sur parole : un programme préparé n'est pri
 construirait sont identiques (sinon il est jeté et reconstruit — traducteurs modifiés), une région préparée est une
 traduction ordinaire du code en mémoire (invalidée par l'écriture de ce code comme les autres), et les adresses sont
 relatives au module chargé. `?programs=0`, `?regions=0` : désactivés.
+
+## D057 — 2026-09-25 — d3dx9 réécrit, effets exécutés sans passer par le code invité
+BFME2 lie `d3dx9_*.dll` (la bibliothèque d'aide de Direct3D 9 : maths, chargement de textures, shaders, effets).
+**Décision** : l'implémenter en builtin (JavaScript), sous tous les noms `d3dx9_24` à `d3dx9_43`, comme les autres DLL
+système. Les effets compilés (fx_2_0) sont analysés (paramètres, techniques, passes, table d'objets, ressources) et
+exécutés directement : une passe est compilée une fois en opérations d'état ; les liaisons de la table des constantes
+d'un shader sont résolues une fois en plans de registres ; les constantes sont écrites dans les tableaux du device
+(version déplacée seulement par un vrai changement) ; les méthodes du device sont appelées sans pile invitée ; les
+préshaders (programmes FXLC qui calculent des constantes sur le CPU) sont compilés en fonctions JavaScript en ligne
+droite (l'interpréteur reste la référence, test d'équivalence). Un gestionnaire d'états fourni par l'application
+(objet COM invité) est respecté : les appels passent alors par lui. Aucun format propre au jeu : ce sont les formats
+publics de Direct3D.
+
