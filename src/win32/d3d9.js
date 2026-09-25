@@ -106,6 +106,8 @@ export function registerDirect3D9(api, vm) {
   /** D3D9 surface desc: Format, Type, Usage, Pool, MultiSampleType, MultiSampleQuality, Width, Height */
   const writeSurfDesc9 = (p, s) => { mem.write32(p, s.fmt); mem.write32(p + 4, RTYPE.SURFACE); mem.write32(p + 8, s.usage); mem.write32(p + 12, s.pool); mem.write32(p + 16, 0); mem.write32(p + 20, 0); mem.write32(p + 24, s.width); mem.write32(p + 28, s.height); };
   const surfaceOf = (ptr) => { const s = com.implAt(ptr); return s instanceof Surface ? s : null; };
+  /** a sampler / texture stage number: 0-15, the displacement map sampler (256) and the vertex samplers (257-260) after them */
+  const samplerIndex = (s) => (s === 0x10 || s === 256 ? 16 : s >= 257 && s <= 260 ? s - 256 + 15 : s);
 
   class Device9 extends Device8 {
     constructor(c, d3d, adapter, devType, hFocus, behavior, pp) {
@@ -190,7 +192,7 @@ export function registerDirect3D9(api, vm) {
     StretchRect(c) {
       const src = surfaceOf(c.arg(1)), sr = c.arg(2), dst = surfaceOf(c.arg(3)), dr = c.arg(4);
       if (!src || !dst) return D3DERR_INVALIDCALL;
-      if (this.gfx?.stretchRect) return this.gfx.stretchRect(src, sr, dst, dr, c.arg(5));
+      if (this.gfx?.stretchRect) { const r = this.gfx.stretchRect(src, sr, dst, dr, c.arg(5)); if (r !== null) return r; } // (null: not on the GPU)
       // CPU path: nearest-neighbour copy between same-format surfaces
       if (src.fmt !== dst.fmt) return D3DERR_INVALIDCALL;
       const sb = src.ensureMem(c.proc), db = dst.ensureMem(c.proc);
@@ -229,10 +231,10 @@ export function registerDirect3D9(api, vm) {
     // ---- state
     CreateStateBlock(c) { const type = c.arg(1), pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const r = super.CreateStateBlock({ ...c, arg: (i) => (i === 1 ? type : i === 2 ? 0 : c.arg(i)) }); if (r !== D3D_OK) return r; const id = this.nextSB - 1; mem.write32(pp, com.create(c.proc, 'IDirect3DStateBlock9', new StateBlock(this, id))); return D3D_OK; }
     EndStateBlock(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; const r = super.EndStateBlock({ ...c, out32: () => {} }); if (r !== D3D_OK) return r; const id = this.nextSB - 1; mem.write32(pp, com.create(c.proc, 'IDirect3DStateBlock9', new StateBlock(this, id))); return D3D_OK; }
-    GetSamplerState(c) { const s = c.arg(1) === 0x10 ? 16 : c.arg(1); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; c.out32(3, this.samplers[s].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetSamplerState(c) { const s = c.arg(1) === 0x10 ? 16 : c.arg(1), type = c.arg(2), v = c.arg(3); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; if (this.recording) { (this.recording.samp ??= new Map()).set(`${s}:${type}`, v); return D3D_OK; } if (this.samplers[s].get(type) === v) return D3D_OK; noteState(this, SAMP_NOTE_GROUPS[s] ?? 'samp' + s, type, v); this.samplers[s].set(type, v); this.gfx?.setSamplerState?.(s, type, v); return D3D_OK; }
-    GetTexture(c) { const st = c.arg(1) === 0x10 ? 16 : c.arg(1), pp = c.arg(2); if (st >= this.textures.length || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
-    SetTexture(c) { const st = c.arg(1) === 0x10 ? 16 : c.arg(1), t = c.arg(2); if (st >= this.textures.length) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; } if (this.textures[st] !== t) { if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
+    GetSamplerState(c) { const s = samplerIndex(c.arg(1)); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; c.out32(3, this.samplers[s].get(c.arg(2)) ?? 0); return D3D_OK; }
+    SetSamplerState(c) { const s = samplerIndex(c.arg(1)), type = c.arg(2), v = c.arg(3); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; if (this.recording) { (this.recording.samp ??= new Map()).set(`${s}:${type}`, v); return D3D_OK; } if (this.samplers[s].get(type) === v) return D3D_OK; noteState(this, SAMP_NOTE_GROUPS[s] ?? 'samp' + s, type, v); this.samplers[s].set(type, v); this.gfx?.setSamplerState?.(s, type, v); return D3D_OK; }
+    GetTexture(c) { const st = samplerIndex(c.arg(1)), pp = c.arg(2); if (st >= this.textures.length || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
+    SetTexture(c) { const st = samplerIndex(c.arg(1)), t = c.arg(2); if (st >= this.textures.length) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; } if (this.textures[st] !== t) { if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
     SetScissorRect(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.scissor = { l: mem.readS32(p), t: mem.readS32(p + 4), r: mem.readS32(p + 8), b: mem.readS32(p + 12) }; return D3D_OK; }
     GetScissorRect(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; const s = this.scissor ?? { l: 0, t: 0, r: this.renderTarget.width, b: this.renderTarget.height }; mem.write32(p, s.l); mem.write32(p + 4, s.t); mem.write32(p + 8, s.r); mem.write32(p + 12, s.b); return D3D_OK; }
     SetSoftwareVertexProcessing(c) { this.softwareVP = c.arg(1) !== 0; return D3D_OK; }
