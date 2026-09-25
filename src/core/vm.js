@@ -158,7 +158,9 @@ export class Vm {
       for (;;) {
         const t = this.sched.pickRunnable(null);
         if (t) {
+          const t0 = performance.now();
           this.runThread(t, TOP_SLICE);
+          t.runMs = (t.runMs ?? 0) + performance.now() - t0; // (diagnostics: time per thread, nested slices included)
           this.sched.wakeBlocked();
           if (untilMs !== Infinity && performance.now() >= untilMs) return RUN_RUNNING;
           continue;

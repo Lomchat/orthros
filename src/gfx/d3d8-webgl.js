@@ -538,6 +538,15 @@ export class WebGLDevice {
     const ps = dev.api9 ? dev.psObj : dev.pixelShaders.get(dev.pixelShader);
     sig[n++] = this.objId(ps);
     for (let k = 0; k < SIG_RS.length; k += 2) sig[n++] = this.rs(SIG_RS[k], SIG_RS[k + 1]) | 0;
+    if (dev.api9 && ps && dev.vsObj) {
+      // both stages programmable: of the texture stages only the textures' kinds and the projected flag reach the
+      // program (programUncached: the pixel shader key), not the fixed-function operations nor the lights
+      for (let i = 0; i < 16; i++) {
+        const texPtr = dev.textures[i], tex = texPtr ? this.comImpl(texPtr) : null;
+        sig[n++] = (tex ? (tex.faces ? 2 : tex.depth ? 3 : 1) : 0) | (i < MAX_STAGES && (this.tss(i, TSS.TEXTURETRANSFORMFLAGS, 0) & 0x100) ? 4 : 0);
+      }
+      return n;
+    }
     const nStages = ps && dev.api9 ? 16 : MAX_STAGES;
     for (let i = 0; i < nStages; i++) {
       const texPtr = dev.textures[i], tex = texPtr ? this.comImpl(texPtr) : null;

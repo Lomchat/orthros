@@ -163,3 +163,57 @@ export function runPreshader(prog, inputs, out) {
     }
   }
 }
+
+/** JS source of a number (constants folded into compiled preshaders) */
+const numSrc = (v) => (Number.isNaN(v) ? 'NaN' : Object.is(v, -0) ? '(-0)' : v < 0 ? `(${v})` : String(v));
+const UNARY = { 0x1000: (a) => a, 0x1010: (a) => `-${a}`, 0x1030: (a) => `1 / ${a}`, 0x1050: (a) => `Math.pow(2, ${a})`, 0x1060: (a) => `Math.log2(Math.abs(${a}))`, 0x1070: (a) => `1 / Math.sqrt(Math.abs(${a}))`, 0x1080: (a) => `Math.sin(${a})`, 0x1090: (a) => `Math.cos(${a})`, 0x10a0: (a) => `Math.asin(${a})`, 0x10b0: (a) => `Math.acos(${a})`, 0x10c0: (a) => `Math.atan(${a})` };
+const BINARY = { 0x2000: (a, b) => `Math.min(${a}, ${b})`, 0x2010: (a, b) => `Math.max(${a}, ${b})`, 0x2020: (a, b) => `(${a} < ${b} ? 1 : 0)`, 0x2030: (a, b) => `(${a} >= ${b} ? 1 : 0)`, 0x2040: (a, b) => `${a} + ${b}`, 0x2050: (a, b) => `${a} * ${b}`, 0x2060: (a, b) => `Math.atan2(${a}, ${b})`, 0x2080: (a, b) => `${a} / ${b}` };
+
+/**
+ * A preshader compiled to a JavaScript function (inputs, out), equivalent to runPreshader with an inputs array of
+ * `inputsLength` values: the program runs whenever an input parameter changes (per draw with animated effects), and
+ * straight-line code with the literals folded in runs far faster than interpreting the instruction list.
+ */
+export function compilePreshader(prog, inputsLength) {
+  const lit = prog.literals, tempLen = Math.max(4, prog.temps);
+  const ref = (o, k) => {
+    const off = o.offset + k;
+    if (o.index) { // relative addressing: the offset moves by 4 per unit of the index register's first component
+      const at = `${off} + Math.floor(${ref({ table: o.index.table, offset: o.index.offset, index: null }, 0)}) * 4`;
+      return o.table === 1 ? `(L[${at}] ?? 0)` : o.table === 2 ? `(I[${at}] ?? 0)` : o.table === 4 ? `(O[${at}] ?? 0)` : o.table === 7 ? `(T[${at}] ?? 0)` : '0';
+    }
+    switch (o.table) {
+      case 1: return numSrc(lit[off] ?? 0);
+      case 2: return off < inputsLength ? `I[${off}]` : '0';
+      case 4: return off < 1024 ? `O[${off}]` : '(O[' + off + '] ?? 0)';
+      case 7: return off < tempLen ? `T[${off}]` : '0';
+      default: return '0';
+    }
+  };
+  const dst = (o, k) => (o.table === 4 ? `O[${o.offset + k}]` : o.table === 7 ? `T[${o.offset + k}]` : null);
+  const lines = ['T.fill(0); let x = 0, s = 0;'];
+  for (const I of prog.insns) {
+    const n = I.n, [a, b, c] = I.ins, op = I.op;
+    const scalarFirst = (op & 0xf000) === 0xa000, base = scalarFirst ? (op & 0x0fff) | 0x2000 : op;
+    const A = (k) => ref(a, scalarFirst ? 0 : k), B = (k) => ref(b, k), C = (k) => ref(c, k);
+    if (base === 0x5000) { // dot
+      lines.push(`s = 0;${Array.from({ length: n }, (_, k) => ` s += ${A(k)} * ${B(k)};`).join('')}`);
+      const d = dst(I.out, 0); if (d) lines.push(`${d} = s;`);
+      continue;
+    }
+    for (let k = 0; k < n; k++) {
+      let v;
+      if (UNARY[base]) v = UNARY[base](A(k));
+      else if (base === 0x1040) { lines.push(`x = ${A(k)};`); v = 'x - Math.floor(x)'; }
+      else if (BINARY[base]) v = BINARY[base](A(k), B(k));
+      else if (base === 0x3000) v = `(${A(k)} >= 0 ? ${B(k)} : ${C(k)})`;
+      else if (base === 0x3010) v = `(${A(k)} !== 0 ? ${B(k)} : ${C(k)})`;
+      else v = '0';
+      const d = dst(I.out, k);
+      if (d) lines.push(`${d} = ${v};`);
+    }
+  }
+  const body = new Function('L', 'I', 'O', 'T', lines.join('\n'));
+  const T = new Float64Array(tempLen), L = Float64Array.from(lit);
+  return (inputs, out) => body(L, inputs, out, T);
+}
