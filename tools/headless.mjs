@@ -294,6 +294,20 @@ async function profileWorker(seconds) {
     for (const [id, c] of counts) { const n = byId.get(id); if (keyOf(n) !== k) continue; const par = byId.get(parentOf.get(id)); const pk = par ? keyOf(par) : '(root)'; callers.set(pk, (callers.get(pk) ?? 0) + c); n0 += c; }
     console.log(`[profile] callers of ${k.split(' ')[0]}: ${[...callers].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([pk, c]) => `${pk.split(' ')[0]} (${pk.split(' ')[1] ?? ''}) ${(100 * c / n0).toFixed(0)}%`).join(', ')}`);
   }
+  // inclusive time per API handler: each sample charged to the frame called by the API dispatchers (vm.js
+  // dispatchThunk / drainDeferred, com.js dispatch) on its stack — the handlers' whole cost, GL calls included
+  {
+    const DISPATCH = /^(dispatchThunk|drainDeferred|dispatch) /;
+    const incl = new Map(); let inApi = 0;
+    for (const [id, c] of counts) {
+      let n = byId.get(id), child = null;
+      while (n) { const par = byId.get(parentOf.get(n.id)); if (par && DISPATCH.test(keyOf(par)) && !DISPATCH.test(keyOf(n))) { child = n; break; } n = par; }
+      if (!child) continue;
+      const k = keyOf(child); incl.set(k, (incl.get(k) ?? 0) + c); inApi += c;
+    }
+    console.log(`[profile] API handlers: ${(100 * inApi / total).toFixed(1)}% of the samples; inclusive, highest:`);
+    for (const [k, c] of [...incl].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  ${k}`);
+  }
   // aggregate by file
   const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
   console.log('[profile] by file:'); for (const [f, c] of [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${f}`);
@@ -318,6 +332,8 @@ function workerThreadTicks() {
   const all = []; const walk = (p) => { for (const k of kids.get(p) ?? []) { all.push(k); walk(k); } }; walk(process.pid);
   const out = new Map();
   for (const pid of all) {
+    // the GPU process as a whole (all its threads: the command decoder, SwiftShader's rasterizer threads)
+    try { if (fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('--type=gpu-process')) { const st = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), f = st.slice(st.lastIndexOf(')') + 2).split(' '); out.set(`gpu:${pid}`, Number(f[11]) + Number(f[12])); } } catch { /* gone */ }
     let tasks; try { tasks = fs.readdirSync(`/proc/${pid}/task`); } catch { continue; }
     for (const tid of tasks) {
       try {
@@ -336,10 +352,10 @@ for (;;) {
     if (!cpuStart && t >= cpuWindow[0]) cpuStart = { ticks: workerThreadTicks(), frames: s.stats.frames, t };
     else if (cpuStart && t >= cpuWindow[1]) {
       cpuDone = true;
-      const end = workerThreadTicks(); let best = 0;
-      for (const [k, v] of end) best = Math.max(best, v - (cpuStart.ticks.get(k) ?? v));
+      const end = workerThreadTicks(); let best = 0, gpu = 0;
+      for (const [k, v] of end) { const d = v - (cpuStart.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else best = Math.max(best, d); }
       const frames = s.stats.frames - cpuStart.frames, wall = t - cpuStart.t;
-      console.log(`[cpu] worker thread ${(best * 10 / frames).toFixed(2)} ms CPU per frame (${(best / 100).toFixed(1)} s CPU in ${wall.toFixed(0)} s, ${frames} frames, ${(frames / wall).toFixed(1)} fps)`);
+      console.log(`[cpu] worker thread ${(best * 10 / frames).toFixed(2)} ms CPU per frame (${(best / 100).toFixed(1)} s CPU in ${wall.toFixed(0)} s, ${frames} frames, ${(frames / wall).toFixed(1)} fps); GPU process ${(gpu * 10 / frames).toFixed(2)} ms per frame`);
     }
   }
   if (s.stats) console.log(`[t=${t.toFixed(0)}s]${s.statsAt && Date.now() - s.statsAt > 2000 ? ` (no stats for ${((Date.now() - s.statsAt) / 1000).toFixed(0)} s)` : ''} ${s.status} fps=${s.stats.fps.toFixed(1)} p99=${s.stats.frameP99.toFixed(1)}ms mips=${s.stats.mips.toFixed(0)} api/s=${s.stats.apiPerSec.toFixed(0)} threads=${s.stats.threads} frames=${s.stats.frames} io=${s.stats.ioMB ?? 0}MB net=${s.stats.netMs ?? 0}ms/${s.stats.netReq ?? 0}${s.stats.d3d ? ` d3d=${s.stats.d3d.w}x${s.stats.d3d.h}/${s.stats.d3d.frames}f/${s.stats.d3d.draws}d/${s.stats.d3d.vaos ?? 0}vao` : s.stats.firstD3D ? ` dx=${s.stats.firstD3D}` : ''} unknown=${s.stats.unknownImports} snd=${s.stats.audioBuffers ?? 0}/${(s.stats.audioPeak ?? 0).toFixed(2)}${s.stats.audioState ? `/${s.stats.audioState}/${s.stats.audioUnderruns}` : ''}${s.stats.audioFrames ? ` mix=${(s.stats.audioFrames / 1000).toFixed(1)}kf/s,${s.stats.audioMs.toFixed(0)}ms/s` : ''}${s.stats.fallbacksPerSec ? ` fb=${(s.stats.fallbacksPerSec / 1000).toFixed(0)}k/s` : ''}${s.stats.topApi && args.includes('--api') ? `\n    top api/s: ${s.stats.topApi}` : ''}${s.stats.topFallback && args.includes('--fallback') ? `\n    fallback/s: ${s.stats.topFallback}` : ''}${s.stats.pump && args.includes('--pump') ? `\n    pump: ${s.stats.pump}` : ''}${s.memoryMB ? ` mem=${s.memoryMB}MB` : ''}${s.stats.offlineTotalMB ? ` offline=${s.stats.offlineMB}/${s.stats.offlineTotalMB}MB` : ''}`);
