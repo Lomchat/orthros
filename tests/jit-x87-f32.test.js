@@ -250,3 +250,35 @@ test('a region reached under several x87 modes gets a version per mode (up to fo
   assert.ok(jit.genericFpu.size > 0, 'a fifth mode: translated with the mode tested at run time');
   for (const cw of [0x007f, 0x027f]) { const w = exec(false, code, cw); assert.deepEqual(runWith(cw), { out: w.out, top: w.top }, `generic, cw ${cw.toString(16)}`); }
 });
+
+// 24-bit precision, round to nearest: a float times, plus or minus a double that is not a float (0.9, 0.1, 1/3...)
+// often lands exactly on a 24-bit midpoint in f64 (0.9: ~9 % of the products); the region settles the side from the
+// f64 operation's exact error (Dekker's product, TwoSum) instead of leaving the instruction to the interpreter. Every
+// result must be the interpreter's, and the interpreter must be left almost never.
+test('24-bit midpoints of float (op) double: settled inline from the exact error, the interpreter\'s results', () => {
+  const R = rng(99), N = 512;
+  const floats = Array.from({ length: N }, () => Math.fround((R() - 0.5) * 2 ** (Math.floor(R() * 40) - 20)));
+  const doubles = [0.9, 0.1, 1 / 3, 0.7, 1.1, -0.9, 2 / 3, 1e-3];
+  // ecx = N ; L: fld dword [esi] ; fmul/fadd/fsub/fsubr qword [edi+k*8] ; fstp dword [ebx] ; add esi,4 ; add ebx,4 ; dec ecx ; jnz L ; hlt
+  for (const [modrm, name] of [[0x0f, 'fmul'], [0x07, 'fadd'], [0x27, 'fsub'], [0x2f, 'fsubr']]) for (let k = 0; k < doubles.length; k++) {
+    const code = [0xb9, ...le(N), 0xd9, 0x06, 0xdc, modrm === 0x0f ? 0x4f : modrm + 0x40, 8 * k, 0xd9, 0x1b, 0x83, 0xc6, 0x04, 0x83, 0xc3, 0x04, 0x49, 0x75, 0, 0xf4];
+    code[code.length - 2] = (0x100 - (code.length - 1 - 5)) & 0xff; // jnz back to L (after mov ecx)
+    const run = (useJit) => {
+      const mem = new GuestMemory(), cpu = new CpuState(mem, THREAD_STATES_BASE);
+      cpu.reset(); mem.writeBytes(CODE, Uint8Array.from(code));
+      floats.forEach((v, i) => mem.writeF32(DATA + 0x1000 + 4 * i, v));
+      doubles.forEach((v, i) => mem.writeF64(DATA + 8 * i, v));
+      cpu.eip = CODE; cpu.esp = DATA + 0x8000; cpu.esi = DATA + 0x1000; cpu.edi = DATA; cpu.ebx = DATA + 0x4000; cpu.eflags = F.RESERVED1 | F.IF;
+      mem.write16(cpu.base + ST.FPU_CW, 0x007f);
+      const I = new Interp(mem, cpu);
+      let r, steps = 0;
+      if (useJit) { const jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu; r = jit.run({ maxInsns: 1e7 }); steps = jit.stats.steps ?? 0; }
+      else r = I.run({ maxInsns: 1e7 });
+      assert.equal(r, EXIT.HALT);
+      return { out: Buffer.from(mem.bytes(DATA + 0x4000, 4 * N)).toString('hex'), steps };
+    };
+    const want = run(false), got = run(true);
+    assert.equal(got.out, want.out, `${name} by ${doubles[k]}`);
+    assert.ok(got.steps <= N / 64, `${name} by ${doubles[k]}: ${got.steps} interpreter steps of ${N}`);
+  }
+});

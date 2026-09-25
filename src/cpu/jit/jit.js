@@ -378,6 +378,7 @@ export class Jit {
       if (r === EXIT_STEP) { // an instruction the translation leaves to the interpreter in rare cases
         this.interp.cpu = cpu;
         cpu.exit = EXIT.NONE;
+        if (this.stepHist) { const k = cpu.eip >>> 0; this.stepHist.set(k, (this.stepHist.get(k) ?? 0) + 1); this.stepSample?.(cpu); } // (diagnostics: which instructions)
         const s = this.interp.step();
         this.stats.steps = (this.stats.steps ?? 0) + 1;
         if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
