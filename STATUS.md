@@ -525,6 +525,15 @@
   charger ni signaler) : comportement probable du patch communautaire 1.09 v3.1 de cette copie, non d'Orthros.
 - Outils : `--control <fichier>` (session pilotée en direct), `--cpu-window` (CPU du worker et du processus GPU par
   image), entrée `burst:N` (trace d'API), `--dbg ORTHROS_FX_DESCRIBE=1` (états des passes d'effets avec leurs valeurs).
+- **Audio mixé dans l'AudioWorklet** (D059) depuis la mémoire invitée partagée : plus de sous-alimentation quand le jeu
+  est occupé (0 contre ~9 400 en 150 s sous charge), BFME1 et BFME2.
+- **Moins de travail par image** : FXAM et XLAT traduits nativement (~1 900 replis/s chacun dans une partie BFME2),
+  maths D3DX, effets, attentes et répartiteur sans allocation par appel (432 → 302 Mo alloués par 30 s), ~8-10 % de
+  CPU du worker en moins.
+- **Vérifié aussi (BFME2)** : tutoriel (carte, cinématique), changement de résolution (Reset du device aller-retour,
+  le jeu revient à l'ancienne résolution faute de confirmation), options. « My Heroes » et la campagne ne s'ouvrent pas
+  (le menu disparaît, rien n'est chargé, aucune erreur) : très probablement une restriction du patch 1.09 v3.1.
+  Le menu radar est un croquis sur parchemin (voulu).
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
