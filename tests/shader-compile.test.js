@@ -30,6 +30,19 @@ programs.push(['dx8 vs.1.1', translateVertexShader(vs11, layout8), translatePixe
 const vs20 = new Uint32Array([0xfffe0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000005, 0x900f0001, 0x03000009, 0xc0010000, 0x90e40000, 0xa0e40000, 0x03000009, 0xc0020000, 0x90e40000, 0xa0e40001, 0x03000009, 0xc0040000, 0x90e40000, 0xa0e40002, 0x03000009, 0xc0080000, 0x90e40000, 0xa0e40003, 0x02000001, 0xe00f0000, 0x90e40001, 0xffff]);
 const ps20 = new Uint32Array([0xffff0200, 0x0200001f, 0x80000000, 0xb00f0000, 0x0200001f, 0x90000000, 0xa00f0800, 0x03000042, 0x800f0000, 0xb0e40000, 0xa0e40800, 0x03000005, 0x800f0000, 0x80e40000, 0xa0e40000, 0x02000001, 0x800f0800, 0x80e40000, 0xffff]);
 programs.push(['dx9 vs_2_0/ps_2_0', translateVertexShader9(vs20).glsl, translatePixelShader9(ps20, { ...env, alphaTest: 5, fog: 3 }).glsl]);
+// the same with v1 declared D3DCOLOR by the vertex declaration (DX9), and a D3DCOLOR input of a DX8 vs.1.1
+const vs20c = translateVertexShader9(vs20, new Set(['s5_0'])).glsl;
+const layout8c = { streams: new Map([[0, { stride: 16, attrs: [{ name: 'pos', reg: 0, offset: 0, comps: 3, type: 'float' }, { name: 'tex0', reg: 7, offset: 12, comps: 4, type: 'color' }] }]]) };
+const vs11c = translateVertexShader(vs11, layout8c);
+programs.push(['dx9 vs_2_0 D3DCOLOR input', vs20c, translatePixelShader9(ps20, env).glsl], ['dx8 vs.1.1 D3DCOLOR input', vs11c, translatePixelShader(ps11, env)]);
+
+// Direct3D expands a D3DCOLOR element (bytes B, G, R, A) to (R, G, B, A); GL reads the bytes in memory order
+test('D3DCOLOR vertex inputs of vertex shaders are read as (R, G, B, A)', () => {
+  assert.match(vs20c, /vec4 i_s5_0 = a_s5_0\.zyxw;/);
+  assert.equal(vs20c.match(/a_s5_0/g).length, 2, 'the attribute is only declared and copied: the shader reads the copy');
+  assert.match(vs11c, /vec4 i_v7 = a_v7\.zyxw;/);
+  assert.doesNotMatch(translateVertexShader9(vs20).glsl, /zyxw/, 'no D3DCOLOR input: no swizzle');
+});
 
 test('generated GLSL compiles and links in WebGL2', { skip: !chromium && 'playwright missing', timeout: 60000 }, async () => {
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-webgl'] });
