@@ -8,7 +8,9 @@
  */
 export function defineD3DXMath(X, mem) {
   const f = (a, i) => mem.readF32(a + 4 * i);
-  const readM = (a) => { const m = new Float64Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(a + 4 * i); return m; };
+  const readM = (a, m = new Float64Array(16)) => { for (let i = 0; i < 16; i++) m[i] = mem.readF32(a + 4 * i); return m; };
+  // (scratch for the functions games call per object each frame: no garbage per call)
+  const S_IN = new Float64Array(16), S_INV = new Float64Array(16), S_V = new Float64Array(4);
   const writeM = (a, m) => { for (let i = 0; i < 16; i++) mem.writeF32(a + 4 * i, m[i]); return a; };
   const readV = (a, n) => { const v = new Float64Array(n); for (let i = 0; i < n; i++) v[i] = mem.readF32(a + 4 * i); return v; };
   const writeV = (a, v) => { for (let i = 0; i < v.length; i++) mem.writeF32(a + 4 * i, v[i]); return a; };
@@ -19,8 +21,7 @@ export function defineD3DXMath(X, mem) {
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   /** inverse and determinant of a general 4x4 (cofactors), null when singular */
-  const inverse = (m) => {
-    const inv = new Float64Array(16);
+  const inverse = (m, inv = new Float64Array(16)) => {
     inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
     inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
     inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
@@ -77,8 +78,8 @@ export function defineD3DXMath(X, mem) {
 
   X.D3DXMatrixMultiply = [3, (c) => writeM(c.arg(0), mul(readM(c.arg(1)), readM(c.arg(2))))];
   X.D3DXMatrixMultiplyTranspose = [3, (c) => { const r = mul(readM(c.arg(1)), readM(c.arg(2))), t = new Float64Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) t[i * 4 + j] = r[j * 4 + i]; return writeM(c.arg(0), t); }];
-  X.D3DXMatrixInverse = [3, (c) => { const [inv, det] = inverse(readM(c.arg(2))); if (c.arg(1)) mem.writeF32(c.arg(1), det); if (!inv) return 0; return writeM(c.arg(0), inv); }];
-  X.D3DXMatrixDeterminant = [1, (c) => { c.retDouble(inverse(readM(c.arg(0)))[1]); }];
+  X.D3DXMatrixInverse = [3, (c) => { const [inv, det] = inverse(readM(c.arg(2), S_IN), S_INV); if (c.arg(1)) mem.writeF32(c.arg(1), det); if (!inv) return 0; return writeM(c.arg(0), inv); }];
+  X.D3DXMatrixDeterminant = [1, (c) => { c.retDouble(inverse(readM(c.arg(0), S_IN), S_INV)[1]); }];
   X.D3DXMatrixTranspose = [2, (c) => { const m = readM(c.arg(1)), t = new Float64Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) t[i * 4 + j] = m[j * 4 + i]; return writeM(c.arg(0), t); }];
   X.D3DXMatrixRotationX = [2, (c) => writeM(c.arg(0), rotAxis([1, 0, 0], c.argF32(1)))];
   X.D3DXMatrixRotationY = [2, (c) => writeM(c.arg(0), rotAxis([0, 1, 0], c.argF32(1)))];
@@ -138,11 +139,21 @@ export function defineD3DXMath(X, mem) {
   X.D3DXVec2Normalize = [2, (c) => { const v = readV(c.arg(1), 2), l = Math.hypot(v[0], v[1]); return writeV(c.arg(0), l ? [v[0] / l, v[1] / l] : [0, 0]); }];
   X.D3DXVec4Normalize = [2, (c) => { const v = readV(c.arg(1), 4), l = Math.hypot(v[0], v[1], v[2], v[3]); return writeV(c.arg(0), l ? [...v].map((x) => x / l) : [0, 0, 0, 0]); }];
   X.D3DXVec3Cross = [3, (c) => writeV(c.arg(0), cross(readV(c.arg(1), 3), readV(c.arg(2), 3)))];
-  const catmull = (c, n) => { const s = c.argF32(5), [p0, p1, p2, p3] = [1, 2, 3, 4].map((i) => readV(c.arg(i), n)), r = []; for (let i = 0; i < n; i++) r.push(0.5 * (2 * p1[i] + (p2[i] - p0[i]) * s + (2 * p0[i] - 5 * p1[i] + 4 * p2[i] - p3[i]) * s * s + (3 * p1[i] - p0[i] - 3 * p2[i] + p3[i]) * s * s * s)); return writeV(c.arg(0), r); };
+  const catmull = (c, n) => {
+    const s = c.argF32(5), a0 = c.arg(1), a1 = c.arg(2), a2 = c.arg(3), a3 = c.arg(4), out = c.arg(0);
+    for (let i = 0; i < n; i++) { const p0 = f(a0, i), p1 = f(a1, i), p2 = f(a2, i), p3 = f(a3, i); S_V[i] = 0.5 * (2 * p1 + (p2 - p0) * s + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s * s + (3 * p1 - p0 - 3 * p2 + p3) * s * s * s); }
+    for (let i = 0; i < n; i++) mem.writeF32(out + 4 * i, S_V[i]); // (after every read: the output may be an input)
+    return out;
+  };
   X.D3DXVec3CatmullRom = [6, (c) => catmull(c, 3)];
   X.D3DXVec2CatmullRom = [6, (c) => catmull(c, 2)];
   X.D3DXVec4CatmullRom = [6, (c) => catmull(c, 4)];
-  const hermite = (c, n) => { const s = c.argF32(5), [p1, t1, p2, t2] = [1, 2, 3, 4].map((i) => readV(c.arg(i), n)), s2 = s * s, s3 = s2 * s, h1 = 2 * s3 - 3 * s2 + 1, h2 = s3 - 2 * s2 + s, h3 = -2 * s3 + 3 * s2, h4 = s3 - s2, r = []; for (let i = 0; i < n; i++) r.push(h1 * p1[i] + h2 * t1[i] + h3 * p2[i] + h4 * t2[i]); return writeV(c.arg(0), r); };
+  const hermite = (c, n) => {
+    const s = c.argF32(5), a1 = c.arg(1), b1 = c.arg(2), a2 = c.arg(3), b2 = c.arg(4), out = c.arg(0), s2 = s * s, s3 = s2 * s, h1 = 2 * s3 - 3 * s2 + 1, h2 = s3 - 2 * s2 + s, h3 = -2 * s3 + 3 * s2, h4 = s3 - s2;
+    for (let i = 0; i < n; i++) S_V[i] = h1 * f(a1, i) + h2 * f(b1, i) + h3 * f(a2, i) + h4 * f(b2, i);
+    for (let i = 0; i < n; i++) mem.writeF32(out + 4 * i, S_V[i]);
+    return out;
+  };
   X.D3DXVec3Hermite = [6, (c) => hermite(c, 3)];
   X.D3DXVec2Hermite = [6, (c) => hermite(c, 2)];
   X.D3DXVec3Project = [6, (c) => { const v = readV(c.arg(1), 3), vp = c.arg(2);

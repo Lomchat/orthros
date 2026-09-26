@@ -1564,6 +1564,15 @@ HANDLERS[OP.SETCC] = (E, insn) => {
   E.pushCond(insn.cc); c.set(L_TV);
   E.storeOpFrom(d, L_TV, insn);
 };
+// XLAT: AL = [(E)BX + AL] (segment override, 16-bit addressing)
+HANDLERS[OP.XLAT] = (E, insn) => {
+  const c = E.c;
+  c.get(L_REG + 3).get(L_REG).i32(0xff).and().add();
+  if (insn.adsize === 2) c.i32(0xffff).and();
+  if (insn.seg === SEG.FS) c.get(L_FS).add(); else if (insn.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
+  c.i32load8u(0).set(L_TV);
+  E.storeRegFrom(1, 0, L_TV);
+};
 HANDLERS[OP.CBW] = (E, insn) => { const c = E.c; if (insn.opsize === 2) { c.get(L_REG).extend8_s().set(L_TV); E.storeRegFrom(2, 0, L_TV); } else c.get(L_REG).extend16_s().set(L_REG); };
 HANDLERS[OP.CWD] = (E, insn) => { const c = E.c; if (insn.opsize === 2) { c.get(L_REG).extend16_s().i32(31).shr_s().set(L_TV); E.storeRegFrom(2, 2, L_TV); } else c.get(L_REG).i32(31).shr_s().set(L_REG + 2); };
 
