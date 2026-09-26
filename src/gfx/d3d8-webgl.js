@@ -31,15 +31,16 @@ export function decodeDxt(fmt, src, w, h) {
   const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2);
   const bs = fmt === FMT.DXT1 ? 8 : 16;
   const c = [new Uint8Array(4), new Uint8Array(4), new Uint8Array(4), new Uint8Array(4)];
-  const alphas = new Uint8Array(16);
+  const alphas = new Uint8Array(16), at = new Uint8Array(8);
+  const expand = (v, o) => { o[0] = ((v >> 11) & 31) * 255 / 31 | 0; o[1] = ((v >> 5) & 63) * 255 / 63 | 0; o[2] = (v & 31) * 255 / 31 | 0; o[3] = 255; };
   for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
     let p = (by * bw + bx) * bs;
     if (fmt !== FMT.DXT1) {
       if (fmt === FMT.DXT2 || fmt === FMT.DXT3) { for (let i = 0; i < 16; i++) { const v = (src[p + (i >> 1)] >> ((i & 1) * 4)) & 15; alphas[i] = v * 17; } }
       else {
         const a0 = src[p], a1 = src[p + 1];
-        const at = [a0, a1];
-        if (a0 > a1) for (let i = 1; i < 7; i++) at.push(((7 - i) * a0 + i * a1) / 7 | 0); else { for (let i = 1; i < 5; i++) at.push(((5 - i) * a0 + i * a1) / 5 | 0); at.push(0, 255); }
+        at[0] = a0; at[1] = a1;
+        if (a0 > a1) for (let i = 1; i < 7; i++) at[i + 1] = ((7 - i) * a0 + i * a1) / 7 | 0; else { for (let i = 1; i < 5; i++) at[i + 1] = ((5 - i) * a0 + i * a1) / 5 | 0; at[6] = 0; at[7] = 255; }
         const lo = src[p + 2] | (src[p + 3] << 8) | (src[p + 4] << 16), hi = src[p + 5] | (src[p + 6] << 8) | (src[p + 7] << 16);
         for (let i = 0; i < 8; i++) alphas[i] = at[(lo >>> (3 * i)) & 7];
         for (let i = 0; i < 8; i++) alphas[8 + i] = at[(hi >>> (3 * i)) & 7];
@@ -47,7 +48,6 @@ export function decodeDxt(fmt, src, w, h) {
       p += 8;
     }
     const c0 = src[p] | (src[p + 1] << 8), c1 = src[p + 2] | (src[p + 3] << 8);
-    const expand = (v, o) => { o[0] = ((v >> 11) & 31) * 255 / 31 | 0; o[1] = ((v >> 5) & 63) * 255 / 63 | 0; o[2] = (v & 31) * 255 / 31 | 0; o[3] = 255; };
     expand(c0, c[0]); expand(c1, c[1]);
     if (fmt !== FMT.DXT1 || c0 > c1) { for (let i = 0; i < 3; i++) { c[2][i] = (2 * c[0][i] + c[1][i]) / 3 | 0; c[3][i] = (c[0][i] + 2 * c[1][i]) / 3 | 0; } c[2][3] = c[3][3] = 255; }
     else { for (let i = 0; i < 3; i++) { c[2][i] = (c[0][i] + c[1][i]) >> 1; c[3][i] = 0; } c[2][3] = 255; c[3][3] = 0; }

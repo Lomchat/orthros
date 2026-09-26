@@ -287,11 +287,16 @@ export function registerD3DX9(api, vm) {
     const src = c.arg(2) === D3DX_DEFAULT ? 0 : c.arg(2), point = (c.arg(3) & 0xff) === FILTER_POINT;
     const chains = t.faces ?? (t.levels && !t.depth ? [t.levels] : null);
     if (!chains) return D3D_OK;
-    for (const lv of chains) for (let i = src + 1; i < lv.length; i++) {
-      const p = lv[i - 1], s = lv[i];
-      if (!p.mem) continue;
-      const enc = fromRgba(s.fmt, resizeRgba(toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height), p.width, p.height, s.width, s.height, point), s.width, s.height);
-      if (enc) fillSurface(c, s, enc);
+    for (const lv of chains) {
+      let rgba = null; // (the level just filtered, as RGBA: the next one comes from it rather than from its re-encoded form)
+      for (let i = src + 1; i < lv.length; i++) {
+        const p = lv[i - 1], s = lv[i];
+        if (!p.mem) { rgba = null; continue; }
+        const from = rgba ?? toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height);
+        rgba = resizeRgba(from, p.width, p.height, s.width, s.height, point);
+        const enc = fromRgba(s.fmt, rgba, s.width, s.height);
+        if (enc) fillSurface(c, s, enc); else rgba = null;
+      }
     }
     return D3D_OK;
   }];

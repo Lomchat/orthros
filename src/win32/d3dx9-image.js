@@ -139,6 +139,11 @@ export function toRgba(fmt, data, w, h) {
 
 function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
   const out = new Uint8Array(w * h * 4);
+  if ((fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && ((u8.byteOffset | pitch) & 3) === 0) { // (whole texels: B,G,R,A -> R,G,B,A on 32-bit lanes)
+    const src = new Uint32Array(u8.buffer, u8.byteOffset, u8.length >> 2), dst = new Uint32Array(out.buffer), alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0;
+    for (let y = 0; y < h; y++) for (let x = 0, si = (y * pitch) >> 2, o = y * w; x < w; x++, si++, o++) { const v = src[si]; dst[o] = ((v & 0xff00ff00) | ((v & 0xff) << 16) | ((v >>> 16) & 0xff) | alpha) >>> 0; }
+    return out;
+  }
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const o = (y * w + x) * 4;
     let s;
@@ -188,6 +193,14 @@ export function fromRgba(fmt, rgba, w, h) {
 /** Box-filtered (or point-sampled, `point`) resize of an RGBA8 image. */
 export function resizeRgba(src, sw, sh, dw, dh, point = false) {
   if (sw === dw && sh === dh) return src;
+  if (!point && dw * 2 === sw && dh * 2 === sh) { // (a mip level: each texel the average of 2 x 2, as the general loop computes it)
+    const out = new Uint8Array(dw * dh * 4), row = sw * 4;
+    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+      const i = (2 * y * sw + 2 * x) * 4, o = (y * dw + x) * 4;
+      for (let c = 0; c < 4; c++) out[o + c] = (src[i + c] + src[i + 4 + c] + src[i + row + c] + src[i + row + 4 + c]) / 4 + 0.5 | 0;
+    }
+    return out;
+  }
   const out = new Uint8Array(dw * dh * 4);
   for (let y = 0; y < dh; y++) {
     const y0 = Math.floor(y * sh / dh), y1 = point ? y0 + 1 : Math.max(y0 + 1, Math.floor((y + 1) * sh / dh));
@@ -212,26 +225,61 @@ export { isDxt };
 
 // ---------------------------------------------------------------- block compression (DXT1/3/5 encoder)
 const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-const from565 = (c) => [((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31];
-/** one color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128 */
+/** the palette of a color block (4 entries of r, g, b; the 4th unused in 3-color mode) and texel indexes: scratch */
+const PAL = new Float64Array(12), IDX = new Uint8Array(16);
+/**
+ * One color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128. Endpoints:
+ * the texels of lowest and highest luminance; each texel takes the nearest palette entry (the first of equals).
+ * Written without an object per block: mip levels of block-compressed textures are re-encoded while maps load.
+ */
 function colorBlock(px, out, o, transparent) {
-  let minL = Infinity, maxL = -Infinity, lo = 0, hi = 0;
-  for (let i = 0; i < 16; i++) { if (transparent && px[4 * i + 3] < 128) continue; const l = px[4 * i] * 2 + px[4 * i + 1] * 4 + px[4 * i + 2]; if (l < minL) { minL = l; lo = i; } if (l > maxL) { maxL = l; hi = i; } }
+  let minL = Infinity, maxL = -Infinity, lo = 0, hi = 0, anyTransparent = false;
+  for (let i = 0; i < 16; i++) {
+    if (transparent && px[4 * i + 3] < 128) { anyTransparent = true; continue; }
+    const l = px[4 * i] * 2 + px[4 * i + 1] * 4 + px[4 * i + 2];
+    if (l < minL) { minL = l; lo = i; } if (l > maxL) { maxL = l; hi = i; }
+  }
   let c0 = to565(px[4 * hi], px[4 * hi + 1], px[4 * hi + 2]), c1 = to565(px[4 * lo], px[4 * lo + 1], px[4 * lo + 2]);
-  const anyTransparent = transparent && [...Array(16).keys()].some((i) => px[4 * i + 3] < 128);
-  if (anyTransparent) { if (c0 > c1) [c0, c1] = [c1, c0]; } // (c0 <= c1: 3 colors + transparent)
-  else { if (c0 < c1) [c0, c1] = [c1, c0]; if (c0 === c1) { if (c1 > 0) c1--; else c0++; } }
-  const a = from565(c0), b = from565(c1);
-  const pal = anyTransparent ? [a, b, a.map((x, k) => (x + b[k]) / 2), null] : [a, b, a.map((x, k) => (2 * x + b[k]) / 3), a.map((x, k) => (x + 2 * b[k]) / 3)];
+  if (anyTransparent) { if (c0 > c1) { const t = c0; c0 = c1; c1 = t; } } // (c0 <= c1: 3 colors + transparent)
+  else { if (c0 < c1) { const t = c0; c0 = c1; c1 = t; } if (c0 === c1) { if (c1 > 0) c1--; else c0++; } }
+  const ar = ((c0 >> 11) & 31) * 255 / 31, ag = ((c0 >> 5) & 63) * 255 / 63, ab = (c0 & 31) * 255 / 31;
+  const br = ((c1 >> 11) & 31) * 255 / 31, bg = ((c1 >> 5) & 63) * 255 / 63, bb = (c1 & 31) * 255 / 31;
+  const P = PAL;
+  P[0] = ar; P[1] = ag; P[2] = ab; P[3] = br; P[4] = bg; P[5] = bb;
+  if (anyTransparent) { P[6] = (ar + br) / 2; P[7] = (ag + bg) / 2; P[8] = (ab + bb) / 2; }
+  else { P[6] = (2 * ar + br) / 3; P[7] = (2 * ag + bg) / 3; P[8] = (2 * ab + bb) / 3; P[9] = (ar + 2 * br) / 3; P[10] = (ag + 2 * bg) / 3; P[11] = (ab + 2 * bb) / 3; }
+  const nPal = anyTransparent ? 3 : 4;
   let idx = 0;
   for (let i = 15; i >= 0; i--) {
-    let best = 0, bd = Infinity;
+    let best = 0;
     if (anyTransparent && px[4 * i + 3] < 128) best = 3;
-    else for (let k = 0; k < 4; k++) { if (!pal[k]) continue; const d = (pal[k][0] - px[4 * i]) ** 2 + (pal[k][1] - px[4 * i + 1]) ** 2 + (pal[k][2] - px[4 * i + 2]) ** 2; if (d < bd) { bd = d; best = k; } }
+    else {
+      const r = px[4 * i], g = px[4 * i + 1], b = px[4 * i + 2];
+      let bd = Infinity;
+      for (let k = 0; k < nPal; k++) { const dr = P[3 * k] - r, dg = P[3 * k + 1] - g, db = P[3 * k + 2] - b, d = dr * dr + dg * dg + db * db; if (d < bd) { bd = d; best = k; } }
+    }
     idx = (idx << 2) | best;
   }
   out[o] = c0 & 255; out[o + 1] = c0 >> 8; out[o + 2] = c1 & 255; out[o + 3] = c1 >> 8;
   out[o + 4] = idx & 255; out[o + 5] = (idx >>> 8) & 255; out[o + 6] = (idx >>> 16) & 255; out[o + 7] = (idx >>> 24) & 255;
+}
+/** One DXT4/5 interpolated alpha block (8 bytes): endpoints the highest and lowest alpha, 8-level mode. */
+function alphaBlock(px, out, o) {
+  let a0 = 0, a1 = 255;
+  for (let i = 0; i < 16; i++) { const a = px[4 * i + 3]; if (a > a0) a0 = a; if (a < a1) a1 = a; }
+  if (a0 === a1) { if (a1 > 0) a1--; else a0++; }
+  for (let i = 0; i < 16; i++) {
+    const a = px[4 * i + 3];
+    let best = 0, bd = Math.abs(a0 - a);
+    const d1 = Math.abs(a1 - a); if (d1 < bd) { bd = d1; best = 1; }
+    for (let k = 1; k < 7; k++) { const d = Math.abs(((7 - k) * a0 + k * a1) / 7 - a); if (d < bd) { bd = d; best = k + 1; } }
+    IDX[i] = best;
+  }
+  let lo = 0, hi = 0; // (3 bits per texel, texel 0 lowest: two 24-bit halves)
+  for (let i = 7; i >= 0; i--) { lo = lo * 8 + IDX[i]; hi = hi * 8 + IDX[i + 8]; }
+  out[o] = a0; out[o + 1] = a1;
+  out[o + 2] = lo & 255; out[o + 3] = (lo >> 8) & 255; out[o + 4] = (lo >> 16) & 255;
+  out[o + 5] = hi & 255; out[o + 6] = (hi >> 8) & 255; out[o + 7] = (hi >> 16) & 255;
 }
 /** RGBA8 (w x h) to DXT1/DXT3/DXT5 blocks */
 export function encodeDxt(fmt, rgba, w, h) {
@@ -242,13 +290,7 @@ export function encodeDxt(fmt, rgba, w, h) {
     const o = (by * bw + bx) * unit;
     if (fmt === FMT.DXT1) { colorBlock(px, out, o, true); continue; }
     if (fmt === FMT.DXT2 || fmt === FMT.DXT3) { for (let i = 0; i < 16; i += 2) out[o + (i >> 1)] = (px[4 * i + 3] >> 4) | ((px[4 * i + 7] >> 4) << 4); }
-    else { // DXT4/5: interpolated alpha
-      let a0 = 0, a1 = 255; for (let i = 0; i < 16; i++) { a0 = Math.max(a0, px[4 * i + 3]); a1 = Math.min(a1, px[4 * i + 3]); }
-      if (a0 === a1) { if (a1 > 0) a1--; else a0++; }
-      const levels = [a0, a1]; for (let k = 1; k < 7; k++) levels.push(((7 - k) * a0 + k * a1) / 7);
-      let bits = 0n; for (let i = 15; i >= 0; i--) { let best = 0, bd = Infinity; for (let k = 0; k < 8; k++) { const d = Math.abs(levels[k] - px[4 * i + 3]); if (d < bd) { bd = d; best = k; } } bits = (bits << 3n) | BigInt(best); }
-      out[o] = a0; out[o + 1] = a1; for (let k = 0; k < 6; k++) out[o + 2 + k] = Number((bits >> BigInt(8 * k)) & 255n);
-    }
+    else alphaBlock(px, out, o); // DXT4/5: interpolated alpha
     colorBlock(px, out, o + 8, false);
   }
   return out;
