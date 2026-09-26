@@ -417,6 +417,9 @@ for (;;) {
     if (t < due) continue;
     ev.done = true;
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
+    if (ev.kind === 'watch' || ev.kind === 'unwatch') { await page.evaluate(([type, addr, len]) => window.orthros.worker?.postMessage({ type, addr, len }), [ev.kind, ev.args[0] || 0, ev.args[1] || 4]); continue; } // (watch:addr,len / unwatch: the code writing there)
+    if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
+    if (ev.kind === 'threads') { await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'threads' })); continue; } // (threads: the VM's threads and sync objects, logged as [hang])
     if (ev.kind === 'burst') { await page.evaluate(([n, tid, noGfx]) => window.orthros.worker?.postMessage({ type: 'burst', n, tid, noGfx }), [ev.args[0] || 3000, ev.args[1] || 0, !!ev.args[2]]); continue; } // (burst:N[,tid[,1]]: the next N API calls of the main thread, or of thread tid, logged — 1: without the COM / D3DX calls; needs --log apiburst)
     if (ev.kind === 'shot') { const f = path.join(out, `${name}-step-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f, timeout: 45000 }).then(() => console.log(`[shot] ${f}`), (e) => console.log(`[shot] failed: ${e.message.split('\n')[0]}`)); continue; }
     // a click holds the button ~100 ms, as a person does (a game polling the button state between two slow frames

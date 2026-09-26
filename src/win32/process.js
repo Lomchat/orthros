@@ -269,6 +269,7 @@ export class Process {
     let r = rings.get(ring);
     if (!r) rings.set(ring, (r = { buf: new Array(SYNC_TRACE_LEN).fill(null), pos: 0 }));
     r.buf[r.pos++ & (SYNC_TRACE_LEN - 1)] = msg;
+    if (this.vm.logKinds.has('sync')) this.vm.logFn('sync', `${ring === 'sync' ? '' : ring + ': '}${msg}`); // (debugging: --log sync)
   }
   syncTraceLines(ring = 'sync') {
     const r = this.syncTraceRings?.get(ring); if (!r) return [];
