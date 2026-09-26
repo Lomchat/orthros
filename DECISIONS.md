@@ -305,3 +305,19 @@ les suit : il se cale sur le curseur à chaque nouvelle génération (Play, SetC
 publié récemment s'écarte de plus de 80 ms (un quart d'une boucle courte) ; un worker bloqué ne publie rien et le
 mixage continue. Mesure : 0 sous-alimentation (BFME2 et BFME1), niveaux comparables. `?audiomix=worker` : l'ancien
 chemin (anneau), qui reste celui des hôtes sans AudioWorklet.
+
+## D060 — 2026-09-26 — Mutex et horloge sur le chemin rapide WebAssembly
+Chaque appel d'API traité en JavaScript coûte une sortie du code traduit, le répartiteur JS et une réentrée (~1 µs).
+Après les états Direct3D (déjà mis en file) et les setters d'effets D3DX (même file, seulement avec un handle de
+l'effet : un nom de paramètre peut désigner une chaîne que le jeu réutilise avant que la file ne soit vidée), les appels
+restants les plus fréquents étaient l'horloge (timeGetTime ~17-29 k/s dans une partie BFME2) et les mutex
+(WaitForSingleObject + ReleaseMutex jusqu'à 50 k/s aux menus de BFME1). **Décision** : (1) le module runtime importe
+l'horloge de la VM (`env.now`) ; timeGetTime, GetTickCount et QueryPerformanceCounter y sont calculés comme par leurs
+gestionnaires JS. (2) L'état d'un mutex (propriétaire, compte, drapeaux) vit en mémoire invitée (zone privée
+0x7fc40000 : adresse de l'état par handle/4, puis les états) ; l'objet JS y lit et écrit par accesseurs, si bien que
+toute la logique d'attente existante reste la référence. Le chemin rapide (dispatcher et appels d'import en ligne)
+prend un mutex libre ou déjà possédé et relâche un niveau ; il laisse la main à JavaScript quand un autre thread le
+possède, qu'il est abandonné, ou qu'un thread est parqué dessus (drapeau posé par l'attente, recalculé par le relâchement
+JS qui remet le mutex au thread en attente, comme Windows). sync.exe (remise sous réacquisition immédiate, exclusion,
+poignée de main, abandon) passe ; ses ~25 000 appels de chaque sorte n'atteignent plus JavaScript. Mesure (partie BFME2,
+deux A/B simultanés) : 34,6 → 32,4 et 31,6 → 29,9 ms de CPU du worker par image.

@@ -3,7 +3,7 @@
 // per Jit instance with the same emitter used for translated regions.
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST, EXIT, F } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../memory.js';
 import { addExpKernels } from './fpmath-exp.js';
 import { addTrigKernels } from './fpmath-trig.js';
 import { addAtanKernels } from './fpmath-atan.js';
@@ -90,8 +90,11 @@ export const DEFER_SPECS = {
   // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
   ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16], ['SetTexture', 3]], DEFER_HANDLE),
 };
-export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15 });
-export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15 };
+export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
+export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
+  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 19, 'kernel32.dll!QueryPerformanceCounter': 20 };
+/** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
+export const TICK_BASE = 0x1000000;
 
 // Lazy flag op kinds (kind << 2 | sizeLog2)
 // ADC/SBB keep (res, a, b): the carry-in is res - a - b (a - b - res), so no fourth value is needed
@@ -138,6 +141,7 @@ export function buildRuntime(opts = {}) {
   const m = new ModuleBuilder();
   m.importMemory('env', 'memory', 32768, 32768, !!opts.shared);
   m.importTable('env', 'table', 1024, undefined);
+  const nowIdx = m.importFunc('env', 'now', [], [T.f64]); // (the VM clock in ms: the time APIs' fast path)
   const regionType = m.type(REGION_PARAMS, REGION_RESULTS);
 
   // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
@@ -264,7 +268,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = 17;
+    const NF = 21;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -343,6 +347,30 @@ export function buildRuntime(opts = {}) {
           c.get(STATE).i32(0).i32store(ST.GPR); c.get(STATE).get(SP).i32load(0).i32store(ST.EIP);
           c.get(STATE).get(SP).i32(4).add().get(N).i32(2).shl().add().i32store(ST.GPR + 16); c.i32(1).return_();
           break;
+        }
+        case 17: case 18: { // a mutex (memory.js MUTEX_HANDLES, kernel32.js Mutex: P = its state: owner, count, flags)
+          c.get(A0).i32(MUTEX_HANDLE_END).ge_u().get(A0).i32(3).and().or().br_if(notHandled);
+          c.get(A0).i32load(MUTEX_HANDLES).tee(P).eqz().br_if(notHandled);
+          if (k === 17) { // WaitForSingleObject: owned by this thread -> recursion; free, no flag -> taken; else JavaScript
+            c.get(P).i32load(0).tee(TM).get(TEB).i32load(0x24).eq();
+            const own = c.if_(); c.get(P).get(P).i32load(4).i32(1).add().i32store(4); c.get(STATE).i32(0); ret(2); c.end(); void own;
+            c.get(TM).get(P).i32load(8).or().br_if(notHandled);
+            c.get(P).get(TEB).i32load(0x24).i32store(0); c.get(P).i32(1).i32store(4);
+            c.get(STATE).i32(0); ret(2);
+          } else { // ReleaseMutex by its owner: one level less; the last one, without a parked waiter; else JavaScript
+            c.get(P).i32load(0).get(TEB).i32load(0x24).ne().br_if(notHandled);
+            c.get(P).i32load(4).i32(1).sub().tee(TM).eqz().get(P).i32load(8).i32(0).ne().and().br_if(notHandled);
+            c.get(P).get(TM).i32store(4);
+            c.get(TM).eqz(); const last = c.if_(); c.get(P).i32(0).i32store(0); c.end(); void last;
+            c.get(STATE).i32(1); ret(1);
+          }
+          break;
+        }
+        case 19: // timeGetTime, GetTickCount: milliseconds of the VM clock from TICK_BASE (their JavaScript handlers' value)
+          c.get(STATE).call(nowIdx).f64floor().f64c(TICK_BASE).f64add().i64trunc_sat_f64_s().wrap(); ret(0); break;
+        case 20: { // QueryPerformanceCounter(p): the VM clock in 100 ns units (QueryPerformanceFrequency: 10 MHz)
+          c.get(A0); const nz = c.if_(); c.get(A0).call(nowIdx).f64c(10000).f64mul().f64floor().i64trunc_sat_f64_s().i64store(0, 0); c.end(); void nz;
+          c.get(STATE).i32(1); ret(1); break;
         }
       }
     }

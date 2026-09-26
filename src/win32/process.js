@@ -102,7 +102,7 @@ export class Process {
     this.type = 'process';
     this.pid = nextPid; nextPid += 4;
     this.vmem = new VMem();
-    this.handles = new HandleTable();
+    this.handles = new HandleTable(vm.mem);
     /** @type {Map<string, any>} lowercase name -> module (PeModule or builtin marker) */
     this.modules = new Map();
     /** @type {any[]} native modules in load order */
