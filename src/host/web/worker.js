@@ -168,7 +168,7 @@ async function start(m) {
   host.onSlowFrame = (dt, d) => {
     // (a frame mostly spent waiting: what the game waited for)
     if (d.idleMs > 150 && (idleFrameLogs = (idleFrameLogs ?? 0) + 1) <= 10) log('hang', `a ${dt.toFixed(0)} ms frame spent ${d.idleMs} ms waiting; idle: ${d.idleParts}; the main thread's waits in the frame: ${d.mainWaits}; its last API calls:\n  ${vm.recentApiCalls(40, vm.proc.threads[0]?.id).join('\n  ')}\n${vm.threadsReport().split('\nsync objects')[0]}`);
-    log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms io ${d.ioReq}/${d.ioKB}KB/${d.ioMs}ms idle ${d.idleMs}ms held ${d.heldMs}ms programs ${d.programMs}ms api ${d.apiMs}ms [${d.topApis}]`);
+    log('slowframe', `t=${(performance.now() / 1000).toFixed(1)}s ${dt.toFixed(1)}ms: api ${d.api} slices ${d.slices} draws ${d.draws} jit ${d.translateMs}ms/${d.regions}r/${d.consolidations}c fb ${d.fallbacks} tex ${d.uploads}/${d.uploadKB}KB present ${d.presentMs}ms audio ${d.audioMs}ms io ${d.ioReq}/${d.ioKB}KB/${d.ioMs}ms idle ${d.idleMs}ms held ${d.heldMs}ms programs ${d.programMs}ms api ${d.apiMs}ms [${d.topApis}]${d.idleMs >= 10 ? ` — idle: ${d.idleParts}; main thread waits: ${d.mainWaits}` : ''}`);
   };
   vm.registry = new Registry(); vm.registry.seed(manifest.registry);
   if (profile.files.has('registry.json')) { try { vm.registry.load(JSON.parse(new TextDecoder().decode(profile.open('registry.json').read(0, profile.stat('registry.json').size)))); } catch (e) { log('warn', `bad registry.json: ${e.message}`); } }
