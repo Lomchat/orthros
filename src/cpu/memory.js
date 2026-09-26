@@ -10,12 +10,17 @@ export const WASM_PAGE = 0x10000;
 
 // Emulator-private region at the top of user space (never handed to the guest allocator):
 //   0x7fc00000  thread CPU states (256 x 0x400)
+//   0x7fc40000  mutexes for the JIT's fast paths (runtime.js fastApi, translate.js emitInlineApi): the address of the
+//               mutex's state per handle / 4 (0: not a mutex), then at 0x7fc80000 the states (kernel32.js Mutex)
 //   0x7fd00000  JIT: next FPU-mode version of each region (4 bytes per table index)
 //   0x7fd50000  JIT scratch (fast API table, deferred COM calls, profiling counters)
 //   0x7fe00000  self-modifying-code page map (1 byte per 4 KB page of the 2 GB space: nonzero = translated code)
 //   0x7ffde000  TEBs (downwards, one page per thread), 0x7ffdf000 PEB, 0x7ffe0000 KUSER_SHARED_DATA
 export const PRIVATE_BASE = 0x7fc00000;
 export const PRIVATE_END = 0x80000000;
+/** handles below MUTEX_HANDLE_END have an entry in MUTEX_HANDLES; MUTEX_STATE_COUNT states of MUTEX_STATE_SIZE bytes */
+export const MUTEX_HANDLES = 0x7fc40000, MUTEX_HANDLE_END = 0x40000;
+export const MUTEX_STATES = 0x7fc80000, MUTEX_STATE_SIZE = 16, MUTEX_STATE_COUNT = 0x4000;
 // EIP -> (function, block) hash table of the JIT: 2^20 entries of 16 bytes just below the thunks
 // (the user address space ends at JIT_HASH_BASE)
 export const JIT_HASH_BITS = 20;

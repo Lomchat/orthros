@@ -534,6 +534,19 @@
   le jeu revient à l'ancienne résolution faute de confirmation), options. « My Heroes » et la campagne ne s'ouvrent pas
   (le menu disparaît, rien n'est chargé, aucune erreur) : très probablement une restriction du patch 1.09 v3.1.
   Le menu radar est un croquis sur parchemin (voulu).
+- **Chargement d'une carte BFME2** : textures D3DX (encodeur DXT sans objet par bloc, entrée de palette la plus proche
+  par projection sur l'axe des extrémités, niveaux de mip filtrés depuis le RGBA du niveau précédent, conversions par
+  format, rectangles écrits seuls) et allocateur d'espace d'adressage avec borne basse de recherche : plus aucun
+  décodage DXT, part de D3DX dans la fenêtre de chargement mesurée ~33 % → ~29 % (→ ~17 % sur la seule phase textures).
+- **Moins d'allers-retours vers JavaScript** : les setters de paramètres d'effets (SetVector/Matrix/Float/Int/Bool/
+  Texture avec un handle de l'effet ; un nom passe toujours par JavaScript) sont mis en file par le JIT comme les états
+  Direct3D (partie BFME2 : 32,8 → 31,1 et 35,1 → 32,1 ms de CPU par image, deux A/B) ; mutex non contendus (état en
+  mémoire invitée, rendu au thread en attente par JavaScript dès qu'il y en a un) et timeGetTime / GetTickCount /
+  QueryPerformanceCounter (horloge importée) traités en WebAssembly.
+- **BFME1 en détails élevés (CPU seul)** : partie ~37 fps (24-25 ms de CPU par image) ; le menu 3D (grande bataille en
+  fond) reste lourd, 13-18 fps (72-74 ms par image dont 75 % dans le code du jeu, calcul x87 réparti sur ~3 300
+  régions). Sous SwiftShader (sans `--gl-discard`), la même partie tombe à 6-12 fps : c'est le rendu logiciel du
+  serveur, pas le worker.
 
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
@@ -553,15 +566,11 @@
   jusqu'à 3,7 % sur la machine partagée).
 - Unités magenta : textures absentes du dossier de jeu (enquête close, voir plus haut) — à revérifier sur une copie
   complète du jeu si l'occasion se présente.
-- Audio : le mixage suit le temps réel (~44 k images/s) mais se fait dans le worker du jeu, qui le suspend pendant ses
-  longues images (sous-alimentations sous SwiftShader chargé) ; piste : mixer dans l'AudioWorklet directement depuis les
-  tampons DirectSound en mémoire partagée (comme le DMA d'une carte son), curseur de lecture tenu par le fil audio.
 - Premier lancement sur réseau réel : plages compressées faites (D054) ; restent les requêtes en série (une à la fois,
   1-4 Mio) — piste : lectures anticipées asynchrones dans un worker d'E/S (mémoire partagée, attente seulement si le
   bloc n'est pas encore arrivé).
-- Saccades : lire les événements `slow` de la prochaine partie du joueur (ce qui reste : traduction de code neuf,
-  lectures, autre) ; pistes : traduction dans un second worker (mémoire partagée, module transféré), budget de
-  préparation hors attente aux menus.
+- Saccades : lire les événements `slow` de la prochaine partie du joueur (ce qui reste : traduction de code neuf non
+  appris, lectures, autre) ; la traduction des régions apprises est déjà dans un second worker (D058).
 
 ## Imports Win32 inconnus (rempli automatiquement à partir de M4)
 - `ole32.dll!OleRun` (référencé par lotrbfme.exe, 0 appel)

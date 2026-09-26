@@ -20,7 +20,7 @@ function boot(exeName, opts = {}) {
   for (const [name, path] of Object.entries(opts.files ?? {})) test.open(name, { create: true }).write(0, fs.readFileSync(path));
   const clock = new VirtualClock();
   const host = new HeadlessHost({ clock, width: 800, height: 600 });
-  const vm = new Vm({ vfs, clock, host, jit: opts.jit, logKinds: opts.logKinds ?? ['warn', 'crash'] });
+  const vm = new Vm({ vfs, clock, host, jit: opts.jit, apiHist: opts.apiHist, logKinds: opts.logKinds ?? ['warn', 'crash'] });
   vm.createProcess({ exePath: 'C:\\Test\\' + exeName });
   return { vm, host, clock };
 }
@@ -103,9 +103,9 @@ test('threads.exe: CreateThread, critical sections, events, Sleep, waits', { ski
   assert.equal(code, 0);
 });
 
-test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off, single wake-ups, handshake, abandonment)', { skip: skip('sync.exe') }, () => {
+test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off, single wake-ups, handshake, abandonment), uncontended mutexes without JavaScript', { skip: skip('sync.exe') }, () => {
   for (const jit of [true, false]) {
-    const { vm } = boot('sync.exe', { jit });
+    const { vm } = boot('sync.exe', { jit, apiHist: true });
     const code = vm.run();
     assert.equal(vm.stdout.join(''),
       'mutex_handoff=1\nmutex_join=0\nmutex_violations=0\nmutex_release_failures=0\n' +
@@ -114,6 +114,8 @@ test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off,
       'handshake=1\nhandshake_bounded=1\nhandshake_join=0\nhandshake_A_free=0\n' +
       'abandoned=128\n', `executor jit=${jit}`);
     assert.equal(code, 0);
+    // (JIT: an uncontended mutex is taken and released without JavaScript — about 25,000 calls each otherwise)
+    if (jit) for (const n of ['WaitForSingleObject', 'ReleaseMutex']) assert.ok(vm.apiHist().get(`kernel32.dll!${n}`) < 500, `${n} calls handled in JavaScript: ${vm.apiHist().get(`kernel32.dll!${n}`)}`);
   }
 });
 

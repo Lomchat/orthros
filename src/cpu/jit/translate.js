@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -100,7 +100,7 @@ function termOfInsn(insn) {
  * TlsGetValue and SetLastError millions of times per second while the game loads. The call checks the slot and the
  * thread's RESUMING flag at run time and takes the ordinary call otherwise (see HANDLERS[OP.CALL]).
  */
-const INLINE_FIDS = new Set([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]);
+const INLINE_FIDS = new Set([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18]);
 /** { slot, thunk, fid } for such a call (the slot's current value is an inlinable fast API's thunk), else null */
 function inlineApiOf(mem, insn) {
   if ((insn.op !== OP.CALL && insn.op !== OP.JMP) || insn.opsize !== 4) return null; // (JMP: an import stub, `jmp [slot]`)
@@ -1790,6 +1790,28 @@ function emitInlineApi(E, fid, slow, viaJmp = false) {
     case 13: c.get(TEB).i32load(0x24).set(AX); pop(0); break; // GetCurrentThreadId
     case 14: c.get(TEB).i32load(0x20).set(AX); pop(0); break; // GetCurrentProcessId
     case 15: c.i32(0).i32load(PROC_CONSTS).set(AX); pop(0); break; // GetProcessHeap
+    case 17: case 18: { // a mutex (memory.js MUTEX_HANDLES; A = its state: owner, count, flags)
+      arg(0); c.tee(A).i32(MUTEX_HANDLE_END).ge_u().get(A).i32(3).and().or().br_if(slow);
+      c.get(A).i32load(MUTEX_HANDLES).tee(A).eqz().br_if(slow);
+      if (fid === 17) { // WaitForSingleObject: owned by this thread -> recursion; free, no flag -> taken
+        const done = c.block(), own = c.block();
+        c.get(A).i32load(0).tee(T).get(TEB).i32load(0x24).eq().br_if(own);
+        c.get(T).get(A).i32load(8).or().br_if(slow);
+        c.get(A).get(TEB).i32load(0x24).i32store(0); c.get(A).i32(1).i32store(4);
+        c.br(done);
+        c.end(); // own
+        c.get(A).get(A).i32load(4).i32(1).add().i32store(4);
+        c.end(); // done
+        c.i32(0).set(AX); pop(2);
+      } else { // ReleaseMutex by its owner: one level less; the last one without a parked waiter
+        c.get(A).i32load(0).get(TEB).i32load(0x24).ne().br_if(slow);
+        c.get(A).i32load(4).i32(1).sub().tee(T).eqz().get(A).i32load(8).i32(0).ne().and().br_if(slow);
+        c.get(A).get(T).i32store(4);
+        c.get(T).eqz(); const i = c.if_(); c.get(A).i32(0).i32store(0); c.end(); void i;
+        c.i32(1).set(AX); pop(1);
+      }
+      break;
+    }
     default: throw new Error(`emitInlineApi: fid ${fid}`);
   }
 }

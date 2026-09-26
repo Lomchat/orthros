@@ -1,11 +1,17 @@
 // Handle table: Win32 HANDLEs are small integers (multiples of 4) mapping to host objects.
+import { MUTEX_HANDLES, MUTEX_HANDLE_END } from '../cpu/memory.js';
 
 export class HandleTable {
-  constructor() {
+  /** @param {import('../cpu/memory.js').GuestMemory=} mem where the JIT's mutex table is kept (memory.js MUTEX_HANDLES) */
+  constructor(mem = null) {
     /** @type {Map<number, any>} */
     this.map = new Map();
     this.next = 0x10;
+    this.mem = mem;
   }
+
+  /** the JIT's mutex table entry of handle `h`: the state address of the mutex it names (kernel32.js Mutex), or 0 */
+  mutexEntry(h, obj) { if (this.mem && h < MUTEX_HANDLE_END && obj?.stateAddr) this.mem.u32[(MUTEX_HANDLES + h) >>> 2] = obj.stateAddr; }
 
   /** @param {any} obj object with a `type` string */
   create(obj) {
@@ -13,6 +19,7 @@ export class HandleTable {
     this.next += 4;
     this.map.set(h, obj);
     if (obj) obj.handle = obj.handle ?? h;
+    this.mutexEntry(h, obj);
     return h;
   }
 
@@ -28,6 +35,7 @@ export class HandleTable {
     const o = this.map.get(h >>> 0);
     if (!o) return false;
     this.map.delete(h >>> 0);
+    if (o.stateAddr && this.mem && (h >>> 0) < MUTEX_HANDLE_END) this.mem.u32[(MUTEX_HANDLES + (h >>> 0)) >>> 2] = 0;
     if (o.refs !== undefined && --o.refs > 0) return true;
     if (typeof o.close === 'function') o.close();
     return true;
@@ -41,6 +49,7 @@ export class HandleTable {
     const nh = this.next;
     this.next += 4;
     this.map.set(nh, o);
+    this.mutexEntry(nh, o);
     return nh;
   }
 }

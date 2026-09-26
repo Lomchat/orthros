@@ -8,9 +8,36 @@ import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAG
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
 import { ApiRegistry } from './api.js';
+import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT } from '../cpu/memory.js';
+import { TICK_BASE } from '../cpu/jit/runtime.js';
 
 export const STILL_ACTIVE = 0x103;
 const INVALID_HANDLE = 0xffffffff;
+
+/** Mutex state flags (Mutex; the JIT's fast paths read them) */
+export const MX_ABANDONED = 1, MX_WAITERS = 2;
+/**
+ * A mutex whose state — owner thread id, recursion count, flags — lives in guest memory (memory.js MUTEX_STATES), so
+ * that the JIT's fast paths (runtime.js fastApi, translate.js emitInlineApi: WaitForSingleObject, ReleaseMutex) take and
+ * release it without JavaScript. They leave to JavaScript whenever it is owned by another thread, abandoned, or has a
+ * parked waiter (MX_WAITERS: set by a wait about to park, recomputed by a release in JavaScript — which hands the mutex
+ * over at once, as Windows does). Without a free state slot, the state is a JavaScript array (no fast path).
+ */
+export class Mutex {
+  constructor(states, owner) {
+    this.type = 'mutex'; this.states = states;
+    this.stateAddr = states.alloc();
+    this.w = this.stateAddr ? states.mem.i32 : new Int32Array(4); this.i = this.stateAddr >>> 2;
+    this.w[this.i] = owner; this.w[this.i + 1] = owner ? 1 : 0; this.w[this.i + 2] = 0;
+  }
+  get owner() { return this.w[this.i]; } set owner(v) { this.w[this.i] = v; }
+  get count() { return this.w[this.i + 1]; } set count(v) { this.w[this.i + 1] = v; }
+  get abandoned() { return (this.w[this.i + 2] & MX_ABANDONED) !== 0; } set abandoned(v) { this.flag(MX_ABANDONED, v); }
+  get waiters() { return (this.w[this.i + 2] & MX_WAITERS) !== 0; } set waiters(v) { this.flag(MX_WAITERS, v); }
+  flag(bit, v) { if (v) this.w[this.i + 2] |= bit; else this.w[this.i + 2] &= ~bit; }
+  /** last handle closed: the state slot back to the pool (the object keeps its state: a named mutex may be reopened) */
+  close() { if (!this.stateAddr) return; const w = this.w.slice(this.i, this.i + 4); this.states.release(this.stateAddr); this.stateAddr = 0; this.w = w; this.i = 0; }
+}
 
 /** Object signaled state for waits. */
 export function isSignaled(obj, thread) {
@@ -72,6 +99,9 @@ export function registerKernel32(api, vm) {
   const mem = vm.mem;
   const K = {};
   const named = new Map(); // named kernel objects
+  const mutexStates = { mem, next: 0, free: [], // (Mutex state slots)
+    alloc() { return this.free.length ? this.free.pop() : this.next < MUTEX_STATE_COUNT ? MUTEX_STATES + MUTEX_STATE_SIZE * this.next++ : 0; },
+    release(a) { this.free.push(a); } };
 
   const createNamed = (ctx, nameArg, make) => {
     const name = nameArg;
@@ -336,15 +366,17 @@ export function registerKernel32(api, vm) {
   K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.signal(); return 1; }];
   K.ResetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = false; return 1; }];
   K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.wakeBlocked(); if (!o.manual) { /* one waiter consumed it on wake */ } o.signaled = false; return 1; }];
-  K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
-  K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => ({ type: 'mutex', owner: c.arg(1) ? c.thread.id : 0, count: c.arg(1) ? 1 : 0, abandoned: false }))];
+  K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0))];
+  K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0))];
   K.OpenMutexA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'mutex') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
   K.ReleaseMutex = [1, (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'mutex'); if (!o) return c.fail(E.INVALID_HANDLE);
     if (o.owner !== c.thread.id) { c.proc.syncTrace(`mutex 0x${o.handle.toString(16)} release by t${c.thread.id} REFUSED (owner t${o.owner})`); return c.fail(288); }
-    if (--o.count === 0) { o.owner = 0; vm.sched.signal(); }
+    if (--o.count === 0) { o.owner = 0; vm.sched.signal(); if (o.waiters) o.waiters = mutexWaited(); }
     return 1;
   }];
+  /** a thread parked in a wait that may be for a mutex (MX_WAITERS is recomputed from it: conservative) */
+  const mutexWaited = () => vm.sched.threads.some((t) => t.state === TS.BLOCKED && (t.blockReason === 'wait:mutex' || t.blockReason === 'waitmany'));
   K.CreateSemaphoreA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
   K.CreateSemaphoreW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
   K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); vm.sched.signal(); return 1; }];
@@ -372,6 +404,7 @@ export function registerKernel32(api, vm) {
     // (a poll, timeout 0, of an object not signaled: WAIT_TIMEOUT at once, likewise)
     if (t.wakeResult === undefined && !(alertable && t.apcQueue.length)) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
     const to = ms === INFINITE ? INFINITE : ms;
+    if (o.type === 'mutex' && t.wakeResult === undefined) o.waiters = true; // (about to park: releases go through JavaScript)
     const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, WAIT_REASONS[o.type] ??= 'wait:' + o.type,
       () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
     if (alertable && t.apcQueue.length) runApcs(c);
@@ -385,6 +418,7 @@ export function registerKernel32(api, vm) {
     const objs = [];
     for (let i = 0; i < n; i++) { const o = waitObject(c, mem.read32(ph + 4 * i)); if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; } objs.push(o); }
     const t = c.thread;
+    if (t.wakeResult === undefined) for (const o of objs) if (o.type === 'mutex') o.waiters = true;
     // (plain loops: the condition is evaluated at every scheduling pass while the thread is parked)
     const ready = () => { if (all) { for (let i = 0; i < objs.length; i++) if (!isSignaled(objs[i], t)) return false; return true; } for (let i = 0; i < objs.length; i++) if (isSignaled(objs[i], t)) return true; return false; };
     const claim = () => {
@@ -577,7 +611,7 @@ export function registerKernel32(api, vm) {
   K.FreeResource = [1, () => 0];
 
   // ---------------------------------------------------------------- time
-  const TICK_BASE = 0x1000000; // fake uptime so GetTickCount does not start at 0
+  // (TICK_BASE: a fake uptime so GetTickCount does not start at 0; the JIT's fast path computes the same value)
   K.GetTickCount = [0, () => (TICK_BASE + Math.floor(vm.clock.now())) >>> 0];
   K.GetTickCount64 = [0, (c) => { const t = BigInt(TICK_BASE + Math.floor(vm.clock.now())); c.cpu.edx = Number(t >> 32n); return Number(t & 0xffffffffn); }];
   K.QueryPerformanceFrequency = [1, (c) => { c.out64(0, 10000000n); return 1; }];

@@ -3,6 +3,7 @@
 import { E } from './errors.js';
 import { CC_CDECL } from './api.js';
 import { allocString } from './kernel32.js';
+import { TICK_BASE } from '../cpu/jit/runtime.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
 const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167;
@@ -18,7 +19,6 @@ export function registerMiscDlls(api, vm) {
 
   // ---------------------------------------------------------------- winmm
   const W = {};
-  const TICK_BASE = 0x1000000;
   W.timeGetTime = [0, () => (TICK_BASE + Math.floor(vm.clock.now())) >>> 0];
   W.timeBeginPeriod = [1, () => MMSYSERR_NOERROR];
   W.timeEndPeriod = [1, () => MMSYSERR_NOERROR];
