@@ -542,7 +542,12 @@
   Texture avec un handle de l'effet ; un nom passe toujours par JavaScript) sont mis en file par le JIT comme les états
   Direct3D (partie BFME2 : 32,8 → 31,1 et 35,1 → 32,1 ms de CPU par image, deux A/B) ; mutex non contendus (état en
   mémoire invitée, rendu au thread en attente par JavaScript dès qu'il y en a un) et timeGetTime / GetTickCount /
-  QueryPerformanceCounter (horloge importée) traités en WebAssembly.
+  QueryPerformanceCounter (horloge importée) traités en WebAssembly (partie BFME2 : 34,6 → 32,4 et 31,6 → 29,9 ms).
+  Essayé puis retiré : détecter les rafales de Sleep(0) sur le temps propre du thread (le fil principal de BFME2 en
+  fait ~1,6 M par partie) — il les endort plus souvent, mais ses Sleep(0) attendent aussi les autres threads : 29,6 →
+  27,5 fps, p99 45 → 75 ms.
+- **Appels WebGL** (`--gl-count t:images`, sans les lectures de la capture) : partie BFME2 1 460 appels par image pour
+  154 tracés (9,5 par tracé), aucune relecture ; partie BFME1 ~6,5 appels par tracé.
 - **BFME1 en détails élevés (CPU seul)** : partie ~37 fps (24-25 ms de CPU par image) ; le menu 3D (grande bataille en
   fond) reste lourd, 13-18 fps (72-74 ms par image dont 75 % dans le code du jeu, calcul x87 réparti sur ~3 300
   régions). Sous SwiftShader (sans `--gl-discard`), la même partie tombe à 6-12 fps : c'est le rendu logiciel du
