@@ -397,7 +397,11 @@ export class WebGLDevice {
     gl.flush(); this.frame++;
     if (this.pc?.queue.length) this.prewarmStep();
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
-    if (this.captureAt && this.frame === this.captureAt) { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
+    if (this.countLeft && --this.countLeft === 0) this.log(`d3d-webgl: GL calls per frame over ${this.countFrames} frames: ${this.stopGlCount(this.countFrames)}`);
+    if (this.captureAt && this.frame === this.captureAt) {
+      if (this.countFrames) { this.countLeft = this.countFrames; this.startGlCount(); } // (count only: no dump, no per-draw log)
+      else { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
+    }
   }
   /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
   startGlCount() {
@@ -409,11 +413,14 @@ export class WebGLDevice {
       gl[k] = function (...a) { counts.set(k, (counts.get(k) ?? 0) + 1); return f.apply(gl, a); };
     }
   }
-  stopGlCount() {
+  /** the counts (per frame over `frames` frames), most frequent first */
+  stopGlCount(frames = 1) {
     const gl = this.gl, counts = this.glCallCounts; this.glCallCounts = null;
     for (const k of Object.keys(gl)) if (typeof gl[k] === 'function') delete gl[k];
     let total = 0; for (const v of counts.values()) total += v;
-    return `${total} (${(total / Math.max(1, this.frameDraws)).toFixed(1)}/draw): ` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+    const draws = frames > 1 ? (counts.get('drawElements') ?? 0) + (counts.get('drawArrays') ?? 0) : this.frameDraws;
+    const f = (v) => (frames > 1 ? (v / frames).toFixed(1) : v);
+    return `${f(total)} (${(total / Math.max(1, draws)).toFixed(1)}/draw): ` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`).join(', ');
   }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;

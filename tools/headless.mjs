@@ -93,6 +93,8 @@ const interpRangeAt = opt('interp-range-at') ? { t: Number(opt('interp-range-at'
 const loseContextAt = opt('lose-context-at') ? Number(opt('lose-context-at')) : null;
 let contextLost = false;
 const captureAt = opt('capture-at') ? { t: Number(opt('capture-at').replace(/^@/, '')), rel: opt('capture-at').startsWith('+'), anchored: opt('capture-at').startsWith('@'), done: false } : null;
+// --gl-count <s>:<frames>: WebGL calls per frame (by function) averaged over <frames> frames from that time (no capture)
+const glCount = opt('gl-count') ? { t: Number(opt('gl-count').split(':')[0]), frames: Number(opt('gl-count').split(':')[1] ?? 30), done: false } : null;
 if (opfsDir) q.set('opfs', '1');
 if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame diagnostics only after that time
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
@@ -441,6 +443,7 @@ for (;;) {
   if (interpRangeAt && !interpRangeAt.done && t >= (interpRangeAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + interpRangeAt.t) : interpRangeAt.t)) { interpRangeAt.done = true; console.log(`[input] interpreter ranges ${opt('interp-range')} at ${t.toFixed(0)}s`); await page.evaluate((ranges) => window.orthros.worker?.postMessage({ type: 'interpRange', ranges }), opt('interp-range')); }
   if (loseContextAt !== null && !contextLost && t >= loseContextAt) { contextLost = true; console.log(`[input] WebGL context loss at ${t.toFixed(0)}s`); await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'loseContext', ms: 500 })); }
   const waitsDone = inputs.every((e) => !e.kind.startsWith('wait') || e.done); // (@N counts from the last anchor of the scenario)
+  if (glCount && !glCount.done && t >= glCount.t) { glCount.done = true; await page.evaluate((count) => window.orthros.worker?.postMessage({ type: 'capture', count }), glCount.frames); }
   if (captureAt && !captureAt.done && t >= (captureAt.anchored ? (anchorAt === null || !waitsDone ? Infinity : anchorAt + captureAt.t) : captureAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + captureAt.t) : captureAt.t)) { captureAt.done = true; console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), args.includes('--capture-draws')); }
   // captured images, a few per round trip (a whole frame of per-draw PNGs exceeds the maximum string length)
   let nDumps = 0;
