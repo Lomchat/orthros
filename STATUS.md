@@ -575,6 +575,8 @@
   sauvegarde d'une escarmouche, fermeture, puis « Load Game » depuis le menu dans une nouvelle session : la partie
   reprend. BFME1 : changement de résolution 800×600 → 1024×768 confirmé (le jeu revient en arrière sans confirmation
   sous 10 s, comme sous Windows ; il ne propose que des modes 4:3).
+- **Vérifié (BFME2)** : escarmouche à 4 sur les Champs aux Iris (moi + IA facile, difficile, brutale) pendant 30 min :
+  les armées des IA attaquent et se battent autour de ma forteresse (des dizaines d'unités), aucune erreur.
 - **Vérifié (BFME1)** : École de guerre (leçons animées), escarmouche avec le Mordor (forteresse, unités, menu de
   construction radial, construction).
 - Les boutons de l'interface 3D des jeux (menu de jeu, carte de campagne) ignorent un clic synthétique trop bref : le
