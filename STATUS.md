@@ -510,6 +510,22 @@
   session en cours (clics, touches, captures) ; `--pump` donne la part du worker par thread invité (le thread principal
   du jeu : ~90 %).
 
+## Nuit du 25 au 26 septembre
+- **Traduction en arrière-plan** (D058) : les régions apprises sont traduites dans un second worker (mémoire invitée
+  partagée) ; traduction sur le fil du jeu pendant le chargement 11,9 → 1,3 s (BFME2), 7,7 → 1,1 s (BFME1).
+- **Effets D3DX : états calculés** — un état de passe donné par une expression (code de version 'FX' : AlphaTestEnable,
+  AlphaBlendEnable, CullMode, ZWriteEnable… calculés depuis un paramètre) gardait sa constante. Corrigé : le menu 3D de
+  BFME2 (statues de l'Argonath, falaises, arbres, rayons de lumière) est rendu correctement ; il n'en restait que des
+  silhouettes noires et des arbres en carrés opaques.
+- **Partie BFME2 (CPU seul)** : à la limite de 30 images/s du jeu sur ce serveur (p50 32,9 ms, p99 39,8 ms, 9 images
+  > 50 ms en 100 s — des lectures de fichiers, locales pour un joueur après une première partie). BFME1 : p50 26 ms,
+  p99 44 ms. Constantes de shader envoyées par plage modifiée ; IDCT JPEG 1,6× (chargements D3DX).
+- **Vérifié en jeu (BFME2)** : sélection, menu radial, construction d'extensions, info-bulles, **sauvegarde et
+  chargement** d'une partie. La campagne du Bien ne démarre pas (le choix de difficulté referme la boîte sans rien
+  charger ni signaler) : comportement probable du patch communautaire 1.09 v3.1 de cette copie, non d'Orthros.
+- Outils : `--control <fichier>` (session pilotée en direct), `--cpu-window` (CPU du worker et du processus GPU par
+  image), entrée `burst:N` (trace d'API), `--dbg ORTHROS_FX_DESCRIBE=1` (états des passes d'effets avec leurs valeurs).
+
 ## Prochaine action
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente. À
   observer là (non mesurable sous SwiftShader) : ~2 400 appels GL par image en partie ; tampons dynamiques
