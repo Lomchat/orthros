@@ -137,7 +137,13 @@ export function describeEffect(fx) {
   for (const pa of fx.params) lines.push(`param ${tn(pa.type)} ${pa.type.name}${pa.type.semantic ? ' : ' + pa.type.semantic : ''}${pa.annotations.length ? ` <${pa.annotations.map((a) => a.type.name).join(',')}>` : ''}`);
   for (const t of fx.techniques) {
     lines.push(`technique ${t.name}`);
-    for (const ps of t.passes) lines.push(`  pass ${ps.name}: ${ps.states.map((s) => `${(STATES[s.op] ?? ['?', s.op]).join(':')}[${s.index}]=${tn(s.type)}`).join(' ')}`);
+    const ti = fx.techniques.indexOf(t);
+    t.passes.forEach((ps, pi) => lines.push(`  pass ${ps.name}: ${ps.states.map((s, si) => {
+      // (the value: a constant, a parameter reference (usage 1: @name) or an expression (usage 2: expr))
+      const res = fx.resources.find((r) => r.technique === ti && r.index === pi && r.state === si);
+      const v = res ? (res.usage === 1 ? '@' + String.fromCharCode(...res.data).replace(/\0.*$/, '') : res.usage === 2 ? 'expr' : `${res.data.length}B`) : s.value instanceof Uint32Array && s.value.length === 1 ? (s.type.type === PT.FLOAT ? new Float32Array(s.value.buffer, s.value.byteOffset, 1)[0] : s.value[0]) : tn(s.type);
+      return `${(STATES[s.op] ?? ['?', s.op]).join(':')}[${s.index}]=${v}`;
+    }).join(' ')}`));
   }
   lines.push(`resources: ${fx.resources.map((r) => `t${r.technique} i${r.index} e${r.element} s${r.state} u${r.usage} ${r.data.length}B`).join(', ')}`);
   return lines.join('\n');
