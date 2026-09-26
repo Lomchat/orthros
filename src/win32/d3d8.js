@@ -196,7 +196,7 @@ export function d3dCore(vm) {
     GetPriority() { return 0; }
     PreLoad() {}
     GetType() { return RTYPE.SURFACE; }
-    lock(c, pLocked, pRect, flags) {
+    lock(c, pLocked, pRect, flags) { this.rgbaCache = null; // (d3dx9 keeps the RGBA of a surface it just encoded: a lock may change the data)
       if (!pLocked) return D3DERR_INVALIDCALL;
       if (this.locked) return D3DERR_INVALIDCALL;
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
@@ -449,6 +449,7 @@ export function d3dCore(vm) {
       const src = com.implAt(c.arg(1)), rects = c.arg(2), n = c.arg(3), dst = com.implAt(c.arg(4)), points = c.arg(5);
       if (!(src instanceof Surface) || !(dst instanceof Surface)) return D3DERR_INVALIDCALL;
       if (src.fmt !== dst.fmt) return D3DERR_INVALIDCALL;
+      dst.rgbaCache = null;
       if (this.gfx?.copyRects) return this.gfx.copyRects(src, dst, rects, n, points);
       const sb = src.ensureMem(c.proc), db = dst.ensureMem(c.proc);
       const bpp = surfacePitch(src.fmt, 1);
@@ -458,7 +459,7 @@ export function d3dCore(vm) {
       dst.dirty = true;
       return D3D_OK;
     }
-    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type) return D3DERR_INVALIDCALL; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
+    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type) return D3DERR_INVALIDCALL; for (const l of d.levels ?? []) l.rgbaCache = null; for (const f of d.faces ?? []) for (const l of f) l.rgbaCache = null; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
     GetFrontBuffer(c) { const s = com.implAt(c.arg(1)); if (!(s instanceof Surface)) return D3DERR_INVALIDCALL; if (this.gfx?.readbackFrontBuffer) this.gfx.readbackFrontBuffer(s); else { const b = this.backBuffers[0]; if (b.mem && b.fmt === s.fmt) mem.copy(s.ensureMem(c.proc), b.mem, Math.min(b.bytes, s.bytes)); } return D3D_OK; }
     SetRenderTarget(c) { const rt = c.arg(1) ? com.implAt(c.arg(1)) : null, ds = c.arg(2) ? com.implAt(c.arg(2)) : null; if (c.arg(1) && !(rt instanceof Surface)) return D3DERR_INVALIDCALL; if (rt) { this.renderTarget = rt; this.viewport = { x: 0, y: 0, w: rt.width, h: rt.height, minZ: 0, maxZ: 1 }; } this.depthTarget = c.arg(2) ? ds : null; this.gfx?.setRenderTarget?.(this.renderTarget, this.depthTarget); return D3D_OK; }
     GetRenderTarget(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; mem.write32(pp, this.renderTarget.ptrOf(c)); return D3D_OK; }

@@ -114,7 +114,7 @@ export function registerD3DX9(api, vm) {
     return out;
   };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
-  const fillSurface = (c, s, data) => { const a = s.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
+  const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
   const fillVolume = (c, t, i, data) => { const l = t.levels[i]; if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
 
   /**
@@ -234,14 +234,35 @@ export function registerD3DX9(api, vm) {
     const px = resizeRgba(rgba, rw, rh, dw, dh, (filter & 0xff) === FILTER_POINT || (filter & 0xff) === 1);
     const base = dst.ensureMem(c.proc);
     const full = dr.l === 0 && dr.t === 0 && dw === dst.width && dh === dst.height;
+    // a rectangle of the surface: only its texels written (uncompressed), or its blocks when it covers whole 4x4 blocks
+    // (the other texels untouched: decoding and re-encoding the whole surface per tile made terrain loads quadratic)
+    const dxt = isDxt(dst.fmt), aligned = !dxt || ((dr.l | dr.t) % 4 === 0 && (dw % 4 === 0 || dr.r === dst.width) && (dh % 4 === 0 || dr.b === dst.height));
+    if (!full && aligned) {
+      const enc = fromRgba(dst.fmt, px, dw, dh);
+      if (enc) {
+        const blk = dxt ? 4 : 1, rows = Math.ceil(dh / blk), rowBytes = dxt ? Math.ceil(dw / 4) * (dst.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(dst.fmt, dw);
+        const unitX = dxt ? (dst.fmt === FMT.DXT1 ? 8 : 16) / 4 : surfacePitch(dst.fmt, 1); // (bytes per texel column: a DXT block row covers 4 texels)
+        for (let y = 0; y < rows; y++) mem.writeBytes(base + (dr.t / blk + y) * dst.pitch + dr.l * unitX, enc.subarray(y * rowBytes, (y + 1) * rowBytes));
+        dst.rgbaCache = null; dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst);
+        return D3D_OK;
+      }
+    }
     const cur = full ? null : toRgba(dst.fmt, mem.bytes(base, dst.bytes), dst.width, dst.height);
     let all = px;
     if (!full) { for (let y = 0; y < dh; y++) cur.set(px.subarray(y * dw * 4, (y + 1) * dw * 4), ((dr.t + y) * dst.width + dr.l) * 4); all = cur; }
     const enc = fromRgba(dst.fmt, all, dst.width, dst.height);
     if (!enc) { vm.log('gfx', `d3dx: surface format ${dst.fmt} not writable`); return D3DERR_INVALIDCALL; }
     fillSurface(c, dst, enc);
+    if (isDxt(dst.fmt)) rememberRgba(dst, all); // (D3DXFilterTexture, typically next, builds the mips from it)
     return D3D_OK;
   };
+  /**
+   * The RGBA a block-compressed surface was just encoded from, for the few surfaces loaded last: the mip levels
+   * D3DXFilterTexture builds right after start from it instead of decoding the compressed level. Any other write
+   * to the surface (fillSurface, a lock) drops it.
+   */
+  const recentRgba = [];
+  const rememberRgba = (s, rgba) => { s.rgbaCache = rgba; recentRgba.push(s); if (recentRgba.length > 4) { const old = recentRgba.shift(); if (!recentRgba.includes(old)) old.rgbaCache = null; } };
   X.D3DXLoadSurfaceFromFileInMemory = [9, (c) => { // (dst, dstPal, dstRect, src, size, srcRect, filter, key, info)
     const dst = surfaceOf(c.arg(0)), im = imageAt(c, c.arg(3), c.arg(4));
     if (!dst || !im) return im ? D3DERR_INVALIDCALL : D3DXERR_INVALIDDATA;
@@ -259,7 +280,7 @@ export function registerD3DX9(api, vm) {
     const dr = rectOf(c.arg(2), dst.width, dst.height);
     if (fmt === dst.fmt && !c.arg(9) && dr.r - dr.l === sw && dr.b - dr.t === sh) {
       const base = dst.ensureMem(c.proc), dxt = isDxt(fmt), blk = dxt ? 4 : 1, unit = dxt ? (fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(fmt, 1);
-      const rows = Math.ceil(sh / blk), rowBytes = Math.ceil(sw / blk) * unit;
+      const rows = Math.ceil(sh / blk), rowBytes = Math.ceil(sw / blk) * unit; dst.rgbaCache = null;
       for (let y = 0; y < rows; y++) mem.copy(base + ((dr.t / blk | 0) + y) * dst.pitch + (dr.l / blk | 0) * unit, c.arg(3) + ((sr.t / blk | 0) + y) * pitch + (sr.l / blk | 0) * unit, rowBytes);
       dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
     }
@@ -292,7 +313,7 @@ export function registerD3DX9(api, vm) {
       for (let i = src + 1; i < lv.length; i++) {
         const p = lv[i - 1], s = lv[i];
         if (!p.mem) { rgba = null; continue; }
-        const from = rgba ?? toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height);
+        const from = rgba ?? (p.rgbaCache ? p.rgbaCache : toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height));
         rgba = resizeRgba(from, p.width, p.height, s.width, s.height, point);
         const enc = fromRgba(s.fmt, rgba, s.width, s.height);
         if (enc) fillSurface(c, s, enc); else rgba = null;
