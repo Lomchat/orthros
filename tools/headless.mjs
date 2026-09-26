@@ -312,6 +312,24 @@ async function profileWorker(seconds) {
     console.log(`[profile] API handlers: ${(100 * inApi / total).toFixed(1)}% of the samples; inclusive, highest:`);
     for (const [k, c] of [...incl].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  ${k}`);
   }
+  // inclusive time of every JavaScript function (a sample counts once per function on its stack), and, for the functions
+  // named by ORTHROS_PROFILE_TREE=name,name, their callees' inclusive time — where a handler's cost goes
+  {
+    const incl = new Map(), tree = (process.env.ORTHROS_PROFILE_TREE ?? '').split(',').filter(Boolean), sub = new Map();
+    for (const [id, c] of counts) {
+      const seen = new Set(), chain = [];
+      for (let n = byId.get(id); n; n = byId.get(parentOf.get(n.id))) { const k = keyOf(n); chain.push(k); if (!seen.has(k)) { seen.add(k); incl.set(k, (incl.get(k) ?? 0) + c); } }
+      const done = new Set();
+      for (let i = chain.length - 1; i > 0; i--) { // (root first: each tree function's outermost frame charges its callee)
+        const fn = chain[i].split(' ')[0]; if (!tree.includes(fn) || done.has(fn)) continue;
+        done.add(fn); const m = sub.get(fn) ?? new Map(); sub.set(fn, m); const ck = chain[i - 1]; m.set(ck, (m.get(ck) ?? 0) + c);
+      }
+      for (const fn of tree) if (chain[0]?.split(' ')[0] === fn) { const m = sub.get(fn) ?? new Map(); sub.set(fn, m); m.set('(self)', (m.get('(self)') ?? 0) + c); }
+    }
+    console.log('[profile] inclusive, highest JavaScript functions:');
+    for (const [k, c] of [...incl].filter(([k]) => k.includes('src/') || / :0$/.test(k)).sort((a, b) => b[1] - a[1]).slice(0, 40)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  ${k}`);
+    for (const [fn, m] of sub) { console.log(`[profile] callees of ${fn} (inclusive):`); for (const [k, c] of [...m].sort((a, b) => b[1] - a[1]).slice(0, 16)) console.log(`  ${(100 * c / total).toFixed(2).padStart(6)}%  ${k}`); }
+  }
   // aggregate by file
   const byFile = new Map(); for (const [k, c] of self) { const f = k.split(' ')[1]?.split(':')[0] ?? '?'; byFile.set(f, (byFile.get(f) ?? 0) + c); }
   console.log('[profile] by file:'); for (const [f, c] of [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${(100 * c / total).toFixed(1).padStart(5)}%  ${f}`);
@@ -417,6 +435,7 @@ for (;;) {
     if (t < due) continue;
     ev.done = true;
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
+    if (ev.kind === 'profile') { profileWorker(ev.args[0] || 20).catch((e) => console.log('[profile] failed:', e.message)); continue; } // (profile:<seconds> — the worker, now)
     if (ev.kind === 'capture') { await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), !!ev.args[0]); console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); continue; } // (capture[:1] — the next frame, with the target after every draw when 1)
     if (ev.kind === 'watch' || ev.kind === 'unwatch') { await page.evaluate(([type, addr, len]) => window.orthros.worker?.postMessage({ type, addr, len }), [ev.kind, ev.args[0] || 0, ev.args[1] || 4]); continue; } // (watch:addr,len / unwatch: the code writing there)
     if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
