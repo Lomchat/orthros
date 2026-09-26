@@ -596,7 +596,9 @@
 
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
-  patch de cette copie ?) ; l'aperçu 3D du créateur de héros montre le décor sans le héros (caméra au-dessus de la
+  patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
+  Middle-earth II` (absente : c'est là qu'un installateur range la clé CD, « ergc ») ; le manifest ne la fournit pas —
+  à tester avec la clé du joueur s'il le souhaite (aucune clé inventée ici) ; l'aperçu 3D du créateur de héros montre le décor sans le héros (caméra au-dessus de la
   scène) — vérifier si un héros créé apparaît en partie.
 - Mesure réelle sur GPU (critère M7) : `node bin/orthros.mjs run <dossier>` puis Chrome sur une machine cliente (celle
   du joueur : Intel Iris Xe, 20 cœurs). À observer là (non mesurable sous SwiftShader) : ~1 460 appels GL par image en
