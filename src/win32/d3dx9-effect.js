@@ -2,7 +2,7 @@
 // shaders, strings) addressed by handles or names, techniques and passes whose state assignments are applied to the
 // device at BeginPass / CommitChanges — render, stage and sampler states, shaders with their constants laid out from
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
-import { parseEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
+import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
@@ -60,7 +60,10 @@ export function defineEffects(X, vm, h) {
       this.refs = new Map(); // same keys -> referenced parameter name (usage 1)
       for (const r of parsed.resources) {
         const key = r.technique === 0xffffffff ? `p${r.index}:${r.element}:${r.state}` : `${r.technique}:${r.index}:${r.state}`;
-        if (r.usage === 0) this.shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, { bytes: r.data, ptr: 0, info: null });
+        // usage 0: compiled code — a shader, or (version token 'FX') an expression computing the state's value from
+        // parameters (e.g. AlphaTestEnable = (a bool parameter)), evaluated whenever the pass is applied
+        if (r.usage === 0 && r.data.length >= 4 && (new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true) >>> 16) === 0x4658) this.exprs.set(key, { name: null, prog: expressionInfo(r.data) });
+        else if (r.usage === 0) this.shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, { bytes: r.data, ptr: 0, info: null });
         else if (r.usage === 1) this.refs.set(key, cstrOf(r.data));
         else if (r.usage === 2) { const n = new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true); const name = cstrOf(r.data.subarray(4, 4 + n)); this.exprs.set(key, { name, prog: expressionInfo(r.data.subarray(4 + ((n + 3) & ~3))) }); }
       }
@@ -356,7 +359,7 @@ export function defineEffects(X, vm, h) {
     stateShader(ps, k) {
       const key = `${ps.technique}:${ps.index}:${k}`;
       if (this.shaders.has(key)) return this.shaderAt(key);
-      const ref = this.refs.get(key), ex = this.exprs.get(key);
+      const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
       if (ref || ex) {
         const n = this.lookup(ref ?? ex.name, null); if (!n) return null;
         const pi = this.params.indexOf(n);
@@ -493,7 +496,7 @@ export function defineEffects(X, vm, h) {
       return ops;
     }
     apply(c, ps, commit) {
-      vm.effectCtx = c;
+    vm.effectCtx = c;
       const ops = ps.ops ??= this.compilePass(ps);
       for (let i = 0; i < ops.length; i++) { const o = ops[i]; if (!commit || o.dyn) o.f(c); } // (CommitChanges: what depends on parameters)
     }
@@ -536,6 +539,7 @@ export function defineEffects(X, vm, h) {
     com.addRef(com.objectAt(dev));
     if (pEffect) mem.write32(pEffect, com.create(c.proc, 'ID3DXEffect', fx));
     vm.log('gfx', `d3dx: effect loaded: ${parsed.params.length} parameters, techniques ${parsed.techniques.map((t) => t.name).join(', ')}`);
+    if (globalThis.ORTHROS_FX_DESCRIBE) vm.log('gfx', `d3dx: effect ${(vm.fxCount = (vm.fxCount ?? 0) + 1)}:\n${describeEffect(parsed)}`); // (debugging: --dbg ORTHROS_FX_DESCRIBE=1)
     return D3D_OK;
   };
   // (device, src, len, defines, include, flags, pool, ppEffect, ppErrors)

@@ -383,6 +383,7 @@ self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) schedulePump(0); }
+  else if (m.type === 'burst') { if (vm) vm.startApiBurst(vm.proc.threads.find((t) => t.id === m.tid) ?? vm.proc.threads[0], m.n ?? 3000, !!m.noGfx); } // (debugging: --log apiburst, harness input burst:N[,tid])
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; log('gfx', `d3d-webgl: capture requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0) : 'no vm' });
