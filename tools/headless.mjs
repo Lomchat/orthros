@@ -417,6 +417,7 @@ for (;;) {
     if (t < due) continue;
     ev.done = true;
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
+    if (ev.kind === 'capture') { await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), !!ev.args[0]); console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); continue; } // (capture[:1] — the next frame, with the target after every draw when 1)
     if (ev.kind === 'watch' || ev.kind === 'unwatch') { await page.evaluate(([type, addr, len]) => window.orthros.worker?.postMessage({ type, addr, len }), [ev.kind, ev.args[0] || 0, ev.args[1] || 4]); continue; } // (watch:addr,len / unwatch: the code writing there)
     if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
     if (ev.kind === 'threads') { await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'threads' })); continue; } // (threads: the VM's threads and sync objects, logged as [hang])
