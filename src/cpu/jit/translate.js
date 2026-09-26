@@ -1109,6 +1109,7 @@ class Emitter {
     this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
+    this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.cur = b.index;
     // flags live after each instruction of the block
@@ -1169,6 +1170,7 @@ class Emitter {
     this.stValid = 0;
     this.f32Mask = 0; // x87 values reloaded as f64
     this.tagSet = this.tagClr = 0; // (applied by x87Normalize before the flush, the tag word reloaded)
+    this.c1Clear = false; // (the interpreter may have set C1: FPREM's quotient bit)
     // did the instruction branch?
     c.get(L_STATE).i32load(ST.EIP).i32(insn.next).ne();
     const j = c.if_();
