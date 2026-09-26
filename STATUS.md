@@ -582,7 +582,8 @@
 - **Vérifié (BFME2)** : escarmouche à 4 sur les Champs aux Iris (moi + IA facile, difficile, brutale) pendant 30 min :
   les armées des IA attaquent et se battent autour de ma forteresse (des dizaines d'unités), aucune erreur.
 - **Vérifié (BFME1)** : École de guerre (leçons animées), escarmouche avec le Mordor (forteresse, unités, menu de
-  construction radial, construction).
+  construction radial, construction), détails « Ultra High » (le jeu avertit que sa machine pourrait être lente, puis
+  la partie est rendue correctement).
 - Les boutons de l'interface 3D des jeux (menu de jeu, carte de campagne) ignorent un clic synthétique trop bref : le
   harnais les pilote avec `down` / `up` espacés (un vrai clic dure 80-150 ms).
 - **Vérifié (BFME1, détails élevés)** : campagne du Bien de bout en bout — carte de la Terre du Milieu en 3D, la
