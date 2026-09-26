@@ -70,10 +70,14 @@ export class VMem {
     const n = size / PAGE_SIZE;
     const step = GRANULARITY / PAGE_SIZE;
     if (!topDown) {
-      for (let p = alignUp(minAddr, GRANULARITY) / PAGE_SIZE; p + n <= this.pages; p += step) {
+      // (from the lowest address: start at freeHint, a lower bound of the first granule with a free start, kept by this
+      // search and by release — the scan from the bottom at every allocation made loading thousands of surfaces quadratic)
+      const fromLowest = minAddr <= this.lowest, p0 = alignUp(minAddr, GRANULARITY) / PAGE_SIZE;
+      let hole = -1;
+      for (let p = fromLowest ? Math.max(p0, this.freeHint ?? 0) : p0; p + n <= this.pages; p += step) {
         let ok = true;
-        for (let k = 0; k < n; k++) if (this.state[p + k] !== STATE_FREE) { ok = false; p += (k / step | 0) * step; break; }
-        if (ok) return p * PAGE_SIZE;
+        for (let k = 0; k < n; k++) if (this.state[p + k] !== STATE_FREE) { ok = false; if (k > 0 && hole < 0) hole = p; p += (k / step | 0) * step; break; }
+        if (ok) { if (fromLowest) this.freeHint = hole >= 0 ? hole : p + Math.ceil(n / step) * step; return p * PAGE_SIZE; }
       }
     } else {
       for (let p = ((this.pages - n) / step | 0) * step; p >= minAddr / PAGE_SIZE; p -= step) {
@@ -124,6 +128,7 @@ export class VMem {
     if (!r) return false;
     const p0 = this.pageOf(base), n = r.size / PAGE_SIZE;
     for (let p = p0; p < p0 + n; p++) { this.state[p] = STATE_FREE; this.prot[p] = 0; this.owner[p] = -1; }
+    if (this.freeHint !== undefined && p0 < this.freeHint) this.freeHint = p0 - (p0 % (GRANULARITY / PAGE_SIZE));
     this.regions.delete(base);
     return true;
   }
