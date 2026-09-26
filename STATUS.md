@@ -556,8 +556,10 @@
   ensuite) — y compris quand tout le code passe à l'interpréteur de référence juste avant le clic : ce n'est pas le
   JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
 - **BFME2 « My Heroes »** (créateur de héros) s'ouvre maintenant (liste, classes, statistiques, portrait) — il ne
-  s'ouvrait pas avant la correction x87 par thread. Reste : le modèle 3D du héros n'apparaît pas dans l'aperçu
-  « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui) :
+  s'ouvrait pas avant la correction x87 par thread — et un héros se crée de bout en bout (classe, apparence,
+  attributs, nom, pouvoirs, enregistré dans la liste). Reste : dans l'aperçu 3D le héros est cadré trop bas (on ne
+  voit que son buste en bas de l'image dans l'écran de création — il semble enfoncé dans le sol —, et plus du tout
+  dans l'écran de sélection), la photo du héros ne montre donc que le ciel. Dans l'aperçu « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui) :
   d'après les constantes de la capture, la caméra de l'aperçu regarde au-dessus de la scène (le héros se projette à
   y ≈ −2 en coordonnées normalisées, le sol de la scène n'est pas visible non plus) — placement calculé par le jeu,
   cause non trouvée ; identique quand tout le code passe à l'interpréteur de référence avant l'ouverture de l'écran
