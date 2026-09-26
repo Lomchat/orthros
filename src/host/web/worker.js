@@ -8,6 +8,7 @@ import { HttpBackend } from '../../vfs/http-backend.js';
 import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
+import { VOICE_TABLE_BYTES } from '../../win32/dsound.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
@@ -21,6 +22,7 @@ const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned pre
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
+let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
 const channel = new MessageChannel();
@@ -143,6 +145,7 @@ async function start(m) {
     profile.open(f.path, { create: true }).write(0, Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0)));
   }
   vfs.mount('C:\\Users\\Player', profile);
+  audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
@@ -228,6 +231,9 @@ function pump() {
     flushProfile(true);
     return;
   }
+  // the DirectSound buffers mixed by the page's AudioWorklet (guest memory shared): the voice table handed over once
+  // DirectSound exists; until the worklet uses it (no audio output yet, ?audiomix=worker) the ring path below goes on
+  if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
   host.renderAudio(vm);
   host.audioHook ??= () => host.renderAudio(vm);
   const now = performance.now();

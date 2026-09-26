@@ -24,6 +24,16 @@ function writeWfx(mem, a, f) {
   mem.write16(a, f.tag === WAVE_FORMAT_IEEE_FLOAT ? 3 : 1); mem.write16(a + 2, f.channels); mem.write32(a + 4, f.rate); mem.write32(a + 8, f.align * f.rate); mem.write16(a + 12, f.align); mem.write16(a + 14, f.bits); mem.write16(a + 16, 0);
 }
 const dbToGain = (v) => (v <= -10000 ? 0 : Math.pow(10, v / 2000));
+/**
+ * Voice table shared with the page's AudioWorklet (audio-worklet.js keeps the same layout): the worklet mixes the
+ * playing buffers straight from the (shared) guest memory on the audio thread, following the play cursors published
+ * here — the output no longer depends on the game's worker keeping up. Header (int32): 0 the worklet's frame counter,
+ * 1 peak level (float bits, reset by the reader), 2 the worklet mixes (1). Voice v at VOICE_BASE + v * VOICE_INTS:
+ * state (1 playing), generation (moved by Play / SetCurrentPosition / a new format: the worklet snaps to the cursor),
+ * address, size, block align, bits, channels, float samples, frequency, looping, gain L / R (float bits), cursor
+ * (bytes), frame counter when the cursor was published.
+ */
+export const VOICE_BASE = 16, VOICE_INTS = 16, MAX_VOICES = 128, VOICE_TABLE_BYTES = 4 * (VOICE_BASE + VOICE_INTS * MAX_VOICES);
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -56,8 +66,19 @@ export function registerDirectSound(api, vm) {
       for (const b of this.buffers) if (b.playing && b.size) b.mixInto(out, frames, rate); // the primary buffer has no storage: it *is* the mix
       return out;
     }
-    /** Advance play cursors to the VM clock. */
-    tick() { const now = vm.clock.now() / 1000; for (const b of this.buffers) if (b.playing) b.advanceTo(now); }
+    /** Advance play cursors to the VM clock (and publish them to the worklet mixer). */
+    tick() {
+      const now = vm.clock.now() / 1000, v = this.voices;
+      for (const b of this.buffers) if (b.playing) { b.advanceTo(now); if (v && b.slot >= 0) { const o = VOICE_BASE + b.slot * VOICE_INTS; v[o + 12] = b.pos; v[o + 13] = v[0]; if (!b.playing) b.publish(); } }
+    }
+    /** The worklet mixes from now on: `sab` is the voice table (every buffer published). */
+    attachVoices(sab) {
+      this.voices = new Int32Array(sab); this.voicesF = new Float32Array(sab); this.freeSlots = [];
+      for (let i = MAX_VOICES - 1; i >= 0; i--) this.freeSlots.push(i);
+      for (const b of this.buffers) b.publish();
+    }
+    /** the worklet is mixing (it sets the flag at its first quantum with the table) */
+    get worklet() { return !!this.voices && this.voices[2] === 1; }
   }
   const audio = () => vm.audio ?? new Audio();
   const signalEvent = (h) => { const o = vm.proc.handles.getAs(h, 'event'); if (o) o.signaled = true; };
@@ -77,9 +98,20 @@ export function registerDirectSound(api, vm) {
       this.locks = 0; this.notifies = [];
       this.iids = [IID_IDirectSoundBuffer, IID_IDirectSoundBuffer8];
       this.stoppedEvents = [];
+      this.slot = -1; this.gen = 0;
       audio().buffers.add(this);
     }
-    destroy() { audio().buffers.delete(this); if (this.mem) this.proc.vmem.release(this.mem); }
+    destroy() { this.gen++; this.playing = false; this.publish(); const a = audio(); if (this.slot >= 0) { a.freeSlots?.push(this.slot); this.slot = -1; } a.buffers.delete(this); if (this.mem) this.proc.vmem.release(this.mem); }
+    /** this buffer's entry in the worklet's voice table (see VOICE_BASE); the generation stored last */
+    publish() {
+      const a = audio(), v = a.voices; if (!v || this.primary || !this.size) return;
+      if (this.slot < 0) { if (!this.playing) return; const s = a.freeSlots.pop(); if (s === undefined) return; this.slot = s; this.gen++; }
+      const o = VOICE_BASE + this.slot * VOICE_INTS, f = this.fmt;
+      const gain = dbToGain(this.volume), gl = gain * (this.pan > 0 ? dbToGain(-this.pan) : 1), gr = gain * (this.pan < 0 ? dbToGain(this.pan) : 1);
+      v[o] = this.playing ? 1 : 0; v[o + 2] = this.mem; v[o + 3] = this.size; v[o + 4] = f.align; v[o + 5] = f.bits; v[o + 6] = f.channels; v[o + 7] = f.tag === WAVE_FORMAT_IEEE_FLOAT ? 1 : 0;
+      v[o + 8] = this.freq; v[o + 9] = this.looping ? 1 : 0; a.voicesF[o + 10] = gl; a.voicesF[o + 11] = gr; v[o + 12] = this.pos; v[o + 13] = v[0];
+      Atomics.store(v, o + 1, this.gen);
+    }
     queryInterface(c, iid) {
       if (iid === IID_IDirectSoundNotify) { if (!this.notifyPtr || !com.objectAt(this.notifyPtr)) this.notifyPtr = com.create(c.proc, 'IDirectSoundNotify', { buffer: this, SetNotificationPositions: (cc) => this.setNotifications(cc) }); else com.addRef(com.objectAt(this.notifyPtr)); return this.notifyPtr; }
       return 0;
@@ -182,11 +214,12 @@ export function registerDirectSound(api, vm) {
       const flags = c.arg(3);
       if (this.primary) { this.playing = true; this.looping = true; return DS_OK; }
       this.looping = (flags & DSBPLAY_LOOPING) !== 0;
-      if (!this.playing) { this.playing = true; this.lastTime = vm.clock.now() / 1000; this.notifyPos = this.pos; this.mixPos = null; }
+      if (!this.playing) { this.playing = true; this.lastTime = vm.clock.now() / 1000; this.notifyPos = this.pos; this.mixPos = null; this.gen++; }
+      this.publish();
       if ((this.diag = (this.diag ?? 0) + 1) <= 4) vm.log('audio', `dsound: play ${this.size} bytes ${this.looping ? 'looping' : 'once'} volume ${this.volume} freq ${this.freq} pos ${this.pos} nonzero ${this.nonZero()}`);
       return DS_OK;
     }
-    SetCurrentPosition(c) { const p = c.arg(1); if (p >= this.size) return DSERR_INVALIDPARAM; this.pos = p - (p % this.fmt.align); this.posFrac = 0; this.mixPos = null; this.notifyPos = this.pos; return DS_OK; }
+    SetCurrentPosition(c) { const p = c.arg(1); if (p >= this.size) return DSERR_INVALIDPARAM; this.pos = p - (p % this.fmt.align); this.posFrac = 0; this.mixPos = null; this.notifyPos = this.pos; this.gen++; this.publish(); return DS_OK; }
     SetFormat(c) {
       if (!this.primary) return DSERR_INVALIDCALL;
       if (this.ds.coop < DSSCL_PRIORITY) return DSERR_PRIOLEVELNEEDED;
@@ -196,10 +229,10 @@ export function registerDirectSound(api, vm) {
       vm.log('audio', `dsound: primary format ${f.rate} Hz ${f.bits}-bit ${f.channels}ch`);
       return DS_OK;
     }
-    SetVolume(c) { if (!(this.flags & DSBCAPS_CTRLVOLUME) && !this.primary) return DSERR_CONTROLUNAVAIL; const v = c.sarg(1); if (v > 0 || v < -10000) return DSERR_INVALIDPARAM; this.volume = v; return DS_OK; }
-    SetPan(c) { if (!(this.flags & DSBCAPS_CTRLPAN)) return DSERR_CONTROLUNAVAIL; const v = c.sarg(1); if (v > 10000 || v < -10000) return DSERR_INVALIDPARAM; this.pan = v; return DS_OK; }
-    SetFrequency(c) { if (!(this.flags & DSBCAPS_CTRLFREQUENCY)) return DSERR_CONTROLUNAVAIL; const v = c.arg(1); if (v && (v < 100 || v > 200000)) return DSERR_INVALIDPARAM; this.cursor(); this.freq = v || this.fmt.rate; return DS_OK; }
-    Stop() { if (this.primary) return DS_OK; this.cursor(); if (this.playing) { this.playing = false; this.onStop(); } return DS_OK; }
+    SetVolume(c) { if (!(this.flags & DSBCAPS_CTRLVOLUME) && !this.primary) return DSERR_CONTROLUNAVAIL; const v = c.sarg(1); if (v > 0 || v < -10000) return DSERR_INVALIDPARAM; this.volume = v; this.publish(); return DS_OK; }
+    SetPan(c) { if (!(this.flags & DSBCAPS_CTRLPAN)) return DSERR_CONTROLUNAVAIL; const v = c.sarg(1); if (v > 10000 || v < -10000) return DSERR_INVALIDPARAM; this.pan = v; this.publish(); return DS_OK; }
+    SetFrequency(c) { if (!(this.flags & DSBCAPS_CTRLFREQUENCY)) return DSERR_CONTROLUNAVAIL; const v = c.arg(1); if (v && (v < 100 || v > 200000)) return DSERR_INVALIDPARAM; this.cursor(); this.freq = v || this.fmt.rate; this.publish(); return DS_OK; }
+    Stop() { if (this.primary) return DS_OK; this.cursor(); if (this.playing) { this.playing = false; this.onStop(); } this.publish(); return DS_OK; }
     Unlock(c) {
       if (this.locks > 0) this.locks--;
       if ((this.unlockDiag = (this.unlockDiag ?? 0) + 1) <= 6 || this.unlockDiag % 500 === 0) vm.log('audio', `dsound: unlock ${c.arg(2)}+${c.arg(4)} bytes at ${(c.arg(1) - this.mem) >>> 0} (playing ${this.playing} pos ${this.pos}) nonzero ${this.nonZero()}`);

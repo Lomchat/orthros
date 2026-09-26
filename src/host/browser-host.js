@@ -180,6 +180,11 @@ export class BrowserHost {
    */
   renderAudio(vm) {
     const audio = vm.audio; if (!audio) return;
+    if (audio.worklet) { // (the AudioWorklet mixes from guest memory: only the play cursors to advance and publish)
+      audio.tick();
+      const pk = audio.voicesF[1]; if (pk > (this.audioPeak ?? 0)) this.audioPeak = pk; audio.voicesF[1] = 0;
+      return;
+    }
     const ctl = this.ctl;
     const now = performance.now(), under = Atomics.load(ctl, CTL.AUDIO_UNDERRUNS);
     if (this.audioLead === undefined) { this.audioLead = 4096; this.audioUnderSeen = under; this.audioCalmSince = now; }
