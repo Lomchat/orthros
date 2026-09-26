@@ -555,6 +555,9 @@
   La campagne ne démarre toujours pas (EASY referme la boîte, aucun appel système, aucun thread, aucune lecture
   ensuite) — y compris quand tout le code passe à l'interpréteur de référence juste avant le clic : ce n'est pas le
   JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
+- **Vérifié (BFME1, détails élevés)** : campagne du Bien de bout en bout — carte de la Terre du Milieu en 3D, la
+  Communauté envoyée en Moria, écran de chargement puis cinématique de la mission (~30 images/s). Sur la carte 3D, un
+  clic synthétique trop bref (appui relâché dès l'image suivante) n'est pas pris : un vrai clic (80-150 ms) l'est.
 - **Appels WebGL** (`--gl-count t:images`, sans les lectures de la capture) : partie BFME2 1 460 appels par image pour
   154 tracés (9,5 par tracé), aucune relecture ; partie BFME1 ~6,5 appels par tracé.
 - **BFME1 en détails élevés (CPU seul)** : partie ~37 fps (24-25 ms de CPU par image) ; le menu 3D (grande bataille en
