@@ -200,6 +200,16 @@ export function resizeRgba(src, sw, sh, dw, dh, point = false) {
   if (sw === dw && sh === dh) return src;
   if (!point && dw * 2 === sw && dh * 2 === sh) { // (a mip level: each texel the average of 2 x 2, as the general loop computes it)
     const out = new Uint8Array(dw * dh * 4), row = sw * 4;
+    if ((src.byteOffset & 3) === 0) { // (whole texels: the channels summed in two 16-bit lanes per word, (sum + 2) >> 2 each)
+      const s32 = new Uint32Array(src.buffer, src.byteOffset, sw * sh), o32 = new Uint32Array(out.buffer), M = 0x00ff00ff;
+      for (let y = 0; y < dh; y++) for (let x = 0, i = 2 * y * sw, o = y * dw; x < dw; x++, i += 2, o++) {
+        const p0 = s32[i], p1 = s32[i + 1], p2 = s32[i + sw], p3 = s32[i + sw + 1];
+        const lo = (((p0 & M) + (p1 & M) + (p2 & M) + (p3 & M) + 0x00020002) >>> 2) & M;
+        const hi = ((((p0 >>> 8) & M) + ((p1 >>> 8) & M) + ((p2 >>> 8) & M) + ((p3 >>> 8) & M) + 0x00020002) >>> 2) & M;
+        o32[o] = (lo | (hi << 8)) >>> 0;
+      }
+      return out;
+    }
     for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
       const i = (2 * y * sw + 2 * x) * 4, o = (y * dw + x) * 4;
       for (let c = 0; c < 4; c++) out[o + c] = (src[i + c] + src[i + 4 + c] + src[i + row + c] + src[i + row + 4 + c]) / 4 + 0.5 | 0;
@@ -230,8 +240,8 @@ export { isDxt };
 
 // ---------------------------------------------------------------- block compression (DXT1/3/5 encoder)
 const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-/** texel indexes of an alpha block: scratch */
-const IDX = new Uint8Array(16);
+/** texel indexes of an alpha block, its palette: scratch */
+const IDX = new Uint8Array(16), APAL = new Float64Array(8);
 /**
  * One color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128. Endpoints:
  * the texels of lowest and highest luminance; each texel takes the nearest palette entry (the first of equals).
@@ -251,14 +261,16 @@ function colorBlock(px, out, o, transparent) {
   const br = ((c1 >> 11) & 31) * 255 / 31, bg = ((c1 >> 5) & 63) * 255 / 63, bb = (c1 & 31) * 255 / 31;
   // the palette (c0, c1 and 1 or 2 points between them) lies on the segment c1 -> c0: the nearest entry is the one
   // nearest the texel's projection on that axis (s = 1 at c0, 0 at c1); equal distances pick the lower index
+  // (the projection t = n / dd is compared with the thresholds scaled by dd once per block: no division per texel)
   const dr = ar - br, dg = ag - bg, db = ab - bb, dd = dr * dr + dg * dg + db * db;
+  const hi0 = anyTransparent ? dd * 0.75 : dd * (5 / 6), mid = anyTransparent ? dd * 0.25 : dd * 0.5, low = dd * (1 / 6);
   let idx = 0;
   for (let i = 15; i >= 0; i--) {
     let best = 0;
     if (anyTransparent && px[4 * i + 3] < 128) best = 3;
     else if (dd > 0) {
-      const t = ((px[4 * i] - br) * dr + (px[4 * i + 1] - bg) * dg + (px[4 * i + 2] - bb) * db) / dd;
-      best = anyTransparent ? (t >= 0.75 ? 0 : t > 0.25 ? 2 : 1) : (t >= 5 / 6 ? 0 : t >= 0.5 ? 2 : t > 1 / 6 ? 3 : 1);
+      const n = (px[4 * i] - br) * dr + (px[4 * i + 1] - bg) * dg + (px[4 * i + 2] - bb) * db;
+      best = anyTransparent ? (n >= hi0 ? 0 : n > mid ? 2 : 1) : (n >= hi0 ? 0 : n >= mid ? 2 : n > low ? 3 : 1);
     }
     idx = (idx << 2) | best;
   }
@@ -270,11 +282,12 @@ function alphaBlock(px, out, o) {
   let a0 = 0, a1 = 255;
   for (let i = 0; i < 16; i++) { const a = px[4 * i + 3]; if (a > a0) a0 = a; if (a < a1) a1 = a; }
   if (a0 === a1) { if (a1 > 0) a1--; else a0++; }
+  // the 8-level palette once per block (entry k + 1 = ((7 - k) a0 + k a1) / 7), then the nearest entry per texel
+  APAL[0] = a0; APAL[1] = a1; for (let k = 1; k < 7; k++) APAL[k + 1] = ((7 - k) * a0 + k * a1) / 7;
   for (let i = 0; i < 16; i++) {
     const a = px[4 * i + 3];
     let best = 0, bd = Math.abs(a0 - a);
-    const d1 = Math.abs(a1 - a); if (d1 < bd) { bd = d1; best = 1; }
-    for (let k = 1; k < 7; k++) { const d = Math.abs(((7 - k) * a0 + k * a1) / 7 - a); if (d < bd) { bd = d; best = k + 1; } }
+    for (let k = 1; k < 8; k++) { const d = Math.abs(APAL[k] - a); if (d < bd) { bd = d; best = k; } }
     IDX[i] = best;
   }
   let lo = 0, hi = 0; // (3 bits per texel, texel 0 lowest: two 24-bit halves)
@@ -286,9 +299,13 @@ function alphaBlock(px, out, o) {
 /** RGBA8 (w x h) to DXT1/DXT3/DXT5 blocks */
 export function encodeDxt(fmt, rgba, w, h) {
   const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2), unit = fmt === FMT.DXT1 ? 8 : 16, out = new Uint8Array(bw * bh * unit);
-  const px = new Uint8Array(64);
+  const px = new Uint8Array(64), px32 = new Uint32Array(px.buffer);
+  // (blocks inside the image: their 16 texels copied as 32-bit words; edge blocks repeat the last row / column)
+  const src32 = (rgba.byteOffset & 3) === 0 ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
   for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
-    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const sx = Math.min(w - 1, bx * 4 + x), sy = Math.min(h - 1, by * 4 + y), s = (sy * w + sx) * 4, d = (y * 4 + x) * 4; px[d] = rgba[s]; px[d + 1] = rgba[s + 1]; px[d + 2] = rgba[s + 2]; px[d + 3] = rgba[s + 3]; }
+    if (src32 && bx * 4 + 3 < w && by * 4 + 3 < h) {
+      for (let y = 0, s = by * 4 * w + bx * 4; y < 16; y += 4, s += w) { px32[y] = src32[s]; px32[y + 1] = src32[s + 1]; px32[y + 2] = src32[s + 2]; px32[y + 3] = src32[s + 3]; }
+    } else for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const sx = Math.min(w - 1, bx * 4 + x), sy = Math.min(h - 1, by * 4 + y), s = (sy * w + sx) * 4, d = (y * 4 + x) * 4; px[d] = rgba[s]; px[d + 1] = rgba[s + 1]; px[d + 2] = rgba[s + 2]; px[d + 3] = rgba[s + 3]; }
     const o = (by * bw + bx) * unit;
     if (fmt === FMT.DXT1) { colorBlock(px, out, o, true); continue; }
     if (fmt === FMT.DXT2 || fmt === FMT.DXT3) { for (let i = 0; i < 16; i += 2) out[o + (i >> 1)] = (px[4 * i + 3] >> 4) | ((px[4 * i + 7] >> 4) << 4); }

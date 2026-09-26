@@ -73,3 +73,18 @@ test('2:1 box filter of a mip level = the general box filter', () => {
   const general = (src, sw, sh, dw, dh) => { const out = new Uint8Array(dw * dh * 4); for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) { let s = [0, 0, 0, 0]; for (let yy = 2 * y; yy < 2 * y + 2; yy++) for (let xx = 2 * x; xx < 2 * x + 2; xx++) for (let c = 0; c < 4; c++) s[c] += src[(yy * sw + xx) * 4 + c]; for (let c = 0; c < 4; c++) out[(y * dw + x) * 4 + c] = s[c] / 4 + 0.5 | 0; } return out; };
   assert.deepEqual(resizeRgba(px, 32, 16, 16, 8), general(px, 32, 16, 16, 8));
 });
+
+// Mip levels: the 2:1 box filter on 32-bit words (two 16-bit lanes per word) gives each channel (sum + 2) >> 2, the
+// general formula's rounding — aligned images through the word path, an unaligned view through the byte loop.
+test('2:1 mip filter: every channel the rounded average of its 2 x 2 texels, aligned or not', () => {
+  const w = 64, h = 32, buf = new Uint8Array(w * h * 4 + 1);
+  let s = 99; for (let i = 0; i < buf.length; i++) { s = (s * 1103515245 + 12345) >>> 0; buf[i] = s >>> 24; }
+  buf.fill(255, 0, 64); // (saturated texels: the lane sums at their largest)
+  for (const src of [buf.subarray(0, w * h * 4), buf.subarray(1)]) {
+    const got = resizeRgba(src, w, h, w / 2, h / 2);
+    for (let y = 0; y < h / 2; y++) for (let x = 0; x < w / 2; x++) for (let c = 0; c < 4; c++) {
+      const i = (2 * y * w + 2 * x) * 4 + c;
+      assert.equal(got[(y * (w / 2) + x) * 4 + c], (src[i] + src[i + 4] + src[i + w * 4] + src[i + w * 4 + 4] + 2) >> 2);
+    }
+  }
+});
