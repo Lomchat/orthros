@@ -412,7 +412,7 @@ export class Vm {
 
   // ------------------------------------------------------------------ API dispatch
   /**
-   * Run the COM calls the JIT's fast path queued (runtime.js DEFER_SPECS: Direct3D state setters), in
+   * Run the COM calls the JIT's fast path queued (runtime.js DEFER_SPECS: Direct3D state setters, D3DX effect parameter setters), in
    * order, before an API call handled in JavaScript observes the device state.
    */
   drainDeferred(thread) {
@@ -422,7 +422,7 @@ export class Vm {
     m.write32(DEFER_QUEUE, 0);
     const ctx = this.ctx;
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end;) {
-      const idx = m.read32(p), argc = m.read32(p + 4), words = m.read32(DEFER_SPEC + 4 * idx) >>> 8;
+      const idx = m.read32(p), argc = m.read32(p + 4), words = (m.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
       const def = this.api.thunk(idx).def;
       ctx.bind(thread, def); ctx.sp = p + 4; // arg(i) reads the recorded arguments
       this.apiCalls++;

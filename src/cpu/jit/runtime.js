@@ -67,22 +67,28 @@ export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
  * memory and return D3D_OK at once; the VM runs the queued calls, in order, before any API call handled
  * in JavaScript (Vm.drainDeferred). DEFER_SPEC[thunk] = argc (stack arguments, `this` included) |
  * pointer argument index << 4 | words of the structure it points to << 8 (copied into the record,
- * the argument then points at the copy); records: thunk index, argc, arguments, structure.
+ * the argument then points at the copy) | DEFER_HANDLE; records: thunk index, argc, arguments, structure.
+ * DEFER_HANDLE: the first argument after `this` must be one of the object's handles — within the
+ * DEFER_HANDLE_BYTES block whose address the object keeps at +12 (com.js) — anything else (a D3DX
+ * parameter name, whose string may be gone by the time the call runs) goes to JavaScript at once.
  */
 export const FID_DEFER = 16;
+export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 export const DEFER_QUEUE = JIT_SCRATCH_BASE + 0x60000; // +0 bytes used, records from +16
 /** profiling runtime: calls handled by the fast path, u32 per fast API id; at +0x80 a count, at +0x100 a ring of the
  * last 1024 return addresses (the call sites) */
 export const FAST_PROF = JIT_SCRATCH_BASE + 0xa8100;
 export const DEFER_CAP = 0x3fff0;
-const deferSpecs = (iface, list) => Object.fromEntries(list.map(([m, argc, ptr = 15, words = 0]) => [`${iface}::${m}`, argc | (ptr << 4) | (words << 8)]));
+const deferSpecs = (iface, list, flags = 0) => Object.fromEntries(list.map(([m, argc, ptr = 15, words = 0]) => [`${iface}::${m}`, argc | (ptr << 4) | (words << 8) | flags]));
 export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetRenderState', 3], ['SetTextureStageState', 4], ['SetSamplerState', 4], ['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3],
     ['SetMaterial', 2, 1, 17], ['SetStreamSource', 5], ['SetIndices', 2], ['SetTexture', 3], ['SetFVF', 2], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetVertexDeclaration', 2],
     ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4]]),
   ...deferSpecs('IDirect3DDevice8', [['SetRenderState', 3], ['SetTextureStageState', 4], ['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3], ['SetMaterial', 2, 1, 17],
     ['SetStreamSource', 4], ['SetIndices', 3], ['SetTexture', 3], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
+  ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16], ['SetTexture', 3]], DEFER_HANDLE),
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15 };
@@ -306,8 +312,13 @@ export function buildRuntime(opts = {}) {
         case 15: c.get(STATE).i32(PROC_CONSTS).i32load(0); ret(0); break;
         case FID_DEFER: { // record the call (see DEFER_SPEC): TM = spec, N = argc, P = record address, A0 = size
           c.get(IDX).i32(2).shl().i32load(DEFER_SPEC).set(TM);
+          c.get(TM).i32(DEFER_HANDLE).and();
+          const handle = c.if_(); // (A0 = this, A1 = the handle)
+          c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A1).get(A0).i32load(12).sub().i32(DEFER_HANDLE_BYTES).ge_u().br_if(notHandled);
+          c.end(); void handle;
           c.get(TM).i32(15).and().set(N);
-          c.get(N).get(TM).i32(8).shr_u().add().i32(2).add().i32(2).shl().set(A0);
+          c.get(N).get(TM).i32(8).shr_u().i32(0xff).and().add().i32(2).add().i32(2).shl().set(A0);
           c.i32(DEFER_QUEUE).i32load(0).tee(A1).get(A0).add().i32(DEFER_CAP).gt_u().br_if(notHandled); // full: JavaScript drains, then handles it
           c.get(A1).i32(DEFER_QUEUE + 16).add().set(P);
           c.get(P).get(IDX).i32store(0); c.get(P).get(N).i32store(4);
@@ -318,7 +329,7 @@ export function buildRuntime(opts = {}) {
           c.get(A2).i32(1).add().set(A2); c.br(lp);
           c.end(); c.end(); void copy;
           // the structure behind the pointer argument, copied after the arguments
-          c.get(TM).i32(8).shr_u();
+          c.get(TM).i32(8).shr_u().i32(0xff).and();
           const struct = c.if_();
           c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
           c.get(TEB);

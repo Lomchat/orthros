@@ -4,6 +4,7 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
+import { DEFER_HANDLE_BYTES } from '../cpu/jit/runtime.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
@@ -62,13 +63,15 @@ export function defineEffects(X, vm, h) {
 
   /** a guest string (names in descriptions: allocated once per effect object, freed with it) */
   const gstr = (fx, s) => { let a = fx.strAddrs.get(s); if (a === undefined) { a = fx.proc.processHeap.alloc(s.length + 1); mem.writeCString(a, s); fx.strAddrs.set(s, a); } return a; };
+  /** an effect's guest object; +12 holds its handle block (runtime.js DEFER_HANDLE: setters given a handle are queued by the JIT) */
+  const createEffect = (c, fx) => { const p = com.create(c.proc, 'ID3DXEffect', fx); mem.write32(p + 12, fx.handleBlock); return p; };
 
   class Effect {
     constructor(c, dev, parsed, flags) {
       this.proc = c.proc; this.dev = dev; this.fx = parsed; this.flags = flags;
       this.strAddrs = new Map();
       this.handles = new Map(); // handle -> node
-      this.handleBlock = c.proc.processHeap.alloc(4 * 4096);
+      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES);
       this.nextHandle = 0;
       this.params = parsed.params.map((p, i) => this.buildParam(p.type, p.value, p.annotations, `${i}`, null, p.flags));
       this.byName = new Map(this.params.map((p) => [p.name, p]));
@@ -78,7 +81,7 @@ export function defineEffects(X, vm, h) {
       this.technique = this.techniques[0] ?? null;
       this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
     }
-    handleOf(node) { if (!node.handle) { node.handle = this.handleBlock + 4 * (this.nextHandle++ % 4096); this.handles.set(node.handle, node); } return node.handle; }
+    handleOf(node) { if (!node.handle) { node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node); } return node.handle; }
     /** a parameter node: numeric words (views into one buffer per top-level parameter), objects per element leaf */
     buildParam(type, value, annotations, path, parent = null, flags = 0, words = null) {
       const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null };
@@ -246,7 +249,7 @@ export function defineEffects(X, vm, h) {
     EndParameterBlock() { if (!this.recording) return 0; const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90)); this.blocks.set(id, [...this.recording].map((n) => ({ n, words: n.words?.slice(), ptr: n.obj?.ptr }))); this.recording = null; return id; }
     ApplyParameterBlock(c) { const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL; for (const e of b) { if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr); this.touched(e.n); } }
     DeleteParameterBlock(c) { return this.blocks.delete(c.arg(1) >>> 0) ? D3D_OK : D3DERR_INVALIDCALL; }
-    CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), com.create(c.proc, 'ID3DXEffect', e)); com.addRef(com.objectAt(e.dev)); }
+    CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), createEffect(c, e)); com.addRef(com.objectAt(e.dev)); }
 
     Begin(c) {
       const t = this.technique; if (!t) return D3DERR_INVALIDCALL;
@@ -557,7 +560,7 @@ export function defineEffects(X, vm, h) {
     vm.effectCtx = c;
     const fx = new Effect(c, dev, parsed, flags);
     com.addRef(com.objectAt(dev));
-    if (pEffect) mem.write32(pEffect, com.create(c.proc, 'ID3DXEffect', fx));
+    if (pEffect) mem.write32(pEffect, createEffect(c, fx));
     vm.log('gfx', `d3dx: effect loaded: ${parsed.params.length} parameters, techniques ${parsed.techniques.map((t) => t.name).join(', ')}`);
     if (globalThis.ORTHROS_FX_DESCRIBE) vm.log('gfx', `d3dx: effect ${(vm.fxCount = (vm.fxCount ?? 0) + 1)}:\n${describeEffect(parsed)}`); // (debugging: --dbg ORTHROS_FX_DESCRIBE=1)
     return D3D_OK;
