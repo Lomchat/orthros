@@ -243,6 +243,7 @@ export function registerKernel32(api, vm) {
   K.TerminateThread = [2, (c) => {
     const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread');
     if (!t) return c.fail(E.INVALID_HANDLE);
+    vm.log('thread', `TerminateThread t${t.id} (${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}, at ${c.proc.symbolize(t.cpu.eip)}) by t${c.thread.id} from ${c.proc.symbolize(c.retAddr)}`);
     if (t === c.thread) vm.exitThread(t, c.arg(1));
     t.exitCode = c.arg(1); t.pendingExit = true;
     if (t.onStack === 0) c.proc.removeThread(t);
@@ -371,12 +372,13 @@ export function registerKernel32(api, vm) {
   K.OpenMutexA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'mutex') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
   K.ReleaseMutex = [1, (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'mutex'); if (!o) return c.fail(E.INVALID_HANDLE);
+    if (o.handle === globalThis.ORTHROS_TRACE_HANDLE && (c.thread !== c.proc.threads[0] || o.owner !== c.thread.id)) vm.log('sync', `release 0x${c.arg(0).toString(16)} by t${c.thread.id} from ${c.proc.symbolize(c.retAddr)} owner=t${o.owner} count=${o.count}`);
     if (o.owner !== c.thread.id) { c.proc.syncTrace(`mutex 0x${o.handle.toString(16)} release by t${c.thread.id} REFUSED (owner t${o.owner})`); return c.fail(288); }
     if (--o.count === 0) { o.owner = 0; vm.sched.signal(); if (o.waiters) o.waiters = mutexWaited(); }
     return 1;
   }];
   /** a thread parked in a wait that may be for a mutex (MX_WAITERS is recomputed from it: conservative) */
-  const mutexWaited = () => vm.sched.threads.some((t) => t.state === TS.BLOCKED && (t.blockReason === 'wait:mutex' || t.blockReason === 'waitmany'));
+  const mutexWaited = () => vm.sched.threads.some((t) => t.state === TS.BLOCKED && typeof t.blockReason === 'string' && (t.blockReason.startsWith('wait:mutex') || t.blockReason === 'waitmany'));
   K.CreateSemaphoreA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
   K.CreateSemaphoreW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
   K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); vm.sched.signal(); return 1; }];
@@ -393,9 +395,12 @@ export function registerKernel32(api, vm) {
 
   // Waits claim their object at wake-up time (sched.block `claim`): a released mutex goes to the parked waiter
   // before the releasing thread can take it back, and never to a second thread in between.
-  const WAIT_REASONS = {};
   const waitOne = (c, h, ms, alertable) => {
     const o = waitObject(c, h);
+    if (o && o.handle === globalThis.ORTHROS_TRACE_HANDLE) { const r = waitOneImpl(c, o, h, ms, alertable); if (c.thread !== c.proc.threads[0] || r !== 0) vm.log('sync', `wait 0x${(h >>> 0).toString(16)} by t${c.thread.id} (${ms}) from ${c.proc.symbolize(c.retAddr)} -> ${r} owner=t${o.owner} count=${o.count}`); return r; } // (debugging: --dbg ORTHROS_TRACE_HANDLE=<first handle>)
+    return waitOneImpl(c, o, h, ms, alertable);
+  };
+  const waitOneImpl = (c, o, h, ms, alertable) => {
     if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
     if (o === c.thread) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; }
     const t = c.thread;
@@ -405,7 +410,7 @@ export function registerKernel32(api, vm) {
     if (t.wakeResult === undefined && !(alertable && t.apcQueue.length)) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
     const to = ms === INFINITE ? INFINITE : ms;
     if (o.type === 'mutex' && t.wakeResult === undefined) o.waiters = true; // (about to park: releases go through JavaScript)
-    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, WAIT_REASONS[o.type] ??= 'wait:' + o.type,
+    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, o.waitReason ??= `wait:${o.type} 0x${(o.handle ?? 0).toString(16)}`,
       () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
     if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;

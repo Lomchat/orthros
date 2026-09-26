@@ -308,7 +308,7 @@ export class Jit {
     for (let p = addr >>> 12; p <= (addr + len - 1) >>> 12; p++) {
       if (this.mem.u8[SMC_MAP_BASE + p]) continue;
       this.mem.u8[SMC_MAP_BASE + p] = 2;
-      this.watches.set(p, { label, hits: 0, max, sites: new Map() });
+      this.watches.set(p, { label, hits: 0, max, sites: new Map(), lo: addr >>> 0, hi: (addr + len) >>> 0 });
     }
   }
   unwatch(label) {
@@ -323,6 +323,7 @@ export class Jit {
     let p = addr >>> 12, w = null;
     for (const last = (addr + len - 1) >>> 12; p <= last && !(w = this.watches.get(p)); p++);
     if (!w) return false;
+    if (addr + len <= w.lo || addr >= w.hi) return true; // (another address of the watched page)
     // the writer's resume EIP, with the first words of its stack (a memcpy's return address)
     let key = eip;
     if (thread) { const sp = thread.cpu.esp; key = `t${thread.id}:` + [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }

@@ -11,7 +11,7 @@ export class HandleTable {
   }
 
   /** the JIT's mutex table entry of handle `h`: the state address of the mutex it names (kernel32.js Mutex), or 0 */
-  mutexEntry(h, obj) { if (this.mem && h < MUTEX_HANDLE_END && obj?.stateAddr) this.mem.u32[(MUTEX_HANDLES + h) >>> 2] = obj.stateAddr; }
+  mutexEntry(h, obj) { if (this.mem && h < MUTEX_HANDLE_END && obj?.stateAddr && !globalThis.ORTHROS_TRACE_HANDLE) this.mem.u32[(MUTEX_HANDLES + h) >>> 2] = obj.stateAddr; } // (a traced handle: every call through JavaScript)
 
   /** @param {any} obj object with a `type` string */
   create(obj) {

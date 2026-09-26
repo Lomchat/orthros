@@ -208,6 +208,19 @@ function threadTimes(dt) {
   return out.sort((a, b) => b[1] - a[1]).map(([id, d]) => `t${id}:${Math.round(d / dt / 10)}%`).join(' ');
 }
 function takeIdleParts() { const r = `pump gaps ${Math.round(pumpIdleMs - idlePartsPrev.pump)}ms in ${pumpGaps} (max ${Math.round(pumpGapMax)}, last return ${lastPumpReturn}), nested waits ${Math.round((host.waitMs ?? 0) - idlePartsPrev.wait)}ms`; idlePartsPrev = { pump: pumpIdleMs, wait: host.waitMs ?? 0 }; pumpGaps = 0; pumpGapMax = 0; return r; }
+/** registers, x87 state and the next instructions of every thread not waiting (debugging: `threads` input) */
+function threadDetails() {
+  const out = [];
+  for (const t of vm.proc.threads) {
+    if (t.state !== 0 && t.state !== 1) continue; // (ready or running)
+    const c = t.cpu, st = [];
+    for (let i = 0; i < 8; i++) st.push(c.st(i));
+    out.push(`thread ${t.id} at ${vm.proc.symbolize(c.eip)}\n${c.dump()}\nx87 cw=${c.fpuCw.toString(16)} sw=${c.fpuSw.toString(16)} top=${c.fpuTop} tw=${c.fpuTw.toString(16)} st=${st.join(', ')}`);
+    let a = c.eip;
+    for (let i = 0; i < 14; i++) { try { const insn = decode(vm.mem, a); out.push(`  ${vm.proc.symbolize(a)}  ${fmtInsn(insn)}`); a = insn.next; } catch { break; } }
+  }
+  return out.join('\n');
+}
 function takeMainWaits() { const r = [...vm.mainWaits].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k} ${v.toFixed(0)}ms`).join(', '); vm.mainWaits.clear(); return r; }
 let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn = ''; // (lastPumpReturn: why the last pump returned) // (time between two pumps: the worker waiting — slow-frame diagnostics)
 function pump() {
@@ -389,6 +402,10 @@ self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) schedulePump(0); }
+  else if (m.type === 'dump') { if (vm) log('hang', `memory ${(m.addr >>> 0).toString(16)}+${m.len.toString(16)}: ${Array.from(vm.mem.bytes(m.addr >>> 0, m.len), (b) => b.toString(16).padStart(2, '0')).join('')}`); } // (debugging: harness input `dump:addr,len`)
+  else if (m.type === 'watch') { if (vm?.jit) { vm.jit.watchWrites(m.addr >>> 0, m.len || 4, 'ctl', 100000); log('hang', `watching writes to ${(m.addr >>> 0).toString(16)}+${m.len || 4}`); } } // (debugging: harness input `watch:addr,len`, then `unwatch`)
+  else if (m.type === 'unwatch') { if (vm?.jit) log('hang', `writes seen (writer: count): ${[...vm.jit.unwatch('ctl')].map(([k, n]) => `${k}: ${n}`).join(', ') || 'none'}`); }
+  else if (m.type === 'threads') { if (vm) log('hang', `threads on request:\n${vm.threadsReport()}\n${threadDetails()}`); } // (debugging: harness input `threads`)
   else if (m.type === 'burst') { if (vm) vm.startApiBurst(vm.proc.threads.find((t) => t.id === m.tid) ?? vm.proc.threads[0], m.n ?? 3000, !!m.noGfx); } // (debugging: --log apiburst, harness input burst:N[,tid])
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; d.countFrames = m.count ?? 0; log('gfx', `d3d-webgl: ${m.count ? 'GL call count' : 'capture'} requested at frame ${d.frame + 1}`); } }
