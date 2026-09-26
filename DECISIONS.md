@@ -292,3 +292,16 @@ de table sont réservés à la demande (le code d'une région porte son indice p
 traduction sur le fil du jeu pendant le chargement 11,9 → 1,3 s (BFME2), 7,7 → 1,1 s (BFME1) ; ~13 000 régions
 installées, 32 rejetées. `?bgjit=0` : désactivé (retour à la traduction pendant les attentes). Les API du navigateur qui
 refusent les vues sur mémoire partagée (TextDecoder, ImageData) reçoivent une copie.
+
+## D059 — 2026-09-26 — Le mixage audio dans l'AudioWorklet, depuis la mémoire invitée partagée
+Le mixage DirectSound se faisait dans le worker du jeu, qui remplissait un anneau lu par l'AudioWorklet : chaque fois que
+le worker était occupé plus longtemps que l'avance de l'anneau (chargement, longue image, traduction), la sortie
+manquait d'échantillons (9 404 sous-alimentations en 150 s sur ce serveur chargé). **Décision** : la mémoire invitée
+étant partagée (D058), l'AudioWorklet mixe lui-même les tampons DirectSound, sur le fil audio, en lisant la mémoire
+invitée comme une carte son par DMA. Le worker publie une table de voix partagée (adresse, taille, format, fréquence,
+gains, boucle, curseur de lecture et l'instant de publication en images du worklet) ; les curseurs restent tenus par
+l'horloge de la VM (le jeu doit voir des curseurs en temps réel même si le navigateur suspend l'audio) et le worklet
+les suit : il se cale sur le curseur à chaque nouvelle génération (Play, SetCurrentPosition) et quand un curseur
+publié récemment s'écarte de plus de 80 ms (un quart d'une boucle courte) ; un worker bloqué ne publie rien et le
+mixage continue. Mesure : 0 sous-alimentation (BFME2 et BFME1), niveaux comparables. `?audiomix=worker` : l'ancien
+chemin (anneau), qui reste celui des hôtes sans AudioWorklet.
