@@ -17,9 +17,11 @@ const scratch = new DataView(new ArrayBuffer(16));
 scratch.setBigUint64(0, INDEFINITE_BITS, true);
 const INDEFINITE = scratch.getFloat64(0, true); // -NaN (payload is not preserved by JS)
 
-/** x87 helper bound to an interpreter. */
+/** x87 helper bound to an interpreter (one per interpreter, which runs every thread: the thread state is the
+ *  interpreter's current one — a copy taken at creation made other threads' x87 instructions work on it) */
 class X87 {
-  constructor(I) { this.I = I; this.cpu = I.cpu; this.mem = I.mem; }
+  constructor(I) { this.I = I; this.mem = I.mem; }
+  get cpu() { return this.I.cpu; }
   get cw() { return this.cpu.fpuCw; }
   get sw() { return this.cpu.fpuSw; }
   set sw(v) { this.cpu.fpuSw = v & 0xffff; }

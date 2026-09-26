@@ -808,3 +808,22 @@ HANDLERS[OP.FNINIT] = (E) => {
 };
 
 export {};
+
+// ---- C1. Nearly every x87 instruction clears it; FXAM (the sign), FPREM/FPREM1 (a quotient bit) and a stack overflow
+// set it. The native handlers leave the status word alone, so C1 is cleared once per block, by the first instruction
+// that clears it on the processor (and again after an interpreter fallback or FXAM, which may set it): a C1 left set
+// by FPREM changed the outcome of the C runtime's fmod for the code examining the status word afterwards (a game's
+// endless loop). FCOMI/FUCOMI leave it, as the interpreter does.
+const C1_CLEARING = ['FLD', 'FILD', 'FST', 'FSTP', 'FIST', 'FISTP', 'FISTTP', 'FBLD', 'FBSTP', 'FLD1', 'FLDZ', 'FLDPI', 'FLDL2E', 'FLDL2T', 'FLDLG2', 'FLDLN2',
+  'FADD', 'FADDP', 'FIADD', 'FMUL', 'FMULP', 'FIMUL', 'FSUB', 'FSUBP', 'FISUB', 'FSUBR', 'FSUBRP', 'FISUBR', 'FDIV', 'FDIVP', 'FIDIV', 'FDIVR', 'FDIVRP', 'FIDIVR',
+  'FCOM', 'FCOMP', 'FCOMPP', 'FUCOM', 'FUCOMP', 'FUCOMPP', 'FICOM', 'FICOMP', 'FTST', 'FCHS', 'FABS', 'FSQRT', 'FRNDINT', 'F2XM1', 'FYL2X', 'FYL2XP1',
+  'FPTAN', 'FPATAN', 'FSCALE', 'FXTRACT', 'FXCH', 'FINCSTP', 'FDECSTP', 'FCMOVCC', 'FSIN', 'FCOS', 'FSINCOS'];
+for (const name of C1_CLEARING) {
+  const op = OP[name], h = HANDLERS[op];
+  if (op === undefined || !h) continue;
+  HANDLERS[op] = (E, insn, b) => {
+    if (!E.c1Clear) { E.c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~(1 << 9)).and().i32store16(ST.FPU_SW); E.c1Clear = true; }
+    h(E, insn, b);
+  };
+}
+{ const fxam = HANDLERS[OP.FXAM]; HANDLERS[OP.FXAM] = (E, insn, b) => { fxam(E, insn, b); E.c1Clear = false; }; }
