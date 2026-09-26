@@ -567,6 +567,28 @@ HANDLERS[OP.FUCOM] = cmp(0, false, false); HANDLERS[OP.FUCOMP] = cmp(1, false, f
 HANDLERS[OP.FICOM] = cmp(0, true, false); HANDLERS[OP.FICOMP] = cmp(1, true, false);
 HANDLERS[OP.FCOMI] = cmp(0, false, true); HANDLERS[OP.FCOMIP] = cmp(1, false, true);
 HANDLERS[OP.FUCOMI] = cmp(0, false, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, true);
+/**
+ * FXAM: the class of ST(0) in C3 C2 C0 (empty 101, NaN 001, infinity 011, zero 100, denormal 110, normal 010) and its
+ * sign in C1 — every condition code, C1 included (code tests the sign through FNSTSW). Empty: from the block's static
+ * tag changes, else the run-time tag word.
+ */
+HANDLERS[OP.FXAM] = (E) => {
+  const c = E.c;
+  loadST(E, 0); c.set(L_F64A);
+  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and();
+  c.get(L_F64A).i64reinterpret_f64().i64(63).i64shr_u().wrap().i32(9).shl().or(); // C1 = sign (NaN and -0 included)
+  const bit = E.stTagBit(0);
+  const known = (E.stValid & 1) || (E.tagSet & bit) ? 0 : (E.tagClr & bit) ? 1 : -1; // (0 valid, 1 empty, -1 run time)
+  if (known === -1) c.get(L_FTW).i32(bit).and().eqz(); else c.i32(known);
+  const ie = c.if_(T.i32); c.i32(C0 | C3); c.else_();
+  c.get(L_F64A).get(L_F64A).f64ne(); const i1 = c.if_(T.i32); c.i32(C0); c.else_();
+  c.get(L_F64A).f64abs().f64c(Infinity).f64eq(); const i2 = c.if_(T.i32); c.i32(C0 | C2); c.else_();
+  c.get(L_F64A).f64c(0).f64eq(); const i3 = c.if_(T.i32); c.i32(C3); c.else_();
+  c.get(L_F64A).f64abs().f64c(2.2250738585072014e-308).f64lt(); const i4 = c.if_(T.i32); c.i32(C2 | C3); c.else_(); c.i32(C2); c.end();
+  c.end(); c.end(); c.end(); c.end();
+  void ie; void i1; void i2; void i3; void i4;
+  c.or().i32store16(ST.FPU_SW);
+};
 HANDLERS[OP.FTST] = (E) => { const c = E.c; loadST(E, 0); c.set(L_F64A); c.f64c(0).set(L_F64B); compareCC(E); };
 
 // ---- unary / stack

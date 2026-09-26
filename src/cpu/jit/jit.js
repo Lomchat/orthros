@@ -414,7 +414,7 @@ export class Jit {
     for (;;) {
       let r;
       try {
-        r = this.runtime.run(cpu.eip, b4);
+        r = this.runtime.run(0, b4); // (the dispatcher reads EIP from the state block)
       } catch (e) {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)

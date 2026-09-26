@@ -260,13 +260,14 @@ export function registerKernel32(api, vm) {
       const now = performance.now();
       st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; vm.sched.block(t, () => false, 1, 'sleep'); return; }
+      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; vm.sched.block(t, NEVER, 1, 'sleep'); return; }
       vm.sched.yieldFrom(t);
       return;
     }
     if (ms <= 2) st.short++; else st.long++;
-    vm.sched.block(t, () => false, ms === INFINITE ? INFINITE : ms, 'sleep');
+    vm.sched.block(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep');
   };
+  function NEVER() { return false; } // (a sleep's wake condition: the timeout alone)
   K.Sleep = [1, (c) => { sleep(c, c.arg(0)); }];
   K.SleepEx = [2, (c) => { sleep(c, c.arg(0)); return 0; }];
   K.QueueUserAPC = [3, (c) => { const t = c.proc.handles.getAs(c.arg(1), 'thread'); if (!t) return 0; t.apcQueue.push({ fn: c.arg(0), arg: c.arg(2) }); return 1; }];
@@ -384,11 +385,12 @@ export function registerKernel32(api, vm) {
     const objs = [];
     for (let i = 0; i < n; i++) { const o = waitObject(c, mem.read32(ph + 4 * i)); if (!o) { c.setLastError(E.INVALID_HANDLE); return WAIT_FAILED; } objs.push(o); }
     const t = c.thread;
-    const ready = () => (all ? objs.every((o) => isSignaled(o, t)) : objs.findIndex((o) => isSignaled(o, t)) >= 0);
+    // (plain loops: the condition is evaluated at every scheduling pass while the thread is parked)
+    const ready = () => { if (all) { for (let i = 0; i < objs.length; i++) if (!isSignaled(objs[i], t)) return false; return true; } for (let i = 0; i < objs.length; i++) if (isSignaled(objs[i], t)) return true; return false; };
     const claim = () => {
       if (!ready()) return 0xc0; // alertable wake-up for APCs
       if (all) { let r = WAIT_OBJECT_0; for (const o of objs) { const rr = consumeSignal(o, t); if (rr === WAIT_ABANDONED) r = WAIT_ABANDONED; } return r; }
-      const i = objs.findIndex((o) => isSignaled(o, t));
+      let i = 0; while (!isSignaled(objs[i], t)) i++;
       return consumeSignal(objs[i], t) + i;
     };
     const ok = vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany', claim);

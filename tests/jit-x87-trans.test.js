@@ -200,15 +200,15 @@ test('region classifier: every transcendental is an x87 instruction; none reache
   const seen = new Set();
   for (let at = CODE, i = 0; i < 9; i++) { const insn = decode(mem, at); assert.ok(touchesFpu(insn), OP_NAMES[insn.op]); seen.add(insn.op); at = insn.next; }
   assert.deepEqual(seen, new Set(TRANS));
-  // a program using all of them, with FXAM (interpreter) as a control for the histogram
+  // a program using all of them, with FNSTENV (interpreter) as a control for the histogram
   const b = new Asm(CODE);
-  b.fldQ(DATA).f2xm1().fld1().fscale().fxam().fyl2x().fldQ(DATA).fyl2xp1().fldQ(DATA).fpatan().fsin().fcos().fsincos().fptan().fstpQ(DATA + 8).fstpQ(DATA + 16).fstpQ(DATA + 24);
+  b.fldQ(DATA).f2xm1().fld1().fscale().fnstenv(DATA + 200).fyl2x().fldQ(DATA).fyl2xp1().fldQ(DATA).fpatan().fsin().fcos().fsincos().fptan().fstpQ(DATA + 8).fstpQ(DATA + 16).fstpQ(DATA + 24);
   b.label('end').hlt();
   const { EJ } = both(b.finish(), [[0, 0.75]], b.labels.get('end'), { slots: [8, 16, 24] });
   for (const op of TRANS) assert.equal(EJ.jit.fallbackHist.get(op), undefined, `${OP_NAMES[op]} fell back`);
-  assert.equal(EJ.jit.fallbackHist.get(OP.FXAM), 1);
+  assert.equal(EJ.jit.fallbackHist.get(OP.FNSTENV), 1);
   assert.equal(EJ.jit.stats.fallbackSteps, 1);
-  assert.equal(EJ.jit.stats.fallback, 1, 'one fallback site (FXAM) in the region');
+  assert.equal(EJ.jit.stats.fallback, 1, 'one fallback site (FNSTENV) in the region');
   assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
 });
 
@@ -610,7 +610,7 @@ test('interpreter fallbacks (FXAM, FLD/FSTP m80, FNSTENV) adjacent to the transc
   const end = a.labels.get('end');
   for (const x of [0.6, -0.6]) {
     const { EJ } = both(a.finish(), [[0, x], [8, 2.5]], end, { slots: [16, 24], msg: `x=${x}`, swMask: ~C1 });
-    assert.equal(EJ.jit.stats.fallbackSteps, 7, 'FSTP m80, FXAM x2, FLD m80, FSTP m80, FNSTENV, FXAM');
+    assert.equal(EJ.jit.stats.fallbackSteps, 4, 'FSTP m80, FLD m80, FSTP m80, FNSTENV (FXAM is native)');
     assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
   }
 });

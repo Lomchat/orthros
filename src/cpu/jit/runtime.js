@@ -346,6 +346,9 @@ export function buildRuntime(opts = {}) {
     const c = new Code();
     const [EIP, STATE, STOP, E, IDX, PROBE] = [0, 1, 2, 3, 4, 5];
     c.get(STATE).i32(2).shl().set(STATE);
+    // EIP from the state block (the first parameter is unused: an address from 0x40000000 up is not a small integer
+    // for the JavaScript caller, and passing it allocated a number at every entry)
+    c.get(STATE).i32load(ST.EIP).set(EIP);
     c.get(STATE).i32load(ST.STOP_AT).set(STOP);
     const L = c.loop();
     // stopAt
