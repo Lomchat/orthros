@@ -1,10 +1,12 @@
-// The DXT encoder (d3dx9-image.js) written without allocations per block gives the blocks of the straightforward
-// version it replaced (kept below as the reference): DXT1 with and without transparent texels, DXT3, DXT5, and the
-// 2:1 box filter of mip levels.
+// The DXT encoder (d3dx9-image.js: no allocation per block, nearest palette entry found by projection on the endpoint
+// axis) against the straightforward version it replaced (kept below as the reference, a distance to each palette
+// entry): the same endpoints, the same choices but for exact ties, never a larger error; DXT1 with and without
+// transparent texels, DXT3, DXT5; and the 2:1 box filter of mip levels.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeDxt, resizeRgba } from '../src/win32/d3dx9-image.js';
 import { FMT } from '../src/win32/d3d8.js';
+import { decodeDxt } from '../src/gfx/d3d8-webgl.js';
 
 // ---- reference (the previous implementation)
 const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
@@ -51,12 +53,19 @@ function image(r, w, h, kind) {
   return px;
 }
 
-test('DXT1 / DXT3 / DXT5 blocks identical to the reference encoder', () => {
+const err = (fmt, blocks, px, w, h) => { const d = decodeDxt(fmt, blocks, w, h); let e = 0; for (let i = 0; i < px.length; i++) if ((i & 3) !== 3 || fmt !== FMT.DXT1) e += (d[i] - px[i]) ** 2; return e; };
+test('DXT1 / DXT3 / DXT5: the reference encoder\'s blocks but for ties, never a larger error', () => {
   const r = rng(11);
+  let same = 0, total = 0;
   for (const [w, h] of [[16, 16], [13, 7], [4, 4], [1, 1], [64, 32]]) for (const kind of [0, 1, 2]) {
     const px = image(r, w, h, kind);
-    for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) assert.deepEqual(encodeDxt(fmt, px, w, h), encodeRef(fmt, px, w, h), `${w}x${h} kind ${kind} fmt ${fmt}`);
+    for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) {
+      const a = encodeDxt(fmt, px, w, h), b = encodeRef(fmt, px, w, h), unit = fmt === FMT.DXT1 ? 8 : 16;
+      for (let o = 0; o < a.length; o += unit, total++) { let eq = true; for (let k = 0; k < unit; k++) if (a[o + k] !== b[o + k]) eq = false; if (eq) same++; }
+      assert.ok(err(fmt, a, px, w, h) <= err(fmt, b, px, w, h) + 1e-9, `${w}x${h} kind ${kind} fmt ${fmt}: larger error`);
+    }
   }
+  assert.ok(same / total > 0.95, `identical blocks ${same} / ${total}`);
 });
 
 test('2:1 box filter of a mip level = the general box filter', () => {

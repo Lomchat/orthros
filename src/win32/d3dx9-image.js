@@ -137,6 +137,27 @@ export function toRgba(fmt, data, w, h) {
   return surfaceToRgbaLocal(fmt, data, w, h, surfacePitch(fmt, w));
 }
 
+/** per-format texel conversions to RGBA8 (source bytes at s, out at o), for one row loop per format */
+const TO_RGBA = {
+  [FMT.A8R8G8B8]: [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }],
+  [FMT.X8R8G8B8]: [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = 255; }],
+  [FMT.A8B8G8R8]: [4, (u8, s, out, o) => { out[o] = u8[s]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s + 2]; out[o + 3] = u8[s + 3]; }],
+  33: [4, (u8, s, out, o) => { out[o] = u8[s]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s + 2]; out[o + 3] = 255; }],
+  [FMT.R8G8B8]: [3, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = 255; }],
+  [FMT.R5G6B5]: [2, (u8, s, out, o) => { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 11) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 63) * 255 / 63 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = 255; }],
+  [FMT.X1R5G5B5]: [2, (u8, s, out, o) => { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 10) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 31) * 255 / 31 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = 255; }],
+  [FMT.A1R5G5B5]: [2, (u8, s, out, o) => { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 10) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 31) * 255 / 31 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = v & 0x8000 ? 255 : 0; }],
+  [FMT.A4R4G4B4]: [2, (u8, s, out, o) => { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 8) & 15) * 17; out[o + 1] = ((v >> 4) & 15) * 17; out[o + 2] = (v & 15) * 17; out[o + 3] = (v >> 12) * 17; }],
+  [FMT.X4R4G4B4]: [2, (u8, s, out, o) => { const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 8) & 15) * 17; out[o + 1] = ((v >> 4) & 15) * 17; out[o + 2] = (v & 15) * 17; out[o + 3] = 255; }],
+  [FMT.A8]: [1, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = 0; out[o + 3] = u8[s]; }],
+  [FMT.L8]: [1, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = u8[s]; out[o + 3] = 255; }],
+  [FMT.P8]: [1, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = u8[s]; out[o + 3] = 255; }],
+  [FMT.A8L8]: [2, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = u8[s]; out[o + 3] = u8[s + 1]; }],
+  [FMT.A4L4]: [1, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = (u8[s] & 15) * 17; out[o + 3] = (u8[s] >> 4) * 17; }],
+  81: [2, (u8, s, out, o) => { out[o] = out[o + 1] = out[o + 2] = u8[s + 1]; out[o + 3] = 255; }], // L16
+};
+const TO_RGBA_DEFAULT = [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }];
+
 function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
   const out = new Uint8Array(w * h * 4);
   if ((fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && ((u8.byteOffset | pitch) & 3) === 0) { // (whole texels: B,G,R,A -> R,G,B,A on 32-bit lanes)
@@ -144,24 +165,8 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
     for (let y = 0; y < h; y++) for (let x = 0, si = (y * pitch) >> 2, o = y * w; x < w; x++, si++, o++) { const v = src[si]; dst[o] = ((v & 0xff00ff00) | ((v & 0xff) << 16) | ((v >>> 16) & 0xff) | alpha) >>> 0; }
     return out;
   }
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const o = (y * w + x) * 4;
-    let s;
-    switch (fmt) {
-      case FMT.A8R8G8B8: case FMT.X8R8G8B8: s = y * pitch + 4 * x; out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = fmt === FMT.X8R8G8B8 ? 255 : u8[s + 3]; break;
-      case FMT.A8B8G8R8: case 33: s = y * pitch + 4 * x; out[o] = u8[s]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s + 2]; out[o + 3] = fmt === 33 ? 255 : u8[s + 3]; break;
-      case FMT.R8G8B8: s = y * pitch + 3 * x; out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = 255; break;
-      case FMT.R5G6B5: { s = y * pitch + 2 * x; const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 11) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 63) * 255 / 63 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = 255; break; }
-      case FMT.X1R5G5B5: case FMT.A1R5G5B5: { s = y * pitch + 2 * x; const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 10) & 31) * 255 / 31 | 0; out[o + 1] = ((v >> 5) & 31) * 255 / 31 | 0; out[o + 2] = (v & 31) * 255 / 31 | 0; out[o + 3] = fmt === FMT.A1R5G5B5 ? (v & 0x8000 ? 255 : 0) : 255; break; }
-      case FMT.A4R4G4B4: case FMT.X4R4G4B4: { s = y * pitch + 2 * x; const v = u8[s] | (u8[s + 1] << 8); out[o] = ((v >> 8) & 15) * 17; out[o + 1] = ((v >> 4) & 15) * 17; out[o + 2] = (v & 15) * 17; out[o + 3] = fmt === FMT.A4R4G4B4 ? (v >> 12) * 17 : 255; break; }
-      case FMT.A8: s = y * pitch + x; out[o] = out[o + 1] = out[o + 2] = 0; out[o + 3] = u8[s]; break;
-      case FMT.L8: case FMT.P8: s = y * pitch + x; out[o] = out[o + 1] = out[o + 2] = u8[s]; out[o + 3] = 255; break;
-      case FMT.A8L8: s = y * pitch + 2 * x; out[o] = out[o + 1] = out[o + 2] = u8[s]; out[o + 3] = u8[s + 1]; break;
-      case FMT.A4L4: s = y * pitch + x; out[o] = out[o + 1] = out[o + 2] = (u8[s] & 15) * 17; out[o + 3] = (u8[s] >> 4) * 17; break;
-      case 81: s = y * pitch + 2 * x; out[o] = out[o + 1] = out[o + 2] = u8[s + 1]; out[o + 3] = 255; break;
-      default: s = y * pitch + 4 * x; out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3];
-    }
-  }
+  const [bpp, texel] = TO_RGBA[fmt] ?? TO_RGBA_DEFAULT; // (one loop per format: the conversion is chosen once, not per texel)
+  for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w * 4; x < w; x++, s += bpp, o += 4) texel(u8, s, out, o);
   return out;
 }
 
@@ -225,8 +230,8 @@ export { isDxt };
 
 // ---------------------------------------------------------------- block compression (DXT1/3/5 encoder)
 const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-/** the palette of a color block (4 entries of r, g, b; the 4th unused in 3-color mode) and texel indexes: scratch */
-const PAL = new Float64Array(12), IDX = new Uint8Array(16);
+/** texel indexes of an alpha block: scratch */
+const IDX = new Uint8Array(16);
 /**
  * One color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128. Endpoints:
  * the texels of lowest and highest luminance; each texel takes the nearest palette entry (the first of equals).
@@ -244,19 +249,16 @@ function colorBlock(px, out, o, transparent) {
   else { if (c0 < c1) { const t = c0; c0 = c1; c1 = t; } if (c0 === c1) { if (c1 > 0) c1--; else c0++; } }
   const ar = ((c0 >> 11) & 31) * 255 / 31, ag = ((c0 >> 5) & 63) * 255 / 63, ab = (c0 & 31) * 255 / 31;
   const br = ((c1 >> 11) & 31) * 255 / 31, bg = ((c1 >> 5) & 63) * 255 / 63, bb = (c1 & 31) * 255 / 31;
-  const P = PAL;
-  P[0] = ar; P[1] = ag; P[2] = ab; P[3] = br; P[4] = bg; P[5] = bb;
-  if (anyTransparent) { P[6] = (ar + br) / 2; P[7] = (ag + bg) / 2; P[8] = (ab + bb) / 2; }
-  else { P[6] = (2 * ar + br) / 3; P[7] = (2 * ag + bg) / 3; P[8] = (2 * ab + bb) / 3; P[9] = (ar + 2 * br) / 3; P[10] = (ag + 2 * bg) / 3; P[11] = (ab + 2 * bb) / 3; }
-  const nPal = anyTransparent ? 3 : 4;
+  // the palette (c0, c1 and 1 or 2 points between them) lies on the segment c1 -> c0: the nearest entry is the one
+  // nearest the texel's projection on that axis (s = 1 at c0, 0 at c1); equal distances pick the lower index
+  const dr = ar - br, dg = ag - bg, db = ab - bb, dd = dr * dr + dg * dg + db * db;
   let idx = 0;
   for (let i = 15; i >= 0; i--) {
     let best = 0;
     if (anyTransparent && px[4 * i + 3] < 128) best = 3;
-    else {
-      const r = px[4 * i], g = px[4 * i + 1], b = px[4 * i + 2];
-      let bd = Infinity;
-      for (let k = 0; k < nPal; k++) { const dr = P[3 * k] - r, dg = P[3 * k + 1] - g, db = P[3 * k + 2] - b, d = dr * dr + dg * dg + db * db; if (d < bd) { bd = d; best = k; } }
+    else if (dd > 0) {
+      const t = ((px[4 * i] - br) * dr + (px[4 * i + 1] - bg) * dg + (px[4 * i + 2] - bb) * db) / dd;
+      best = anyTransparent ? (t >= 0.75 ? 0 : t > 0.25 ? 2 : 1) : (t >= 5 / 6 ? 0 : t >= 0.5 ? 2 : t > 1 / 6 ? 3 : 1);
     }
     idx = (idx << 2) | best;
   }

@@ -172,6 +172,7 @@ export function registerDirect3D9(api, vm) {
     CreateOffscreenPlainSurface(c) { const pp = c.arg(5); if (!pp) return D3DERR_INVALIDCALL; const s = new Surface(this, null, c.arg(3), c.arg(1), c.arg(2), 0, c.arg(4)); s.lockable = true; s.iids = [IID.IDirect3DSurface9, IID.IDirect3DResource9]; mem.write32(pp, s.ptrOf(c)); return D3D_OK; }
     UpdateSurface(c) {
       const src = surfaceOf(c.arg(1)), rect = c.arg(2), dst = surfaceOf(c.arg(3)), pt = c.arg(4);
+      if (dst) dst.rgbaCache = null; // (d3dx9's copy of the RGBA a surface was encoded from: stale after a write)
       if (!src || !dst || src.fmt !== dst.fmt) return D3DERR_INVALIDCALL;
       const sb = src.ensureMem(c.proc), db = dst.ensureMem(c.proc);
       const l = rect ? mem.readS32(rect) : 0, t = rect ? mem.readS32(rect + 4) : 0, r = rect ? mem.readS32(rect + 8) : src.width, b = rect ? mem.readS32(rect + 12) : src.height;
@@ -191,6 +192,7 @@ export function registerDirect3D9(api, vm) {
     GetFrontBufferData(c) { const s = surfaceOf(c.arg(2)); if (!s) return D3DERR_INVALIDCALL; return this.GetFrontBuffer({ arg: (i) => (i === 1 ? c.arg(2) : 0), proc: c.proc }); }
     StretchRect(c) {
       const src = surfaceOf(c.arg(1)), sr = c.arg(2), dst = surfaceOf(c.arg(3)), dr = c.arg(4);
+      if (dst) dst.rgbaCache = null;
       if (!src || !dst) return D3DERR_INVALIDCALL;
       if (this.gfx?.stretchRect) { const r = this.gfx.stretchRect(src, sr, dst, dr, c.arg(5)); if (r !== null) return r; } // (null: not on the GPU)
       // CPU path: nearest-neighbour copy between same-format surfaces
@@ -206,6 +208,7 @@ export function registerDirect3D9(api, vm) {
     }
     ColorFill(c) {
       const s = surfaceOf(c.arg(1)), rect = c.arg(2), color = c.arg(3);
+      if (s) s.rgbaCache = null;
       if (!s) return D3DERR_INVALIDCALL;
       if (this.gfx?.colorFill) return this.gfx.colorFill(s, rect, color);
       const base = s.ensureMem(c.proc);
