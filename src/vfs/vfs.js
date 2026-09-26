@@ -18,16 +18,16 @@ export class Vfs {
   /** @param {string} winPath e.g. 'C:\\Game' @param {any} backend */
   mount(winPath, backend) {
     const prefix = normalizeWin(winPath);
-    this.mounts.push({ prefix, backend });
+    this.mounts.push({ prefix, lower: prefix.toLowerCase(), backend }); // (paths match their mount whatever their case)
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
   }
 
   /** @returns {{ backend: any, rel: string, prefix: string } | null} */
   resolve(winPath) {
-    const p = normalizeWin(winPath);
+    const p = normalizeWin(winPath), lp = p.toLowerCase();
     for (const m of this.mounts) {
-      if (p === m.prefix) return { backend: m.backend, rel: '', prefix: m.prefix };
-      if (p.startsWith(m.prefix + '\\') || m.prefix.endsWith('\\') && p.startsWith(m.prefix)) {
+      if (lp === m.lower) return { backend: m.backend, rel: '', prefix: m.prefix };
+      if (lp.startsWith(m.lower + '\\') || m.lower.endsWith('\\') && lp.startsWith(m.lower)) {
         const rel = p.slice(m.prefix.length).replace(/^\\+/, '').split('\\').join('/');
         return { backend: m.backend, rel, prefix: m.prefix };
       }

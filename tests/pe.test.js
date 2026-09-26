@@ -85,13 +85,14 @@ test('hello.exe: a non-zero exit code leaves a failure report with the last exce
   assert.match(vm.exitReport, /exceptions raised: 1, the last ones:\n  t\d+ 0xe06d7363 \.\?AVFailure@@ at /);
 });
 
-test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind, execution faults at bad addresses', { skip: skip('seh.exe') }, () => {
+test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind, execution faults at bad addresses, an exception raised in a handler', { skip: skip('seh.exe') }, () => {
   for (const jit of [true, false]) {
     const { vm } = boot('seh.exe', { jit });
     const code = vm.run();
     const exec = (a) => `exec code 0xc0000005\nexec addr 0x${a}\nexec info 0x${a}\n`;
     assert.equal(vm.stdout.join(''), 'div result 0x0000004d\ninner code 0xc0000094\ninner hits after unwind 0x00000065\ntop is outer 0x00000001\n' +
-      exec('00000000') + exec('fffffff0') + exec('ffffffff'), `jit=${jit}`);
+      exec('00000000') + exec('fffffff0') + exec('ffffffff') +
+      'nested inner 0x0000004d\nnested inner code 0xc0000094\nnested outer 0x00000037\n', `jit=${jit}`);
     assert.equal(code, 0);
   }
 });

@@ -39,6 +39,22 @@ static int __cdecl handler_exec(EXCEPTION_RECORD* rec, void* frame, CONTEXT* ctx
   return 0;
 }
 
+// Handler 4: an exception raised while it runs (a nested dispatch): it installs a frame of its own, divides by zero
+// (skipped by handler_skip, eax = 77), removes the frame, then continues the first exception with eax = 55
+static void install(REG* r, void* handler);
+static void uninstall(REG* r);
+static DWORD nested_q, nested_code;
+static int __cdecl handler_nested(EXCEPTION_RECORD* rec, void* frame, CONTEXT* ctx, void* disp) {
+  if (rec->ExceptionFlags & 2) return 1;
+  REG r2; install(&r2, handler_skip);
+  unsigned q2;
+  __asm__ volatile("xorl %%ecx, %%ecx; movl $10, %%eax; xorl %%edx, %%edx; divl %%ecx" : "=a"(q2) : : "ecx", "edx");
+  uninstall(&r2);
+  nested_q = q2; nested_code = r2.code;
+  ctx->Eip += 2; ctx->Eax = 55;
+  return 0;
+}
+
 static void install(REG* r, void* handler) {
   r->handler = handler; r->code = 0; r->hits = 0;
   __asm__ volatile("movl %%fs:0, %%eax; movl %%eax, (%0); movl %0, %%fs:0" : : "r"(r) : "eax", "memory");
@@ -72,5 +88,11 @@ void __stdcall start(void) {
     put(out, "exec code "); puthex(out, exec_code); put(out, "exec addr "); puthex(out, exec_addr); put(out, "exec info "); puthex(out, exec_info1);
   }
   uninstall(&ex);
+  // 5. nested dispatch: the handler of a division by zero raises and handles another one before continuing the first
+  REG n; install(&n, handler_nested);
+  unsigned qn;
+  __asm__ volatile("xorl %%ecx, %%ecx; movl $10, %%eax; xorl %%edx, %%edx; divl %%ecx" : "=a"(qn) : : "ecx", "edx");
+  uninstall(&n);
+  put(out, "nested inner "); puthex(out, nested_q); put(out, "nested inner code "); puthex(out, nested_code); put(out, "nested outer "); puthex(out, qn);
   ExitProcess(q == 77 && inner.code == 0xC0000094 && inner.hits == 101 && top == &outer ? 0 : 1);
 }

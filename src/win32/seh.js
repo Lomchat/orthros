@@ -60,7 +60,11 @@ export class Seh {
     const rec = (ctx - REC_SIZE) >>> 0;
     this.writeContext(cpu, ctx);
     this.writeRecord(rec, code, flags, addr, params);
-    thread.seh = { rec, ctx, frame: m.read32(thread.teb), code, flags, addr, depth: (thread.seh?.depth ?? 0) + 1, spBase: (rec - 0x40) >>> 0 };
+    // (a dispatch keeps the one it interrupted — an exception raised while a handler runs — which becomes current again
+    // once it completes: the outer handler's return finds its own state; a C++ catch continuing without returning here
+    // leaves a completed state behind: the chain is cut at 64)
+    const prev = thread.seh && thread.seh.depth < 64 ? thread.seh : null;
+    thread.seh = { rec, ctx, frame: m.read32(thread.teb), code, flags, addr, depth: (prev?.depth ?? 0) + 1, spBase: (rec - 0x40) >>> 0, prev };
     this.remember(thread, code, addr, params);
     this.sehLog( `exception ${code.toString(16)} at ${this.vm.proc.symbolize(addr)} (thread ${thread.id}), first frame ${m.read32(thread.teb).toString(16)}`);
     return this.next(thread);
@@ -140,12 +144,13 @@ export class Seh {
   onHandlerReturn(ctx) {
     const thread = ctx.thread, cpu = thread.cpu, m = this.mem, s = thread.seh;
     const disp = cpu.eax;
-    if (!s) { this.vm.warn('SEH: handler returned without dispatch state'); return; }
+    // (no dispatch to return to: a crash report rather than this thunk running again and again)
+    if (!s) throw new (this.vm.GuestCrash)(this.vm.crashReport(thread, 'SEH: a handler returned without an exception being dispatched'));
     cpu.esp = (ctx.sp + 4 + 16) >>> 0; // pop our return address + 4 args (cdecl)
     if (disp === 0) { // ExceptionContinueExecution
       this.sehLog( `  <- continue execution at ${m.read32(s.ctx + 0xb8).toString(16)}`);
       this.readContext(cpu, s.ctx);
-      thread.seh = null;
+      thread.seh = s.prev;
       return;
     }
     if (disp === 1) { // ExceptionContinueSearch
@@ -168,7 +173,7 @@ export class Seh {
       m.write32(ep, s.rec); m.write32(ep + 4, s.ctx);
       this.sehLog( `  -> unhandled exception filter ${this.vm.proc.symbolize(filter)}`);
       const r = this.vm.callGuest(thread, filter, [ep]) | 0;
-      if (r === -1) { this.readContext(cpu, s.ctx); thread.seh = null; return true; }
+      if (r === -1) { this.readContext(cpu, s.ctx); thread.seh = s.prev; return true; }
       if (r === 1) { this.vm.warn(`unhandled exception ${s.code.toString(16)} at ${this.vm.proc.symbolize(s.addr)}: filter requested termination`); this.vm.exitProcess(s.code); }
     }
     this.readContext(cpu, s.ctx);
@@ -210,7 +215,7 @@ export class Seh {
       frame = prev;
     }
     m.write32(thread.teb, target || CHAIN_END);
-    if (thread.seh && (thread.seh.frame === target || !target)) thread.seh = null;
+    if (thread.seh && (thread.seh.frame === target || !target)) thread.seh = thread.seh.prev;
     // x86 RtlUnwind returns to its caller normally with EAX = returnValue
     return retval;
   }
