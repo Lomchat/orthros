@@ -572,7 +572,8 @@
   comparés en respectant la casse (→ ERROR_PATH_NOT_FOUND), puis l'exception C++ qui a suivi a révélé l'emplacement
   unique de dispatch SEH par thread (une exception levée pendant un gestionnaire l'écrasait : ~12 000 avertissements
   en boucle, le moteur de rendu mourait). Corrigé (montages insensibles à la casse, pile de dispatchs SEH, tests) ;
-  vérifié : sauvegarde puis chargement dans une escarmouche.
+  vérifié : sauvegarde puis chargement dans une escarmouche, et chargement depuis le menu Solo → Load dans une
+  nouvelle session.
 - **Vérifié (BFME2)** : La Guerre de l'Anneau démarre (profil créé, carte stratégique 3D, tour 1, phase tactique ; fin
   de phase → tour 2) ;
   sauvegarde d'une escarmouche, fermeture, puis « Load Game » depuis le menu dans une nouvelle session : la partie
