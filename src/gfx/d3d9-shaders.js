@@ -65,8 +65,12 @@ function* instructions(code) {
   }
 }
 
-/** Translate a DX9 vertex shader (vs_1_1 or vs_2_x with dcl inputs) to GLSL. */
-export function translateVertexShader9(code) {
+/**
+ * Translate a DX9 vertex shader (vs_1_1 or vs_2_x with dcl inputs) to GLSL. `bgra`: the semantic names (`s<usage>_<index>`)
+ * the vertex declaration gives the D3DCOLOR type — Direct3D expands those bytes (B, G, R, A in memory) to (R, G, B, A),
+ * GL reads them in memory order: they are read through a .zyxw copy (vertex colors, blend indices packed as colors).
+ */
+export function translateVertexShader9(code, bgra = null) {
   const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
   const inputs = new Map(); // v# -> attribute name
   const version = code[0] & 0xffff, major = version >> 8;
@@ -83,6 +87,7 @@ export function translateVertexShader9(code) {
   body.push('  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);');
   body.push('  vec4 oPos = vec4(0.0), oD0 = vec4(1.0), oD1 = vec4(0.0), oFog = vec4(1.0), oPts = vec4(1.0); ivec4 a0 = ivec4(0); int aL = 0; bvec4 p0 = bvec4(false);');
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 oT${i} = vec4(0.0);`);
+  for (const n of inputs.values()) if (bgra?.has(n)) body.push(`  vec4 i_${n} = a_${n}.zyxw; // D3DCOLOR`);
   const consts = new Map(), defis = new Set(); // (def / defi registers: local constants)
   const regName = (tok, args, k) => {
     const type = regType(tok), n = tok & 0x7ff;
@@ -90,7 +95,7 @@ export function translateVertexShader9(code) {
     let name;
     switch (type) {
       case 0: name = `r[${n & 31}]`; break;
-      case 1: name = inputs.has(n) ? `a_${inputs.get(n)}` : 'vec4(0.0)'; break;
+      case 1: name = inputs.has(n) ? (bgra?.has(inputs.get(n)) ? `i_${inputs.get(n)}` : `a_${inputs.get(n)}`) : 'vec4(0.0)'; break;
       // (relative addressing: vs 2.0+ name the address register in a following token; vs 1.x always use a0.x)
       case 2: { let idx = `${n}`; if (rel) { const at = args[k + 1] >>> 0; const addr = major < 2 ? 'a0.x' : regType(at) === 15 ? 'aL' : `a0.${SWZ[(at >> 16) & 3]}`; idx = `clamp(${n} + ${addr}, 0, 255)`; } name = consts.has(n) && !rel ? `c${n}` : `u_vc[${idx}]`; break; }
       case 3: name = 'vec4(a0)'; break;

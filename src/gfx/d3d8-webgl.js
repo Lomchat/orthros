@@ -621,7 +621,12 @@ export class WebGLDevice {
     let p = this.programs.get(key);
     if (p) return { p, L, stages, lighting, fog, lightTypes, ps };
     let vsSrc, attrNames;
-    if (L.code && L.dx9) { const t = translateVertexShader9(L.code); vsSrc = t.glsl; attrNames = [...t.inputs.values()].map((n) => 'a_' + n); }
+    if (L.code && L.dx9) {
+      // (the D3DCOLOR inputs, named as attrSpecs binds them: a declaration's streams, or an FVF's attributes)
+      const all = L.layout.streams ? [...L.layout.streams.values()].flatMap((s) => s.attrs) : L.layout.attrs ?? [];
+      const t = translateVertexShader9(L.code, new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name)));
+      vsSrc = t.glsl; attrNames = [...t.inputs.values()].map((n) => 'a_' + n);
+    }
     else if (L.code) { vsSrc = translateVertexShader(L.code, L.layout); attrNames = [...new Set([...L.layout.streams.values()].flatMap((s) => s.attrs.map((a) => 'a_v' + a.reg)))]; }
     else {
       vsSrc = ffVertexShader({ layout: L.layout, lighting, lights: lightTypes, colorVertex: this.rs(RS.COLORVERTEX, 1) !== 0, diffuseSrc: this.rs(RS.DIFFUSEMATERIALSOURCE, 1), specularSrc: this.rs(RS.SPECULARMATERIALSOURCE, 2), ambientSrc: this.rs(RS.AMBIENTMATERIALSOURCE, 0), emissiveSrc: this.rs(RS.EMISSIVEMATERIALSOURCE, 0), specularEnable: this.rs(RS.SPECULARENABLE, 0) !== 0, localViewer: this.rs(RS.LOCALVIEWER, 1) !== 0, normalize: this.rs(RS.NORMALIZENORMALS, 0) !== 0, fogVertex: fog === -1 && !rhw ? vertexMode : 0, rangeFog: this.rs(RS.RANGEFOGENABLE, 0) !== 0, stages, rhw, blend: this.rs(RS.VERTEXBLEND, 0) ? (L.layout.blend || 1) + 1 : 0, pointSize: true });

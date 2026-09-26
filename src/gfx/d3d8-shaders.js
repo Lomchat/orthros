@@ -302,8 +302,8 @@ function writeMask(tok) { let s = ''; for (let i = 0; i < 4; i++) if (tok & (1 <
 /** Translate a vertex shader 1.x function (Uint32Array of tokens) to a GLSL ES 3.00 vertex shader. */
 export function translateVertexShader(code, layout) {
   const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
-  const inputs = new Set();
-  for (const s of layout.streams.values()) for (const a of s.attrs) inputs.add(a.reg);
+  const inputs = new Set(), bgra = new Set(); // (bgra: D3DCOLOR inputs, expanded by Direct3D to R, G, B, A from B, G, R, A bytes)
+  for (const s of layout.streams.values()) for (const a of s.attrs) { inputs.add(a.reg); if (a.type === 'color') bgra.add(a.reg); }
   for (const r of inputs) lines.push(`in vec4 a_v${r};`);
   lines.push('uniform vec4 u_vc[96]; uniform vec4 u_viewport; uniform float u_flipY;');
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
@@ -312,6 +312,7 @@ export function translateVertexShader(code, layout) {
   body.push('  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0), r6 = vec4(0.0), r7 = vec4(0.0), r8 = vec4(0.0), r9 = vec4(0.0), r10 = vec4(0.0), r11 = vec4(0.0);');
   body.push('  vec4 oPos = vec4(0.0), oD0 = vec4(1.0), oD1 = vec4(0.0), oFog = vec4(1.0), oPts = vec4(1.0); int a0 = 0;');
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 oT${i} = vec4(0.0);`);
+  for (const r of bgra) body.push(`  vec4 i_v${r} = a_v${r}.zyxw; // D3DCOLOR`);
   const defsV = new Set(); // constants defined in the shader (def)
   const reg = (tok, isSrc) => {
     const type = ((tok >> 28) & 7) | (((tok >> 8) & 0x18) ? 0 : 0); // VS1.x: bits 28-30
@@ -319,7 +320,7 @@ export function translateVertexShader(code, layout) {
     let name;
     switch (type) {
       case 0: name = `r${n}`; break;
-      case 1: name = inputs.has(n) ? `a_v${n}` : 'vec4(0.0)'; break;
+      case 1: name = inputs.has(n) ? (bgra.has(n) ? `i_v${n}` : `a_v${n}`) : 'vec4(0.0)'; break;
       case 2: name = (tok & 0x2000) ? `u_vc[clamp(${n} + a0, 0, 95)]` : defsV.has(n) ? `c${n}` : `u_vc[${n}]`; break;
       case 3: name = 'vec4(float(a0))'; break;
       case 4: name = ['oPos', 'oFog', 'oPts'][n] ?? 'oPos'; break;
