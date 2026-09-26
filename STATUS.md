@@ -581,6 +581,11 @@
   clic synthétique trop bref (appui relâché dès l'image suivante) n'est pas pris : un vrai clic (80-150 ms) l'est.
 - **Appels WebGL** (`--gl-count t:images`, sans les lectures de la capture) : partie BFME2 1 460 appels par image pour
   154 tracés (9,5 par tracé), aucune relecture ; partie BFME1 ~6,5 appels par tracé.
+- **Bilan mesuré de la journée (partie BFME2, CPU du worker par image, `--gl-discard`)** : quatre paires simultanées
+  « build de ce matin (7b09cdc) / build actuel » ; les deux navigateurs d'une paire ne sont pas à égalité (celui dont le
+  processus GPU consomme ~348 ms/image au lieu de ~220 est plus lent de 2-4 ms, quel que soit l'ordre de lancement) :
+  à emplacement égal, ~1 ms de moins par image (32,2 → 31,1 ms, ~3 %). Les A/B de chaque changement (5-9 %) étaient en
+  partie gonflés par ce biais.
 - **BFME1 en détails élevés (CPU seul)** : partie ~37 fps (24-25 ms de CPU par image) ; le menu 3D (grande bataille en
   fond) reste lourd, 13-18 fps (72-74 ms par image dont 75 % dans le code du jeu, calcul x87 réparti sur ~3 300
   régions). Sous SwiftShader (sans `--gl-discard`), la même partie tombe à 6-12 fps : c'est le rendu logiciel du
