@@ -560,7 +560,8 @@
   « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui) :
   d'après les constantes de la capture, la caméra de l'aperçu regarde au-dessus de la scène (le héros se projette à
   y ≈ −2 en coordonnées normalisées, le sol de la scène n'est pas visible non plus) — placement calculé par le jeu,
-  cause non trouvée.
+  cause non trouvée ; identique quand tout le code passe à l'interpréteur de référence avant l'ouverture de l'écran
+  (ce n'est pas le JIT).
 - **Couleurs de sommets dans les shaders** : une entrée typée D3DCOLOR par la déclaration de sommets est lue (R, G, B, A)
   comme Direct3D la développe (octets B, G, R, A en mémoire) ; seul le pipeline fixe le faisait. Le terrain de BFME2
   (éclairage par sommet) avait le rouge et le bleu inversés : il sort maintenant chaud au lieu d'olive.
