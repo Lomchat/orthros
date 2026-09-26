@@ -561,6 +561,7 @@
 - **Couleurs de sommets dans les shaders** : une entrée typée D3DCOLOR par la déclaration de sommets est lue (R, G, B, A)
   comme Direct3D la développe (octets B, G, R, A en mémoire) ; seul le pipeline fixe le faisait. Le terrain de BFME2
   (éclairage par sommet) avait le rouge et le bleu inversés : il sort maintenant chaud au lieu d'olive.
+- **Vérifié (BFME2)** : La Guerre de l'Anneau démarre (profil créé, carte stratégique 3D, tour 1, phase tactique).
 - **Vérifié (BFME1, détails élevés)** : campagne du Bien de bout en bout — carte de la Terre du Milieu en 3D, la
   Communauté envoyée en Moria, écran de chargement puis cinématique de la mission (~30 images/s). Sur la carte 3D, un
   clic synthétique trop bref (appui relâché dès l'image suivante) n'est pas pris : un vrai clic (80-150 ms) l'est.
