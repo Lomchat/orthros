@@ -554,7 +554,8 @@
   `--log sync`, `ORTHROS_TRACE_HANDLE`). Le JIT remet aussi C1 à zéro (une fois par bloc) comme le processeur.
   La campagne ne démarre toujours pas (EASY referme la boîte, aucun appel système, aucun thread, aucune lecture
   ensuite) — y compris quand tout le code passe à l'interpréteur de référence juste avant le clic : ce n'est pas le
-  JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
+  JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement). La campagne du Mal se
+  comporte de même.
 - **BFME2 « My Heroes »** (créateur de héros) s'ouvre maintenant (liste, classes, statistiques, portrait) — il ne
   s'ouvrait pas avant la correction x87 par thread — et un héros se crée de bout en bout (classe, apparence,
   attributs, nom, pouvoirs, enregistré dans la liste). Reste : dans l'aperçu 3D le héros est cadré trop bas (on ne
