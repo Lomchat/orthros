@@ -977,8 +977,9 @@ export class WebGLDevice {
     const gl = this.gl; void gl;
     // (programmable pipeline: the first constant registers, with the shader listing once per program)
     if (this.dev.api9 && (this.dev.vsObj || this.dev.psObj)) {
-      const regs = (arr, n) => Array.from({ length: n }, (_, r) => `c${r}=(${Array.from(arr.subarray(4 * r, 4 * r + 4)).map((x) => +x.toPrecision(4)).join(',')})`).join(' ');
-      this.log(`d3d-webgl: [cap] constants vs ${regs(this.dev.vsConst, 16)} | ps ${regs(this.dev.psConst, 8)}`);
+      // (every register that is not all zero: shaders read constants anywhere in the 256)
+      const regs = (arr, n) => Array.from({ length: n }, (_, r) => r).filter((r) => arr[4 * r] || arr[4 * r + 1] || arr[4 * r + 2] || arr[4 * r + 3]).map((r) => `c${r}=(${Array.from(arr.subarray(4 * r, 4 * r + 4)).map((x) => +x.toPrecision(4)).join(',')})`).join(' ');
+      this.log(`d3d-webgl: [cap] constants vs ${regs(this.dev.vsConst, this.dev.vsConst.length >> 2)} | ps ${regs(this.dev.psConst, this.dev.psConst.length >> 2)}`);
       if (!(this.capListed ??= new Set()).has(P.key)) { this.capListed.add(P.key); if (this.dev.vsObj) this.log(`d3d-webgl: [cap] VS\n${disasmShader9(this.dev.vsObj.code)}`); if (this.dev.psObj) this.log(`d3d-webgl: [cap] PS\n${disasmShader9(this.dev.psObj.code)}`); }
     }
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };

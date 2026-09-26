@@ -557,7 +557,10 @@
   JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
 - **BFME2 « My Heroes »** (créateur de héros) s'ouvre maintenant (liste, classes, statistiques, portrait) — il ne
   s'ouvrait pas avant la correction x87 par thread. Reste : le modèle 3D du héros n'apparaît pas dans l'aperçu
-  « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui).
+  « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui) :
+  d'après les constantes de la capture, la caméra de l'aperçu regarde au-dessus de la scène (le héros se projette à
+  y ≈ −2 en coordonnées normalisées, le sol de la scène n'est pas visible non plus) — placement calculé par le jeu,
+  cause non trouvée.
 - **Couleurs de sommets dans les shaders** : une entrée typée D3DCOLOR par la déclaration de sommets est lue (R, G, B, A)
   comme Direct3D la développe (octets B, G, R, A en mémoire) ; seul le pipeline fixe le faisait. Le terrain de BFME2
   (éclairage par sommet) avait le rouge et le bleu inversés : il sort maintenant chaud au lieu d'olive.
