@@ -555,6 +555,9 @@
   La campagne ne démarre toujours pas (EASY referme la boîte, aucun appel système, aucun thread, aucune lecture
   ensuite) — y compris quand tout le code passe à l'interpréteur de référence juste avant le clic : ce n'est pas le
   JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
+- **BFME2 « My Heroes »** (créateur de héros) s'ouvre maintenant (liste, classes, statistiques, portrait) — il ne
+  s'ouvrait pas avant la correction x87 par thread. Reste : le modèle 3D du héros n'apparaît pas dans l'aperçu
+  « Appearance » (ses tracés, maillages animés par os, ne produisent aucun pixel ; le décor du même aperçu, oui).
 - **Vérifié (BFME1, détails élevés)** : campagne du Bien de bout en bout — carte de la Terre du Milieu en 3D, la
   Communauté envoyée en Moria, écran de chargement puis cinématique de la mission (~30 images/s). Sur la carte 3D, un
   clic synthétique trop bref (appui relâché dès l'image suivante) n'est pas pris : un vrai clic (80-150 ms) l'est.
