@@ -546,6 +546,15 @@
   Essayé puis retiré : détecter les rafales de Sleep(0) sur le temps propre du thread (le fil principal de BFME2 en
   fait ~1,6 M par partie) — il les endort plus souvent, mais ses Sleep(0) attendent aussi les autres threads : 29,6 →
   27,5 fps, p99 45 → 75 ms.
+- **Blocage corrigé (BFME2, retour au menu après La Guerre de l'Anneau)** : l'objet x87 de l'interpréteur gardait
+  l'état du thread courant à sa création ; toute instruction x87 interprétée pour un autre thread (replis du JIT :
+  FPREM, FNSTENV/FLDENV, chargements m80...) travaillait sur les registres d'un autre thread. Le thread du second écran
+  de chargement tournait dans le fmod du runtime C (FPREM ne remettait jamais son C2 à zéro) en tenant le verrou
+  attendu par le fil principal. Trouvé avec les nouvelles commandes du harnais (`threads`, `dump`, `watch`,
+  `--log sync`, `ORTHROS_TRACE_HANDLE`). Le JIT remet aussi C1 à zéro (une fois par bloc) comme le processeur.
+  La campagne ne démarre toujours pas (EASY referme la boîte, aucun appel système, aucun thread, aucune lecture
+  ensuite) — y compris quand tout le code passe à l'interpréteur de référence juste avant le clic : ce n'est pas le
+  JIT ; décision interne au jeu (données / patch 1.09 v3.1 de cette copie, probablement).
 - **Appels WebGL** (`--gl-count t:images`, sans les lectures de la capture) : partie BFME2 1 460 appels par image pour
   154 tracés (9,5 par tracé), aucune relecture ; partie BFME1 ~6,5 appels par tracé.
 - **BFME1 en détails élevés (CPU seul)** : partie ~37 fps (24-25 ms de CPU par image) ; le menu 3D (grande bataille en
