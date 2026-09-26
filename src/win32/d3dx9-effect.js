@@ -37,6 +37,25 @@ const SM = { SetTransform: 3, SetMaterial: 4, SetLight: 5, LightEnable: 6, SetRe
  * @param {import('../core/vm.js').Vm} vm
  * @param {{ callMethod: Function, textBuffer: Function }} h
  */
+/**
+ * The resources of a parsed effect by key ("technique:pass:state", or "p<param>:<element>:<state>" for the states of
+ * sampler parameters): shaders ("t:p:s" or "p<param>:<element>" -> { bytes }), expressions computing a state's value
+ * or an array selector's index ({ name: the array (selectors) or null, prog }), referenced parameter names.
+ */
+export function effectResources(parsed) {
+  const shaders = new Map(), exprs = new Map(), refs = new Map();
+  for (const r of parsed.resources) {
+    const key = r.technique === 0xffffffff ? `p${r.index}:${r.element}:${r.state}` : `${r.technique}:${r.index}:${r.state}`;
+    // usage 0: compiled code — a shader, or (version token 'FX') an expression computing the state's value from
+    // parameters (e.g. AlphaTestEnable = (a bool parameter)), evaluated whenever the pass is applied
+    if (r.usage === 0 && r.data.length >= 4 && (new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true) >>> 16) === 0x4658) exprs.set(key, { name: null, prog: expressionInfo(r.data) });
+    else if (r.usage === 0) shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, { bytes: r.data, ptr: 0, info: null });
+    else if (r.usage === 1) refs.set(key, cstrOf(r.data));
+    else if (r.usage === 2) { const n = new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true); const name = cstrOf(r.data.subarray(4, 4 + n)); exprs.set(key, { name, prog: expressionInfo(r.data.subarray(4 + ((n + 3) & ~3))) }); }
+  }
+  return { shaders, exprs, refs };
+}
+
 export function defineEffects(X, vm, h) {
   const mem = vm.mem, com = vm.com;
   com.interface('ID3DXEffect', 'f6ceb4b3-4e4c-40dd-b883-8d8de5ea0cd5', 'IUnknown', EFFECT_METHODS);
@@ -55,18 +74,7 @@ export function defineEffects(X, vm, h) {
       this.byName = new Map(this.params.map((p) => [p.name, p]));
       this.techniques = parsed.techniques.map((t, ti) => ({ kind: 'technique', name: t.name, annotations: t.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}a${k}`)), passes: t.passes.map((ps, pi) => ({ kind: 'pass', name: ps.name, index: pi, technique: ti, states: ps.states, annotations: ps.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}p${pi}a${k}`)) })) }));
       for (const t of this.techniques) { this.handleOf(t); for (const ps of t.passes) this.handleOf(ps); }
-      this.shaders = new Map(); // "t:p:s" or "param:element" -> { ptr, info, vs }
-      this.exprs = new Map(); // "t:p:s" / "-1:param:element:state" -> { name, prog }
-      this.refs = new Map(); // same keys -> referenced parameter name (usage 1)
-      for (const r of parsed.resources) {
-        const key = r.technique === 0xffffffff ? `p${r.index}:${r.element}:${r.state}` : `${r.technique}:${r.index}:${r.state}`;
-        // usage 0: compiled code — a shader, or (version token 'FX') an expression computing the state's value from
-        // parameters (e.g. AlphaTestEnable = (a bool parameter)), evaluated whenever the pass is applied
-        if (r.usage === 0 && r.data.length >= 4 && (new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true) >>> 16) === 0x4658) this.exprs.set(key, { name: null, prog: expressionInfo(r.data) });
-        else if (r.usage === 0) this.shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, { bytes: r.data, ptr: 0, info: null });
-        else if (r.usage === 1) this.refs.set(key, cstrOf(r.data));
-        else if (r.usage === 2) { const n = new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true); const name = cstrOf(r.data.subarray(4, 4 + n)); this.exprs.set(key, { name, prog: expressionInfo(r.data.subarray(4 + ((n + 3) & ~3))) }); }
-      }
+      ({ shaders: this.shaders, exprs: this.exprs, refs: this.refs } = effectResources(parsed));
       this.technique = this.techniques[0] ?? null;
       this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
     }
