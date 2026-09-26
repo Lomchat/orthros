@@ -570,7 +570,12 @@
   unique de dispatch SEH par thread (une exception levée pendant un gestionnaire l'écrasait : ~12 000 avertissements
   en boucle, le moteur de rendu mourait). Corrigé (montages insensibles à la casse, pile de dispatchs SEH, tests) ;
   vérifié : sauvegarde puis chargement dans une escarmouche.
-- **Vérifié (BFME2)** : La Guerre de l'Anneau démarre (profil créé, carte stratégique 3D, tour 1, phase tactique).
+- **Vérifié (BFME2)** : La Guerre de l'Anneau démarre (profil créé, carte stratégique 3D, tour 1, phase tactique) ;
+  sauvegarde d'une escarmouche, fermeture, puis « Load Game » depuis le menu dans une nouvelle session : la partie
+  reprend. BFME1 : changement de résolution 800×600 → 1024×768 confirmé (le jeu revient en arrière sans confirmation
+  sous 10 s, comme sous Windows ; il ne propose que des modes 4:3).
+- Les boutons de l'interface 3D des jeux (menu de jeu, carte de campagne) ignorent un clic synthétique trop bref : le
+  harnais les pilote avec `down` / `up` espacés (un vrai clic dure 80-150 ms).
 - **Vérifié (BFME1, détails élevés)** : campagne du Bien de bout en bout — carte de la Terre du Milieu en 3D, la
   Communauté envoyée en Moria, écran de chargement puis cinématique de la mission (~30 images/s). Sur la carte 3D, un
   clic synthétique trop bref (appui relâché dès l'image suivante) n'est pas pris : un vrai clic (80-150 ms) l'est.
