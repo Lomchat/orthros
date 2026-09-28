@@ -9,6 +9,7 @@ import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { VOICE_TABLE_BYTES } from '../../win32/dsound.js';
+import { LAN } from '../lan-proto.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
@@ -107,6 +108,7 @@ async function start(m) {
     }).catch(() => {});
     programSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: list }) }).catch(() => {});
   }
+  if (!m.opts.headless || m.opts.lan) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
   if (m.opts.regionCache) {
     const url = `/api/regions/${encodeURIComponent(manifestName)}`;
     fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
@@ -432,3 +434,39 @@ self.onmessage = (e) => {
   }
 };
 void IN_RING; void AUDIO_RING_FRAMES;
+
+/**
+ * The link to the server's virtual LAN (src/host/lan.js, D061): host.lan for the emulated Winsock — the address the
+ * server gave, send() of a frame — and the frames received handed to it between guest time slices. Reconnects after a
+ * drop (the address may then change: a game in progress loses its peers, as on a real network cable pulled).
+ */
+function connectLan(h, room) {
+  if (typeof WebSocket === 'undefined') return;
+  const lan = h.lan = { ip: null, peers: 0, ws: null, sent: 0, received: 0 };
+  lan.send = (type, src, dst, payload) => {
+    const ws = lan.ws; if (!ws || ws.readyState !== 1) return;
+    const f = new Uint8Array(LAN.HEADER + (payload?.length ?? 0)), dv = new DataView(f.buffer);
+    f[0] = type; dv.setUint32(1, src.ip, true); dv.setUint16(5, src.port); dv.setUint32(7, dst.ip, true); dv.setUint16(11, dst.port);
+    if (payload) f.set(payload, LAN.HEADER);
+    ws.send(f); lan.sent++;
+  };
+  const open = () => {
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/lan?room=${encodeURIComponent(room)}`);
+    ws.binaryType = 'arraybuffer'; lan.ws = ws;
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.type === 'hello') { lan.ip = m.ip; log('net', `LAN: address ${m.ip}, ${m.peers} player${m.peers > 1 ? 's' : ''} of this game on the server`); }
+        if (m.peers !== undefined) { lan.peers = m.peers; post({ type: 'lan', ip: lan.ip, peers: m.peers }); }
+        return;
+      }
+      const f = new Uint8Array(e.data); if (f.length < LAN.HEADER) return;
+      const dv = new DataView(f.buffer);
+      lan.received++;
+      vm?.lanDeliver?.(f[0], { ip: dv.getUint32(1, true), port: dv.getUint16(5) }, { ip: dv.getUint32(7, true), port: dv.getUint16(11) }, f.subarray(LAN.HEADER));
+      h.wake?.();
+    };
+    ws.onclose = (e) => { lan.ws = null; log('net', `LAN: link closed (${e.code}${e.reason ? ' ' + e.reason : ''}), reconnecting`); post({ type: 'lan', ip: null, peers: 0 }); setTimeout(open, 3000); };
+  };
+  open();
+}

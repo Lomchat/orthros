@@ -4,6 +4,7 @@ import { E } from './errors.js';
 import { CC_CDECL } from './api.js';
 import { allocString } from './kernel32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
+import { defineWinsock } from './winsock.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
 const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167;
@@ -186,7 +187,7 @@ export function registerMiscDlls(api, vm) {
   api.define('version.dll', V);
 
 
-  // ---------------------------------------------------------------- winsock (no network in v1)
+  // ---------------------------------------------------------------- winsock: sockets over the virtual LAN (winsock.js, D061)
   const WS = {};
   const WSAENETDOWN = 10050, WSAEWOULDBLOCK = 10035, WSANOTINITIALISED = 10093, SOCKET_ERROR = 0xffffffff;
   const wsaErr = (c, e) => { c.proc.wsaLastError = e; return SOCKET_ERROR; };
@@ -194,30 +195,21 @@ export function registerMiscDlls(api, vm) {
   WS.WSACleanup = [0, () => 0];
   WS.WSAGetLastError = [0, (c) => c.proc.wsaLastError ?? 0];
   WS.WSASetLastError = [1, (c) => { c.proc.wsaLastError = c.arg(0); }];
-  WS.socket = [3, (c) => { c.proc.wsaLastError = WSAENETDOWN; return SOCKET_ERROR; }];
-  WS.WSASocketA = [6, (c) => { c.proc.wsaLastError = WSAENETDOWN; return SOCKET_ERROR; }];
-  WS.closesocket = [1, () => 0];
-  for (const n of ['bind', 'connect', 'listen', 'send', 'recv', 'sendto', 'recvfrom', 'select', 'ioctlsocket', 'setsockopt', 'getsockopt', 'getsockname', 'getpeername', 'shutdown', 'accept', 'WSAAsyncSelect', 'WSAEventSelect', 'WSAIoctl', 'WSASend', 'WSARecv', 'WSASendTo', 'WSARecvFrom']) {
-    WS[n] = [api.signatures.get(n) ?? 3, (c) => wsaErr(c, WSAENETDOWN)];
-  }
-  WS.gethostname = [2, (c) => { mem.writeCString(c.arg(0), 'orthros', c.arg(1)); return 0; }];
-  WS.gethostbyname = [1, (c) => { c.proc.wsaLastError = 11001; return 0; }];
-  WS.gethostbyaddr = [3, (c) => { c.proc.wsaLastError = 11001; return 0; }];
+  for (const n of ['WSAEventSelect', 'WSAIoctl', 'WSASend', 'WSARecv', 'WSASendTo', 'WSARecvFrom']) WS[n] = [api.signatures.get(n) ?? 3, (c) => wsaErr(c, WSAENETDOWN)]; // (overlapped / event-driven sockets: not yet)
   WS.getaddrinfo = [4, () => 11001]; WS.freeaddrinfo = [1, () => {}];
   WS.inet_addr = [1, (c) => { const p = (c.str(0) ?? '').split('.').map(Number); if (p.length !== 4 || p.some((x) => !(x >= 0 && x <= 255))) return 0xffffffff; return (p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)) >>> 0; }];
-  WS.inet_ntoa = [1, (c) => { const v = c.arg(0); const s = `${v & 255}.${(v >> 8) & 255}.${(v >> 16) & 255}.${(v >>> 24) & 255}`; return allocString(c, s); }];
   WS.htons = [1, (c) => ((c.arg(0) & 0xff) << 8) | ((c.arg(0) >> 8) & 0xff)]; WS.ntohs = WS.htons;
   WS.htonl = [1, (c) => { const v = c.arg(0); return ((v >>> 24) | ((v >>> 8) & 0xff00) | ((v << 8) & 0xff0000) | (v << 24)) >>> 0; }]; WS.ntohl = WS.htonl;
-  WS.__WSAFDIsSet = [2, () => 0];
+  defineWinsock(WS, vm);
   WS.WSACreateEvent = [0, (c) => c.proc.handles.create({ type: 'event', manual: true, signaled: false })];
   WS.WSACloseEvent = [1, (c) => { c.proc.handles.close(c.arg(0)); return 1; }];
   WS.WSAResetEvent = [1, () => 1]; WS.WSASetEvent = [1, () => 1];
   WS.WSAWaitForMultipleEvents = [5, () => 0x102]; WS.WSAEnumNetworkEvents = [3, () => wsaErr];
   WS.WSAEnumProtocolsA = [3, (c) => { mem.write32(c.arg(2), 0); return 0; }];
   api.define('ws2_32.dll', WS);
-  api.ordinals('ws2_32.dll', { 1: 'accept', 2: 'bind', 3: 'closesocket', 4: 'connect', 5: 'getpeername', 6: 'getsockname', 7: 'getsockopt', 8: 'htonl', 9: 'htons', 10: 'ioctlsocket', 11: 'inet_addr', 12: 'inet_ntoa', 13: 'listen', 14: 'ntohl', 15: 'ntohs', 16: 'recv', 17: 'recvfrom', 18: 'select', 19: 'send', 20: 'sendto', 21: 'setsockopt', 22: 'shutdown', 23: 'socket', 51: 'gethostbyaddr', 52: 'gethostbyname', 57: 'gethostname', 111: 'WSAGetLastError', 112: 'WSASetLastError', 115: 'WSAStartup', 116: 'WSACleanup', 151: '__WSAFDIsSet' });
+  api.ordinals('ws2_32.dll', { 1: 'accept', 2: 'bind', 3: 'closesocket', 4: 'connect', 5: 'getpeername', 6: 'getsockname', 7: 'getsockopt', 8: 'htonl', 9: 'htons', 10: 'ioctlsocket', 11: 'inet_addr', 12: 'inet_ntoa', 13: 'listen', 14: 'ntohl', 15: 'ntohs', 16: 'recv', 17: 'recvfrom', 18: 'select', 19: 'send', 20: 'sendto', 21: 'setsockopt', 22: 'shutdown', 23: 'socket', 51: 'gethostbyaddr', 52: 'gethostbyname', 57: 'gethostname', 111: 'WSAGetLastError', 112: 'WSASetLastError', 115: 'WSAStartup', 116: 'WSACleanup', 151: '__WSAFDIsSet', 101: 'WSAAsyncSelect' });
   api.define('wsock32.dll', WS);
-  api.ordinals('wsock32.dll', { 1: 'accept', 2: 'bind', 3: 'closesocket', 4: 'connect', 5: 'getpeername', 6: 'getsockname', 7: 'getsockopt', 8: 'htonl', 9: 'htons', 10: 'ioctlsocket', 11: 'inet_addr', 12: 'inet_ntoa', 13: 'listen', 14: 'ntohl', 15: 'ntohs', 16: 'recv', 17: 'recvfrom', 18: 'select', 19: 'send', 20: 'sendto', 21: 'setsockopt', 22: 'shutdown', 23: 'socket', 51: 'gethostbyaddr', 52: 'gethostbyname', 57: 'gethostname', 111: 'WSAGetLastError', 112: 'WSASetLastError', 115: 'WSAStartup', 116: 'WSACleanup', 151: '__WSAFDIsSet' });
+  api.ordinals('wsock32.dll', { 1: 'accept', 2: 'bind', 3: 'closesocket', 4: 'connect', 5: 'getpeername', 6: 'getsockname', 7: 'getsockopt', 8: 'htonl', 9: 'htons', 10: 'ioctlsocket', 11: 'inet_addr', 12: 'inet_ntoa', 13: 'listen', 14: 'ntohl', 15: 'ntohs', 16: 'recv', 17: 'recvfrom', 18: 'select', 19: 'send', 20: 'sendto', 21: 'setsockopt', 22: 'shutdown', 23: 'socket', 51: 'gethostbyaddr', 52: 'gethostbyname', 57: 'gethostname', 111: 'WSAGetLastError', 112: 'WSASetLastError', 115: 'WSAStartup', 116: 'WSACleanup', 151: '__WSAFDIsSet', 101: 'WSAAsyncSelect' });
 
   // ---------------------------------------------------------------- never-needed: fail gracefully
   const fail = (n, argc, ret = 0xffffffff) => [argc, () => ret];
