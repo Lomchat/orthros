@@ -122,8 +122,9 @@ function inlineApiOf(mem, insn) {
 }
 
 // Lazy kinds whose CF / OF Emitter.pushCond computes inline (the same formulas as the flags helper); ZF, SF and PF
-// come from the result for every kind. SHL (CF/OF depend on the count in a way not worth inlining) is left to the helper.
-const CF_INLINE = new Set([LZ.ADD, LZ.SUB, LZ.LOGIC, LZ.INC, LZ.DEC, LZ.NEG, LZ.ADC, LZ.SBB, LZ.SHR, LZ.SAR, LZ.MUL, LZ.IMUL, LZ.SHLD, LZ.BSF]);
+// come from the result for every kind. All of them now: with SHL's (the last bit shifted out, pushShlCarry) the run-time
+// dispatch of a block reading flags it did not set (pushCondDynamic) has no flags helper call left.
+const CF_INLINE = new Set([LZ.ADD, LZ.SUB, LZ.LOGIC, LZ.INC, LZ.DEC, LZ.NEG, LZ.ADC, LZ.SBB, LZ.SHL, LZ.SHR, LZ.SAR, LZ.MUL, LZ.IMUL, LZ.SHLD, LZ.BSF]);
 const OF_INLINE = CF_INLINE;
 /** highest lazy kind (LZ.SBB) */
 const LZ_KINDS_MAX = Math.max(...Object.values(LZ));
@@ -200,6 +201,62 @@ function regionFlagsLiveness(blocks, byEip) {
       if (li !== liveIn[k]) { liveIn[k] = li; changed = true; }
     }
   }
+}
+
+// ---- lazy flag state predicted at block entries. A block testing flags it did not set (a JCC right after the previous
+// block's JCC, a DEC/INC keeping the CF of an earlier block) dispatches on the run-time lazy op (pushCondDynamic).
+// When every in-region predecessor leaves the same lazy op (kind and size, known from its instructions), that op is
+// the likely one: the dispatch first tests L_LZOP against it and evaluates the condition inline for it (a compare
+// and a predictable branch instead of an indirect jump). A prediction only: other entries (dispatcher, chains,
+// returns) and mispredictions take the full dispatch, so it never changes what is computed.
+const LZ_OF_OP = new Map([[OP.ADD, LZ.ADD], [OP.SUB, LZ.SUB], [OP.CMP, LZ.SUB], [OP.AND, LZ.LOGIC], [OP.OR, LZ.LOGIC],
+  [OP.XOR, LZ.LOGIC], [OP.TEST, LZ.LOGIC], [OP.INC, LZ.INC], [OP.DEC, LZ.DEC], [OP.NEG, LZ.NEG], [OP.ADC, LZ.ADC],
+  [OP.SBB, LZ.SBB], [OP.SHL, LZ.SHL], [OP.SHR, LZ.SHR], [OP.SAR, LZ.SAR]]);
+/** Instructions leaving the lazy flag state as it is (they neither write nor materialize the flags). */
+const LZ_KEEP = new Set([...FLAGS_NONE, OP.JCC, OP.SETCC, OP.CMOVCC]);
+/**
+ * Lazy op (kind << 2 | size) after `insn` given the one before it (-1: unknown): the op its handler sets (a
+ * shift by a constant count; by CL: unknown, the count may be 0), the same for LZ_KEEP, unknown for the others.
+ */
+function lzOpAfter(insn, before) {
+  if (LZ_KEEP.has(insn.op)) return before;
+  const kind = LZ_OF_OP.get(insn.op);
+  if (kind === undefined) return -1;
+  if (kind === LZ.SHL || kind === LZ.SHR || kind === LZ.SAR) { const n = shiftCountConst(insn); if (n === 0) return before; if (n < 0) return -1; }
+  return (kind << 2) | SZLOG[insn.ops[0].size];
+}
+/**
+ * b.lzPred for every block: the lazy op every in-region predecessor leaves (forward dataflow to a fixpoint), or
+ * -1 (unknown: no in-region predecessor, predecessors disagreeing, a return site, the region entry).
+ */
+function regionLazyPrediction(blocks, byEip) {
+  const preds = blocks.map(() => []);
+  for (const b of blocks) {
+    const last = b.insns[b.insns.length - 1];
+    let succ = [];
+    switch (b.term) {
+      case TERM_NONE: succ = [b.fallthrough]; break;
+      case TERM_JCC: case TERM_LOOP: succ = [last.ops[0].v, b.fallthrough]; break;
+      case TERM_JMP: if (last.ops[0].t === OT.REL) succ = [last.ops[0].v]; break;
+      default: break;
+    }
+    for (const a of succ) { const t = byEip.get(a); if (t) preds[t.index].push(b); }
+  }
+  const UNSET = -2; // (not reached yet: the identity of the meet)
+  const lzIn = new Int32Array(blocks.length).fill(UNSET), lzOut = new Int32Array(blocks.length).fill(UNSET);
+  const outOf = (b, l) => { for (const insn of b.insns) l = lzOpAfter(insn, l); return l; }; // (UNSET kept up to a write)
+  for (let changed = true, rounds = 0; changed && rounds < 64; rounds++) {
+    changed = false;
+    for (const b of blocks) {
+      const k = b.index;
+      let l = preds[k].length ? UNSET : -1; // (the region entry's own state is not predicted: entered once)
+      for (const p of preds[k]) { const o = lzOut[p.index]; if (o === UNSET) continue; l = l === UNSET || l === o ? o : -1; }
+      lzIn[k] = l;
+      const o = outOf(b, l);
+      if (o !== lzOut[k]) { lzOut[k] = o; changed = true; }
+    }
+  }
+  for (const b of blocks) b.lzPred = lzIn[b.index] >= 0 ? lzIn[b.index] : -1;
 }
 
 /** Instructions that load the x87 control word (precision / rounding control). */
@@ -384,6 +441,7 @@ class Emitter {
     this.blocks = blocks;
     this.byEip = byEip;
     if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
+    if (this.opts.lazyPredict !== false) regionLazyPrediction(blocks, byEip);
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
@@ -999,11 +1057,25 @@ class Emitter {
    * set by its predecessors): dispatch on the run-time lazy op (L_LZOP = kind << 2 | size) to an
    * inline computation for every kind pushCond evaluates inline (flags already materialized, and the
    * lazy kinds of lazyCondInline); lazy ops whose code is identical (ZF of any kind, CF of a subtraction
-   * of any size...) share one arm. Only the other kinds (SHL's CF/OF...) call the flags helper. The lazy
-   * state is left as is.
+   * of any size...) share one arm. Only the other kinds (none left: see CF_INLINE) would call the flags helper.
+   * When the block's predecessors in the region agree on the lazy op (b.lzPred), that op is tested first and its
+   * condition evaluated inline (a compare and a predictable branch before the indirect jump). The lazy state is
+   * left as is.
    */
   pushCondDynamic(cc) {
     const c = this.c, base = cc >> 1;
+    const pred = this.insnIdx - 1 <= this.lzPredUntil ? this.lzPred : -1;
+    if (pred > 0 && lazyCondInline(base, pred >> 2)) {
+      // the lazy op every in-region predecessor leaves (regionLazyPrediction): tested first, inline
+      c.get(L_LZOP).i32(pred).eq();
+      c.hint(true).if_(T.i32);
+      this.lz = { kind: pred >> 2, sz: pred & 3 }; this.pushCond(cc);
+      c.else_();
+      this.lzPred = -1; this.pushCondDynamic(cc); // (the full dispatch, which leaves this.lz null)
+      this.lzPred = pred;
+      c.end();
+      return;
+    }
     // arms by generated code: each candidate lazy op is emitted into a scratch body, identical bytes share an arm
     const byCode = new Map();
     const scratch = (this.armScratch ??= new Code());
@@ -1015,24 +1087,31 @@ class Emitter {
       arm.ops.push(op);
     };
     add(0, { kind: LZ.NONE, sz: 2 });
+    let allInline = true;
     for (let kind = 1; kind <= LZ_KINDS_MAX; kind++) {
-      if (!lazyCondInline(base, kind)) continue;
+      if (!lazyCondInline(base, kind)) { allInline = false; continue; }
       for (const sz of [0, 1, 2]) add((kind << 2) | sz, { kind, sz });
     }
     const arms = [...byCode.values()];
     const done = c.block(T.i32);
-    const slow = c.block();
+    const slow = allInline ? null : c.block();
     for (let k = arms.length - 1; k >= 0; k--) arms[k].label = c.block();
-    const table = new Array(Math.max(...arms.flatMap((a) => a.ops)) + 1).fill(slow);
+    // every lazy kind inline: no helper call in the function (a call site, even never taken, makes V8 spill the
+    // values live across it on every path). The remaining table entries (no translation writes such an L_LZOP)
+    // share the NONE arm: EFLAGS as is, what the flags helper returns for an unknown kind.
+    const other = slow ?? arms[0].label;
+    const table = new Array(Math.max(...arms.flatMap((a) => a.ops)) + 1).fill(other);
     for (const a of arms) for (const op of a.ops) table[op] = a.label;
-    c.get(L_LZOP).br_table(table, slow);
+    c.get(L_LZOP).br_table(table, other);
     for (const a of arms) {
       c.end(); // a.label
       this.lz = a.lz; this.pushCond(cc);
       c.br(done);
     }
-    c.end(); // slow: another lazy kind
-    this.lz = { kind: -1, sz: 2 }; this.materialize(); this.pushCond(cc); // flags helper, then EFLAGS
+    if (slow) {
+      c.end(); // slow: another lazy kind
+      this.lz = { kind: -1, sz: 2 }; this.materialize(); this.pushCond(cc); // flags helper, then EFLAGS
+    }
     c.end(); // done
     this.lz = null;
   }
@@ -1047,6 +1126,7 @@ class Emitter {
       case LZ.SHR: case LZ.SAR: c.get(L_LZA).get(L_LZB).i32(1).sub().shr_u().i32(1).and(); return;
       case LZ.MUL: c.get(L_LZA).i32(0).ne(); return;
       case LZ.SHLD: c.get(L_LZA).i32(1).and(); return;
+      case LZ.SHL: this.pushShlCarry(8 << lz.sz); return;
       default: this.pushCarryOf(lz); // ADC, SBB, NEG
     }
   }
@@ -1062,6 +1142,7 @@ class Emitter {
       case LZ.NEG: c.get(L_LZA).i32(sign | 0).eq(); return;
       case LZ.SHR: c.get(L_LZA).i32(sign).and().i32(0).ne(); return;
       case LZ.MUL: c.get(L_LZA).i32(0).ne(); return;
+      case LZ.SHL: c.get(L_LZRES).i32(sign).and().i32(0).ne(); this.pushShlCarry(8 << lz.sz); c.xor(); return;
       default: c.get(L_LZB).i32(1).and(); // IMUL, SHLD
     }
   }
@@ -1171,6 +1252,10 @@ class Emitter {
     this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
     this.xsValid = this.xsDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
+    // the predicted lazy op at entry (regionLazyPrediction) holds up to the block's first instruction changing it
+    this.lzPred = b.lzPred ?? -1;
+    this.lzPredUntil = 0;
+    if (this.lzPred >= 0) while (this.lzPredUntil < b.insns.length && LZ_KEEP.has(b.insns[this.lzPredUntil].op)) this.lzPredUntil++;
     // flags live after each instruction of the block
     const live = (this.flagsAfter = new Uint8Array(b.insns.length));
     for (let i = b.insns.length - 1, l = b.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
