@@ -3,8 +3,8 @@
 // static stack shift and tag word across the FSINCOS/FPTAN pushes and the FYL2X/FYL2XP1/FPATAN
 // pops, FXCH/FINCSTP/FDECSTP/FFREE around them, the status word (C2 out of range, IE | ES and
 // the indefinite for NaN, C0-C3 cleared), precision control, time slices at every budget, the
-// out-of-range FSINCOS/FPTAN region exit, interpreter fallbacks (FXAM, FNSTENV, m80 loads and
-// stores) next to the native ops, SMC exits with a pending shift, region consolidation, chained
+// out-of-range FSINCOS/FPTAN region exit, FXAM, FNSTENV, m80 loads and stores (once interpreter
+// fallbacks) next to the native ops, SMC exits with a pending shift, region consolidation, chained
 // entries, the region classifier and the fallback histogram, and a seeded random differential
 // test against the reference interpreter (the generator steps the interpreter as it goes, so no
 // sequence ever reads an empty register or pushes onto a full one: the JIT does not emulate
@@ -100,8 +100,9 @@ class Asm {
   fldQEsi(off) { return this.emit(0xdd, 0x46, off & 0xff); } // fld qword [esi+disp8]
   fstpQ(a) { return this.abs([0xdd], 3, a); }
   fstQ(a) { return this.abs([0xdd], 2, a); }
-  fldT(a) { return this.abs([0xdb], 5, a); } // fld tbyte (interpreter fallback)
-  fstpT(a) { return this.abs([0xdb], 7, a); } // fstp tbyte (interpreter fallback)
+  fldT(a) { return this.abs([0xdb], 5, a); } // fld tbyte
+  fstpT(a) { return this.abs([0xdb], 7, a); } // fstp tbyte
+  fxtract() { return this.emit(0xd9, 0xf4); } // (interpreter fallback)
   faddQ(a) { return this.abs([0xdc], 0, a); }
   fsin() { return this.emit(0xd9, 0xfe); }
   fcos() { return this.emit(0xd9, 0xff); }
@@ -200,15 +201,15 @@ test('region classifier: every transcendental is an x87 instruction; none reache
   const seen = new Set();
   for (let at = CODE, i = 0; i < 9; i++) { const insn = decode(mem, at); assert.ok(touchesFpu(insn), OP_NAMES[insn.op]); seen.add(insn.op); at = insn.next; }
   assert.deepEqual(seen, new Set(TRANS));
-  // a program using all of them, with FNSTENV (interpreter) as a control for the histogram
+  // a program using all of them, with FXTRACT (interpreter; its two results popped) as a control for the histogram
   const b = new Asm(CODE);
-  b.fldQ(DATA).f2xm1().fld1().fscale().fnstenv(DATA + 200).fyl2x().fldQ(DATA).fyl2xp1().fldQ(DATA).fpatan().fsin().fcos().fsincos().fptan().fstpQ(DATA + 8).fstpQ(DATA + 16).fstpQ(DATA + 24);
+  b.fldQ(DATA).f2xm1().fld1().fscale().fld1().fxtract().fstpSt(0).fstpSt(0).fyl2x().fldQ(DATA).fyl2xp1().fldQ(DATA).fpatan().fsin().fcos().fsincos().fptan().fstpQ(DATA + 8).fstpQ(DATA + 16).fstpQ(DATA + 24);
   b.label('end').hlt();
   const { EJ } = both(b.finish(), [[0, 0.75]], b.labels.get('end'), { slots: [8, 16, 24] });
   for (const op of TRANS) assert.equal(EJ.jit.fallbackHist.get(op), undefined, `${OP_NAMES[op]} fell back`);
-  assert.equal(EJ.jit.fallbackHist.get(OP.FNSTENV), 1);
+  assert.equal(EJ.jit.fallbackHist.get(OP.FXTRACT), 1);
   assert.equal(EJ.jit.stats.fallbackSteps, 1);
-  assert.equal(EJ.jit.stats.fallback, 1, 'one fallback site (FNSTENV) in the region');
+  assert.equal(EJ.jit.stats.fallback, 1, 'one fallback site (FXTRACT) in the region');
   assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
 });
 
@@ -244,7 +245,7 @@ test('pushes (FSINCOS/FPTAN) and pops (FYL2X/FYL2XP1/FPATAN) under a pending shi
     assert.equal((EJ.mem.read32(DATA + 96 + 4) >> 11) & 7, 7, 'TOP at the FNSTENV');
     for (const o of [64, 66, 68, 70, 72]) assert.equal(EJ.mem.read16(DATA + o) & 0x4700, 0, `no C0/C2/C3 after the transcendental at [D+${o}]`);
     assert.equal(EJ.cpu.fpuTop, 5); assert.equal(EJ.cpu.fpuTw, 0);
-    assert.equal(EJ.jit.stats.fallbackSteps, 1, 'FNSTENV only');
+    assert.equal(EJ.jit.stats.fallbackSteps, 0, 'FNSTENV is native');
   }
 });
 
@@ -599,9 +600,9 @@ test('loop with pushes and pops across blocks and out-of-range exits: region bou
 });
 
 // --------------------------------------------------------------------------- fallbacks next to the native ops
-test('interpreter fallbacks (FXAM, FLD/FSTP m80, FNSTENV) adjacent to the transcendentals with a pending shift', () => {
+test('FXAM, FLD/FSTP m80, FNSTENV (native, formerly interpreter fallbacks) adjacent to the transcendentals with a pending shift', () => {
   const a = new Asm(CODE);
-  a.fldQ(DATA).fstpT(DATA + 96); // an 80-bit copy of x for the m80 load below (interpreter)
+  a.fldQ(DATA).fstpT(DATA + 96); // an 80-bit copy of x for the m80 load below
   a.fldQ(DATA + 8).fldQ(DATA).fxam().fnstswM(DATA + 64).fsincos().fxam().fnstswM(DATA + 66); // FXAM before and after the push
   a.fldT(DATA + 96).fpatan().fnstswM(DATA + 68); // m80 load right before the pop
   a.fptan().fstpT(DATA + 112).fnstenv(DATA + 128); // m80 store right after the push (pops the 1.0), then the environment
@@ -610,7 +611,7 @@ test('interpreter fallbacks (FXAM, FLD/FSTP m80, FNSTENV) adjacent to the transc
   const end = a.labels.get('end');
   for (const x of [0.6, -0.6]) {
     const { EJ } = both(a.finish(), [[0, x], [8, 2.5]], end, { slots: [16, 24], msg: `x=${x}`, swMask: ~C1 });
-    assert.equal(EJ.jit.stats.fallbackSteps, 4, 'FSTP m80, FLD m80, FSTP m80, FNSTENV (FXAM is native)');
+    assert.equal(EJ.jit.stats.fallbackSteps, 0, 'FSTP m80, FLD m80, FSTP m80, FNSTENV and FXAM are native');
     assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
   }
 });

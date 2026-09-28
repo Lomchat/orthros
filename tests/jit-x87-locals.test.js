@@ -382,7 +382,7 @@ test('FXCH / FSTP st(i) / FLD st(i) / FFREE / FINCSTP permutations with tags via
   assert.equal(EJ.mem.readF64(DATA + 96), 3.5);
   assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map((p) => EJ.cpu.fpr(p)), [0, 0, 1, 4.5, 0, 3.5, 0, 3.5], 'physical registers written back');
   assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
-  assert.equal(EJ.jit.stats.fallbackSteps, 1, 'FNSTENV (FXAM is native)');
+  assert.equal(EJ.jit.stats.fallbackSteps, 0, 'FNSTENV and FXAM are native');
 });
 
 test('FCMOVcc, FUCOMIP and FCOMPP condition results with the cached stack', () => {

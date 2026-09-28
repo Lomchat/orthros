@@ -5,15 +5,18 @@
 // load/flush) and L_FPC the control word's precision/rounding bits (cw & 0xf00). Within a
 // block push/pop only move a static shift (Emitter.stShift); the locals are rotated once where
 // the block is left, and the Emitter writes everything back to the thread state at every exit
-// and around interpreter fallbacks (FXAM, FNSTENV, transcendentals, m80 loads/stores...), which
-// work on the memory copy. Precision control (24-bit mode) rounds inline through f32 for
+// and around interpreter fallbacks (FXTRACT, FPREM, FBLD/FBSTP, FXSAVE...), which work on the
+// memory copy. Precision control (24-bit mode) rounds inline through f32 for
 // normal-range values in round-to-nearest mode and through the runtime's round24 helper
 // otherwise (extended exponent range, directed rounding); rounding control applies to integer
 // conversions and FRNDINT.
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
-// the interpreter and FNSTENV/FXAM, not checked.
+// the interpreter and FNSTENV/FNSAVE/FXAM, not checked (an FLD m80 onto a full stack or an FSTP m80
+// of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
 import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
-import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
+import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
+import { smcCheckEnd } from './translate-sse-common.js';
+import { emitF80Load, emitF80Store } from './fpmath-f80.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import { T } from './wasm.js';
@@ -324,7 +327,8 @@ function compareEflags(E) {
 // ---- loads / stores
 HANDLERS[OP.FLD] = (E, insn) => {
   const o = insn.ops[0];
-  if (o.t === OT.MEM && o.size === 10) { E.fallback(insn); return; }
+  // m80: inline conversion (fpmath-f80.js, the interpreter's readF80 bit for bit)
+  if (o.t === OT.MEM && o.size === 10) { E.eaTo(o); emitF80Load(E.c, L_TA, 0, F80_LOAD); push(E); storeSTStack(E, 0); return; }
   // 24-bit mode: a float operand (or a register held as one) stays a float
   if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.ea(o); E.c.f32load(0, 0); push(E); storeST32Stack(E, 0); return; }
   if (o.t === OT.ST && isF32(E, o.r)) { E.c.get(L_S32 + slot(E, o.r)); push(E); storeST32Stack(E, 0); return; }
@@ -332,6 +336,8 @@ HANDLERS[OP.FLD] = (E, insn) => {
   push(E); storeSTStack(E, 0);
 };
 HANDLERS[OP.FILD] = (E, insn) => { loadIntOperand(E, insn.ops[0]); push(E); storeSTStack(E, 0); };
+/** scratch locals of the inline m80 conversions (fpmath-f80.js) */
+const F80_LOAD = { m: L_I64A, se: L_T4, e: L_T5, r: L_F64A }, F80_STORE = { b: L_I64A, exp: L_T4, sg: L_T5 };
 function fstore(E, insn, doPop) {
   const c = E.c; const o = insn.ops[0];
   if (o.t === OT.ST) {
@@ -339,7 +345,13 @@ function fstore(E, insn, doPop) {
     if (doPop) pop(E);
     return;
   }
-  if (o.size === 10) { E.fallback(insn); return; }
+  if (o.size === 10) {
+    // FSTP m80: exact (fpmath-f80.js, the interpreter's writeF80); 10 bytes may straddle two pages
+    E.eaTo(o); loadST(E, 0); c.set(L_F64A); emitF80Store(c, L_TA, 0, L_F64A, F80_STORE);
+    if (doPop) pop(E);
+    E.smcCheck(insn); smcCheckEnd(E, insn, 10);
+    return;
+  }
   E.eaTo(o);
   if (o.size === 4 && isF32(E, 0)) {
     c.get(L_TA).get(L_S32 + slot(E, 0)).f32store(0, 0); // an exact float: no rounding in any mode
@@ -842,13 +854,123 @@ HANDLERS[OP.FCMOVCC] = (E, insn) => {
   toF64(E, 0); // conditionally overwritten: the f64 local must hold the current value on both paths
   const t = c.if_(); loadST(E, i); c.set(stW(E, 0)); tagValid(E, 0, false); c.end(); void t;
 };
-HANDLERS[OP.FNINIT] = (E) => {
+function fninit(E) {
   const c = E.c;
   c.get(L_STATE).i32(0x037f).i32store16(ST.FPU_CW); c.get(L_STATE).i32(0).i32store16(ST.FPU_SW);
   E.x87SetTop0(); // register contents are kept (as the interpreter does), only re-based on TOP = 0
   c.i32(0).set(L_FTW); E.stValid = 0;
   c.i32(0x300).set(L_FPC);
   E.fpcStatic = null;
+}
+HANDLERS[OP.FNINIT] = fninit;
+
+// ---- environment / state save and restore (FNSTENV, FLDENV, FNSAVE, FRSTOR): the interpreter's layout
+// (interp-x87.js storeEnv/loadEnv: 32-bit protected mode, 28-byte environment, then for FNSAVE/FRSTOR the
+// eight registers ST(0)..ST(7) as 80-bit values), emitted inline on the normalized locals (ST(i) in
+// L_ST0+i, L_FTW in ST order, L_TOP the real TOP). They used to be interpreter fallbacks: an exit from
+// translated code costing ~0.3-0.5 us each, in C-runtime math routines that save the x87 state around
+// their SSE2 code.
+/** DBL_MIN: below it (and for infinities / NaNs) the full tag word says "special" (interp-x87.js fullTags) */
+const DBL_MIN = 2.2250738585072014e-308;
+/**
+ * Write the 28-byte environment at L_TA: control word, status word with TOP, the full tag word (2 bits per
+ * physical register: 0 valid, 1 zero, 2 special, 3 empty, from the values in the locals), zero pointers.
+ * The x87 state must be normalized (E.x87Normalize). Clobbers L_TV, L_T4, L_F64A.
+ */
+function storeEnv(E) {
+  const c = E.c;
+  c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32(0xffff0000 | 0).or().i32store(0, 0);
+  c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800 & 0xffff).and().get(L_TOP).i32(11).shl().or().i32(0xffff0000 | 0).or().i32store(4, 0);
+  // tags in ST order (tag of ST(i) at bits 2i), then rotated left by 2 TOP into physical order
+  for (let i = 0; i < 8; i++) {
+    c.get(L_ST0 + i).f64abs().set(L_F64A);
+    c.i32(1); // zero
+    c.i32(2).i32(0).get(L_F64A).f64c(DBL_MIN).f64lt().get(L_F64A).f64c(Infinity).f64lt().eqz().or().select(); // denormal, inf, NaN: special
+    c.get(L_F64A).f64c(0).f64eq().select();
+    c.i32(3).get(L_FTW).i32(1 << i).and().select(); // empty
+    if (i) c.i32(2 * i).shl().get(L_TV).or();
+    c.set(L_TV);
+  }
+  c.get(L_TA);
+  c.get(L_TV).get(L_TOP).i32(1).shl().tee(L_T4).shl().get(L_TV).i32(16).get(L_T4).sub().shr_u().or();
+  c.i32(0xffff).and().i32(0xffff0000 | 0).or().i32store(8, 0);
+  c.get(L_TA).i64(0n).i64store(12, 0); c.get(L_TA).i64(0n).i64store(20, 0); // instruction / operand pointers
+}
+/**
+ * Load the environment at L_TA: control word (L_FPC, fpcStatic unknown from here on), status word and TOP,
+ * tag word (valid unless the 2-bit tag is 3). `keepRegs` (FLDENV): the physical registers keep their
+ * values under the new TOP (the locals are written back and reloaded); FRSTOR reloads them all after.
+ * The x87 state must be normalized. Clobbers L_TV, L_T3, L_T4, L_T5.
+ */
+function loadEnv(E, keepRegs) {
+  const c = E.c;
+  c.get(L_STATE).get(L_TA).i32load16u(0).i32(0x1f3f).and().i32(0x40).or().tee(L_T4).i32store16(ST.FPU_CW);
+  c.get(L_T4).i32(0xf00).and().set(L_FPC);
+  E.fpcStatic = null;
+  c.get(L_TA).i32load16u(4).set(L_TV);
+  c.get(L_STATE).get(L_TV).i32(~0x3800 & 0xffff).and().i32store16(ST.FPU_SW);
+  c.get(L_TV).i32(11).shr_u().i32(7).and();
+  if (keepRegs) {
+    // a new TOP re-bases the locals on the physical registers (written back, reloaded); the usual restore of
+    // the same TOP costs nothing
+    c.tee(L_T5).get(L_TOP).ne();
+    const moved = c.if_(); E.flushX87Regs(); c.get(L_T5).set(L_TOP); E.loadX87Regs(); c.end(); void moved;
+  } else c.set(L_TOP);
+  // physical valid bits: tag != 3, i.e. not (both bits set); the even bits compressed into a byte
+  c.get(L_TA).i32load16u(8).tee(L_TV).get(L_TV).i32(1).shr_u().and().i32(0x5555).and().set(L_TV);
+  c.get(L_TV).get(L_TV).i32(1).shr_u().or().i32(0x3333).and().set(L_TV);
+  c.get(L_TV).get(L_TV).i32(2).shr_u().or().i32(0x0f0f).and().set(L_TV);
+  c.get(L_TV).get(L_TV).i32(4).shr_u().or().i32(-1).xor().i32(0xff).and().set(L_TV);
+  // L_FTW in ST order: rotate right by TOP (Emitter.loadX87Tags)
+  c.get(L_TV).get(L_TOP).shr_u().get(L_TV).i32(8).get(L_TOP).sub().shl().or().i32(0xff).and().set(L_FTW);
+  E.stValid = 0;
+  E.c1Clear = false; // (the loaded status word may have C1 set)
+}
+HANDLERS[OP.FNSTENV] = (E, insn) => {
+  const c = E.c;
+  E.x87Normalize();
+  E.eaTo(insn.ops[0]);
+  storeEnv(E);
+  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_CW).i32(0x3f).or().i32store16(ST.FPU_CW); // all exceptions masked
+  E.smcCheck(insn); smcCheckEnd(E, insn, 28);
+};
+HANDLERS[OP.FLDENV] = (E, insn) => {
+  E.x87Normalize();
+  E.eaTo(insn.ops[0]);
+  loadEnv(E, true);
+};
+/**
+ * The eight 80-bit register images at L_TA + 28 (ST(0) first) <-> the physical registers of the state block
+ * (FPR[(TOP + i) & 7]): one inline conversion in a run-time loop over i rather than eight copies of it.
+ * Clobbers L_T3, L_T4..L_T7, L_I64A, L_F64A.
+ */
+function registerImages(E, save) {
+  const c = E.c;
+  c.get(L_TOP).i32(3).shl().set(L_T3);
+  c.i32(0).set(L_T6); c.get(L_TA).set(L_T7);
+  const lp = c.loop();
+  c.get(L_STATE).get(L_T3).get(L_T6).i32(3).shl().add().i32(63).and().add(); // the physical slot of ST(i)
+  if (save) { c.f64load(ST.FPR).set(L_F64A); emitF80Store(c, L_T7, 28, L_F64A, F80_STORE); }
+  else { emitF80Load(c, L_T7, 28, F80_LOAD); c.f64store(ST.FPR); }
+  c.get(L_T7).i32(10).add().set(L_T7);
+  c.get(L_T6).i32(1).add().tee(L_T6).i32(8).lt_u().br_if(lp);
+  c.end(); void lp;
+}
+HANDLERS[OP.FNSAVE] = (E, insn) => {
+  E.x87Normalize();
+  E.eaTo(insn.ops[0]);
+  storeEnv(E);
+  E.flushX87Regs(); // (the locals stay valid)
+  registerImages(E, true);
+  fninit(E); // then the FPU is re-initialized (the register values kept, as FNINIT does)
+  E.smcCheck(insn); smcCheckEnd(E, insn, 108);
+};
+HANDLERS[OP.FRSTOR] = (E, insn) => {
+  E.x87Normalize();
+  E.eaTo(insn.ops[0]);
+  loadEnv(E, false);
+  registerImages(E, false); // ST(i) under the new TOP
+  E.loadX87Regs();
 };
 
 export {};

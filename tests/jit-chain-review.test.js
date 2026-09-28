@@ -237,12 +237,12 @@ test('two thread states alternate through the same chained regions', () => {
 
 test('interpreter fallback and indirect jumps inside chained regions', () => {
   // L0: mov ebx, DATA ; mov eax, L1 ; sub eax, 0 (lazy flags) ; jmp eax        (indirect exit -> chain)
-  // L1: xlat (al = [ebx + al]) ; fnstenv [DATA+0x100] (fallback) ; jz L2 ; inc edx ; L2: hlt
+  // L1: xlat (al = [ebx + al]) ; fxtract (fallback) ; jz L2 ; inc edx ; L2: hlt
   const a = new Asm(CODE);
   a.label('L0').movRegImm(3, DATA).movRegImm(0, 0).emit(0x83, 0xe8, 0x00); // sub eax, 0 -> ZF=1 lazily
   const movEaxAt = a.bytes.length; a.movRegImm(0, 0); // mov eax, L1 (absolute, patched below)
   a.jmpEax();
-  a.label('L1').xlat().emit(0xd9, 0x35, ...[0, 8, 16, 24].map((k) => ((DATA + 0x100) >>> k) & 0xff)).jcc(0x4, 'L2').incReg(2);
+  a.label('L1').xlat().emit(0xd9, 0xf4).jcc(0x4, 'L2').incReg(2);
   a.label('L2').hlt();
   const code = a.finish();
   const L1 = a.at('L1'), L2 = a.at('L2');
@@ -257,5 +257,5 @@ test('interpreter fallback and indirect jumps inside chained regions', () => {
   assert.deepEqual(snapshot(EJ), snapshot(EI));
   assert.equal(EJ.cpu.eax & 0xff, 0x77);
   assert.ok(EJ.jit.stats.chained >= 1, `chained ${EJ.jit.stats.chained}`);
-  assert.ok(EJ.jit.stats.fallbackSteps >= 1, 'fnstenv ran in the interpreter');
+  assert.ok(EJ.jit.stats.fallbackSteps >= 1, 'fxtract ran in the interpreter');
 });

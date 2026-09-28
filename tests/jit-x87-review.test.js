@@ -207,7 +207,7 @@ test('pending static shift at block ends: both JCC directions, region boundaries
 });
 
 // (2) TOP wrap-around and a full stack: 8 pushes (TOP 0 -> 7 -> ... -> 0 wraps), FNSTSW at each
-// TOP, FFREE/FXCH/FSTP st(i) permutations, FINCSTP past 7, observed through FNSTENV (fallback).
+// TOP, FFREE/FXCH/FSTP st(i) permutations, FINCSTP past 7, observed through FNSTENV.
 test('TOP wrap-around with a full stack, FFREE / FXCH / FSTP st(i) tags via FNSTENV', () => {
   const a = new Asm(CODE);
   for (let i = 0; i < 8; i++) a.fldQ(DATA + 8 * i).fnstswAx().movAbsEax(DATA + 64 + 4 * i);
@@ -223,7 +223,7 @@ test('TOP wrap-around with a full stack, FFREE / FXCH / FSTP st(i) tags via FNST
   for (let i = 0; i < 8; i++) data.push([8 * i, i + 0.5]);
   const { EJ } = both(a.finish(), data, end);
   for (let i = 0; i < 8; i++) assert.equal((EJ.mem.read32(DATA + 64 + 4 * i) >> 11) & 7, (7 - i) & 7, `TOP after push ${i}`);
-  assert.equal(EJ.jit.stats.fallbackSteps, 1, 'only FNSTENV fell back');
+  assert.equal(EJ.jit.stats.fallbackSteps, 0, 'nothing fell back (FNSTENV is native)');
 });
 
 // (3) precision control: FLDCW with a pending shift then arithmetic in the same block, FNINIT
