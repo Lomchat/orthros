@@ -59,7 +59,8 @@ export const SIN_POLY = Object.freeze([-0.16666666666666666, 0.00833333333333333
 /** cos r = 1 - r^2/2 + r^4 Q(r^2), Q(z) = sum_{j=0..6} (-1)^j z^j / (2j+4)! */
 export const COS_POLY = Object.freeze([0.041666666666666664, -0.001388888888888889, 2.48015873015873e-05, -2.755731922398589e-07, 2.08767569878681e-09, -1.1470745597729725e-11, 4.779477332387385e-14]);
 
-const TINY_SIN = 2 ** -26, TINY_COS = 2 ** -27;
+/** Below these |x|, sin(x) = tan(x) = x and cos(x) = 1 exactly (the kernels return at once). */
+export const TINY_SIN = 2 ** -26, TINY_COS = 2 ** -27;
 const MASK32 = 0xffffffffn;
 
 /** Veltkamp split of PIO2_HI into two 26-bit halves (exact partial products in Dekker's product). */
@@ -69,9 +70,11 @@ const PIO2_B2 = PIO2_HI - PIO2_B1;
 
 /**
  * Emit sin(r) for r = rh + rl (|r| <= ~pi/4) onto the stack. Locals: RH, RL, Z (= rh^2, set).
+ * Also used by the translator's inline FSIN / FCOS fast path (|x| < pi/4, where the reduction is
+ * the identity (x, +0, quadrant 0)), which therefore gives the kernel's bits.
  * @param {Code} c
  */
-function emitSinPoly(c, RH, RL, Z) {
+export function emitSinPoly(c, RH, RL, Z) {
   c.get(RH);
   c.get(RH).get(Z).f64mul();
   c.f64c(SIN_POLY[SIN_POLY.length - 1]);
@@ -85,7 +88,7 @@ function emitSinPoly(c, RH, RL, Z) {
  * Emit cos(r) for r = rh + rl onto the stack. Locals: RH, RL, Z (set), HZ and W (scratch f64).
  * @param {Code} c
  */
-function emitCosPoly(c, RH, RL, Z, HZ, W) {
+export function emitCosPoly(c, RH, RL, Z, HZ, W) {
   c.get(Z).f64c(0.5).f64mul().set(HZ);
   c.f64c(1).get(HZ).f64sub().set(W);
   c.get(W);

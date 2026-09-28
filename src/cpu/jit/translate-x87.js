@@ -17,6 +17,8 @@ import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, 
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import { T } from './wasm.js';
+import { emitExp2m1Core, EXP2M1_CORE_MIN } from './fpmath-exp.js';
+import { emitSinPoly, emitCosPoly, PIO4, TINY_SIN, TINY_COS } from './fpmath-trig.js';
 
 const C0 = 1 << 8, C2 = 1 << 10, C3 = 1 << 14, SW_CC = C0 | (1 << 9) | C2 | C3;
 /** x87 indefinite QNaN (the interpreter's INDEFINITE) */
@@ -613,6 +615,12 @@ HANDLERS[OP.FRNDINT] = (E) => { loadST(E, 0); roundRC(E, false); storeSTStack(E,
 // the kernels return a NaN for a NaN operand or an invalid arithmetic operand, and the handler
 // then takes the rare path through the nan2 kernel (fpmath-nan.js: SNaN -> IE and quieted, QNaN
 // propagated, two NaNs -> the larger significand, no NaN -> IE and the indefinite).
+/**
+ * Inline fast paths of F2XM1 / FSCALE / FSIN / FCOS for their common argument ranges (below). Debugging and tests:
+ * globalThis.ORTHROS_NO_X87_INLINE = true at translation time keeps only the kernel paths (the fast-path test is
+ * then a constant false), which must give the same bits (tests/jit-x87-inline.test.js).
+ */
+function inlineTrans() { return !globalThis.ORTHROS_NO_X87_INLINE; }
 /** status word |= bits (C2 for an out-of-range trig argument) */
 function orSW(E, bits) { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(bits).or().i32store16(ST.FPU_SW); }
 /**
@@ -644,20 +652,42 @@ function nanOutcome(E, a, b, res, otherwise = null) {
 }
 // F2XM1: finite |x| > 1 is undefined by the SDM and leaves ST(0) unchanged on the reference
 // hardware (mirrored, as in the interpreter); +-inf follow the SDM (+inf, -1) through the kernel
+// Inline fast path for 2^-1000 <= |x| < 1 (the x87 exp/pow sequences apply F2XM1 to a fraction): the kernel's own
+// core (emitExp2m1Core, the same operations on the same operands) without its call, special-value tests and
+// recombination, which are identities there: k = trunc(x) = +-0, r = x - k = x, and 2^k p + (2^k - 1) = 1 p + 0 = p
+// (p != 0). NaN, zeros, tiny, |x| >= 1 and infinities fail the test and take the kernel path.
 HANDLERS[OP.F2XM1] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
+  if (inlineTrans()) c.get(L_F64A).f64abs().f64c(1).f64lt().get(L_F64A).f64abs().f64c(EXP2M1_CORE_MIN).f64ge().and(); else c.i32(0);
+  const fast = c.if_();
+  emitExp2m1Core(c, { R: L_F64A, TT: L_F64B, RL: L_F64B, RH: L_F64C, HI: L_F64C, Z: L_F64D, E: L_F64E, O: L_F64G, LO: L_F64H });
+  c.get(L_F64C).get(L_F64H).f64add().set(stW(E, 0));
+  c.else_();
   c.get(L_F64A); c.get(L_F64A).call(IMP_EXP2M1);
   c.get(L_F64A).f64abs().f64c(1).f64gt().get(L_F64A).f64abs().f64c(Number.MAX_VALUE).f64le().and();
   c.select().set(stW(E, 0)); // outside ? x : 2^x - 1
   nanOutcome(E, L_F64A, L_F64A, stW(E, 0));
+  c.end(); void fast;
   tagValid(E, 0);
 };
-// FSCALE: the kernel's special cases (0 * 2^inf, inf * 2^-inf -> NaN) and NaN operands go through nanOutcome
+// FSCALE: the kernel's special cases (0 * 2^inf, inf * 2^-inf -> NaN) and NaN operands go through nanOutcome.
+// Inline fast path for |ST(1)| < 1023 (the x87 pow/exp sequences scale by a small integer): e = trunc(ST(1)) is in
+// [-1022, 1022], so 2^e is a normal double built from its exponent field and the IEEE product a 2^e is the exact
+// value rounded once to nearest — the kernel's (and the hardware's) result for every a: normal or denormal results,
+// overflow to +-inf, zeros and infinities unchanged; a NaN a gives a NaN, replaced by nanOutcome as on the kernel
+// path. A NaN or larger ST(1) fails the test and calls the kernel.
 HANDLERS[OP.FSCALE] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A); loadST(E, 1); c.set(L_F64B);
+  if (inlineTrans()) {
+    // a 2^e, e = trunc(b) (saturating: no trap; the product is only kept when |b| < 1023, else replaced below)
+    c.get(L_F64A).get(L_F64B).i32trunc_sat_f64_s().i32(1023).add().extend_u().i64(52n).i64shl().f64reinterpret_i64().f64mul().set(stW(E, 0));
+    c.get(L_F64B).f64abs().f64c(1023).f64lt().eqz(); // (NaN: true)
+  } else c.i32(1);
+  const slow = c.hint(false).if_();
   c.get(L_F64A).get(L_F64B).call(IMP_SCALB).set(stW(E, 0));
+  c.end(); void slow;
   nanOutcome(E, L_F64A, L_F64B, stW(E, 0));
   tagValid(E, 0);
 };
@@ -732,18 +762,32 @@ function trigArg(E, store, oor, compute) {
   c.end(); void big;
   c.end(); void nan;
 }
-// FSIN / FCOS: ST(0) <- the classified result (untouched on the out-of-range path)
-function trig1(kernel) {
+// FSIN / FCOS: ST(0) <- the classified result (untouched on the out-of-range path).
+// Inline fast path for tiny <= |x| < pi/4 (the kernel's first two tests: no tiny shortcut, and the range reduction
+// is the identity r = x + 0, quadrant 0 for the sine, 1 for the cosine, no sign change): the kernel's polynomial
+// emitter on (x, +0), i.e. the same operations on the same operands, without the call, the reduction dispatch and
+// the special-value classification (C0-C3 cleared as on the kernel path). Every other argument (NaN included:
+// the test is false) takes the classified kernel path.
+function trig1(kernel, isCos) {
   return (E) => {
     const c = E.c;
     loadST(E, 0); c.set(L_F64A);
     toF64(E, 0); // written on some paths only (out of range: unchanged)
+    if (inlineTrans()) c.get(L_F64A).f64abs().f64c(PIO4).f64lt().get(L_F64A).f64abs().f64c(isCos ? TINY_COS : TINY_SIN).f64ge().and(); else c.i32(0);
+    const fast = c.if_();
+    setCC(E, 0, 0, 0);
+    c.f64c(0).set(L_F64B); // rl
+    c.get(L_F64A).get(L_F64A).f64mul().set(L_F64D); // z = rh^2
+    if (isCos) emitCosPoly(c, L_F64A, L_F64B, L_F64D, L_F64E, L_F64G); else emitSinPoly(c, L_F64A, L_F64B, L_F64D);
+    c.set(stW(E, 0));
+    c.else_();
     trigArg(E, (c) => c.set(stW(E, 0)), () => {}, (c) => c.get(L_F64A).call(kernel).set(stW(E, 0)));
+    c.end(); void fast;
     tagValid(E, 0);
   };
 }
-HANDLERS[OP.FSIN] = trig1(IMP_SIN);
-HANDLERS[OP.FCOS] = trig1(IMP_COS);
+HANDLERS[OP.FSIN] = trig1(IMP_SIN, false);
+HANDLERS[OP.FCOS] = trig1(IMP_COS, true);
 // FSINCOS / FPTAN: ST(0) <- first result (L_F64A) and push the second (L_F64B); both are the same
 // NaN / indefinite on the NaN and infinity paths, as on the hardware. The push is a static
 // rotation of the locals, so the out-of-range path (no push) cannot rejoin the block: it sets C2

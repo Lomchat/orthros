@@ -19,7 +19,7 @@
 //   at 24-bit precision (the Direct3D FPU mode) and 53-bit precision; results checked against a
 //   JavaScript reference that rounds like the x87.
 //
-// Transcendental mode: node tools/x87-bench.mjs trans [iterations]
+// Transcendental mode: node tools/x87-bench.mjs trans [iterations] [--jit [reps]]
 //   ns per transcendental instruction (F2XM1, FSCALE, FSIN small / 1e6 argument, FCOS, FSINCOS,
 //   FPTAN, FPATAN, FYL2X, FYL2XP1, and the game's e^x sequence) with the loop shape of
 //   tools/pe/bench.c's TRANS_LOOP (acc / x / dx on the register stack, one kernel applied to a copy
@@ -31,6 +31,7 @@
 //     interp   the interpreter alone (iterations / 10)
 //   Each case is paired with a base loop (same body without the transcendental) so that the cost of
 //   the instruction itself is the difference; a JS reference sum validates every encoding.
+//   --jit [reps]: the JIT alone, median and spread of `reps` paired runs per case (CASES=name,... selects cases).
 import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
@@ -44,7 +45,8 @@ const CODE = 0x20000000, DATA = 0x10000000, VEC_A = DATA + 0x1000, VEC_B = DATA 
 const LEN = 256; // elements per pass (the loop restarts the pointers every LEN elements)
 const MODE = ['trans', 'xform'].includes(process.argv[2]) ? process.argv[2] : 'dot';
 const CW_PC24 = 0x007f, CW_PC53 = 0x027f;
-const ITER = +(process.argv.slice(2).find((a) => /^\d/.test(a)) ?? (MODE === 'trans' ? 1e6 : 2e6));
+// (the number after --jit is its repetition count, not the iteration count)
+const ITER = +(process.argv.slice(2).find((a, i, v) => /^\d/.test(a) && v[i - 1] !== '--jit') ?? (MODE === 'trans' ? 1e6 : 2e6));
 
 class Asm {
   constructor(base) { this.base = base; this.bytes = []; this.labels = new Map(); this.fixups = []; }
@@ -156,7 +158,7 @@ function xformMode() {
 // ============================================================================================
 // Transcendental mode
 
-const X0 = DATA, DX = DATA + 8, OUT = DATA + 0x20;
+const X0 = DATA, DX = DATA + 8, OUT = DATA + 0x20, BIG = DATA + 0x40;
 /**
  * mov ecx, n ; fld qword [DX] ; fld qword [X0] ; fldz            (st0 = acc, st1 = x, st2 = dx)
  * L: fld st(1) ; <body> ; faddp st(1), st ; fxch st(1) ; fadd st, st(2) ; fxch st(1) ; dec ecx ; jnz L
@@ -177,13 +179,19 @@ function transProgram(body, n) {
 const FLD1 = [0xd9, 0xe8], FLD_ST0 = [0xd9, 0xc0], FXCH = [0xd9, 0xc9], FSTP_ST0 = [0xdd, 0xd8], FSTP_ST1 = [0xdd, 0xd9], FADDP = [0xde, 0xc1];
 const F2XM1 = [0xd9, 0xf0], FYL2X = [0xd9, 0xf1], FPTAN = [0xd9, 0xf2], FPATAN = [0xd9, 0xf3], FYL2XP1 = [0xd9, 0xf9];
 const FSINCOS = [0xd9, 0xfb], FRNDINT = [0xd9, 0xfc], FSCALE = [0xd9, 0xfd], FSIN = [0xd9, 0xfe], FCOS = [0xd9, 0xff];
+const FLD_BIG = [0xdd, 0x05, BIG & 0xff, (BIG >> 8) & 0xff, (BIG >> 16) & 0xff, BIG >>> 24]; // fld qword [BIG] (-1023.5)
 const FLDL2E = [0xd9, 0xea], FMULP = [0xde, 0xc9], FSUB_ST1_ST = [0xdc, 0xe9];
 /** name, body (transcendental included), base (same body without it), x0/dx of the argument sweep, reference f(x) */
 const TRANS_CASES = [
   { name: 'f2xm1', body: F2XM1, base: [], x0: -0.5, dx: 1e-6, ref: (x) => 2 ** x - 1 },
   // FSCALE with ST(1) = 1: fld1 ; fxch ; fscale ; fstp st(1)  ->  2 x
   { name: 'fscale', body: [...FLD1, ...FXCH, ...FSCALE, ...FSTP_ST1], base: [...FLD1, ...FXCH, ...FSTP_ST1], x0: -0.5, dx: 1e-6, ref: (x) => 2 * x },
+  // FSCALE by trunc(-1023.5) = -1023 (|ST(1)| >= 1023: the kernel path; denormal results, exact in the reference)
+  { name: 'fscale big', body: [...FLD_BIG, ...FXCH, ...FSCALE, ...FSTP_ST1], base: [...FLD_BIG, ...FXCH, ...FSTP_ST1], x0: -0.5, dx: 1e-6, ref: (x) => x * 2 ** -1023 },
   { name: 'fsin', body: FSIN, base: [], x0: -2, dx: 6e-6, ref: Math.sin },
+  // |x| < pi/4: the inline polynomial path (no range reduction)
+  { name: 'fsin small', body: FSIN, base: [], x0: -0.75, dx: 1.5e-6, ref: Math.sin },
+  { name: 'fcos small', body: FCOS, base: [], x0: -0.75, dx: 1.5e-6, ref: Math.cos },
   { name: 'fsin 1e6', body: FSIN, base: [], x0: 1e6, dx: 1, ref: Math.sin },
   { name: 'fcos', body: FCOS, base: [], x0: -2, dx: 6e-6, ref: Math.cos },
   { name: 'fsincos', body: [...FSINCOS, ...FADDP], base: [], x0: -2, dx: 6e-6, ref: (x) => Math.sin(x) + Math.cos(x) },
@@ -206,7 +214,7 @@ function runTrans(exec, body, n, x0, dx) {
   const { code, end } = transProgram(body, n);
   cpu.reset();
   mem.writeBytes(CODE, code);
-  mem.writeF64(X0, x0); mem.writeF64(DX, dx);
+  mem.writeF64(X0, x0); mem.writeF64(DX, dx); mem.writeF64(BIG, -1023.5);
   cpu.eip = CODE; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
   let r, ms, fallbacks = 0;
   if (exec === 'interp') {
@@ -257,7 +265,32 @@ function transMode() {
   }
 }
 
-if (MODE === 'trans') transMode();
+/**
+ * `trans --jit [reps]`: the JIT executor alone, `reps` (default 7) runs of each case paired with a run of its base
+ * loop; prints the median ns/insn (case - base of the same pair) and the min..max spread, for before/after
+ * comparisons on a shared machine.
+ */
+function transJitMode() {
+  const at = process.argv.indexOf('--jit'), reps = +(process.argv[at + 1] ?? 7) || 7;
+  console.log(`x87 transcendentals under the JIT, ${ITER} iterations, ${reps} paired runs: median ns/insn (case - base) [min..max]`);
+  const cases = TRANS_CASES.filter((c) => !process.env.CASES || process.env.CASES.split(',').includes(c.name));
+  for (const c of cases) {
+    const d = [];
+    let sum = 0;
+    for (let k = 0; k < reps; k++) {
+      const r = runTrans('jit', c.body, ITER, c.x0, c.dx); sum = r.sum;
+      const b = runTrans('jit', c.base, ITER, c.x0, c.dx);
+      d.push(((r.ms - b.ms) * 1e6) / ITER);
+    }
+    d.sort((a, b) => a - b);
+    const want = refSum(c, ITER);
+    const bad = !(Math.abs(sum - want) <= 1e-8 * Math.max(1, Math.abs(want)));
+    console.log(`${c.name.padEnd(11)} ${d[d.length >> 1].toFixed(1).padStart(6)} ns  [${d[0].toFixed(1)}..${d[d.length - 1].toFixed(1)}]${bad ? `  MISMATCH got ${sum} want ${want}` : ''}`);
+  }
+}
+
+if (MODE === 'trans' && process.argv.includes('--jit')) transJitMode();
+else if (MODE === 'trans') transMode();
 else if (MODE === 'xform') xformMode();
 else {
   console.log(`x87 dot-product loop, ${ITER} iterations (7 instructions each: FLD m64, FMUL m64, FADDP, 2x ADD, DEC, JNZ)`);
