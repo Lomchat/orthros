@@ -81,6 +81,32 @@ function horner(c, coefs, v) {
 function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
 
 /**
+ * Emit the core of exp2m1: 2^r - 1 = HI + LO for the value r in local R (|r| < 1), the exact
+ * double-double r ln2 plus the polynomial part (see the header). Shared by the kernel and by the
+ * translator's inline F2XM1 fast path (translate-x87.js), so both perform the same operations on the
+ * same operands and give the same bits. Locals (f64): R is only read; TT and RL may be the same local,
+ * and so may RH and HI (each is dead when the other is written); all others distinct.
+ * @param {Code} c
+ * @param {{ R: number, TT: number, RH: number, RL: number, Z: number, E: number, O: number, HI: number, LO: number }} L
+ */
+export function emitExp2m1Core(c, { R, TT, RH, RL, Z, E, O, HI, LO }) {
+  // Veltkamp split of r
+  c.get(R).f64c(SPLIT).f64mul().set(TT);
+  c.get(TT).get(TT).get(R).f64sub().f64sub().set(RH);
+  c.get(R).get(RH).f64sub().set(RL);
+  // R(r) = E(z) + r O(z), z = r^2 (two independent Horner chains)
+  c.get(R).get(R).f64mul().set(Z);
+  horner(c, EXP_R.filter((_, i) => i % 2 === 0), Z); c.set(E);
+  horner(c, EXP_R.filter((_, i) => i % 2 === 1), Z); c.set(O);
+  // 2^r - 1 = hi + lo, hi = rh LN2_HI (exact), lo = (rl LN2_HI + r LN2_LO) + r (r (E + r O))
+  c.get(RL).f64c(LN2_HI).f64mul().get(R).f64c(LN2_LO).f64mul().f64add();
+  c.get(R).get(R).get(E).get(R).get(O).f64mul().f64add().f64mul().f64mul().f64add().set(LO);
+  c.get(RH).f64c(LN2_HI).f64mul().set(HI);
+}
+/** Inline F2XM1 fast-path window: TWO_M1000 <= |x| < 1 (k = trunc(x) = 0, no tiny scaling). */
+export const EXP2M1_CORE_MIN = TWO_M1000;
+
+/**
  * Define the kernels in a module under construction. Nothing is exported; the caller decides
  * (m.exportFunc) or calls them by index.
  * @param {import('./wasm.js').ModuleBuilder} m
@@ -134,18 +160,7 @@ export function addExpKernels(m) {
     // k = trunc(x), r = x - k (exact)
     c.get(X).f64trunc().set(K);
     c.get(X).get(K).f64sub().set(R);
-    // Veltkamp split of r
-    c.get(R).f64c(SPLIT).f64mul().set(TT);
-    c.get(TT).get(TT).get(R).f64sub().f64sub().set(RH);
-    c.get(R).get(RH).f64sub().set(RL);
-    // R(r) = E(z) + r O(z), z = r^2 (two independent Horner chains)
-    c.get(R).get(R).f64mul().set(Z);
-    horner(c, EXP_R.filter((_, i) => i % 2 === 0), Z); c.set(E);
-    horner(c, EXP_R.filter((_, i) => i % 2 === 1), Z); c.set(O);
-    // 2^r - 1 = hi + lo, hi = rh LN2_HI (exact), lo = (rl LN2_HI + r LN2_LO) + r (r (E + r O))
-    c.get(RL).f64c(LN2_HI).f64mul().get(R).f64c(LN2_LO).f64mul().f64add();
-    c.get(R).get(R).get(E).get(R).get(O).f64mul().f64add().f64mul().f64mul().f64add().set(LO);
-    c.get(RH).f64c(LN2_HI).f64mul().set(HI);
+    emitExp2m1Core(c, { R, TT, RH, RL, Z, E, O, HI, LO });
     c.get(TINY); const tinyOut = c.if_(); c.get(HI).get(LO).call(roundTiny).return_(); c.end(); void tinyOut;
     c.get(HI).get(LO).f64add().set(P);
     // 2^k from the exponent bits (k in [-59, 1023]); result = 2^k p + (2^k - 1)
