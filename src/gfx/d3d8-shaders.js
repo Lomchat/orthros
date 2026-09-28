@@ -107,9 +107,12 @@ export function ffVertexShader(k) {
   for (const a of L.attrs) lines.push(`in ${a.type === 'float' && a.comps === 1 ? 'float' : a.type === 'float' ? 'vec' + a.comps : 'vec4'} a_${a.name};`);
   lines.push('uniform mat4 u_world[4]; uniform mat4 u_view; uniform mat4 u_proj; uniform mat4 u_texmat[8];');
   lines.push('uniform vec4 u_viewport; uniform vec2 u_depthRange; uniform float u_flipY;'); // x,y,w,h ; minZ,maxZ (for RHW) ; -1 when rendering into a texture
-  lines.push('uniform vec4 u_matDiffuse, u_matAmbient, u_matSpecular, u_matEmissive; uniform float u_matPower; uniform vec4 u_ambient;');
+  // material (diffuse, ambient, specular, emissive, power in [4].x) and lights packed in vec4 arrays: one upload each
+  // (a struct array costs one GL call per field and light; games change lights per object). Per light, 7 vec4:
+  // diffuse, specular, ambient, (position, type), (direction, range), (attenuation, falloff), (theta, phi)
+  lines.push('uniform vec4 u_mat[5]; uniform vec4 u_ambient;');
   lines.push('struct Light { int type; vec4 diffuse; vec4 specular; vec4 ambient; vec3 position; vec3 direction; float range; float falloff; vec3 atten; float theta; float phi; };');
-  lines.push(`uniform Light u_lights[${MAX_LIGHTS}]; uniform int u_numLights;`);
+  lines.push(`uniform vec4 u_ld[${MAX_LIGHTS * 7}]; uniform int u_numLights;`);
   lines.push('uniform vec4 u_fog; uniform float u_pointSize;'); // fog: start, end, density, unused
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`out vec4 v_tex${i};`);
@@ -152,17 +155,17 @@ export function ffVertexShader(k) {
     const dif = has('diffuse') ? colorIn('diffuse') : 'vec4(1.0)', spc = has('specular') ? colorIn('specular') : 'vec4(0.0)';
     if (k.lighting) {
       const src = (s, mat) => (s === 1 && k.colorVertex && has('diffuse') ? dif : s === 2 && k.colorVertex && has('specular') ? spc : mat);
-      lines.push(`  vec4 mDiffuse = ${src(k.diffuseSrc, 'u_matDiffuse')}; vec4 mSpecular = ${src(k.specularSrc, 'u_matSpecular')}; vec4 mAmbient = ${src(k.ambientSrc, 'u_matAmbient')}; vec4 mEmissive = ${src(k.emissiveSrc, 'u_matEmissive')};`);
+      lines.push(`  vec4 mDiffuse = ${src(k.diffuseSrc, 'u_mat[0]')}; vec4 mSpecular = ${src(k.specularSrc, 'u_mat[2]')}; vec4 mAmbient = ${src(k.ambientSrc, 'u_mat[1]')}; vec4 mEmissive = ${src(k.emissiveSrc, 'u_mat[3]')};`);
       lines.push('  vec3 diffuseAcc = vec3(0.0); vec3 specAcc = vec3(0.0); vec3 ambientAcc = vec3(0.0);');
       lines.push(`  vec3 eye = ${k.localViewer ? 'normalize(-posView)' : 'vec3(0.0, 0.0, -1.0)'};`);
       lines.push('  for (int i = 0; i < u_numLights; i++) {');
-      lines.push('    Light lt = u_lights[i]; vec3 ldir; float att = 1.0;');
+      lines.push('    int b = i * 7; Light lt = Light(int(u_ld[b + 3].w), u_ld[b], u_ld[b + 1], u_ld[b + 2], u_ld[b + 3].xyz, u_ld[b + 4].xyz, u_ld[b + 4].w, u_ld[b + 5].w, u_ld[b + 5].xyz, u_ld[b + 6].x, u_ld[b + 6].y); vec3 ldir; float att = 1.0;');
       lines.push(`    if (lt.type == ${LIGHT_DIRECTIONAL}) { ldir = normalize(-lt.direction); }`);
       lines.push('    else { vec3 d = lt.position - posView; float dist = length(d); if (dist > lt.range) continue; ldir = d / max(dist, 1e-6); att = 1.0 / max(lt.atten.x + lt.atten.y * dist + lt.atten.z * dist * dist, 1e-6);');
       lines.push(`      if (lt.type == ${LIGHT_SPOT}) { float rho = dot(-ldir, normalize(lt.direction)); float ct = cos(lt.theta * 0.5), cp = cos(lt.phi * 0.5); if (rho <= cp) continue; if (rho < ct) att *= pow((rho - cp) / max(ct - cp, 1e-6), lt.falloff); } }`);
       lines.push('    ambientAcc += lt.ambient.rgb * att;');
       lines.push('    float ndl = max(dot(nView, ldir), 0.0); diffuseAcc += lt.diffuse.rgb * ndl * att;');
-      if (k.specularEnable) lines.push('    if (ndl > 0.0) { vec3 h = normalize(ldir + eye); float ndh = max(dot(nView, h), 0.0); specAcc += lt.specular.rgb * pow(ndh, max(u_matPower, 1e-4)) * att; }');
+      if (k.specularEnable) lines.push('    if (ndl > 0.0) { vec3 h = normalize(ldir + eye); float ndh = max(dot(nView, h), 0.0); specAcc += lt.specular.rgb * pow(ndh, max(u_mat[4].x, 1e-4)) * att; }');
       lines.push('  }');
       lines.push('  v_color0 = vec4(clamp(mEmissive.rgb + mAmbient.rgb * (u_ambient.rgb + ambientAcc) + mDiffuse.rgb * diffuseAcc, 0.0, 1.0), mDiffuse.a);');
       lines.push(k.specularEnable ? '  v_color1 = vec4(clamp(mSpecular.rgb * specAcc, 0.0, 1.0), 0.0);' : '  v_color1 = vec4(0.0);');

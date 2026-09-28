@@ -348,7 +348,7 @@ export function registerDirect3D9(api, vm) {
     constructor(dev, id) { this.dev = dev; this.id = id; this.iids = [IID.IDirect3DStateBlock9]; }
     GetDevice(c) { c.out32(1, this.dev.ptr); com.addRef(com.objectAt(this.dev.ptr)); return D3D_OK; }
     Capture(c) { return this.dev.CaptureStateBlock({ ...c, arg: (i) => (i === 1 ? this.id : 0) }); }
-    Apply(c) { this.dev.stateVersion++; this.dev.programVersion++; this.dev.touchAllTransforms(); this.dev.lightVersion++; this.dev.viewportVersion++; this.dev.constVersion++; return this.dev.ApplyStateBlock({ ...c, arg: (i) => (i === 1 ? this.id : 0) }); }
+    Apply(c) { return this.dev.ApplyStateBlock({ ...c, arg: (i) => (i === 1 ? this.id : 0) }); }
     destroy() { this.dev.stateBlocks.delete(this.id); }
   }
   class SwapChain {

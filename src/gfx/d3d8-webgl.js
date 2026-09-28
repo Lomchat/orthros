@@ -103,7 +103,6 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
 
 // constant uniform names (template strings built per draw would defeat the location cache)
 const names = (p, n) => Array.from({ length: n }, (_, i) => `${p}[${i}]`);
-const LIGHT_U = Array.from({ length: 8 }, (_, n) => Object.fromEntries(['type', 'diffuse', 'specular', 'ambient', 'position', 'direction', 'range', 'falloff', 'atten', 'theta', 'phi'].map((k) => [k, `u_lights[${n}].${k}`])));
 const TEX_U = { tex: names('u_tex', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), cube: names('u_cube', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')), vol: names('u_vol', 16).map((x) => x.replace(/\[(\d+)\]$/, '$1')) };
 let blendOpsCache = null; const BLEND_OPS = (gl) => blendOpsCache ?? (blendOpsCache = [gl.FUNC_ADD, gl.FUNC_ADD, gl.FUNC_SUBTRACT, gl.FUNC_REVERSE_SUBTRACT, gl.MIN, gl.MAX]);
 /** program signature inputs: render states with the defaults programUncached reads them with (pairs state, default) */
@@ -782,29 +781,29 @@ export class WebGLDevice {
       pv.l = dev.lightVersion; pv.lt = viewVersion; pv.ls = dev.stateVersion;
       // each block is compared with what this program last received (a light or material re-sent per object is
       // usually the same one): only the slots that really changed reach GL
-      const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(17).fill(NaN), amb: -1, n: -1, slots: [] });
+      const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(20).fill(NaN), amb: -1, n: -1, slots: [], ld: new Float32Array(MAX_LIGHTS * 28) });
       const m = dev.material;
-      if (!sameF32(lv.mat, m, 17)) { for (let k = 0; k < 17; k++) lv.mat[k] = m[k]; gl.uniform4fv(U('u_matDiffuse'), m, 0, 4); gl.uniform4fv(U('u_matAmbient'), m, 4, 4); gl.uniform4fv(U('u_matSpecular'), m, 8, 4); gl.uniform4fv(U('u_matEmissive'), m, 12, 4); gl.uniform1f(U('u_matPower'), m[16]); }
+      if (!sameF32(lv.mat, m, 17)) { for (let k = 0; k < 17; k++) lv.mat[k] = m[k]; lv.mat[17] = lv.mat[18] = lv.mat[19] = 0; gl.uniform4fv(U('u_mat[0]'), lv.mat); }
       const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
-      let n = 0;
+      let n = 0, dirty = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
       for (const i of this.enabledLights()) {
         const l = dev.lights.get(i); if (!l || n >= MAX_LIGHTS) continue;
         const slot = lv.slots[n] ?? (lv.slots[n] = { data: new Float32Array(26).fill(NaN), view: -1 });
         if (slot.view !== viewVersion || !sameF32(slot.data, l, 26)) {
           slot.view = viewVersion; for (let k = 0; k < 26; k++) slot.data[k] = l[k];
-          const LU = LIGHT_U[n];
-          gl.uniform1i(U(LU.type), l[0] | 0);
-          gl.uniform4fv(U(LU.diffuse), l, 1, 4); gl.uniform4fv(U(LU.specular), l, 5, 4); gl.uniform4fv(U(LU.ambient), l, 9, 4);
-          const px = l[13], py = l[14], pz = l[15];
-          gl.uniform3f(U(LU.position), view[0] * px + view[4] * py + view[8] * pz + view[12], view[1] * px + view[5] * py + view[9] * pz + view[13], view[2] * px + view[6] * py + view[10] * pz + view[14]);
-          const dx = l[16], dy = l[17], dz = l[18];
-          gl.uniform3f(U(LU.direction), view[0] * dx + view[4] * dy + view[8] * dz, view[1] * dx + view[5] * dy + view[9] * dz, view[2] * dx + view[6] * dy + view[10] * dz);
-          gl.uniform1f(U(LU.range), l[19]); gl.uniform1f(U(LU.falloff), l[20]);
-          gl.uniform3f(U(LU.atten), l[21], l[22], l[23]); gl.uniform1f(U(LU.theta), l[24]); gl.uniform1f(U(LU.phi), l[25]);
+          // (packed as the shader reads it, see ffVertexShader: position and direction in view space)
+          const d = lv.ld, o = n * 28;
+          for (let k = 0; k < 12; k++) d[o + k] = l[1 + k];
+          const px = l[13], py = l[14], pz = l[15], dx = l[16], dy = l[17], dz = l[18];
+          d[o + 12] = view[0] * px + view[4] * py + view[8] * pz + view[12]; d[o + 13] = view[1] * px + view[5] * py + view[9] * pz + view[13]; d[o + 14] = view[2] * px + view[6] * py + view[10] * pz + view[14]; d[o + 15] = l[0] | 0;
+          d[o + 16] = view[0] * dx + view[4] * dy + view[8] * dz; d[o + 17] = view[1] * dx + view[5] * dy + view[9] * dz; d[o + 18] = view[2] * dx + view[6] * dy + view[10] * dz; d[o + 19] = l[19];
+          d[o + 20] = l[21]; d[o + 21] = l[22]; d[o + 22] = l[23]; d[o + 23] = l[20]; d[o + 24] = l[24]; d[o + 25] = l[25]; d[o + 26] = 0; d[o + 27] = 0;
+          dirty = n + 1;
         }
         n++;
       }
+      if (dirty) gl.uniform4fv(U('u_ld[0]'), lv.ld, 0, dirty * 28);
       if (lv.n !== n) { lv.n = n; gl.uniform1i(U('u_numLights'), n); }
     }
     if (pv.s !== dev.stateVersion) {
