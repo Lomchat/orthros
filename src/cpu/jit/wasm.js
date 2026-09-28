@@ -285,7 +285,7 @@ export class Code extends ByteWriter {
   i32trunc_f64_s() { return this.byte(0xaa); } i64trunc_f64_s() { return this.byte(0xb0); }
   i32trunc_sat_f64_s() { this.byte(0xfc).u(2); return this; } i64trunc_sat_f64_s() { this.byte(0xfc).u(6); return this; }
   i32trunc_sat_f32_s() { this.byte(0xfc).u(0); return this; }
-  f64convert_i32_s() { return this.byte(0xb7); } f64convert_i32_u() { return this.byte(0xb8); } f64convert_i64_s() { return this.byte(0xb9); }
+  f64convert_i32_s() { return this.byte(0xb7); } f64convert_i32_u() { return this.byte(0xb8); } f64convert_i64_s() { return this.byte(0xb9); } f64convert_i64_u() { return this.byte(0xba); }
   f32convert_i32_s() { return this.byte(0xb2); }
   f64promote() { return this.byte(0xbb); } f32demote() { return this.byte(0xb6); }
   i32reinterpret_f32() { return this.byte(0xbc); } i64reinterpret_f64() { return this.byte(0xbd); }
