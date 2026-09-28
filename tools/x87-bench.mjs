@@ -45,7 +45,8 @@ const CODE = 0x20000000, DATA = 0x10000000, VEC_A = DATA + 0x1000, VEC_B = DATA 
 const LEN = 256; // elements per pass (the loop restarts the pointers every LEN elements)
 const MODE = ['trans', 'xform'].includes(process.argv[2]) ? process.argv[2] : 'dot';
 const CW_PC24 = 0x007f, CW_PC53 = 0x027f;
-const ITER = +(process.argv.slice(2).find((a) => /^\d/.test(a)) ?? (MODE === 'trans' ? 1e6 : 2e6));
+// (the number after --jit is its repetition count, not the iteration count)
+const ITER = +(process.argv.slice(2).find((a, i, v) => /^\d/.test(a) && v[i - 1] !== '--jit') ?? (MODE === 'trans' ? 1e6 : 2e6));
 
 class Asm {
   constructor(base) { this.base = base; this.bytes = []; this.labels = new Map(); this.fixups = []; }
