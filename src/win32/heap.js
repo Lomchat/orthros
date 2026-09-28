@@ -5,7 +5,9 @@
 // obtained from VMem start and end with used sentinel blocks so coalescing stops at their edges.
 import { PAGE_READWRITE, alignUp } from './vmem.js';
 
-const HDR = 8, FTR = 4;
+// (FTR: the footer's 4 bytes and 4 of padding — header and footer together 16 bytes, so every user address stays
+// 8-aligned, as HeapAlloc's are on Windows; with a 4-byte footer every other block was only 4-aligned)
+const HDR = 8, FTR = 8;
 const MAGIC_USED = 0x4f524855; // 'UHRO'
 const MAGIC_FREE = 0x46524855;
 const MIN_CHUNK = 0x100000; // 1 MB growth
@@ -48,8 +50,9 @@ export class Heap {
     this.chunks.push({ base, size });
     this.total += size;
     const m = this.mem;
-    // start sentinel: a used block with a 4-byte user area so the first real block's user address is 8-aligned
-    m.write32(base, 4); m.write32(base + 4, MAGIC_USED); m.write32(base + 12, 4);
+    // start sentinel: a used block with an empty user area (its footer, 0, stops backward merges); the first real
+    // block's user address is base + 24: 8-aligned
+    m.write32(base, 0); m.write32(base + 4, MAGIC_USED); m.write32(base + 8, 0);
     // end sentinel header (8 bytes at the very end)
     m.write32(base + size - 8, 0); m.write32(base + size - 4, MAGIC_USED);
     const user = base + 16 + HDR;
