@@ -19,3 +19,14 @@ test('heap: frees next to an overwritten footer or free-list link stay inside th
   for (let i = 0; i < 200; i++) assert.ok(heap.alloc(8 + (i % 40)), 'allocations go on');
   assert.equal(heap.free_(0x7ffffff0), false);
 });
+
+test('heap: every block 8-aligned (HeapAlloc on Windows), through splits, frees and merges', () => {
+  const mem = new GuestMemory();
+  const heap = new Heap({ mem, vmem: new VMem() });
+  const live = [];
+  let seed = 7; const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return seed % n; };
+  for (let i = 0; i < 5000; i++) {
+    if (live.length && rnd(3) === 0) { const k = rnd(live.length); assert.equal(heap.free_(live[k]), true); live.splice(k, 1); continue; }
+    const p = heap.alloc(1 + rnd(300)); assert.ok(p); assert.equal(p & 7, 0, `block ${p.toString(16)} 8-aligned`); live.push(p);
+  }
+});
