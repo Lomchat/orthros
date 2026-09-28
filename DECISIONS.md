@@ -321,3 +321,18 @@ possède, qu'il est abandonné, ou qu'un thread est parqué dessus (drapeau pos�
 JS qui remet le mutex au thread en attente, comme Windows). sync.exe (remise sous réacquisition immédiate, exclusion,
 poignée de main, abandon) passe ; ses ~25 000 appels de chaque sorte n'atteignent plus JavaScript. Mesure (partie BFME2,
 deux A/B simultanés) : 34,6 → 32,4 et 31,6 → 29,9 ms de CPU du worker par image.
+
+## D061 — 2026-09-28 — Multijoueur : un réseau local virtuel par jeu, relayé par le serveur
+Les jeux Windows de cette époque jouent en réseau local par Winsock : diffusion UDP pour annoncer et trouver les
+parties (BFME1/2 : port 8086), puis UDP/TCP entre machines. Un navigateur n'a ni UDP ni TCP brut. **Décision** : le
+serveur Orthros tient un réseau local simulé par jeu (« salle ») : chaque page ouvre un WebSocket `/api/lan?room=<jeu>`
+(serveur RFC 6455 minimal écrit ici, aucune dépendance), reçoit une adresse 10.77.x.y et le serveur relaie des trames
+(type, source, destination, charge) : datagrammes UDP vers une adresse ou diffusés à toute la salle, et trames des
+connexions TCP émulées (ouverture, acceptation, refus/réinitialisation, données, fermeture). Le serveur impose l'adresse
+source (pas d'usurpation) et répond « refusé » à une ouverture vers personne. Côté invité, Winsock (ws2_32/wsock32) est
+émulé au-dessus : sockets UDP et TCP bloquants et non bloquants, select, WSAAsyncSelect, livraison locale (boucle,
+propre adresse ; les diffusions atteignent aussi les sockets du processus, comme sous Windows), gethostname (GuestN,
+court : les jeux en font le pseudonyme) et gethostbyname renvoyant l'adresse du réseau virtuel. Tous les joueurs d'un jeu
+sur le serveur sont sur le même réseau (séparer des réseaux privés plus tard : un paramètre de salle). Vérifié : BFME2 et
+BFME1, deux joueurs se voient dans le salon, l'un crée une partie, l'autre la voit, la rejoint, la carte charge des deux
+côtés et la partie avance en synchronie.

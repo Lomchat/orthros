@@ -602,6 +602,17 @@
   régions). Sous SwiftShader (sans `--gl-discard`), la même partie tombe à 6-12 fps : c'est le rendu logiciel du
   serveur, pas le worker.
 
+## 28 septembre : multijoueur, en-tête, écran de chargement
+- **Multijoueur en réseau local virtuel (D061)** : tous les joueurs d'un jeu sur le serveur partagent un réseau local ;
+  Winsock émulé (UDP/TCP) relayé par le serveur (WebSocket). BFME2 (Network → Open Play) et BFME1 (Multiplayer →
+  Network) : un joueur crée une partie, l'autre la voit, la rejoint, ils jouent ensemble (vérifié avec deux navigateurs).
+- **En-tête** (logo Orthros, jeu, images/s avec petit graphe, préchargement en arrière-plan, joueurs du réseau local,
+  plein écran, retour aux jeux ; caché en plein écran) et **écran de chargement** (couverture du jeu floutée, barre avec
+  pourcentage, étapes, débit, astuces).
+- **Plantage au démarrage de BFME2 chez le joueur** (RangeError dans Heap.free_) : le tas ne suit plus une balise de
+  bloc écrasée par le programme hors de l'espace d'adressage ; les blocs sont désormais alignés sur 8 octets comme sous
+  Windows (un bloc sur deux ne l'était pas).
+
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
   patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
