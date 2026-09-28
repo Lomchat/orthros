@@ -11,6 +11,8 @@ const MAGIC_FREE = 0x46524855;
 const MIN_CHUNK = 0x100000; // 1 MB growth
 const MIN_USER = 16, SPLIT_MIN = HDR + FTR + MIN_USER;
 const CLASSES = 128;
+/** a free-list link that can be followed: 0 (end) or an address of the user space (cheap: no chunk search per step) */
+const plausible = (p) => p === 0 || (p >= 0x10000 && p < 0x7eb00000 && (p & 7) === 0);
 
 /** size class of an 8-aligned user size: exact classes up to 512 bytes, then powers of two */
 function classIndex(size) {
@@ -62,8 +64,12 @@ export class Heap {
     this.heads[c] = b;
   }
   unlink(b, c) {
-    const m = this.mem, next = m.read32(b), prev = m.read32(b + 4);
-    if (prev) m.write32(prev, next); else this.heads[c] = next;
+    const m = this.mem;
+    let next = m.read32(b), prev = m.read32(b + 4);
+    // (links overwritten by a program using a freed block: dropped rather than followed out of the address space)
+    if (!plausible(next)) next = 0;
+    if (!plausible(prev)) prev = 0;
+    if (prev) m.write32(prev, next); else if (this.heads[c] === b) this.heads[c] = next;
     if (next) m.write32(next + 4, prev);
   }
   setFree(b, size) {
@@ -94,6 +100,7 @@ export class Heap {
             return b;
           }
           b = m.read32(b);
+          if (!plausible(b)) break; // (a list overwritten by the program: its rest ignored)
         }
       }
       if (!this.grow(size + HDR + FTR + 32)) return 0;
@@ -105,16 +112,24 @@ export class Heap {
   free_(addr) {
     const m = this.mem;
     addr >>>= 0;
-    if (!this.inHeap(addr) || m.read32(addr - 4) !== MAGIC_USED) return false;
+    const ch = this.chunkOf(addr);
+    if (!ch || m.read32(addr - 4) !== MAGIC_USED) return false;
     let size = m.read32(addr - 8);
+    const lo = ch.base + 8, hi = ch.base + ch.size; // (user addresses of the chunk's two sentinels)
+    if (addr + size + FTR + HDR > hi) return false; // (a header overwritten by the program)
     m.write32(addr - 4, MAGIC_FREE);
+    // Neighbours are merged only when their boundary tags agree (header size = footer size, inside the chunk): a
+    // program writing a few bytes past its block overwrites the footer, which Windows' heap would not notice either.
     // coalesce forward
     const nextU = addr + size + FTR + HDR;
-    if (m.read32(nextU - 4) === MAGIC_FREE) { const ns = m.read32(nextU - 8); this.unlink(nextU, classIndex(ns)); size += FTR + HDR + ns; }
+    if (nextU < hi && m.read32(nextU - 4) === MAGIC_FREE) {
+      const ns = m.read32(nextU - 8);
+      if (nextU + ns + FTR <= hi - 8 && m.read32(nextU + ns) === ns) { this.unlink(nextU, classIndex(ns)); size += FTR + HDR + ns; }
+    }
     // coalesce backward
     const ps = m.read32(addr - HDR - FTR);
     const prevU = addr - HDR - FTR - ps;
-    if (ps && m.read32(prevU - 4) === MAGIC_FREE) { this.unlink(prevU, classIndex(ps)); size += ps + FTR + HDR; addr = prevU; }
+    if (ps && prevU > lo && m.read32(prevU - 4) === MAGIC_FREE && m.read32(prevU - 8) === ps) { this.unlink(prevU, classIndex(ps)); size += ps + FTR + HDR; addr = prevU; }
     this.setFree(addr, size);
     return true;
   }
@@ -156,9 +171,11 @@ export class Heap {
     return n;
   }
 
-  inHeap(addr) {
-    for (const c of this.chunks) if (addr >= c.base + 16 + HDR && addr < c.base + c.size - 8) return true;
-    return false;
+  inHeap(addr) { return this.chunkOf(addr) !== null; }
+  /** the chunk holding user address `addr` (between its sentinels), or null */
+  chunkOf(addr) {
+    for (const c of this.chunks) if (addr >= c.base + 16 + HDR && addr < c.base + c.size - 8) return c;
+    return null;
   }
   validate(addr) { return addr === 0 || this.size(addr) >= 0; }
 
