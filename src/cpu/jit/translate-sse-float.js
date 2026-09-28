@@ -3,19 +3,19 @@
 // (including the MMX-coupled CVTPI2PS/CVTPS2PI families) and LDMXCSR/STMXCSR.
 //
 // Semantics follow src/cpu/interp-sse.js bit for bit (the oracle suite tests/generated/sse is the
-// judge): XMM/MM/MXCSR stay memory-resident in the thread state, scalar forms write lane 0 only,
+// judge): XMM registers live in v128 locals (lane 0 of scalar single-precision code in f32 shadows:
+// XMM_SHADOW_OPS, Emitter.xmmShadowSync), MM/MXCSR in the thread state, scalar forms write lane 0 only,
 // MIN/MAX return the source on NaN/equal (f32x4.pmin(src, dst)), float->int conversions yield
 // 0x80000000 on NaN/overflow and the non-truncating ones honour MXCSR.RC at run time, RCP/RSQRT
 // are the exact f32(1/x) / f32(1/sqrt(x in f64)) of the interpreter. DAZ/FTZ are ignored (WASM
 // SIMD has no flush-to-zero). Every MM access mirrors opAddr (tag word 0xff, TOP 0) through the
 // common helpers. Not registered here: FXSAVE/FXRSTOR (interpreter fallback).
-import { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_TA, L_F64A, L_F64B, L_V0, L_V1, L_V2 } from './translate.js';
+import { HANDLERS, XMM_SHADOW_OPS, L_STATE, L_REG, L_EFLAGS, L_TA, L_F64A, L_F64B, L_V0, L_V1, L_V2, L_F32A, L_F32B } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
-import { T } from './wasm.js';
 import {
   xmmOff, xmmLocal, xmmLoad, xmmStore, xmmStoreLow, mmStore, loadVec, storeVec,
-  scalarF32, scalarF64, xmmStoreF32, xmmStoreF64,
+  scalarF32, scalarF64, xmmStoreF32, xmmStoreF64, xmmStoreShadowed,
   pushSplatI32, pushSplatF32, pushSplatF64, pushLowMask,
   elemMask, shufps, shufpd, unpackMask,
 } from './translate-sse-common.js';
@@ -87,24 +87,30 @@ function f64ToI32Vec(E) {
   pushLowMask(E, 8); c.v128and();
 }
 
-/** f64 in L_F64A (rounded) -> i32 on the stack, 0x80000000 when NaN / out of range. */
+/**
+ * f64 in L_F64A (already an integer, or any value when truncating) -> i32 on the stack, 0x80000000 (the x86
+ * "integer indefinite") when NaN / out of range. Branch-free: trunc_sat already gives 0x80000000 at or below
+ * -2^31 (and truncates toward zero, so -2^31 - 0.5 -> -2^31 like CVTTSD2SI); only NaN and x >= 2^31 need the
+ * select (x < 2^31 is false for both).
+ */
 function f64ToI32Scalar(E) {
   const c = E.c;
-  c.get(L_F64A).f64c(-TWO31).f64ge().get(L_F64A).f64c(TWO31).f64lt().and();
-  const i = c.if_(T.i32); c.get(L_F64A).i32trunc_sat_f64_s(); c.else_(); c.i32(-TWO31); c.end(); void i;
+  c.get(L_F64A).i32trunc_sat_f64_s().i32(-TWO31).get(L_F64A).f64c(TWO31).f64lt().select();
 }
 
-/** Compare L_F64A (a) with L_F64B (b) into EFLAGS: COMISS/UCOMISS semantics (see interp comis). */
-function compareEflags(E) {
+/**
+ * Compare local a with local b (type p: 'f32' / 'f64') into EFLAGS, COMISS/UCOMISS semantics (see interp comis):
+ * ZF,PF,CF = 111 unordered, 000 greater, 001 less, 100 equal; OF, SF, AF cleared. Branch-free, with the IEEE
+ * comparisons (all false on a NaN): CF = !(a >= b), ZF = !(a < b || a > b), PF = !(a >= b || a < b).
+ */
+function compareEflags(E, a, b, p) {
   const c = E.c;
-  E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
+  const cmp = (op) => { c.get(a).get(b)[p + op](); };
   c.get(L_EFLAGS).i32(~(F.ZF | F.PF | F.CF | F.OF | F.SF | F.AF)).and();
-  c.get(L_F64A).get(L_F64B).f64lt(); const i1 = c.if_(T.i32); c.i32(F.CF); c.else_();
-  c.get(L_F64A).get(L_F64B).f64eq(); const i2 = c.if_(T.i32); c.i32(F.ZF); c.else_();
-  c.get(L_F64A).get(L_F64B).f64gt(); const i3 = c.if_(T.i32); c.i32(0); c.else_(); c.i32(F.ZF | F.PF | F.CF); c.end(); void i3;
-  c.end(); void i2;
-  c.end(); void i1;
-  c.or().set(L_EFLAGS);
+  cmp('ge'); c.eqz().or(); // CF (bit 0)
+  cmp('lt'); cmp('gt'); c.or().eqz().i32(6).shl().or(); // ZF
+  cmp('ge'); cmp('lt'); c.or().eqz().i32(2).shl().or(); // PF
+  c.set(L_EFLAGS);
 }
 
 /** Push 1/sqrt(x) for the two f32 lanes 0,1 of the v128 on the stack, computed in f64 and demoted (lanes 2,3 zero). */
@@ -134,8 +140,15 @@ function movScalar(n) {
     else xmmStoreLow(E, d.r, n, () => xmmLoad(E, s.r));
   };
 }
-HANDLERS[OP.MOVSS] = movScalar(4);
 HANDLERS[OP.MOVSD] = movScalar(8);
+// MOVSS through the lane-0 shadows (XMM_SHADOW_OPS below): m32 <- the shadow; xmm <- m32 loads the zero-extended
+// vector and its lane 0 into the shadow; xmm <- xmm copies shadow to shadow (lanes 1-3 of the destination kept)
+HANDLERS[OP.MOVSS] = (E, insn) => {
+  const c = E.c; const [d, s] = insn.ops;
+  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF32(E, s); c.f32store(0, 0); E.smcCheck(insn); }
+  else if (s.t === OT.MEM) xmmStoreShadowed(E, d.r, () => { E.ea(s); c.v128load32zero(0); });
+  else xmmStoreF32(E, d.r, () => scalarF32(E, s));
+};
 
 // MOVLPS/MOVLPD: low qword <-> m64 (upper preserved)
 HANDLERS[OP.MOVLPS] = HANDLERS[OP.MOVLPD] = (E, insn) => {
@@ -191,35 +204,57 @@ function packedUn(op) {
     xmmStore(E, d.r, () => { loadVec(E, s); c[op](); });
   };
 }
-/** Scalar SS/SD binary: lane 0 = op(dst0, src0), other lanes preserved (computed on the vector, low-lane store). */
+// Scalar SS/SD forms: lane 0 is computed with WASM scalar f32/f64 arithmetic (extract_lane 0, the op,
+// replace_lane 0 — the host's mulss/addsd...), never on the whole vector: lanes 1-3 of an x86 register
+// written by scalar code are arbitrary (the integers of an earlier MOVD/PINSRW, the lanes CVTSI2SS keeps...),
+// and a packed host op would also compute on them — every denormal lane costing a microcode assist on the
+// host (DAZ is off in browsers): measured with tools/ssef-bench.mjs, the kernel whose xmm0 carries denormal
+// upper lanes took 0.92 ns per instruction computed packed, twice its clean-lanes time. Same results bit for bit: the
+// host's scalar and packed instructions round and propagate NaNs alike (first operand's NaN quieted, the
+// default NaN for invalid operations), and an m32/m64 source is read with a plain scalar load.
+/** f32 / f64 prefix of the WASM scalar ops for a 4- / 8-byte scalar */
+const fp = (n) => (n === 4 ? 'f32' : 'f64');
+/** Push lane 0 of operand o as an f32 (n = 4) or f64 (n = 8). */
+function scalarF(E, o, n) { if (n === 4) scalarF32(E, o); else scalarF64(E, o); }
+/** XMM r lane 0 <- the f32 / f64 pushed by emitValue(E), other lanes preserved. */
+function xmmStoreF(E, r, n, emitValue) { if (n === 4) xmmStoreF32(E, r, emitValue); else xmmStoreF64(E, r, emitValue); }
+/** Scalar SS/SD binary: lane 0 = op(dst0, src0), other lanes preserved. */
 function scalarBin(op, n) {
   return (E, insn) => {
     const c = E.c; const [d, s] = insn.ops;
-    xmmStoreLow(E, d.r, n, () => { xmmLoad(E, d.r); loadVec(E, s); c[op](); });
+    xmmStoreF(E, d.r, n, () => { scalarF(E, d, n); scalarF(E, s, n); c[fp(n) + op](); });
   };
 }
-function scalarMinMax(op, n) {
+/**
+ * MINSS/MAXSS/MINSD/MAXSD: dst0 < src0 (resp. >) ? dst0 : src0 — the source when either is NaN or both are
+ * equal (±0 included), exactly f32x4.pmin(src, dst) of the packed forms.
+ */
+function scalarMinMax(max, n) {
   return (E, insn) => {
-    const c = E.c; const [d, s] = insn.ops;
-    xmmStoreLow(E, d.r, n, () => { loadVec(E, s); xmmLoad(E, d.r); c[op](); });
+    const c = E.c; const [d, s] = insn.ops; const p = fp(n);
+    const A = n === 4 ? L_F32A : L_F64A, B = n === 4 ? L_F32B : L_F64B;
+    xmmStoreF(E, d.r, n, () => {
+      scalarF(E, d, n); c.set(A); scalarF(E, s, n); c.set(B);
+      c.get(A).get(B).get(A).get(B)[p + (max ? 'gt' : 'lt')]().select();
+    });
   };
 }
 function scalarUn(op, n) {
   return (E, insn) => {
     const c = E.c; const [d, s] = insn.ops;
-    xmmStoreLow(E, d.r, n, () => { loadVec(E, s); c[op](); });
+    xmmStoreF(E, d.r, n, () => { scalarF(E, s, n); c[fp(n) + op](); });
   };
 }
 for (const [k, w] of [['ADD', 'add'], ['SUB', 'sub'], ['MUL', 'mul'], ['DIV', 'div']]) {
   HANDLERS[OP[k + 'PS']] = packedBin('f32x4' + w); HANDLERS[OP[k + 'PD']] = packedBin('f64x2' + w);
-  HANDLERS[OP[k + 'SS']] = scalarBin('f32x4' + w, 4); HANDLERS[OP[k + 'SD']] = scalarBin('f64x2' + w, 8);
+  HANDLERS[OP[k + 'SS']] = scalarBin(w, 4); HANDLERS[OP[k + 'SD']] = scalarBin(w, 8);
 }
 HANDLERS[OP.MINPS] = packedMinMax('f32x4pmin'); HANDLERS[OP.MAXPS] = packedMinMax('f32x4pmax');
 HANDLERS[OP.MINPD] = packedMinMax('f64x2pmin'); HANDLERS[OP.MAXPD] = packedMinMax('f64x2pmax');
-HANDLERS[OP.MINSS] = scalarMinMax('f32x4pmin', 4); HANDLERS[OP.MAXSS] = scalarMinMax('f32x4pmax', 4);
-HANDLERS[OP.MINSD] = scalarMinMax('f64x2pmin', 8); HANDLERS[OP.MAXSD] = scalarMinMax('f64x2pmax', 8);
+HANDLERS[OP.MINSS] = scalarMinMax(false, 4); HANDLERS[OP.MAXSS] = scalarMinMax(true, 4);
+HANDLERS[OP.MINSD] = scalarMinMax(false, 8); HANDLERS[OP.MAXSD] = scalarMinMax(true, 8);
 HANDLERS[OP.SQRTPS] = packedUn('f32x4sqrt'); HANDLERS[OP.SQRTPD] = packedUn('f64x2sqrt');
-HANDLERS[OP.SQRTSS] = scalarUn('f32x4sqrt', 4); HANDLERS[OP.SQRTSD] = scalarUn('f64x2sqrt', 8);
+HANDLERS[OP.SQRTSS] = scalarUn('sqrt', 4); HANDLERS[OP.SQRTSD] = scalarUn('sqrt', 8);
 
 // RCP: exact f32 reciprocal (== fround(1/x)); RSQRT: fround(1/sqrt(x)) computed in f64
 HANDLERS[OP.RCPPS] = (E, insn) => {
@@ -331,12 +366,27 @@ function cmpHandler(dbl, n) {
 HANDLERS[OP.CMPPS] = cmpHandler(false, 16); HANDLERS[OP.CMPPD] = cmpHandler(true, 16);
 HANDLERS[OP.CMPSS] = cmpHandler(false, 4); HANDLERS[OP.CMPSD] = cmpHandler(true, 8);
 
+/** Instructions evaluating a condition code once through E.pushCond, before anything else of theirs could
+ * overwrite the float temporaries: they can test a compare's operands directly (Emitter.pushFcmpCond). */
+const FCMP_READERS = new Set([OP.JCC, OP.SETCC, OP.CMOVCC]);
+/**
+ * COMISS/UCOMISS/COMISD/UCOMISD (the same flags: SSE exceptions are masked, the translator raises none). Compared
+ * in the operands' own precision (promoting f32 to f64 is exact, so it cannot change an ordering). When the next
+ * instruction of the block is a JCC/SETCC/CMOVCC, its condition is computed from the operands kept in L_F32A/B
+ * (L_F64A/B) instead of from EFLAGS, and EFLAGS is only written if a later instruction (or a successor block, an
+ * exit...) may read it: the common `ucomiss ; jp/jae` then costs one or two host compares.
+ */
 function comis(dbl) {
-  return (E, insn) => {
+  return (E, insn, b) => {
     const c = E.c; const [d, s] = insn.ops;
-    if (dbl) { scalarF64(E, d); c.set(L_F64A); scalarF64(E, s); c.set(L_F64B); }
-    else { scalarF32(E, d); c.f64promote().set(L_F64A); scalarF32(E, s); c.f64promote().set(L_F64B); }
-    compareEflags(E);
+    const A = dbl ? L_F64A : L_F32A, B = dbl ? L_F64B : L_F32B, p = dbl ? 'f64' : 'f32';
+    if (dbl) { scalarF64(E, d); c.set(A); scalarF64(E, s); c.set(B); }
+    else { scalarF32(E, d); c.set(A); scalarF32(E, s); c.set(B); }
+    E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
+    const next = b.insns[E.insnIdx]; // (insnIdx: this instruction's index + 1)
+    const fused = next !== undefined && FCMP_READERS.has(next.op);
+    E.fcmp = fused ? { blk: E.cur, at: E.insnIdx + 1, a: A, b: B, p } : null;
+    if (fused ? E.flagsAfter[E.insnIdx] : E.flagsLive()) compareEflags(E, A, B, p);
   };
 }
 HANDLERS[OP.COMISS] = HANDLERS[OP.UCOMISS] = comis(false);
@@ -380,6 +430,11 @@ HANDLERS[OP.CVTSI2SD] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; x
 function cvtToGpr(dbl, trunc) {
   return (E, insn) => {
     const c = E.c; const [d, s] = insn.ops;
+    if (!dbl && trunc) { // CVTTSS2SI: straight from the f32 (same select as f64ToI32Scalar)
+      scalarF32(E, s); c.tee(L_F32A).i32trunc_sat_f32_s().i32(-TWO31).get(L_F32A).f32c(TWO31).f32lt().select();
+      c.set(L_REG + d.r);
+      return;
+    }
     if (dbl) scalarF64(E, s); else { scalarF32(E, s); c.f64promote(); }
     c.set(L_F64A);
     roundMxScalar(E, trunc);
@@ -389,6 +444,12 @@ function cvtToGpr(dbl, trunc) {
 }
 HANDLERS[OP.CVTSS2SI] = cvtToGpr(false, false); HANDLERS[OP.CVTTSS2SI] = cvtToGpr(false, true);
 HANDLERS[OP.CVTSD2SI] = cvtToGpr(true, false); HANDLERS[OP.CVTTSD2SI] = cvtToGpr(true, true);
+
+// Scalar single-precision instructions whose every XMM access goes through the lane-0 shadow helpers (scalarF32,
+// xmmStoreF32, xmmStoreShadowed): chains of them keep their values in f32 locals (Emitter.xmmShadowSync). Not
+// CVTSS2SD / CVTSD2SS (an f64 lane of the vector), nor the packed or double forms.
+for (const k of ['MOVSS', 'ADDSS', 'SUBSS', 'MULSS', 'DIVSS', 'MINSS', 'MAXSS', 'SQRTSS', 'RCPSS', 'RSQRTSS',
+  'CVTSI2SS', 'CVTSS2SI', 'CVTTSS2SI', 'COMISS', 'UCOMISS']) XMM_SHADOW_OPS.add(OP[k]);
 
 // ------------------------------------------------------------------ MXCSR
 

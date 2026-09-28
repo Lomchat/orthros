@@ -41,9 +41,18 @@ const L_S32 = 45, L_F32A = 53, L_F32B = 54, L_F32C = 55;
 const L_XMM0 = 56;
 // f64 temporaries of the exact-rounding helpers (the error of an f64 sum or product: see translate-x87.js roundF32)
 const L_F64D = 64, L_F64E = 65, L_F64G = 66, L_F64H = 67;
+// f32 shadows of lane 0 of the XMM registers (L_XS0+r), for scalar single-precision code (Emitter.xsValid)
+const L_XS0 = 68;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64]; // indices 16..63
-if (LOCAL_TYPES.length !== L_F64H + 1 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32)]; // indices 16..75
+if (LOCAL_TYPES.length !== L_XS0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+/**
+ * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
+ * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
+ * single-precision family. Any other instruction naming an XMM register first writes that register's pending
+ * shadow back to its v128 local (Emitter.xmmShadowRelease).
+ */
+const XMM_SHADOW_OPS = new Set();
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -358,6 +367,8 @@ class Emitter {
     this.c = scratchCode ??= new Code(1 << 16);
     this.c.reset();
     this.lz = null;
+    this.xsValid = this.xsDirty = 0; this.xsOK = false; // XMM lane-0 shadows (see xmmShadowSync)
+    this.fcmp = null;
     this.smc = opts.smc !== false;
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
@@ -551,6 +562,7 @@ class Emitter {
   loadXmm() {
     const c = this.c;
     for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).v128load(ST.XMM + 16 * r).set(L_XMM0 + r);
+    this.xsValid = this.xsDirty = 0; // (the shadows are older than the reloaded registers)
   }
   /** Write the cached XMM registers back to the state block. */
   flushXmm() {
@@ -590,9 +602,11 @@ class Emitter {
    * must not write the shadows again, into locals the rotation has moved.
    */
   x87Normalize() {
-    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr };
+    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty };
     this.materializeF32();
     this.f32Mask = 0;
+    this.xmmShadowSync(this.xsDirty); // (XMM lane-0 shadows: the same discipline, see xsValid)
+    this.xsDirty = 0;
     this.applyTags();
     const s = this.stShift;
     if (!s) return saved;
@@ -605,7 +619,28 @@ class Emitter {
     return saved;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
-  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; }
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; }
+  // ---- XMM lane-0 shadows. Scalar single-precision code (MOVSS / ADDSS / MULSS / CVTSI2SS / COMISS...) keeps lane 0
+  // of an XMM register in an f32 local L_XS0+r: xsValid bit r = the shadow holds lane 0; xsDirty bit r (a subset) =
+  // the v128 local's lane 0 is stale. A chain of scalar operations then runs on f32 values (the host's mulss /
+  // addss on registers) without re-inserting every result into the vector (an insertps on each operation's
+  // dependency chain) nor extracting operands; the lane is put back once, where the block is left (every exit,
+  // branch and fallback goes through x87Normalize, which writes the dirty shadows back and, on a conditional exit
+  // path, restores the mask afterwards) or before another instruction names the register (xmmShadowRelease).
+  // Both masks are 0 at block entry and after the locals are reloaded from the state block (loadXmm).
+  /** v128 local of XMM r <- its f32 shadow in lane 0, for every r of `mask` (the masks unchanged). */
+  xmmShadowSync(mask) {
+    const c = this.c;
+    for (let r = 0; mask; mask >>= 1, r++) if (mask & 1) c.get(L_XMM0 + r).get(L_XS0 + r).f32x4replacelane(0).set(L_XMM0 + r);
+  }
+  /** Before an instruction outside XMM_SHADOW_OPS: its XMM operands' shadows written back and dropped. */
+  xmmShadowRelease(insn) {
+    let m = 0;
+    for (const o of insn.ops) if (o.t === OT.XMM) m |= 1 << (o.r & 7);
+    if (!(m & this.xsValid)) return;
+    this.xmmShadowSync(m & this.xsDirty);
+    this.xsValid &= ~m; this.xsDirty &= ~m;
+  }
   /**
    * Tag word changes of the block are static (tagSet / tagClr: bits of L_FTW in its current order, i.e.
    * stTagBit positions): a push marks its slot valid and a pop empty without code; the pending changes are
@@ -1047,6 +1082,8 @@ class Emitter {
   pushCond(cc) {
     const c = this.c;
     const lz = this.lz;
+    const fc = this.fcmp;
+    if (fc && fc.blk === this.cur && fc.at === this.insnIdx) { this.pushFcmpCond(cc, fc); return; }
     if (lz === null) { this.pushCondDynamic(cc); return; }
     const neg = cc & 1;
     const base = cc >> 1;
@@ -1093,6 +1130,26 @@ class Emitter {
     }
     if (neg) c.eqz();
   }
+  /**
+   * Condition cc straight from the operands of the COMISS/UCOMISS/COMISD/UCOMISD just before (this.fcmp, set by
+   * translate-sse-float.js: locals fc.a / fc.b of type fc.p, 'f32' or 'f64'): ZF,PF,CF = 111 unordered, 000
+   * a > b, 001 a < b, 100 a == b; OF, SF (and AF) 0. With the IEEE comparisons (false when unordered):
+   * CF = !(a >= b), ZF = !(a < b || a > b), CF|ZF = !(a > b), PF = !(a >= b || a < b); O, S, L are never
+   * set, LE is ZF. The instruction's EFLAGS update is skipped when nothing reads the flags after the consumer.
+   */
+  pushFcmpCond(cc, fc) {
+    const c = this.c, p = fc.p;
+    const cmp = (op) => { c.get(fc.a).get(fc.b)[p + op](); };
+    let inv = cc & 1; // result to invert
+    switch (cc >> 1) {
+      case 0: case 4: case 6: c.i32(inv); return; // O, S, L: 0 (negated: 1)
+      case 1: cmp('ge'); inv ^= 1; break; // B: !(a >= b)
+      case 3: cmp('gt'); inv ^= 1; break; // BE: !(a > b)
+      case 2: case 7: cmp('lt'); cmp('gt'); c.or(); inv ^= 1; break; // E, LE: !(a < b || a > b)
+      default: cmp('ge'); cmp('lt'); c.or(); inv ^= 1; break; // P: unordered
+    }
+    if (inv) c.eqz();
+  }
   /** Compute arithmetic flags eagerly from (res in lzRes, a in lzA, b in lzB) with kind, into EFLAGS. */
   eagerFlags(kind, size) {
     const c = this.c;
@@ -1111,6 +1168,8 @@ class Emitter {
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
+    this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
+    this.xsValid = this.xsDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
     // flags live after each instruction of the block
     const live = (this.flagsAfter = new Uint8Array(b.insns.length));
@@ -1147,6 +1206,8 @@ class Emitter {
     this.curOp = insn.op;
     this.c.site = insn.op; // (call statistics)
     const h = HANDLERS[insn.op];
+    this.xsOK = XMM_SHADOW_OPS.has(insn.op); // (read by the shadow helpers)
+    if (!this.xsOK && this.xsValid) this.xmmShadowRelease(insn);
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
   }
@@ -1943,5 +2004,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, Emitter };
+export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, XMM_SHADOW_OPS, Emitter };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
