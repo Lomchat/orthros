@@ -31,7 +31,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -83,6 +83,7 @@ if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translate
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
+if (opt('timescale')) q.set('timescale', opt('timescale')); // (guest ms per real ms: below 1 the guest sees a faster machine — first-launch benchmarks)
 if (args.includes('--lan')) q.set('lan', '1'); // (the virtual LAN link, as players have it; headless runs are off it by default)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
@@ -404,7 +405,7 @@ for (;;) {
       for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
         if (line === 'quit') { control.quit = true; continue; }
         const [kind, ...rest] = line.split(':'); const a = rest.join(':');
-        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' ? [a] : a ? a.split(',').map(Number) : [], done: false });
       }
     }
     if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
@@ -441,6 +442,7 @@ for (;;) {
     if (ev.kind === 'profile') { profileWorker(ev.args[0] || 20).catch((e) => console.log('[profile] failed:', e.message)); continue; } // (profile:<seconds> — the worker, now)
     if (ev.kind === 'capture') { await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), !!ev.args[0]); console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); continue; } // (capture[:1] — the next frame, with the target after every draw when 1)
     if (ev.kind === 'watch' || ev.kind === 'unwatch') { await page.evaluate(([type, addr, len]) => window.orthros.worker?.postMessage({ type, addr, len }), [ev.kind, ev.args[0] || 0, ev.args[1] || 4]); continue; } // (watch:addr,len / unwatch: the code writing there)
+    if (ev.kind === 'find') { await page.evaluate((hex) => window.orthros.worker?.postMessage({ type: 'find', hex }), String(ev.args[0])); continue; } // (find:<hex bytes> — where guest memory holds them)
     if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
     if (ev.kind === 'threads') { await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'threads' })); continue; } // (threads: the VM's threads and sync objects, logged as [hang])
     if (ev.kind === 'burst') { await page.evaluate(([n, tid, noGfx]) => window.orthros.worker?.postMessage({ type: 'burst', n, tid, noGfx }), [ev.args[0] || 3000, ev.args[1] || 0, !!ev.args[2]]); continue; } // (burst:N[,tid[,1]]: the next N API calls of the main thread, or of thread tid, logged — 1: without the COM / D3DX calls; needs --log apiburst)

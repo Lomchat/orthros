@@ -206,7 +206,7 @@ function applyCursor() {
 const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
 const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable/i;
 function log(kind, msg) {
-  if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, 4000) });
+  if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, String(msg).includes('\n') ? 24000 : 4000) });
   // frames of 150 ms and more with what happened during them (translation, program builds, file reads, waits): the
   // first 150 of a session, to tell a player's hitches apart (a frame without any of these: collection or the GPU)
   else if (state.telemetry && kind === 'slowframe' && Number(/ ([\d.]+)ms:/.exec(msg)?.[1]) >= 150 && (state.slowSent = (state.slowSent ?? 0) + 1) <= 150) (state.queue ??= []).push({ t: Date.now(), event: 'slow', msg: String(msg).slice(0, 1000) });
