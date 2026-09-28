@@ -1861,6 +1861,60 @@ HANDLERS[OP.STD] = (E) => { E.c.get(L_EFLAGS).i32(F.DF).or().set(L_EFLAGS); };
 HANDLERS[OP.CLI] = () => {}; HANDLERS[OP.STI] = () => {};
 
 // ---- string ops (32-bit address size; DF from EFLAGS)
+/** REP MOVS / REP STOS below this many elements run the element loop: memory.copy / memory.fill cost a call into
+ *  the engine (~8-10 ns in V8, more for overlapping copies) where the loop moves an element in ~0.6 ns (MOVS) or
+ *  ~0.4 ns (STOS) — the crossovers measured with tools/strop-bench.mjs. */
+const REP_BULK_MIN = { movs: 12, stos: 28 };
+/**
+ * REP MOVS / REP STOS (L_T4 = the signed element step, L_T6 = EDI before). The whole range goes to one
+ * memory.copy / memory.fill when that gives the element-by-element result:
+ * - MOVS, either direction, unless the destination starts inside the source range on the side the copy moves
+ *   towards (forward with 0 < EDI-ESI < bytes, backward with 0 < ESI-EDI < bytes): there the x86 element order
+ *   reads bytes it has already written and replicates a pattern, which memmove semantics would not. (A C
+ *   runtime's memmove copies forward when dst < src and backward — STD — when dst > src: both qualify.)
+ *   Not with an FS-overridden source (a segment base: the element loop adds it).
+ * - STOS, either direction, when the element is one byte repeated (always for bytes; memset's replicated
+ *   pattern for words/dwords): the filled range is the same whatever the order.
+ * The range is [ESI/EDI, +bytes) forward and [ESI/EDI + size - bytes, ESI/EDI + size) backward; ESI/EDI end
+ * moved by ECX * step, ECX = 0. A range reaching outside the memory traps before writing anything where the
+ * element loop traps part-way: JIT'd code reports either as a fault in the region, without precise registers.
+ * Counts under REP_BULK_MIN or whose byte length would not fit in 31 bits (no wrap-around in the arithmetic),
+ * and the cases above, run the element loop.
+ */
+function repStore(E, insn, kind, size, fsSrc, body) {
+  const c = E.c; const sz = size; const min = REP_BULK_MIN[kind];
+  const outer = c.block();
+  if (!(kind === 'movs' && fsSrc)) {
+    c.get(L_REG + 1).i32(min).sub().i32(((0x7fffffff / sz) | 0) - min + 1).lt_u();
+    const cand = c.if_();
+    c.get(L_REG + 1).i32(sz).mul().set(L_T7); // byte length
+    // one arm per direction (constant offsets: measured 1-2 ns cheaper than selecting them from L_T4)
+    const arm = (back) => {
+      if (kind === 'movs') {
+        // how far the destination lies ahead of the source in the copy direction: unsafe when in [1, bytes-1]
+        if (back) c.get(L_REG + 6).get(L_REG + 7); else c.get(L_REG + 7).get(L_REG + 6);
+        c.sub().i32(1).sub().get(L_T7).i32(1).sub().ge_u();
+      } else if (sz > 1) { E.loadReg(sz, 0); E.loadReg(1, 0); c.i32(sz === 4 ? 0x01010101 : 0x0101).mul().eq(); }
+      const ok = kind === 'movs' || sz > 1 ? c.if_() : null;
+      // the low ends of the ranges: ESI/EDI forward, ESI/EDI + size - bytes backward
+      const low = (r) => { c.get(L_REG + r); if (back) c.i32(sz).add().get(L_T7).sub(); };
+      if (kind === 'movs') { low(7); low(6); c.get(L_T7).memcopy(); } else { low(7); E.loadReg(1, 0); c.get(L_T7).memfill(); }
+      if (kind === 'movs') { c.get(L_REG + 6).get(L_T7); if (back) c.sub(); else c.add(); c.set(L_REG + 6); }
+      c.get(L_REG + 7).get(L_T7); if (back) c.sub(); else c.add(); c.set(L_REG + 7);
+      c.i32(0).set(L_REG + 1);
+      c.br(outer);
+      if (ok) c.end();
+    };
+    c.get(L_T4).i32(0).lt_s(); const dir = c.if_(); arm(true); c.else_(); arm(false); c.end(); void dir;
+    c.end(); void cand;
+  }
+  // element loop (one loop stepping by L_T4: two loops with constant steps, one per direction, measured ~1 ns slower)
+  c.get(L_REG + 1);
+  const any = c.if_();
+  const lp = c.loop(); body(); c.get(L_REG + 1).i32(1).sub().tee(L_REG + 1).br_if(lp); c.end();
+  c.end(); void any;
+  c.end(); void outer;
+}
 function strOp(kind) {
   return (E, insn) => {
     const c = E.c;
@@ -1882,46 +1936,9 @@ function strOp(kind) {
     const writes = kind === 'movs' || kind === 'stos';
     if (writes) c.get(L_REG + 7).set(L_T6); // EDI before: the written range is checked for translated code afterwards
     if (!insn.rep) { body(); if (isCmp) E.lz = { kind: LZ.SUB, sz: SZLOG[size] }; if (writes) E.smcRange(L_T6, insn); return; }
+    // (every REP MOVS/STOS checks its range for translated code, word/dword STOS included)
+    if (writes) { repStore(E, insn, kind, size, fsBase >= 0, body); E.lz = null; E.smcRange(L_T6, insn); return; }
     if (isCmp) E.materialize();
-    // fast path: rep movs/stos forward with size 4/1 -> memory.copy/fill when non-overlapping-backwards
-    if (kind === 'stos' && !isCmp) {
-      c.get(L_T4).i32(0).gt_s().get(L_REG + 1).i32(0).ne().and();
-      const fast = c.if_();
-      if (size === 1) { c.get(L_REG + 7); E.loadReg(1, 0); c.get(L_REG + 1).memfill(); }
-      else {
-        // dword/word fill: loop (memory.fill only fills bytes); use a simple loop
-        const lp = c.loop(); c.get(L_REG + 7); E.loadReg(size, 0); E.storeMem(size); c.get(L_REG + 7).i32(sz).add().set(L_REG + 7); c.get(L_REG + 1).i32(1).sub().tee(L_REG + 1).br_if(lp); c.end();
-        c.i32(0).set(L_REG + 1);
-        c.else_();
-        const lp2 = c.loop(); c.get(L_REG + 1).eqz(); const ex2 = c.if_(); c.else_(); body(); c.get(L_REG + 1).i32(1).sub().set(L_REG + 1); c.br(lp2); c.end(); void ex2; c.end();
-        c.end(); void fast;
-        E.lz = null;
-        return;
-      }
-      c.get(L_REG + 7).get(L_REG + 1).add().set(L_REG + 7); c.i32(0).set(L_REG + 1);
-      c.else_();
-      const lp2 = c.loop(); c.get(L_REG + 1).eqz(); const ex2 = c.if_(); c.else_(); body(); c.get(L_REG + 1).i32(1).sub().set(L_REG + 1); c.br(lp2); c.end(); void ex2; c.end();
-      c.end(); void fast;
-      E.lz = null;
-      E.smcRange(L_T6, insn);
-      return;
-    }
-    if (kind === 'movs') {
-      // forward, non-overlapping-or-dst<src: memory.copy of ecx*size bytes
-      c.get(L_T4).i32(0).gt_s().get(L_REG + 1).i32(0).ne().and();
-      c.get(L_REG + 7).get(L_REG + 6).le_u().get(L_REG + 6).get(L_REG + 1).i32(sz).mul().add().get(L_REG + 7).le_u().or().and();
-      if (fsBase >= 0) { c.drop(); c.i32(0); }
-      const fast = c.if_();
-      c.get(L_REG + 7).get(L_REG + 6).get(L_REG + 1).i32(sz).mul().memcopy();
-      c.get(L_REG + 1).i32(sz).mul().set(L_T5);
-      c.get(L_REG + 6).get(L_T5).add().set(L_REG + 6); c.get(L_REG + 7).get(L_T5).add().set(L_REG + 7); c.i32(0).set(L_REG + 1);
-      c.else_();
-      const lp2 = c.loop(); c.get(L_REG + 1).eqz(); const ex2 = c.if_(); c.else_(); body(); c.get(L_REG + 1).i32(1).sub().set(L_REG + 1); c.br(lp2); c.end(); void ex2; c.end();
-      c.end(); void fast;
-      E.lz = null;
-      E.smcRange(L_T6, insn);
-      return;
-    }
     // generic rep loop (lods/scas/cmps)
     const lp = c.loop();
     c.get(L_REG + 1).eqz();
