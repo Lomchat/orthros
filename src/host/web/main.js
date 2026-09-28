@@ -6,7 +6,7 @@ import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const headless = params.get('headless') === '1';
-const state = { status: 'menu', stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false, lastX: 0, lastY: 0 };
+const state = { status: 'menu', loadT0: performance.now(), loadPct: 0, stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false, lastX: 0, lastY: 0 };
 window.orthros = state;
 
 /** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
@@ -64,13 +64,11 @@ async function main() {
   state.programCache = !!config.programCache && params.get('programs') !== '0';
   state.regionCache = !!config.regionCache && params.get('regions') !== '0'; // (code regions of earlier sessions translated while the game waits; ?regions=0: off) // (GL programs of earlier sessions compiled ahead; ?programs=0: off)
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
-  $('hudToggle').onchange = () => { $('hud').style.display = $('hudToggle').checked && state.status !== 'menu' ? 'block' : 'none'; };
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
   // the server's default game starts directly (a deployment for players); ?menu shows the picker
   const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
   if (auto) start(auto); else await showMenu();
-  $('hud').onclick = () => { $('hud').classList.toggle('collapsed'); try { localStorage.setItem('orthros.hud', $('hud').classList.contains('collapsed') ? 'compact' : 'full'); } catch { /* no storage */ } };
-  try { if (localStorage.getItem('orthros.hud') === 'compact') $('hud').classList.add('collapsed'); } catch { /* no storage */ }
+  $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
 }
 
 /** The game list: one card per manifest (its cover, description, size), arrows and Enter to choose. */
@@ -114,10 +112,11 @@ async function start(name) {
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   const tree = await (await fetch(`/api/tree/${name}`)).json();
   state.status = 'starting'; state.manifest = name;
-  $('menu').classList.add('hidden'); $('menu').onkeydown = null; $('stage').classList.remove('hidden'); if (!headless) $('hint').classList.remove('hidden');
+  $('menu').classList.add('hidden'); $('menu').onkeydown = null; $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
-  if (!headless) showStatus(`Starting ${state.title}…`, 'the first launch reads the game files from the server; later ones start from the browser\'s copy');
-  if ($('hudToggle').checked && !headless) $('hud').style.display = 'block'; // (headless: the harness reads the stats; the display would cover part of the frame in its screenshots)
+  // (headless: no header nor loading screen — the harness reads the stats, and screenshots the frame alone)
+  if (headless) document.body.classList.add('nobar');
+  else { $('topbar').classList.remove('hidden'); $('tbGame').textContent = state.title; showLoader(name); }
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer');
   resizeTo(manifest.display.width, manifest.display.height);
@@ -143,7 +142,8 @@ function resizeTo(w, h) {
 }
 function fit() {
   const { width: w, height: h } = state.mode;
-  const s = Math.min(innerWidth / w, innerHeight / h, headless ? 1 : Infinity);
+  const bar = headless || document.fullscreenElement || $('topbar').classList.contains('hidden') ? 0 : $('topbar').offsetHeight;
+  const s = Math.min(innerWidth / w, (innerHeight - bar) / h, headless ? 1 : Infinity);
   const frame = $('frame');
   frame.style.transform = `scale(${s})`; frame.style.transformOrigin = 'center';
   // nearest-neighbour only for whole scale factors (crisp, even pixels); a fractional scale is filtered smoothly
@@ -151,6 +151,7 @@ function fit() {
   state.scale = s;
 }
 addEventListener('resize', fit);
+document.addEventListener('fullscreenchange', fit);
 
 function onWorkerMessage(m) {
   switch (m.type) {
@@ -159,7 +160,7 @@ function onWorkerMessage(m) {
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
       if (m.frames !== state.lastFrames) { state.lastFrames = m.frames; state.lastNewFrameAt = Date.now(); }
-      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if (m.frames > 0) hideStatus(); else showStatus(`Starting ${state.title}…`, `game files read: ${m.ioMB ?? 0} MB · emulated CPU: ${Math.round(m.mips)} MIPS · ${m.threads} thread${m.threads > 1 ? 's' : ''}`); } if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, or a few GDI frames) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'mode': resizeTo(m.width, m.height); break;
     case 'title': document.title = m.title || 'Orthros'; break;
@@ -168,8 +169,8 @@ function onWorkerMessage(m) {
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
-    case 'exit': $('busy').classList.add('hidden'); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''}`, null, m.code !== 0, true); break;
-    case 'crash': $('busy').classList.add('hidden'); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true, true); break;
+    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''}`, null, m.code !== 0, true); break;
+    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -215,33 +216,110 @@ function log(kind, msg) {
   if (el.style.display !== 'none') { el.textContent += line + '\n'; el.scrollTop = el.scrollHeight; }
 }
 
+// ---------------------------------------------------------------- loading screen
+const TIPS = [
+  'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
+  'Full screen (button above, or Alt+Enter) gives the game the whole screen and keeps the mouse in it; hold Esc to leave.',
+  'Everyone playing on this server is on the same local network: in the game, Multiplayer → LAN shows their games.',
+  'The game runs entirely in your browser, from its original files: nothing is installed.',
+];
+/** The loading screen of a game: its cover blurred behind, the progress of the work done before its first image. */
+function showLoader(name) {
+  const el = $('loader');
+  el.querySelector('.bg').style.backgroundImage = `url(/api/cover/${encodeURIComponent(name)})`;
+  el.querySelector('.title').textContent = state.title;
+  el.querySelector('.subtitle').textContent = 'running from its original files, in your browser';
+  el.querySelector('.tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+  el.classList.remove('hidden', 'gone');
+  state.loadT0 = performance.now(); state.loadPct = 0;
+  state.tipTimer = setInterval(() => { const t = el.querySelector('.tip'); t.textContent = TIPS[(TIPS.indexOf(t.textContent) + 1) % TIPS.length]; }, 9000);
+}
+function hideLoader(now = false) {
+  const el = $('loader'); if (el.classList.contains('hidden')) return;
+  clearInterval(state.tipTimer);
+  const done = () => el.classList.add('hidden');
+  if (now) { done(); return; }
+  try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ }
+  el.querySelector('.fill').style.width = '100%'; el.querySelector('.pct').textContent = '100%'; el.querySelector('.phase').textContent = 'Ready';
+  setTimeout(() => { el.classList.add('gone'); setTimeout(done, 600); }, 250);
+  toast('Click the game to capture the mouse · Esc releases it · ⛶ for full screen', 7000);
+}
+const fmtMB = (mb) => (mb >= 1000 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB');
 /**
- * Frame-rate display for players (top left; a click switches compact / detailed): the frames shown per second, coloured
- * against 30 fps, the last minute as a graph (a red mark where a frame took more than 50 ms), the worst frame and the
- * frames over 33 / 50 ms since the previous update, the emulated CPU and the local time (to report a slowdown).
+ * Progress while the game starts: the files learned from earlier sessions (downloaded ahead), the code regions
+ * translated ahead, the shader programs compiled ahead, then the game's own start (until its first image). Each part
+ * weighs by its usual share of the wait; parts without anything to do are left out; the bar never goes back.
+ */
+function updateLoader(m) {
+  const el = $('loader'); if (el.classList.contains('hidden')) return;
+  const L = m.load ?? {}, now = performance.now(), secs = (now - state.loadT0) / 1000;
+  const set = (k, st, v) => { const li = el.querySelector(`li[data-k="${k}"]`); li.className = st; li.querySelector('.v').textContent = v; };
+  const parts = [];
+  // files
+  const pf = L.pfTotal ? Math.min(1, L.pfDone / L.pfTotal) : null;
+  const prev = state.lastLoad; state.lastLoad = { t: now, mb: L.pfMB ?? m.ioMB ?? 0 };
+  const speed = prev && now > prev.t ? Math.max(0, (state.lastLoad.mb - prev.mb) / ((now - prev.t) / 1000)) : 0;
+  state.speed = state.speed == null ? speed : state.speed * 0.7 + speed * 0.3;
+  if (pf !== null) { parts.push([0.45, pf]); set('files', L.pfFinished || pf >= 1 ? 'done' : 'active', `${fmtMB(L.pfMB ?? 0)}${!L.pfFinished && state.speed > 0.05 ? ` · ${state.speed.toFixed(1)} MB/s` : ''}`); }
+  else set('files', (m.ioMB ?? 0) > 0 ? 'active' : '', `${fmtMB(m.ioMB ?? 0)} read`);
+  // code
+  const rg = L.rgTotal ? Math.min(1, L.rgDone / L.rgTotal) : null;
+  if (rg !== null) { parts.push([0.15, rg]); set('code', rg >= 1 ? 'done' : 'active', `${Math.round(rg * 100)}%`); } else set('code', 'skip', '');
+  // shaders
+  const pg = L.pgTotal ? Math.min(1, L.pgDone / L.pgTotal) : null;
+  void pg; set('gfx', 'skip', ''); // (the shaders learned earlier compile along the first frames: not part of this wait)
+  // the game's own start: an estimate from the time its last start took in this browser (else ~60 s), completed by
+  // its first image — a curve that slows down rather than stops when the estimate is short
+  const T = state.bootEstimate ??= (() => { try { return Number(localStorage.getItem('orthros.boot.' + state.manifest)) || 60; } catch { return 60; } })();
+  const boot = Math.min(0.97, 1 - Math.exp(-2.2 * secs / T));
+  parts.push([0.4, boot]); set('boot', 'active', `${Math.round(secs)} s · ${Math.round(m.mips)} MIPS`);
+  const wsum = parts.reduce((a, [w]) => a + w, 0), p = parts.reduce((a, [w, f]) => a + w * f, 0) / wsum;
+  state.loadPct = Math.max(state.loadPct, Math.min(99, Math.floor(p * 100)));
+  el.querySelector('.fill').style.width = state.loadPct + '%';
+  el.querySelector('.pct').textContent = state.loadPct + '%';
+  el.querySelector('.phase').textContent = pf !== null && pf < 1 && !L.pfFinished ? `Downloading the game files — ${fmtMB(L.pfMB ?? 0)}` : rg !== null && rg < 1 ? 'Preparing the game\'s code…' : 'Starting the game…';
+}
+function toast(text, ms = 5000) {
+  if (headless) return;
+  const el = $('toast'); el.textContent = text; el.classList.remove('hidden'); el.style.opacity = '1';
+  clearTimeout(state.toastTimer); state.toastTimer = setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.classList.add('hidden'), 700); }, ms);
+}
+state.toast = toast;
+
+/**
+ * The header's live figures: frames per second (coloured against 30), the last minute as a small graph, the worst
+ * frame and p99; the background preload; click for details. Also the game's own loading waits (#busy).
  */
 function renderHud() {
-  const s = state.stats; if (!s) return;
-  const hud = $('hud'), fpsEl = hud.querySelector('.fps'), det = hud.querySelector('.details');
+  const s = state.stats; if (!s || headless) return;
+  const bar = $('topbar'), fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), panel = $('perfPanel');
   const clock = new Date().toLocaleTimeString();
-  // no new image for a while: the game is loading (at startup, or between screens) rather than running slowly
   const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
-  // (a game deactivated with its window — the page lost the focus — pauses, as a fullscreen game does on Windows)
-  const busy = $('busy'), paused = !document.hasFocus(), showBusy = !headless && state.status === 'running' && (still >= 3 || (paused && s.frames > 0));
+  const busy = $('busy'), paused = !document.hasFocus(), showBusy = state.status === 'running' && $('loader').classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
   if (showBusy) busy.innerHTML = paused ? `${state.title ?? 'The game'} is paused while its window is inactive <small>click the game to resume</small>`
-    : `${state.title ?? 'The game'} is loading…${state.firstLaunch && s.frames < 300 ? '<br><small>first launch in this browser: the game sets itself up and its files come from the server — later launches start much faster</small>' : ''}<br><small>${Math.round(still)} s without a new image · emulated CPU ${Math.round(s.mips)} MIPS · game files ${s.ioMB ?? 0} MB${s.prefetchMB ? ` (+${s.prefetchMB} MB ahead)` : ''}</small>`;
-  if (paused && s.frames > 0) { fpsEl.innerHTML = '<small>paused</small>'; det.textContent = `window inactive\n${clock}`; drawHudGraph(hud.querySelector('canvas')); return; }
-  if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { // starting: no frame yet, or the first images then a long wait
-    fpsEl.innerHTML = '<small>loading…</small>';
-    det.textContent = `files ${s.ioMB ?? 0} MB${s.prefetchMB ? ` (+${s.prefetchMB} MB ahead)` : ''} · CPU ${Math.round(s.mips)} MIPS\n${clock}`;
-    return;
+    : `${state.title ?? 'The game'} is loading…<br><small>${Math.round(still)} s · emulated CPU ${Math.round(s.mips)} MIPS · game files ${fmtMB(s.ioMB ?? 0)}</small>`;
+  // background preload still going after the start
+  const L = s.load ?? {}, pre = $('tbPreload');
+  const pending = L.pfTotal > 0 && !L.pfFinished && L.pfDone < L.pfTotal && s.frames > 0;
+  pre.classList.toggle('hidden', !pending);
+  if (pending) { const q = Math.floor(100 * L.pfDone / L.pfTotal); pre.querySelector('b').textContent = q + '%'; pre.querySelector('u').style.width = q + '%'; }
+  let f = 0, cls = '';
+  if (paused && s.frames > 0) { fpsEl.textContent = '❚❚'; fpsEl.className = 'fps'; sub.textContent = 'paused'; }
+  else if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { fpsEl.textContent = '…'; fpsEl.className = 'fps'; sub.textContent = `loading\n${Math.round(s.mips)} MIPS`; }
+  else {
+    f = hudFps(); cls = f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad';
+    fpsEl.textContent = f.toFixed(0); fpsEl.className = 'fps ' + cls;
+    const last = state.samples[state.samples.length - 1];
+    const ms = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
+    sub.textContent = `p99 ${ms(s.frameP99)}\nmax ${ms(last?.max ?? 0)}`;
   }
-  const f = hudFps(), cls = f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad';
-  fpsEl.innerHTML = `<span class="${cls}">${f.toFixed(1)}</span> <small>fps</small>`;
-  const last = state.samples[state.samples.length - 1];
-  det.textContent = `worst ${Math.round(last?.max ?? 0)} ms · p99 ${Math.round(s.frameP99)} ms · >33ms ${last?.s33 ?? 0}\nCPU ${Math.round(s.mips)} MIPS · ${s.d3d ? `${s.d3d.w}x${s.d3d.h}` : ''} · ${clock}`;
-  drawHudGraph(hud.querySelector('canvas'));
+  drawHudGraph(bar.querySelector('canvas'), false);
+  if (!panel.classList.contains('hidden')) {
+    drawHudGraph(panel.querySelector('canvas'), true);
+    const last = state.samples[state.samples.length - 1];
+    panel.querySelector('.txt').textContent = `frame rate   ${f.toFixed(1)} fps\nworst frame  ${Math.round(last?.max ?? 0)} ms (p99 ${Math.round(s.frameP99)} ms)\n>33 ms       ${last?.s33 ?? 0} in the last 0.5 s\nemulated CPU ${Math.round(s.mips)} MIPS\ndisplay      ${s.d3d ? `${s.d3d.w}x${s.d3d.h}` : '-'}\ngame files   ${fmtMB(s.ioMB ?? 0)}${L.pfTotal ? ` (+${fmtMB(L.pfMB ?? 0)} ahead)` : ''}\n${clock}`;
+  }
 }
 /** frames per second over the last second (the stats arrive every ~0.5 s) */
 function hudFps() {
@@ -249,10 +327,10 @@ function hudFps() {
   let frames = 0, t = 0; for (let i = n - 1; i >= 0 && t < 1; i--) { frames += a[i].fps * a[i].dt; t += a[i].dt; }
   return t ? frames / t : 0;
 }
-function drawHudGraph(cv) {
+function drawHudGraph(cv, big = false) {
   const g = cv.getContext('2d'), w = cv.width, h = cv.height, a = state.samples, top = 60;
   g.clearRect(0, 0, w, h);
-  g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(0, 0, w, h);
+  g.fillStyle = big ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.04)'; g.fillRect(0, 0, w, h);
   const y = (v) => h - 1 - Math.min(v, top) / top * (h - 2);
   g.strokeStyle = 'rgba(255,255,255,0.25)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, y(30)); g.lineTo(w, y(30)); g.stroke(); g.setLineDash([]);
   const span = 120, x0 = w - Math.min(a.length, span) * (w / span); // (the last ~60 s)
@@ -389,11 +467,11 @@ function setupInput() {
   addEventListener('keyup', (e) => { push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
   addEventListener('blur', () => push(EV.FOCUS, 0, 0, 0));
   addEventListener('focus', () => push(EV.FOCUS, 1, 0, 0));
-  document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } $('hint').classList.toggle('hidden', state.pointerLocked); applyCursor(); });
+  document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } applyCursor(); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
-  $('fsHint').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
-  $('quitHint').addEventListener('click', (e) => { e.preventDefault(); if (state.status !== 'running' || confirm(`Quit ${state.title}? Unsaved progress is lost.`)) backToGames(); });
+  $('tbFull').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
+  $('tbGames').addEventListener('click', (e) => { e.preventDefault(); if (state.status !== 'running' || confirm(`Quit ${state.title}? Unsaved progress is lost.`)) backToGames(); });
 }
 
 async function setupAudio(audioSab, ctlSab) {
