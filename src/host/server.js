@@ -14,6 +14,7 @@ import { BLOCK as LEARN_BLOCK } from '../vfs/http-backend.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
+import { attachLan } from './lan.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
@@ -365,6 +366,7 @@ export function createServer(opts = {}) {
       return send(res, 500, String(e.stack || e));
     }
   });
+  attachLan(server, opts.lanLog ?? ((m) => console.log(m))); // (the virtual LAN of the games: WebSocket /api/lan)
   return server;
 }
 

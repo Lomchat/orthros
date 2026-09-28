@@ -43,10 +43,12 @@ const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
 if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
-const server = createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn') });
+// --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
+// virtual LAN links them) instead of starting one
+const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn') });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
-await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
-const port = server.address().port;
+if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
+const port = server ? server.address().port : Number(opt('server-port'));
 // ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them)
 const chromeArgs = [...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
@@ -81,6 +83,7 @@ if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translate
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
+if (args.includes('--lan')) q.set('lan', '1'); // (the virtual LAN link, as players have it; headless runs are off it by default)
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
 if (args.includes('--capture-draws')) q.set('capturedraws', '1');
@@ -494,4 +497,4 @@ await page.locator('#frame').screenshot({ path: f }).catch(() => page.screenshot
 console.log(`[shot] ${f}`);
 logFile.end();
 await browser.close();
-server.close();
+server?.close();

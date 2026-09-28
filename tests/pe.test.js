@@ -259,3 +259,32 @@ test('cursor: SetCursor(NULL) hides until the next SetCursor; ShowCursor counts 
   call('ShowCursor', 0); call('SetCursor', 0); call('SetCursor', h); call('ShowCursor', 1);
   assert.deepEqual(shown, [false, false, false, true], 'a negative display count keeps it hidden whatever the shape');
 });
+
+// Winsock (D061): UDP and TCP inside the process, then over the virtual LAN with a machine played by the test (it
+// answers the program's broadcast on port 8086, then accepts its TCP connection on 8100 and replies "ok" to "data").
+import { LAN } from '../src/host/lan-proto.js';
+test('net.exe: Winsock inside the process and over the virtual LAN', { skip: skip('net.exe') }, () => {
+  const inside = boot('net.exe', { jit: true });
+  assert.equal(inside.vm.run(), 0);
+  const want = 'startup=0\nme=127.0.0.1\nbind1=0\nbind2=0\nbind_inuse=10048\nsendto=4\nrecvfrom=4\nfrom_port=9001\ndata_ping=1\nwouldblock=10035\nbcast_own=5\n' +
+    'listen=0\nconnect=0\naccept_ready=1\naccepted=1\nsend=5\nrecv=5\ndata_hello=1\nreadable=1\nrecv2=3\nrecv3=3\ndata_world=1\npeer_closed=0\nrefused=10061\n';
+  assert.equal(inside.vm.stdout.join(''), want);
+
+  const { vm, host } = boot('net.exe', { jit: true });
+  const other = { ip: 0x09004d0a, frames: [] }; // 10.77.0.9
+  host.lan = {
+    ip: '10.77.0.2',
+    send(type, src, dst, payload) {
+      other.frames.push(type);
+      const back = (t, data = null) => vm.lanDeliver(t, dst.ip === 0xffffffff ? { ip: other.ip, port: dst.port } : dst, src, data);
+      if (type === LAN.UDP && dst.port === 8086) back(LAN.UDP, new TextEncoder().encode('hello'));
+      else if (type === LAN.SYN && dst.ip === other.ip && dst.port === 8100) back(LAN.ACCEPT);
+      else if (type === LAN.DATA && new TextDecoder().decode(payload) === 'data') back(LAN.DATA, new TextEncoder().encode('ok'));
+    },
+  };
+  assert.equal(vm.run(), 0);
+  const out = vm.stdout.join('');
+  assert.ok(out.startsWith('startup=0\nme=10.77.0.2\n'), out);
+  assert.ok(out.endsWith('lan_reply=5\nlan_from=10.77.0.9\nlan_data=1\nlan_connect=0\nlan_recv=2\nlan_ok=1\n'), out);
+  assert.deepEqual(other.frames, [LAN.UDP, LAN.UDP, LAN.SYN, LAN.DATA, LAN.FIN], 'both broadcasts leave the machine, then the connection');
+});
