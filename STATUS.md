@@ -613,6 +613,34 @@
   bloc écrasée par le programme hors de l'espace d'adressage ; les blocs sont désormais alignés sur 8 octets comme sous
   Windows (un bloc sur deux ne l'était pas).
 
+## Nuit du 28 au 29 septembre : chargement de BFME2, diagnostic du plantage du joueur
+- **Plantage BFME2 chez le joueur (image-4)** : pile écrasée (retour vers 0x53524852, texte de noms de ressources) 3 ms
+  après l'échec des lancements d'`assetCacheBuilder` & co. — les 3 sessions BFME2 du joueur (Iris Xe, 20 cœurs) ont
+  planté, aucune des miennes. Non reproduit ici malgré : traduction d'arrière-plan terminée avant le démarrage
+  (`--dbg ORTHROS_BG_FIRST=1`), réseau lent (`--net`), réseau local connecté, clics/Échap/Espace pendant le chargement,
+  machine vue 10× plus rapide (`--timescale 0.1`), régions/programmes appris d'orth2 ; les plages servies par orth2
+  sont identiques aux fichiers (364 blocs vérifiés). Robustesse et diagnostic déployés : une exception sans pile
+  utilisable termine le processus avec un rapport (plus de RangeError dans `Seh.writeContext`) ; le premier saut vers
+  une adresse non allouée journalise un rapport complet (registres, code, appels API récents, fichiers ouverts,
+  octets de la pile en hexa/texte) envoyé avec la télémétrie ; une erreur de l'émulateur porte aussi le rapport de la VM.
+  → attendre la prochaine session du joueur.
+- **Éclairage du pipeline fixe** : matériau et lumières en tableaux de vec4 (un appel GL pour le matériau, un pour les
+  lumières modifiées d'un tracé) au lieu d'un tableau de structures (un appel par champ, 11 par lumière) : menu 3D de
+  BFME2 18,1 → 7,6 appels WebGL par tracé (6 300 → 2 340 par image). `Apply` d'un state block n'invalide plus ce qu'il
+  ne contient pas.
+- **Chargement BFME2 = ~75 s de calcul pur sur un thread** avant la fenêtre (40 appels API/s) : profils par tranches
+  de 5 s → phases entières (1 400-4 700 MIPS), copies `memmove` arrière (`STD; REP MOVS`), maths SSE2 du runtime C et
+  x87 `FSIN/FCOS` (570-860 MIPS), puissances x87 `F2XM1/FSCALE` (~1 200 MIPS). Première vague d'optimisations du JIT
+  (5 agents en parallèle, chacune mesurée et relue par un second agent contre l'interpréteur de référence) :
+  REP MOVS/STOS dans les deux sens par `memory.copy/fill` quand c'est équivalent (arrière n=64 : 39 → 11 ns ; corrige
+  au passage l'absence de détection SMC des REP STOSW/D) ; voie 0 des registres XMM dans des locaux f32 pour le SSE
+  scalaire (0,46 → 0,32 ns/instr., 0,92 → 0,32 avec des dénormaux dans les voies hautes) ; F2XM1/FSCALE/FSIN/FCOS en
+  ligne pour les arguments courants, bit à bit identiques (séquence exp x87 27 → 14,5 ns) ; FNSAVE/FRSTOR/FNSTENV/
+  FLDENV/FLD-FSTP m80 natifs au lieu de replis sur l'interpréteur ; prédiction des drapeaux paresseux d'un bloc à
+  l'autre (DEC en tête de bloc 1,21 → 0,93 ns). 116 tests ajoutés (350 au total). Bout en bout (A/B simultanés) :
+  fin du calcul 82 → 76 s et 80 → 76 s, menu jouable 92 → 85 s et 89 → 84 s ; menu 3D, CPU du worker par image
+  (`--gl-discard`) 44,4 → 40,4 et 44,3 → 43,3 ms.
+
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
   patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
