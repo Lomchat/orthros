@@ -58,6 +58,8 @@ export class Seh {
     const base = ((cpu.esp - 0x40) & ~0xf) >>> 0;
     const ctx = (base - CTX_SIZE) >>> 0;
     const rec = (ctx - REC_SIZE) >>> 0;
+    // (no usable stack to dispatch on — a stack pointer the program lost: Windows ends the process there too)
+    if (!this.vm.proc.vmem.isCommitted((rec - 0x60) >>> 0, base - rec + 0x60)) throw new (this.vm.GuestCrash)(this.vm.crashReport(thread, `exception 0x${(code >>> 0).toString(16)} at ${this.vm.proc.symbolize(addr)} with no stack to dispatch it on (esp ${(cpu.esp >>> 0).toString(16)})`));
     this.writeContext(cpu, ctx);
     this.writeRecord(rec, code, flags, addr, params);
     // (a dispatch keeps the one it interrupted — an exception raised while a handler runs — which becomes current again

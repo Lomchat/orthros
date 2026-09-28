@@ -510,7 +510,12 @@ export class Vm {
     if (precise && this.mem.read32(thread.teb) !== 0xffffffff) {
       const map = { 0: [EXC.INT_DIVIDE_BY_ZERO, []], 6: [EXC.ILLEGAL_INSTRUCTION, []], 13: [EXC.ACCESS_VIOLATION, [0, 0xffffffff]], 14: [EXC.ACCESS_VIOLATION, [0, fault?.faultAddr ?? 0]], 3: [EXC.BREAKPOINT, []], 4: [EXC.INT_OVERFLOW, []], 5: [EXC.ARRAY_BOUNDS, []] };
       const [code, params] = map[vec] ?? [EXC.ILLEGAL_INSTRUCTION, []];
-      if (vec === 14 && /^(cpu fault #14 )?execution at/.test(fault?.message ?? '') && (this.execFaults = (this.execFaults ?? 0) + 1) <= 8) this.warn(`${fault.message} (thread ${thread.id}, return address on the stack: ${this.proc.symbolize(this.mem.read32(cpu.esp))}): access violation raised`);
+      if (vec === 14 && /^(cpu fault #14 )?execution at/.test(fault?.message ?? '') && (this.execFaults = (this.execFaults ?? 0) + 1) <= 8) {
+        this.warn(`${fault.message} (thread ${thread.id}, return address on the stack: ${this.proc.symbolize(this.mem.read32(cpu.esp))}): access violation raised`);
+        // (the first one in full — a jump to nowhere usually means an overwritten return address: what ran before it,
+        // which files it read and the stack's bytes are what tell why; it goes to the crash telemetry with the log)
+        if (this.execFaults === 1) { try { this.warn(`${this.crashReport(thread, 'first jump to unmapped memory')}\n${this.stackBytes(cpu.esp)}${this.recentFiles?.length ? `\nfiles opened last (oldest first):\n  ${this.recentFiles.join('\n  ')}` : ''}`); } catch { /* best effort */ } }
+      }
       cpu.exit = EXIT.NONE;
       this.seh.raise(thread, code, 0, cpu.eip, params);
       return;
@@ -572,6 +577,17 @@ export class Vm {
     if (st.length) lines.push('sync transitions (oldest first):\n  ' + st.join('\n  '));
     const cs = proc.syncTraceLines('cs');
     if (cs.length) lines.push('critical-section hand-offs (oldest first):\n  ' + cs.join('\n  '));
+    return lines.join('\n');
+  }
+
+  /** Hex and text of the stack around `esp` (256 bytes below, 768 above): what overwrote a return address. */
+  stackBytes(esp) {
+    const lines = ['stack bytes:'];
+    for (let a = ((esp - 0x100) & ~15) >>> 0; a < esp + 0x300; a += 16) {
+      if (!this.proc.vmem.isCommitted(a, 16)) continue;
+      const b = this.mem.bytes(a, 16);
+      lines.push(`  ${a.toString(16).padStart(8, '0')}${a <= esp && esp < a + 16 ? '>' : ' '} ${hex(b)}  ${String.fromCharCode(...[...b].map((c) => (c >= 32 && c < 127 ? c : 46)))}`);
+    }
     return lines.join('\n');
   }
 

@@ -230,6 +230,9 @@ function pump() {
   if (bgTranslator && regionQueue) feedBackground();
   if (pumpEndAt) { const g = performance.now() - pumpEndAt; pumpIdleMs += g; pumpGaps++; if (g > pumpGapMax) pumpGapMax = g; }
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
+  // (debugging, --dbg ORTHROS_BG_FIRST=1: the guest waits until the learned regions of the loaded modules are installed —
+  // the background translation as a very fast machine has it)
+  if (globalThis.ORTHROS_BG_FIRST && bgTranslator && regionQueue && vm?.jit && (regionPos < regionQueue.length || vm.jit.bgPending())) { schedulePump(5); return; }
   let r;
   const tRun = performance.now();
   // a slice that does not come back within a second (guest code run from a nested call — DllMain, a callback — is
@@ -241,7 +244,9 @@ function pump() {
     r = vm.runFor(tRun + 12);
   } catch (e) {
     running = false;
-    const report = e instanceof GuestCrash ? e.report : String(e.stack || e);
+    let report = e instanceof GuestCrash ? e.report : String(e.stack || e);
+    // (an emulator error: the guest's state with it — threads, recent API calls — for the crash telemetry)
+    if (!(e instanceof GuestCrash)) { try { report += '\n\n' + vm.crashReport(vm.current ?? vm.proc.threads[0], 'emulator error'); } catch { /* best effort */ } }
     post({ type: 'crash', report });
     flushProfile(true);
     return;
@@ -408,6 +413,7 @@ self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) schedulePump(0); }
+  else if (m.type === 'find') { if (vm) { const pat = Uint8Array.from(m.hex.match(/../g).map((h) => parseInt(h, 16))), u8 = vm.mem.u8, hits = []; const lim = 0x7f000000; for (let a = 0x10000; a < lim && hits.length < 20; a++) { if (u8[a] !== pat[0]) continue; let k = 1; while (k < pat.length && u8[a + k] === pat[k]) k++; if (k === pat.length) { const ctx = Array.from(u8.subarray(a - 48, a + 48), (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join(''); hits.push(`${a.toString(16)} ${vm.proc.symbolize(a)} |${ctx}|`); } } log('hang', `find ${m.hex}: ${hits.length} hits\n${hits.join('\n')}`); } } // (debugging: harness input find:<hex bytes>)
   else if (m.type === 'dump') { if (vm) log('hang', `memory ${(m.addr >>> 0).toString(16)}+${m.len.toString(16)}: ${Array.from(vm.mem.bytes(m.addr >>> 0, m.len), (b) => b.toString(16).padStart(2, '0')).join('')}`); } // (debugging: harness input `dump:addr,len`)
   else if (m.type === 'watch') { if (vm?.jit) { vm.jit.watchWrites(m.addr >>> 0, m.len || 4, 'ctl', 100000); log('hang', `watching writes to ${(m.addr >>> 0).toString(16)}+${m.len || 4}`); } } // (debugging: harness input `watch:addr,len`, then `unwatch`)
   else if (m.type === 'unwatch') { if (vm?.jit) log('hang', `writes seen (writer: count): ${[...vm.jit.unwatch('ctl')].map(([k, n]) => `${k}: ${n}`).join(', ') || 'none'}`); }
