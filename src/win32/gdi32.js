@@ -569,7 +569,7 @@ export function registerGdi32(api, vm) {
     if (!bytes) { vm.log('gfx', `AddFontResource(${name}): file not found`); return 0; }
     const n = engine().registerFontFile(path, bytes);
     // (the host runs the scheduler again as soon as the browser is done: the wait lasts the decoding, not the timeout)
-    if (!engine().ready) { engine().onReady = () => vm.host?.wake?.(); vm.sched.block(c.thread, () => engine().ready, 5000, 'font load'); }
+    if (!engine().ready) { const t0 = performance.now(); engine().onReady = () => { vm.log('gfx', `AddFontResource: decoded by the browser in ${Math.round(performance.now() - t0)} ms`); vm.host?.wake?.(); }; vm.sched.block(c.thread, () => engine().ready, 5000, 'font load'); }
     vm.log('gfx', `AddFontResource(${name}): ${n} face(s)${n ? ' ' + engine().files.get(path.toLowerCase()).join(', ') : ''}`);
     return n;
   };
