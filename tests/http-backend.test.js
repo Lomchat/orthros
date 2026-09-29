@@ -249,7 +249,8 @@ test('http backend: a random read fetches only its 64 KiB pieces; the whole bloc
   const realFetch = globalThis.fetch;
   const fetched = [];
   let release; const gate = new Promise((r) => { release = r; });
-  globalThis.fetch = async (url, init) => { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range); fetched.push([+a, +b]); await gate; return { status: 206, arrayBuffer: async () => FILE.slice(+a, +b + 1).buffer }; };
+  // (only this backend's requests count: a background fill loop an earlier test left may call fetch meanwhile)
+  globalThis.fetch = async (url, init) => { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range); if (String(url).startsWith('/game/p/')) fetched.push([+a, +b]); await gate; return { status: 206, arrayBuffer: async () => FILE.slice(+a, +b + 1).buffer }; };
   try {
     const store = new MemStore();
     const b = new HttpBackend('/game/p/', tree(3), { store });
