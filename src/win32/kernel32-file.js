@@ -111,7 +111,9 @@ export function registerKernel32File(api, vm) {
     // it is here) — not in a nested call, whose wait cannot let the browser deliver it
     if (f.file.prepare && c.thread.wakeResult === undefined && vm.asyncReads && vm.canUnwind(c.thread)) {
       const p = f.file.prepare(pos, n);
-      if (p) { let done = false; p.finally(() => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done, 60000, 'file read'); }
+      // (a nested wait elsewhere blocks the event loop, so the fetch cannot complete during it: the parked read then
+      // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
+      if (p) { let done = false; p.then(() => { done = true; vm.host?.wake?.(); }, () => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     const d = f.file.read(pos, n);
     if (d.length) mem.writeBytes(c.arg(1), d);
