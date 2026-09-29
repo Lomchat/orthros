@@ -11,12 +11,12 @@
 //
 // Reference semantics: src/cpu/interp-sse.js (bit-exact target, checked by tests/generated/sse).
 // XMM/MM registers stay memory-resident in the thread state; nothing here touches EFLAGS.
-import { HANDLERS, L_STATE, L_REG, L_TA, L_TV, L_I64A, L_FS, L_FTW, L_V0, L_V1 } from './translate.js';
+import { HANDLERS, XMM_SHADOW64_OPS, L_STATE, L_REG, L_TA, L_TV, L_I64A, L_FS, L_FTW, L_V0, L_V1 } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, SEG } from '../state.js';
 import { T } from './wasm.js';
 import {
-  width, xmmOff, xmmLocal, mmOff, mmTouch, loadVec, storeVec, smcCheckEnd, xmmStore, scalarI32, scalarI64, pushZero,
+  width, xmmOff, xmmLocal, mmOff, mmTouch, loadVec, storeVec, smcCheckEnd, xmmStore, scalarI32, scalarI64, pushZero, xmmLowI64, xmmStoreShadowed64,
   elemMask, unpackMask, pshufd, pshuflw, pshufhw, pshufw, pslldqMask, psrldqMask, storeScalar,
 } from './translate-sse-common.js';
 
@@ -85,16 +85,26 @@ HANDLERS[OP.MOVD] = (E, insn) => {
   // mm/xmm <- r32/m32, zero-extended
   touch(E, insn);
   put(E, d, insn, width(d), () => { pushZero(E); E.loadOp(s); c.i32x4replacelane(0); });
+  if (d.t === OT.XMM) xmmDropF64(E, d.r);
 };
 
+// MOVQ: in XMM_SHADOW64_OPS (like MOVD and PEXTRW: a C runtime's SSE2 routine moves a double's bits between the x87
+// stack, memory, integer registers and XMM registers with them): xmm <- m64 also fills the f64 shadow, m64 <- xmm and
+// xmm <- xmm read the shadow's bits when valid; the MMX forms name no XMM register
 HANDLERS[OP.MOVQ] = (E, insn) => {
   const d = insn.ops[0], s = insn.ops[1]; const c = E.c;
   touch(E, insn);
-  if (d.t === OT.MEM) { storeVec(E, d, insn, 8, () => vec(E, s)); return; }
+  if (d.t === OT.MEM) {
+    if (s.t === OT.XMM) { E.eaTo(d); c.get(L_TA); scalarI64(E, s); c.i64store(0, 0); E.smcCheck(insn); return; }
+    storeVec(E, d, insn, 8, () => vec(E, s)); return;
+  }
   if (d.t === OT.MM) { put(E, d, insn, 8, () => vec(E, s)); return; }
   // xmm <- low qword of xmm/m64, zero-extended
-  xmmStore(E, d.r, () => { if (s.t === OT.XMM) { pushZero(E); c.get(xmmLocal(s.r)).i64x2extractlane(0).i64x2replacelane(0); } else vec(E, s); });
+  if (s.t === OT.XMM) { xmmStore(E, d.r, () => { pushZero(E); scalarI64(E, s); c.i64x2replacelane(0); }); xmmDropF64(E, d.r); }
+  else xmmStoreShadowed64(E, d.r, () => vec(E, s));
 };
+/** The f64 shadow of XMM r dropped (the whole v128 local just written by an XMM_SHADOW64_OPS member). */
+function xmmDropF64(E, r) { const m = ~(1 << (r & 7)); E.xdValid &= m; E.xdDirty &= m; }
 HANDLERS[OP.MOVQ2DQ] = (E, insn) => { touch(E, insn); xmmStore(E, insn.ops[0].r, () => vec(E, insn.ops[1])); };
 HANDLERS[OP.MOVDQ2Q] = (E, insn) => { touch(E, insn); put(E, insn.ops[0], insn, 8, () => vec(E, insn.ops[1])); };
 HANDLERS[OP.MOVNTQ] = (E, insn) => { touch(E, insn); storeVec(E, insn.ops[0], insn, 8, () => vec(E, insn.ops[1])); };
@@ -234,7 +244,11 @@ HANDLERS[OP.PSRLDQ] = pshiftdq(psrldqMask);
 HANDLERS[OP.PEXTRW] = (E, insn) => {
   const d = insn.ops[0], s = insn.ops[1]; const c = E.c;
   touch(E, insn);
-  vec(E, s); c.i16x8extractlane_u(insn.ops[2].v & (width(s) / 2 - 1));
+  const k = insn.ops[2].v & (width(s) / 2 - 1);
+  // (XMM_SHADOW64_OPS: a word of the low qword from the f64 shadow when valid — the exponent word of a double a
+  // scalar chain or a MOVLPD left there —, the high qword's from the v128 local, never stale)
+  if (s.t === OT.XMM && k < 4 && (E.xdValid & (1 << (s.r & 7)))) { xmmLowI64(E, s.r); if (k) c.i64(BigInt(16 * k)).i64shr_u(); c.wrap().i32(0xffff).and(); }
+  else { vec(E, s); c.i16x8extractlane_u(k); }
   storeScalar(E, d, insn, L_TV);
 };
 HANDLERS[OP.PINSRW] = (E, insn) => {
@@ -282,5 +296,9 @@ function maskmov(E, insn) {
 }
 HANDLERS[OP.MASKMOVQ] = maskmov;
 HANDLERS[OP.MASKMOVDQU] = maskmov;
+
+// the f64 shadow family (translate.js XMM_SHADOW64_OPS): their XMM accesses go through scalarI32 / scalarI64 /
+// xmmLowI64 / xmmStoreShadowed64, or drop the destination's shadow after writing the whole register
+for (const k of ['MOVD', 'MOVQ', 'PEXTRW']) XMM_SHADOW64_OPS.add(OP[k]);
 
 export {};

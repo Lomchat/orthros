@@ -7,7 +7,7 @@
 // Conventions (see translate.js): `E` is the Emitter, `E.c` the Code writer; GPRs live in
 // locals L_REG+r; every guest store goes through L_TA and is followed by E.smcCheck(insn);
 // any MM register access mirrors interp-sse.js opAddr (FPU tag word = 0xff, TOP = 0).
-import { L_STATE, L_REG, L_TA, L_FTW, L_V0, L_V1, L_V2, L_XMM0, L_XS0 } from './translate.js';
+import { L_STATE, L_REG, L_TA, L_FTW, L_V0, L_V1, L_V2, L_XMM0, L_XS0, L_XD0 } from './translate.js';
 import { OT } from '../decoder.js';
 import { ST } from '../state.js';
 
@@ -163,9 +163,10 @@ export function smcCheckEnd(E, insn, bytes) {
 
 // ------------------------------------------------------------------ scalars (lane 0)
 
-// ------------------------------------------------------------------ lane-0 f32 shadows
+// ------------------------------------------------------------------ lane-0 f32 / f64 shadows
 // In an instruction of XMM_SHADOW_OPS (E.xsOK) lane 0 of an XMM register is read from / written to its f32 shadow
-// L_XS0+r (see Emitter.xmmShadowSync); elsewhere these helpers work on the v128 local, whose shadow the emitter has
+// L_XS0+r (see Emitter.xmmShadowSync), in one of XMM_SHADOW64_OPS (E.xdOK) the low qword from / to its f64 shadow
+// L_XD0+r (Emitter.xmmShadowSync64); elsewhere these helpers work on the v128 local, whose shadow the emitter has
 // already written back and dropped (Emitter.xmmShadowRelease).
 
 /**
@@ -186,27 +187,38 @@ export function scalarF32(E, o) {
   throw new Error('scalarF32: bad operand');
 }
 
-/** Push lane 0 of operand o as an f64 (XMM register or m64). */
+/**
+ * Push lane 0 of operand o as an f64 (XMM register or m64). In an f64 shadow instruction (E.xdOK) an XMM operand is
+ * read from its shadow, extracted into it first when not valid.
+ */
 export function scalarF64(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).f64x2extractlane(0); return; }
+  if (o.t === OT.XMM) {
+    const r = o.r & 7, bit = 1 << r;
+    if (!E.xdOK) { c.get(xmmLocal(r)).f64x2extractlane(0); return; }
+    if (E.xdValid & bit) { c.get(L_XD0 + r); return; }
+    c.get(xmmLocal(r)).f64x2extractlane(0).tee(L_XD0 + r);
+    E.xdValid |= bit;
+    return;
+  }
   if (o.t === OT.MEM) { E.ea(o); c.f64load(0, 0); return; }
   throw new Error('scalarF64: bad operand');
 }
 
-/** Push lane 0 of operand o as an i32 (XMM register, MM register (mmTouch), or m32). */
+/** Push lane 0 of operand o as an i32 (XMM register — the valid f64 shadow's bits in an f64 shadow instruction —, MM
+ * register (mmTouch), or m32). */
 export function scalarI32(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).i32x4extractlane(0); return; }
+  if (o.t === OT.XMM) { if (E.xdOK && (E.xdValid & (1 << (o.r & 7)))) { xmmLowI64(E, o.r); c.wrap(); } else c.get(xmmLocal(o.r)).i32x4extractlane(0); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i32load(mmOff(o.r)); return; }
   if (o.t === OT.MEM) { E.ea(o); c.i32load(0, 0); return; }
   throw new Error('scalarI32: bad operand');
 }
 
-/** Push the low 64 bits of operand o as an i64 (XMM, MM (mmTouch) or m64). */
+/** Push the low 64 bits of operand o as an i64 (XMM (xmmLowI64), MM (mmTouch) or m64). */
 export function scalarI64(E, o) {
   const c = E.c;
-  if (o.t === OT.XMM) { c.get(xmmLocal(o.r)).i64x2extractlane(0); return; }
+  if (o.t === OT.XMM) { xmmLowI64(E, o.r); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i64load(mmOff(o.r)); return; }
   if (o.t === OT.MEM) { E.ea(o); c.i64load(0, 0); return; }
   throw new Error('scalarI64: bad operand');
@@ -229,8 +241,46 @@ export function xmmStoreShadowed(E, r, emitValue) {
   emitValue(E); c.tee(xmmLocal(r)).f32x4extractlane(0).set(L_XS0 + (r & 7));
   E.xsValid |= 1 << (r & 7); E.xsDirty &= ~(1 << (r & 7));
 }
-/** Store an f64 into lane 0 of XMM r (lane 1 preserved). emitValue(E) pushes one f64. */
-export function xmmStoreF64(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.f64x2replacelane(0).set(xmmLocal(r)); }
+/**
+ * Store an f64 into lane 0 of XMM r (lane 1 preserved). emitValue(E) pushes one f64. In an f64 shadow instruction
+ * only the shadow is written (xdDirty). The value's bits are kept as they are (locals, loads and stores never touch
+ * a NaN's payload in WASM: only arithmetic may), so a move through the shadow is exact.
+ */
+export function xmmStoreF64(E, r, emitValue) {
+  if (E.xdOK) { emitValue(E); E.c.set(L_XD0 + (r & 7)); E.xdValid |= 1 << (r & 7); E.xdDirty |= 1 << (r & 7); return; }
+  E.c.get(xmmLocal(r)); emitValue(E); E.c.f64x2replacelane(0).set(xmmLocal(r));
+}
+/**
+ * f64 shadow instructions: XMM r <- a whole v128 (emitValue pushes it) whose low qword also goes to the shadow (valid,
+ * not dirty) — MOVSD / MOVQ xmm, m64.
+ */
+export function xmmStoreShadowed64(E, r, emitValue) {
+  const c = E.c;
+  emitValue(E); c.tee(xmmLocal(r)).f64x2extractlane(0).set(L_XD0 + (r & 7));
+  E.xdValid |= 1 << (r & 7); E.xdDirty &= ~(1 << (r & 7));
+}
+/**
+ * Push the low qword of XMM r as an i64 in an f64 shadow instruction: the shadow's bits when valid (a PEXTRW / MOVD /
+ * MOVQ reading the double a scalar chain left there), else the v128 local's.
+ */
+export function xmmLowI64(E, r) {
+  const c = E.c;
+  if (E.xdOK && (E.xdValid & (1 << (r & 7)))) c.get(L_XD0 + (r & 7)).i64reinterpret_f64(); else c.get(xmmLocal(r)).i64x2extractlane(0);
+}
+/**
+ * Instructions of both shadow families (the whole-register moves): before XMM r is read as a whole, its dirty
+ * shadows (f32 and f64) are written back, both staying valid.
+ */
+export function xmmSyncWhole(E, r) {
+  const bit = 1 << (r & 7);
+  if (E.xsDirty & bit) { E.xmmShadowSync(bit); E.xsDirty &= ~bit; }
+  if (E.xdDirty & bit) { E.xmmShadowSync64(bit); E.xdDirty &= ~bit; }
+}
+/** ... before XMM r is overwritten as a whole: its shadows dropped (nothing written back). */
+export function xmmDropShadows(E, r) {
+  const bit = ~(1 << (r & 7));
+  E.xsValid &= bit; E.xsDirty &= bit; E.xdValid &= bit; E.xdDirty &= bit;
+}
 /** Store an i32 into lane 0 of XMM r (other lanes preserved). emitValue(E) pushes one i32. */
 export function xmmStoreI32(E, r, emitValue) { E.c.get(xmmLocal(r)); emitValue(E); E.c.i32x4replacelane(0).set(xmmLocal(r)); }
 /** Store an i64 into the low qword of XMM r (high qword preserved). emitValue(E) pushes one i64. */
