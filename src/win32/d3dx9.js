@@ -4,7 +4,7 @@
 import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
-import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
+import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
@@ -226,20 +226,27 @@ export function registerD3DX9(api, vm) {
 
   // surfaces / volumes: loading into existing resources
   const surfaceOf = (ptr) => com.implAt(ptr);
+  /** (diagnostics, harness --api-times: time of D3DX image work by kind of operation, reported at phase marks) */
+  const prof = (key, t0) => { const m = vm.d3dxProf ?? (vm.d3dxProf = new Map()), e = m.get(key) ?? { n: 0, ms: 0 }; e.n++; e.ms += performance.now() - t0; m.set(key, e); };
+  const profOn = () => !!vm.apiTimes;
   const rectOf = (p, w, h) => (p ? { l: mem.readS32(p), t: mem.readS32(p + 4), r: mem.readS32(p + 8), b: mem.readS32(p + 12) } : { l: 0, t: 0, r: w, b: h });
   /** RGBA8 pixels (rw x rh) into `dst` at rectangle dr (resized to it), converted to its format */
   const blitRgba = (c, dst, dr, rgba, rw, rh, filter, colorKey) => {
     if (colorKey) rgba = applyColorKey(rgba.slice(), colorKey);
     const dw = dr.r - dr.l, dh = dr.b - dr.t;
     if (dw <= 0 || dh <= 0) return D3DERR_INVALIDCALL;
+    const tr = profOn() ? performance.now() : 0;
     const px = resizeRgba(rgba, rw, rh, dw, dh, (filter & 0xff) === FILTER_POINT || (filter & 0xff) === 1);
+    if (tr && px !== rgba) prof(`blit resize ${rw}x${rh} -> ${dw}x${dh}`, tr);
     const base = dst.ensureMem(c.proc);
     const full = dr.l === 0 && dr.t === 0 && dw === dst.width && dh === dst.height;
     // a rectangle of the surface: only its texels written (uncompressed), or its blocks when it covers whole 4x4 blocks
     // (the other texels untouched: decoding and re-encoding the whole surface per tile made terrain loads quadratic)
     const dxt = isDxt(dst.fmt), aligned = !dxt || ((dr.l | dr.t) % 4 === 0 && (dw % 4 === 0 || dr.r === dst.width) && (dh % 4 === 0 || dr.b === dst.height));
+    const tp = profOn() ? performance.now() : 0, pk = tp ? `blit ${full ? 'whole' : aligned ? 'rect' : 'unaligned rect'} ${dw}x${dh} into fmt ${dst.fmt} ${dst.width}x${dst.height}` : '';
     if (!full && aligned) {
       const enc = fromRgba(dst.fmt, px, dw, dh);
+      if (tp) prof(pk, tp);
       if (enc) {
         const blk = dxt ? 4 : 1, rows = Math.ceil(dh / blk), rowBytes = dxt ? Math.ceil(dw / 4) * (dst.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(dst.fmt, dw);
         const unitX = dxt ? (dst.fmt === FMT.DXT1 ? 8 : 16) / 4 : surfacePitch(dst.fmt, 1); // (bytes per texel column: a DXT block row covers 4 texels)
@@ -255,6 +262,7 @@ export function registerD3DX9(api, vm) {
     if (!enc) { vm.log('gfx', `d3dx: surface format ${dst.fmt} not writable`); return D3DERR_INVALIDCALL; }
     fillSurface(c, dst, enc);
     if (isDxt(dst.fmt)) rememberRgba(dst, all); // (D3DXFilterTexture, typically next, builds the mips from it)
+    if (tp) prof(pk, tp);
     return D3D_OK;
   };
   /**
@@ -285,11 +293,17 @@ export function registerD3DX9(api, vm) {
       for (let y = 0; y < rows; y++) mem.copy(base + ((dr.t / blk | 0) + y) * dst.pitch + (dr.l / blk | 0) * unit, c.arg(3) + ((sr.t / blk | 0) + y) * pitch + (sr.l / blk | 0) * unit, rowBytes);
       dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
     }
-    let rgba;
-    if (isDxt(fmt)) { const bw = Math.ceil(sw / 4), bh = Math.ceil(sh / 4), unit = fmt === FMT.DXT1 ? 8 : 16, raw = new Uint8Array(bw * bh * unit); for (let y = 0; y < bh; y++) raw.set(mem.bytes(c.arg(3) + ((sr.t >> 2) + y) * pitch + (sr.l >> 2) * unit, bw * unit), y * bw * unit); rgba = toRgba(fmt, raw, sw, sh); }
-    else { const bpp = surfacePitch(fmt, 1), raw = new Uint8Array(sw * sh * bpp); for (let y = 0; y < sh; y++) raw.set(mem.bytes(c.arg(3) + (sr.t + y) * pitch + sr.l * bpp, sw * bpp), y * sw * bpp); rgba = toRgba(fmt, raw, sw, sh); }
+    const tp = profOn() ? performance.now() : 0;
+    const rgba = sourceRgba(fmt, c.arg(3), sr, pitch, sw, sh);
+    if (tp) prof(`LoadSurfaceFromMemory source fmt ${fmt} ${sw}x${sh}`, tp);
     return blitRgba(c, dst, dr, rgba, sw, sh, c.arg(8), c.arg(9));
   }];
+  /** RGBA8 of the rectangle `sr` of an image in guest memory (`fmt`, rows `pitch` bytes apart), read in place */
+  const sourceRgba = (fmt, addr, sr, pitch, sw, sh) => {
+    if (isDxt(fmt)) { const bw = Math.ceil(sw / 4), bh = Math.ceil(sh / 4), unit = fmt === FMT.DXT1 ? 8 : 16, raw = new Uint8Array(bw * bh * unit); for (let y = 0; y < bh; y++) raw.set(mem.bytes(addr + ((sr.t >> 2) + y) * pitch + (sr.l >> 2) * unit, bw * unit), y * bw * unit); return toRgba(fmt, raw, sw, sh); }
+    const bpp = surfacePitch(fmt, 1);
+    return toRgbaRows(fmt, mem.bytes(addr + sr.t * pitch + sr.l * bpp, (sh - 1) * pitch + sw * bpp), sw, sh, pitch);
+  };
   X.D3DXLoadSurfaceFromSurface = [8, (c) => { // (dst, dstPal, dstRect, src, srcPal, srcRect, filter, key)
     const dst = surfaceOf(c.arg(0)), src = surfaceOf(c.arg(3)); if (!dst || !src) return D3DERR_INVALIDCALL;
     if (src.usage & 1 && src.dev?.gfx?.readbackSurface) src.dev.gfx.readbackSurface(src); // (a render target: its GPU contents)
@@ -314,9 +328,15 @@ export function registerD3DX9(api, vm) {
       for (let i = src + 1; i < lv.length; i++) {
         const p = lv[i - 1], s = lv[i];
         if (!p.mem) { rgba = null; continue; }
+        const tp = profOn() ? performance.now() : 0;
         const from = rgba ?? (p.rgbaCache ? p.rgbaCache : toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height));
+        if (tp) prof(`FilterTexture decode fmt ${p.fmt} (${rgba ? 'kept' : p.rgbaCache ? 'cached' : 'decoded'})`, tp);
+        const tr = tp ? performance.now() : 0;
         rgba = resizeRgba(from, p.width, p.height, s.width, s.height, point);
+        if (tp) prof('FilterTexture resize', tr);
+        const te = tp ? performance.now() : 0;
         const enc = fromRgba(s.fmt, rgba, s.width, s.height);
+        if (tp) prof(`FilterTexture encode fmt ${s.fmt}`, te);
         if (enc) fillSurface(c, s, enc); else rgba = null;
       }
     }

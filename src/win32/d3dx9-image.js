@@ -155,6 +155,9 @@ export function toRgba(fmt, data, w, h) {
   return surfaceToRgbaLocal(fmt, data, w, h, surfacePitch(fmt, w));
 }
 
+/** Raw pixels of an uncompressed `fmt` (w x h, rows `pitch` bytes apart) to RGBA8. */
+export function toRgbaRows(fmt, data, w, h, pitch) { return surfaceToRgbaLocal(fmt, data, w, h, pitch); }
+
 /** per-format texel conversions to RGBA8 (source bytes at s, out at o), for one row loop per format */
 const TO_RGBA = {
   [FMT.A8R8G8B8]: [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }],
@@ -184,14 +187,53 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
     return out;
   }
   const [bpp, texel] = TO_RGBA[fmt] ?? TO_RGBA_DEFAULT; // (one loop per format: the conversion is chosen once, not per texel)
+  // 8- and 16-bit formats: the RGBA8 of every possible texel value in a table (built once per format from the same
+  // per-texel conversion), one lookup per texel
+  if (bpp <= 2 && TO_RGBA[fmt]) {
+    const lut = texelTable(fmt, bpp, texel), dst = new Uint32Array(out.buffer);
+    if (bpp === 1) { for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++) dst[o + x] = lut[u8[s + x]]; }
+    else if (((u8.byteOffset | pitch) & 1) === 0) { const src = new Uint16Array(u8.buffer, u8.byteOffset, u8.length >> 1); for (let y = 0; y < h; y++) for (let x = 0, s = (y * pitch) >> 1, o = y * w; x < w; x++) dst[o + x] = lut[src[s + x]]; }
+    else for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++, s += 2) dst[o + x] = lut[u8[s] | (u8[s + 1] << 8)];
+    return out;
+  }
   for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w * 4; x < w; x++, s += bpp, o += 4) texel(u8, s, out, o);
   return out;
 }
+const TEXEL_TABLES = new Map();
+/** RGBA8 (as a little-endian word) of each value of an 8- or 16-bit texel format, from its per-texel conversion. */
+function texelTable(fmt, bpp, texel) {
+  let t = TEXEL_TABLES.get(fmt);
+  if (!t) {
+    t = new Uint32Array(bpp === 1 ? 256 : 65536);
+    const v8 = new Uint8Array(2), o8 = new Uint8Array(4), o32 = new Uint32Array(o8.buffer);
+    for (let v = 0; v < t.length; v++) { v8[0] = v & 255; v8[1] = v >> 8; texel(v8, 0, o8, 0); t[v] = o32[0]; }
+    TEXEL_TABLES.set(fmt, t);
+  }
+  return t;
+}
+/** q(v, bits) = round(v * (2^bits - 1) / 255) for v in 0..255, per bit count (fromRgba's quantization, tabulated) */
+const QUANT = [4, 5, 6].reduce((m, bits) => { m[bits] = Uint8Array.from({ length: 256 }, (_, v) => Math.round(v * ((1 << bits) - 1) / 255)); return m; }, []);
 
 /** RGBA8 to raw pixels of `fmt` (uncompressed formats; null when not encodable here). */
 export function fromRgba(fmt, rgba, w, h) {
   if (isDxt(fmt)) return encodeDxt(fmt, rgba, w, h);
   const pitch = surfacePitch(fmt, w), out = new Uint8Array(surfaceBytes(fmt, w, h));
+  // the common formats a texel at a time on whole words (the same values as the general loop below)
+  if ((rgba.byteOffset & 3) === 0 && (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8)) {
+    const src = new Uint32Array(rgba.buffer, rgba.byteOffset, w * h), dst = new Uint32Array(out.buffer), alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0; // (pitch = 4 w)
+    for (let i = 0; i < w * h; i++) { const p = src[i]; dst[i] = ((p & 0xff00ff00) | ((p & 0xff) << 16) | ((p >>> 16) & 0xff) | alpha) >>> 0; }
+    return out;
+  }
+  if (fmt === FMT.R5G6B5 || fmt === FMT.X1R5G5B5 || fmt === FMT.A1R5G5B5 || fmt === FMT.A4R4G4B4 || fmt === FMT.X4R4G4B4) {
+    const dst = new Uint16Array(out.buffer), q4 = QUANT[4], q5 = QUANT[5], q6 = QUANT[6]; // (pitch = 2 w)
+    const n = w * h;
+    if (fmt === FMT.R5G6B5) for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = (q5[rgba[j]] << 11) | (q6[rgba[j + 1]] << 5) | q5[rgba[j + 2]];
+    else if (fmt === FMT.X1R5G5B5) for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = 0x8000 | (q5[rgba[j]] << 10) | (q5[rgba[j + 1]] << 5) | q5[rgba[j + 2]];
+    else if (fmt === FMT.A1R5G5B5) for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = (rgba[j + 3] >= 128 ? 0x8000 : 0) | (q5[rgba[j]] << 10) | (q5[rgba[j + 1]] << 5) | q5[rgba[j + 2]];
+    else if (fmt === FMT.X4R4G4B4) for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = 0xf000 | (q4[rgba[j]] << 8) | (q4[rgba[j + 1]] << 4) | q4[rgba[j + 2]];
+    else for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = (q4[rgba[j + 3]] << 12) | (q4[rgba[j]] << 8) | (q4[rgba[j + 1]] << 4) | q4[rgba[j + 2]];
+    return out;
+  }
   const q = (v, bits) => Math.round(v * ((1 << bits) - 1) / 255);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = (y * w + x) * 4, r = rgba[i], g = rgba[i + 1], b = rgba[i + 2], a = rgba[i + 3];

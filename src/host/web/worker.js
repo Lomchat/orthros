@@ -439,6 +439,7 @@ self.onmessage = (e) => {
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
     const top = vm?.apiTimesPhase ? [...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ') : '(--api-times off)';
     log('gfx', `mark ${m.label}: texture levels uploaded ${d('texLevels')} (${d('reuploads')} again), ${(d('uploadBytes') / 1048576).toFixed(1)} MiB as RGBA8, ${d('texMs').toFixed(0)} ms (conversion ${d('texConvMs').toFixed(0)}, placeholder check ${d('texCheckMs').toFixed(0)}); locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only; API ms: ${top}`);
+    if (vm?.d3dxProf?.size) { log('gfx', `mark ${m.label}: D3DX image work (ms, count): ${[...vm.d3dxProf].sort((a, b) => b[1].ms - a[1].ms).slice(0, 14).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); vm.d3dxProf.clear(); }
     markPrev = { ...st, locks: { ...ls } }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
