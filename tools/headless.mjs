@@ -31,7 +31,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -352,7 +352,7 @@ async function profileWorker(seconds) {
 // this one, their "DedicatedWorker" threads, the busiest taken) per presented frame between those times — a
 // measure of the work per frame far less sensitive to the machine's load than the frame rate
 const cpuWindow = opt('cpu-window') ? opt('cpu-window').split(':').map(Number) : null;
-let cpuStart = null, cpuDone = false;
+let cpuStart = null, cpuDone = false, markState = null;
 function workerThreadTicks() {
   const kids = new Map();
   for (const d of fs.readdirSync('/proc')) { if (!/^\d+$/.test(d)) continue; try { const st = fs.readFileSync(`/proc/${d}/stat`, 'utf8'); const ppid = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]); if (!kids.has(ppid)) kids.set(ppid, []); kids.get(ppid).push(Number(d)); } catch { /* gone */ } }
@@ -406,7 +406,7 @@ for (;;) {
       for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
         if (line === 'quit') { control.quit = true; continue; }
         const [kind, ...rest] = line.split(':'); const a = rest.join(':');
-        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' ? [a] : a ? a.split(',').map(Number) : [], done: false });
       }
     }
     if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
@@ -447,6 +447,15 @@ for (;;) {
     if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
     if (ev.kind === 'threads') { await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'threads' })); continue; } // (threads: the VM's threads and sync objects, logged as [hang])
     if (ev.kind === 'burst') { await page.evaluate(([n, tid, noGfx]) => window.orthros.worker?.postMessage({ type: 'burst', n, tid, noGfx }), [ev.args[0] || 3000, ev.args[1] || 0, !!ev.args[2]]); continue; } // (burst:N[,tid[,1]]: the next N API calls of the main thread, or of thread tid, logged — 1: without the COM / D3DX calls; needs --log apiburst)
+    // mark:<label> — a phase boundary: worker-thread and GPU-process CPU since the previous mark, and the worker's
+    // texture work / API time over the phase (logged as [gfx] mark)
+    if (ev.kind === 'mark') {
+      const ticks = workerThreadTicks(), frames = s.stats?.frames ?? 0;
+      if (markState) { let best = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else best = Math.max(best, d); } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
+      markState = { ticks, frames, t, label: ev.args[0] };
+      await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
+      continue;
+    }
     if (ev.kind === 'shot') { const f = path.join(out, `${name}-step-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f, timeout: 45000 }).then(() => console.log(`[shot] ${f}`), (e) => console.log(`[shot] failed: ${e.message.split('\n')[0]}`)); continue; }
     // a click holds the button ~100 ms, as a person does (a game polling the button state between two slow frames
     // would miss a press and release delivered together)
