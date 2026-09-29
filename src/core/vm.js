@@ -209,8 +209,11 @@ export class Vm {
   // (noGfx: COM and D3DX calls neither logged nor counted)
   startApiBurst(thread, n = 3000, noGfx = false) { if (this.logKinds.has('apiburst') && (this.apiBursts = (this.apiBursts ?? 0) + 1) <= 8) { this.apiBurst = { tid: thread.id, left: n, noGfx }; this.logFn('apiburst', `---- burst ${this.apiBursts} on t${thread.id}`); } }
 
-  /** Time spent in API handlers (apiTimes: Map name -> ms, reset by the host per frame; diagnostics only). */
-  noteApiTime(t, t0) { const ms = performance.now() - t0; this.apiTimeTotal = (this.apiTimeTotal ?? 0) + ms; if (ms > 0.05) this.apiTimes.set(t.name, (this.apiTimes.get(t.name) ?? 0) + ms); }
+  /**
+   * Time spent in API handlers (apiTimes: Map name -> ms, reset by the host per frame; apiTimesPhase: the same, reset
+   * by the host at each phase mark; diagnostics only).
+   */
+  noteApiTime(t, t0) { const ms = performance.now() - t0; this.apiTimeTotal = (this.apiTimeTotal ?? 0) + ms; if (ms > 0.05) this.apiTimes.set(t.name, (this.apiTimes.get(t.name) ?? 0) + ms); const ph = this.apiTimesPhase; if (ph) ph.set(t.name, (ph.get(t.name) ?? 0) + ms); }
 
   /** Call counts per API as a Map "dll!name" -> count (null when the histogram is disabled). */
   apiHist() {

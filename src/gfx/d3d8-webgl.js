@@ -222,7 +222,10 @@ export class WebGLDevice {
         const s = lv[i];
         if (!s.dirty && s.uploaded && !fresh) continue; // (a new GL texture — first use, or after a context loss — takes every level)
         if (!bound) { this.bindForUpload(target, g.tex); bound = true; }
+        const t0 = performance.now();
+        if (s.uploaded) this.stats.reuploads = (this.stats.reuploads ?? 0) + 1; // (report: levels updated after their first upload)
         this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s, g, f * 32 + i);
+        this.stats.texMs = (this.stats.texMs ?? 0) + performance.now() - t0; // (report: texture conversion + upload time)
         s.dirty = false; s.uploaded = true;
       }
     }
@@ -241,34 +244,61 @@ export class WebGLDevice {
     gs.tex[u] = tex;
   }
   volumeToRgba(fmt, l) { const out = new Uint8Array(l.width * l.height * l.depth * 4); for (let z = 0; z < l.depth; z++) out.set(surfaceToRgba(this.mem, fmt, l.mem + z * l.slice, l.width, l.height, l.pitch), z * l.width * l.height * 4); return out; }
-  /** Upload a surface into `level` of the bound texture; `g.alloc[slot]` records the levels already specified (GL texture record). */
+  /**
+   * Upload a surface into `level` of the bound texture; `g.alloc[slot]` records the levels already specified (GL texture
+   * record). A level already specified in the same format whose change is known to be confined to a rectangle
+   * (`s.dirtyRect`: the union of the rectangles locked since the last upload) gets only that rectangle, converted and
+   * sent alone (DXT: widened to whole 4x4 blocks).
+   */
   uploadLevel(target, level, s, g, slot) {
     const gl = this.gl;
-    this.stats.uploads++;
-    this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + s.width * s.height * 4;
-    { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
     const alloc = g.alloc ?? (g.alloc = []);
+    const dxt = isDxt(s.fmt) && this.s3tc;
+    const ext = this.s3tc;
+    const glf = !dxt ? 'rgba8' : s.fmt === FMT.DXT1 ? ext.COMPRESSED_RGBA_S3TC_DXT1_EXT : s.fmt === FMT.DXT2 || s.fmt === FMT.DXT3 ? ext.COMPRESSED_RGBA_S3TC_DXT3_EXT : ext.COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    let x0 = 0, y0 = 0, x1 = s.width, y1 = s.height;
+    const d = s.mem && alloc[slot] === glf ? s.dirtyRect : null;
+    if (d) {
+      if (dxt) { x0 = d[0] & ~3; y0 = d[1] & ~3; x1 = Math.min(s.width, (d[2] + 3) & ~3); y1 = Math.min(s.height, (d[3] + 3) & ~3); }
+      else { x0 = d[0]; y0 = d[1]; x1 = d[2]; y1 = d[3]; }
+    }
+    const w = x1 - x0, h = y1 - y0, whole = w === s.width && h === s.height;
+    this.stats.uploads++; this.stats.texLevels = (this.stats.texLevels ?? 0) + 1;
+    if (!whole) this.stats.texPartial = (this.stats.texPartial ?? 0) + 1;
+    this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + w * h * 4;
+    { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
     if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); alloc[slot] = 'rgba8'; return; }
-    if (level === 0 && !alloc[slot] && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s); // (first upload only)
     // a level already specified in the same format is updated in place (no reallocation of GPU storage)
-    if (isDxt(s.fmt) && this.s3tc) {
-      const ext = this.s3tc;
-      const glf = s.fmt === FMT.DXT1 ? ext.COMPRESSED_RGBA_S3TC_DXT1_EXT : s.fmt === FMT.DXT2 || s.fmt === FMT.DXT3 ? ext.COMPRESSED_RGBA_S3TC_DXT3_EXT : ext.COMPRESSED_RGBA_S3TC_DXT5_EXT;
-      const data = this.mem.bytes(s.mem, surfaceBytes(s.fmt, s.width, s.height));
-      if (alloc[slot] === glf) gl.compressedTexSubImage2D(target, level, 0, 0, s.width, s.height, glf, data);
-      else gl.compressedTexImage2D(target, level, glf, s.width, s.height, 0, data);
-      alloc[slot] = glf;
+    if (dxt) {
+      const bs = s.fmt === FMT.DXT1 ? 8 : 16;
+      if (whole) {
+        const data = this.mem.bytes(s.mem, surfaceBytes(s.fmt, s.width, s.height));
+        if (alloc[slot] === glf) gl.compressedTexSubImage2D(target, level, 0, 0, s.width, s.height, glf, data);
+        else gl.compressedTexImage2D(target, level, glf, s.width, s.height, 0, data);
+        alloc[slot] = glf;
+        return;
+      }
+      // rows of blocks of the rectangle: one view when they span whole block rows, else packed
+      const rows = (h + 3) >> 2, rowBytes = ((w + 3) >> 2) * bs, src = s.mem + (y0 >> 2) * s.pitch + (x0 >> 2) * bs;
+      let data;
+      if (rowBytes === s.pitch) data = this.mem.bytes(src, rows * rowBytes);
+      else { data = new Uint8Array(rows * rowBytes); const u8 = this.mem.u8; for (let y = 0; y < rows; y++) data.set(u8.subarray(src + y * s.pitch, src + y * s.pitch + rowBytes), y * rowBytes); }
+      gl.compressedTexSubImage2D(target, level, x0, y0, w, h, glf, data);
       return;
     }
-    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch);
+    const tc = performance.now();
+    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem + y0 * s.pitch + x0 * (whole ? 0 : surfacePitch(s.fmt, 1)), w, h, s.pitch);
+    this.stats.texConvMs = (this.stats.texConvMs ?? 0) + performance.now() - tc; // (report: CPU format conversion)
+    // (diagnostic on the pixels just converted — first upload of small textures; DXT levels uploaded compressed are
+    // not decoded for it)
+    if (level === 0 && !alloc[slot] && s.width * s.height <= 65536 && (this.placeholderLogs ?? 0) < 8) this.checkPlaceholder(s, rgba);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (alloc[slot] === 'rgba8') gl.texSubImage2D(target, level, 0, 0, s.width, s.height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    if (alloc[slot] === 'rgba8') gl.texSubImage2D(target, level, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     else gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     alloc[slot] = 'rgba8';
   }
   /** Diagnostic: flag textures that look like an engine's "missing texture" placeholder (mostly magenta). */
-  checkPlaceholder(s) {
-    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch);
+  checkPlaceholder(s, rgba) {
     let magenta = 0; const n = s.width * s.height;
     for (let i = 0; i < n * 4; i += 4) if (rgba[i] > 200 && rgba[i + 1] < 80 && rgba[i + 2] > 200) magenta++;
     if (magenta < n * 0.3) return;

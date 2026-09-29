@@ -151,9 +151,16 @@ export function d3dCore(vm) {
     constructor(dev, owner, fmt, w, h, usage, pool, level = 0, face = 0) {
       this.dev = dev; this.owner = owner; this.fmt = fmt; this.width = w; this.height = h; this.usage = usage; this.pool = pool; this.level = level; this.face = face;
       this.pitch = surfacePitch(fmt, w); this.bytes = surfaceBytes(fmt, w, h);
-      this.mem = 0; this.locked = false; this.dirty = false; this.id = nextResId++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
+      this.mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = nextResId++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
       this.iids = [IID_IDirect3DSurface8];
     }
+    /**
+     * Contents changed since the backend last uploaded them. `dirtyRect` ([left, top, right, bottom]) narrows the change
+     * to the rectangles locked since then (their union), as the Direct3D runtime tracks the dirty region of a managed
+     * texture; any other way of marking the surface dirty (a copy, D3DX, AddDirtyRect...) means the whole surface.
+     */
+    get dirty() { return this._dirty; }
+    set dirty(v) { this._dirty = v; this.dirtyRect = null; }
     ensureMem(proc) { if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
@@ -182,7 +189,7 @@ export function d3dCore(vm) {
       const base = this.ensureMem(c.proc);
       const surf = new GdiSurface(mem, base, this.width, this.height, this.pitch, bpp, { masks: this.fmt === FMT.R5G6B5 ? [0xf800, 0x7e0, 0x1f] : undefined });
       this.gdiDC = makeDC(c.proc, surf, { memory: true });
-      this.locked = true; this.lockFlags = 0;
+      this.locked = true; this.lockFlags = 0; this.lockRect = null;
       this.trace(c, 'GetDC');
       mem.write32(p, this.gdiDC.handle);
       return D3D_OK;
@@ -202,13 +209,18 @@ export function d3dCore(vm) {
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
       const base = this.ensureMem(c.proc);
       let off = 0;
+      this.lockRect = null;
       if (pRect) {
         const l = mem.readS32(pRect), t = mem.readS32(pRect + 4);
+        // (the rectangle written, for a partial upload: clamped; an empty or inverted one counts as the whole surface)
+        const r = Math.min(this.width, mem.readS32(pRect + 8)), b = Math.min(this.height, mem.readS32(pRect + 12)), cl = Math.max(0, l), ct = Math.max(0, t);
+        if (r > cl && b > ct) this.lockRect = [cl, ct, r, b];
         const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
         off = blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width));
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
+      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += Math.max(0, (mem.readS32(pRect + 8) - mem.readS32(pRect)) * (mem.readS32(pRect + 12) - mem.readS32(pRect + 4))); k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
       if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
       if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
@@ -217,7 +229,13 @@ export function d3dCore(vm) {
     }
     unlock() {
       if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt} (unlock by t${vm.current?.id}): ${sites.length ? sites.map(([k, n]) => { const [tid, rest] = typeof k === 'number' ? ['', k.toString(16)] : k.split(':'); return `${tid} ${rest.split('/').map((h) => vm.proc.symbolize(parseInt(h, 16))).join(' < ')} x${n}`; }).join(', ') : 'no translated writer'}`); this.watchKey = null; }
-      if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
+      if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.markLocked(); this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
+    /** A lock for writing ended: the surface is dirty, over the union of the rectangles locked since the last upload. */
+    markLocked() {
+      const r = this.lockRect, d = this.dirtyRect, partial = r && (!this._dirty || d);
+      this._dirty = true;
+      this.dirtyRect = !partial ? null : !d ? r.slice() : [Math.min(d[0], r[0]), Math.min(d[1], r[1]), Math.max(d[2], r[2]), Math.max(d[3], r[3])];
+    }
   }
   class Texture extends Resource {
     constructor(dev, w, h, levels, usage, fmt, pool) {
