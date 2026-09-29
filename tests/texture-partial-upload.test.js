@@ -109,3 +109,23 @@ test('a DXT1 level locked in part: whole blocks of the rectangle, packed rows', 
   R.calls.length = 0; lock(t, [0, 0, 12, 3]); t.unlock(); W.glTexture({ id: 503, fmt: FMT.DXT1, levels: [t] });
   assert.deepEqual(R.calls[0].slice(2, 7), [0, 0, 0, 12, 4]);
 });
+
+test('textures written but not drawn are uploaded at a Present within the budget, complete ones only', () => {
+  const R = recordingGl(), W = backend(R.gl);
+  const mk = (id, n) => { const t = { id, fmt: FMT.A8R8G8B8, usage: 0, levels: [] }; for (let i = 0; i < n; i++) { const s = new core.Surface({}, t, FMT.A8R8G8B8, 8 >> i, 8 >> i, 0, 1, i); t.levels.push(s); } return t; };
+  const a = mk(601, 2), b = mk(602, 2), gone = mk(603, 1);
+  for (const l of a.levels) { lock(l, null); l.unlock(); W.surfaceUpdated(l); }
+  lock(b.levels[0], null); b.levels[0].unlock(); W.surfaceUpdated(b.levels[0]); // (level 1 not written yet)
+  lock(gone.levels[0], null); gone.levels[0].unlock(); W.surfaceUpdated(gone.levels[0]); W.destroyResource(gone);
+  W.preloadTextures(100);
+  assert.ok(W.textures.has(601), 'complete texture uploaded');
+  assert.equal(a.levels[0].dirty, false); assert.equal(a.levels[1].dirty, false);
+  assert.equal(W.textures.has(602), false, 'a texture still being filled waits');
+  assert.equal(W.textures.has(603), false, 'a released texture is forgotten');
+  lock(b.levels[1], null); b.levels[1].unlock(); W.surfaceUpdated(b.levels[1]);
+  const before = R.calls.length; W.preloadTextures(100);
+  assert.ok(W.textures.has(602)); assert.equal(R.calls.length - before, 2, 'both levels uploaded');
+  R.calls.length = 0; W.glTexture(a); W.glTexture(b);
+  assert.equal(R.calls.length, 0, 'drawing them later uploads nothing');
+  assert.equal(W.pendingTextures.size, 0);
+});
