@@ -670,7 +670,7 @@
   pour un fichier lu d'un bout à l'autre ; un téléchargement d'arrière-plan s'efface (interrompu, repris) quand le jeu
   a besoin du réseau. Escarmouche BFME2 sur un lien simulé à 20 Mbit/s : à-coups de lecture en partie 28 (49 s au
   total, pire 16 s) → 4 (5,8 s, pire 2 s) ; 522 → 354 Mo téléchargés.
-- **Lectures parquées** (`?asyncreads=1`, en relecture) : un ReadFile dont les données sont encore sur le réseau
+- **Lectures parquées** (par défaut depuis 62f4096, `?asyncreads=0` pour les couper ; relues sous trois angles, 7 défauts corrigés) : un ReadFile dont les données sont encore sur le réseau
   parque son thread pendant un téléchargement asynchrone ; menu BFME2 65 s plus tôt sur ce lien (128 s contre 193 s) ;
   neutre en partie (c'est le fil principal du jeu qui lit).
 - Le chargement d'une carte reste long sur un réseau lent la première fois (~20 Mo lus derrière l'écran de chargement).
