@@ -181,37 +181,58 @@ function roundPC(E, op, insn) {
   c.end(); void pc;
   c.get(L_F64C);
 }
+/** i64x2 lanes as v128.const bytes */
+const i64x2Bytes = (v) => { const b = new Uint8Array(16), dv = new DataView(b.buffer); dv.setBigInt64(0, v, true); dv.setBigInt64(8, v, true); return b; };
+/** clears the 29 significand bits below the 24 an x87 register keeps under 24-bit precision */
+const V_GRID24 = i64x2Bytes(~0x1fffffffn);
 /**
  * 24-bit precision with a directed rounding (1 down, 2 up, 3 toward zero) known statically — code written to truncate
- * its FISTPs sets it for whole functions. The f64 result on the stack is rounded without any call: off the 24-bit grid,
- * masking (plus one step away from zero for down-negative / up-positive) is exact (see the generic path); on the grid,
- * the result is exact for float operands (pushExactOnGrid); a zero is exact except when rounding down (x - x = -0).
- * Anything else — inexact on the grid, denormal, infinite or NaN results, zeros rounding down — leaves the region for
- * the interpreter (stepExit: no call in the region, whose hot paths would otherwise keep no value in a register).
+ * its FISTPs sets it for whole functions. The f64 result s on the stack is rounded without any call: off the 24-bit
+ * grid, masking the low 29 significand bits (plus one 24-bit step away from zero for down-negative / up-positive) is
+ * exact (see the generic path); on the grid, the result is exact for float operands (pushExactOnGrid); a zero is exact
+ * except when rounding down (x - x = -0). Anything else — inexact on the grid, denormal, infinite or NaN results,
+ * zeros rounding down — leaves the region for the interpreter (stepExit: no call in the region, whose hot paths would
+ * otherwise keep no value in a register). NaN results included: the caller needs no NaN test of its own
+ * (roundPCExcludesNaN).
+ * Code shape (TurboFan): the rounded value is computed unconditionally — toward zero in a vector register (f64x2.splat,
+ * v128.and, lane 0 back: no round trip through an integer register, measured faster there), down / up on the integer
+ * bits (the sign-dependent step is cheaper there than as vector ops, measured) —; the hot path is two predicted
+ * branches to the end, and everything else shares one cold tail with one exit. The previous nesting (if normal { if
+ * off-grid {...} else {... exit} } else {... exit}, plus a NaN test with its own exit in the caller) gave every
+ * arithmetic instruction three exit edges, each carrying the whole register state to the region's exit block: a
+ * truncating vertex transform ran 2.5x slower than the round-to-nearest one (tools/x87loop-bench.mjs xform).
  */
 function roundDirected24(E, op, insn, rc) {
   const c = E.c;
   c.set(L_F64C);
-  c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+  // L_F64D = s with its significand cut to 24 bits (toward zero), plus the step for down-negative / up-positive
+  if (rc === 3) c.get(L_F64C).f64x2splat().v128const(V_GRID24).v128and().f64x2extractlane(0).set(L_F64D);
+  else {
+    // the step where the sign calls for it (an i64 add: a carry into the exponent lands on the next binade's grid
+    // point); the bits stay in L_I64A for the grid test
+    c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).i64(~0x1fffffffn).i64and();
+    c.get(L_I64A).i64(0n); if (rc === 1) c.i64lt_s(); else c.i64ge_s();
+    c.extend_u().i64(29n).i64shl().i64add().f64reinterpret_i64().set(L_F64D);
+  }
   const done = c.block();
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u();
-  const normal = c.hint(true).if_();
-  c.get(L_I64A).wrap().i32(0x1fffffff).and();
-  const offGrid = c.hint(true).if_();
-  c.get(L_I64A).i64(~0x1fffffffn).i64and();
-  if (rc !== 3) { c.get(L_I64A).i64(0n); if (rc === 1) c.i64lt_s(); else c.i64ge_s(); c.extend_u().i64(29n).i64shl().i64add(); }
-  c.f64reinterpret_i64().set(L_F64C);
-  c.else_();
-  pushExactOnGrid(E, op); c.eqz();
-  const inexact = c.hint(false).if_(); E.stepExit(insn); c.end(); void inexact;
-  c.end(); void offGrid;
-  c.else_();
-  if (rc !== 1) c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // (a zero as computed: +0 for x - x)
+  const cold = c.block();
+  // f64-normal s (NaN fails both compares): its 24-bit grid is the top of its f64 significand
+  c.get(L_F64C).f64abs().f64c(DBL_MIN).f64ge().get(L_F64C).f64abs().f64c(Number.MAX_VALUE).f64le().and().eqz().hint(false).br_if(cold);
+  // off the grid (the truncation removed something): L_F64D is the result
+  if (rc === 3) c.get(L_F64D).get(L_F64C).f64ne();
+  else c.get(L_I64A).wrap().i32(0x1fffffff).and();
+  c.hint(true).br_if(done);
+  // on the grid: s itself when it is exact (toward zero: L_F64D is already s), else the interpreter
+  if (rc !== 3) c.get(L_F64C).set(L_F64D);
+  pushExactOnGrid(E, op); c.br_if(done);
+  c.end(); // cold
+  if (rc !== 1) c.get(L_F64C).set(L_F64D).get(L_F64C).f64c(0).f64eq().br_if(done); // a zero as computed: +0 for x - x
   E.stepExit(insn);
-  c.end(); void normal;
   c.end(); // done
-  c.get(L_F64C);
+  c.get(L_F64D);
 }
+/** roundPC leaves no NaN result: the static directed 24-bit path (roundDirected24) exits for every non-normal result but zeros */
+function roundPCExcludesNaN(E) { return E.fpcStatic !== null && (E.fpcStatic & 0x300) === 0 && E.fpcStatic !== 0; }
 /**
  * f32 of L_F64A rounded by a directed rounding (1 down, 2 up, 3 toward zero): f32.demote rounds to nearest, then one
  * step (the integer pattern +-1, through zero to the smallest denormal) when it went the wrong way; overflow to
@@ -542,11 +563,11 @@ function arith(op, doPop, integer) {
     }
     if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
+      const noNaN = roundPCExcludesNaN(E);
       roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
-      c.get(L_F64C).get(L_F64C).f64ne();
-      const nan = c.hint(false).if_(); E.stepExit(insn); c.end(); void nan;
+      if (!noNaN) { c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_(); E.stepExit(insn); c.end(); void nan; }
       c.get(L_F64C); storeSTStack(E, dst);
     }
     if (doPop) pop(E);
