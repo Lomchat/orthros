@@ -10,7 +10,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import { BLOCK as LEARN_BLOCK } from '../vfs/http-backend.js';
+import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK } from '../vfs/http-backend.js';
 import { createAccountApi } from './accounts.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,9 +102,13 @@ export function createServer(opts = {}) {
    * earliest time since its session's first read it was needed ('s' parameter of /gamez requests; prefetch requests,
    * 'p=1', are not counted). /api/prefetch/<manifest> lists them in that order: a new session downloads them in the
    * background (network otherwise idle while the game computes) before the game asks for them. Kept in
-   * opts.learnDir/prefetch-<manifest>.json when set.
+   * opts.learnDir/prefetch-<manifest>.json when set. Each block also carries the mask of the 64 KiB pieces sessions
+   * read in it (bit i: piece i; absent for blocks learned before masks): a session fetches those pieces ahead of the
+   * game — a few pieces of each block is what a run of small random reads needs, not whole blocks.
    */
-  const learned = new Map(); // manifest -> Map("path#block" -> { t, n })
+  const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask })
+  /** mask of the 64 KiB pieces of a block covered by [a, b) (offsets within the block) */
+  const pieceBits = (a, b) => { let m = 0; for (let c = Math.floor(a / LEARN_CHUNK); c * LEARN_CHUNK < b; c++) m |= 1 << c; return m >>> 0; };
   const sessions = new Map(); // session id -> { start, seen: Set }
   const learnFile = (name) => opts.learnDir && path.join(opts.learnDir, `prefetch-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
   const learnedOf = (name) => {
@@ -112,7 +116,7 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined }); } catch { /* none yet */ }
     }
     return m;
   };
@@ -128,22 +132,25 @@ export function createServer(opts = {}) {
     const m = learnedOf(name), t = now - ss.start;
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
+      const bits = pieceBits(Math.max(start, b * LEARN_BLOCK) - b * LEARN_BLOCK, Math.min(end, (b + 1) * LEARN_BLOCK) - b * LEARN_BLOCK);
+      let e = m.get(k);
+      if (!e) m.set(k, e = { t, n: 0, mask: 0 });
+      e.mask = (e.mask ?? 0) | bits; // (every session's pieces, first read of the block or not)
       if (ss.seen.has(k)) continue;
       ss.seen.add(k);
-      const e = m.get(k);
-      if (!e) m.set(k, { t, n: 1 }); else { e.t = Math.min(e.t, t); e.n++; }
+      e.t = Math.min(e.t, t); e.n++;
     }
     if (learnFile(name)) {
       learnDirty.add(name);
       learnTimer ??= setTimeout(() => {
         learnTimer = null;
-        for (const n of learnDirty) { const f = learnFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => [k, v.t, v.n]))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+        for (const n of learnDirty) { const f = learnFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
         learnDirty = new Set();
       }, 20000);
       learnTimer.unref?.(); // (does not keep a finished process alive)
     }
   };
-  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1))]; });
+  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1))]; if (v.mask) e.push(v.mask); return e; });
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute

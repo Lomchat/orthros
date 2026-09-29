@@ -464,6 +464,18 @@
   télécharge en fond vers OPFS pendant que le jeu calcule. Réseau simulé 40 ms / 50 Mbit/s : première image 56 → 49 s,
   chargement d'une partie 93 → 72 s ; en réel (profil vierge, URL publique) 490 Mo préchargés pendant le premier
   lancement, le jeu ne lit ensuite que ~50 Mo par le réseau. Coût dans le worker : écritures 1,4 %, fetch 0,6 %, GC 0,5 %.
+- **Préchargement qui suit le jeu** : (1) le serveur apprend aussi, par bloc, le masque des morceaux de 64 Kio lus
+  (4e champ de la liste, absent pour les anciennes entrées) ; la page suit la position du jeu dans la liste apprise
+  (premier contact avec un bloc listé) et va chercher d'avance les morceaux appris des 32 entrées suivantes (3 requêtes
+  au plus, non annulées ; une lecture garée d'un morceau en vol l'attend) ; (2) la passe des blocs entiers repart de
+  la position du jeu (puis le début de la liste) ; (3) elle ne s'arrête plus tant que le remplissage des blocs touchés
+  a du travail : sous `--net 40:20` avec profil, ce remplissage ne se vidait jamais et la passe restait bloquée sur
+  l'entrée 0 toute la session (0 bloc préchargé). Harnais `--opfs --net 40:20` (lien partagé), scénario
+  bfme2-skirmish-sync, liste apprise avec masques (déduits d'une session, mêmes entrées des deux côtés), 1re session :
+  première image 74 → 42 s, menu 88 → 67 s, chargement de la partie 77 → 55 s, images lentes avec E/S en jeu
+  70 (17,9 s cumulées, attente E/S 22 s) → 28 (6,9 s, 8,3 s) ; requêtes du jeu 1 293 (158 s) → 581 (78 s).
+  Une seule paire (machine partagée, charge 35-45 : les autres essais n'ont pas atteint 20 images/s au menu).
+  2e session : le socle ne fait déjà plus qu'une requête réseau (tout est en OPFS après la 1re).
 - **Entrées** : la souris est suivie sur toute la page, bornée aux bords du jeu (défilement aux bords sans capture) ;
   bouton « Fullscreen » cliquable ; un relâchement de bouton attend que le jeu ait présenté une image depuis l'appui
   (≤ 250 ms : un clic plus court qu'une image lente n'est plus perdu — vu au menu 3D High sous SwiftShader) ;

@@ -104,7 +104,7 @@ async function run(seed) {
         doRead(s, fi, off, len);
       } else if (op < 0.99) await settleSome();
       else if (store && op < 0.995) { // the prefetch of blocks an earlier session needed
-        const list = []; for (let i = 0, n = 1 + ri(8); i < n; i++) { const f = ri(NAMES.length); list.push([`Data/${NAMES[f]}`, ri(Math.ceil(SIZES[NAMES[f]] / BLOCK) + 1)]); }
+        const list = []; for (let i = 0, n = 1 + ri(8); i < n; i++) { const f = ri(NAMES.length); list.push([`Data/${NAMES[f]}`, ri(Math.ceil(SIZES[NAMES[f]] / BLOCK) + 1), ...(R() < 0.7 ? [R() < 0.2 ? 0xffff : 1 + ri(0xffff)] : [])]); } // (learned pieces: fetched ahead of the reads that follow)
         s.b.prefetch(list, {}, () => finished || R() < 0.01);
       } else if (store && !s.offline) { s.offline = {}; s.b.downloadAll(s.offline, () => finished); }
       // invariants: every piece, block and stored block holds its version's bytes
