@@ -87,6 +87,13 @@ const CASES = [
   ['fnstenv [edi] (28 bytes, 4 into the page)', 24, [0xd9, 0x37], true, { noCall: true }],
   ['fnsave [edi] (108 bytes, 8 into the page)', 100, [0xdd, 0x37], true, { noCall: true }],
   ['fnsave [edi] ending right before the page', 108, [0xdd, 0x37], false, { noCall: true }],
+  ['stmxcsr [edi] (4 bytes, 1 into the page: the operand has no size in the decoder)', 3, [0x0f, 0xae, 0x1f], true, { noCall: true }],
+  ['stmxcsr [edi] ending right before the page', 4, [0x0f, 0xae, 0x1f], false, { noCall: true }],
+  ['fnstcw [edi] (word, 1 into the page)', 1, [0xd9, 0x3f], true, { noCall: true }],
+  ['fnstcw [edi] ending right before the page', 2, [0xd9, 0x3f], false, { noCall: true }],
+  ['fnstsw [edi] (word, 1 into the page)', 1, [0xdd, 0x3f], true, { noCall: true }],
+  ['fnstcw [edi] on the code page itself', 0, [0xd9, 0x3f], true, { noCall: true }],
+  ['fnstsw [edi] on the code page itself', -2, [0xdd, 0x3f], true, { noCall: true }],
 ];
 
 test('stores crossing from a data page into a translated code page are detected (and only those)', () => {
@@ -136,4 +143,35 @@ test('a loop storing into the last bytes of the page before its own code takes n
   assert.equal(smc, 0);
   assert.equal(mem.read32(CODE - 4) >>> 0, 0x00010001);
   assert.equal(mem.u8[SMC_MAP_BASE + (CODE >>> 12) - 1], SMC_NEXT);
+});
+
+test('a write watch does not hide a store into translated code (watch set before the code, or on the page before)', () => {
+  // a watch on the store's page, then code translated there / on the next page: the SMC exit must still invalidate
+  // main: xor ebx, ebx ; mov ecx, 2 ; L: call FN ; add ebx, eax ; mov dword [at], v ; dec ecx ; jnz L ; hlt
+  // FN: mov eax, 1 ; ret, rewritten by the store into mov eax, 2 ; ret: ebx = 1 + 2 (1 + 1 when stale code runs)
+  for (const [name, watchAt, at] of [['watched page gains code', FN, FN], ['watched page before a code page', FN - 0x100, FN - 2]]) {
+    const E = makeExec(true), { mem, cpu, jit } = E;
+    cpu.reset();
+    mem.fill(FN - 0x1000, 0x4000, 0xcc);
+    jit.watchWrites(watchAt, 0x10, 'w');
+    mem.writeBytes(FN, Uint8Array.from([0xb8, 1, 0, 0, 0, 0xc3]));
+    const val = at === FN ? 0x000002b8 : 0x02b8cccc;
+    const main = [0x31, 0xdb, 0xb9, ...le(2)];
+    const L = MAIN + main.length;
+    main.push(0xe8, ...le(FN - (L + 5)), 0x01, 0xc3, 0xc7, 0x05, ...le(at), ...le(val), 0x49);
+    main.push(0x75, (L - (MAIN + main.length + 2)) & 0xff, 0xf4);
+    mem.writeBytes(MAIN, Uint8Array.from(main));
+    cpu.eip = MAIN; cpu.esp = DATA + 0x800; cpu.eflags = F.RESERVED1 | F.IF;
+    let r, smc = 0;
+    while ((r = jit.run({ stopAt: MAIN + main.length - 1, maxInsns: 1e6 })) === EXIT.SMC) {
+      const len = mem.read32(cpu.base + ST.EXIT_LEN) || 16; mem.write32(cpu.base + ST.EXIT_LEN, 0);
+      if (!jit.watchHit(cpu.exitArg, cpu.eip, len)) jit.invalidate(cpu.exitArg, len);
+      smc++; if (process.env.DBG) console.log(name, (cpu.exitArg>>>0).toString(16), (cpu.eip>>>0).toString(16), jit.regions.length, cpu.ebx, cpu.ecx);
+    }
+    assert.equal(r, EXIT.HALT);
+    assert.ok(smc >= 1, name);
+    assert.equal(cpu.ebx >>> 0, 3, `${name}: the rewritten code runs`);
+    assert.ok(jit.stats.invalidations >= 1, `${name}: the translation of the rewritten code dropped`);
+    assert.equal(mem.u8[SMC_MAP_BASE + (watchAt >>> 12)] & SMC_WATCH, SMC_WATCH, `${name}: the watch kept`);
+  }
 });

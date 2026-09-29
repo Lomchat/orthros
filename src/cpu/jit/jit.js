@@ -206,7 +206,7 @@ export class Jit {
     }
     // mark code pages for SMC detection (and the page before each: a store crossing into a code page, see smcCheck)
     for (const p of region.pages) {
-      this.mem.u8[SMC_MAP_BASE + p] = (this.mem.u8[SMC_MAP_BASE + p] & SMC_NEXT) | SMC_CODE;
+      this.mem.u8[SMC_MAP_BASE + p] |= SMC_CODE; // (SMC_NEXT and a write watch kept)
       if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
@@ -318,9 +318,13 @@ export class Jit {
     for (const [p, w] of this.watches) if (w.label === label) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); report.push(...w.sites); }
     return report;
   }
-  /** SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). */
+  /**
+   * SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). A page that
+   * gained translated code after its watch was set is not handled here: its code must be invalidated.
+   */
   watchHit(addr, eip, len = 16, thread = null) {
     if (!this.watches) return false;
+    for (let q = addr >>> 12; q <= (addr + len - 1) >>> 12; q++) if (this.pageRegions.has(q)) return false;
     let p = addr >>> 12, w = null;
     for (const last = (addr + len - 1) >>> 12; p <= last && !(w = this.watches.get(p)); p++);
     if (!w) return false;
@@ -356,7 +360,7 @@ export class Jit {
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
-      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= SMC_NEXT; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
+      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
     }
     this.table.set(r.fnIdx, null);
     this.byFn.delete(r.fnIdx);
