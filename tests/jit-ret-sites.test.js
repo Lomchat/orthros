@@ -189,3 +189,55 @@ test('the inline-API JMP of an import stub returns locally to the stub\'s caller
   assert.ok(whole.prof.retLocal >= 30 * 3 - 3, `local returns: ${whole.prof.retLocal}`);
   for (const slice of [3, 5]) assert.deepEqual(run(slice).regs, whole.regs, `slices of ${slice}`);
 });
+
+test('random call graphs (tail calls, return-address skews, RET imm16, flags read after a return): JIT = interpreter', () => {
+  // Functions F0..Fn-1 call only higher-numbered ones (terminates). After every call site an `inc esi` (1 byte): a
+  // callee may `add dword [esp], 1` to return past it (a non-site), or rewrite its return address to another caller's
+  // site of the same shape. Callers read the flags the callee left (ADC/SBB/SETcc right after the call).
+  let seed = 0x2545f491;
+  const rnd = (n) => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % n; };
+  let local = 0;
+  for (let round = 0; round < 20; round++) {
+    const a = new Asm();
+    const nf = 3 + rnd(8);
+    let lbl = 0;
+    const body = (f) => {
+      const ops = 1 + rnd(6);
+      for (let k = 0; k < ops; k++) {
+        const r = rnd(12);
+        if (r < 4 && f + 1 < nf) {
+          const g = f + 1 + rnd(nf - f - 1), argc = rnd(2);
+          if (argc) a.raw(0x6a, rnd(100));
+          a.call('F' + g + (argc ? 'a' : '')).raw(0x46);
+          const rd = rnd(4);
+          if (rd === 0) a.raw(0x11, 0xc3); // adc ebx, eax
+          else if (rd === 1) a.raw(0x19, 0xd0); // sbb eax, edx
+          else if (rd === 2) a.raw(0x0f, 0x94, 0xc1); // setz cl
+        } else if (r < 6) a.raw(0x01, [0xd8, 0xd9, 0xda, 0xde][rnd(4)]); // add eax/ecx/edx/esi, ebx
+        else if (r < 7) a.raw(0x31, 0xc2); // xor edx, eax
+        else if (r < 8) a.raw(0xc1, 0xc0, 1 + rnd(31)); // rol eax, n
+        else if (r < 9) { const l = 'j' + lbl++; a.raw(0xa8, 1 + rnd(255)).jz(l).raw(0x83, 0xc3, rnd(127)).label(l); }
+        else if (r < 10) a.raw(0xff, 0x05, ...le(DATA + 4 * rnd(16))); // inc dword [mem]
+        else a.raw(0x3d, ...le(rnd(1 << 30))); // cmp eax, imm
+      }
+    };
+    // main: mov edi, 25 ; L: calls of random functions ; dec edi ; jnz L ; hlt
+    a.raw(0xbf, ...le(25)).label('L');
+    for (let k = 0, n = 2 + rnd(20); k < n; k++) { const g = rnd(nf), argc = rnd(2); if (argc) a.raw(0x6a, k); a.call('F' + g + (argc ? 'a' : '')).raw(0x46, 0x11, 0xc3); }
+    a.raw(0x4f).jnz('L').label('end').raw(0xf4);
+    for (let f = 0; f < nf; f++) {
+      for (const argc of [0, 1]) {
+        a.label('F' + f + (argc ? 'a' : ''));
+        body(f);
+        const end = rnd(6);
+        if (end === 0 && f + 1 < nf && !argc) { a.jmp('F' + (f + 1 + rnd(nf - f - 1))); continue; } // tail call
+        if (end === 1) { const l = 'j' + lbl++; a.raw(0xf6, 0xc3, 1).jz(l).raw(0x83, 0x04, 0x24, 1).label(l); } // skew
+        if (argc) a.raw(0xc2, 4, 0); else a.raw(0xc3);
+      }
+    }
+    const code = a.build();
+    local += check(code, a.at('end'), { slices: [5, 17] }).retLocal ?? 0;
+    check(code, a.at('end'), { slices: [], boundaries: new Set([a.at('F' + rnd(nf)), a.at('F' + rnd(nf) + 'a')]) });
+  }
+  assert.ok(local > 1000, `local returns: ${local}`);
+});
