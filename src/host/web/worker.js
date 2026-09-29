@@ -1,6 +1,8 @@
 // Emulator worker: builds the VFS (game folder over HTTP ranges, user profile in memory mirrored
 // to OPFS), the browser host and the VM, then pumps the VM cooperatively so the canvases are
 // presented and input/audio flow while the guest runs.
+import { DxtPool } from '../../win32/dxt-pool.js';
+import { setDxtEncoder } from '../../win32/d3dx9-image.js';
 import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin } from '../../vfs/vfs.js';
@@ -164,6 +166,16 @@ async function start(m) {
       bgTranslator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); bgTranslator = null; };
       vm.jit.attachBackground(bgTranslator);
     } catch (e) { bgTranslator = null; log('warn', `background translation unavailable: ${e.message}`); }
+  }
+  // D3DX's DXT encoding of large images split with helper workers (other cores; the same bytes as on one thread);
+  // ?dxthelpers=N sets their number (0: none)
+  const dxtHelpers = m.opts.dxtHelpers ?? Math.max(0, Math.min(4, (navigator.hardwareConcurrency || 2) - 2));
+  if (dxtHelpers > 0 && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated) {
+    try {
+      const pool = new DxtPool(dxtHelpers, () => { const w = new Worker(new URL('../../win32/dxt-helper.js', import.meta.url), { type: 'module' }); w.onerror = (e) => log('warn', `dxt helper: ${e.message ?? e}`); return w; }, (t) => log('warn', t));
+      setDxtEncoder((fmt, rgba, w, h) => pool.encode(fmt, rgba, w, h));
+      host.dxtPool = pool;
+    } catch (e) { log('warn', `parallel DXT encoding unavailable: ${e.message}`); }
   }
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
   host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '' });
@@ -439,8 +451,9 @@ self.onmessage = (e) => {
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
     const top = vm?.apiTimesPhase ? [...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ') : '(--api-times off)';
     log('gfx', `mark ${m.label}: texture levels uploaded ${d('texLevels')} (${d('reuploads')} again), ${(d('uploadBytes') / 1048576).toFixed(1)} MiB as RGBA8, ${d('texMs').toFixed(0)} ms (conversion ${d('texConvMs').toFixed(0)}, placeholder check ${d('texCheckMs').toFixed(0)}); locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only; API ms: ${top}`);
+    if (host?.dxtPool) { const ps = host.dxtPool.stats, pp = markPrev?.pool ?? { jobs: 0, waitMs: 0 }; log('gfx', `mark ${m.label}: parallel DXT encodes ${ps.jobs - pp.jobs}, waiting for the helpers ${(ps.waitMs - pp.waitMs).toFixed(0)} ms${host.dxtPool.broken ? ' (pool off)' : ''}`); }
     if (vm?.d3dxProf?.size) { log('gfx', `mark ${m.label}: D3DX image work (ms, count): ${[...vm.d3dxProf].sort((a, b) => b[1].ms - a[1].ms).slice(0, 14).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); vm.d3dxProf.clear(); }
-    markPrev = { ...st, locks: { ...ls } }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
