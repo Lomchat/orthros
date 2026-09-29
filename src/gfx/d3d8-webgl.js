@@ -257,7 +257,8 @@ export class WebGLDevice {
     const ext = this.s3tc;
     const glf = !dxt ? 'rgba8' : s.fmt === FMT.DXT1 ? ext.COMPRESSED_RGBA_S3TC_DXT1_EXT : s.fmt === FMT.DXT2 || s.fmt === FMT.DXT3 ? ext.COMPRESSED_RGBA_S3TC_DXT3_EXT : ext.COMPRESSED_RGBA_S3TC_DXT5_EXT;
     let x0 = 0, y0 = 0, x1 = s.width, y1 = s.height;
-    const d = s.mem && alloc[slot] === glf ? s.dirtyRect : null;
+    // (DXT decoded on the CPU, without the s3tc extension: always the whole level — the rectangle offsets below are texels)
+    const d = s.mem && alloc[slot] === glf && (dxt || !isDxt(s.fmt)) ? s.dirtyRect : null;
     if (d) {
       if (dxt) { x0 = d[0] & ~3; y0 = d[1] & ~3; x1 = Math.min(s.width, (d[2] + 3) & ~3); y1 = Math.min(s.height, (d[3] + 3) & ~3); }
       else { x0 = d[0]; y0 = d[1]; x1 = d[2]; y1 = d[3]; }
