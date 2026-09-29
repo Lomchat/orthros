@@ -56,3 +56,31 @@ test('a timer a parked thread waits for still wakes it when due', () => {
   assert.equal(vm.clock.now(), 25);
   assert.equal(waiter.state, TS.READY);
 });
+
+test('a timer set with elapse 0 at the very time of the last check still wakes its waiter at the next idle step', () => {
+  const vm = fakeVm(), s = vm.sched;
+  vm.clock.sleep(10);
+  const timers = vm.proc.timers;
+  const waiter = parked(vm, 1, () => timers.some((t) => t.due <= vm.clock.now()), Infinity);
+  assert.equal(s.wakeBlocked(), false); // (checkedAt = 10)
+  timers.push({ kind: 'wm', due: 10, thread: {} }); // (another thread's SetTimer(..., 0) at the same virtual time)
+  assert.equal(s.nextWake(), Infinity, 'due at the check time: not a future wake-up');
+  s.idle(); // (the idle step checks the waits first)
+  assert.equal(waiter.state, TS.READY);
+  assert.equal(vm.clock.now(), 10, 'no sleep needed');
+});
+
+test('nested wait: the waiting thread\'s own timer falling due is seen even though it is not a parked wait', () => {
+  const vm = fakeVm(), s = vm.sched;
+  const me = { id: 1, state: TS.RUNNING, wakeAt: Infinity, isRunnable: () => false };
+  vm.proc.threads.push(me);
+  const other = parked(vm, 2, () => false, 50); other.isRunnable = () => false; // (keeps a finite wake-up so the loop sleeps rather than deadlocks)
+  const tm = { kind: 'wm', due: 30, thread: me };
+  vm.proc.timers.push(tm);
+  vm.canUnwind = () => false;
+  vm.runThread = () => assert.fail('nothing runnable');
+  const ok = s.block(me, () => vm.clock.now() >= tm.due, 0xffffffff, 'getmessage');
+  assert.equal(ok, true);
+  assert.equal(vm.clock.now(), 30, 'woke at the timer, not at the other thread\'s deadline');
+  assert.equal(other.state, TS.BLOCKED);
+});
