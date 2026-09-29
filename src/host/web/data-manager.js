@@ -416,9 +416,9 @@ function open(tab = 'local') {
   dialog.showModal();
   refresh({ account: true }).catch((error) => { app.message = error.message; render(); });
 }
-const menuButton = button('◫  Mes données', () => open(), 'dm-entry');
-const menuOptions = document.querySelector('#menu .opts');
-menuOptions?.insertBefore(menuButton, menuOptions.querySelector('.keys'));
+const menuButton = el('button', 'hm-btn hm-btn-data', 'Mes données'); // (home screen: its label follows the page language, see home.js)
+menuButton.type = 'button'; menuButton.onclick = () => open();
+document.querySelector('#menu [data-slot="data"]')?.append(menuButton);
 const barButton = button('◫  Mes données', () => open(), 'dm-bar-entry');
 document.querySelector('#topbar')?.insertBefore(barButton, document.querySelector('#tbFull'));
 

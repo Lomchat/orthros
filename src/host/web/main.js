@@ -2,6 +2,7 @@
 // audio worklet fed from the shared float ring, perf HUD, and a small window.orthros API for the
 // headless harness (status, stats, screenshots, logs).
 import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host.js';
+import { mountHome } from './home.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -71,37 +72,19 @@ async function main() {
   $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
 }
 
-/** The game list: one card per manifest (its cover, description, size), arrows and Enter to choose. */
+/** The home screen (home.js): the game list, one card per manifest; started games hand over to start(). */
+let home = null;
 async function showMenu() {
-  const list = (await (await fetch('/api/manifests')).json()).filter((g) => !g.hidden || params.has('all'));
   let last = null; try { last = localStorage.getItem('orthros.last'); } catch { /* no storage */ }
-  const games = $('games'), cards = [];
-  for (const g of list) {
-    const card = document.createElement('div');
-    card.className = 'card' + (g.available ? '' : ' unavailable'); card.tabIndex = g.available ? 0 : -1; card.dataset.name = g.name;
-    const cover = document.createElement('div'); cover.className = 'cover';
-    if (g.cover) cover.style.backgroundImage = `url(/api/cover/${encodeURIComponent(g.name)})`; else { cover.classList.add('none'); cover.textContent = g.title.slice(0, 1); }
-    const body = document.createElement('div'); body.className = 'body';
-    const h = document.createElement('h3'); h.textContent = g.title;
-    const d = document.createElement('p'); d.textContent = g.description ?? '';
-    const meta = document.createElement('div'); meta.className = 'meta';
-    meta.textContent = g.available ? `${g.exe} · ${g.bytes >= 1e9 ? (g.bytes / 1e9).toFixed(1) + ' GB' : Math.round(g.bytes / 1e6) + ' MB'}` : 'game files not found on the server';
-    const play = document.createElement('button'); play.className = 'play'; play.textContent = 'Play'; play.tabIndex = -1; meta.appendChild(play);
-    body.append(h, d, meta); card.append(cover, body);
-    if (g.name === last) { const b = document.createElement('div'); b.className = 'badge'; b.textContent = 'last played'; card.appendChild(b); }
-    if (g.available) { card.onclick = () => start(g.name); cards.push(card); }
-    games.appendChild(card);
-  }
-  $('menu').classList.remove('hidden');
-  (cards.find((c) => c.dataset.name === last) ?? cards[0])?.focus();
-  $('menu').onkeydown = (e) => {
-    const i = cards.indexOf(document.activeElement);
-    if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); start(cards[i].dataset.name); return; }
-    const cols = Math.max(1, Math.round(games.clientWidth / (cards[0]?.offsetWidth || 1)));
-    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
-    if (step === undefined || !cards.length) return;
-    e.preventDefault(); cards[Math.min(cards.length - 1, Math.max(0, (i < 0 ? 0 : i + step)))].focus();
+  home = mountHome({ onPlay: start });
+  const load = async () => {
+    home.setLoading();
+    try {
+      const res = await fetch('/api/manifests'); if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      home.setGames((await res.json()).filter((g) => !g.hidden || params.has('all')), last);
+    } catch (e) { home.setError(String(e.message ?? e), load); }
   };
+  await load();
 }
 
 async function start(name) {
@@ -112,7 +95,7 @@ async function start(name) {
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   const tree = await (await fetch(`/api/tree/${name}`)).json();
   state.status = 'starting'; state.manifest = name;
-  $('menu').classList.add('hidden'); $('menu').onkeydown = null; $('stage').classList.remove('hidden');
+  home?.destroy(); home = null; $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
   // (headless: no header nor loading screen — the harness reads the stats, and screenshots the frame alone)
   if (headless) document.body.classList.add('nobar');
