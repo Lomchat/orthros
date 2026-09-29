@@ -356,13 +356,24 @@ function alphaBlock(px, out, o) {
   out[o + 2] = lo & 255; out[o + 3] = (lo >> 8) & 255; out[o + 4] = (lo >> 16) & 255;
   out[o + 5] = hi & 255; out[o + 6] = (hi >> 8) & 255; out[o + 7] = (hi >> 16) & 255;
 }
-/** RGBA8 (w x h) to DXT1/DXT3/DXT5 blocks */
+/** RGBA8 (w x h) to DXT1/DXT3/DXT5 blocks (through the parallel encoder when one is installed, see setDxtEncoder) */
 export function encodeDxt(fmt, rgba, w, h) {
-  const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2), unit = fmt === FMT.DXT1 ? 8 : 16, out = new Uint8Array(bw * bh * unit);
+  if (dxtEncoder) { const r = dxtEncoder(fmt, rgba, w, h); if (r) return r; }
+  const bh = Math.max(1, (h + 3) >> 2);
+  return encodeDxtRows(fmt, rgba, w, h, 0, bh, new Uint8Array(dxtBytes(fmt, w, h)));
+}
+/** Size of the DXT blocks of a w x h image. */
+export const dxtBytes = (fmt, w, h) => Math.max(1, (w + 3) >> 2) * Math.max(1, (h + 3) >> 2) * (fmt === FMT.DXT1 ? 8 : 16);
+let dxtEncoder = null;
+/** Install an encoder that may split the work (returns null to decline: the encoder here runs). */
+export function setDxtEncoder(f) { dxtEncoder = f; }
+/** Block rows [by0, by1) of the DXT encoding of an RGBA8 image, written at their place in `out` (the whole image's blocks). */
+export function encodeDxtRows(fmt, rgba, w, h, by0, by1, out) {
+  const bw = Math.max(1, (w + 3) >> 2), unit = fmt === FMT.DXT1 ? 8 : 16;
   const px = new Uint8Array(64), px32 = new Uint32Array(px.buffer);
   // (blocks inside the image: their 16 texels copied as 32-bit words; edge blocks repeat the last row / column)
   const src32 = (rgba.byteOffset & 3) === 0 ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
-  for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
+  for (let by = by0; by < by1; by++) for (let bx = 0; bx < bw; bx++) {
     if (src32 && bx * 4 + 3 < w && by * 4 + 3 < h) {
       for (let y = 0, s = by * 4 * w + bx * 4; y < 16; y += 4, s += w) { px32[y] = src32[s]; px32[y + 1] = src32[s + 1]; px32[y + 2] = src32[s + 2]; px32[y + 3] = src32[s + 3]; }
     } else for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const sx = Math.min(w - 1, bx * 4 + x), sy = Math.min(h - 1, by * 4 + y), s = (sy * w + sx) * 4, d = (y * 4 + x) * 4; px[d] = rgba[s]; px[d + 1] = rgba[s + 1]; px[d + 2] = rgba[s + 2]; px[d + 3] = rgba[s + 3]; }
