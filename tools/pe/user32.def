@@ -26,3 +26,4 @@ LoadCursorA@8
 GetSystemMetrics@4
 SetWindowTextA@8
 DrawTextA@20
+EnumWindows@8
