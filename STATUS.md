@@ -420,12 +420,12 @@
 - Écart connu non corrigé : `lstrcmp`/`lstrcmpi`/`CompareString` comparent en ordinal (Windows : tri linguistique,
   minuscules avant majuscules d'une même lettre, tirets et apostrophes à part) — n'affecte que l'ordre de listes triées.
 
-## Instance de test pour jouer (2026-09-24)
-- **https://orth2.chalco.website** (utilisateur `orthros`, mot de passe dans `/root/.orth2-password`) : le jeu démarre
-  directement (`--default bfme-vanilla`), compteur d'images en haut à gauche (clic : compact / détaillé).
-- Servie depuis une copie figée : worktree `/srv/orthros-live` (commit déployé), service `orthros2.service`
-  (127.0.0.1:8095, utilisateur dynamique), bloc Caddy `orth2.chalco.website` (basic auth, pas de compression sur
-  `/game/*`). Mise à jour : `git -C /srv/orthros-live checkout --detach <commit> && systemctl restart orthros2`.
+## Instance pour jouer (mise à jour 2026-09-29)
+- **https://orthros.chalco.website** (utilisateur `orthros`, mot de passe dans `/root/.orth2-password`) : ouvre le menu des jeux ; compteur d'images en haut à gauche (clic : compact / détaillé).
+- Servie directement depuis `/srv/orthros` par `orthros.service` (127.0.0.1:8095, utilisateur dynamique),
+  bloc Caddy `orthros.chalco.website` (basic auth, pas de compression sur `/game/*`). Après une modification
+  du serveur Node, redémarrer avec `systemctl restart orthros`. L’ancien projet BFME utilise
+  `orthros-old.service` et `orthros-live.chalco.website`; `orth2.chalco.website` redirige vers le nouveau domaine.
 - Mesures des joueurs : `/var/lib/private/orthros2/telemetry/telemetry-<date>.jsonl` (échantillons ~0,5 s : fps, pire
   image, images > 33 / 50 ms, p99, MIPS, API/s, draws, Mo lus, état ; environnement navigateur / GPU en début de session).
 - Vérifié de bout en bout par l'URL publique (Chromium headless, profil vierge) : isolation cross-origin, lecture des
@@ -647,6 +647,21 @@
   sur deux pages, FNSTCW/FNSTSW m16), décodeur JPEG 2,5-4× plus rapide (1024² q90 : 105 → 30 ms). Bout en bout
   (2 A/B simultanés) : **pas de gain mesurable sur le démarrage de BFME2** (±1-5 s, bruit) — les noyaux synthétiques
   ne représentent pas le code chaud réel ; 388 tests.
+
+## 29 septembre : lag en partie (BFME2 chez le joueur)
+- **Cause mesurée (télémétrie de la session du joueur)** : presque chaque à-coup en partie (200 ms - 1 s) est une
+  lecture synchrone d'un bloc de 1 Mio sur le réseau (`io 1/1024KB/500ms`) — un son, un modèle, une texture pas encore
+  téléchargés ; tout l'émulateur attend.
+- **Lectures par morceaux** : une lecture aléatoire manquante ne télécharge que les morceaux de 64 Kio qu'elle couvre
+  (le bloc entier suit en arrière-plan dans le magasin persistant) ; un flux lu petit à petit (audio) passe par des
+  fenêtres croissantes (64 → 256 Kio) avec ses blocs suivants en arrière-plan ; les blocs entiers d'avance seulement
+  pour un fichier lu d'un bout à l'autre ; un téléchargement d'arrière-plan s'efface (interrompu, repris) quand le jeu
+  a besoin du réseau. Escarmouche BFME2 sur un lien simulé à 20 Mbit/s : à-coups de lecture en partie 28 (49 s au
+  total, pire 16 s) → 4 (5,8 s, pire 2 s) ; 522 → 354 Mo téléchargés.
+- **Lectures parquées** (`?asyncreads=1`, en relecture) : un ReadFile dont les données sont encore sur le réseau
+  parque son thread pendant un téléchargement asynchrone ; menu BFME2 65 s plus tôt sur ce lien (128 s contre 193 s) ;
+  neutre en partie (c'est le fil principal du jeu qui lit).
+- Le chargement d'une carte reste long sur un réseau lent la première fois (~20 Mo lus derrière l'écran de chargement).
 
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
