@@ -150,6 +150,9 @@ async function start(m) {
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
   vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
+  // (a ReadFile whose data is still on the network parks its thread while the fetch runs: the other threads and the
+  // page go on; ?asyncreads=0 restores the synchronous reads)
+  vm.asyncReads = m.opts.asyncReads !== false;
   vm.onStdout = (s) => post({ type: 'stdout', text: s });
   if (regionSink && vm.jit) vm.jit.learned = [];
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only

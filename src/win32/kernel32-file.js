@@ -107,6 +107,12 @@ export function registerKernel32File(api, vm) {
     let pos = f.pos;
     if (ovl) pos = mem.read32(ovl + 8) + mem.read32(ovl + 12) * 4294967296;
     const n = c.arg(2);
+    // data still on the network: this thread waits parked while the others run (the call is executed again once
+    // it is here) — not in a nested call, whose wait cannot let the browser deliver it
+    if (f.file.prepare && c.thread.wakeResult === undefined && vm.asyncReads && vm.canUnwind(c.thread)) {
+      const p = f.file.prepare(pos, n);
+      if (p) { let done = false; p.finally(() => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done, 60000, 'file read'); }
+    } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     const d = f.file.read(pos, n);
     if (d.length) mem.writeBytes(c.arg(1), d);
     if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay
