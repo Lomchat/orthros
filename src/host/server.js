@@ -11,6 +11,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK } from '../vfs/http-backend.js';
+import { createAccountApi } from './accounts.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
@@ -267,11 +268,17 @@ export function createServer(opts = {}) {
     });
   };
 
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => manifests.has(game) }) : null;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/account' || p.startsWith('/api/account/') || p === '/api/cloud' || p.startsWith('/api/cloud/')) {
+        if (!accountApi) return send(res, 503, 'accounts unavailable');
+        accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
+        return;
+      }
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;
@@ -374,8 +381,8 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args[args.indexOf('--port') + 1] || 8080) || 8080;
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
-  const telemetryDir = arg('--telemetry'), learnDir = arg('--learn');
-  for (const d of [telemetryDir, learnDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir, learnDir });
+  const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
+  for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
+  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

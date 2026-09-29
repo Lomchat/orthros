@@ -421,11 +421,15 @@
   minuscules avant majuscules d'une même lettre, tirets et apostrophes à part) — n'affecte que l'ordre de listes triées.
 
 ## Instance pour jouer (mise à jour 2026-09-29)
-- **https://orthros.chalco.website** (utilisateur `orthros`, mot de passe dans `/root/.orth2-password`) : ouvre le menu des jeux ; compteur d'images en haut à gauche (clic : compact / détaillé).
+- **https://orthros.chalco.website** : accès public au menu des jeux, sans code d'entrée ; compteur d'images en haut à gauche (clic : compact / détaillé).
 - Servie directement depuis `/srv/orthros` par `orthros.service` (127.0.0.1:8095, utilisateur dynamique),
-  bloc Caddy `orthros.chalco.website` (basic auth, pas de compression sur `/game/*`). Après une modification
+  bloc Caddy `orthros.chalco.website` (pas de compression sur `/game/*`). Après une modification
   du serveur Node, redémarrer avec `systemctl restart orthros`. L’ancien projet BFME utilise
   `orthros-old.service` et `orthros-live.chalco.website`; `orth2.chalco.website` redirige vers le nouveau domaine.
+- Le menu « Mes données » gère les sauvegardes et le cache locaux, l'export et la restauration d'archives, ainsi qu'un
+  compte facultatif pour les copies en ligne. L'API des comptes utilise la base SQLite persistante de
+  `/var/lib/private/orthros2/accounts`. Les jeux sont accessibles sans compte et les comptes de l'ancien site ne sont
+  pas repris. Les menus emploient le bleu nuit et l'orange de l'ancien site.
 - Mesures des joueurs : `/var/lib/private/orthros2/telemetry/telemetry-<date>.jsonl` (échantillons ~0,5 s : fps, pire
   image, images > 33 / 50 ms, p99, MIPS, API/s, draws, Mo lus, état ; environnement navigateur / GPU en début de session).
 - Vérifié de bout en bout par l'URL publique (Chromium headless, profil vierge) : isolation cross-origin, lecture des
