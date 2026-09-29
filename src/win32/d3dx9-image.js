@@ -2,7 +2,7 @@
 // pixel data, plus the conversions and box filtering D3DX applies when the texture it creates differs from the file
 // (another format, size or mip chain). The formats are the public ones (Microsoft DDS, Truevision TGA, Windows BMP).
 import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
-import { decodeJpeg, isJpeg } from '../gfx/codecs/jpeg.js';
+import { decodeJpeg, isJpeg, jpegSize } from '../gfx/codecs/jpeg.js';
 import { decodePng, isPng } from '../gfx/codecs/png.js';
 import { decodeDxt } from '../gfx/d3d8-webgl.js';
 
@@ -25,10 +25,28 @@ export function parseImage(bytes) {
   return parseTga(bytes); // (no signature: the header's plausibility decides)
 }
 
+/**
+ * What parseImage would describe (size, format, kind: D3DXIMAGE_INFO), without decoding the pixels of a JPEG or PNG
+ * file: their headers give it (D3DXGetImageInfoFromFile*, usually called before creating the texture from the same
+ * file, decoded it in full). Other formats, and headers this cannot read, go through parseImage.
+ */
+export function parseImageInfo(bytes) {
+  const info = (width, height, alpha, fileFormat) => ({ width, height, depth: 1, mips: 1, fmt: alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8, infoFmt: alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8, fileFormat, kind: 'tex', images: null });
+  if (isJpeg(bytes)) { const s = jpegSize(bytes); if (s && s.width && s.height) return info(s.width, s.height, false, IFF.JPG); }
+  else if (isPng(bytes) && bytes.length >= 33 && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52) { // (IHDR first)
+    const w = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0, h = ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0;
+    if (w && h) return info(w, h, true, IFF.PNG);
+  }
+  return parseImage(bytes);
+}
+
 /** An RGBA8 image as a one-level A8R8G8B8 / X8R8G8B8 file */
 function rgbaFile(w, h, rgba, fileFormat, alpha, infoFmt) {
   const out = new Uint8Array(w * h * 4);
-  for (let i = 0; i < w * h; i++) { out[4 * i] = rgba[4 * i + 2]; out[4 * i + 1] = rgba[4 * i + 1]; out[4 * i + 2] = rgba[4 * i]; out[4 * i + 3] = alpha ? rgba[4 * i + 3] : 255; }
+  if ((rgba.byteOffset & 3) === 0) { // (whole pixels as little-endian words: R,G,B,A -> B,G,R,A)
+    const s32 = new Int32Array(rgba.buffer, rgba.byteOffset, w * h), d32 = new Int32Array(out.buffer), a = alpha ? 0 : 0xff000000;
+    for (let i = 0; i < w * h; i++) { const v = s32[i]; d32[i] = (v & 0xff00ff00) | ((v >>> 16) & 0xff) | ((v & 0xff) << 16) | a; }
+  } else for (let i = 0; i < w * h; i++) { out[4 * i] = rgba[4 * i + 2]; out[4 * i + 1] = rgba[4 * i + 1]; out[4 * i + 2] = rgba[4 * i]; out[4 * i + 3] = alpha ? rgba[4 * i + 3] : 255; }
   return { width: w, height: h, depth: 1, mips: 1, fmt: alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8, infoFmt: infoFmt ?? (alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8), fileFormat, kind: 'tex', images: [[out]] };
 }
 
