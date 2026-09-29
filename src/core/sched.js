@@ -28,6 +28,8 @@ export class Scheduler {
     this.idleSince = -1;
     /** nested waits in progress (block() on top of a JavaScript frame): the event loop cannot run until they end */
     this.nestedWaits = 0;
+    /** clock time of the last wakeBlocked() pass (see nextWake) */
+    this.checkedAt = -Infinity;
   }
 
   get threads() { return this.vm.proc.threads; }
@@ -43,12 +45,17 @@ export class Scheduler {
     return null;
   }
 
-  /** Earliest wake-up time among sleeping/blocked threads and process timers. */
+  /**
+   * Earliest wake-up time among sleeping/blocked threads and process timers. A timer already due at the last
+   * wakeBlocked() pass does not count: every wait it could end was checked then and none did (a window timer whose
+   * thread is busy or waits for something else stays due until that thread retrieves its WM_TIMER) — counted, it
+   * made the idle loop spin without ever sleeping (nor returning to the event loop) until another thread woke.
+   */
   nextWake() {
     let w = Infinity;
     for (const t of this.threads) if (t.state === TS.BLOCKED && t.wakeAt < w) w = t.wakeAt;
-    const timers = this.vm.proc.timers;
-    for (const tm of timers) if (tm.due < w) w = tm.due;
+    const timers = this.vm.proc.timers, checked = this.checkedAt;
+    for (const tm of timers) if (tm.due < w && tm.due > checked) w = tm.due;
     const host = this.vm.host?.nextWake?.();
     if (host !== undefined && host < w) w = host;
     return w;
@@ -57,6 +64,7 @@ export class Scheduler {
   /** Wake parked threads whose condition holds or whose timeout passed. Returns true if any woke. */
   wakeBlocked() {
     const now = this.vm.clock.now();
+    this.checkedAt = now;
     let any = false;
     for (const t of this.threads) {
       if (t.state !== TS.BLOCKED || !t.wait) continue;
