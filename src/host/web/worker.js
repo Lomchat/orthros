@@ -4,7 +4,7 @@
 import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin } from '../../vfs/vfs.js';
-import { HttpBackend } from '../../vfs/http-backend.js';
+import { HttpBackend, BLOCK } from '../../vfs/http-backend.js';
 import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
@@ -20,6 +20,8 @@ let profileFilesRestored = 0, profileListing = []; // (the listing goes to the p
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
+/** (?netlog=1: each game file read over the network is logged with the rank of its block in the learned list) */
+const learnedRank = new Map();
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
@@ -124,13 +126,14 @@ async function start(m) {
   if (!store && m.opts.memPrefetch) store = new MemBlockStore(1536 * 1048576); // (harness: prefetch measured without a persistent profile)
   if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
   if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store: a stored block did not read back as written, fetched again: ${key}`); };
-  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
+  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${learnedRank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${prefetch.k ?? '-'}`) : null, onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
   gameStore = store; gameFilesStats = gameFiles.stats;
   // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
   // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
   if (store && m.opts.prefetch && !m.opts.offline) {
     fetch(`/api/prefetch/${encodeURIComponent(manifestName)}`).then((r) => (r.ok ? r.json() : [])).then((list) => {
       prefetch.total = list.length; prefetch.t0 = performance.now();
+      if (m.opts.netLog) list.forEach(([p, b], i) => learnedRank.set(`${p}#${b}`, i));
       if (list.length) log('file', `prefetch: ${list.length} blocks learned from earlier sessions`);
       return gameFiles.prefetch(list, prefetch, () => stopped).then(() => log('file', `prefetch: ${prefetch.done ? 'done' : 'stopped'}, ${prefetch.blocks} blocks (${Math.round(prefetch.bytes / 1048576)} MB) downloaded in ${((performance.now() - prefetch.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
     }).catch(() => {});

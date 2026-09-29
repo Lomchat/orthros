@@ -118,7 +118,7 @@ export class HttpBackend {
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     for (let k = 0; k < list.length; k++) {
       if (stop() || store.failed) return;
-      const [p, b] = list[k];
+      const [p, b] = list[k]; progress.k = k;
       const r = this.lookup(p); if (!r || !r.file) continue;
       const size = r.file.size, mtime = r.file.mtime ?? 0, key = (i) => `${r.path}#${size}#${mtime}#${i}`;
       if (b * BLOCK >= size || store.map.has(key(b))) continue;
@@ -189,7 +189,7 @@ export class HttpBackend {
       }
       if (!problem) {
         this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms;
-        this.onFetch?.({ url, start, end, ms });
+        this.onFetch?.({ url, path, start, end, ms });
         return data;
       }
       this.stats.retries = (this.stats.retries ?? 0) + 1;
@@ -325,7 +325,7 @@ export class HttpBackend {
       if (data.length !== end - start) return null;
       const ms = performance.now() - t0;
       this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms; this.stats.asyncReads = (this.stats.asyncReads ?? 0) + 1;
-      this.onFetch?.({ url, start, end, ms });
+      this.onFetch?.({ url, path, start, end, ms, async: true });
       return data;
     } catch { return null; } finally { this.fgPending--; this.lastSyncFetchAt = performance.now(); }
   }
