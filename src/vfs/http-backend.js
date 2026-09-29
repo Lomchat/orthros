@@ -203,7 +203,8 @@ export class HttpBackend {
     const data = this.fetchRange(path, start, end);
     for (let i = 0; i < n; i++) this.installBlock(path, index + i, data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)), skey(index + i));
     this.evict();
-    return this.cache.get(`${path}#${index}`);
+    // (the block itself, not a cache lookup: a cache smaller than the read-ahead has already evicted it)
+    return data.subarray(0, Math.min(data.length, BLOCK));
   }
   /** A whole block arrived: memory cache, persistent store; its pieces and its background request are dropped. */
   installBlock(path, index, bytes, skey) {
