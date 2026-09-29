@@ -159,14 +159,19 @@ test('SMC: 16-byte store crossing into the translated page from the page before'
   assert.equal(EI.run(end), EXIT.HALT);
   const r = EJ.run(end);
   assert.equal(r, EXIT.SMC, 'a store crossing into a translated page must be detected');
-  assert.equal(EJ.mem.read32(EJ.cpu.base + ST.EXIT_ARG), CODE + 7, 'EXIT_ARG = last byte written (the page to invalidate)');
+  // the range the host invalidates, EXIT_ARG + (EXIT_LEN or 16 bytes), covers the bytes written on the code page
+  const written = (E) => { const a = E.mem.read32(E.cpu.base + ST.EXIT_ARG), n = E.mem.read32(E.cpu.base + ST.EXIT_LEN) || 16; return [a, a + n]; };
+  let [lo, hi] = written(EJ);
+  assert.ok(lo <= CODE && hi >= CODE + 8, `invalidated range [${lo.toString(16)}, ${hi.toString(16)}) covers CODE..CODE+7`);
+  assert.equal(lo, CODE - 8, 'EXIT_ARG = the store address');
   assert.equal(EJ.cpu.eip, CODE + 3);
   // same with MASKMOVDQU (mask = all bytes) and the aligned forms, which cannot cross: page-aligned target, plain store
   const mm = '660ff7c1' + '90'.repeat(8) + '8b4808';
   const end2 = load(mm, (mem, cpu) => { cpu.edi = CODE - 8; cpu.eax = CODE - 8; mem.writeBytes(cpu.xmmAddr(1), new Uint8Array(16).fill(0x80)); mem.writeBytes(cpu.xmmAddr(0), bytesOf('00000000000000009090909090909090')); });
   EJ.cpu.eip = CODE;
   assert.equal(EJ.run(end2), EXIT.SMC, 'maskmovdqu crossing into the translated page');
-  assert.equal(EJ.mem.read32(EJ.cpu.base + ST.EXIT_ARG), CODE + 7);
+  [lo, hi] = written(EJ);
+  assert.ok(lo <= CODE && hi >= CODE + 8, 'maskmovdqu: the invalidated range covers the code bytes written');
 });
 
 // ---------------------------------------------------------------- handlers without oracle coverage

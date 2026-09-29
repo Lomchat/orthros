@@ -1,7 +1,7 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
@@ -204,9 +204,10 @@ export class Jit {
       this.byEntry.set(eip, region);
       for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     }
-    // mark code pages for SMC detection
+    // mark code pages for SMC detection (and the page before each: a store crossing into a code page, see smcCheck)
     for (const p of region.pages) {
-      this.mem.u8[SMC_MAP_BASE + p] = 1;
+      this.mem.u8[SMC_MAP_BASE + p] = (this.mem.u8[SMC_MAP_BASE + p] & SMC_NEXT) | SMC_CODE;
+      if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
@@ -306,15 +307,15 @@ export class Jit {
   watchWrites(addr, len, label, max = 64) {
     this.watches ??= new Map();
     for (let p = addr >>> 12; p <= (addr + len - 1) >>> 12; p++) {
-      if (this.mem.u8[SMC_MAP_BASE + p]) continue;
-      this.mem.u8[SMC_MAP_BASE + p] = 2;
+      if (this.mem.u8[SMC_MAP_BASE + p] & (SMC_CODE | SMC_WATCH)) continue;
+      this.mem.u8[SMC_MAP_BASE + p] |= SMC_WATCH;
       this.watches.set(p, { label, hits: 0, max, sites: new Map(), lo: addr >>> 0, hi: (addr + len) >>> 0 });
     }
   }
   unwatch(label) {
     if (!this.watches) return [];
     const report = [];
-    for (const [p, w] of this.watches) if (w.label === label) { if (this.mem.u8[SMC_MAP_BASE + p] === 2) this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); report.push(...w.sites); }
+    for (const [p, w] of this.watches) if (w.label === label) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); report.push(...w.sites); }
     return report;
   }
   /** SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). */
@@ -328,7 +329,7 @@ export class Jit {
     let key = eip;
     if (thread) { const sp = thread.cpu.esp; key = `t${thread.id}:` + [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }
     w.sites.set(key, (w.sites.get(key) ?? 0) + 1);
-    if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] = 0; this.watches.delete(p); this.watchDone?.(w); }
+    if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); this.watchDone?.(w); }
     return true;
   }
 
@@ -355,7 +356,7 @@ export class Jit {
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
-      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] = 0; } }
+      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= SMC_NEXT; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
     }
     this.table.set(r.fnIdx, null);
     this.byFn.delete(r.fnIdx);

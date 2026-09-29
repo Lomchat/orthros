@@ -122,14 +122,11 @@ function rsqrtLowPair(E) {
 
 // ------------------------------------------------------------------ 16-byte moves
 
-function mov16(unaligned) {
-  return (E, insn) => {
-    const [d, s] = insn.ops;
-    storeVec(E, d, insn, 16, () => loadVec(E, s, 16), unaligned);
-  };
-}
-for (const k of ['MOVAPS', 'MOVAPD', 'MOVDQA', 'LDDQU', 'MOVNTPS', 'MOVNTPD', 'MOVNTDQ']) HANDLERS[OP[k]] = mov16(false);
-for (const k of ['MOVUPS', 'MOVUPD', 'MOVDQU']) HANDLERS[OP[k]] = mov16(true); // may straddle two pages: end-page SMC check
+const mov16 = (E, insn) => {
+  const [d, s] = insn.ops;
+  storeVec(E, d, insn, 16, () => loadVec(E, s, 16)); // (an unaligned store straddling two pages: see Emitter.smcCheck)
+};
+for (const k of ['MOVAPS', 'MOVAPD', 'MOVDQA', 'LDDQU', 'MOVNTPS', 'MOVNTPD', 'MOVNTDQ', 'MOVUPS', 'MOVUPD', 'MOVDQU']) HANDLERS[OP[k]] = mov16;
 
 // MOVSS / MOVSD: mem dest -> 4/8-byte store; xmm <- mem zero-extends; xmm <- xmm merges lane 0
 function movScalar(n) {

@@ -25,7 +25,11 @@ export const MUTEX_STATES = 0x7fc80000, MUTEX_STATE_SIZE = 16, MUTEX_STATE_COUNT
 // (the user address space ends at JIT_HASH_BASE)
 export const JIT_HASH_BITS = 20;
 export const JIT_HASH_BASE = 0x7fb00000 - (16 << JIT_HASH_BITS);
+// SMC map: one byte per 4 KB page, tested by translated code after its stores (Emitter.smcCheck): SMC_CODE the page
+// holds translated code, SMC_WATCH a write watch (debugging), SMC_NEXT the next page holds translated code (a store
+// ending past the last byte of this page writes it: found without a second lookup on the store's hot path)
 export const SMC_MAP_BASE = 0x7fe00000;
+export const SMC_CODE = 1, SMC_WATCH = 2, SMC_NEXT = 4;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
 // FPU-mode versions of a region: for each table index, the table index + 1 of the next version of the same region
 // (specialized for another x87 mode), 0 for none (see Jit: EXIT_FPUMODE)
