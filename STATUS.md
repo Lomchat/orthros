@@ -675,6 +675,23 @@
   neutre en partie (c'est le fil principal du jeu qui lit).
 - Le chargement d'une carte reste long sur un réseau lent la première fois (~20 Mo lus derrière l'écran de chargement).
 
+## 30 septembre : chargement d'une carte d'escarmouche (BFME2)
+- Profil du chargement (clic « Lancer » → premières images en partie, ~40 s headless) : lectures de fichiers ~1/3
+  (70 Mo en ~400 requêtes HTTP locales, le thread principal attend ~13,5 s dans ReadFile — chez le joueur ces données
+  viennent de l'OPFS), code invité ~31 %, dessin de l'écran de chargement ~20 % (uniform4fv / getProgramParameter :
+  contre-pression de SwiftShader, artefact headless), D3DX (conversions de texels, encodage DXT des mips) ~10 %, et
+  ~15 % d'une **boucle d'attente active** de l'ordonnanceur.
+- Corrigé : un timer de fenêtre échu dont le thread ne relève pas ses messages restait « prochain réveil » : la boucle
+  idle tournait sans dormir ni rendre la main à la boucle d'événements. `nextWake` ignore désormais les timers déjà
+  échus au dernier passage de `wakeBlocked` (test `sched-nextwake`). D3DX : conversions par tables / mots 32 bits,
+  encodeur DXT sur mots (mêmes octets que la référence, tests).
+- Mesure (3 A/B alternés, a78a967 vs ce lot, scénario bfme2-skirmish-sync ancré sur une image du menu) : temps CPU du
+  worker pendant le chargement 37,2 / 35,5 / 34,1 s → 24,6 / 24,6 / 24,6 s (−31 %) ; durée murale inchangée
+  (41,3 / 39,3 / 37,3 → 41,4 / 40,4 / 40,3 s, bruit de la machine partagée) : le chemin critique headless est la
+  lecture des fichiers + le calcul, l'attente active ne faisait que brûler un cœur.
+- Constaté, non corrigé : les timers attendables (`SetWaitableTimer`) ne passent jamais à l'état signalé et restent
+  dans `proc.timers` après échéance.
+
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
   patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
