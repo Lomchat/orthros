@@ -839,11 +839,11 @@ HANDLERS[OP.FLDCW] = (E, insn) => {
   c.get(L_TV).i32(0xf00).and().set(L_FPC);
   E.fpcStatic = null; // unknown from here on (tested at run time)
 };
-HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.ea(insn.ops[0]); c.get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); };
+HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); E.smcCheck(insn, 2); };
 HANDLERS[OP.FNSTSW] = (E, insn) => {
   const c = E.c; const o = insn.ops[0];
   c.get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
-  if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.ea(o); c.get(L_TV).i32store16(0); }
+  if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.eaTo(o); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); }
 };
 HANDLERS[OP.FNCLEX] = (E) => { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x80ff).and().i32store16(ST.FPU_SW); };
 HANDLERS[OP.FCMOVCC] = (E, insn) => {

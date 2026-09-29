@@ -451,6 +451,6 @@ for (const k of ['MOVSS', 'ADDSS', 'SUBSS', 'MULSS', 'DIVSS', 'MINSS', 'MAXSS', 
 // ------------------------------------------------------------------ MXCSR
 
 HANDLERS[OP.LDMXCSR] = (E, insn) => { const c = E.c; c.get(L_STATE); E.ea(insn.ops[0]); c.i32load(0, 0).i32(0xffff).and().i32store(ST.MXCSR); };
-HANDLERS[OP.STMXCSR] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load(ST.MXCSR).i32store(0, 0); E.smcCheck(insn); };
+HANDLERS[OP.STMXCSR] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load(ST.MXCSR).i32store(0, 0); E.smcCheck(insn, 4); }; // (the decoder gives m32 no size)
 
 export {};
