@@ -176,6 +176,23 @@ const TO_RGBA = {
 };
 const TO_RGBA_DEFAULT = [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }];
 
+/**
+ * The RGBA8 texel (as a little-endian word) of every value of a 1- or 2-byte format, built once per format from its
+ * TO_RGBA conversion itself (so a table lookup gives exactly what the per-texel function computes): one load per
+ * texel instead of a call, shifts and divisions — textures in 16-bit formats are converted while maps load.
+ */
+const RGBA_LUT = new Map();
+function rgbaLut(fmt, bpp, texel) {
+  let lut = RGBA_LUT.get(fmt);
+  if (!lut) {
+    const n = bpp === 1 ? 256 : 65536, src = new Uint8Array(2), px = new Uint8Array(4), px32 = new Uint32Array(px.buffer);
+    lut = new Uint32Array(n);
+    for (let v = 0; v < n; v++) { src[0] = v & 255; src[1] = v >> 8; texel(src, 0, px, 0); lut[v] = px32[0]; }
+    RGBA_LUT.set(fmt, lut);
+  }
+  return lut;
+}
+
 function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
   const out = new Uint8Array(w * h * 4);
   if ((fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && ((u8.byteOffset | pitch) & 3) === 0) { // (whole texels: B,G,R,A -> R,G,B,A on 32-bit lanes)
@@ -183,7 +200,19 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
     for (let y = 0; y < h; y++) for (let x = 0, si = (y * pitch) >> 2, o = y * w; x < w; x++, si++, o++) { const v = src[si]; dst[o] = ((v & 0xff00ff00) | ((v & 0xff) << 16) | ((v >>> 16) & 0xff) | alpha) >>> 0; }
     return out;
   }
-  const [bpp, texel] = TO_RGBA[fmt] ?? TO_RGBA_DEFAULT; // (one loop per format: the conversion is chosen once, not per texel)
+  if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) { // (unaligned data: bytes in, whole texels out)
+    const dst = new Uint32Array(out.buffer), alpha = fmt === FMT.X8R8G8B8;
+    for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++, s += 4, o++) dst[o] = (u8[s + 2] | (u8[s + 1] << 8) | (u8[s] << 16) | ((alpha ? 255 : u8[s + 3]) << 24)) >>> 0;
+    return out;
+  }
+  const conv = TO_RGBA[fmt];
+  if (conv && conv[0] <= 2) { // (1- and 2-byte formats: a table of every texel value; `| 0`: a byte past the data reads as 0, as there)
+    const lut = rgbaLut(fmt, conv[0], conv[1]), dst = new Uint32Array(out.buffer);
+    if (conv[0] === 1) for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++, s++, o++) dst[o] = lut[u8[s] | 0];
+    else for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++, s += 2, o++) dst[o] = lut[u8[s] | (u8[s + 1] << 8)];
+    return out;
+  }
+  const [bpp, texel] = conv ?? TO_RGBA_DEFAULT; // (one loop per format: the conversion is chosen once, not per texel)
   for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w * 4; x < w; x++, s += bpp, o += 4) texel(u8, s, out, o);
   return out;
 }
@@ -192,6 +221,49 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
 export function fromRgba(fmt, rgba, w, h) {
   if (isDxt(fmt)) return encodeDxt(fmt, rgba, w, h);
   const pitch = surfacePitch(fmt, w), out = new Uint8Array(surfaceBytes(fmt, w, h));
+  if (w <= 0 || h <= 0) return out;
+  const fast = fromRgbaFast(fmt, rgba, w, h, out);
+  if (fast !== undefined) return fast;
+  return fromRgbaTexels(fmt, rgba, w, h, pitch, out);
+}
+
+/** channel quantizations of fromRgba (q(v, bits) = round(v * (2^bits - 1) / 255)) for every 8-bit value */
+const quantTable = (bits) => Uint8Array.from({ length: 256 }, (_, v) => Math.round(v * ((1 << bits) - 1) / 255));
+const Q4 = quantTable(4), Q5 = quantTable(5), Q6 = quantTable(6);
+/**
+ * fromRgba's common formats, one loop each (whole texels read and written as words; channel quantizations from
+ * tables): the same bytes as the per-texel conversion below, which D3DXFilterTexture and D3DXLoadSurface* ran for
+ * every texel of every mip level while maps load. undefined: not one of these formats.
+ */
+function fromRgbaFast(fmt, rgba, w, h, out) {
+  const n = w * h;
+  if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8 || fmt === FMT.A8B8G8R8 || fmt === 33) {
+    const d32 = new Uint32Array(out.buffer, 0, n), opaque = fmt === FMT.X8R8G8B8 || fmt === 33 ? 0xff000000 : 0, swap = fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8;
+    if ((rgba.byteOffset & 3) === 0 && rgba.length >= 4 * n) {
+      const s32 = new Uint32Array(rgba.buffer, rgba.byteOffset, n);
+      if (swap) for (let i = 0; i < n; i++) { const v = s32[i]; d32[i] = ((v & 0xff00ff00) | ((v >>> 16) & 0xff) | ((v & 0xff) << 16) | opaque) >>> 0; }
+      else for (let i = 0; i < n; i++) d32[i] = (s32[i] | opaque) >>> 0;
+    } else for (let i = 0, s = 0; i < n; i++, s += 4) {
+      const r = rgba[s], g = rgba[s + 1], b = rgba[s + 2], a = rgba[s + 3];
+      d32[i] = ((swap ? b | (r << 16) : r | (b << 16)) | (g << 8) | (a << 24) | opaque) >>> 0;
+    }
+    return out;
+  }
+  if (fmt === FMT.R5G6B5 || fmt === FMT.X1R5G5B5 || fmt === FMT.A1R5G5B5 || fmt === FMT.A4R4G4B4 || fmt === FMT.X4R4G4B4) {
+    const d16 = new Uint16Array(out.buffer, 0, n);
+    for (let i = 0, s = 0; i < n; i++, s += 4) {
+      const r = rgba[s], g = rgba[s + 1], b = rgba[s + 2], a = rgba[s + 3];
+      d16[i] = fmt === FMT.R5G6B5 ? (Q5[r] << 11) | (Q6[g] << 5) | Q5[b]
+        : fmt === FMT.X1R5G5B5 || fmt === FMT.A1R5G5B5 ? ((fmt === FMT.X1R5G5B5 || a >= 128) ? 0x8000 : 0) | (Q5[r] << 10) | (Q5[g] << 5) | Q5[b]
+          : ((fmt === FMT.X4R4G4B4 ? 15 : Q4[a]) << 12) | (Q4[r] << 8) | (Q4[g] << 4) | Q4[b];
+    }
+    return out;
+  }
+  if (fmt === FMT.A8) { for (let i = 0; i < n; i++) out[i] = rgba[4 * i + 3]; return out; }
+  return undefined;
+}
+
+function fromRgbaTexels(fmt, rgba, w, h, pitch, out) {
   const q = (v, bits) => Math.round(v * ((1 << bits) - 1) / 255);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = (y * w + x) * 4, r = rgba[i], g = rgba[i + 1], b = rgba[i + 2], a = rgba[i + 3];
@@ -258,21 +330,27 @@ export { isDxt };
 
 // ---------------------------------------------------------------- block compression (DXT1/3/5 encoder)
 const to565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-/** texel indexes of an alpha block, its palette: scratch */
-const IDX = new Uint8Array(16), APAL = new Float64Array(8);
+/** an alpha block: its texel indexes, its levels in scale order (scratch); the palette index at each scale position */
+const IDX = new Uint8Array(16), APOS = new Float64Array(8), POS_INDEX = Uint8Array.of(0, 2, 3, 4, 5, 6, 7, 1);
 /**
- * One color block (8 bytes) for 16 RGBA texels; `transparent`: DXT1 3-color mode for texels with alpha < 128. Endpoints:
- * the texels of lowest and highest luminance; each texel takes the nearest palette entry (the first of equals).
- * Written without an object per block: mip levels of block-compressed textures are re-encoded while maps load.
+ * One color block (8 bytes) for 16 RGBA texels (px32: one little-endian word R,G,B,A per texel); `transparent`: DXT1
+ * 3-color mode for texels with alpha < 128. Endpoints: the texels of lowest and highest luminance; each texel takes the
+ * nearest palette entry (the first of equals). Written without an object per block: mip levels of block-compressed
+ * textures are re-encoded while maps load. A block of 16 equal texels (flat areas, small mip levels) has its index
+ * computed once.
  */
-function colorBlock(px, out, o, transparent) {
-  let minL = Infinity, maxL = -Infinity, lo = 0, hi = 0, anyTransparent = false;
+function colorBlock(px32, out, o, transparent) {
+  let minL = 0x7fffffff, maxL = -1, lo = 0, hi = 0, anyTransparent = false, uniform = true; // (luminances are 0..1785: small integers)
+  const first = px32[0];
   for (let i = 0; i < 16; i++) {
-    if (transparent && px[4 * i + 3] < 128) { anyTransparent = true; continue; }
-    const l = px[4 * i] * 2 + px[4 * i + 1] * 4 + px[4 * i + 2];
+    const v = px32[i];
+    if (v !== first) uniform = false;
+    if (transparent && (v >>> 24) < 128) { anyTransparent = true; continue; }
+    const l = (v & 255) * 2 + ((v >>> 8) & 255) * 4 + ((v >>> 16) & 255);
     if (l < minL) { minL = l; lo = i; } if (l > maxL) { maxL = l; hi = i; }
   }
-  let c0 = to565(px[4 * hi], px[4 * hi + 1], px[4 * hi + 2]), c1 = to565(px[4 * lo], px[4 * lo + 1], px[4 * lo + 2]);
+  const vh = px32[hi], vl = px32[lo];
+  let c0 = to565(vh & 255, (vh >>> 8) & 255, (vh >>> 16) & 255), c1 = to565(vl & 255, (vl >>> 8) & 255, (vl >>> 16) & 255);
   if (anyTransparent) { if (c0 > c1) { const t = c0; c0 = c1; c1 = t; } } // (c0 <= c1: 3 colors + transparent)
   else { if (c0 < c1) { const t = c0; c0 = c1; c1 = t; } if (c0 === c1) { if (c1 > 0) c1--; else c0++; } }
   const ar = ((c0 >> 11) & 31) * 255 / 31, ag = ((c0 >> 5) & 63) * 255 / 63, ab = (c0 & 31) * 255 / 31;
@@ -284,29 +362,44 @@ function colorBlock(px, out, o, transparent) {
   const hi0 = anyTransparent ? dd * 0.75 : dd * (5 / 6), mid = anyTransparent ? dd * 0.25 : dd * 0.5, low = dd * (1 / 6);
   let idx = 0;
   for (let i = 15; i >= 0; i--) {
+    const v = px32[i];
     let best = 0;
-    if (anyTransparent && px[4 * i + 3] < 128) best = 3;
+    if (anyTransparent && (v >>> 24) < 128) best = 3;
     else if (dd > 0) {
-      const n = (px[4 * i] - br) * dr + (px[4 * i + 1] - bg) * dg + (px[4 * i + 2] - bb) * db;
+      const n = ((v & 255) - br) * dr + (((v >>> 8) & 255) - bg) * dg + (((v >>> 16) & 255) - bb) * db;
       best = anyTransparent ? (n >= hi0 ? 0 : n > mid ? 2 : 1) : (n >= hi0 ? 0 : n >= mid ? 2 : n > low ? 3 : 1);
     }
+    if (uniform) { idx = best * 0x55555555; break; } // (every texel the same: the same index 16 times)
     idx = (idx << 2) | best;
   }
   out[o] = c0 & 255; out[o + 1] = c0 >> 8; out[o + 2] = c1 & 255; out[o + 3] = c1 >> 8;
   out[o + 4] = idx & 255; out[o + 5] = (idx >>> 8) & 255; out[o + 6] = (idx >>> 16) & 255; out[o + 7] = (idx >>> 24) & 255;
 }
-/** One DXT4/5 interpolated alpha block (8 bytes): endpoints the highest and lowest alpha, 8-level mode. */
-function alphaBlock(px, out, o) {
+/**
+ * One DXT4/5 interpolated alpha block (8 bytes): endpoints the highest and lowest alpha, 8-level mode; each texel takes
+ * the nearest level (the lowest index of equals). The levels decrease strictly from a0 to a1 (index order 0, 2..7, 1),
+ * so the nearest one is at the texel's rounded position on that scale or next to it: three distances per texel instead
+ * of eight (the same choice, ties included — tests/dxt-encode.test.js checks every alpha of every endpoint pair), and
+ * a texel with the alpha of the one before it reuses its choice.
+ */
+function alphaBlock(px32, out, o) {
   let a0 = 0, a1 = 255;
-  for (let i = 0; i < 16; i++) { const a = px[4 * i + 3]; if (a > a0) a0 = a; if (a < a1) a1 = a; }
+  for (let i = 0; i < 16; i++) { const a = px32[i] >>> 24; if (a > a0) a0 = a; if (a < a1) a1 = a; }
   if (a0 === a1) { if (a1 > 0) a1--; else a0++; }
-  // the 8-level palette once per block (entry k + 1 = ((7 - k) a0 + k a1) / 7), then the nearest entry per texel
-  APAL[0] = a0; APAL[1] = a1; for (let k = 1; k < 7; k++) APAL[k + 1] = ((7 - k) * a0 + k * a1) / 7;
+  // the levels in their order on the scale (position j = ((7 - j) a0 + j a1) / 7: a0 at 0, a1 at 7), once per block
+  for (let j = 0; j < 8; j++) APOS[j] = ((7 - j) * a0 + j * a1) / 7;
+  const scale = 7 / (a0 - a1);
+  let prevA = -1, prevBest = 0;
   for (let i = 0; i < 16; i++) {
-    const a = px[4 * i + 3];
-    let best = 0, bd = Math.abs(a0 - a);
-    for (let k = 1; k < 8; k++) { const d = Math.abs(APAL[k] - a); if (d < bd) { bd = d; best = k; } }
-    IDX[i] = best;
+    const a = px32[i] >>> 24;
+    if (a !== prevA) {
+      let j = Math.round((a0 - a) * scale); if (j < 0) j = 0; else if (j > 7) j = 7;
+      let bp = j, bd = Math.abs(APOS[j] - a);
+      if (j > 0) { const d = Math.abs(APOS[j - 1] - a); if (d < bd || (d === bd && POS_INDEX[j - 1] < POS_INDEX[bp])) { bd = d; bp = j - 1; } }
+      if (j < 7) { const d = Math.abs(APOS[j + 1] - a); if (d < bd || (d === bd && POS_INDEX[j + 1] < POS_INDEX[bp])) { bd = d; bp = j + 1; } }
+      prevA = a; prevBest = POS_INDEX[bp];
+    }
+    IDX[i] = prevBest;
   }
   let lo = 0, hi = 0; // (3 bits per texel, texel 0 lowest: two 24-bit halves)
   for (let i = 7; i >= 0; i--) { lo = lo * 8 + IDX[i]; hi = hi * 8 + IDX[i + 8]; }
@@ -319,16 +412,16 @@ export function encodeDxt(fmt, rgba, w, h) {
   const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2), unit = fmt === FMT.DXT1 ? 8 : 16, out = new Uint8Array(bw * bh * unit);
   const px = new Uint8Array(64), px32 = new Uint32Array(px.buffer);
   // (blocks inside the image: their 16 texels copied as 32-bit words; edge blocks repeat the last row / column)
-  const src32 = (rgba.byteOffset & 3) === 0 ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
+  const src32 = (rgba.byteOffset & 3) === 0 && rgba.length >= 4 * w * h ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
   for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
     if (src32 && bx * 4 + 3 < w && by * 4 + 3 < h) {
       for (let y = 0, s = by * 4 * w + bx * 4; y < 16; y += 4, s += w) { px32[y] = src32[s]; px32[y + 1] = src32[s + 1]; px32[y + 2] = src32[s + 2]; px32[y + 3] = src32[s + 3]; }
     } else for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const sx = Math.min(w - 1, bx * 4 + x), sy = Math.min(h - 1, by * 4 + y), s = (sy * w + sx) * 4, d = (y * 4 + x) * 4; px[d] = rgba[s]; px[d + 1] = rgba[s + 1]; px[d + 2] = rgba[s + 2]; px[d + 3] = rgba[s + 3]; }
     const o = (by * bw + bx) * unit;
-    if (fmt === FMT.DXT1) { colorBlock(px, out, o, true); continue; }
+    if (fmt === FMT.DXT1) { colorBlock(px32, out, o, true); continue; }
     if (fmt === FMT.DXT2 || fmt === FMT.DXT3) { for (let i = 0; i < 16; i += 2) out[o + (i >> 1)] = (px[4 * i + 3] >> 4) | ((px[4 * i + 7] >> 4) << 4); }
-    else alphaBlock(px, out, o); // DXT4/5: interpolated alpha
-    colorBlock(px, out, o + 8, false);
+    else alphaBlock(px32, out, o); // DXT4/5: interpolated alpha
+    colorBlock(px32, out, o + 8, false);
   }
   return out;
 }
