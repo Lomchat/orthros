@@ -26,6 +26,8 @@ export class Scheduler {
     this.rr = 0;
     this.deadlockLimit = 60000; // ms of virtual/real time with nothing runnable and no timers
     this.idleSince = -1;
+    /** nested waits in progress (block() on top of a JavaScript frame): the event loop cannot run until they end */
+    this.nestedWaits = 0;
   }
 
   get threads() { return this.vm.proc.threads; }
@@ -117,6 +119,12 @@ export class Scheduler {
     if (clock.now() >= deadline) return false;
     if (this.vm.canUnwind(thread)) throw new WaitUnwind({ cond, deadline, reason, claim });
     // Nested context: run the others on top of this JS frame until the condition holds.
+    this.nestedWaits++;
+    try { return this.nestedWait(thread, cond, deadline, reason, claim); } finally { this.nestedWaits--; }
+  }
+
+  nestedWait(thread, cond, deadline, reason, claim) {
+    const clock = this.vm.clock;
     let idleSince = -1;
     for (;;) {
       if (cond()) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; thread.wakeValue = claim ? claim(false) : undefined; return true; }
