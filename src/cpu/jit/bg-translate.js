@@ -36,7 +36,7 @@ function translateBatch(items) {
       const t = translateRegion(mem, it.eip, o);
       if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks))) continue; // (the code changed meanwhile)
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
-      r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls };
+      r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
     } catch { /* undecodable: left to the emulator */ }
   }
