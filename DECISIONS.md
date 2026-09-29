@@ -336,3 +336,16 @@ court : les jeux en font le pseudonyme) et gethostbyname renvoyant l'adresse du 
 sur le serveur sont sur le même réseau (séparer des réseaux privés plus tard : un paramètre de salle). Vérifié : BFME2 et
 BFME1, deux joueurs se voient dans le salon, l'un crée une partie, l'autre la voit, la rejoint, la carte charge des deux
 côtés et la partie avance en synchronie.
+
+## D062 — 2026-09-30 — Encodage DXT de D3DX réparti sur des workers d'aide
+Au chargement d'une carte BFME2, D3DX encode ~1 225 images 256×256 en DXT1 (plus leurs mips) : ~2,6 s de CPU sur le
+fil de l'émulateur. Les fonctions D3DX sont synchrones pour le jeu. **Décision** : un groupe de workers d'aide (jusqu'à
+4, `hardwareConcurrency - 2`, `?dxthelpers=N`) ; pour une image d'au moins 1 024 blocs (≤ 2048×2048), le fil de
+l'émulateur copie les pixels dans un tampon partagé, publie la tâche (format, taille, nombre de parts) dans des mots de
+contrôle et incrémente un compteur de tâches ; les aides dorment dans `Atomics.wait` sur ce compteur (pas de message par
+tâche), encodent chacune une bande de rangées de blocs, et répondent toutes à chaque tâche (une aide sans part répond
+aussi : aucune ne prend de retard sur le compteur). L'émulateur encode la dernière bande puis attend
+(`Atomics.wait`, autorisé dans un worker). Même fonction d'encodage de blocs partout : octets identiques au chemin
+séquentiel. Aides muettes (2 s, 10 s pour la première tâche) : le groupe se coupe et l'encodage redevient séquentiel.
+Mesure : bande d'encodage « whole 256×256 → DXT1 » 2 031 → 1 232-1 280 ms sur un chargement (machine partagée chargée).
+
