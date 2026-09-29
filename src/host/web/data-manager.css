@@ -90,7 +90,6 @@
 .dm-account-delete strong { font: 700 18px Georgia, serif; color: #9f493f; }
 .dm-account-delete p { color: #6d7066; font-size: 12px; }
 .dm-status { flex: none; min-height: 33px; padding: 8px 35px; border-top: 1px solid #d8ded8; background: #edf0e9; color: #385953; font-size: 12px; }
-.dm-entry { margin-left: 10px; color: #f4dfbd !important; background: #2a313a !important; border-color: #6c654f !important; white-space: nowrap; }
 .dm-bar-entry { margin-right: 8px; white-space: nowrap; background: #354044 !important; border-color: #627372 !important; color: #f5ebd8 !important; }
 @media (max-width: 720px) {
   .dm-dialog { width: 100vw; height: 100dvh; border-radius: 0; }
@@ -106,7 +105,7 @@
   .dm-metric:last-child { grid-column: span 2; }
   .dm-cloud-controls { align-items: flex-start; flex-direction: column; }
   .dm-status { padding-inline: 18px; }
-  .dm-entry, .dm-bar-entry { font-size: 11px; }
+  .dm-bar-entry { font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dm-button { transition: none; }
@@ -126,19 +125,6 @@
   --dm-danger: #ff7a7a;
 }
 html, body { background: var(--dm-ink); color: var(--dm-fg); }
-#menu { background: radial-gradient(ellipse at 75% -15%, #1e2740 0%, #0b101c 48%, #03050c 100%); }
-#menu h1 { color: var(--dm-fg) !important; }
-#menu header span, #menu .opts { color: var(--dm-muted); }
-#menu .card { background: var(--dm-raised); border-color: var(--dm-border); }
-#menu .card:hover, #menu .card:focus-visible { border-color: var(--dm-ember); box-shadow: 0 10px 30px #0008, 0 0 0 1px #f8901f66; }
-#menu .card .cover { background-color: var(--dm-surface); }
-#menu .card .cover.none { background-image: linear-gradient(135deg, #1e2740, #0b101c); color: #6a7290; }
-#menu .card h3 { color: var(--dm-fg); }
-#menu .card p { color: var(--dm-muted); }
-#menu .card .meta { color: #6a7290; }
-#menu .card .play { background: var(--dm-ember); color: #1a0f05; }
-#menu .card:hover .play, #menu .card:focus-visible .play { background: #ffb56b; }
-#menu .card .badge { color: #ffb56b; background: #070a14dd; }
 #topbar { background: linear-gradient(180deg, #0e1424f5, #070a14e0); border-bottom-color: #2b3347; }
 #topbar .brand .name { color: var(--dm-fg); }
 #topbar .brand .game, #topbar .pill, #topbar .perf .unit, #topbar .perf .sub { color: var(--dm-muted); }
@@ -213,8 +199,8 @@ html, body { background: var(--dm-ink); color: var(--dm-fg); }
 .dm-account-delete strong { color: var(--dm-danger); }
 .dm-account-delete p { color: var(--dm-muted); }
 .dm-status { background: #0e1424; color: #a9cdea; border-color: #2b3347; }
-#menu .opts .dm-entry, #topbar .dm-bar-entry { background: #f8901f !important; color: #1a0f05 !important; border-color: #f8901f !important; }
-#menu .opts .dm-entry:hover, #topbar .dm-bar-entry:hover { background: #ffb56b !important; }
+#topbar .dm-bar-entry { background: #f8901f !important; color: #1a0f05 !important; border-color: #f8901f !important; }
+#topbar .dm-bar-entry:hover { background: #ffb56b !important; }
 @media (max-width: 720px) {
   .dm-header h2 { margin-top: 26px; }
 }

@@ -430,6 +430,14 @@
   compte facultatif pour les copies en ligne. L'API des comptes utilise la base SQLite persistante de
   `/var/lib/private/orthros2/accounts`. Les jeux sont accessibles sans compte et les comptes de l'ancien site ne sont
   pas repris. Les menus emploient le bleu nuit et l'orange de l'ancien site.
+- **Écran d'accueil refait (2026-09-29)** : `src/host/web/home.js` + `home.css` + `embers.js`, montés par `main.js` (`mountHome`).
+  Palette tirée du logo (bleu nuit, yeux ambre, rouge sang, os) ; mot-symbole ORTHROS en pixel-art dessiné cellule par cellule
+  (SVG généré, sans police externe) ; le chien à deux têtes en grand, yeux qui pulsent et s'embrasent quand un jeu est survolé,
+  braises (canvas, arrêtées pour de bon au lancement d'un jeu : plus aucun `requestAnimationFrame` de l'accueil, mesuré) ;
+  bouton « Reprendre » (dernier jeu) ; cartes avec couverture, fond flouté qui suit le jeu survolé, navigation aux flèches par
+  position réelle ; états chargement / vide / erreur ; options (copie hors ligne, journal) dans un popover ⚙ ; FR/EN selon le
+  navigateur (`?lang=`, mémorisé). « Mes données » s'accroche à `[data-slot="data"]` (son dialogue reste en français ; le
+  chargement et l'en-tête de jeu restent en anglais — à traduire si besoin). Les règles `#menu` de `data-manager.css` ont été retirées.
 - Mesures des joueurs : `/var/lib/private/orthros2/telemetry/telemetry-<date>.jsonl` (échantillons ~0,5 s : fps, pire
   image, images > 33 / 50 ms, p99, MIPS, API/s, draws, Mo lus, état ; environnement navigateur / GPU en début de session).
 - Vérifié de bout en bout par l'URL publique (Chromium headless, profil vierge) : isolation cross-origin, lecture des

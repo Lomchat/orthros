@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#080c17">
 <title>Orthros</title>
+<link rel="icon" type="image/png" href="/src/host/web/orthros_logo.png">
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   #stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); display: flex; align-items: center; justify-content: center; }
@@ -17,7 +21,7 @@
     background: linear-gradient(180deg, rgba(16,17,22,.92), rgba(12,13,17,.78)); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(201,165,90,.22); box-shadow: 0 2px 14px rgba(0,0,0,.45); user-select: none; }
   #topbar .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
   #topbar .brand img { width: 30px; height: 30px; image-rendering: pixelated; filter: drop-shadow(0 0 6px rgba(255,90,40,.35)); }
-  #topbar .brand .name { font: 700 16px/1 system-ui, sans-serif; letter-spacing: 1.5px; color: #f1e3c0; text-transform: uppercase; }
+  #topbar .brand .name { font: 700 14px/1 var(--serif); letter-spacing: .3em; color: #f1e3c0; text-transform: uppercase; }
   #topbar .brand .sep { width: 1px; height: 20px; background: rgba(255,255,255,.14); }
   #topbar .brand .game { color: #b8bcc8; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #topbar .spacer { flex: 1; }
@@ -48,7 +52,7 @@
   #loader .head { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; }
   #loader .head img { width: 64px; height: 64px; image-rendering: pixelated; animation: breathe 2.4s ease-in-out infinite; filter: drop-shadow(0 0 10px rgba(255,90,40,.35)); }
   @keyframes breathe { 50% { transform: translateY(-3px) scale(1.04); filter: drop-shadow(0 0 16px rgba(255,90,40,.55)); } }
-  #loader .title { font: 700 22px/1.2 system-ui, sans-serif; color: #f2ead6; }
+  #loader .title { font: 700 24px/1.2 var(--serif); color: #f2ead6; }
   #loader .subtitle { font: 12px system-ui; color: #8a8f9c; margin-top: 4px; }
   #loader .bar { height: 10px; border-radius: 6px; background: rgba(255,255,255,.08); overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,.5); }
   #loader .fill { height: 100%; width: 0; border-radius: 6px; background: linear-gradient(90deg, #9c7a35, #e0bd6e); transition: width .45s ease-out; position: relative; }
@@ -66,30 +70,6 @@
   #loader li .v { font: 11.5px ui-monospace, monospace; color: #8a8f9c; }
   @keyframes spin { to { transform: rotate(360deg); } }
   #loader .tip { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.07); font-size: 12px; color: #8a8f9c; line-height: 1.5; }
-  #menu { position: absolute; inset: 0; overflow: auto; background: radial-gradient(ellipse at 50% -10%, #2b2f3a 0%, #121318 55%, #0b0b0e 100%); }
-  #menu .wrap { max-width: 1100px; margin: 0 auto; padding: 48px 28px 32px; display: flex; flex-direction: column; min-height: calc(100% - 80px); }
-  #menu header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
-  #menu header .logo { width: 56px; height: 56px; image-rendering: pixelated; filter: drop-shadow(0 0 10px rgba(255,90,40,.35)); }
-  #menu h1 { text-transform: uppercase; letter-spacing: 3px; color: #f1e3c0 !important; }
-  #menu h1 { margin: 0; font: 700 34px/1 system-ui, sans-serif; letter-spacing: .5px; color: #f2f2f2; }
-  #menu header span { color: #8a8f9c; font-size: 14px; }
-  #games { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 22px; }
-  .card { position: relative; display: flex; flex-direction: column; background: #1b1d24; border: 1px solid #2c2f39; border-radius: 12px; overflow: hidden; cursor: pointer; outline: none; transition: transform .15s, border-color .15s, box-shadow .15s; }
-  .card:hover, .card:focus-visible { transform: translateY(-3px); border-color: #c9a55a; box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 0 1px #c9a55a55; }
-  .card .cover { aspect-ratio: 16 / 10; background: #101116 center / cover no-repeat; display: flex; align-items: flex-end; }
-  .card .cover.none { background-image: linear-gradient(135deg, #2a2d38, #15161c); align-items: center; justify-content: center; font: 700 42px system-ui; color: #3d4150; }
-  .card .body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
-  .card h3 { margin: 0; font: 600 17px/1.25 system-ui, sans-serif; color: #f0f0f0; }
-  .card p { margin: 0; color: #a3a8b4; font-size: 13px; flex: 1; }
-  .card .meta { display: flex; gap: 10px; align-items: center; color: #6f7482; font: 11px ui-monospace, monospace; margin-top: 6px; }
-  .card .play { margin-left: auto; font: 600 13px system-ui; padding: 7px 18px; border-radius: 7px; border: 0; background: #c9a55a; color: #17140c; cursor: pointer; }
-  .card:hover .play, .card:focus-visible .play { background: #e0bd6e; }
-  .card .badge { position: absolute; top: 10px; left: 10px; font: 600 11px system-ui; padding: 3px 8px; border-radius: 10px; background: rgba(0,0,0,.65); color: #e0bd6e; }
-  .card.unavailable { opacity: .45; cursor: default; }
-  .card.unavailable .play { display: none; }
-  #menu .opts { margin-top: auto; padding-top: 36px; display: flex; flex-wrap: wrap; gap: 18px; color: #8a8f9c; font-size: 12px; }
-  #menu .opts label { cursor: pointer; }
-  #menu .opts .keys { margin-left: auto; }
   #log { position: absolute; left: 8px; bottom: 8px; right: 8px; max-height: 30%; overflow: auto; background: rgba(0,0,0,.7); font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; display: none; padding: 6px; }
   #busy { position: absolute; left: 50%; bottom: 24px; border: 1px solid rgba(201,165,90,.25); transform: translateX(-50%); z-index: 25; background: rgba(0,0,0,.7); padding: 8px 14px; border-radius: 6px; font: 13px/1.5 system-ui, sans-serif; color: #ddd; text-align: center; pointer-events: none; }
   #busy small { font: 11px/1.5 ui-monospace, monospace; color: #999; }
@@ -103,14 +83,49 @@
   #status button:hover { background: #3a3a3a; }
   .hidden { display: none !important; }
 </style>
+<link rel="stylesheet" href="/src/host/web/home.css">
 <link rel="stylesheet" href="/src/host/web/data-manager.css">
 </head>
 <body>
-<div id="menu" class="hidden"><div class="wrap">
-  <header><img src="/src/host/web/orthros_logo.png" alt="" class="logo"><h1>Orthros</h1><span>Windows games, run from their own files in your browser</span></header>
-  <div id="games"></div>
-  <div class="opts"><label><input type="checkbox" id="logToggle"> log</label> <label title="downloads the whole game folder into the browser's storage in the background: later launches and loads read nothing from the network"><input type="checkbox" id="offlineToggle"> offline copy</label><span class="keys">arrows: choose · Enter: play</span></div>
-</div></div>
+<div id="menu" class="hidden">
+  <div class="hm-bg" aria-hidden="true"><div class="hm-backdrops" id="hmBackdrops"></div><div class="hm-vignette"></div><div class="hm-grain"></div></div>
+  <canvas id="hmEmbers" aria-hidden="true"></canvas>
+  <div class="hm-page">
+    <header class="hm-nav" id="hmNav"><div class="hm-wrap">
+      <div class="hm-brand"><img src="/src/host/web/orthros_logo.png" alt=""><span>Orthros</span></div>
+      <div class="hm-actions">
+        <div class="hm-lang" id="hmLang" role="group"><button type="button" data-lang="fr" lang="fr">FR</button><button type="button" data-lang="en" lang="en">EN</button></div>
+        <span data-slot="data"></span>
+        <button type="button" class="hm-btn icon" id="hmOptionsBtn" popovertarget="hmOptions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      </div>
+    </div></header>
+    <div id="hmOptions" class="hm-pop" popover>
+      <h2 data-i18n="options">Options</h2>
+      <label class="hm-switch"><input type="checkbox" id="offlineToggle"><span class="track"></span><span><b data-i18n="offline">Offline copy</b><small data-i18n="offlineText"></small></span></label>
+      <label class="hm-switch"><input type="checkbox" id="logToggle"><span class="track"></span><span><b data-i18n="log">Debug log</b><small data-i18n="logText"></small></span></label>
+    </div>
+    <main>
+      <section class="hm-wrap hm-hero">
+        <div class="hm-copy">
+          <p class="hm-over">Win32 · x86 · WebAssembly</p>
+          <h1 class="hm-title" id="hmTitle"></h1>
+          <p class="hm-tagline" data-i18n="tagline"></p>
+          <button type="button" class="hm-cta hidden" id="hmCta"><span class="ico"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.6v10.8a.6.6 0 0 0 .92.5l8.5-5.4a.6.6 0 0 0 0-1L4.92 2.1A.6.6 0 0 0 4 2.6z" fill="currentColor"/></svg></span><span><small></small><b></b></span></button>
+          <ul class="hm-points"><li data-i18n="p1"></li><li data-i18n="p2"></li><li data-i18n="p3"></li></ul>
+        </div>
+        <div class="hm-hound" id="hmHound" aria-hidden="true"></div>
+      </section>
+      <section class="hm-wrap hm-lib" aria-labelledby="hmLibTitle">
+        <div class="hm-lib-head"><h2 id="hmLibTitle" data-i18n="library">Library</h2><span class="count" id="hmCount"></span></div>
+        <div class="hm-grid" id="hmGrid" role="group" aria-labelledby="hmLibTitle"></div>
+      </section>
+    </main>
+    <footer class="hm-foot"><div class="hm-wrap">
+      <span data-i18n="foot"></span>
+      <span class="keys"><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd><span data-i18n="keys"></span><kbd>Enter</kbd><span data-i18n="enter"></span></span>
+    </div></footer>
+  </div>
+</div>
 <div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
 <div id="status" class="hidden"><div class="title"></div><div class="detail"></div><div><button class="hidden">Restart</button> <button class="hidden" title="the saved settings and saves are moved aside (kept), the game starts as on its first launch">Restart with a fresh game profile</button> <button class="hidden">Back to the games</button></div><pre class="hidden"></pre></div>
 <div id="busy" class="hidden"></div>
