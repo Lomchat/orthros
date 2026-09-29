@@ -83,8 +83,9 @@ const SZLOG = [0, 0, 1, 0, 2];
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 
 export const MAX_BLOCKS = 48;
-/** at most this many call-return sites compared inline at a RET (more: the RET leaves the region) */
-const MAX_RET_SITES = 16;
+/** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
+ * leaves the region), and in all the RETs of a region (see regionRetSites) */
+const MAX_RET_SITES = 16, MAX_RET_COMPARES = 128;
 export const MAX_INSNS = 400;
 
 /** Terminator classes */
@@ -257,6 +258,65 @@ function regionLazyPrediction(blocks, byEip) {
     }
   }
   for (const b of blocks) b.lzPred = lzIn[b.index] >= 0 ? lzIn[b.index] : -1;
+}
+
+/**
+ * Return sites a RET of the region may go back to without leaving it: per block ending in a RET (or in an import
+ * stub's inline-API JMP, which returns like one), the return sites of the in-region direct calls whose callee reaches
+ * that block — following the callee's own control flow from its entry (fallthroughs, direct jumps and branches, a
+ * call continuing at its return site, a JMP to another function: a tail call, whose RET returns to the same callers).
+ * A RET compares the address it pops with these sites only: a region making many calls (the C runtime's call-heavy
+ * functions with their small helpers inlined) no longer compares every RET with every call site — above
+ * MAX_RET_SITES sites in the region they were all dropped, and every return of an inlined helper then left the region
+ * and chained back into it — and the region entry's own RET, which returns outside, compares nothing (unless the
+ * region calls callees outside it: see below). Only a
+ * filter: a return to a site not listed (a callee reached otherwise, a modified return address) leaves the region as
+ * before, and comparing more sites would give the same results.
+ * @returns {Array<number[] | null>} per block index
+ */
+function regionRetSites(blocks, byEip) {
+  const callers = new Map(); // callee entry block -> return sites of its calls
+  const outside = []; // return sites of calls to callees outside the region
+  for (const b of blocks) {
+    if (b.term !== TERM_CALL || !byEip.has(b.fallthrough)) continue;
+    const t = byEip.get(branchTarget(b.insns[b.insns.length - 1]));
+    if (!t) { if (!outside.includes(b.fallthrough)) outside.push(b.fallthrough); continue; }
+    let l = callers.get(t); if (!l) callers.set(t, l = []);
+    if (!l.includes(b.fallthrough)) l.push(b.fallthrough);
+  }
+  const sites = blocks.map(() => null);
+  const succ = (b) => {
+    const last = b.insns[b.insns.length - 1];
+    switch (b.term) {
+      case TERM_NONE: case TERM_CALL: return [b.fallthrough];
+      case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
+      case TERM_JMP: return [last.ops[0].v];
+      default: return [];
+    }
+  };
+  const returns = (b) => b.term === TERM_RET || (b.term === TERM_INDIRECT && b.insns[b.insns.length - 1].inlineApi && b.insns[b.insns.length - 1].op === OP.JMP);
+  for (const [entry, rs] of callers) {
+    const seen = new Set([entry]), stack = [entry];
+    while (stack.length) {
+      const b = stack.pop();
+      if (returns(b)) { const l = (sites[b.index] ??= []); for (const r of rs) if (!l.includes(r)) l.push(r); continue; }
+      for (const a of succ(b)) { const t = byEip.get(a); if (t && !seen.has(t)) { seen.add(t); stack.push(t); } }
+    }
+  }
+  // the RETs no in-region callee reaches (the region entry's function, a function the region was entered in the
+  // middle of) may return to a call of a callee outside the region: a recursive function whose entry is another
+  // region's (every level returns to the recursive call's site, in this region) — as the old region-wide list did
+  if (outside.length) for (const b of blocks) if (returns(b) && !sites[b.index]) sites[b.index] = outside.slice();
+  let budget = MAX_RET_COMPARES;
+  for (let i = 0; i < sites.length; i++) {
+    const l = sites[i]; if (!l) continue;
+    l.sort((x, y) => x - y);
+    if (l.length > MAX_RET_SITES) l.length = MAX_RET_SITES;
+    if (l.length > budget) l.length = budget;
+    budget -= l.length;
+    if (!l.length) sites[i] = null;
+  }
+  return sites;
 }
 
 /** Instructions that load the x87 control word (precision / rounding control). */
@@ -484,9 +544,9 @@ class Emitter {
     const { top, blockUnit, pathOf } = planUnits(blocks, byEip, !!this.opts.nestLoops);
     this.blockUnit = blockUnit;
     this.pathOf = pathOf;
-    // return sites of the region's direct calls: a RET to one of them stays in the region (see HANDLERS[OP.RET])
-    this.retSites = blocks.filter((b) => b.term === TERM_CALL && byEip.has(b.fallthrough)).map((b) => b.fallthrough);
-    if (this.retSites.length > MAX_RET_SITES) this.retSites = [];
+    // per RET block, the return sites of the region's direct calls it may return to: a RET to one of them stays in the
+    // region (see HANDLERS[OP.RET])
+    this.retSitesOf = regionRetSites(blocks, byEip);
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
     this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
@@ -1839,7 +1899,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     c.i32(0).i32load(api.slot).i32(api.thunk).ne().get(L_STATE).i32load(ST.RESUMING).or().hint(false).br_if(slow);
     emitInlineApi(E, api.fid, slow, true);
     E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
-    for (const site of E.retSites) {
+    for (const site of E.retSitesOf[E.cur] ?? []) {
       c.get(L_TV).i32(site).eq();
       const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
     }
@@ -1969,7 +2029,7 @@ HANDLERS[OP.RET] = (E, insn) => {
   c.get(L_REG + 4).i32(size + (insn.ops.length ? insn.ops[0].v : 0)).add().set(L_REG + 4);
   // returning to a call site of this region (a callee inlined into the caller's region): intra-region jump
   // instead of leaving the region and chaining back into it
-  for (const site of E.retSites) {
+  for (const site of E.retSitesOf[E.cur] ?? []) {
     c.get(L_TV).i32(site).eq();
     const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
   }
