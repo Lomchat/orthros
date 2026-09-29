@@ -14,6 +14,8 @@ const STREAM_BYTES = 1 << 20;
 /** at most this many bytes fetched ahead of a stream's read while the game waits (the rest comes in the background) */
 const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched behind them replace them)
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
+/** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
+const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
 const RETRY_WAITS = [250, 1000, 2000, 4000, 8000]; // ms before each new attempt of a failed range request
 /** fetchBackground's answer for a download aborted because the game needed the network (fetched again later) */
 const ABORTED = Symbol('aborted');
@@ -56,6 +58,10 @@ export class HttpBackend {
     this.bgCur = null;
     /** asynchronous reads the game waits for, in flight (the background downloads wait for them to end) */
     this.fgPending = 0;
+    /** learned pieces being fetched ahead of the game: "path#chunk" -> promise (see fetchPiecesAhead) */
+    this.flights = new Map();
+    /** the learned prefetch list and the game's position in it (see prefetch, noteBlock) */
+    this.learned = null;
   }
 
   /** Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. */
@@ -109,33 +115,115 @@ export class HttpBackend {
   }
 
   /**
-   * Background prefetch: download the listed blocks ([path, block index], in the order earlier sessions needed them)
-   * that the store does not hold yet, one request at a time (two consecutive blocks at most), yielding while the game
-   * reads synchronously (its reads come first). `progress` gets { bytes, blocks, done }.
+   * Background prefetch: download the listed blocks ([path, block index, pieces mask?], in the order earlier sessions
+   * first needed them) that the store does not hold yet, one request at a time (two consecutive blocks at most),
+   * yielding while the game reads from the network (its reads come first). The list is followed from the game's
+   * position in it (see noteBlock): the blocks just past the last listed block the game touched first, then the rest
+   * from the start — sessions of different speeds (and menu times) interleave phases in the learned order, so the head
+   * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
+   * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
+   * { bytes, blocks, done, k }.
    */
   async prefetch(list, progress, stop = () => false) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
-    for (let k = 0; k < list.length; k++) {
+    /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
+    const entries = [], rankOf = new Map();
+    for (const [p, b, mask] of list) {
+      const r = this.lookup(p); if (!r || !r.file || !(b * BLOCK < r.file.size)) continue;
+      const k = `${r.path}#${b}`; if (rankOf.has(k)) continue;
+      rankOf.set(k, entries.length);
+      entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0 });
+    }
+    const L = this.learned = { entries, rankOf, pos: -1, inFlight: 0, stop };
+    const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
+    const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
+    // (the block the fill is downloading is left to it: it stores it too)
+    const todo = (e) => !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}`;
+    // the entry to download next: the first one past the game's position not stored yet, else the first one
+    const next = () => {
+      for (let r = L.pos + 1; r < entries.length; r++) if (todo(entries[r])) return r;
+      for (let r = 0; r <= L.pos && r < entries.length; r++) if (todo(entries[r])) return r;
+      return -1;
+    };
+    for (;;) {
       if (stop() || store.failed) return;
-      const [p, b] = list[k]; progress.k = k;
-      const r = this.lookup(p); if (!r || !r.file) continue;
-      const size = r.file.size, mtime = r.file.mtime ?? 0, key = (i) => `${r.path}#${size}#${mtime}#${i}`;
-      if (b * BLOCK >= size || store.map.has(key(b))) continue;
-      const n = k + 1 < list.length && list[k + 1][0] === p && list[k + 1][1] === b + 1 && (b + 1) * BLOCK < size && !store.map.has(key(b + 1)) ? 2 : 1;
-      if (n === 2) k++;
-      // (the game's own reads first, then the blocks its random reads touched)
-      while (this.gameBusy(300) || this.filling) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
-      const start = b * BLOCK, end = Math.min(size, (b + n) * BLOCK);
-      const data = await this.fetchBackground(r.path, start, end);
-      if (data === ABORTED) { k -= n; continue; }
+      // (the game's own reads first; the block fill, when it has blocks to fetch, runs beside this pass rather than
+      // before it: a session whose game keeps touching new blocks keeps the fill busy for good, and waiting for it
+      // starved this pass for whole sessions)
+      while (this.gameBusy(300)) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
+      const k = next(); progress.k = k;
+      if (k < 0) break;
+      const e = entries[k], f = entries[k + 1];
+      const n = f && f.path === e.path && f.index === e.index + 1 && todo(f) ? 2 : 1;
+      const start = e.index * BLOCK, end = Math.min(e.size, (e.index + n) * BLOCK);
+      const data = await this.fetchBackground(e.path, start, end);
+      if (data === ABORTED) continue;
       if (data === null) return;
-      if (!data) continue;
-      for (let i = 0; i < n; i++) store.put(key(b + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+      if (!data) { e.skip = true; continue; } // (an answer to skip: not asked again this session)
+      for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
       progress.bytes += data.length; progress.blocks += n;
     }
     store.flush?.();
     progress.done = true;
+  }
+
+  /**
+   * The game touches block `index` of `path` (a read, from here or not): its first touch of a block of the learned
+   * list moves the game's position in the list there, and the pieces learned for the next entries are fetched ahead.
+   */
+  noteBlock(path, index) {
+    const L = this.learned; if (!L) return;
+    const r = L.rankOf.get(`${path}#${index}`); if (r === undefined) return;
+    const e = L.entries[r]; if (e.seen) return;
+    e.seen = true; L.pos = r;
+    this.pumpAhead();
+  }
+
+  /**
+   * Fetch ahead the pieces earlier sessions read (the entry's mask of 64 KiB pieces) of the learned entries just past
+   * the game's position (AHEAD_WINDOW entries), AHEAD_REQUESTS requests in flight at most. While the game walks a run
+   * of learned blocks reading a piece or two of each (a latency-bound chain of small reads, the link mostly idle
+   * between them), its next reads are already here or on their way. These requests are not aborted by the game's own
+   * reads (they are predictions of those reads, and small); a parked read of a piece in flight waits for it
+   * (fetchAhead). Entries whose mask is unknown (learned before masks) are left to the whole-block pass.
+   */
+  pumpAhead() {
+    const L = this.learned; if (!L || L.stop() || this.store?.failed || typeof fetch !== 'function') return;
+    const P = BLOCK / CHUNK;
+    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < AHEAD_REQUESTS; r++) {
+      const e = L.entries[r];
+      if (e.ahead || e.seen || !e.mask) continue;
+      e.ahead = true;
+      if (this.cache.has(`${e.path}#${e.index}`) || this.store?.map.has(`${e.path}#${e.size}#${e.mtime}#${e.index}`)) continue;
+      const c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
+      let all = true; for (let i = 0; i < pieces; i++) if (!((e.mask >>> i) & 1)) all = false;
+      const want = (i) => ((e.mask >>> i) & 1) === 1 && !this.chunks.has(`${e.path}#${c0 + i}`) && !this.flights.has(`${e.path}#${c0 + i}`);
+      for (let i = 0; i < pieces; i++) {
+        if (!want(i)) continue;
+        let j = i; while (j + 1 < pieces && want(j + 1)) j++;
+        // (every piece of the block wanted: the block itself, stored)
+        this.fetchPiecesAhead(e, c0 + i, c0 + j, all && i === 0 && j === pieces - 1);
+        i = j;
+      }
+    }
+  }
+  /** Pieces m0..m1 of a learned entry, fetched ahead (see pumpAhead); `whole`: they are the whole block. */
+  fetchPiecesAhead(e, m0, m1, whole) {
+    const L = this.learned;
+    const start = m0 * CHUNK, stop = Math.min(e.size, (m1 + 1) * CHUNK);
+    L.inFlight++;
+    this.stats.aheadRequests = (this.stats.aheadRequests ?? 0) + 1;
+    const done = this.fetchBackground(e.path, start, stop, null, false).then((d) => {
+      if (!(d instanceof Uint8Array) || this.cache.has(`${e.path}#${e.index}`)) return;
+      this.stats.aheadBytes = (this.stats.aheadBytes ?? 0) + d.length;
+      if (whole) { this.installBlock(e.path, e.index, d, `${e.path}#${e.size}#${e.mtime}#${e.index}`); this.evict(); } else this.addPieces(e.path, m0, m1, d);
+    }).finally(() => {
+      for (let c = m0; c <= m1; c++) if (this.flights.get(`${e.path}#${c}`) === done) this.flights.delete(`${e.path}#${c}`);
+      L.inFlight--;
+      this.pumpAhead();
+    });
+    for (let c = m0; c <= m1; c++) this.flights.set(`${e.path}#${c}`, done);
   }
   /** The game read from the network within the last `ms`, or waits for an asynchronous read: background downloads wait. */
   gameBusy(ms) { return this.fgPending > 0 || performance.now() - (this.lastSyncFetchAt ?? -1e9) < ms; }
@@ -153,9 +241,9 @@ export class HttpBackend {
    * [start, end) with fetch(), for the background downloads: the bytes, undefined for an answer to skip, ABORTED when
    * the game needed the network (try again later), null when the network failed. `onStart` gets the AbortController.
    */
-  async fetchBackground(path, start, end, onStart) {
+  async fetchBackground(path, start, end, onStart, abortable = true) {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    if (ctl) this.bgAborts.add(ctl);
+    if (ctl && abortable) this.bgAborts.add(ctl);
     onStart?.(ctl);
     try {
       const res = await fetch(this.rangeUrl(path, start, end, true), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
@@ -285,6 +373,12 @@ export class HttpBackend {
    * synchronously and reports the error itself).
    */
   async fetchAhead(path, size, mtime, pos, end, bulk) {
+    // pieces of the read already on their way (fetched ahead from the learned list): waited for, not asked again
+    if (this.flights.size) {
+      const flying = new Set();
+      for (let c = Math.floor(pos / CHUNK); c * CHUNK < end; c++) { const f = this.flights.get(`${path}#${c}`); if (f) flying.add(f); }
+      if (flying.size) await Promise.all(flying);
+    }
     const jobs = [];
     // a block of the read is being downloaded in the background (a stream's read-ahead): wait for it rather than
     // abort it (marked before any fetch below aborts the background downloads)
@@ -339,7 +433,8 @@ export class HttpBackend {
         while (this.gameBusy(150)) await new Promise((res) => setTimeout(res, 50));
         if (!this.want.size) break; // (fetched whole meanwhile by a sequential read)
         const [k, w] = this.want.entries().next().value;
-        if (this.cache.has(k)) { this.want.delete(k); continue; }
+        // (here already: fetched whole by a read, or stored by the learned prefetch)
+        if (this.cache.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { this.want.delete(k); continue; }
         const start = w.index * BLOCK, end = Math.min(w.size, start + BLOCK);
         const cur = { key: k, path: w.path, index: w.index, ctl: null, done: null, waiters: 0 };
         const pr = this.fetchBackground(w.path, start, end, (ctl) => { cur.ctl = ctl; });
@@ -398,6 +493,11 @@ export class HttpBackend {
 class HttpFile {
   constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; }
   size() { return this.len; }
+  /** The blocks of [off, end) are touched: the game's position in the learned prefetch list (see noteBlock). */
+  note(off, end) {
+    if (!this.b.learned) return;
+    for (let bi = Math.floor(off / BLOCK), e = Math.floor((end - 1) / BLOCK); bi <= e; bi++) if (bi !== this.noted) { this.noted = bi; this.b.noteBlock(this.path, bi); }
+  }
   /**
    * A read of [off, off + len) would need the network: a promise fetching it asynchronously (resolved when the data
    * is here), else null. Leaves the read state (sequence detection) alone.
@@ -405,6 +505,7 @@ class HttpFile {
   prepare(off, len) {
     const end = Math.min(off + len, this.len);
     if (off >= end || typeof fetch !== 'function') return null;
+    this.note(off, end);
     const sequential = off === this.lastEnd, bulk = sequential && this.run + (end - off) >= STREAM_BYTES;
     let missing = false;
     for (let bi = Math.floor(off / BLOCK); bi * BLOCK < end && !missing; bi++) {
@@ -417,6 +518,7 @@ class HttpFile {
   read(off, len) {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
+    this.note(off, end);
     const out = new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
