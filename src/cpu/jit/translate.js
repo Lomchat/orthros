@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -925,6 +925,16 @@ class Emitter {
     throw new Error('storeOp: bad operand');
   }
   /**
+   * Page number on the stack -> a value that is non-zero iff the page's SMC map byte is (translated code on the page
+   * or the next one, or a watch). The byte is shifted to the top of the word rather than tested directly: V8
+   * (TurboFan, x64) turns `if (i32.load8_u ...)` into a movzx load, kept for its out-of-bounds trap, plus a
+   * `cmpb [mem], 0` that reads the byte again — two loads per check where the shift leaves one (movzx ; shl ; jnz).
+   * The check follows every store not addressed by ESP (tools/memop-bench.mjs, a `mov [edi+4], eax` over an empty
+   * loop: 0.63 -> 0.37 ns per store, 0.15 without any check).
+   * `shift` 30 keeps SMC_CODE | SMC_WATCH only (the byte's other bits leave the word).
+   */
+  smcFlag(shift = 24) { this.c.i32load8u(SMC_MAP_BASE).i32(shift).shl(); }
+  /**
    * After a string store (MOVS/STOS, single or repeated) from the EDI saved in local `start` to the current
    * EDI, either direction: exit with SMC (the instruction completed, EXIT_LEN = the range length) when a page
    * of the range holds translated code.
@@ -938,7 +948,7 @@ class Emitter {
     c.get(start).get(L_REG + 7).get(start).get(L_REG + 7).gt_u().select().i32(4).add().set(L_T5); // hi
     c.get(L_TA).i32(12).shr_u().set(L_TV);
     const done = c.block(); const lp = c.loop();
-    c.get(L_TV).i32load8u(SMC_MAP_BASE);
+    c.get(L_TV); this.smcFlag(30); // (every page of the range is tested: SMC_NEXT is not needed)
     const hit = c.hint(false).if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG); c.get(L_STATE).get(L_T5).get(L_TA).sub().i32store(ST.EXIT_LEN);
     this.exitCode(EXIT.SMC, insn.next);
@@ -948,19 +958,29 @@ class Emitter {
     c.end(); void any;
   }
   /**
-   * After a store through L_TA: exit with SMC if the page holds translated code (one byte per page). Stores
-   * addressed by ESP alone (the stack: locals and arguments without a frame pointer) are not checked, like
-   * PUSH: stacks do not hold code.
+   * After a `bytes`-wide store through L_TA (default: the size of the instruction's memory operand): exit with SMC
+   * when the store wrote a page holding translated code (or a watched page) — one map byte read on the hot path, the
+   * byte of the store's first page, whose SMC_NEXT bit tells the next page holds code: only then (a rare, cold path)
+   * does the store's end decide, so an unaligned store crossing into a code page is caught too (it used to be only
+   * for the 16-byte and larger forms, by a second check on every store). Stores addressed by ESP alone (the stack:
+   * locals and arguments without a frame pointer) are not checked, like PUSH: stacks do not hold code.
    */
-  smcCheck(insn) {
+  smcCheck(insn, bytes) {
     if (!this.smc || !insn) return;
     const m = insn.ops.find((o) => o.t === OT.MEM);
     if (m && m.base === 4 && m.index < 0 && !m.a16 && m.seg !== SEG.FS && m.seg !== SEG.GS) return;
+    bytes ??= m && m.size > 0 ? m.size : 1;
     const c = this.c;
-    c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE);
+    c.get(L_TA).i32(12).shr_u(); this.smcFlag();
     const i = c.hint(false).if_();
+    // (cold) this page, or the next one when the store reaches it
+    c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH).and();
+    if (bytes > 1) c.get(L_TA).i32(0xfff).and().i32(0x1000 - bytes).gt_u().or();
+    const hit = c.if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
+    if (bytes > 16) c.get(L_STATE).i32(bytes).i32store(ST.EXIT_LEN); // (the range the host invalidates: 16 bytes by default)
     this.exitCode(EXIT.SMC, insn.next);
+    c.end(); void hit;
     c.end(); void i;
   }
 
@@ -1654,7 +1674,7 @@ HANDLERS[OP.MOV] = (E, insn) => {
   if (d.t === OT.SEG) { E.fallback(insn); return; }
   if (s.t === OT.SEG) {
     E.loadOp(s); c.set(L_TV);
-    if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA).get(L_TV).i32store16(0); } else E.storeRegFrom(d.size, d.r, L_TV);
+    if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); } else E.storeRegFrom(d.size, d.r, L_TV);
     return;
   }
   if (d.t === OT.MEM) { E.eaTo(d); E.loadOp(s); c.set(L_TV); c.get(L_TA).get(L_TV); E.storeMem(d.size); E.smcCheck(insn); return; }
