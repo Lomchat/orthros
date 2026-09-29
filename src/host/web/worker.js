@@ -15,6 +15,7 @@ import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
 import { MATH_KERNELS, FAST_NAMES, FAST_PROF } from '../../cpu/jit/runtime.js';
+import { listRegion } from '../../cpu/jit/listing.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -355,7 +356,19 @@ function prewarmRegions(budgetMs) {
 /** Instruction mix of translated regions (by entry EIP): mnemonic counts per region and overall — profiler companion. */
 /** region function imports by index (translate.js IMP_*: flags helper, round24, interpreter fallback, then the math kernels) */
 const IMPORT_NAMES = ['flags', 'round24', 'fallback', ...MATH_KERNELS.map(([n]) => n)];
-function regionMix(eips, list = 0) {
+/**
+ * WASM listing of the live region holding `eip` (src/cpu/jit/listing.js): the region translated again with its own
+ * options (same emitter decisions), per guest instruction, with the block structure and — translations with block
+ * counters (?jitopts={"blockCounts":true}) — each block's execution count so far. `ops` false: operation counts only.
+ */
+function jitList(eip, ops = true) {
+  const jit = vm?.jit; if (!jit) return 'no jit';
+  const r = jit.regionAt(eip);
+  if (!r) return `jitlist ${(eip >>> 0).toString(16)}: no live region holds it`;
+  try { return listRegion(vm.mem, r.entry, { ...jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: jit.blockCounts(r), ops }).text; }
+  catch (e) { return `jitlist ${(eip >>> 0).toString(16)}: ${e.message}`; }
+}
+function regionMix(eips, list = 0, wasm = 0) {
   const lines = [], overall = new Map(), listed = new Set(); let total = 0;
   for (const eipHex of eips) {
     const eip = parseInt(eipHex, 16);
@@ -369,10 +382,12 @@ function regionMix(eips, list = 0) {
     const top = [...hist].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ');
     const calls = new Map(); const rc = r.calls ?? []; for (let i = 0; i < rc.length; i += 2) { const k = `${IMPORT_NAMES[rc[i]] ?? 'f' + rc[i]}@${rc[i + 1] >= 0 ? OP_NAMES[rc[i + 1]] : 'end'}`; calls.set(k, (calls.get(k) ?? 0) + 1); }
     lines.push(`region ${eipHex} (${vm.proc.symbolize(eip)}): ${r.blocks.length} blocks, ${n} insns, ${bytes} bytes, ${fb} interpreter fallbacks, calls ${calls.size ? [...calls].map(([k, v]) => `${k}x${v}`).join(' ') : 'none'} — ${top}`);
+    if (wasm > 0 && !listed.has(eip)) { wasm--; listed.add(eip); lines.push(jitList(eip).split('\n').map((l) => '  ' + l).join('\n')); continue; } // (--profile-wasm N)
     if (listed.has(eip) || listed.size >= list) continue;
     listed.add(eip); // listing of the hottest regions: which instruction patterns the translation spends its time on
+    const counts = vm.jit.blockCounts(r);
     for (const b of [...r.blocks].sort((x, y) => x.eip - y.eip)) {
-      lines.push(`  block ${b.eip.toString(16)}`);
+      lines.push(`  block ${b.eip.toString(16)}${counts ? ` executed ${counts[b.index]}` : ''}`);
       for (let a = b.eip; a < b.end;) { let insn; try { insn = decode(vm.mem, a); } catch { break; } lines.push(`    ${a.toString(16)}  ${fmtInsn(insn)}`); a = insn.next; }
     }
   }
@@ -424,7 +439,8 @@ self.onmessage = (e) => {
   else if (m.type === 'burst') { if (vm) vm.startApiBurst(vm.proc.threads.find((t) => t.id === m.tid) ?? vm.proc.threads[0], m.n ?? 3000, !!m.noGfx); } // (debugging: --log apiburst, harness input burst:N[,tid])
   else if (m.type === 'stop') stop('stop requested');
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; d.countFrames = m.count ?? 0; log('gfx', `d3d-webgl: ${m.count ? 'GL call count' : 'capture'} requested at frame ${d.frame + 1}`); } }
-  else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0) : 'no vm' });
+  else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0, m.wasm ?? 0) : 'no vm' });
+  else if (m.type === 'jitlist') { if (vm) log('jitlist', jitList(parseInt(m.eip, 16), m.ops !== false)); } // (debugging: harness input jitlist:<hex eip>)
   else if (m.type === 'interpRange') { // (debugging: from now on, these code ranges run in the reference interpreter)
     const ranges = String(m.ranges).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16)));
     if (vm?.jit) { vm.jit.opts.interpRanges = ranges; for (const [lo, hi] of ranges) vm.invalidateCode(lo, hi - lo); log('warn', `interpreter ranges on: ${m.ranges}`); }

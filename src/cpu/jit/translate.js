@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -210,6 +210,7 @@ function regionFlagsLiveness(blocks, byEip) {
       if (li !== liveIn[k]) { liveIn[k] = li; changed = true; }
     }
   }
+  for (const b of blocks) b.flagsIn = liveIn[b.index]; // (flags read at the block's entry: its budget exits, see deadFlagsExit)
 }
 
 // ---- lazy flag state predicted at block entries. A block testing flags it did not set (a JCC right after the previous
@@ -564,6 +565,20 @@ const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
 /** offset from PROF_OPS_BASE of the unchained-transition counters (thunk, stop, budget, miss) */
 export const NOCHAIN_PROF = 0x8000;
+/**
+ * n consecutive block execution counters (BLOCK_COUNTS_BASE), zeroed: the address of the first, or -1 once the area is
+ * full. The bump index lives in guest memory (word 0), so that the background translator, which shares it, allocates
+ * from the same area (atomically when the memory is shared).
+ */
+export function allocBlockCounters(mem, n) {
+  const i32 = mem.i32, w = BLOCK_COUNTS_BASE >>> 2;
+  const shared = typeof SharedArrayBuffer !== 'undefined' && i32.buffer instanceof SharedArrayBuffer;
+  const at = (shared ? Atomics.add(i32, w, n) : (i32[w] += n) - n) || 0;
+  const first = at + 1; // (slot 0 is the bump index)
+  if (first + n > BLOCK_COUNTS_SLOTS) return -1;
+  i32.fill(0, w + first, w + first + n);
+  return BLOCK_COUNTS_BASE + 4 * first;
+}
 
 class Emitter {
   constructor(mem, opts) {
@@ -600,6 +615,10 @@ class Emitter {
     this.x87EntryIdx = byEip.get(entry)?.index ?? 0; // (see x87EntryTop)
     if (this.usesX87 && this.opts.x87EntryShifts !== false) this.x87Plan = x87EntryPlan(blocks, byEip, this.x87EntryIdx);
     this.stats.x87Planned = this.x87Plan ? this.x87Plan.reduce((k, p) => k + (p !== 0), 0) : 0;
+    // profiling translations (opts.blockCounts): a u32 counter per block, incremented at the block's entry (every path
+    // into a block passes there: fallthrough, branch, dispatch, chain) — which blocks of a hot region the time goes to
+    this.counterBase = this.opts.blockCounts ? allocBlockCounters(this.mem, blocks.length) : -1;
+    this.stats.counters = this.counterBase;
     // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
     // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through
     // memory, where an 8-byte store followed by a 16-byte load of the same register defeats store forwarding.
@@ -1029,11 +1048,33 @@ class Emitter {
     this.exitTo(target, n);
     c.end(); void g;
   }
-  /** Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. */
-  budget(n, eip) {
+  /**
+   * An exit resuming at an address where no arithmetic flag is live (`live`: the flags read there before being written,
+   * from the region's liveness — 0 when every path from it writes them all first) leaves no lazy operation: the lazy op
+   * and its operands are written as zeros instead of their values. Otherwise the lazy values of every instruction
+   * before such an exit stay live up to it — around a whole loop for the time-slice exit of its back edge and for the
+   * SMC checks of its stores, which is where they cost registers (V8 keeps them in registers or spill slots across the
+   * loop only for those cold paths). What the resumed code reads is unchanged: it writes the flags before reading them;
+   * the arithmetic bits left in EFLAGS meanwhile are those of an older instruction, which only an exception raised in
+   * between (its CONTEXT) could see, as for the flags regionFlagsLiveness already leaves uncomputed. Only on the exit
+   * path (inside the exit's conditional): the fallthrough keeps its lazy state.
+   */
+  deadFlagsExit(live) {
+    if (live !== 0 || this.opts.deadExitFlags === false) return;
+    const c = this.c;
+    c.i32(0).set(L_LZOP).i32(0).set(L_LZRES).i32(0).set(L_LZA).i32(0).set(L_LZB);
+  }
+  /** flags live after the instruction being emitted (FL_ALL outside an instruction handler) */
+  flagsLiveAfter(insn) { return this.curInsn === insn && this.flagsAfter ? this.flagsLive() : FL_ALL; }
+  /**
+   * Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. `live`: the flags live at eip (see
+   * deadFlagsExit).
+   */
+  budget(n, eip, live = FL_ALL) {
     const c = this.c;
     c.get(L_ICOUNT).i32(n).sub().tee(L_ICOUNT).i32(0).le_s();
     const i = c.hint(false).if_();
+    this.deadFlagsExit(live);
     this.exitCode(EXIT.TIMESLICE, eip);
     c.end(); void i;
   }
@@ -1058,7 +1099,7 @@ class Emitter {
       else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
-      this.budget(n, target);
+      this.budget(n, target, b.flagsIn ?? FL_ALL);
       const common = d > 0 ? sp[d - 1] : null;
       if (common) { if (t !== common.first) { this.count(PF.dispatch); c.i32(t).set(L_BLK); } c.br(common.loopL); }
       else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
@@ -1149,6 +1190,7 @@ class Emitter {
     c.get(L_TV); this.smcFlag(30); // (every page of the range is tested: SMC_NEXT is not needed)
     const hit = c.hint(false).if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG); c.get(L_STATE).get(L_T5).get(L_TA).sub().i32store(ST.EXIT_LEN);
+    this.deadFlagsExit(this.flagsLiveAfter(insn));
     this.exitCode(EXIT.SMC, insn.next);
     c.end(); void hit;
     c.get(L_TV).i32(1).add().tee(L_TV).i32(12).shl().get(L_T5).lt_u().br_if(lp);
@@ -1177,6 +1219,7 @@ class Emitter {
     const hit = c.if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
     if (bytes > 16) c.get(L_STATE).i32(bytes).i32store(ST.EXIT_LEN); // (the range the host invalidates: 16 bytes by default)
+    this.deadFlagsExit(this.flagsLiveAfter(insn)); // (the instruction's own flags are in the lazy state: see binArith)
     this.exitCode(EXIT.SMC, insn.next);
     c.end(); void hit;
     c.end(); void i;
@@ -1470,6 +1513,7 @@ class Emitter {
     this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
+    if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
     // the predicted lazy op at entry (regionLazyPrediction) holds up to the block's first instruction changing it
     this.lzPred = b.lzPred ?? -1;
     this.lzPredUntil = 0;
@@ -1507,6 +1551,7 @@ class Emitter {
 
   emitInsn(insn, b) {
     this.curOp = insn.op;
+    this.curInsn = insn;
     this.c.site = insn.op; // (call statistics)
     const h = HANDLERS[insn.op];
     this.xsOK = XMM_SHADOW_OPS.has(insn.op); this.xdOK = XMM_SHADOW64_OPS.has(insn.op); // (read by the shadow helpers)
@@ -1583,8 +1628,8 @@ function adcSbb(isAdc) {
     E.loadOp(s); c.set(L_LZB);
     if (isAdc) { c.get(L_LZA).get(L_LZB).add().get(L_T4).add(); } else { c.get(L_LZA).get(L_LZB).sub().get(L_T4).sub(); }
     maskTo(E, size); c.set(L_LZRES);
+    E.setLazy(isAdc ? LZ.ADC : LZ.SBB, size); // (before the store: see binArith)
     E.storeOpFrom(d, L_LZRES, insn);
-    E.setLazy(isAdc ? LZ.ADC : LZ.SBB, size);
   };
 }
 HANDLERS[OP.ADC] = adcSbb(true);
@@ -1597,8 +1642,8 @@ HANDLERS[OP.INC] = (E, insn) => {
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).add(); maskTo(E, size); c.set(L_LZRES);
   c.get(L_T4).set(L_LZB);
+  E.setLazy(LZ.INC, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
-  E.setLazy(LZ.INC, size);
 };
 HANDLERS[OP.DEC] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
@@ -1607,15 +1652,15 @@ HANDLERS[OP.DEC] = (E, insn) => {
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).sub(); maskTo(E, size); c.set(L_LZRES);
   c.get(L_T4).set(L_LZB);
+  E.setLazy(LZ.DEC, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
-  E.setLazy(LZ.DEC, size);
 };
 HANDLERS[OP.NEG] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
   loadDst(E, d); c.set(L_LZA);
   c.i32(0).get(L_LZA).sub(); maskTo(E, size); c.set(L_LZRES);
+  E.setLazy(LZ.NEG, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
-  E.setLazy(LZ.NEG, size);
 };
 HANDLERS[OP.NOT] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
@@ -1637,8 +1682,8 @@ function shiftOp(kind) {
       else if (kind === LZ.SHR) { c.get(L_LZA).get(L_LZB).shr_u(); }
       else { c.get(L_LZA); if (size === 1) c.extend8_s(); else if (size === 2) c.extend16_s(); c.get(L_LZB).shr_s(); maskTo(E, size); }
       c.set(L_LZRES);
+      E.setLazy(kind, size); // (before the store: see binArith)
       E.storeOpFrom(d, L_LZRES, insn);
-      E.setLazy(kind, size);
       void bits;
     };
     if (cnt > 0) { emitCore(cnt); return; }
@@ -1677,15 +1722,17 @@ function rotateOp(kind) {
           maskTo(E, size);
         }
         c.set(L_LZRES);
+        // (the flags before the store: an SMC exit after it leaves with this instruction's flags, see binArith)
+        if (live) { // (else no flag of this rotate is ever read)
+          // CF = rol ? res&1 : msb(res); OF = rol ? msb(res)^cf : msb(res)^msb-1(res)  (count==1 defined; we always compute)
+          c.get(L_EFLAGS).i32(~(F.CF | F.OF)).and().set(L_EFLAGS);
+          if (kind === 'rol') c.get(L_LZRES).i32(1).and().set(L_T3); else c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().set(L_T3);
+          c.get(L_EFLAGS).get(L_T3).or().set(L_EFLAGS);
+          if (kind === 'rol') c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().get(L_T3).xor();
+          else c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().get(L_LZRES).i32(bits - 2).shr_u().i32(1).and().xor();
+          c.i32(11).shl().get(L_EFLAGS).or().set(L_EFLAGS);
+        }
         E.storeOpFrom(d, L_LZRES, insn);
-        if (!live) return; // no flag of this rotate is ever read
-        // CF = rol ? res&1 : msb(res); OF = rol ? msb(res)^cf : msb(res)^msb-1(res)  (count==1 defined; we always compute)
-        c.get(L_EFLAGS).i32(~(F.CF | F.OF)).and().set(L_EFLAGS);
-        if (kind === 'rol') c.get(L_LZRES).i32(1).and().set(L_T3); else c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().set(L_T3);
-        c.get(L_EFLAGS).get(L_T3).or().set(L_EFLAGS);
-        if (kind === 'rol') c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().get(L_T3).xor();
-        else c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().get(L_LZRES).i32(bits - 2).shr_u().i32(1).and().xor();
-        c.i32(11).shl().get(L_EFLAGS).or().set(L_EFLAGS);
       } else {
         // RCL/RCR through carry: loop-free formulation using i64 (value:carry) for bits<32; use loop for simplicity
         c.get(L_EFLAGS).i32(1).and().set(L_T3); // cf
@@ -1712,10 +1759,10 @@ function rotateOp(kind) {
         c.end(); void brk;
         c.end();
         c.get(L_TV).set(L_LZRES);
-        E.storeOpFrom(d, L_LZRES, insn);
         c.get(L_EFLAGS).i32(~(F.CF | F.OF)).and().get(L_T3).or().set(L_EFLAGS);
         if (kind === 'rcl') c.get(L_LZRES).i32(bits - 1).shr_u().i32(1).and().get(L_T3).xor().i32(11).shl().get(L_EFLAGS).or().set(L_EFLAGS);
         else c.get(L_T5).i32(11).shl().get(L_EFLAGS).or().set(L_EFLAGS);
+        E.storeOpFrom(d, L_LZRES, insn); // (after the flags: see binArith)
       }
     };
     if (cnt > 0) { core(cnt); E.lz = { kind: LZ.NONE, sz: 2 }; return; }
@@ -1743,12 +1790,12 @@ function shldShrd(isLeft) {
       if (isLeft) c.get(L_T4).get(L_T6).shl().get(L_T5).i32(bits).get(L_T6).sub().i32(31).and().shr_u().or();
       else c.get(L_T4).get(L_T6).shr_u().get(L_T5).i32(bits).get(L_T6).sub().i32(31).and().shl().or();
       maskTo(E, size); c.set(L_LZRES);
-      E.storeOpFrom(d, L_LZRES, insn);
       // CF: left: bit (bits - cnt) of a ; right: bit (cnt-1) of a. OF: msb(a) ^ msb(res)
       if (isLeft) c.get(L_T4).i32(bits).get(L_T6).sub().i32(31).and().shr_u().i32(1).and().set(L_LZA);
       else c.get(L_T4).get(L_T6).i32(1).sub().shr_u().i32(1).and().set(L_LZA);
       c.get(L_T4).get(L_LZRES).xor().i32(bits - 1).shr_u().i32(1).and().set(L_LZB);
-      E.setLazy(LZ.SHLD, size);
+      E.setLazy(LZ.SHLD, size); // (before the store: see binArith)
+      E.storeOpFrom(d, L_LZRES, insn);
     };
     if (cnt > 0) { core(cnt); return; }
     c.get(L_REG + 1).i32(31).and();
@@ -1898,8 +1945,8 @@ HANDLERS[OP.XADD] = (E, insn) => {
   E.loadOp(s); c.set(L_LZB);
   c.get(L_LZA).get(L_LZB).add(); maskTo(E, size); c.set(L_LZRES);
   E.storeRegFrom(size, s.r, L_LZA);
+  E.setLazy(LZ.ADD, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
-  E.setLazy(LZ.ADD, size);
 };
 HANDLERS[OP.CMPXCHG] = (E, insn) => {
   const c = E.c; const d = insn.ops[0], s = insn.ops[1]; const size = d.size;

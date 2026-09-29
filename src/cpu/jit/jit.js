@@ -150,7 +150,7 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
     const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
-    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx: this.nextFn, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi });
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, this.translateOpts(this.nextFn, fpcAssume));
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
@@ -182,6 +182,28 @@ export class Jit {
     return region;
   }
 
+  /** translateRegion options of a region at table index `fnIdx` specialized for x87 mode `fpcAssume` (null: generic) */
+  translateOpts(fnIdx, fpcAssume) {
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags };
+  }
+  /**
+   * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
+   * covers it), or null — debugging listings.
+   */
+  regionAt(eip) {
+    eip >>>= 0;
+    const r = this.byEntry.get(eip) ?? this.blockMap.get(eip)?.region;
+    if (r) return r;
+    for (const x of this.byEntry.values()) if (x.blocks.some((b) => eip >= b.eip && eip < b.end)) return x;
+    return null;
+  }
+  /** block execution counts of a region translated with opts.blockCounts (by block index), or null */
+  blockCounts(region) {
+    if (!(region.counters >= 0)) return null;
+    const u32 = this.mem.u32, w = region.counters >>> 2;
+    return region.blocks.map((b) => u32[w + b.index]);
+  }
+
   /** A table index for a new region (the table grows by doubling). */
   reserveFn() {
     if (this.nextFn >= this.table.length) this.table.grow(Math.max(4096, this.table.length));
@@ -195,7 +217,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, first: version?.first ?? null, versions: null };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, first: version?.first ?? null, versions: null };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
@@ -222,7 +244,7 @@ export class Jit {
    */
   attachBackground(port) {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
-    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges } });
+    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags } });
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
