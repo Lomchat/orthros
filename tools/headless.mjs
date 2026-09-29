@@ -79,7 +79,7 @@ if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API funct
 if (opt('programs') === '0') q.set('programs', '0');
 if (opt('audiomix')) q.set('audiomix', opt('audiomix')); // (worker: the game's worker mixes into the ring instead of the AudioWorklet)
 if (opt('bgjit') === '0') q.set('bgjit', '0'); // (learned regions translated on this thread while the game waits, not in a background worker)
-if (opt('asyncreads')) q.set('asyncreads', opt('asyncreads')); // 1: a read of data still on the network parks its thread (async fetch)
+if (opt('asyncreads')) q.set('asyncreads', opt('asyncreads')); // 0: synchronous file reads (default: a read of data still on the network parks its thread)
 if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
