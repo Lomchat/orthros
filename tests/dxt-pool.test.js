@@ -41,3 +41,10 @@ test('helpers that never answer: the pool turns itself off and returns null (no 
   assert.equal(pool.broken, true); assert.equal(logs.length, 1);
   assert.equal(pool.encode(FMT.DXT1, image(256, 256, 3), 256, 256), null, 'stays off');
 });
+
+test('an image whose edge blocks do not fit the shared output buffer is left to the caller (no RangeError)', () => {
+  const pool = new DxtPool(1, () => ({ postMessage() {}, terminate() {} }), () => {}, { firstMs: 50, ms: 50 });
+  const w = 2049, h = 2045; // (w * h texels within the limit, ceil(w/4) * ceil(h/4) * 16 bytes beyond it)
+  assert.equal(pool.encode(FMT.DXT5, new Uint8Array(w * h * 4), w, h), null);
+  assert.equal(pool.broken, false, 'declined, not broken');
+});

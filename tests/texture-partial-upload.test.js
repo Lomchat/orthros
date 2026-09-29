@@ -48,7 +48,7 @@ test('the dirty rectangle is the union of the rectangles locked since the last u
   assert.equal(s.dirtyRect, null, 'a rectangle locked after a whole change keeps the whole surface');
 });
 
-function recordingGl() {
+function recordingGl(noS3tc = false) {
   const calls = []; let next = 1;
   const s3tc = { COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1, COMPRESSED_RGBA_S3TC_DXT3_EXT: 0x83f2, COMPRESSED_RGBA_S3TC_DXT5_EXT: 0x83f3 };
   const rec = (name) => (...a) => calls.push([name, ...a.map((x) => (ArrayBuffer.isView(x) ? Uint8Array.from(x) : x))]);
@@ -56,7 +56,7 @@ function recordingGl() {
     canvas: { width: 800, height: 600 }, drawingBufferWidth: 800, drawingBufferHeight: 600,
     TEXTURE0: 0x84c0, TEXTURE_2D: 0x0de1, MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
     createTexture: () => ({ id: next++ }), getParameter: (p) => (p === 0x8b4d ? 32 : 0),
-    getExtension: (n) => (n === 'WEBGL_compressed_texture_s3tc' ? s3tc : null),
+    getExtension: (n) => (n === 'WEBGL_compressed_texture_s3tc' && !noS3tc ? s3tc : null),
     texImage2D: rec('texImage2D'), texSubImage2D: rec('texSubImage2D'), compressedTexImage2D: rec('compressedTexImage2D'), compressedTexSubImage2D: rec('compressedTexSubImage2D'),
   };
   const gl = new Proxy(base, { get(t, k) { if (k in t) return t[k]; if (typeof k === 'string' && /^[A-Z0-9_]+$/.test(k)) return k.length; return () => ({}); } });
@@ -108,4 +108,18 @@ test('a DXT1 level locked in part: whole blocks of the rectangle, packed rows', 
   lock(t, null); t.unlock(); W.glTexture({ id: 503, fmt: FMT.DXT1, levels: [t] });
   R.calls.length = 0; lock(t, [0, 0, 12, 3]); t.unlock(); W.glTexture({ id: 503, fmt: FMT.DXT1, levels: [t] });
   assert.deepEqual(R.calls[0].slice(2, 7), [0, 0, 0, 12, 4]);
+});
+
+test('a DXT level locked in part without the s3tc extension (decoded on the CPU): the whole level, decoded right', () => {
+  const R = recordingGl(true), W = backend(R.gl);
+  const s = new core.Surface({}, null, FMT.DXT1, 16, 16, 0, 1, 0);
+  const base = lock(s, null); for (let i = 0; i < 128; i++) mem.u8[base + i] = (i * 37) & 255; s.unlock();
+  const tex = { id: 504, fmt: FMT.DXT1, levels: [s] };
+  W.glTexture(tex);
+  R.calls.length = 0;
+  const p = lock(s, [5, 6, 9, 7]); mem.u8[p] ^= 0xff; s.unlock();
+  W.glTexture(tex);
+  const call = R.calls.find((c) => c[0] === 'texSubImage2D' || c[0] === 'texImage2D');
+  assert.deepEqual(call.slice(3, 7), [0, 0, 16, 16], 'whole level');
+  assert.deepEqual(call.at(-1), surfaceToRgba(mem, s.fmt, s.mem, 16, 16, s.pitch));
 });

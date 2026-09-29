@@ -35,6 +35,7 @@ export class DxtPool {
     const bw = Math.max(1, (w + 3) >> 2), bh = Math.max(1, (h + 3) >> 2);
     if (this.broken || !this.workers.length || bw * bh < MIN_PARALLEL_BLOCKS || bh < 2 || w * h > MAX_PARALLEL_TEXELS) return null;
     const inBytes = w * h * 4, outBytes = dxtBytes(fmt, w, h), ctl = this.ctl;
+    if (outBytes > this.output.byteLength) return null; // (sizes not multiple of 4 near the limit: edge blocks exceed 1 byte per texel)
     new Uint8Array(this.input, 0, inBytes).set(rgba.subarray(0, inBytes));
     const out = new Uint8Array(this.output, 0, outBytes);
     // parts: helpers take the first ones, this thread the last one (block rows split evenly)
