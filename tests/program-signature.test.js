@@ -160,3 +160,41 @@ test('program cache: learned programs started and resolved before the device exi
   assert.equal(W.stats.programs, 0); assert.equal(pc.hits, 1); assert.equal(pc.resolvedHits, 1);
   assert.equal(queries, q, 'no query at the draw');
 });
+
+// One vertex shader over two declarations that place or type its inputs differently generates the same GLSL: the
+// two keys share a GL program, but not its vertex array objects (a VAO holds one layout's offsets and types).
+test('programs: a program shared by keys of other vertex layouts binds each layout\'s attributes', () => {
+  const vs20 = new Uint32Array([0xfffe0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000005, 0x900f0001, 0x03000009, 0xc0010000, 0x90e40000, 0xa0e40000, 0x03000009, 0xc0020000, 0x90e40000, 0xa0e40001, 0x03000009, 0xc0040000, 0x90e40000, 0xa0e40002, 0x03000009, 0xc0080000, 0x90e40000, 0xa0e40003, 0x02000001, 0xe00f0000, 0x90e40001, 0xffff]);
+  const decl = (texOff, texType) => {
+    const attrs = [{ name: 'pos', sem: 's0_0', offset: 0, comps: 3, type: 'float', usage: 0, index: 0, reg: 0 }, { name: 'tex0', sem: 's5_0', offset: texOff, comps: 2, type: texType, usage: 5, index: 0, reg: 7 }];
+    return { layout: { streams: new Map([[0, { attrs, stride: 20 }]]), elements: [], rhw: false, texCount: 1, blend: 0, attrs, dx9: true } };
+  };
+  const vb = { id: 5 }, calls = [], gl = mockGl();
+  const recording = new Proxy({}, { get(t, k) { return k === 'vertexAttribPointer' ? (...a) => { calls.push(a); } : gl[k]; } });
+  const dev = {
+    api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
+    rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
+    textures: new Array(16).fill(0), com: { implAt: (p) => (p === 1 ? vb : null) }, fvf: 0, vertexDecl: decl(12, 'float'), vsObj: { handle: 3, code: vs20 }, psObj: null,
+    lights: new Map(), lightEnabled: new Set(), lightVersion: 0, transforms: new Map(), transformSlotVersion: new Map(), streams: [{ vb: 1, stride: 20, offset: 0 }],
+  };
+  const W = new WebGLDevice(recording, dev, {});
+  W.glBuffer = () => ({ buf: {} });
+  const texPointer = () => calls.find((c) => c[0] === 1)?.slice(1, 6) ?? null;
+  const a = W.program(); calls.length = 0; W.bindAttributes(a.p, a.L);
+  assert.deepEqual(texPointer(), [2, recording.FLOAT, false, 20, 12]);
+  const declA = dev.vertexDecl;
+  dev.vertexDecl = decl(16, 'half'); dev.programVersion++;
+  const b = W.program();
+  assert.equal(b.p, a.p, 'one GL program for both keys');
+  calls.length = 0; W.bindAttributes(b.p, b.L);
+  assert.deepEqual(texPointer(), [2, recording.HALF_FLOAT, false, 20, 16], 'the second layout\'s offset and type');
+  dev.vertexDecl = declA; dev.programVersion++;
+  const c = W.program(); calls.length = 0; W.bindAttributes(c.p, c.L);
+  assert.equal(W.curVao.specs[4 + 5], 12, 'the first layout\'s VAO again');
+  // (UP draws: a VAO per stride, per layout too)
+  calls.length = 0; W.bindAttributes(c.p, c.L, 20);
+  assert.deepEqual(texPointer(), [2, recording.FLOAT, false, 20, 12]);
+  dev.vertexDecl = decl(16, 'half'); dev.programVersion++;
+  const d = W.program(); calls.length = 0; W.bindAttributes(d.p, d.L, 20);
+  assert.deepEqual(texPointer(), [2, recording.HALF_FLOAT, false, 20, 16]);
+});

@@ -1084,22 +1084,28 @@ export class WebGLDevice {
   bindAttributes(P, L, upStride = 0, baseVertex = 0) {
     const gl = this.gl, dev = this.dev;
     const vaos = this.vaos ?? (this.vaos = new Map());
-    if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; }
+    if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; P.vaoLayout = L.layout; P.vaoOwner = P; }
+    // VAOs are per (program, vertex layout): keys of other layouts can share a program (their generated sources are
+    // the same, e.g. one vertex shader over declarations that place or type its inputs differently), and a VAO holds
+    // the attribute offsets and types of one layout. The program's first layout owns its VAOs directly.
+    let Q = P.vaoLayout === L.layout ? P.vaoOwner : (P.vaoOwners ??= new Map([[P.vaoLayout, P]])).get(L.layout);
+    if (!Q) { Q = { vid: this.nextVid = this.nextVid + 1, vaoKeys: P.vaoKeys }; P.vaoOwners.set(L.layout, Q); }
+    P.vaoLayout = L.layout; P.vaoOwner = Q;
     const streams = L.layout.streamList ?? (L.layout.streamList = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]]);
     if (!upStride && streams.length === 1) {
       const s0 = streams[0], s = dev.streams[s0[0]], vb = s ? this.comImpl(s.vb) : null;
       if (vb) {
         const stride = s.stride || s0[1].stride, base = (s.offset ?? 0) + baseVertex * stride;
         const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
-        const byVb = P.vaoByVb ?? (P.vaoByVb = new Map());
+        const byVb = Q.vaoByVb ?? (Q.vaoByVb = new Map());
         let m = byVb.get(vb.id), v = m?.get(stride);
         if (v && vaos.get(v.key) !== v) v = null; // (dropped since)
         if (!v) {
           if (vaos.size >= 8192) { this.dropVaos(); m = null; }
-          const key = `${P.vid}|${vb.id}:${stride}`;
-          v = { vao: gl.createVertexArray(), ib: null, key, bufs: [vb.id], P, base: NaN, specs: this.attrSpecs(P, L, s0[1].attrs) };
+          const key = `${Q.vid}|${vb.id}:${stride}`;
+          v = { vao: gl.createVertexArray(), ib: null, key, bufs: [vb.id], P: Q, base: NaN, specs: this.attrSpecs(P, L, s0[1].attrs) };
           this.stats.vaos++;
-          vaos.set(key, v); P.vaoKeys.push(key);
+          vaos.set(key, v); Q.vaoKeys.push(key);
           if (!m) byVb.set(vb.id, (m = new Map()));
           m.set(stride, v);
           let set = (this.vaosByBuf ??= new Map()).get(vb.id); if (!set) this.vaosByBuf.set(vb.id, (set = new Set())); set.add(key);
@@ -1118,10 +1124,10 @@ export class WebGLDevice {
     }
     // a UP draw (vertices from memory through the shared upVbo): its VAO found by the stride, no key string per draw
     if (upStride && streams.length === 1) {
-      const v = P.upVaos?.get(upStride);
+      const v = Q.upVaos?.get(upStride);
       if (v && vaos.get(v.key) === v) { if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
     }
-    let key = upStride ? `${P.vid}|up${upStride}` : `${P.vid}`;
+    let key = upStride ? `${Q.vid}|up${upStride}` : `${Q.vid}`;
     const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
     for (const [n, st] of streams) {
       if (upStride) { bound.push([n, st.attrs, upStride, 0, this.upVbo, -1]); continue; }
@@ -1135,10 +1141,10 @@ export class WebGLDevice {
     let v = vaos.get(key);
     if (!v) {
       if (vaos.size >= 8192) this.dropVaos();
-      v = { vao: gl.createVertexArray(), ib: null, key, bufs: bound.map((b) => b[5]).filter((x) => x >= 0), P };
+      v = { vao: gl.createVertexArray(), ib: null, key, bufs: bound.map((b) => b[5]).filter((x) => x >= 0), P: Q };
       this.stats.vaos++;
-      vaos.set(key, v); P.vaoKeys.push(key);
-      if (upStride && streams.length === 1) (P.upVaos ??= new Map()).set(upStride, v);
+      vaos.set(key, v); Q.vaoKeys.push(key);
+      if (upStride && streams.length === 1) (Q.upVaos ??= new Map()).set(upStride, v);
       for (const id of v.bufs) { let set = (this.vaosByBuf ??= new Map()).get(id); if (!set) this.vaosByBuf.set(id, (set = new Set())); set.add(key); }
       gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
       for (const [, attrs, stride, base, buf] of bound) {
