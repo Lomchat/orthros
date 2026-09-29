@@ -166,26 +166,37 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
   } finally { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-// Learned GL programs: sessions post the programs they built at a draw; the server lists them by earliest use, and a
-// key posted again with other sources (the translators changed) takes the new sources.
-test('learned programs: listed by first use, new sources replace old ones', async () => {
+// Learned GL programs: sessions post the programs they built at a draw; the server lists them by earliest use,
+// identified by their sources (keys name shader objects by handle, which vary between sessions): the same sources
+// under another key are one entry. An entry no session built or used (`used`: the learned ones a session took) for
+// 64 sessions is dropped (sources of an older translator); a list of the first format (by key) is read and merged.
+test('learned programs: listed by first use, one entry per sources, unused ones age out', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
   const { createServer } = await import('../src/host/server.js');
+  const { programSourceId } = await import('../src/gfx/program-id.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
-  const server = createServer({ manifests: path.join(dir, 'man') });
+  fs.mkdirSync(path.join(dir, 'learn'));
+  fs.writeFileSync(path.join(dir, 'learn', 'programs-g.json'), JSON.stringify([['vs1:17|ps', 'vs-old', 'fs-old', [], 50, 2], ['vs1:30|ps', 'vs-old', 'fs-old', [], 40, 1]]));
+  const server = createServer({ manifests: path.join(dir, 'man'), learnDir: path.join(dir, 'learn') });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
-  const post = (programs) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs }) });
+  const post = (programs, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs, used }) });
   try {
-    assert.deepEqual(await (await fetch(url)).json(), []);
+    const first = await (await fetch(url)).json();
+    assert.deepEqual(first.map((e) => [e.key, e.vs, e.id]), [['vs1:17|ps', 'vs-old', programSourceId('vs-old', 'fs-old', [])]], 'the first format: one entry per sources');
     assert.equal((await post([{ key: 'b', vs: 'vs-b', fs: 'fs-b', attrs: ['a_pos'], t: 900 }, { key: 'a', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 1200 }, { key: 'bad', vs: 1, fs: 'x', attrs: [] }])).status, 204);
-    assert.equal((await post([{ key: 'a', vs: 'vs-a2', fs: 'fs-a', attrs: [], t: 100 }])).status, 204);
+    assert.equal((await post([{ key: 'a2', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 100 }, { key: 'c', vs: 'vs-a', fs: 'fs-a', attrs: ['a_pos'], t: 1000 }])).status, 204);
     const list = await (await fetch(url)).json();
-    assert.deepEqual(list.map((e) => e.key), ['a', 'b'], 'by earliest use, the malformed entry dropped');
-    assert.equal(list[0].vs, 'vs-a2', 'the newer sources');
-    assert.deepEqual(list[1].attrs, ['a_pos']);
+    assert.deepEqual(list.map((e) => e.vs + '/' + e.attrs.join()), ['vs-old/', 'vs-a/', 'vs-b/a_pos', 'vs-a/a_pos'], 'by earliest use, same sources merged, other attributes apart, the malformed entry dropped');
     assert.equal((await fetch(url.replace('/g', '/nope'))).status, 404);
+    // sessions go by: 'b' is used by each of them, 'a' built again once, the others never seen again
+    const idB = list.find((e) => e.vs === 'vs-b').id;
+    for (let i = 0; i < 70; i++) {
+      await fetch(url);
+      assert.equal((await post(i === 20 ? [{ key: 'z', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 5 }] : [], [idB, 'nope', 3])).status, 204);
+    }
+    assert.deepEqual((await (await fetch(url)).json()).map((e) => e.vs + '/' + e.attrs.join()), ['vs-a/', 'vs-b/a_pos'], 'unused ones dropped');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

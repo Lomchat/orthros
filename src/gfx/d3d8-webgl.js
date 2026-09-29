@@ -7,6 +7,7 @@
 import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, translateVertexShader, translatePixelShader, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
+import { programSourceKey, programSourceId } from './program-id.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -129,7 +130,8 @@ export class WebGLDevice {
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.uploadUnit = Math.min(gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) || 32, 32) - 1; // (stages and shader samplers use units 0..15; see bindForUpload)
     this.firstVertexConvention();
-    this.programs = new Map();
+    this.programs = new Map(); // program key -> record (several keys share a record when they build the same sources)
+    this.programsBySrc = new Map(); // programSourceKey -> record: GL programs by what GL compiles (see program-id.js)
     this.textures = new Map(); // resource id -> { tex, target }
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
@@ -178,7 +180,7 @@ export class WebGLDevice {
     const gl = this.gl;
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
-    this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null; this.pc?.ready.clear();
+    this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; this.pc?.ready.clear();
     this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
@@ -186,7 +188,7 @@ export class WebGLDevice {
     this.reset(this.dev);
     this.log('d3d-webgl: context restored, resources recreated on use');
   }
-  destroy() { const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programs.values()) gl.deleteProgram(p.prog); }
+  destroy() { const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
@@ -471,8 +473,21 @@ export class WebGLDevice {
   }
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTexture() {} setTextureStageState() {} setSamplerState() {}
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
-  deleteVertexShader(sh) { this.progBySig?.clear(); for (const [k, p] of this.programs) if (p.vs === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
-  deletePixelShader(sh) { this.progBySig?.clear(); for (const [k, p] of this.programs) if (p.ps === sh) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programs.delete(k); if (this.lastProgram?.p === p) this.lastProgram = null; } }
+  deleteVertexShader(sh) { this.dropProgramsOf(sh); }
+  deletePixelShader(sh) { this.dropProgramsOf(sh); }
+  /**
+   * A shader object is gone: the programs built for it are deleted, with every key that shares them (keys of other
+   * shaders with the same translated sources: rebuilt at their next draw).
+   */
+  dropProgramsOf(sh) {
+    this.progBySig?.clear();
+    for (const [k, p] of this.programs) {
+      if (!p.shaders.has(sh)) continue;
+      if (this.programsBySrc.get(p.srcKey) === p) { this.dropVaos(undefined, p); this.gl.deleteProgram(p.prog); this.programsBySrc.delete(p.srcKey); }
+      this.programs.delete(k);
+      if (this.lastProgram?.p === p) this.lastProgram = null;
+    }
+  }
   setCursor() {}
   /**
    * Gamma ramp (SetGammaRamp / SetDeviceGammaRamp): 3 x 256 WORDs. An identity ramp disables the pass; otherwise
@@ -665,8 +680,18 @@ export class WebGLDevice {
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
     let fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     if (flat) { vsSrc = vsSrc.replace('out vec4 v_color0; out vec4 v_color1;', 'flat out vec4 v_color0; flat out vec4 v_color1;'); fsSrc = fsSrc.replace('in vec4 v_color0; in vec4 v_color1;', 'flat in vec4 v_color0; flat in vec4 v_color1;'); }
-    p = this.takePrewarmed(key, vsSrc, fsSrc, attrNames) ?? this.compile(vsSrc, fsSrc, key, attrNames);
-    p.vs = L.shader; p.ps = ps;
+    // the same sources as a program built for another key (another shader object with the same code, a state the
+    // key records but these sources ignore): that program, without a new compile and link
+    const srcKey = programSourceKey(vsSrc, fsSrc, attrNames);
+    p = this.programsBySrc.get(srcKey);
+    if (p) this.stats.programsShared = (this.stats.programsShared ?? 0) + 1;
+    else {
+      p = this.takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) ?? this.compile(vsSrc, fsSrc, key, attrNames);
+      p.srcKey = srcKey; p.shaders = new Set(); // (the shader objects of its keys: dropProgramsOf)
+      this.programsBySrc.set(srcKey, p);
+    }
+    if (L.shader) p.shaders.add(L.shader);
+    if (ps) p.shaders.add(ps);
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
     if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} key=${key}${L.code ? `\nD3D VS\n${disasmShader9(L.code)}` : ''}${ps ? `\nD3D PS\n${disasmShader9(ps.code)}` : ''}\nGLSL VS\n${vsSrc}\nGLSL FS\n${fsSrc}`);
     this.programs.set(key, p);
@@ -687,58 +712,33 @@ export class WebGLDevice {
     return p;
   }
   /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
-  startProgram(vsSrc, fsSrc, attrNames) {
-    const gl = this.gl;
-    const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
-    const prog = gl.createProgram();
-    const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
-    gl.attachShader(prog, vs); gl.attachShader(prog, fs);
-    attrNames.forEach((n, i) => gl.bindAttribLocation(prog, i, n));
-    gl.linkProgram(prog);
-    return { prog, vs, fs };
-  }
-  /** The program record of a started build: link status (compile logs on failure), uniforms, sampler units. */
+  startProgram(vsSrc, fsSrc, attrNames) { return startProgram(this.gl, vsSrc, fsSrc, attrNames); }
+  /** The program record of a started build (resolveProgram), the device's GL state cache told of its useProgram. */
   finishProgram(h, key, attrNames, vsSrc, fsSrc) {
-    const gl = this.gl, prog = h.prog;
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      this.stats.errors++;
-      for (const [sh, src] of [[h.vs, vsSrc], [h.fs, fsSrc]]) if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) this.log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(sh)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`);
-      this.log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`);
-    }
-    gl.deleteShader(h.vs); gl.deleteShader(h.fs);
-    const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
-    const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
-    for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
-    const u = (name) => { let l = loc[name]; if (l === undefined) { l = gl.getUniformLocation(prog, name); loc[name] = l; } return l; };
-    // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
-    gl.useProgram(prog); this.gs.prog = prog;
-    for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
-    return { prog, u, attrNames, key };
+    const r = resolveProgram(this.gl, h, key, attrNames, vsSrc, fsSrc, this.log);
+    if (!r.ok) this.stats.errors++;
+    this.gs.prog = h.prog;
+    return r.rec;
   }
+  /** Learned programs started at a present (prewarmPrograms): a few per frame. */
+  prewarmStep() { prewarmPrograms(this.gl, this.pc, this.programsBySrc); }
   /**
-   * Programs of earlier sessions (programCache.queue, from the server) compiled ahead of their first draw, a few per
-   * frame: with KHR_parallel_shader_compile the GPU process builds them on its own threads while the game runs (the
-   * loading screens, typically). A draw that needs one takes it when its sources are the ones it would build.
+   * The prewarmed build of these sources (taken out of the cache), or null. Its use is reported to the server
+   * (programCache.used: the server keeps the programs sessions still use). Programs learned from sources an older
+   * translator produced are never taken (no draw builds those sources any more) and age out of the server's list.
    */
-  prewarmStep() {
-    const pc = this.pc;
-    for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
-      const e = pc.queue.shift();
-      if (pc.ready.has(e.key) || this.programs.has(e.key) || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs)) continue;
-      pc.ready.set(e.key, { ...this.startProgram(e.vs, e.fs, e.attrs), vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs });
-      pc.started++;
-    }
-  }
-  /** A prewarmed build of `key` with these very sources (taken out of the cache), or null. */
-  takePrewarmed(key, vsSrc, fsSrc, attrNames) {
-    const pc = this.pc, e = pc?.ready.get(key);
+  takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) {
+    const pc = this.pc, e = pc?.ready.get(srcKey);
     if (!e) return null;
-    pc.ready.delete(key);
-    if (e.vsSrc === vsSrc && e.fsSrc === fsSrc && e.attrs.length === attrNames.length && e.attrs.every((a, i) => a === attrNames[i])) { pc.hits++; return this.finishProgram(e, key, attrNames, vsSrc, fsSrc); }
-    // (built by another version of the translators: dropped, built again from the current sources)
-    pc.stale++;
-    this.gl.deleteShader(e.vs); this.gl.deleteShader(e.fs); this.gl.deleteProgram(e.prog);
-    return null;
+    pc.ready.delete(srcKey);
+    pc.hits++;
+    if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
+    // (resolved ahead, before the device existed: no query at all; else the link status query waits for a build the
+    // GPU process has not finished, and for the commands queued before it: timed apart from full builds)
+    if (e.rec) { if (!e.ok) this.stats.errors++; e.rec.key = key; pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; return e.rec; }
+    const t0 = performance.now(), p = this.finishProgram(e, key, attrNames, vsSrc, fsSrc);
+    this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + performance.now() - t0;
+    return p;
   }
 
   /**
@@ -1279,6 +1279,76 @@ export class WebGLDevice {
   }
 }
 
+/** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
+function startProgram(gl, vsSrc, fsSrc, attrNames) {
+  const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
+  const prog = gl.createProgram();
+  const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+  attrNames.forEach((n, i) => gl.bindAttribLocation(prog, i, n));
+  gl.linkProgram(prog);
+  return { prog, vs, fs };
+}
+
+/**
+ * The program record of a started build: link status (compile logs on failure), uniforms, sampler units (the program
+ * left in use). The first query waits until the GPU process has linked it.
+ * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string }, ok: boolean }}
+ */
+function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
+  const prog = h.prog, ok = !!gl.getProgramParameter(prog, gl.LINK_STATUS);
+  if (!ok) {
+    for (const [sh, src] of [[h.vs, vsSrc], [h.fs, fsSrc]]) if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(sh)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`);
+    log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`);
+  }
+  gl.deleteShader(h.vs); gl.deleteShader(h.fs);
+  const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
+  const nu = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < nu; i++) { const info = gl.getActiveUniform(prog, i); loc[info.name] = gl.getUniformLocation(prog, info.name); }
+  const u = (name) => { let l = loc[name]; if (l === undefined) { l = gl.getUniformLocation(prog, name); loc[name] = l; } return l; };
+  // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
+  gl.useProgram(prog);
+  for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
+  return { rec: { prog, u, attrNames, key }, ok };
+}
+
+/**
+ * Learned programs started before the game has a device, resolved (resolveProgram) a while after their start: the
+ * link status and uniform queries then find them linked, and wait for nothing else (no frame being drawn) — the
+ * draw that takes one later makes no query at all. With KHR_parallel_shader_compile only the finished ones (the
+ * completion query does not wait); without it, those started RESOLVE_AFTER_MS ago (the GPU process links in order).
+ */
+const RESOLVE_AFTER_MS = 1000;
+function resolvePrewarmed(gl, pc, log) {
+  const now = performance.now(), ext = pc.parallel ? pc.parallelExt ??= gl.getExtension('KHR_parallel_shader_compile') : null;
+  let n = 8;
+  for (const e of pc.ready.values()) {
+    if (e.rec) continue;
+    if (ext ? !gl.getProgramParameter(e.prog, ext.COMPLETION_STATUS_KHR) : now - e.t0 < RESOLVE_AFTER_MS) { if (ext) continue; break; }
+    const r = resolveProgram(gl, e, '', e.attrs, e.vsSrc, e.fsSrc, log);
+    e.rec = r.rec; e.ok = r.ok; pc.resolved = (pc.resolved ?? 0) + 1;
+    if (--n === 0) break;
+  }
+}
+
+/**
+ * Programs of earlier sessions (programCache.queue, from the server, by earliest first use) started a few at a time:
+ * the GPU process builds them while the game computes (before its window, loading screens), on its own threads with
+ * KHR_parallel_shader_compile. They are found by their sources (programSourceKey), not by the key they had: keys name
+ * shader objects by handle, and handles follow the order a session creates them in. `built`: a device's programs by
+ * sources (those need no build ahead), or null.
+ */
+function prewarmPrograms(gl, pc, built) {
+  for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
+    const e = pc.queue.shift();
+    if (typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs)) continue;
+    const srcKey = programSourceKey(e.vs, e.fs, e.attrs);
+    if (pc.ready.has(srcKey) || built?.has(srcKey)) continue;
+    pc.ready.set(srcKey, { ...startProgram(gl, e.vs, e.fs, e.attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs, t0: performance.now(), rec: null, ok: false });
+    pc.started++;
+  }
+}
+
 /** Host-side factory: `host.gfx = createWebGLBackend(canvas, log)`. */
 export function createWebGLBackend(canvas, log, dump) {
   const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
@@ -1289,10 +1359,12 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
-  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), started: 0, hits: 0, stale: 0 };
-  const backend = { gl, device: null, programCache, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); } };
+  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, hits: 0 };
+  // prewarm(): learned programs started before the game has a device (it computes for a long time before its window:
+  // the GPU process compiles meanwhile), called by the worker every few tens of ms until then; afterwards at presents
+  const backend = { gl, device: null, programCache, prewarm() { if (this.device) return; if (programCache.queue.length) prewarmPrograms(gl, programCache, null); if (programCache.ready.size) resolvePrewarmed(gl, programCache, log); }, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); } };
   return backend;
 }
