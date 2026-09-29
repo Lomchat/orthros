@@ -35,12 +35,13 @@ test('http backend: reads through the block cache and the persistent store', () 
   const store = new MemStore();
   const b1 = new HttpBackend('/game/x/', tree(5), { store });
   const f = b1.open('data\\A.BIG');
-  assert.deepEqual(f.read(MiB - 10, 30), FILE.subarray(MiB - 10, MiB + 20)); // spans two blocks
+  assert.deepEqual(f.read(0, 30), FILE.subarray(0, 30)); // a random read: its 64 KiB piece only
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].slice(1), [0, 65535]);
+  assert.equal(store.m.size, 0);
+  // sequential reads fetch whole blocks, ahead, in one request, every block stored
+  assert.deepEqual(f.read(30, 3 * MiB), FILE.subarray(30, 3 * MiB + 30));
   assert.equal(requests.length, 2);
-  assert.equal(store.m.size, 2);
-  // sequential reads fetch ahead in one request, every block stored
-  assert.deepEqual(f.read(MiB + 20, 2 * MiB), FILE.subarray(MiB + 20, 3 * MiB + 20));
-  assert.equal(requests.length, 3);
   assert.equal(store.m.size, 4);
   // a new backend (a later run) reads everything from the store
   const n = requests.length;
@@ -78,7 +79,7 @@ test('http backend: a failed range request (network error, error status, short a
   const b = new HttpBackend('/game/r/', tree(1), { retryWaits: [1, 1, 1], onRetry: (r) => retries.push(r.problem) });
   faults.push('network', 'status', 'short');
   assert.deepEqual(b.open('Data/a.big').read(5, 10), FILE.subarray(5, 15));
-  assert.deepEqual(retries, ['NetworkError', 'status 502', '100 bytes of 1048576']);
+  assert.deepEqual(retries, ['NetworkError', 'status 502', '100 bytes of 65536']);
   faults.push('status', 'status', 'status', 'status');
   assert.throws(() => b.open('Data/a.big').read(2 * MiB, 10), /range request failed \(status 502\)/);
   faults.length = 0;
@@ -242,4 +243,43 @@ test('block store: checksummed blocks, a damaged block dropped, an earlier-forma
     assert.equal(s.map.size, 0);
     assert.equal(files.get('blocks.bin').getSize(), 0, 'data file emptied');
   } finally { if (realNav) Object.defineProperty(globalThis, 'navigator', realNav); else delete globalThis.navigator; }
+});
+
+test('http backend: a random read fetches only its 64 KiB pieces; the whole block follows in the background, stored', async () => {
+  const realFetch = globalThis.fetch;
+  const fetched = [];
+  let release; const gate = new Promise((r) => { release = r; });
+  globalThis.fetch = async (url, init) => { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range); fetched.push([+a, +b]); await gate; return { status: 206, arrayBuffer: async () => FILE.slice(+a, +b + 1).buffer }; };
+  try {
+    const store = new MemStore();
+    const b = new HttpBackend('/game/p/', tree(3), { store });
+    const f = b.open('Data/a.big'), n = requests.length;
+    // a read straddling two pieces and two blocks: one request per block, only the pieces
+    assert.deepEqual(f.read(MiB - 70000, 140000), FILE.subarray(MiB - 70000, MiB + 70000));
+    assert.deepEqual(requests.slice(n).map((r) => r.slice(1)), [[MiB - 2 * 65536, MiB - 1], [MiB, MiB + 2 * 65536 - 1]]);
+    // pieces already here: no request (a later read at another offset is random again)
+    f.read(MiB + 1000, 10);
+    assert.equal(requests.length, n + 2);
+    assert.equal(store.m.size, 0);
+    b.lastSyncFetchAt = -1e9; release();
+    for (let i = 0; i < 50 && store.m.size < 2; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(fetched, [[0, MiB - 1], [MiB, 2 * MiB - 1]]);
+    assert.equal(store.m.size, 2);
+    assert.equal(b.chunks.size, 0, 'the pieces are dropped once their block is here');
+    assert.deepEqual(f.read(5, 2 * MiB - 10), FILE.subarray(5, 2 * MiB - 5));
+    assert.equal(requests.length, n + 2, 'no synchronous request once the blocks are stored');
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('http backend: a stream read a little at a time fetches growing windows, not whole blocks ahead', () => {
+  const b = new HttpBackend('/game/s/', tree(4), {});
+  b.fillBackground = () => {}; // (no background downloads here)
+  const f = b.open('Data/a.big'), n = requests.length;
+  for (let pos = 0; pos < MiB + 8192; pos += 4096) assert.deepEqual(f.read(pos, 4096), FILE.subarray(pos, pos + 4096));
+  const reqs = requests.slice(n), sizes = reqs.map((r) => r[2] - r[1] + 1);
+  // doubling windows within the first block (its tail last), then — a file read whole — whole blocks ahead
+  assert.deepEqual(sizes.slice(0, 3), [65536, 131072, 262144]); // (then capped: at most 256 KiB ahead while the game waits)
+  assert.ok(sizes.every((n, i) => i === sizes.length - 1 || n <= 262144 + 65536), `bounded windows (${sizes})`);
+  assert.ok(reqs.filter((r) => r[1] < MiB).every((r) => r[2] < MiB), `the first MiB by pieces (${sizes})`);
+  assert.ok(sizes.length <= 8, `few requests (${sizes})`);
 });

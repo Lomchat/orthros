@@ -3,6 +3,16 @@
 // JSON listing so stat/readdir never hit the network; file data is fetched in blocks kept in a
 // bounded LRU cache with read-ahead for sequential access.
 export const BLOCK = 1 << 20; // 1 MiB
+/**
+ * A random read that misses fetches only the 64 KiB pieces it covers (a round trip plus 64 KiB instead of a whole
+ * block: ~10x less waiting over the Internet while the game waits); the whole block follows in the background.
+ */
+export const CHUNK = 1 << 16;
+const MAX_CHUNK_BYTES = 64 << 20;
+/** sequential bytes after which a file is being read whole (whole blocks ahead) rather than streamed */
+const STREAM_BYTES = 1 << 20;
+/** at most this many bytes fetched ahead of a stream's read while the game waits (the rest comes in the background) */
+const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched behind them replace them)
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 const RETRY_WAITS = [250, 1000, 2000, 4000, 8000]; // ms before each new attempt of a failed range request
 
@@ -33,6 +43,12 @@ export class HttpBackend {
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
+    /** 64 KiB pieces of blocks not fetched whole yet: "path#chunk" -> bytes (insertion order = LRU) */
+    this.chunks = new Map(); this.chunkBytes = 0;
+    /** whole blocks wanted in the background (a random read touched them): "path#block" -> {path, size, mtime, index} */
+    this.want = new Map(); this.filling = false;
+    /** the background download in flight (aborted when the game needs the network synchronously) */
+    this.bgAbort = null;
   }
 
   /** Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. */
@@ -101,23 +117,37 @@ export class HttpBackend {
       if (b * BLOCK >= size || store.map.has(key(b))) continue;
       const n = k + 1 < list.length && list[k + 1][0] === p && list[k + 1][1] === b + 1 && (b + 1) * BLOCK < size && !store.map.has(key(b + 1)) ? 2 : 1;
       if (n === 2) k++;
-      while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 300) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
+      // (the game's own reads first, then the blocks its random reads touched)
+      while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 300 || this.filling) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
       const start = b * BLOCK, end = Math.min(size, (b + n) * BLOCK);
-      let data;
-      try {
-        const res = await fetch(this.rangeUrl(r.path, start, end, true), this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } });
-        if (res.status !== 206 && res.status !== 200) continue;
-        data = new Uint8Array(await res.arrayBuffer());
-        if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
-        if (data.length !== end - start) continue;
-      } catch { return; }
+      const data = await this.fetchBackground(r.path, start, end);
+      if (data === null) { if (this.aborted) { this.aborted = false; k -= n; continue; } return; }
+      if (!data) continue;
       for (let i = 0; i < n; i++) store.put(key(b + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
       progress.bytes += data.length; progress.blocks += n;
     }
     store.flush?.();
     progress.done = true;
   }
+  /**
+   * [start, end) with fetch(), for the background downloads: the bytes, undefined for an answer to skip, null when the
+   * network failed or the download was aborted (this.aborted set: the game needed the network, try again later).
+   */
+  async fetchBackground(path, start, end) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    this.bgAbort = ctl;
+    try {
+      const res = await fetch(this.rangeUrl(path, start, end, true), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
+      if (res.status !== 206 && res.status !== 200) return undefined;
+      let data = new Uint8Array(await res.arrayBuffer());
+      if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
+      return data.length === end - start ? data : undefined;
+    } catch { return null; } finally { if (this.bgAbort === ctl) this.bgAbort = null; }
+  }
+
   fetchRange(path, start, end) {
+    // (a background download shares the connection: it goes away while the game waits, and is fetched again later)
+    if (this.bgAbort) { this.aborted = true; this.bgAbort.abort(); this.bgAbort = null; }
     const url = this.rangeUrl(path, start, end);
     for (let attempt = 0; ; attempt++) {
       const xhr = new XMLHttpRequest();
@@ -148,29 +178,150 @@ export class HttpBackend {
     }
   }
 
-  block(path, size, index, readAhead, mtime = 0) {
+  /** Block `index` from the memory cache or the persistent store, or null (no network). */
+  peekBlock(path, size, index, mtime = 0) {
     const key = `${path}#${index}`;
     let b = this.cache.get(key);
     if (b) { this.cache.delete(key); this.cache.set(key, b); return b; }
     // persistent store (the key names the file version: size and mtime of the listing)
-    const skey = (i) => `${path}#${size}#${mtime}#${i}`;
-    b = this.store?.get(skey(index));
+    const skey = `${path}#${size}#${mtime}#${index}`;
+    b = this.store?.get(skey);
     // (a stored block must have the block's length: the whole block, or the file's tail for the last one)
     if (b && b.length === Math.min(BLOCK, size - index * BLOCK)) { this.cache.set(key, b); this.evict(); return b; }
-    if (b) this.store.drop?.(skey(index));
+    if (b) this.store.drop?.(skey);
+    return null;
+  }
+
+  block(path, size, index, readAhead, mtime = 0) {
+    const b0 = this.peekBlock(path, size, index, mtime);
+    if (b0) return b0;
+    const skey = (i) => `${path}#${size}#${mtime}#${i}`;
     // fetch this block plus up to `readAhead` following blocks in one request
     const start = index * BLOCK;
     const n = Math.max(1, Math.min(readAhead, Math.ceil((size - start) / BLOCK)));
     const end = Math.min(size, start + n * BLOCK);
     const data = this.fetchRange(path, start, end);
-    for (let i = 0; i < n; i++) {
-      const k = `${path}#${index + i}`;
-      const slice = data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK));
-      this.cache.set(k, slice);
-      this.store?.put(skey(index + i), slice);
-    }
+    for (let i = 0; i < n; i++) this.installBlock(path, index + i, data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)), skey(index + i));
     this.evict();
-    return this.cache.get(key);
+    return this.cache.get(`${path}#${index}`);
+  }
+  /** A whole block arrived: memory cache, persistent store; its pieces and its background request are dropped. */
+  installBlock(path, index, bytes, skey) {
+    const k = `${path}#${index}`;
+    this.cache.set(k, bytes);
+    this.store?.put(skey, bytes);
+    this.want.delete(k);
+    for (let c = (index * BLOCK) / CHUNK, e = c + BLOCK / CHUNK; c < e; c++) { const ck = `${path}#${c}`, p = this.chunks.get(ck); if (p) { this.chunks.delete(ck); this.chunkBytes -= p.length; } }
+  }
+
+  /**
+   * Bytes [pos, end) of one block that is neither cached nor stored (a random read): the missing 64 KiB pieces are
+   * fetched in one request, the whole block is queued for the background.
+   */
+  readPieces(path, size, mtime, index, pos, end, out, outOff, ahead = 0, extra = 0) {
+    const c0 = Math.floor(pos / CHUNK), c1 = Math.floor((end - 1) / CHUNK);
+    let m0 = -1, m1 = -1;
+    for (let c = c0; c <= c1; c++) if (!this.chunks.has(`${path}#${c}`)) { if (m0 < 0) m0 = c; m1 = c; }
+    // (a stream: the request also covers the `extra` bytes that follow, within the block — the window grows with the
+    // stream, as few round trips as whole blocks would take for a file read from start to end)
+    if (m0 >= 0 && extra > 0) { const last = Math.min(Math.floor((Math.min(size, (index + 1) * BLOCK) - 1) / CHUNK), Math.floor((end - 1 + extra) / CHUNK)); while (m1 < last && !this.chunks.has(`${path}#${m1 + 1}`)) m1++; }
+    if (m0 >= 0) {
+      const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
+      const data = this.fetchRange(path, start, stop);
+      for (let c = m0; c <= m1; c++) {
+        const ck = `${path}#${c}`, piece = data.subarray((c - m0) * CHUNK, Math.min(data.length, (c - m0 + 1) * CHUNK));
+        if (this.chunks.has(ck)) continue;
+        this.chunks.set(ck, piece); this.chunkBytes += piece.length;
+      }
+      while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; }
+    }
+    for (let c = c0; c <= c1; c++) {
+      const ck = `${path}#${c}`, piece = this.chunks.get(ck);
+      if (!piece) return false; // (evicted at once: a read larger than the piece cache — the caller fetches the block)
+      this.chunks.delete(ck); this.chunks.set(ck, piece); // (LRU)
+      const a = Math.max(pos, c * CHUNK), b = Math.min(end, c * CHUNK + piece.length);
+      out.set(piece.subarray(a - c * CHUNK, b - c * CHUNK), outOff + (a - pos));
+    }
+    // the block, and for a stream the next ones, in the background
+    for (let i = index; i <= index + ahead && i * BLOCK < size; i++) {
+      const wk = `${path}#${i}`;
+      if (!this.want.has(wk) && (i === index || !this.peekBlock(path, size, i, mtime))) this.want.set(wk, { path, size, mtime, index: i });
+    }
+    this.fillBackground();
+    return true;
+  }
+
+  /**
+   * Fetch asynchronously what a read of [pos, end) would fetch (the missing pieces of the blocks it touches, or whole
+   * blocks for a bulk read), so that the read that follows finds everything here: the reading guest thread waits
+   * parked while the others run (see ReadFile). Resolves when done (failures resolve too: the read then fetches
+   * synchronously and reports the error itself).
+   */
+  async fetchAhead(path, size, mtime, pos, end, bulk) {
+    const jobs = [];
+    for (let bi = Math.floor(pos / BLOCK); bi * BLOCK < end; bi++) {
+      if (this.peekBlock(path, size, bi, mtime)) continue;
+      const b0 = bi * BLOCK, b1 = Math.min(size, b0 + BLOCK);
+      // the block is being downloaded in the background (a stream's read-ahead): wait for it rather than abort it
+      if (this.bgCur?.key === `${path}#${bi}`) { this.keepBg = true; jobs.push(this.bgCur.done); continue; }
+      if (bulk) {
+        const e = Math.min(size, b0 + 4 * BLOCK);
+        jobs.push(this.fetchForeground(path, b0, e).then((d) => { if (d) for (let i = 0; b0 + i * BLOCK < e; i++) if (!this.cache.has(`${path}#${bi + i}`)) this.installBlock(path, bi + i, d.subarray(i * BLOCK, Math.min(d.length, (i + 1) * BLOCK)), `${path}#${size}#${mtime}#${bi + i}`); this.evict(); }));
+        break;
+      }
+      const c0 = Math.floor(Math.max(pos, b0) / CHUNK), c1 = Math.floor((Math.min(end, b1) - 1) / CHUNK);
+      let m0 = -1, m1 = -1;
+      for (let c = c0; c <= c1; c++) if (!this.chunks.has(`${path}#${c}`)) { if (m0 < 0) m0 = c; m1 = c; }
+      if (m0 < 0) continue;
+      const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
+      jobs.push(this.fetchForeground(path, start, stop).then((d) => {
+        if (!d) return;
+        for (let c = m0; c <= m1; c++) { const ck = `${path}#${c}`; if (this.chunks.has(ck) || this.cache.has(`${path}#${bi}`)) continue; const piece = d.subarray((c - m0) * CHUNK, Math.min(d.length, (c - m0 + 1) * CHUNK)); this.chunks.set(ck, piece); this.chunkBytes += piece.length; }
+      }));
+    }
+    try { await Promise.all(jobs); } finally { this.keepBg = false; }
+  }
+  /** [start, end) with fetch() for a read the game waits for (counted as the game's own reads; not aborted). */
+  async fetchForeground(path, start, end) {
+    const t0 = performance.now();
+    if (this.bgAbort && !this.keepBg) { this.aborted = true; this.bgAbort.abort(); this.bgAbort = null; }
+    try {
+      const url = this.rangeUrl(path, start, end);
+      const res = await fetch(url, this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } });
+      if (res.status !== 206 && res.status !== 200) return null;
+      let data = new Uint8Array(await res.arrayBuffer());
+      if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
+      if (data.length !== end - start) return null;
+      const ms = performance.now() - t0;
+      this.stats.requests++; this.stats.bytes += data.length; this.stats.ms += ms; this.stats.asyncReads = (this.stats.asyncReads ?? 0) + 1;
+      this.onFetch?.({ url, start, end, ms });
+      return data;
+    } catch { return null; } finally { this.lastSyncFetchAt = performance.now(); }
+  }
+
+  /** Download the wanted blocks, one at a time, while the game is not reading synchronously. */
+  async fillBackground() {
+    if (this.filling || typeof fetch !== 'function') return;
+    this.filling = true;
+    try {
+      while (this.want.size) {
+        while (performance.now() - (this.lastSyncFetchAt ?? -1e9) < 150) await new Promise((res) => setTimeout(res, 50));
+        if (!this.want.size) break; // (fetched whole meanwhile by a sequential read)
+        const [k, w] = this.want.entries().next().value;
+        if (this.cache.has(k)) { this.want.delete(k); continue; }
+        const start = w.index * BLOCK, end = Math.min(w.size, start + BLOCK);
+        const pr = this.fetchBackground(w.path, start, end);
+        this.bgCur = { key: k, done: pr.then(() => {}) };
+        const data = await pr;
+        this.bgCur = null;
+        if (data === null) { if (this.aborted) { this.aborted = false; continue; } break; } // (network down: the next random read queues it again)
+        this.want.delete(k);
+        if (!data) continue;
+        this.installBlock(w.path, w.index, data, `${w.path}#${w.size}#${w.mtime}#${w.index}`);
+        this.evict();
+        this.stats.bgBlocks = (this.stats.bgBlocks ?? 0) + 1;
+      }
+    } finally { this.filling = false; }
   }
   /**
    * Offline copy: fetch every block of every file of the listing that the store does not hold yet, in the
@@ -211,17 +362,42 @@ export class HttpBackend {
 }
 
 class HttpFile {
-  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; }
+  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; }
   size() { return this.len; }
+  /**
+   * A read of [off, off + len) would need the network: a promise fetching it asynchronously (resolved when the data
+   * is here), else null. Leaves the read state (sequence detection) alone.
+   */
+  prepare(off, len) {
+    const end = Math.min(off + len, this.len);
+    if (off >= end || typeof fetch !== 'function') return null;
+    const sequential = off === this.lastEnd, bulk = sequential && this.run + (end - off) >= STREAM_BYTES;
+    let missing = false;
+    for (let bi = Math.floor(off / BLOCK); bi * BLOCK < end && !missing; bi++) {
+      if (this.b.peekBlock(this.path, this.len, bi, this.mtime)) continue;
+      if (bulk) { missing = true; break; }
+      for (let c = Math.floor(Math.max(off, bi * BLOCK) / CHUNK), e = Math.floor((Math.min(end, (bi + 1) * BLOCK) - 1) / CHUNK); c <= e; c++) if (!this.b.chunks.has(`${this.path}#${c}`)) { missing = true; break; }
+    }
+    return missing ? this.b.fetchAhead(this.path, this.len, this.mtime, off, end, bulk) : null;
+  }
   read(off, len) {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
     const out = new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
+    // bytes read in sequence so far: a bulk read (loading a file whole) fetches whole blocks ahead synchronously; a
+    // stream read a little at a time (audio, video while playing) goes by pieces, its next blocks in the background
+    this.run = sequential ? this.run + (end - off) : 0;
+    const bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
+      // a random read of a block not here yet: only its pieces now (the block follows in the background)
+      if (!bulk && !this.b.peekBlock(this.path, this.len, bi, this.mtime)) {
+        const stop = Math.min(end, (bi + 1) * BLOCK);
+        if (this.b.readPieces(this.path, this.len, this.mtime, bi, pos, stop, out, pos - off, sequential ? 2 : 0, sequential ? Math.min(this.run, STREAM_WINDOW) : 0)) { pos = stop; continue; }
+      }
       const blk = this.b.block(this.path, this.len, bi, sequential ? 4 : 1, this.mtime);
       const n = Math.min(end - pos, blk.length - bo);
       if (n <= 0) break;
