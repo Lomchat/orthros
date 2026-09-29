@@ -112,8 +112,10 @@ function decodeBlockBaseline(r, c, coef, off, dc, ac) {
     }
     const rs = r.decodeHuff(ac); const s = rs & 15, rr = rs >> 4;
     if (s === 0) { if (rr < 15) break; k += 16; continue; }
-    k += rr; if (k > 63) break;
-    coef[off + ZIGZAG[k]] = r.receiveExtend(s); k++;
+    // (a run past the block's end, corrupt data: its size bits are read all the same, as the fast lookup above and
+    // libjpeg do, so that the next block starts at the same bit whichever path decoded this one)
+    k += rr; const v = r.receiveExtend(s); if (k > 63) break;
+    coef[off + ZIGZAG[k]] = v; k++;
   }
 }
 
