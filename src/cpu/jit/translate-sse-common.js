@@ -110,17 +110,15 @@ export function loadVec(E, o, bytes = width(o)) {
 
 /**
  * Store the low `bytes` of a v128 into operand o. MEM: EA into L_TA, then
- * v128.store / store64_lane 0 / store32_lane 0 / store16_lane 0, followed by E.smcCheck(insn)
- * (and, when `unaligned`, by smcCheckEnd for a store that may cross into the next page).
+ * v128.store / store64_lane 0 / store32_lane 0 / store16_lane 0, followed by E.smcCheck(insn, bytes)
+ * (which also catches an unaligned store crossing into a code page).
  * XMM: full store (16) or low-lane merge (8/4/2). MM: mmStore (8) or a 32-bit low-lane merge (4).
  * emitValue(E) must push exactly one v128.
  * @param {any} insn the instruction (for smcCheck)
  * @param {number} bytes 16 | 8 | 4 | 2
  * @param {(E: any) => void} emitValue
- * @param {boolean} [unaligned] the ISA allows any address (MOVUPS/MOVDQU...), so the store may
- *   straddle two pages; aligned forms (MOVAPS/MOVNTPS/MOVDQA...) never do and skip the end check
  */
-export function storeVec(E, o, insn, bytes, emitValue, unaligned = false) {
+export function storeVec(E, o, insn, bytes, emitValue) {
   const c = E.c;
   if (o.t === OT.XMM) { xmmStoreLow(E, o.r, bytes, emitValue); return; }
   if (o.t === OT.MM) {
@@ -138,27 +136,7 @@ export function storeVec(E, o, insn, bytes, emitValue, unaligned = false) {
   else if (bytes === 2) c.v128store16lane(0, 0);
   else if (bytes === 1) c.v128store8lane(0, 0);
   else throw new Error(`storeVec: bad width ${bytes}`);
-  E.smcCheck(insn);
-  if (unaligned) smcCheckEnd(E, insn, bytes);
-}
-
-/**
- * Second SMC page check for a `bytes`-wide store starting at L_TA: E.smcCheck only inspects the
- * page of the first byte, so an unaligned 16-byte store that crosses into the next 4 KB page
- * would silently overwrite translated code there. Taken only when the store actually crosses
- * (L_TA & 0xfff > 0x1000 - bytes); then L_TA is moved to the last byte written (the EXIT_ARG the
- * host invalidates). Emit after the store and after E.smcCheck(insn). Cost: and/compare/branch
- * per store (measured: ~20% on a pure vector-store loop when applied to every store, hence only
- * the unaligned-capable 16-byte forms use it; 8-byte and scalar stores keep the single check).
- */
-export function smcCheckEnd(E, insn, bytes) {
-  if (!E.smc || !insn) return;
-  const c = E.c;
-  c.get(L_TA).i32(0xfff).and().i32(0x1000 - bytes).gt_u();
-  const i = c.if_();
-  c.get(L_TA).i32(bytes - 1).add().set(L_TA);
-  E.smcCheck(insn);
-  c.end(); void i;
+  E.smcCheck(insn, bytes);
 }
 
 // ------------------------------------------------------------------ scalars (lane 0)
