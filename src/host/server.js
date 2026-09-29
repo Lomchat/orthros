@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { attachLan } from './lan.js';
+import { SimLink } from './sim-link.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
@@ -69,6 +70,10 @@ export function createServer(opts = {}) {
     'Cache-Control': 'no-cache',
     ...extra,
   });
+  // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip, its bytes
+  // crossing one link shared by the answers in flight (see SimLink)
+  const link = opts.net ? new SimLink(opts.net) : null;
+  const viaLink = (res, bytes, go) => { const cancel = link.send(bytes, go); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
   const sendFile = (req, res, file, mime) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
@@ -83,9 +88,7 @@ export function createServer(opts = {}) {
       if (start > end || start >= st.size) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
       res.writeHead(206, { ...h, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
       if (req.method === 'HEAD') return res.end();
-      // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip plus its transfer time
-      const net = opts.net;
-      if (net) { setTimeout(() => fs.createReadStream(file, { start, end }).pipe(res), net.delayMs + (end - start + 1) / net.bytesPerSec * 1000); return; }
+      if (link) { viaLink(res, end - start + 1, () => fs.createReadStream(file, { start, end }).pipe(res)); return; }
       fs.createReadStream(file, { start, end }).pipe(res);
       return;
     }
@@ -242,7 +245,7 @@ export function createServer(opts = {}) {
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { res.writeHead(200, h); res.end(body); };
-      if (opts.net) setTimeout(go, opts.net.delayMs + body.length / opts.net.bytesPerSec * 1000); else go();
+      if (link) viaLink(res, body.length, go); else go();
     };
     const hit = encodedCache.get(key);
     if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
