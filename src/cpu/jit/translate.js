@@ -1052,20 +1052,20 @@ class Emitter {
    * An exit resuming at an address where no arithmetic flag is live (`live`: the flags read there before being written,
    * from the region's liveness — 0 when every path from it writes them all first) leaves no lazy operation: the lazy op
    * and its operands are written as zeros instead of their values. Otherwise the lazy values of every instruction
-   * before such an exit stay live up to it — around a whole loop for the time-slice exit of its back edge and for the
-   * SMC checks of its stores, which is where they cost registers (V8 keeps them in registers or spill slots across the
-   * loop only for those cold paths). What the resumed code reads is unchanged: it writes the flags before reading them;
-   * the arithmetic bits left in EFLAGS meanwhile are those of an older instruction, which only an exception raised in
-   * between (its CONTEXT) could see, as for the flags regionFlagsLiveness already leaves uncomputed. Only on the exit
-   * path (inside the exit's conditional): the fallthrough keeps its lazy state.
+   * before such an exit stay live up to it — around a whole loop for the time-slice exit of its back edge, which is
+   * where they cost registers (V8 keeps them in registers or spill slots across the loop only for that cold path).
+   * What the resumed code reads is unchanged: it writes the flags before reading them; the arithmetic bits left in
+   * EFLAGS meanwhile are those of an older instruction, which only an exception raised in between (its CONTEXT) could
+   * see, as for the flags regionFlagsLiveness already leaves uncomputed. Only on the exit path (inside the exit's
+   * conditional): the fallthrough keeps its lazy state.
+   * Not for SMC exits: the liveness was computed on the bytes translated, and the store that takes that exit may have
+   * just rewritten the code the proof walked (a JMP patched into a JCC reads the flags the exit would have dropped).
    */
   deadFlagsExit(live) {
     if (live !== 0 || this.opts.deadExitFlags === false) return;
     const c = this.c;
     c.i32(0).set(L_LZOP).i32(0).set(L_LZRES).i32(0).set(L_LZA).i32(0).set(L_LZB);
   }
-  /** flags live after the instruction being emitted (FL_ALL outside an instruction handler) */
-  flagsLiveAfter(insn) { return this.curInsn === insn && this.flagsAfter ? this.flagsLive() : FL_ALL; }
   /**
    * Budget check: subtract n and exit TIMESLICE (to eip) when exhausted. `live`: the flags live at eip (see
    * deadFlagsExit).
@@ -1190,8 +1190,7 @@ class Emitter {
     c.get(L_TV); this.smcFlag(30); // (every page of the range is tested: SMC_NEXT is not needed)
     const hit = c.hint(false).if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG); c.get(L_STATE).get(L_T5).get(L_TA).sub().i32store(ST.EXIT_LEN);
-    this.deadFlagsExit(this.flagsLiveAfter(insn));
-    this.exitCode(EXIT.SMC, insn.next);
+    this.exitCode(EXIT.SMC, insn.next); // (the lazy state kept whole: see deadFlagsExit)
     c.end(); void hit;
     c.get(L_TV).i32(1).add().tee(L_TV).i32(12).shl().get(L_T5).lt_u().br_if(lp);
     c.end(); c.end(); void done;
@@ -1219,8 +1218,7 @@ class Emitter {
     const hit = c.if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
     if (bytes > 16) c.get(L_STATE).i32(bytes).i32store(ST.EXIT_LEN); // (the range the host invalidates: 16 bytes by default)
-    this.deadFlagsExit(this.flagsLiveAfter(insn)); // (the instruction's own flags are in the lazy state: see binArith)
-    this.exitCode(EXIT.SMC, insn.next);
+    this.exitCode(EXIT.SMC, insn.next); // (the instruction's own flags are in the lazy state: see binArith, deadFlagsExit)
     c.end(); void hit;
     c.end(); void i;
   }
@@ -1551,7 +1549,6 @@ class Emitter {
 
   emitInsn(insn, b) {
     this.curOp = insn.op;
-    this.curInsn = insn;
     this.c.site = insn.op; // (call statistics)
     const h = HANDLERS[insn.op];
     this.xsOK = XMM_SHADOW_OPS.has(insn.op); this.xdOK = XMM_SHADOW64_OPS.has(insn.op); // (read by the shadow helpers)

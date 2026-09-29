@@ -5,9 +5,10 @@
 //    (EXIT.SMC): its own flags must be in the state (INC/DEC/NEG/ADC/SBB/shifts/SHLD/XADD... used to set the lazy kind
 //    after the store, so that exit flushed the new operands with the previous instruction's kind).
 // 2. Where no flag is live at the resume address (every path from it writes the flags before reading them: the region's
-//    liveness), an in-region exit writes "no lazy op" instead of the lazy operands, so that they are not kept live
-//    around loops for the exit paths alone; flags that are live are still exact. JIT against the interpreter, whole
-//    and time-sliced runs.
+//    liveness), a time-slice exit writes "no lazy op" instead of the lazy operands, so that they are not kept live
+//    around loops for the exit path alone; flags that are live are still exact. SMC exits keep the whole lazy state
+//    (their store may rewrite the code the liveness was computed on). JIT against the interpreter, whole and
+//    time-sliced runs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -151,4 +152,17 @@ test('the time-slice exit of a back edge whose flags are dead does not use the l
   mem2.writeBytes(CODE, Uint8Array.from([...LOOP_LIVE, 0xf4]));
   const j2 = listRegion(mem2, CODE, { smc: true }).groups.find((g) => /\bjb\b/.test(g.label));
   assert.ok(!j2.ops.includes('set lzop'), 'live flags: the lazy state is kept');
+});
+// the store taking the SMC exit rewrites the code right after it: a JMP (flags dead: its target's CMP writes them) becomes
+// a JZ reading the ZF of the CMP before the store — the SMC exit keeps the whole lazy state (the region's liveness was
+// computed on the old bytes)
+test('SMC exit whose store turns the next JMP into a JZ: the flags before the store survive', () => {
+  // mov edi, L ; mov eax, 5 ; cmp eax, 5 ; mov byte [edi], 0x74 ; L: jmp +2 ; mov bl, 1 ; cmp eax, eax ; hlt
+  const pre = [0xbf, 0, 0, 0, 0, 0xb8, ...le(5), 0x83, 0xf8, 0x05, 0xc6, 0x07, 0x74];
+  pre.splice(1, 4, ...le(CODE + pre.length));
+  const code = [...pre, 0xeb, 0x02, 0xb3, 0x01, 0x39, 0xc0, 0xf4];
+  const want = run(code, false), got = run(code, true);
+  assert.ok(got.smc >= 1, 'the store takes the SMC exit');
+  assert.equal(want.regs[3] & 0xff, 0, 'the JZ is taken');
+  assert.deepEqual(got.regs, want.regs);
 });

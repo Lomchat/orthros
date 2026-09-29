@@ -687,6 +687,10 @@
   cycles −2 %, temps −7 % (boucle limitée par les erreurs de prédiction). Bout en bout (3 A/B alternés, 105 s,
   `--jit-opts {"deadExitFlags":false}` pour A, machine à charge ~36) : fin du calcul (TextureAssetBuilder) A 90/93/>105 s,
   B >105/95/89 s ; **pas de différence mesurable** sous ce bruit ; menu non atteint en 105 s.
+- **Revue** : l'abandon des drapeaux aux sorties SMC était faux (la liveness est calculée sur les octets traduits ; l'écriture
+  qui prend la sortie peut réécrire le code qu'elle a parcouru : un JMP changé en JZ lisait un ZF perdu, test ajouté).
+  Les sorties SMC gardent tout l'état paresseux ; seules les sorties de tranche de temps l'abandonnent. Le gain retombe :
+  micro-banc instructions hôte −2 % (7,90–7,95 → 7,66–7,82 G), cycles et temps ~−3 % (4 paires alternées, charge ~47).
 - Piste : le reste de la boucle (répartiteur `blk` en tête de boucle, décompte `icount` par bloc) coûte peu ; le gain
   réel demanderait de sortir du modèle (moins d'erreurs de prédiction : impossible côté JIT).
 
