@@ -4,18 +4,19 @@
 //
 // Semantics follow src/cpu/interp-sse.js bit for bit (the oracle suite tests/generated/sse is the
 // judge): XMM registers live in v128 locals (lane 0 of scalar single-precision code in f32 shadows:
-// XMM_SHADOW_OPS, Emitter.xmmShadowSync), MM/MXCSR in the thread state, scalar forms write lane 0 only,
+// XMM_SHADOW_OPS, Emitter.xmmShadowSync; the low qword of scalar double-precision code in f64 shadows:
+// XMM_SHADOW64_OPS, Emitter.xmmShadowSync64), MM/MXCSR in the thread state, scalar forms write lane 0 only,
 // MIN/MAX return the source on NaN/equal (f32x4.pmin(src, dst)), float->int conversions yield
 // 0x80000000 on NaN/overflow and the non-truncating ones honour MXCSR.RC at run time, RCP/RSQRT
 // are the exact f32(1/x) / f32(1/sqrt(x in f64)) of the interpreter. DAZ/FTZ are ignored (WASM
 // SIMD has no flush-to-zero). Every MM access mirrors opAddr (tag word 0xff, TOP 0) through the
 // common helpers. Not registered here: FXSAVE/FXRSTOR (interpreter fallback).
-import { HANDLERS, XMM_SHADOW_OPS, L_STATE, L_REG, L_EFLAGS, L_TA, L_F64A, L_F64B, L_V0, L_V1, L_V2, L_F32A, L_F32B } from './translate.js';
+import { HANDLERS, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, L_STATE, L_REG, L_EFLAGS, L_TA, L_F64A, L_F64B, L_V0, L_V1, L_V2, L_F32A, L_F32B, L_XS0, L_XD0 } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
 import {
   xmmOff, xmmLocal, xmmLoad, xmmStore, xmmStoreLow, mmStore, loadVec, storeVec,
-  scalarF32, scalarF64, xmmStoreF32, xmmStoreF64, xmmStoreShadowed,
+  scalarF32, scalarF64, xmmStoreF32, xmmStoreF64, xmmStoreShadowed, xmmStoreShadowed64, xmmSyncWhole, xmmDropShadows,
   pushSplatI32, pushSplatF32, pushSplatF64, pushLowMask,
   elemMask, shufps, shufpd, unpackMask,
 } from './translate-sse-common.js';
@@ -122,25 +123,38 @@ function rsqrtLowPair(E) {
 
 // ------------------------------------------------------------------ 16-byte moves
 
+// Whole-register moves belong to both shadow families (XMM_SHADOW_OPS and XMM_SHADOW64_OPS, see the end of this file):
+// a register copy (`movapd xmm1, xmm0` before a scalar operation on the copy, frequent in compiled scalar code) copies
+// the v128 local and the source's shadows with their dirty bits, so that a scalar chain goes on in the copy without
+// the lane being written back first; a load drops the destination's shadows; a store writes the source's dirty
+// shadows back first.
 function mov16(unaligned) {
   return (E, insn) => {
-    const [d, s] = insn.ops;
+    const c = E.c; const [d, s] = insn.ops;
+    if (d.t === OT.XMM && s.t === OT.XMM) {
+      const sr = s.r & 7, dr = d.r & 7, sb = 1 << sr, db = 1 << dr;
+      c.get(xmmLocal(sr)).set(xmmLocal(dr));
+      if (E.xsValid & sb) { c.get(L_XS0 + sr).set(L_XS0 + dr); E.xsValid |= db; E.xsDirty = E.xsDirty & sb ? E.xsDirty | db : E.xsDirty & ~db; } else { E.xsValid &= ~db; E.xsDirty &= ~db; }
+      if (E.xdValid & sb) { c.get(L_XD0 + sr).set(L_XD0 + dr); E.xdValid |= db; E.xdDirty = E.xdDirty & sb ? E.xdDirty | db : E.xdDirty & ~db; } else { E.xdValid &= ~db; E.xdDirty &= ~db; }
+      return;
+    }
+    if (s.t === OT.XMM) xmmSyncWhole(E, s.r);
     storeVec(E, d, insn, 16, () => loadVec(E, s, 16), unaligned);
+    if (d.t === OT.XMM) xmmDropShadows(E, d.r);
   };
 }
-for (const k of ['MOVAPS', 'MOVAPD', 'MOVDQA', 'LDDQU', 'MOVNTPS', 'MOVNTPD', 'MOVNTDQ']) HANDLERS[OP[k]] = mov16(false);
-for (const k of ['MOVUPS', 'MOVUPD', 'MOVDQU']) HANDLERS[OP[k]] = mov16(true); // may straddle two pages: end-page SMC check
+const MOV16 = ['MOVAPS', 'MOVAPD', 'MOVDQA', 'LDDQU', 'MOVNTPS', 'MOVNTPD', 'MOVNTDQ', 'MOVUPS', 'MOVUPD', 'MOVDQU'];
+for (const k of MOV16) HANDLERS[OP[k]] = mov16(k === 'MOVUPS' || k === 'MOVUPD' || k === 'MOVDQU'); // (unaligned: may straddle two pages, end-page SMC check)
 
-// MOVSS / MOVSD: mem dest -> 4/8-byte store; xmm <- mem zero-extends; xmm <- xmm merges lane 0
-function movScalar(n) {
-  return (E, insn) => {
-    const [d, s] = insn.ops;
-    if (d.t === OT.MEM) storeVec(E, d, insn, n, () => xmmLoad(E, s.r));
-    else if (s.t === OT.MEM) xmmStore(E, d.r, () => loadVec(E, s, n));
-    else xmmStoreLow(E, d.r, n, () => xmmLoad(E, s.r));
-  };
-}
-HANDLERS[OP.MOVSD] = movScalar(8);
+// MOVSS / MOVSD: mem dest -> 4/8-byte store; xmm <- mem zero-extends; xmm <- xmm merges lane 0.
+// MOVSD through the f64 shadows (XMM_SHADOW64_OPS): m64 <- the shadow; xmm <- m64 loads the zero-extended vector and
+// its low qword into the shadow; xmm <- xmm copies shadow to shadow (the destination's high qword kept)
+HANDLERS[OP.MOVSD] = (E, insn) => {
+  const c = E.c; const [d, s] = insn.ops;
+  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF64(E, s); c.f64store(0, 0); E.smcCheck(insn); }
+  else if (s.t === OT.MEM) xmmStoreShadowed64(E, d.r, () => { E.ea(s); c.v128load64zero(0); });
+  else xmmStoreF64(E, d.r, () => scalarF64(E, s));
+};
 // MOVSS through the lane-0 shadows (XMM_SHADOW_OPS below): m32 <- the shadow; xmm <- m32 loads the zero-extended
 // vector and its lane 0 into the shadow; xmm <- xmm copies shadow to shadow (lanes 1-3 of the destination kept)
 HANDLERS[OP.MOVSS] = (E, insn) => {
@@ -150,13 +164,16 @@ HANDLERS[OP.MOVSS] = (E, insn) => {
   else xmmStoreF32(E, d.r, () => scalarF32(E, s));
 };
 
-// MOVLPS/MOVLPD: low qword <-> m64 (upper preserved)
+// MOVLPS/MOVLPD: low qword <-> m64 (upper preserved), through the f64 shadow: the C runtimes' way of moving a double
+// between memory and a register (the x87 stack's included: fstp m64 ; movlpd xmm, m64). Bit-exact for any
+// contents (two floats, integers, signaling NaNs): WASM loads, stores and locals keep an f64's bits
 HANDLERS[OP.MOVLPS] = HANDLERS[OP.MOVLPD] = (E, insn) => {
-  const [d, s] = insn.ops;
-  if (d.t === OT.MEM) storeVec(E, d, insn, 8, () => xmmLoad(E, s.r));
-  else xmmStoreLow(E, d.r, 8, () => loadVec(E, s, 8));
+  const c = E.c; const [d, s] = insn.ops;
+  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF64(E, s); c.f64store(0, 0); E.smcCheck(insn); }
+  else xmmStoreF64(E, d.r, () => { E.ea(s); c.f64load(0, 0); });
 };
-// MOVHPS/MOVHPD: high qword <-> m64 (low preserved)
+// MOVHPS/MOVHPD: high qword <-> m64 (low preserved). In XMM_SHADOW64_OPS without using the shadow: they never read nor
+// write the low qword, which may stay stale in the v128 local (a dirty f64 shadow)
 HANDLERS[OP.MOVHPS] = HANDLERS[OP.MOVHPD] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
   if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); xmmLoad(E, s.r); c.v128store64lane(0, 1); E.smcCheck(insn); return; }
@@ -450,6 +467,13 @@ HANDLERS[OP.CVTSD2SI] = cvtToGpr(true, false); HANDLERS[OP.CVTTSD2SI] = cvtToGpr
 // CVTSS2SD / CVTSD2SS (an f64 lane of the vector), nor the packed or double forms.
 for (const k of ['MOVSS', 'ADDSS', 'SUBSS', 'MULSS', 'DIVSS', 'MINSS', 'MAXSS', 'SQRTSS', 'RCPSS', 'RSQRTSS',
   'CVTSI2SS', 'CVTSS2SI', 'CVTTSS2SI', 'COMISS', 'UCOMISS']) XMM_SHADOW_OPS.add(OP[k]);
+// Their double-precision counterparts and the low-qword moves, through the f64 shadow helpers (scalarF64,
+// xmmStoreF64, xmmStoreShadowed64): the scalar code of the C runtimes' SSE2 math routines; MOVHPS/MOVHPD, which leave
+// the low qword alone; PEXTRW / MOVD / MOVQ (translate-sse-int.js) reading the shadow's bits. The whole-register moves
+// are in both sets (mov16 handles both kinds of shadow).
+for (const k of ['MOVSD', 'MOVLPD', 'MOVLPS', 'MOVHPD', 'MOVHPS', 'ADDSD', 'SUBSD', 'MULSD', 'DIVSD', 'MINSD', 'MAXSD',
+  'SQRTSD', 'CVTSI2SD', 'CVTSD2SI', 'CVTTSD2SI', 'COMISD', 'UCOMISD']) XMM_SHADOW64_OPS.add(OP[k]);
+for (const k of MOV16) { XMM_SHADOW_OPS.add(OP[k]); XMM_SHADOW64_OPS.add(OP[k]); }
 
 // ------------------------------------------------------------------ MXCSR
 
