@@ -162,6 +162,8 @@ export class HttpBackend {
       if (data === null) return;
       if (!data) { e.skip = true; continue; } // (an answer to skip: not asked again this session)
       for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+      // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
+      e.skip = true; if (n === 2) f.skip = true;
       progress.bytes += data.length; progress.blocks += n;
     }
     store.flush?.();
