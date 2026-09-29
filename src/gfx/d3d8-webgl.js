@@ -19,8 +19,6 @@ const colorToVec = (c, out = new Float32Array(4)) => { out[0] = ((c >> 16) & 0xf
 const IDENTITY = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 /** First n floats equal (NaN placeholders never match: fresh caches always upload). */
 const byNumber = (a, b) => a - b;
-/** Time per Present for uploading textures written but not drawn yet (WebGLDevice.preloadTextures). */
-const PRELOAD_MS = 4;
 const sameF32 = (a, b, n) => { for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
 const isDxt = (f) => f === FMT.DXT1 || f === FMT.DXT2 || f === FMT.DXT3 || f === FMT.DXT4 || f === FMT.DXT5;
 /** FVF attribute name -> DX9 semantic name (shaders used together with SetFVF) */
@@ -133,7 +131,6 @@ export class WebGLDevice {
     this.firstVertexConvention();
     this.programs = new Map();
     this.textures = new Map(); // resource id -> { tex, target }
-    this.pendingTextures = new Set(); // textures written, not yet uploaded (see surfaceUpdated)
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
     this.samplerPool = new Map(); // parameter combination -> WebGLSampler
@@ -192,33 +189,7 @@ export class WebGLDevice {
   destroy() { const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programs.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
-  createTexture() {} createBuffer() {} createSurface() {}
-  /**
-   * A texture level was written (lock, D3DX, copy): a texture not yet on the GPU is remembered, to be uploaded at a
-   * later Present within a time budget (see preloadTextures) instead of all at once by the first frame drawing with it —
-   * a map load fills hundreds of textures behind a loading screen, then its first frame would upload them all.
-   */
-  surfaceUpdated(s) { const t = s.owner; if (t && !this.textures.has(t.id)) this.pendingTextures.add(t); }
-  volumeUpdated(t) { if (t && !this.textures.has(t.id)) this.pendingTextures.add(t); }
-  /**
-   * Upload textures written but not yet used, until `budgetMs` is spent: only those whose levels all hold data (a
-   * texture still being filled waits), the same uploads a draw would make (a texture changed afterwards is dirty
-   * again and uploaded again when drawn).
-   */
-  preloadTextures(budgetMs) {
-    if (!this.pendingTextures.size) return;
-    const t0 = performance.now();
-    for (const t of this.pendingTextures) {
-      if (performance.now() - t0 > budgetMs) break;
-      if (this.textures.has(t.id)) { this.pendingTextures.delete(t); continue; } // (drawn meanwhile)
-      const levels = t.faces ? t.faces.flat() : t.levels ?? [];
-      if (!levels.length || (t.usage & 1) || !levels.every((l) => l.mem)) continue; // (render targets: drawn, not uploaded)
-      this.pendingTextures.delete(t);
-      this.glTexture(t);
-      this.stats.preloaded = (this.stats.preloaded ?? 0) + 1;
-    }
-    this.stats.preloadMs = (this.stats.preloadMs ?? 0) + performance.now() - t0;
-  }
+  createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
   /** A locked range was written: remember the union of dirty bytes so the upload can be partial. */
   bufferUpdated(b, start = 0, size = b.length) {
     const end = Math.min(b.length, start + size);
@@ -228,7 +199,6 @@ export class WebGLDevice {
   destroyResource(r) {
     const gl = this.gl;
     const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); }
-    this.pendingTextures.delete(r);
     const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
     for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); } }
@@ -455,7 +425,6 @@ export class WebGLDevice {
     }
     gl.flush(); this.frame++;
     if (this.pc?.queue.length) this.prewarmStep();
-    this.preloadTextures(PRELOAD_MS);
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
     if (this.countLeft && --this.countLeft === 0) this.log(`d3d-webgl: GL calls per frame over ${this.countFrames} frames: ${this.stopGlCount(this.countFrames)}`);
     if (this.captureAt && this.frame === this.captureAt) {
