@@ -15,7 +15,6 @@
 // of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
 import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
 import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
-import { smcCheckEnd } from './translate-sse-common.js';
 import { emitF80Load, emitF80Store } from './fpmath-f80.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
@@ -370,7 +369,7 @@ function fstore(E, insn, doPop) {
     // FSTP m80: exact (fpmath-f80.js, the interpreter's writeF80); 10 bytes may straddle two pages
     E.eaTo(o); loadST(E, 0); c.set(L_F64A); emitF80Store(c, L_TA, 0, L_F64A, F80_STORE);
     if (doPop) pop(E);
-    E.smcCheck(insn); smcCheckEnd(E, insn, 10);
+    E.smcCheck(insn, 10);
     return;
   }
   E.eaTo(o);
@@ -861,11 +860,11 @@ HANDLERS[OP.FLDCW] = (E, insn) => {
   c.get(L_TV).i32(0xf00).and().set(L_FPC);
   E.fpcStatic = null; // unknown from here on (tested at run time)
 };
-HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.ea(insn.ops[0]); c.get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); };
+HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); E.smcCheck(insn, 2); };
 HANDLERS[OP.FNSTSW] = (E, insn) => {
   const c = E.c; const o = insn.ops[0];
   c.get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
-  if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.ea(o); c.get(L_TV).i32store16(0); }
+  if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.eaTo(o); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); }
 };
 HANDLERS[OP.FNCLEX] = (E) => { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x80ff).and().i32store16(ST.FPU_SW); };
 HANDLERS[OP.FCMOVCC] = (E, insn) => {
@@ -953,7 +952,7 @@ HANDLERS[OP.FNSTENV] = (E, insn) => {
   E.eaTo(insn.ops[0]);
   storeEnv(E);
   c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_CW).i32(0x3f).or().i32store16(ST.FPU_CW); // all exceptions masked
-  E.smcCheck(insn); smcCheckEnd(E, insn, 28);
+  E.smcCheck(insn, 28);
 };
 HANDLERS[OP.FLDENV] = (E, insn) => {
   E.x87Normalize();
@@ -984,7 +983,7 @@ HANDLERS[OP.FNSAVE] = (E, insn) => {
   E.flushX87Regs(); // (the locals stay valid)
   registerImages(E, true);
   fninit(E); // then the FPU is re-initialized (the register values kept, as FNINIT does)
-  E.smcCheck(insn); smcCheckEnd(E, insn, 108);
+  E.smcCheck(insn, 108);
 };
 HANDLERS[OP.FRSTOR] = (E, insn) => {
   E.x87Normalize();

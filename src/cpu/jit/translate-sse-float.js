@@ -128,7 +128,7 @@ function rsqrtLowPair(E) {
 // the v128 local and the source's shadows with their dirty bits, so that a scalar chain goes on in the copy without
 // the lane being written back first; a load drops the destination's shadows; a store writes the source's dirty
 // shadows back first.
-function mov16(unaligned) {
+function mov16() {
   return (E, insn) => {
     const c = E.c; const [d, s] = insn.ops;
     if (d.t === OT.XMM && s.t === OT.XMM) {
@@ -139,12 +139,12 @@ function mov16(unaligned) {
       return;
     }
     if (s.t === OT.XMM) xmmSyncWhole(E, s.r);
-    storeVec(E, d, insn, 16, () => loadVec(E, s, 16), unaligned);
+    storeVec(E, d, insn, 16, () => loadVec(E, s, 16)); // (an unaligned store straddling two pages: see Emitter.smcCheck)
     if (d.t === OT.XMM) xmmDropShadows(E, d.r);
   };
 }
 const MOV16 = ['MOVAPS', 'MOVAPD', 'MOVDQA', 'LDDQU', 'MOVNTPS', 'MOVNTPD', 'MOVNTDQ', 'MOVUPS', 'MOVUPD', 'MOVDQU'];
-for (const k of MOV16) HANDLERS[OP[k]] = mov16(k === 'MOVUPS' || k === 'MOVUPD' || k === 'MOVDQU'); // (unaligned: may straddle two pages, end-page SMC check)
+for (const k of MOV16) HANDLERS[OP[k]] = mov16();
 
 // MOVSS / MOVSD: mem dest -> 4/8-byte store; xmm <- mem zero-extends; xmm <- xmm merges lane 0.
 // MOVSD through the f64 shadows (XMM_SHADOW64_OPS): m64 <- the shadow; xmm <- m64 loads the zero-extended vector and
@@ -478,6 +478,6 @@ for (const k of MOV16) { XMM_SHADOW_OPS.add(OP[k]); XMM_SHADOW64_OPS.add(OP[k]);
 // ------------------------------------------------------------------ MXCSR
 
 HANDLERS[OP.LDMXCSR] = (E, insn) => { const c = E.c; c.get(L_STATE); E.ea(insn.ops[0]); c.i32load(0, 0).i32(0xffff).and().i32store(ST.MXCSR); };
-HANDLERS[OP.STMXCSR] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load(ST.MXCSR).i32store(0, 0); E.smcCheck(insn); };
+HANDLERS[OP.STMXCSR] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load(ST.MXCSR).i32store(0, 0); E.smcCheck(insn, 4); }; // (the decoder gives m32 no size)
 
 export {};

@@ -16,7 +16,7 @@ import { OP, OT } from '../decoder.js';
 import { ST, SEG } from '../state.js';
 import { T } from './wasm.js';
 import {
-  width, xmmOff, xmmLocal, mmOff, mmTouch, loadVec, storeVec, smcCheckEnd, xmmStore, scalarI32, scalarI64, pushZero, xmmLowI64, xmmStoreShadowed64,
+  width, xmmOff, xmmLocal, mmOff, mmTouch, loadVec, storeVec, xmmStore, scalarI32, scalarI64, pushZero, xmmLowI64, xmmStoreShadowed64,
   elemMask, unpackMask, pshufd, pshuflw, pshufhw, pshufw, pslldqMask, psrldqMask, storeScalar,
 } from './translate-sse-common.js';
 
@@ -291,8 +291,7 @@ function maskmov(E, insn) {
     c.get(L_TA).get(L_V0).v128store8lane(i, i);
     c.end(); void l;
   }
-  E.smcCheck(insn);
-  if (n === 16) smcCheckEnd(E, insn, n); // MASKMOVDQU: unaligned 16-byte store, may straddle two pages
+  E.smcCheck(insn, n); // (MASKMOVDQU: an unaligned 16-byte store, may straddle two pages)
 }
 HANDLERS[OP.MASKMOVQ] = maskmov;
 HANDLERS[OP.MASKMOVDQU] = maskmov;
