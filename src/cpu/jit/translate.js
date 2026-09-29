@@ -43,9 +43,11 @@ const L_XMM0 = 56;
 const L_F64D = 64, L_F64E = 65, L_F64G = 66, L_F64H = 67;
 // f32 shadows of lane 0 of the XMM registers (L_XS0+r), for scalar single-precision code (Emitter.xsValid)
 const L_XS0 = 68;
+// f64 shadows of the low qword of the XMM registers (L_XD0+r), for scalar double-precision code (Emitter.xdValid)
+const L_XD0 = 76;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32)]; // indices 16..75
-if (LOCAL_TYPES.length !== L_XS0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64)]; // indices 16..83
+if (LOCAL_TYPES.length !== L_XD0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -53,6 +55,12 @@ if (LOCAL_TYPES.length !== L_XS0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length 
  * shadow back to its v128 local (Emitter.xmmShadowRelease).
  */
 const XMM_SHADOW_OPS = new Set();
+/**
+ * The same for the f64 shadows (xmmShadowSync64): the scalar double-precision family and the low-qword moves, filled by
+ * translate-sse-float.js / translate-sse-int.js. An instruction of both sets (the whole-register moves) handles both
+ * kinds of shadow itself.
+ */
+const XMM_SHADOW64_OPS = new Set();
 // Instructions whose handler (native or interpreter) reads or writes the x87 state: every x87
 // mnemonic (the decoder names them F*: FLD..FBSTP, FNSTENV, FXSAVE/FXRSTOR, ...), EMMS, and any
 // MMX-register operand (TOP = 0, tags = 0xff side effect). A region containing one is an "x87
@@ -390,6 +398,86 @@ export function translateRegion(mem, entry, opts = {}) {
   return em.run(entry);
 }
 
+// ---- x87 entry shifts. Inside a block the x87 handlers only move a static shift (Emitter.stShift); where the block
+// is left the shift is materialized: the 8 stack locals rotated, the tag word rotated, L_TOP adjusted. A C-runtime
+// math routine entered with its argument pushed (fld ; jcc to the SSE2 code) or pushing its result before a jump
+// to a common epilogue (fld ; jmp L ; ... L: fstp) paid one such rotation on every in-region branch: 8 f64 moves of
+// loop-carried locals (tools/crtmath-bench.mjs: 4 of them per element of an SSE2 sin). A block may instead be
+// entered with a non-zero shift, its planned entry shift: an in-region transfer (fallthrough, branch, dispatch
+// through L_BLK) rotates only by the difference between its shift and the target's plan, nothing when they agree.
+// A region entry (dispatcher, chain, return) finds the x87 state in the state block: the prologue loads the locals
+// for the entry block's plan directly (x87EntryTop: L_TOP = TOP - plan, the loads relative to it), so that no
+// rotation merges into the blocks' loop-carried values. The plan only chooses where rotations happen: any plan is
+// exact, so it is computed before the emission from the instructions' usual stack effects (x87StackEffect): a
+// handler doing otherwise (an interpreter fallback of an operand form, a push depending on the operand) only costs
+// the rotations the plan meant to avoid.
+/** x87 instructions pushing (-1: the shift decreases) or popping (+1, +2) the stack, for x87EntryPlan. */
+const X87_STACK = new Map([
+  ...['FLD', 'FILD', 'FBLD', 'FLD1', 'FLDL2T', 'FLDL2E', 'FLDPI', 'FLDLG2', 'FLDLN2', 'FLDZ', 'FXTRACT', 'FPTAN', 'FSINCOS',
+    'FDECSTP'].map((k) => [OP[k], -1]),
+  ...['FSTP', 'FISTP', 'FISTTP', 'FBSTP', 'FCOMP', 'FICOMP', 'FUCOMP', 'FCOMIP', 'FUCOMIP', 'FADDP', 'FMULP', 'FSUBP', 'FSUBRP',
+    'FDIVP', 'FDIVRP', 'FPATAN', 'FYL2X', 'FYL2XP1', 'FINCSTP'].map((k) => [OP[k], 1]),
+  [OP.FCOMPP, 2], [OP.FUCOMPP, 2],
+]);
+/** Instructions whose handler leaves the stack normalized (shift 0: TOP reloaded or re-based). */
+const X87_NORMALIZING = new Set(['FLDENV', 'FNSTENV', 'FRSTOR', 'FNSAVE', 'FNINIT', 'FXSAVE', 'FXRSTOR', 'EMMS'].map((k) => OP[k]));
+/**
+ * Usual effect of `insn` on the static shift: a change (-1 push, +1/+2 pops, 0), or null when its translation
+ * normalizes the stack (interpreter fallbacks, state loads / saves, MMX instructions re-basing it on TOP = 0).
+ */
+function x87StackEffect(insn) {
+  if (!HANDLERS[insn.op] || X87_NORMALIZING.has(insn.op)) return null;
+  const d = X87_STACK.get(insn.op);
+  if (d !== undefined) return d;
+  return touchesFpu(insn) && !FPU_OPS.has(insn.op) ? null : 0; // (an MMX operand: TOP = 0)
+}
+/**
+ * Planned x87 entry shift per block (null when all are 0): the value every in-region transfer into the block
+ * leaves, from the blocks' stack effects (a transfer's shift: its block's entry shift plus the effects before it, or
+ * from the last normalizing instruction); 0 for the blocks entered from outside on every visit (the region entry —
+ * whose entries then skip the prologue's plan lookup —, return sites), without in-region predecessor, or whose
+ * transfers disagree.
+ */
+function x87EntryPlan(blocks, byEip, entryIdx) {
+  const n = blocks.length, edges = [];
+  for (const b of blocks) {
+    let shift = 0, abs = false;
+    for (const insn of b.insns) {
+      const d = x87StackEffect(insn);
+      if (d === null) { shift = 0; abs = true; } else shift = (shift + d) & 7;
+    }
+    const last = b.insns[b.insns.length - 1];
+    const succ = [];
+    if (b.term === TERM_NONE || b.term === TERM_JCC || b.term === TERM_LOOP) succ.push(b.fallthrough);
+    if (last && b.term !== TERM_NONE && branchTarget(last) >= 0) succ.push(branchTarget(last));
+    for (const a of succ) { const t = byEip.get(a); if (t) edges.push({ src: b.index, tgt: t.index, shift, abs }); }
+  }
+  if (!edges.some((e) => e.shift !== 0)) return null;
+  // forward dataflow to a fixpoint, optimistic like regionLazyPrediction: UNSET (no computable incoming transfer
+  // yet: a loop header before its back edge is known) is the identity of the meet, disagreeing values meet to 0
+  // for good (BAD). Monotone (UNSET -> a value -> BAD), so it ends
+  const UNSET = -1, BAD = -2;
+  const plan = new Int8Array(n).fill(BAD);
+  for (const e of edges) plan[e.tgt] = UNSET;
+  plan[entryIdx] = BAD;
+  for (const b of blocks) if (b.term === TERM_CALL && byEip.has(b.fallthrough)) plan[byEip.get(b.fallthrough).index] = BAD;
+  const at = (k) => (plan[k] < 0 ? 0 : plan[k]);
+  for (let changed = true, rounds = 0; changed && rounds < 64; rounds++) {
+    changed = false;
+    for (const e of edges) {
+      const t = e.tgt;
+      if (plan[t] === BAD) continue;
+      if (!e.abs && plan[e.src] === UNSET) continue; // (its source's shift not known yet)
+      const v = e.abs ? e.shift : (at(e.src) + e.shift) & 7;
+      if (plan[t] === v) continue;
+      plan[t] = plan[t] === UNSET ? v : BAD;
+      changed = true;
+    }
+  }
+  for (let k = 0; k < n; k++) plan[k] = at(k);
+  return plan.some((p) => p !== 0) ? plan : null;
+}
+
 /** Assemble region function bodies into one module exporting r0..rN (same imports for all regions). */
 export function buildRegionModule(codes, names = null, shared = false) {
   const key = shared ? 1 : 0; // (the memory import declares whether the guest memory is shared between workers)
@@ -425,6 +513,7 @@ class Emitter {
     this.c.reset();
     this.lz = null;
     this.xsValid = this.xsDirty = 0; this.xsOK = false; // XMM lane-0 shadows (see xmmShadowSync)
+    this.xdValid = this.xdDirty = 0; this.xdOK = false; // (f64 shadows, see xmmShadowSync64)
     this.fcmp = null;
     this.smc = opts.smc !== false;
     this.x87 = opts.x87 !== false;
@@ -432,7 +521,10 @@ class Emitter {
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 precision/rounding control (cw & 0xf00) the region is specialized for (null: tested at run time)
     this.fpcAssume = opts.fpcAssume ?? null;
-    this.stats = { native: 0, fallback: 0 };
+    this.stats = { native: 0, fallback: 0, x87Planned: 0 }; // (x87Planned: blocks entered with a planned x87 shift)
+    /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
+    this.x87Plan = null;
+    this.stShift = 0;
   }
 
   run(entry) {
@@ -445,6 +537,9 @@ class Emitter {
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
+    this.x87EntryIdx = byEip.get(entry)?.index ?? 0; // (see x87EntryTop)
+    if (this.usesX87 && this.opts.x87EntryShifts !== false) this.x87Plan = x87EntryPlan(blocks, byEip, this.x87EntryIdx);
+    this.stats.x87Planned = this.x87Plan ? this.x87Plan.reduce((k, p) => k + (p !== 0), 0) : 0;
     // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
     // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through
     // memory, where an 8-byte store followed by a 16-byte load of the same register defeats store forwarding.
@@ -455,7 +550,7 @@ class Emitter {
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
-    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
+    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
@@ -473,6 +568,8 @@ class Emitter {
         c.get(L_T2).i32(1).sub().return_call_indirect(REGION_TYPE, 0);
         c.end(); void alt;
       }
+      // (an entry block planned with a non-zero x87 shift loaded the stack for it: reloaded at shift 0 for the exit)
+      if (this.x87Plan) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
       c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
       c.end(); void i;
     }
@@ -620,7 +717,7 @@ class Emitter {
   loadXmm() {
     const c = this.c;
     for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).v128load(ST.XMM + 16 * r).set(L_XMM0 + r);
-    this.xsValid = this.xsDirty = 0; // (the shadows are older than the reloaded registers)
+    this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // (the shadows are older than the reloaded registers)
   }
   /** Write the cached XMM registers back to the state block. */
   flushXmm() {
@@ -641,10 +738,11 @@ class Emitter {
 
   // ------------------------------------------------------------------ x87 stack cache
   // Inside a block the x87 handlers do not move the locals on push/pop: they keep a static shift
-  // (`stShift`, 0 at block entry) such that ST(i) lives in local L_ST0 + ((i + stShift) & 7) and
-  // the real TOP is (L_TOP + stShift) & 7. The shift is materialized (x87Normalize: one rotation
-  // of the locals, one update of L_TOP) only where the code leaves the block: exits, branches to
-  // other blocks, fallbacks, TOP resets. A balanced block (fld ... fstp) never moves a local.
+  // (`stShift`: the block's planned entry shift at its entry, see x87EntryPlan, usually 0) such that
+  // ST(i) lives in local L_ST0 + ((i + stShift) & 7) and the real TOP is (L_TOP + stShift) & 7. The
+  // shift is materialized (x87Normalize: one rotation of the locals, one update of L_TOP) only where
+  // the code leaves the block: exits, fallbacks, TOP resets (to shift 0), branches to other blocks (to
+  // the target's planned shift). A balanced block (fld ... fstp) never moves a local.
   /** Local holding ST(i) under the pending static shift. */
   stLocal(i) { return L_ST0 + ((i + this.stShift) & 7); }
   /** Bit of ST(i) in L_FTW under the pending static shift. */
@@ -652,32 +750,61 @@ class Emitter {
   /** Push the physical slot number of ST(i): (L_TOP + stShift + i) & 7 (L_TOP is always 0..7). */
   pushStPhys(i) { const c = this.c; const k = (this.stShift + i) & 7; c.get(L_TOP); if (k) c.i32(k).add().i32(7).and(); }
   /**
-   * Materialize the pending shift: write the f32 shadows back, rotate the locals so that L_ST0+i holds
-   * ST(i) again, rotate the logical tag word the same way and make L_TOP the real TOP. Returns the static
-   * state that was pending (shift, f32 mask): a conditional exit path restores it afterwards (x87Restore)
-   * so that the fallthrough path keeps its unrotated locals and f32 values. Code emitted after it on the
-   * same path sees shift 0 and no shadow: a second normalization there (the budget exit of a back edge)
-   * must not write the shadows again, into locals the rotation has moved.
+   * Materialize the pending shift: write the f32 shadows back (and the XMM lane-0 shadows), rotate the
+   * locals so that L_ST0+i holds ST(i) again (L_ST0+((i+target)&7) for a branch to a block planned with
+   * that entry shift), rotate the logical tag word the same way and make L_TOP the real TOP (minus the
+   * target shift). Returns the static state that was pending (shift, f32 mask): a conditional exit path
+   * restores it afterwards (x87Restore) so that the fallthrough path keeps its unrotated locals and f32
+   * values. Code emitted after it on the same path sees the target shift and no shadow: a second
+   * normalization there (the budget exit of a back edge) must not write the shadows again, into locals
+   * the rotation has moved.
    */
-  x87Normalize() {
-    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty };
+  x87Normalize(target = 0) {
+    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
     this.materializeF32();
     this.f32Mask = 0;
     this.xmmShadowSync(this.xsDirty); // (XMM lane-0 shadows: the same discipline, see xsValid)
-    this.xsDirty = 0;
+    this.xmmShadowSync64(this.xdDirty);
+    this.xsDirty = this.xdDirty = 0;
     this.applyTags();
-    const s = this.stShift;
-    if (!s) return saved;
-    const c = this.c;
-    for (let i = 0; i < 8; i++) c.get(L_ST0 + ((i + s) & 7)); // through the operand stack: no temporary
-    for (let i = 7; i >= 0; i--) c.set(L_ST0 + i);
-    c.get(L_FTW).i32(s).shr_u().get(L_FTW).i32(8 - s).shl().or().i32(0xff).and().set(L_FTW); // rotr8 by s
-    c.get(L_TOP).i32(s).add().i32(7).and().set(L_TOP);
-    this.stShift = 0;
+    // `target`: a direct transfer to a block planned to be entered with that shift (x87EntryPlan) rotates by the
+    // difference only; everything else (exits, fallbacks, dispatches, handlers needing the real TOP) targets 0
+    this.x87Rotate((this.stShift - target) & 7);
+    this.stShift = target;
     return saved;
   }
+  /**
+   * Rotate the x87 locals by the static amount d: L_ST0+i <- L_ST0+((i+d)&7), the tag word the same way, L_TOP += d
+   * (the pending shift is d lower afterwards).
+   */
+  x87Rotate(d) {
+    if (!d) return;
+    const c = this.c;
+    for (let i = 0; i < 8; i++) c.get(L_ST0 + ((i + d) & 7)); // through the operand stack: no temporary
+    for (let i = 7; i >= 0; i--) c.set(L_ST0 + i);
+    c.get(L_FTW).i32(d).shr_u().get(L_FTW).i32(8 - d).shl().or().i32(0xff).and().set(L_FTW); // rotr8 by d
+    c.get(L_TOP).i32(d).add().i32(7).and().set(L_TOP);
+  }
+  /** Planned x87 shift at the entry of block k (0 without a plan). */
+  planOf(k) { return this.x87Plan ? this.x87Plan[k] : 0; }
+  /**
+   * Region prologue of a planned x87 region (L_TOP = TOP): L_TOP -= the entry block's planned shift, so that the
+   * stack locals loaded next (loadX87) are those of a block entered with that shift. Entries at the region's entry
+   * block (never planned) skip the lookup.
+   */
+  x87EntryTop() {
+    if (!this.x87Plan) return;
+    const c = this.c, plan = this.x87Plan;
+    c.get(L_BLK).i32(this.x87EntryIdx).ne();
+    const i = c.if_();
+    c.i32(0);
+    for (let k = 0; k < plan.length; k++) if (plan[k]) c.set(L_T2).i32(plan[k]).get(L_T2).get(L_BLK).i32(k).eq().select();
+    c.set(L_T2);
+    c.get(L_TOP).get(L_T2).sub().i32(7).and().set(L_TOP);
+    c.end(); void i;
+  }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
-  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; }
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
   // ---- XMM lane-0 shadows. Scalar single-precision code (MOVSS / ADDSS / MULSS / CVTSI2SS / COMISS...) keeps lane 0
   // of an XMM register in an f32 local L_XS0+r: xsValid bit r = the shadow holds lane 0; xsDirty bit r (a subset) =
   // the v128 local's lane 0 is stale. A chain of scalar operations then runs on f32 values (the host's mulss /
@@ -686,18 +813,29 @@ class Emitter {
   // branch and fallback goes through x87Normalize, which writes the dirty shadows back and, on a conditional exit
   // path, restores the mask afterwards) or before another instruction names the register (xmmShadowRelease).
   // Both masks are 0 at block entry and after the locals are reloaded from the state block (loadXmm).
+  // Scalar double-precision code (MOVSD / MOVLPD / ADDSD / MULSD / CVTSI2SD / COMISD...) keeps the low qword in an f64
+  // shadow L_XD0+r the same way (xdValid / xdDirty): the f64x2.replace_lane of every result (a blend on the
+  // dependency chain, plus register copies around it) is gone. A register never has both kinds valid: an
+  // instruction of one family writes the other family's shadows of its operands back (release) before it runs.
   /** v128 local of XMM r <- its f32 shadow in lane 0, for every r of `mask` (the masks unchanged). */
   xmmShadowSync(mask) {
     const c = this.c;
     for (let r = 0; mask; mask >>= 1, r++) if (mask & 1) c.get(L_XMM0 + r).get(L_XS0 + r).f32x4replacelane(0).set(L_XMM0 + r);
   }
-  /** Before an instruction outside XMM_SHADOW_OPS: its XMM operands' shadows written back and dropped. */
-  xmmShadowRelease(insn) {
+  /** v128 local of XMM r <- its f64 shadow in the low qword, for every r of `mask` (the masks unchanged). */
+  xmmShadowSync64(mask) {
+    const c = this.c;
+    for (let r = 0; mask; mask >>= 1, r++) if (mask & 1) c.get(L_XMM0 + r).get(L_XD0 + r).f64x2replacelane(0).set(L_XMM0 + r);
+  }
+  /**
+   * Before an instruction outside XMM_SHADOW_OPS (f32: !xsOK) / XMM_SHADOW64_OPS (f64: !xdOK): its XMM operands'
+   * shadows of that kind written back and dropped.
+   */
+  xmmShadowRelease(insn, f32, f64) {
     let m = 0;
     for (const o of insn.ops) if (o.t === OT.XMM) m |= 1 << (o.r & 7);
-    if (!(m & this.xsValid)) return;
-    this.xmmShadowSync(m & this.xsDirty);
-    this.xsValid &= ~m; this.xsDirty &= ~m;
+    if (f32 && (m & this.xsValid)) { this.xmmShadowSync(m & this.xsDirty); this.xsValid &= ~m; this.xsDirty &= ~m; }
+    if (f64 && (m & this.xdValid)) { this.xmmShadowSync64(m & this.xdDirty); this.xdValid &= ~m; this.xdDirty &= ~m; }
   }
   /**
    * Tag word changes of the block are static (tagSet / tagClr: bits of L_FTW in its current order, i.e.
@@ -848,7 +986,7 @@ class Emitter {
     const t = b.index, sp = this.pathOf[this.cur], tp = this.pathOf[t];
     let d = 0; // loops holding both
     while (d < sp.length && d < tp.length && sp[d] === tp[d]) d++;
-    const s = this.x87Normalize(); // blocks are entered with shift 0
+    const s = this.x87Normalize(this.planOf(t)); // (blocks are entered with their planned shift: see x87EntryPlan)
     if (t > this.cur) {
       // forward: no budget check (every cycle contains a backward edge, which checks it). The unit holding t
       // among the children of the innermost common loop (or the top level) is a later sibling of the one
@@ -1244,13 +1382,13 @@ class Emitter {
   emitBlock(b, nextBlock) {
     this.lz = null; // unknown at block entry
     this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
-    this.stShift = 0; // pending static rotation of the x87 locals (see stLocal), x87 regions
+    this.stShift = this.planOf(b.index); // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
-    this.xsValid = this.xsDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
+    this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
     // the predicted lazy op at entry (regionLazyPrediction) holds up to the block's first instruction changing it
     this.lzPred = b.lzPred ?? -1;
@@ -1276,7 +1414,7 @@ class Emitter {
         if (nextBlock && nextBlock.eip === ft) { // natural fallthrough into the next block's code
           this.count(PF.fallthrough);
           this.fpuModeGuard(ft, n);
-          this.x87Normalize();
+          this.x87Normalize(this.planOf(nextBlock.index));
           this.charge(n); // (a loop entered by its top sees L_BLK outside its blocks: see loopPrologue)
           return;
         }
@@ -1291,8 +1429,8 @@ class Emitter {
     this.curOp = insn.op;
     this.c.site = insn.op; // (call statistics)
     const h = HANDLERS[insn.op];
-    this.xsOK = XMM_SHADOW_OPS.has(insn.op); // (read by the shadow helpers)
-    if (!this.xsOK && this.xsValid) this.xmmShadowRelease(insn);
+    this.xsOK = XMM_SHADOW_OPS.has(insn.op); this.xdOK = XMM_SHADOW64_OPS.has(insn.op); // (read by the shadow helpers)
+    if ((!this.xsOK && this.xsValid) || (!this.xdOK && this.xdValid)) this.xmmShadowRelease(insn, !this.xsOK, !this.xdOK);
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
   }
@@ -2106,5 +2244,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, XMM_SHADOW_OPS, Emitter };
+export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
