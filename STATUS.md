@@ -640,6 +640,13 @@
   l'autre (DEC en tête de bloc 1,21 → 0,93 ns). 116 tests ajoutés (350 au total). Bout en bout (A/B simultanés) :
   fin du calcul 82 → 76 s et 80 → 76 s, menu jouable 92 → 85 s et 89 → 84 s ; menu 3D, CPU du worker par image
   (`--gl-discard`) 44,4 → 40,4 et 44,3 → 43,3 ms.
+- **Seconde vague (5 agents, relus)** : x87 en précision 24 bits avec arrondi dirigé (troncature −11 % de cycles),
+  ombres f64 de la voie basse des registres XMM pour le SSE2 scalaire double (sin du runtime C 22 → 15 ns), petites
+  fonctions feuilles incluses dans la région appelante (20 appels : 253 → 179 ns), vérification SMC des écritures
+  allégée (8 écritures : 6,1 → 4,0 ns ; corrige trois écritures non détectées sur du code traduit : STMXCSR à cheval
+  sur deux pages, FNSTCW/FNSTSW m16), décodeur JPEG 2,5-4× plus rapide (1024² q90 : 105 → 30 ms). Bout en bout
+  (2 A/B simultanés) : **pas de gain mesurable sur le démarrage de BFME2** (±1-5 s, bruit) — les noyaux synthétiques
+  ne représentent pas le code chaud réel ; 388 tests.
 
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
