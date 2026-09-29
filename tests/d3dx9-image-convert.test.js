@@ -65,6 +65,10 @@ test('fromRgba: the per-texel conversion\'s bytes for every format, aligned and 
   // every 8-bit value through each channel of the quantized formats
   const ramp = new Uint8Array(256 * 4); for (let v = 0; v < 256; v++) ramp.fill(v, 4 * v, 4 * v + 4);
   for (const fmt of FORMATS) assert.deepEqual(fromRgba(fmt, ramp, 16, 16), fromRgbaRef(fmt, ramp, 16, 16), `ramp fmt ${fmt}`);
+  // a source cut short (aligned and not): the missing channels read as 0, as the per-texel conversion does
+  const long = new Uint8Array(6 * 5 * 4 + 1); for (let i = 0; i < long.length; i++) long[i] = r();
+  for (const cut of [1, 3, 6]) for (const src of [long.subarray(0, 6 * 5 * 4 - cut), long.subarray(1, 1 + 6 * 5 * 4 - cut)])
+    for (const fmt of FORMATS) assert.deepEqual(fromRgba(fmt, src, 6, 5), fromRgbaRef(fmt, src, 6, 5), `short by ${cut} fmt ${fmt} offset ${src.byteOffset}`);
 });
 
 test('toRgba: the per-texel conversion\'s texels for every format and every value of the 1- and 2-byte formats', () => {
