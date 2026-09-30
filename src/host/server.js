@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { listGameTree, resolveGameFile } from './game-files.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { attachLan } from './lan.js';
 import { SimLink } from './sim-link.js';
 
@@ -40,9 +41,13 @@ export function loadManifests(dir, extra = null) {
 }
 
 export function createServer(opts = {}) {
-  const manifestDir = path.resolve(opts.manifests ?? path.join(ROOT, 'manifests'));
-  let manifests = loadManifests(manifestDir, opts.extra);
+  const manifestDir = opts.manifests ? path.resolve(opts.manifests) : null;
+  const gamesDir = path.resolve(opts.gamesDir ?? DEFAULT_GAMES_DIR);
+  const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra);
+  let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
+  const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
+  const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   const coverFile = (man) => man.cover && resolveGameFile(man, man.cover);
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
@@ -259,7 +264,7 @@ export function createServer(opts = {}) {
     });
   };
 
-  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => manifests.has(game) }) : null;
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
@@ -285,7 +290,7 @@ export function createServer(opts = {}) {
       }
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
       if (p === '/api/manifests') {
-        manifests = loadManifests(manifestDir, opts.extra);
+        refreshCatalog();
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
@@ -298,10 +303,10 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined }), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, saveDir: undefined }), { 'Content-Type': 'application/json' }); }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
-        const man = manifests.get(m[1]), f = man && coverFile(man);
+        const man = getManifest(m[1]), f = man && coverFile(man);
         if (!f) return send(res, 404, 'no cover');
         const ext = path.extname(f).toLowerCase();
         res.writeHead(200, { 'Content-Type': ext === '.png' ? 'image/png' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin' });
@@ -309,12 +314,12 @@ export function createServer(opts = {}) {
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
       // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
-        const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
         const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
@@ -322,7 +327,7 @@ export function createServer(opts = {}) {
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
       if (m) {
-        if (!manifests.get(m[1])) return send(res, 404, 'no such manifest');
+        if (!getManifest(m[1])) return send(res, 404, 'no such manifest');
         if (req.method === 'POST') {
           let body = '', size = 0;
           req.on('data', (d) => { size += d.length; if (size <= 8 * 1024 * 1024) body += d; });
@@ -338,7 +343,7 @@ export function createServer(opts = {}) {
       }
       m = /^\/api\/programs\/([^/]+)$/.exec(p);
       if (m) {
-        if (!manifests.get(m[1])) return send(res, 404, 'no such manifest');
+        if (!getManifest(m[1])) return send(res, 404, 'no such manifest');
         if (req.method === 'POST') {
           let body = '', size = 0;
           req.on('data', (d) => { size += d.length; if (size <= 8 * 1024 * 1024) body += d; });
@@ -353,10 +358,10 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
-      if (m) { if (!manifests.get(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
+      if (m) { if (!getManifest(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         const file = path.join(ROOT, p);
         if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
@@ -377,6 +382,6 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
   for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

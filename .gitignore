@@ -6,6 +6,7 @@ build/
 /tests/generated/
 __pycache__/
 /data_games/
+/data_installers/
 /data_wine/
 /.claude/
 /.charon-uploads/
