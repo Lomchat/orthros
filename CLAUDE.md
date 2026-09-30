@@ -5,7 +5,7 @@ x86-32 user-mode emulation (reference interpreter + x86→WebAssembly dynamic re
 PE32 loader, reimplementation of the public Win32/DirectX APIs on top of browser APIs
 (WebGL2/WebGPU, WebAudio, DOM input), virtual filesystem served over HTTP.
 
-Validation target: the game in `/srv/bfme/game-source/bfme-vanilla` (`lotrbfme.exe`).
+Validation target: the game in `/srv/orthros/data_games/bfme1` (`lotrbfme.exe`).
 Final goal: it runs in Chrome at a stable 30 fps (p99 frame ≤ 33 ms over 10 min), full game
 playable (audio, mouse/keyboard, saves). Then `orthros run <folder>` runs any Win32 game folder.
 
