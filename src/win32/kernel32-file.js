@@ -129,6 +129,7 @@ export function registerKernel32File(api, vm) {
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
       if (p) { let done = false; p.then(() => { done = true; vm.host?.wake?.(); }, () => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
+    if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
     const d = f.file.read(pos, n);
     if (f.ioOwner === c.thread) f.ioOwner = null;
     if (globalThis.ORTHROS_VERIFY_READS && f.file.verify) { const bad = f.file.verify(pos, d); if (bad && (vm.readMismatches = (vm.readMismatches ?? 0) + 1) <= 20) vm.warn(`read mismatch: ${f.path ?? '?'} @${pos} ${n} -> ${d.length}: byte ${bad.at} is ${bad.got}, the file has ${bad.want} [t${c.thread.id}${c.thread.wakeResult !== undefined ? ' parked' : ''}]`); }
@@ -137,7 +138,7 @@ export function registerKernel32File(api, vm) {
     f.pos = pos + d.length; // a synchronous handle's file pointer follows the read even when the offset came from OVERLAPPED
     c.out32(3, d.length);
     { const r = (vm.recentReads ??= { a: new Array(32), i: 0 }); r.a[r.i++ & 31] = `${f.path ?? '?'} @${pos} ${n}${d.length !== n ? ` -> ${d.length}` : ''} [t${c.thread.id}]`; } // (failure reports)
-    if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} -> ${d.length} [t${c.thread.id}]`);
+    if (vm.logKinds.has('fileio') && d.length !== n) vm.log('fileio', `  -> ${d.length} bytes read [t${c.thread.id}]`);
     if (d.length < n && pos + d.length < (f.file.size?.() ?? Infinity) && (this_shortReads = (this_shortReads ?? 0) + 1) <= 16) vm.log('file', `short read ${f.path ?? '?'} at ${pos} (${n} requested, ${d.length} read, size ${f.file.size?.() ?? '?'}) [t${c.thread.id}]`); // short before EOF: a backend problem
     if (d.length === 0 && n > 0 && ovl) return c.fail(E.HANDLE_EOF);
     return 1;

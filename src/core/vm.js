@@ -129,6 +129,7 @@ export class Vm {
     this.mem.write32(0x7ffdf000 + 8, exe.base); // PEB.ImageBaseAddress
     const stackSize = Math.max(exe.image.stackReserve || 0x100000, 0x100000);
     const main = proc.createThread({ start: exe.entry, param: 0, stackSize, main: true, stackBase: 0x00130000 - stackSize });
+    this.log('loader', `main thread stack: ${(stackSize / 1024).toFixed(0)} KiB (image reserve ${((exe.image.stackReserve || 0) / 1024).toFixed(0)} KiB) at ${(main.stackLimit >>> 0).toString(16)}-${(main.stackBase >>> 0).toString(16)}`);
     main.name = 'main';
     return proc;
   }
@@ -445,6 +446,7 @@ export class Vm {
     const ctx = this.ctx.bind(thread, def);
     const sp = cpu.esp;
     this.apiCalls++;
+    if (globalThis.ORTHROS_STACK_PATTERN && !this.stackPatSeen) this.stackPatternCheck(thread, t, sp);
     if ((sp & 3) && !this.warnedMisaligned) { this.warnedMisaligned = true; this.warn(`misaligned ESP ${sp.toString(16)} at API call ${t.dll}!${t.name}\n` + this.crashReport(thread, 'misaligned stack')); }
     if (this.apiHistCounts) { if (idx >= this.apiHistCounts.length) { const n = new Uint32Array(Math.max(idx + 1, this.apiHistCounts.length * 2)); n.set(this.apiHistCounts); this.apiHistCounts = n; } this.apiHistCounts[idx]++; }
     if (def) {
@@ -592,6 +594,23 @@ export class Vm {
       lines.push(`  ${a.toString(16).padStart(8, '0')}${a <= esp && esp < a + 16 ? '>' : ' '} ${hex(b)}  ${String.fromCharCode(...[...b].map((c) => (c >= 32 && c < 127 ? c : 46)))}`);
     }
     return lines.join('\n');
+  }
+
+  /**
+   * Debugging (?dbg=ORTHROS_STACK_PATTERN=<text>): at every API call, whether the calling thread's stack (1.5 KiB above
+   * ESP) holds `text`; the first call that finds it is logged with the calls before it — what put it there.
+   */
+  stackPatternCheck(thread, t, sp) {
+    const pat = this.stackPat ??= Array.from(String(globalThis.ORTHROS_STACK_PATTERN), (ch) => ch.charCodeAt(0) & 0xff);
+    const u8 = this.mem.u8, end = Math.min(sp + 0x600, 0x7fff0000) - pat.length;
+    for (let a = sp - 0x100; a < end; a++) {
+      if (u8[a] !== pat[0]) continue;
+      let k = 1; while (k < pat.length && u8[a + k] === pat[k]) k++;
+      if (k < pat.length) continue;
+      this.stackPatSeen = true;
+      this.warn(`stack pattern "${globalThis.ORTHROS_STACK_PATTERN}" at ${a.toString(16)} (esp ${sp.toString(16)}) in thread ${thread.id}, seen at ${t.dll}!${t.name} from ${this.proc.symbolize(this.mem.read32(sp))}; calls before (oldest first):\n  ${this.recentApiCalls(24).join('\n  ')}\n${this.stackBytes(sp)}`);
+      return;
+    }
   }
 
   crashReport(thread, reason) {

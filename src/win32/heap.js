@@ -38,6 +38,7 @@ export class Heap {
     this.max = opts.max ?? 0; // 0 = growable
     this.heads = new Uint32Array(CLASSES);
     this.chunks = [];
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
     this.total = 0;
     this.grow(Math.max(opts.initial ?? MIN_CHUNK, MIN_CHUNK));
   }
@@ -88,9 +89,13 @@ export class Heap {
     const m = this.mem;
     for (let attempt = 0; attempt < 2; attempt++) {
       for (let c = classIndex(size); c < CLASSES; c++) {
-        let b = this.heads[c];
+        let b = this.heads[c], prev = 0;
         while (b) {
           const bs = m.read32(b - 8);
+          // (a free block is used only if it is one: inside this heap, marked free, header and footer agreeing — a link
+          // the program overwrote after freeing a block can point anywhere, even into another heap or a thread's
+          // stack, with any size: the rest of that list is dropped (leaked) rather than handed out)
+          if (!this.freeBlockOk(b, bs)) { if (prev) m.write32(prev, 0); else this.heads[c] = 0; this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1; break; }
           if (bs >= size) {
             this.unlink(b, c);
             const rem = bs - size;
@@ -100,9 +105,10 @@ export class Heap {
             }
             m.write32(b - 4, MAGIC_USED);
             if (zero) m.fill(b, m.read32(b - 8), 0);
+            if (globalThis.ORTHROS_HEAP_WATCH && (b >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: alloc(${size}) -> ${b.toString(16)} from free block of ${bs} in class ${c} (chunk ${JSON.stringify(this.chunkOf(b))})`);
             return b;
           }
-          b = m.read32(b);
+          prev = b; b = m.read32(b);
           if (!plausible(b)) break; // (a list overwritten by the program: its rest ignored)
         }
       }
@@ -137,6 +143,12 @@ export class Heap {
     return true;
   }
 
+  /** whether user address `b` with header size `bs` is a free block of this heap (see alloc) */
+  freeBlockOk(b, bs) {
+    const m = this.mem, ch = this.chunkOf(b);
+    return !!ch && m.read32(b - 4) === MAGIC_FREE && bs >= MIN_USER && (bs & 7) === 0 && b + bs + FTR + HDR <= ch.base + ch.size && m.read32(b + bs) === bs;
+  }
+
   /** user size of a used block, -1 if not a live block */
   size(addr) {
     addr >>>= 0;
@@ -153,7 +165,7 @@ export class Heap {
     if (size <= old) return addr; // shrinking keeps the block (its size stays valid for HeapSize)
     // grow into a following free block when possible
     const nextU = addr + old + FTR + HDR;
-    if (m.read32(nextU - 4) === MAGIC_FREE) {
+    if (m.read32(nextU - 4) === MAGIC_FREE && this.freeBlockOk(nextU, m.read32(nextU - 8))) {
       const ns = m.read32(nextU - 8);
       const avail = old + FTR + HDR + ns;
       if (avail >= size) {
@@ -162,6 +174,7 @@ export class Heap {
         if (rem >= SPLIT_MIN) { m.write32(addr - 8, size); m.write32(addr + size, size); this.setFree(addr + size + FTR + HDR, rem - FTR - HDR); }
         else { m.write32(addr - 8, avail); m.write32(addr + avail, avail); }
         if (zero) m.fill(addr + old, m.read32(addr - 8) - old, 0);
+        if (globalThis.ORTHROS_HEAP_WATCH && (addr >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: realloc in place ${addr.toString(16)} ${old} -> ${size} with next free ${nextU.toString(16)} of ${ns} (chunk ${JSON.stringify(this.chunkOf(addr))})`);
         return addr;
       }
     }
@@ -195,6 +208,7 @@ export class Heap {
   destroy() {
     for (const c of this.chunks) this.vmem.release(c.base);
     this.chunks = [];
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
     this.heads.fill(0);
   }
 }
