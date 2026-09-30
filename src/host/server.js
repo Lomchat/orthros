@@ -309,7 +309,10 @@ export function createServer(opts = {}) {
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
           try { if (!treeObjs.has(name)) treeObjs.set(name, listTree(m.folder)); bytes = sizeOf(treeObjs.get(name)); } catch { /* folder missing */ }
-          return { name, title: m.name ?? name, exe: m.exe, description: m.description ?? null, hidden: !!m.hidden, cover: !!coverFile(m), bytes, available: bytes !== null };
+          return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], exe: m.exe,
+            description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
+            hidden: !!m.hidden, cover: !!coverFile(m), bytes, available: bytes !== null };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }

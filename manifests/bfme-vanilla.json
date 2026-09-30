@@ -1,5 +1,10 @@
 {
   "name": "The Battle for Middle-earth",
+  "gameId": "bfme1",
+  "version": "2.22 v7.0.4",
+  "versionOrder": 2,
+  "languages": ["en"],
+  "languageRegistryKey": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\The Battle for Middle-earth",
   "folder": "/srv/orthros/data_games/bfme1",
   "exe": "lotrbfme.exe",
   "args": "",
@@ -15,5 +20,6 @@
     "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\The Battle for Middle-earth": {}
   },
   "cover": "englishSplash.jpg",
-  "description": "Real-time strategy in Middle-earth (2004): build fortresses, raise armies of Gondor, Rohan, Isengard or Mordor."
+  "description": "Command Gondor, Rohan, Isengard or Mordor. Patch 2.22 displays its game menus in English.",
+  "descriptionFr": "Commandez le Gondor, le Rohan, l'Isengard ou le Mordor. Les menus du patch 2.22 sont en anglais."
 }

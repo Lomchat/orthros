@@ -21,8 +21,15 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
 des options du menu (⚙, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
 
-Les fichiers de jeux installés sont rangés hors Git dans `/srv/orthros/data_games/` : `bfme1/`, `bfme2/`, `rotwk/`
-et `installers/`. Les manifestes lisent directement `bfme1/` et `bfme2/`. Le préfixe Wine de diagnostic est dans
+Les fichiers de jeux installés sont rangés hors Git dans `/srv/orthros/data_games/` : `bfme1/` (patch 2.22),
+`bfme1-103/` (version officielle 1.03), `bfme2/`, `rotwk/` et `installers/`. La version 1.03 a été reconstituée
+depuis le manifeste `original-BFME1.json` de l'installeur : ses 349 fichiers anglais/français ont été vérifiés par
+MD5 et liés physiquement aux fichiers communs de `bfme1/`, sans seconde copie des données. `Data.big` est inclus :
+le manifeste de l'installeur indique par erreur une taille nulle pour ce fichier nécessaire au démarrage. Les manifestes séparent
+leurs caches et sauvegardes par version ; le menu permet de choisir la version de BFME 1 et la langue du jeu
+avant le lancement. La 1.03 et BFME 2 proposent anglais et français ; les menus du patch 2.22 restent en anglais
+même avec la clé de registre française, donc cette version est proposée en anglais seulement. La langue du site se
+règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est dans
 `/srv/orthros/data_wine/wine-prefix/`. Les deux dossiers sont exclus de Git.
 
 ## Mes données et compte facultatif

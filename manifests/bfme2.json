@@ -1,5 +1,10 @@
 {
   "name": "The Battle for Middle-earth II",
+  "gameId": "bfme2",
+  "version": "1.09 v3.01",
+  "versionOrder": 1,
+  "languages": ["en", "fr"],
+  "languageRegistryKey": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
   "folder": "/srv/orthros/data_games/bfme2",
   "exe": "game.dat",
   "args": "",
@@ -22,5 +27,6 @@
     }
   },
   "cover": "englishSplash.jpg",
-  "description": "The sequel (2006): the war in the North \u2014 Elves, Dwarves, Goblins, Men of the West and more, with a hero creator."
+  "description": "The sequel (2006): the war in the North \u2014 Elves, Dwarves, Goblins, Men of the West and more, with a hero creator.",
+  "descriptionFr": "La guerre s'étend au Nord : Elfes, Nains, Gobelins, Hommes de l'Ouest et création de héros."
 }

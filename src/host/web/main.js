@@ -24,7 +24,7 @@ function showStatus(title, detail = '', report = null, error = false, restart = 
 function hideStatus() { $('status').classList.add('hidden'); }
 /** The game list again (a fresh page: the worker and its memory go with the old one). */
 function backToGames() {
-  const u = new URL(location.href); u.searchParams.delete('manifest'); u.searchParams.set('menu', '');
+  const u = new URL(location.href); u.searchParams.delete('manifest'); u.searchParams.delete('gameLang'); u.searchParams.set('menu', '');
   location.href = u.toString();
 }
 /**
@@ -68,7 +68,7 @@ async function main() {
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
   // the server's default game starts directly (a deployment for players); ?menu shows the picker
   const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
-  if (auto) start(auto); else await showMenu();
+  if (auto) start(auto, params.get('gameLang')); else await showMenu();
   $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
 }
 
@@ -87,12 +87,18 @@ async function showMenu() {
   await load();
 }
 
-async function start(name) {
+async function start(name, language = null) {
   if (state.status !== 'menu') return;
   state.status = 'loading';
   try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
-  if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.set('manifest', name); history.replaceState(null, '', u.toString()); } // (a reload restarts this game)
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
+  const options = manifest.languages ?? [];
+  if (!options.includes(language)) {
+    try { language = localStorage.getItem('orthros.gameLanguage.' + (manifest.gameId ?? name)); } catch { language = null; }
+  }
+  if (!options.includes(language)) language = options.includes('en') ? 'en' : options[0] ?? null;
+  state.gameLanguage = language;
+  if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.set('manifest', name); if (language) u.searchParams.set('gameLang', language); history.replaceState(null, '', u.toString()); } // (a reload keeps the selected version and language)
   const tree = await (await fetch(`/api/tree/${name}`)).json();
   state.status = 'starting'; state.manifest = name;
   home?.destroy(); home = null; $('stage').classList.remove('hidden');
@@ -109,7 +115,7 @@ async function start(name) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: params.get('dbg') ?? '', jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session };
+  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: params.get('dbg') ?? '', jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
