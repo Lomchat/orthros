@@ -205,6 +205,7 @@ export class Process {
   // ------------------------------------------------------------------ heaps
   createHeap(opts = {}) {
     const h = new Heap(this, opts);
+    h.watchLog = (msg) => this.vm?.warn(msg); // (debugging: ?dbg=ORTHROS_HEAP_WATCH=<address>)
     h.handle = this.handles.create(h);
     this.heaps.push(h);
     return h;

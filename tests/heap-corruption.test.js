@@ -30,3 +30,23 @@ test('heap: every block 8-aligned (HeapAlloc on Windows), through splits, frees 
     const p = heap.alloc(1 + rnd(300)); assert.ok(p); assert.equal(p & 7, 0, `block ${p.toString(16)} 8-aligned`); live.push(p);
   }
 });
+
+// A block the program keeps writing after freeing it: its free-list link then points anywhere — into another heap, just
+// below a thread's stack — where the "size" read is garbage (0xffffffff). Handing that out gave a 2 MiB buffer that ran
+// over the main thread's stack (BFME2's first launch, the player's crash). The list is cut there instead.
+test('heap: a free-list link overwritten after free never hands out memory outside the heap', () => {
+  const mem = new GuestMemory(), vmem = new VMem();
+  const other = new Heap({ mem, vmem, tag: 'other' }), heap = new Heap({ mem, vmem, tag: 'user' });
+  const victim = other.alloc(64);
+  mem.write32(victim - 8, 0xffffffff); // (what the stray link's target reads as a size)
+  const a = heap.alloc(4000);
+  assert.equal(heap.free_(a), true);
+  mem.write32(a, victim); // (the program writes into the freed block: its "next" link now leads into the other heap)
+  const inHeap = (p, n) => heap.chunks.some((c) => p >= c.base && p + n <= c.base + c.size);
+  for (const n of [4000, 2 << 20, 64]) {
+    const p = heap.alloc(n);
+    assert.ok(p, `alloc(${n}) succeeds`);
+    assert.ok(inHeap(p, n), `alloc(${n}) = ${p.toString(16)} lies inside the heap`);
+    assert.notEqual(p, victim);
+  }
+});
