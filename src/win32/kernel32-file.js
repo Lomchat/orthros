@@ -1,4 +1,5 @@
 // kernel32.dll part 2: files, directories, environment, code pages and locale, console output.
+import { utcZone } from './timezone.js';
 import { E } from './errors.js';
 import { decodeBytes, encodeString, CP_UTF8, caseMap } from './strings.js';
 import { msToFiletime, filetimeToMs, allocString, allocWString } from './kernel32.js';
@@ -13,6 +14,32 @@ const CREATE_NEW = 1, CREATE_ALWAYS = 2, OPEN_EXISTING = 3, OPEN_ALWAYS = 4, TRU
  * @param {import('./api.js').ApiRegistry} api
  * @param {import('../core/vm.js').Vm} vm
  */
+const LOCALE_RETURN_NUMBER = 0x20000000;
+/** GetLocaleInfo values of the system locale, en-US (LCTYPE constants of winnls.h). */
+const LOCALE_EN_US = new Map(Object.entries({
+  0x01: '0409', 0x02: 'English (United States)', 0x03: 'ENU', 0x04: 'English', 0x05: '1', 0x06: 'United States', 0x07: 'USA',
+  0x08: 'United States', 0x09: '0409', 0x0a: '1', 0x0b: '437', 0x0c: ',', 0x0d: '1', 0x0e: '.', 0x0f: ',', 0x10: '3;0',
+  0x11: '2', 0x12: '1', 0x13: '0123456789', 0x14: '$', 0x15: 'USD', 0x16: '.', 0x17: ',', 0x18: '3;0', 0x19: '2', 0x1a: '2',
+  0x1b: '0', 0x1c: '0', 0x1d: '/', 0x1e: ':', 0x1f: 'M/d/yyyy', 0x20: 'dddd, MMMM dd, yyyy', 0x21: '0', 0x22: '0', 0x23: '0',
+  0x24: '1', 0x25: '0', 0x26: '0', 0x27: '0', 0x28: 'AM', 0x29: 'PM',
+  0x2a: 'Monday', 0x2b: 'Tuesday', 0x2c: 'Wednesday', 0x2d: 'Thursday', 0x2e: 'Friday', 0x2f: 'Saturday', 0x30: 'Sunday',
+  0x31: 'Mon', 0x32: 'Tue', 0x33: 'Wed', 0x34: 'Thu', 0x35: 'Fri', 0x36: 'Sat', 0x37: 'Sun',
+  0x38: 'January', 0x39: 'February', 0x3a: 'March', 0x3b: 'April', 0x3c: 'May', 0x3d: 'June', 0x3e: 'July', 0x3f: 'August',
+  0x40: 'September', 0x41: 'October', 0x42: 'November', 0x43: 'December',
+  0x44: 'Jan', 0x45: 'Feb', 0x46: 'Mar', 0x47: 'Apr', 0x48: 'May', 0x49: 'Jun', 0x4a: 'Jul', 0x4b: 'Aug', 0x4c: 'Sep', 0x4d: 'Oct',
+  0x4e: 'Nov', 0x4f: 'Dec', 0x50: '', 0x51: '-', 0x52: '3', 0x53: '0', 0x54: '1', 0x55: '0', 0x56: '1', 0x57: '0',
+  0x59: 'en', 0x5a: 'US', 0x5c: 'en-US', 0x67: 'eng', 0x68: 'USA',
+  0x1001: 'English', 0x1002: 'United States', 0x1003: 'h:mm:ss tt', 0x1004: '1252', 0x1005: '0', 0x1006: 'MMMM, yyyy',
+  0x1007: 'US Dollar', 0x1008: 'US Dollar', 0x1009: '1', 0x100a: '1', 0x100b: '0', 0x100c: '6', 0x100d: '0', 0x100e: '',
+  0x100f: '', 0x1010: '1', 0x1011: '10000', 0x1012: '037', 0x1014: '1',
+}).map(([k, v]) => [Number(k), v]));
+/**
+ * The en-US value of a GetLocaleInfo LCTYPE (flags such as LOCALE_NOUSEROVERRIDE, LOCALE_USE_CP_ACP and
+ * LOCALE_RETURN_NUMBER ignored); undefined when unknown.
+ * @param {number} lctype
+ */
+export function localeInfoValue(lctype) { return LOCALE_EN_US.get(lctype & 0xffff); }
+
 export function registerKernel32File(api, vm) {
   const mem = vm.mem;
   const K = {};
@@ -556,17 +583,16 @@ export function registerKernel32File(api, vm) {
   const compareStr = (a, b, flags) => { if (flags & 1) { a = a.toLowerCase(); b = b.toLowerCase(); } return a < b ? 1 : a > b ? 3 : 2; };
   K.CompareStringA = [6, (c) => { const a = c.sarg(3) < 0 ? mem.readCString(c.arg(2)) : decodeBytes(mem.bytes(c.arg(2), c.arg(3)), 0); const b = c.sarg(5) < 0 ? mem.readCString(c.arg(4)) : decodeBytes(mem.bytes(c.arg(4), c.arg(5)), 0); return compareStr(a, b, c.arg(1)); }];
   K.CompareStringW = [6, (c) => { const a = c.sarg(3) < 0 ? mem.readWString(c.arg(2)) : mem.readWStringN(c.arg(2), c.arg(3)); const b = c.sarg(5) < 0 ? mem.readWString(c.arg(4)) : mem.readWStringN(c.arg(4), c.arg(5)); return compareStr(a, b, c.arg(1)); }];
-  const LOCALE = { 0x1: '0409', 0x2: 'English', 0x3: 'ENU', 0x4: 'English (United States)', 0x5: '0409', 0x6: 'United States', 0x7: 'USA', 0x8: 'United States', 0x9: 'English', 0xa: 'English', 0xb: '0409', 0xc: 'English (United States)', 0xe: '$', 0xf: ',', 0x10: '.', 0x11: '1', 0x12: ';', 0x13: '.', 0x14: '2', 0x15: '3', 0x16: '0', 0x17: '0', 0x19: '2', 0x1a: '1', 0x1b: '0', 0x1c: '/', 0x1d: ':', 0x1f: 'M/d/yyyy', 0x20: 'dddd, MMMM dd, yyyy', 0x1003: 'h:mm:ss tt', 0x21: '0', 0x22: '0', 0x23: '0', 0x24: '0', 0x25: '0', 0x28: 'AM', 0x29: 'PM', 0x1004: '1252', 0x1006: '850', 0x1009: '0', 0x1011: '1', 0x1012: '1', 0x1000: 'M/d/yyyy', 0x1001: 'English', 0x1002: 'United States', 0x5a: '0', 0x5b: '0', 0x5c: 'eng', 0x5d: 'USA', 0x1000e: ',', 0x1000f: '.', 0x59: '1', 0x2a: 'Monday', 0x2b: 'Tuesday', 0x2c: 'Wednesday', 0x2d: 'Thursday', 0x2e: 'Friday', 0x2f: 'Saturday', 0x30: 'Sunday', 0x38: 'January', 0x39: 'February', 0x3a: 'March', 0x3b: 'April', 0x3c: 'May', 0x3d: 'June', 0x3e: 'July', 0x3f: 'August', 0x40: 'September', 0x41: 'October', 0x42: 'November', 0x43: 'December', 0x31: 'Mon', 0x32: 'Tue', 0x33: 'Wed', 0x34: 'Thu', 0x35: 'Fri', 0x36: 'Sat', 0x37: 'Sun', 0x44: 'Jan', 0x45: 'Feb', 0x46: 'Mar', 0x47: 'Apr', 0x48: 'May', 0x49: 'Jun', 0x4a: 'Jul', 0x4b: 'Aug', 0x4c: 'Sep', 0x4d: 'Oct', 0x4e: 'Nov', 0x4f: 'Dec' };
   const localeInfo = (c, wide) => {
-    const type = c.arg(1) & 0xffff;
-    const s = LOCALE[type];
-    if (s === undefined) { vm.warn(`GetLocaleInfo: unknown LCTYPE 0x${c.arg(1).toString(16)}`); return c.fail(E.INVALID_PARAMETER); }
-    const n = c.arg(3);
-    if (n === 0) return s.length + 1;
-    if (n <= s.length) return c.fail(E.INSUFFICIENT_BUFFER);
-    if (c.arg(1) & 0x20000000) { mem.write32(c.arg(2), parseInt(s, 10) | 0); return 2; }
+    const lctype = c.arg(1), s = localeInfoValue(lctype);
+    if (s === undefined) { vm.warn(`GetLocaleInfo: unknown LCTYPE 0x${lctype.toString(16)}`); return c.fail(E.INVALID_PARAMETER); }
+    const n = c.arg(3), number = (lctype & LOCALE_RETURN_NUMBER) !== 0;
+    const need = number ? (wide ? 2 : 4) : s.length + 1; // (a number is a DWORD: its size in TCHARs)
+    if (n === 0) return need;
+    if (n < need) return c.fail(E.INSUFFICIENT_BUFFER);
+    if (number) { mem.write32(c.arg(2), parseInt(s, 10) | 0); return need; }
     if (wide) mem.writeWString(c.arg(2), s); else mem.writeCString(c.arg(2), s);
-    return s.length + 1;
+    return need;
   };
   K.GetLocaleInfoA = [4, (c) => localeInfo(c, false)];
   K.GetLocaleInfoW = [4, (c) => localeInfo(c, true)];
@@ -580,8 +606,9 @@ export function registerKernel32File(api, vm) {
   K.GetSystemDefaultUILanguage = [0, () => 0x409];
   K.IsValidLocale = [2, () => 1];
   K.EnumSystemLocalesA = [2, (c) => { vm.callGuest(c.thread, c.arg(0), [allocString(c, '00000409')]); return 1; }];
-  K.GetDateFormatA = [6, (c) => { const ms = c.arg(3) ? readSystemTimeMs(mem, c.arg(3)) : vm.clock.wall(); const d = new Date(ms); const s = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`; if (c.arg(5) === 0) return s.length + 1; mem.writeCString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
-  K.GetTimeFormatA = [6, (c) => { const ms = c.arg(3) ? readSystemTimeMs(mem, c.arg(3)) : vm.clock.wall(); const d = new Date(ms); const s = `${d.getUTCHours() % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCHours() < 12 ? 'AM' : 'PM'}`; if (c.arg(5) === 0) return s.length + 1; mem.writeCString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  const localNow = () => { const w = vm.clock.wall(); return w + (vm.clock.zone ?? utcZone)(w) * 60000; };
+  K.GetDateFormatA = [6, (c) => { const ms = c.arg(3) ? readSystemTimeMs(mem, c.arg(3)) : localNow(); const d = new Date(ms); const s = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`; if (c.arg(5) === 0) return s.length + 1; mem.writeCString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  K.GetTimeFormatA = [6, (c) => { const ms = c.arg(3) ? readSystemTimeMs(mem, c.arg(3)) : localNow(); const d = new Date(ms); const s = `${d.getUTCHours() % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCHours() < 12 ? 'AM' : 'PM'}`; if (c.arg(5) === 0) return s.length + 1; mem.writeCString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
   K.FormatMessageA = [7, (c) => {
     const flags = c.arg(0), id = c.arg(2), buf = c.arg(4), size = c.arg(5);
     let s;

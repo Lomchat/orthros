@@ -10,6 +10,7 @@ import { registerKernel32File } from './kernel32-file.js';
 import { ApiRegistry } from './api.js';
 import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT } from '../cpu/memory.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
+import { utcZone, timeZoneInfo, tziOffsetAt, localToUtc, hostZone, hostZoneNames } from './timezone.js';
 
 export const STILL_ACTIVE = 0x103;
 const INVALID_HANDLE = 0xffffffff;
@@ -623,13 +624,27 @@ export function registerKernel32(api, vm) {
   K.QueryPerformanceCounter = [1, (c) => { c.out64(0, BigInt(Math.floor(vm.clock.now() * 10000))); return 1; }];
   K.GetSystemTimeAsFileTime = [1, (c) => { c.out64(0, msToFiletime(vm.clock.wall())); }];
   K.GetSystemTime = [1, (c) => writeSystemTime(mem, c.arg(0), vm.clock.wall())];
-  K.GetLocalTime = [1, (c) => writeSystemTime(mem, c.arg(0), vm.clock.wall())];
+  // local time: the host's time zone (vm.clock.zone)
+  const zone = () => vm.clock.zone ?? utcZone;
+  const localNow = () => { const w = vm.clock.wall(); return w + zone()(w) * 60000; };
+  K.GetLocalTime = [1, (c) => writeSystemTime(mem, c.arg(0), localNow())];
   K.SetLocalTime = [1, () => 1];
   K.SystemTimeToFileTime = [2, (c) => { c.out64(1, msToFiletime(readSystemTime(mem, c.arg(0)))); return 1; }];
   K.FileTimeToSystemTime = [2, (c) => { writeSystemTime(mem, c.arg(1), filetimeToMs(mem.read64(c.arg(0)))); return 1; }];
-  K.FileTimeToLocalFileTime = [2, (c) => { c.out64(1, mem.read64(c.arg(0))); return 1; }];
-  K.LocalFileTimeToFileTime = [2, (c) => { c.out64(1, mem.read64(c.arg(0))); return 1; }];
-  K.SystemTimeToTzSpecificLocalTime = [3, (c) => { mem.copy(c.arg(2), c.arg(1), 16); return 1; }];
+  // (as Windows: the current bias, daylight saving included, whatever the date converted)
+  const currentBiasMs = () => zone()(vm.clock.wall()) * 60000;
+  K.FileTimeToLocalFileTime = [2, (c) => { c.out64(1, mem.read64(c.arg(0)) + BigInt(currentBiasMs()) * 10000n); return 1; }];
+  K.LocalFileTimeToFileTime = [2, (c) => { c.out64(1, mem.read64(c.arg(0)) - BigInt(currentBiasMs()) * 10000n); return 1; }];
+  K.SystemTimeToTzSpecificLocalTime = [3, (c) => {
+    const utc = readSystemTime(mem, c.arg(1));
+    const off = c.arg(0) ? tziOffsetAt(readTzi(c.arg(0)), utc) : zone()(utc);
+    writeSystemTime(mem, c.arg(2), utc + off * 60000); return 1;
+  }];
+  K.TzSpecificLocalTimeToSystemTime = [3, (c) => {
+    const local = readSystemTime(mem, c.arg(1));
+    const z = c.arg(0) ? ((tzi) => (ms) => tziOffsetAt(tzi, ms))(readTzi(c.arg(0))) : zone();
+    writeSystemTime(mem, c.arg(2), localToUtc(z, local)); return 1;
+  }];
   K.CompareFileTime = [2, (c) => { const a = mem.read64(c.arg(0)), b = mem.read64(c.arg(1)); return a < b ? 0xffffffff : a > b ? 1 : 0; }];
   K.FileTimeToDosDateTime = [3, (c) => {
     const d = new Date(filetimeToMs(mem.read64(c.arg(0))));
@@ -642,7 +657,25 @@ export function registerKernel32(api, vm) {
     const ms = Date.UTC(1980 + (dd >> 9), ((dd >> 5) & 15) - 1, dd & 31, tt >> 11, (tt >> 5) & 63, (tt & 31) * 2);
     c.out64(2, msToFiletime(ms)); return 1;
   }];
-  K.GetTimeZoneInformation = [1, (c) => { const p = c.arg(0); mem.fill(p, 172, 0); mem.writeWString(p + 4, 'Coordinated Universal Time', 32); mem.writeWString(p + 88, 'Coordinated Universal Time', 32); return 0; }];
+  // TIME_ZONE_INFORMATION: Bias, StandardName[32], StandardDate, StandardBias, DaylightName[32], DaylightDate, DaylightBias
+  const tziCache = new Map();
+  const currentTzi = () => {
+    const w = vm.clock.wall(), year = new Date(w).getUTCFullYear();
+    let t = tziCache.get(year);
+    if (!t) tziCache.set(year, (t = timeZoneInfo(zone(), year, zone() === hostZone ? hostZoneNames(year) : {})));
+    return t;
+  };
+  const writeRule = (p, r) => { mem.fill(p, 16, 0); if (!r) return; mem.write16(p, r.year); mem.write16(p + 2, r.month); mem.write16(p + 4, r.dayOfWeek); mem.write16(p + 6, r.day); mem.write16(p + 8, r.hour); mem.write16(p + 10, r.minute); };
+  const readRule = (p) => ({ year: mem.read16(p), month: mem.read16(p + 2), dayOfWeek: mem.read16(p + 4), day: mem.read16(p + 6), hour: mem.read16(p + 8), minute: mem.read16(p + 10) });
+  function readTzi(p) { return { bias: mem.readS32(p), standardDate: readRule(p + 68), standardBias: mem.readS32(p + 84), daylightDate: readRule(p + 152), daylightBias: mem.readS32(p + 168) }; }
+  K.GetTimeZoneInformation = [1, (c) => {
+    const p = c.arg(0), t = currentTzi();
+    mem.fill(p, 172, 0);
+    mem.write32(p, t.bias >>> 0); mem.writeWString(p + 4, t.standardName.slice(0, 31), 32); writeRule(p + 68, t.standardDate); mem.write32(p + 84, t.standardBias >>> 0);
+    mem.writeWString(p + 88, t.daylightName.slice(0, 31), 32); writeRule(p + 152, t.daylightDate); mem.write32(p + 168, t.daylightBias >>> 0);
+    if (!t.daylightDate) return 0; // TIME_ZONE_ID_UNKNOWN
+    return zone()(vm.clock.wall()) === -t.bias ? 1 : 2; // TIME_ZONE_ID_STANDARD / DAYLIGHT
+  }];
   K.GetSystemTimes = [3, (c) => { c.out64(0, 0n); c.out64(1, 0n); c.out64(2, BigInt(Math.floor(vm.clock.now() * 10000))); return 1; }];
 
   // ---------------------------------------------------------------- toolhelp32 snapshots
@@ -684,8 +717,8 @@ export function registerKernel32(api, vm) {
   K.lstrcmp = [2, (c) => { const a = mem.readCString(c.arg(0)), b = mem.readCString(c.arg(1)); return (a < b ? -1 : a > b ? 1 : 0) >>> 0; }];
   K.lstrcmpi = [2, (c) => { const a = mem.readCString(c.arg(0)).toLowerCase(), b = mem.readCString(c.arg(1)).toLowerCase(); return (a < b ? -1 : a > b ? 1 : 0) >>> 0; }];
   K.lstrlen = [1, (c) => (c.arg(0) ? mem.readCString(c.arg(0)).length : 0)];
-  K.GetDateFormatW = [6, (c) => { const d = new Date(vm.clock.wall()); const s = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
-  K.GetTimeFormatW = [6, (c) => { const d = new Date(vm.clock.wall()); const s = `${d.getUTCHours() % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCHours() < 12 ? 'AM' : 'PM'}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  K.GetDateFormatW = [6, (c) => { const d = new Date(c.arg(3) ? readSystemTime(mem, c.arg(3)) : localNow()); const s = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
+  K.GetTimeFormatW = [6, (c) => { const d = new Date(c.arg(3) ? readSystemTime(mem, c.arg(3)) : localNow()); const s = `${d.getUTCHours() % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCHours() < 12 ? 'AM' : 'PM'}`; if (c.arg(5) === 0) return s.length + 1; mem.writeWString(c.arg(4), s, c.arg(5)); return s.length + 1; }];
   K.GetStringTypeExW = [5, (c) => { const s = c.sarg(3) < 0 ? mem.readWString(c.arg(2)) : mem.readWStringN(c.arg(2), c.arg(3)); for (let i = 0; i < s.length; i++) mem.write16(c.arg(4) + 2 * i, 0); return 1; }];
   for (const n of ['SetCommState', 'GetCommState', 'SetupComm', 'PurgeComm', 'SetCommTimeouts', 'GetCommTimeouts', 'SetCommMask', 'GetCommMask', 'WaitCommEvent', 'GetCommConfig', 'SetCommConfig', 'ClearCommError', 'EscapeCommFunction', 'TransmitCommChar', 'GetCommModemStatus', 'SetNamedPipeHandleState', 'ReadConsoleInputA', 'PeekConsoleInputA', 'SetConsoleCursorInfo', 'GetConsoleCursorInfo', 'SetConsoleScreenBufferSize', 'SetConsoleWindowInfo', 'WriteConsoleOutputA', 'ReadConsoleOutputA', 'FillConsoleOutputCharacterA', 'FillConsoleOutputAttribute', 'SetConsoleCursorPosition', 'WriteConsoleOutputCharacterA', 'ScrollConsoleScreenBufferA']) K[n] = [api.signatures.get(n), (c) => c.fail(E.INVALID_HANDLE)];
   K.GetNumberOfConsoleInputEvents = [2, (c) => { c.out32(1, 0); return 1; }];

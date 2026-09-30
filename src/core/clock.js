@@ -1,6 +1,8 @@
 // Time sources. RealClock follows wall time and really sleeps (Atomics.wait blocks the
 // current JS thread, which is what the guest expects from Sleep/WaitFor*). VirtualClock is
-// used by tests: sleeping just advances time.
+// used by tests: sleeping just advances time. `zone` is the guest's time zone (see win32/timezone.js): the host's for
+// RealClock, UTC for VirtualClock (deterministic tests).
+import { hostZone, utcZone } from '../win32/timezone.js';
 
 export class RealClock {
   /**
@@ -11,6 +13,7 @@ export class RealClock {
     this.origin = performance.now();
     this.scale = scale;
     this.sab = new Int32Array(new SharedArrayBuffer(4));
+    this.zone = hostZone;
   }
   /** milliseconds since process start (fractional) */
   now() { return this.scale === 1 ? performance.now() - this.origin : (performance.now() - this.origin) * this.scale; }
@@ -32,6 +35,7 @@ export class VirtualClock {
     this.t = 0;
     this.wallOrigin = startWall;
     this.slept = 0;
+    this.zone = utcZone;
   }
   now() { return this.t; }
   wall() { return this.wallOrigin + this.t; }
