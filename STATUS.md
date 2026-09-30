@@ -687,6 +687,29 @@
   neutre en partie (c'est le fil principal du jeu qui lit).
 - Le chargement d'une carte reste long sur un réseau lent la première fois (~20 Mo lus derrière l'écran de chargement).
 
+## 30 septembre : textures au chargement d'une carte (BFME2)
+- **Mesure** (harnais, nouvel événement de scénario `mark:<étiquette>` : CPU du worker et du processus GPU par phase,
+  travail de textures et temps d'API par phase avec `--api-times`) : pendant le chargement d'une escarmouche BFME2
+  (~30 s, ~29 s de CPU du worker), l'envoi des textures au GPU ne coûte que ~230 ms (dont la moitié en diagnostic de
+  texture « magenta » qui reconvertissait chaque petite texture), mais D3DX ~5,7 s : 1 225 textures 256×256 chargées par
+  `D3DXLoadSurfaceFromMemory` (X8R8G8B8 → DXT1 : encodage DXT) puis `D3DXFilterTexture` (mips A1R5G5B5 et DXT1).
+- **Fait** : (1) conversions D3DX par table (8/16 bits : une table des valeurs de texel par format, construite avec la
+  même conversion) et par mot (A8R8G8B8), source lue sur place — mêmes octets (test contre l'ancien code gardé en
+  fixture) ; (2) encodage DXT en parallèle (D062) ; (3) envoi partiel : un niveau modifié seulement par des LockRect à
+  rectangle n'envoie que leur union (comme le runtime Direct3D pour une texture managée) — vérifié en partie par la
+  capture d'image (96 textures relues du GPU : identiques à la mémoire invitée) ; (4) le diagnostic magenta réutilise
+  les pixels déjà convertis.
+- **Résultat** (A/B alternés, même scénario, `--api-times` des deux côtés) : phase écran de chargement → partie, CPU du
+  fil du worker 29,8 / 29,1 s → 25,4 / 26,4 s ; durée 31 / 30 s → 27 / 28 s ; D3DX 5,7 → 3,7-3,9 s ; envoi des
+  textures 228-234 → 121-131 ms. (Les aides DXT prennent ~1 s de CPU sur d'autres cœurs.)
+- **Essayé puis retiré** : envoyer au GPU, à chaque Present (4 ms), les textures écrites mais pas encore dessinées — la
+  première image de la partie envoie toujours ~680 niveaux / 60 Mo (ces textures sont probablement remplies après la dernière image
+  de l'écran de chargement), et le jeu crée beaucoup de textures jamais dessinées (+130 Mio envoyés pendant le
+  chargement, +576 textures en 20 s de partie).
+- Reste en D3DX au chargement : encodage DXT des mips 64×64 et moins (non parallélisés, ~0,6 s), décodage A1R5G5B5 et
+  réductions (~1 s, surtout des allocations). Observé en passant : `SetCursor` ~11 s de temps d'API cumulé au menu
+  (à comprendre : probablement du temps d'ordonnancement attribué à cet appel).
+
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
   patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
