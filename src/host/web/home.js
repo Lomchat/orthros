@@ -14,7 +14,7 @@ const STRINGS = {
     playAria: (t) => `Play ${t}`, missing: 'Game files not found on the server',
     emptyTitle: 'No game available', emptyText: 'This server offers no game yet. Add one with',
     errorTitle: 'Cannot reach the server', retry: 'Try again',
-    options: 'Options', myData: 'My data', language: 'Language', gameLanguage: 'Game language', gameVersion: 'Version',
+    options: 'Options', myData: 'My data', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     offline: 'Offline copy', offlineText: 'Downloads the whole game folder into this browser’s storage in the background: later launches read nothing from the network.',
     log: 'Debug log', logText: 'Shows the emulator’s log over the game.',
     keys: 'choose', enter: 'play', foot: 'Runs entirely in your browser',
@@ -28,7 +28,7 @@ const STRINGS = {
     playAria: (t) => `Jouer à ${t}`, missing: 'Fichiers du jeu introuvables sur le serveur',
     emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutez-en un avec',
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
-    options: 'Options', myData: 'Mes données', language: 'Langue', gameLanguage: 'Langue du jeu', gameVersion: 'Version',
+    options: 'Options', myData: 'Mes données', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     offline: 'Copie hors ligne', offlineText: 'Télécharge tout le dossier du jeu dans le stockage du navigateur, en arrière-plan : les lancements suivants ne lisent plus rien sur le réseau.',
     log: 'Journal de débogage', logText: 'Affiche le journal de l’émulateur par-dessus le jeu.',
     keys: 'choisir', enter: 'jouer', foot: 'Tout s’exécute dans votre navigateur',
@@ -36,13 +36,18 @@ const STRINGS = {
   },
 };
 
-/** The page language: ?lang=, else the visitor's choice, else the browser's (French for French browsers, English otherwise). */
-function pickLang() {
-  const q = new URLSearchParams(location.search).get('lang');
+const UI_LANGS = Object.keys(STRINGS);
+const baseLang = (l) => String(l ?? '').toLowerCase().split(/[-_]/)[0];
+/** The browser's languages, preferred first ('fr-CA' → 'fr'). */
+const browserLangs = () => (navigator.languages?.length ? [...navigator.languages] : [navigator.language]).map(baseLang).filter(Boolean);
+/** The page language chosen by the visitor (?lang= or the flags, remembered), or null while nothing was chosen. */
+function explicitLang() {
   let saved = null; try { saved = localStorage.getItem('orthros.lang'); } catch { /* no storage */ }
-  const l = q ?? saved ?? navigator.language ?? 'en';
-  return String(l).toLowerCase().startsWith('fr') ? 'fr' : 'en';
+  const l = baseLang(new URLSearchParams(location.search).get('lang') ?? saved);
+  return UI_LANGS.includes(l) ? l : null;
 }
+/** The page language: the visitor's choice, else the first language of the browser that the page speaks, else English. */
+const pickLang = () => explicitLang() ?? browserLangs().find((l) => UI_LANGS.includes(l)) ?? 'en';
 
 /** Tiny element builder: h('div', { class: 'x', onclick }, child, ...). */
 function h(tag, props = {}, ...kids) {
@@ -80,6 +85,86 @@ function wordmark(text) {
   return svg;
 }
 
+// ---------------------------------------------------------------- flags
+// Drawn here as plain shapes on a 3:2 board (emoji flags are letters on Windows), one <symbol> each in a hidden sprite.
+const bands = (dir, ...colors) => colors.map((c, i) => (dir === 'v' ? `<rect x="${i * 10}" width="10" height="20" fill="${c}"/>` : `<rect y="${i * 20 / colors.length}" width="30" height="${20 / colors.length + .01}" fill="${c}"/>`)).join('');
+const FLAGS = {
+  fr: bands('v', '#0055a4', '#fff', '#ef4135'),
+  it: bands('v', '#009246', '#fff', '#ce2b37'),
+  de: bands('h', '#111', '#dd0000', '#ffce00'),
+  nl: bands('h', '#ae1c28', '#fff', '#21468b'),
+  ru: bands('h', '#fff', '#0039a6', '#d52b1e'),
+  pl: bands('h', '#fff', '#dc143c'),
+  es: '<rect width="30" height="20" fill="#aa151b"/><rect y="5" width="30" height="10" fill="#f1bf00"/>',
+  ja: '<rect width="30" height="20" fill="#fff"/><circle cx="15" cy="10" r="6" fill="#bc002d"/>',
+  // the Union Jack: blue board, white saltire, red saltire cut in counterchange, white then red cross
+  en: '<symbol-viewbox 0 0 60 40/><clipPath id="hmf-gb-b"><path d="M0 0h60v40H0z"/></clipPath><clipPath id="hmf-gb-x"><path d="M30 20h30v20zM30 20v20H0zM30 20H0V0zM30 20V0h30z"/></clipPath>'
+    + '<g clip-path="url(#hmf-gb-b)"><rect width="60" height="40" fill="#012169"/><path d="M0 0l60 40M60 0L0 40" stroke="#fff" stroke-width="8"/><path d="M0 0l60 40M60 0L0 40" clip-path="url(#hmf-gb-x)" stroke="#c8102e" stroke-width="5"/>'
+    + '<path d="M30 0v40M0 20h60" stroke="#fff" stroke-width="13"/><path d="M30 0v40M0 20h60" stroke="#c8102e" stroke-width="8"/></g>',
+};
+/** A language's name in that language ('fr' → 'Français'). */
+function endonym(code) {
+  try { const n = new Intl.DisplayNames([code], { type: 'language' }).of(code); return n.charAt(0).toLocaleUpperCase(code) + n.slice(1); } catch { return code.toUpperCase(); }
+}
+let spriteReady = false;
+function flagEl(code) {
+  if (!spriteReady) {
+    spriteReady = true;
+    const sprite = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    sprite.setAttribute('aria-hidden', 'true'); sprite.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+    sprite.innerHTML = Object.entries(FLAGS).map(([c, body]) => `<symbol id="hmf-${c}" viewBox="${c === 'en' ? '0 0 60 40' : '0 0 30 20'}">${body.replace('<symbol-viewbox 0 0 60 40/>', '')}</symbol>`).join('');
+    document.body.append(sprite);
+  }
+  const el = h('span', { class: 'hm-flag' + (FLAGS[code] ? '' : ' code'), 'aria-hidden': 'true' });
+  if (FLAGS[code]) el.innerHTML = `<svg viewBox="0 0 30 20"><use href="#hmf-${code}" width="30" height="20"/></svg>`; else el.textContent = code.slice(0, 3).toUpperCase();
+  return el;
+}
+
+// ---------------------------------------------------------------- a row of choices
+/**
+ * One row: its label, then the options as chips (flags for languages); past `max` options, the rest go into a select
+ * ("Others") at the end. A single option is shown, not offered. `set(value)` moves the selection, `onPick` reports a choice.
+ * @param {{ label: string, aria: string, items: { value: string, label?: string, flag?: string, title?: string, disabled?: boolean }[],
+ *   max: number, more: string, onPick: (value: string) => void }} o
+ */
+function choiceRow({ label, aria, items, max, more, onPick }) {
+  const solo = items.length === 1, shown = items.slice(0, max), rest = items.slice(max);
+  const seg = h('div', { class: 'hm-seg', role: solo ? 'group' : 'radiogroup', 'aria-label': aria });
+  for (const it of shown) {
+    const inner = it.flag ? flagEl(it.flag) : it.label, common = { class: 'hm-opt' + (it.flag ? ' is-flag' : '') + (solo ? ' solo on' : ''), 'data-value': it.value, title: it.title ?? (it.flag ? it.label : null) };
+    seg.append(solo ? h('span', { ...common, role: 'img', 'aria-label': it.title ?? it.label }, inner)
+      : h('button', { ...common, type: 'button', role: 'radio', 'aria-label': it.flag ? (it.title ?? it.label) : null, disabled: it.disabled, onclick: () => onPick(it.value) }, inner));
+  }
+  const select = rest.length ? h('select', { class: 'hm-opt hm-more', 'aria-label': `${aria} — ${more}`, onchange: (e) => e.target.value && onPick(e.target.value) },
+    h('option', { value: '', hidden: true }, more), rest.map((it) => h('option', { value: it.value, disabled: it.disabled }, it.label))) : null;
+  if (select) seg.append(select);
+  // left / right move between the options of the row (and choose, as in any group of radio buttons)
+  seg.addEventListener('keydown', (e) => {
+    if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.target.tagName === 'SELECT') return;
+    const radios = [...seg.querySelectorAll('button.hm-opt:not(:disabled)')], i = radios.indexOf(document.activeElement);
+    if (i < 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const next = radios[(i + (e.key === 'ArrowLeft' ? -1 : 1) + radios.length) % radios.length];
+    next.focus(); onPick(next.dataset.value);
+  });
+  const set = (value) => {
+    if (!solo) {
+      let on = null;
+      for (const b of seg.querySelectorAll('.hm-opt[data-value]')) {
+        const is = b.dataset.value === value;
+        b.classList.toggle('on', is); b.setAttribute('aria-checked', String(is)); b.tabIndex = is ? 0 : -1;
+        if (is) on = b;
+      }
+      if (!on) seg.querySelector('button.hm-opt:not(:disabled)')?.setAttribute('tabindex', '0'); // (the chosen one is in the select: the row stays reachable)
+    }
+    if (select) { const inRest = rest.some((it) => it.value === value); select.value = inRest ? value : ''; select.classList.toggle('on', inRest); }
+  };
+  return { el: h('div', { class: 'hm-row' }, h('span', { class: 'hm-row-label' }, label), seg), set };
+}
+
+/** Options shown as chips in a row before the rest go into the "Others" select. */
+const MAX_VERSIONS = 3, MAX_LANGS = 6;
+
 const ICON = {
   play: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.6v10.8a.6.6 0 0 0 .92.5l8.5-5.4a.6.6 0 0 0 0-1L4.92 2.1A.6.6 0 0 0 4 2.6z" fill="currentColor"/></svg>',
 };
@@ -91,7 +176,7 @@ const ICON = {
 export function mountHome({ onPlay }) {
   const menu = $('menu'), grid = $('hmGrid'), nav = $('hmNav');
   const cleanup = [];
-  let lang = pickLang(), games = [], last = null, cards = [], resume = null, embers = null;
+  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false;
   let view = { kind: 'loading' }; // (loading, games, error)
   const S = () => STRINGS[lang];
   const on = (target, type, fn, o) => { target.addEventListener(type, fn, o); cleanup.push(() => target.removeEventListener(type, fn, o)); };
@@ -113,7 +198,9 @@ export function mountHome({ onPlay }) {
     $('hmLang').setAttribute('aria-label', S().language);
     renderView();
   }
-  for (const b of menu.querySelectorAll('[data-lang]')) b.onclick = () => { lang = b.dataset.lang; try { localStorage.setItem('orthros.lang', lang); } catch { /* no storage */ } applyLang(); };
+  // the flags of the languages the page speaks: the browser's language is the default, a click chooses (and is remembered)
+  $('hmLang').replaceChildren(...UI_LANGS.map((code) => h('button', { type: 'button', 'data-lang': code, lang: code, title: endonym(code), 'aria-label': endonym(code),
+    onclick: () => { lang = explicit = code; try { localStorage.setItem('orthros.lang', code); } catch { /* no storage */ } applyLang(); } }, flagEl(code))));
 
   // options popover: placed under its button (top layer, closes on outside click and Escape by itself)
   const pop = $('hmOptions'), popBtn = $('hmOptionsBtn');
@@ -136,47 +223,75 @@ export function mountHome({ onPlay }) {
   const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
     ?? g.variants.find((v) => v.name === last && v.available)
     ?? g.variants.find((v) => v.available) ?? g.variants[0];
+  /** The game's language for this version: the visitor's last choice, else the page's / the browser's language if the game has it. */
   const gameLang = (g, variant) => {
     const options = variant.languages ?? [], saved = pref('orthros.gameLanguage.' + g.id);
-    return options.includes(saved) ? saved : options.includes(lang) ? lang : options[0] ?? null;
+    if (options.includes(saved)) return saved;
+    const wanted = explicit ? [explicit, ...browserLangs()] : [...browserLangs(), lang];
+    return wanted.find((l) => options.includes(l)) ?? (options.includes('en') ? 'en' : options[0] ?? null);
   };
   const play = (g) => { const v = chosen(g); if (v?.available) onPlay(v.name, gameLang(g, v)); };
   function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
+
+  // the cover of the game's chosen version behind the page (added, updated or removed as the choice changes)
+  function syncBackdrop(g) {
+    const v = chosen(g), d = [...backdrops.children].find((b) => b.dataset.name === g.id);
+    if (!v?.cover || !v.available) { d?.remove(); return; }
+    const bd = d ?? backdrops.appendChild(h('div', { class: 'hm-bd', 'data-name': g.id }));
+    bd.style.backgroundImage = `url(/api/cover/${encodeURIComponent(v.name)})`;
+  }
+  /** The hero button: resume the last game, or start the first one. */
+  function renderCta() {
+    resume = games.find((g) => g.variants.some((v) => v.name === last && v.available)) ?? games.find((g) => chosen(g)?.available) ?? null;
+    const cta = $('hmCta');
+    cta.classList.toggle('hidden', !resume);
+    if (!resume) return;
+    cta.querySelector('small').textContent = chosen(resume)?.name === last ? S().resume : S().first;
+    cta.querySelector('b').textContent = resume.title;
+    cta.onclick = () => play(resume);
+  }
+
   function card(g, i) {
-    const v = chosen(g), title = g.title, ok = !!v?.available;
-    const cover = h('div', { class: 'hm-cover' + (v?.cover ? '' : ' none') });
-    if (v?.cover) cover.append(h('img', { src: `/api/cover/${encodeURIComponent(v.name)}`, alt: '', decoding: 'async', draggable: 'false', onload: (e) => e.target.classList.add('loaded') }));
-    else cover.append(h('img', { src: LOGO, alt: '', class: 'loaded glyph', draggable: 'false' }));
-    if (v.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
-    const choices = h('div', { class: 'hm-choices' });
-    if (g.variants.length > 1) {
-      const select = h('select', { 'aria-label': S().gameVersion, class: 'hm-version' },
-        g.variants.map((item) => h('option', { value: item.name, disabled: !item.available }, item.version ?? item.name)));
-      select.value = v.name;
-      select.onchange = () => { savePref('orthros.version.' + g.id, select.value); renderGames(); grid.querySelector(`[data-name="${CSS.escape(g.id)}"] .hm-version`)?.focus(); };
-      choices.append(h('label', {}, h('span', {}, S().gameVersion), select));
-    } else if (v.version) choices.append(h('div', { class: 'hm-version-label' }, h('span', {}, S().gameVersion), h('strong', {}, v.version)));
-    if (v.languages?.length) {
-      const select = h('select', { 'aria-label': S().gameLanguage, class: 'hm-game-lang' },
-        v.languages.map((code) => h('option', { value: code }, code === 'fr' ? 'Français' : 'English')));
-      select.value = gameLang(g, v);
-      select.onchange = () => savePref('orthros.gameLanguage.' + g.id, select.value);
-      choices.append(h('label', {}, h('span', {}, S().gameLanguage), select));
+    const el = h('article', { class: 'hm-card' + (drawn ? ' still' : ''), 'data-name': g.id, style: `--i:${i}`, role: 'group', 'aria-label': g.title });
+    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('span', { class: 'hm-meta' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
+    let shown = null, langRow = null;
+    // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
+    const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
+      items: g.variants.map((v) => ({ value: v.name, label: v.version ?? v.name, disabled: !v.available, title: v.available ? null : S().missing })),
+      onPick: (name) => { savePref('orthros.version.' + g.id, name); sync(); syncBackdrop(g); setBackdrop(g.id); renderCta(); } }) : null;
+
+    /** Everything that depends on the chosen version: cover, text, size, languages. */
+    function sync() {
+      const v = chosen(g), ok = !!v?.available;
+      el.classList.toggle('unavailable', !ok); el.tabIndex = ok ? 0 : -1;
+      cover.classList.toggle('none', !v?.cover);
+      const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}` : LOGO;
+      if (src !== shown) { // (the new image fades in over the old one)
+        shown = src;
+        const img = h('img', { src, alt: '', decoding: 'async', draggable: 'false', class: v?.cover ? '' : 'glyph' });
+        const put = () => { const old = [...cover.querySelectorAll('img')]; cover.insertBefore(img, cover.querySelector('.hm-badge')); requestAnimationFrame(() => { img.classList.add('loaded'); setTimeout(() => old.forEach((o) => o.remove()), 700); }); };
+        if (v?.cover) img.onload = put; else put();
+      }
+      cover.querySelector('.hm-badge')?.remove();
+      if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
+      desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
+      meta.textContent = ok ? `${v.exe} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
+      playBtn.hidden = !ok;
+      versions?.set(v?.name);
+      langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
+        items: v.languages.map((code) => ({ value: code, flag: code, label: endonym(code) })),
+        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); } }) : null;
+      langRow?.set(gameLang(g, v));
+      langSlot.replaceChildren(...(langRow ? [langRow.el] : []));
     }
-    const body = h('div', { class: 'hm-body' },
-      h('h3', {}, title),
-      h('p', {}, (lang === 'fr' ? v.descriptionFr : null) ?? v.description ?? ''), choices,
-      h('div', { class: 'hm-foot-row' },
-        h('span', { class: 'hm-meta', title: v.exe }, ok ? `${v.exe} · ${S().size(v.bytes)}` : S().missing),
-        ok ? playPill(g) : null));
-    const el = h('article', { class: 'hm-card' + (ok ? '' : ' unavailable'), 'data-name': g.id, style: `--i:${i}`, tabindex: ok ? 0 : -1, role: 'group', 'aria-label': title }, cover, body);
-    if (ok) {
-      el.onclick = (e) => { if (!e.target.closest('select, button, label')) play(g); };
-      el.addEventListener('mouseenter', () => { setBackdrop(g.id); heat(true); });
-      el.addEventListener('mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); });
-      el.addEventListener('focus', () => { setBackdrop(g.id); heat(true); });
-      el.addEventListener('blur', () => { setBackdrop(resume?.id ?? null); heat(false); });
-    }
+
+    el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
+      h('div', { class: 'hm-choices' }, versions?.el, langSlot),
+      h('div', { class: 'hm-foot-row' }, meta, playBtn)));
+    sync();
+    el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label')) play(g); };
+    for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],
+      ['focus', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['blur', () => { setBackdrop(resume?.id ?? null); heat(false); }]]) el.addEventListener(type, fn);
     return el;
   }
 
@@ -198,20 +313,14 @@ export function mountHome({ onPlay }) {
   }
   function renderGames() {
     const focused = document.activeElement?.dataset?.name;
-    resume = games.find((g) => g.variants.some((v) => v.name === last && v.available)) ?? games.find((g) => chosen(g)?.available) ?? null;
-    // hero button: resume the last game, or start the first one
-    const cta = $('hmCta');
-    cta.classList.toggle('hidden', !resume);
-    if (resume) {
-      cta.querySelector('small').textContent = chosen(resume)?.name === last ? S().resume : S().first;
-      cta.querySelector('b').textContent = resume.title;
-      cta.onclick = () => play(resume);
-    }
+    renderCta();
     $('hmCount').textContent = S().games(games.length);
     // covers behind the page: the one of the game under the pointer, else the resumable one
-    backdrops.replaceChildren(...games.filter((g) => chosen(g)?.cover && chosen(g)?.available).map((g) => h('div', { class: 'hm-bd', 'data-name': g.id, style: `background-image:url(/api/cover/${encodeURIComponent(chosen(g).name)})` })));
+    backdrops.replaceChildren();
+    for (const g of games) syncBackdrop(g);
     setBackdrop(resume?.id ?? null);
     cards = games.map(card);
+    drawn = true; // (later drawings — a language change — do not replay the entrance)
     grid.style.setProperty('--n', games.length);
     grid.replaceChildren(...cards);
     grid.setAttribute('aria-busy', 'false');
