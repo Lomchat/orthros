@@ -8,10 +8,14 @@ import { h } from './dom.js';
 // ---------------------------------------------------------------- text
 const TEXT = {
   fr: {
-    title: 'Mes données', subtitle: 'Sauvegardes et stockage', close: 'Fermer',
-    tabDevice: 'Cet appareil', tabCloud: 'En ligne', tabAccount: 'Compte',
-    hintUsed: (b) => `${b} utilisés`, hintReading: 'Lecture…', hintCloud: 'Synchronisation', hintCloudOff: 'Compte requis', hintAccount: 'Facultatif',
+    title: 'Paramètres', subtitle: 'Options et sauvegardes', close: 'Fermer',
+    tabGeneral: 'Général', tabDevice: 'Cet appareil', tabCloud: 'En ligne', tabAccount: 'Compte',
+    hintGeneral: 'Options du lanceur', hintUsed: (b) => `${b} utilisés`, hintReading: 'Lecture…', hintCloud: 'Synchronisation', hintCloudOff: 'Compte requis',
     sideNote: 'Jouer ne demande aucun compte. Vos parties restent dans ce navigateur tant que vous ne les envoyez pas.',
+    // general
+    generalTitle: 'Options du lanceur', generalLead: 'Quelques réglages valables pour tous vos jeux. Vos sauvegardes et le stockage sont dans les onglets suivants.',
+    offline: 'Copie hors ligne', offlineText: 'Télécharge tout le dossier du jeu dans le stockage du navigateur, en arrière-plan : les lancements suivants ne lisent plus rien sur le réseau.',
+    log: 'Journal de débogage', logText: 'Affiche le journal de l’émulateur par-dessus le jeu.', nextLaunch: ' S’applique au prochain lancement.',
     // this device
     deviceTitle: 'Sauvegardes et cache des jeux',
     deviceLead: 'Vos parties et réglages, ainsi que les fichiers de jeu déjà téléchargés, sont rangés dans ce navigateur. Exportez vos sauvegardes pour les garder ailleurs.',
@@ -32,7 +36,7 @@ const TEXT = {
     cloudLead: 'Copiez vos sauvegardes sur votre compte pour les retrouver sur un autre appareil. Les fichiers des jeux ne sont jamais envoyés.',
     cloudOffTitle: 'Retrouvez vos parties partout', cloudOffText: 'Connectez-vous pour garder une copie de vos sauvegardes en ligne. C’est facultatif : le jeu fonctionne très bien sans.',
     signIn: 'Se connecter ou créer un compte', accountsOff: 'Les comptes ne sont pas activés sur ce serveur.',
-    signedAs: (n) => `Connecté : ${n}`, keeps: 'Jusqu’à 20 versions conservées par jeu.', syncAll: 'Synchroniser maintenant',
+    toCloud: 'Mes sauvegardes en ligne', signedAs: (n) => `Connecté : ${n}`, keeps: 'Jusqu’à 20 versions conservées par jeu.', syncAll: 'Synchroniser maintenant',
     online: 'En ligne', version: (v) => `version ${v}`, noCopy: 'Pas encore de copie en ligne',
     send: 'Envoyer', restore: 'Restaurer', downloadBtn: 'Télécharger', history: 'Historique', deleteOnline: 'Effacer en ligne',
     noSaves: 'Aucune sauvegarde pour le moment', noSavesText: 'Lancez un jeu, puis revenez ici pour créer sa première copie en ligne.',
@@ -70,10 +74,13 @@ const TEXT = {
     rHistory: 'Historique chargé.', rAccountDeleted: 'Compte supprimé. Les sauvegardes de cet appareil sont conservées.', errConnection: 'Erreur de connexion.',
   },
   en: {
-    title: 'My data', subtitle: 'Saves and storage', close: 'Close',
-    tabDevice: 'This device', tabCloud: 'Online', tabAccount: 'Account',
-    hintUsed: (b) => `${b} used`, hintReading: 'Reading…', hintCloud: 'Sync', hintCloudOff: 'Account needed', hintAccount: 'Optional',
+    title: 'Settings', subtitle: 'Options and saves', close: 'Close',
+    tabGeneral: 'General', tabDevice: 'This device', tabCloud: 'Online', tabAccount: 'Account',
+    hintGeneral: 'Launcher options', hintUsed: (b) => `${b} used`, hintReading: 'Reading…', hintCloud: 'Sync', hintCloudOff: 'Account needed',
     sideNote: 'Playing needs no account. Your games stay in this browser unless you send them.',
+    generalTitle: 'Launcher options', generalLead: 'A few settings for all your games. Saves and storage are in the next tabs.',
+    offline: 'Offline copy', offlineText: 'Downloads the whole game folder into this browser’s storage in the background: later launches read nothing from the network.',
+    log: 'Debug log', logText: 'Shows the emulator’s log over the game.', nextLaunch: ' Applies at the next launch.',
     deviceTitle: 'Saved games and game cache',
     deviceLead: 'Your games and settings, and the game files already downloaded, are kept in this browser. Export your saves to keep them elsewhere.',
     used: 'Space used', ofQuota: (b) => `of ${b} available`, quotaUnknown: 'Quota unavailable',
@@ -92,7 +99,7 @@ const TEXT = {
     cloudLead: 'Copy your saves to your account to find them on another device. Game files are never uploaded.',
     cloudOffTitle: 'Find your games anywhere', cloudOffText: 'Sign in to keep a copy of your saves online. It is optional: the game works fine without.',
     signIn: 'Sign in or create an account', accountsOff: 'Accounts are not enabled on this server.',
-    signedAs: (n) => `Signed in: ${n}`, keeps: 'Up to 20 versions kept per game.', syncAll: 'Sync now',
+    toCloud: 'My online saves', signedAs: (n) => `Signed in: ${n}`, keeps: 'Up to 20 versions kept per game.', syncAll: 'Sync now',
     online: 'Online', version: (v) => `version ${v}`, noCopy: 'No online copy yet',
     send: 'Send', restore: 'Restore', downloadBtn: 'Download', history: 'History', deleteOnline: 'Delete online',
     noSaves: 'No saves yet', noSavesText: 'Start a game, then come back here to make its first online copy.',
@@ -150,7 +157,7 @@ const stamp = (ms) => ms ? new Date(ms).toLocaleString(lang, { dateStyle: 'mediu
 
 // ---------------------------------------------------------------- state
 const app = {
-  tab: 'device', open: false, busy: false, account: null, accountsOn: null, cloud: new Map(), storage: null,
+  tab: 'general', open: false, busy: false, account: null, accountsOn: null, cloud: new Map(), storage: null,
   games: new Map(), accountMode: 'login', expanded: null, histories: new Map(), message: '', tone: 'info', opened: new Set(),
 };
 const showAll = new URLSearchParams(location.search).has('all');
@@ -219,6 +226,7 @@ const ICONS = {
   chevron: '<path d="M6 9l6 6 6-6"/>',
   restore: '<path d="M4 12a8 8 0 1 0 3-6.2M4 4v5h5"/>',
   box: '<path d="M3 8l9-5 9 5-9 5-9-5zM3 8v8l9 5 9-5V8M12 13v8"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
 };
 const icon = (name) => { const s = h('span', { class: 'dm-ico', 'aria-hidden': 'true' }); s.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`; return s; };
 /** A button: `variant` primary / ghost / danger, an icon, a key to find it again after a redraw. */
@@ -235,6 +243,15 @@ const fold = (key, summary, ...kids) => {
 };
 const panel = (ico, title, text, ...actions) => h('div', { class: 'dm-panel' }, icon(ico), h('div', {}, h('strong', {}, title), h('p', {}, text), actions.flat().some(Boolean) ? row(actions) : null));
 
+// ---------------------------------------------------------------- the account button of the home screen
+/** A green dot and the name on the little person of the home screen while a session is open. */
+function updateAccountButton() {
+  const b = document.getElementById('hmAccountBtn'); if (!b) return;
+  b.toggleAttribute('data-signed', !!app.account);
+  if (app.account) b.dataset.user = app.account.username; else delete b.dataset.user;
+  b.title = t('tabAccount') + (app.account ? ' · ' + app.account.username : '');
+}
+
 // ---------------------------------------------------------------- the window
 const dialog = h('dialog', { class: 'dm-dialog', 'aria-labelledby': 'dmTitle' });
 const nav = h('nav', { class: 'dm-nav', role: 'tablist', 'aria-orientation': 'vertical' });
@@ -243,6 +260,7 @@ const status = h('div', { class: 'dm-status', role: 'status', 'aria-live': 'poli
 const asking = h('div', { class: 'dm-ask', hidden: true });
 const closeBtn = h('button', { type: 'button', class: 'dm-close', onclick: () => dialog.close() });
 const brandTitle = h('strong', { id: 'dmTitle' }), brandSub = h('span'), sideNote = h('p', { class: 'dm-side-note' });
+const parking = document.getElementById('dmParking');
 dialog.append(h('div', { class: 'dm-shell' },
   h('aside', { class: 'dm-side' }, h('div', { class: 'dm-brand' }, h('img', { src: '/src/host/web/orthros_logo.png', alt: '', width: 140, height: 143 }), h('div', {}, brandTitle, brandSub)), nav, sideNote),
   h('section', { class: 'dm-main' }, closeBtn, content, status, asking)));
@@ -272,6 +290,23 @@ function ask({ title, text, ok, danger = false, password = false }) {
     };
     asking.hidden = false; (input ?? no).focus();
   });
+}
+
+// ---------------------------------------------------------------- tab: general
+// The two launch options are checkboxes of the page (main.js reads them by id): they are wrapped once in a switch, which lives
+// in the window's general tab while it shows and in #dmParking otherwise — never out of the document.
+function makeSwitch(id) {
+  const input = document.getElementById(id), title = h('b'), text = h('small');
+  const label = h('label', { class: 'dm-switch' }, input, h('span', { class: 'track' }), h('span', {}, title, text));
+  parking.append(label);
+  return { label, title, text };
+}
+const switches = { offline: makeSwitch('offlineToggle'), log: makeSwitch('logToggle') };
+function renderGeneral() {
+  content.append(head(t('tabGeneral'), t('generalTitle'), t('generalLead')));
+  const playing = ['running', 'loading', 'starting'].includes(state()?.status);
+  for (const key of ['offline', 'log']) { switches[key].title.textContent = t(key); switches[key].text.textContent = t(key + 'Text') + (key === 'offline' && playing ? t('nextLaunch') : ''); }
+  content.append(h('div', { class: 'dm-switches' }, switches.offline.label, switches.log.label));
 }
 
 // ---------------------------------------------------------------- tab: this device
@@ -372,11 +407,12 @@ function renderAccount() {
   if (app.account) {
     content.append(h('div', { class: 'dm-who' }, h('div', { class: 'dm-avatar', 'aria-hidden': 'true' }, (app.account.username[0] ?? '?').toUpperCase()),
       h('div', {}, h('strong', {}, app.account.username), h('small', {}, t('signedIn'))),
-      btn(t('signOut'), () => run(t('wLogout'), async () => { await jsonApi('/api/account/logout', 'POST'); app.account = null; app.cloud.clear(); return t('signOutDone'); }), { variant: 'ghost', key: 'logout' })));
-    const pw = h('form', { class: 'dm-form' }, h('h3', {}, t('changePassword')), field(t('oldPassword'), 'password', 'oldPassword', 'current-password'), field(t('newPassword'), 'password', 'newPassword', 'new-password'),
+      row(btn(t('toCloud'), () => { app.tab = 'cloud'; render(); }, { variant: 'primary', ico: 'cloud', key: 'tocloud', small: true }),
+        btn(t('signOut'), () => run(t('wLogout'), async () => { await jsonApi('/api/account/logout', 'POST'); app.account = null; app.cloud.clear(); updateAccountButton(); return t('signOutDone'); }), { variant: 'ghost', key: 'logout', small: true }))));
+    const pw = h('form', { class: 'dm-form' }, field(t('oldPassword'), 'password', 'oldPassword', 'current-password'), field(t('newPassword'), 'password', 'newPassword', 'new-password'),
       h('button', { type: 'submit', class: 'dm-btn primary', disabled: app.busy }, t('changePasswordBtn')));
     pw.onsubmit = (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(pw)); run(t('wPassword'), async () => { await jsonApi('/api/account/password', 'POST', data); pw.reset(); return t('passwordChanged'); }, false); };
-    content.append(pw);
+    content.append(fold('password', t('changePassword'), pw));
     content.append(h('div', { class: 'dm-zone' }, h('div', {}, h('strong', {}, t('deleteAccount')), h('p', {}, t('deleteAccountText'))),
       btn(t('deleteAccountBtn'), () => deleteAccount(), { variant: 'danger', ico: 'trash', key: 'delaccount' })));
     return;
@@ -389,7 +425,7 @@ function renderAccount() {
     event.preventDefault(); const data = Object.fromEntries(new FormData(form));
     run(app.accountMode === 'login' ? t('wLogin') : t('wRegister'), async () => {
       const result = await jsonApi('/api/account/' + app.accountMode, 'POST', data);
-      app.account = result.user; app.tab = 'cloud'; form.reset();
+      app.account = result.user; form.reset(); updateAccountButton();
       await refresh(); await syncAll(); return t('connected');
     });
   };
@@ -397,19 +433,22 @@ function renderAccount() {
 }
 
 // ---------------------------------------------------------------- drawing
-const TABS = [['device', 'device', 'tabDevice'], ['cloud', 'cloud', 'tabCloud'], ['account', 'user', 'tabAccount']];
+const TABS = [['general', 'settings', 'tabGeneral'], ['device', 'device', 'tabDevice'], ['cloud', 'cloud', 'tabCloud']];
 function render() {
   const keep = document.activeElement?.dataset?.k, scroll = content.scrollTop;
+  parking.append(switches.offline.label, switches.log.label); // (before the content is cleared: they never leave the document)
+  const solo = app.tab === 'account'; // (the account has its own small window: the little person of the home screen)
+  dialog.classList.toggle('solo', solo);
   brandTitle.textContent = t('title'); brandSub.textContent = t('subtitle'); sideNote.textContent = t('sideNote');
-  dialog.setAttribute('aria-label', t('title')); closeBtn.setAttribute('aria-label', t('close')); closeBtn.title = t('close');
-  const hint = { device: app.storage ? t('hintUsed', fmtBytes(app.storage.usage)) : t('hintReading'), cloud: app.account ? t('hintCloud') : t('hintCloudOff'), account: app.account ? app.account.username : t('hintAccount') };
+  dialog.setAttribute('aria-label', solo ? t('tabAccount') : t('title')); closeBtn.setAttribute('aria-label', t('close')); closeBtn.title = t('close');
+  const hint = { general: t('hintGeneral'), device: app.storage ? t('hintUsed', fmtBytes(app.storage.usage)) : t('hintReading'), cloud: app.account ? t('hintCloud') : t('hintCloudOff') };
   nav.replaceChildren(...TABS.map(([id, ico, label]) => h('button', { type: 'button', role: 'tab', class: 'dm-tab' + (app.tab === id ? ' on' : ''), 'aria-selected': String(app.tab === id), 'data-k': 'tab:' + id,
     onclick: () => { app.tab = id; content.scrollTop = 0; render(); } }, icon(ico), h('span', {}, h('strong', {}, t(label)), h('small', {}, hint[id])))));
   content.replaceChildren();
-  ({ device: renderDevice, cloud: renderCloud, account: renderAccount })[app.tab]();
+  ({ general: renderGeneral, device: renderDevice, cloud: renderCloud, account: renderAccount })[app.tab]();
   status.className = 'dm-status ' + (app.message ? app.tone : 'idle'); status.replaceChildren(app.message ? icon(app.tone === 'error' ? 'alert' : app.tone === 'ok' ? 'check' : 'sync') : '', app.message);
   content.scrollTop = scroll;
-  if (keep) content.querySelector(`[data-k="${CSS.escape(keep)}"]`)?.focus({ preventScroll: true }) ?? nav.querySelector(`[data-k="${CSS.escape(keep)}"]`)?.focus({ preventScroll: true });
+  if (keep) (content.querySelector(`[data-k="${CSS.escape(keep)}"]`) ?? nav.querySelector(`[data-k="${CSS.escape(keep)}"]`))?.focus({ preventScroll: true });
 }
 
 // ---------------------------------------------------------------- actions
@@ -528,24 +567,27 @@ async function deleteAccount() {
     if (!password) return t('cancelled');
     if (!await ask({ title: t('finalAsk'), text: t('finalAskText'), ok: t('finalOk'), danger: true })) return t('cancelled');
     await jsonApi('/api/account', 'DELETE', { password });
-    app.account = null; app.cloud.clear();
+    app.account = null; app.cloud.clear(); updateAccountButton();
     return t('rAccountDeleted');
   });
 }
 
 // ---------------------------------------------------------------- entry points
-function open(tab = 'device') {
+function open(tab = 'general') {
   if (document.pointerLockElement) document.exitPointerLock();
   lang = pickLang();
   app.tab = tab; app.open = true; app.message = ''; app.tone = 'info'; asking.hidden = true;
   render();
   dialog.showModal();
-  refresh({ account: true }).catch((error) => { app.tone = 'error'; app.message = error.message; render(); });
+  refresh({ account: true }).then(updateAccountButton).catch((error) => { app.tone = 'error'; app.message = error.message; render(); });
 }
-// home screen: the button sits in the header (its label follows the page language, see home.js); in game: in the game header
-const menuButton = h('button', { type: 'button', class: 'hm-btn hm-btn-data', onclick: () => open() }, t('title'));
-document.querySelector('#menu [data-slot="data"]')?.append(menuButton);
-document.querySelector('#topbar')?.insertBefore(h('button', { type: 'button', class: 'dm-bar-entry', onclick: () => open() }, t('title')), document.querySelector('#tbFull'));
+// home screen: the two buttons of its header (see index.html); in game: one in the game header
+document.getElementById('hmSettingsBtn')?.addEventListener('click', () => open('general'));
+document.getElementById('hmAccountBtn')?.addEventListener('click', () => open('account'));
+const gear = icon('settings'); gear.classList.add('dm-bar-ico');
+document.querySelector('#topbar')?.insertBefore(h('button', { type: 'button', class: 'dm-bar-entry', onclick: () => open('general') }, gear, t('title')), document.querySelector('#tbFull'));
+// is a session open? (a cheap question; the answer only lights the dot of the little person)
+fetch('/api/config').then((r) => r.json()).then(async (c) => { app.accountsOn = !!c.accounts; if (c.accounts) app.account = (await jsonApi('/api/account')).user; updateAccountButton(); }).catch(() => {});
 
 setInterval(() => {
   if (app.account && !app.busy) refresh().then(() => syncAll()).then((message) => {

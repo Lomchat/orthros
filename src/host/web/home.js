@@ -16,10 +16,7 @@ const STRINGS = {
     playAria: (t) => `Play ${t}`, missing: 'Game files not found on the server',
     emptyTitle: 'No game available', emptyText: 'This server offers no game yet. Add one with',
     errorTitle: 'Cannot reach the server', retry: 'Try again',
-    options: 'Options', myData: 'My data', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
-    offline: 'Offline copy', offlineText: 'Downloads the whole game folder into this browser’s storage in the background: later launches read nothing from the network.',
-    log: 'Debug log', logText: 'Shows the emulator’s log over the game.',
-    keys: 'choose', enter: 'play', foot: 'Runs entirely in your browser',
+    settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
   },
   fr: {
@@ -30,10 +27,7 @@ const STRINGS = {
     playAria: (t) => `Jouer à ${t}`, missing: 'Fichiers du jeu introuvables sur le serveur',
     emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutez-en un avec',
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
-    options: 'Options', myData: 'Mes données', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
-    offline: 'Copie hors ligne', offlineText: 'Télécharge tout le dossier du jeu dans le stockage du navigateur, en arrière-plan : les lancements suivants ne lisent plus rien sur le réseau.',
-    log: 'Journal de débogage', logText: 'Affiche le journal de l’émulateur par-dessus le jeu.',
-    keys: 'choisir', enter: 'jouer', foot: 'Tout s’exécute dans votre navigateur',
+    settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
   },
 };
@@ -167,22 +161,16 @@ export function mountHome({ onPlay }) {
     document.documentElement.lang = lang;
     for (const el of menu.querySelectorAll('[data-i18n]')) el.textContent = S()[el.dataset.i18n];
     for (const b of menu.querySelectorAll('[data-lang]')) b.setAttribute('aria-pressed', String(b.dataset.lang === lang));
-    const data = menu.querySelector('[data-slot="data"] button'); if (data) data.textContent = S().myData;
-    $('hmOptionsBtn').setAttribute('aria-label', S().options);
+    for (const [id, label] of [['hmSettingsBtn', S().settings], ['hmAccountBtn', S().account]]) {
+      const user = $(id).dataset.user; // (the signed-in name, set by data-manager.js)
+      $(id).setAttribute('aria-label', label); $(id).title = user ? `${label} · ${user}` : label;
+    }
     $('hmLang').setAttribute('aria-label', S().language);
     renderView();
   }
   // the flags of the languages the page speaks: the browser's language is the default, a click chooses (and is remembered)
   $('hmLang').replaceChildren(...UI_LANGS.map((code) => h('button', { type: 'button', 'data-lang': code, lang: code, title: endonym(code), 'aria-label': endonym(code),
     onclick: () => { lang = explicit = code; try { localStorage.setItem('orthros.lang', code); } catch { /* no storage */ } applyLang(); } }, flagEl(code))));
-
-  // options popover: placed under its button (top layer, closes on outside click and Escape by itself)
-  const pop = $('hmOptions'), popBtn = $('hmOptionsBtn');
-  pop.addEventListener('beforetoggle', (e) => {
-    if (e.newState !== 'open') return;
-    const r = popBtn.getBoundingClientRect();
-    pop.style.top = `${r.bottom + 10}px`; pop.style.right = `${Math.max(12, innerWidth - r.right)}px`;
-  });
 
   // the header turns opaque once the page scrolls under it
   on(menu, 'scroll', () => nav.classList.toggle('scrolled', menu.scrollTop > 8), { passive: true });
@@ -311,7 +299,7 @@ export function mountHome({ onPlay }) {
 
   // ---- keyboard: arrows move between the games (nearest card in that direction), Enter / Space plays
   on(menu, 'keydown', (e) => {
-    if (e.target.closest?.('#hmOptions, input, textarea, select')) return;
+    if (e.target.closest?.('input, textarea, select')) return;
     const list = cards.filter((c) => !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
     if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); play(games.find((g) => g.id === list[i].dataset.name)); return; }
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) || !list.length) return;

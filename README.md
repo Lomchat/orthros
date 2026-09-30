@@ -19,7 +19,7 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 (installateurs, désinstalleurs, lanceurs et outils écartés ; nom proche de celui du dossier, puis le plus gros). Un
 `manifest.json` dans le dossier, ou `--exe` / `--args`, imposent un autre choix. Le navigateur garde les fichiers du jeu
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
-des options du menu (⚙, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
+des paramètres du menu (bouton ⚙, onglet Général, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
 
 Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
@@ -56,10 +56,12 @@ dans `/srv/orthros/data_wine/wine-prefix/` ; les installateurs et ressources de 
 `/srv/orthros/data_installers/`. Ces trois dossiers sont exclus de Git. Le préfixe Wine ne conserve que les outils et
 manifests de l'installeur, sans copies installées des jeux ni cache de téléchargement.
 
-## Mes données et compte facultatif
+## Paramètres et compte facultatif
 
-Le bouton « Mes données » ouvre la bibliothèque locale, l'espace en ligne et le compte. Le site et les jeux restent
-accessibles sans compte. La bibliothèque affiche l'espace occupé, permet de demander la conservation du stockage par
+En haut à droite de l'accueil : la langue (drapeaux), le bouton Paramètres (⚙) et le compte (le petit bonhomme). Les
+paramètres ouvrent une fenêtre à trois onglets : Général (copie hors ligne, journal), Cet appareil (sauvegardes et cache
+locaux) et En ligne (copies sur le compte) ; le compte a sa propre fenêtre. Le site et les jeux restent
+accessibles sans compte. L'onglet Cet appareil affiche l'espace occupé, permet de demander la conservation du stockage par
 le navigateur, d'exporter ou restaurer une archive `.orthros-save`, et d'effacer séparément le cache du jeu et ses
 sauvegardes. Une restauration conserve une copie des données locales précédentes.
 

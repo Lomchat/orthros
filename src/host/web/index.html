@@ -95,15 +95,10 @@
       <div class="hm-brand"><img src="/src/host/web/orthros_logo.png" alt=""><span>Orthros</span></div>
       <div class="hm-actions">
         <div class="hm-lang" id="hmLang" role="group"></div>
-        <span data-slot="data"></span>
-        <button type="button" class="hm-btn icon" id="hmOptionsBtn" popovertarget="hmOptions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+        <button type="button" class="hm-btn icon" id="hmSettingsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+        <button type="button" class="hm-btn icon" id="hmAccountBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><i class="hm-dot"></i></button>
       </div>
     </div></header>
-    <div id="hmOptions" class="hm-pop" popover>
-      <h2 data-i18n="options">Options</h2>
-      <label class="hm-switch"><input type="checkbox" id="offlineToggle"><span class="track"></span><span><b data-i18n="offline">Offline copy</b><small data-i18n="offlineText"></small></span></label>
-      <label class="hm-switch"><input type="checkbox" id="logToggle"><span class="track"></span><span><b data-i18n="log">Debug log</b><small data-i18n="logText"></small></span></label>
-    </div>
     <main>
       <section class="hm-wrap hm-hero">
         <div class="hm-copy">
@@ -120,12 +115,9 @@
         <div class="hm-grid" id="hmGrid" role="group" aria-labelledby="hmLibTitle"></div>
       </section>
     </main>
-    <footer class="hm-foot"><div class="hm-wrap">
-      <span data-i18n="foot"></span>
-      <span class="keys"><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd><span data-i18n="keys"></span><kbd>Enter</kbd><span data-i18n="enter"></span></span>
-    </div></footer>
   </div>
 </div>
+<div id="dmParking" hidden><input type="checkbox" id="offlineToggle"><input type="checkbox" id="logToggle"></div>
 <div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
 <div id="status" class="hidden"><div class="title"></div><div class="detail"></div><div><button class="hidden">Restart</button> <button class="hidden" title="the saved settings and saves are moved aside (kept), the game starts as on its first launch">Restart with a fresh game profile</button> <button class="hidden">Back to the games</button></div><pre class="hidden"></pre></div>
 <div id="busy" class="hidden"></div>
