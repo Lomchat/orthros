@@ -744,6 +744,29 @@
 - Piste : le reste de la boucle (répartiteur `blk` en tête de boucle, décompte `icount` par bloc) coûte peu ; le gain
   réel demanderait de sortir du modèle (moins d'erreurs de prédiction : impossible côté JIT).
 
+## 30 septembre : plantage BFME2 résolu, préchargement, textures, chargement des cartes
+- **Plantage « 0x53524852 » trouvé et corrigé** (celui du joueur, image-4) : reproduit à chaque premier lancement
+  (sans profil) sur la version en ligne. Cause : un tas créé par le jeu (HeapCreate) donnait un bloc libre dont le
+  lien de liste avait été réécrit par le programme après libération — il pointait dans un autre tas, juste sous la
+  pile du fil principal, avec une taille lue 0xffffffff ; le jeu y lisait 2 Mio d'`asset.dat`, à travers la pile.
+  Le tas ne rend plus qu'un bloc réellement libre de ce tas (en-tête, pied et marque cohérents), sinon la liste est
+  coupée (fuite plutôt que corruption). Trouvé avec de nouveaux crochets de débogage : `ORTHROS_HEAP_WATCH=<adresse>`,
+  `ORTHROS_STACK_PATTERN=<texte>`, `ORTHROS_VERIFY_READS=1` (chaque ReadFile comparé au serveur), traces `fileio`
+  avec l'allocation de la destination.
+- **E/S de fichier sérialisées** avec une lecture parquée (un autre thread qui lit, écrit ou déplace le pointeur du
+  même fichier attend, comme sous Windows).
+- **Intégré (relu)** : préchargement réseau guidé par la position du jeu dans la liste apprise, par morceaux de
+  64 Kio (premier lancement sur lien simulé 20 Mbit/s : première image 74 → 42 s, menu 88 → 67 s, carte 77 → 55 s,
+  images ralenties par le réseau en partie 70 → 28) ; téléversements partiels de textures et conversions D3DX par
+  tables, compression DXT en parallèle (CPU du chargement d'une carte −12 %) ; attente active de l'ordonnanceur
+  supprimée (CPU du worker pendant le chargement d'une carte −31 %) ; listes JIT et compteurs par bloc en jeu.
+  Mesuré ici sans réseau : carte chargée en 27 s au lieu de 28,5.
+- **Non intégré** : programmes GL appris par leurs sources (branche `worktree-wf_47b80144-ae5-2`) — la préparation
+  anticipée pendant le calcul initial ralentit le premier lancement de ~18 s (A/B : fin du calcul 82-84 → 101-102 s) ;
+  à reprendre sans résolution synchrone des programmes avant le device.
+- Premier lancement vs suivants : le long calcul initial (~75 s) n'a lieu qu'au premier lancement (sans Options.ini) ;
+  ensuite la fenêtre arrive en ~20 s.
+
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
   patch de cette copie ?). Observation : au démarrage le jeu ouvre `HKLM\SOFTWARE\Electronic Arts\The Battle for
