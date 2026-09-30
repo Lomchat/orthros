@@ -19,7 +19,7 @@ const DIPROPAXISMODE_ABS = 0, DIPROPAXISMODE_REL = 1;
 /** virtual key -> scan code for events that carry only a VK (PC AT set 1) */
 const VK_TO_SCAN = (() => {
   const t = new Uint8Array(256);
-  const row1 = '1234567890'; for (let i = 0; i < 10; i++) t[0x30 + i] = 0x02 + i; t[0x30] = 0x0b;
+  const row1 = '1234567890'; for (let i = 0; i < 9; i++) t[0x31 + i] = 0x02 + i; t[0x30] = 0x0b; // ('1'..'9' = 02..0A, '0' = 0B)
   const q = 'QWERTYUIOP'; for (let i = 0; i < q.length; i++) t[q.charCodeAt(i)] = 0x10 + i;
   const a = 'ASDFGHJKL'; for (let i = 0; i < a.length; i++) t[a.charCodeAt(i)] = 0x1e + i;
   const z = 'ZXCVBNM'; for (let i = 0; i < z.length; i++) t[z.charCodeAt(i)] = 0x2c + i;

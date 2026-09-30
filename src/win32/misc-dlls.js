@@ -161,7 +161,7 @@ export function registerMiscDlls(api, vm) {
   // ---------------------------------------------------------------- imm32
   const IM = {};
   IM.ImmGetContext = [1, () => 0]; IM.ImmReleaseContext = [2, () => 1]; IM.ImmAssociateContext = [2, () => 0]; IM.ImmAssociateContextEx = [3, () => 1];
-  IM.ImmDisableIME = [1, () => 1]; IM.ImmGetOpenStatus = [1, () => 0]; IM.ImmSetOpenStatus = [2, () => 1]; IM.ImmSetCompositionWindow = [2, () => 1]; IM.ImmSetCandidateWindow = [2, () => 1];
+  IM.ImmDisableIME = [1, () => 1]; IM.ImmDisableTextFrameService = [1, () => 1]; IM.ImmGetOpenStatus = [1, () => 0]; IM.ImmSetOpenStatus = [2, () => 1]; IM.ImmSetCompositionWindow = [2, () => 1]; IM.ImmSetCandidateWindow = [2, () => 1];
   IM.ImmGetCompositionStringA = [4, () => 0]; IM.ImmGetCompositionStringW = [4, () => 0]; IM.ImmNotifyIME = [4, () => 1]; IM.ImmGetCandidateListA = [4, () => 0]; IM.ImmGetCandidateListCountA = [2, () => 0];
   IM.ImmGetDefaultIMEWnd = [1, () => 0]; IM.ImmIsIME = [1, () => 0]; IM.ImmGetConversionStatus = [3, () => 0]; IM.ImmSetConversionStatus = [3, () => 1]; IM.ImmGetIMEFileNameA = [3, () => 0]; IM.ImmGetProperty = [2, () => 0]; IM.ImmGetVirtualKey = [1, () => 0];
   IM.ImmSetCompositionFontA = [2, () => 1]; IM.ImmGetDescriptionA = [3, () => 0]; IM.ImmSimulateHotKey = [2, () => 0]; IM.ImmEscapeA = [4, () => 0]; IM.ImmCreateContext = [0, () => 0]; IM.ImmDestroyContext = [1, () => 1];
