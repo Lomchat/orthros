@@ -1,18 +1,18 @@
 {
   "name": "The Battle for Middle-earth II",
   "gameId": "bfme2",
-  "version": "1.09 v3.01",
-  "versionOrder": 2,
+  "version": "1.06 · Vanilla",
+  "versionOrder": 1,
   "languages": [
     "en",
     "fr"
   ],
   "languageRegistryKey": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\Electronic Arts\\The Battle for Middle-earth II",
-  "folder": "/srv/orthros/data_games/bfme2/versions/1.09-v3.01",
+  "folder": "/srv/orthros/data_games/bfme2/versions/1.06-vanilla",
   "exe": "game.dat",
   "args": "",
   "mount": "C:\\Game",
-  "saveDir": "../build/saves/bfme2",
+  "saveDir": "../build/saves/bfme2-106",
   "display": {
     "width": 1024,
     "height": 768
@@ -30,7 +30,7 @@
     }
   },
   "cover": "englishSplash.jpg",
-  "description": "The sequel (2006): the war in the North — Elves, Dwarves, Goblins, Men of the West and more, with a hero creator.",
-  "descriptionFr": "La guerre s'étend au Nord : Elfes, Nains, Gobelins, Hommes de l'Ouest et création de héros.",
+  "description": "Official 1.06 files installed. This version currently closes during startup in Orthros.",
+  "descriptionFr": "Fichiers officiels 1.06 installés. Cette version se ferme encore au démarrage dans Orthros.",
   "baseFolder": "/srv/orthros/data_games/bfme2/base"
 }
