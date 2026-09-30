@@ -9,6 +9,7 @@ import { createServer } from '../src/host/server.js';
 import { folderManifest } from '../src/host/manifest.js';
 import { defaultGameManifest } from '../src/host/game-catalog.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
+import { scanCodeOfVk } from '../src/win32/dinput8.js';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -475,6 +476,14 @@ for (;;) {
       await page.evaluate(({ b, x, y }) => { const { push, EV } = window.orthrosInput; push(EV.MOUSEMOVE, x, y, 0); push(EV.MOUSEDOWN, b, x, y); }, { b, x: ev.args[0], y: ev.args[1] });
       await page.waitForTimeout(100);
       await page.evaluate(({ b, x, y }) => { const { push, EV } = window.orthrosInput; push(EV.MOUSEUP, b, x, y); }, { b, x: ev.args[0], y: ev.args[1] });
+      continue;
+    }
+    // a key press likewise: held ~100 ms, with the physical key's scan code (DirectInput sees scan codes only)
+    if (ev.kind === 'key') {
+      const vk = ev.args[0], scan = ev.args[1] || scanCodeOfVk(vk);
+      await page.evaluate(({ vk, scan }) => { const { push, EV } = window.orthrosInput; push(EV.KEYDOWN, vk, scan, 0); }, { vk, scan });
+      await page.waitForTimeout(100);
+      await page.evaluate(({ vk, scan }) => { const { push, EV } = window.orthrosInput; push(EV.KEYUP, vk, scan, 0); }, { vk, scan });
       continue;
     }
     await page.evaluate(({ kind, args }) => {
