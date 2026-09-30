@@ -1,6 +1,6 @@
 {
   "name": "The Battle for Middle-earth",
-  "folder": "/srv/bfme/game-source/bfme-vanilla",
+  "folder": "/srv/orthros/data_games/bfme1",
   "exe": "lotrbfme.exe",
   "args": "",
   "mount": "C:\\Game",

@@ -426,6 +426,9 @@
   bloc Caddy `orthros.chalco.website` (pas de compression sur `/game/*`). Après une modification
   du serveur Node, redémarrer avec `systemctl restart orthros`. L’ancien projet BFME utilise
   `orthros-old.service` et `orthros-live.chalco.website`; `orth2.chalco.website` redirige vers le nouveau domaine.
+- Depuis le 30 septembre, les jeux sont dans `/srv/orthros/data_games/` (manifestes BFME 1 et BFME 2 directs),
+  les bundles de l'ancien site dans `data_games/bundles/` et le préfixe Wine dans `/srv/orthros/data_wine/`.
+  Ces dossiers, ainsi que `.claude/` et `.charon-uploads/`, sont exclus de Git.
 - Le menu « Mes données » gère les sauvegardes et le cache locaux, l'export et la restauration d'archives, ainsi qu'un
   compte facultatif pour les copies en ligne. L'API des comptes utilise la base SQLite persistante de
   `/var/lib/private/orthros2/accounts`. Les jeux sont accessibles sans compte et les comptes de l'ancien site ne sont
@@ -515,7 +518,7 @@
   événement `slow`, les 150 premières par session.
 
 ## Second jeu : La Bataille pour la Terre du Milieu II, écran de sélection (2026-09-25, soir)
-- **BFME2** (`manifests/bfme2.json`, dossier `/srv/games/bfme2-109/rom`, exécutable `game.dat`) : menu principal, menu 3D
+- **BFME2** (`manifests/bfme2.json`, dossier `/srv/orthros/data_games/bfme2`, exécutable `game.dat`) : menu principal, menu 3D
   (shell map), escarmouche rendue (terrain, eau, arbres, forteresse, unités, interface), son. Écrit pour lui, en
   générique : **d3dx9** (toutes les versions `d3dx9_24..43`, D057) — maths, textures depuis fichiers (DDS/TGA/BMP/JPEG/
   PNG, encodeur DXT), assembleur de shaders, **framework d'effets** (binaires fx_2_0, ID3DXEffect, préshaders) ; **shlwapi** ;

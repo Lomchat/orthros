@@ -21,6 +21,11 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
 des options du menu (⚙, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
 
+Les fichiers de jeux installés sont rangés hors Git dans `/srv/orthros/data_games/` : `bfme1/`, `bfme2/`, `rotwk/`,
+`bundles/` (archives `.wgb` de l'ancien site), `installers/` et `duplicates/` (copie BFME 2 conservée pour le prochain
+tri). Les manifestes lisent directement `bfme1/` et `bfme2/`. Le préfixe Wine de diagnostic est dans
+`/srv/orthros/data_wine/wine-prefix/`. Les deux dossiers sont exclus de Git.
+
 ## Mes données et compte facultatif
 
 Le bouton « Mes données » ouvre la bibliothèque locale, l'espace en ligne et le compte. Le site et les jeux restent

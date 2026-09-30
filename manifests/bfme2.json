@@ -1,6 +1,6 @@
 {
   "name": "The Battle for Middle-earth II",
-  "folder": "/srv/games/bfme2-109/rom",
+  "folder": "/srv/orthros/data_games/bfme2",
   "exe": "game.dat",
   "args": "",
   "mount": "C:\\Game",

@@ -5,3 +5,7 @@ build/
 /artifacts/
 /tests/generated/
 __pycache__/
+/data_games/
+/data_wine/
+/.claude/
+/.charon-uploads/
