@@ -98,24 +98,40 @@ export function registerKernel32File(api, vm) {
   K._llseek = [3, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.file) return 0xffffffff; const m = c.arg(2); f.pos = m === 0 ? c.sarg(1) : m === 1 ? f.pos + c.sarg(1) : f.file.size() + c.sarg(1); return f.pos; }];
 
   let this_shortReads = 0;
+  /**
+   * I/O on a file object is serialized, as Windows does for synchronous handles: while a thread's ReadFile waits parked
+   * for network data (below), another thread's read, write or seek of the same file waits for it — else it would move
+   * the file pointer under the parked read. True when the call parked (thrown at top level) or consumed its wait.
+   */
+  const ioWait = (c, f) => {
+    if (c.thread.wakeResult !== undefined) { vm.sched.block(c.thread, () => true, 0, 'file busy'); return true; }
+    const o = f.ioOwner;
+    if (!o || o === c.thread || !vm.proc.threads.includes(o) || !vm.canUnwind(c.thread)) return false;
+    vm.sched.block(c.thread, () => !f.ioOwner, 60000, 'file busy');
+    return true;
+  };
   K.ReadFile = [5, (c) => {
     const f = fileOf(c, c.arg(0));
     if (!f) return c.fail(E.INVALID_HANDLE);
     if (f.console) { c.out32(3, 0); return 1; }
     if (!f.file) return c.fail(E.ACCESS_DENIED);
+    const waited = f.ioOwner && f.ioOwner !== c.thread && ioWait(c, f); // (another thread's read of this file is parked)
     const ovl = c.arg(4);
     let pos = f.pos;
     if (ovl) pos = mem.read32(ovl + 8) + mem.read32(ovl + 12) * 4294967296;
     const n = c.arg(2);
     // data still on the network: this thread waits parked while the others run (the call is executed again once
     // it is here) — not in a nested call, whose wait cannot let the browser deliver it
-    if (f.file.prepare && c.thread.wakeResult === undefined && vm.asyncReads && vm.canUnwind(c.thread)) {
+    if (!waited && f.file.prepare && c.thread.wakeResult === undefined && vm.asyncReads && vm.canUnwind(c.thread)) {
       const p = f.file.prepare(pos, n);
+      if (p) f.ioOwner = c.thread;
       // (a nested wait elsewhere blocks the event loop, so the fetch cannot complete during it: the parked read then
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
       if (p) { let done = false; p.then(() => { done = true; vm.host?.wake?.(); }, () => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     const d = f.file.read(pos, n);
+    if (f.ioOwner === c.thread) f.ioOwner = null;
+    if (globalThis.ORTHROS_VERIFY_READS && f.file.verify) { const bad = f.file.verify(pos, d); if (bad && (vm.readMismatches = (vm.readMismatches ?? 0) + 1) <= 20) vm.warn(`read mismatch: ${f.path ?? '?'} @${pos} ${n} -> ${d.length}: byte ${bad.at} is ${bad.got}, the file has ${bad.want} [t${c.thread.id}${c.thread.wakeResult !== undefined ? ' parked' : ''}]`); }
     if (d.length) mem.writeBytes(c.arg(1), d);
     if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay
     f.pos = pos + d.length; // a synchronous handle's file pointer follows the read even when the offset came from OVERLAPPED
@@ -129,6 +145,7 @@ export function registerKernel32File(api, vm) {
   K.WriteFile = [5, (c) => {
     const f = fileOf(c, c.arg(0));
     if (!f) return c.fail(E.INVALID_HANDLE);
+    if (f.ioOwner && f.ioOwner !== c.thread) ioWait(c, f); // (serialized with a parked read of the same file)
     const n = c.arg(2);
     if (f.console) { consoleWrite(f.console, mem.bytes(c.arg(1), n)); c.out32(3, n); return 1; }
     if (!f.file || !f.write) return c.fail(E.ACCESS_DENIED);
@@ -145,6 +162,7 @@ export function registerKernel32File(api, vm) {
   K.SetFilePointer = [4, (c) => {
     const f = fileOf(c, c.arg(0));
     if (!f || !f.file) return c.fail(E.INVALID_HANDLE) | INVALID_HANDLE;
+    if (f.ioOwner && f.ioOwner !== c.thread) ioWait(c, f); // (serialized with a parked read of the same file)
     const hiPtr = c.arg(2);
     let dist = c.sarg(1);
     if (hiPtr) dist = mem.readS32(hiPtr) * 4294967296 + c.arg(1);
@@ -160,6 +178,7 @@ export function registerKernel32File(api, vm) {
   K.SetFilePointerEx = [5, (c) => {
     const f = fileOf(c, c.arg(0));
     if (!f || !f.file) return c.fail(E.INVALID_HANDLE);
+    if (f.ioOwner && f.ioOwner !== c.thread) ioWait(c, f); // (serialized with a parked read of the same file)
     const dist = Number(mem.dv.getBigInt64(c.sp + 4 + 4, true));
     const m = c.arg(4);
     const np = m === 0 ? dist : m === 1 ? f.pos + dist : f.file.size() + dist;
