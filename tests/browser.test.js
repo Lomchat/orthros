@@ -14,7 +14,7 @@ const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = !chromium ? 'playwright missing' : !fs.existsSync(PE_DIR + 'dx.exe') ? 'build/pe missing (make pe-tests)' : false;
 
 async function runManifest(name, seconds) {
-  const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../manifests') });
+  const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/manifests') });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl'] });

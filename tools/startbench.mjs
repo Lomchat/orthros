@@ -2,7 +2,7 @@
 // Startup benchmark (Node, headless, no rendering): runs a manifest from a fresh user profile until the first call of
 // an API (the end of a phase: --until-api, default CreateProcessA) and reports the wall time, the CPU time of the
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
-// Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs manifests/x.json`.
+// Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
 //   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]
 import fs from 'node:fs';
 import os from 'node:os';

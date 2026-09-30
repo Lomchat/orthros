@@ -1,6 +1,6 @@
 {
   "name": "Test: text.exe",
-  "folder": "../build/pe",
+  "folder": "../../../build/pe",
   "exe": "text.exe",
   "args": "",
   "mount": "C:\\Test",
