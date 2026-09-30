@@ -495,6 +495,16 @@ export class HttpBackend {
 class HttpFile {
   constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; }
   size() { return this.len; }
+  /**
+   * Debugging (?dbg=ORTHROS_VERIFY_READS=1): the bytes a read returned compared with the same range fetched straight
+   * from the server, past every cache; the first difference, or null.
+   */
+  verify(off, bytes) {
+    if (!bytes.length) return null;
+    const ref = this.b.fetchRange(this.path, off, off + bytes.length);
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] !== ref[i]) return { at: i, got: bytes[i], want: ref[i] };
+    return null;
+  }
   /** The blocks of [off, end) are touched: the game's position in the learned prefetch list (see noteBlock). */
   note(off, end) {
     if (!this.b.learned) return;
