@@ -9,3 +9,6 @@ __pycache__/
 /data_wine/
 /.claude/
 /.charon-uploads/
+/CLAUDE.md
+/DECISIONS.md
+/STATUS.md
