@@ -193,6 +193,10 @@ async function start(m) {
   };
   vm.registry = new Registry(); vm.registry.seed(manifest.registry);
   if (profile.files.has('registry.json')) { try { vm.registry.load(JSON.parse(new TextDecoder().decode(profile.open('registry.json').read(0, profile.stat('registry.json').size)))); } catch (e) { log('warn', `bad registry.json: ${e.message}`); } }
+  // The player's pre-launch choice wins over settings saved by an earlier run of this version.
+  if (manifest.languageRegistryKey && ['en', 'fr'].includes(m.opts.gameLanguage) && manifest.languages?.includes(m.opts.gameLanguage)) {
+    vm.registry.setString(manifest.languageRegistryKey, 'Language', m.opts.gameLanguage === 'fr' ? 'French' : 'English');
+  }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
   try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });

@@ -47,7 +47,7 @@ async function refresh({ account = false } = {}) {
     fetch('/api/manifests').then((r) => r.json()).catch(() => []),
   ]);
   app.storage = storage;
-  app.titles = new Map(manifests.map((m) => [m.name, m.title ?? m.name]));
+  app.titles = new Map(manifests.map((m) => [m.name, (m.title ?? m.name) + (m.version ? ' · ' + m.version : '')]));
   if (app.account) {
     try {
       const cloud = await jsonApi('/api/cloud');
