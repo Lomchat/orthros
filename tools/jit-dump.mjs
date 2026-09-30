@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // Translated code listing: the WASM instructions the JIT emits for each guest instruction of a region, as a
-// pseudo-WAT trace of the emitter calls (locals by name), with per-instruction counts — to judge the code
-// quality of common x86 patterns without a WASM disassembler.
+// pseudo-WAT trace of the emitter calls (locals by name), with per-instruction counts and the block structure — to
+// judge the code quality of common x86 patterns without a WASM disassembler (src/cpu/jit/listing.js; the page worker
+// lists live regions of a running game the same way: harness input `jitlist:<hex eip>`).
 // Usage: node tools/jit-dump.mjs <hex bytes | preset> [--cw 0x7f] [--quiet]
 //   presets: prologue (frame setup, loads/stores, call, epilogue), xform (x87 float transform), loop (integer loop)
 import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, ST } from '../src/cpu/state.js';
-import { decode, fmtInsn } from '../src/cpu/decoder.js';
-import { Code } from '../src/cpu/jit/wasm.js';
-import { translateRegion, Emitter } from '../src/cpu/jit/translate.js';
+import { listRegion } from '../src/cpu/jit/listing.js';
 import '../src/cpu/jit/translate-x87.js'; // (the translators register their handlers on import, as jit.js does)
 import '../src/cpu/jit/translate-sse-float.js';
 import '../src/cpu/jit/translate-sse-int.js';
@@ -29,53 +28,9 @@ const cwArg = args.indexOf('--cw');
 const cw = cwArg >= 0 ? parseInt(args[cwArg + 1], 16) : 0x027f;
 const bytes = Uint8Array.from(src.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
 
-// locals by name (translate.js layout)
-const LOCALS = { 56: 'xmm0', 57: 'xmm1', 58: 'xmm2', 59: 'xmm3', 60: 'xmm4', 61: 'xmm5', 62: 'xmm6', 63: 'xmm7', 0: 'blk', 1: 'state', 10: 'eflags', 11: 'lzop', 12: 'lzres', 13: 'lza', 14: 'lzb', 15: 'icount', 16: 'ta', 17: 'tv', 18: 't2', 19: 't3', 20: 't4', 21: 't5', 22: 't6', 23: 't7', 24: 'i64a', 25: 'i64b', 26: 'f64a', 27: 'f64b', 28: 'top', 29: 't8', 30: 'v0', 31: 'v1', 32: 'v2', 41: 'ftw', 42: 'fpc', 43: 'f64c', 44: 'fs', 53: 'f32a', 54: 'f32b', 55: 'f32c' };
-const REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
-const localName = (i) => (i >= 2 && i < 10 ? REGS[i - 2] : i >= 33 && i < 41 ? `st${i - 33}` : i >= 45 && i < 53 ? `s32_${i - 45}` : i >= 68 && i < 76 ? `xmm${i - 68}.f32` : i >= 76 && i < 84 ? `xmm${i - 76}.f64` : LOCALS[i] ?? `l${i}`);
-
-// trace the instruction-level emitter methods (not the byte writers they are built on)
-const RAW = new Set(['constructor', 'byte', 'bytes', 'u', 's', 's64', 'f32', 'f64', 'str', 'sized', 'raw', 'finish', 'ensure', 'reset', 'depth', 'hint']);
-let trace = null, depth = 0;
-for (const name of Object.getOwnPropertyNames(Code.prototype)) {
-  if (RAW.has(name)) continue;
-  const d = Object.getOwnPropertyDescriptor(Code.prototype, name);
-  if (typeof d.value !== 'function') continue;
-  const fn = d.value;
-  Code.prototype[name] = function (...a) {
-    if (trace && depth === 0) trace.push(['get', 'set', 'tee'].includes(name) ? `${name} ${localName(a[0])}` : a.length && typeof a[0] !== 'object' ? `${name} ${a.map((x) => (typeof x === 'number' && Math.abs(x) > 255 ? '0x' + (x >>> 0).toString(16) : String(x))).join(',')}` : name);
-    depth++;
-    try { return fn.apply(this, a); } finally { depth--; }
-  };
-}
-const groups = []; // [label, ops]
-const emitInsn = Emitter.prototype.emitInsn;
-Emitter.prototype.emitInsn = function (insn, b) { trace = []; groups.push([`${insn.addr.toString(16)}  ${fmtInsn(insn)}`, trace]); return emitInsn.call(this, insn, b); };
-const emitBlock = Emitter.prototype.emitBlock;
-Emitter.prototype.emitBlock = function (b, next) {
-  trace = []; groups.push([`-- block ${b.index} @${b.eip.toString(16)} entry`, trace]);
-  const r = emitBlock.call(this, b, next);
-  return r;
-};
-
-// (an x87 region may be translated twice, the second time with planned entry shifts: the last translation is listed)
-const run = Emitter.prototype.run;
-Emitter.prototype.run = function (entry) { groups.length = 0; trace = []; groups.push(['-- region prologue', trace]); return run.call(this, entry); };
-
 const mem = new GuestMemory();
 const cpu = new CpuState(mem, THREAD_STATES_BASE);
 cpu.reset();
 mem.writeBytes(CODE, bytes);
 mem.write16(cpu.base + ST.FPU_CW, cw);
-trace = []; groups.push(['-- region prologue', trace]);
-const r = translateRegion(mem, CODE, { fpcAssume: cw & 0xf00, smc: true });
-trace = null;
-let total = 0;
-const quiet = args.includes('--quiet');
-for (const [label, ops] of groups) {
-  if (!ops.length && label.startsWith('--')) continue;
-  total += ops.length;
-  console.log(`${label.padEnd(44)} ${String(ops.length).padStart(4)} ops`);
-  if (!quiet) for (const o of ops) console.log(`      ${o}`);
-}
-console.log(`total ${total} emitter ops, ${r.code.length} body bytes, ${r.blocks.length} blocks; decoded: ${decode(mem, CODE) ? 'ok' : '?'}`);
+console.log(listRegion(mem, CODE, { fpcAssume: cw & 0xf00, smc: true }, { ops: !args.includes('--quiet') }).text);

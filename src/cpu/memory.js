@@ -15,6 +15,8 @@ export const WASM_PAGE = 0x10000;
 //   0x7fd00000  JIT: next FPU-mode version of each region (4 bytes per table index)
 //   0x7fd50000  JIT scratch (fast API table, deferred COM calls, profiling counters)
 //   0x7fe00000  self-modifying-code page map (1 byte per 4 KB page of the 2 GB space: nonzero = translated code)
+//   0x7fe80000  JIT block execution counters (profiling translations only, opts.blockCounts; 320 KB, below the TEBs of
+//               the 256 threads at most)
 //   0x7ffde000  TEBs (downwards, one page per thread), 0x7ffdf000 PEB, 0x7ffe0000 KUSER_SHARED_DATA
 export const PRIVATE_BASE = 0x7fc00000;
 export const PRIVATE_END = 0x80000000;
@@ -31,6 +33,9 @@ export const JIT_HASH_BASE = 0x7fb00000 - (16 << JIT_HASH_BITS);
 export const SMC_MAP_BASE = 0x7fe00000;
 export const SMC_CODE = 1, SMC_WATCH = 2, SMC_NEXT = 4;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
+// Block execution counters of profiling translations (Jit opts.blockCounts): word 0 is the bump allocator (next free
+// counter index, shared by the background translator through the shared memory), then one u32 per translated block
+export const BLOCK_COUNTS_BASE = 0x7fe80000, BLOCK_COUNTS_SLOTS = 0x14000;
 // FPU-mode versions of a region: for each table index, the table index + 1 of the next version of the same region
 // (specialized for another x87 mode), 0 for none (see Jit: EXIT_FPUMODE)
 export const JIT_ALT_BASE = 0x7fd00000;
