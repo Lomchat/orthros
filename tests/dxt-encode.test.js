@@ -88,3 +88,28 @@ test('2:1 mip filter: every channel the rounded average of its 2 x 2 texels, ali
     }
   }
 });
+
+// DXT5 alpha: the nearest of the 8 levels is searched only around the texel's position on the a0 -> a1 scale; every
+// alpha between every pair of endpoints must pick what the reference's scan of all 8 levels picks (ties included).
+test('DXT5 alpha blocks: the reference choice for every alpha of every endpoint pair', () => {
+  const px = new Uint8Array(64);
+  for (let hi = 0; hi < 256; hi++) for (let lo = 0; lo <= hi; lo++) {
+    for (let start = lo; start <= hi; start += 14) {
+      for (let i = 0; i < 16; i++) { px[4 * i] = (i * 37 + hi) & 255; px[4 * i + 1] = (i * 11) & 255; px[4 * i + 2] = 0; px[4 * i + 3] = i === 0 ? hi : i === 1 ? lo : Math.min(hi, start + i - 2); }
+      const a = encodeDxt(FMT.DXT5, px, 4, 4), b = encodeRef(FMT.DXT5, px, 4, 4);
+      for (let k = 0; k < 8; k++) if (a[k] !== b[k]) assert.fail(`endpoints ${hi}/${lo} from ${start}: alpha byte ${k} ${a[k]} != ${b[k]}`);
+      if (lo === hi) break;
+    }
+  }
+});
+
+// A block of 16 equal texels has its color index computed once: the same block as when every texel is examined.
+test('uniform blocks: the index of every texel the same as the reference', () => {
+  const px = new Uint8Array(64);
+  const r = rng(3);
+  for (let n = 0; n < 2000; n++) {
+    const c = [(r() * 256) | 0, (r() * 256) | 0, (r() * 256) | 0, n % 3 === 0 ? 0 : n % 3 === 1 ? 255 : (r() * 256) | 0];
+    for (let i = 0; i < 64; i++) px[i] = c[i & 3];
+    for (const fmt of [FMT.DXT1, FMT.DXT5]) assert.deepEqual(encodeDxt(fmt, px, 4, 4), encodeRef(fmt, px, 4, 4), `texel ${c} fmt ${fmt}`);
+  }
+});
