@@ -21,16 +21,18 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
 des options du menu (⚙, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
 
-Les fichiers de jeux installés sont rangés hors Git dans `/srv/orthros/data_games/` : `bfme1/` (patch 2.22),
-`bfme1-103/` (version officielle 1.03), `bfme2/`, `rotwk/` et `installers/`. La version 1.03 a été reconstituée
-depuis le manifeste `original-BFME1.json` de l'installeur : ses 349 fichiers anglais/français ont été vérifiés par
-MD5 et liés physiquement aux fichiers communs de `bfme1/`, sans seconde copie des données. `Data.big` est inclus :
-le manifeste de l'installeur indique par erreur une taille nulle pour ce fichier nécessaire au démarrage. Les manifestes séparent
-leurs caches et sauvegardes par version ; le menu permet de choisir la version de BFME 1 et la langue du jeu
-avant le lancement. La 1.03 et BFME 2 proposent anglais et français ; les menus du patch 2.22 restent en anglais
-même avec la clé de registre française, donc cette version est proposée en anglais seulement. La langue du site se
-règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est dans
-`/srv/orthros/data_wine/wine-prefix/`. Les deux dossiers sont exclus de Git.
+Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/base` et
+`/srv/orthros/data_games/<jeu>/versions/<version>`. Chaque manifeste assemble la base et les fichiers de sa version ;
+les fichiers de version remplacent ceux de la base sans recopier les données communes. L'installeur a fourni les
+versions BFME1 1.03 et 2.22 v7.0.4, BFME2 1.06 et 1.09 v3.01, et RotWK 2.01 et 2.02 v9.7.7. Les fichiers
+anglais et français requis ont été vérifiés par MD5 ; les fichiers absents ont été récupérés depuis les adresses
+du manifeste de l'installeur. Leurs caches et sauvegardes restent séparés par identifiant de manifeste. RotWK
+monte également les fichiers de BFME2 1.06 dans son second lecteur virtuel.
+
+Le menu permet de choisir la version et la langue avant le lancement. BFME1 2.22 ne propose que l'anglais car ses
+menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore pendant l'initialisation sous Orthros ;
+sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est
+dans `/srv/orthros/data_wine/wine-prefix/` ; les deux dossiers de données sont exclus de Git.
 
 ## Mes données et compte facultatif
 

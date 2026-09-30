@@ -22,6 +22,7 @@ import { listRegion } from '../../cpu/jit/listing.js';
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
+const offlineDependencies = []; // copies of additional mounted games, counted with the primary game
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
 /** (?netlog=1: each game file read over the network is logged with the rank of its block in the learned list) */
 const learnedRank = new Map();
@@ -143,6 +144,23 @@ async function start(m) {
   }
   if (store && m.opts.offline) { gameFiles.downloadAll(offline, () => stopped).then(() => log('file', `offline copy: ${offline.done ? 'complete' : 'stopped'} (${Math.round(offline.bytes / 1048576)} MiB of ${Math.round(offline.total / 1048576)})`)); }
   vfs.mount(manifest.mount, gameFiles);
+  for (const dependency of manifest.extraMounts ?? []) {
+    root.mkdir(dependency.mount.replace(/^C:\\/, ''));
+    const treeResponse = await fetch(`/api/tree/${encodeURIComponent(dependency.manifest)}`);
+    if (!treeResponse.ok) throw new Error(`dependency ${dependency.manifest}: HTTP ${treeResponse.status}`);
+    const tree = await treeResponse.json();
+    const dependencyStore = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + dependency.manifest) : null;
+    const dependencyFiles = new HttpBackend(`/game/${dependency.manifest}/`, tree, {
+      cacheBlocks: m.opts.cacheBlocks ?? 256, store: dependencyStore, encoded: !!m.opts.encodedRanges,
+      session: m.opts.session ?? '',
+    });
+    vfs.mount(dependency.mount, dependencyFiles);
+    if (dependencyStore && m.opts.offline) {
+      const progress = { bytes: 0, total: 0, done: false };
+      offlineDependencies.push(progress);
+      dependencyFiles.downloadAll(progress, () => stopped).then(() => log('file', `offline copy ${dependency.manifest}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
+    }
+  }
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
   if (!m.opts.headless || m.opts.opfs) await loadProfile(profile);
@@ -301,7 +319,7 @@ function pump() {
     // (loading progress for the page's loading screen: the learned downloads, translations and program builds done ahead)
     const load = { pfDone: prefetch.blocks, pfTotal: prefetch.total, pfFinished: prefetch.done || (prefetch.total > 0 && prefetch.blocks >= prefetch.total), pfMB: Math.round(prefetch.bytes / 1048576),
       rgDone: regionQueue ? regionPos : 0, rgTotal: regionQueue ? regionQueue.length : 0, pgDone: pc ? pc.started : 0, pgTotal: pc ? pc.started + pc.queue.length : 0 };
-    post({ type: 'stats', load, dt, busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round(offline.bytes / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round(offline.total / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', load, dt, busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (hist) lastHist = hist;
     lastFallbacks = vm.jit?.stats.fallbackSteps ?? 0; if (vm.jit?.fallbackHist) lastFbHist = new Map(vm.jit.fallbackHist);
     // --jit-profile: block transitions per second by kind (intra-region jumps, returns, chaining)

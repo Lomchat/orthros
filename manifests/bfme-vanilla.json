@@ -3,9 +3,11 @@
   "gameId": "bfme1",
   "version": "2.22 v7.0.4",
   "versionOrder": 2,
-  "languages": ["en"],
+  "languages": [
+    "en"
+  ],
   "languageRegistryKey": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\The Battle for Middle-earth",
-  "folder": "/srv/orthros/data_games/bfme1",
+  "folder": "/srv/orthros/data_games/bfme1/versions/2.22-v7.0.4",
   "exe": "lotrbfme.exe",
   "args": "",
   "mount": "C:\\Game",
@@ -21,5 +23,6 @@
   },
   "cover": "englishSplash.jpg",
   "description": "Command Gondor, Rohan, Isengard or Mordor. Patch 2.22 displays its game menus in English.",
-  "descriptionFr": "Commandez le Gondor, le Rohan, l'Isengard ou le Mordor. Les menus du patch 2.22 sont en anglais."
+  "descriptionFr": "Commandez le Gondor, le Rohan, l'Isengard ou le Mordor. Les menus du patch 2.22 sont en anglais.",
+  "baseFolder": "/srv/orthros/data_games/bfme1/base"
 }

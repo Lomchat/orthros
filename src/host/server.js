@@ -15,11 +15,14 @@ import { createAccountApi } from './accounts.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
+import { listGameTree, resolveGameFile } from './game-files.js';
 import { attachLan } from './lan.js';
 import { SimLink } from './sim-link.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
+
+export const listTree = (dir) => listGameTree({ folder: dir });
 
 export function loadManifests(dir, extra = null) {
   const out = new Map();
@@ -28,6 +31,7 @@ export function loadManifests(dir, extra = null) {
       if (!f.endsWith('.json')) continue;
       const m = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       m.folder = path.resolve(dir, m.folder ?? '.');
+      if (m.baseFolder) m.baseFolder = path.resolve(dir, m.baseFolder);
       out.set(f.slice(0, -5), withDefaults(m));
     }
   }
@@ -35,34 +39,11 @@ export function loadManifests(dir, extra = null) {
   return out;
 }
 
-/** Recursive listing { name, size, dirs: {...}, files: {...} } with original case. */
-export function listTree(dir) {
-  const node = { dirs: {}, files: {} };
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) node.dirs[e.name] = listTree(path.join(dir, e.name));
-    else if (e.isFile()) { const st = fs.statSync(path.join(dir, e.name)); node.files[e.name] = { size: st.size, mtime: st.mtimeMs }; }
-  }
-  return node;
-}
-
-/** Resolve a URL path (case-insensitively) inside a game folder; returns the real path or null. */
-function resolveInsensitive(root, rel) {
-  let cur = root;
-  for (const part of rel.split('/').filter(Boolean)) {
-    if (part === '..' || part === '.') return null;
-    let names; try { names = fs.readdirSync(cur); } catch { return null; }
-    const hit = names.find((n) => n === part) ?? names.find((n) => n.toLowerCase() === part.toLowerCase());
-    if (!hit) return null;
-    cur = path.join(cur, hit);
-  }
-  return cur;
-}
-
 export function createServer(opts = {}) {
   const manifestDir = path.resolve(opts.manifests ?? path.join(ROOT, 'manifests'));
   let manifests = loadManifests(manifestDir, opts.extra);
   const trees = new Map(), treeObjs = new Map();
-  const coverFile = (man) => { if (!man.cover) return null; const f = resolveInsensitive(man.folder, man.cover.replace(/\\/g, '/')); return f && fs.existsSync(f) && fs.statSync(f).isFile() ? f : null; };
+  const coverFile = (man) => man.cover && resolveGameFile(man, man.cover);
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -308,7 +289,7 @@ export function createServer(opts = {}) {
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
-          try { if (!treeObjs.has(name)) treeObjs.set(name, listTree(m.folder)); bytes = sizeOf(treeObjs.get(name)); } catch { /* folder missing */ }
+          try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) { if (!treeObjs.has(name)) treeObjs.set(name, listGameTree(m)); bytes = sizeOf(treeObjs.get(name)); } } catch { /* folder missing */ }
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], exe: m.exe,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
@@ -317,7 +298,7 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined }), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined }), { 'Content-Type': 'application/json' }); }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
         const man = manifests.get(m[1]), f = man && coverFile(man);
@@ -328,13 +309,13 @@ export function createServer(opts = {}) {
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listTree(man.folder)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
       // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
         const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest');
-        const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found');
+        const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
         return sendRangeEncoded(req, res, file, r);
@@ -375,7 +356,7 @@ export function createServer(opts = {}) {
       if (m) { if (!manifests.get(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
-      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveInsensitive(man.folder, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
+      if (m) { const man = manifests.get(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         const file = path.join(ROOT, p);
         if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
