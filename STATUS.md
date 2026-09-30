@@ -725,6 +725,24 @@
   lecture des fichiers + le calcul, l'attente active ne faisait que brûler un cœur.
 - Constaté, non corrigé : les timers attendables (`SetWaitableTimer`) ne passent jamais à l'état signalé et restent
   dans `proc.timers` après échéance.
+## 29-30 septembre : boucles chaudes du démarrage BFME2 (JIT)
+- **Outils** : listings de ce que le JIT émet pour une région d'un jeu en cours (`src/cpu/jit/listing.js`, entrée
+  harness `jitlist:<eip>`, `--profile-wasm N`, compteurs par bloc `--block-counts`). (Banc `hotloop-bench` retiré à l'intégration : il contenait des octets du jeu.)
+- **Constat** (fenêtres de profil de 5 s) : la moitié de la phase de calcul (~75 s) est une seule région (tri par tas,
+  boucle de descente), le reste des boucles entières de même forme. Le code V8 de la boucle est déjà serré ; les
+  opérandes de drapeaux paresseux y restaient vivants pour les seules sorties froides (tranche de temps, SMC).
+- **Fait** : une sortie dont l'adresse de reprise ne lit aucun drapeau n'emporte plus d'opération paresseuse ; correctif
+  d'exactitude : INC/DEC/NEG/ADC/SBB/décalages/rotations/XADD sur mémoire posent leurs drapeaux avant l'écriture (une
+  sortie SMC reprenait avec les drapeaux de l'instruction précédente). Micro-banc : instructions hôte −16 % (7,9 → 6,7 G),
+  cycles −2 %, temps −7 % (boucle limitée par les erreurs de prédiction). Bout en bout (3 A/B alternés, 105 s,
+  `--jit-opts {"deadExitFlags":false}` pour A, machine à charge ~36) : fin du calcul (TextureAssetBuilder) A 90/93/>105 s,
+  B >105/95/89 s ; **pas de différence mesurable** sous ce bruit ; menu non atteint en 105 s.
+- **Revue** : l'abandon des drapeaux aux sorties SMC était faux (la liveness est calculée sur les octets traduits ; l'écriture
+  qui prend la sortie peut réécrire le code qu'elle a parcouru : un JMP changé en JZ lisait un ZF perdu, test ajouté).
+  Les sorties SMC gardent tout l'état paresseux ; seules les sorties de tranche de temps l'abandonnent. Le gain retombe :
+  micro-banc instructions hôte −2 % (7,90–7,95 → 7,66–7,82 G), cycles et temps ~−3 % (4 paires alternées, charge ~47).
+- Piste : le reste de la boucle (répartiteur `blk` en tête de boucle, décompte `icount` par bloc) coûte peu ; le gain
+  réel demanderait de sortir du modèle (moins d'erreurs de prédiction : impossible côté JIT).
 
 ## Prochaine action
 - BFME2 : la campagne ne démarre pas (décision interne au jeu, même sous l'interpréteur de référence : données ou
