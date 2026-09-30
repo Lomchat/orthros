@@ -7,6 +7,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { createServer } from '../src/host/server.js';
 import { folderManifest } from '../src/host/manifest.js';
+import { defaultGameManifest } from '../src/host/game-catalog.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
 
 const args = process.argv.slice(2);
@@ -14,7 +15,10 @@ let name = args.find((a) => !a.startsWith('--'));
 // a game folder instead of a manifest name: served with a synthesized manifest, as `orthros run <folder>` does
 let extraManifests = null;
 if (name && (name.includes('/') || name.includes('\\')) && fs.existsSync(name) && fs.statSync(name).isDirectory()) {
-  const m = folderManifest(name);
+  const manifestFile = path.join(name, 'manifest.json');
+  const m = fs.existsSync(manifestFile) && JSON.parse(fs.readFileSync(manifestFile, 'utf8')).schemaVersion === 1
+    ? defaultGameManifest(name)
+    : folderManifest(name);
   const folderName = path.basename(m.folder).replace(/[^A-Za-z0-9._-]/g, '_') || 'game';
   extraManifests = new Map([[folderName, m]]);
   name = folderName;

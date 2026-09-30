@@ -7,14 +7,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from '../src/host/server.js';
 import { folderManifest } from '../src/host/manifest.js';
+import { loadGameCatalog, defaultGameManifest } from '../src/host/game-catalog.js';
+import { resolveGameFile } from '../src/host/game-files.js';
 
 const arg = process.argv[2];
 const samples = Number(process.argv[3] ?? 2000);
 if (!arg) { console.error('usage: node tools/vfs-check.mjs <manifest | game folder> [samples]'); process.exit(2); }
-let name = arg, folder;
+let name = arg, manifest;
 const extra = new Map();
-if (fs.existsSync(arg) && fs.statSync(arg).isDirectory()) { const m = folderManifest(arg); name = 'check'; extra.set(name, m); folder = m.folder; }
-else folder = JSON.parse(fs.readFileSync(new URL(`../manifests/${arg}.json`, import.meta.url))).folder;
+if (fs.existsSync(arg) && fs.statSync(arg).isDirectory()) {
+  manifest = fs.existsSync(path.join(arg, 'manifest.json'))
+    ? defaultGameManifest(arg)
+    : folderManifest(arg);
+  name = 'check'; extra.set(name, manifest);
+} else manifest = loadGameCatalog().get(arg);
+if (!manifest) throw new Error(`unknown version: ${arg}`);
 
 const server = createServer({ extra });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -36,7 +43,7 @@ for (let i = 0; i < samples; i++) {
   const start = i < files.length && rnd() < 0.5 ? f.size - len : Math.floor(rnd() * (f.size - len + 1)); // (file ends included)
   const r = await fetch(`${base}/game/${name}/${f.rel.split('/').map(encodeURIComponent).join('/')}`, { headers: { Range: `bytes=${start}-${start + len - 1}` } });
   const got = new Uint8Array(await r.arrayBuffer());
-  const want = Buffer.alloc(len); const fd = fs.openSync(path.join(folder, f.rel), 'r'); fs.readSync(fd, want, 0, len, start); fs.closeSync(fd);
+  const want = Buffer.alloc(len); const fd = fs.openSync(resolveGameFile(manifest, f.rel), 'r'); fs.readSync(fd, want, 0, len, start); fs.closeSync(fd);
   bytes += len;
   if (r.status !== 206 || got.length !== len || Buffer.compare(Buffer.from(got), want) !== 0) { bad++; if (bad <= 10) console.log(`MISMATCH ${f.rel} [${start}, ${start + len}) status ${r.status} got ${got.length} bytes`); }
 }

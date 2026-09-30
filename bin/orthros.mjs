@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../src/host/server.js';
 import { folderManifest, withDefaults } from '../src/host/manifest.js';
+import { defaultGameManifest } from '../src/host/game-catalog.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [cmd, ...rest] = process.argv.slice(2);
@@ -37,8 +38,17 @@ async function run() {
   if (!target) { console.error('usage: orthros run <game-folder | manifest.json> [--port N] [--exe name] [--args "..."] [--open]'); process.exit(2); }
   let manifest;
   if (target.endsWith('.json')) {
-    manifest = withDefaults(JSON.parse(fs.readFileSync(target, 'utf8')));
-    manifest.folder = path.resolve(path.dirname(target), manifest.folder ?? '.');
+    const spec = JSON.parse(fs.readFileSync(target, 'utf8'));
+    if (path.basename(target) === 'manifest.json' && spec.schemaVersion === 1) {
+      manifest = defaultGameManifest(path.dirname(target));
+    } else {
+      manifest = withDefaults(spec);
+      manifest.folder = path.resolve(path.dirname(target), manifest.folder ?? '.');
+    }
+    if (opt('exe')) manifest.exe = opt('exe');
+    if (opt('args') !== undefined) manifest.args = opt('args');
+  } else if (fs.existsSync(path.join(target, 'manifest.json')) && JSON.parse(fs.readFileSync(path.join(target, 'manifest.json'), 'utf8')).schemaVersion === 1) {
+    manifest = defaultGameManifest(target);
     if (opt('exe')) manifest.exe = opt('exe');
     if (opt('args') !== undefined) manifest.args = opt('args');
   } else manifest = folderManifest(target, { exe: opt('exe'), args: opt('args') });
@@ -56,7 +66,7 @@ async function run() {
 }
 
 async function serve() {
-  const server = createServer({ manifests: opt('manifests') });
+  const server = createServer({ manifests: opt('manifests'), gamesDir: opt('games-dir') });
   const port = await listen(server, Number(opt('port', 8080)));
   console.log(`orthros: http://127.0.0.1:${port}/`);
 }

@@ -3,6 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer } from '../src/host/server.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
 
@@ -12,7 +14,7 @@ const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = !chromium ? 'playwright missing' : !fs.existsSync(PE_DIR + 'dx.exe') ? 'build/pe missing (make pe-tests)' : false;
 
 async function runManifest(name, seconds) {
-  const server = createServer();
+  const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../manifests') });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl'] });

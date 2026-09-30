@@ -9,7 +9,6 @@
 //     --trace-api         alias for --log api
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Vm, GuestCrash } from '../core/vm.js';
 import { Vfs, MemBackend, normalizeWin } from '../vfs/vfs.js';
 import { NodeBackend } from '../vfs/node-backend.js';
@@ -18,6 +17,7 @@ import { RealClock } from '../core/clock.js';
 import { HeadlessHost } from './display.js';
 import { Registry } from '../win32/registry.js';
 import { folderManifest, withDefaults } from './manifest.js';
+import { loadGameCatalog, defaultGameManifest, DEFAULT_GAMES_DIR } from './game-catalog.js';
 
 function parseArgs(argv) {
   const o = { positional: [], log: null, interp: false, seconds: 0, status: null, profile: false, progress: 0 };
@@ -38,9 +38,20 @@ function parseArgs(argv) {
 /** Load a manifest (json file) or the folder's manifest (its manifest.json, else synthesized: see manifest.js). */
 export function loadManifest(target) {
   if (target.endsWith('.json')) {
+    if (path.basename(target) === 'manifest.json') {
+      const spec = JSON.parse(fs.readFileSync(target, 'utf8'));
+      if (spec.schemaVersion === 1) {
+        const manifest = defaultGameManifest(path.dirname(target));
+        return { manifest, dir: manifest.folder };
+      }
+    }
     const manifest = withDefaults(JSON.parse(fs.readFileSync(target, 'utf8')));
     if (manifest.baseFolder) manifest.baseFolder = path.resolve(path.dirname(target), manifest.baseFolder);
     return { manifest, dir: path.resolve(path.dirname(target), manifest.folder ?? '.') };
+  }
+  if (fs.existsSync(path.join(target, 'manifest.json')) && JSON.parse(fs.readFileSync(path.join(target, 'manifest.json'), 'utf8')).schemaVersion === 1) {
+    const manifest = defaultGameManifest(target);
+    return { manifest, dir: manifest.folder };
   }
   const manifest = folderManifest(target);
   return { manifest, dir: manifest.folder };
@@ -54,12 +65,13 @@ export function makeVfs(manifest, dir, saveDir) {
   for (const d of ['Windows', 'Windows\\System32', 'Windows\\Temp', 'Users', 'Users\\Player', 'Users\\Player\\Temp', 'Users\\Player\\AppData', 'Users\\Player\\AppData\\Roaming', 'Users\\Player\\AppData\\Local', 'Users\\Player\\Documents', 'Program Files', 'Program Files\\Common Files', 'Game']) root.mkdir(d);
   vfs.mount(manifest.mount, manifest.baseFolder ? new OverlayBackend([dir, manifest.baseFolder]) : new NodeBackend(dir, { readOnly: !manifest.writableGameFolder }));
   for (const dependency of manifest.extraMounts ?? []) {
-    const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../manifests', `${dependency.manifest}.json`);
-    const dep = loadManifest(file);
+    const catalogDir = manifest.gameId ? path.resolve(manifest.folder, '../../..') : DEFAULT_GAMES_DIR;
+    const depManifest = loadGameCatalog(catalogDir).get(dependency.manifest);
+    if (!depManifest) throw new Error(`missing game dependency ${dependency.manifest}`);
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
-    vfs.mount(dependency.mount, dep.manifest.baseFolder
-      ? new OverlayBackend([dep.dir, dep.manifest.baseFolder])
-      : new NodeBackend(dep.dir, { readOnly: true }));
+    vfs.mount(dependency.mount, depManifest.baseFolder
+      ? new OverlayBackend([depManifest.folder, depManifest.baseFolder])
+      : new NodeBackend(depManifest.folder, { readOnly: true }));
   }
   if (saveDir) {
     // the user profile lives on disk (saves, settings): standard profile subdirectories must exist there

@@ -21,8 +21,28 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
 des options du menu (⚙, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
 
-Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/base` et
-`/srv/orthros/data_games/<jeu>/versions/<version>`. Chaque manifeste assemble la base et les fichiers de sa version ;
+Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
+et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
+pour ajouter un jeu, il suffit d'ajouter son dossier et de recharger la page. Le contrat du manifeste est décrit dans
+[docs/game-manifest.schema.json](docs/game-manifest.schema.json). Exemple minimal :
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "mon-jeu",
+  "name": "Mon jeu",
+  "defaultVersion": "mon-jeu-1.0",
+  "defaults": { "mount": "C:\\Game" },
+  "versions": [
+    { "id": "mon-jeu-1.0", "dir": "1.0", "version": "1.0", "exe": "jeu.exe", "languages": ["fr"] }
+  ]
+}
+```
+
+Les identifiants de version sont stables : ils servent aux caches et sauvegardes. `exe` est recherché dans la
+superposition de `base/` et de `versions/<dir>/`. Les dépendances éventuelles se déclarent avec
+`requires: [{"game":"autre-jeu","version":"autre-jeu-1.0","mount":"C:\\AutreJeu"}]`.
+Chaque manifeste assemble la base et les fichiers de sa version ;
 les fichiers de version remplacent ceux de la base sans recopier les données communes. L'installeur a fourni les
 versions BFME1 1.03 et 2.22 v7.0.4, BFME2 1.06 et 1.09 v3.01, et RotWK 2.01 et 2.02 v9.7.7. Les fichiers
 anglais et français requis ont été vérifiés par MD5 ; les fichiers absents ont été récupérés depuis les adresses
@@ -32,7 +52,9 @@ monte également les fichiers de BFME2 1.06 dans son second lecteur virtuel.
 Le menu permet de choisir la version et la langue avant le lancement. BFME1 2.22 ne propose que l'anglais car ses
 menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore pendant l'initialisation sous Orthros ;
 sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est
-dans `/srv/orthros/data_wine/wine-prefix/` ; les deux dossiers de données sont exclus de Git.
+dans `/srv/orthros/data_wine/wine-prefix/` ; les installateurs et ressources de réimportation sont dans
+`/srv/orthros/data_installers/`. Ces trois dossiers sont exclus de Git. Le préfixe Wine ne conserve que les outils et
+manifests de l'installeur, sans copies installées des jeux ni cache de téléchargement.
 
 ## Mes données et compte facultatif
 
