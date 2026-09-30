@@ -1,6 +1,6 @@
 {
   "name": "Test: window.exe",
-  "folder": "../build/pe",
+  "folder": "../../../build/pe",
   "exe": "window.exe",
   "args": "",
   "mount": "C:\\Test",

@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests manifests/] [--default <manifest>] [--telemetry <dir>] [--learn <dir>]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>]
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
