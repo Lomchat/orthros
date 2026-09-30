@@ -1,15 +1,15 @@
 /* The home screen. Palette taken from the hound: night-blue fur, amber eyes, blood-red ears and mouths, bone fangs. */
-:root {
+:root { /* (shared: the home screen, the data window) */
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-#menu {
   --ink: #05070f; --night: #080c17; --surface: #0e1424; --raised: #141b2e; --raised-2: #1b2340;
   --line: #2b3347; --line-soft: #1c2440;
   --fg: #eceef5; --muted: #9aa3bd; --faint: #7a84a3;
   --ember: #f8901f; --ember-hi: #ffb56b; --ember-lo: #b75d14; --blood: #e0242a; --bone: #ecd9ae; --steel: #6ea8d8;
   --ease: cubic-bezier(.2, .7, .2, 1);
+}
+#menu {
   position: absolute; inset: 0; overflow: hidden auto; isolation: isolate;
   background: var(--night); color: var(--fg); font: 15px/1.5 var(--sans);
   scroll-behavior: smooth; scrollbar-color: #2b3347 transparent; scrollbar-width: thin;

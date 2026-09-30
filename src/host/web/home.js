@@ -1,6 +1,8 @@
 // The home screen: hero (pixel wordmark, the hound, a resume button), the game library and the options. Only
 // rendering and keyboard navigation live here — starting a game stays main.js's job (`onPlay`).
 import { startEmbers } from './embers.js';
+import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
+import { h } from './dom.js';
 
 const $ = (id) => document.getElementById(id);
 const LOGO = '/src/host/web/orthros_logo.png';
@@ -35,30 +37,6 @@ const STRINGS = {
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
   },
 };
-
-const UI_LANGS = Object.keys(STRINGS);
-const baseLang = (l) => String(l ?? '').toLowerCase().split(/[-_]/)[0];
-/** The browser's languages, preferred first ('fr-CA' → 'fr'). */
-const browserLangs = () => (navigator.languages?.length ? [...navigator.languages] : [navigator.language]).map(baseLang).filter(Boolean);
-/** The page language chosen by the visitor (?lang= or the flags, remembered), or null while nothing was chosen. */
-function explicitLang() {
-  let saved = null; try { saved = localStorage.getItem('orthros.lang'); } catch { /* no storage */ }
-  const l = baseLang(new URLSearchParams(location.search).get('lang') ?? saved);
-  return UI_LANGS.includes(l) ? l : null;
-}
-/** The page language: the visitor's choice, else the first language of the browser that the page speaks, else English. */
-const pickLang = () => explicitLang() ?? browserLangs().find((l) => UI_LANGS.includes(l)) ?? 'en';
-
-/** Tiny element builder: h('div', { class: 'x', onclick }, child, ...). */
-function h(tag, props = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (v == null || v === false) continue;
-    if (k === 'class') el.className = v; else if (k.startsWith('on')) el[k] = v; else if (k === 'style') el.style.cssText = v; else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
-  return el;
-}
 
 // ---------------------------------------------------------------- the pixel wordmark
 // 5 x 7 letters, drawn cell by cell like the hound: one SVG, a continuous gradient from bone to ember to blood across
@@ -102,10 +80,6 @@ const FLAGS = {
     + '<g clip-path="url(#hmf-gb-b)"><rect width="60" height="40" fill="#012169"/><path d="M0 0l60 40M60 0L0 40" stroke="#fff" stroke-width="8"/><path d="M0 0l60 40M60 0L0 40" clip-path="url(#hmf-gb-x)" stroke="#c8102e" stroke-width="5"/>'
     + '<path d="M30 0v40M0 20h60" stroke="#fff" stroke-width="13"/><path d="M30 0v40M0 20h60" stroke="#c8102e" stroke-width="8"/></g>',
 };
-/** A language's name in that language ('fr' → 'Français'). */
-function endonym(code) {
-  try { const n = new Intl.DisplayNames([code], { type: 'language' }).of(code); return n.charAt(0).toLocaleUpperCase(code) + n.slice(1); } catch { return code.toUpperCase(); }
-}
 let spriteReady = false;
 function flagEl(code) {
   if (!spriteReady) {
