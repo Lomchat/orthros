@@ -147,7 +147,12 @@ export function d3dCore(vm) {
     GetPriority() { return this.priority; }
     PreLoad() { return D3D_OK; }
     GetType() { return this.type; }
-    destroy() { this.dev.gfx?.destroyResource?.(this); this.free?.(); }
+    destroy() {
+      this.gone = true;
+      this.dev.gfx?.destroyResource?.(this); this.free?.();
+      for (const l of this.levels ?? []) com.unpin?.(l); // (its surfaces kept alive without references: see Surface.keepAlive)
+      for (const f of this.faces ?? []) for (const l of f) com.unpin?.(l);
+    }
   }
   /** one 2D level (or cube face level): guest memory backing */
   class Surface {
@@ -179,6 +184,12 @@ export function d3dCore(vm) {
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
     ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
+    /**
+     * Released to no reference, the surface stays a valid object at the same address while its owner lives (a device's
+     * back buffers and automatic depth-stencil surface, a texture's levels), as in Direct3D (GetBackBuffer,
+     * GetRenderTarget, GetSurfaceLevel then Release, the pointer kept and used later).
+     */
+    get keepAlive() { return this.implicit || (!!this.owner && !this.owner.gone); }
     GetDevice(c) { return Resource.prototype.GetDevice.call(this, c); }
     SetPrivateData(c) { return Resource.prototype.SetPrivateData.call(this, c); }
     GetPrivateData(c) { return Resource.prototype.GetPrivateData.call(this, c); }
@@ -379,10 +390,14 @@ export function d3dCore(vm) {
       }
       else if (this.modeOwned) { wm.setDisplayMode(0, 0, 32, false); this.modeOwned = false; }
     }
+    /** The back buffers and automatic depth-stencil surface are replaced (Reset) or gone (the device's end). */
+    releaseImplicit() { for (const s of [...this.backBuffers, this.depthStencil]) if (s) { s.implicit = false; s.free(); com.unpin?.(s); } }
     createBackBuffers(c) {
       this.backBuffers = [];
       for (let i = 0; i < this.pp.count; i++) this.backBuffers.push(new Surface(this, null, this.pp.format, this.pp.width, this.pp.height, USAGE_RENDERTARGET, POOL.DEFAULT));
       this.depthStencil = this.pp.autoDepth ? new Surface(this, null, this.pp.depthFormat, this.pp.width, this.pp.height, USAGE_DEPTHSTENCIL, POOL.DEFAULT) : null;
+      for (const s of this.backBuffers) s.implicit = true;
+      if (this.depthStencil) this.depthStencil.implicit = true;
       this.renderTarget = this.backBuffers[0]; this.depthTarget = this.depthStencil;
       this.viewport = { x: 0, y: 0, w: this.pp.width, h: this.pp.height, minZ: 0, maxZ: 1 };
       void c;
@@ -441,7 +456,7 @@ export function d3dCore(vm) {
     }
     /** the filter on unless a state block records (or a measurement switched it off: Vm.setApiFastPaths) */
     shadowOn() { if (this.shadow) mem.write32(this.shadow, this.recording || vm.stateFilterOff ? 0 : 1); }
-    destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
+    destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.releaseImplicit(); this.gfx?.destroy?.(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
     TestCooperativeLevel() { return this.lost === 1 ? D3DERR_DEVICELOST : this.lost === 2 ? D3DERR_DEVICENOTRESET : D3D_OK; }
     GetAvailableTextureMem() { return 256 * 1024 * 1024; }
@@ -458,7 +473,7 @@ export function d3dCore(vm) {
       const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL;
       if (this.lost === 1) return D3DERR_DEVICELOST; // (the application is still inactive)
       this.lost = 0;
-      for (const b of this.backBuffers) b.free(); this.depthStencil?.free();
+      this.releaseImplicit();
       this.readPresentParams(pp);
       // the default state first, then the new back buffers: render target 0 is back buffer 0 again (Direct3D 9: the
       // other render targets unset), the depth target the automatic depth-stencil surface — the order of CreateDevice
@@ -500,7 +515,7 @@ export function d3dCore(vm) {
     CreateVertexBuffer(c) { const pp = c.arg(5); if (!pp || !c.arg(1)) return D3DERR_INVALIDCALL; const b = new Buffer(this, RTYPE.VERTEXBUFFER, c.arg(1), c.arg(2), c.arg(3), c.arg(4)); if (!b.mem) return E_OUTOFMEMORY; mem.write32(pp, b.ptr = com.create(c.proc, 'IDirect3DVertexBuffer8', b)); this.gfx?.createBuffer?.(b); return D3D_OK; }
     CreateIndexBuffer(c) { const pp = c.arg(5); if (!pp || !c.arg(1)) return D3DERR_INVALIDCALL; const b = new Buffer(this, RTYPE.INDEXBUFFER, c.arg(1), c.arg(2), c.arg(3), c.arg(4)); if (!b.mem) return E_OUTOFMEMORY; mem.write32(pp, b.ptr = com.create(c.proc, 'IDirect3DIndexBuffer8', b)); this.gfx?.createBuffer?.(b); return D3D_OK; }
     CreateRenderTarget(c) { const pp = c.arg(6); if (!pp) return D3DERR_INVALIDCALL; const s = new Surface(this, null, c.arg(3), c.arg(1), c.arg(2), USAGE_RENDERTARGET, POOL.DEFAULT); s.lockable = c.arg(5) !== 0; mem.write32(pp, s.ptrOf(c)); this.gfx?.createSurface?.(s); return D3D_OK; }
-    CreateDepthStencilSurface(c) { const pp = c.arg(4); if (!pp) return D3DERR_INVALIDCALL; const s = new Surface(this, null, c.arg(3), c.arg(1), c.arg(2), USAGE_DEPTHSTENCIL, POOL.DEFAULT); mem.write32(pp, s.ptrOf(c)); this.gfx?.createSurface?.(s); return D3D_OK; }
+    CreateDepthStencilSurface(c) { const pp = c.arg(5); if (!pp) return D3DERR_INVALIDCALL; const s = new Surface(this, null, c.arg(3), c.arg(1), c.arg(2), USAGE_DEPTHSTENCIL, POOL.DEFAULT); mem.write32(pp, s.ptrOf(c)); this.gfx?.createSurface?.(s); return D3D_OK; }
     CreateImageSurface(c) { const pp = c.arg(4); if (!pp) return D3DERR_INVALIDCALL; const s = new Surface(this, null, c.arg(3), c.arg(1), c.arg(2), 0, POOL.SYSTEMMEM); s.lockable = true; mem.write32(pp, s.ptrOf(c)); return D3D_OK; }
     CopyRects(c) {
       const src = com.implAt(c.arg(1)), rects = c.arg(2), n = c.arg(3), dst = com.implAt(c.arg(4)), points = c.arg(5);
@@ -650,7 +665,7 @@ export function registerDirect3D8(api, vm) {
   const mem = vm.mem, com = vm.com;
   const I = (name, iid, parent, methods) => com.interface(name, iid, parent, methods);
   I('IDirect3D8', IID_IDirect3D8, 'IUnknown', [['RegisterSoftwareDevice', 1], ['GetAdapterCount', 0], ['GetAdapterIdentifier', 3], ['GetAdapterModeCount', 1], ['EnumAdapterModes', 3], ['GetAdapterDisplayMode', 2], ['CheckDeviceType', 5], ['CheckDeviceFormat', 6], ['CheckDeviceMultiSampleType', 5], ['CheckDepthStencilMatch', 5], ['GetDeviceCaps', 3], ['GetAdapterMonitor', 1], ['CreateDevice', 6]]);
-  I('IDirect3DDevice8', IID_IDirect3DDevice8, 'IUnknown', [['TestCooperativeLevel', 0], ['GetAvailableTextureMem', 0], ['ResourceManagerDiscardBytes', 1], ['GetDirect3D', 1], ['GetDeviceCaps', 1], ['GetDisplayMode', 1], ['GetCreationParameters', 1], ['SetCursorProperties', 3], ['SetCursorPosition', 3], ['ShowCursor', 1], ['CreateAdditionalSwapChain', 2], ['Reset', 1], ['Present', 4], ['GetBackBuffer', 3], ['GetRasterStatus', 1], ['SetGammaRamp', 2], ['GetGammaRamp', 1], ['CreateTexture', 7], ['CreateVolumeTexture', 8], ['CreateCubeTexture', 6], ['CreateVertexBuffer', 5], ['CreateIndexBuffer', 5], ['CreateRenderTarget', 6], ['CreateDepthStencilSurface', 4], ['CreateImageSurface', 4], ['CopyRects', 5], ['UpdateTexture', 2], ['GetFrontBuffer', 1], ['SetRenderTarget', 2], ['GetRenderTarget', 1], ['GetDepthStencilSurface', 1], ['BeginScene', 0], ['EndScene', 0], ['Clear', 6], ['SetTransform', 2], ['GetTransform', 2], ['MultiplyTransform', 2], ['SetViewport', 1], ['GetViewport', 1], ['SetMaterial', 1], ['GetMaterial', 1], ['SetLight', 2], ['GetLight', 2], ['LightEnable', 2], ['GetLightEnable', 2], ['SetClipPlane', 2], ['GetClipPlane', 2], ['SetRenderState', 2], ['GetRenderState', 2], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['ApplyStateBlock', 1], ['CaptureStateBlock', 1], ['DeleteStateBlock', 1], ['CreateStateBlock', 2], ['SetClipStatus', 1], ['GetClipStatus', 1], ['GetTexture', 2], ['SetTexture', 2], ['GetTextureStageState', 3], ['SetTextureStageState', 3], ['ValidateDevice', 1], ['GetInfo', 3], ['SetPaletteEntries', 2], ['GetPaletteEntries', 2], ['SetCurrentTexturePalette', 1], ['GetCurrentTexturePalette', 1], ['DrawPrimitive', 3], ['DrawIndexedPrimitive', 5], ['DrawPrimitiveUP', 4], ['DrawIndexedPrimitiveUP', 8], ['ProcessVertices', 5], ['CreateVertexShader', 4], ['SetVertexShader', 1], ['GetVertexShader', 1], ['DeleteVertexShader', 1], ['SetVertexShaderConstant', 3], ['GetVertexShaderConstant', 3], ['GetVertexShaderDeclaration', 3], ['GetVertexShaderFunction', 3], ['SetStreamSource', 3], ['GetStreamSource', 3], ['SetIndices', 2], ['GetIndices', 2], ['CreatePixelShader', 2], ['SetPixelShader', 1], ['GetPixelShader', 1], ['DeletePixelShader', 1], ['SetPixelShaderConstant', 3], ['GetPixelShaderConstant', 3], ['GetPixelShaderFunction', 3], ['DrawRectPatch', 3], ['DrawTriPatch', 3], ['DeletePatch', 1]]);
+  I('IDirect3DDevice8', IID_IDirect3DDevice8, 'IUnknown', [['TestCooperativeLevel', 0], ['GetAvailableTextureMem', 0], ['ResourceManagerDiscardBytes', 1], ['GetDirect3D', 1], ['GetDeviceCaps', 1], ['GetDisplayMode', 1], ['GetCreationParameters', 1], ['SetCursorProperties', 3], ['SetCursorPosition', 3], ['ShowCursor', 1], ['CreateAdditionalSwapChain', 2], ['Reset', 1], ['Present', 4], ['GetBackBuffer', 3], ['GetRasterStatus', 1], ['SetGammaRamp', 2], ['GetGammaRamp', 1], ['CreateTexture', 7], ['CreateVolumeTexture', 8], ['CreateCubeTexture', 6], ['CreateVertexBuffer', 5], ['CreateIndexBuffer', 5], ['CreateRenderTarget', 6], ['CreateDepthStencilSurface', 5], ['CreateImageSurface', 4], ['CopyRects', 5], ['UpdateTexture', 2], ['GetFrontBuffer', 1], ['SetRenderTarget', 2], ['GetRenderTarget', 1], ['GetDepthStencilSurface', 1], ['BeginScene', 0], ['EndScene', 0], ['Clear', 6], ['SetTransform', 2], ['GetTransform', 2], ['MultiplyTransform', 2], ['SetViewport', 1], ['GetViewport', 1], ['SetMaterial', 1], ['GetMaterial', 1], ['SetLight', 2], ['GetLight', 2], ['LightEnable', 2], ['GetLightEnable', 2], ['SetClipPlane', 2], ['GetClipPlane', 2], ['SetRenderState', 2], ['GetRenderState', 2], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['ApplyStateBlock', 1], ['CaptureStateBlock', 1], ['DeleteStateBlock', 1], ['CreateStateBlock', 2], ['SetClipStatus', 1], ['GetClipStatus', 1], ['GetTexture', 2], ['SetTexture', 2], ['GetTextureStageState', 3], ['SetTextureStageState', 3], ['ValidateDevice', 1], ['GetInfo', 3], ['SetPaletteEntries', 2], ['GetPaletteEntries', 2], ['SetCurrentTexturePalette', 1], ['GetCurrentTexturePalette', 1], ['DrawPrimitive', 3], ['DrawIndexedPrimitive', 5], ['DrawPrimitiveUP', 4], ['DrawIndexedPrimitiveUP', 8], ['ProcessVertices', 5], ['CreateVertexShader', 4], ['SetVertexShader', 1], ['GetVertexShader', 1], ['DeleteVertexShader', 1], ['SetVertexShaderConstant', 3], ['GetVertexShaderConstant', 3], ['GetVertexShaderDeclaration', 3], ['GetVertexShaderFunction', 3], ['SetStreamSource', 3], ['GetStreamSource', 3], ['SetIndices', 2], ['GetIndices', 2], ['CreatePixelShader', 2], ['SetPixelShader', 1], ['GetPixelShader', 1], ['DeletePixelShader', 1], ['SetPixelShaderConstant', 3], ['GetPixelShaderConstant', 3], ['GetPixelShaderFunction', 3], ['DrawRectPatch', 3], ['DrawTriPatch', 3], ['DeletePatch', 1]]);
   const resourceMethods = [['GetDevice', 1], ['SetPrivateData', 4], ['GetPrivateData', 3], ['FreePrivateData', 1], ['SetPriority', 1], ['GetPriority', 0], ['PreLoad', 0], ['GetType', 0]];
   I('IDirect3DResource8', IID_IDirect3DResource8, 'IUnknown', resourceMethods);
   I('IDirect3DBaseTexture8', IID_IDirect3DBaseTexture8, 'IDirect3DResource8', [['SetLOD', 1], ['GetLOD', 0], ['GetLevelCount', 0]]);
