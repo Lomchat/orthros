@@ -8,15 +8,18 @@ export const CC_STDCALL = 0, CC_CDECL = 1;
 /** pseudo-DLLs of Orthros' own (no module image) */
 const INTERNAL_DLLS = new Set(['com.dll', 'orthros.dll']);
 /** free slots of a module image for functions it does not export (unknown imports); then header-less pages */
-const SLACK_SLOTS = 256;
+const SLACK_SLOTS = 64;
 const CHUNK_SIZE = 0x1000;
+/** size of the headers (MZ, PE, one section header) and alignment of the image's section: the export directory and
+ * the thunks follow at once (a small-alignment image, mapped as one region as Windows maps such images) */
+const HDR = 0x200;
 const alignUp = (v, a) => (v + a - 1) & ~(a - 1);
 
 /** @typedef {{ dll: string, base: number, end: number, chunk: { next: number, end: number } }} ThunkWindow */
 
 /**
- * Layout of a builtin DLL's image: headers (page 0), the export directory (from page 1), then the thunk slots (page
- * aligned, at headerSize). funcs: the export address table (function name per ordinal - 1, null for an unused
+ * Layout of a builtin DLL's image: headers, the export directory (at HDR), then the thunk slots (16-byte aligned, at
+ * headerSize). funcs: the export address table (function name per ordinal - 1, null for an unused
  * ordinal); names: [name, EAT index] sorted by name (the order a binary search of the name table expects).
  * @param {string} dllName
  * @param {{ funcs: Map<string, any>, ordinals: Map<number, string> } | undefined} d
@@ -38,7 +41,7 @@ export function buildExportImage(dllName, d) {
   let strBytes = dllName.length + 1;
   for (const [n] of names) strBytes += n.length + 1;
   const exportSize = 40 + 4 * funcs.length + 6 * names.length + strBytes;
-  return { funcs, names, exportSize, headerSize: 0x1000 + alignUp(exportSize, 0x1000) };
+  return { funcs, names, exportSize, headerSize: alignUp(HDR + exportSize, 16) };
 }
 
 /** Write a builtin DLL's MZ/PE headers and export directory at its base (eat: function RVA per ordinal - 1). */
@@ -52,26 +55,26 @@ function writeExportImage(mem, base, size, dllName, img, eat) {
   mem.write16(pe + 4, 0x14c); mem.write16(pe + 6, 1); mem.write16(pe + 20, 0xe0); mem.write16(pe + 22, 0x2102);
   const oh = pe + 24;
   mem.write16(oh, 0x10b); // PE32
-  mem.write32(oh + 4, size - 0x1000); // SizeOfCode
-  mem.write32(oh + 20, 0x1000); // BaseOfCode
+  mem.write32(oh + 4, size - HDR); // SizeOfCode
+  mem.write32(oh + 20, HDR); // BaseOfCode
   mem.write32(oh + 28, base); // ImageBase
-  mem.write32(oh + 32, 0x1000); mem.write32(oh + 36, 0x200); // section / file alignment
+  mem.write32(oh + 32, HDR); mem.write32(oh + 36, HDR); // section / file alignment (equal: below a page)
   mem.write16(oh + 40, 5); mem.write16(oh + 42, 1); // OS version 5.1
   mem.write16(oh + 48, 5); mem.write16(oh + 50, 1); // subsystem version 5.1
   mem.write32(oh + 56, size); // SizeOfImage
-  mem.write32(oh + 60, 0x1000); // SizeOfHeaders
+  mem.write32(oh + 60, HDR); // SizeOfHeaders
   mem.write16(oh + 68, 3); // subsystem: Windows CUI (as system DLLs)
   mem.write32(oh + 72, 0x40000); mem.write32(oh + 76, 0x1000); mem.write32(oh + 80, 0x100000); mem.write32(oh + 84, 0x1000); // stack / heap
   mem.write32(oh + 92, 16); // NumberOfRvaAndSizes
-  mem.write32(oh + 96, 0x1000); mem.write32(oh + 100, img.exportSize); // export directory
+  mem.write32(oh + 96, HDR); mem.write32(oh + 100, img.exportSize); // export directory
   const sh = oh + 0xe0;
   for (let i = 0; i < 5; i++) mem.write8(sh + i, '.text'.charCodeAt(i));
-  mem.write32(sh + 8, size - 0x1000); mem.write32(sh + 12, 0x1000); // VirtualSize, VirtualAddress
-  mem.write32(sh + 16, size - 0x1000); mem.write32(sh + 20, 0x400); // SizeOfRawData, PointerToRawData
+  mem.write32(sh + 8, size - HDR); mem.write32(sh + 12, HDR); // VirtualSize, VirtualAddress
+  mem.write32(sh + 16, size - HDR); mem.write32(sh + 20, HDR); // SizeOfRawData, PointerToRawData
   mem.write32(sh + 36, 0x60000020); // code | execute | read
   // export directory
-  const ed = base + 0x1000, nf = img.funcs.length, nn = img.names.length;
-  const eatRva = 0x1000 + 40, namesRva = eatRva + 4 * nf, ordsRva = namesRva + 4 * nn;
+  const ed = base + HDR, nf = img.funcs.length, nn = img.names.length;
+  const eatRva = HDR + 40, namesRva = eatRva + 4 * nf, ordsRva = namesRva + 4 * nn;
   let str = ordsRva + 2 * nn;
   const putStr = (s) => { for (let i = 0; i < s.length; i++) mem.write8(base + str + i, s.charCodeAt(i) & 0xff); str += s.length + 1; };
   mem.write32(ed + 12, str); putStr(dllName); // Name

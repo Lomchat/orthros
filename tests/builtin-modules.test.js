@@ -80,9 +80,9 @@ test('builtin DLLs are PE images: exports, function addresses inside, found by s
   assert.equal(mem.read32(scratch + 4), user32, 'AllocationBase');
   assert.equal(mem.read32(scratch + 16), 0x1000, 'MEM_COMMIT');
   assert.equal(mem.read32(scratch + 24), 0x1000000, 'MEM_IMAGE');
-  assert.equal(mem.read32(scratch + 20), 0x20, 'code pages PAGE_EXECUTE_READ');
+  assert.equal(mem.read32(scratch + 20), 0x80, 'a small-alignment image: PAGE_EXECUTE_WRITECOPY');
   call('kernel32.dll', 'VirtualQuery', user32, scratch, 28);
-  assert.equal(mem.read32(scratch + 20), 0x02, 'headers PAGE_READONLY');
+  assert.equal(mem.read32(scratch), user32, 'from the image base');
   // GetModuleHandleEx(FROM_ADDRESS)
   assert.equal(call('kernel32.dll', 'GetModuleHandleExA', 4 | 2, msgBox, scratch), 1);
   assert.equal(mem.read32(scratch), user32);
