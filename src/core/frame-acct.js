@@ -62,7 +62,7 @@ export class FrameAccount {
     // still measures its own time) and its value at the last frame boundary
     this.acc = new Float64Array(N_CATS); this.base = new Float64Array(N_CATS);
     this.out = new Float64Array(N_CATS); // the last closed frame (estimates applied)
-    this.cur = C.host; this.at = now();
+    this.cur = C.host; this.at = now(); this.on = true;
     this.rng = 0x2545f491; this.apiLeft = 1; this.interpLeft = 1;
     this.always = new Uint16Array(256); // per API index: timed on every call while non-zero (short calls left before sampling again)
     // per frame: sampled (randomly timed) API calls, their exclusive time, and the calls not timed; same for the interpreter
@@ -76,6 +76,13 @@ export class FrameAccount {
     // per API index: time and count of its timed calls (with the call counts, an estimate of each API's time)
     this.idxMs = new Float64Array(256); this.idxN = new Float64Array(256); this.idxCalls = new Float64Array(256);
   }
+  /**
+   * Measurement switch (harness dbg:ORTHROS_ACCT_OFF=1): `now` null stops reading the clock (every section then lasts
+   * 0 ms) — the accounting's cost compared within one session; a function restores it.
+   */
+  setClock(now) { if (now) { this.now = now; this.at = now(); this.on = true; } else { this.at = this.now(); this.now = () => this.at; this.on = false; } }
+  /** The time of the last section boundary (enter / leave), or the clock when the accounting's clock is off (callers timing their own stats with it). */
+  stamp() { return this.on ? this.at : performance.now(); }
   /** Close the running segment and charge the time from now on to `cat`; returns the category to give leave(). */
   enter(cat) { this.reads++; const t = this.now(); this.acc[this.cur] += t - this.at; this.at = t; const p = this.cur; this.cur = cat; return p; }
   /** Close the running segment and go back to `prev` (enter's result). */

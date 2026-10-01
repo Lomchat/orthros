@@ -259,10 +259,10 @@ export class WebGLDevice {
         const s = lv[i];
         if (!s.dirty && s.uploaded && !fresh) continue; // (a new GL texture — first use, or after a context loss — takes every level)
         if (!bound) { this.bindForUpload(target, g.tex); bound = true; }
-        const ap = acct.enter(ACCT.tex), t0 = acct.at;
+        const ap = acct.enter(ACCT.tex), t0 = acct.stamp();
         if (s.uploaded) this.stats.reuploads = (this.stats.reuploads ?? 0) + 1; // (report: levels updated after their first upload)
         try { this.uploadLevel(cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : gl.TEXTURE_2D, i, s, g, f * 32 + i); } finally { acct.leave(ap); }
-        this.stats.texMs = (this.stats.texMs ?? 0) + acct.at - t0; // (report: texture conversion + upload time)
+        this.stats.texMs = (this.stats.texMs ?? 0) + acct.stamp() - t0; // (report: texture conversion + upload time)
         s.dirty = false; s.uploaded = true;
       }
     }
@@ -402,7 +402,7 @@ export class WebGLDevice {
     const prev = dev.renderTarget; dev.renderTarget = s;
     const { w, h, flip } = this.bindTarget();
     const rgba = new Uint8Array(w * h * 4);
-    const ap = acct.enter(ACCT.readback), t0 = acct.at;
+    const ap = acct.enter(ACCT.readback), t0 = acct.stamp();
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     acct.leave(ap);
     // (report: synchronous readbacks — a round trip to the GPU process that waits for every command queued before it;
@@ -835,7 +835,7 @@ export class WebGLDevice {
    * server by the worker) so that later sessions compile it in the background before it is needed (prewarmStep).
    */
   compile(vsSrc, fsSrc, key, attrNames) {
-    const ap = acct.enter(ACCT.prog), t0 = acct.at;
+    const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
     let p; try { p = this.finishProgram(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
     this.stats.programs++;
     { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
@@ -870,9 +870,9 @@ export class WebGLDevice {
     // build the GPU process has not finished, and for the commands queued before it: timed apart from full builds)
     if (e.rec) { if (!e.ok) this.stats.errors++; e.rec.key = key; pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; return e.rec; }
     pc.pending--;
-    const ap = acct.enter(ACCT.prog), t0 = acct.at;
+    const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
     let p; try { p = this.finishProgram(e, key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
-    this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + acct.at - t0;
+    this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + acct.stamp() - t0;
     return p;
   }
 

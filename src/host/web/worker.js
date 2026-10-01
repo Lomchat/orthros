@@ -346,7 +346,7 @@ function pump() {
   let r;
   if (host.gfx?.beforeSlice) { acct.enter(ACCT.prog); host.gfx.beforeSlice(2); acct.enter(ACCT.host); } // (GL programs compiled ahead, resolved when the GPU process has caught up: see createWebGLBackend)
   acct.enter(ACCT.guest);
-  const tRun = acct.at;
+  const tRun = acct.stamp();
   // a slice that does not come back within a second (guest code run from a nested call — DllMain, a callback — is
   // not cut into slices): what runs, logged each second meanwhile (the page shows no new frame then)
   vm.progressEvery = 1000; vm.progressAt = tRun + 1000;
@@ -370,7 +370,7 @@ function pump() {
   if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
   acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.host);
   host.audioHook ??= () => { const p = acct.enter(ACCT.audio); host.renderAudio(vm); acct.leave(p); };
-  const now = acct.at;
+  const now = acct.stamp();
   pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (programSink && (host.gfx.programCache.learned.length || host.gfx.programCache.used.length) && now - programsPostedAt > 5000) { programsPostedAt = now; programSink(host.gfx.programCache.learned.splice(0), host.gfx.programCache.used.splice(0)); }
   if (regionSink && vm.jit?.learned?.length && now - regionsPostedAt > 10000) {
@@ -589,7 +589,7 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     if (host) { const ph = host.frameAcct.phase(String(m.label), performance.now()); log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}`); post({ type: 'phase', report: { ...ph, text: undefined } }); }

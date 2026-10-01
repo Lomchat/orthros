@@ -149,10 +149,10 @@ export class BrowserHost {
     const t = Math.min(ms, 50);
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
     const ap = acct.enter(io ? ACCT.ioWait : ACCT.wait);
-    const t0 = acct.at;
+    const t0 = acct.stamp();
     Atomics.wait(this.ctl, CTL.WAKE, 0, t);
     acct.leave(ap);
-    this.waitMs = (this.waitMs ?? 0) + acct.at - t0;
+    this.waitMs = (this.waitMs ?? 0) + acct.stamp() - t0;
     this.pump();
   }
   pollInput() { this.pump(); return this.inputQueue.length ? this.inputQueue.splice(0) : null; }
@@ -170,7 +170,7 @@ export class BrowserHost {
   }
   framePresented() {
     this.framesPresented++;
-    const cats = acct.frame(), now = acct.at;
+    const cats = acct.frame(), now = performance.now(); // (not acct.stamp(): the accounting's clock can be switched off)
     this.lastCats = cats;
     if (this.lastFrameAt) {
       const dt = now - this.lastFrameAt; this.frameTimes.push(dt); this.frameTimesAt.push(now);
