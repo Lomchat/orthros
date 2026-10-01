@@ -126,12 +126,13 @@ export class RenderLink {
   unbind(rr) { if (rr) { rr.binds--; if (this.lastWorkEnd > rr.lastRef) rr.lastRef = this.lastWorkEnd; } }
   ref(rr) { if (rr) rr.lastRef = this.w.produced; }
   /** A buffer locked for writing (Buffer.Lock): wait, or with DISCARD give it other memory (its old block retired). */
-  lockBuffer(b, flags) {
+  lockBuffer(b, flags, off = 0, size = 0) {
     const rr = b.rec;
     if ((flags & READONLY) || !rr || this.failed || !this.mayRead(rr)) return;
-    // NOOVERWRITE: the application does not write data pending draws use — except that a buffer's first upload
-    // takes all of it (as a new buffer does after a context loss): waited for once
-    if ((flags & NOOVERWRITE) && (rr.slot < 0 || this.ack === null || this.ack[rr.slot] - rr.gen0 >= 0)) return;
+    // NOOVERWRITE: the application does not write data pending draws use — but a pending upload may take more than
+    // what the draws use: the whole buffer at its first upload (as after a context loss), and the union of the
+    // ranges written since its last upload: waited for when the locked range meets them
+    if ((flags & NOOVERWRITE) && rr.slot >= 0 && this.ack !== null && this.ack[rr.slot] - rr.gen0 >= 0 && !this.pendingOverlap(rr, off, size ? off + size : b.length)) return;
     if (!(flags & DISCARD)) { this.waitConsumed(this.lastRefOf(rr), 'fence'); return; }
     const pool = rr.pool ??= [], consumed = this.consumedNow();
     let addr = 0;
@@ -143,6 +144,15 @@ export class RenderLink {
     b.dev.proc.mem.copy(addr, b.mem, b.length);
     pool.push({ addr: b.mem, pos: this.lastRefOf(rr) });
     b.mem = addr; rr.refFloor = this.w.produced; this.stats.renames++; this.stats.renameBytes = (this.stats.renameBytes ?? 0) + b.length;
+  }
+  /** do the ranges written but not yet uploaded (generations past the acknowledged one) meet [lo, hi)? */
+  pendingOverlap(rr, lo, hi) {
+    const p = rr.pend; if (!p) return false;
+    const acked = this.ack[rr.slot];
+    let j = 0, hit = false;
+    for (let i = 0; i < p.length; i += 3) { if (p[i] - acked <= 0) continue; p[j++] = p[i]; p[j++] = p[i + 1]; p[j++] = p[i + 2]; if (p[i + 1] < hi && lo < p[i + 2]) hit = true; }
+    p.length = j;
+    return hit;
   }
   /** A resource's memory released: later if a pending command may still read it (true: the release is taken care of). */
   deferFree(rr, addr) {
@@ -211,6 +221,10 @@ export class Recorder {
   bufferUpdated(b, start = 0, size = b.length) {
     const rr = b.rec; if (!rr || rr.destroyed || this.link.failed) return;
     rr.gen = ++this.link.gen;
+    // (the ranges not yet uploaded, for lockBuffer: past 16 of them the two oldest merge — a wider range, never a lost one)
+    const pend = rr.pend ??= [];
+    if (pend.length >= 48) { pend[3] = Math.max(pend[0], pend[3]); pend[4] = Math.min(pend[1], pend[4]); pend[5] = Math.max(pend[2], pend[5]); pend.splice(0, 3); }
+    pend.push(rr.gen, start, start + size);
     this.sel();
     const p = this.w.begin(OP.BUF_DIRTY, 5), I = this.w.I; I[p] = b.id; I[p + 1] = rr.gen; I[p + 2] = start; I[p + 3] = size; I[p + 4] = b.mem;
   }
@@ -539,6 +553,11 @@ export class Recorder {
   }
   setGamma(ramp) { if (this.link.failed) return; this.sel(); this.w.put(OP.GAMMA, ramp.subarray(0, 1536)); }
   reset() { if (this.link.failed) return; this.flush(); this.w.c0(OP.RESET); this.fbos.clear(); }
+  /** stop recording (the device gets another backend): the state tables' hooks removed */
+  detach() {
+    this.link.recorders.delete(this);
+    for (const t of [this.s.rs, ...(this.s.tss ?? []), ...(this.s.samplers ?? [])]) if (t && t.rec === this) t.rec = null;
+  }
   destroy() {
     this.link.recorders.delete(this);
     for (const t of [this.s.rs, ...(this.s.tss ?? []), ...(this.s.samplers ?? [])]) if (t && t.rec === this) t.rec = null;

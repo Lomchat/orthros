@@ -410,6 +410,16 @@ export class WebGLDevice {
     const base = s.ensureMem(dev.proc);
     packReadback(this.mem.u8, base, s, rgba, w, h, flip);
   }
+  /** The pixels of back buffer 0 (RGBA8, GL rows) — the render worker's frame comparison (?glworker=compare). */
+  readBackBuffer() {
+    const gl = this.gl, dev = this.dev, prev = dev.renderTarget;
+    dev.renderTarget = dev.backBuffers[0];
+    const { w, h } = this.bindTarget();
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    dev.renderTarget = prev; this.bindTarget();
+    return { w, h, px };
+  }
   /**
    * StretchRect between surfaces the GPU holds (render targets, back buffers, texture levels drawn to): a framebuffer
    * blit, filtered when asked (D3DTEXF_LINEAR). Surfaces never rendered to (their contents in guest memory) return null:

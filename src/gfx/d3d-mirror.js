@@ -189,7 +189,7 @@ export class Replayer {
       case OP.DRAW_INDEXED: g?.drawIndexedPrimitive(a[0], a[1], a[2], a[3], a[4], a[5]); break;
       case OP.DRAW_UP: g?.drawPrimitiveUP(a[0], a[1], a[3], a[2]); break;
       case OP.DRAW_INDEXED_UP: g?.drawIndexedPrimitiveUP(a[0], a[1], a[2], a[3], a[7], a[4], a[6], a[5]); break;
-      case OP.PRESENT: g?.present(); this.opts.onPresent?.(m, a[0]); break;
+      case OP.PRESENT: this.opts.beforePresent?.(m, a[0]); g?.present(); this.opts.onPresent?.(m, a[0]); break;
       case OP.READBACK: { const s = this.res.get(a[0]); if (s) { s.pendingMem = a[2]; if (g) g.readbackSurface(s); s.ensureMem(); } this.opts.onReadback?.(a[1]); break; }
       case OP.STRETCH: { const s = this.res.get(a[0]), d = this.res.get(a[1]); if (s && d && g) g.stretchRect(s, a[3] ? Array.from(a[3]) : 0, d, a[4] ? Array.from(a[4]) : 0, a[2]); break; }
       case OP.GAMMA: g?.setGamma(a[0]); break;

@@ -325,7 +325,7 @@ export function d3dCore(vm) {
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
     /** (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents, or with
      * D3DLOCK_DISCARD gives the buffer fresh memory — the driver behaviour DISCARD exists for) */
-    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; this.dev.gfx?.lockBuffer?.(this, flags); mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
+    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; this.dev.gfx?.lockBuffer?.(this, flags, off, size); mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
     Unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); } return D3D_OK; }
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, this.type); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.length); if (this.type === RTYPE.VERTEXBUFFER) mem.write32(p + 20, this.fvf); return D3D_OK; }
   }

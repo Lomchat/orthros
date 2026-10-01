@@ -25,7 +25,9 @@ export class BrowserDisplay {
   resize(w, h) {
     this.width = w; this.height = h;
     if (this.canvas2d.width !== w || this.canvas2d.height !== h) { this.canvas2d.width = w; this.canvas2d.height = h; }
-    if (this.canvasGl.width !== w || this.canvasGl.height !== h) { this.canvasGl.width = w; this.canvasGl.height = h; }
+    // (recorded Direct3D work: the canvas resized in order with the recorded presents, where they are replayed)
+    if (this.host.gfx?.canvasResized) this.host.gfx.canvasResized(w, h);
+    else if (this.canvasGl.width !== w || this.canvasGl.height !== h) { this.canvasGl.width = w; this.canvasGl.height = h; }
     this.ctx = this.canvas2d.getContext('2d', { alpha: false });
     this.desk = new ImageData(w, h); new Uint32Array(this.desk.data.buffer).fill(0xff000000);
     this.row = new Uint32Array(w);
@@ -51,6 +53,7 @@ export class BrowserDisplay {
   }
   /** Hand the Direct3D frame just presented (blitted into the GL canvas) to the page. */
   presentGl() {
+    if (this.host.remoteGl) { if (!this.glActive) { this.glActive = true; this.host.post({ type: 'gl', active: true }); } return; } // (a render worker posts the frames)
     let bitmap;
     try { bitmap = this.canvasGl.transferToImageBitmap(); } catch { return; } // (WebGL context lost: no frame until it is restored)
     this.host.post({ type: 'frame', layer: 'gl', bitmap }, [bitmap]);

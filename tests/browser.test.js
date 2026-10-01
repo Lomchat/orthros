@@ -13,7 +13,7 @@ try { ({ chromium } = await import('playwright')); } catch { /* playwright not i
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = !chromium ? 'playwright missing' : !fs.existsSync(PE_DIR + 'dx.exe') ? 'build/pe missing (make pe-tests)' : false;
 
-async function runManifest(name, seconds) {
+async function runManifest(name, seconds, query = '') {
   const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/manifests') });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
@@ -22,7 +22,7 @@ async function runManifest(name, seconds) {
     const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
     const logs = [];
     page.on('console', (m) => logs.push(m.text()));
-    await page.goto(`http://127.0.0.1:${port}/?manifest=${name}&headless=1`);
+    await page.goto(`http://127.0.0.1:${port}/?manifest=${name}&headless=1${query}`);
     const t0 = Date.now();
     let s;
     for (;;) {
@@ -74,6 +74,27 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.match(text, /px_chk33=0x00000000/);
   assert.match(text, /px_chk_out=0x0000ff00/, 'the quad covers exactly pixels 100..103');
 });
+
+// the render worker (docs/render-worker.md): the same pixels and readbacks with the Direct3D work recorded and replayed
+// in this thread (inline) and in a render worker that presents the frames itself
+for (const mode of ['inline', '1']) {
+  test(`browser host, ?glworker=${mode}: dx9.exe renders, reads back and presents through the gamma ramp as in-thread`, { skip, timeout: 60000 }, async () => {
+    const r = await runManifest('test-dx9', 20, `&glworker=${mode}`);
+    assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.pixel(60, 60), 0x007f00, 'triangle through the gamma ramp');
+    assert.equal(r.pixel(300, 200), 0x00007f, 'clear color through the gamma ramp');
+    const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
+    for (const k of ['px_tri=0x0000ff00', 'px_clear=0x000000ff', 'px_chk00=0x00000000', 'px_chk10=0x00ffffff', 'px_chk33=0x00000000', 'px_chk_out=0x0000ff00']) assert.ok(text.includes(k), `${k} in\n${text}`);
+    if (mode === '1') assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker rendered');
+  });
+  test(`browser host, ?glworker=${mode}: dx.exe clears the Direct3D back buffer`, { skip, timeout: 60000 }, async () => {
+    const r = await runManifest('test-dx', 20, `&glworker=${mode}`);
+    assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.pixel(100, 100), 0x0000ff, 'D3D Clear color on the GL layer');
+  });
+}
 
 test('browser host: text.exe measures and draws an outline font through the canvas text engine', { skip, timeout: 60000 }, async () => {
   const r = await runManifest('test-text', 20);

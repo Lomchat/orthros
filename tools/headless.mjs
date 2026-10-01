@@ -97,6 +97,7 @@ if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download 
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
 if (opt('timescale')) q.set('timescale', opt('timescale')); // (guest ms per real ms: below 1 the guest sees a faster machine — first-launch benchmarks)
 if (args.includes('--lan')) q.set('lan', '1'); // (the virtual LAN link, as players have it; headless runs are off it by default)
+if (opt('glworker')) q.set('glworker', opt('glworker')); // render worker (docs/render-worker.md): 1 a render worker, inline / check recorded and replayed in the emulator's worker, 0 in-thread backend
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
 // --block-counts: translations count each block's executions (shown by --profile-list / --profile-wasm and jitlist; the
@@ -393,10 +394,11 @@ for (;;) {
     if (!cpuStart && t >= cpuWindow[0]) cpuStart = { ticks: workerThreadTicks(), frames: s.stats.frames, t };
     else if (cpuStart && t >= cpuWindow[1]) {
       cpuDone = true;
-      const end = workerThreadTicks(); let best = 0, gpu = 0;
-      for (const [k, v] of end) { const d = v - (cpuStart.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else best = Math.max(best, d); }
+      const end = workerThreadTicks(); let best = 0, next = 0, gpu = 0;
+      for (const [k, v] of end) { const d = v - (cpuStart.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; }
       const frames = s.stats.frames - cpuStart.frames, wall = t - cpuStart.t;
-      console.log(`[cpu] worker thread ${(best * 10 / frames).toFixed(2)} ms CPU per frame (${(best / 100).toFixed(1)} s CPU in ${wall.toFixed(0)} s, ${frames} frames, ${(frames / wall).toFixed(1)} fps); GPU process ${(gpu * 10 / frames).toFixed(2)} ms per frame`);
+      // (the next busiest worker thread: the render worker with --glworker 1 — or the background translator, early on)
+      console.log(`[cpu] worker thread ${(best * 10 / frames).toFixed(2)} ms CPU per frame (${(best / 100).toFixed(1)} s CPU in ${wall.toFixed(0)} s, ${frames} frames, ${(frames / wall).toFixed(1)} fps); next worker thread ${(next * 10 / frames).toFixed(2)} ms per frame; GPU process ${(gpu * 10 / frames).toFixed(2)} ms per frame${s.stats.gl ? `; render: gpu waits ${s.stats.gl.gpuWaitMs.toFixed(0)} ms in ${s.stats.gl.waits} (fences ${s.stats.gl.fenceWaits}/${s.stats.gl.fenceMs.toFixed(0)} ms, frames ${s.stats.gl.frameWaits}/${s.stats.gl.frameMs.toFixed(0)} ms), ${s.stats.gl.renames} renames, replay ${(s.stats.gl.replayMs ?? 0).toFixed(0)} ms (totals)` : ''}`);
     }
   }
   // (prog=N/Xms+Yms: GL programs built at a draw so far and their time, + time waiting at draws for learned programs)
@@ -469,7 +471,7 @@ for (;;) {
     // texture work / API time over the phase (logged as [gfx] mark)
     if (ev.kind === 'mark') {
       const ticks = workerThreadTicks(), frames = s.stats?.frames ?? 0;
-      if (markState) { let best = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else best = Math.max(best, d); } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
+      if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
       markState = { ticks, frames, t, label: ev.args[0] };
       await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
       continue;

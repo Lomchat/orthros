@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 // A WebGL2 context for Node tests: every call is recorded (objects by creation number, array data by a checksum), the
 // queries answer as a working context would (programs linked, framebuffers complete, no error). Two backends fed
 // the same Direct3D work through two of these must produce the same call log.
@@ -24,7 +26,7 @@ export function fakeGl(width = 800, height = 600) {
     checkFramebufferStatus: () => E('FRAMEBUFFER_COMPLETE'), getError: () => 0, getVertexAttrib: () => 0, getSyncParameter: () => E('SIGNALED'),
     isEnabled: () => false,
   };
-  function E(name) { let v = enums.get(name); if (v === undefined) enums.set(name, (v = 0x1000 + enums.size)); return v; }
+  function E(name) { let v = enums.get(name); if (v === undefined) { v = 0x10000; for (let i = 0; i < name.length; i++) v = (v * 31 + name.charCodeAt(i)) % 0xffff0000; v += 0x10000; enums.set(name, v); } return v; }
   const gl = new Proxy(answers, {
     get(t, k) {
       if (typeof k !== 'string') return undefined;
@@ -46,7 +48,12 @@ export function fakeGl(width = 800, height = 600) {
   return { gl, calls, canvas };
 }
 
-const enums = new Map(); // (one numbering for every context: their logs compare)
+// one numbering for every context, in every thread (their logs compare): the names the backend uses, sorted
+const enums = new Map();
+for (const f of ['../src/gfx/d3d8-webgl.js']) {
+  const names = [...new Set([...fs.readFileSync(new URL(f, import.meta.url), 'utf8').matchAll(/\bgl\.([A-Z][A-Z0-9_]+)\b/g)].map((m) => m[1]))].sort();
+  for (const n of names) enums.set(n, 0x1000 + enums.size);
+}
 function hash(b) { let h = 0x811c9dc5; for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193); return (h >>> 0).toString(16); }
 
 /** index and context of the first difference between two call logs, or null */
