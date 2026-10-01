@@ -78,7 +78,7 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch, out = null) {
   if (bpp) {
     const lut = texelTable(fmt, bpp), dst = new Uint32Array(out.buffer, out.byteOffset, w * h), u8 = mem.u8;
     if (bpp === 1) { for (let y = 0; y < h; y++) for (let x = 0, s = addr + y * pitch, o = y * w; x < w; x++) dst[o + x] = lut[u8[s + x]]; }
-    else if (((addr | pitch | u8.byteOffset) & 1) === 0) { const src = new Uint16Array(u8.buffer, u8.byteOffset, u8.length >> 1); for (let y = 0; y < h; y++) for (let x = 0, s = (addr + y * pitch) >> 1, o = y * w; x < w; x++) dst[o + x] = lut[src[s + x]]; }
+    else if (((addr | pitch | u8.byteOffset) & 1) === 0) { const src = new Uint16Array(u8.buffer, u8.byteOffset, u8.length >>> 1); for (let y = 0; y < h; y++) for (let x = 0, s = (addr + y * pitch) >>> 1, o = y * w; x < w; x++) dst[o + x] = lut[src[s + x]]; }
     else for (let y = 0; y < h; y++) for (let x = 0, s = addr + y * pitch, o = y * w; x < w; x++, s += 2) dst[o + x] = lut[u8[s] | (u8[s + 1] << 8)];
     return out;
   }

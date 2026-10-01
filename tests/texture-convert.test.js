@@ -32,3 +32,10 @@ test('surfaceToRgba: every texel value of every format, aligned or not, with a p
     }
   }
 });
+
+test('surfaceToRgba: a 2 GiB guest memory (16-bit texels read through a view of the whole memory)', () => {
+  const bytes = new Uint8Array(2 ** 31), mem = memOf(bytes); // (zero pages: committed lazily by the system)
+  const addr = 2 ** 31 - 4096;
+  for (let i = 0; i < 2048; i++) { bytes[addr + 2 * i] = i & 255; bytes[addr + 2 * i + 1] = (i * 37) & 255; }
+  for (const fmt of [FMT.R5G6B5, FMT.A4R4G4B4, FMT.L8]) assert.deepEqual(surfaceToRgba(mem, fmt, addr, 32, 32, surfacePitch(fmt, 32)), surfaceToRgbaRef(mem, fmt, addr, 32, 32, surfacePitch(fmt, 32)), `format ${fmt}`);
+});
