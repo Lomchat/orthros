@@ -455,7 +455,25 @@ frame comparison.
   smaller levels), new vertex/index buffers are zeroed (their contents depended on what the allocator reused), the
   first-draw diagnostics survive a draw without stream 0.
 
-### 7.4 Tests
+### 7.4 Failure, context loss, debugging
+
+- The render worker answers within 10 s of its start (`ready`, with the renderer's name), else the devices get the
+  in-thread backend. While the emulator waits for it (fences, readbacks, frames, a full ring), no progress (neither
+  its heartbeat nor its consumed words) for 10 s, or no answer within 30 s, has the same effect: logged, the render
+  worker terminated, every device given the in-thread backend (`renderInThread` in the worker: resources are
+  uploaded again from guest memory on use, render-target contents lost once, as after a lost context). Testing:
+  harness `dbg:ORTHROS_RW_STALL=1` stops the render worker's loop.
+- A command that throws in the render worker is logged (`render worker: <command> failed`) and skipped; presents
+  and readbacks are answered even then, so the emulator never waits for a dead command.
+- Context loss happens in the render worker (its canvas's events: `contextRestored()` as in-thread, the epoch word
+  incremented); harness `--lose-context-at` reaches it through the emulator worker.
+- `dbg:` globals, `--capture`, `glcount`, the GL timing probe, `--gl-validate` and `--gl-discard` reach the render
+  worker (the globals at its start, `dbg:` messages later); its logs and captured images go to the page directly.
+- Statistics: the emulator's waits (`gpuWaitMs`, by kind: fences, frames, readbacks, ring), renames and their copied
+  bytes, the render worker's replay time: in the HUD's panel, the slow-frame lines (`render waits`), the `mark:`
+  lines of the harness (per phase, with the frame-time percentiles), and the stats message (`gl`).
+
+### 7.5 Tests
 
 - `tests/render-worker.test.js`: every command round-trips through the table; `dx.exe`, `dx9.exe`, `d3dlost.exe` issue
   the same WebGL calls (recording context, `tests/fake-gl.js`) in-thread and recorded + replayed; randomized Direct3D
@@ -466,6 +484,9 @@ frame comparison.
 - `tests/render-worker-thread.test.js`: the same sessions replayed by the render loop **in a worker thread** (shared
   memory, ring, control words, acknowledgements; also with a slowed worker): the same WebGL calls; a worker that
   stops answering is reported once and the emulator stops waiting.
+- `tests/render-worker-host.test.js`: the browser render worker (`render-worker.js`) and the emulator side of
+  `render-host.js` in a Node worker thread with a shimmed canvas: `dx.exe` and `dx9.exe` draw the same WebGL calls,
+  frames are posted, readbacks answered; `?glworker=check` and `compare` on this thread: no mismatch.
 - `tests/browser.test.js`: `dx9.exe` and `dx.exe` with `?glworker=inline` and `1` in Chromium: same pixels, same
   readbacks, gamma ramp.
 - `tools/render-record-bench.mjs`: the recording cost per draw.
