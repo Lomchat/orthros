@@ -166,26 +166,75 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
   } finally { globalThis.fetch = realFetch; fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-// Learned GL programs: sessions post the programs they built at a draw; the server lists them by earliest use, and a
-// key posted again with other sources (the translators changed) takes the new sources.
-test('learned programs: listed by first use, new sources replace old ones', async () => {
+// Learned GL programs: sessions post the programs they built at a draw; the server lists them by earliest use,
+// identified by their sources (keys name shader objects by handle, which vary between sessions): the same sources
+// under another key are one entry. An entry no session built or used (`used`: the learned ones a session took) for
+// 64 sessions is dropped (sources of an older translator); a list of the first format (by key) is read and merged.
+test('learned programs: listed by first use, one entry per sources, unused ones age out', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const { programSourceId } = await import('../src/gfx/program-id.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  fs.mkdirSync(path.join(dir, 'learn'));
+  fs.writeFileSync(path.join(dir, 'learn', 'programs-g.json'), JSON.stringify([['vs1:17|ps', 'vs-old', 'fs-old', [], 50, 2], ['vs1:30|ps', 'vs-old', 'fs-old', [], 40, 1]]));
+  const server = createServer({ manifests: path.join(dir, 'man'), learnDir: path.join(dir, 'learn') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const post = (programs, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs, used }) });
+  try {
+    const first = await (await fetch(url)).json();
+    assert.deepEqual(first.map((e) => [e.key, e.vs, e.id]), [['vs1:17|ps', 'vs-old', programSourceId('vs-old', 'fs-old', [])]], 'the first format: one entry per sources');
+    assert.equal((await post([{ key: 'b', vs: 'vs-b', fs: 'fs-b', attrs: ['a_pos'], t: 900 }, { key: 'a', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 1200 }, { key: 'bad', vs: 1, fs: 'x', attrs: [] }])).status, 204);
+    assert.equal((await post([{ key: 'a2', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 100 }, { key: 'c', vs: 'vs-a', fs: 'fs-a', attrs: ['a_pos'], t: 1000 }])).status, 204);
+    const list = await (await fetch(url)).json();
+    assert.deepEqual(list.map((e) => e.vs + '/' + e.attrs.join()), ['vs-old/', 'vs-a/', 'vs-b/a_pos', 'vs-a/a_pos'], 'by earliest use, same sources merged, other attributes apart, the malformed entry dropped');
+    assert.equal((await fetch(url.replace('/g', '/nope'))).status, 404);
+    // sessions go by: 'b' is used by each of them, 'a' built again once, the others never seen again
+    const idB = list.find((e) => e.vs === 'vs-b').id;
+    for (let i = 0; i < 70; i++) {
+      await fetch(url);
+      assert.equal((await post(i === 20 ? [{ key: 'z', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 5 }] : [], [idB, 'nope', 3])).status, 204);
+    }
+    assert.deepEqual((await (await fetch(url)).json()).map((e) => e.vs + '/' + e.attrs.join()), ['vs-a/', 'vs-b/a_pos'], 'unused ones dropped');
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The learned programs of the source-keyed format go to their own file: a server of the first format running on the
+// same directory keeps reading and writing programs-<manifest>.json (neither rewrites the other's file); its new
+// programs are imported when that file changes, and entries aged out do not come back from it at every start.
+test('learned programs: the new format in its own file, the first format imported when it changes', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
   const { createServer } = await import('../src/host/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
-  const server = createServer({ manifests: path.join(dir, 'man') });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
-  const post = (programs) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs }) });
+  const learn = path.join(dir, 'learn'); fs.mkdirSync(learn);
+  const v1File = path.join(learn, 'programs-g.json'), v2File = path.join(learn, 'programs2-g.json');
+  const v1 = JSON.stringify([['k1', 'vs-1', 'fs-1', [], 50, 2]]);
+  fs.writeFileSync(v1File, v1);
+  const start = async () => { const s = createServer({ manifests: path.join(dir, 'man'), learnDir: learn, learnWriteMs: 10 }); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
+  const written = async () => { for (let i = 0; i < 200 && !fs.existsSync(v2File); i++) await new Promise((r) => setTimeout(r, 10)); await new Promise((r) => setTimeout(r, 50)); };
+  let server = await start();
+  const url = () => `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const vsList = async () => (await (await fetch(url())).json()).map((e) => e.vs);
   try {
-    assert.deepEqual(await (await fetch(url)).json(), []);
-    assert.equal((await post([{ key: 'b', vs: 'vs-b', fs: 'fs-b', attrs: ['a_pos'], t: 900 }, { key: 'a', vs: 'vs-a', fs: 'fs-a', attrs: [], t: 1200 }, { key: 'bad', vs: 1, fs: 'x', attrs: [] }])).status, 204);
-    assert.equal((await post([{ key: 'a', vs: 'vs-a2', fs: 'fs-a', attrs: [], t: 100 }])).status, 204);
-    const list = await (await fetch(url)).json();
-    assert.deepEqual(list.map((e) => e.key), ['a', 'b'], 'by earliest use, the malformed entry dropped');
-    assert.equal(list[0].vs, 'vs-a2', 'the newer sources');
-    assert.deepEqual(list[1].attrs, ['a_pos']);
-    assert.equal((await fetch(url.replace('/g', '/nope'))).status, 404);
+    assert.deepEqual(await vsList(), ['vs-1']);
+    await fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: [{ key: 'k2', vs: 'vs-2', fs: 'fs-2', attrs: [], t: 10 }] }) });
+    await written();
+    assert.equal(fs.readFileSync(v1File, 'utf8'), v1, 'the first format\'s file untouched');
+    assert.equal(JSON.parse(fs.readFileSync(v2File, 'utf8')).programs.length, 2);
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-2', 'vs-1'], 'read back');
+    // a server of the first format adds a program to its file: imported at the next start
+    fs.writeFileSync(v1File, JSON.stringify([['k1', 'vs-1', 'fs-1', [], 50, 2], ['k3', 'vs-3', 'fs-3', [], 5, 1]]));
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-3', 'vs-2', 'vs-1']);
+    // 'vs-1' and 'vs-3' age out (never used again); the unchanged first-format file does not bring them back
+    for (let i = 0; i < 70; i++) { await fetch(url()); await fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: [{ key: 'k2', vs: 'vs-2', fs: 'fs-2', attrs: [], t: 10 }] }) }); }
+    assert.deepEqual(await vsList(), ['vs-2']);
+    await new Promise((r) => setTimeout(r, 100)); // (written)
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-2'], 'aged-out entries stay out');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -283,4 +332,29 @@ test('http backend: a stream read a little at a time fetches growing windows, no
   assert.ok(sizes.every((n, i) => i === sizes.length - 1 || n <= 262144 + 65536), `bounded windows (${sizes})`);
   assert.ok(reqs.filter((r) => r[1] < MiB).every((r) => r[2] < MiB), `the first MiB by pieces (${sizes})`);
   assert.ok(sizes.length <= 8, `few requests (${sizes})`);
+});
+
+// A full learned list (PROGRAMS_MAX): a new program takes the place of the least recently used one, never of one this
+// session built or used; when every entry was built this session, the new one is not kept.
+test('learned programs: a full list makes room by least recent use', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const { programSourceId } = await import('../src/gfx/program-id.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const post = (programs, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs, used }) });
+  try {
+    await fetch(url);
+    await post(Array.from({ length: 4096 }, (_, i) => ({ key: 'k' + i, vs: 'vs' + i, fs: 'f', attrs: [], t: i })));
+    await post([{ key: 'x', vs: 'vsX', fs: 'f', attrs: [], t: 1 }]);
+    let list = await (await fetch(url)).json(); // (a new session)
+    assert.equal(list.length, 4096); assert.ok(!list.some((e) => e.vs === 'vsX'), 'all built this session: not added');
+    await post([], [programSourceId('vs0', 'f', [])]);
+    await post([{ key: 'y', vs: 'vsY', fs: 'f', attrs: [], t: 1 }]);
+    list = await (await fetch(url)).json();
+    assert.equal(list.length, 4096); assert.ok(list.some((e) => e.vs === 'vsY'), 'added'); assert.ok(list.some((e) => e.vs === 'vs0'), 'the used one kept');
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

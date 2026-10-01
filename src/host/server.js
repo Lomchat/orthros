@@ -19,6 +19,7 @@ import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { attachLan } from './lan.js';
 import { SimLink } from './sim-link.js';
+import { programSourceId } from '../gfx/program-id.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
@@ -142,43 +143,90 @@ export function createServer(opts = {}) {
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
    * names, earliest time since the page started), posted by the worker. /api/programs/<manifest> lists them in that
    * order: a new session compiles them in the background before the game draws with them (no build hitch in a match).
-   * The sources are Orthros' own translations; a key posted again with other sources (translators changed) replaces
-   * them. Kept in opts.learnDir/programs-<manifest>.json when set.
+   * They are identified by their sources (programSourceId), not by their key: a key names shader objects by handle,
+   * which varies between sessions, and several keys can build the same sources. The sources are Orthros' own
+   * translations: those of an older translator are never drawn with again, so an entry no session has built or used
+   * (the worker reports the learned programs it took, `used`) for PROGRAMS_KEEP_SESSIONS sessions is dropped, and
+   * the least recently used one makes room when the list is full. Kept in opts.learnDir/programs2-<manifest>.json;
+   * programs-<manifest>.json, the list of the first format (by key), is only read: its programs missing from the new
+   * list are added at each start (a server of the first format may still run on the same directory: neither server
+   * rewrites the other's file).
    */
-  const programsLearned = new Map(); // manifest -> Map(key -> { vs, fs, attrs, t, n })
-  const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const programsLearned = new Map(); // manifest -> { sessions, m: Map(id -> { key, vs, fs, attrs, t, n, s }) }
+  const learnName = (name) => name.replace(/[^A-Za-z0-9._-]/g, '_');
+  const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs2-${learnName(name)}.json`);
+  const programsFileV1 = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${learnName(name)}.json`);
+  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024, PROGRAMS_KEEP_SESSIONS = 64;
   const programsOf = (name) => {
-    let m = programsLearned.get(name);
-    if (!m) {
-      m = new Map(); programsLearned.set(name, m);
-      const f = programsFile(name);
-      if (f) try { for (const [k, vs, fs2, attrs, t, n] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { vs, fs: fs2, attrs, t, n }); } catch { /* none yet */ }
+    let L = programsLearned.get(name);
+    if (!L) {
+      L = { sessions: 0, m: new Map() }; programsLearned.set(name, L);
+      const read = (f) => { try { return f ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } };
+      const add = (id0, key, vs, fs2, attrs, t, n, s) => {
+        if (typeof vs !== 'string' || typeof fs2 !== 'string' || !Array.isArray(attrs) || !attrs.every((a) => typeof a === 'string')) return;
+        const id = typeof id0 === 'string' ? id0 : programSourceId(vs, fs2, attrs), old = L.m.get(id);
+        t = Number.isFinite(t) ? t : 1e9; n = Number.isFinite(n) ? n : 1; s = Number.isFinite(s) ? s : L.sessions;
+        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); }
+        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s });
+      };
+      const j = read(programsFile(name));
+      if (j && Array.isArray(j.programs)) {
+        L.sessions = Number(j.sessions) || 0;
+        for (const r of j.programs) if (Array.isArray(r)) add(...r);
+      }
+      // (the first format: an array of [key, vs, fs, attrs, t, n] by key, imported when it changed since the last
+      // import — `v1`, its size and time — so that entries aged out here do not come back at every start. Entries of
+      // the same sources merged, those already listed left as they are)
+      let st = null; try { st = programsFileV1(name) ? fs.statSync(programsFileV1(name)) : null; } catch { /* none */ }
+      L.v1 = st ? `${st.size}:${Math.round(st.mtimeMs)}` : j?.v1 ?? null;
+      const v1 = st && L.v1 !== j?.v1 ? read(programsFileV1(name)) : null;
+      if (Array.isArray(v1)) {
+        for (const r of v1) if (Array.isArray(r)) { const [key, vs, fs2, attrs, t, n] = r; add(null, key, vs, fs2, attrs, t, n, L.sessions); }
+        programsChanged(name);
+      }
     }
-    return m;
+    return L;
   };
   let programsDirty = new Set(), programsTimer = null;
-  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024;
-  const learnPrograms = (name, list) => {
-    const m = programsOf(name);
+  const programsChanged = (name) => {
+    if (!programsFile(name)) return;
+    programsDirty.add(name);
+    programsTimer ??= setTimeout(() => {
+      programsTimer = null;
+      for (const n of programsDirty) {
+        const f = programsFile(n), L = programsOf(n);
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+      }
+      programsDirty = new Set();
+    }, opts.learnWriteMs ?? 20000); // (tests: sooner)
+    programsTimer.unref?.();
+  };
+  const learnPrograms = (name, list, used) => {
+    const L = programsOf(name), m = L.m;
     for (const e of Array.isArray(list) ? list : []) {
       if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
       if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
-      const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, old = m.get(e.key);
-      if (!old && m.size >= PROGRAMS_MAX) continue;
-      if (old && old.vs === e.vs && old.fs === e.fs) { old.t = Math.min(old.t, t); old.n++; }
-      else m.set(e.key, { vs: e.vs, fs: e.fs, attrs: e.attrs, t: old ? Math.min(old.t, t) : t, n: (old?.n ?? 0) + 1 });
+      const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id);
+      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; continue; }
+      if (m.size >= PROGRAMS_MAX) { // (full: the least recently used one leaves, unless all were used this session)
+        let lru = null;
+        for (const [k, v] of m) if (!lru || v.s < lru[1].s) lru = [k, v];
+        if (lru[1].s >= L.sessions) continue;
+        m.delete(lru[0]);
+      }
+      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions });
     }
-    if (programsFile(name)) {
-      programsDirty.add(name);
-      programsTimer ??= setTimeout(() => {
-        programsTimer = null;
-        for (const n of programsDirty) { const f = programsFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...programsOf(n)].map(([k, v]) => [k, v.vs, v.fs, v.attrs, v.t, v.n]))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
-        programsDirty = new Set();
-      }, 20000);
-      programsTimer.unref?.();
-    }
+    for (const id of Array.isArray(used) ? used.slice(0, PROGRAMS_MAX) : []) { const v = typeof id === 'string' ? m.get(id) : null; if (v) v.s = L.sessions; }
+    programsChanged(name);
   };
-  const programsList = (name) => [...programsOf(name)].sort((a, b) => a[1].t - b[1].t).map(([key, v]) => ({ key, vs: v.vs, fs: v.fs, attrs: v.attrs }));
+  /** The list a new session compiles ahead (a session starts: the entries unused for too long are dropped first). */
+  const programsList = (name) => {
+    const L = programsOf(name);
+    L.sessions++;
+    for (const [id, v] of L.m) if (v.s < L.sessions - PROGRAMS_KEEP_SESSIONS) L.m.delete(id);
+    programsChanged(name);
+    return [...L.m].sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs }));
+  };
 
   /**
    * Learned code regions, per manifest: the entries of the regions the JIT translated at a miss (module, offset in it,
@@ -350,7 +398,7 @@ export function createServer(opts = {}) {
           req.on('end', () => {
             if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
-            learnPrograms(m[1], rec?.programs);
+            learnPrograms(m[1], rec?.programs, rec?.used);
             send(res, 204, '');
           });
           return;
