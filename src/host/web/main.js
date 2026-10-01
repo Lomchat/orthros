@@ -193,7 +193,7 @@ function applyCursor() {
 /** Emulator warnings and graphics failures sent to the server as they happen (the first 60 of a session): what a
  * player's GPU / browser rejects (a shader, a GL error), an API the game needed, a slow program build. */
 const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
-const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable/i;
+const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable|GL timing/i; // (GL timing: the ?dbg=ORTHROS_GL_TIME=N@F probe on a player's GPU)
 function log(kind, msg) {
   if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, String(msg).includes('\n') ? 24000 : 4000) });
   // frames of 150 ms and more with what happened during them (translation, program builds, file reads, waits): the
