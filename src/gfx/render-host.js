@@ -58,7 +58,7 @@ export function createInlineGfx(canvas, log, dump, { check = false, beforePresen
 /**
  * ?glworker=1: a render worker replays the commands with its own canvas and WebGL2 context. `start(memory)` once the
  * guest memory exists (shared: the render worker reads resource contents from it). If the render worker does not
- * come up within 5 s, dies, or stops making progress while the emulator waits for it, `onFail(reason)` is called:
+ * come up within 10 s, dies, or stops making progress while the emulator waits for it, `onFail(reason)` is called:
  * the worker then gives every device the in-thread backend (the emulator's device was the reference all along).
  */
 export function createRemoteGfx({ log, onFail, workerUrl }) {
@@ -94,7 +94,7 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
         else if (m.type === 'compare') gfx.onCompare?.(m);
       };
       worker.onerror = (e) => fail(`render worker error: ${e.message ?? e}`);
-      readyTimer = setTimeout(() => { if (!gfx.ready) fail('render worker not ready after 5 s'); }, 5000);
+      readyTimer = setTimeout(() => { if (!gfx.ready) fail('render worker not ready after 10 s'); }, 10000); // (its modules load and compile while the guest starts: 10 s, a loaded machine included)
       worker.postMessage({ type: 'init', memory, ring: ringSab, ctl: ctlSab, ack: ackSab, port: pagePort, opts }, [pagePort]);
     },
   };
