@@ -403,8 +403,7 @@ export class WebGLDevice {
     const { w, h, flip } = this.bindTarget();
     const rgba = new Uint8Array(w * h * 4);
     const ap = acct.enter(ACCT.readback), t0 = acct.stamp();
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-    acct.leave(ap);
+    try { gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); } finally { acct.leave(ap); }
     // (report: synchronous readbacks — a round trip to the GPU process that waits for every command queued before it;
     // logged at powers of two so a session's count and rhythm show in the log)
     const n = this.stats.readbacks = (this.stats.readbacks ?? 0) + 1, ms = performance.now() - t0; this.stats.readbackMs = (this.stats.readbackMs ?? 0) + ms;
