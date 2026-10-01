@@ -11,10 +11,12 @@ export function publishTail(ctl, replayer) {
   if (Atomics.load(ctl, CTL.EMU_WAIT)) Atomics.notify(ctl, CTL.TAIL);
 }
 
-// (a return to the event loop without a timer's clamp, the other tasks — messages, canvas events — served: the
-// scheduler's yield where it exists; in Node setImmediate (messages to one port are drained in one go there and would
-// starve the others); else a message to itself)
-const yieldTask = typeof globalThis.scheduler?.yield === 'function' ? () => globalThis.scheduler.yield() : typeof setImmediate === 'function' ? () => new Promise((r) => setImmediate(r)) : (() => { let ch = null, resolve = null; return () => new Promise((r) => { if (!ch) { ch = new MessageChannel(); ch.port1.onmessage = () => { const f = resolve; resolve = null; f?.(); }; } resolve = r; ch.port2.postMessage(0); }); })();
+// (a return to the event loop without a timer's clamp, at the priority of the other tasks — messages, timers, the
+// canvas's own work: scheduler.yield's continuation is served before them, and a loop yielding only that way starved
+// them (no statistics, ImageBitmaps never released); in Node setImmediate, as messages to one port are drained in one
+// go there)
+const NODE = typeof setImmediate === 'function';
+const yieldTask = NODE ? () => new Promise((r) => setImmediate(r)) : (() => { let ch = null, resolve = null; return () => new Promise((r) => { if (!ch) { ch = new MessageChannel(); ch.port1.onmessage = () => { const f = resolve; resolve = null; f?.(); }; } resolve = r; ch.port2.postMessage(0); }); })();
 
 /**
  * Run until `stop()` is true. `backend`: the WebGL backend factory object (program prewarm and resolution between
@@ -46,10 +48,15 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
     Atomics.add(ctl, CTL.HEARTBEAT, 1);
     Atomics.store(ctl, CTL.SLEEP, 1);
     const t0 = performance.now();
-    if ((Atomics.load(ctl, CTL.HEAD) >>> 0) === head) Atomics.wait(ctl, CTL.HEAD, head | 0, 2);
+    // (caught up: sleep on the head word without blocking the event loop — waitAsync — at most 2 ms; in Node a pending
+    // waitAsync does not keep a worker thread alive: a blocking wait, then a return to the event loop)
+    if ((Atomics.load(ctl, CTL.HEAD) >>> 0) === head) {
+      const w = Atomics.waitAsync && !NODE ? Atomics.waitAsync(ctl, CTL.HEAD, head | 0, 2) : null;
+      if (w?.async) await w.value; else if (!w) { Atomics.wait(ctl, CTL.HEAD, head | 0, 2); await yieldTask(); }
+    }
     Atomics.store(ctl, CTL.SLEEP, 0);
     const t1 = performance.now();
     stats.waitMs += t1 - t0;
-    if (t1 - lastYield > 8) { await yieldTask(); lastYield = performance.now(); }
+    lastYield = t1;
   }
 }
