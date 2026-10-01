@@ -170,7 +170,7 @@ export class BrowserHost {
   }
   framePresented() {
     this.framesPresented++;
-    const cats = acct.frame(), now = performance.now(); // (not acct.stamp(): the accounting's clock can be switched off)
+    const cats = acct.frame(), now = acct.stamp(); // (the clock read of the frame boundary, unless the accounting's clock is off)
     this.lastCats = cats;
     if (this.lastFrameAt) {
       const dt = now - this.lastFrameAt; this.frameTimes.push(dt); this.frameTimesAt.push(now);
