@@ -449,7 +449,8 @@ export function defineEffects(X, vm, h) {
         if (!same || wrote || runs !== sh.pre.runs || sh.preRuns !== runs) for (const [start, cnt] of sh.pre.prog.outRanges) this.setConsts(c, vs, RSET.FLOAT4, start, cnt, out, 4 * start);
         sh.preRuns = sh.pre.runs;
       }
-      if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; }
+      // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
+      if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     bindSampler(c, n, reg) {

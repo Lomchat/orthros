@@ -84,7 +84,7 @@ function setup() {
     SetVertexShader(c) { this.vs = c.arg(1); }, SetPixelShader() {},
   };
   const devPtr = com.create(proc, 'IDirect3DDevice9', dev);
-  const vm = { mem, com, log() {}, effectCtx: null };
+  const vm = { mem, com, log() {}, effectCtx: null, guestCalls: [], callGuest(t, fn, args) { this.guestCalls.push([fn, ...args]); return 0; } };
   const h = {
     callMethod(ctx, self, name, [, out]) { mem.write32(out, 0x7000); return 0; }, // (CreateVertexShader: a shader pointer)
     textBuffer: () => 0,
@@ -98,7 +98,7 @@ function setup() {
   const fxPtr = mem.read32(out), fx = com.implAt(fxPtr);
   const name = (s) => { const p = heap.alloc(s.length + 1); mem.writeCString(p, s); return p; };
   const vec = (...v) => { const p = heap.alloc(16 * Math.ceil(v.length / 4)); v.forEach((x, i) => mem.writeF32(p + 4 * i, x)); return p; };
-  return { mem, dev, fx, fxPtr, ctx, name, vec };
+  return { mem, dev, fx, fxPtr, ctx, name, vec, vm };
 }
 
 test('effect constants: every change of a parameter reaches the device at CommitChanges, and only then', () => {
@@ -169,4 +169,26 @@ test('effect state manager: the calls the JIT queues go to JavaScript while one 
   assert.equal(mem.read32(fxPtr + 12), 0, 'cleared: nothing queued (runtime.js DEFER_OBJ / DEFER_HANDLE)');
   fx.SetStateManager(ctx(fxPtr, 0));
   assert.equal(mem.read32(fxPtr + 12), block, 'restored');
+});
+
+test('effect constants: values sent to a state manager are sent to the device again once it is removed', () => {
+  // (a state manager may keep or drop what it receives: the device's registers then still hold the values of before)
+  const { mem, dev, fx, fxPtr, ctx, name, vec, vm } = setup();
+  const c = (i) => Array.from(dev.vsConst.subarray(4 * i, 4 * i + 4));
+  const B = name('B');
+  fx.SetVector(ctx(fxPtr, B, vec(1, 2, 3, 4)));
+  fx.Begin(ctx(fxPtr, 0, 0)); fx.BeginPass(ctx(fxPtr, 0));
+  assert.deepEqual(c(4), [1, 2, 3, 4]);
+  const vt = 0x20000000, mgr = 0x20001000; // (a guest state manager: a vtable of dummy method addresses)
+  for (let i = 0; i < 32; i++) mem.write32(vt + 4 * i, 0x30000000 + 4 * i);
+  mem.write32(mgr, vt);
+  fx.SetStateManager(ctx(fxPtr, mgr));
+  fx.SetVector(ctx(fxPtr, B, vec(5, 6, 7, 8)));
+  fx.CommitChanges(ctx(fxPtr));
+  assert.ok(vm.guestCalls.length > 0, 'the constants went to the state manager');
+  assert.deepEqual(c(4), [1, 2, 3, 4], 'the device untouched');
+  fx.SetStateManager(ctx(fxPtr, 0));
+  fx.CommitChanges(ctx(fxPtr));
+  assert.deepEqual(c(4), [5, 6, 7, 8], 'the device receives the current value');
+  fx.EndPass(ctx(fxPtr)); fx.End(ctx(fxPtr));
 });
