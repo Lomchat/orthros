@@ -16,7 +16,7 @@ const READONLY = 0x10, NOOVERWRITE = 0x1000, DISCARD = 0x2000;
 /** frames recorded ahead of the frames the render worker has shown */
 export const MAX_FRAMES_IN_FLIGHT = 2;
 /** a wait for the render worker without any progress on its side for this long: it is considered dead */
-export const STALL_MS = 10000;
+export const STALL_MS = 30000; // (a software rasterizer on a loaded machine can spend seconds in one GL call)
 const NO_RECT = null;
 const EMPTY_STATS = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
 /** the recorder entry points the recording probe times */
@@ -555,7 +555,7 @@ export class Recorder {
   }
   present() {
     const L = this.link;
-    if (L.failed) return this.dev.gfx !== this ? this.dev.gfx.present(this.dev) : undefined;
+    if (L.failed) return; // (the devices have the in-thread backend from the next call on: this frame is not shown)
     this.flush();
     const d = this.dev;
     this.noteTarget(d.backBuffers[0]);
@@ -574,7 +574,7 @@ export class Recorder {
   }
   readbackSurface(sf) {
     const L = this.link;
-    if (L.failed) { if (this.dev.gfx !== this) this.dev.gfx.readbackSurface(sf); return; }
+    if (L.failed) return; // (render-target contents are lost with the render worker anyway)
     this.flush();
     this.ensureRes(sf);
     // (the memory the pixels go to: the mirror's surface gets it once they are read, as the backend allocates it)
@@ -587,12 +587,11 @@ export class Recorder {
     if (L.replayer) { L.publish(true); }
     else L.waitFor(() => Atomics.load(L.ctl, CTL.READBACK) === t, CTL.READBACK, 'readback');
     L.stats.readbacks++; void t0;
-    if (L.failed && this.dev.gfx !== this) this.dev.gfx.readbackSurface(sf);
   }
   readbackFrontBuffer(sf) { const b = this.dev.backBuffers[0]; this.readbackSurface(b); if (b.mem && b.fmt === sf.fmt) this.mem.copy(sf.ensureMem(this.dev.proc), b.mem, Math.min(b.bytes, sf.bytes)); }
-  copyRects(src, dst, rects, n, points) { return copyRectsCpu(this.mem, this.dev.proc, src, dst, rects, n, points, (x) => this.dev.gfx.readbackSurface(x)); }
+  copyRects(src, dst, rects, n, points) { return copyRectsCpu(this.mem, this.dev.proc, src, dst, rects, n, points, (x) => this.readbackSurface(x)); }
   stretchRect(src, sr, dst, dr, filter) {
-    if (this.link.failed) return this.dev.gfx !== this ? this.dev.gfx.stretchRect(src, sr, dst, dr, filter) : null;
+    if (this.link.failed) return null; // (copied on the CPU)
     if (!this.fbos.has(src.id) || (dst.usage & 2)) return null;
     this.flush();
     this.ensureRes(src); this.ensureRes(dst);

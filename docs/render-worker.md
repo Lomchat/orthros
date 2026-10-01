@@ -458,8 +458,11 @@ frame comparison.
 ### 7.4 Failure, context loss, debugging
 
 - The render worker answers within 10 s of its start (`ready`, with the renderer's name), else the devices get the
-  in-thread backend. While the emulator waits for it (fences, readbacks, frames, a full ring), no progress (neither
-  its heartbeat nor its consumed words) for 10 s, or no answer within 30 s, has the same effect: logged, the render
+  in-thread backend; the emulator waits for that answer before running the guest (a nested worker's scripts load
+  through its parent's thread: an emulator blocked from the start — a readback in the first slice — kept it from ever
+  loading). While the emulator waits for it (fences, readbacks, frames, a full ring), no progress (neither
+  its heartbeat nor its consumed words) for 30 s, or no answer within 90 s, has the same effect (SwiftShader on the
+  loaded server can spend seconds in one GL call: 10 s was reached once in a compare run): logged, the render
   worker terminated, every device given the in-thread backend (`renderInThread` in the worker: resources are
   uploaded again from guest memory on use, render-target contents lost once, as after a lost context). Testing:
   harness `dbg:ORTHROS_RW_STALL=1` stops the render worker's loop.
