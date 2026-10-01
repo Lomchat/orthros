@@ -64,10 +64,43 @@ export function decodeDxt(fmt, src, w, h) {
   return out;
 }
 
-/** Convert a guest surface to RGBA8 bytes. */
-export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
+/**
+ * Convert a guest surface to RGBA8 bytes (into `out` when it is given and large enough: a view of its first w * h * 4
+ * bytes — uploads reuse one buffer instead of allocating one per level).
+ */
+export function surfaceToRgba(mem, fmt, addr, w, h, pitch, out = null) {
   if (isDxt(fmt)) return decodeDxt(fmt, mem.bytes(addr, surfaceBytes(fmt, w, h)), w, h);
-  const out = new Uint8Array(w * h * 4);
+  const n = w * h * 4;
+  out = out && out.length >= n ? out.subarray(0, n) : new Uint8Array(n);
+  // 8- and 16-bit formats: the RGBA8 of every texel value in a table (built once per format by the per-row conversion
+  // below), one lookup per texel
+  const bpp = TABLE_BPP[fmt];
+  if (bpp) {
+    const lut = texelTable(fmt, bpp), dst = new Uint32Array(out.buffer, out.byteOffset, w * h), u8 = mem.u8;
+    if (bpp === 1) { for (let y = 0; y < h; y++) for (let x = 0, s = addr + y * pitch, o = y * w; x < w; x++) dst[o + x] = lut[u8[s + x]]; }
+    else if (((addr | pitch | u8.byteOffset) & 1) === 0) { const src = new Uint16Array(u8.buffer, u8.byteOffset, u8.length >> 1); for (let y = 0; y < h; y++) for (let x = 0, s = (addr + y * pitch) >> 1, o = y * w; x < w; x++) dst[o + x] = lut[src[s + x]]; }
+    else for (let y = 0; y < h; y++) for (let x = 0, s = addr + y * pitch, o = y * w; x < w; x++, s += 2) dst[o + x] = lut[u8[s] | (u8[s + 1] << 8)];
+    return out;
+  }
+  return convertRows(mem, fmt, addr, w, h, pitch, out);
+}
+/** bytes per texel of the formats converted through a table of every texel value */
+const TABLE_BPP = { [FMT.R5G6B5]: 2, [FMT.X1R5G5B5]: 2, [FMT.A1R5G5B5]: 2, [FMT.A4R4G4B4]: 2, [FMT.X4R4G4B4]: 2, [FMT.A8L8]: 2, [FMT.V8U8]: 2, 81: 2, [FMT.A8]: 1, [FMT.L8]: 1, [FMT.P8]: 1, [FMT.A4L4]: 1 };
+const TEXEL_TABLES = new Map();
+/** RGBA8 (a little-endian word) of each value of an 8- or 16-bit format: convertRows over a row holding every value */
+function texelTable(fmt, bpp) {
+  let t = TEXEL_TABLES.get(fmt);
+  if (!t) {
+    const count = bpp === 1 ? 256 : 65536, src = new Uint8Array(count * bpp);
+    for (let v = 0; v < count; v++) { src[v * bpp] = v & 255; if (bpp === 2) src[v * bpp + 1] = v >> 8; }
+    const rgba = convertRows({ u8: src, u32: null }, fmt, 0, count, 1, count * bpp, new Uint8Array(count * 4));
+    t = new Uint32Array(rgba.buffer, rgba.byteOffset, count);
+    TEXEL_TABLES.set(fmt, t);
+  }
+  return t;
+}
+/** The per-row conversion of the uncompressed formats into `out` (w * h * 4 bytes). */
+function convertRows(mem, fmt, addr, w, h, pitch, out) {
   const u8 = mem.u8;
   let out32 = null;
   for (let y = 0; y < h; y++) {
@@ -75,7 +108,7 @@ export function surfaceToRgba(mem, fmt, addr, w, h, pitch) {
     switch (fmt) {
       case FMT.A8R8G8B8: case FMT.X8R8G8B8: {
         if ((s & 3) === 0) { // whole-pixel swizzle B,G,R,A -> R,G,B,A on 32-bit lanes
-          const src = mem.u32, dst = out32 ?? (out32 = new Uint32Array(out.buffer)); const alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0;
+          const src = mem.u32, dst = out32 ?? (out32 = new Uint32Array(out.buffer, out.byteOffset, out.length >> 2)); const alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0;
           for (let x = 0, si = s >> 2, oi = o >> 2; x < w; x++, si++, oi++) { const p = src[si]; dst[oi] = ((p & 0xff00ff00) | ((p & 0xff) << 16) | ((p >>> 16) & 0xff) | alpha) >>> 0; }
         } else for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = fmt === FMT.X8R8G8B8 ? 255 : u8[s + 3]; }
         break;
@@ -288,7 +321,10 @@ export class WebGLDevice {
       return;
     }
     const tc = performance.now();
-    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem + y0 * s.pitch + x0 * (whole ? 0 : surfacePitch(s.fmt, 1)), w, h, s.pitch);
+    // (converted into a buffer kept for the uploads: texImage2D / texSubImage2D copy the pixels before returning)
+    const n = w * h * 4;
+    if (n <= (1 << 22) && !(this.rgbaScratch?.length >= n)) this.rgbaScratch = new Uint8Array(Math.min(1 << 22, Math.max(n, 2 * (this.rgbaScratch?.length ?? 0))));
+    const rgba = surfaceToRgba(this.mem, s.fmt, s.mem + y0 * s.pitch + x0 * (whole ? 0 : surfacePitch(s.fmt, 1)), w, h, s.pitch, n <= (1 << 22) ? this.rgbaScratch : null);
     this.stats.texConvMs = (this.stats.texConvMs ?? 0) + performance.now() - tc; // (report: CPU format conversion)
     // (diagnostic on the pixels just converted — first upload of small textures; DXT levels uploaded compressed are
     // not decoded for it)
