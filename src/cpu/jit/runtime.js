@@ -9,6 +9,7 @@ import { addTrigKernels } from './fpmath-trig.js';
 import { addAtanKernels } from './fpmath-atan.js';
 import { addNanKernels } from './fpmath-nan.js';
 import { addRoundKernels } from './fpmath-round.js';
+import { emitD3dxFast, D3DX_FAST_FIRST, D3DX_FAST_LAST, D3DX_F64_LOCALS } from './fast-d3dx.js';
 
 /**
  * Transcendental kernels of the runtime module, in the order the region modules import them
@@ -310,7 +311,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = 23;
+    const NF = D3DX_FAST_LAST + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -486,11 +487,15 @@ export function buildRuntime(opts = {}) {
           c.get(A0); const nz = c.if_(); c.get(A0).call(nowIdx).f64c(10000).f64mul().f64floor().i64trunc_sat_f64_s().i64store(0, 0); c.end(); void nz;
           c.get(STATE).i32(1); ret(1); break;
         }
+        default: // pure D3DX math (fast-d3dx.js)
+          if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: FV + 1, notHandled, ret });
+          else c.br(notHandled);
+          break;
       }
     }
     c.end(); // notHandled
     c.i32(0);
-    fastApiIdx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32], c, 'fastApi');
+    fastApiIdx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, ...Array(D3DX_F64_LOCALS).fill(T.f64)], c, 'fastApi');
     m.exportFunc('fastApi', fastApiIdx);
   }
 

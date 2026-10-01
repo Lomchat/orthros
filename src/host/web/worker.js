@@ -591,7 +591,7 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_D3DX_FAST_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     if (host) { const ph = host.frameAcct.phase(String(m.label), performance.now()); log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}`); post({ type: 'phase', report: { ...ph, text: undefined } }); }
