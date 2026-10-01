@@ -205,3 +205,48 @@ test('MapVirtualKey(MAPVK_VK_TO_CHAR): letters in upper case, other keys unshift
   assert.equal(call('user32.dll', 'MapVirtualKeyA', 0xbd, 2), 0x2d, "'-'");
   assert.equal(call('user32.dll', 'MapVirtualKeyA', 0x46, 0), 0x21, 'VK_TO_VSC');
 });
+
+test('DirectSound3D: listener on a 3D primary buffer, 3D buffers attenuated and panned, deferred settings', { skip }, () => {
+  const { vm, mem, heap, call, ctx, scratch } = boot();
+  const com = vm.com;
+  assert.equal(call('dsound.dll', 'DirectSoundCreate', 0, scratch, 0), 0);
+  const dsPtr = mem.read32(scratch), ds = com.implAt(dsPtr);
+  ds.SetCooperativeLevel(ctx(dsPtr, 0, 2));
+  const desc = heap.alloc(36, true), wfx = heap.alloc(18, true);
+  const f32 = (v) => { const b = new DataView(new ArrayBuffer(4)); b.setFloat32(0, v, true); return b.getUint32(0, true); };
+  const qi = (ptr, iid) => { const g = heap.alloc(16, true); writeGuid(mem, g, iid); const r = com.dispatch(ctx(ptr, g, scratch + 8), com.objectAt(ptr).iface, 0); return r === 0 ? mem.read32(scratch + 8) : 0; };
+  // primary buffer without DSBCAPS_CTRL3D: no listener; with it: the listener
+  mem.write32(desc, 36); mem.write32(desc + 4, 0x1);
+  assert.equal(ds.CreateSoundBuffer(ctx(dsPtr, desc, scratch + 4, 0)), 0);
+  const L_IID = '279afa84-4981-11ce-a521-0020af0be560', B_IID = '279afa86-4981-11ce-a521-0020af0be560';
+  assert.equal(qi(mem.read32(scratch + 4), L_IID), 0);
+  mem.write32(desc + 4, 0x1 | 0x10);
+  const prim = (ds.primary = 0, ds.CreateSoundBuffer(ctx(dsPtr, desc, scratch + 4, 0)), mem.read32(scratch + 4));
+  const lis = qi(prim, L_IID);
+  assert.ok(lis, 'IDirectSound3DListener');
+  // a mono 3D secondary buffer
+  mem.write16(wfx, 1); mem.write16(wfx + 2, 1); mem.write32(wfx + 4, 22050); mem.write32(wfx + 8, 44100); mem.write16(wfx + 12, 2); mem.write16(wfx + 14, 16);
+  mem.write32(desc + 4, 0x10 | 0x80); mem.write32(desc + 8, 4096); mem.write32(desc + 16, wfx);
+  assert.equal(ds.CreateSoundBuffer(ctx(dsPtr, desc, scratch + 4, 0)), 0);
+  const bufPtr = mem.read32(scratch + 4), buf = com.implAt(bufPtr), b3 = qi(bufPtr, B_IID);
+  assert.ok(b3, 'IDirectSound3DBuffer');
+  const B = com.implAt(b3), Lst = com.implAt(lis);
+  const near = buf.gains();
+  assert.deepEqual(near.map((g) => +g.toFixed(3)), [1, 1], 'at the listener: unity');
+  // to the right (listener facing +z, up +y: +x is right), 10 units away with min distance 1: 1/10, panned right
+  assert.equal(B.SetPosition(ctx(b3, f32(10), 0, 0, 0)), 0);
+  const [l, r] = buf.gains();
+  assert.ok(Math.abs(r - 0.1) < 1e-6 && l < 1e-6, `fully right, 1/10: ${l} ${r}`);
+  // beyond the maximum distance: no more attenuation
+  B.SetMaxDistance(ctx(b3, f32(5), 0));
+  assert.ok(Math.abs(buf.gains()[1] - 0.2) < 1e-6, 'attenuated as at the maximum distance (1/5)');
+  // deferred: nothing changes until CommitDeferredSettings
+  const before = buf.gains();
+  Lst.SetPosition(ctx(lis, f32(10), 0, 0, 1));
+  assert.deepEqual(buf.gains(), before, 'deferred');
+  Lst.CommitDeferredSettings(ctx(lis));
+  assert.deepEqual(buf.gains().map((g) => +g.toFixed(3)), [1, 1], 'the listener moved onto the source');
+  // DS3DMODE_DISABLE: no 3D processing
+  B.SetPosition(ctx(b3, f32(-50), 0, 0, 0)); B.SetMode(ctx(b3, 2, 0));
+  assert.deepEqual(buf.gains(), [1, 1]);
+});

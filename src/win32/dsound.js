@@ -5,6 +5,7 @@ import { readGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER } from './com.js';
 
 const DS_OK = 0, DSERR_ALLOCATED = 0x8878000a, DSERR_CONTROLUNAVAIL = 0x8878001e, DSERR_INVALIDPARAM = 0x80070057, DSERR_INVALIDCALL = 0x88780032, DSERR_PRIOLEVELNEEDED = 0x88780046, DSERR_OUTOFMEMORY = 0x8007000e, DSERR_BADFORMAT = 0x88780064, DSERR_UNSUPPORTED = 0x80004001, DSERR_NODRIVER = 0x88780078, DSERR_BUFFERLOST = 0x88780096, DSERR_UNINITIALIZED = 0x887800aa;
 const IID_IDirectSound = '279afa83-4981-11ce-a521-0020af0be560', IID_IDirectSound8 = 'c50a7e93-f395-4834-9ef6-7fa99de50966';
+const IID_IDirectSound3DListener = '279afa84-4981-11ce-a521-0020af0be560', IID_IDirectSound3DBuffer = '279afa86-4981-11ce-a521-0020af0be560';
 const IID_IDirectSoundBuffer = '279afa85-4981-11ce-a521-0020af0be560', IID_IDirectSoundBuffer8 = '6825a449-7524-4d82-920f-50e36ab3ab40', IID_IDirectSoundNotify = 'b0aa1afe-3d0d-11d1-8c6a-00c04f8ef5ad';
 const CLSID_DirectSound = '47d4d946-62e8-11cf-93bc-444553540000', CLSID_DirectSound8 = '3901cc3f-84b5-4fa4-ba35-aa8172b8a09b';
 const DSBCAPS_PRIMARYBUFFER = 1, DSBCAPS_STATIC = 2, DSBCAPS_LOCHARDWARE = 4, DSBCAPS_LOCSOFTWARE = 8, DSBCAPS_CTRL3D = 0x10, DSBCAPS_CTRLFREQUENCY = 0x20, DSBCAPS_CTRLPAN = 0x40, DSBCAPS_CTRLVOLUME = 0x80, DSBCAPS_CTRLPOSITIONNOTIFY = 0x100, DSBCAPS_GLOBALFOCUS = 0x8000, DSBCAPS_GETCURRENTPOSITION2 = 0x10000;
@@ -46,6 +47,124 @@ export function registerDirectSound(api, vm) {
   com.interface('IDirectSoundBuffer', IID_IDirectSoundBuffer, 'IUnknown', [['GetCaps', 1], ['GetCurrentPosition', 2], ['GetFormat', 3], ['GetVolume', 1], ['GetPan', 1], ['GetFrequency', 1], ['GetStatus', 1], ['Initialize', 2], ['Lock', 7], ['Play', 3], ['SetCurrentPosition', 1], ['SetFormat', 1], ['SetVolume', 1], ['SetPan', 1], ['SetFrequency', 1], ['Stop', 0], ['Unlock', 4], ['Restore', 0]]);
   com.interface('IDirectSoundBuffer8', IID_IDirectSoundBuffer8, 'IDirectSoundBuffer', [['SetFX', 3], ['AcquireResources', 3], ['GetObjectInPath', 4]]);
   com.interface('IDirectSoundNotify', IID_IDirectSoundNotify, 'IUnknown', [['SetNotificationPositions', 2]]);
+  com.interface('IDirectSound3DListener', IID_IDirectSound3DListener, 'IUnknown', [['GetAllParameters', 1], ['GetDistanceFactor', 1], ['GetDopplerFactor', 1], ['GetOrientation', 2], ['GetPosition', 1], ['GetRolloffFactor', 1], ['GetVelocity', 1], ['SetAllParameters', 2], ['SetDistanceFactor', 2], ['SetDopplerFactor', 2], ['SetOrientation', 7], ['SetPosition', 4], ['SetRolloffFactor', 2], ['SetVelocity', 4], ['CommitDeferredSettings', 0]]);
+  com.interface('IDirectSound3DBuffer', IID_IDirectSound3DBuffer, 'IUnknown', [['GetAllParameters', 1], ['GetConeAngles', 2], ['GetConeOrientation', 1], ['GetConeOutsideVolume', 1], ['GetMaxDistance', 1], ['GetMinDistance', 1], ['GetMode', 1], ['GetPosition', 1], ['GetVelocity', 1], ['SetAllParameters', 2], ['SetConeAngles', 3], ['SetConeOrientation', 4], ['SetConeOutsideVolume', 2], ['SetMaxDistance', 2], ['SetMinDistance', 2], ['SetMode', 2], ['SetPosition', 4], ['SetVelocity', 4]]);
+
+  // ---- DirectSound3D: one listener per device (the primary buffer's), 3D parameters per DSBCAPS_CTRL3D buffer.
+  // Rendered as DirectSound's software 3D without virtualization: distance attenuation (minimum / maximum distance,
+  // rolloff), sound cones, and a stereo pan from the direction relative to the listener; Doppler is not rendered.
+  // Settings applied with DS3D_DEFERRED wait for CommitDeferredSettings.
+  const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
+  const readVec = (a) => vec(mem.readF32(a), mem.readF32(a + 4), mem.readF32(a + 8));
+  const writeVec = (a, v) => { mem.writeF32(a, v.x); mem.writeF32(a + 4, v.y); mem.writeF32(a + 8, v.z); };
+  const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+  const cross = (a, b) => vec(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  const DS3D_DEFERRED = 1, DS3DMODE_NORMAL = 0, DS3DMODE_HEADRELATIVE = 1, DS3DMODE_DISABLE = 2;
+  /** the listener state of the device (the committed one, and the pending deferred one) */
+  const listener = () => {
+    const a = audio();
+    return a.listener ??= { now: { pos: vec(), vel: vec(), front: vec(0, 0, 1), top: vec(0, 1, 0), distance: 1, rolloff: 1, doppler: 1 }, deferred: null };
+  };
+  /** what a 3D buffer contributes to the left / right gains, from the committed listener and buffer parameters */
+  const spatialGains = (b) => {
+    const p = b.ds3d?.now;
+    if (!p || p.mode === DS3DMODE_DISABLE) return [1, 1];
+    const L = listener().now;
+    const rel = p.mode === DS3DMODE_HEADRELATIVE ? p.pos : vec(p.pos.x - L.pos.x, p.pos.y - L.pos.y, p.pos.z - L.pos.z);
+    // listener axes (left-handed: right = top x front); a head-relative position is already in them
+    let front = L.front, top = L.top;
+    if (p.mode === DS3DMODE_HEADRELATIVE) { front = vec(0, 0, 1); top = vec(0, 1, 0); }
+    const right = cross(top, front), rn = Math.hypot(right.x, right.y, right.z) || 1;
+    const d = Math.hypot(rel.x, rel.y, rel.z);
+    const min = Math.max(p.min, 1e-6), dd = Math.min(Math.max(d, min), Math.max(p.max, min));
+    let gain = min / (min + L.rolloff * (dd - min));
+    // cone: full volume inside the inner angle, the outside volume beyond the outer one, interpolated in between
+    if (p.coneOuter < 360 && d > 0) {
+      const co = p.coneOrient, cl = Math.hypot(co.x, co.y, co.z);
+      if (cl > 0) {
+        const ang = (Math.acos(Math.max(-1, Math.min(1, -dot(co, rel) / (cl * d)))) * 360) / Math.PI; // (the full angle the listener is inside)
+        const out = dbToGain(p.coneOutside);
+        if (ang > p.coneOuter) gain *= out;
+        else if (ang > p.coneInner) gain *= 1 + (out - 1) * (ang - p.coneInner) / Math.max(1e-6, p.coneOuter - p.coneInner);
+      }
+    }
+    const x = d > 0 ? Math.max(-1, Math.min(1, dot(rel, right) / (rn * d))) : 0;
+    const th = ((x + 1) * Math.PI) / 4; // equal-power pan, unity at the center
+    return [gain * Math.min(1, Math.SQRT2 * Math.cos(th)), gain * Math.min(1, Math.SQRT2 * Math.sin(th))];
+  };
+  const republish3d = () => { for (const b of audio().buffers) if (b.ds3d) b.publish(); };
+  class Listener3D {
+    constructor(primary) { this.primary = primary; }
+    get st() { const l = listener(); return l.deferred ?? l.now; }
+    /** a setter: applied now, or kept until CommitDeferredSettings */
+    set(c, applyArg, fn) {
+      const l = listener();
+      if (c.arg(applyArg) & DS3D_DEFERRED) { l.deferred ??= structuredClone(l.now); fn(l.deferred); return DS_OK; }
+      fn(l.now); if (l.deferred) fn(l.deferred); republish3d(); return DS_OK;
+    }
+    GetAllParameters(c) {
+      const p = c.arg(1), s = listener().now; if (!p || mem.read32(p) < 64) return DSERR_INVALIDPARAM;
+      writeVec(p + 4, s.pos); writeVec(p + 16, s.vel); writeVec(p + 28, s.front); writeVec(p + 40, s.top);
+      mem.writeF32(p + 52, s.distance); mem.writeF32(p + 56, s.rolloff); mem.writeF32(p + 60, s.doppler); return DS_OK;
+    }
+    GetDistanceFactor(c) { if (c.arg(1)) mem.writeF32(c.arg(1), listener().now.distance); return DS_OK; }
+    GetDopplerFactor(c) { if (c.arg(1)) mem.writeF32(c.arg(1), listener().now.doppler); return DS_OK; }
+    GetOrientation(c) { if (c.arg(1)) writeVec(c.arg(1), listener().now.front); if (c.arg(2)) writeVec(c.arg(2), listener().now.top); return DS_OK; }
+    GetPosition(c) { if (c.arg(1)) writeVec(c.arg(1), listener().now.pos); return DS_OK; }
+    GetRolloffFactor(c) { if (c.arg(1)) mem.writeF32(c.arg(1), listener().now.rolloff); return DS_OK; }
+    GetVelocity(c) { if (c.arg(1)) writeVec(c.arg(1), listener().now.vel); return DS_OK; }
+    SetAllParameters(c) {
+      const p = c.arg(1); if (!p || mem.read32(p) < 64) return DSERR_INVALIDPARAM;
+      return this.set(c, 2, (s) => { s.pos = readVec(p + 4); s.vel = readVec(p + 16); s.front = readVec(p + 28); s.top = readVec(p + 40); s.distance = mem.readF32(p + 52); s.rolloff = mem.readF32(p + 56); s.doppler = mem.readF32(p + 60); });
+    }
+    SetDistanceFactor(c) { const v = c.argF32(1); if (!(v > 0)) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.distance = v; }); }
+    SetDopplerFactor(c) { const v = c.argF32(1); if (!(v >= 0 && v <= 10)) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.doppler = v; }); }
+    SetOrientation(c) { const f = vec(c.argF32(1), c.argF32(2), c.argF32(3)), t = vec(c.argF32(4), c.argF32(5), c.argF32(6)); return this.set(c, 7, (s) => { s.front = f; s.top = t; }); }
+    SetPosition(c) { const v = vec(c.argF32(1), c.argF32(2), c.argF32(3)); return this.set(c, 4, (s) => { s.pos = v; }); }
+    SetRolloffFactor(c) { const v = c.argF32(1); if (!(v >= 0 && v <= 10)) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.rolloff = v; }); }
+    SetVelocity(c) { const v = vec(c.argF32(1), c.argF32(2), c.argF32(3)); return this.set(c, 4, (s) => { s.vel = v; }); }
+    CommitDeferredSettings() {
+      const l = listener();
+      if (l.deferred) { l.now = l.deferred; l.deferred = null; }
+      for (const b of audio().buffers) if (b.ds3d?.deferred) { b.ds3d.now = b.ds3d.deferred; b.ds3d.deferred = null; }
+      republish3d();
+      return DS_OK;
+    }
+  }
+  class Buffer3D {
+    constructor(buffer) { this.b = buffer; }
+    get st() { return this.b.ds3d.deferred ?? this.b.ds3d.now; }
+    set(c, applyArg, fn) {
+      const d = this.b.ds3d;
+      if (c.arg(applyArg) & DS3D_DEFERRED) { d.deferred ??= structuredClone(d.now); fn(d.deferred); return DS_OK; }
+      fn(d.now); if (d.deferred) fn(d.deferred); this.b.publish(); return DS_OK;
+    }
+    GetAllParameters(c) {
+      const p = c.arg(1), s = this.b.ds3d.now; if (!p || mem.read32(p) < 64) return DSERR_INVALIDPARAM;
+      writeVec(p + 4, s.pos); writeVec(p + 16, s.vel); mem.write32(p + 28, s.coneInner); mem.write32(p + 32, s.coneOuter); writeVec(p + 36, s.coneOrient);
+      mem.write32(p + 48, s.coneOutside); mem.writeF32(p + 52, s.min); mem.writeF32(p + 56, s.max); mem.write32(p + 60, s.mode); return DS_OK;
+    }
+    GetConeAngles(c) { c.out32(1, this.b.ds3d.now.coneInner); c.out32(2, this.b.ds3d.now.coneOuter); return DS_OK; }
+    GetConeOrientation(c) { if (c.arg(1)) writeVec(c.arg(1), this.b.ds3d.now.coneOrient); return DS_OK; }
+    GetConeOutsideVolume(c) { c.out32(1, this.b.ds3d.now.coneOutside); return DS_OK; }
+    GetMaxDistance(c) { if (c.arg(1)) mem.writeF32(c.arg(1), this.b.ds3d.now.max); return DS_OK; }
+    GetMinDistance(c) { if (c.arg(1)) mem.writeF32(c.arg(1), this.b.ds3d.now.min); return DS_OK; }
+    GetMode(c) { c.out32(1, this.b.ds3d.now.mode); return DS_OK; }
+    GetPosition(c) { if (c.arg(1)) writeVec(c.arg(1), this.b.ds3d.now.pos); return DS_OK; }
+    GetVelocity(c) { if (c.arg(1)) writeVec(c.arg(1), this.b.ds3d.now.vel); return DS_OK; }
+    SetAllParameters(c) {
+      const p = c.arg(1); if (!p || mem.read32(p) < 64) return DSERR_INVALIDPARAM;
+      return this.set(c, 2, (s) => { s.pos = readVec(p + 4); s.vel = readVec(p + 16); s.coneInner = mem.read32(p + 28); s.coneOuter = mem.read32(p + 32); s.coneOrient = readVec(p + 36); s.coneOutside = mem.read32(p + 48) | 0; s.min = mem.readF32(p + 52); s.max = mem.readF32(p + 56); s.mode = mem.read32(p + 60); });
+    }
+    SetConeAngles(c) { const i = c.arg(1), o = c.arg(2); if (i > 360 || o > 360 || i > o) return DSERR_INVALIDPARAM; return this.set(c, 3, (s) => { s.coneInner = i; s.coneOuter = o; }); }
+    SetConeOrientation(c) { const v = vec(c.argF32(1), c.argF32(2), c.argF32(3)); return this.set(c, 4, (s) => { s.coneOrient = v; }); }
+    SetConeOutsideVolume(c) { const v = c.sarg(1); if (v > 0 || v < -10000) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.coneOutside = v; }); }
+    SetMaxDistance(c) { const v = c.argF32(1); if (!(v > 0)) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.max = v; }); }
+    SetMinDistance(c) { const v = c.argF32(1); if (!(v > 0)) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.min = v; }); }
+    SetMode(c) { const v = c.arg(1); if (v > 2) return DSERR_INVALIDPARAM; return this.set(c, 2, (s) => { s.mode = v; }); }
+    SetPosition(c) { const v = vec(c.argF32(1), c.argF32(2), c.argF32(3)); return this.set(c, 4, (s) => { s.pos = v; }); }
+    SetVelocity(c) { const v = vec(c.argF32(1), c.argF32(2), c.argF32(3)); return this.set(c, 4, (s) => { s.vel = v; }); }
+  }
 
   /** Mixer state shared by all DirectSound objects of the process (one audio device). */
   class Audio {
@@ -99,6 +218,8 @@ export function registerDirectSound(api, vm) {
       this.iids = [IID_IDirectSoundBuffer, IID_IDirectSoundBuffer8];
       this.stoppedEvents = [];
       this.slot = -1; this.gen = 0;
+      // 3D parameters (DS3DBUFFER defaults) of a DSBCAPS_CTRL3D secondary buffer
+      this.ds3d = !this.primary && (flags & DSBCAPS_CTRL3D) ? { now: { pos: vec(), vel: vec(), coneInner: 360, coneOuter: 360, coneOrient: vec(0, 0, 1), coneOutside: 0, min: 1, max: 1e9, mode: DS3DMODE_NORMAL }, deferred: null } : null;
       audio().buffers.add(this);
     }
     destroy() { this.gen++; this.playing = false; this.publish(); const a = audio(); if (this.slot >= 0) { a.freeSlots?.push(this.slot); this.slot = -1; } a.buffers.delete(this); if (this.mem) this.proc.vmem.release(this.mem); }
@@ -107,14 +228,27 @@ export function registerDirectSound(api, vm) {
       const a = audio(), v = a.voices; if (!v || this.primary || !this.size) return;
       if (this.slot < 0) { if (!this.playing) return; const s = a.freeSlots.pop(); if (s === undefined) return; this.slot = s; this.gen++; }
       const o = VOICE_BASE + this.slot * VOICE_INTS, f = this.fmt;
-      const gain = dbToGain(this.volume), gl = gain * (this.pan > 0 ? dbToGain(-this.pan) : 1), gr = gain * (this.pan < 0 ? dbToGain(this.pan) : 1);
+      const [gl, gr] = this.gains();
       v[o] = this.playing ? 1 : 0; v[o + 2] = this.mem; v[o + 3] = this.size; v[o + 4] = f.align; v[o + 5] = f.bits; v[o + 6] = f.channels; v[o + 7] = f.tag === WAVE_FORMAT_IEEE_FLOAT ? 1 : 0;
       v[o + 8] = this.freq; v[o + 9] = this.looping ? 1 : 0; a.voicesF[o + 10] = gl; a.voicesF[o + 11] = gr; v[o + 12] = this.pos; v[o + 13] = v[0];
       Atomics.store(v, o + 1, this.gen);
     }
+    /** left / right gains: volume, pan, and the 3D rendering of a 3D buffer */
+    gains() {
+      const gain = dbToGain(this.volume);
+      if (this.ds3d) { const [l, r] = spatialGains(this); return [gain * l, gain * r]; }
+      return [gain * (this.pan > 0 ? dbToGain(-this.pan) : 1), gain * (this.pan < 0 ? dbToGain(this.pan) : 1)];
+    }
     queryInterface(c, iid) {
+      // the listener: from a primary buffer created with DSBCAPS_CTRL3D; the 3D parameters: from a 3D secondary buffer
+      if (iid === IID_IDirectSound3DListener && this.primary && (this.flags & DSBCAPS_CTRL3D)) return this.ref3d(c, 'IDirectSound3DListener', () => new Listener3D(this));
+      if (iid === IID_IDirectSound3DBuffer && this.ds3d) return this.ref3d(c, 'IDirectSound3DBuffer', () => new Buffer3D(this));
       if (iid === IID_IDirectSoundNotify) { if (!this.notifyPtr || !com.objectAt(this.notifyPtr)) this.notifyPtr = com.create(c.proc, 'IDirectSoundNotify', { buffer: this, SetNotificationPositions: (cc) => this.setNotifications(cc) }); else com.addRef(com.objectAt(this.notifyPtr)); return this.notifyPtr; }
       return 0;
+    }
+    ref3d(c, iface, make) {
+      if (this.ptr3d && com.objectAt(this.ptr3d)) { com.addRef(com.objectAt(this.ptr3d)); return this.ptr3d; }
+      return (this.ptr3d = com.create(c.proc, iface, make()));
     }
     get bytesPerSec() { return this.fmt.align * this.freq; }
     /** advance the play cursor by `frames` sample frames of this buffer */
@@ -160,7 +294,7 @@ export function registerDirectSound(api, vm) {
     mixInto(out, frames, rate) {
       if (!this.size) return;
       const f = this.fmt, step = this.freq / rate;
-      const gain = dbToGain(this.volume), gl = gain * (this.pan > 0 ? dbToGain(-this.pan) : 1), gr = gain * (this.pan < 0 ? dbToGain(this.pan) : 1);
+      const [gl, gr] = this.gains();
       const base = this.mem, size = this.size, align = f.align;
       const totalFrames = Math.floor(size / align);
       const cursor = this.pos / align + this.posFrac;
@@ -286,7 +420,7 @@ export function registerDirectSound(api, vm) {
       const b = new Buffer(c.proc, this, src.flags, src.size, src.fmt);
       if (!b.mem) return DSERR_OUTOFMEMORY;
       mem.copy(b.mem, src.mem, src.size);
-      b.volume = src.volume; b.pan = src.pan; b.freq = src.freq;
+      b.volume = src.volume; b.pan = src.pan; b.freq = src.freq; if (src.ds3d) b.ds3d = { now: structuredClone(src.ds3d.now), deferred: null };
       mem.write32(pp, com.create(c.proc, this.v8 ? 'IDirectSoundBuffer8' : 'IDirectSoundBuffer', b));
       return DS_OK;
     }
@@ -332,5 +466,5 @@ export function registerDirectSound(api, vm) {
   const factory = (v8) => (c) => { const ds = new DirectSound(v8); ds.initialized = false; return com.create(c.proc, v8 ? 'IDirectSound8' : 'IDirectSound', ds); };
   com.registerClass(CLSID_DirectSound, factory(false));
   com.registerClass(CLSID_DirectSound8, factory(true));
-  void readGuid; void S_OK; void E_POINTER; void DSBCAPS_STATIC; void DSBCAPS_LOCHARDWARE; void DSBCAPS_CTRL3D; void DSBCAPS_GLOBALFOCUS; void DSBCAPS_GETCURRENTPOSITION2; void DSBSTATUS_BUFFERLOST; void DSSCL_EXCLUSIVE; void DSERR_UNSUPPORTED; void DSERR_BUFFERLOST; void DSERR_UNINITIALIZED;
+  void readGuid; void S_OK; void E_POINTER; void DSBCAPS_STATIC; void DSBCAPS_LOCHARDWARE; void DSBCAPS_GLOBALFOCUS; void DSBCAPS_GETCURRENTPOSITION2; void DSBSTATUS_BUFFERLOST; void DSSCL_EXCLUSIVE; void DSERR_UNSUPPORTED; void DSERR_BUFFERLOST; void DSERR_UNINITIALIZED;
 }
