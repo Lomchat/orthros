@@ -5,6 +5,83 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE } from '../cpu/memory.js';
 
 export const CC_STDCALL = 0, CC_CDECL = 1;
 
+/** pseudo-DLLs of Orthros' own (no module image) */
+const INTERNAL_DLLS = new Set(['com.dll', 'orthros.dll']);
+/** free slots of a module image for functions it does not export (unknown imports); then header-less pages */
+const SLACK_SLOTS = 256;
+const CHUNK_SIZE = 0x1000;
+const alignUp = (v, a) => (v + a - 1) & ~(a - 1);
+
+/** @typedef {{ dll: string, base: number, end: number, chunk: { next: number, end: number } }} ThunkWindow */
+
+/**
+ * Layout of a builtin DLL's image: headers (page 0), the export directory (from page 1), then the thunk slots (page
+ * aligned, at headerSize). funcs: the export address table (function name per ordinal - 1, null for an unused
+ * ordinal); names: [name, EAT index] sorted by name (the order a binary search of the name table expects).
+ * @param {string} dllName
+ * @param {{ funcs: Map<string, any>, ordinals: Map<number, string> } | undefined} d
+ */
+export function buildExportImage(dllName, d) {
+  /** @type {(string|null)[]} */
+  const funcs = [];
+  if (d) {
+    const index = new Map();
+    let maxOrd = 0;
+    for (const ord of d.ordinals.keys()) if (ord > maxOrd && ord < 0x10000) maxOrd = ord;
+    for (let i = 0; i < maxOrd; i++) funcs.push(null);
+    for (const [ord, name] of [...d.ordinals].sort((a, b) => a[0] - b[0])) if (ord >= 1 && ord < 0x10000 && !index.has(name)) { funcs[ord - 1] = name; index.set(name, ord - 1); }
+    for (const name of d.funcs.keys()) if (!index.has(name) && !name.startsWith('#')) { index.set(name, funcs.length); funcs.push(name); }
+  }
+  const names = [];
+  for (let i = 0; i < funcs.length; i++) if (funcs[i] !== null && !funcs[i].startsWith('#')) names.push([funcs[i], i]);
+  names.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  let strBytes = dllName.length + 1;
+  for (const [n] of names) strBytes += n.length + 1;
+  const exportSize = 40 + 4 * funcs.length + 6 * names.length + strBytes;
+  return { funcs, names, exportSize, headerSize: 0x1000 + alignUp(exportSize, 0x1000) };
+}
+
+/** Write a builtin DLL's MZ/PE headers and export directory at its base (eat: function RVA per ordinal - 1). */
+function writeExportImage(mem, base, size, dllName, img, eat) {
+  mem.fill(base, img.headerSize, 0);
+  const pe = base + 0x40;
+  mem.write16(base, 0x5a4d); // MZ
+  mem.write32(base + 0x3c, 0x40); // e_lfanew
+  mem.write32(pe, 0x4550); // PE\0\0
+  // file header: i386, one section, optional header size, DLL | 32-bit machine | executable image
+  mem.write16(pe + 4, 0x14c); mem.write16(pe + 6, 1); mem.write16(pe + 20, 0xe0); mem.write16(pe + 22, 0x2102);
+  const oh = pe + 24;
+  mem.write16(oh, 0x10b); // PE32
+  mem.write32(oh + 4, size - 0x1000); // SizeOfCode
+  mem.write32(oh + 20, 0x1000); // BaseOfCode
+  mem.write32(oh + 28, base); // ImageBase
+  mem.write32(oh + 32, 0x1000); mem.write32(oh + 36, 0x200); // section / file alignment
+  mem.write16(oh + 40, 5); mem.write16(oh + 42, 1); // OS version 5.1
+  mem.write16(oh + 48, 5); mem.write16(oh + 50, 1); // subsystem version 5.1
+  mem.write32(oh + 56, size); // SizeOfImage
+  mem.write32(oh + 60, 0x1000); // SizeOfHeaders
+  mem.write16(oh + 68, 3); // subsystem: Windows CUI (as system DLLs)
+  mem.write32(oh + 72, 0x40000); mem.write32(oh + 76, 0x1000); mem.write32(oh + 80, 0x100000); mem.write32(oh + 84, 0x1000); // stack / heap
+  mem.write32(oh + 92, 16); // NumberOfRvaAndSizes
+  mem.write32(oh + 96, 0x1000); mem.write32(oh + 100, img.exportSize); // export directory
+  const sh = oh + 0xe0;
+  for (let i = 0; i < 5; i++) mem.write8(sh + i, '.text'.charCodeAt(i));
+  mem.write32(sh + 8, size - 0x1000); mem.write32(sh + 12, 0x1000); // VirtualSize, VirtualAddress
+  mem.write32(sh + 16, size - 0x1000); mem.write32(sh + 20, 0x400); // SizeOfRawData, PointerToRawData
+  mem.write32(sh + 36, 0x60000020); // code | execute | read
+  // export directory
+  const ed = base + 0x1000, nf = img.funcs.length, nn = img.names.length;
+  const eatRva = 0x1000 + 40, namesRva = eatRva + 4 * nf, ordsRva = namesRva + 4 * nn;
+  let str = ordsRva + 2 * nn;
+  const putStr = (s) => { for (let i = 0; i < s.length; i++) mem.write8(base + str + i, s.charCodeAt(i) & 0xff); str += s.length + 1; };
+  mem.write32(ed + 12, str); putStr(dllName); // Name
+  mem.write32(ed + 16, 1); // ordinal base
+  mem.write32(ed + 20, nf); mem.write32(ed + 24, nn);
+  mem.write32(ed + 28, eatRva); mem.write32(ed + 32, namesRva); mem.write32(ed + 36, ordsRva);
+  for (let i = 0; i < nf; i++) mem.write32(base + eatRva + 4 * i, eat[i]);
+  img.names.forEach(([name, i], k) => { mem.write32(base + namesRva + 4 * k, str); mem.write16(base + ordsRva + 2 * k, i); putStr(name); });
+}
+
 /**
  * @typedef {object} ApiDef
  * @property {string} name
@@ -17,10 +94,18 @@ export const CC_STDCALL = 0, CC_CDECL = 1;
  */
 
 export class ApiRegistry {
-  constructor() {
+  /** @param {import('../cpu/memory.js').GuestMemory|null} [mem] guest memory (the module images are written there) */
+  constructor(mem = null) {
+    this.mem = mem;
+    /** @type {Map<string, ThunkWindow>} canonical DLL name -> thunk window */
+    this.windows = new Map();
+    /** @type {ThunkWindow[]} the windows holding a module image, by address */
+    this.windowList = [];
+    this.windowTop = THUNK_BASE; // module images grow upwards from THUNK_BASE...
+    this.chunkFloor = THUNK_END; // ...header-less pages downwards from THUNK_END
     /** @type {Map<string, {name: string, funcs: Map<string, ApiDef>, ordinals: Map<number, string>, aliasOf?: string}>} */
     this.dlls = new Map();
-    /** @type {Array<{dll: string, name: string, def: ApiDef|null, addr: number}>} */
+    /** @type {Array<{dll: string, name: string, def: ApiDef|null, addr: number}>} by thunk index (sparse: module headers and free slots have none) */
     this.thunks = [];
     /** dll!name -> thunk index */
     this.thunkIndex = new Map();
@@ -84,16 +169,78 @@ export class ApiRegistry {
   /** Thunk address for dll!name (creates a stub entry for unknown functions). */
   thunkFor(dll, name) {
     const n = ApiRegistry.norm(dll);
-    const key = `${n}!${name}`;
-    let idx = this.thunkIndex.get(key);
+    const cn = this.dlls.get(n)?.name ?? n; // (aliases share their DLL's thunks)
+    const idx = this.thunkIndex.get(`${cn}!${name}`);
     if (idx !== undefined) return this.thunks[idx].addr;
-    const def = this.lookup(n, name);
-    idx = this.thunks.length;
-    if (THUNK_BASE + idx * THUNK_SIZE >= THUNK_END) throw new Error('thunk table exhausted');
-    this.thunks.push({ dll: n, name, def, addr: THUNK_BASE + idx * THUNK_SIZE });
+    return this.newThunk(this.window(cn), cn, name);
+  }
+
+  /** @param {ThunkWindow} w */
+  newThunk(w, dll, name) {
+    let c = w.chunk;
+    if (c.next >= c.end) c = w.chunk = this.allocChunk();
+    const addr = c.next;
+    c.next += THUNK_SIZE;
+    const idx = (addr - THUNK_BASE) / THUNK_SIZE;
+    const key = `${dll}!${name}`;
+    const def = this.lookup(dll, name);
+    this.thunks[idx] = { dll, name, def, addr };
     this.thunkIndex.set(key, idx);
     if (this.onThunk) this.onThunk(idx, key, def);
-    return this.thunks[idx].addr;
+    return addr;
+  }
+
+  /** A page of thunk slots without a module header (internal pseudo-DLLs, full images), from the top down. */
+  allocChunk() {
+    const base = this.chunkFloor - CHUNK_SIZE;
+    if (base < this.windowTop) throw new Error('thunk table exhausted');
+    this.chunkFloor = base;
+    return { next: base, end: base + CHUNK_SIZE };
+  }
+
+  /**
+   * The thunk window of a DLL (created on first use). A builtin DLL's window is an in-memory PE image, as a loaded DLL
+   * is on Windows: MZ/PE headers and an export directory at its base (the module handle), whose functions are the
+   * thunk slots that follow, inside the image. Software finding a module from one of its function addresses (scanning
+   * down for the MZ header, VirtualQuery's allocation base) or resolving functions from the export table instead of
+   * GetProcAddress then sees what it would on Windows. Orthros' internal pseudo-DLLs (COM methods, its own return
+   * thunks) have header-less pages.
+   * @returns {ThunkWindow}
+   */
+  window(dll) {
+    const n = ApiRegistry.norm(dll);
+    const d = this.dlls.get(n);
+    const cn = d?.name ?? n;
+    let w = this.windows.get(cn);
+    if (w) return w;
+    if (INTERNAL_DLLS.has(cn)) {
+      w = { dll: cn, base: 0, end: 0, chunk: { next: 0, end: 0 } };
+      this.windows.set(cn, w);
+      return w;
+    }
+    const img = buildExportImage(cn, d);
+    const base = this.windowTop;
+    const size = alignUp(img.headerSize + (img.funcs.length + SLACK_SLOTS) * THUNK_SIZE, 0x1000);
+    if (base + size > this.chunkFloor) throw new Error('thunk table exhausted');
+    this.windowTop = base + size;
+    w = { dll: cn, base, end: base + size, chunk: { next: base + img.headerSize, end: base + size } };
+    this.windows.set(cn, w);
+    this.windowList.push(w);
+    // the slots of the exported functions first (their addresses go into the export table)
+    const eat = img.funcs.map((f) => (f === null ? 0 : this.newThunk(w, cn, f) - base));
+    if (this.mem) writeExportImage(this.mem, base, size, cn, img, eat);
+    return w;
+  }
+
+  /** Module handle (image base) of a builtin DLL. */
+  moduleBase(dll) { return this.window(dll).base; }
+
+  /** The builtin DLL image containing an address, or null. */
+  windowAt(addr) {
+    addr >>>= 0;
+    if (addr < THUNK_BASE || addr >= this.windowTop) return null;
+    for (const w of this.windowList) if (addr >= w.base && addr < w.end) return w;
+    return null;
   }
 
   thunkForOrdinal(dll, ordinal) {
