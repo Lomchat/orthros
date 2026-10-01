@@ -440,12 +440,18 @@ frame comparison.
   write path of the emulator stamps the resource with a new *generation*; the render worker writes the generation it
   uploaded (after `glTexture` / `glBuffer`). A write waits only while a not-yet-replayed command may read the
   resource **and** its latest generation is not uploaded yet. Write paths: `Surface.ensureMem` (locks, `GetDC`,
-  copies, fills, D3DX loads all go through it), `LockBox`, D3DX volume fills, `Buffer.Lock`.
-- **`D3DLOCK_DISCARD`** on a buffer still in use gives it a block from a per-buffer pool (3 at most) — **with the
-  buffer's contents copied**: what the application does not rewrite reads as before (undefined after `DISCARD` in
-  Direct3D, the old contents in the in-thread path: kept identical).
-- **`D3DLOCK_NOOVERWRITE`** waits only when the locked range meets ranges written but not uploaded yet (a pending
-  upload takes their union, possibly more than the draws use), or before the buffer's first upload (all of it).
+  copies, fills, D3DX loads all go through it), `LockBox`, D3DX volume fills, `Buffer.Lock`. A surface of at most
+  4 MiB written meanwhile is copied on write instead of waited for (new guest memory with its contents; the old block
+  released once the commands reading it are replayed; `ORTHROS_RW_COW=0`: wait).
+- **Buffers rewritten while in use: their contents travel in the ring.** A dynamic buffer (`D3DUSAGE_DYNAMIC`) from
+  its first use, and any other buffer once a lock had to wait for it, copies each written range into the ring at
+  `Unlock` (`BUF_DATA`, 1 MiB chunks; its whole contents once when it switches). The mirror buffer keeps its own copy
+  and the backend uploads from it (same dirty unions, same GL calls as in-thread), so those buffers' locks never wait
+  and their memory is released at once. (The first implementation renamed them on `DISCARD` and copied the whole
+  buffer at every lock still in use: 51 renames, ~32 MiB copied per BFME2 skirmish frame — the emulator thread was
+  slower than in-thread.) What the application does not rewrite after `DISCARD` reads as before, as in-thread.
+- **`D3DLOCK_NOOVERWRITE`** on another buffer waits only when the locked range meets ranges written but not uploaded
+  yet (a pending upload takes their union, possibly more than the draws use), or before the buffer's first upload.
 - **Readbacks**: the memory the pixels go to is allocated by the recorder and handed to the mirror surface once the
   pixels are read, as the backend allocates it (a level uploaded meanwhile sees no memory, as in-thread).
 - **Back-pressure**: the head is published after every draw (a store, no notification) and notified every 32 draws
