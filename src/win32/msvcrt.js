@@ -3,6 +3,7 @@
 import { CC_CDECL } from './api.js';
 import { formatPrintf } from './wsprintf.js';
 import { decodeBytes } from './strings.js';
+import { utcZone, localToUtc } from './timezone.js';
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -206,11 +207,13 @@ export function registerMsvcrt(api, vm) {
   M.remove = M._unlink;
   M._getcwd = [2, (c) => { const p = c.arg(0) || heap(c).alloc(260); mem.writeCString(p, c.proc.cwd); return p; }];
   M._chdir = [1, (c) => { c.proc.cwd = c.proc.path(cstr(c.arg(0))); return 0; }];
-  M._strtime = [1, (c) => { const d = new Date(vm.clock.wall()); mem.writeCString(c.arg(0), `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')}`); return c.arg(0); }];
-  M._strdate = [1, (c) => { const d = new Date(vm.clock.wall()); mem.writeCString(c.arg(0), `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCFullYear() % 100).padStart(2, '0')}`); return c.arg(0); }];
-  M.localtime = [1, (c) => tmOf(c, mem.read32(c.arg(0)))];
-  M.gmtime = M.localtime;
-  M.mktime = [1, (c) => { const p = c.arg(0); return Math.floor(Date.UTC(1900 + mem.readS32(p + 20), mem.readS32(p + 16), mem.readS32(p + 12), mem.readS32(p + 8), mem.readS32(p + 4), mem.readS32(p)) / 1000) >>> 0; }];
+  const zone = () => vm.clock.zone ?? utcZone;
+  const localNow = () => { const w = vm.clock.wall(); return w + zone()(w) * 60000; };
+  M._strtime = [1, (c) => { const d = new Date(localNow()); mem.writeCString(c.arg(0), `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')}`); return c.arg(0); }];
+  M._strdate = [1, (c) => { const d = new Date(localNow()); mem.writeCString(c.arg(0), `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCFullYear() % 100).padStart(2, '0')}`); return c.arg(0); }];
+  M.localtime = [1, (c) => tmOf(c, mem.read32(c.arg(0)), zone())];
+  M.gmtime = [1, (c) => tmOf(c, mem.read32(c.arg(0)))];
+  M.mktime = [1, (c) => { const p = c.arg(0); return Math.floor(localToUtc(zone(), Date.UTC(1900 + mem.readS32(p + 20), mem.readS32(p + 16), mem.readS32(p + 12), mem.readS32(p + 8), mem.readS32(p + 4), mem.readS32(p))) / 1000) >>> 0; }];
   M.strftime = [4, (c) => { const s = new Date((mem.read32(c.arg(3) + 0) || 0)).toISOString(); mem.writeCString(c.arg(0), s.slice(0, c.arg(1) - 1)); return Math.min(s.length, c.arg(1) - 1); }];
   M._vscprintf = [2, (c) => formatPrintf(c, cstr(c.arg(0)), c.arg(1)).length];
   M._scprintf = [1, (c) => formatPrintf(c, cstr(c.arg(0)), c.sp + 8).length];
@@ -251,13 +254,17 @@ export function registerMsvcrt(api, vm) {
   return M;
 }
 
-function tmOf(c, t) {
+/** struct tm of a time_t (UTC; local with a zone: minutes east of UTC at an instant, tm_isdst when it is not the standard offset) */
+function tmOf(c, t, zone) {
   const mem = c.mem;
   const p = c.proc.crtTm ?? (c.proc.crtTm = c.proc.processHeap.alloc(36, true));
-  const d = new Date(t * 1000);
+  const utc = t * 1000, off = zone ? zone(utc) : 0;
+  const d = new Date(utc + off * 60000);
   mem.write32(p, d.getUTCSeconds()); mem.write32(p + 4, d.getUTCMinutes()); mem.write32(p + 8, d.getUTCHours()); mem.write32(p + 12, d.getUTCDate());
   mem.write32(p + 16, d.getUTCMonth()); mem.write32(p + 20, d.getUTCFullYear() - 1900); mem.write32(p + 24, d.getUTCDay());
-  const start = Date.UTC(d.getUTCFullYear(), 0, 1); mem.write32(p + 28, Math.floor((d.getTime() - start) / 86400000)); mem.write32(p + 32, 0);
+  const start = Date.UTC(d.getUTCFullYear(), 0, 1); mem.write32(p + 28, Math.floor((d.getTime() - start) / 86400000));
+  const y = d.getUTCFullYear(), std = zone ? Math.min(zone(Date.UTC(y, 0, 1)), zone(Date.UTC(y, 6, 1))) : 0;
+  mem.write32(p + 32, off !== std ? 1 : 0);
   return p;
 }
 

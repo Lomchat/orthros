@@ -19,7 +19,7 @@ const DIPROPAXISMODE_ABS = 0, DIPROPAXISMODE_REL = 1;
 /** virtual key -> scan code for events that carry only a VK (PC AT set 1) */
 const VK_TO_SCAN = (() => {
   const t = new Uint8Array(256);
-  const row1 = '1234567890'; for (let i = 0; i < 10; i++) t[0x30 + i] = 0x02 + i; t[0x30] = 0x0b;
+  const row1 = '1234567890'; for (let i = 0; i < 9; i++) t[0x31 + i] = 0x02 + i; t[0x30] = 0x0b; // ('1'..'9' = 02..0A, '0' = 0B)
   const q = 'QWERTYUIOP'; for (let i = 0; i < q.length; i++) t[q.charCodeAt(i)] = 0x10 + i;
   const a = 'ASDFGHJKL'; for (let i = 0; i < a.length; i++) t[a.charCodeAt(i)] = 0x1e + i;
   const z = 'ZXCVBNM'; for (let i = 0; i < z.length; i++) t[z.charCodeAt(i)] = 0x2c + i;
@@ -27,6 +27,14 @@ const VK_TO_SCAN = (() => {
   void row1;
   return t;
 })();
+
+/**
+ * The keyboard's scan code for a virtual key, as the key down / up events carry it (bit 8: extended key, E0 prefix);
+ * 0 for keys without one. Scripted input (the harness) models a physical keyboard with it: DirectInput reads scan
+ * codes only, so a key event without one is invisible to it (as synthesized input without a scan code on Windows).
+ * @param {number} vk
+ */
+export function scanCodeOfVk(vk) { const d = VK_TO_SCAN[vk & 0xff]; return d >= 0x80 ? 0x100 | (d & 0x7f) : d; }
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -188,6 +196,7 @@ export function registerDirectInput(api, vm) {
         mem.write32(a, e.ofs); mem.write32(a + 4, e.data); mem.write32(a + 8, e.time); mem.write32(a + 12, e.seq);
         if (cbData === 20) mem.write32(a + 16, 0);
       }
+      if (n && globalThis.ORTHROS_DI_DEBUG) vm.log('input', `dinput: GetDeviceData ${this.kind} max ${max} flags ${flags} -> ${this.queue.slice(0, n).map((e) => e.ofs.toString(16) + '=' + e.data.toString(16)).join(' ')} from ${c.proc.symbolize(c.retAddr)}`);
       if (!peek) this.queue.splice(0, rgdod ? n : this.queue.length);
       mem.write32(pInOut, rgdod ? n : this.queue.length);
       const ov = this.overflow; if (!peek) this.overflow = false;
