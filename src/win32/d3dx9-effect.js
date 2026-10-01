@@ -4,7 +4,7 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
@@ -259,7 +259,7 @@ export function defineEffects(X, vm, h) {
       this.saved = (flags & 1) ? null : this.snapshot(c, t, flags);
       return D3D_OK;
     }
-    BeginPass(c) { const ps = this.technique?.passes[c.arg(1)]; if (!ps) return D3DERR_INVALIDCALL; this.pass = ps; this.apply(c, ps, false); if (globalThis.ORTHROS_FX_BURST && (vm.fxPasses = (vm.fxPasses ?? 0) + 1) === globalThis.ORTHROS_FX_BURST) vm.startApiBurst(c.thread, 3000); }
+    BeginPass(c) { const ps = this.technique?.passes[c.arg(1)]; if (!ps) return D3DERR_INVALIDCALL; this.pass = ps; this.apply(c, ps, false); this.publishCommit(c, ps); if (globalThis.ORTHROS_FX_BURST && (vm.fxPasses = (vm.fxPasses ?? 0) + 1) === globalThis.ORTHROS_FX_BURST) vm.startApiBurst(c.thread, 3000); }
     CommitChanges(c) { if (this.pass) this.apply(c, this.pass, true); }
     EndPass() { this.pass = null; }
     End(c) { if (this.saved) this.restore(c, this.saved); this.saved = null; this.pass = null; }
@@ -456,7 +456,8 @@ export function defineEffects(X, vm, h) {
       if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
-    bindSampler(c, n, reg) {
+    /** a sampler parameter's states compiled once: { tex } (its texture) or { type, word() } (a sampler state) */
+    samplerOpsOf(n) {
       if (!n.samplerOps) {
         const states = n.samplerStates?.[0] ?? (n.parent?.samplerStates?.[n.parent.elements.indexOf(n)]) ?? [];
         const pi = this.params.indexOf(n.parent ?? n), el = n.parent ? n.parent.elements.indexOf(n) : 0;
@@ -468,9 +469,12 @@ export function defineEffects(X, vm, h) {
           return null;
         }).filter(Boolean);
       }
+      return n.samplerOps;
+    }
+    bindSampler(c, n, reg) {
       // (a state the device already holds is not set again: sampler states are re-applied at every pass)
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
-      for (const o of n.samplerOps) {
+      for (const o of this.samplerOpsOf(n)) {
         if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (!dev || dev.textures[reg] !== p) this.call(c, 'SetTexture', 2, reg, p); }
         else { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
       }
@@ -492,16 +496,17 @@ export function defineEffects(X, vm, h) {
         const key = `${ps.technique}:${ps.index}:${k}`;
         const dyn = this.refs.has(key) || this.exprs.has(key);
         const word = this.wordOf(s, key);
-        let f = null;
+        let f = null, touches = null; // (touches: the shadowed device states the operation sets, see commitEntries)
         switch (cls) {
-          case 'rs': f = (c) => this.call(c, 'SetRenderState', 2, idx, word()); break;
-          case 'tss': f = (c) => this.call(c, 'SetTextureStageState', 3, s.index, idx, word()); break;
-          case 'samp': f = (c) => this.call(c, 'SetSamplerState', 3, s.index, idx, word()); break;
+          case 'rs': f = (c) => this.call(c, 'SetRenderState', 2, idx, word()); touches = { rs: idx }; break;
+          case 'tss': f = (c) => this.call(c, 'SetTextureStageState', 3, s.index, idx, word()); touches = { tss: [s.index, idx] }; break;
+          case 'samp': f = (c) => this.call(c, 'SetSamplerState', 3, s.index, idx, word()); touches = { samp: [s.index, idx] }; break;
           case 'fvf': f = (c) => this.call(c, 'SetFVF', 1, word()); break;
           case 'npatch': f = (c) => this.call(c, 'SetNPatchMode', 1, word()); break;
           case 'lightenable': f = (c) => this.call(c, 'LightEnable', 2, s.index, word()); break;
           case 'vs': case 'ps': {
             const vsState = cls === 'vs', fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
+            touches = fixed ? { shader: fixed } : { any: true };
             f = (c) => {
               const sh = fixed ?? this.stateShader(ps, k);
               if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
@@ -511,7 +516,7 @@ export function defineEffects(X, vm, h) {
             break;
           }
           case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); break; }
-          case 'sampler': { const ref = this.refs.get(key); const sn = ref ? this.lookup(ref, null) : null; if (sn) f = (c) => this.bindSampler(c, sn, s.index); break; }
+          case 'sampler': { const ref = this.refs.get(key); const sn = ref ? this.lookup(ref, null) : null; if (sn) { f = (c) => this.bindSampler(c, sn, s.index); touches = { sampler: [sn, s.index] }; } break; }
           case 'transform': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => { const src = tn ? tn.words : s.value; if (!src) return; const p = this.scratch(c, 2048); for (let i = 0; i < 16; i++) mem.write32(p + 4 * i, src[i] ?? (i % 5 === 0 ? 0x3f800000 : 0)); this.call(c, 'SetTransform', 2, idx + (idx === 256 || idx === 16 ? s.index : 0), p); }; break; }
           case 'const': {
             const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null;
@@ -527,9 +532,48 @@ export function defineEffects(X, vm, h) {
           case 'material': case 'light': break; // (fixed-function lights/materials from effects: not used by shader effects)
           default: if ((this.unknownOps ??= new Set()).size < 16 && !this.unknownOps.has(s.op)) { this.unknownOps.add(s.op); vm.log('gfx', `d3dx effect: state operation 0x${s.op.toString(16)} not applied`); }
         }
-        if (f) ops.push({ f, dyn: dyn || cls === 'vs' || cls === 'ps' || cls === 'sampler' || cls === 'texture' });
+        if (f) ops.push({ f, dyn: dyn || cls === 'vs' || cls === 'ps' || cls === 'sampler' || cls === 'texture', touches });
       });
       return ops;
+    }
+    /**
+     * The device states CommitChanges may set for pass `ps`, for the JIT's issued-state filter (runtime.js COMMIT_LIST):
+     * the shadow entries of the render / stage / sampler states its dynamic operations set — a queued CommitChanges
+     * forgets them instead of switching the whole filter off until the queue has run. null: any (a shader picked by an
+     * expression, an effect without a device shadow).
+     */
+    commitEntries(ps) {
+      if (ps.commitEntries !== undefined) return ps.commitEntries;
+      const out = new Set();
+      const rs = (i) => { if (i >= 0 && i < 256) out.add(SHADOW_RS + i); };
+      const tss = (st, t) => { if (st >= 0 && st < 8 && t >= 0 && t < 40) out.add(SHADOW_TSS + 40 * st + t); };
+      const samp = (r, t) => { if (r >= 0 && r < 16 && t >= 0 && t < 16) out.add(SHADOW_SAMP + 16 * r + t); };
+      const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); };
+      let any = false;
+      ps.ops ??= this.compilePass(ps);
+      for (const o of ps.ops) {
+        if (!o.dyn) continue;
+        const t = o.touches;
+        if (!t) continue;
+        if (t.any) { any = true; break; }
+        if (t.rs !== undefined) rs(t.rs);
+        else if (t.tss) tss(t.tss[0], t.tss[1]);
+        else if (t.samp) samp(t.samp[0], t.samp[1]);
+        else if (t.sampler) sampler(t.sampler[0], t.sampler[1]);
+        else if (t.shader) for (const x of t.shader.samplers ?? []) sampler(x.n, x.reg);
+      }
+      return (ps.commitEntries = any ? null : Uint32Array.from(out));
+    }
+    /** the commit list of the pass now begun, where the effect's guest object points at +20 (runtime.js COMMIT_LIST) */
+    publishCommit(c, ps) {
+      const self = this.comObject?.ptr; if (!self) return;
+      const dev = this.devImpl ??= com.implAt(this.dev);
+      const list = this.commitBlock ??= c.proc.processHeap.alloc(4 * COMMIT_LIST_WORDS);
+      const e = dev?.shadow ? this.commitEntries(ps) : null;
+      mem.write32(list, dev?.shadow ?? 0);
+      if (!e || e.length > COMMIT_LIST_WORDS - 2) mem.write32(list + 4, 0xffffffff);
+      else { mem.write32(list + 4, e.length); for (let i = 0; i < e.length; i++) mem.write32(list + 8 + 4 * i, e[i]); }
+      mem.write32(self + COMMIT_LIST, list);
     }
     apply(c, ps, commit) {
     vm.effectCtx = c;

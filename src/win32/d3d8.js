@@ -9,6 +9,7 @@ import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
 import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
+import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -26,6 +27,8 @@ const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R
 
 /** bytes of one row / total bytes for a surface of this format */
 /** Distinct values each render / stage state took (end-of-run report: which pipeline features a game uses). */
+/** kind of a texture object for the backend's program key: 0 none, 1 2D, 2 cube, 3 volume */
+const texKindOf = (t) => (!t ? 0 : t.faces ? 2 : t.depth ? 3 : 1);
 export function noteState(dev, group, s, v) {
   // (numeric keys: this runs for every state change — group name and state number joined only for the report)
   const gid = STATE_GROUPS.get(group) ?? STATE_GROUPS.set(group, STATE_GROUP_NAMES.push(group) - 1).get(group);
@@ -417,7 +420,28 @@ export function d3dCore(vm) {
       else if (this.lost === 1) this.lost = 2;
       vm.log('gfx', `d3d: application ${active ? 'reactivated' : 'deactivated'}: device ${['ok', 'lost', 'not reset'][this.lost]}`);
     }
-    destroy() { vm.d3dDevices?.delete(this); this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
+    /**
+     * The issued-state shadow the JIT's fast path filters redundant state sets with (runtime.js DEFER_F_*): a block in
+     * guest memory whose address the device's COM object keeps at +12, mirroring the state tables (re-attached when
+     * Reset makes new ones); disabled while a state block records (every set is recorded then).
+     */
+    initShadow(proc) {
+      this.shadow = proc.processHeap.alloc(SHADOW_BYTES);
+      mem.fill(this.shadow, SHADOW_BYTES, 0);
+      mem.write32(this.ptr + 12, this.shadow);
+      this.attachShadow();
+    }
+    attachShadow() {
+      if (!this.shadow) return;
+      const u32 = mem.u32, e = (i) => this.shadow + 16 + 8 * i;
+      this.rs.attachShadow(u32, e(SHADOW_RS), 256);
+      for (let i = 0; i < 8; i++) this.tss[i]?.attachShadow(u32, e(SHADOW_TSS + 40 * i), 40);
+      for (let i = 0; i < 16; i++) this.samplers?.[i]?.attachShadow(u32, e(SHADOW_SAMP + 16 * i), 16);
+      this.shadowOn();
+    }
+    /** the filter on unless a state block records (or a measurement switched it off: Vm.setApiFastPaths) */
+    shadowOn() { if (this.shadow) mem.write32(this.shadow, this.recording || vm.stateFilterOff ? 0 : 1); }
+    destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
     TestCooperativeLevel() { return this.lost === 1 ? D3DERR_DEVICELOST : this.lost === 2 ? D3DERR_DEVICENOTRESET : D3D_OK; }
     GetAvailableTextureMem() { return 256 * 1024 * 1024; }
@@ -439,6 +463,7 @@ export function d3dCore(vm) {
       // the default state first, then the new back buffers: render target 0 is back buffer 0 again (Direct3D 9: the
       // other render targets unset), the depth target the automatic depth-stencil surface — the order of CreateDevice
       this.resetState();
+      this.attachShadow();
       this.createBackBuffers(c);
       this.gfx?.reset?.(this);
       vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'}`);
@@ -540,8 +565,8 @@ export function d3dCore(vm) {
     // nor re-upload the state uniforms
     SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_RS.has(s)) this.programVersion++; this.rs.set(s, v); noteState(this, 'rs', s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
-    BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
-    EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; c.out32(1, id); return D3D_OK; }
+    BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; if (this.shadow) mem.write32(this.shadow, 0); this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
+    EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; this.shadowOn(); c.out32(1, id); return D3D_OK; }
     // (only what the block holds — states, textures, transforms, shaders — and, for the transforms, only the slots whose
     // matrix differs: effects restore their state with a block around every object, and a blanket invalidation made the
     // backend re-send every matrix and light at every draw)
@@ -553,8 +578,21 @@ export function d3dCore(vm) {
     GetClipStatus(c) { const p = c.arg(1); if (p) { mem.write32(p, 0); mem.write32(p + 4, 0); } return D3D_OK; }
     GetTexture(c) { const st = c.arg(1), pp = c.arg(2); if (st >= MAX_STAGES || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
     /** kind of a bound texture for the backend's program key: 0 none, 1 2D, 2 cube, 3 volume */
-    texKind(ptr) { const t = ptr ? com.implAt(ptr) : null; return !t ? 0 : t.faces ? 2 : t.depth ? 3 : 1; }
-    SetTexture(c) { const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
+    texKind(ptr) { return texKindOf(ptr ? com.implAt(ptr) : null); }
+    SetTexture(c) { const st = c.arg(1), t = c.arg(2); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; return this.bindTexture(st, t); }
+    /** SetTexture of stage `st` (validated): each object looked up once (a texture is bound several times per draw) */
+    bindTexture(st, t) {
+      const o = t ? com.objectAt(t) : null;
+      if (t && !o?.impl) return D3DERR_INVALIDCALL;
+      if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; }
+      const old = this.textures[st];
+      if (old !== t) {
+        const oo = old ? com.objectAt(old) : null;
+        this.stateVersion++; if (texKindOf(oo?.impl) !== texKindOf(o?.impl)) this.programVersion++;
+        if (o) com.addRef(o); if (old) com.release(oo); this.textures[st] = t;
+      }
+      this.gfx?.setTexture?.(st, o ? o.impl : null); return D3D_OK;
+    }
     GetTextureStageState(c) { const st = c.arg(1); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; c.out32(3, this.tss[st].get(c.arg(2)) ?? 0); return D3D_OK; }
     SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_TSS.has(ty)) this.programVersion++; noteState(this, TSS_NOTE_GROUPS[st] ?? 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
     ValidateDevice(c) { c.out32(1, 1); return D3D_OK; }
@@ -665,6 +703,7 @@ export function registerDirect3D8(api, vm) {
       if (adapter !== 0 || !pp || !out) return D3DERR_INVALIDCALL;
       const dev = new Device(c, this, adapter, devType, hFocus, behavior, pp);
       dev.ptr = com.create(c.proc, 'IDirect3DDevice8', dev);
+      dev.initShadow(c.proc);
       mem.write32(out, dev.ptr);
       vm.d3dDevice = dev;
       vm.log('gfx', `d3d8: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);

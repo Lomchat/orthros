@@ -68,8 +68,8 @@ export class Scheduler {
   }
 
   /** Wake parked threads whose condition holds or whose timeout passed. Returns true if any woke. */
-  wakeBlocked() {
-    const now = this.vm.clock.now();
+  /** @param {number} [now] the clock's time when the caller has just read it */
+  wakeBlocked(now = this.vm.clock.now()) {
     this.checkedAt = now;
     let any = false;
     for (const t of this.threads) {
@@ -135,8 +135,9 @@ export class Scheduler {
     }
     const clock = this.vm.clock;
     if (cond()) { thread.wakeValue = claim ? claim(false) : undefined; return true; }
-    const deadline = timeoutMs === INFINITE ? Infinity : clock.now() + timeoutMs;
-    if (clock.now() >= deadline) return false;
+    const now = clock.now();
+    const deadline = timeoutMs === INFINITE ? Infinity : now + timeoutMs;
+    if (now >= deadline) return false;
     if (this.vm.canUnwind(thread)) {
       const w = { cond, deadline, reason, claim };
       if (park) { thread.parkWait = w; return PARK; }

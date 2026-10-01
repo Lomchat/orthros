@@ -17,7 +17,7 @@ import { createInlineGfx, createRemoteGfx, createCompareGfx } from '../../gfx/re
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
-import { MATH_KERNELS, FAST_NAMES, FAST_PROF } from '../../cpu/jit/runtime.js';
+import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/runtime.js';
 import { listRegion } from '../../cpu/jit/listing.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
@@ -540,7 +540,7 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     const st = host?.gfx?.device?.stats ?? {}, prev = markPrev ?? {}, d = (k) => (st[k] ?? 0) - (prev[k] ?? 0);
@@ -554,7 +554,9 @@ self.onmessage = (e) => {
     // (frame times of the phase: percentiles of the frames presented since the previous mark; render worker waits)
     const fs = markPrev?.at !== undefined ? host?.frameStats(markPrev.at) : null, g = host?.gfx?.stats?.() ?? null, gp = markPrev?.gl;
     if (fs) log('gfx', `mark ${m.label}: frames ${fs.frames} in ${fs.seconds.toFixed(1)} s (${fs.fps.toFixed(1)} fps), frame time p50 ${fs.p50.toFixed(1)} p90 ${fs.p90.toFixed(1)} p99 ${fs.p99.toFixed(1)} max ${fs.max.toFixed(0)} ms, >33 ms ${fs.over33}${g ? `; render: waits ${(g.gpuWaitMs - (gp?.gpuWaitMs ?? 0)).toFixed(0)} ms (fences ${(g.fenceMs - (gp?.fenceMs ?? 0)).toFixed(0)} ms in ${g.fenceWaits - (gp?.fenceWaits ?? 0)}, frames ${(g.frameMs - (gp?.frameMs ?? 0)).toFixed(0)} ms in ${g.frameWaits - (gp?.frameWaits ?? 0)}, readbacks ${(g.readbackMs - (gp?.readbackMs ?? 0)).toFixed(0)} ms), replay ${((g.replayMs ?? 0) - (gp?.replayMs ?? 0)).toFixed(0)} ms, buffer data ${(((g.bufDataBytes ?? 0) - (gp?.bufDataBytes ?? 0)) / 1048576).toFixed(1)} MiB, ${(g.cows ?? 0) - (gp?.cows ?? 0)} surface copies (${(((g.cowBytes ?? 0) - (gp?.cowBytes ?? 0)) / 1048576).toFixed(1)} MiB)${g.compared !== undefined ? `, ${g.compared} frames compared, ${g.differing} differing` : ''}` : ''}`);
-    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
+    if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release`);
+    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });

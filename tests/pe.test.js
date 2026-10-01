@@ -7,6 +7,7 @@ import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/host/display.js';
 import { wmOf } from '../src/win32/user32.js';
+import { FAST_STATS } from '../src/cpu/jit/runtime.js';
 
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 
@@ -185,6 +186,24 @@ test('bench.exe: JIT region consolidation into multi-function modules keeps resu
   const out = vm.stdout.join('');
   for (const [k, v] of [['int', '49965701'], ['sieve', '000245c5'], ['memory', '213a0000'], ['string', '00fa0000'], ['fpu', '000007d1'], ['sse', 'd4fd7eca']]) assert.ok(out.includes(`${k} 0x${v}`), `${k} checksum in\n${out}`);
   assert.ok(vm.jit.stats.consolidations >= 5, `consolidations: ${vm.jit.stats.consolidations}`);
+});
+
+// The JIT's API fast paths (deferred state setters, the issued-state filter dropping redundant sets, COM AddRef/Release
+// counted in guest memory) must not change anything the application observes: a pseudo-random sequence of Direct3D 9
+// state calls, bindings, reference counting, state blocks and a Reset gives the interpreter's output under the JIT.
+test('dx9state.exe: Direct3D 9 states and reference counts under the JIT fast paths = the interpreter', { skip: skip('dx9state.exe') }, () => {
+  const runs = [true, false].map((jit) => {
+    const { vm } = boot('dx9state.exe', { jit });
+    assert.equal(vm.run(), 0);
+    return { vm, out: vm.stdout.join('') };
+  });
+  const [j, i] = runs;
+  assert.equal(j.out, i.out, 'same getter values and AddRef/Release results');
+  const out = Object.fromEntries(j.out.trim().split('\n').map((l) => l.split('=')));
+  assert.deepEqual([out.device, out.reset, out.devrelease], ['0x00000000', '0x00000000', '0x00000000']);
+  assert.deepEqual([j.vm.d3dDevice.stateVersion, j.vm.d3dDevice.programVersion], [i.vm.d3dDevice.stateVersion, i.vm.d3dDevice.programVersion], 'the same state changes reached the device');
+  const st = j.vm.mem.read32(FAST_STATS), refs = j.vm.mem.read32(FAST_STATS + 4);
+  assert.ok(st > 100 && refs > 100, `fast paths exercised: ${st} sets dropped, ${refs} AddRef/Release`);
 });
 
 test('d3dlost.exe: Direct3D 9 Reset, a fullscreen device lost while the application is inactive', { skip: skip('d3dlost.exe') }, () => {

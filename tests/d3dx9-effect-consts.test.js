@@ -73,7 +73,7 @@ function setup() {
   const objects = new Map();
   const com = {
     interface() {},
-    create(p, iface, impl) { const ptr = heap.alloc(16); objects.set(ptr, { ptr, impl, refs: 1 }); impl.comObject = objects.get(ptr); return ptr; },
+    create(p, iface, impl) { const ptr = heap.alloc(24); objects.set(ptr, { ptr, impl, refs: 1 }); impl.comObject = objects.get(ptr); return ptr; },
     objectAt: (p) => objects.get(p >>> 0) ?? null,
     implAt: (p) => objects.get(p >>> 0)?.impl ?? null,
     addRef: (o) => ++o.refs, release: (o) => --o.refs,
@@ -191,4 +191,21 @@ test('effect constants: values sent to a state manager are sent to the device ag
   fx.CommitChanges(ctx(fxPtr));
   assert.deepEqual(c(4), [5, 6, 7, 8], 'the device receives the current value');
   fx.EndPass(ctx(fxPtr)); fx.End(ctx(fxPtr));
+});
+
+// BeginPass publishes, at +20 of the effect's guest object, the device states its CommitChanges may set (runtime.js
+// COMMIT_LIST) for the JIT's issued-state filter: none here (a vertex shader without samplers); "any" without a shadow.
+test('effect commit list: the shadowed states CommitChanges may set, published at BeginPass', () => {
+  const { mem, dev, fx, fxPtr, ctx } = setup();
+  fx.Begin(ctx(fxPtr, 0, 0));
+  fx.BeginPass(ctx(fxPtr, 0));
+  let list = mem.read32(fxPtr + 20);
+  assert.ok(list, 'a list');
+  assert.deepEqual([mem.read32(list), mem.read32(list + 4)], [0, 0xffffffff], 'a device without a shadow: any state');
+  fx.EndPass(ctx(fxPtr)); fx.End(ctx(fxPtr));
+  dev.shadow = 0x12340000;
+  fx.Begin(ctx(fxPtr, 0, 0));
+  fx.BeginPass(ctx(fxPtr, 0));
+  list = mem.read32(fxPtr + 20);
+  assert.deepEqual([mem.read32(list), mem.read32(list + 4)], [0x12340000, 0], 'the pass sets no render, stage or sampler state at CommitChanges');
 });

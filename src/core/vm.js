@@ -156,27 +156,32 @@ export class Vm {
         for (const cb of proc.exe.tls?.callbacks ?? []) this.callGuest(main, cb, [proc.exe.base, 1, 0]);
       }
       // top-level scheduler loop: every thread runs in slices at depth 1 (see sched.js)
+      // (one clock read per slice: it ends the slice's time, starts the next one's and dates the wake-up pass — a
+      // thread yielding thousands of times per second made the reads a fifth of the switch)
+      let t0 = performance.now();
       for (;;) {
         const t = this.sched.pickRunnable(null);
         if (t) {
-          const t0 = performance.now();
           this.runThread(t, TOP_SLICE);
-          t.runMs = (t.runMs ?? 0) + performance.now() - t0; // (diagnostics: time per thread, nested slices included)
-          this.sched.wakeBlocked();
-          if (untilMs !== Infinity && performance.now() >= untilMs) return RUN_RUNNING;
+          const t1 = performance.now();
+          t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)
+          this.sched.wakeBlocked(this.clock.at ? this.clock.at(t1) : undefined);
+          if (untilMs !== Infinity && t1 >= untilMs) return RUN_RUNNING;
+          t0 = t1;
           continue;
         }
         if (proc.threads.every((x) => x.state === TS.DONE)) break;
         if (untilMs !== Infinity && this.host?.cooperative) {
           // cooperative host (browser worker): hand the wait back to the event loop when it is long
           if (this.host.pump) this.host.pump();
-          if (this.sched.wakeBlocked()) continue;
+          if (this.sched.wakeBlocked()) { t0 = performance.now(); continue; }
           const wake = this.sched.nextWake();
           if (wake === Infinity) return RUN_IDLE;
           const delay = wake - this.clock.now();
           if (delay > 2) return { state: 'sleep', until: performance.now() + (this.clock.real ? this.clock.real(delay) : delay) };
         }
         this.sched.idle();
+        t0 = performance.now();
       }
       // every thread returned/exited without ExitProcess: the process ends with the main thread's code
       return { state: 'exited', code: this.finish(main.exitCode === 0x103 ? main.cpu.eax : (main.exitCode ?? 0)) };
@@ -304,8 +309,10 @@ export class Vm {
     const cpu = thread.cpu;
     // the instruction budget of a slice persists across API calls (API-dense code must yield too)
     let budget = SLICE_INSNS;
-    // (one options object per call, not per exec.run — that runs after every API call; the executors read it on entry)
-    const runOpts = { stopAt: until, maxInsns: 0 };
+    // (one options object per nesting depth, not per call nor per exec.run — that runs after every API call; the
+    // executors read it on entry)
+    const runOpts = (this.runOptsByDepth ??= [])[this.depth] ??= { stopAt: -1, maxInsns: 0 };
+    runOpts.stopAt = until;
     try {
       for (;;) {
         exec.cpu = cpu;
@@ -423,18 +430,33 @@ export class Vm {
     const m = this.mem;
     const n = m.read32(DEFER_QUEUE);
     if (!n) return;
-    m.write32(DEFER_QUEUE, 0);
-    const ctx = this.ctx;
-    for (let p = DEFER_QUEUE + 16, end = p + n; p < end;) {
-      const idx = m.read32(p), argc = m.read32(p + 4), words = (m.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
-      const def = this.api.thunk(idx).def;
-      ctx.bind(thread, def); ctx.sp = p + 4; // arg(i) reads the recorded arguments
-      this.apiCalls++;
-      if (this.apiHistCounts && idx < this.apiHistCounts.length) this.apiHistCounts[idx]++;
+    m.write32(DEFER_QUEUE, 0); m.write32(DEFER_QUEUE + 4, 0); m.write32(DEFER_QUEUE + 8, 0);
+    const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc;
+    let calls = 0;
+    for (let p = DEFER_QUEUE + 16, end = p + n; p < end; calls++) {
+      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], words = (u32[(DEFER_SPEC >>> 2) + idx] >>> 8) & 0xff;
+      const def = thunks[idx].def;
+      ctx.thread = thread; ctx.cpu = cpu; ctx.proc = proc; ctx.def = def; ctx.sp = p + 4; // (Ctx.bind; arg(i) reads the recorded arguments)
+      if (hist && idx < hist.length) hist[idx]++;
       def.fn(ctx);
       p += 4 * (2 + argc + words);
     }
+    this.apiCalls += calls;
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
+    if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
+  }
+
+  /**
+   * Measurement switch (harness dbg:ORTHROS_API_FAST_OFF=1, then =): the fast paths of COM AddRef/Release and the
+   * issued-state filter of the Direct3D state setters off / on again within one session. The filter comes back on only
+   * once the deferred queue is empty (sets queued meanwhile did not update the shadow; their handlers do when drained).
+   */
+  setApiFastPaths(on) {
+    this.jit?.setRefFast?.(on);
+    this.stateFilterOff = !on;
+    if (on && this.mem.u32[DEFER_QUEUE >>> 2]) { this.shadowResync = true; return; }
+    this.shadowResync = false;
+    for (const d of this.d3dDevices ?? []) d.shadowOn?.();
   }
 
   dispatchThunk(thread, idx) {
