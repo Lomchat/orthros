@@ -496,8 +496,8 @@ export class Vm {
    */
   dispatchThunk(thread, idx) {
     if (!acct.apiTimed(idx)) return this.dispatchThunkBody(thread, idx);
-    const outer = acct.cur !== ACCT.api, p = acct.enter(ACCT.api), a0 = acct.acc[ACCT.api], d0 = acct.acc[ACCT.draw];
-    try { return this.dispatchThunkBody(thread, idx); } finally { acct.apiEnd(p, idx, a0, d0, outer); }
+    const outer = acct.cur !== ACCT.api, p = acct.enter(ACCT.api), a0 = acct.acc[ACCT.api], d0 = acct.acc[ACCT.draw], n0 = acct.nestApi, m0 = acct.nestDraw;
+    try { return this.dispatchThunkBody(thread, idx); } finally { acct.apiEnd(p, idx, a0, d0, outer, n0, m0); }
   }
   dispatchThunkBody(thread, idx) {
     if (this.mem.u32[DEFER_QUEUE >>> 2]) this.drainDeferred(thread);
