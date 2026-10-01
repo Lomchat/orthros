@@ -71,9 +71,12 @@ export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
  * DEFER_HANDLE: the first argument after `this` must be one of the object's handles — within the
  * DEFER_HANDLE_BYTES block whose address the object keeps at +12 (com.js) — anything else (a D3DX
  * parameter name, whose string may be gone by the time the call runs) goes to JavaScript at once.
+ * DEFER_OBJ: queued only while the object keeps a non-zero word at +12 (an effect clears it while the application's
+ * state manager receives its states: applying them then calls guest code, which must run at the call, on its thread).
+ * Both flags also require that word to be non-zero.
  */
 export const FID_DEFER = 16;
-export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096;
+export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096, DEFER_OBJ = 1 << 17;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 export const DEFER_QUEUE = JIT_SCRATCH_BASE + 0x60000; // +0 bytes used, records from +16
 /** profiling runtime: calls handled by the fast path, u32 per fast API id; at +0x80 a count, at +0x100 a ring of the
@@ -89,6 +92,8 @@ export const DEFER_SPECS = {
     ['SetStreamSource', 4], ['SetIndices', 3], ['SetTexture', 3], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
   // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
   ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16], ['SetTexture', 3]], DEFER_HANDLE),
+  // the pass's states set again from the parameters (only device calls observe them; always D3D_OK), the pass closed
+  ...deferSpecs('ID3DXEffect', [['CommitChanges', 1], ['EndPass', 1]], DEFER_OBJ),
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
@@ -316,11 +321,15 @@ export function buildRuntime(opts = {}) {
         case 15: c.get(STATE).i32(PROC_CONSTS).i32load(0); ret(0); break;
         case FID_DEFER: { // record the call (see DEFER_SPEC): TM = spec, N = argc, P = record address, A0 = size
           c.get(IDX).i32(2).shl().i32load(DEFER_SPEC).set(TM);
-          c.get(TM).i32(DEFER_HANDLE).and();
-          const handle = c.if_(); // (A0 = this, A1 = the handle)
+          c.get(TM).i32(DEFER_HANDLE | DEFER_OBJ).and();
+          const guarded = c.if_(); // (A0 = this, A1 = the handle)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A0).i32load(12).eqz().br_if(notHandled);
+          c.get(TM).i32(DEFER_HANDLE).and();
+          const handle = c.if_();
           c.get(A1).get(A0).i32load(12).sub().i32(DEFER_HANDLE_BYTES).ge_u().br_if(notHandled);
           c.end(); void handle;
+          c.end(); void guarded;
           c.get(TM).i32(15).and().set(N);
           c.get(N).get(TM).i32(8).shr_u().i32(0xff).and().add().i32(2).add().i32(2).shl().set(A0);
           c.i32(DEFER_QUEUE).i32load(0).tee(A1).get(A0).add().i32(DEFER_CAP).gt_u().br_if(notHandled); // full: JavaScript drains, then handles it
