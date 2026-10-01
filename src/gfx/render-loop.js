@@ -11,7 +11,10 @@ export function publishTail(ctl, replayer) {
   if (Atomics.load(ctl, CTL.EMU_WAIT)) Atomics.notify(ctl, CTL.TAIL);
 }
 
-const yieldTask = (() => { let ch = null, resolve = null; return () => new Promise((r) => { if (!ch) { ch = new MessageChannel(); ch.port1.onmessage = () => { const f = resolve; resolve = null; f?.(); }; } resolve = r; ch.port2.postMessage(0); }); })();
+// (a return to the event loop without a timer's clamp, the other tasks — messages, canvas events — served: the
+// scheduler's yield where it exists; in Node setImmediate (messages to one port are drained in one go there and would
+// starve the others); else a message to itself)
+const yieldTask = typeof globalThis.scheduler?.yield === 'function' ? () => globalThis.scheduler.yield() : typeof setImmediate === 'function' ? () => new Promise((r) => setImmediate(r)) : (() => { let ch = null, resolve = null; return () => new Promise((r) => { if (!ch) { ch = new MessageChannel(); ch.port1.onmessage = () => { const f = resolve; resolve = null; f?.(); }; } resolve = r; ch.port2.postMessage(0); }); })();
 
 /**
  * Run until `stop()` is true. `backend`: the WebGL backend factory object (program prewarm and resolution between
