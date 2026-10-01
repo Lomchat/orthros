@@ -172,7 +172,7 @@ export function registerDirectInput(api, vm) {
       const size = c.arg(1), p = c.arg(2);
       if (!this.format) return DIERR_INVALIDPARAM;
       if (!this.acquired) return DIERR_NOTACQUIRED;
-      if (!p || size < this.format.size) return DIERR_INVALIDPARAM;
+      if (!p || size !== this.format.size) return DIERR_INVALIDPARAM; // (the buffer is the data format's size exactly, as DirectInput checks)
       mem.fill(p, size, 0);
       if (this.kind === 'keyboard') { mem.writeBytes(p, this.keys.subarray(0, Math.min(256, size))); return DI_OK; }
       const m = this.mouse;
@@ -275,7 +275,10 @@ export function registerDirectInput(api, vm) {
       const size = this.wide ? 0x2f4 : 0x244; // DIDEVICEINSTANCE(A/W) with DI8 fields
       const list = [];
       const kbType = this.v8 ? DI8DEVTYPE_KEYBOARD | (4 << 8) : DIDEVTYPE_KEYBOARD | (4 << 8), msType = this.v8 ? DI8DEVTYPE_MOUSE | (2 << 8) : DIDEVTYPE_MOUSE | (2 << 8);
-      const want = (t) => type === 0 || type === (t & 0xff) || (this.v8 && type === 4 && (t & 0xff) === DI8DEVTYPE_KEYBOARD) || (this.v8 && type === 2 && (t & 0xff) === DI8DEVTYPE_MOUSE) || (this.v8 && type === 1 && (t & 0xff) <= 0x13);
+      // the filter: a device type, or (DirectInput 8) a class — DI8DEVCLASS_DEVICE 1 (other devices), POINTER 2 (mice),
+      // KEYBOARD 3, GAMECTRL 4 (joysticks, gamepads...: none here)
+      const cls = (t) => ((t & 0xff) === DI8DEVTYPE_MOUSE ? 2 : (t & 0xff) === DI8DEVTYPE_KEYBOARD ? 3 : (t & 0xff) === 0x11 ? 1 : 4);
+      const want = (t) => type === 0 || type === (t & 0xff) || (this.v8 && type >= 1 && type <= 4 && cls(t) === type);
       if (want(kbType)) list.push({ guid: GUID_SysKeyboard, type: kbType, name: 'Keyboard' });
       if (want(msType)) list.push({ guid: GUID_SysMouse, type: msType, name: 'Mouse' });
       const buf = c.proc.processHeap.alloc(size);
