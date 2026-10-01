@@ -28,7 +28,7 @@ const LOCALE_EN_US = new Map(Object.entries({
   0x40: 'September', 0x41: 'October', 0x42: 'November', 0x43: 'December',
   0x44: 'Jan', 0x45: 'Feb', 0x46: 'Mar', 0x47: 'Apr', 0x48: 'May', 0x49: 'Jun', 0x4a: 'Jul', 0x4b: 'Aug', 0x4c: 'Sep', 0x4d: 'Oct',
   0x4e: 'Nov', 0x4f: 'Dec', 0x50: '', 0x51: '-', 0x52: '3', 0x53: '0', 0x54: '1', 0x55: '0', 0x56: '1', 0x57: '0',
-  0x59: 'en', 0x5a: 'US', 0x5c: 'en-US', 0x67: 'eng', 0x68: 'USA',
+  0x59: 'en', 0x5a: 'US', 0x5b: '244', 0x5c: 'en-US', 0x67: 'eng', 0x68: 'USA',
   0x1001: 'English', 0x1002: 'United States', 0x1003: 'h:mm:ss tt', 0x1004: '1252', 0x1005: '0', 0x1006: 'MMMM, yyyy',
   0x1007: 'US Dollar', 0x1008: 'US Dollar', 0x1009: '1', 0x100a: '1', 0x100b: '0', 0x100c: '6', 0x100d: '0', 0x100e: '',
   0x100f: '', 0x1010: '1', 0x1011: '10000', 0x1012: '037', 0x1014: '1',
@@ -590,7 +590,7 @@ export function registerKernel32File(api, vm) {
     const need = number ? (wide ? 2 : 4) : s.length + 1; // (a number is a DWORD: its size in TCHARs)
     if (n === 0) return need;
     if (n < need) return c.fail(E.INSUFFICIENT_BUFFER);
-    if (number) { mem.write32(c.arg(2), parseInt(s, 10) | 0); return need; }
+    if (number) { const t = lctype & 0xffff; mem.write32(c.arg(2), parseInt(s, t === 0x01 || t === 0x09 ? 16 : 10) | 0); return need; } // (LOCALE_ILANGUAGE / IDEFAULTLANGUAGE are hexadecimal)
     if (wide) mem.writeWString(c.arg(2), s); else mem.writeCString(c.arg(2), s);
     return need;
   };
