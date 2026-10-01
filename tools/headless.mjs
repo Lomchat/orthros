@@ -35,7 +35,10 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // --capture-at @N captures N seconds after the anchor.
 // A/B within one session: dbg:NAME=value sets a worker debug global now (NAME=: unset), mark:<label> closes a phase
 // ([cpu] worker CPU and frames of the phase, [gfx] mark: texture work and the API calls of the phase), glcount:<frames>
-// counts the WebGL calls per frame from now. dbg:ORTHROS_API_FAST_OFF=1 / dbg:ORTHROS_API_FAST_OFF= switches the
+// counts the WebGL calls per frame from now. Every phase (and the last one, at the end of the run) gets a [frames] report:
+// frames > 33 / > 50 ms per minute, frame and work percentiles, time by category of the mean and the slow frames, the
+// slow frames' excess over the median frame by category, the worst frames (src/core/frame-acct.js); --phases <file>
+// writes them as JSON. dbg:ORTHROS_API_FAST_OFF=1 / dbg:ORTHROS_API_FAST_OFF= switches the
 // COM AddRef/Release fast path and the Direct3D issued-state filter off / on again (Vm.setApiFastPaths).
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
@@ -71,7 +74,7 @@ const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
 const stopOn = opt('stop-on');
 let stopSeen = null, stopCpu = null;
 // (with the busiest worker thread's CPU time then: the emulator's, far less sensitive to the machine's load than the time)
-page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang)\]/.test(t) || args.includes('--verbose')) console.log(t); if (stopOn && stopSeen === null && t.includes(stopOn)) { stopSeen = Date.now(); try { stopCpu = Math.max(0, ...[...workerThreadTicks()].filter(([k]) => !k.startsWith('gpu:')).map(([, v]) => v)) / 100; } catch { /* no /proc */ } } });
+page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang|frames)\]/.test(t) || args.includes('--verbose')) console.log(t); if (stopOn && stopSeen === null && t.includes(stopOn)) { stopSeen = Date.now(); try { stopCpu = Math.max(0, ...[...workerThreadTicks()].filter(([k]) => !k.startsWith('gpu:')).map(([, v]) => v)) / 100; } catch { /* no /proc */ } } });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 page.on('crash', () => console.log('[pageerror] page crashed (renderer died)'));
 browser.on('disconnected', () => console.log('[pageerror] browser disconnected'));
@@ -536,6 +539,9 @@ for (;;) {
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
     // --corpus <file>: distinct instruction forms of the translated code (input of the `corpus` conformance suite)
     if (opt('corpus')) { await page.evaluate(() => { window.orthros.corpus = null; window.orthros.worker?.postMessage({ type: 'corpus' }); }); for (let i = 0; i < 100; i++) { const c = await page.evaluate(() => window.orthros.corpus); if (c) { fs.mkdirSync(path.dirname(opt('corpus')), { recursive: true }); fs.writeFileSync(opt('corpus'), c); const j = JSON.parse(c); console.log(`[corpus] ${j.forms.length} forms from ${j.insns} instructions -> ${opt('corpus')}`); break; } await page.waitForTimeout(200); } }
+    // the last phase's frame report (a mark named "end"), the phases as JSON (--phases <file>)
+    await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'mark', label: 'end' })).catch(() => {}); await page.waitForTimeout(300);
+    if (opt('phases')) { const ph = await page.evaluate(() => window.orthros.phases ?? []).catch(() => []); fs.writeFileSync(opt('phases'), JSON.stringify({ manifest: name, args: args.join(' '), phases: ph }, null, 1)); console.log(`[frames] ${ph.length} phase reports -> ${opt('phases')}`); }
     await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })); await page.waitForTimeout(500); const r = await page.evaluate(() => window.orthros.report); if (r) console.log(r); await saveProfile(); break; }
   await page.waitForTimeout(1000);
 }

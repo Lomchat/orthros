@@ -61,6 +61,7 @@ async function main() {
   if (missing) { $('menu').classList.add('hidden'); showStatus('Orthros cannot run here', missing, null, true); return; }
   const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   state.telemetry = !!config.telemetry && !headless;
+  state.version = config.version ?? null; // (the served build: telemetry is read with it)
   state.encodedRanges = !!config.encodedRanges && params.get('encoded') !== '0';
   state.programCache = !!config.programCache && params.get('programs') !== '0';
   state.regionCache = !!config.regionCache && params.get('regions') !== '0'; // (code regions of earlier sessions translated while the game waits; ?regions=0: off) // (GL programs of earlier sessions compiled ahead; ?programs=0: off)
@@ -167,6 +168,10 @@ function onWorkerMessage(m) {
     case 'corpus': state.corpus = m.text; break;
     case 'profile': state.profile = m.files; break;
     case 'frames': state.frames = m.text; log('frames', m.text); break;
+    // the options the worker runs with (render worker, asynchronous reads, ...): with the build version, the context of
+    // this session's frame measurements
+    case 'perf-options': state.perfOptions = m.options; telemetryEvent({ event: 'options', version: state.version, options: m.options }); break;
+    case 'phase': (state.phases ??= []).push(m.report); if (state.phases.length > 100) state.phases.shift(); break; // (harness marks: frame report of the phase)
     case 'dump': { const u8 = new Uint8Array(m.data); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); (state.dumps ??= []).push({ name: m.name, data: btoa(bin) }); break; } // frame-capture PNGs, collected by the headless harness
   }
 }
@@ -343,6 +348,9 @@ function recordSample(m) {
   const jitMs = m.jitMs ?? 0, pj = state.lastJitMs ?? jitMs; state.lastJitMs = jitMs;
   // (busy: % of the interval the worker spent running the game; jit: ms spent translating code in the interval)
   const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, busy: m.busy ?? null, jit: jitMs - pj, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
+  // frame accounting of the interval (frame-acct.js): mean work and time by category per frame (ms), the slow frames'
+  // categories summed and the worst one [ms, work ms, categories] — what made frames slow
+  const fa = m.acct; if (fa) { smp.w = fa.w; smp.c = fa.c; if (fa.sc) { smp.sc = fa.sc; smp.wf = fa.wf; } }
   state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);
@@ -362,7 +370,7 @@ addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
 function environment() {
   let gpu = null;
   try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); } catch { /* unknown */ }
-  return { ua: navigator.userAgent, gpu, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}` };
+  return { version: state.version ?? null, ua: navigator.userAgent, gpu, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}` };
 }
 
 // ---------------------------------------------------------------- input

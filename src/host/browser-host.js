@@ -4,6 +4,8 @@
 // consumed by an AudioWorklet, cooperative waits (the worker returns to its event loop between
 // slices). Frames are explicit on purpose: a placeholder canvas committed automatically at the end
 // of a worker task showed half-drawn or missing frames under load.
+import { acct, C as ACCT, FrameStats } from '../core/frame-acct.js';
+
 export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
 export const EV = { MOUSEMOVE: 1, MOUSEDOWN: 2, MOUSEUP: 3, WHEEL: 4, KEYDOWN: 5, KEYUP: 6, CHAR: 7, FOCUS: 8 };
@@ -38,6 +40,11 @@ export class BrowserDisplay {
     const W = this.width, H = this.height;
     const x0 = Math.max(0, x), y0 = Math.max(0, y), x1 = Math.min(W, x + w), y1 = Math.min(H, y + h);
     if (x1 <= x0 || y1 <= y0) return;
+    const ap = acct.enter(ACCT.present);
+    try { this.present2d(surface, x, y, x0, y0, x1, y1); } finally { acct.leave(ap); }
+  }
+  present2d(surface, x, y, x0, y0, x1, y1) {
+    const W = this.width;
     const px = new Uint32Array(this.desk.data.buffer);
     const row = this.row, cw = x1 - x0;
     for (let yy = y0; yy < y1; yy++) {
@@ -107,6 +114,9 @@ export class BrowserHost {
     this.presentMs = 0;
     // slow-frame diagnostics: the worker installs `frameProbe()` (counters snapshot) and `onSlowFrame(dt, deltas)`
     this.frameProbe = null; this.onSlowFrame = null; this.lastProbe = null; this.slowFrameLogs = 0; this.slowFrameFrom = 0;
+    // per-frame time accounting (frame-acct.js): every frame's categories, by interval and by phase
+    this.frameAcct = new FrameStats();
+    this.lastCats = null; // (the categories of the last frame: the slow-frame diagnostics)
   }
   /** Drain the shared input ring into the local queue. */
   pump() {
@@ -135,9 +145,11 @@ export class BrowserHost {
   waitEvent(ms) {
     const t = Math.min(ms, 50);
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
-    const t0 = performance.now();
+    const ap = acct.enter(ACCT.wait); // (a guest thread's wait in a nested call: pacing, not work)
+    const t0 = acct.at;
     Atomics.wait(this.ctl, CTL.WAKE, 0, t);
-    this.waitMs = (this.waitMs ?? 0) + performance.now() - t0;
+    acct.leave(ap);
+    this.waitMs = (this.waitMs ?? 0) + acct.at - t0;
     this.pump();
   }
   pollInput() { this.pump(); return this.inputQueue.length ? this.inputQueue.splice(0) : null; }
@@ -155,9 +167,11 @@ export class BrowserHost {
   }
   framePresented() {
     this.framesPresented++;
-    const now = performance.now();
+    const cats = acct.frame(), now = acct.at;
+    this.lastCats = cats;
     if (this.lastFrameAt) {
       const dt = now - this.lastFrameAt; this.frameTimes.push(dt); this.frameTimesAt.push(now);
+      this.frameAcct.add(dt, cats, now, acct.lastReads);
       // (the last 10 s of frames, at most 600: a loading phase's long frames leave the live percentiles once it is over)
       while (this.frameTimes.length > 600 || (this.frameTimesAt.length && now - this.frameTimesAt[0] > 10000)) { this.frameTimes.shift(); this.frameTimesAt.shift(); } this.frameLog.push(now, dt); this.probeFrame(dt);
       const iv = this.interval ??= { max: 0, slow33: 0, slow50: 0 }; // (per stats interval: the live frame-rate display)

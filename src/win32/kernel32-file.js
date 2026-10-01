@@ -154,7 +154,8 @@ export function registerKernel32File(api, vm) {
       if (p) f.ioOwner = c.thread;
       // (a nested wait elsewhere blocks the event loop, so the fetch cannot complete during it: the parked read then
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
-      if (p) { let done = false; p.then(() => { done = true; vm.host?.wake?.(); }, () => { done = true; vm.host?.wake?.(); }); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
+      // (readsInFlight: the worker's frame accounting tells a wait for a read from the game's own pacing)
+      if (p) { let done = false; vm.readsInFlight = (vm.readsInFlight ?? 0) + 1; const end = () => { done = true; vm.readsInFlight--; vm.host?.wake?.(); }; p.then(end, end); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
     const d = f.file.read(pos, n);

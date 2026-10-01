@@ -9,6 +9,7 @@ import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
 import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
+import { acct, C as ACCT } from '../core/frame-acct.js';
 import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
@@ -473,10 +474,13 @@ export function d3dCore(vm) {
       if (this.lost) return D3DERR_DEVICELOST;
       this.frames++;
       this.lastPresent = vm.clock.now();
-      if (this.gfx) this.gfx.present(this, c.arg(1), c.arg(2), c.arg(3));
-      else vm.host?.onPresent?.(this);
-      if (vm.host?.frameHook) vm.host.frameHook(this);
-      if (this.pp.interval !== 0x80000000 && this.pp.interval !== 0 && vm.host?.vsyncWait) vm.host.vsyncWait();
+      const ap = acct.enter(ACCT.present); // (frame accounting: the present and its hand-off; the frame boundary is in frameHook)
+      try {
+        if (this.gfx) this.gfx.present(this, c.arg(1), c.arg(2), c.arg(3));
+        else vm.host?.onPresent?.(this);
+        if (vm.host?.frameHook) vm.host.frameHook(this);
+        if (this.pp.interval !== 0x80000000 && this.pp.interval !== 0 && vm.host?.vsyncWait) vm.host.vsyncWait();
+      } finally { acct.leave(ap); }
       // back buffer surfaces keep their identity across Present (GetBackBuffer(0) stays the render target);
       // a flipping chain rotates the contents, which the backend does on its side
       return D3D_OK;
@@ -525,7 +529,7 @@ export function d3dCore(vm) {
     // ---- scene
     BeginScene() { if (this.sceneDepth) return D3DERR_INVALIDCALL; this.sceneDepth = 1; this.gfx?.beginScene?.(); return D3D_OK; }
     EndScene() { if (!this.sceneDepth) return D3DERR_INVALIDCALL; this.sceneDepth = 0; this.gfx?.endScene?.(); return D3D_OK; }
-    Clear(c) { const n = c.arg(1), rects = c.arg(2), flags = c.arg(3), color = c.arg(4), z = c.argF32(5), stencil = c.arg(6); this.gfx?.clear?.(n, rects, flags, color, z, stencil); if (!this.gfx) this.clears = (this.clears ?? 0) + 1; return D3D_OK; }
+    Clear(c) { const n = c.arg(1), rects = c.arg(2), flags = c.arg(3), color = c.arg(4), z = c.argF32(5), stencil = c.arg(6); if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.clear?.(n, rects, flags, color, z, stencil); else { const ap = acct.enter(ACCT.draw); try { this.gfx.clear?.(n, rects, flags, color, z, stencil); } finally { acct.leave(ap); } } } if (!this.gfx) this.clears = (this.clears ?? 0) + 1; return D3D_OK; }
     touchTransform(st) { this.transformSlotVersion.set(st, ++this.transformVersion); this.gfx?.transformTouched?.(st); }
     touchAllTransforms() { this.transformAllVersion = ++this.transformVersion; }
     SetTransform(c) {
@@ -602,10 +606,10 @@ export function d3dCore(vm) {
     SetCurrentTexturePalette(c) { this.currentPalette = c.arg(1); return D3D_OK; }
     GetCurrentTexturePalette(c) { c.out32(1, this.currentPalette); return D3D_OK; }
     // ---- drawing
-    DrawPrimitive(c) { const type = c.arg(1), start = c.arg(2), count = c.arg(3); this.draws++; this.gfx?.drawPrimitive?.(type, start, count); return D3D_OK; }
-    DrawIndexedPrimitive(c) { const type = c.arg(1), minIdx = c.arg(2), numV = c.arg(3), start = c.arg(4), count = c.arg(5); this.draws++; this.gfx?.drawIndexedPrimitive?.(type, minIdx, numV, start, count); return D3D_OK; }
-    DrawPrimitiveUP(c) { const type = c.arg(1), count = c.arg(2), data = c.arg(3), stride = c.arg(4); this.draws++; this.gfx?.drawPrimitiveUP?.(type, count, data, stride); return D3D_OK; }
-    DrawIndexedPrimitiveUP(c) { const type = c.arg(1), minIdx = c.arg(2), numV = c.arg(3), count = c.arg(4), idx = c.arg(5), ifmt = c.arg(6), data = c.arg(7), stride = c.arg(8); this.draws++; this.gfx?.drawIndexedPrimitiveUP?.(type, minIdx, numV, count, idx, ifmt, data, stride); return D3D_OK; }
+    DrawPrimitive(c) { const type = c.arg(1), start = c.arg(2), count = c.arg(3); this.draws++; if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.drawPrimitive?.(type, start, count); else { const ap = acct.enter(ACCT.draw); try { this.gfx.drawPrimitive?.(type, start, count); } finally { acct.leave(ap); } } } return D3D_OK; }
+    DrawIndexedPrimitive(c) { const type = c.arg(1), minIdx = c.arg(2), numV = c.arg(3), start = c.arg(4), count = c.arg(5); this.draws++; if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.drawIndexedPrimitive?.(type, minIdx, numV, start, count); else { const ap = acct.enter(ACCT.draw); try { this.gfx.drawIndexedPrimitive?.(type, minIdx, numV, start, count); } finally { acct.leave(ap); } } } return D3D_OK; }
+    DrawPrimitiveUP(c) { const type = c.arg(1), count = c.arg(2), data = c.arg(3), stride = c.arg(4); this.draws++; if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.drawPrimitiveUP?.(type, count, data, stride); else { const ap = acct.enter(ACCT.draw); try { this.gfx.drawPrimitiveUP?.(type, count, data, stride); } finally { acct.leave(ap); } } } return D3D_OK; }
+    DrawIndexedPrimitiveUP(c) { const type = c.arg(1), minIdx = c.arg(2), numV = c.arg(3), count = c.arg(4), idx = c.arg(5), ifmt = c.arg(6), data = c.arg(7), stride = c.arg(8); this.draws++; if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.drawIndexedPrimitiveUP?.(type, minIdx, numV, count, idx, ifmt, data, stride); else { const ap = acct.enter(ACCT.draw); try { this.gfx.drawIndexedPrimitiveUP?.(type, minIdx, numV, count, idx, ifmt, data, stride); } finally { acct.leave(ap); } } } return D3D_OK; }
     ProcessVertices() { return D3DERR_INVALIDCALL; }
     CreateVertexShader(c) {
       const decl = c.arg(1), fn = c.arg(2), pp = c.arg(3), usage = c.arg(4);

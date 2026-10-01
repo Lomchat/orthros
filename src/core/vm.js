@@ -10,6 +10,7 @@ import { ApiRegistry, CC_STDCALL } from '../win32/api.js';
 import { Ctx } from '../win32/ctx.js';
 import { Process, TS } from '../win32/process.js';
 import { Scheduler, WaitUnwind, PARK } from './sched.js';
+import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
@@ -298,6 +299,9 @@ export class Vm {
     const until = opts.until ?? -1;
     const prev = this.current;
     const base = thread.onStack === 0;
+    // (guest code run from inside an API call or another section — a callback, a nested wait running the other
+    // threads — is charged to guest code; top-level slices already are)
+    const acctPrev = this.depth > 0 ? acct.enter(ACCT.guest) : -1;
     this.current = thread;
     this.lastThread = thread;
     thread.onStack++;
@@ -353,6 +357,7 @@ export class Vm {
       if (e instanceof ThreadExit && e.thread === thread && base) return e.code;
       throw e;
     } finally {
+      if (acctPrev >= 0) acct.leave(acctPrev);
       this.depth--;
       thread.onStack--;
       if (opts.top) thread.topLevel = false;
@@ -459,7 +464,16 @@ export class Vm {
     for (const d of this.d3dDevices ?? []) d.shadowOn?.();
   }
 
+  /**
+   * An API call from guest code (thunk `idx`), timed on a sample of the calls for the frame accounting (frame-acct.js:
+   * the others are counted and estimated).
+   */
   dispatchThunk(thread, idx) {
+    if (!acct.apiTimed(idx)) return this.dispatchThunkBody(thread, idx);
+    const outer = acct.cur !== ACCT.api, p = acct.enter(ACCT.api), a0 = acct.acc[ACCT.api], d0 = acct.acc[ACCT.draw];
+    try { return this.dispatchThunkBody(thread, idx); } finally { acct.apiEnd(p, idx, a0, d0, outer); }
+  }
+  dispatchThunkBody(thread, idx) {
     if (this.mem.u32[DEFER_QUEUE >>> 2]) this.drainDeferred(thread);
     const t = this.api.thunk(idx);
     const cpu = thread.cpu;

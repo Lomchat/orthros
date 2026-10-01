@@ -8,6 +8,7 @@
 //   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
 //            the GL programs they built and the code regions they translated (both prepared ahead by later sessions)
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK } from '../vfs/http-backend.js';
@@ -39,6 +40,32 @@ export function loadManifests(dir, extra = null) {
   }
   for (const [name, m] of extra ?? []) out.set(name, m); // (manifests given by the caller: `orthros run <folder>`)
   return out;
+}
+
+/**
+ * The build the server serves, for telemetry: the git commit of the tree, '+' when tracked files under src/ differ
+ * from it, and the newest modification time of the runtime's files (the page loads src/ directly: an edited tree
+ * serves new code without a new commit). Recomputed at most once a minute.
+ */
+let versionCache = null;
+export function buildVersion(root = ROOT) {
+  const now = Date.now();
+  if (versionCache && versionCache.root === root && now - versionCache.at < 60000) return versionCache.value;
+  let commit = 'nogit', dirty = false, newest = 0;
+  const vcs = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+  try { commit = vcs('rev-parse', '--short', 'HEAD') || 'nogit'; dirty = vcs('status', '--porcelain', '--untracked-files=no', '--', 'src') !== ''; } catch { /* not a checkout */ }
+  const walk = (d) => {
+    let es; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (/\.(m?js|html|css)$/.test(e.name)) { try { const t = fs.statSync(f).mtimeMs; if (t > newest) newest = t; } catch { /* gone */ } }
+    }
+  };
+  walk(path.join(root, 'src'));
+  const value = `${commit}${dirty ? '+' : ''}@${newest ? new Date(newest).toISOString().slice(0, 19) + 'Z' : '?'}`;
+  versionCache = { root, at: now, value };
+  return value;
 }
 
 export function createServer(opts = {}) {
@@ -322,7 +349,7 @@ export function createServer(opts = {}) {
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
         return;
       }
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;

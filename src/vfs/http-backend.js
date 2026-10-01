@@ -2,6 +2,8 @@
 // synchronous and the emulator runs in a worker). The directory tree comes from the server's
 // JSON listing so stat/readdir never hit the network; file data is fetched in blocks kept in a
 // bounded LRU cache with read-ahead for sequential access.
+import { acct, C as ACCT } from '../core/frame-acct.js';
+
 export const BLOCK = 1 << 20; // 1 MiB
 /**
  * A random read that misses fetches only the 64 KiB pieces it covers (a round trip plus 64 KiB instead of a whole
@@ -257,6 +259,10 @@ export class HttpBackend {
   }
 
   fetchRange(path, start, end) {
+    const ap = acct.enter(ACCT.net); // (frame accounting: the game thread waits for the network)
+    try { return this.fetchRangeNow(path, start, end); } finally { acct.leave(ap); }
+  }
+  fetchRangeNow(path, start, end) {
     // (a background download shares the connection: it goes away while the game waits, and is fetched again later)
     this.abortBackground();
     const url = this.rangeUrl(path, start, end);
@@ -528,6 +534,10 @@ class HttpFile {
     return missing ? this.b.fetchAhead(this.path, this.len, this.mtime, off, end, bulk) : null;
   }
   read(off, len) {
+    const ap = acct.enter(ACCT.io); // (frame accounting: a game file read — its network part is `net`)
+    try { return this.readNow(off, len); } finally { acct.leave(ap); }
+  }
+  readNow(off, len) {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);

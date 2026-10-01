@@ -6,6 +6,7 @@ import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL
 import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
+import { acct, C as ACCT } from '../core/frame-acct.js';
 
 const IID = {
   IDirect3D9: '81bdcbca-64d4-426d-ae8d-ad0147f4275c', IDirect3DDevice9: 'd0223b96-bf7a-43fd-92bd-a43b0d82b9eb', IDirect3DResource9: '05eec05d-8f7d-4362-b999-d1baf357c704',
@@ -194,7 +195,7 @@ export function registerDirect3D9(api, vm) {
       const src = surfaceOf(c.arg(1)), sr = c.arg(2), dst = surfaceOf(c.arg(3)), dr = c.arg(4);
       if (dst) dst.rgbaCache = null;
       if (!src || !dst) return D3DERR_INVALIDCALL;
-      if (this.gfx?.stretchRect) { const r = this.gfx.stretchRect(src, sr, dst, dr, c.arg(5)); if (r !== null) return r; } // (null: not on the GPU)
+      if (this.gfx?.stretchRect) { const ap = acct.cur === ACCT.api ? acct.enter(ACCT.draw) : -1; let r; try { r = this.gfx.stretchRect(src, sr, dst, dr, c.arg(5)); } finally { if (ap >= 0) acct.leave(ap); } if (r !== null) return r; } // (null: not on the GPU)
       // CPU path: nearest-neighbour copy between same-format surfaces
       if (src.fmt !== dst.fmt) return D3DERR_INVALIDCALL;
       const sb = src.ensureMem(c.proc), db = dst.ensureMem(c.proc);
@@ -245,7 +246,7 @@ export function registerDirect3D9(api, vm) {
     SetNPatchMode(c) { this.npatch = c.argF32(1); return D3D_OK; }
     GetNPatchMode() { return 0; }
     // ---- drawing (DX9 signatures)
-    DrawIndexedPrimitive(c) { const type = c.arg(1), base = c.sarg(2), minIdx = c.arg(3), numV = c.arg(4), start = c.arg(5), count = c.arg(6); this.draws++; this.indices.base = base; this.gfx?.drawIndexedPrimitive?.(type, minIdx, numV, start, count, base); return D3D_OK; }
+    DrawIndexedPrimitive(c) { const type = c.arg(1), base = c.sarg(2), minIdx = c.arg(3), numV = c.arg(4), start = c.arg(5), count = c.arg(6); this.draws++; this.indices.base = base; if (this.gfx) { if (acct.cur !== ACCT.api) this.gfx.drawIndexedPrimitive?.(type, minIdx, numV, start, count, base); else { const ap = acct.enter(ACCT.draw); try { this.gfx.drawIndexedPrimitive?.(type, minIdx, numV, start, count, base); } finally { acct.leave(ap); } } } return D3D_OK; }
     ProcessVertices() { return D3DERR_INVALIDCALL; }
     CreateVertexDeclaration(c) {
       const elems = c.arg(1), pp = c.arg(2);

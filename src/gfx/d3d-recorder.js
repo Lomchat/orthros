@@ -14,6 +14,7 @@
 // the whole buffer.
 import { OP, CTL, VERSION_FIELDS, CONST_FIELDS, RingWriter, TWO32, ACK_SLOTS } from './cmd-ring.js';
 import { copyRectsCpu } from './d3d8-webgl.js';
+import { acct, C as ACCT } from '../core/frame-acct.js';
 
 const READONLY = 0x10, NOOVERWRITE = 0x1000;
 /** frames recorded ahead of the frames the render worker has shown */
@@ -78,6 +79,10 @@ export class RenderLink {
   waitFor(cond, word, kind) {
     if (cond()) return true;
     if (this.failed) return false;
+    const ap = acct.enter(ACCT.render); // (frame accounting: the game thread waits for the render worker)
+    try { return this.waitForNow(cond, word, kind); } finally { acct.leave(ap); }
+  }
+  waitForNow(cond, word, kind) {
     const t0 = performance.now();
     this.publish(true);
     if (this.replayer) { this.drain(this.w.produced); this.account(kind, t0); return cond(); }

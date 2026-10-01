@@ -5,6 +5,7 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MA
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
+import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
 import './translate-sse-int.js';
@@ -148,6 +149,11 @@ export class Jit {
    * x87 mode `fpc`, reached only through the entry guard of the previous version (not in the hash table).
    */
   translate(eip, version = null, assume = undefined) {
+    // (frame accounting: a translation ahead of need — prewarm, while the game waits — stays in that category)
+    const p = acct.enter(acct.cur === ACCT.ahead ? ACCT.ahead : ACCT.jit);
+    try { return this.translateNow(eip, version, assume); } finally { acct.leave(p); }
+  }
+  translateNow(eip, version, assume) {
     const t0 = performance.now();
     // already translated (its hash entry was evicted): re-insert instead of retranslating
     const known = version ? null : this.blockMap.get(eip);
@@ -275,6 +281,10 @@ export class Jit {
   }
   /** A batch from the background worker: each region whose bytes are unchanged and not translated meanwhile is installed. */
   bgInstall(m) {
+    const p = acct.enter(ACCT.install);
+    try { this.bgInstallNow(m); } finally { acct.leave(p); }
+  }
+  bgInstallNow(m) {
     const bg = this.bg; if (!bg || !bg.inflight.has(m.id)) return;
     bg.inflight.delete(m.id);
     bg.bgMs += m.ms ?? 0;
@@ -397,6 +407,12 @@ export class Jit {
 
   // ------------------------------------------------------------------ fallback
   fallback(eip) {
+    // (frame accounting: a sample of the fallbacks is timed, the others counted)
+    if (!acct.interpTimed()) return this.fallbackNow(eip);
+    const p = acct.enter(ACCT.interp), a0 = acct.acc[ACCT.interp];
+    try { return this.fallbackNow(eip); } finally { acct.interpEnd(p, a0); }
+  }
+  fallbackNow(eip) {
     const cpu = this.cpu;
     this.interp.cpu = cpu;
     this.materialize();
@@ -501,7 +517,9 @@ export class Jit {
         this.interp.cpu = cpu;
         cpu.exit = EXIT.NONE;
         if (this.stepHist) { const k = cpu.eip >>> 0; this.stepHist.set(k, (this.stepHist.get(k) ?? 0) + 1); this.stepSample?.(cpu); } // (diagnostics: which instructions)
-        const s = this.interp.step();
+        let s;
+        if (acct.interpTimed()) { const p = acct.enter(ACCT.interp), a0 = acct.acc[ACCT.interp]; try { s = this.interp.step(); } finally { acct.interpEnd(p, a0); } }
+        else s = this.interp.step();
         this.stats.steps = (this.stats.steps ?? 0) + 1;
         if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
         continue;

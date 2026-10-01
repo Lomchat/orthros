@@ -5,6 +5,7 @@
 // helpers sleep in Atomics.wait on a job counter (no message per job: a wake-up costs microseconds, not an event-loop
 // round trip).
 import { encodeDxtRows, dxtBytes } from './d3dx9-image.js';
+import { acct, C as ACCT } from '../core/frame-acct.js';
 
 /** Images with fewer blocks than this are encoded by the caller alone (the hand-off costs more than it saves). */
 export const MIN_PARALLEL_BLOCKS = 1024;
@@ -45,6 +46,10 @@ export class DxtPool {
     Atomics.add(ctl, SEQ, 1); Atomics.notify(ctl, SEQ);
     encodeDxtRows(fmt, new Uint8Array(this.input, 0, inBytes), w, h, cut(helpers, bh, parts), bh, out);
     const t0 = performance.now(), limit = this.firstJob ? this.timeouts.firstMs : this.timeouts.ms; // (the first job waits for the helpers to load)
+    const ap = acct.enter(ACCT.tex); // (frame accounting: waiting for the helpers)
+    try { return this.collect(ctl, out, t0, limit); } finally { acct.leave(ap); }
+  }
+  collect(ctl, out, t0, limit) {
     for (;;) {
       const done = Atomics.load(ctl, DONE);
       if (done >= this.workers.length) break; // (every helper answers every job, with a part or not: none lags behind)
