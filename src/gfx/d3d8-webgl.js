@@ -125,6 +125,7 @@ export class WebGLDevice {
     this.gl = gl; this.dev = dev; this.mem = dev.proc.mem;
     this.log = opts.log ?? (() => {});
     this.pc = opts.programCache ?? null; // (shared by the devices of this GL context, see createWebGLBackend)
+    this.pc?.devices?.add(this); // (their GL state caches told of the programs resolved between slices)
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
@@ -188,7 +189,7 @@ export class WebGLDevice {
     this.reset(this.dev);
     this.log('d3d-webgl: context restored, resources recreated on use');
   }
-  destroy() { const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
+  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
@@ -1085,13 +1086,16 @@ export class WebGLDevice {
   bindAttributes(P, L, upStride = 0, baseVertex = 0) {
     const gl = this.gl, dev = this.dev;
     const vaos = this.vaos ?? (this.vaos = new Map());
-    if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; P.vaoLayout = L.layout; P.vaoOwner = P; }
     // VAOs are per (program, vertex layout): keys of other layouts can share a program (their generated sources are
     // the same, e.g. one vertex shader over declarations that place or type its inputs differently), and a VAO holds
-    // the attribute offsets and types of one layout. The program's first layout owns its VAOs directly.
-    let Q = P.vaoLayout === L.layout ? P.vaoOwner : (P.vaoOwners ??= new Map([[P.vaoLayout, P]])).get(L.layout);
-    if (!Q) { Q = { vid: this.nextVid = this.nextVid + 1, vaoKeys: P.vaoKeys }; P.vaoOwners.set(L.layout, Q); }
-    P.vaoLayout = L.layout; P.vaoOwner = Q;
+    // the attribute offsets and types of one layout. Layouts are told apart by content (layoutVaoSig), not by object:
+    // declaration objects of the same elements (created per mesh, or again and again) share their VAOs. The
+    // program's first layout owns its VAOs directly.
+    const lsig = layoutVaoSig(L.layout);
+    if (P.vid === undefined) { P.vid = this.nextVid = (this.nextVid ?? 0) + 1; P.vaoKeys = []; P.vaoLayout = lsig; P.vaoOwner = P; }
+    let Q = P.vaoLayout === lsig ? P.vaoOwner : (P.vaoOwners ??= new Map([[P.vaoLayout, P]])).get(lsig);
+    if (!Q) { Q = { vid: this.nextVid = this.nextVid + 1, vaoKeys: P.vaoKeys }; P.vaoOwners.set(lsig, Q); }
+    P.vaoLayout = lsig; P.vaoOwner = Q;
     const streams = L.layout.streamList ?? (L.layout.streamList = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]]);
     if (!upStride && streams.length === 1) {
       const s0 = streams[0], s = dev.streams[s0[0]], vb = s ? this.comImpl(s.vb) : null;
@@ -1286,6 +1290,16 @@ export class WebGLDevice {
   }
 }
 
+/**
+ * What a VAO of a vertex layout depends on (cached on the layout object): per stream its number and default stride,
+ * per attribute what attrSpecs reads (names, register, offset, type, components). Equal for two declaration objects
+ * of the same elements.
+ */
+function layoutVaoSig(layout) {
+  return layout.vaoSig ??= (layout.streams ? [...layout.streams] : [[0, { attrs: layout.attrs, stride: layout.stride }]])
+    .map(([n, s]) => `${n}:${s.stride}:` + (s.attrs ?? []).map((a) => `${a.name}/${a.sem}/${a.reg}@${a.offset}${a.type}x${a.comps}`).join(',')).join('|');
+}
+
 /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
 function startProgram(gl, vsSrc, fsSrc, attrNames) {
   const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
@@ -1383,7 +1397,7 @@ export function createWebGLBackend(canvas, log, dump) {
   canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
-  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0 };
+  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set() };
   // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
   // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU
   // process stays out of its way); once the device exists, at presents.
@@ -1407,7 +1421,7 @@ export function createWebGLBackend(canvas, log, dump) {
       if (gl.getSyncParameter(f, gl.SYNC_STATUS) !== gl.SIGNALED) return;
       gl.deleteSync(f); programCache.fence = null; programCache.caughtUp = (programCache.caughtUp ?? 0) + 1;
       const prog = resolvePrewarmed(gl, programCache, log, budgetMs);
-      if (prog && this.device) this.device.gs.prog = prog; // (resolveProgram left it in use: the device's GL state cache)
+      if (prog) for (const d of programCache.devices) d.gs.prog = prog; // (resolveProgram left it in use: every device's GL state cache — several devices share the context)
     },
     createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); },
   };

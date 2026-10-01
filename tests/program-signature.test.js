@@ -213,6 +213,16 @@ test('programs: a program shared by keys of other vertex layouts binds each layo
   dev.vertexDecl = decl(16, 'half'); dev.programVersion++;
   const d = W.program(); calls.length = 0; W.bindAttributes(d.p, d.L, 20);
   assert.deepEqual(texPointer(), [2, recording.HALF_FLOAT, false, 20, 16]);
+  // declaration objects of the same elements (one per mesh, or created again each frame) share their VAOs: no VAO
+  // created, no owner kept per object
+  const vaos = W.stats.vaos;
+  for (let i = 0; i < 50; i++) {
+    dev.vertexDecl = decl(i & 1 ? 16 : 12, i & 1 ? 'half' : 'float'); dev.programVersion++;
+    const e = W.program(); calls.length = 0; W.bindAttributes(e.p, e.L);
+    assert.equal(W.curVao.specs[4 + 5], i & 1 ? 16 : 12);
+    W.bindAttributes(e.p, e.L, 20);
+  }
+  assert.equal(W.stats.vaos, vaos, 'no VAO per declaration object'); assert.equal(a.p.vaoOwners.size, 2);
 });
 
 // With KHR_parallel_shader_compile, builds run on other threads of the GPU process: when it has caught up, only those
@@ -250,9 +260,12 @@ test('program cache: parallel compilation, only finished builds resolved', () =>
   assert.equal(pc.resolved ?? 0, 0); assert.equal(linkQueries, 0, 'unfinished: not resolved');
   finished.add(e2.prog);
   const W = backend.createDevice({ ...src.dev, programVersion: 100 });
+  const W0 = new WebGLDevice(fake, { ...src.dev }, { programCache: pc }); W0.gs.prog = { other: true }; // (an older device, still alive)
+  const Wx = new WebGLDevice(fake, { ...src.dev }, { programCache: pc }); Wx.destroy();
   backend.beforeSlice(4);
   assert.equal(pc.resolved, 1); assert.ok(e2.rec); assert.equal(e1.rec, null);
   assert.equal(W.gs.prog, e2.prog, 'the device knows the program left in use');
+  assert.equal(W0.gs.prog, e2.prog, 'so does every other live device of the context'); assert.equal(pc.devices.size, 2);
   // the first learned program (unfinished) is taken by a draw: resolved there
   src.dev.tss[0].set(TSS.COLOROP, 4); src.dev.programVersion++;
   W.dev.tss[0].set(TSS.COLOROP, 4); W.dev.programVersion++;
