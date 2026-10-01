@@ -41,7 +41,7 @@ export const CAT_INFO = {
   host: "the worker's own bookkeeping between slices (stats, learning uploads)",
   wait: 'guest threads waiting inside a nested call (pacing)',
   sleep: 'every guest thread waits: the worker sleeps until the next wake-up (pacing)',
-  ioWait: 'the worker idle while a parked file read is on the network',
+  ioWait: 'guest threads waiting for a file read on the network (the worker idle, or a nested wait for a read)',
   late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks)',
 };
 export const N_CATS = CATS.length;

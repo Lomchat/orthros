@@ -141,11 +141,14 @@ export class BrowserHost {
     Atomics.store(ctl, CTL.IN_TAIL, tail);
   }
   nextWake() { return undefined; }
-  /** Nested waits (inside callbacks) block the worker briefly; woken early by input. */
-  waitEvent(ms) {
+  /**
+   * Nested waits (inside callbacks) block the worker briefly; woken early by input. `io`: the guest thread waits for a
+   * file read (frame accounting: `ioWait`, else `wait` — the game's pacing).
+   */
+  waitEvent(ms, io = false) {
     const t = Math.min(ms, 50);
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
-    const ap = acct.enter(ACCT.wait); // (a guest thread's wait in a nested call: pacing, not work)
+    const ap = acct.enter(io ? ACCT.ioWait : ACCT.wait);
     const t0 = acct.at;
     Atomics.wait(this.ctl, CTL.WAKE, 0, t);
     acct.leave(ap);

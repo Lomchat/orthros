@@ -29,7 +29,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 | `host` | the worker's bookkeeping between slices |
 | `wait` | a guest thread waiting inside a nested call (pacing) |
 | `sleep` | every guest thread waits: the worker sleeps until the next wake-up (pacing) |
-| `ioWait` | the worker idle while a parked file read is on the network and no guest timer is due within 50 ms |
+| `ioWait` | waiting for a file read on the network: the worker idle while a parked read is in flight and no guest timer is due within 50 ms, or a nested wait for a read (`file read` / `file busy`, or any wait but a sleep while reads are in flight) |
 | `late` | the worker resumed later than planned: timer clamping, garbage collection, other tasks of its event loop |
 
 **Work** of a frame = its duration minus the pacing categories (`wait`, `sleep`). A game that paces itself by polling
