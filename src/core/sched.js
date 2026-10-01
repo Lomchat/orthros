@@ -18,6 +18,12 @@ export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAI
 export class WaitUnwind {
   constructor(wait) { this.wait = wait; }
 }
+/**
+ * Returned (not thrown) by a handler whose wait parks its thread (Scheduler.park): the dispatcher rolls the call back
+ * as for WaitUnwind, the wait being in thread.parkWait. The hot waits (Sleep, WaitForSingleObject) return it: a
+ * thrown WaitUnwind costs far more than a return, at thousands of parks per second.
+ */
+export const PARK = Object.freeze({ park: true });
 
 export class Scheduler {
   /** @param {import('./vm.js').Vm} vm */
@@ -114,7 +120,13 @@ export class Scheduler {
    *   satisfies a wait at signal time; its value is left in `thread.wakeValue` for the re-executed call.
    * @returns {boolean} true if cond became true, false on timeout
    */
-  block(thread, cond, timeoutMs, reason, claim) {
+  block(thread, cond, timeoutMs, reason, claim) { return this.wait(thread, cond, timeoutMs, reason, claim, false); }
+  /**
+   * block() for a handler that returns PARK to the dispatcher instead of throwing WaitUnwind: the result is PARK when
+   * the thread parks (the handler must return it at once), else block()'s result.
+   */
+  park(thread, cond, timeoutMs, reason, claim) { return this.wait(thread, cond, timeoutMs, reason, claim, true); }
+  wait(thread, cond, timeoutMs, reason, claim, park) {
     if (thread.wakeResult !== undefined) { // re-executed call after an unwound wait: the recorded outcome
       const r = thread.wakeResult;
       thread.wakeResult = undefined; thread.resuming = false;
@@ -125,7 +137,11 @@ export class Scheduler {
     if (cond()) { thread.wakeValue = claim ? claim(false) : undefined; return true; }
     const deadline = timeoutMs === INFINITE ? Infinity : clock.now() + timeoutMs;
     if (clock.now() >= deadline) return false;
-    if (this.vm.canUnwind(thread)) throw new WaitUnwind({ cond, deadline, reason, claim });
+    if (this.vm.canUnwind(thread)) {
+      const w = { cond, deadline, reason, claim };
+      if (park) { thread.parkWait = w; return PARK; }
+      throw new WaitUnwind(w);
+    }
     // Nested context: run the others on top of this JS frame until the condition holds.
     this.nestedWaits++;
     try { return this.nestedWait(thread, cond, deadline, reason, claim); } finally { this.nestedWaits--; }
