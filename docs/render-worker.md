@@ -1,6 +1,7 @@
-# Render worker — measurements and design (phase 1)
+# Render worker — measurements and design (phase 1), implementation (phase 2)
 
-Status: study. The render worker is not implemented. Added for the measurements: the probes `ORTHROS_GL_TIME` and
+Status: implemented behind `?glworker=1` (section 7); the in-thread backend stays the default until the render
+worker is measured faster on every game. Phase 1 added for the measurements: the probes `ORTHROS_GL_TIME` and
 `ORTHROS_GL_NULL` and readback / buffer-byte counters (`src/gfx/d3d8-webgl.js`, test `tests/gl-probe.test.js`),
 `GL timing` reports forwarded to the telemetry (`src/host/web/main.js`), and `tools/cmdring-bench.mjs`.
 
@@ -398,6 +399,76 @@ backend's garbage and GC move off the emulator's thread.
   draw. State reads through `rs()`/`tss()`/`samp()` and per-draw comparisons dominate.
 - Measure the player's machine with `?dbg=ORTHROS_GL_TIME=300@6000` before and after.
 - Keep compiling programs ahead (D056): it removes the only frequent synchronous wait on a real GPU.
+
+## 7. Implementation (phase 2)
+
+### 7.1 Modules
+
+| File | Role |
+|---|---|
+| `src/gfx/cmd-ring.js` | the command table (name and argument kinds of every command), `RingWriter` / `RingReader` over a ring of 32-bit words, the control-block layout |
+| `src/gfx/d3d-recorder.js` | emulator side: `Recorder` (a device's `gfx` in place of the backend) and `RenderLink` (the ring, ids and slots, fences, renames, deferred releases, waits) |
+| `src/gfx/d3d-mirror.js` | replay side: mirror resources (`MSurface`, `MTexture`, `MBuffer`), `DeviceMirror`, `Replayer`; `compareDevice` (mirror == device, field by field) |
+| `src/gfx/render-loop.js` | the render worker's loop (replay, publish the words consumed, sleep on the head word, yield to the event loop) |
+| `src/gfx/render-worker.js` | the render worker: its `OffscreenCanvas` and WebGL2 context, frames posted to the page, readbacks, learned programs, statistics |
+| `src/gfx/render-host.js` | `host.gfx` objects of the modes below, for the emulator worker |
+
+The backend (`WebGLDevice`) is unchanged except for three input shapes: clear and `StretchRect` rectangles and UP-draw
+data may be passed as values instead of guest addresses (they are copied at the draw), and `readBackBuffer()` for the
+frame comparison.
+
+### 7.2 Modes (`?glworker=`, harness `--glworker`; manifest compat flag `"glWorker"`)
+
+| Mode | What runs where |
+|---|---|
+| `0` (default) | today's path: the backend on the emulator's thread |
+| `1` | the render worker replays and presents; the emulator records |
+| `inline` | recorded and replayed on the emulator's thread (at presents, readbacks, fences, a full ring): the recording checked without a thread |
+| `check` | `inline`, replayed after every draw and the mirror compared with the device field by field (mismatches logged) |
+| `compare` / `compare-worker` | the in-thread backend renders and presents as usual; the recorded work is also replayed (in this thread / in a render worker) into a second context, and both back buffers are read just before the present and compared every 60 frames — the same scene, pixel for pixel (`render compare:` lines) |
+
+### 7.3 What changed from the design (section 5)
+
+- **State**: the state tables tell the recorder of each `set` (a mark per key, one `TSETS` command per draw); the
+  stages' textures, streams and indices come from the `gfx.setTexture` / `setStreamSource` / `setIndices` calls every
+  setter already makes; transform slots from `touchTransform`; constants from the writers (`constTouched`: the 8
+  `Set*ShaderConstant*` handlers and the effect's direct writes); the few other fields (viewport, scissor, FVF,
+  declaration, shaders, render target, back buffers, presentation parameters, lights, material) are compared at each
+  draw; the 7 version counters are copied. `api9` is a field too (a Direct3D 9 device is a Direct3D 8 one until its
+  constructor ends).
+- **Resource reads by the render worker** are tracked with an acknowledgement table (64 Ki slots, shared): every
+  write path of the emulator stamps the resource with a new *generation*; the render worker writes the generation it
+  uploaded (after `glTexture` / `glBuffer`). A write waits only while a not-yet-replayed command may read the
+  resource **and** its latest generation is not uploaded yet. Write paths: `Surface.ensureMem` (locks, `GetDC`,
+  copies, fills, D3DX loads all go through it), `LockBox`, D3DX volume fills, `Buffer.Lock`.
+- **`D3DLOCK_DISCARD`** on a buffer still in use gives it a block from a per-buffer pool (3 at most) — **with the
+  buffer's contents copied**: what the application does not rewrite reads as before (undefined after `DISCARD` in
+  Direct3D, the old contents in the in-thread path: kept identical).
+- **`D3DLOCK_NOOVERWRITE`** waits only when the locked range meets ranges written but not uploaded yet (a pending
+  upload takes their union, possibly more than the draws use), or before the buffer's first upload (all of it).
+- **Readbacks**: the memory the pixels go to is allocated by the recorder and handed to the mirror surface once the
+  pixels are read, as the backend allocates it (a level uploaded meanwhile sees no memory, as in-thread).
+- **Back-pressure**: the head is published after every draw (a store, no notification) and notified every 32 draws
+  or 16 Ki words when the render worker sleeps; it wakes by itself every 2 ms; frames in flight: 2.
+- Found and fixed on the way, for every path: render-target readbacks are packed in the surface's format (16-bit
+  formats were written as 32-bit pixels, past the surface), `UpdateTexture` requires equal formats (it copied past
+  smaller levels), new vertex/index buffers are zeroed (their contents depended on what the allocator reused), the
+  first-draw diagnostics survive a draw without stream 0.
+
+### 7.4 Tests
+
+- `tests/render-worker.test.js`: every command round-trips through the table; `dx.exe`, `dx9.exe`, `d3dlost.exe` issue
+  the same WebGL calls (recording context, `tests/fake-gl.js`) in-thread and recorded + replayed; randomized Direct3D
+  9 and 8 sessions (`tests/d3d-random.js`: states, transforms, lights, constants, shaders, declarations, textures of
+  every kind with locks, buffers with plain / DISCARD / NOOVERWRITE locks, state blocks, render targets, Reset,
+  surface copies, fills, readbacks, gamma, UP draws, clears, presents): the mirror equals the device at every draw,
+  and the same WebGL calls both replayed at once and replayed late (fences, renames, deferred releases).
+- `tests/render-worker-thread.test.js`: the same sessions replayed by the render loop **in a worker thread** (shared
+  memory, ring, control words, acknowledgements; also with a slowed worker): the same WebGL calls; a worker that
+  stops answering is reported once and the emulator stops waiting.
+- `tests/browser.test.js`: `dx9.exe` and `dx.exe` with `?glworker=inline` and `1` in Chromium: same pixels, same
+  readbacks, gamma ramp.
+- `tools/render-record-bench.mjs`: the recording cost per draw.
 
 ## Appendix: how the numbers were taken
 

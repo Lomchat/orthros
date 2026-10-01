@@ -48,7 +48,7 @@ function init(m) {
   Atomics.store(ctl, CTL.READY, 1);
   self.postMessage({ type: 'ready', renderer: String(backend.gl.getParameter(backend.gl.RENDERER)) });
   setInterval(postStats, 500);
-  replayLoop(ctl, replayer, backend, replay);
+  replayLoop(ctl, replayer, backend, replay, () => false, log).catch((e) => { log(`render worker: replay loop stopped: ${e?.stack ?? e}`); });
 }
 
 function postStats() {

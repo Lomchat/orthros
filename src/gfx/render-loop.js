@@ -1,7 +1,7 @@
 // The render worker's replay loop (docs/render-worker.md section 5.6): replay what the emulator published, publish the
 // words consumed (its fences, readbacks and frame pacing wait on them), sleep on the head word when caught up, return
 // to the event loop regularly. Shared by the browser render worker (render-worker.js) and the tests (a Node worker).
-import { CTL, TWO32 } from './cmd-ring.js';
+import { CTL, TWO32, OP_NAMES } from './cmd-ring.js';
 
 const BATCH = 16; // commands between two publications of the words consumed
 
@@ -17,7 +17,7 @@ const yieldTask = (() => { let ch = null, resolve = null; return () => new Promi
  * Run until `stop()` is true. `backend`: the WebGL backend factory object (program prewarm and resolution between
  * batches) or null; `stats`: { ms (replaying), waitMs (sleeping) } updated.
  */
-export async function replayLoop(ctl, replayer, backend, stats, stop = () => false) {
+export async function replayLoop(ctl, replayer, backend, stats, stop = () => false, log = null) {
   const r = replayer.reader;
   let idle = true, lastYield = performance.now();
   while (!stop()) {
@@ -27,7 +27,8 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
       if (idle) { idle = false; backend?.beforeSlice(2); }
       const t0 = performance.now();
       while (r.consumed < avail) {
-        replayer.run(avail, BATCH);
+        // (a command that throws is reported and skipped: the emulator must never wait for a dead loop)
+        try { replayer.run(avail, BATCH); } catch (e) { stats.errors = (stats.errors ?? 0) + 1; if (stats.errors <= 20) log?.(`render worker: ${OP_NAMES[r.op] ?? r.op} failed: ${e?.stack ?? e}`); }
         publishTail(ctl, replayer);
         if (performance.now() - t0 > 8) break;
       }

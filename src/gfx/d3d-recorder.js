@@ -78,7 +78,8 @@ export class RenderLink {
       Atomics.wait(ctl, word, Atomics.load(ctl, word), 20);
       const b = Atomics.load(ctl, CTL.HEARTBEAT), t = Atomics.load(ctl, CTL.TAIL), now = performance.now();
       if (b !== beat || t !== tail) { beat = b; tail = t; still = now; }
-      else if (now - still > this.stallMs || Atomics.load(ctl, CTL.READY) < 0) { Atomics.store(ctl, CTL.EMU_WAIT, 0); this.fail(`render worker stalled for ${((now - still) / 1000).toFixed(1)} s waiting for ${kind}`); this.account(kind, t0); return false; }
+      // (no progress, or never the answer)
+      if (now - still > this.stallMs || now - t0 > 3 * this.stallMs || Atomics.load(ctl, CTL.READY) < 0) { Atomics.store(ctl, CTL.EMU_WAIT, 0); this.fail(`render worker stalled for ${((now - still) / 1000).toFixed(1)} s waiting for ${kind}`); this.account(kind, t0); return false; }
       if (this.failed) break;
     }
     Atomics.store(ctl, CTL.EMU_WAIT, 0);
