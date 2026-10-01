@@ -31,7 +31,7 @@ export class RenderLink {
   constructor(o) {
     this.w = new RingWriter(o.words, (need) => this.waitSpace(need));
     this.ctl = o.ctl ?? null; this.ack = o.ack ?? null; this.replayer = o.replayer ?? null;
-    this.log = o.log ?? (() => {}); this.onFail = o.onFail ?? null;
+    this.log = o.log ?? (() => {}); this.onFail = o.onFail ?? null; this.stallMs = o.stallMs ?? STALL_MS;
     this.gen = 0; this.frames = 0; this.tickets = 0;
     this.freeSlots = []; this.nextSlot = 0;
     this.lastWorkEnd = 0; // ring position after the last command that may read bound resources (draws, clears...)
@@ -78,7 +78,7 @@ export class RenderLink {
       Atomics.wait(ctl, word, Atomics.load(ctl, word), 20);
       const b = Atomics.load(ctl, CTL.HEARTBEAT), t = Atomics.load(ctl, CTL.TAIL), now = performance.now();
       if (b !== beat || t !== tail) { beat = b; tail = t; still = now; }
-      else if (now - still > STALL_MS || Atomics.load(ctl, CTL.READY) < 0) { Atomics.store(ctl, CTL.EMU_WAIT, 0); this.fail(`render worker stalled for ${((now - still) / 1000).toFixed(1)} s waiting for ${kind}`); this.account(kind, t0); return false; }
+      else if (now - still > this.stallMs || Atomics.load(ctl, CTL.READY) < 0) { Atomics.store(ctl, CTL.EMU_WAIT, 0); this.fail(`render worker stalled for ${((now - still) / 1000).toFixed(1)} s waiting for ${kind}`); this.account(kind, t0); return false; }
       if (this.failed) break;
     }
     Atomics.store(ctl, CTL.EMU_WAIT, 0);
@@ -100,6 +100,7 @@ export class RenderLink {
   fail(reason) {
     if (this.failed) return;
     this.failed = true;
+    this.w.waitSpace = () => { this.w.consumed = this.w.produced; }; // (nobody reads the ring any more: whatever is still recorded is dropped)
     this.log(`render worker: ${reason}; rendering goes on in this thread`);
     for (let i = 0; i < this.deferred.length; i += 2) this.proc?.vmem.release(this.deferred[i]);
     this.deferred.length = 0;

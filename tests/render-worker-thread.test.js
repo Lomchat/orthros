@@ -44,3 +44,15 @@ for (const api9 of [true, false]) {
     }
   });
 }
+
+test('a render worker that stops answering: the emulator stops waiting for it and reports the failure once', () => {
+  const ring = new SharedArrayBuffer(4 << 16), ctl = new SharedArrayBuffer(CTL_WORDS * 4), ack = new SharedArrayBuffer(ACK_SLOTS * 4);
+  new Int32Array(ack).fill(-1);
+  const fails = [];
+  const link = new RenderLink({ words: new Int32Array(ring), ctl: new Int32Array(ctl), ack: new Int32Array(ack), stallMs: 200, onFail: (r) => fails.push(r) });
+  const t0 = Date.now();
+  randomSession({ createDevice: (dev) => new Recorder(link, dev) }, 3, true, () => {}, true); // (nobody replays: the ring fills, frames are never shown)
+  assert.equal(fails.length, 1, fails.join('; '));
+  assert.match(fails[0], /stalled/);
+  assert.ok(link.failed && Date.now() - t0 < 5000, 'one stall, then no more waits');
+});
