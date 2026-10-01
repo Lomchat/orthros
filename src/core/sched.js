@@ -155,6 +155,7 @@ export class Scheduler {
     // or while the thread presenting frames waits for one — is not the game's pacing)
     const ioReason = reason === 'file read' || reason === 'file busy' || (this.vm.readsInFlight > 0 && reason !== 'sleep' && reason !== 'mmtimer');
     const io = () => ioReason || !!this.vm.frameThreadWaitsForRead?.();
+    const note = (ms) => { const k = `t${thread.id} ${reason}${io() ? ' (io)' : ''}`, m = (this.vm.nestedWaitLog ??= new Map()); if (m.size < 64 || m.has(k)) m.set(k, (m.get(k) ?? 0) + ms); }; // (diagnostics: who waits nested, for what)
     for (;;) {
       if (cond()) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; thread.wakeValue = claim ? claim(false) : undefined; return true; }
       if (clock.now() >= deadline) { thread.state = TS.RUNNING; thread.wakeAt = Infinity; return false; }
@@ -174,7 +175,7 @@ export class Scheduler {
       const wake = Math.min(this.nextWake(), deadline);
       if (wake === Infinity) {
         if (idleSince < 0) idleSince = clock.now();
-        if (this.vm.host?.waitEvent) this.vm.host.waitEvent(this.deadlockLimit, io());
+        if (this.vm.host?.waitEvent) { const w0 = clock.now(); this.vm.host.waitEvent(this.deadlockLimit, io()); note(clock.now() - w0); }
         else clock.sleep(1);
         if (clock.now() - idleSince > this.deadlockLimit) this.vm.deadlock(thread, reason);
         continue;
@@ -182,7 +183,7 @@ export class Scheduler {
       idleSince = -1;
       const now = clock.now();
       if (wake > now) {
-        if (this.vm.host?.waitEvent) this.vm.host.waitEvent(wake - now, io());
+        if (this.vm.host?.waitEvent) { this.vm.host.waitEvent(wake - now, io()); note(clock.now() - now); }
         else clock.sleepUntil(wake);
       }
     }
@@ -205,7 +206,7 @@ export class Scheduler {
     const wake = this.nextWake();
     if (wake === Infinity) {
       if (this.idleSince < 0) this.idleSince = clock.now();
-      if (this.vm.host?.waitEvent) this.vm.host.waitEvent(this.deadlockLimit);
+      if (this.vm.host?.waitEvent) this.vm.host.waitEvent(this.deadlockLimit, !!this.vm.frameThreadWaitsForRead?.());
       else clock.sleep(1);
       if (this.wakeBlocked()) { this.idleSince = -1; return; }
       if (clock.now() - this.idleSince > this.deadlockLimit) {
@@ -217,7 +218,9 @@ export class Scheduler {
     this.idleSince = -1;
     const now = clock.now();
     if (wake > now) {
-      if (this.vm.host?.waitEvent) this.vm.host.waitEvent(wake - now);
+      // (frame accounting: while the thread presenting frames waits for a file read, the short waits between the other
+      // threads' timers are the read's delay, not pacing)
+      if (this.vm.host?.waitEvent) this.vm.host.waitEvent(wake - now, !!this.vm.frameThreadWaitsForRead?.());
       else clock.sleepUntil(wake);
     }
     this.wakeBlocked();
