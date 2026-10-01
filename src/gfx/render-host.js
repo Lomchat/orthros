@@ -57,7 +57,8 @@ export function createInlineGfx(canvas, log, dump, { check = false, beforePresen
 
 /**
  * ?glworker=1: a render worker replays the commands with its own canvas and WebGL2 context. `start(memory)` once the
- * guest memory exists (shared: the render worker reads resource contents from it). If the render worker does not
+ * guest memory exists (shared: the render worker reads resource contents from it), awaited before the guest runs
+ * (true: ready). If the render worker does not
  * come up within 10 s, dies, or stops making progress while the emulator waits for it, `onFail(reason)` is called:
  * the worker then gives every device the in-thread backend (the emulator's device was the reference all along).
  */
@@ -66,7 +67,7 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
   const words = new Int32Array(ringSab), ctl = new Int32Array(ctlSab), ack = new Int32Array(ackSab).fill(-1);
   const remoteStats = new Map();
   const programCache = { queue: { length: 0 }, ready: new Map(), learned: [], used: [], started: 0, hits: 0, pending: 0, devices: new Set(), remote: true };
-  let worker = null, readyTimer = null, failed = false, deviceProxy = null;
+  let worker = null, readyTimer = null, failed = false, deviceProxy = null, settle = null;
   const gfx = {
     mode: 'worker', gl: null, programCache, ready: false, replay: { ms: 0, frames: 0 },
     link: null,
@@ -87,15 +88,18 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
       worker = new Worker(workerUrl, { type: 'module' });
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'ready') { gfx.ready = true; clearTimeout(readyTimer); log(`render worker: ready (${m.renderer})`); }
-        else if (m.type === 'failed') fail(`render worker could not start: ${m.reason}`);
+        if (m.type === 'ready') { gfx.ready = true; clearTimeout(readyTimer); log(`render worker: ready (${m.renderer})`); settle?.(); }
+        else if (m.type === 'failed') { fail(`render worker could not start: ${m.reason}`); settle?.(); }
         else if (m.type === 'stats') { for (const [id, s] of m.devices) remoteStats.set(id, s); Object.assign(programCache, m.programCache, { queue: { length: m.programCache.queueLength ?? 0 } }); gfx.replay = m.replay; }
         else if (m.type === 'log') log(m.msg);
         else if (m.type === 'compare') gfx.onCompare?.(m);
       };
-      worker.onerror = (e) => fail(`render worker error: ${e.message ?? e}`);
-      readyTimer = setTimeout(() => { if (!gfx.ready) fail('render worker not ready after 10 s'); }, 10000); // (its modules load and compile while the guest starts: 10 s, a loaded machine included)
+      worker.onerror = (e) => { fail(`render worker error: ${e.message ?? e}`); settle?.(); };
+      readyTimer = setTimeout(() => { if (!gfx.ready) fail('render worker not ready after 10 s'); settle?.(); }, 10000); // (a loaded machine included)
       worker.postMessage({ type: 'init', memory, ring: ringSab, ctl: ctlSab, ack: ackSab, port: pagePort, opts }, [pagePort]);
+      // (the emulator waits for it before running the guest: a nested worker's scripts load through its parent's
+      // thread, which must not be blocked meanwhile — waiting for a render worker that cannot load would never end)
+      return new Promise((r) => { settle = () => { settle = null; r(gfx.ready && !failed); }; if (gfx.ready || failed) settle(); });
     },
   };
   const fail = (reason) => { if (failed) return; failed = true; gfx.link.fail(reason); };

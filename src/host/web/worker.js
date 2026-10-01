@@ -201,7 +201,7 @@ async function start(m) {
     const ch = new MessageChannel(), globals = {};
     for (const k of Object.keys(globalThis)) if (k.startsWith('ORTHROS_') && (typeof globalThis[k] !== 'object' || globalThis[k] === null)) globals[k] = globalThis[k];
     post({ type: 'gl-port', port: ch.port1 }, [ch.port1]);
-    renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : 60, noPresent: !remoteGl }, ch.port2);
+    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : 60, noPresent: !remoteGl }, ch.port2);
   }
   if (regionSink && vm.jit) vm.jit.learned = [];
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
