@@ -356,8 +356,8 @@ export class WebGLDevice {
       if (kind === 'ib' && this.curVao) this.curVao.ib = g.buf; // an element array binding is state of the bound VAO
       // (uploads read the guest memory through offsets into its one view: no view object per upload; a length of 0
       // would mean "to the end of the source" to GL)
-      if (g.size !== b.length) { if (b.length > 0) gl.bufferData(target, this.mem.u8, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW, b.mem >>> 0, b.length); else gl.bufferData(target, 0, gl.STATIC_DRAW); g.size = b.length; }
-      else { const s = b.dirtyRange ? b.dirtyLo : 0, e = b.dirtyRange ? b.dirtyHi : b.length; if (e > s) gl.bufferSubData(target, s, this.mem.u8, (b.mem + s) >>> 0, e - s); }
+      if (g.size !== b.length) { if (b.length > 0) gl.bufferData(target, this.mem.u8, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW, b.mem >>> 0, b.length); else gl.bufferData(target, 0, gl.STATIC_DRAW); g.size = b.length; this.stats.bufBytes = (this.stats.bufBytes ?? 0) + b.length; }
+      else { const s = b.dirtyRange ? b.dirtyLo : 0, e = b.dirtyRange ? b.dirtyHi : b.length; if (e > s) gl.bufferSubData(target, s, this.mem.u8, (b.mem + s) >>> 0, e - s); this.stats.bufBytes = (this.stats.bufBytes ?? 0) + Math.max(0, e - s); }
       b.dirty = false; b.dirtyRange = false; this.stats.uploads++;
     }
     return g;
@@ -400,7 +400,12 @@ export class WebGLDevice {
     const prev = dev.renderTarget; dev.renderTarget = s;
     const { w, h, flip } = this.bindTarget();
     const rgba = new Uint8Array(w * h * 4);
+    const t0 = performance.now();
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    // (report: synchronous readbacks — a round trip to the GPU process that waits for every command queued before it;
+    // logged at powers of two so a session's count and rhythm show in the log)
+    const n = this.stats.readbacks = (this.stats.readbacks ?? 0) + 1, ms = performance.now() - t0; this.stats.readbackMs = (this.stats.readbackMs ?? 0) + ms;
+    if ((n & (n - 1)) === 0) this.log(`d3d-webgl: readback #${n} at frame ${this.frame}: ${w}x${h} ${dev.backBuffers.includes(s) ? 'back buffer' : s.owner ? 'texture level' : 'surface'} usage 0x${(s.usage ?? 0).toString(16)}, ${ms.toFixed(1)} ms (total ${this.stats.readbackMs.toFixed(0)} ms)`);
     dev.renderTarget = prev;
     const base = s.ensureMem(dev.proc), u8 = this.mem.u8;
     for (let y = 0; y < h; y++) { const src = (flip ? y : h - 1 - y) * w * 4; /* texture targets are rendered y-flipped (rows match D3D); back buffers are bottom-up */ let o = base + y * s.pitch; for (let x = 0; x < w; x++, o += 4) { const i = src + x * 4; u8[o] = rgba[i + 2]; u8[o + 1] = rgba[i + 1]; u8[o + 2] = rgba[i]; u8[o + 3] = rgba[i + 3]; } }
@@ -464,6 +469,7 @@ export class WebGLDevice {
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
     gl.flush(); this.frame++;
+    if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
     if (this.countLeft && --this.countLeft === 0) this.log(`d3d-webgl: GL calls per frame over ${this.countFrames} frames: ${this.stopGlCount(this.countFrames)}`);
@@ -490,6 +496,92 @@ export class WebGLDevice {
     const draws = frames > 1 ? (counts.get('drawElements') ?? 0) + (counts.get('drawArrays') ?? 0) : this.frameDraws;
     const f = (v) => (frames > 1 ? (v / frames).toFixed(1) : v);
     return `${f(total)} (${(total / Math.max(1, draws)).toFixed(1)}/draw): ` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`).join(', ');
+  }
+  /**
+   * Measurement probes (study of a render worker, docs/render-worker.md), switched at a present by worker debug
+   * globals (harness `dbg:NAME=value`):
+   * - ORTHROS_GL_TIME=<frames>[@<from frame>]: every WebGL call timed per function, the backend's entry points (what the Direct3D
+   *   layer calls) timed inclusively, and the canvas hand-off, over that many frames; one report logged.
+   * - ORTHROS_GL_NULL=1: the WebGL calls that return nothing (state, uniforms, uploads, draws: what a render worker
+   *   would issue) become no-ops — the worker CPU they cost is the difference with a normal phase (nothing is drawn).
+   *   Back to 0: every GL object is deleted and recreated on use, as after a context loss (state set while calls were
+   *   dropped is unknown).
+   */
+  glProbeStep() {
+    const gl = this.gl;
+    if (this.glTime && --this.glTime.left <= 0) this.glTimeReport();
+    else if (globalThis.ORTHROS_GL_TIME && !this.glTime) { // ("N", or "N@F": N frames from the device's frame F on — a player's run: ?dbg=ORTHROS_GL_TIME=300@6000)
+      const [n, from] = String(globalThis.ORTHROS_GL_TIME).split('@').map(Number);
+      if (!(this.frame < from)) { globalThis.ORTHROS_GL_TIME = undefined; this.glTimeStart(n || 30); }
+    }
+    const want = !!globalThis.ORTHROS_GL_NULL;
+    if (want === !!this.glNull) return;
+    if (want) {
+      const keep = /^(create|get|is|check|read|fenceSync|clientWaitSync|deleteSync|shaderSource|compileShader|attachShader|linkProgram|bindAttribLocation|detachShader|delete|flush|finish|makeXRCompatible|drawingBuffer)/;
+      const proto = Object.getPrototypeOf(gl), noop = () => {};
+      this.glNull = [];
+      for (const k of Object.getOwnPropertyNames(proto)) { const d = Object.getOwnPropertyDescriptor(proto, k); if (typeof d?.value !== 'function' || k === 'constructor' || keep.test(k) || Object.prototype.hasOwnProperty.call(gl, k)) continue; gl[k] = noop; this.glNull.push(k); }
+      this.log(`d3d-webgl: GL null mode on (${this.glNull.length} functions dropped)`);
+    } else {
+      for (const k of this.glNull) delete gl[k];
+      this.glNull = null;
+      // what the dropped calls specified is unknown: textures, buffers, targets, VAOs and samplers are deleted and
+      // recreated on use (contents re-uploaded from guest memory); programs are kept (their builds were real) with
+      // their uniforms marked unsent and their sampler units set again
+      this.dropVaos();
+      for (const t of this.textures.values()) gl.deleteTexture(t.tex);
+      for (const b of this.buffers.values()) gl.deleteBuffer(b.buf);
+      for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
+      for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
+      this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.gamma = null; this.gammaDirty = true;
+      const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
+      for (const r of recs) { r.v = undefined; r.cs = null; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
+      this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
+      this.reset(this.dev);
+      this.log(`d3d-webgl: GL null mode off (textures, buffers, targets, VAOs and samplers recreated; ${recs.length} programs kept)`);
+    }
+  }
+  glTimeStart(frames) {
+    const gl = this.gl, now = performance.now.bind(performance), proto = Object.getPrototypeOf(gl);
+    const T = this.glTime = { left: frames, frames, t0: now(), fns: new Map(), entry: new Map(), depth: 0, wrapped: [], entries: [] };
+    // (timer cost: a wrapped no-op timed the same way; the clock is coarsened in isolated pages, jitter keeps sums unbiased)
+    { const e = { ms: 0, n: 0 }, f = () => 0; const w = function () { const t0 = now(); const r = f.apply(gl, arguments); e.ms += now() - t0; e.n++; return r; }; const c0 = now(); for (let i = 0; i < 20000; i++) w(i); T.overheadUs = (now() - c0) * 1000 / 20000; T.innerUs = e.ms * 1000 / 20000; }
+    for (const k of Object.getOwnPropertyNames(proto)) {
+      const d = Object.getOwnPropertyDescriptor(proto, k);
+      if (typeof d?.value !== 'function' || k === 'constructor' || Object.prototype.hasOwnProperty.call(gl, k)) continue;
+      const f = d.value, e = { ms: 0, n: 0 }; T.fns.set(k, e);
+      gl[k] = function () { const t0 = now(); const r = f.apply(gl, arguments); e.ms += now() - t0; e.n++; return r; };
+      T.wrapped.push(k);
+    }
+    const c = gl.canvas;
+    if (c && typeof c.transferToImageBitmap === 'function') { const f = c.transferToImageBitmap, e = { ms: 0, n: 0 }; T.fns.set('(canvas.transferToImageBitmap)', e); c.transferToImageBitmap = function () { const t0 = now(); try { return f.call(c); } finally { e.ms += now() - t0; e.n++; } }; T.canvas = c; }
+    const self = this;
+    for (const k of ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'readbackFrontBuffer', 'stretchRect', 'copyRects', 'reset', 'destroyResource', 'deleteVertexShader', 'deletePixelShader', 'setGamma', 'bufferUpdated', 'colorFill']) {
+      const f = Object.getPrototypeOf(this)[k]; if (typeof f !== 'function') continue;
+      const e = { ms: 0, n: 0 }; T.entry.set(k, e); T.entries.push(k);
+      this[k] = function () { if (T.depth++) { try { return f.apply(self, arguments); } finally { T.depth--; } } const t0 = now(); try { return f.apply(self, arguments); } finally { T.depth--; e.ms += now() - t0; e.n++; } };
+    }
+    this.glTimeBase = { draws: this.stats.draws, uploads: this.stats.uploads, uploadBytes: this.stats.uploadBytes ?? 0, texMs: this.stats.texMs ?? 0, texConvMs: this.stats.texConvMs ?? 0, programs: this.stats.programs, programMs: this.stats.programMs ?? 0, readbacks: this.stats.readbacks ?? 0, readbackMs: this.stats.readbackMs ?? 0, blits: this.stats.blits ?? 0, bufBytes: this.stats.bufBytes ?? 0, upBytes: this.stats.upBytes ?? 0 };
+    this.log(`d3d-webgl: GL timing over ${frames} frames (timer: wrapped no-op ${T.overheadUs.toFixed(3)} us per call, ${T.innerUs.toFixed(3)} us inside the timed span)`);
+  }
+  glTimeReport() {
+    const T = this.glTime, gl = this.gl; this.glTime = null;
+    for (const k of T.wrapped) delete gl[k];
+    for (const k of T.entries) delete this[k];
+    if (T.canvas) delete T.canvas.transferToImageBitmap;
+    const wall = performance.now() - T.t0, F = T.frames, b = this.glTimeBase, d = (k) => ((this.stats[k] ?? 0) - b[k]);
+    // per frame: raw sums, and with the timer's own share inside the span (T.innerUs per call) taken out
+    let calls = 0, ms = 0; const rows = [];
+    for (const [k, e] of T.fns) { if (!e.n) continue; calls += e.n; ms += e.ms; rows.push([k, e.n, e.ms]); }
+    const corr = (n, m) => Math.max(0, m - n * T.innerUs / 1000);
+    const SYNC = /^(get|is|check|read|clientWaitSync|finish)/;
+    let syncMs = 0, syncN = 0; for (const [k, n, m] of rows) if (SYNC.test(k)) { syncMs += corr(n, m); syncN += n; }
+    let entryMs = 0; for (const e of T.entry.values()) entryMs += e.ms;
+    rows.sort((x, y) => y[2] - x[2]);
+    const f1 = (v) => (v / F).toFixed(2);
+    this.log(`d3d-webgl: GL timing report over ${F} frames, ${(wall / F).toFixed(1)} ms per frame (wall): backend entry points ${f1(entryMs)} ms/frame (inclusive); WebGL calls ${(calls / F).toFixed(0)}/frame, ${f1(ms)} ms/frame raw, ${f1(corr(calls, ms))} ms/frame without the timer; of which synchronous kinds (get*/is*/check*/read*) ${(syncN / F).toFixed(1)} calls ${f1(syncMs)} ms/frame; draws ${(d('draws') / F).toFixed(0)}/frame; texture uploads ${(d('uploads') / F).toFixed(1)}/frame ${(d('uploadBytes') / F / 1024).toFixed(0)} KiB/frame (conversion ${f1(d('texConvMs'))} ms/frame); buffer data ${(d('bufBytes') / F / 1024).toFixed(0)} KiB/frame, UP draw data ${(d('upBytes') / F / 1024).toFixed(0)} KiB/frame; programs built ${d('programs')} (${d('programMs').toFixed(0)} ms); readbacks ${d('readbacks')} (${d('readbackMs').toFixed(1)} ms); blits ${d('blits')}`);
+    this.log(`d3d-webgl: GL timing by function (calls/frame, ms/frame without the timer, us/call): ${rows.slice(0, 40).map(([k, n, m]) => `${k} ${(n / F).toFixed(1)} ${f1(corr(n, m))} ${(corr(n, m) * 1000 / n).toFixed(2)}`).join('; ')}`);
+    this.log(`d3d-webgl: GL timing entry points (calls/frame, ms/frame inclusive): ${[...T.entry].filter(([, e]) => e.n).sort((x, y) => y[1].ms - x[1].ms).map(([k, e]) => `${k} ${(e.n / F).toFixed(1)} ${f1(e.ms)}`).join('; ')}`);
   }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
@@ -1294,7 +1386,7 @@ export class WebGLDevice {
     void minIdx;
   }
   /** Upload `n` bytes of guest memory at `addr` into the buffer bound to `target` (the UP draws' shared buffers). */
-  streamData(target, addr, n) { if (n > 0) this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
+  streamData(target, addr, n) { this.stats.upBytes = (this.stats.upBytes ?? 0) + n; if (n > 0) this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
   drawPrimitiveUP(type, count, data, stride) {
     const gl = this.gl;
     const info = this.program(); const P = info.p;
@@ -1365,8 +1457,12 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   const u = (name) => { let l = loc[name]; if (l === undefined) { l = gl.getUniformLocation(prog, name); loc[name] = l; } return l; };
   // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
   gl.useProgram(prog);
-  for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
+  setSamplerUnits(gl, u);
   return { rec: { prog, u, attrNames, key }, ok };
+}
+/** The sampler uniforms of the program in use: stage i reads texture unit i. */
+function setSamplerUnits(gl, u) {
+  for (let i = 0; i < 16; i++) for (const n of [TEX_U.tex[i], TEX_U.cube[i], TEX_U.vol[i]]) { const l = u(n); if (l) gl.uniform1i(l, i); }
 }
 
 /**
