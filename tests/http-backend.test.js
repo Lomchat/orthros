@@ -333,3 +333,28 @@ test('http backend: a stream read a little at a time fetches growing windows, no
   assert.ok(reqs.filter((r) => r[1] < MiB).every((r) => r[2] < MiB), `the first MiB by pieces (${sizes})`);
   assert.ok(sizes.length <= 8, `few requests (${sizes})`);
 });
+
+// A full learned list (PROGRAMS_MAX): a new program takes the place of the least recently used one, never of one this
+// session built or used; when every entry was built this session, the new one is not kept.
+test('learned programs: a full list makes room by least recent use', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const { programSourceId } = await import('../src/gfx/program-id.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const post = (programs, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs, used }) });
+  try {
+    await fetch(url);
+    await post(Array.from({ length: 4096 }, (_, i) => ({ key: 'k' + i, vs: 'vs' + i, fs: 'f', attrs: [], t: i })));
+    await post([{ key: 'x', vs: 'vsX', fs: 'f', attrs: [], t: 1 }]);
+    let list = await (await fetch(url)).json(); // (a new session)
+    assert.equal(list.length, 4096); assert.ok(!list.some((e) => e.vs === 'vsX'), 'all built this session: not added');
+    await post([], [programSourceId('vs0', 'f', [])]);
+    await post([{ key: 'y', vs: 'vsY', fs: 'f', attrs: [], t: 1 }]);
+    list = await (await fetch(url)).json();
+    assert.equal(list.length, 4096); assert.ok(list.some((e) => e.vs === 'vsY'), 'added'); assert.ok(list.some((e) => e.vs === 'vs0'), 'the used one kept');
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
