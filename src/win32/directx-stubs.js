@@ -1,11 +1,11 @@
-// DirectX entry points without an implementation yet (d3d9, ddraw): tracing stubs.
-// d3d8, dinput8 and dsound live in their own modules.
+// DirectX entry points without a module of their own: DirectDraw (ddraw.js).
+// d3d8, d3d9, dinput8 and dsound live in their own modules.
+import { registerDirectDraw } from './ddraw.js';
 
 /**
  * @param {import('./api.js').ApiRegistry} api
  * @param {import('../core/vm.js').Vm} vm
  */
 export function registerDirectXStubs(api, vm) {
-  const trace = (name) => (c) => { vm.log('warn', `${name} called (not implemented yet) from ${c.proc.symbolize(c.retAddr)}`); vm.firstD3DCall ??= { name, from: c.proc.symbolize(c.retAddr), apiCalls: vm.apiCalls }; return 0; };
-  api.define('ddraw.dll', { DirectDrawCreate: [3, trace('DirectDrawCreate')], DirectDrawCreateEx: [4, trace('DirectDrawCreateEx')], DirectDrawEnumerateA: [2, () => 0], DirectDrawEnumerateExA: [3, () => 0] });
+  registerDirectDraw(api, vm);
 }
