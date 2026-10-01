@@ -478,8 +478,8 @@ frame comparison.
   incremented); harness `--lose-context-at` reaches it through the emulator worker.
 - `dbg:` globals, `--capture`, `glcount`, the GL timing probe, `--gl-validate` and `--gl-discard` reach the render
   worker (the globals at its start, `dbg:` messages later); its logs and captured images go to the page directly.
-- Statistics: the emulator's waits (`gpuWaitMs`, by kind: fences, frames, readbacks, ring), renames and their copied
-  bytes, the render worker's replay time: in the HUD's panel, the slow-frame lines (`render waits`), the `mark:`
+- Statistics: the emulator's waits (`gpuWaitMs`, by kind: fences, frames, readbacks, ring), buffer bytes sent
+  through the ring, surface copies on write and their bytes, the render worker's replay time: in the HUD's panel, the slow-frame lines (`render waits`), the `mark:`
   lines of the harness (per phase, with the frame-time percentiles), and the stats message (`gl`).
 
 ### 7.5 Tests
@@ -489,7 +489,8 @@ frame comparison.
   9 and 8 sessions (`tests/d3d-random.js`: states, transforms, lights, constants, shaders, declarations, textures of
   every kind with locks, buffers with plain / DISCARD / NOOVERWRITE locks, state blocks, render targets, Reset,
   surface copies, fills, readbacks, gamma, UP draws, clears, presents): the mirror equals the device at every draw,
-  and the same WebGL calls both replayed at once and replayed late (fences, renames, deferred releases).
+  and the same WebGL calls both replayed at once and replayed late (fences, buffer contents in the ring, surface
+  copies on write, deferred releases).
 - `tests/render-worker-thread.test.js`: the same sessions replayed by the render loop **in a worker thread** (shared
   memory, ring, control words, acknowledgements; also with a slowed worker): the same WebGL calls; a worker that
   stops answering is reported once and the emulator stops waiting.
@@ -499,6 +500,48 @@ frame comparison.
 - `tests/browser.test.js`: `dx9.exe` and `dx.exe` with `?glworker=inline` and `1` in Chromium: same pixels, same
   readbacks, gamma ramp.
 - `tools/render-record-bench.mjs`: the recording cost per draw.
+
+### 7.6 Measurements and decision (default stays `?glworker=0`)
+
+Conditions as in 2.1 (headless Chromium + SwiftShader on the shared server, load 25-33), `--gl-discard --timescale 1.5`,
+learned data copied from `learn-live`, game profiles for BFME2 and RotWK; skirmish in play, idle camera, three
+consecutive 15-20 s phases per run (`mark:` lines: worker thread CPU per frame from `/proc`, frame-time
+percentiles); runs alternated 0, 1, 0, 1 per game.
+
+**Fidelity** (`?glworker=compare-worker`, no `--gl-discard`: the in-thread backend presents, the recorded work is
+replayed in a render worker, both back buffers compared pixel for pixel): BFME2 menu to skirmish 104 frames compared
+(every 60), BFME1 menu to skirmish 240, RotWK menu to skirmish 400 (every 10): **0 differing**. `dx.exe`/`dx9.exe`
+in Chromium with `?glworker=1` and `inline`: same pixels and readbacks (`tests/browser.test.js`). Context loss in the
+render worker (BFME2 skirmish setup, `--lose-context-at`): restored, the screen redrawn correctly (an 11 s
+stall while SwiftShader rebuilt the programs; not compared with the in-thread path). Screenshots of `?glworker=1`
+without `--gl-discard` (frames shown by the render worker): BFME2 and RotWK skirmish setup and skirmish identical in
+content to the in-thread ones of the compare runs.
+
+**Emulator thread CPU per frame (ms) in skirmish, three phases per run:**
+
+| Game | `?glworker=0` | `?glworker=1` | difference of the means |
+|---|---|---|---|
+| BFME2 | 22.90 23.13 23.86 / 24.97 24.88 26.46 (mean 24.37) | 22.58 23.09 22.03 / 22.52 22.39 24.22 (mean 22.80) | −1.6 ms (−6 %) |
+| BFME1 (800×600 runs) | 18.56 18.08 18.62 | 16.09 16.32 15.94 | −2.3 ms (−12 %) |
+| BFME1 (1024×768 runs, capped near 58 fps) | 15.60 15.35 14.86 | 14.89 15.15 15.14 | −0.2 ms (noise) |
+| RotWK | 25.66 26.35 26.06 / 23.42 24.78 28.22 (mean 25.75) | 23.33 24.53 24.74 / 24.70 27.31 26.94 (mean 25.26) | −0.5 ms (noise: ±2 ms between phases) |
+
+(BFME1's first-launch detection chose a different resolution in two of the four runs: the pairs are compared per
+setting, one run each.) The render worker's own CPU: 2.9-4.0 ms per frame (BFME2), 2.6-4.2 (BFME1), 2.6-3.4 (RotWK).
+Emulator waits for it in play: 0 ms (no fence, frame or readback wait in any skirmish phase); recording 0.16 ms per
+frame (BFME2, `ORTHROS_REC_TIME`); buffer bytes through the ring 140 KiB per frame (BFME2), 220 KiB (RotWK),
+300-400 KiB (BFME1).
+
+**Frame time p99 (ms) in skirmish:** BFME2 33.7 34.2 34.0 45.8 38.5 41.0 (off) / 31.9 30.1 30.4 35.5 35.4 46.8 (on);
+BFME1 21.8-25.7 (off) / 20.9-22.2 (on); RotWK 56.9 67.1 58.8 46.2 59.1 75.8 (off, mean 60.6) / 49.4 81.3 86.3 59.0
+73.6 99.0 (on, mean 74.8).
+
+**Decision: not on by default.** It is exact, and it takes 0-2.3 ms per frame off the emulator thread in BFME1 and
+BFME2, but on RotWK the gain is within the noise and the p99 frame time is worse in these runs; the bar (exact *and*
+faster on all three games) is not met. The measured gain is also below the 9-21 % of the study (5.13): the backend's
+time does leave the thread (the render worker spends 3-4 ms per frame on it), but the emulator thread gains back only
+part of it on this machine. To revisit on a machine without SwiftShader competing for cores (the player's), with
+`?glworker=1` and the `mark:`/HUD figures above.
 
 ## Appendix: how the numbers were taken
 
