@@ -35,7 +35,8 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // --capture-at @N captures N seconds after the anchor.
 // A/B within one session: dbg:NAME=value sets a worker debug global now (NAME=: unset), mark:<label> closes a phase
 // ([cpu] worker CPU and frames of the phase, [gfx] mark: texture work and the API calls of the phase), glcount:<frames>
-// counts the WebGL calls per frame from now.
+// counts the WebGL calls per frame from now. dbg:ORTHROS_API_FAST_OFF=1 / dbg:ORTHROS_API_FAST_OFF= switches the
+// COM AddRef/Release fast path and the Direct3D issued-state filter off / on again (Vm.setApiFastPaths).
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');

@@ -86,6 +86,12 @@ export class Jit {
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
+    if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+  }
+  /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */
+  setRefFast(on) {
+    this.refFastOff = !on;
+    for (const [idx, fid] of this.refFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
   }
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }

@@ -206,3 +206,33 @@ test('issued-state filter: an effect commit list that misses a state it sets is 
   }
   assert.ok(mismatches > 0, 'an incomplete list makes the filter drop sets it must not');
 });
+
+test('measurement switch: AddRef/Release back to JavaScript and the filter off, then on once the queue is empty', async () => {
+  const env = setup(), { mem, cpu } = env;
+  mem.write32(TEX + 4, COM_MARKER); mem.write32(TEX + COM_REFS, 1);
+  const runAddRef = () => {
+    const code = [...push(TEX), ...callSlot(M.AddRef9), 0xf4];
+    mem.writeBytes(CODE, Uint8Array.from(code)); env.jit.invalidate?.(CODE, code.length);
+    cpu.eip = CODE; cpu.esp = STACK; cpu.eflags = F.RESERVED1 | F.IF;
+    return env.jit.run({ maxInsns: 1e6 });
+  };
+  env.jit.setRefFast(false);
+  assert.equal(runAddRef(), EXIT.THUNK, 'switched off: AddRef handled in JavaScript');
+  env.jit.setRefFast(true);
+  assert.equal(runAddRef(), EXIT.HALT, 'switched on: the fast path again');
+  assert.equal(mem.read32(TEX + COM_REFS), 2);
+
+  // Vm.setApiFastPaths: the devices' filter flag follows; switched on while calls are queued, it waits for the drain
+  const { Vm } = await import('../src/core/vm.js');
+  const flags = [];
+  const fakeVm = { jit: env.jit, mem, d3dDevices: new Set([{ shadowOn() { flags.push(fakeVm.stateFilterOff ? 0 : 1); } }]) };
+  Vm.prototype.setApiFastPaths.call(fakeVm, false);
+  assert.deepEqual(flags, [0]);
+  mem.write32(DEFER_QUEUE, 8);
+  Vm.prototype.setApiFastPaths.call(fakeVm, true);
+  assert.deepEqual(flags, [0], 'not while the queue holds calls');
+  assert.equal(fakeVm.shadowResync, true);
+  mem.write32(DEFER_QUEUE, 0);
+  Vm.prototype.setApiFastPaths.call(fakeVm, true);
+  assert.deepEqual(flags, [0, 1]);
+});

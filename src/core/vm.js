@@ -443,6 +443,20 @@ export class Vm {
     }
     this.apiCalls += calls;
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
+    if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
+  }
+
+  /**
+   * Measurement switch (harness dbg:ORTHROS_API_FAST_OFF=1, then =): the fast paths of COM AddRef/Release and the
+   * issued-state filter of the Direct3D state setters off / on again within one session. The filter comes back on only
+   * once the deferred queue is empty (sets queued meanwhile did not update the shadow; their handlers do when drained).
+   */
+  setApiFastPaths(on) {
+    this.jit?.setRefFast?.(on);
+    this.stateFilterOff = !on;
+    if (on && this.mem.u32[DEFER_QUEUE >>> 2]) { this.shadowResync = true; return; }
+    this.shadowResync = false;
+    for (const d of this.d3dDevices ?? []) d.shadowOn?.();
   }
 
   dispatchThunk(thread, idx) {

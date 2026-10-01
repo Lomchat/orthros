@@ -423,8 +423,10 @@ export function d3dCore(vm) {
       this.rs.attachShadow(u32, e(SHADOW_RS), 256);
       for (let i = 0; i < 8; i++) this.tss[i]?.attachShadow(u32, e(SHADOW_TSS + 40 * i), 40);
       for (let i = 0; i < 16; i++) this.samplers?.[i]?.attachShadow(u32, e(SHADOW_SAMP + 16 * i), 16);
-      mem.write32(this.shadow, this.recording ? 0 : 1);
+      this.shadowOn();
     }
+    /** the filter on unless a state block records (or a measurement switched it off: Vm.setApiFastPaths) */
+    shadowOn() { if (this.shadow) mem.write32(this.shadow, this.recording || vm.stateFilterOff ? 0 : 1); }
     destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.gfx?.destroy?.(); for (const b of this.backBuffers) b.free(); this.depthStencil?.free(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
     TestCooperativeLevel() { return this.lost === 1 ? D3DERR_DEVICELOST : this.lost === 2 ? D3DERR_DEVICENOTRESET : D3D_OK; }
@@ -549,7 +551,7 @@ export function d3dCore(vm) {
     SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_RS.has(s)) this.programVersion++; this.rs.set(s, v); noteState(this, 'rs', s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
     BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; if (this.shadow) mem.write32(this.shadow, 0); this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
-    EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; if (this.shadow) mem.write32(this.shadow, 1); c.out32(1, id); return D3D_OK; }
+    EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; this.shadowOn(); c.out32(1, id); return D3D_OK; }
     // (only what the block holds — states, textures, transforms, shaders — and, for the transforms, only the slots whose
     // matrix differs: effects restore their state with a block around every object, and a blanket invalidation made the
     // backend re-send every matrix and light at every draw)

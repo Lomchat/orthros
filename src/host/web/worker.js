@@ -494,7 +494,7 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     const st = host?.gfx?.device?.stats ?? {}, prev = markPrev ?? {}, d = (k) => (st[k] ?? 0) - (prev[k] ?? 0);
