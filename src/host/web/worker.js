@@ -5,7 +5,7 @@ import { DxtPool } from '../../win32/dxt-pool.js';
 import { setDxtEncoder } from '../../win32/d3dx9-image.js';
 import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
-import { Vfs, MemBackend, normalizeWin } from '../../vfs/vfs.js';
+import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js';
 import { HttpBackend, BLOCK } from '../../vfs/http-backend.js';
 import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
@@ -164,6 +164,7 @@ async function start(m) {
   }
   if (store && m.opts.offline) { gameFiles.downloadAll(offline, () => stopped).then(() => log('file', `offline copy: ${offline.done ? 'complete' : 'stopped'} (${Math.round(offline.bytes / 1048576)} MiB of ${Math.round(offline.total / 1048576)})`)); }
   vfs.mount(manifest.mount, gameFiles);
+  mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
     const treeResponse = await fetch(`/api/tree/${encodeURIComponent(dependency.manifest)}`);

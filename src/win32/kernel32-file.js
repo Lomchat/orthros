@@ -307,11 +307,34 @@ export function registerKernel32File(api, vm) {
   K.GetDiskFreeSpaceW = [5, (c) => { c.out32(1, 8); c.out32(2, 512); c.out32(3, 0x400000); c.out32(4, 0x800000); return 1; }];
   K.GetDiskFreeSpaceExW = [4, (c) => { const free = 16n * 1024n * 1024n * 1024n; c.out64(1, free); c.out64(2, 4n * free); c.out64(3, free); return 1; }];
   K.GetDiskFreeSpaceExA = [4, (c) => { const free = 16n * 1024n * 1024n * 1024n; c.out64(1, free); c.out64(2, 4n * free); c.out64(3, free); return 1; }];
-  K.GetDriveTypeA = [1, (c) => { const s = (c.str(0) ?? '').toUpperCase(); return s.startsWith('C') ? 3 : s.startsWith('D') ? 5 : 1; }];
-  K.GetDriveTypeW = [1, (c) => { const s = (c.wstr(0) ?? '').toUpperCase(); return s.startsWith('C') ? 3 : s.startsWith('D') ? 5 : 1; }];
-  K.GetLogicalDrives = [0, () => 0x4];
-  K.GetLogicalDriveStringsA = [2, (c) => { const s = 'C:\\\0'; if (c.arg(0) < s.length + 1) return s.length + 1; mem.writeBytes(c.arg(1), [...s].map((ch) => ch.charCodeAt(0)).concat([0])); return s.length; }];
-  K.GetVolumeInformationA = [8, (c) => { if (c.arg(1)) mem.writeCString(c.arg(1), 'ORTHROS', c.arg(2)); c.out32(3, 0x1234abcd); c.out32(4, 255); c.out32(5, 0x700ff); if (c.arg(6)) mem.writeCString(c.arg(6), 'NTFS', c.arg(7)); return 1; }];
+  // Drives: C: (fixed disk), the extra drives of the VFS (a game's CD-ROM: Vfs.mountDrive), D: an empty CD-ROM drive
+  // otherwise. (The drive of a NULL root is the current directory's.)
+  const driveOf = (s, c) => (s ? s : c.proc.cwd ?? 'C:').toUpperCase().charAt(0);
+  const driveType = (L) => (L === 'C' ? 3 : vm.vfs.drives?.get(L)?.type ?? (L === 'D' ? 5 : 1));
+  const driveLetters = () => ['C', ...[...(vm.vfs.drives?.keys() ?? [])]].sort();
+  K.GetDriveTypeA = [1, (c) => driveType(driveOf(c.str(0), c))];
+  K.GetDriveTypeW = [1, (c) => driveType(driveOf(c.wstr(0), c))];
+  K.GetLogicalDrives = [0, () => driveLetters().reduce((m, L) => m | (1 << (L.charCodeAt(0) - 65)), 0) >>> 0];
+  const driveStrings = (c, wide) => {
+    const s = driveLetters().map((L) => L + ':\\\0').join('');
+    if (c.arg(0) < s.length + 1) return s.length + 1;
+    for (let i = 0; i <= s.length; i++) { const ch = i < s.length ? s.charCodeAt(i) : 0; if (wide) mem.write16(c.arg(1) + 2 * i, ch); else mem.write8(c.arg(1) + i, ch); }
+    return s.length;
+  };
+  K.GetLogicalDriveStringsA = [2, (c) => driveStrings(c, false)];
+  K.GetLogicalDriveStringsW = [2, (c) => driveStrings(c, true)];
+  const volumeInfo = (c, root, wide) => {
+    const L = driveOf(root, c), d = vm.vfs.drives?.get(L);
+    if (L !== 'C' && !d) return c.fail(L === 'D' ? 21 : E.PATH_NOT_FOUND); // ERROR_NOT_READY: no disc in the drive
+    const label = d ? d.label : 'ORTHROS', fsName = d ? d.fs : 'NTFS';
+    const put = (a, str, n) => { if (a) { if (wide) mem.writeWString(a, str, n); else mem.writeCString(a, str, n); } };
+    put(c.arg(1), label, c.arg(2));
+    c.out32(3, d ? d.serial : 0x1234abcd); c.out32(4, d ? 110 : 255); c.out32(5, d ? 0x80005 : 0x700ff); // (CDFS: case-preserved, unicode, read-only)
+    put(c.arg(6), fsName, c.arg(7));
+    return 1;
+  };
+  K.GetVolumeInformationA = [8, (c) => volumeInfo(c, c.str(0), false)];
+  K.GetVolumeInformationW = [8, (c) => volumeInfo(c, c.wstr(0), true)];
   K.SearchPathA = [6, (c) => {
     const name = c.str(1) ?? ''; const ext = c.str(2);
     const cands = [c.str(0) ? c.str(0) + '\\' + name : name, c.proc.exeDir + '\\' + name, c.proc.cwd + '\\' + name];

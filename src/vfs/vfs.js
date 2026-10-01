@@ -13,6 +13,15 @@ export class Vfs {
   constructor() {
     /** @type {Array<{prefix: string, backend: any}>} sorted longest-prefix first */
     this.mounts = [];
+    /** @type {Map<string, {type: number, label: string, fs: string, serial: number}>} drives besides C: (letter -> Windows drive type, volume) */
+    this.drives = new Map();
+  }
+
+  /** A whole drive (e.g. a CD-ROM: type 5, file system CDFS) served by `backend`. */
+  mountDrive(letter, backend, { type = 5, label = '', fs = 'CDFS', serial = 0 } = {}) {
+    const L = String(letter).charAt(0).toUpperCase();
+    this.mount(`${L}:\\`, backend);
+    this.drives.set(L, { type, label, fs, serial: serial >>> 0 });
   }
 
   /** @param {string} winPath e.g. 'C:\\Game' @param {any} backend */
@@ -53,10 +62,33 @@ export class Vfs {
   }
 }
 
+/**
+ * The manifest's `cdrom` (generic compat option: games checking for their disc): the game's own files are also a
+ * CD-ROM drive. `"cdrom": "D"` or `{ "drive": "D", "label": "<volume label>", "serial": <number> }`.
+ */
+export function mountGameCdrom(vfs, manifest, gameBackend) {
+  const cd = manifest?.cdrom;
+  if (!cd) return;
+  const spec = typeof cd === 'string' ? { drive: cd } : cd;
+  const L = String(spec.drive ?? 'D').charAt(0).toUpperCase();
+  if (!/[D-Z]/.test(L)) throw new Error(`manifest cdrom: invalid drive ${spec.drive}`);
+  const label = String(spec.label ?? '').slice(0, 32);
+  let serial = spec.serial ?? 0;
+  if (!serial) for (const ch of label + L) serial = (Math.imul(serial, 31) + ch.charCodeAt(0)) >>> 0; // (stable per label)
+  vfs.mountDrive(L, gameBackend, { type: 5, label, fs: 'CDFS', serial });
+}
+
 /** Normalize a Windows path: uppercase drive, backslashes, resolve . and .., no trailing slash. */
 export function normalizeWin(p, cwd = 'C:\\') {
   let s = String(p).replace(/\//g, '\\');
-  if (/^\\\\\?\\/.test(s)) s = s.slice(4);
+  const literal = /^\\\\\?\\/.test(s); // (\\?\ paths are taken as they are)
+  if (literal) s = s.slice(4);
+  // Win32 path normalization: the trailing spaces and periods of a path not ending with a separator are removed
+  // ("data\file.ide " opens "data\file.ide"); not in a wildcard pattern (FindFirstFile's "*." has its own meaning)
+  else {
+    const last = s.slice(s.lastIndexOf('\\') + 1);
+    if (/[ .]$/.test(last) && !/^\.+$/.test(last) && !/[*?]/.test(last)) s = s.slice(0, s.length - last.length) + last.replace(/[ .]+$/, '');
+  }
   if (!/^[A-Za-z]:/.test(s)) {
     // relative or rooted-without-drive
     if (s.startsWith('\\')) s = cwd.slice(0, 2) + s;
