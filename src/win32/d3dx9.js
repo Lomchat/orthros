@@ -116,7 +116,7 @@ export function registerD3DX9(api, vm) {
   };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
   const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
-  const fillVolume = (c, t, i, data) => { const l = t.levels[i]; if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
+  const fillVolume = (c, t, i, data) => { const l = t.levels[i]; t.dev.gfx?.beforeWrite?.(t); if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
 
   /**
    * Create a texture of kind 'tex' | 'cube' | 'volume' from an image in memory (the ...FromFileInMemoryEx family).

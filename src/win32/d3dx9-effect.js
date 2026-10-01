@@ -299,12 +299,15 @@ export function defineEffects(X, vm, h) {
         if (set === RSET.FLOAT4) {
           const dst = vs ? dev.vsConst : dev.psConst, o = 4 * reg, n = Math.min(4 * count, dst.length - o);
           for (let i = 0; i < n; i++) { const v = vals[vo + i]; if (dst[o + i] !== v && !(dst[o + i] !== dst[o + i] && v !== v)) { dst[o + i] = v; changed = true; } }
+          if (changed) dev.gfx?.constTouched?.(vs ? 0 : 1, o, o + n);
         } else if (set === RSET.INT4) {
           const dst = vs ? dev.vsConstI : dev.psConstI, o = 4 * reg, n = Math.min(4 * count, dst.length - o);
           for (let i = 0; i < n; i++) if (dst[o + i] !== vals[vo + i]) { dst[o + i] = vals[vo + i]; changed = true; }
+          if (changed) dev.gfx?.constTouched?.(vs ? 2 : 3, o, o + n);
         } else {
           const dst = vs ? dev.vsConstB : dev.psConstB, n = Math.min(count, dst.length - reg);
           for (let i = 0; i < n; i++) { const b = vals[vo + 4 * i] ? 1 : 0; if (dst[reg + i] !== b) { dst[reg + i] = b; changed = true; } }
+          if (changed) dev.gfx?.constTouched?.(vs ? 4 : 5, reg, reg + n);
         }
         if (changed) dev.constVersion++;
         return;

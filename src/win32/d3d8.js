@@ -151,7 +151,7 @@ export function d3dCore(vm) {
     constructor(dev, owner, fmt, w, h, usage, pool, level = 0, face = 0) {
       this.dev = dev; this.owner = owner; this.fmt = fmt; this.width = w; this.height = h; this.usage = usage; this.pool = pool; this.level = level; this.face = face;
       this.pitch = surfacePitch(fmt, w); this.bytes = surfaceBytes(fmt, w, h);
-      this.mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = nextResId++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
+      this._mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = nextResId++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
       this.iids = [IID_IDirect3DSurface8];
     }
     /**
@@ -160,12 +160,20 @@ export function d3dCore(vm) {
      * texture; any other way of marking the surface dirty (a copy, D3DX, AddDirtyRect...) means the whole surface.
      */
     get dirty() { return this._dirty; }
-    set dirty(v) { this._dirty = v; this.dirtyRect = null; }
-    ensureMem(proc) { if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v) this.dev.gfx?.surfaceDirty?.(this, null); }
+    /** guest address of the contents (0 until first needed); a render worker's mirror is told of every change */
+    get mem() { return this._mem; }
+    set mem(v) { this._mem = v; this.dev.gfx?.surfaceMem?.(this); }
+    /**
+     * The contents in guest memory, allocated on first use. Every write to a surface goes through here (locks, GetDC,
+     * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
+     * contents (gfx.beforeWrite).
+     */
+    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this.owner ?? this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
-    free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
+    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
     ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     GetDevice(c) { return Resource.prototype.GetDevice.call(this, c); }
@@ -235,6 +243,7 @@ export function d3dCore(vm) {
       const r = this.lockRect, d = this.dirtyRect, partial = r && (!this._dirty || d);
       this._dirty = true;
       this.dirtyRect = !partial ? null : !d ? r.slice() : [Math.min(d[0], r[0]), Math.min(d[1], r[1]), Math.max(d[2], r[2]), Math.max(d[3], r[3])];
+      this.dev.gfx?.surfaceDirty?.(this, r);
     }
   }
   class Texture extends Resource {
@@ -290,13 +299,13 @@ export function d3dCore(vm) {
       for (let i = 0, lw = w, lh = h, ld = d; i < levels; i++, lw = Math.max(1, lw >> 1), lh = Math.max(1, lh >> 1), ld = Math.max(1, ld >> 1)) this.levels.push({ width: lw, height: lh, depth: ld, pitch: surfacePitch(fmt, lw), slice: surfaceBytes(fmt, lw, lh), bytes: surfaceBytes(fmt, lw, lh) * ld, mem: 0, locked: false });
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
-    free() { for (const l of this.levels) if (l.mem) { this.dev.proc.vmem.release(l.mem); l.mem = 0; } }
+    free() { for (const l of this.levels) if (l.mem) { const a = l.mem; l.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
     SetLOD(c) { const p = this.lod; this.lod = c.arg(1); return p; }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.levels.length; }
     GetLevelDesc(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, RTYPE.VOLUME); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); if (this.dev.api9) { mem.write32(p + 16, l.width); mem.write32(p + 20, l.height); mem.write32(p + 24, l.depth); } else { mem.write32(p + 16, l.bytes); mem.write32(p + 20, l.width); mem.write32(p + 24, l.height); mem.write32(p + 28, l.depth); } return D3D_OK; }
     GetVolumeLevel(c) { c.out32(2, 0); return E_NOTIMPL; }
-    LockBox(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p || l.locked) return D3DERR_INVALIDCALL; if (!l.mem) { l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.fill(l.mem, l.bytes, 0); } mem.write32(p, l.pitch); mem.write32(p + 4, l.slice); mem.write32(p + 8, l.mem); l.locked = true; return D3D_OK; }
+    LockBox(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p || l.locked) return D3DERR_INVALIDCALL; this.dev.gfx?.beforeWrite?.(this); if (!l.mem) { l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.fill(l.mem, l.bytes, 0); this.dev.gfx?.volumeMem?.(this, c.arg(1)); } mem.write32(p, l.pitch); mem.write32(p + 4, l.slice); mem.write32(p + 8, l.mem); l.locked = true; return D3D_OK; }
     UnlockBox(c) { const l = this.levels[c.arg(1)]; if (!l || !l.locked) return D3DERR_INVALIDCALL; l.locked = false; this.dev.gfx?.volumeUpdated?.(this, c.arg(1)); return D3D_OK; }
     AddDirtyBox() { return D3D_OK; }
     SetAutoGenFilterType() { return D3D_OK; }
@@ -308,10 +317,15 @@ export function d3dCore(vm) {
       super(dev, type, pool, usage, type === RTYPE.INDEXBUFFER ? fvfOrFmt : FMT.VERTEXDATA);
       this.length = length; this.fvf = type === RTYPE.VERTEXBUFFER ? fvfOrFmt : 0;
       this.mem = dev.proc.vmem.alloc(Math.max(length, 16), 4, type === RTYPE.VERTEXBUFFER ? 'd3d8:vb' : 'd3d8:ib');
+      // (zeroed, as fresh pages are: contents never written read the same whatever memory was released before — the
+      // allocator reuses blocks without clearing them, and a render worker releases memory later than the device does)
+      if (this.mem) mem.fill(this.mem, Math.max(length, 16), 0);
       this.locked = false; this.dirty = false;
     }
-    free() { if (this.mem) { this.dev.proc.vmem.release(this.mem); this.mem = 0; } }
-    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
+    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
+    /** (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents, or with
+     * D3DLOCK_DISCARD gives the buffer fresh memory — the driver behaviour DISCARD exists for) */
+    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; this.dev.gfx?.lockBuffer?.(this, flags); mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
     Unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); } return D3D_OK; }
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, this.type); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.length); if (this.type === RTYPE.VERTEXBUFFER) mem.write32(p + 20, this.fvf); return D3D_OK; }
   }
@@ -477,7 +491,8 @@ export function d3dCore(vm) {
       dst.dirty = true;
       return D3D_OK;
     }
-    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type) return D3DERR_INVALIDCALL; for (const l of d.levels ?? []) l.rgbaCache = null; for (const f of d.faces ?? []) for (const l of f) l.rgbaCache = null; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
+    // (the same format, as Direct3D requires: the levels are copied byte for byte)
+    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type || s.fmt !== d.fmt) return D3DERR_INVALIDCALL; for (const l of d.levels ?? []) l.rgbaCache = null; for (const f of d.faces ?? []) for (const l of f) l.rgbaCache = null; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
     GetFrontBuffer(c) { const s = com.implAt(c.arg(1)); if (!(s instanceof Surface)) return D3DERR_INVALIDCALL; if (this.gfx?.readbackFrontBuffer) this.gfx.readbackFrontBuffer(s); else { const b = this.backBuffers[0]; if (b.mem && b.fmt === s.fmt) mem.copy(s.ensureMem(c.proc), b.mem, Math.min(b.bytes, s.bytes)); } return D3D_OK; }
     SetRenderTarget(c) { const rt = c.arg(1) ? com.implAt(c.arg(1)) : null, ds = c.arg(2) ? com.implAt(c.arg(2)) : null; if (c.arg(1) && !(rt instanceof Surface)) return D3DERR_INVALIDCALL; if (rt) { this.renderTarget = rt; this.viewport = { x: 0, y: 0, w: rt.width, h: rt.height, minZ: 0, maxZ: 1 }; } this.depthTarget = c.arg(2) ? ds : null; this.gfx?.setRenderTarget?.(this.renderTarget, this.depthTarget); return D3D_OK; }
     GetRenderTarget(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; mem.write32(pp, this.renderTarget.ptrOf(c)); return D3D_OK; }
@@ -569,7 +584,7 @@ export function d3dCore(vm) {
     SetVertexShader(c) { const h = c.arg(1); if (this.recording) { this.recording.vs = h; return D3D_OK; } if (this.vertexShader !== h) this.programVersion++; this.vertexShader = h; this.gfx?.setVertexShader?.(h, this.vertexShaders.get(h)); return D3D_OK; }
     GetVertexShader(c) { c.out32(1, this.vertexShader); return D3D_OK; }
     DeleteVertexShader(c) { const sh = this.vertexShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.vertexShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deleteVertexShader?.(sh); return D3D_OK; }
-    SetVertexShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
+    SetVertexShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(0, reg * 4, (reg + n) * 4); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
     GetVertexShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.vsConst[reg * 4 + i]); return D3D_OK; }
     GetVertexShaderDeclaration(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.decl.length * 4); if (!p) return D3D_OK; if (size < sh.decl.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.decl.length; i++) mem.write32(p + 4 * i, sh.decl[i]); return D3D_OK; }
     GetVertexShaderFunction(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const code = sh.code ?? new Uint32Array(0); const size = mem.read32(ps); mem.write32(ps, code.length * 4); if (!p) return D3D_OK; if (size < code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < code.length; i++) mem.write32(p + 4 * i, code[i]); return D3D_OK; }
@@ -581,7 +596,7 @@ export function d3dCore(vm) {
     SetPixelShader(c) { const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } if (this.pixelShader !== h) this.programVersion++; this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
     GetPixelShader(c) { c.out32(1, this.pixelShader); return D3D_OK; }
     DeletePixelShader(c) { const sh = this.pixelShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.pixelShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deletePixelShader?.(sh); return D3D_OK; }
-    SetPixelShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
+    SetPixelShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(1, reg * 4, (reg + n) * 4); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
     GetPixelShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.psConst[reg * 4 + i]); return D3D_OK; }
     GetPixelShaderFunction(c) { const sh = this.pixelShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.code.length * 4); if (!p) return D3D_OK; if (size < sh.code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.code.length; i++) mem.write32(p + 4 * i, sh.code[i]); return D3D_OK; }
     DrawRectPatch() { return D3DERR_INVALIDCALL; }

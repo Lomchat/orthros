@@ -407,8 +407,8 @@ export class WebGLDevice {
     const n = this.stats.readbacks = (this.stats.readbacks ?? 0) + 1, ms = performance.now() - t0; this.stats.readbackMs = (this.stats.readbackMs ?? 0) + ms;
     if ((n & (n - 1)) === 0) this.log(`d3d-webgl: readback #${n} at frame ${this.frame}: ${w}x${h} ${dev.backBuffers.includes(s) ? 'back buffer' : s.owner ? 'texture level' : 'surface'} usage 0x${(s.usage ?? 0).toString(16)}, ${ms.toFixed(1)} ms (total ${this.stats.readbackMs.toFixed(0)} ms)`);
     dev.renderTarget = prev;
-    const base = s.ensureMem(dev.proc), u8 = this.mem.u8;
-    for (let y = 0; y < h; y++) { const src = (flip ? y : h - 1 - y) * w * 4; /* texture targets are rendered y-flipped (rows match D3D); back buffers are bottom-up */ let o = base + y * s.pitch; for (let x = 0; x < w; x++, o += 4) { const i = src + x * 4; u8[o] = rgba[i + 2]; u8[o + 1] = rgba[i + 1]; u8[o + 2] = rgba[i]; u8[o + 3] = rgba[i + 3]; } }
+    const base = s.ensureMem(dev.proc);
+    packReadback(this.mem.u8, base, s, rgba, w, h, flip);
   }
   /**
    * StretchRect between surfaces the GPU holds (render targets, back buffers, texture levels drawn to): a framebuffer
@@ -422,7 +422,8 @@ export class WebGLDevice {
     dev.renderTarget = src; const fs = this.bindTarget();
     dev.renderTarget = dst; const fd = this.bindTarget();
     dev.renderTarget = prev;
-    const rect = (p, w, h) => (p ? [mem.readS32(p), mem.readS32(p + 4), mem.readS32(p + 8), mem.readS32(p + 12)] : [0, 0, w, h]);
+    // (a rectangle in guest memory, or its four values copied by a render worker's recorder)
+    const rect = (p, w, h) => (!p ? [0, 0, w, h] : typeof p === 'number' ? [mem.readS32(p), mem.readS32(p + 4), mem.readS32(p + 8), mem.readS32(p + 12)] : p);
     const [sl, st, srr, sb] = rect(sr, src.width, src.height), [dl, dt, drr, db] = rect(dr, dst.width, dst.height);
     // D3D rows go down; a back buffer's GL rows go up (flip false), a texture target's match D3D (flip true)
     const sy0 = fs.flip ? st : fs.h - st, sy1 = fs.flip ? sb : fs.h - sb, dy0 = fd.flip ? dt : fd.h - dt, dy1 = fd.flip ? db : fd.h - db;
@@ -435,18 +436,7 @@ export class WebGLDevice {
     return 0;
   }
   readbackFrontBuffer(s) { const b = this.dev.backBuffers[0]; this.readbackSurface(b); if (b.mem && b.fmt === s.fmt) this.mem.copy(s.ensureMem(this.dev.proc), b.mem, Math.min(b.bytes, s.bytes)); }
-  copyRects(src, dst, rects, n, points) {
-    const mem = this.mem, dev = this.dev;
-    if ((src.usage & 1) && !src.mem) this.readbackSurface(src);
-    const sb = src.ensureMem(dev.proc), db = dst.ensureMem(dev.proc);
-    // DXT surfaces are copied as rows of 4x4 blocks
-    const block = isDxt(src.fmt) ? 4 : 1, unit = block === 4 ? (src.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(src.fmt, 1);
-    const copy = (sx, sy, w, h, dx, dy) => { if (w <= 0 || h <= 0) return; const rows = Math.ceil(h / block), cols = Math.ceil(w / block); for (let y = 0; y < rows; y++) mem.copy(db + ((dy / block | 0) + y) * dst.pitch + (dx / block | 0) * unit, sb + ((sy / block | 0) + y) * src.pitch + (sx / block | 0) * unit, cols * unit); };
-    if (!rects || !n) copy(0, 0, Math.min(src.width, dst.width), Math.min(src.height, dst.height), 0, 0);
-    else for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = mem.readS32(r), t = mem.readS32(r + 4), rr = mem.readS32(r + 8), b = mem.readS32(r + 12); const dx = points ? mem.readS32(points + 8 * i) : 0, dy = points ? mem.readS32(points + 8 * i + 4) : 0; copy(l, t, Math.min(rr - l, dst.width - dx), Math.min(b - t, dst.height - dy), dx, dy); }
-    dst.dirty = true;
-    return D3D_OK;
-  }
+  copyRects(src, dst, rects, n, points) { return copyRectsCpu(this.mem, this.dev.proc, src, dst, rects, n, points, (s) => this.readbackSurface(s)); }
 
   // ---------------------------------------------------------------- frame
   beginScene() { this.frameDraws = 0; }
@@ -596,7 +586,8 @@ export class WebGLDevice {
     if (flags & 1) { const c = colorToVec(color, this.tmp.v4); gl.colorMask(true, true, true, true); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; }
     if (flags & 2) { gl.depthMask(true); gl.clearDepth(z); mask |= gl.DEPTH_BUFFER_BIT; }
     if (flags & 4) { gl.stencilMask(0xff); gl.clearStencil(stencil); mask |= gl.STENCIL_BUFFER_BIT; }
-    if (n && rects) { const mem = this.mem; for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = mem.readS32(r), t = mem.readS32(r + 4), rr = mem.readS32(r + 8), b = mem.readS32(r + 12); gl.scissor(l, gy(t, b - t), rr - l, b - t); gl.clear(mask); } }
+    // (rectangles in guest memory, or their values copied by a render worker's recorder: 4 per rectangle)
+    if (n && rects) { const mem = this.mem, copied = typeof rects !== 'number'; for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = copied ? rects[4 * i] : mem.readS32(r), t = copied ? rects[4 * i + 1] : mem.readS32(r + 4), rr = copied ? rects[4 * i + 2] : mem.readS32(r + 8), b = copied ? rects[4 * i + 3] : mem.readS32(r + 12); gl.scissor(l, gy(t, b - t), rr - l, b - t); gl.clear(mask); } }
     else gl.clear(mask);
     gl.disable(gl.SCISSOR_TEST);
   }
@@ -1355,7 +1346,7 @@ export class WebGLDevice {
     const px = new Uint8Array(4); gl.readPixels(60, gl.drawingBufferHeight - 61, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const vp = gl.getParameter(gl.VIEWPORT);
     const px2 = new Uint8Array(4); gl.readPixels(20, 20, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px2);
-    this.log(`d3d-webgl: state depth=${gl.getParameter(gl.DEPTH_TEST)}/${gl.getParameter(gl.DEPTH_FUNC)} mask=${gl.getParameter(gl.DEPTH_WRITEMASK)} cull=${gl.getParameter(gl.CULL_FACE)} blend=${gl.getParameter(gl.BLEND)} scissor=${gl.getParameter(gl.SCISSOR_TEST)} cmask=${gl.getParameter(gl.COLOR_WRITEMASK)} range=${gl.getParameter(gl.DEPTH_RANGE)} fb=${gl.getParameter(gl.FRAMEBUFFER_BINDING)} prog=${gl.getParameter(gl.CURRENT_PROGRAM) === P.prog} vao=${gl.getParameter(gl.VERTEX_ARRAY_BINDING) === this.vao} pixel(20,20gl)=${Array.from(px2).join(',')} v1=[${Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 28 + 4 * i).toFixed(1)).join(',')}] v2=[${Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 56 + 4 * i).toFixed(1)).join(',')}]`);
+    this.log(`d3d-webgl: state depth=${gl.getParameter(gl.DEPTH_TEST)}/${gl.getParameter(gl.DEPTH_FUNC)} mask=${gl.getParameter(gl.DEPTH_WRITEMASK)} cull=${gl.getParameter(gl.CULL_FACE)} blend=${gl.getParameter(gl.BLEND)} scissor=${gl.getParameter(gl.SCISSOR_TEST)} cmask=${gl.getParameter(gl.COLOR_WRITEMASK)} range=${gl.getParameter(gl.DEPTH_RANGE)} fb=${gl.getParameter(gl.FRAMEBUFFER_BINDING)} prog=${gl.getParameter(gl.CURRENT_PROGRAM) === P.prog} vao=${gl.getParameter(gl.VERTEX_ARRAY_BINDING) === this.vao} pixel(20,20gl)=${Array.from(px2).join(',')} v1=[${vb ? Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 28 + 4 * i).toFixed(1)).join(',') : '-'}] v2=[${vb ? Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 56 + 4 * i).toFixed(1)).join(',') : '-'}]`);
     this.log(`d3d-webgl: draw ${this.stats.draws}: viewport ${Array.from(vp).join(',')} buffer ${gl.drawingBufferWidth}x${gl.drawingBufferHeight} attrs ${attrs} v0=[${v0}] stride=${s.stride} pixel(60,60)=${Array.from(px).join(',')} active=${gl.getProgramParameter(P.prog, gl.ACTIVE_ATTRIBUTES)} err=${gl.getError()}`);
     void info;
   }
@@ -1385,8 +1376,11 @@ export class WebGLDevice {
     if (this.capturing) this.dumpTarget('dip');
     void minIdx;
   }
-  /** Upload `n` bytes of guest memory at `addr` into the buffer bound to `target` (the UP draws' shared buffers). */
-  streamData(target, addr, n) { this.stats.upBytes = (this.stats.upBytes ?? 0) + n; if (n > 0) this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
+  /**
+   * Upload `n` bytes of guest memory at `addr` into the buffer bound to `target` (the UP draws' shared buffers); `addr`
+   * may also be the bytes themselves (a Uint8Array: copied by a render worker's recorder at the draw).
+   */
+  streamData(target, addr, n) { this.stats.upBytes = (this.stats.upBytes ?? 0) + n; if (n > 0) { if (typeof addr === 'number') this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, addr, this.gl.STREAM_DRAW, 0, n); } else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
   drawPrimitiveUP(type, count, data, stride) {
     const gl = this.gl;
     const info = this.program(); const P = info.p;
@@ -1416,6 +1410,46 @@ export class WebGLDevice {
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dipup');
   }
+}
+
+/**
+ * The pixels read back from a render target (RGBA8, GL rows) into the surface's memory in its own format and row
+ * order: texture targets are rendered y-flipped (rows match D3D), back buffers bottom-up. Formats of 1 to 8 bytes per
+ * pixel are packed (16-bit ones by their bit layout, others as their closest channels); never past the surface's rows.
+ */
+export function packReadback(u8, base, s, rgba, w, h, flip) {
+  const bpp = isDxt(s.fmt) ? 0 : surfacePitch(s.fmt, 1), fmt = s.fmt, cw = Math.min(w, s.width), ch = Math.min(h, s.height);
+  for (let y = 0; y < ch; y++) {
+    const src = (flip ? y : h - 1 - y) * w * 4;
+    let o = base + y * s.pitch;
+    for (let x = 0; x < cw; x++, o += bpp) {
+      const i = src + x * 4, r = rgba[i], g = rgba[i + 1], b = rgba[i + 2], a = rgba[i + 3];
+      if (bpp === 4) { u8[o] = b; u8[o + 1] = g; u8[o + 2] = r; u8[o + 3] = a; }
+      else if (bpp === 2) {
+        const v = fmt === FMT.R5G6B5 ? ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3) : fmt === FMT.X1R5G5B5 || fmt === FMT.A1R5G5B5 ? ((a >> 7) << 15) | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+          : fmt === FMT.A4R4G4B4 || fmt === FMT.X4R4G4B4 ? ((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4) : 0;
+        u8[o] = v & 255; u8[o + 1] = v >> 8;
+      } else if (bpp === 1) u8[o] = fmt === FMT.A8 ? a : r;
+      else if (bpp === 3) { u8[o] = b; u8[o + 1] = g; u8[o + 2] = r; }
+      else if (bpp === 8) { u8[o] = u8[o + 1] = r; u8[o + 2] = u8[o + 3] = g; u8[o + 4] = u8[o + 5] = b; u8[o + 6] = u8[o + 7] = a; }
+    }
+  }
+}
+
+/**
+ * D3D8 CopyRects between surfaces in guest memory (a render target never read back yet is read back first: `readback`),
+ * DXT surfaces as rows of 4x4 blocks. Shared by the backend and a render worker's recorder (which runs it on the
+ * emulator's thread, where the guest memory is written).
+ */
+export function copyRectsCpu(mem, proc, src, dst, rects, n, points, readback) {
+  if ((src.usage & 1) && !src.mem) readback(src);
+  const sb = src.ensureMem(proc), db = dst.ensureMem(proc);
+  const block = isDxt(src.fmt) ? 4 : 1, unit = block === 4 ? (src.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(src.fmt, 1);
+  const copy = (sx, sy, w, h, dx, dy) => { if (w <= 0 || h <= 0) return; const rows = Math.ceil(h / block), cols = Math.ceil(w / block); for (let y = 0; y < rows; y++) mem.copy(db + ((dy / block | 0) + y) * dst.pitch + (dx / block | 0) * unit, sb + ((sy / block | 0) + y) * src.pitch + (sx / block | 0) * unit, cols * unit); };
+  if (!rects || !n) copy(0, 0, Math.min(src.width, dst.width), Math.min(src.height, dst.height), 0, 0);
+  else for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = mem.readS32(r), t = mem.readS32(r + 4), rr = mem.readS32(r + 8), b = mem.readS32(r + 12); const dx = points ? mem.readS32(points + 8 * i) : 0, dy = points ? mem.readS32(points + 8 * i + 4) : 0; copy(l, t, Math.min(rr - l, dst.width - dx), Math.min(b - t, dst.height - dy), dx, dy); }
+  dst.dirty = true;
+  return D3D_OK;
 }
 
 /**

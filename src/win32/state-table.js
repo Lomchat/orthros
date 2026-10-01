@@ -8,6 +8,8 @@ export class StateTable {
     this.v = new Array(capacity).fill(undefined);
     this.order = [];
     this.extra = null;
+    /** a recorder told of every set (render worker: the device's state changes, see gfx/d3d-recorder.js), or null */
+    this.rec = null;
     if (init) for (const [k, x] of init) this.set(k, x);
   }
   get(k) { return k >= 0 && k < this.v.length ? this.v[k] : this.extra?.get(k); }
@@ -15,6 +17,7 @@ export class StateTable {
   set(k, x) {
     if (k >= 0 && k < this.v.length) { if (this.v[k] === undefined) this.order.push(k); this.v[k] = x; }
     else { if (!(this.extra ??= new Map()).has(k)) this.order.push(k); this.extra.set(k, x); }
+    if (this.rec !== null) this.rec.noteSet(this, k);
     return this;
   }
   get size() { return this.order.length; }
