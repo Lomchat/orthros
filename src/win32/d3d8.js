@@ -473,7 +473,7 @@ export function d3dCore(vm) {
     Present(c) {
       if (this.lost) return D3DERR_DEVICELOST;
       this.frames++;
-      this.lastPresent = vm.clock.now();
+      this.lastPresent = vm.clock.now(); vm.presentThread = c.thread; // (frame accounting: the thread whose waits delay the frames)
       const ap = acct.enter(ACCT.present); // (frame accounting: the present and its hand-off; the frame boundary is in frameHook)
       try {
         if (this.gfx) this.gfx.present(this, c.arg(1), c.arg(2), c.arg(3));

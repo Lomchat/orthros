@@ -426,6 +426,13 @@ export class Vm {
   /** Can a blocking API call on this thread be unwound (parked) instead of nesting? Only at top level, outside callbacks. */
   canUnwind(thread) { return thread.topLevel && this.depth === 1 && thread.callbackDepth === 0 && this.current === thread; }
 
+  /**
+   * Frame accounting: does the thread that presents frames (the last to call Present, `presentThread`) wait for a
+   * file read (its own on the network, or one another thread has parked)? Then the worker's waits are I/O stalls of the
+   * frame, not the game's pacing.
+   */
+  frameThreadWaitsForRead() { const t = this.presentThread; return !!t && t.state === TS.BLOCKED && (t.blockReason === 'file read' || t.blockReason === 'file busy'); }
+
   // ------------------------------------------------------------------ API dispatch
   /**
    * Run the COM calls the JIT's fast path queued (runtime.js DEFER_SPECS: Direct3D state setters, D3DX effect parameter setters), in

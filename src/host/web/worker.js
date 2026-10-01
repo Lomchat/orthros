@@ -321,8 +321,9 @@ function gapBegin(r) {
   let cat = ACCT.late, planned = 0;
   if (r.state === 'sleep' || r.state === 'idle') {
     planned = r.state === 'idle' ? 30 : Math.max(0, r.until - performance.now());
-    // (a read on the network and no guest timer due soon: the threads wait for the read)
-    cat = vm.readsInFlight > 0 && (r.state === 'idle' || planned > 50) ? ACCT.ioWait : ACCT.sleep;
+    // (the thread presenting frames waits for a file read, or a read is on the network and no guest timer is due soon:
+    // the threads wait for the read)
+    cat = vm.frameThreadWaitsForRead() || (vm.readsInFlight > 0 && (r.state === 'idle' || planned > 50)) ? ACCT.ioWait : ACCT.sleep;
   }
   acct.enter(cat);
   gap.cat = cat; gap.planned = planned; gap.at = acct.at; gap.acc0 = acct.acc[cat];
