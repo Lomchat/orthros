@@ -116,7 +116,8 @@ async function start(m) {
   if (renderWorker) renderer = createRemoteGfx({ log: (msg) => log('gfx', msg), workerUrl: new URL('../../gfx/render-worker.js', import.meta.url), onFail: (reason, recorders) => (remoteGl ? renderInThread(recorders, threadBackend) : log('gfx', 'render compare: stopped (render worker gone)')) });
   if (remoteGl) { host.gfx = renderer; host.remoteGl = true; }
   else if (glMode === 'compare' || glMode === 'compare-worker') {
-    try { host.gfx = createCompareGfx(canvasGl, (msg) => log('gfx', msg), dump, { remote: renderer }); log('gfx', `render: frames compared with the recorded work replayed ${renderer ? 'in a render worker' : 'in this thread'} (${glMode})`); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
+    // (?dbg=ORTHROS_COMPARE_EVERY=N: compared every N frames)
+    try { host.gfx = createCompareGfx(canvasGl, (msg) => log('gfx', msg), dump, { remote: renderer, every: Number(globalThis.ORTHROS_COMPARE_EVERY) || 60 }); log('gfx', `render: frames compared with the recorded work replayed ${renderer ? 'in a render worker' : 'in this thread'} (${glMode})`); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   } else if (glMode === 'inline' || glMode === 'check') {
     try { host.gfx = createInlineGfx(canvasGl, (msg) => log('gfx', msg), dump, { check: glMode === 'check' }); log('gfx', `render: Direct3D work recorded and replayed in this thread (${glMode})`); } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); }
   } else host.gfx = threadBackend();
@@ -201,7 +202,7 @@ async function start(m) {
     const ch = new MessageChannel(), globals = {};
     for (const k of Object.keys(globalThis)) if (k.startsWith('ORTHROS_') && (typeof globalThis[k] !== 'object' || globalThis[k] === null)) globals[k] = globalThis[k];
     post({ type: 'gl-port', port: ch.port1 }, [ch.port1]);
-    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : 60, noPresent: !remoteGl }, ch.port2);
+    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
   }
   if (regionSink && vm.jit) vm.jit.learned = [];
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
