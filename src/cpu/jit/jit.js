@@ -2,7 +2,7 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
 import './translate-x87.js';
@@ -81,7 +81,8 @@ export class Jit {
 
   /** Mark a thunk slot as having a WASM fast path (called for every created thunk). */
   markFast(idx, key, def) {
-    const fid = def ? FAST_NAMES[key] : undefined;
+    // (IUnknown::AddRef/Release of every interface Orthros implements: com.js keeps their counts in guest memory)
+    const fid = !def ? undefined : FAST_NAMES[key] ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);

@@ -16,7 +16,7 @@ import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
-import { MATH_KERNELS, FAST_NAMES, FAST_PROF } from '../../cpu/jit/runtime.js';
+import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/runtime.js';
 import { listRegion } from '../../cpu/jit/listing.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
@@ -505,7 +505,9 @@ self.onmessage = (e) => {
     if (vm?.d3dxProf?.size) { log('gfx', `mark ${m.label}: D3DX image work (ms, count): ${[...vm.d3dxProf].sort((a, b) => b[1].ms - a[1].ms).slice(0, 14).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); vm.d3dxProf.clear(); }
     const hist = vm?.apiHist(), hp = markPrev?.hist;
     if (hist && hp) { const dh = [...hist].map(([k, v]) => [k, v - (hp.get(k) ?? 0)]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]); log('gfx', `mark ${m.label}: API calls ${dh.reduce((a, [, v]) => a + v, 0)}, most frequent: ${dh.slice(0, 30).map(([k, v]) => `${k.replace(/^com\.dll!/, '')} ${v}`).join(', ')}`); }
-    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
+    if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release`);
+    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, fast }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });

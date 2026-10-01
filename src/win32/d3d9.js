@@ -237,7 +237,7 @@ export function registerDirect3D9(api, vm) {
     GetSamplerState(c) { const s = samplerIndex(c.arg(1)); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; c.out32(3, this.samplers[s].get(c.arg(2)) ?? 0); return D3D_OK; }
     SetSamplerState(c) { const s = samplerIndex(c.arg(1)), type = c.arg(2), v = c.arg(3); if (s >= this.samplers.length) return D3DERR_INVALIDCALL; if (this.recording) { (this.recording.samp ??= new Map()).set(`${s}:${type}`, v); return D3D_OK; } if (this.samplers[s].get(type) === v) return D3D_OK; noteState(this, SAMP_NOTE_GROUPS[s] ?? 'samp' + s, type, v); this.samplers[s].set(type, v); this.gfx?.setSamplerState?.(s, type, v); return D3D_OK; }
     GetTexture(c) { const st = samplerIndex(c.arg(1)), pp = c.arg(2); if (st >= this.textures.length || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
-    SetTexture(c) { const st = samplerIndex(c.arg(1)), t = c.arg(2); if (st >= this.textures.length) return D3DERR_INVALIDCALL; if (t && !com.implAt(t)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; } if (this.textures[st] !== t) { this.stateVersion++; if (this.texKind(this.textures[st]) !== this.texKind(t)) this.programVersion++; } if (this.textures[st] !== t) { if (t) com.addRef(com.objectAt(t)); if (this.textures[st]) com.release(com.objectAt(this.textures[st])); this.textures[st] = t; } this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); return D3D_OK; }
+    SetTexture(c) { const st = samplerIndex(c.arg(1)), t = c.arg(2); if (st >= this.textures.length) return D3DERR_INVALIDCALL; return this.bindTexture(st, t); }
     SetScissorRect(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.scissor = { l: mem.readS32(p), t: mem.readS32(p + 4), r: mem.readS32(p + 8), b: mem.readS32(p + 12) }; return D3D_OK; }
     GetScissorRect(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; const s = this.scissor ?? { l: 0, t: 0, r: this.renderTarget.width, b: this.renderTarget.height }; mem.write32(p, s.l); mem.write32(p + 4, s.t); mem.write32(p + 8, s.r); mem.write32(p + 12, s.b); return D3D_OK; }
     SetSoftwareVertexProcessing(c) { this.softwareVP = c.arg(1) !== 0; return D3D_OK; }
@@ -414,6 +414,7 @@ export function registerDirect3D9(api, vm) {
       if (adapter !== 0 || !pp || !out) return D3DERR_INVALIDCALL;
       const dev = new Device9(c, this, adapter, devType, hFocus, behavior, pp);
       dev.ptr = com.create(c.proc, 'IDirect3DDevice9', dev);
+      dev.initShadow(c.proc);
       mem.write32(out, dev.ptr);
       vm.d3dDevice = dev;
       vm.log('gfx', `d3d9: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);

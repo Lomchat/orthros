@@ -2,13 +2,14 @@
 // guest blocks [vtable, marker, id] whose methods dispatch to JS implementations. Unimplemented
 // methods are traced (once per method) and return E_NOTIMPL so the caller keeps going.
 import { E } from './errors.js';
+import { COM_MARKER, COM_REFS } from '../cpu/jit/runtime.js';
 /** 'comx' log kind: the COM trace without the per-draw state setters, draws, buffer locks and reference counting */
 const COM_SITE_MAX = 20; // 'comx': calls logged per (method, call site)
 const COM_QUIET = /^(Set(RenderState|TextureStageState|SamplerState|Texture|Transform|StreamSource|Indices|FVF|VertexShader|PixelShader|VertexDeclaration|Material|Light|VertexShaderConstantF|PixelShaderConstantF|Viewport|SoftwareVertexProcessing|ClipPlane|ScissorRect)|LightEnable|Draw\w*|Get(Transform|RenderState|TextureStageState|Desc|LevelDesc|LevelCount|DeviceCaps|DisplayMode|Direct3D|Type|CurrentPosition|Status|DeviceData|DeviceState)|AddRef|Release|QueryInterface|Lock|Unlock|TestCooperativeLevel|BeginScene|EndScene|Present|Clear)$/;
 
 export const S_OK = 0, S_FALSE = 1, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, E_POINTER = 0x80004003, E_FAIL = 0x80004005, E_INVALIDARG = 0x80070057, E_OUTOFMEMORY = 0x8007000e, CLASS_E_NOAGGREGATION = 0x80040110, REGDB_E_CLASSNOTREG = 0x80040154;
 export const IID_IUnknown = '00000000-0000-0000-c000-000000000046';
-const MARKER = 0x4d4f4321; // '!COM'
+const MARKER = COM_MARKER; // '!COM'
 
 /** GUID in guest memory -> canonical lowercase string */
 export function readGuid(mem, a) {
@@ -86,11 +87,16 @@ export class Com {
    */
   create(proc, iface, impl) {
     if (typeof iface === 'string') iface = this.interfaces.get(iface);
-    const ptr = proc.processHeap.alloc(16);
+    // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow),
+    // reference count] — the count in guest memory: AddRef/Release run on the JIT's fast path (runtime.js FID_ADDREF)
+    const ptr = proc.processHeap.alloc(20);
     this.mem.write32(ptr, this.vtableOf(proc, iface));
     this.mem.write32(ptr + 4, MARKER);
     this.mem.write32(ptr + 8, this.nextId);
-    const obj = { ptr, iface, impl, refs: 1, id: this.nextId++, proc };
+    this.mem.write32(ptr + 12, 0);
+    this.mem.write32(ptr + COM_REFS, 1);
+    const mem = this.mem;
+    const obj = { ptr, iface, impl, get refs() { return mem.read32(ptr + COM_REFS) | 0; }, set refs(v) { mem.write32(ptr + COM_REFS, v >>> 0); }, id: this.nextId++, proc };
     this.objects.set(ptr, obj);
     impl.comObject = obj;
     return ptr;
@@ -104,6 +110,7 @@ export class Com {
   release(obj) {
     if (--obj.refs > 0) return obj.refs;
     this.objects.delete(obj.ptr);
+    this.mem.write32(obj.ptr + 4, 0); // (no longer an object for the fast paths)
     try { obj.impl.destroy?.(obj); } finally { obj.proc.processHeap.free_(obj.ptr); }
     return 0;
   }

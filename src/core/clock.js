@@ -17,6 +17,8 @@ export class RealClock {
   }
   /** milliseconds since process start (fractional) */
   now() { return this.scale === 1 ? performance.now() - this.origin : (performance.now() - this.origin) * this.scale; }
+  /** now() at the time performance.now() returned `t` (a caller that has just read it saves a second read) */
+  at(t) { return this.scale === 1 ? t - this.origin : (t - this.origin) * this.scale; }
   /** real milliseconds for `ms` guest milliseconds */
   real(ms) { return ms / this.scale; }
   /** wall clock ms since epoch */
@@ -38,6 +40,7 @@ export class VirtualClock {
     this.zone = utcZone;
   }
   now() { return this.t; }
+  at() { return this.t; }
   wall() { return this.wallOrigin + this.t; }
   sleep(ms) { if (ms > 0) { this.t += ms; this.slept += ms; } }
   sleepUntil(t) { if (t > this.t) { this.slept += t - this.t; this.t = t; } }
