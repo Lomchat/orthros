@@ -13,7 +13,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 |---|---|
 | `guest` | guest code: translated code, the dispatcher, thread switches |
 | `api` | Win32 / Direct3D / D3DX handlers in JavaScript, exclusive of the categories below |
-| `draw` | Direct3D draws, clears and StretchRect submitted to WebGL (state, constants, vertex data, the GL call) or recorded for the render worker; blocks when the GPU process is behind. Timed inside timed API calls only (see Cost) |
+| `draw` | Direct3D draws, clears and StretchRect submitted to WebGL (state, constants, vertex data, the GL call) or recorded for the render worker; blocks when the GPU process is behind. Sampled with the API calls, all timed while the GPU process is behind (see Cost) |
 | `interp` | instructions run by the interpreter (fallbacks of translated code) |
 | `jit` | translation of new code on the game thread (first tier, consolidation) |
 | `ahead` | learned regions translated on the game thread while it waits |
@@ -41,8 +41,10 @@ the clock (no sleep) shows that polling as `guest`/`api` work: compare slow fram
 are sampled: JS API calls and interpreter fallbacks are timed on a random 1 in ~16 and counted otherwise; a frame's
 untimed calls are estimated from its timed ones (ratio estimator) and that time moved from `guest`. An API whose
 timed call took 0.5 ms or more of its own time is timed on every call until 1024 of its calls in a row are short
-again (rare heavy calls are not left to sampling). `draw` is timed only inside a timed API call: the untimed calls'
-draw time is estimated with their API time (a GPU process behind slows every draw: sampling them is enough). A timed
+again (rare heavy calls are not left to sampling). `draw` is timed inside a timed API call (the untimed calls' draw
+time is estimated with their API time), and every draw is timed from a draw of 0.5 ms or more until 1024 draws in a
+row are short again (a GPU process behind: one draw a frame may wait for the whole previous frame, which sampling
+would miss). A timed
 section may span a frame boundary (a timed Present): the counters are cumulative, so its time stays exact. The phase
 report prints the accounting's own clock reads per frame.
 

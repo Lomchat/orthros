@@ -82,6 +82,25 @@ test('a timed call spanning a frame boundary (a Present) is measured whole, no c
   }
 });
 
+test('one long draw a frame (a GPU process behind) makes every draw timed', () => {
+  const clk = fakeClock(), a = new FrameAccount(clk.now);
+  a.enter(C.guest);
+  const draw = (ms) => { if (!a.drawTimed()) { clk.t += ms; return; } const q = a.enter(C.draw), d0 = a.acc[C.draw]; clk.t += ms; a.drawEnd(q, d0); };
+  const frames = [];
+  for (let f = 0; f < 40; f++) {
+    for (let i = 0; i < 100; i++) {
+      clk.t += 0.05;
+      const ms = i === 0 ? 20 : 0.02; // (the first draw of each frame waits for the GPU process)
+      if (a.apiTimed(4)) { const outer = a.cur !== C.api, p = a.enter(C.api), a0 = a.acc[C.api], d0 = a.acc[C.draw]; clk.t += 0.002; draw(ms); a.apiEnd(p, 4, a0, d0, outer); }
+      else { clk.t += 0.002; draw(ms); }
+    }
+    frames.push(Float64Array.from(a.frame()));
+  }
+  assert.equal(a.drawAllSwitches, 1);
+  // once a long draw was seen, every frame's draws are measured: 20 + 99 x 0.02 ms
+  for (const f of frames.slice(-20)) assert.ok(Math.abs(f[C.draw] - (20 + 99 * 0.02)) < 1e-6, `draw ${f[C.draw]}`);
+});
+
 test('the estimate never takes more than guest time holds', () => {
   const clk = fakeClock(), a = new FrameAccount(clk.now);
   a.enter(C.guest);

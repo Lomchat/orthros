@@ -8,10 +8,11 @@
 // performance.now() costs ~250 ns in a cross-origin isolated Chrome worker, so the very frequent sections are not
 // timed one by one: JS API calls and interpreter fallbacks are timed on a random sample (1 in ~16, `sampled*`) and
 // the others counted; a frame's untimed calls are estimated from its timed ones (ratio estimator) and that time is
-// moved from the enclosing category (guest code) when the frame closes. A draw is timed (`draw`) only inside a timed
-// API call: the untimed calls' draw time is estimated with their API time. An API whose timed call took 0.5 ms or more
-// of its own (draws excluded: a GPU process behind slows every draw) is timed on every call (`always`) until 1024 of
-// its calls in a row are short again: rare heavy calls are not left to sampling.
+// moved from the enclosing category (guest code) when the frame closes. A draw is timed (`draw`) inside a timed API
+// call — the untimed calls' draw time is estimated with their API time — and every draw is timed from a draw of 0.5 ms
+// or more (a GPU process behind: one draw a frame may wait for the whole previous frame) until 1024 draws in a row are
+// short again. An API whose timed call took 0.5 ms or more of its own (draws excluded) is timed on every call
+// (`always`) until 1024 of its calls in a row are short again: rare heavy calls are not left to sampling.
 //
 // Pacing (`wait`, `sleep`) is the game's own frame pacing — guest threads waiting for their timers — not work: a
 // frame's work is its duration minus those.
@@ -70,6 +71,7 @@ export class FrameAccount {
     // whole-run means per sampled call (frames without a sample use these)
     this.apiMean = 0.002; this.drawMean = 0; this.interpMean = 0.0005; this.apiTotN = 0; this.apiTotMs = 0; this.drawTotMs = 0; this.interpTotN = 0; this.interpTotMs = 0;
     this.heavyApis = 0; // APIs switched to timing on every call
+    this.drawAll = 0; this.drawAllFrame = false; this.drawAllSwitches = 0; // every draw timed while non-zero (short draws left)
     this.reads = 0; // clock reads by the accounting itself (its cost: ~0.25 µs each in a Chrome worker)
     // per API index: time and count of its timed calls (with the call counts, an estimate of each API's time)
     this.idxMs = new Float64Array(256); this.idxN = new Float64Array(256); this.idxCalls = new Float64Array(256);
@@ -111,6 +113,15 @@ export class FrameAccount {
     if (al) return; // (timed because heavy: measured, not a sample)
     this.apiSampledN++; this.apiSampledMs += ms; this.drawSampledMs += draw;
   }
+  /** Is the draw about to be submitted timed (then enter(C.draw) / drawEnd bracket it)? */
+  drawTimed() { return this.cur === C.api || this.drawAll > 0; }
+  /** End a timed draw (`p` enter's result, `d0` acc[draw] just after it). */
+  drawEnd(p, d0) {
+    this.leave(p);
+    const ms = this.acc[C.draw] - d0;
+    if (ms >= HEAVY_MS) { if (!this.drawAll) this.drawAllSwitches++; this.drawAll = ALWAYS_CALLS; this.drawAllFrame = true; }
+    else if (this.drawAll > 0 && ms < SHORT_MS) this.drawAll--;
+  }
   growCalls(idx) { const a = new Float64Array(Math.max(idx + 1, this.idxCalls.length * 2)); a.set(this.idxCalls); this.idxCalls = a; a[idx]++; }
   /** An interpreter fallback: true when this one is timed (then enter(C.interp) / interpEnd(prev, acc[interp]) bracket it). */
   interpTimed() {
@@ -132,7 +143,9 @@ export class FrameAccount {
     if (this.interpSampledN) { this.interpTotN += this.interpSampledN; this.interpTotMs += this.interpSampledMs; this.interpMean = this.interpTotMs / this.interpTotN; }
     const local = this.apiSampledN >= 8;
     const apiEst = this.apiUntimedN * (local ? this.apiSampledMs / this.apiSampledN : this.apiMean);
-    const drawEst = this.apiUntimedN * (local ? this.drawSampledMs / this.apiSampledN : this.drawMean);
+    // (every draw timed during this frame: none to estimate)
+    const drawEst = this.drawAllFrame ? 0 : this.apiUntimedN * (local ? this.drawSampledMs / this.apiSampledN : this.drawMean);
+    this.drawAllFrame = this.drawAll > 0;
     const interpEst = this.interpUntimedN * (this.interpSampledN >= 8 ? this.interpSampledMs / this.interpSampledN : this.interpMean);
     for (let i = 0; i < N_CATS; i++) { o[i] = a[i] - b[i]; b[i] = a[i]; }
     // (the untimed calls ran inside guest code's time: moved from it, never more than it holds)
