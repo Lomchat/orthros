@@ -89,10 +89,16 @@ export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096, DEFER_OBJ = 
 export const DEFER_F_RS = 1 << 18, DEFER_F_TSS = 1 << 19, DEFER_F_SAMP = 1 << 20;
 /** a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them) */
 export const DEFER_REFS = 1 << 21;
-/** a queued call that may change device states (an effect pass applying them): the filter is off until the queue has run */
+/**
+ * a queued call that may change device states (an effect's CommitChanges applying its pass): the shadow entries listed
+ * by the object's commit list (+20: COMMIT_LIST) are forgotten when it is queued — [shadow block, count, entry
+ * indices], count 0xffffffff: any — else (no list) the filter is off until the queue has run
+ */
 export const DEFER_STATES = 1 << 22;
+export const COMMIT_LIST = 20;
 export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_ENTRIES = SHADOW_SAMP + 16 * 16, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
-/** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path) */
+export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
+/** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
 export const FID_ADDREF = 21, FID_RELEASE = 22;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
@@ -417,8 +423,29 @@ export function buildRuntime(opts = {}) {
           c.end(); void struct;
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
           c.get(TM).i32(DEFER_REFS).and(); const refs = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(4); c.end(); void refs;
-          c.get(TM).i32(DEFER_STATES).and(); const states = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(8); c.end(); void states;
           c.get(FE); const known = c.if_(); c.get(FE).i32(1).i32store(0); c.get(FE).get(FV).i32store(4); c.end(); void known;
+          c.get(TM).i32(DEFER_STATES).and();
+          const states = c.if_();
+          { // forget the shadow entries of the object's commit list (FB = the list, FE = the shadow block, FV = count, A2 = i)
+            const done = c.block(); const stale = c.block();
+            c.get(SP).i32load(4).i32load(COMMIT_LIST).tee(FB).eqz().br_if(stale);
+            c.get(FB).i32(0x7fff0000 - 4 * COMMIT_LIST_WORDS).ge_u().br_if(stale);
+            c.get(FB).i32load(0).tee(FE).eqz().br_if(stale);
+            c.get(FE).i32(0x7fff0000 - SHADOW_BYTES).ge_u().br_if(stale);
+            c.get(FB).i32load(4).tee(FV).i32(SHADOW_ENTRIES).gt_u().br_if(stale); // (0xffffffff: any state)
+            c.i32(0).set(A2);
+            const lpEnd = c.block(); const lp = c.loop();
+            c.get(A2).get(FV).ge_u().br_if(lpEnd);
+            c.get(FB).get(A2).i32(2).shl().add().i32load(8).tee(TEB).i32(SHADOW_ENTRIES).lt_u();
+            const inRange = c.if_(); c.get(FE).get(TEB).i32(3).shl().add().i32(0).i32store(16); c.end(); void inRange;
+            c.get(A2).i32(1).add().set(A2); c.br(lp);
+            c.end(); c.end(); void lpEnd;
+            c.br(done);
+            c.end(); void stale;
+            c.i32(DEFER_QUEUE).i32(1).i32store(8);
+            c.end(); void done;
+          }
+          c.end(); void states;
           // stdcall return, D3D_OK
           c.get(STATE).i32(0).i32store(ST.GPR); c.get(STATE).get(SP).i32load(0).i32store(ST.EIP);
           c.get(STATE).get(SP).i32(4).add().get(N).i32(2).shl().add().i32store(ST.GPR + 16); c.i32(1).return_();

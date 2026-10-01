@@ -10,7 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, COM_MARKER, COM_REFS, FAST_STATS } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
@@ -127,6 +127,9 @@ test('issued-state filter: randomized call sequences end in the same state with 
     const env = setup(), { mem } = env;
     mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000);
     mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    // odd seeds: the effect lists the states its CommitChanges sets (forgotten when it is queued); even: no list (the
+    // filter waits for the queue to run)
+    if (seed % 2) { const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1, SHADOW_SAMP + 16 * 2 + 5]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L); }
     const calls = randomProgram(seed, 400);
     const ref = new Model(null);
     for (const [m, a] of calls) ref.call(m, a);
@@ -185,4 +188,21 @@ test('COM AddRef/Release: counted in guest memory by the fast path; the last Rel
   assert.equal(r, EXIT.THUNK);
   assert.equal(cpu.exitArg, M.AddRef9, 'AddRef with a SetTexture queued goes to JavaScript');
   assert.equal(mem.read32(DEFER_QUEUE + 4), 1);
+});
+
+test('issued-state filter: an effect commit list that misses a state it sets is caught by the randomized comparison', () => {
+  // (the test's sensitivity: CommitChanges sets samp2.5, the list forgets only rs7 and tss0.1)
+  let mismatches = 0;
+  for (let seed = 1; seed <= 20; seed++) {
+    const env = setup(), { mem } = env;
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000);
+    mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L);
+    const calls = randomProgram(seed, 400);
+    const ref = new Model(null); for (const [m, a] of calls) ref.call(m, a);
+    const dev = new Model({ u32: mem.u32, mem });
+    runJit(env, calls, dev);
+    if (dev.state() !== ref.state() || JSON.stringify(dev.log) !== JSON.stringify(ref.log)) mismatches++;
+  }
+  assert.ok(mismatches > 0, 'an incomplete list makes the filter drop sets it must not');
 });

@@ -88,13 +88,15 @@ export class Com {
   create(proc, iface, impl) {
     if (typeof iface === 'string') iface = this.interfaces.get(iface);
     // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow),
-    // reference count] — the count in guest memory: AddRef/Release run on the JIT's fast path (runtime.js FID_ADDREF)
-    const ptr = proc.processHeap.alloc(20);
+    // reference count, an effect's commit list] — the count in guest memory: AddRef/Release run on the JIT's fast path
+    // (runtime.js FID_ADDREF)
+    const ptr = proc.processHeap.alloc(24);
     this.mem.write32(ptr, this.vtableOf(proc, iface));
     this.mem.write32(ptr + 4, MARKER);
     this.mem.write32(ptr + 8, this.nextId);
     this.mem.write32(ptr + 12, 0);
     this.mem.write32(ptr + COM_REFS, 1);
+    this.mem.write32(ptr + 20, 0); // (runtime.js COMMIT_LIST: an effect's)
     const mem = this.mem;
     const obj = { ptr, iface, impl, get refs() { return mem.read32(ptr + COM_REFS) | 0; }, set refs(v) { mem.write32(ptr + COM_REFS, v >>> 0); }, id: this.nextId++, proc };
     this.objects.set(ptr, obj);
