@@ -19,6 +19,8 @@ export const MAX_FRAMES_IN_FLIGHT = 2;
 export const STALL_MS = 10000;
 const NO_RECT = null;
 const EMPTY_STATS = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
+/** the recorder entry points the recording probe times */
+const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'stretchRect', 'bufferUpdated', 'surfaceDirty', 'surfaceMem', 'beginScene', 'reset', 'setGamma', 'destroyResource'];
 
 /** the recorded resource (texture of a level, else the resource itself) */
 const recOf = (r) => (r.owner ?? r).rec;
@@ -170,6 +172,34 @@ export class RenderLink {
     let j = 0;
     for (let i = 0; i < d.length; i += 2) { if (d[i + 1] <= c) this.proc?.vmem.release(d[i]); else { d[j++] = d[i]; d[j++] = d[i + 1]; } }
     d.length = j;
+  }
+  /**
+   * Recording cost probe (ORTHROS_REC_TIME=<frames>, a worker debug global: harness dbg:): the recorders' entry points
+   * (draws, clears, presents, readbacks, blits, dirty records, with the state sync they run) timed over that many
+   * frames, the waits for the render worker taken out; one report logged. The state-table and constant hooks run
+   * inside the Direct3D setters and are not counted (tools/render-record-bench.mjs measures everything).
+   */
+  recTimeStep() {
+    const T = this.recTime;
+    if (T) {
+      if (--T.left > 0) return;
+      for (const r of T.wrapped) for (const k of REC_ENTRIES) delete r[k];
+      this.recTime = null;
+      const F = T.frames, ms = T.ms - (this.stats.gpuWaitMs - T.wait0) - T.n * T.overhead / 1000;
+      this.log(`render record: ${(ms / F).toFixed(3)} ms per frame over ${F} frames (${T.n} entry calls, ${(T.n / F).toFixed(0)} per frame, timer ${T.overhead.toFixed(3)} us each taken out; waits ${(this.stats.gpuWaitMs - T.wait0).toFixed(0)} ms excluded); commands ${((this.w.produced - T.words0) * 4 / F / 1024).toFixed(0)} KiB per frame`);
+      return;
+    }
+    const want = globalThis.ORTHROS_REC_TIME; if (!want) return;
+    globalThis.ORTHROS_REC_TIME = undefined;
+    const now = performance.now.bind(performance);
+    const t = { ms: 0, n: 0, depth: 0, left: Number(want) || 60, frames: Number(want) || 60, wait0: this.stats.gpuWaitMs, words0: this.w.produced, wrapped: [...this.recorders] };
+    { let x = 0; const c0 = now(); for (let i = 0; i < 20000; i++) { const a = now(); x += now() - a; } t.overhead = (now() - c0) * 1000 / 20000; void x; } // (a timed empty span)
+    for (const r of t.wrapped) for (const k of REC_ENTRIES) {
+      const f = Recorder.prototype[k];
+      r[k] = function () { if (t.depth++) { try { return f.apply(this, arguments); } finally { t.depth--; } } const t0 = now(); try { return f.apply(this, arguments); } finally { t.depth--; t.ms += now() - t0; t.n++; } };
+    }
+    this.recTime = t;
+    this.log(`render record: timing the recording over ${t.frames} frames`);
   }
   /** the statistics of a device's backend (inline: the backend itself; render worker: its last report) */
   statsFor(id) { return (this.replayer ? this.replayer.devices.get(id)?.gfx?.stats : this.remoteStats?.get(id)) ?? EMPTY_STATS; }
@@ -538,6 +568,7 @@ export class Recorder {
       this.lastTarget = null;
     }
     if (L.ctl) Atomics.store(L.ctl, CTL.FRAMES, frame);
+    if (L.recTime || globalThis.ORTHROS_REC_TIME) L.recTimeStep();
     L.publish(true);
     if (L.ctl) L.waitFor(() => Atomics.load(L.ctl, CTL.SHOWN) >= frame - MAX_FRAMES_IN_FLIGHT, CTL.SHOWN, 'frame');
   }
