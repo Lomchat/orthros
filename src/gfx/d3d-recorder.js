@@ -274,6 +274,8 @@ export class Recorder {
     else this.w.put(OP.SHADER8, id, sh.decl ? 0 : 1, sh.handle >>> 0, sh.usage, sh.decl ?? null, sh.code ?? null);
     return id;
   }
+  /** a vertex declaration released (VertexDecl.destroy) */
+  declDestroyed(d) { if (d.recId && !this.link.failed) { this.w.c1(OP.DECL_DELETE, d.recId); d.recId = 0; } }
   declId(d) {
     if (!d) return 0;
     if (!d.recId) { d.recId = this.link.nextObjId++; this.w.put(OP.DECL_CREATE, d.recId, d.bytes); }
@@ -287,18 +289,26 @@ export class Recorder {
     // render / stage / sampler state tables
     if (!!d.api9 !== s.api9) { s.api9 = !!d.api9; W.c1(OP.API9, s.api9 ? 1 : 0); }
     if (d.rs !== s.rs || d.tss !== s.tss || d.samplers !== s.samplers) this.syncTables();
-    else if (this.nDirty) {
+    else if (this.nDirty) { // (one TSETS command for the uint32 values — nearly all of them)
       const T = this.dirtyT, K = this.dirtyK, nd = this.nDirty;
+      const p0 = W.begin(OP.TSETS, 1 + 3 * nd), I = W.I;
+      let q = p0 + 1;
       for (let i = 0; i < nd; i++) {
         const t = T[i], k = K[i], v = t.get(k);
         if (k < t.v.length) t.recMark[k] = 0;
-        if ((v >>> 0) === v) { const p = W.begin(OP.TSET, 4), I = W.I; I[p] = t.recId; I[p + 1] = k; I[p + 2] = 0; I[p + 3] = v; }
-        else W.put(OP.TSET, t.recId, k >>> 0, v);
+        if ((v >>> 0) === v && (k >>> 0) === k) { I[q] = t.recId; I[q + 1] = k; I[q + 2] = v; q += 3; }
+        else (this.oddSets ??= []).push(t.recId, k, v);
       }
+      I[p0] = q - p0 - 1;
+      if (q < p0 + 1 + 3 * nd) { I[p0 - 1] = OP.TSETS | ((q - p0) << 8); W.produced -= p0 + 1 + 3 * nd - q; } // (the unused end given back)
+      if (this.oddSets?.length) { const o = this.oddSets; for (let i = 0; i < o.length; i += 3) W.put(OP.TSET, o[i], o[i + 1] >>> 0, o[i + 2]); o.length = 0; }
       this.nDirty = 0;
     }
     if (d.pp !== s.pp) { s.pp = d.pp; W.put(OP.PP, d.pp.width >>> 0, d.pp.height >>> 0, d.pp.swap >>> 0, d.pp.count >>> 0); }
-    if (d.backBuffers !== s.bb) { s.bb = d.backBuffers; for (const b of d.backBuffers) this.ensureRes(b); W.put(OP.BACKBUFFERS, d.backBuffers.map((b) => b.id)); }
+    if (d.backBuffers !== s.bb) {
+      for (const b of s.bb ?? []) if (!d.backBuffers.includes(b) && b.rec && !b.rec.destroyed) { b.rec.destroyed = true; W.c1(OP.FORGET, b.id); } // (replaced by Reset)
+      s.bb = d.backBuffers; for (const b of d.backBuffers) this.ensureRes(b); W.put(OP.BACKBUFFERS, d.backBuffers.map((b) => b.id));
+    }
     if (d.renderTarget !== s.rt) {
       const rt = d.renderTarget; s.rt = rt;
       const res = rt?.owner ? rt.owner.rec ?? null : null;

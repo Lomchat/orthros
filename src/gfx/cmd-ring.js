@@ -26,6 +26,7 @@ export const OPS = [
   // state
   ['TABLES', 'uu'], // fresh state tables: texture stages, samplers (0 for a Direct3D 8 device)
   ['TSET', 'uun'], // table (0 render states, 1 + stage, 1 + stages + sampler), key, value
+  ['TSETS', 'w'], // several uint32 values at once: (table, key, value) triples
   ['VIEWPORT', 'nnnnff'],
   ['SCISSOR', 'uiiii'], // present, l, t, r, b
   ['FVF', 'n'],
@@ -61,6 +62,8 @@ export const OPS = [
   ['SHADER8', 'uuunww'], // id, kind, handle, usage, declaration tokens, code (none: fixed-function vertex processing)
   ['SHADER_DELETE', 'u'],
   ['DECL_CREATE', 'ub'],
+  ['DECL_DELETE', 'u'],
+  ['FORGET', 'u'], // a resource the device no longer refers to (old back buffers after Reset): dropped from the mirror only
   // work
   ['BEGIN_SCENE', ''],
   ['CLEAR', 'uuunuw'], // rect count, flags, color, z, stencil, rects (4 words each)

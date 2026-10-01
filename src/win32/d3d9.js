@@ -342,7 +342,7 @@ export function registerDirect3D9(api, vm) {
     constructor(dev, layout, bytes) { this.dev = dev; this.layout = layout; this.bytes = bytes; this.iids = [IID.IDirect3DVertexDeclaration9]; }
     GetDevice(c) { c.out32(1, this.dev.ptr); com.addRef(com.objectAt(this.dev.ptr)); return D3D_OK; }
     GetDeclaration(c) { const p = c.arg(1), pn = c.arg(2); const n = this.bytes.length / 8; mem.write32(pn, n); if (p) mem.writeBytes(p, this.bytes); return D3D_OK; }
-    destroy() { if (this.dev.vertexDecl === this) this.dev.vertexDecl = null; }
+    destroy() { if (this.dev.vertexDecl === this) this.dev.vertexDecl = null; this.dev.gfx?.declDestroyed?.(this); }
   }
   class StateBlock {
     constructor(dev, id) { this.dev = dev; this.id = id; this.iids = [IID.IDirect3DStateBlock9]; }

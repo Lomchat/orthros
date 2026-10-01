@@ -111,6 +111,7 @@ export class Replayer {
       case OP.API9: m.api9 = !!a[0]; if (m.api9 && m.samplers === undefined) { m.samplers = []; m.scissor = null; m.fvf = 0; m.vertexDecl = null; m.vsObj = null; m.psObj = null; } break;
       case OP.TABLES: m.rs = new StateTable(256); m.tss = Array.from({ length: a[0] }, () => new StateTable(40)); m.samplers = a[1] ? Array.from({ length: a[1] }, () => new StateTable(16)) : undefined; break;
       case OP.TSET: this.table(m, a[0]).set(a[1], a[2]); break;
+      case OP.TSETS: { const w = a[0]; for (let i = 0; i < w.length; i += 3) this.table(m, w[i]).set(w[i + 1], w[i + 2] >>> 0); break; }
       case OP.VIEWPORT: m.viewport = { x: a[0], y: a[1], w: a[2], h: a[3], minZ: a[4], maxZ: a[5] }; break;
       case OP.SCISSOR: m.scissor = a[0] ? { l: a[1], t: a[2], r: a[3], b: a[4] } : null; break;
       case OP.FVF: m.fvf = a[0]; break;
@@ -181,6 +182,8 @@ export class Replayer {
       case OP.SHADER9: { const code = Uint32Array.from(a[3]); this.shaders.set(a[0], { kind: a[1] ? 'ps' : 'vs', code, handle: a[2], version: code[0] >>> 0 }); break; }
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;
       case OP.SHADER_DELETE: { const s = this.shaders.get(a[0]); if (!s) break; this.shaders.delete(a[0]); if (s.decl || s.kind === 'vs') g?.deleteVertexShader(s); else g?.deletePixelShader(s); break; }
+      case OP.DECL_DELETE: this.decls.delete(a[0]); break;
+      case OP.FORGET: this.res.delete(a[0]); break;
       case OP.DECL_CREATE: { const bytes = a[1].slice(); this.decls.set(a[0], { layout: declLayout9(memOfBytes(bytes), 0), bytes }); break; }
       // work
       case OP.BEGIN_SCENE: g?.beginScene(); break;
