@@ -52,7 +52,8 @@ export function buildVersion(root = ROOT) {
   const now = Date.now();
   if (versionCache && versionCache.root === root && now - versionCache.at < 60000) return versionCache.value;
   let commit = 'nogit', dirty = false, newest = 0;
-  const vcs = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+  // (--no-optional-locks: the status never writes the index nor takes its lock — the tree may be edited meanwhile)
+  const vcs = (...a) => execFileSync('git', ['--no-optional-locks', ...a], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
   try { commit = vcs('rev-parse', '--short', 'HEAD') || 'nogit'; dirty = vcs('status', '--porcelain', '--untracked-files=no', '--', 'src') !== ''; } catch { /* not a checkout */ }
   const walk = (d) => {
     let es; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
