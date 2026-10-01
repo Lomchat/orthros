@@ -18,6 +18,9 @@ export const MAX_FRAMES_IN_FLIGHT = 2;
 /** a wait for the render worker without any progress on its side for this long: it is considered dead */
 export const STALL_MS = 30000; // (a software rasterizer on a loaded machine can spend seconds in one GL call)
 const NO_RECT = null;
+/** copy on write instead of a fence wait for resources up to this size (ORTHROS_RW_COW=0: always wait) */
+const COW_MAX = 4 << 20;
+const COW = () => globalThis.ORTHROS_RW_COW !== 0;
 const EMPTY_STATS = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
 /** the recorder entry points the recording probe times */
 const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'stretchRect', 'bufferUpdated', 'surfaceDirty', 'surfaceMem', 'beginScene', 'reset', 'setGamma', 'destroyResource'];
@@ -41,7 +44,7 @@ export class RenderLink {
     this.recorders = new Set(); this.curDev = -1; this.nextDeviceId = 1; this.nextObjId = 1;
     this.proc = null; this.failed = false;
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
-    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, renames: 0, deferredFrees: 0 };
+    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, renames: 0, renameBytes: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
   }
   /** words the render worker has consumed (its 32-bit counter widened against what was produced) */
   consumedNow() {
@@ -121,7 +124,31 @@ export class RenderLink {
     if (e <= this.consumedNow()) return false;
     return !(rr.slot >= 0 && this.ack !== null && this.ack[rr.slot] === (rr.gen | 0));
   }
-  /** before the guest writes a resource's memory: wait while a pending command may read the old contents */
+  /**
+   * Before the guest writes a resource's memory (`r`: a surface — texture level or standalone —, a volume texture):
+   * while a pending command may still read the old contents, a surface of at most COW_MAX bytes gets new memory with
+   * the contents copied (copy on write: the pending commands read the old block, released once they are replayed),
+   * anything else waits.
+   */
+  beforeWrite(r) {
+    const rr = recOf(r);
+    if (!rr || this.failed || rr.destroyed || !this.mayRead(rr)) return;
+    if (r.bytes !== undefined && r.owner !== undefined) { // (a surface)
+      if (!r.mem) return; // (no memory yet: nothing a pending command could read)
+      if (r.bytes <= COW_MAX && COW()) {
+        const vmem = r.dev.proc.vmem, addr = vmem.alloc(Math.max(r.bytes, 16), 4, 'd3d8:surface-cow') >>> 0;
+        if (addr) {
+          r.dev.proc.mem.copy(addr, r.mem, r.bytes);
+          this.deferred.push(r.mem, this.lastRefOf(rr));
+          r.mem = addr; // (recorded: the commands after this point read the new memory)
+          this.stats.cows++; this.stats.cowBytes += r.bytes;
+          return;
+        }
+      }
+    }
+    this.stats.fenceTex++;
+    this.waitConsumed(this.lastRefOf(rr), 'fence');
+  }
   fence(rr) {
     if (!rr || this.failed || rr.destroyed || !this.mayRead(rr)) return;
     this.waitConsumed(this.lastRefOf(rr), 'fence');
@@ -137,7 +164,8 @@ export class RenderLink {
     // what the draws use: the whole buffer at its first upload (as after a context loss), and the union of the
     // ranges written since its last upload: waited for when the locked range meets them
     if ((flags & NOOVERWRITE) && rr.slot >= 0 && this.ack !== null && this.ack[rr.slot] - rr.gen0 >= 0 && !this.pendingOverlap(rr, off, size ? off + size : b.length)) return;
-    if (!(flags & DISCARD)) { this.waitConsumed(this.lastRefOf(rr), 'fence'); return; }
+    // (other locks: new memory as for DISCARD — copy on write — up to COW_MAX bytes, else a wait)
+    if (!(flags & DISCARD) && !(b.length <= COW_MAX && COW())) { this.stats.fenceBuf++; this.waitConsumed(this.lastRefOf(rr), 'fence'); return; }
     const pool = rr.pool ??= [], consumed = this.consumedNow();
     let addr = 0;
     for (let i = 0; i < pool.length; i++) if (pool[i].pos <= consumed) { addr = pool[i].addr; pool.splice(i, 1); break; }
@@ -260,7 +288,7 @@ export class Recorder {
     this.sel();
     const p = this.w.begin(OP.BUF_DIRTY, 5), I = this.w.I; I[p] = b.id; I[p + 1] = rr.gen; I[p + 2] = start; I[p + 3] = size; I[p + 4] = b.mem;
   }
-  beforeWrite(r) { this.link.fence(r.rec); }
+  beforeWrite(r) { this.link.beforeWrite(r); }
   lockBuffer(b, flags) { this.link.lockBuffer(b, flags); }
   deferFree(r, addr) { return this.link.deferFree(r.rec, addr); }
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {}
@@ -577,9 +605,10 @@ export class Recorder {
     if (L.failed) return; // (render-target contents are lost with the render worker anyway)
     this.flush();
     this.ensureRes(sf);
-    // (the memory the pixels go to: the mirror's surface gets it once they are read, as the backend allocates it)
+    // (the memory the pixels go to: the mirror's surface gets it once they are read, as the backend allocates it; a
+    // surface with memory is written in place — after every command before the readback, nothing to protect)
     const had = sf.mem;
-    this.readbackOf = sf; sf.ensureMem(this.dev.proc); this.readbackOf = null;
+    if (!had) { this.readbackOf = sf; sf.ensureMem(this.dev.proc); this.readbackOf = null; }
     this.noteTarget(sf);
     const t = ++L.tickets, t0 = performance.now();
     if (had) this.w.c3(OP.READBACK, sf.id, t, 0); else this.w.c3(OP.READBACK, sf.id, t, sf.mem);

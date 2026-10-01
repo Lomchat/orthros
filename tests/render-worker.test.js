@@ -112,8 +112,9 @@ for (const api9 of [true, false]) {
   });
   // replayed late (at presents, waits and when the ring is full, as a render worker would be behind): guest memory
   // written or released meanwhile must not reach the replayed draws (fences, renaming, deferred releases)
-  test(`Direct3D ${api9 ? 9 : 8}: random call sequences replayed late — the same WebGL calls (memory fences)`, () => {
-    for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number)) {
+  test(`Direct3D ${api9 ? 9 : 8}: random call sequences replayed late — the same WebGL calls (copies on write, and fences)`, () => {
+    for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number)) for (const cow of [true, false]) {
+      globalThis.ORTHROS_RW_COW = cow ? undefined : 0;
       const A = fakeGl(), B = fakeGl();
       randomSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9, () => {});
       const words = new Int32Array(1 << 17), ack = new Int32Array(1 << 16).fill(-1);
@@ -123,7 +124,8 @@ for (const api9 of [true, false]) {
       link.publish(true);
       const d = firstDifference(A.calls, B.calls);
       assert.equal(d, null, d ? `seed ${seed}: first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nreplayed\n  ${d.b.join('\n  ')}` : '');
-      assert.ok(link.stats.waits > 0, 'fences waited');
+      assert.ok(cow ? link.stats.cows + link.stats.renames > 0 : link.stats.waits > 0, cow ? 'copies on write' : 'fences waited');
+      globalThis.ORTHROS_RW_COW = undefined;
     }
   });
 }

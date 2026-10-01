@@ -169,7 +169,7 @@ export function d3dCore(vm) {
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
      * contents (gfx.beforeWrite).
      */
-    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this.owner ?? this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
