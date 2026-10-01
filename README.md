@@ -81,6 +81,11 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
 - Mesure : `--gl-discard` (CPU seul), `--frames-from s` (percentiles des temps d'image), `--profile s:n` (profil du
   worker, appelants des entrées chaudes, mix d'instructions des régions ; `--profile-list N` : leur listing),
   `--jit-profile` (transitions, chaînages, appels d'API rapides par API et sites d'appel).
+- Images lentes : chaque étape `mark:<nom>` ouvre une phase ; la précédente (et la dernière, `end`, à la fin) reçoit un
+  rapport `[frames]` — images > 33 / 40 / 50 ms par minute, percentiles, temps par catégorie (code invité, API, draws,
+  JIT, programmes GL, textures, lectures, attentes, réveils tardifs…) des images et des images lentes, pires images ;
+  `--phases <fichier>` les écrit en JSON (docs/frame-accounting.md). Télémétrie des joueurs :
+  `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry`.
 - Rendu : `--capture-at @s` (une image : états de chaque draw, textures, cohérence GPU ↔ mémoire invitée ;
   `--capture-draws` : cible après chaque draw), `--gl-validate` (cache d'état GL, états approchés), `--dump-shaders`.
 - Journaux `--log kinds` : `api`, `apisite` (premiers appels de chaque site), `com` / `comx` (COM sans les appels par
