@@ -6,7 +6,7 @@ import { registerDirect3D9 } from '../src/win32/d3d9.js';
 import { registerDirect3D8 } from '../src/win32/d3d8.js';
 
 /** A minimal VM for Direct3D: guest memory, allocator, COM objects (pointers reused once released), a call context. */
-function d3dEnv(gfx, shared = false) {
+export function d3dEnv(gfx, shared = false) {
   const mem = new GuestMemory({ sizeBytes: 64 << 20, shared });
   let top = 0x100000; const freed = new Map(); // size -> addresses (reused: memory recycled like a real heap)
   const alloc = (n) => { n = (Math.max(n, 16) + 15) & ~15; const l = freed.get(n); if (l?.length) return l.pop(); const a = top; top += n; if (top > (60 << 20)) throw new Error('test heap full'); return a; };

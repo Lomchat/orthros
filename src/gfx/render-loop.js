@@ -21,6 +21,7 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
   const r = replayer.reader;
   let idle = true, lastYield = performance.now();
   while (!stop()) {
+    if (globalThis.ORTHROS_RW_STALL) { globalThis.ORTHROS_RW_STALL = 0; for (;;) Atomics.wait(ctl, CTL.HEARTBEAT + 1, 0, 60000); } // (testing: a render worker that stops answering — the emulator falls back)
     const head = Atomics.load(ctl, CTL.HEAD) >>> 0, avail = r.consumed + ((head - (r.consumed % TWO32) + TWO32) % TWO32);
     if (avail > r.consumed) {
       if (idle) { idle = false; backend?.beforeSlice(2); }

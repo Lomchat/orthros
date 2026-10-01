@@ -501,7 +501,7 @@ export function d3dCore(vm) {
     BeginScene() { if (this.sceneDepth) return D3DERR_INVALIDCALL; this.sceneDepth = 1; this.gfx?.beginScene?.(); return D3D_OK; }
     EndScene() { if (!this.sceneDepth) return D3DERR_INVALIDCALL; this.sceneDepth = 0; this.gfx?.endScene?.(); return D3D_OK; }
     Clear(c) { const n = c.arg(1), rects = c.arg(2), flags = c.arg(3), color = c.arg(4), z = c.argF32(5), stencil = c.arg(6); this.gfx?.clear?.(n, rects, flags, color, z, stencil); if (!this.gfx) this.clears = (this.clears ?? 0) + 1; return D3D_OK; }
-    touchTransform(st) { this.transformSlotVersion.set(st, ++this.transformVersion); }
+    touchTransform(st) { this.transformSlotVersion.set(st, ++this.transformVersion); this.gfx?.transformTouched?.(st); }
     touchAllTransforms() { this.transformAllVersion = ++this.transformVersion; }
     SetTransform(c) {
       const st = c.arg(1), p = c.arg(2);
