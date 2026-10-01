@@ -355,9 +355,10 @@ export class WebGLDevice {
       gl.bindBuffer(target, g.buf);
       if (kind === 'ib' && this.curVao) this.curVao.ib = g.buf; // an element array binding is state of the bound VAO
       // (uploads read the guest memory through offsets into its one view: no view object per upload; a length of 0
-      // would mean "to the end of the source" to GL)
-      if (g.size !== b.length) { if (b.length > 0) gl.bufferData(target, this.mem.u8, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW, b.mem >>> 0, b.length); else gl.bufferData(target, 0, gl.STATIC_DRAW); g.size = b.length; this.stats.bufBytes = (this.stats.bufBytes ?? 0) + b.length; }
-      else { const s = b.dirtyRange ? b.dirtyLo : 0, e = b.dirtyRange ? b.dirtyHi : b.length; if (e > s) gl.bufferSubData(target, s, this.mem.u8, (b.mem + s) >>> 0, e - s); this.stats.bufBytes = (this.stats.bufBytes ?? 0) + Math.max(0, e - s); }
+      // would mean "to the end of the source" to GL. A render worker's mirror buffer may hold its own copy instead.)
+      const src = b.shadow ?? this.mem.u8, at = b.shadow ? 0 : b.mem >>> 0;
+      if (g.size !== b.length) { if (b.length > 0) gl.bufferData(target, src, b.usage & 0x200 ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW, at, b.length); else gl.bufferData(target, 0, gl.STATIC_DRAW); g.size = b.length; this.stats.bufBytes = (this.stats.bufBytes ?? 0) + b.length; }
+      else { const s = b.dirtyRange ? b.dirtyLo : 0, e = b.dirtyRange ? b.dirtyHi : b.length; if (e > s) gl.bufferSubData(target, s, src, at + s, e - s); this.stats.bufBytes = (this.stats.bufBytes ?? 0) + Math.max(0, e - s); }
       b.dirty = false; b.dirtyRange = false; this.stats.uploads++;
     }
     return g;

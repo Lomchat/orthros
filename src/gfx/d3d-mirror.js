@@ -37,6 +37,8 @@ export class MBuffer {
   constructor(id, type, length, usage, fmt, mem, slot, gen) {
     this.id = id; this.type = type; this.length = length; this.usage = usage; this.fmt = fmt; this.mem = mem;
     this.dirty = false; this.dirtyRange = false; this.dirtyLo = 0; this.dirtyHi = 0; this.slot = slot; this.gen = gen; this.acked = -1;
+    /** the buffer's own copy of its contents once they travel in the ring (BUF_DATA): uploads read it, not guest memory */
+    this.shadow = null;
   }
 }
 
@@ -178,6 +180,13 @@ export class Replayer {
       case OP.SURF_MEM: { const s = this.res.get(a[0]); if (s) s.mem = a[1]; break; }
       case OP.SURF_DIRTY: { const s = this.res.get(a[0]); if (!s) break; if (a[2]) s.markLocked(a[2]); else s.dirty = true; if (s.owner) s.owner.gen = a[1] | 0; break; }
       case OP.BUF_DIRTY: { const b = this.res.get(a[0]); if (!b) break; b.mem = a[4]; b.gen = a[1] | 0; b.dirty = true; g?.bufferUpdated(b, a[2], a[3]); break; }
+      case OP.BUF_DATA: {
+        const b = this.res.get(a[0]); if (!b) break;
+        const bytes = a[3], sh = b.shadow ??= new Uint8Array(b.length);
+        sh.set(bytes, a[1]);
+        if (a[2] === 0) { b.dirty = true; g?.bufferUpdated(b, a[1], bytes.length); }
+        break;
+      }
       case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) l.mem = a[2]; break; }
       case OP.SHADER9: { const code = Uint32Array.from(a[3]); this.shaders.set(a[0], { kind: a[1] ? 'ps' : 'vs', code, handle: a[2], version: code[0] >>> 0 }); break; }
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;

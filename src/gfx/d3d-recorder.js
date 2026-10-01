@@ -8,11 +8,14 @@
 // The guest memory of resources is read by the render worker later than the draw that uses it, so every write path
 // first calls beforeWrite / lockBuffer (fences: wait until no pending command may still read the old contents), and
 // memory releases wait the same way (deferFree). A resource's contents are acknowledged by the render worker once
-// uploaded (the ack table: the generation of the contents uploaded), after which writes need no wait.
+// uploaded (the ack table: the generation of the contents uploaded), after which writes need no wait. Buffers that
+// are rewritten while in use (dynamic ones, and any a lock had to wait for) instead copy every written range into the
+// ring at Unlock (BUF_DATA): the mirror keeps their contents and never reads their guest memory — no wait, no copy of
+// the whole buffer.
 import { OP, CTL, VERSION_FIELDS, CONST_FIELDS, RingWriter, TWO32, ACK_SLOTS } from './cmd-ring.js';
 import { copyRectsCpu } from './d3d8-webgl.js';
 
-const READONLY = 0x10, NOOVERWRITE = 0x1000, DISCARD = 0x2000;
+const READONLY = 0x10, NOOVERWRITE = 0x1000;
 /** frames recorded ahead of the frames the render worker has shown */
 export const MAX_FRAMES_IN_FLIGHT = 2;
 /** a wait for the render worker without any progress on its side for this long: it is considered dead */
@@ -21,6 +24,9 @@ const NO_RECT = null;
 /** copy on write instead of a fence wait for resources up to this size (ORTHROS_RW_COW=0: always wait) */
 const COW_MAX = 4 << 20;
 const COW = () => globalThis.ORTHROS_RW_COW !== 0;
+/** buffer bytes per BUF_DATA command */
+const BUF_CHUNK = 1 << 20;
+const DYNAMIC = 0x200;
 const EMPTY_STATS = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
 /** the recorder entry points the recording probe times */
 const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'stretchRect', 'bufferUpdated', 'surfaceDirty', 'surfaceMem', 'beginScene', 'reset', 'setGamma', 'destroyResource'];
@@ -44,7 +50,7 @@ export class RenderLink {
     this.recorders = new Set(); this.curDev = -1; this.nextDeviceId = 1; this.nextObjId = 1;
     this.proc = null; this.failed = false;
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
-    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, renames: 0, renameBytes: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
+    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
   }
   /** words the render worker has consumed (its 32-bit counter widened against what was produced) */
   consumedNow() {
@@ -114,13 +120,13 @@ export class RenderLink {
   }
   // ---------------------------------------------------------------- resources: ids, fences, memory
   slot() { return this.freeSlots.length ? this.freeSlots.pop() : this.nextSlot < ACK_SLOTS ? this.nextSlot++ : -1; }
-  newRec(r, slotted) { const gen = ++this.gen; return (r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, refFloor: 0, binds: 0, destroyed: false, pool: null }); }
+  newRec(r, slotted) { const gen = ++this.gen; return (r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, binds: 0, destroyed: false, eager: false }); }
   /** latest ring position of a command that may read the resource's guest memory */
   lastRefOf(rr) { return rr.binds > 0 && this.lastWorkEnd > rr.lastRef ? this.lastWorkEnd : rr.lastRef; }
   /** may a command not yet replayed still read the resource's guest memory? */
   mayRead(rr) {
     const e = this.lastRefOf(rr);
-    if (e <= rr.refFloor || e <= this.w.consumed) return false;
+    if (e <= this.w.consumed) return false;
     if (e <= this.consumedNow()) return false;
     return !(rr.slot >= 0 && this.ack !== null && this.ack[rr.slot] === (rr.gen | 0));
   }
@@ -156,26 +162,37 @@ export class RenderLink {
   bind(rr) { if (rr) rr.binds++; }
   unbind(rr) { if (rr) { rr.binds--; if (this.lastWorkEnd > rr.lastRef) rr.lastRef = this.lastWorkEnd; } }
   ref(rr) { if (rr) rr.lastRef = this.w.produced; }
-  /** A buffer locked for writing (Buffer.Lock): wait, or with DISCARD give it other memory (its old block retired). */
+  /**
+   * A buffer locked for writing (Buffer.Lock). A buffer whose contents travel in the ring (`eager`: dynamic buffers
+   * from their first use, others once a lock found them still read by pending commands) needs nothing: the render
+   * worker never reads its guest memory. Otherwise, while a pending command may still read it, wait — then its
+   * contents travel in the ring from now on.
+   */
   lockBuffer(b, flags, off = 0, size = 0) {
     const rr = b.rec;
-    if ((flags & READONLY) || !rr || this.failed || !this.mayRead(rr)) return;
+    if ((flags & READONLY) || !rr || this.failed || rr.eager || !this.mayRead(rr)) return;
     // NOOVERWRITE: the application does not write data pending draws use — but a pending upload may take more than
     // what the draws use: the whole buffer at its first upload (as after a context loss), and the union of the
     // ranges written since its last upload: waited for when the locked range meets them
     if ((flags & NOOVERWRITE) && rr.slot >= 0 && this.ack !== null && this.ack[rr.slot] - rr.gen0 >= 0 && !this.pendingOverlap(rr, off, size ? off + size : b.length)) return;
-    // (other locks: new memory as for DISCARD — copy on write — up to COW_MAX bytes, else a wait)
-    if (!(flags & DISCARD) && !(b.length <= COW_MAX && COW())) { this.stats.fenceBuf++; this.waitConsumed(this.lastRefOf(rr), 'fence'); return; }
-    const pool = rr.pool ??= [], consumed = this.consumedNow();
-    let addr = 0;
-    for (let i = 0; i < pool.length; i++) if (pool[i].pos <= consumed) { addr = pool[i].addr; pool.splice(i, 1); break; }
-    if (!addr && pool.length < 3) addr = b.dev.proc.vmem.alloc(Math.max(b.length, 16), 4, 'd3d8:renamed') >>> 0;
-    if (!addr) { let k = 0; for (let i = 1; i < pool.length; i++) if (pool[i].pos < pool[k].pos) k = i; if (!this.waitConsumed(pool[k].pos, 'fence')) return; addr = pool[k].addr; pool.splice(k, 1); }
-    // (the new memory starts with the buffer's contents: what the application did not rewrite reads as before —
-    // undefined after DISCARD in Direct3D, the old contents in the in-thread path; kept exact)
-    b.dev.proc.mem.copy(addr, b.mem, b.length);
-    pool.push({ addr: b.mem, pos: this.lastRefOf(rr) });
-    b.mem = addr; rr.refFloor = this.w.produced; this.stats.renames++; this.stats.renameBytes = (this.stats.renameBytes ?? 0) + b.length;
+    this.stats.fenceBuf++;
+    if (!this.waitConsumed(this.lastRefOf(rr), 'fence')) return;
+    // (its contents as they are now, before the guest writes: what the mirror's pending dirty ranges upload too)
+    rr.eager = true; this.stats.eagerBufs++;
+    this.bufData(b, 0, b.length, 1);
+  }
+  /**
+   * Copy guest bytes [start, start + size) of a buffer into the ring (BUF_DATA, in chunks): kind 0 written by the
+   * guest (dirty in the mirror), 1 its contents as they are.
+   */
+  bufData(b, start, size, kind) {
+    const W = this.w, u8 = this.proc.mem.u8, end = Math.min(b.length, start + size);
+    for (let o = start; o < end; o += BUF_CHUNK) {
+      const n = Math.min(BUF_CHUNK, end - o), p = W.begin(OP.BUF_DATA, 4 + ((n + 3) >> 2)), I = W.I, a = (b.mem + o) >>> 0;
+      I[p] = b.id; I[p + 1] = o; I[p + 2] = kind; I[p + 3] = n;
+      W.U8.set(u8.subarray(a, a + n), (p + 4) * 4);
+    }
+    if (end > start) this.stats.bufDataBytes += end - start;
   }
   /** do the ranges written but not yet uploaded (generations past the acknowledged one) meet [lo, hi)? */
   pendingOverlap(rr, lo, hi) {
@@ -189,10 +206,8 @@ export class RenderLink {
   /** A resource's memory released: later if a pending command may still read it (true: the release is taken care of). */
   deferFree(rr, addr) {
     if (!rr || this.failed) return false;
-    let deferred = false;
-    if (rr.pool) { for (const p of rr.pool) this.deferred.push(p.addr, p.pos); rr.pool = null; deferred = true; }
+    if (rr.eager) return false; // (the render worker never reads its guest memory)
     if (this.mayRead(rr)) { this.deferred.push(addr, this.lastRefOf(rr)); this.stats.deferredFrees++; return true; }
-    if (deferred) { this.proc?.vmem.release(addr); return true; }
     return false;
   }
   releaseDeferred() {
@@ -280,6 +295,7 @@ export class Recorder {
   volumeUpdated(t, i) { this.volumeMem(t, i); }
   bufferUpdated(b, start = 0, size = b.length) {
     const rr = b.rec; if (!rr || rr.destroyed || this.link.failed) return;
+    if (rr.eager) { this.sel(); this.link.bufData(b, start, size, 0); return; }
     rr.gen = ++this.link.gen;
     // (the ranges not yet uploaded, for lockBuffer: past 16 of them the two oldest merge — a wider range, never a lost one)
     const pend = rr.pend ??= [];
@@ -289,7 +305,7 @@ export class Recorder {
     const p = this.w.begin(OP.BUF_DIRTY, 5), I = this.w.I; I[p] = b.id; I[p + 1] = rr.gen; I[p + 2] = start; I[p + 3] = size; I[p + 4] = b.mem;
   }
   beforeWrite(r) { this.link.beforeWrite(r); }
-  lockBuffer(b, flags) { this.link.lockBuffer(b, flags); }
+  lockBuffer(b, flags, off, size) { this.link.lockBuffer(b, flags, off, size); }
   deferFree(r, addr) { return this.link.deferFree(r.rec, addr); }
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {}
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTextureStageState() {} setSamplerState() {}
@@ -308,6 +324,8 @@ export class Recorder {
     } else if (o.length !== undefined) { // buffers
       const rr = L.newRec(o, true);
       W.put(OP.BUF, o.id, o.type, o.length, o.usage, o.fmt, o.mem, rr.slot >>> 0, rr.gen);
+      // (a dynamic buffer, rewritten while draws that read it are pending: its contents travel in the ring)
+      if (o.usage & DYNAMIC) { rr.eager = true; L.stats.eagerBufs++; L.bufData(o, 0, o.length, 1); }
     } else { // standalone surfaces (render targets, back buffers, depth, offscreen): never read by the render worker
       L.newRec(o, false);
       W.put(OP.SURF, o.id, o.fmt, o.width, o.height, o.usage, o.pool, o.mem, o.lockable ? 1 : 0);
