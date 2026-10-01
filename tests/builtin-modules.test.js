@@ -196,3 +196,12 @@ test('COM: an object kept alive by its owner survives its last Release at the sa
   com.release(com.objectAt(q));
   assert.equal(com.objectAt(q), null, 'without an owner: destroyed at the last Release');
 });
+
+test('MapVirtualKey(MAPVK_VK_TO_CHAR): letters in upper case, other keys unshifted', { skip }, () => {
+  const { call } = boot();
+  assert.equal(call('user32.dll', 'MapVirtualKeyA', 0x46, 2), 0x46, "VK 'F' -> 'F'");
+  assert.equal(call('user32.dll', 'MapVirtualKeyA', 0x57, 2), 0x57);
+  assert.equal(call('user32.dll', 'MapVirtualKeyA', 0x31, 2), 0x31, "'1'");
+  assert.equal(call('user32.dll', 'MapVirtualKeyA', 0xbd, 2), 0x2d, "'-'");
+  assert.equal(call('user32.dll', 'MapVirtualKeyA', 0x46, 0), 0x21, 'VK_TO_VSC');
+});

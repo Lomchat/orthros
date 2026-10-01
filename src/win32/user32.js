@@ -1378,7 +1378,8 @@ function mapVirtualKey(code, type) {
   switch (type) {
     case 0: case 4: return scanOf(code);
     case 1: case 3: { for (let vk = 0; vk < 256; vk++) if (scanOf(vk) === code) return vk; return 0; }
-    case 2: { const ch = vkToChar(code, new Uint8Array(256)); return ch ?? 0; }
+    // MAPVK_VK_TO_CHAR: the unshifted character, letters in upper case ('A' for VK_A, as Windows returns them)
+    case 2: { if (code >= 0x41 && code <= 0x5a) return code; const ch = vkToChar(code, new Uint8Array(256)); return ch ?? 0; }
     default: return 0;
   }
 }
