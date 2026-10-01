@@ -8,7 +8,7 @@ import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 
 function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 
-const SIZES = { 'a.big': 3 * BLOCK + 12345, 'b.big': BLOCK - 1000, 'c.big': 2 * BLOCK, 'd.big': 5 * CHUNK + 7, 'e.big': 0, 'f.big': 1, 'g.big': BLOCK + CHUNK };
+const SIZES = { 'a.big': 3 * BLOCK + 12345, 'b.big': BLOCK - 1000, 'c.big': 2 * BLOCK, 'd.big': 5 * CHUNK + 7, 'e.big': 0, 'f.big': 1, 'g.big': BLOCK + CHUNK, 'h.big': 9 * BLOCK + 3 }; // (h: long enough for the read-ahead of a file read whole)
 const NAMES = Object.keys(SIZES);
 /** two versions of the folder: /game/v7/ (mtime 7) and /game/v8/ (mtime 8, other bytes, same sizes) */
 const VERSIONS = { 7: {}, 8: {} };

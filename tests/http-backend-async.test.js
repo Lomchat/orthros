@@ -24,7 +24,8 @@ function fakeFetch() {
   const fn = (url, init = {}) => new Promise((resolve, reject) => {
     const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range);
     const call = { start: +a, end: +b + 1, bg: !!init.signal, signal: init.signal, settled: false,
-      release: () => { if (call.settled) return; call.settled = true; resolve({ status: 206, arrayBuffer: async () => bytes(+a, +b + 1).buffer }); } };
+      release: () => { if (call.settled) return; call.settled = true; resolve({ status: 206, arrayBuffer: async () => bytes(+a, +b + 1).buffer }); },
+      fail: () => { if (call.settled) return; call.settled = true; reject(new TypeError('Failed to fetch')); } };
     init.signal?.addEventListener('abort', () => { if (!call.settled) { call.settled = true; reject(new DOMException('aborted', 'AbortError')); } });
     calls.push(call);
   });
@@ -112,4 +113,57 @@ test('async read: pieces fetched ahead stay within the piece cache bound', () =>
   assert.ok(b.chunkBytes <= 64 * MiB, `piece cache ${b.chunkBytes / MiB} MiB`);
   let sum = 0; for (const v of b.chunks.values()) sum += v.length;
   assert.equal(sum, b.chunkBytes);
+}));
+
+/** Read [a, z) of `f` in 256 KiB reads, checking the bytes. */
+const readSeq = (f, a, z) => { for (let pos = a; pos < z; pos += 256 << 10) assert.deepEqual(f.read(pos, Math.min(256 << 10, z - pos)), bytes(pos, Math.min(pos + (256 << 10), z))); };
+
+test('read-ahead: a file read whole has its next blocks fetched asynchronously; its reads then find them here', () => withFetch(async (calls) => {
+  const size = 12 * MiB;
+  const b = new HttpBackend('/game/e/', tree(size));
+  b.fillBackground = () => {}; // (the read-ahead alone)
+  const f = b.open('f.big'), n0 = syncReqs.length;
+  // (the first MiB by pieces, then the file is being read whole: 4 blocks at once, then the next ones ahead)
+  readSeq(f, 0, 3 * MiB + (256 << 10));
+  assert.ok(calls.length >= 1, 'blocks fetched ahead of the reader');
+  assert.ok(calls.every((c) => c.start % BLOCK === 0 && c.start >= 3 * MiB && c.end <= 8 * MiB), `within the window past the reader (${calls.map((c) => [c.start / MiB, c.end / MiB])})`);
+  assert.equal(b.gameBusy(0), true, 'background downloads wait while the reader\'s blocks are on their way');
+  // a parked read of a block on its way waits for that download instead of asking again
+  const before = calls.length;
+  const p = f.prepare(calls[0].start, 64 << 10);
+  assert.ok(p, 'the block is not here yet');
+  assert.equal(calls.length, before, 'no second request for a block on its way');
+  for (const c of calls) c.release();
+  await p; await tick();
+  const nSync = syncReqs.length;
+  readSeq(f, 3 * MiB + (256 << 10), 8 * MiB);
+  assert.equal(syncReqs.length, nSync, 'the blocks fetched ahead served the reads');
+  // the reader moves on: the window moves with it, never past the file's end
+  for (let pos = 8 * MiB; pos < size; pos += MiB) { for (const c of calls) c.release(); await tick(); readSeq(f, pos, pos + MiB); }
+  assert.ok(calls.every((c) => c.end <= size), 'nothing past the end');
+  assert.ok(syncReqs.slice(n0).every(([, z]) => z < 5 * MiB), `no synchronous request past the first whole blocks (${syncReqs.slice(n0).map(([a, z]) => [a, z - a + 1])})`);
+  for (let bi = 5; bi < 12; bi++) assert.equal(calls.filter((c) => c.start <= bi * MiB && bi * MiB < c.end).length, 1, `block ${bi} asked once`);
+  for (const c of calls) c.release(); await tick();
+  assert.equal(b.readAheadPending, 0); assert.equal(b.blockFlights.size, 0);
+}));
+
+test('read-ahead: a failed download leaves the read to fetch the block itself, with the exact bytes', () => withFetch(async (calls) => {
+  const size = 6 * MiB;
+  const b = new HttpBackend('/game/g/', tree(size));
+  b.fillBackground = () => {};
+  const f = b.open('f.big');
+  readSeq(f, 0, 3 * MiB + (256 << 10));
+  assert.ok(calls.length >= 1);
+  const p = f.prepare(3 * MiB + (256 << 10), 2 * MiB); // (a parked read reaching block 5, on its way) // (a parked read waiting for the download)
+  const failed = calls.length;
+  for (const c of calls) c.fail();
+  let done = false; p.then(() => { done = true; });
+  for (let i = 0; i < 20 && !done; i++) { await tick(); for (const c of calls.slice(failed)) c.release(); }
+  assert.ok(done, 'the parked read ends');
+  assert.ok(calls.length > failed, 'it asked for the block itself');
+  assert.equal(b.readAheadPending, 0);
+  const n = syncReqs.length;
+  assert.deepEqual(f.read(3 * MiB + (256 << 10), 2 * MiB), bytes(3 * MiB + (256 << 10), 5 * MiB + (256 << 10)));
+  assert.equal(syncReqs.length, n, 'the parked read\'s own fetch served the read');
+  for (const c of calls) c.release();
 }));
