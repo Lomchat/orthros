@@ -200,6 +200,44 @@ test('learned programs: listed by first use, one entry per sources, unused ones 
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// The learned programs of the source-keyed format go to their own file: a server of the first format running on the
+// same directory keeps reading and writing programs-<manifest>.json (neither rewrites the other's file); its new
+// programs are imported when that file changes, and entries aged out do not come back from it at every start.
+test('learned programs: the new format in its own file, the first format imported when it changes', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const learn = path.join(dir, 'learn'); fs.mkdirSync(learn);
+  const v1File = path.join(learn, 'programs-g.json'), v2File = path.join(learn, 'programs2-g.json');
+  const v1 = JSON.stringify([['k1', 'vs-1', 'fs-1', [], 50, 2]]);
+  fs.writeFileSync(v1File, v1);
+  const start = async () => { const s = createServer({ manifests: path.join(dir, 'man'), learnDir: learn, learnWriteMs: 10 }); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
+  const written = async () => { for (let i = 0; i < 200 && !fs.existsSync(v2File); i++) await new Promise((r) => setTimeout(r, 10)); await new Promise((r) => setTimeout(r, 50)); };
+  let server = await start();
+  const url = () => `http://127.0.0.1:${server.address().port}/api/programs/g`;
+  const vsList = async () => (await (await fetch(url())).json()).map((e) => e.vs);
+  try {
+    assert.deepEqual(await vsList(), ['vs-1']);
+    await fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: [{ key: 'k2', vs: 'vs-2', fs: 'fs-2', attrs: [], t: 10 }] }) });
+    await written();
+    assert.equal(fs.readFileSync(v1File, 'utf8'), v1, 'the first format\'s file untouched');
+    assert.equal(JSON.parse(fs.readFileSync(v2File, 'utf8')).programs.length, 2);
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-2', 'vs-1'], 'read back');
+    // a server of the first format adds a program to its file: imported at the next start
+    fs.writeFileSync(v1File, JSON.stringify([['k1', 'vs-1', 'fs-1', [], 50, 2], ['k3', 'vs-3', 'fs-3', [], 5, 1]]));
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-3', 'vs-2', 'vs-1']);
+    // 'vs-1' and 'vs-3' age out (never used again); the unchanged first-format file does not bring them back
+    for (let i = 0; i < 70; i++) { await fetch(url()); await fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: [{ key: 'k2', vs: 'vs-2', fs: 'fs-2', attrs: [], t: 10 }] }) }); }
+    assert.deepEqual(await vsList(), ['vs-2']);
+    await new Promise((r) => setTimeout(r, 100)); // (written)
+    server.close(); server = await start();
+    assert.deepEqual(await vsList(), ['vs-2'], 'aged-out entries stay out');
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Learned code regions: sessions post the region entries they translated (module, offset, x87 mode, time); the server
 // lists them by earliest use across sessions, module names folded to lower case, malformed entries dropped.
 test('learned regions: listed by first use across sessions', async () => {

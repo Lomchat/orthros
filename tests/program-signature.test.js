@@ -131,9 +131,22 @@ test('programs: keys of the same sources share one GL program', () => {
   assert.notEqual(W.program().p, p1, 'built again'); assert.equal(W.stats.programs, 3);
 });
 
+/** A GL context over mockGl whose fences signal when `gpu.caughtUp` is set, counting program queries and live fences. */
+function fencedGl(base, gpu) {
+  return new Proxy({}, { get(t, k) {
+    if (k === 'fenceSync') return () => { gpu.fences++; return { fence: true }; };
+    if (k === 'deleteSync') return () => { gpu.fences--; };
+    if (k === 'getSyncParameter') return (f, p) => (p === base.SYNC_STATUS && gpu.caughtUp ? base.SIGNALED : base.UNSIGNALED);
+    if (k === 'getProgramParameter') return (o, p) => { gpu.queries++; return base.getProgramParameter(o, p); };
+    return base[k];
+  } });
+}
+
 // Before the game has a device (it computes for a long time before its window), the backend starts the learned
-// programs and resolves them (link status, uniforms) a while later: the draw that takes one then queries nothing.
-test('program cache: learned programs started and resolved before the device exists', () => {
+// programs without querying anything (a query waits for the GPU process). They are resolved (link status, uniforms)
+// only when the GPU process has caught up: a fence placed when the worker yields (afterSlice) found signaled when it
+// comes back (beforeSlice). The draw that takes one then queries nothing.
+test('program cache: learned programs started before the device, resolved when the GPU process has caught up', () => {
   const a = new WebGLDevice(mockGl(), {
     api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
     rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
@@ -142,23 +155,26 @@ test('program cache: learned programs started and resolved before the device exi
   }, { programCache: { queue: [], ready: new Map(), learned: [], used: [], t0: 0, parallel: false, started: 0, hits: 0 } });
   a.program();
   const learned = a.pc.learned;
-  let queries = 0;
-  const gl = mockGl(), getProgramParameter = gl.getProgramParameter;
-  const counting = new Proxy({}, { get(t, k) { return k === 'getProgramParameter' ? (o, p) => { queries++; return getProgramParameter(o, p); } : gl[k]; } });
-  const backend = createWebGLBackend({ getContext: () => counting }, () => {});
+  const gpu = { caughtUp: false, queries: 0, fences: 0 };
+  const backend = createWebGLBackend({ getContext: () => fencedGl(mockGl(), gpu) }, () => {});
   const pc = backend.programCache;
+  backend.beforeSlice(2); backend.afterSlice();
+  assert.equal(gpu.fences, 0, 'nothing pending: no fence');
   pc.queue.push(...learned);
-  backend.prewarm();
-  assert.equal(pc.started, 1); assert.equal(queries, 0, 'started, not waited for');
-  backend.prewarm();
-  assert.equal(pc.resolved ?? 0, 0, 'too recent to be resolved without waiting');
-  for (const e of pc.ready.values()) e.t0 -= 5000;
-  backend.prewarm();
-  assert.equal(pc.resolved, 1); const q = queries; assert.ok(q > 0);
+  backend.beforeSlice(2); backend.prewarm(); backend.afterSlice();
+  assert.equal(pc.started, 1); assert.equal(pc.pending, 1); assert.equal(gpu.queries, 0, 'started, not waited for'); assert.equal(gpu.fences, 1);
+  backend.beforeSlice(2); backend.prewarm(); backend.afterSlice();
+  assert.equal(gpu.queries, 0, 'the GPU process is behind: not resolved'); assert.equal(gpu.fences, 1, 'one fence at a time');
+  gpu.caughtUp = true;
+  backend.beforeSlice(2);
+  assert.equal(pc.resolved, 1); assert.equal(pc.pending, 0); const q = gpu.queries; assert.ok(q > 0);
+  assert.equal(gpu.fences, 0);
+  backend.afterSlice(); backend.beforeSlice(2);
+  assert.equal(gpu.queries, q, 'nothing left to resolve: no query'); assert.equal(gpu.fences, 0);
   const W = backend.createDevice({ ...a.dev, programVersion: 1 });
   assert.equal(W.program().p.key, learned[0].key);
   assert.equal(W.stats.programs, 0); assert.equal(pc.hits, 1); assert.equal(pc.resolvedHits, 1);
-  assert.equal(queries, q, 'no query at the draw');
+  assert.equal(gpu.queries, q, 'no query at the draw');
 });
 
 // One vertex shader over two declarations that place or type its inputs differently generates the same GLSL: the
@@ -197,4 +213,53 @@ test('programs: a program shared by keys of other vertex layouts binds each layo
   dev.vertexDecl = decl(16, 'half'); dev.programVersion++;
   const d = W.program(); calls.length = 0; W.bindAttributes(d.p, d.L, 20);
   assert.deepEqual(texPointer(), [2, recording.HALF_FLOAT, false, 20, 16]);
+});
+
+// With KHR_parallel_shader_compile, builds run on other threads of the GPU process: when it has caught up, only those
+// it reports finished are resolved (the completion query does not wait); an unfinished one taken by a draw is resolved
+// there. A resolve leaves its
+// program in use: the device's GL state cache follows.
+test('program cache: parallel compilation, only finished builds resolved', () => {
+  const src = new WebGLDevice(mockGl(), {
+    api9: true, proc: { mem: {} }, pp: { width: 800, height: 600 }, programVersion: 0,
+    rs: new StateTable(256), tss: Array.from({ length: 8 }, () => new StateTable(40)), samplers: Array.from({ length: 16 }, () => new StateTable(16)),
+    textures: new Array(16).fill(0), com: { implAt: () => null }, fvf: 0x152, vertexDecl: null, vsObj: null, psObj: null,
+    lights: new Map(), lightEnabled: new Set(), lightVersion: 0, transforms: new Map(), transformSlotVersion: new Map(),
+  }, { programCache: { queue: [], ready: new Map(), learned: [], used: [], t0: 0, parallel: false, started: 0, hits: 0 } });
+  src.program();
+  src.dev.tss[0].set(TSS.COLOROP, 2); src.dev.programVersion++; src.program();
+  const learned = src.pc.learned;
+  assert.equal(learned.length, 2);
+  const gl = mockGl(), ext = { COMPLETION_STATUS_KHR: 0x91b1 }, finished = new Set();
+  let linkQueries = 0;
+  const fake = new Proxy({}, { get(t, k) {
+    if (k === 'getSyncParameter') return () => gl.SIGNALED;
+    if (k === 'getExtension') return (n) => (n === 'KHR_parallel_shader_compile' ? ext : null);
+    if (k === 'createProgram') return () => ({ n: Math.random() });
+    if (k === 'getProgramParameter') return (o, p) => { if (p === ext.COMPLETION_STATUS_KHR) return finished.has(o); linkQueries++; return gl.getProgramParameter(o, p); };
+    return gl[k];
+  } });
+  const backend = createWebGLBackend({ getContext: () => fake }, () => {});
+  const pc = backend.programCache;
+  assert.equal(pc.parallel, true);
+  pc.queue.push(...learned);
+  backend.prewarm(); backend.afterSlice();
+  assert.equal(pc.started, 2); assert.equal(pc.pending, 2);
+  const [e1, e2] = [...pc.ready.values()];
+  backend.beforeSlice(4); backend.afterSlice();
+  assert.equal(pc.resolved ?? 0, 0); assert.equal(linkQueries, 0, 'unfinished: not resolved');
+  finished.add(e2.prog);
+  const W = backend.createDevice({ ...src.dev, programVersion: 100 });
+  backend.beforeSlice(4);
+  assert.equal(pc.resolved, 1); assert.ok(e2.rec); assert.equal(e1.rec, null);
+  assert.equal(W.gs.prog, e2.prog, 'the device knows the program left in use');
+  // the first learned program (unfinished) is taken by a draw: resolved there
+  src.dev.tss[0].set(TSS.COLOROP, 4); src.dev.programVersion++;
+  W.dev.tss[0].set(TSS.COLOROP, 4); W.dev.programVersion++;
+  const q = linkQueries;
+  assert.equal(W.program().p.key, learned[0].key);
+  assert.ok(linkQueries > q, 'resolved at the draw'); assert.equal(pc.pending, 0); assert.equal(W.stats.programs, 0);
+  W.dev.tss[0].set(TSS.COLOROP, 2); W.dev.programVersion++;
+  const q2 = linkQueries;
+  assert.equal(W.program().p.key, learned[1].key); assert.equal(linkQueries, q2, 'resolved ahead: no query'); assert.equal(pc.resolvedHits, 1);
 });

@@ -180,7 +180,7 @@ export class WebGLDevice {
     const gl = this.gl;
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
-    this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; this.pc?.ready.clear();
+    this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
     this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
@@ -733,9 +733,10 @@ export class WebGLDevice {
     pc.ready.delete(srcKey);
     pc.hits++;
     if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
-    // (resolved ahead, before the device existed: no query at all; else the link status query waits for a build the
-    // GPU process has not finished, and for the commands queued before it: timed apart from full builds)
+    // (resolved ahead, when the GPU process had caught up: no query at all; else the link status query waits for a
+    // build the GPU process has not finished, and for the commands queued before it: timed apart from full builds)
     if (e.rec) { if (!e.ok) this.stats.errors++; e.rec.key = key; pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; return e.rec; }
+    pc.pending--;
     const t0 = performance.now(), p = this.finishProgram(e, key, attrNames, vsSrc, fsSrc);
     this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + performance.now() - t0;
     return p;
@@ -1319,22 +1320,34 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
 }
 
 /**
- * Learned programs started before the game has a device, resolved (resolveProgram) a while after their start: the
- * link status and uniform queries then find them linked, and wait for nothing else (no frame being drawn) — the
- * draw that takes one later makes no query at all. With KHR_parallel_shader_compile only the finished ones (the
- * completion query does not wait); without it, those started RESOLVE_AFTER_MS ago (the GPU process links in order).
+ * Learned programs resolved (resolveProgram) ahead of their first draw, so that the draw makes no query at all.
+ * Resolving issues synchronous queries (link status, uniforms: a round trip to the GPU process, which first executes
+ * every command queued before them — builds, a frame's draws), so it is only done when the GPU process has caught up
+ * (backend.beforeSlice: a fence found signaled): every build started is then done, except those
+ * KHR_parallel_shader_compile runs on other threads — only those COMPLETION_STATUS_KHR (a query that does not wait)
+ * reports finished are resolved. Within `budgetMs`; a resolve that took longer (the GPU process was busy after all)
+ * holds the next ones back for RESOLVE_BACKOFF_MS. Returns the program left in use, or null.
  */
-const RESOLVE_AFTER_MS = 1000;
-function resolvePrewarmed(gl, pc, log) {
-  const now = performance.now(), ext = pc.parallel ? pc.parallelExt ??= gl.getExtension('KHR_parallel_shader_compile') : null;
-  let n = 8;
+const RESOLVE_BACKOFF_MS = 500, COMPLETION_CHECKS = 4;
+function resolvePrewarmed(gl, pc, log, budgetMs) {
+  const t0 = performance.now(), end = t0 + budgetMs;
+  if (!pc.pending || t0 < (pc.resolveHoldUntil ?? 0)) return null;
+  const ext = pc.parallel ? pc.parallelExt ??= gl.getExtension('KHR_parallel_shader_compile') : null;
+  let checks = COMPLETION_CHECKS, used = null;
   for (const e of pc.ready.values()) {
     if (e.rec) continue;
-    if (ext ? !gl.getProgramParameter(e.prog, ext.COMPLETION_STATUS_KHR) : now - e.t0 < RESOLVE_AFTER_MS) { if (ext) continue; break; }
-    const r = resolveProgram(gl, e, '', e.attrs, e.vsSrc, e.fsSrc, log);
-    e.rec = r.rec; e.ok = r.ok; pc.resolved = (pc.resolved ?? 0) + 1;
-    if (--n === 0) break;
+    if (ext) {
+      const c0 = performance.now(), done = gl.getProgramParameter(e.prog, ext.COMPLETION_STATUS_KHR);
+      pc.polls = (pc.polls ?? 0) + 1; pc.pollMs = (pc.pollMs ?? 0) + performance.now() - c0;
+      if (!done) { if (--checks === 0) break; continue; }
+    }
+    const r0 = performance.now(), r = resolveProgram(gl, e, '', e.attrs, e.vsSrc, e.fsSrc, log), r1 = performance.now();
+    e.rec = r.rec; e.ok = r.ok; used = e.prog; pc.pending--;
+    pc.resolved = (pc.resolved ?? 0) + 1; pc.resolveMs = (pc.resolveMs ?? 0) + r1 - r0; pc.resolveMaxMs = Math.max(pc.resolveMaxMs ?? 0, r1 - r0);
+    if (r1 - r0 > budgetMs) { pc.resolveHoldUntil = r1 + RESOLVE_BACKOFF_MS; break; }
+    if (r1 >= end) break;
   }
+  return used;
 }
 
 /**
@@ -1345,14 +1358,16 @@ function resolvePrewarmed(gl, pc, log) {
  * sources (those need no build ahead), or null.
  */
 function prewarmPrograms(gl, pc, built) {
+  const t0 = performance.now();
   for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
     const e = pc.queue.shift();
     if (typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs)) continue;
     const srcKey = programSourceKey(e.vs, e.fs, e.attrs);
     if (pc.ready.has(srcKey) || built?.has(srcKey)) continue;
-    pc.ready.set(srcKey, { ...startProgram(gl, e.vs, e.fs, e.attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs, t0: performance.now(), rec: null, ok: false });
-    pc.started++;
+    pc.ready.set(srcKey, { ...startProgram(gl, e.vs, e.fs, e.attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs, rec: null, ok: false });
+    pc.started++; pc.pending = (pc.pending ?? 0) + 1;
   }
+  pc.startMs = (pc.startMs ?? 0) + performance.now() - t0;
 }
 
 /** Host-side factory: `host.gfx = createWebGLBackend(canvas, log)`. */
@@ -1365,12 +1380,36 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
-  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, hits: 0 };
-  // prewarm(): learned programs started before the game has a device (it computes for a long time before its window:
-  // the GPU process compiles meanwhile), called by the worker every few tens of ms until then; afterwards at presents
-  const backend = { gl, device: null, programCache, prewarm() { if (this.device) return; if (programCache.queue.length) prewarmPrograms(gl, programCache, null); if (programCache.ready.size) resolvePrewarmed(gl, programCache, log); }, createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); } };
+  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0 };
+  // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
+  // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU
+  // process stays out of its way); once the device exists, at presents.
+  // afterSlice() / beforeSlice(budgetMs): called by the worker when it yields and when it comes back — a fence placed
+  // at the first and found signaled at the second (a query that does not wait; nothing was issued in between) means
+  // the GPU process has executed every command: the started programs are resolved then, at the cost of a round trip
+  // each (resolvePrewarmed). A GPU process behind (a heavy frame, a software rasterizer) leaves them to a later slice,
+  // or to their first draw.
+  const backend = {
+    gl, device: null, programCache,
+    prewarm() { if (!this.device && programCache.queue.length) prewarmPrograms(gl, programCache, null); },
+    afterSlice() {
+      if (!programCache.pending) return;
+      if (programCache.fence) gl.deleteSync(programCache.fence);
+      programCache.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+    },
+    beforeSlice(budgetMs) {
+      const f = programCache.fence;
+      if (!f) return;
+      if (!programCache.pending) { gl.deleteSync(f); programCache.fence = null; return; }
+      if (gl.getSyncParameter(f, gl.SYNC_STATUS) !== gl.SIGNALED) return;
+      gl.deleteSync(f); programCache.fence = null; programCache.caughtUp = (programCache.caughtUp ?? 0) + 1;
+      const prog = resolvePrewarmed(gl, programCache, log, budgetMs);
+      if (prog && this.device) this.device.gs.prog = prog; // (resolveProgram left it in use: the device's GL state cache)
+    },
+    createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); },
+  };
   return backend;
 }
