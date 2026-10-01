@@ -66,7 +66,11 @@ const opfsDir = opt('opfs');
 const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args: chromeArgs, viewport: { width: 1280, height: 900 } }) : await chromium.launch({ args: chromeArgs });
 const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
-page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang)\]/.test(t) || args.includes('--verbose')) console.log(t); });
+// --stop-on <text>: the run ends (as at its time limit: report, profile saved) once a log line contains that text — a
+// benchmark of the time to some point (e.g. the end of a game's first-launch computation) without running past it
+const stopOn = opt('stop-on');
+let stopSeen = null;
+page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang)\]/.test(t) || args.includes('--verbose')) console.log(t); if (stopOn && stopSeen === null && t.includes(stopOn)) stopSeen = Date.now(); });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 page.on('crash', () => console.log('[pageerror] page crashed (renderer died)'));
 browser.on('disconnected', () => console.log('[pageerror] browser disconnected'));
@@ -523,7 +527,8 @@ for (;;) {
   if (nDumps) console.log(`[capture] ${nDumps} image(s) saved to ${path.join(out, 'capture')}`);
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
-  if (t >= seconds) {
+  if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000)) {
+    if (stopSeen !== null) console.log(`[end] stop text seen at ${((stopSeen - t0) / 1000).toFixed(1)} s`);
     console.log(`[end] time limit ${seconds}s`);
     try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.requests) console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`); } catch { /* no stats */ }
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
