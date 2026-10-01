@@ -313,11 +313,9 @@ export class Recorder {
     }
     if (d.renderTarget !== s.rt) {
       const rt = d.renderTarget; s.rt = rt;
-      const res = rt?.owner ? rt.owner.rec ?? null : null;
       this.ensureRes(rt);
-      const nres = rt?.owner ? rt.owner.rec : null;
+      const nres = rt?.owner ? rt.owner.rec : null; // (a texture level: its texture may be uploaded when its framebuffer is made)
       if (s.rtRes !== nres) { L.unbind(s.rtRes); L.bind(nres); s.rtRes = nres; }
-      void res;
       W.c1(OP.RT, rt ? rt.id : 0);
     }
     if (d.viewport !== s.vp) { const v = d.viewport; s.vp = v; W.put(OP.VIEWPORT, v.x, v.y, v.w, v.h, v.minZ, v.maxZ); }

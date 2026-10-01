@@ -67,3 +67,32 @@ for (const exe of ['dx.exe', 'dx9.exe']) {
     assert.equal(d, null, d ? `first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nrender worker\n  ${d.b.join('\n  ')}` : '');
   });
 }
+
+// ?glworker=check and ?glworker=compare on this thread: no mirror mismatch, identical frames (fake contexts render
+// nothing: this checks the plumbing — the comparison itself is exercised on the games)
+import { createInlineGfx, createCompareGfx, compareFrames } from '../src/gfx/render-host.js';
+for (const exe of ['dx.exe', 'dx9.exe']) {
+  test(`${exe} with ?glworker=check and compare: the mirror equals the device at every draw, frames compared`, { skip: skip(exe) }, () => {
+    for (const mode of ['check', 'compare']) {
+      const vfs = new Vfs(), dir = new MemBackend(); vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', dir);
+      dir.open(exe, { create: true }).write(0, fs.readFileSync(PE_DIR + exe));
+      const clock = new VirtualClock(), host = new HeadlessHost({ clock, width: 800, height: 600 });
+      const logs = [], G = fakeGl();
+      globalThis.OffscreenCanvas = class { constructor(w, h) { this.width = w; this.height = h; } getContext() { return fakeGl(this.width, this.height).gl; } };
+      try {
+        host.gfx = mode === 'check' ? createInlineGfx({ getContext: () => G.gl }, (m) => logs.push(m), null, { check: true }) : createCompareGfx({ getContext: () => G.gl, width: 800, height: 600 }, (m) => logs.push(m), null, { every: 1 });
+        const vm = new Vm({ vfs, clock, host, jit: true, logKinds: ['warn', 'crash'] });
+        vm.createProcess({ exePath: 'C:\\Test\\' + exe });
+        assert.equal(vm.run(), 0);
+      } finally { delete globalThis.OffscreenCanvas; }
+      assert.ok(!logs.some((l) => /differs|differing [1-9]|failed/.test(l)), logs.filter((l) => /render/.test(l)).join('\n'));
+      if (mode === 'compare') assert.ok(logs.some((l) => /render compare: frame 1: identical/.test(l)), logs.join('\n'));
+    }
+  });
+}
+test('frame comparison: identical, then the first differing pixel located (D3D rows from the top)', () => {
+  const a = { w: 2, h: 2, px: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]) }, b = { w: 2, h: 2, px: a.px.slice() };
+  assert.equal(compareFrames(a, b), null);
+  b.px[9] = 0;
+  assert.match(compareFrames(a, b), /^1 of 4 pixels differ \(largest channel difference 10; first at 0,0/);
+});
