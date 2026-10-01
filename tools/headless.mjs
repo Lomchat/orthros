@@ -33,10 +33,13 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
 // --capture-at @N captures N seconds after the anchor.
+// A/B within one session: dbg:NAME=value sets a worker debug global now (NAME=: unset), mark:<label> closes a phase
+// ([cpu] worker CPU and frames of the phase, [gfx] mark: texture work and the API calls of the phase), glcount:<frames>
+// counts the WebGL calls per frame from now.
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -418,7 +421,7 @@ for (;;) {
       for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
         if (line === 'quit') { control.quit = true; continue; }
         const [kind, ...rest] = line.split(':'); const a = rest.join(':');
-        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [a] : a ? a.split(',').map(Number) : [], done: false });
       }
     }
     if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
@@ -460,6 +463,8 @@ for (;;) {
     if (ev.kind === 'dump') { await page.evaluate(([addr, len]) => window.orthros.worker?.postMessage({ type: 'dump', addr, len }), [ev.args[0], ev.args[1] || 256]); continue; } // (dump:addr,len — guest memory in hex, logged as [hang])
     if (ev.kind === 'threads') { await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'threads' })); continue; } // (threads: the VM's threads and sync objects, logged as [hang])
     if (ev.kind === 'burst') { await page.evaluate(([n, tid, noGfx]) => window.orthros.worker?.postMessage({ type: 'burst', n, tid, noGfx }), [ev.args[0] || 3000, ev.args[1] || 0, !!ev.args[2]]); continue; } // (burst:N[,tid[,1]]: the next N API calls of the main thread, or of thread tid, logged — 1: without the COM / D3DX calls; needs --log apiburst)
+    if (ev.kind === 'glcount') { await page.evaluate((count) => window.orthros.worker?.postMessage({ type: 'capture', count }), ev.args[0] || 30); continue; } // (glcount:<frames> — WebGL calls per frame from now, as --gl-count does at a fixed time)
+    if (ev.kind === 'dbg') { await page.evaluate((kv) => window.orthros.worker?.postMessage({ type: 'dbg', kv }), String(ev.args[0])); continue; } // (dbg:NAME=value — a worker debug global set now, as --dbg sets them at start: A/B switches within one session)
     // mark:<label> — a phase boundary: worker-thread and GPU-process CPU since the previous mark, and the worker's
     // texture work / API time over the phase (logged as [gfx] mark)
     if (ev.kind === 'mark') {

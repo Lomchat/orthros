@@ -243,7 +243,8 @@ export function defineEffects(X, vm, h) {
     GetDevice(c) { if (!c.arg(1)) return D3DERR_INVALIDCALL; mem.write32(c.arg(1), this.dev); com.addRef(com.objectAt(this.dev)); }
     OnLostDevice() {}
     OnResetDevice() {}
-    SetStateManager(c) { const m = c.arg(1); if (m && com.objectAt(m)) com.addRef(com.objectAt(m)); this.stateManager = m; if (m) vm.log('gfx', `d3dx effect: state manager set (guest object 0x${m.toString(16)})`); }
+    // (with a state manager, the calls the JIT would queue go to JavaScript at once: +12 cleared, see runtime.js DEFER_OBJ)
+    SetStateManager(c) { const m = c.arg(1); if (m && com.objectAt(m)) com.addRef(com.objectAt(m)); this.stateManager = m; mem.write32(c.arg(0) + 12, m ? 0 : this.handleBlock); if (m) vm.log('gfx', `d3dx effect: state manager set (guest object 0x${m.toString(16)})`); }
     GetStateManager(c) { if (c.arg(1)) mem.write32(c.arg(1), this.stateManager); }
     BeginParameterBlock() { this.recording = new Set(); }
     EndParameterBlock() { if (!this.recording) return 0; const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90)); this.blocks.set(id, [...this.recording].map((n) => ({ n, words: n.words?.slice(), ptr: n.obj?.ptr }))); this.recording = null; return id; }
@@ -344,7 +345,7 @@ export function defineEffects(X, vm, h) {
         for (const e of sh.info.constants) {
           const n = this.lookup(e.name, null); if (!n) continue;
           if (e.set === RSET.SAMPLER) sh.samplers.push({ n, reg: (sh.vs ? 257 : 0) + e.reg });
-          else sh.consts.push({ e, plan: this.planOf(n, e.type, e.count, e.set), vals: e.set === RSET.FLOAT4 ? new Float32Array(4 * e.count) : new Int32Array(4 * e.count) });
+          else { let top = n; while (top.parent) top = top.parent; sh.consts.push({ e, top, ver: -1, plan: this.planOf(n, e.type, e.count, e.set), vals: e.set === RSET.FLOAT4 ? new Float32Array(4 * e.count) : new Int32Array(4 * e.count) }); }
         }
         if (sh.info.preshader) sh.pre = this.programOf(sh.info.preshader);
       }
@@ -352,20 +353,22 @@ export function defineEffects(X, vm, h) {
     }
     /** a preshader / expression with its input plans, its register files and a cache of its last outputs */
     programOf(prog) {
-      const inputs = prog.inputs.map((e) => { const n = this.lookup(e.name, null); return n ? { e, n, plan: this.planOf(n, e.type, e.count, e.set) } : null; }).filter(Boolean);
+      const inputs = prog.inputs.map((e) => { const n = this.lookup(e.name, null); if (!n) return null; let top = n; while (top.parent) top = top.parent; return { e, n, top, plan: this.planOf(n, e.type, e.count, e.set) }; }).filter(Boolean);
       let maxReg = 0; for (const i of inputs) maxReg = Math.max(maxReg, i.e.reg + i.e.count);
       const regs = new Float64Array(4 * Math.max(1, maxReg));
-      return { prog, inputs, regs, out: new Float32Array(4 * 256), versions: null, run: compilePreshader(prog, regs.length) };
+      return { prog, inputs, regs, out: new Float32Array(4 * 256), versions: null, runs: 0, run: compilePreshader(prog, regs.length) };
     }
     /** run a program if one of its inputs changed since its last run (outputs kept otherwise) */
     runProgram(P) {
+      // (the version of the input's top-level parameter: a write to the whole parameter moves it, not its elements')
       let changed = !P.versions;
-      if (!changed) for (let i = 0; i < P.inputs.length; i++) if ((P.inputs[i].n.version ?? 0) !== P.versions[i]) { changed = true; break; }
+      if (!changed) for (let i = 0; i < P.inputs.length; i++) if ((P.inputs[i].top.version ?? 0) !== P.versions[i]) { changed = true; break; }
       if (!changed) return P.out;
       const vs = P.versions ??= new Float64Array(P.inputs.length);
-      for (let i = 0; i < P.inputs.length; i++) vs[i] = P.inputs[i].n.version ?? 0;
+      for (let i = 0; i < P.inputs.length; i++) vs[i] = P.inputs[i].top.version ?? 0;
       for (const i of P.inputs) this.fill(i.plan, P.regs, 4 * i.e.reg);
       P.run(P.regs, P.out);
+      P.runs++;
       return P.out;
     }
     /** the shader of state k of a pass (its own bytecode, a referenced parameter's, or an array selector's pick) */
@@ -422,15 +425,32 @@ export function defineEffects(X, vm, h) {
         out[o + i] = k === 0 ? bitsf(v) : k === 2 ? (v ? 1 : 0) : v | 0;
       }
     }
-    /** a shader set for the pass, its constants (from the parameters, and its preshader's outputs) and samplers */
+    /**
+     * A shader set for the pass, its constants (from the parameters, and its preshader's outputs) and samplers. A binding
+     * is converted again only when its parameter changed (every write to a parameter or to any part of it moves the
+     * version of its top-level parameter, see touched), and compared with the device's registers only when it changed
+     * or when some constant of the device changed since this shader's last binding (the device's constant version).
+     */
     bindShader(c, sh) {
       const vs = sh.vs;
-      for (const b of sh.consts) { this.fill(b.plan, b.vals); this.setConsts(c, vs, b.e.set, b.e.reg, b.e.count, b.vals); }
-      for (const s of sh.samplers) this.bindSampler(c, s.n, s.reg);
-      if (sh.pre) {
-        const out = this.runProgram(sh.pre);
-        for (const [start, cnt] of sh.pre.prog.outRanges) this.setConsts(c, vs, RSET.FLOAT4, start, cnt, out, 4 * start);
+      const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
+      const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
+      const same = dev !== null && sh.constVersion === dev.constVersion && sh.constRegs === regs;
+      let wrote = false;
+      for (const b of sh.consts) {
+        const v = b.top.version ?? 0;
+        if (b.ver !== v) { this.fill(b.plan, b.vals); b.ver = v; }
+        else if (same) continue;
+        this.setConsts(c, vs, b.e.set, b.e.reg, b.e.count, b.vals); wrote = true;
       }
+      for (const s of sh.samplers) this.bindSampler(c, s.n, s.reg);
+      if (sh.pre) { // (after the constants, as always: its outputs win where they share registers)
+        const runs = sh.pre.runs, out = this.runProgram(sh.pre);
+        if (!same || wrote || runs !== sh.pre.runs || sh.preRuns !== runs) for (const [start, cnt] of sh.pre.prog.outRanges) this.setConsts(c, vs, RSET.FLOAT4, start, cnt, out, 4 * start);
+        sh.preRuns = sh.pre.runs;
+      }
+      // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
+      if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     bindSampler(c, n, reg) {

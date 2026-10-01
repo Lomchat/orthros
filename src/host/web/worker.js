@@ -492,6 +492,10 @@ self.onmessage = (e) => {
     const ext = host?.gfx?.gl.getExtension('WEBGL_lose_context');
     if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), m.ms ?? 500); } else log('warn', 'WEBGL_lose_context unavailable');
   }
+  else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
+    const [k, v] = String(m.kv ?? '').split('=');
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); }
+  }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     const st = host?.gfx?.device?.stats ?? {}, prev = markPrev ?? {}, d = (k) => (st[k] ?? 0) - (prev[k] ?? 0);
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
@@ -499,7 +503,9 @@ self.onmessage = (e) => {
     log('gfx', `mark ${m.label}: texture levels uploaded ${d('texLevels')} (${d('reuploads')} again), ${(d('uploadBytes') / 1048576).toFixed(1)} MiB as RGBA8, ${d('texMs').toFixed(0)} ms (conversion ${d('texConvMs').toFixed(0)}, placeholder check ${d('texCheckMs').toFixed(0)}), ${d('texPartial')} of them partial; locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only; API ms: ${top}`);
     if (host?.dxtPool) { const ps = host.dxtPool.stats, pp = markPrev?.pool ?? { jobs: 0, waitMs: 0 }; log('gfx', `mark ${m.label}: parallel DXT encodes ${ps.jobs - pp.jobs}, waiting for the helpers ${(ps.waitMs - pp.waitMs).toFixed(0)} ms${host.dxtPool.broken ? ' (pool off)' : ''}`); }
     if (vm?.d3dxProf?.size) { log('gfx', `mark ${m.label}: D3DX image work (ms, count): ${[...vm.d3dxProf].sort((a, b) => b[1].ms - a[1].ms).slice(0, 14).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); vm.d3dxProf.clear(); }
-    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    const hist = vm?.apiHist(), hp = markPrev?.hist;
+    if (hist && hp) { const dh = [...hist].map(([k, v]) => [k, v - (hp.get(k) ?? 0)]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]); log('gfx', `mark ${m.label}: API calls ${dh.reduce((a, [, v]) => a + v, 0)}, most frequent: ${dh.slice(0, 30).map(([k, v]) => `${k.replace(/^com\.dll!/, '')} ${v}`).join(', ')}`); }
+    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });

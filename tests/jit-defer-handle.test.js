@@ -47,3 +47,47 @@ test('effect setters: queued with a handle of the object, left to JavaScript wit
     assert.deepEqual([0, 1, 2, 3].map((i) => mem.readF32(p + 20 + 4 * i)), [1.5, -2, 3.25, 4]);
   }
 });
+
+// DEFER_OBJ (ID3DXEffect::CommitChanges, EndPass): queued while the object's word at +12 is set, left to JavaScript
+// once it is cleared (an effect with an application state manager: applying states calls guest code at the call).
+test('effect CommitChanges: queued while the object allows it, left to JavaScript otherwise', () => {
+  const mem = new GuestMemory();
+  const cpu = new CpuState(mem, THREAD_STATES_BASE);
+  cpu.reset();
+  const commit = [...push(OBJ), 0xff, 0x15, ...le(SLOT)]; // effect->CommitChanges()
+  mem.writeBytes(CODE, Uint8Array.from([...commit, ...commit, 0xf4]));
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
+  jit.cpu = cpu;
+  jit.markFast(IDX, 'com.dll!ID3DXEffect::CommitChanges', true);
+  mem.write32(SLOT, THUNK_BASE + IDX * THUNK_SIZE);
+  mem.write32(OBJ + 12, HB);
+  cpu.eip = CODE; cpu.esp = 0x10009000; cpu.eflags = F.RESERVED1 | F.IF;
+  let toJs = 0, r;
+  for (let n = 0; n < 100; n++) {
+    r = jit.run({ maxInsns: 1e6 });
+    if (r !== EXIT.THUNK) break;
+    toJs++;
+    cpu.eip = mem.read32(cpu.esp); cpu.esp += 8; cpu.eax = 0;
+    mem.write32(OBJ + 12, 0); // (never reached: the first call is queued)
+  }
+  assert.equal(r, EXIT.HALT);
+  assert.equal(toJs, 0, 'both calls queued');
+  assert.equal(cpu.esp, 0x10009000, 'stdcall returns');
+  assert.equal(mem.read32(DEFER_QUEUE), 2 * 12, 'two records: thunk, argc, this');
+  assert.deepEqual([mem.read32(DEFER_QUEUE + 16), mem.read32(DEFER_QUEUE + 20), mem.read32(DEFER_QUEUE + 24)], [IDX, 1, OBJ]);
+
+  // the word cleared: the same code goes to JavaScript
+  mem.write32(DEFER_QUEUE, 0);
+  mem.write32(OBJ + 12, 0);
+  cpu.eip = CODE; cpu.esp = 0x10009000;
+  toJs = 0;
+  for (let n = 0; n < 100; n++) {
+    r = jit.run({ maxInsns: 1e6 });
+    if (r !== EXIT.THUNK) break;
+    toJs++;
+    cpu.eip = mem.read32(cpu.esp); cpu.esp += 8; cpu.eax = 0;
+  }
+  assert.equal(r, EXIT.HALT);
+  assert.equal(toJs, 2);
+  assert.equal(mem.read32(DEFER_QUEUE), 0, 'nothing queued');
+});

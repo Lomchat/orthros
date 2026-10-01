@@ -9,7 +9,7 @@ import { decode, fmtInsn } from '../cpu/decoder.js';
 import { ApiRegistry, CC_STDCALL } from '../win32/api.js';
 import { Ctx } from '../win32/ctx.js';
 import { Process, TS } from '../win32/process.js';
-import { Scheduler, WaitUnwind } from './sched.js';
+import { Scheduler, WaitUnwind, PARK } from './sched.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
@@ -456,13 +456,17 @@ export class Vm {
       this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id;
       let r;
       const tApi = this.apiTimes ? performance.now() : 0; // (diagnostics: time per API within a frame, see apiTimes)
-      try { r = def.fn(ctx); }
+      let wait = null;
+      try { r = def.fn(ctx); if (r === PARK) { wait = thread.parkWait; thread.parkWait = null; } }
       catch (e) {
+        if (!(e instanceof WaitUnwind)) { if (this.apiTimes) this.noteApiTime(t, tApi); throw e; }
+        wait = e.wait;
+      }
+      if (wait) {
         if (this.apiTimes) this.noteApiTime(t, tApi);
-        if (!(e instanceof WaitUnwind)) throw e;
         // park the thread: roll the call back to the thunk so it re-executes once woken
         cpu.esp = sp; cpu.eip = t.addr;
-        thread.state = TS.BLOCKED; thread.wait = e.wait; thread.blockReason = e.wait.reason; thread.wakeAt = e.wait.deadline;
+        thread.state = TS.BLOCKED; thread.wait = wait; thread.blockReason = wait.reason; thread.wakeAt = wait.deadline;
         if (this.waitLogMin) { thread.blockedAt = this.clock.now(); thread.blockedApi = t.name; thread.blockedFrom = this.mem.read32(sp); } // (diagnostics: long waits, see Scheduler.wake)
         return;
       }

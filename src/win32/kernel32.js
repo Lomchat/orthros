@@ -3,7 +3,7 @@
 import { SIGNATURES } from './signatures.js';
 import { E } from './errors.js';
 import { TS, PEB_ADDR, TEB_TLS_SLOTS } from './process.js';
-import { INFINITE, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT, WAIT_FAILED } from '../core/sched.js';
+import { INFINITE, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
 import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAGE_NOACCESS, MEM_TOP_DOWN } from './vmem.js';
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
@@ -292,16 +292,16 @@ export function registerKernel32(api, vm) {
       const now = performance.now();
       st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; vm.sched.block(t, NEVER, 1, 'sleep'); return; }
+      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; return vm.sched.park(t, NEVER, 1, 'sleep') === PARK ? PARK : undefined; }
       vm.sched.yieldFrom(t);
       return;
     }
     if (ms <= 2) st.short++; else st.long++;
-    vm.sched.block(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep');
+    return vm.sched.park(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep') === PARK ? PARK : undefined;
   };
   function NEVER() { return false; } // (a sleep's wake condition: the timeout alone)
-  K.Sleep = [1, (c) => { sleep(c, c.arg(0)); }];
-  K.SleepEx = [2, (c) => { sleep(c, c.arg(0)); return 0; }];
+  K.Sleep = [1, (c) => sleep(c, c.arg(0))]; // (undefined, or PARK: the thread parks)
+  K.SleepEx = [2, (c) => (sleep(c, c.arg(0)) === PARK ? PARK : 0)];
   K.QueueUserAPC = [3, (c) => { const t = c.proc.handles.getAs(c.arg(1), 'thread'); if (!t) return 0; t.apcQueue.push({ fn: c.arg(0), arg: c.arg(2) }); return 1; }];
 
   // TLS
@@ -411,8 +411,9 @@ export function registerKernel32(api, vm) {
     if (t.wakeResult === undefined && !(alertable && t.apcQueue.length)) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
     const to = ms === INFINITE ? INFINITE : ms;
     if (o.type === 'mutex' && t.wakeResult === undefined) o.waiters = true; // (about to park: releases go through JavaScript)
-    const ok = vm.sched.block(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, o.waitReason ??= `wait:${o.type} 0x${(o.handle ?? 0).toString(16)}`,
+    const ok = vm.sched.park(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, o.waitReason ??= `wait:${o.type} 0x${(o.handle ?? 0).toString(16)}`,
       () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
+    if (ok === PARK) return PARK; // (the thread parks: the handlers return it to the dispatcher)
     if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
     return t.wakeValue;
