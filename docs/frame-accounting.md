@@ -62,3 +62,18 @@ report prints the accounting's own clock reads per frame.
   {category: ms}]); the old fields are unchanged. An `options` event gives the options the worker runs with (render
   worker, asynchronous reads, background translation, DXT helpers, ...) and the served build (`version`: commit,
   `+` when `src/` differs from it, newest source modification time), also in `env.version`.
+
+## Phase scenarios (the shared measurement)
+
+`tools/scenarios/*-phases.txt` mark the phases `menu`, `load` (from the click that starts a skirmish), `loadscreen`
+and `play` (the last one ends with the run, reported as `end`); `bfme2-acct-ab.txt` alternates the accounting's clock
+on and off every 20 s of play (its cost). Run, e.g.:
+
+```
+tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 520 --profile-dir <copy of /tmp/orthros-profiles/bfme2> \
+  --learn <copy of /tmp/orthros-profiles/learn-live> --phases out.json --input "$(cat tools/scenarios/bfme2-phases.txt)" [--gl-discard]
+```
+
+`rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
+saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless
+SwiftShader otherwise makes `draw` — the GPU process behind — dominate every rendered frame of play).
