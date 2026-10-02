@@ -23,7 +23,7 @@ const PRESETS = {
   loop: '31c0 03048e 41 39d1 7cf8 c3',
 };
 const args = process.argv.slice(2);
-const src = PRESETS[args[0]] ?? args.filter((a) => !a.startsWith('--') && !/^0x/.test(a)).join('');
+const src = PRESETS[args[0]] ?? args.filter((a, i) => !a.startsWith('--') && !/^0x/.test(a) && args[i - 1] !== '--opts' && args[i - 1] !== '--cw').join('');
 const cwArg = args.indexOf('--cw');
 const cw = cwArg >= 0 ? parseInt(args[cwArg + 1], 16) : 0x027f;
 const bytes = Uint8Array.from(src.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
@@ -33,4 +33,7 @@ const cpu = new CpuState(mem, THREAD_STATES_BASE);
 cpu.reset();
 mem.writeBytes(CODE, bytes);
 mem.write16(cpu.base + ST.FPU_CW, cw);
-console.log(listRegion(mem, CODE, { fpcAssume: cw & 0xf00, smc: true }, { ops: !args.includes('--quiet') }).text);
+// --opts <json>: translation options (e.g. '{"ifcvt":true}')
+const optsArg = args.indexOf('--opts');
+const extra = optsArg >= 0 ? JSON.parse(args[optsArg + 1]) : {};
+console.log(listRegion(mem, CODE, { fpcAssume: cw & 0xf00, smc: true, ...extra }, { ops: !args.includes('--quiet') }).text);
