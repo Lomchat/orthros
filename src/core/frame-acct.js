@@ -70,6 +70,7 @@ export class FrameAccount {
     this.interpSampledN = 0; this.interpSampledMs = 0; this.interpUntimedN = 0;
     // whole-run means per sampled call (frames without a sample use these)
     this.apiMean = 0.002; this.drawMean = 0; this.interpMean = 0.0005; this.apiTotN = 0; this.apiTotMs = 0; this.drawTotMs = 0; this.interpTotN = 0; this.interpTotMs = 0;
+    this.nestApi = 0; this.nestDraw = 0; // own api / draw time of every timed outer call so far (apiEnd: a call's nested ones taken out)
     this.heavyApis = 0; // APIs switched to timing on every call
     this.drawAll = 0; this.drawAllFrame = false; this.drawAllSwitches = 0; // every draw timed while non-zero (short draws left)
     this.reads = 0; // clock reads by the accounting itself (its cost: ~0.25 µs each in a Chrome worker)
@@ -105,12 +106,15 @@ export class FrameAccount {
   }
   /**
    * End a timed API call: `p` enter(C.api)'s result, `a0` / `d0` acc[api] / acc[draw] just after it, `outer` false
-   * for a call made while another timed one runs (its time is part of that one's).
+   * for a call made while another timed one runs (its time is part of that one's). `n0` / `m0`: nestApi / nestDraw
+   * just after it — the timed calls made from guest code it ran (a callback, a nested wait running other threads)
+   * measured their own time: it is not this call's.
    */
-  apiEnd(p, idx, a0, d0, outer) {
+  apiEnd(p, idx, a0, d0, outer, n0 = this.nestApi, m0 = this.nestDraw) {
     this.leave(p);
     if (!outer) return;
-    const ms = this.acc[C.api] - a0, draw = this.acc[C.draw] - d0;
+    const ms = this.acc[C.api] - a0 - (this.nestApi - n0), draw = this.acc[C.draw] - d0 - (this.nestDraw - m0);
+    this.nestApi += ms; this.nestDraw += draw;
     if (idx >= this.idxMs.length) { const m = new Float64Array(Math.max(idx + 1, this.idxMs.length * 2)), n = new Float64Array(m.length); m.set(this.idxMs); n.set(this.idxN); this.idxMs = m; this.idxN = n; }
     this.idxMs[idx] += ms + draw; this.idxN[idx]++;
     if (idx >= this.always.length) { const a = new Uint16Array(Math.max(idx + 1, this.always.length * 2)); a.set(this.always); this.always = a; }
@@ -225,7 +229,8 @@ export class FrameStats {
    * total excess; `dominant`: slow frames counted by their largest excess).
    */
   phase(label, at = 0) {
-    const n = Math.min(this.n, this.ring), K = N_CATS + 1, rec = this.rec, start = this.phaseStart;
+    // (a phase longer than the ring: its rates are those of the frames kept, over their own time)
+    const all = this.n, n = Math.min(all, this.ring), K = N_CATS + 1, rec = this.rec, start = all > this.ring ? null : this.phaseStart;
     const prev = this.label, reads = this.phaseReads ?? 0; this.label = label; this.n = 0; this.phaseStart = at; this.phaseReads = 0;
     if (!n) return { label: prev, frames: 0, text: `phase ${prev}: no frames` };
     const dts = new Float64Array(n), works = new Float64Array(n);
@@ -261,7 +266,7 @@ export class FrameStats {
     const r = {
       label: prev, frames: n, seconds: Math.round(seconds * 10) / 10, fps: Math.round(n / Math.max(1e-3, seconds) * 10) / 10,
       slow33: s33, slow40: s40, slow50: s50, per33: Math.round(s33 / Math.max(1e-6, minutes)), per40: Math.round(s40 / Math.max(1e-6, minutes)), per50: Math.round(s50 / Math.max(1e-6, minutes)),
-      clockReads: Math.round(reads / n),
+      clockReads: Math.round(reads / all),
       dt: { p50: Math.round(q(dts, 0.5) * 10) / 10, p90: Math.round(q(dts, 0.9) * 10) / 10, p99: Math.round(q(dts, 0.99) * 10) / 10, max: Math.round(q(dts, 1)) },
       work: { p50: Math.round(q(works, 0.5) * 10) / 10, p90: Math.round(q(works, 0.9) * 10) / 10, p99: Math.round(q(works, 0.99) * 10) / 10 },
       mean: catsObject(mean, 0.1), slowMean: catsObject(slowMean, 0.1), excessShares: shares, dominant: dom, worst: worstFrames,
