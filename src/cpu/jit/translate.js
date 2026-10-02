@@ -95,7 +95,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * opts.layout (layoutBlocks), opts.foldDisp (Emitter.eaFold). ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them,
  * so that a whole test suite runs under either setting.
  */
-export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, exitStubs: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -647,6 +647,7 @@ class Emitter {
     this.foldDisp = opts.foldDisp ?? JIT_DEFAULTS.foldDisp; // (see eaFold)
     this.x87Logical = !!(opts.x87Logical ?? JIT_DEFAULTS.x87Logical); // (the state block's x87 layout, see loadX87)
     this.dispatchIf = !!(opts.dispatchIf ?? JIT_DEFAULTS.dispatchIf); // (see dispatchAmong)
+    this.exitStubs = !!(opts.exitStubs ?? JIT_DEFAULTS.exitStubs); // (see chainStub)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -1127,8 +1128,44 @@ class Emitter {
   // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
   // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
-  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.chainStub(null); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.chainStub(eip); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  /**
+   * opts.exitStubs: this exit chains to the translated target itself, before the region's shared exit path — when
+   * the target's hash entry is its home slot (the first probe), the budget is not exhausted and it is not the stop
+   * address; anything else (a later probe, a miss, an API thunk, address 0) goes on to the shared exit (emitChain).
+   * Every exit then has its own return_call_indirect, an indirect jump the processor predicts per site: through the
+   * one shared tail call of a region, the exits of all its RETs, calls and jumps out of it took turns at a single
+   * indirect jump, mispredicted at most transitions (the entry of the next region is where most of the samples of a
+   * game's translated code land). `eip`: the target when constant (its slot is a constant address), else L_TV.
+   * Called at shift 0 (after x87Normalize), the x87 / XMM locals written back only on the chained path.
+   */
+  chainStub(eip) {
+    if (!this.exitStubs || !this.chain || this.prof) return;
+    const c = this.c;
+    let slot = -1;
+    if (eip !== null) {
+      eip >>>= 0;
+      if (eip === 0 || (eip >= THUNK_BASE && eip < THUNK_END)) return; // (the dispatcher's cases)
+      slot = JIT_HASH_BASE + (Math.imul(eip, 0x9e3779b1) >>> (32 - JIT_HASH_BITS)) * HASH_ENTRY;
+    }
+    const target = () => { if (slot >= 0) c.i32(eip | 0); else c.get(L_TV); };
+    const slotAddr = () => { if (slot >= 0) c.i32(0); else c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().i32(HASH_ENTRY).mul(); };
+    const slotOff = (k) => (slot >= 0 ? slot : JIT_HASH_BASE) + k;
+    c.get(L_ICOUNT).i32(0).gt_s();
+    target(); c.get(L_STATE).i32load(ST.STOP_AT).ne().and();
+    if (slot < 0) { c.get(L_TV).i32(0).ne().and(); } // (address 0: the key of the empty entries)
+    slotAddr(); c.i32load(slotOff(0)); target(); c.eq().and();
+    const i = c.if_();
+    c.get(L_STATE); target(); c.i32store(ST.EIP);
+    this.flushFpu();
+    this.flushXmm();
+    if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS);
+    slotAddr(); c.i32load(slotOff(8)); // block index in the target region
+    for (let k = L_STATE; k < L_FIRST_DECLARED; k++) c.get(k);
+    slotAddr(); c.i32load(slotOff(4)).return_call_indirect(REGION_TYPE, 0);
+    c.end(); void i;
+  }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);

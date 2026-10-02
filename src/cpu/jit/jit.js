@@ -233,13 +233,19 @@ export class Jit {
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
   }
+  /** the code-shape options of JIT_DEFAULTS given to this Jit (the translator applies the defaults to the others) */
+  codeOpts() {
+    const o = {};
+    for (const k of Object.keys(JIT_DEFAULTS)) if (k !== 'x87Logical' && this.opts[k] !== undefined) o[k] = this.opts[k];
+    return o;
+  }
   /** translateRegion options of a region at table index `fnIdx` specialized for x87 mode `fpcAssume` (null: generic) */
   translateOpts(fnIdx, fpcAssume) {
     if (this.abOpts) return { ...this.translateOptsBase(fnIdx, fpcAssume), ...this.abOpts };
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { x87Logical: this.x87Logical, boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, foldDisp: this.opts.foldDisp, layout: this.opts.layout };
+    return { x87Logical: this.x87Logical, boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -299,7 +305,7 @@ export class Jit {
    */
   attachBackground(port) {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
-    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { x87Logical: this.x87Logical, smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, foldDisp: this.opts.foldDisp, layout: this.opts.layout } });
+    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { x87Logical: this.x87Logical, smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
