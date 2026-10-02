@@ -209,3 +209,20 @@ test('effect commit list: the shadowed states CommitChanges may set, published a
   list = mem.read32(fxPtr + 20);
   assert.deepEqual([mem.read32(list), mem.read32(list + 4)], [0x12340000, 0], 'the pass sets no render, stage or sampler state at CommitChanges');
 });
+
+test('effect constants with per-stage versions (Direct3D devices): a vertex constant overwritten is restored, a pixel change leaves the vertex bindings alone', () => {
+  const { dev, fx, fxPtr, ctx, name, vec } = setup();
+  dev.vsConstVersion = 1; dev.psConstVersion = 1; // (as Device8.resetState: the device's vertex / pixel constant versions)
+  const c = (i) => Array.from(dev.vsConst.subarray(4 * i, 4 * i + 4));
+  fx.SetVector(ctx(fxPtr, name('B'), vec(9, 10, 11, 12)));
+  fx.Begin(ctx(fxPtr, 0, 0)); fx.BeginPass(ctx(fxPtr, 0));
+  assert.deepEqual(c(4), [9, 10, 11, 12]);
+  const vv = dev.vsConstVersion;
+  dev.psConst[0] = 7; dev.constVersion++; dev.psConstVersion++; // (SetPixelShaderConstantF)
+  fx.CommitChanges(ctx(fxPtr));
+  assert.equal(dev.vsConstVersion, vv, 'no vertex constant written');
+  dev.vsConst[16] = 98; dev.constVersion++; dev.vsConstVersion++; // (SetVertexShaderConstantF over B)
+  fx.CommitChanges(ctx(fxPtr));
+  assert.deepEqual(c(4), [9, 10, 11, 12], 'restored');
+  fx.End(ctx(fxPtr));
+});
