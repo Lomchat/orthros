@@ -286,6 +286,12 @@ export function defineEffects(X, vm, h) {
       const r = dev?.[name]?.(fc, this.devObj ??= com.objectAt(this.dev));
       return r === undefined ? D3D_OK : r;
     }
+    /** the device when its own state setters receive the calls and no state block records them, else null */
+    plainDev() {
+      if (this.stateManager || globalThis.ORTHROS_API_OPT_OFF === 1) return null;
+      const d = this.devImpl ??= com.implAt(this.dev);
+      return d && !d.recording ? d : null;
+    }
     scratch(c, n) { return (c.proc.fxScratch ??= c.proc.processHeap.alloc(4096)) + n; }
     /**
      * Shader constants from values (Float32Array / Int32Array, 4 per register; bools: one per register): straight into
@@ -513,9 +519,11 @@ export function defineEffects(X, vm, h) {
         const word = this.wordOf(s, key);
         let f = null, touches = null; // (touches: the shadowed device states the operation sets, see commitEntries)
         switch (cls) {
-          case 'rs': f = (c) => this.call(c, 'SetRenderState', 2, idx, word()); touches = { rs: idx }; break;
-          case 'tss': f = (c) => this.call(c, 'SetTextureStageState', 3, s.index, idx, word()); touches = { tss: [s.index, idx] }; break;
-          case 'samp': f = (c) => this.call(c, 'SetSamplerState', 3, s.index, idx, word()); touches = { samp: [s.index, idx] }; break;
+          // (a state the device already holds is left alone, as its handler would: no call at all — a pass sets its
+          // states at every BeginPass)
+          case 'rs': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.rs.get(idx) !== v) this.call(c, 'SetRenderState', 2, idx, v); }; touches = { rs: idx }; break;
+          case 'tss': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.tss[s.index]?.get(idx) !== v) this.call(c, 'SetTextureStageState', 3, s.index, idx, v); }; touches = { tss: [s.index, idx] }; break;
+          case 'samp': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || s.index >= 16 || d.samplers?.[s.index]?.get(idx) !== v) this.call(c, 'SetSamplerState', 3, s.index, idx, v); }; touches = { samp: [s.index, idx] }; break;
           case 'fvf': f = (c) => this.call(c, 'SetFVF', 1, word()); break;
           case 'npatch': f = (c) => this.call(c, 'SetNPatchMode', 1, word()); break;
           case 'lightenable': f = (c) => this.call(c, 'LightEnable', 2, s.index, word()); break;
