@@ -53,9 +53,9 @@ export class DeviceMirror {
     this.vertexShader = 0; this.pixelShader = 0; this.vertexShaders = new Map(); this.pixelShaders = new Map();
     if (api9) { this.scissor = null; this.fvf = 0; this.vertexDecl = null; this.vsObj = null; this.psObj = null; }
     this.transforms = new Map(); this.transformSlotVersion = new Map();
-    this.transformWords = new Map(); this.constWords = [null, null]; // (word views of the matrices and float constants: Replayer.applyFast)
+    this.transformWords = new Map(); this.constWords = [null, null]; this.lightWords = new Map(); // (word views of the matrices, float constants and lights: Replayer.applyFast)
     for (const f of VERSION_FIELDS) this[f] = 0;
-    this.lights = new Map(); this.lightEnabled = new Set(); this.material = new Float32Array(17);
+    this.lights = new Map(); this.lightEnabled = new Set(); this.material = new Float32Array(17); this.materialWords = new Int32Array(this.material.buffer);
     this.renderTarget = null; this.backBuffers = [];
     this.gfx = null;
   }
@@ -140,6 +140,20 @@ export class Replayer {
         m.transformSlotVersion.set(slot, I[p + 2] >>> 0);
         return true;
       }
+      case OP.MATERIAL: { // (the material array is kept: its word view too)
+        const n = I[p]; if (n < 0 || n > m.material.length) return false;
+        const w = m.materialWords.buffer === m.material.buffer ? m.materialWords : (m.materialWords = new Int32Array(m.material.buffer, m.material.byteOffset, m.material.length));
+        for (let i = 0; i < n; i++) w[i] = I[p + 1 + i];
+        return true;
+      }
+      case OP.LIGHT: {
+        const i = I[p] >>> 0, n = I[p + 1]; if (n < 0 || n > 26) return false;
+        let l = m.lights.get(i), w = m.lightWords.get(i);
+        if (!l) { m.lights.set(i, (l = new Float32Array(26))); w = undefined; }
+        if (w === undefined || w.buffer !== l.buffer) m.lightWords.set(i, (w = new Int32Array(l.buffer, l.byteOffset, 26)));
+        for (let k = 0; k < n; k++) w[k] = I[p + 2 + k];
+        return true;
+      }
       case OP.DRAW: m.gfx?.drawPrimitive(I[p] >>> 0, I[p + 1] >>> 0, I[p + 2] >>> 0); return true;
       case OP.DRAW_INDEXED: { const t = I[p + 5]; if (t > 1) return false; m.gfx?.drawIndexedPrimitive(I[p] >>> 0, I[p + 1] >>> 0, I[p + 2] >>> 0, I[p + 3] >>> 0, I[p + 4] >>> 0, t === 0 ? I[p + 6] >>> 0 : I[p + 6]); return true; }
       default: return false;
@@ -180,7 +194,7 @@ export class Replayer {
         if (a[1] === undefined) m.transformSlotVersion.delete(a[0]); else m.transformSlotVersion.set(a[0], a[1]);
         break;
       }
-      case OP.LIGHTS: m.lights = new Map(); m.lightEnabled = new Set(); break;
+      case OP.LIGHTS: m.lights = new Map(); m.lightEnabled = new Set(); m.lightWords = new Map(); break;
       case OP.LIGHT: { let l = m.lights.get(a[0]); if (!l) m.lights.set(a[0], (l = new Float32Array(26))); copyBits(l, a[1]); break; }
       case OP.LIGHTS_ON: m.lightEnabled = new Set(a[0]); break;
       case OP.MATERIAL: copyBits(m.material, a[0]); break;
