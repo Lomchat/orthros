@@ -68,8 +68,10 @@ async function run(seed) {
     const store = R() < 0.7 ? new MemStore() : null;
     const tree = (mtime) => ({ dirs: { Data: { files: Object.fromEntries(Object.entries(SIZES).map(([n, size]) => [n, { size, mtime }])) } }, files: {} });
     const cacheBlocks = 1 + ri(10); // (down to a cache smaller than the read-ahead)
+    // (odd seeds: the two folders share one connection, as a game and a game it requires do: see HttpBackend.link)
+    const link = seed % 2 ? new Set() : undefined;
     sides = [7, 8].map((v) => {
-      const b = new HttpBackend(`/game/v${v}/`, tree(v), { store, cacheBlocks, retryWaits: [0, 0] });
+      const b = new HttpBackend(`/game/v${v}/`, tree(v), { store, cacheBlocks, retryWaits: [0, 0], link });
       return { v, b, files: VERSIONS[v], handles: NAMES.map((n) => b.open(`Data/${n}`)), offline: null };
     });
     const doRead = (s, fi, off, len) => {
