@@ -7,8 +7,9 @@
 // frame, process CPU per frame — and the guest instructions executed. A measure of the Direct3D path's cost on real
 // workloads that neither the shared machine's load on a browser's GPU process nor SwiftShader disturb.
 //   node tools/framebench.mjs <manifest id | manifest.json> [--games-dir /srv/orthros/data_games] [--profile <dir to copy>]
-//     [--gfx backend|recorder|none] [--min-draws 100] [--warm 300] [--frames 600] [--limit 900] [--keys 3,6,9 (Escape,
-//     seconds after the first frame)]
+//     [--gfx backend|recorder|none] [--min-draws 100] [--warm 300] [--frames 600] [--limit 900]
+//     [--input "3:key:27;10:click:320,192" (seconds after the first frame: a key's virtual-key code, a left click)]
+//     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,7 +30,8 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/framebench.mjs <manifest id | manifest.json> [--gfx backend|recorder|none] ...'); process.exit(2); }
 const gfxKind = opt('gfx', 'backend'), minDraws = Number(opt('min-draws', 100)), warm = Number(opt('warm', 300)), frames = Number(opt('frames', 600)), limit = Number(opt('limit', 900));
-const keys = (opt('keys', '') || '').split(',').filter(Boolean).map(Number);
+const VK_SCAN = { 13: 0x1c, 27: 1, 32: 0x39 };
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, a = ''] = e.split(':'); return { t: Number(t), kind, a: a.split(',').map(Number) }; });
 let manifest, dir;
 if (target.endsWith('.json') || fs.existsSync(target)) ({ manifest, dir } = loadManifest(target));
 else { manifest = loadGameCatalog(opt('games-dir', '/srv/orthros/data_games')).get(target); if (!manifest) throw new Error(`no manifest ${target}`); dir = manifest.folder; }
@@ -55,7 +57,12 @@ const t0 = performance.now();
 let firstFrameAt = null, streak = 0, phase = 'wait', counted = 0, lastDraws = 0, cpu0 = null, insn0 = 0, wall0 = 0;
 const sums = new Float64Array(CATS.length);
 let drawsSum = 0;
+// --prof: the sampling profiler over the measured frames (node:inspector, this thread)
+const profFile = opt('prof', null);
+let session = null;
+if (profFile) { const inspector = await import('node:inspector'); session = new inspector.Session(); session.connect(); session.post('Profiler.enable'); session.post('Profiler.setSamplingInterval', { interval: 200 }); }
 const finish = (why) => {
+  if (session) session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(profFile, JSON.stringify(r.profile)); });
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
   console.log(`${why}: ${manifest.id ?? target} gfx=${gfxKind}: ${counted} frames, ${(drawsSum / counted).toFixed(0)} draws/frame, ${(wall / counted).toFixed(2)} ms/frame wall, ${((cpu.user + cpu.system) / 1000 / counted).toFixed(2)} ms/frame process CPU; mean ms/frame: ${mean.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}; guest ${(gi / counted / 1e6).toFixed(2)} M instructions/frame`);
@@ -64,10 +71,18 @@ const finish = (why) => {
 };
 host.frameHook = (dev) => {
   const cats = acct.frame(), now = performance.now();
-  if (firstFrameAt === null) { firstFrameAt = now; for (const s of keys) for (const [type, dt] of [['keydown', 0], ['keyup', 120]]) host.at(clock.now() + s * 1000 + dt, { type, vk: 27, scan: 1, extended: false, repeat: 0 }); }
+  if (firstFrameAt === null) {
+    firstFrameAt = now;
+    // (scripted input, as the harness gives it: a key held ~120 ms, a click held ~100 ms)
+    for (const { t, kind, a } of inputs) {
+      const at = clock.now() + t * 1000;
+      if (kind === 'key') { host.at(at, { type: 'keydown', vk: a[0], scan: VK_SCAN[a[0]], extended: false, repeat: 0 }); host.at(at + 120, { type: 'keyup', vk: a[0], scan: VK_SCAN[a[0]], extended: false }); }
+      else if (kind === 'click') { host.at(at, { type: 'mousemove', x: a[0], y: a[1] }); host.at(at + 1, { type: 'mousedown', button: 0, x: a[0], y: a[1] }); host.at(at + 100, { type: 'mouseup', button: 0, x: a[0], y: a[1] }); }
+    }
+  }
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); insn0 = vm.guestInsns; wall0 = now; } }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); } }
   else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };

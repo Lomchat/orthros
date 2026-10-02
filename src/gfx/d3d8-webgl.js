@@ -1135,13 +1135,17 @@ export class WebGLDevice {
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
     // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it)
+    // (the render states applyRaster reads are watched on the table: a change of another one — a fog color, a texture
+    // factor, set by effects at every pass — leaves the cache valid)
     const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
-    if (rc.gs === gs && rc.rs === rsT && rc.ver === rsT.ver && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
+    if (rc.rs !== rsT) rsT.watchKeys(WATCH_RASTER, RASTER_KEYS);
+    const wv = rsT.wv[WATCH_RASTER];
+    if (rc.gs === gs && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
       if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
       return;
     }
     this.applyRaster(dev, gs, flip);
-    rc.gs = gs; rc.rs = rsT; rc.ver = rsT.ver; rc.flip = flip; rc.dev = dev;
+    rc.gs = gs; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.dev = dev;
   }
   /**
    * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
@@ -1575,6 +1579,19 @@ export class WebGLDevice {
  * order: texture targets are rendered y-flipped (rows match D3D), back buffers bottom-up. Formats of 1 to 8 bytes per
  * pixel are packed (16-bit ones by their bit layout, others as their closest channels); never past the surface's rows.
  */
+/** the watched key group of the render states the raster cache depends on (StateTable.watchKeys) */
+const WATCH_RASTER = 0;
+/** those render states: every RS / RS9 name applyRaster's source reads (kept in step with the code by construction) */
+const RASTER_KEYS = (() => {
+  const keys = new Set();
+  for (const m of WebGLDevice.prototype.applyRaster.toString().matchAll(/\b(RS9?)\.([A-Z_0-9]+)\b/g)) {
+    const k = (m[1] === 'RS9' ? RS9 : RS)[m[2]];
+    if (k === undefined) throw new Error(`applyRaster reads an unknown render state ${m[0]}`);
+    keys.add(k);
+  }
+  return [...keys];
+})();
+
 export function packReadback(u8, base, s, rgba, w, h, flip) {
   const bpp = isDxt(s.fmt) ? 0 : surfacePitch(s.fmt, 1), fmt = s.fmt, cw = Math.min(w, s.width), ch = Math.min(h, s.height);
   for (let y = 0; y < ch; y++) {
