@@ -5,6 +5,7 @@
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
 import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
+import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
@@ -215,9 +216,13 @@ export function defineEffects(X, vm, h) {
     GetString(c) { const n = this.param(c.arg(1)); if (!n?.obj || !c.arg(2)) return D3DERR_INVALIDCALL; mem.write32(c.arg(2), gstr(this, n.obj.string ?? '')); }
     setTexture(n, ptr) {
       const old = n.obj.ptr;
-      if (ptr && com.objectAt(ptr)) com.addRef(com.objectAt(ptr));
-      n.obj.ptr = ptr;
-      if (old && com.objectAt(old)) com.release(com.objectAt(old));
+      if (old !== ptr) { // (the same texture again: its reference taken then dropped — nothing to do but the touch)
+        const o = ptr ? com.objectAt(ptr) : null;
+        if (o) com.addRef(o);
+        n.obj.ptr = ptr;
+        const oo = old ? com.objectAt(old) : null;
+        if (oo) com.release(oo);
+      }
       this.touched(n);
       return D3D_OK;
     }
@@ -288,7 +293,7 @@ export function defineEffects(X, vm, h) {
     }
     /** the device when its own state setters receive the calls and no state block records them, else null */
     plainDev() {
-      if (this.stateManager || globalThis.ORTHROS_API_OPT_OFF === 1) return null;
+      if (this.stateManager || apiOpt.off) return null;
       const d = this.devImpl ??= com.implAt(this.dev);
       return d && !d.recording ? d : null;
     }
@@ -458,7 +463,7 @@ export function defineEffects(X, vm, h) {
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
       // (this stage's constants only; dbg:ORTHROS_API_OPT_OFF=1: any constant, as before — measurement)
-      const all = globalThis.ORTHROS_API_OPT_OFF === 1, ver = dev === null ? -1 : all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion;
+      const all = apiOpt.off, ver = dev === null ? -1 : all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion;
       const same = dev !== null && sh.constVersion === ver && sh.constAll === all && sh.constRegs === regs;
       let wrote = false;
       for (const b of sh.consts) {
@@ -533,7 +538,8 @@ export function defineEffects(X, vm, h) {
             f = (c) => {
               const sh = fixed ?? this.stateShader(ps, k);
               if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
-              this.call(c, vsState ? 'SetVertexShader' : 'SetPixelShader', 1, sh?.ptr ?? 0);
+              const d = this.plainDev(), p = sh?.ptr ?? 0; // (the shader the device already has: no call, its handler would change nothing)
+              if (d === null || ((vsState ? d.vsObj : d.psObj)?.comObject?.ptr ?? 0) !== p) this.call(c, vsState ? 'SetVertexShader' : 'SetPixelShader', 1, p);
               if (sh) this.bindShader(c, sh);
             };
             break;

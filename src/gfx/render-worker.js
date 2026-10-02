@@ -7,6 +7,7 @@ import { Replayer } from './d3d-mirror.js';
 import { CTL } from './cmd-ring.js';
 import { replayLoop, publishTail } from './render-loop.js';
 import { GuestMemory } from '../cpu/memory.js';
+import { refreshApiOpt } from '../core/api-opt.js';
 
 let ctl = null, port = null, replayer = null, backend = null, canvas = null;
 const replay = { ms: 0, frames: 0, commands: 0, waitMs: 0 };
@@ -15,7 +16,7 @@ const log = (msg) => port?.postMessage({ type: 'log', kind: 'gfx', msg });
 self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'init') { try { init(m); } catch (err) { self.postMessage({ type: 'failed', reason: String(err?.stack ?? err) }); if (ctl) Atomics.store(ctl, CTL.READY, -1); } }
-  else if (m.type === 'dbg') { const [k, v] = String(m.kv ?? '').split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); }
+  else if (m.type === 'dbg') { const [k, v] = String(m.kv ?? '').split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); refreshApiOpt(); }
   else if (m.type === 'capture') { const d = backend?.device; if (d) { if (m.at !== undefined) d.captureAt = d.frame + 1; if (m.draws !== undefined) d.captureDraws = !!m.draws; if (m.count !== undefined) d.countFrames = m.count; } }
   else if (m.type === 'loseContext') { const ext = backend?.gl.getExtension('WEBGL_lose_context'); if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), m.ms ?? 500); } else log('d3d-webgl: WEBGL_lose_context unavailable'); }
 };

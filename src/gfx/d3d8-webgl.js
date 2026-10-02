@@ -9,6 +9,7 @@ import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, translateVerte
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
+import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -1166,7 +1167,7 @@ export class WebGLDevice {
     for (const b of bad) { this.glValidateLogs = (this.glValidateLogs ?? 0) + 1; if (this.glValidateLogs <= 40) this.log(`d3d-webgl: GL state cache mismatch (draw ${this.stats.draws}): ${b}`); }
   }
   /** enable/disable a GL capability through the state cache */
-  get noStateCache() { return this.noStateCacheOpt || globalThis.ORTHROS_GL_NOCACHE === 1 || globalThis.ORTHROS_API_OPT_OFF === 1; }
+  get noStateCache() { return this.noStateCacheOpt || apiOpt.glNoCache; }
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
   invalidateGlState() {

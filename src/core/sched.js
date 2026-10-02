@@ -6,6 +6,7 @@
 // the recorded result. Blocking inside a nested callback (window procedure, DllMain...) cannot
 // unwind through the host's JS frames: it runs other threads nested until the condition holds.
 import { TS } from '../win32/process.js';
+import { apiOpt } from './api-opt.js';
 
 export const INFINITE = 0xffffffff;
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
@@ -204,7 +205,7 @@ export class Scheduler {
   yieldFrom(thread) {
     if (this.vm.canUnwind(thread)) {
       if (this.pickRunnable(thread) === null) {
-        if (globalThis.ORTHROS_API_OPT_OFF === 1) { thread.yieldRequested = true; return false; } // (measurement: as before)
+        if (apiOpt.off) { thread.yieldRequested = true; return false; } // (measurement: as before)
         this.wakeBlocked();
         if (!this.hasRunnable(thread)) return false;
       }

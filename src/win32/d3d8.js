@@ -390,6 +390,7 @@ export function d3dCore(vm) {
       void c;
     }
     resetState() {
+      this.sameSets ??= 0;
       this.stateVersion = (this.stateVersion ?? 0) + 1; // bumped by every state setter
       this.programVersion = (this.programVersion ?? 0) + 1; // only by what the backend's program key depends on
       // uniform-group versions: the backend re-uploads a group only when its version moved (see WebGLDevice.applyState)
@@ -594,6 +595,7 @@ export function d3dCore(vm) {
       if (t && !o?.impl) return D3DERR_INVALIDCALL;
       if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; }
       const old = this.textures[st];
+      if (old === t) this.sameSets++; // (measurement: sets that change nothing and still reach JavaScript, see the harness's mark report)
       if (old !== t) {
         const oo = old ? com.objectAt(old) : null;
         this.stateVersion++; if (texKindOf(oo?.impl) !== texKindOf(o?.impl)) this.programVersion++;

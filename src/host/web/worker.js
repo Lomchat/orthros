@@ -20,6 +20,7 @@ import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.j
 import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/runtime.js';
 import { listRegion } from '../../cpu/jit/listing.js';
 import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
+import { refreshApiOpt } from '../../core/api-opt.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -99,6 +100,7 @@ async function start(m) {
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
   // (debugging: ?dbg=NAME=value,... sets worker globals, e.g. ORTHROS_FX_BURST=30000)
   for (const kv of (m.opts.dbg ?? '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
+  refreshApiOpt();
   if (m.opts.jitOpts) try { globalThis.ORTHROS_JIT_OPTS = JSON.parse(m.opts.jitOpts); } catch { /* ignored */ } // (debugging: ?jitopts={"consolidateEvery":...})
   globalThis.ORTHROS_DUMP_SHADERS = !!m.opts.dumpShaders; globalThis.ORTHROS_CAPTURE_FRAME = m.opts.captureFrame || 0; globalThis.ORTHROS_CAPTURE_DRAWS = !!m.opts.captureDraws; globalThis.ORTHROS_LOCK_LOG = (m.opts.log ?? []).includes('lock'); if (m.opts.burstFromId) globalThis.ORTHROS_BURST_FROM_ID = m.opts.burstFromId; globalThis.ORTHROS_NO_CULL = !!m.opts.noCull; globalThis.ORTHROS_JIT_PROFILE = !!m.opts.jitProfile; globalThis.ORTHROS_GL_DISCARD = !!m.opts.glDiscard; globalThis.ORTHROS_WATCH_TEX = m.opts.watchTex || undefined; globalThis.ORTHROS_NO_F32 = !!m.opts.noF32; globalThis.ORTHROS_F32_OFF = m.opts.f32Off || ''; globalThis.ORTHROS_GL_VALIDATE = !!m.opts.glValidate; globalThis.ORTHROS_INTERP_RANGES = m.opts.interpRange || undefined;
   // frame capture (--capture N): images (bound textures, render target after draws) encoded as PNG for the harness
@@ -591,7 +593,7 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); refreshApiOpt(); if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     if (host) { const ph = host.frameAcct.phase(String(m.label), performance.now()); log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}`); post({ type: 'phase', report: { ...ph, text: undefined } }); }
@@ -607,8 +609,9 @@ self.onmessage = (e) => {
     const fs = markPrev?.at !== undefined ? host?.frameStats(markPrev.at) : null, g = host?.gfx?.stats?.() ?? null, gp = markPrev?.gl;
     if (fs) log('gfx', `mark ${m.label}: frames ${fs.frames} in ${fs.seconds.toFixed(1)} s (${fs.fps.toFixed(1)} fps), frame time p50 ${fs.p50.toFixed(1)} p90 ${fs.p90.toFixed(1)} p99 ${fs.p99.toFixed(1)} max ${fs.max.toFixed(0)} ms, >33 ms ${fs.over33}${g ? `; render: waits ${(g.gpuWaitMs - (gp?.gpuWaitMs ?? 0)).toFixed(0)} ms (fences ${(g.fenceMs - (gp?.fenceMs ?? 0)).toFixed(0)} ms in ${g.fenceWaits - (gp?.fenceWaits ?? 0)}, frames ${(g.frameMs - (gp?.frameMs ?? 0)).toFixed(0)} ms in ${g.frameWaits - (gp?.frameWaits ?? 0)}, readbacks ${(g.readbackMs - (gp?.readbackMs ?? 0)).toFixed(0)} ms), replay ${((g.replayMs ?? 0) - (gp?.replayMs ?? 0)).toFixed(0)} ms, buffer data ${(((g.bufDataBytes ?? 0) - (gp?.bufDataBytes ?? 0)) / 1048576).toFixed(1)} MiB, ${(g.cows ?? 0) - (gp?.cows ?? 0)} surface copies (${(((g.cowBytes ?? 0) - (gp?.cowBytes ?? 0)) / 1048576).toFixed(1)} MiB)${g.compared !== undefined ? `, ${g.compared} frames compared, ${g.differing} differing` : ''}` : ''}`);
     const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
-    if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release`);
-    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    const same = [...(vm?.d3dDevices ?? [])].reduce((a, d) => a + (d.sameSets ?? 0), 0);
+    if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release; ${same - (markPrev.same ?? 0)} texture / stream / index sets changing nothing ran in JavaScript`);
+    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
