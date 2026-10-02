@@ -1369,6 +1369,10 @@ function systemParametersInfo(c, wm, wide) {
     case 0x2000: if (pv) mem.write32(pv, 0); return 1; // SPI_GETFOREGROUNDLOCKTIMEOUT (alt)
     case 0x2001: return 1;
     case 0x1012: if (pv) mem.write32(pv, 0); return 1;
+    // screen power saving: SPI_GETLOWPOWERTIMEOUT / GETPOWEROFFTIMEOUT / GETLOWPOWERACTIVE / GETPOWEROFFACTIVE read the
+    // settings, SPI_SET* (0x51, 0x52, 0x55, 0x56: what games switch off while they run) accepted
+    case 0x4f: case 0x50: case 0x53: case 0x54: if (pv) mem.write32(pv, (wm.powerSaving ??= new Map()).get(action) ?? 0); return 1;
+    case 0x51: case 0x52: case 0x55: case 0x56: (wm.powerSaving ??= new Map()).set(action === 0x51 ? 0x4f : action === 0x52 ? 0x50 : action === 0x55 ? 0x53 : 0x54, c.arg(1)); return 1;
     default: c.vm.warn(`SystemParametersInfo: unhandled action 0x${action.toString(16)}`); return 1;
   }
 }
@@ -1378,7 +1382,8 @@ function mapVirtualKey(code, type) {
   switch (type) {
     case 0: case 4: return scanOf(code);
     case 1: case 3: { for (let vk = 0; vk < 256; vk++) if (scanOf(vk) === code) return vk; return 0; }
-    case 2: { const ch = vkToChar(code, new Uint8Array(256)); return ch ?? 0; }
+    // MAPVK_VK_TO_CHAR: the unshifted character, letters in upper case ('A' for VK_A, as Windows returns them)
+    case 2: { if (code >= 0x41 && code <= 0x5a) return code; const ch = vkToChar(code, new Uint8Array(256)); return ch ?? 0; }
     default: return 0;
   }
 }

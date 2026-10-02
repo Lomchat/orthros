@@ -50,7 +50,7 @@ export class Vm {
     this.clock = opts.clock ?? new RealClock();
     this.host = opts.host ?? null;
     this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
-    this.api = new ApiRegistry();
+    this.api = new ApiRegistry(this.mem);
     this.interp = new Interp(this.mem, null);
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
@@ -106,7 +106,7 @@ export class Vm {
         return r;
       };
     }
-    if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); for (let i = 0; i < this.api.thunks.length; i++) this.jit.markFast(i, `${this.api.thunks[i].dll}!${this.api.thunks[i].name}`, this.api.thunks[i].def); }
+    if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); this.api.thunks.forEach((t, i) => this.jit.markFast(i, `${t.dll}!${t.name}`, t.def)); }
     registerBuiltins(this.api, this);
     this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
     this.apiTraceRets = new Uint32Array(API_TRACE_LEN);

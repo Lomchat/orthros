@@ -319,7 +319,7 @@ export class Process {
     if (!forExe && builtin && override !== 'native') { file = null; }
     if (!forExe && override === 'builtin') file = null;
     if (!file && !bytes) {
-      if (builtin) { mod = { name: n, builtin: true, base: this.api.dll(n).base ?? 0 }; this.modules.set(n, mod); return mod; }
+      if (builtin) { mod = { name: n, builtin: true, base: this.api.moduleBase(n) }; this.modules.set(n, mod); return mod; }
       return null;
     }
     const data = bytes ?? this.vfs.readFile(file);

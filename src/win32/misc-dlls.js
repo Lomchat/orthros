@@ -225,6 +225,10 @@ export function registerMiscDlls(api, vm) {
   api.define('opengl32.dll', { wglCreateContext: [1, () => 0], wglDeleteContext: [1, () => 0], wglMakeCurrent: [2, () => 0], wglGetProcAddress: [1, () => 0], glGetString: [1, () => 0] });
   api.define('setupapi.dll', { SetupDiGetClassDevsA: [4, () => 0xffffffff], SetupDiEnumDeviceInterfaces: [5, () => 0], SetupDiGetDeviceInterfaceDetailA: [6, () => 0], SetupDiDestroyDeviceInfoList: [1, () => 1] });
   api.define('hid.dll', { HidD_GetHidGuid: [1, () => {}], HidD_GetAttributes: [2, () => 0], HidD_GetPreparsedData: [2, () => 0], HidP_GetCaps: [2, () => 0], HidD_FreePreparsedData: [1, () => 1] });
+  // DirectX 9 system DLLs whose presence version checks test (the DirectPlay NAT helper is DirectX 8.1's marker):
+  // in-process COM servers serving no class here
+  const comServer = { DllCanUnloadNow: [0, () => 1], DllGetClassObject: [3, (c) => { if (c.arg(2)) mem.write32(c.arg(2), 0); return 0x80040111; }], DllRegisterServer: [0, () => S_OK], DllUnregisterServer: [0, () => S_OK] }; // (S_FALSE; CLASS_E_CLASSNOTAVAILABLE)
+  api.define('dpnhpast.dll', comServer);
 }
 
 /** GUID at address as lowercase "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" */

@@ -28,7 +28,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | text <string> | blur | focus (window focus loss / return). Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | blur | focus (window focus loss / return). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -57,7 +57,8 @@ const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
 if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
-const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn') });
+// --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data_games (a manifest under test)
+const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir') });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -501,6 +502,12 @@ for (;;) {
       await page.evaluate(({ vk, scan }) => { const { push, EV } = window.orthrosInput; push(EV.KEYDOWN, vk, scan, 0); }, { vk, scan });
       await page.waitForTimeout(100);
       await page.evaluate(({ vk, scan }) => { const { push, EV } = window.orthrosInput; push(EV.KEYUP, vk, scan, 0); }, { vk, scan });
+      continue;
+    }
+    // keydown:vk / keyup:vk — a key held between two events (driving, walking)
+    if (ev.kind === 'keydown' || ev.kind === 'keyup') {
+      const vk = ev.args[0], scan = ev.args[1] || scanCodeOfVk(vk), down = ev.kind === 'keydown';
+      await page.evaluate(({ vk, scan, down }) => { const { push, EV } = window.orthrosInput; push(down ? EV.KEYDOWN : EV.KEYUP, vk, scan, 0); }, { vk, scan, down });
       continue;
     }
     await page.evaluate(({ kind, args }) => {

@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Vm, GuestCrash } from '../core/vm.js';
-import { Vfs, MemBackend, normalizeWin } from '../vfs/vfs.js';
+import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../vfs/vfs.js';
 import { NodeBackend } from '../vfs/node-backend.js';
 import { OverlayBackend } from '../vfs/overlay-backend.js';
 import { RealClock } from '../core/clock.js';
@@ -63,7 +63,9 @@ export function makeVfs(manifest, dir, saveDir) {
   const root = new MemBackend();
   vfs.mount('C:\\', root);
   for (const d of ['Windows', 'Windows\\System32', 'Windows\\Temp', 'Users', 'Users\\Player', 'Users\\Player\\Temp', 'Users\\Player\\AppData', 'Users\\Player\\AppData\\Roaming', 'Users\\Player\\AppData\\Local', 'Users\\Player\\Documents', 'Program Files', 'Program Files\\Common Files', 'Game']) root.mkdir(d);
-  vfs.mount(manifest.mount, manifest.baseFolder ? new OverlayBackend([dir, manifest.baseFolder]) : new NodeBackend(dir, { readOnly: !manifest.writableGameFolder }));
+  const gameFiles = manifest.baseFolder ? new OverlayBackend([dir, manifest.baseFolder]) : new NodeBackend(dir, { readOnly: !manifest.writableGameFolder });
+  vfs.mount(manifest.mount, gameFiles);
+  mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     const catalogDir = manifest.gameId ? path.resolve(manifest.folder, '../../..') : DEFAULT_GAMES_DIR;
     const depManifest = loadGameCatalog(catalogDir).get(dependency.manifest);

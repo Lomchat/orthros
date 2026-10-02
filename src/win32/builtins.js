@@ -33,13 +33,7 @@ export function registerBuiltins(api, vm) {
   registerDirect3D8(api, vm);
   registerDirect3D9(api, vm);
   registerD3DX9(api, vm);
-  // Pseudo module bases (HMODULE values) for builtin DLLs: distinct, stable, outside guest allocations.
-  let base = 0x7c800000;
-  const seen = new Set();
-  for (const d of api.dlls.values()) {
-    if (seen.has(d)) continue;
-    seen.add(d);
-    d.base = base;
-    base += 0x10000;
-  }
+  // Module images of the builtin DLLs (their HMODULE values) are made on first use in the thunk area (ApiRegistry.window);
+  // kernel32's first, at its 1 MB-aligned start, as software locating kernel32 by its address expects an aligned base.
+  api.window('kernel32.dll');
 }

@@ -478,7 +478,11 @@ export function registerKernel32(api, vm) {
   }];
   K.VirtualProtect = [4, (c) => { const o = c.proc.vmem.protect(c.arg(0), c.arg(1), c.arg(2)); if (o < 0) return c.fail(E.INVALID_ADDRESS); c.out32(3, o); if (c.arg(2) & 0xf0) vm.invalidateCode(c.arg(0), c.arg(1)); return 1; }];
   K.VirtualQuery = [3, (c) => {
-    const q = c.proc.vmem.query(c.arg(0)); const p = c.arg(1);
+    const a = c.arg(0), w = api.windowAt(a), p = c.arg(1);
+    // (a builtin DLL's image: committed image pages; its section alignment is below a page, so Windows maps it as one
+    // PAGE_EXECUTE_WRITECOPY region)
+    const page = a & ~0xfff;
+    const q = w ? { base: page, allocBase: w.base, allocProtect: 0x80, size: w.end - page, state: 0x1000, protect: 0x80, type: 0x1000000 } : c.proc.vmem.query(a);
     mem.write32(p, q.base); mem.write32(p + 4, q.allocBase); mem.write32(p + 8, q.allocProtect ?? 0); mem.write32(p + 12, q.size);
     mem.write32(p + 16, q.state); mem.write32(p + 20, q.protect); mem.write32(p + 24, q.type);
     return 28;
@@ -538,19 +542,21 @@ export function registerKernel32(api, vm) {
   K.GlobalCompact = [1, () => 0x100000];
 
   // ---------------------------------------------------------------- modules
-  const modHandle = (m) => (m.builtin ? m.base || api.dll(m.name).base : m.base);
+  const modHandle = (m) => (m.builtin ? m.base || api.moduleBase(m.name) : m.base);
+  // (the module containing an address: a mapped image, or a builtin DLL's image in the thunk area)
+  const moduleAt = (c, a) => { const m = c.proc.moduleByAddr(a); if (m) return m; const w = api.windowAt(a); return w ? c.proc.modules.get(w.dll) ?? { name: w.dll, builtin: true, base: w.base } : null; };
   K.GetModuleHandleA = [1, (c) => { const n = c.str(0); if (!n) return c.proc.exe.base; const m = c.proc.modules.get(ApiRegistry.norm(n)); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
   K.GetModuleHandleW = [1, (c) => { const n = c.wstr(0); if (!n) return c.proc.exe.base; const m = c.proc.modules.get(ApiRegistry.norm(n)); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
   K.GetModuleHandleExA = [3, (c) => {
     let m;
-    if (c.arg(0) & 4) m = c.proc.moduleByAddr(c.arg(1));
+    if (c.arg(0) & 4) m = moduleAt(c, c.arg(1));
     else { const n = c.str(1); m = n ? c.proc.modules.get(ApiRegistry.norm(n)) : c.proc.exe; }
     if (!m) return c.fail(E.MOD_NOT_FOUND);
     c.out32(2, modHandle(m)); return 1;
   }];
   K.GetModuleHandleExW = [3, (c) => {
     let m;
-    if (c.arg(0) & 4) m = c.proc.moduleByAddr(c.arg(1));
+    if (c.arg(0) & 4) m = moduleAt(c, c.arg(1));
     else { const n = c.wstr(1); m = n ? c.proc.modules.get(ApiRegistry.norm(n)) : c.proc.exe; }
     if (!m) return c.fail(E.MOD_NOT_FOUND);
     c.out32(2, modHandle(m)); return 1;

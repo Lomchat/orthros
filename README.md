@@ -42,6 +42,8 @@ pour ajouter un jeu, il suffit d'ajouter son dossier et de recharger la page. Le
 Les identifiants de version sont stables : ils servent aux caches et sauvegardes. `exe` est recherché dans la
 superposition de `base/` et de `versions/<dir>/`. Les dépendances éventuelles se déclarent avec
 `requires: [{"game":"autre-jeu","version":"autre-jeu-1.0","mount":"C:\\AutreJeu"}]`.
+Un jeu qui vérifie la présence de son disque se déclare avec `"cdrom": "D"` (ou `{"drive":"D","label":"…"}`) :
+ses propres fichiers servent aussi de lecteur de CD-ROM.
 Chaque manifeste assemble la base et les fichiers de sa version ;
 les fichiers de version remplacent ceux de la base sans recopier les données communes. L'installeur a fourni les
 versions BFME1 1.03 et 2.22 v7.0.4, BFME2 1.06 et 1.09 v3.01, et RotWK 2.01 et 2.02 v9.7.7. Les fichiers

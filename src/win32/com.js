@@ -111,6 +111,18 @@ export class Com {
   addRef(obj) { return ++obj.refs; }
   release(obj) {
     if (--obj.refs > 0) return obj.refs;
+    // (an object another one owns — a device's back buffers, a texture's levels — stays valid at the same address
+    // without references while its owner lives, as Direct3D's do: software keeps such pointers after Release)
+    if (obj.impl.keepAlive) { obj.refs = 0; return 0; }
+    this.dispose(obj);
+    return 0;
+  }
+  /** The owner of a kept-alive object is gone: the object is destroyed now if nothing references it. */
+  unpin(impl) {
+    const obj = impl?.comObject;
+    if (obj && this.objects.get(obj.ptr) === obj && obj.refs <= 0) this.dispose(obj);
+  }
+  dispose(obj) {
     this.objects.delete(obj.ptr);
     this.mem.write32(obj.ptr + 4, 0); // (no longer an object for the fast paths)
     try { obj.impl.destroy?.(obj); } finally { obj.proc.processHeap.free_(obj.ptr); }

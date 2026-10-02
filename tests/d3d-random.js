@@ -19,7 +19,9 @@ export function d3dEnv(gfx, shared = false) {
     create(p, iface, impl) { const ptr = proc.processHeap.alloc(16); const obj = { ptr, impl, refs: 1, proc: p }; objects.set(ptr, obj); impl.comObject = obj; return ptr; },
     objectAt: (ptr) => objects.get(ptr >>> 0) ?? null, implAt: (ptr) => objects.get(ptr >>> 0)?.impl ?? null,
     addRef: (o) => ++o.refs,
-    release(o) { if (--o.refs > 0) return o.refs; objects.delete(o.ptr); try { o.impl.destroy?.(o); } finally { proc.processHeap.free_(o.ptr); } return 0; },
+    release(o) { if (--o.refs > 0) return o.refs; if (o.impl.keepAlive) { o.refs = 0; return 0; } com.dispose(o); return 0; },
+    unpin(impl) { const o = impl?.comObject; if (o && objects.get(o.ptr) === o && o.refs <= 0) com.dispose(o); },
+    dispose(o) { objects.delete(o.ptr); try { o.impl.destroy?.(o); } finally { proc.processHeap.free_(o.ptr); } },
   };
   const vm = { mem, com, proc, host: { gfx }, log() {}, clock: { now: () => 0 }, recentApiCalls: () => [], startApiBurst() {} };
   const defs = {};
