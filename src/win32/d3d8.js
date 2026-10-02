@@ -164,7 +164,8 @@ export function d3dCore(vm) {
      * texture; any other way of marking the surface dirty (a copy, D3DX, AddDirtyRect...) means the whole surface.
      */
     get dirty() { return this._dirty; }
-    set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v) this.dev.gfx?.surfaceDirty?.(this, null); }
+    // (owner.levelsClean: the backend skips a texture whose levels it has all uploaded since none became dirty)
+    set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v) { if (this.owner) this.owner.levelsClean = false; this.dev.gfx?.surfaceDirty?.(this, null); } }
     /** guest address of the contents (0 until first needed); a render worker's mirror is told of every change */
     get mem() { return this._mem; }
     set mem(v) { this._mem = v; this.dev.gfx?.surfaceMem?.(this); }
@@ -245,7 +246,7 @@ export function d3dCore(vm) {
     /** A lock for writing ended: the surface is dirty, over the union of the rectangles locked since the last upload. */
     markLocked() {
       const r = this.lockRect, d = this.dirtyRect, partial = r && (!this._dirty || d);
-      this._dirty = true;
+      this._dirty = true; if (this.owner) this.owner.levelsClean = false;
       this.dirtyRect = !partial ? null : !d ? r.slice() : [Math.min(d[0], r[0]), Math.min(d[1], r[1]), Math.max(d[2], r[2]), Math.max(d[3], r[3])];
       this.dev.gfx?.surfaceDirty?.(this, r);
     }

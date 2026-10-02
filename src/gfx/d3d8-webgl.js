@@ -254,6 +254,8 @@ export class WebGLDevice {
       for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty && !fresh) continue; this.bindForUpload(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
       return g;
     }
+    // (every level uploaded at an earlier bind and none dirty since — Surface.dirty / markLocked clear levelsClean)
+    if (!fresh && t.levelsClean === true && !this.noStateCache) return g;
     const faces = cube ? t.faces : [t.levels ?? []];
     let bound = false;
     for (let f = 0; f < faces.length; f++) {
@@ -269,6 +271,7 @@ export class WebGLDevice {
         s.dirty = false; s.uploaded = true;
       }
     }
+    t.levelsClean = true;
     return g;
   }
   /**

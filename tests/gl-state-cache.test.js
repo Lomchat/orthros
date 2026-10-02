@@ -1,7 +1,8 @@
 // The WebGL backend's per-draw caches (d3d8-webgl.js applyState: a stage's sampler object kept while its sampler states
 // and texture did not change; the depth / stencil / blend / color mask / culling block skipped while the render states
-// did not change): random Direct3D 8 and 9 sessions (state changes, state blocks, resource work, clears, presents, draws)
-// over a GL that tracks its effective state give, at every draw, the same GL state with the caches as without them.
+// did not change; glTexture: a texture whose levels are all uploaded and clean not scanned): random Direct3D 8 and 9 sessions (state changes, state blocks, resource work, clears, presents, draws)
+// over a GL that tracks its effective state give, at every draw, the same GL state with the caches as without them, and
+// the same uploads.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomSession } from './d3d-random.js';
@@ -15,7 +16,8 @@ function stateGl() {
   const E = (n) => { let v = 0x10000; for (let i = 0; i < n.length; i++) v = (v * 31 + n.charCodeAt(i)) % 0xfff0000; return v + 0x10000; }; // (by name: the same in every run)
   const src = new WeakMap(), attached = new WeakMap();
   const uniforms = (prog) => { const out = []; for (const sh of attached.get(prog) ?? []) for (const m of (src.get(sh) ?? '').matchAll(/uniform\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+(\w+)(\[\d+\])?/g)) { const n = m[1] + (m[2] ? '[0]' : ''); if (!out.includes(n)) out.push(n); } return out; };
-  const st = new Map(), draws = [];
+  const st = new Map(), draws = [], uploads = [];
+  const hash = (x) => { const b = new Uint8Array(x.buffer, x.byteOffset, x.byteLength); let h = 0x811c9dc5; for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193); return `${b.length}:${h >>> 0}`; };
   let unit = 0, prog = null, vao = null;
   const set = (k, ...a) => st.set(k, JSON.stringify(a.map(val)));
   const own = {
@@ -46,20 +48,22 @@ function stateGl() {
       else if (own[k]) v = own[k];
       else if (k.startsWith('uniform')) v = (loc, ...a) => set(`u${id(prog)}:${loc?.n}`, k, ...a);
       else if (STATEFUL.test(k)) v = (...a) => set(k, ...a);
+      else if (/^(compressedT|t)ex(Sub)?Image[23]D$|^bufferS?u?b?Data$/.test(k)) v = (...a) => { const tex = st.get(`tex${unit}:${a[0]}`); uploads.push(JSON.stringify([k, tex, ...a.map((x, i) => (!ArrayBuffer.isView(x) ? val(x) : x.byteLength > (1 << 20) ? hash(x.subarray(a[i + (k === 'bufferData' ? 2 : 1)], a[i + (k === 'bufferData' ? 2 : 1)] + a[i + (k === 'bufferData' ? 3 : 2)])) : hash(x)))]));  st.set('uploads', uploads.length); }; // (the guest memory: the range given)
       else v = () => ({});
       Object.defineProperty(recv, k, { value: v, writable: true });
       return v;
     },
   }));
-  return Object.assign(gl, { canvas: { width: 320, height: 240 }, drawingBufferWidth: 320, drawingBufferHeight: 240, draws });
+  return Object.assign(gl, { canvas: { width: 320, height: 240 }, drawingBufferWidth: 320, drawingBufferHeight: 240, draws, uploads });
 }
 
 for (const api9 of [true, false]) {
   test(`GL state at every draw with the backend's sampler and raster caches as without them (Direct3D ${api9 ? 9 : 8})`, () => {
     let compared = 0;
     for (let seed = 1; seed <= 6; seed++) {
-      const run = (noStateCache) => { const gl = stateGl(); randomSession({ createDevice: (dev) => new WebGLDevice(gl, dev, { noStateCache }) }, seed, api9, () => {}); return gl.draws; };
-      const a = run(false), b = run(true);
+      const run = (noStateCache) => { const gl = stateGl(); randomSession({ createDevice: (dev) => new WebGLDevice(gl, dev, { noStateCache }) }, seed, api9, () => {}); return gl; };
+      const A = run(false), B = run(true), a = A.draws, b = B.draws;
+      assert.deepEqual(A.uploads, B.uploads, `seed ${seed}: texture and buffer uploads`);
       assert.equal(a.length, b.length, `seed ${seed}: draws`);
       for (let i = 0; i < a.length; i++) {
         if (a[i] === b[i]) continue;
