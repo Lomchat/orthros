@@ -90,7 +90,7 @@ function session(api9, gfx) {
     VS20.forEach((v, i) => mem.write32(vsc + 4 * i, v)); PS20.forEach((v, i) => mem.write32(psc + 4 * i, v));
     for (let i = 0; i < 3; i++) { call('CreateVertexShader', vsc, out); const vs = mem.read32(out); call('CreatePixelShader', psc, out); shaders.push([vs, mem.read32(out)]); }
     // position float3, texcoord float2 (two declarations of the same elements, as games create per mesh)
-    const el = E.alloc(64); [0x00000000, 0x00000002, 0x0000000c, 0x00050001, 0x000000ff, 0x00000011].forEach((v, i) => mem.write32(el + 4 * i, v));
+    const el = E.alloc(64); [0x00000000, 0x00000002, 0x000c0000, 0x00050001, 0x000000ff, 0x00000011].forEach((v, i) => mem.write32(el + 4 * i, v));
     call('CreateVertexDeclaration', el, out); const d1 = mem.read32(out); call('CreateVertexDeclaration', el, out); shaders.decls = [d1, mem.read32(out)];
   } else {
     // two directional lights, a material

@@ -1383,16 +1383,33 @@ export class WebGLDevice {
       const v = Q.upVaos?.get(upStride);
       if (v && vaos.get(v.key) === v) { if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
     }
+    // several streams: the same buffers, strides and offsets as this program's (and layout's) last draw — its VAO
+    // again, without building the key (each buffer still gets its pending data uploaded)
+    const lm = upStride ? undefined : Q.lastMulti;
+    if (lm !== undefined && lm.n === streams.length && vaos.get(lm.v.key) === lm.v) {
+      let same = true;
+      for (let k = 0; k < streams.length && same; k++) {
+        const [n, st] = streams[k], s = dev.streams[n], vb = this.comImpl(s?.vb);
+        if (!vb) { same = lm.ids[k] === -1; continue; }
+        const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+        this.glBuffer(vb, 'vb'); // (uploads pending data)
+        same = lm.ids[k] === vb.id && lm.strides[k] === stride && lm.bases[k] === base;
+      }
+      if (same) { const v = lm.v; if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
+    }
     let key = upStride ? `${Q.vid}|up${upStride}` : `${Q.vid}`;
     const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
+    const ids = upStride ? null : new Array(streams.length).fill(-1), strides = upStride ? null : [], bases = upStride ? null : [];
     for (const [n, st] of streams) {
       if (upStride) { bound.push([n, st.attrs, upStride, 0, this.upVbo, -1]); continue; }
-      const s = dev.streams[n], vb = this.comImpl(s?.vb);
+      const s = dev.streams[n], vb = this.comImpl(s?.vb), k = strides.length;
+      strides.push(0); bases.push(0);
       if (!vb) continue;
       const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
       const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
       key += `|${vb.id}:${stride}:${base}`;
       bound.push([n, st.attrs, stride, base, buf, vb.id]);
+      ids[k] = vb.id; strides[k] = stride; bases[k] = base;
     }
     let v = vaos.get(key);
     if (!v) {
@@ -1410,6 +1427,7 @@ export class WebGLDevice {
       }
     } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
     this.curVao = v;
+    if (!upStride) Q.lastMulti = { n: streams.length, ids, strides, bases, v };
     return true;
   }
   /**

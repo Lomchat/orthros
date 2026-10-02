@@ -58,7 +58,7 @@ function session(gfx, seed, check) {
     call('CreateVertexShader', code(VS20), out); const v = mem.read32(out);
     call('CreatePixelShader', code(ps), out); shaders.push([v, mem.read32(out)]);
   }
-  const el = E.alloc(64); [0x00000000, 0x00000002, 0x0000000c, 0x00050001, 0x000000ff, 0x00000011].forEach((v, i) => mem.write32(el + 4 * i, v));
+  const el = E.alloc(64); [0x00000000, 0x00000002, 0x000c0000, 0x00050001, 0x000000ff, 0x00000011].forEach((v, i) => mem.write32(el + 4 * i, v));
   call('CreateVertexDeclaration', el, out); call('SetVertexDeclaration', mem.read32(out));
   call('CreateVertexBuffer', 4096, 8, 0, 1, out); call('SetStreamSource', 0, mem.read32(out), 0, 20);
   call('CreateIndexBuffer', 4096, 8, 101, 1, out); call('SetIndices', mem.read32(out));
