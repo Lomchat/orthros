@@ -111,6 +111,21 @@ export class Vm {
     this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
     this.apiTraceRets = new Uint32Array(API_TRACE_LEN);
     this.apiTraceTids = new Uint32Array(API_TRACE_LEN);
+    // Fields the hosts and the DLL modules attach later (as the game reaches them), declared here so that the Vm keeps
+    // one hidden class from the start: each late addition was a new map for the property loads of the dispatcher
+    // (runThread, runFor, dispatchThunk read `this.*` per slice and per API call), which went megamorphic — V8's
+    // stub-cache lookup on every one of those loads.
+    // (kept when registerBuiltins above has set them already)
+    const late = {
+      started: false, lastThread: null, runOptsByDepth: [], deferredCalls: 0,
+      presentThread: null, // (the thread that presents frames: d3d8.js Present)
+      waitLogMin: 0, mainWaits: null, // (diagnostics: long waits, set by the headless host)
+      asyncReads: false, readsInFlight: 0, recentFiles: null, recentReads: null, // (kernel32-file.js)
+      registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
+      firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
+      exitReport: null, execFaults: 0,
+    };
+    for (const k of Object.keys(late)) this[k] ??= late[k];
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }

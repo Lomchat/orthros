@@ -72,11 +72,14 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
+    // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
+    this.refFast = null; this.refFastOff = false; this.bg = null; this.stormAt = 0; this.stormCount = 0;
+    this.abOpts = null; this.abEpoch = 0; this.watches = null; this.x87Logical = false;
     this.clearTables();
     this.setX87Layout();
   }

@@ -60,6 +60,19 @@ export class Thread {
     this.callbackDepth = 0;
     this.apcQueue = [];
     this.pendingExit = false;
+    // Fields other modules attach to some threads only, declared here so that every thread keeps one hidden class:
+    // added later, in an order that differs from thread to thread, they made the property loads of the scheduler and
+    // the dispatcher (state, onStack, ...) megamorphic — V8's stub cache lookup was ~8% of the worker's time in play.
+    this.runMs = 0; // (diagnostics: time per thread, vm.js)
+    this.parkWait = null; // a parked wait being returned (sched.js)
+    this.continuations = null; // guest-level callback continuations (vm.js tailCallGuest)
+    this.msgQueue = null; // message queue (user32.js queueOf)
+    this.seh = null; // exception being dispatched (seh.js)
+    this.sleepStats = null; // Sleep pattern (kernel32.js)
+    this.blockedAt = undefined; // (diagnostics, vm.waitLogMin: long waits)
+    this.blockedApi = '';
+    this.blockedFrom = 0;
+    this.waitReason = undefined; // (a wait on this thread's handle: kernel32.js waitOne)
   }
 
   /** Re-executing an API call after a parked wait (handlers skip side effects done before blocking). Lives in the
