@@ -657,6 +657,11 @@ map (239 or 154 draws per frame), so only its per-draw figures compare, and its 
 cap; RotWK's frame figures are within the run-to-run spread (its frames are bound by guest code, 8.1); Vice City runs
 at its cap and spends the difference in its own pacing loop.
 
+In-thread (`?glworker=0`), this code against the code before it, concurrent pairs (same slot): RotWK 11.1 → 10.6 and
+11.0 → 9.5 µs per draw (D3D work 6.27 → 5.93 and 6.67 → 6.20 ms per frame), BFME1 10.4 → 10.1 and 8.0 → 6.9 (7.56 →
+7.36 and 6.23 → 5.37), Vice City 7.0 → 6.9 and 6.6 → 6.4, BFME2 12.7 → 12.4: in the browser most of a draw's backend
+time is its 8-10 WebGL calls, so the JavaScript savings of 8.2 show as 2-14 %.
+
 **Rendered** (SwiftShader, `--timescale 1`: the frame rate is the software rasterizer's on this shared machine; the share
 of frames over 50 ms rather than their count per minute, which grows with the frame rate when every frame is slow):
 
@@ -692,10 +697,14 @@ rendered runs did not always start the skirmish: the scripted clicks are timed f
 mirror equals the device at every draw and the same WebGL calls are issued in-thread and replayed (randomized Direct3D 8
 and 9 sessions, replayed at once and late, in a worker thread), plus the tests of 8.2.
 
-BFME1 has an intermittent failure at a menu click before the skirmish setup, with either backend: once the game
-showed an error dialog and exited (code 666, in-thread backend), once it stopped presenting while its main thread polled
-`WaitForSingleObject` / `Sleep` (render worker); 3 other runs with the render worker and 2 without went through. Not
-investigated further here (it is not in the rendering path: no Direct3D call, no render-worker wait).
+BFME1 has intermittent failures at a menu click before the skirmish setup, with either backend: once its main thread
+jumped to address 0 (an access violation, then an error dialog — `DialogBoxParam` unsupported — and exit code 666;
+in-thread backend; the same jump also ended a first launch of `bfme1-103` before its first frame, with the render
+worker), once it stopped presenting while its main thread polled `WaitForSingleObject` / `Sleep` (render worker);
+5 other runs with the render worker and 4 without went through. Neither is in the rendering path (no Direct3D call, no
+render-worker wait); left to the CPU / Win32 work. Smoke runs of the other versions with `compare-worker`: `rotwk-201`
+menu 1 160 frames compared, 0 differing; `bfme2-106` exits by itself 2 s after start (before any Direct3D, as without
+the render worker).
 
 ### 8.5 Decision: the render worker by default
 
