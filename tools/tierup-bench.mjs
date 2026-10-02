@@ -5,6 +5,8 @@
 // and with TurboFan once it has used a tiering budget (--wasm-tiering-budget, ~13 MB of "bytes executed"); a region
 // run briefly per entry may stay in the baseline tier for a long time.
 //   node [--wasm-tiering-budget=N] tools/tierup-bench.mjs [iterations per entry] [entries] [--opts json]
+// (Liftoff charges the budget by code position: dead bytes at a function's start made a small region tier up after
+// ~4k entries instead of ~16-32k here, but changed nothing measurable in play — the option was removed.)
 import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
