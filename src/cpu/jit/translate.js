@@ -540,9 +540,9 @@ export function discoverRegion(mem, entry, opts) {
   const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
   const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
-  // opts.coldExits with a heat map (Jit.collectHeat: guest instruction address -> executions in a counted run): a
-  // successor of a branch that ran at least opts.coldMin times is left out of the region when the counted run never
-  // executed it — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
+  // opts.coldExits with a heat (opts.heat, see heat.js: get(address) = executions, VISITED for the learned / visited
+  // ranges): a successor of a branch that ran at least opts.coldMin times is left out of the region when it never ran
+  // itself — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
   const heat = (opts.coldExits ?? JIT_DEFAULTS.coldExits) && opts.heat ? opts.heat : null;
   const coldMin = opts.coldMin ?? JIT_DEFAULTS.coldMin;
   // opts.onlyBlocks (a Set of block addresses): the blocks of an earlier translation of this entry, whose extent and

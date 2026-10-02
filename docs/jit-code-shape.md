@@ -51,6 +51,20 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
 - **If-conversion** (`ifcvt`, off): branches comparing two data values in loops (sorts, searches) over short arms,
   translated with selects; binary search −38 % per instruction, neutral in play and on the first launch, so off.
 - The FS base is loaded at a region's entry only when it reads it.
+- **Regions shaped by code heat** (`coldExits`, on when a heat is known; src/cpu/jit/heat.js): discovery leaves out a
+  branch successor (jump/branch target, fallthrough, callee, return site) when the branch ran and the successor never
+  did — that edge becomes an ordinary exit, so a region holds the blocks runs go through (fewer values live across
+  merges and exits, less code, room for more hot blocks within 48). Exact whatever the heat (only the extent changes).
+  The heat comes from the translations' **visit flags** (`visit`: one byte per block not already known to have run, set
+  at its entry; `Jit.harvestVisits` every 10 s in the page worker), learned per game by the server
+  (`/api/heat/<manifest>`, module + offset ranges, `heat-<manifest>.json` in the learn directory) and applied as modules
+  load, to the background translator as well. An x87-mode version repeats its first version's blocks
+  (`onlyBlocks`), the heat having possibly grown since. Measurement helpers: `Jit.collectHeat` (block counters),
+  `dbg:ORTHROS_JIT_HEAT` / `dbg:ORTHROS_JIT_HARVEST` in Node scenarios, `startbench --heat <file> / --heat-out <file>`.
+  Node play, in-session A/B (4 rounds of 20 s, heat of 30 s of play): RotWK −13 % guest time per instruction with
+  visit heat (3.70 → 3.21 ns), −4 / −6 % with counted heat; BFME2 −4 % (visit), −5 % (counted); BFME1 −8 % (counted);
+  Vice City −8 % (counted), +2 % (visit; its spread ±20 %). Visit flags on every block (a first session, no heat yet):
+  +3 % (within the spread).
 
 ## Measured, not kept
 
