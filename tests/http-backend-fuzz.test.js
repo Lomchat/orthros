@@ -132,7 +132,7 @@ async function run(seed) {
   } finally {
     // (the background loops still running end: nothing wanted, the network quiet, the fetches in flight failed)
     finished = true;
-    for (const { b } of sides) { b.want.clear(); b.lastSyncFetchAt = -Infinity; }
+    for (const { b } of sides) { b.want.clear(); b.near.clear(); b.lastSyncFetchAt = -Infinity; }
     for (const p of pending.splice(0)) p.reject(new Error('NetworkError'));
     globalThis.XMLHttpRequest = realXhr; globalThis.fetch = realFetch; performance.now = realNow;
   }

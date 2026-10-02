@@ -216,3 +216,26 @@ test('shared connection: the game\'s reads through one mount come first for the 
   for (let i = 0; i < 40 && dep.filling; i++) await tick(10);
   assert.ok(dep.cache.has('f.big#0'));
 }));
+
+test('near blocks: the blocks next to a missed one are fetched last, by the background fill, once the network is quiet', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/n/', tree());
+  b.missFlights = 2; // (no whole-block download of the missed block itself here: the near blocks alone)
+  b.noteMiss('f.big', SIZE, 1, 3);
+  assert.deepEqual([...b.near.keys()], ['f.big#1', 'f.big#2', 'f.big#4', 'f.big#5']);
+  b.noteMiss('f.big', SIZE, 1, 0); // (the file's first block: no block before it)
+  assert.deepEqual([...b.near.keys()], ['f.big#1', 'f.big#2', 'f.big#4', 'f.big#5']);
+  b.want.set('f.big#6', { path: 'f.big', size: SIZE, mtime: 1, index: 6 }); // a block the game touched
+  b.lastSyncFetchAt = performance.now() - 200; // (quiet for 200 ms: enough for it, not for the near blocks)
+  b.fillBackground();
+  for (let i = 0; i < 20 && !calls.length; i++) await tick(10);
+  assert.deepEqual(calls.map((c) => c.start / MiB), [6], 'the touched block first');
+  calls[0].release();
+  for (let i = 0; i < 100 && calls.length < 2; i++) await tick(10);
+  assert.equal(calls[1].start / MiB, 1, 'then the near ones, oldest first');
+  b.cache.set('f.big#2', bytes(2 * MiB, 3 * MiB)); // (here meanwhile: not fetched)
+  for (let n = 1; n < 10; n++) { for (const c of calls) c.release(); await tick(60); }
+  assert.deepEqual(calls.map((c) => c.start / MiB), [6, 1, 4, 5]);
+  assert.equal(b.near.size, 0);
+  for (let i = 0; i < 40 && b.filling; i++) await tick(10);
+  assert.equal(b.filling, false);
+}));

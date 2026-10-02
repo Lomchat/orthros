@@ -26,6 +26,12 @@ const READ_AHEAD_LOW = 2 << 20, READ_AHEAD_HIGH = 4 << 20;
  * such downloads in flight (else the block waits for the background fill, as before): see noteMiss.
  */
 const MISSED_BLOCK_FLIGHTS = 2;
+/**
+ * The blocks this close to a missed one (before and after it) are wanted too, at the lowest priority: downloaded by the
+ * background fill once the blocks the game touched are here and the network has been quiet for NEAR_QUIET_MS (the
+ * game's next misses are often next to its last ones: the parts of an archive one scene needs). At most NEAR_MAX wanted.
+ */
+const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
@@ -67,6 +73,8 @@ export class HttpBackend {
     this.chunks = new Map(); this.chunkBytes = 0;
     /** whole blocks wanted in the background (a random read touched them): "path#block" -> {path, size, mtime, index} */
     this.want = new Map(); this.filling = false;
+    /** blocks next to missed ones, wanted at the lowest priority (see NEAR_BLOCKS): same entries as `want` */
+    this.near = new Map();
     /** the background downloads in flight (prefetch, block fill): their AbortControllers, aborted when the game
      * needs the network (see abortBackground) */
     this.bgAborts = new Set();
@@ -291,6 +299,12 @@ export class HttpBackend {
   noteMiss(path, size, mtime, index) {
     if (typeof fetch !== 'function') return;
     const k = `${path}#${index}`;
+    for (let j = Math.max(0, index - NEAR_BLOCKS); j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
+      const nk = `${path}#${j}`;
+      if (j === index || this.near.has(nk) || this.cache.has(nk) || this.store?.map.has(`${path}#${size}#${mtime}#${j}`)) continue;
+      this.near.set(nk, { path, size, mtime, index: j });
+      if (this.near.size > NEAR_MAX) this.near.delete(this.near.keys().next().value); // (the oldest go)
+    }
     if (this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
     this.missFlights++;
     this.stats.missBlocks = (this.stats.missBlocks ?? 0) + 1;
@@ -418,7 +432,7 @@ export class HttpBackend {
     const k = `${path}#${index}`;
     this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
-    this.want.delete(k);
+    this.want.delete(k); this.near.delete(k);
     for (let c = (index * BLOCK) / CHUNK, e = c + BLOCK / CHUNK; c < e; c++) { const ck = `${path}#${c}`, p = this.chunks.get(ck); if (p) { this.chunks.delete(ck); this.chunkBytes -= p.length; } }
   }
 
@@ -533,13 +547,15 @@ export class HttpBackend {
     if (this.filling || typeof fetch !== 'function') return;
     this.filling = true;
     try {
-      while (this.want.size) {
-        while (this.gameBusy(150)) await new Promise((res) => setTimeout(res, 50));
-        if (!this.want.size) break; // (fetched whole meanwhile by a sequential read)
-        const [k, w] = this.want.entries().next().value;
+      while (this.want.size || this.near.size) {
+        // (the blocks next to missed ones last, after a longer quiet time)
+        while (this.gameBusy(this.want.size ? 150 : NEAR_QUIET_MS)) await new Promise((res) => setTimeout(res, 50));
+        const q = this.want.size ? this.want : this.near;
+        if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
+        const [k, w] = q.entries().next().value;
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
-        if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { this.want.delete(k); continue; }
+        if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
         const start = w.index * BLOCK, end = Math.min(w.size, start + BLOCK);
         const cur = { key: k, path: w.path, index: w.index, ctl: null, done: null, waiters: 0 };
         const pr = this.fetchBackground(w.path, start, end, (ctl) => { cur.ctl = ctl; });
@@ -549,7 +565,7 @@ export class HttpBackend {
         this.bgCur = null;
         if (data === ABORTED) continue;
         if (data === null) break; // (network down: the next random read queues it again)
-        this.want.delete(k);
+        q.delete(k);
         if (!data) continue;
         this.installBlock(w.path, w.index, data, `${w.path}#${w.size}#${w.mtime}#${w.index}`);
         this.evict();

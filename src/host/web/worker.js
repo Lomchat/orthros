@@ -154,7 +154,7 @@ async function start(m) {
     let store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + name) : null;
     if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
     const tag = primary ? '' : ` (${name})`;
-    if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
+    if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
     const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
     const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link,
