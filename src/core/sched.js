@@ -189,9 +189,27 @@ export class Scheduler {
     }
   }
 
-  /** Give other runnable threads a turn. At top level this just ends the current slice. */
+  /** Is a thread other than `except` runnable? (round robin untouched) */
+  hasRunnable(except) {
+    for (const t of this.threads) if (t !== except && t.isRunnable()) return true;
+    return false;
+  }
+
+  /**
+   * Give other runnable threads a turn (Sleep(0), SwitchToThread): true when one runs. At top level the current slice
+   * ends, if some other thread can run — after waking those whose wait is over, as the end of the slice would: with
+   * none, the call returns at once without leaving the slice (Windows does not switch then either; a thread polling
+   * with Sleep(0) no longer pays a slice end and a scheduler pass per call).
+   */
   yieldFrom(thread) {
-    if (this.vm.canUnwind(thread)) { thread.yieldRequested = true; return this.pickRunnable(thread) !== null; }
+    if (this.vm.canUnwind(thread)) {
+      if (this.pickRunnable(thread) === null) {
+        if (globalThis.ORTHROS_API_OPT_OFF === 1) { thread.yieldRequested = true; return false; } // (measurement: as before)
+        this.wakeBlocked();
+        if (!this.hasRunnable(thread)) return false;
+      }
+      thread.yieldRequested = true; return true;
+    }
     const other = this.pickRunnable(thread);
     if (!other) return false;
     this.vm.runThread(other, { slice: true });
