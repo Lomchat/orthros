@@ -1,6 +1,6 @@
 // Per-draw cost of the Direct3D work on the thread that does it, without a GPU: frames shaped like the games' — a
 // Direct3D 9 shader scene (vertex / pixel shaders, effect-style constants, a texture and a stream per draw, a few render
-// states) and a Direct3D 8 fixed-function one (world matrix, material, lights, texture stages per draw) — run through
+// states, a dynamic vertex buffer refilled before every third draw) and a Direct3D 8 fixed-function one (world matrix, material, lights, texture stages per draw) — run through
 // the Direct3D layer alone ("none"), the WebGL backend over a no-op WebGL2 context ("backend": the in-thread path, or
 // what the render worker does), and the render worker's recorder with its commands dropped ("recorder": what the
 // emulator thread does with ?glworker=1). Prints µs per draw (the Direct3D layer's own share included in each).
@@ -81,6 +81,14 @@ function session(api9, gfx) {
   const tex = [], vbs = [];
   for (let i = 0; i < 24; i++) { call('CreateTexture', 64, 64, 1, 0, 21, 1, out); tex.push(mem.read32(out)); }
   for (let i = 0; i < 6; i++) { if (api9) call('CreateVertexBuffer', 65536, 0x8, 0, 1, out); else call('CreateVertexBuffer', 65536, 0x8, 0x152, 1, out); vbs.push(mem.read32(out)); }
+  // a dynamic buffer refilled (DISCARD) before every third draw, as games stream particles and interface quads
+  if (api9) call('CreateVertexBuffer', 65536, 0x208, 0, 0, out); else call('CreateVertexBuffer', 65536, 0x208, 0x152, 0, out);
+  const dyn = mem.read32(out), dynObj = com.implAt(dyn), dynCtx = ctx([dyn]);
+  const refill = (k) => {
+    const A = dynCtx.args; A[1] = 0; A[2] = 1280; A[3] = out; A[4] = 0x2000; dynObj.Lock(dynCtx);
+    const p = mem.read32(out); for (let i = 0; i < 320; i++) mem.write32(p + 4 * i, k + i);
+    dynObj.Unlock(dynCtx);
+  };
   const ibs = [];
   for (let i = 0; i < 3; i++) { if (api9) call('CreateIndexBuffer', 65536, 0x8, 101, 1, out); else call('CreateIndexBuffer', 65536, 0x8, 101, 1, out); ibs.push(mem.read32(out)); }
   const consts = E.alloc(4096);
@@ -114,7 +122,8 @@ function session(api9, gfx) {
         call('SetTexture', 0, tex[k % tex.length]); if (k % 3 === 0) call('SetTexture', 1, tex[(k * 7) % tex.length]);
         call('SetSamplerState', 0, 5, 2); call('SetSamplerState', 0, 6, 2); call('SetSamplerState', 0, 1, 1 + ((k >> 4) & 1));
         if ((k & 7) === 0) { call('SetRenderState', 27, (k >> 3) & 1); call('SetRenderState', 14, ((k >> 4) & 1)); call('SetRenderState', 22, 2 + ((k >> 5) & 1)); }
-        call('SetStreamSource', 0, vbs[k % vbs.length], 0, 20); if ((k & 7) === 0) call('SetIndices', ibs[(k >> 3) % ibs.length]);
+        if (k % 3 === 0) { refill(k); call('SetStreamSource', 0, dyn, 0, 20); } else call('SetStreamSource', 0, vbs[k % vbs.length], 0, 20);
+        if ((k & 7) === 0) call('SetIndices', ibs[(k >> 3) % ibs.length]);
         call('DrawIndexedPrimitive', 4, 0, 0, 100, 0, 50);
       } else {
         mem.writeF32(m4 + 48, k * 0.01); call('SetTransform', 256, m4);
@@ -122,7 +131,8 @@ function session(api9, gfx) {
         call('SetTexture', 0, tex[k % tex.length]);
         if (k % 5 === 0) { call('SetTextureStageState', 0, 1, 4 + ((k / 5) & 1)); call('SetTextureStageState', 0, 4, 4); }
         if ((k & 7) === 0) { call('SetRenderState', 27, (k >> 3) & 1); call('SetRenderState', 14, ((k >> 4) & 1)); }
-        call('SetStreamSource', 0, vbs[k % vbs.length], 36); call('SetIndices', ibs[k % ibs.length], 0);
+        if (k % 3 === 0) { refill(k); call('SetStreamSource', 0, dyn, 36); } else call('SetStreamSource', 0, vbs[k % vbs.length], 36);
+        call('SetIndices', ibs[k % ibs.length], 0);
         call('DrawIndexedPrimitive', 4, 0, 100, 0, 50);
       }
     }
@@ -135,7 +145,7 @@ const variants = {
   none: () => ({ createDevice: () => null }),
   backend: () => { const gl = noopGl(); return { createDevice: (dev) => new WebGLDevice(gl, dev, {}) }; },
   recorder: () => {
-    const words = new Int32Array(1 << 20);
+    const words = new Int32Array(new SharedArrayBuffer(4 << 20)); // (shared, as the render worker's ring)
     const link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
     link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
     return { createDevice: (dev) => new Recorder(link, dev) };
@@ -143,7 +153,7 @@ const variants = {
   // (recorded, then replayed on this thread into a mirror whose backend draws over the no-op context: minus "recorder",
   // the render worker's work per draw)
   replay: () => {
-    const words = new Int32Array(1 << 20), gl = noopGl();
+    const words = new Int32Array(new SharedArrayBuffer(4 << 20)), gl = noopGl();
     let mem = null;
     const replayer = new Replayer(words, { get mem() { return mem; }, ack: null, createBackend: (m) => new WebGLDevice(gl, m, {}) });
     const link = new RenderLink({ words, replayer });

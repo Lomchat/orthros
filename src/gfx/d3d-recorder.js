@@ -577,7 +577,7 @@ export class Recorder {
       const p = W.begin(OP.CONST, 3 + n), I = W.I;
       I[p] = k; I[p + 1] = lo; I[p + 2] = n;
       const src = s.cWords[k]; // (floats as their bits)
-      if (n > 32 && k < 2) I.set(src.subarray(lo, lo + n), p + 3); else for (let i = 0; i < n; i++) I[p + 3 + i] = src[lo + i]; // (long runs: one copy)
+      if (n > 128 && k < 2) I.set(src.subarray(lo, lo + n), p + 3); else for (let i = 0; i < n; i++) I[p + 3 + i] = src[lo + i]; // (long runs: one copy — into shared memory a copy is slower than a loop below ~128 words)
     }
   }
   // ---------------------------------------------------------------- work
