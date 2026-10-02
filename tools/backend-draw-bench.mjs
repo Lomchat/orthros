@@ -33,7 +33,8 @@ export function noopGl(width = 1024, height = 768) {
   gl.attachShader = (p, s) => p.shaders.push(s);
   gl.linkProgram = (p) => {
     p.uniforms = new Map();
-    for (const s of p.shaders) for (const m of s.src.matchAll(/uniform\s+\w+\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?/g)) p.uniforms.set(m[1], m[2] ? Number(m[2]) : 0);
+    // (active: declared and used — a GLSL compiler drops the uniforms a program never reads)
+    for (const s of p.shaders) for (const m of s.src.matchAll(/uniform\s+\w+\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?/g)) if (s.src.split(new RegExp(`\\b${m[1]}\\b`)).length > 2) p.uniforms.set(m[1], m[2] ? Number(m[2]) : 0);
     p.names = [...p.uniforms].map(([n, size]) => (size ? `${n}[0]` : n));
     p.locs = new Map();
   };
