@@ -797,11 +797,13 @@ export class WebGLDevice {
   /** the enabled light indices in increasing order (sorted again only after a light change) */
   enabledLights() {
     const dev = this.dev;
-    if (this.lightOrderVersion !== dev.lightVersion || this.lightOrderDev !== dev) {
+    // (the enabled set changes only with programVersion — LightEnable, state resets — or as a new set: a light's or
+    // the material's data moving lightVersion leaves the order alone)
+    if (this.lightOrderVersion !== dev.programVersion || this.lightOrderSet !== dev.lightEnabled || this.lightOrderDev !== dev || this.noStateCache) {
       const o = this.lightOrder ??= []; o.length = 0; // (the same array: light data re-sent per object moves the version)
       for (const i of dev.lightEnabled) o.push(i);
       if (o.length > 1) o.sort(byNumber);
-      this.lightOrderVersion = dev.lightVersion; this.lightOrderDev = dev;
+      this.lightOrderVersion = dev.programVersion; this.lightOrderSet = dev.lightEnabled; this.lightOrderDev = dev;
     }
     return this.lightOrder;
   }
@@ -1007,14 +1009,20 @@ export class WebGLDevice {
     }
     // lights are transformed by the view matrix only: its slot version, not the whole transform group
     const viewVersion = info.lighting ? Math.max(tsv.get(TS_VIEW) ?? 0, tall) : 0;
-    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion || pv.ls !== dev.stateVersion)) {
-      pv.l = dev.lightVersion; pv.lt = viewVersion; pv.ls = dev.stateVersion;
+    // (the ambient color is a render state: looked at when the states moved; the lights and the material — every
+    // change of them, and of the enabled set, moves lightVersion — when they or the view matrix moved)
+    if (info.lighting && pv.ls !== dev.stateVersion) {
+      pv.ls = dev.stateVersion;
+      const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(20).fill(NaN), amb: -1, n: -1, slots: [], ld: new Float32Array(MAX_LIGHTS * 28) });
+      const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
+    }
+    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion)) {
+      pv.l = dev.lightVersion; pv.lt = viewVersion;
       // each block is compared with what this program last received (a light or material re-sent per object is
       // usually the same one): only the slots that really changed reach GL
       const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(20).fill(NaN), amb: -1, n: -1, slots: [], ld: new Float32Array(MAX_LIGHTS * 28) });
       const m = dev.material;
       if (!sameF32(lv.mat, m, 17)) { for (let k = 0; k < 17; k++) lv.mat[k] = m[k]; lv.mat[17] = lv.mat[18] = lv.mat[19] = 0; gl.uniform4fv(U('u_mat[0]'), lv.mat); }
-      const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
       let n = 0, dirty = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
       for (const i of this.enabledLights()) {
