@@ -111,6 +111,25 @@ export class Interp {
       this.lastFault = e;
       return EXIT.FAULT;
     }
+    return this.execute(insn, eip);
+  }
+
+  /**
+   * Execute `insn`, decoded at EIP by the caller (the JIT's cold tier keeps its own decodes), not a thunk: step()
+   * without the decode cache.
+   */
+  stepDecoded(insn) {
+    const cpu = this.cpu, eip = cpu.eip;
+    if ((eip >>> 12) !== this.execPage) {
+      if (!this.executable(eip)) { cpu.exit = EXIT.FAULT; cpu.exitArg = 14; this.lastFault = new CpuFault(14, eip, `execution at 0x${(eip >>> 0).toString(16)}: no memory there`); return EXIT.FAULT; }
+      this.execPage = eip >>> 12;
+    }
+    return this.execute(insn, eip);
+  }
+
+  /** @param {import('./decoder.js').Insn} insn @param {number} eip */
+  execute(insn, eip) {
+    const cpu = this.cpu;
     if (this.trace) this.trace(insn);
     this.lastOp = insn.op;
     const h = H[insn.op];
