@@ -48,7 +48,10 @@ else to run park the thread 1 ms) is what bounds it.
   orientation and the GL state cache are those of the previous draw (`StateTable.ver`).
 - A stage's sampler object is kept while its sampler (DX8: stage) states and its texture did not change.
 - A texture whose levels are all uploaded and clean is not scanned at each bind (`levelsClean`, cleared by
-  `Surface.dirty` / `markLocked`).
+  `Surface.dirty` / `markLocked`); its GL record is kept on the resource (`glOwner` / `glRec` / `glGen`: no lookup by
+  id; a context loss or restore moves the backend's `texGen`, a destroyed resource drops it).
+- Texture / cube / volume sampler uniform locations are resolved once per program (`P.texU`), not by name per stage
+  and draw.
 - Vertex and pixel constants are synced per stage only when that stage's constants changed; integer / boolean constant
   and bump-environment uniform locations are cached per program.
 
