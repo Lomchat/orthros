@@ -138,7 +138,7 @@ export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetSamplerState', 4]], DEFER_F_SAMP),
   ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3],
     ['SetMaterial', 2, 1, 17], ['SetFVF', 2], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetVertexDeclaration', 2],
-    ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4]]),
+    ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4], ['SetSoftwareVertexProcessing', 2]]),
   ...deferSpecs('IDirect3DDevice9', [['SetStreamSource', 5]], DEFER_REFS | DEFER_F_STREAM),
   ...deferSpecs('IDirect3DDevice9', [['SetIndices', 2]], DEFER_REFS | DEFER_F_IB),
   ...deferSpecs('IDirect3DDevice9', [['SetTexture', 3]], DEFER_REFS | DEFER_F_TEX),
