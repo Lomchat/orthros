@@ -107,11 +107,13 @@ test('learned entries that are blocks of a region the background worker translat
   assert.ok(blocks.length >= 2, 'the region has blocks past its entry');
   // (the entries in one batch, interior blocks after the region holding them: the install would drop them)
   const b = setupShared();
+  b.jit.coveredLearned = [];
   const list = [[CODE, 0], ...blocks.map((e) => [e, 0]), ...a.jit.learned.filter(([e]) => e !== CODE && !blocks.includes(e))];
   const n = b.jit.bgPrewarm(list);
   assert.equal(n, list.length);
   b.jit.bgInstall(b.replies[0]);
   assert.equal(b.jit.bg.covered, blocks.length);
+  assert.deepEqual(b.jit.coveredLearned, blocks.map((e) => [e, 0]), 'reported (the server forgets them)');
   assert.equal(b.jit.bg.rejected, 0, 'nothing translated for the install to drop');
   assert.equal(b.jit.bg.installed, n - blocks.length);
   for (const e of blocks) assert.equal(b.jit.blockMap.get(e).region.entry, CODE, 'reached through the region holding it');

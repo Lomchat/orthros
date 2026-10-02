@@ -172,7 +172,7 @@ async function start(m) {
   if (m.opts.regionCache) {
     const url = `/api/regions/${encodeURIComponent(manifestName)}`;
     fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
-    regionSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list }) }).catch(() => {});
+    regionSink = (list, covered) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list, covered }) }).catch(() => {});
   }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
   const vfs = new Vfs();
@@ -249,7 +249,7 @@ async function start(m) {
     post({ type: 'gl-port', port: ch.port1 }, [ch.port1]);
     await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
   }
-  if (regionSink && vm.jit) vm.jit.learned = [];
+  if (regionSink && vm.jit) { vm.jit.learned = []; vm.jit.coveredLearned = []; } // (coveredLearned: learned entries found to be blocks of other learned regions, see Jit.bgInstallNow)
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
   // while the game waits, on this thread)
   if (vm.jit && bgWanted) {
@@ -427,11 +427,12 @@ function pump() {
   const now = acct.stamp();
   pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (programSink && (host.gfx.programCache.learned.length || host.gfx.programCache.used.length) && now - programsPostedAt > 5000) { programsPostedAt = now; programSink(host.gfx.programCache.learned.splice(0), host.gfx.programCache.used.splice(0)); }
-  if (regionSink && vm.jit?.learned?.length && now - regionsPostedAt > 10000) {
+  if (regionSink && (vm.jit?.learned?.length || vm.jit?.coveredLearned?.length) && now - regionsPostedAt > 10000) {
     regionsPostedAt = now;
-    const list = [];
+    const list = [], covered = [];
     for (const [eip, fpc, t] of vm.jit.learned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) list.push([mod.name.toLowerCase(), eip - mod.base, fpc, t]); }
-    if (list.length) regionSink(list);
+    for (const [eip, fpc] of vm.jit.coveredLearned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) covered.push([mod.name.toLowerCase(), eip - mod.base, fpc]); }
+    if (list.length || covered.length) regionSink(list, covered);
   }
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;

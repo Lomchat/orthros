@@ -253,6 +253,10 @@ test('learned regions: listed by first use across sessions', async () => {
     assert.equal((await post([['Game.exe', 0x1000, 0x200, 500], ['game.exe', 0x2000, null, 100], ['x.dll', -1, null, 1], ['game.exe', 1.5, null, 1]])).status, 204);
     assert.equal((await post([['GAME.EXE', 0x1000, 0x200, 50]])).status, 204);
     assert.deepEqual(await (await fetch(url)).json(), [['game.exe', 0x1000, 0x200], ['game.exe', 0x2000, null]]);
+    // entries a session found to be blocks of learned regions listed before them: forgotten (malformed ones ignored)
+    const post2 = (regions, covered) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions, covered }) });
+    assert.equal((await post2([['game.exe', 0x3000, null, 700]], [['Game.exe', 0x2000, null], ['game.exe', 0x1000, 0x201], 'x', ['game.exe', -4, null]])).status, 204);
+    assert.deepEqual(await (await fetch(url)).json(), [['game.exe', 0x1000, 0x200], ['game.exe', 0x3000, null]]);
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

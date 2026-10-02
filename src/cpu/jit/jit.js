@@ -361,7 +361,10 @@ export class Jit {
       if (it.covered) {
         // (a block of a region the worker translated before: see bg-translate.js. That region not installed — its code
         // changed, or the entry was translated here first —, the entry is asked again, once: its own region)
-        if (!this.blockMap.has(it.eip) && !(bg.again ??= new Set()).has(it.eip)) { bg.again.add(it.eip); (again ??= []).push([it.eip, it.fpc]); } else bg.covered++;
+        if (!this.blockMap.has(it.eip) && !(bg.again ??= new Set()).has(it.eip)) { bg.again.add(it.eip); (again ??= []).push([it.eip, it.fpc]); } else {
+          bg.covered++;
+          this.coveredLearned?.push([it.eip, it.fpc]); // (the worker tells the server: a learned entry it need not list)
+        }
         continue;
       }
       if (it.k < 0) continue; // (not translatable)

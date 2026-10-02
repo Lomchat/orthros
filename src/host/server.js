@@ -278,13 +278,21 @@ export function createServer(opts = {}) {
   };
   let regionsDirty = new Set(), regionsTimer = null;
   const REGIONS_MAX = 100000;
-  const learnRegions = (name, list) => {
+  const regionKey = (e) => (!Array.isArray(e) || typeof e[0] !== 'string' || e[0].length > 64 || !Number.isInteger(e[1]) || e[1] < 0 || !(e[2] === null || Number.isInteger(e[2])) ? null : `${e[0].toLowerCase()}:${e[1]}:${e[2] ?? ''}`);
+  /**
+   * A session's report: `list` the entries it translated at a miss ([module, rva, fpc, t]); `covered` learned entries
+   * its background translator found to be blocks of learned regions listed before them ([module, rva, fpc]: never
+   * installed as regions of their own) — forgotten, which leaves their room in the served list to regions of later
+   * phases; one a session misses again is learned again.
+   */
+  const learnRegions = (name, list, covered) => {
     const m = regionsOf(name);
     for (const e of Array.isArray(list) ? list : []) {
-      if (!Array.isArray(e) || typeof e[0] !== 'string' || e[0].length > 64 || !Number.isInteger(e[1]) || e[1] < 0 || !(e[2] === null || Number.isInteger(e[2]))) continue;
-      const k = `${e[0].toLowerCase()}:${e[1]}:${e[2] ?? ''}`, t = Number.isFinite(e[3]) ? Math.max(0, e[3]) : 1e9, old = m.get(k);
+      const k = regionKey(e); if (!k) continue;
+      const t = Number.isFinite(e[3]) ? Math.max(0, e[3]) : 1e9, old = m.get(k);
       if (old) { old.t = Math.min(old.t, t); old.n++; } else if (m.size < REGIONS_MAX) m.set(k, { t, n: 1 });
     }
+    for (const e of Array.isArray(covered) ? covered : []) { const k = regionKey(e); if (k) m.delete(k); }
     if (regionsFile(name)) {
       regionsDirty.add(name);
       regionsTimer ??= setTimeout(() => {
@@ -487,7 +495,7 @@ export function createServer(opts = {}) {
           req.on('end', () => {
             if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
-            learnRegions(m[1], rec?.regions);
+            learnRegions(m[1], rec?.regions, rec?.covered);
             send(res, 204, '');
           });
           return;
