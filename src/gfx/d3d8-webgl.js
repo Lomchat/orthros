@@ -169,6 +169,7 @@ export class WebGLDevice {
     this.programs = new Map(); // program key -> record (several keys share a record when they build the same sources)
     this.programsBySrc = new Map(); // programSourceKey -> record: GL programs by what GL compiles (see program-id.js)
     this.textures = new Map(); // resource id -> { tex, target }
+    this.texGen = 0; // (moves when the GL textures are all dropped: records kept on resources, see glTexture)
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
     this.samplerPool = new Map(); // parameter combination -> WebGLSampler
@@ -220,7 +221,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null;
+    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null;
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
@@ -240,12 +241,16 @@ export class WebGLDevice {
   destroyResource(r) {
     const gl = this.gl;
     const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); }
+    if (r.glOwner === this) r.glOwner = null; // (glTexture's record on the resource)
     const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
     for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); } }
   }
   /** GL texture for a texture resource, uploading dirty levels. */
   glTexture(t) {
+    // (a texture whose levels are all uploaded and clean, bound before by this backend: its record kept on the resource —
+    // no lookup by id at each bind. glOwner / glGen: this backend, and no context loss or restore since)
+    if (t.levelsClean === true && t.glOwner === this && t.glGen === this.texGen && !this.noStateCache) return t.glRec;
     const gl = this.gl;
     const cube = !!t.faces, volume = !!t.depth;
     const target = cube ? gl.TEXTURE_CUBE_MAP : volume ? gl.TEXTURE_3D : gl.TEXTURE_2D;
@@ -273,7 +278,7 @@ export class WebGLDevice {
         s.dirty = false; s.uploaded = true;
       }
     }
-    if (owned) t.levelsClean = true;
+    if (owned) { t.levelsClean = true; t.glOwner = this; t.glRec = g; t.glGen = this.texGen; }
     return g;
   }
   /**
@@ -543,7 +548,7 @@ export class WebGLDevice {
       for (const b of this.buffers.values()) gl.deleteBuffer(b.buf);
       for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
       for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
-      this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
+      this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
       const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
       for (const r of recs) { r.v = undefined; r.cs = null; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
       this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
@@ -1021,10 +1026,12 @@ export class WebGLDevice {
       }
     }
     // textures + samplers
+    // (locations, per program; dbg:ORTHROS_GL_NOCACHE=1: looked up by name per draw, as before — measurement)
+    const texU = this.noStateCache ? null : P.texU ??= { tex: TEX_U.tex.map((n) => U(n)), cube: TEX_U.cube.map((n) => U(n)), vol: TEX_U.vol.map((n) => U(n)) };
     for (let i = 0; i < info.stages.length; i++) {
       const st = info.stages[i];
       if (!st.bound) continue;
-      const l = U(st.cube ? TEX_U.cube[i] : st.volume ? TEX_U.vol[i] : TEX_U.tex[i]);
+      const l = texU === null ? U(st.cube ? TEX_U.cube[i] : st.volume ? TEX_U.vol[i] : TEX_U.tex[i]) : st.cube ? texU.cube[i] : st.volume ? texU.vol[i] : texU.tex[i];
       if (!l) continue;
       const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
       const g = this.glTexture(tex);

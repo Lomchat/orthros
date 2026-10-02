@@ -311,6 +311,7 @@ async function profileWorker(seconds) {
   const r = await s.send('Profiler.stop', {}, 60000);
   await s.close();
   const p = r?.result?.profile; if (!p) { console.log('[profile] no profile returned'); return; }
+  if (process.env.ORTHROS_PROFILE_OUT) fs.writeFileSync(process.env.ORTHROS_PROFILE_OUT, JSON.stringify(p)); // (the raw .cpuprofile, for offline call trees)
   const byId = new Map(p.nodes.map((n) => [n.id, n])); const self = new Map(); let total = 0;
   const counts = new Map(); for (const s of p.samples) counts.set(s, (counts.get(s) ?? 0) + 1);
   for (const [id, c] of counts) { const n = byId.get(id); const cf = n.callFrame; const key = `${cf.functionName || '(anonymous)'} ${cf.url.replace(/^.*\/src\//, 'src/')}:${cf.lineNumber + 1}`; self.set(key, (self.get(key) ?? 0) + c); total += c; }
