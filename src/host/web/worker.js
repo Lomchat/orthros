@@ -28,6 +28,8 @@ const offlineDependencies = []; // copies of additional mounted games, counted w
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
 /** the network read counters of the games the manifest requires (mounted beside it), counted with the game's own */
 let extraFilesStats = null;
+/** a network read counter (requests, ms, bytes) of the game's folder and the games it requires */
+const netStat = (k) => { let v = gameFilesStats?.[k] ?? 0; for (const st of extraFilesStats ?? []) v += st[k] ?? 0; return v; };
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
@@ -233,7 +235,7 @@ async function start(m) {
     } catch (e) { log('warn', `parallel DXT encoding unavailable: ${e.message}`); }
   }
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
-  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '', gpuWaitMs: Math.round(host.gfx?.link?.stats.gpuWaitMs ?? 0) });
+  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: netStat('requests'), ioMs: Math.round(netStat('ms')), ioKB: Math.round(netStat('bytes') / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '', gpuWaitMs: Math.round(host.gfx?.link?.stats.gpuWaitMs ?? 0) });
   host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
   if (m.opts.headless) { longWaitMin = 150; vm.waitLogMin = 80; vm.mainWaits = new Map(); }
   if (m.opts.apiTimes) { vm.apiTimes = new Map(); vm.apiTimesPhase = new Map(); } // (harness --api-times: a clock read per API call, garbage included) // (harness: waits of 150 ms and more reported too) // (harness runs: per-frame API time in the slow-frame lines)
@@ -394,8 +396,7 @@ function pump() {
     const p = (q) => (ft.length ? ft[Math.min(ft.length - 1, Math.floor(q * ft.length))] : 0);
     const iv = host.interval ?? { max: 0, slow33: 0, slow50: 0 }; host.interval = { max: 0, slow33: 0, slow50: 0 };
     // time the game waited on the network for its files since the last report (synchronous range requests: nothing runs meanwhile)
-    let allMs = gameFilesStats?.ms ?? 0, allReq = gameFilesStats?.requests ?? 0;
-    for (const st of extraFilesStats ?? []) { allMs += st.ms; allReq += st.requests; }
+    const allMs = netStat('ms'), allReq = netStat('requests');
     const netMs = allMs - lastNetMs, netReq = allReq - lastNetReq; lastNetMs = allMs; lastNetReq = allReq;
     const pc = host?.gfx?.programCache;
     // (loading progress for the page's loading screen: the learned downloads, translations and program builds done ahead)
