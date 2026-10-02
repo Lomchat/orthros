@@ -505,7 +505,7 @@ export class Jit {
     if (insn === undefined) {
       try { insn = interp.fetch(a); } catch { return false; } // (undecodable: the translation path reports it)
       if (insn.next <= a || insn.next - a > 15) return false;
-      if (raw.size >= 0x40000) raw.clear();
+      if (raw.size >= 0x40000) { raw.clear(); interp.cache.clear(); } // (bounded memory: the decodes are redone)
       raw.set(a, u8.slice(a, insn.next));
     }
     const op = insn.op;
