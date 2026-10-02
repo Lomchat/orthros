@@ -18,6 +18,7 @@ import { decode, fmtInsn } from '../src/cpu/decoder.js';
 import { listRegion } from '../src/cpu/jit/listing.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
+import { LearnedHeat, RangeHeat } from '../src/cpu/jit/heat.js';
 import { acct, C as ACCT, catsObject } from '../src/core/frame-acct.js';
 
 const args = process.argv.slice(2);
@@ -79,8 +80,30 @@ if (process.env.ORTHROS_JIT_STATS && vm.jit) {
 }
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
+// --heat <file>: learned code heat ({ module: [rva, length, ...] }, as the server's heat-<manifest>.json), applied as the
+// modules load (the regions leave out what never ran, see src/cpu/jit/heat.js); --heat-out <file>: the translations'
+// visit flags harvested at the end, merged into that file
+const learnedHeat = opt('heat') && vm.jit ? new LearnedHeat(JSON.parse(fs.readFileSync(opt('heat'), 'utf8'))) : null;
+let heatModules = 0;
+if (opt('heat-out') && vm.jit) vm.jit.opts.visit = true;
+const writeHeat = () => {
+  const f = opt('heat-out'); if (!f || !vm.jit) return;
+  const pairs = vm.jit.harvestVisits(), byMod = new Map();
+  let old = {}; try { old = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { /* new */ }
+  for (const [mod, l] of Object.entries(old)) { const h = new RangeHeat(); for (let i = 0; i + 1 < l.length; i += 2) h.add(l[i], l[i] + l[i + 1]); byMod.set(mod, h); }
+  for (let i = 0; i < pairs.length; i += 2) {
+    const m = vm.proc.moduleByAddr(pairs[i]); if (!m || pairs[i + 1] > m.base + m.size) continue;
+    const k = m.name.toLowerCase(); if (!byMod.has(k)) byMod.set(k, new RangeHeat());
+    byMod.get(k).add(pairs[i] - m.base, pairs[i + 1] - m.base);
+  }
+  const out = {}; let n = 0;
+  for (const [k, h] of byMod) { const p = h.pairs(), l = []; for (let i = 0; i < p.length; i += 2) l.push(p[i], p[i + 1] - p[i]); out[k] = l; n += p.length / 2; }
+  fs.writeFileSync(f, JSON.stringify(out));
+  console.log(`[heat] ${pairs.length / 2} blocks visited, ${n} ranges in ${f}`);
+};
 const t0 = performance.now(), c0 = process.cpuUsage();
 const report = (why) => {
+  writeHeat();
   const wall = (performance.now() - t0) / 1000, cpu = process.cpuUsage(c0).user / 1e6, minsns = vm.guestInsns / 1e6;
   if (process.env.ORTHROS_JIT_STATS) {
     const j = vm.jit?.stats ?? {}; console.log(Object.entries(j).filter(([, v]) => typeof v === 'number').map(([k, v]) => `${k}=${Math.round(v)}`).join(' '));
@@ -118,6 +141,7 @@ let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // event (--phases <file>: the phase results as JSON)
 const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l)) : null;
 vm.dispatchThunk = (t, i) => {
+  if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = vm.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
   if (apiHist && th) { apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1); if (th.name === 'Sleep') { const k = `Sleep(${vm.mem.read32((t.cpu.esp + 4) >>> 0)}) t${t.id} from ${(vm.mem.read32(t.cpu.esp >>> 0) >>> 0).toString(16)}`; apiHist.set(k, (apiHist.get(k) ?? 0) + 1); } }
@@ -149,6 +173,7 @@ vm.host.waitEvent = (ms) => { scenario?.tick(); const p = acct.enter(ACCT.wait);
 const stopOn = opt('stop-on', null);
 if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof msg === 'string' && msg.includes(stopOn)) { report(`"${stopOn}" logged`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); } log(kind, msg); }; }
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
+if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)
 try { vm.run(); report('exited'); } catch (e) { report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); }
 if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });
