@@ -11,6 +11,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { decode } from '../src/cpu/decoder.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -123,4 +124,64 @@ test('x87-mode versions of a region translated under different layouts are not c
     assert.equal(r, EXIT.HALT, `cw ${cw.toString(16)}`);
     assert.equal(mem.readF32(DATA), 3, `cw ${cw.toString(16)}: 0 + 1 + 1 + 1 stored`);
   }
+});
+
+// Self-modifying code and threads under the layout: a routine called first stores AL into the immediate of one of the
+// program's ALU-with-imm8 instructions (an SMC exit, the region translated again). One thread against the interpreter; two threads
+// sharing the code (each patching it), alternated every few instructions: the same results and the same time slices
+// with and without the layout (the interleaving does not change).
+function genSmc() {
+  const g = gen(), body = [...g.code], imms = [];
+  // (the program's `ALU r, imm8` instructions, found by decoding it from its start: every byte of it is code)
+  const scratch = new GuestMemory(); scratch.writeBytes(CODE, g.code);
+  for (let a = 0; a < g.end;) { const insn = decode(scratch, CODE + a); if (body[a] === 0x83 && (body[a + 1] & 0xc0) === 0xc0) imms.push(a + 2); a = insn.next - CODE; }
+  if (!imms.length) return null;
+  const at = 5 + imms[rnd(imms.length)]; // (the body follows a 5-byte CALL)
+  // call patch ; <body ... hlt> ; patch: mov [CODE+at], al ; inc al ; ret
+  const out = [0xe8, ...le(body.length), ...body, 0xa2, ...le(CODE + at), 0xfe, 0xc0, 0xc3];
+  return { code: Uint8Array.from(out), end: 5 + g.end };
+}
+function runThreads(code, end, regs, jitOpts, slice, nThreads) {
+  const mem = new GuestMemory();
+  mem.fill(CODE, 0x1000, 0xcc); mem.writeBytes(CODE, code); mem.fill(DATA, 0x2000, 0);
+  const I0 = new Interp(mem, new CpuState(mem, THREAD_STATES_BASE));
+  if (!jitOpts) I0.cache = new (class extends Map { set() { return this; } })(); // (stores into code: decode afresh)
+  const jit = jitOpts ? new Jit(mem, I0, { smc: true, ...jitOpts }) : null;
+  const threads = [];
+  for (let k = 0; k < nThreads; k++) {
+    const cpu = new CpuState(mem, THREAD_STATES_BASE + k * 0x1000); cpu.reset();
+    [cpu.eax, cpu.ecx, cpu.edx, cpu.ebx] = regs.slice(0, 4).map((v) => (v + k * 0x1111) >>> 0);
+    cpu.edi = 150 + 37 * k; cpu.esp = DATA + 0x800 + k * 0x800; cpu.eip = CODE; cpu.eflags = F.RESERVED1 | F.IF | (regs[4] & ARITH);
+    threads.push({ cpu, done: false, r: 0 });
+  }
+  const trace = [];
+  for (let turn = 0; threads.some((t) => !t.done); turn++) {
+    if (turn > 1e6) throw new Error('runaway');
+    const t = threads[turn % nThreads]; if (t.done) continue;
+    let r;
+    if (jit) { jit.cpu = t.cpu; r = jit.run({ stopAt: CODE + end, maxInsns: slice }); } else { I0.cpu = t.cpu; r = I0.run({ stopAt: CODE + end, maxInsns: 1e7 }); }
+    if (r === EXIT.SMC) { const len = mem.read32(t.cpu.base + ST.EXIT_LEN) || 16; mem.write32(t.cpu.base + ST.EXIT_LEN, 0); jit.invalidate(t.cpu.exitArg, len); trace.push('smc'); turn--; continue; }
+    if (r === EXIT.TIMESLICE) { trace.push(`${turn % nThreads}:${(t.cpu.eip >>> 0).toString(16)}/${jit.remaining()}`); continue; }
+    t.done = true; t.r = r;
+  }
+  if (jit) for (const t of threads) CpuState.foldLazyFlags?.(t.cpu);
+  const regsOf = (t) => [t.r, t.cpu.eax, t.cpu.ecx, t.cpu.edx, t.cpu.ebx, t.cpu.esp, t.cpu.edi, t.cpu.eflags & ARITH, t.cpu.eip].map((v) => (v >>> 0).toString(16)).join(' ');
+  return { state: threads.map(regsOf).join(' | ') + ' code ' + Buffer.from(mem.bytes(CODE, code.length)).toString('hex'), trace: trace.join(' ') };
+}
+test('reverse-postorder layout with self-modifying code and threads: one thread matches the interpreter; two alternated threads give the same results and slices with and without it', () => {
+  let n = 0, smc = 0;
+  for (let t = 0; t < 150; t++) {
+    const p = genSmc(); if (!p) continue; n++;
+    const regs = [val(), val(), val(), val(), rnd(0x1000)];
+    const msg = `program ${t}: ${Buffer.from(p.code).toString('hex')} regs ${regs.map((x) => (x >>> 0).toString(16)).join(' ')}`;
+    const want = runThreads(p.code, p.end, regs, null, 0, 1);
+    for (const slice of [1e7, 5]) assert.equal(runThreads(p.code, p.end, regs, { layout: true }, slice, 1).state, want.state, `${msg} slice ${slice}`);
+    for (const slice of [3, 11]) {
+      const on = runThreads(p.code, p.end, regs, { layout: true }, slice, 2), off = runThreads(p.code, p.end, regs, { layout: false }, slice, 2);
+      assert.equal(on.state, off.state, `${msg} two threads, slice ${slice}`);
+      assert.equal(on.trace, off.trace, `${msg} two threads, slice ${slice}: time slices`);
+      smc += on.trace.split('smc').length - 1;
+    }
+  }
+  assert.ok(n > 80 && smc > n, `programs with self-modifying code: ${n}, SMC exits: ${smc}`);
 });
