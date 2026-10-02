@@ -95,7 +95,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * opts.layout (layoutBlocks), opts.foldDisp (Emitter.eaFold). ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them,
  * so that a whole test suite runs under either setting.
  */
-export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, exitStubs: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, exitStubs: false, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -451,6 +451,7 @@ export function discoverRegion(mem, entry, opts) {
   const queue = [entry];
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
   let total = 0;
+  const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
   const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
   // pass 1: find leaders
