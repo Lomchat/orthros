@@ -50,7 +50,7 @@ and reuses them at later launches:
 - The cache key is a hash of the translator's own sources — the import closure of `bg-translate.js`, `jit.js` and
   `runtime.js`, fetched by the worker like the modules themselves — plus the translation options: any change to the
   translator or its options empties the cache. Instrumented translations (profiling, block counters) are not kept.
-- Append-only records (~6 KiB per region: 27 000 BFME2 regions take ~165 MiB), a cut tail dropped at load, at most 256 MiB per game; only an index stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is
+- Append-only records (~6 KiB per region: 27 000 BFME2 regions take ~165 MiB), a cut tail dropped at load, at most 256 MiB per game (full, it stays as it is while its entries serve; when the entries read at load mostly miss — ≥ 2 000 misses, over 4 per hit: the game's code changed — it is emptied and refilled); only an index stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is
   opened for exclusive synchronous access: another tab runs without it).
 - **Off:** `?codecache=0`; harness runs use it only with a persistent browser profile (`--opfs`), `--code-cache 0`.
 

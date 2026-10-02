@@ -191,6 +191,21 @@ test('code cache: entries need the same extent, bytes and inline-API slots; anot
   // bounded
   const small = new CodeCache(new MemStore(), 'k', 400); // (bounded)
   assert.ok(small.add(e)); assert.ok(!small.add({ ...e, eip: 0x3000, code: new Uint8Array(200) }));
+  // full: kept while its entries serve (a first session: nothing read at load; a later one: hits), emptied when the
+  // entries read at load mostly miss (the game's code changed)
+  const fs2 = new MemStore(), big = { ...e, code: new Uint8Array(300) };
+  let f = new CodeCache(fs2, 'k', 800);
+  assert.ok(f.add(big));
+  f.stats.misses = 5000; assert.ok(!f.add({ ...big, eip: 0x3000 }), 'first session: nothing loaded, never emptied');
+  f = new CodeCache(fs2, 'k', 800);
+  assert.equal(f.stats.loaded, 1);
+  f.stats.hits = 1000; f.stats.misses = 2500; assert.ok(!f.add({ ...big, eip: 0x3000 }), 'entries still serve');
+  f.stats.hits = 10; f.stats.misses = 2500;
+  assert.ok(f.add({ ...big, eip: 0x3000 })); assert.match(f.stats.reset, /stale/);
+  f = new CodeCache(fs2, 'k', 800);
+  assert.equal(f.stats.loaded, 1);
+  assert.ok(f.lookup(0x3000, 0x200, ext, Uint8Array.of(1, 2, 3, 4), [0x5000, 0x7f000010, 3]));
+  assert.equal(f.lookup(0x1000, 0x200, ext, Uint8Array.of(1, 2, 3, 4), [0x5000, 0x7f000010, 3]), null);
 });
 
 test('code cache: the key covers the import closure of the translator modules', async () => {

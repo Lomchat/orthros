@@ -99,10 +99,10 @@ export class CodeCache {
       const k = enc.encode(this.key), h = new Uint8Array(8 + k.length);
       new DataView(h.buffer).setUint32(0, MAGIC, true); new DataView(h.buffer).setUint32(4, k.length, true); h.set(k, 8);
       st.truncate(0); st.write(0, h); st.flush();
-      this.end = h.length;
+      this.end = this.headLen = h.length;
     } else {
       // (the index only: each record's header and meta; bodies and code bytes stay in the file until a hit)
-      let at = 8 + klen;
+      let at = this.headLen = 8 + klen;
       while (at + 8 <= size) {
         const hv = new DataView(st.read(at, 8).buffer), len = hv.getUint32(0, true), mlen = hv.getUint32(4, true);
         if (len < 8 + mlen || at + len > size) break; // (a record cut short: the tail is dropped)
@@ -155,7 +155,14 @@ export class CodeCache {
   add(t) {
     const meta = { eip: t.eip, fpcIn: t.fpcIn ?? null, fpcOut: t.fpcOut ?? null, altAt: t.altAt ?? -1, blocks: t.blocks.map((b) => [b.eip, b.end, b.index]), deps: t.deps, stats: t.stats, hints: t.hints ?? [], snapLen: t.snap.length };
     const mb = enc.encode(JSON.stringify(meta)), len = 8 + mb.length + t.snap.length + t.code.length;
-    if (this.end + len > this.maxBytes) return false;
+    if (this.end + len > this.maxBytes) {
+      // full: kept as it is while it serves this game's code; emptied (a new start) when the entries read at load
+      // mostly miss — the game's code changed (an update), what is kept no longer applies
+      const s = this.stats;
+      if (!(s.loaded > 0 && s.misses >= 2000 && s.misses > 4 * s.hits) || this.headLen + len > this.maxBytes) return false;
+      this.store.truncate(this.headLen); this.store.flush();
+      this.map.clear(); this.end = this.headLen; s.loaded = 0; s.reset = `full and stale (${s.hits} reused, ${s.misses} not)`;
+    }
     const rec = new Uint8Array(len), v = new DataView(rec.buffer);
     v.setUint32(0, len, true); v.setUint32(4, mb.length, true);
     rec.set(mb, 8); rec.set(t.snap, 8 + mb.length); rec.set(t.code, 8 + mb.length + t.snap.length);
