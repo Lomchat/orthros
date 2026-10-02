@@ -503,7 +503,8 @@ export class Recorder {
     s.sVb[i] = x.vb; s.sStride[i] = x.stride; s.sOff[i] = x.offset;
     if (nres !== s.sRes[i]) { L.unbind(s.sRes[i]); L.bind(nres); s.sRes[i] = nres; }
     const W = this.w, stride = x.stride, off = x.offset;
-    if ((stride >>> 0) === stride && (off >>> 0) === off) { const p = W.begin(OP.STREAM, 6), I = W.I; I[p] = i; I[p + 1] = r ? r.id : 0; I[p + 2] = 0; I[p + 3] = stride; I[p + 4] = 0; I[p + 5] = off; } // (the common case, encoded in place)
+    if ((stride >>> 0) === stride && (off >>> 0) === off) { const p = W.begin(OP.STREAM, 6), I = W.I; I[p] = i; I[p + 1] = r ? r.id : 0; I[p + 2] = 0; I[p + 3] = stride; I[p + 4] = 0; I[p + 5] = off; } // (the common cases, encoded in place)
+    else if ((stride >>> 0) === stride && off === undefined) { const p = W.begin(OP.STREAM, 5), I = W.I; I[p] = i; I[p + 1] = r ? r.id : 0; I[p + 2] = 0; I[p + 3] = stride; I[p + 4] = 3; } // (Direct3D 8: no offset)
     else W.put(OP.STREAM, i, r ? r.id : 0, stride, off);
   }
   /** a transform slot changed (Device.touchTransform: every change of a matrix goes through it) */
