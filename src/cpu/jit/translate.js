@@ -613,7 +613,13 @@ export function buildRegionModule(codes, names = null, shared = false) {
 }
 
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
-export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87'];
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87',
+  // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
+  // backward transfer to a block of the innermost loop holding both ends other than its header, a backward transfer
+  // no structured loop holds (the region dispatcher), and the local returns among the latter
+  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop'];
+/** state block offset of profiling counter k */
+export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 /** profiling translations: flags helper calls per x86 opcode (u32 per OP value) */
 export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
@@ -1116,7 +1122,7 @@ class Emitter {
    */
   count(k) {
     if (!this.prof) return;
-    this.c.get(L_STATE).get(L_STATE).i32load(ST.PROF + 4 * k).i32(1).add().i32store(ST.PROF + 4 * k);
+    this.c.get(L_STATE).get(L_STATE).i32load(profOffset(k)).i32(1).add().i32store(profOffset(k));
     // flags helper calls are also counted per x86 mnemonic (JIT_PROF_OPS: opcode -> counter at PROF_OPS_BASE)
     if (k >= PF.flagsNull && k <= PF.flagsSlowArm) {
       const a = PROF_OPS_BASE + 4 * (this.curOp ?? 0);
@@ -1247,13 +1253,13 @@ class Emitter {
       this.charge(n);
       const ct = d < tp.length ? tp[d] : this.blockUnit[t];
       if (!ct.loop || ct.first === t) c.br(ct.label);
-      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(ct.label); }
+      else { this.count(PF.dispatch); this.count(PF.dispatchFwdLoop); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
       this.budget(n, target, b.flagsIn ?? FL_ALL);
       const common = d > 0 ? sp[d - 1] : null;
-      if (common) { if (t !== common.first) { this.count(PF.dispatch); c.i32(t).set(L_BLK); } c.br(common.loopL); }
-      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
+      if (common) { if (t !== common.first) { this.count(PF.dispatch); this.count(PF.dispatchBackLoop); c.i32(t).set(L_BLK); } c.br(common.loopL); }
+      else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
     this.x87Restore(s);
   }
@@ -2275,7 +2281,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
     for (const site of E.retSitesOf[E.cur] ?? []) {
       c.get(L_TV).i32(site).eq();
-      const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+      const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
     }
     E.count(PF.ret);
     c.get(L_TV);
@@ -2405,7 +2411,7 @@ HANDLERS[OP.RET] = (E, insn) => {
   // instead of leaving the region and chaining back into it
   for (const site of E.retSitesOf[E.cur] ?? []) {
     c.get(L_TV).i32(site).eq();
-    const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+    const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
   }
   E.count(PF.ret);
   c.get(L_TV);

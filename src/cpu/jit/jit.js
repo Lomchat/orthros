@@ -3,7 +3,7 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, X87_LOGICAL } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
@@ -497,7 +497,7 @@ export class Jit {
     if (n) { this.stats.chained += n; this.mem.u32[b4 + ST.TRANSITIONS / 4] = 0; }
     if (this.opts.profile) {
       const p = (this.stats.prof ??= Object.fromEntries(JIT_PROF.map((k) => [k, 0])));
-      JIT_PROF.forEach((k, i) => { const a = b4 + ST.PROF / 4 + i; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
+      JIT_PROF.forEach((k, i) => { const a = b4 + profOffset(i) / 4; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
     }
   }
   /** flags helper calls per x86 mnemonic since the last call (profiling translations), sorted */

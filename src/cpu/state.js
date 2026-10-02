@@ -34,6 +34,7 @@
 //                     layout (Jit opts.x87Logical): the JIT dispatcher fills it from FPR on entry and writes it back
 //                     to FPR before returning to JavaScript (see runtime.js run, Jit.x87ToPhysical)
 //   0x280  XL_TW      u8 the abridged tag word in the same logical order (bit i = ST(i) non-empty)
+//   0x290  PROF2[16]  u32 more transition counters of profiling translations (JIT_PROF entries from the 17th on)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
 
@@ -67,6 +68,7 @@ export const ST = Object.freeze({
   EXIT_LEN: 0x210,
   XL: 0x240,
   XL_TW: 0x280,
+  PROF2: 0x290,
   SIZE: 0x400,
 });
 
