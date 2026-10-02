@@ -99,10 +99,17 @@ const report = (why) => {
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M`); }
   if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
+  if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
 };
 // --api-hist: the API calls dispatched to JavaScript (the WASM fast paths not counted), most frequent first, with the report
 const apiHist = args.includes('--api-hist') ? new Map() : null;
+// --threads: guest instructions per thread (nested runs charged to the outermost), with the report
+const threadInsns = args.includes('--threads') ? new Map() : null;
+if (threadInsns) {
+  const runThread = vm.runThread.bind(vm);
+  vm.runThread = (t, o) => { const g0 = vm.guestInsns; try { return runThread(t, o); } finally { if (t.onStack === 0) threadInsns.set(t.id, (threadInsns.get(t.id) ?? 0) + vm.guestInsns - g0); } };
+}
 const dispatch = vm.dispatchThunk.bind(vm);
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
