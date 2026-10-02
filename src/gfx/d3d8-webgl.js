@@ -257,11 +257,12 @@ export class WebGLDevice {
     // (every level uploaded at an earlier bind and none dirty since — Surface.dirty / markLocked clear levelsClean)
     if (!fresh && t.levelsClean === true && !this.noStateCache) return g;
     const faces = cube ? t.faces : [t.levels ?? []];
-    let bound = false;
+    let bound = false, owned = true;
     for (let f = 0; f < faces.length; f++) {
       const lv = faces[f];
       for (let i = 0; i < lv.length; i++) {
         const s = lv[i];
+        if (s.owner !== t) owned = false; // (levelsClean is kept by the levels' owner: only such textures are skipped)
         if (!s.dirty && s.uploaded && !fresh) continue; // (a new GL texture — first use, or after a context loss — takes every level)
         if (!bound) { this.bindForUpload(target, g.tex); bound = true; }
         const ap = acct.enter(ACCT.tex), t0 = acct.stamp();
@@ -271,7 +272,7 @@ export class WebGLDevice {
         s.dirty = false; s.uploaded = true;
       }
     }
-    t.levelsClean = true;
+    if (owned) t.levelsClean = true;
     return g;
   }
   /**
