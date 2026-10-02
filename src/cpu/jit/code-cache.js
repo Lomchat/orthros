@@ -84,7 +84,7 @@ export class CodeCache {
   constructor(store, key, maxBytes = 256 * 1024 * 1024) {
     this.store = store; this.key = key; this.maxBytes = maxBytes;
     this.map = new Map(); // "eip:fpcIn" -> [entry]
-    this.end = 0; this.stats = { loaded: 0, hits: 0, misses: 0, added: 0, bytes: 0, loadMs: 0, reset: '' };
+    this.end = 0; this.flushedAt = 0; this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, added: 0, bytes: 0, loadMs: 0, reset: '' };
     this.load();
   }
   load() {
@@ -129,21 +129,23 @@ export class CodeCache {
    */
   lookup(eip, fpcIn, extent, snap, deps) {
     const l = this.map.get(`${eip}:${fpcIn ?? 'g'}`);
+    let why = 'missNew'; // (miss reasons, the closest candidate's: diagnostics)
     if (l) {
       for (const e of l) {
-        if (e.ext.length !== 2 * extent.length || e.deps.length !== deps.length || e.snapLen !== snap.length) continue;
-        let same = true;
+        let same = e.ext.length === 2 * extent.length && e.snapLen === snap.length;
         for (let i = 0; same && i < extent.length; i++) same = e.ext[2 * i] === extent[i].eip && e.ext[2 * i + 1] === extent[i].end;
+        if (!same) { if (why === 'missNew') why = 'missExtent'; continue; }
+        same = e.deps.length === deps.length;
         for (let i = 0; same && i < deps.length; i++) same = e.deps[i] === deps[i] >>> 0;
-        if (!same) continue;
+        if (!same) { if (why !== 'missBytes') why = 'missDeps'; continue; }
         const rec = this.store.read(e.at, e.len);
-        if (rec.length !== e.len || !sameBytes(rec.subarray(8 + e.mlen, 8 + e.mlen + e.snapLen), snap)) continue;
+        if (rec.length !== e.len || !sameBytes(rec.subarray(8 + e.mlen, 8 + e.mlen + e.snapLen), snap)) { why = 'missBytes'; continue; }
         let meta; try { meta = JSON.parse(dec.decode(rec.subarray(8, 8 + e.mlen))); } catch { continue; }
         this.stats.hits++;
         return { ...meta, code: rec.slice(8 + e.mlen + e.snapLen) };
       }
     }
-    this.stats.misses++;
+    this.stats.misses++; this.stats[why]++;
     return null;
   }
   /**

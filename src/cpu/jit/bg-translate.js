@@ -29,7 +29,7 @@ const sameDeps = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]
 
 function translateBatch(items) {
   const codes = [], names = [], out = [];
-  let hits = 0;
+  let hits = 0, emitMs = 0;
   for (const it of items) {
     const r = { eip: it.eip, fnIdx: it.fnIdx, fpc: it.fpc, k: -1 };
     out.push(r);
@@ -49,7 +49,9 @@ function translateBatch(items) {
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
         continue;
       }
+      const te = performance.now();
       const t = translateRegion(mem, it.eip, o);
+      emitMs += performance.now() - te;
       if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks))) continue; // (the code changed meanwhile)
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
       r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
@@ -58,7 +60,7 @@ function translateBatch(items) {
       if (cache && sameDeps(deps, t.deps)) cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats: r.stats, hints: t.code.hints, snap, code: t.code });
     } catch { /* undecodable: left to the emulator */ }
   }
-  return { codes, names, out, hits };
+  return { codes, names, out, hits, emitMs };
 }
 
 /**
@@ -75,16 +77,18 @@ async function openCache(c) {
 
 function batch(m, reply) {
   const t0 = performance.now();
-  const { codes, names, out, hits } = translateBatch(m.items);
+  const { codes, names, out, hits, emitMs } = translateBatch(m.items);
   const t1 = performance.now();
   let module = null;
   if (codes.length) {
     try { module = new WebAssembly.Module(buildRegionModule(codes, names, mem.memory.buffer instanceof SharedArrayBuffer)); }
     catch { for (const r of out) r.k = -1; }
   }
-  if (cache && cache.stats.added) cache.flush();
   const t2 = performance.now();
-  reply({ type: 'batch', id: m.id, module, items: out, ms: t2 - t0, compileMs: t2 - t1, cacheHits: hits, cache: cache ? { ...cache.stats } : null });
+  // (written records reach the disk at the next flush — a costly sync: at most every 5 s; a session ended before
+  // keeps what was flushed, a record cut short is dropped at the next load)
+  if (cache && cache.stats.added && t2 - (cache.flushedAt ?? 0) > 5000) { cache.flush(); cache.flushedAt = performance.now(); }
+  reply({ type: 'batch', id: m.id, module, items: out, ms: t2 - t0, compileMs: t2 - t1, translateMs: emitMs, cacheHits: hits, cache: cache ? { ...cache.stats } : null });
 }
 
 /** A message from the emulator's worker; the answer (if any) goes through `reply` (tests call this directly). */
