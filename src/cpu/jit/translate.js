@@ -95,7 +95,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * opts.layout (layoutBlocks), opts.foldDisp (Emitter.eaFold). ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them,
  * so that a whole test suite runs under either setting.
  */
-export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -646,6 +646,7 @@ class Emitter {
     this.smc = opts.smc !== false;
     this.foldDisp = opts.foldDisp ?? JIT_DEFAULTS.foldDisp; // (see eaFold)
     this.x87Logical = !!(opts.x87Logical ?? JIT_DEFAULTS.x87Logical); // (the state block's x87 layout, see loadX87)
+    this.dispatchIf = !!(opts.dispatchIf ?? JIT_DEFAULTS.dispatchIf); // (see dispatchAmong)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -789,9 +790,34 @@ class Emitter {
     for (let k = direct.length - 1; k >= 0; k--) tramp.set(direct[k], c.block());
     const targets = [];
     for (let j = first; j <= last; j++) { const ch = childOf(j); targets.push(ch.loop ? ch.label : tramp.get(ch)); }
+    // the region dispatcher (top level): the targets of the backward transfers no structured loop holds are compared
+    // first (opts.dispatchIf), each a conditional branch of its own, before the br_table — one indirect jump shared by
+    // the region's entries and all those transfers, whose target changes from one dispatch to the next
+    if (!parent && this.dispatchIf) for (const t of this.backTargets()) c.get(L_BLK).i32(t).eq().br_if(targets[t - first]);
     c.get(L_BLK); if (first) c.i32(first).sub();
     c.br_table(targets, def);
     for (const ch of direct) { c.end(); c.i32(-1).set(L_BLK).br(ch.label); }
+  }
+  /**
+   * Blocks reached by a backward in-region transfer outside any structured loop holding both ends (the ones jumpTo
+   * sends through the region dispatcher): branch targets, fallthroughs and local return sites, at most 4, the most
+   * referenced first.
+   */
+  backTargets() {
+    const refs = new Map(), blocks = this.blocks;
+    const add = (b, a) => {
+      const t = this.byEip.get(a); if (!t || t.index > b.index) return;
+      const sp = this.pathOf[b.index], tp = this.pathOf[t.index];
+      if (sp.length && tp.length && sp[0] === tp[0]) return; // (a structured loop holds both)
+      refs.set(t.index, (refs.get(t.index) ?? 0) + 1);
+    };
+    for (const b of blocks) {
+      const last = b.insns[b.insns.length - 1];
+      if (b.term === TERM_NONE || b.term === TERM_JCC || b.term === TERM_LOOP) add(b, b.fallthrough);
+      if (last && b.term !== TERM_NONE && branchTarget(last) >= 0) add(b, branchTarget(last));
+      for (const a of this.retSitesOf[b.index] ?? []) add(b, a);
+    }
+    return [...refs].sort((x, y) => y[1] - x[1] || x[0] - y[0]).slice(0, 4).map(([t]) => t);
   }
 
   /**
