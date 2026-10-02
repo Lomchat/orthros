@@ -13,7 +13,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 |---|---|
 | `guest` | guest code: translated code, the dispatcher, thread switches |
 | `api` | Win32 / Direct3D / D3DX handlers in JavaScript, exclusive of the categories below |
-| `draw` | Direct3D draws, clears and StretchRect submitted to WebGL (state, constants, vertex data, the GL call) or recorded for the render worker; blocks when the GPU process is behind. Sampled with the API calls, all timed while the GPU process is behind (see Cost) |
+| `draw` | Direct3D draws, clears and StretchRect recorded for the render worker, or (`?glworker=0`) submitted to WebGL (state, constants, vertex data, the GL call); blocks when the GPU process is behind. Sampled with the API calls, all timed while the GPU process is behind (see Cost) |
 | `interp` | instructions run by the interpreter (fallbacks of translated code; the JIT's cold tier: new code interpreted while the background worker translates it) |
 | `jit` | translation of new code on the game thread (first tier, consolidation) |
 | `ahead` | learned regions translated on the game thread while it waits |
@@ -24,7 +24,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 | `io` | game file reads served from memory or the block store |
 | `net` | synchronous game file reads over the network |
 | `present` | the present and the hand-off of the frame to the page |
-| `render` | waits for the render worker (`?glworker=1`) |
+| `render` | waits for the render worker (the default; none with `?glworker=0`) |
 | `audio` | audio mixing / cursor publication on the game thread |
 | `host` | the worker's bookkeeping between slices |
 | `wait` | a guest thread waiting inside a nested call (pacing) |

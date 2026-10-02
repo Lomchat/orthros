@@ -73,11 +73,13 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.match(text, /px_chk10=0x00ffffff/);
   assert.match(text, /px_chk33=0x00000000/);
   assert.match(text, /px_chk_out=0x0000ff00/, 'the quad covers exactly pixels 100..103');
+  assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker by default');
 });
 
-// the render worker (docs/render-worker.md): the same pixels and readbacks with the Direct3D work recorded and replayed
-// in this thread (inline) and in a render worker that presents the frames itself
-for (const mode of ['inline', '1']) {
+// the render worker (docs/render-worker.md; the default, so the tests above use it): the same pixels and readbacks with
+// the Direct3D work recorded and replayed in this thread (inline), in a render worker that presents the frames itself
+// (1), and with the backend in the emulator's thread (0)
+for (const mode of ['inline', '1', '0']) {
   test(`browser host, ?glworker=${mode}: dx9.exe renders, reads back and presents through the gamma ramp as in-thread`, { skip, timeout: 60000 }, async () => {
     const r = await runManifest('test-dx9', 20, `&glworker=${mode}`);
     assert.equal(r.status, 'exited', r.crash ?? r.logs.slice(-5).join('\n'));
@@ -87,6 +89,7 @@ for (const mode of ['inline', '1']) {
     const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
     for (const k of ['px_tri=0x0000ff00', 'px_clear=0x000000ff', 'px_chk00=0x00000000', 'px_chk10=0x00ffffff', 'px_chk33=0x00000000', 'px_chk_out=0x0000ff00']) assert.ok(text.includes(k), `${k} in\n${text}`);
     if (mode === '1') assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker rendered');
+    if (mode === '0') assert.ok(!r.logs.some((l) => l.includes('render worker: ready')), 'the backend in the emulator\'s thread');
   });
   test(`browser host, ?glworker=${mode}: dx.exe clears the Direct3D back buffer`, { skip, timeout: 60000 }, async () => {
     const r = await runManifest('test-dx', 20, `&glworker=${mode}`);

@@ -111,8 +111,10 @@ async function start(m) {
   // recorded for a render worker that owns its own canvas — ?glworker=inline / check: recorded and replayed here
   // (?glworker=compare / compare-worker: the in-thread backend presents, the recorded work is replayed beside it — here
   // or in a render worker — and the two back buffers compared every 60 frames)
-  // (the page's ?glworker= wins; a manifest may set the default with the compat flag "glWorker": 0 / 1 / "inline")
-  const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '0' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
+  // (the page's ?glworker= wins; a manifest may set the default with the compat flag "glWorker": 0 / 1 / "inline";
+  // without either, the render worker where it can run — docs/render-worker.md section 8 — and ?glworker=0 the
+  // in-thread backend)
+  const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '1' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
   const workerOk = typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && !m.opts.interp;
   const renderWorker = (glMode === '1' || glMode === 'compare-worker') && workerOk, remoteGl = glMode === '1' && workerOk;
   if ((glMode === '1' || glMode === 'compare-worker') && !workerOk) log('gfx', 'render worker unavailable here (needs cross-origin isolation and shared memory): rendering in this thread');
