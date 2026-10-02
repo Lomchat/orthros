@@ -119,6 +119,20 @@ test('profile seed server: offered once enough distinct sessions reported identi
   });
 });
 
+test('profile seed server: behind a proxy, sessions from one client address count once toward the quorum', async () => {
+  await withServer(async (start) => {
+    const s = await start();
+    const opts = [['AppData/G/Options.ini', 'Detail = High']];
+    const from = (ip, sid) => fetch(url(s, '/api/profile-seed/g'), { method: 'POST', headers: { 'X-Forwarded-For': ip }, body: JSON.stringify({ lang: 'en', session: sid, files: opts.map(([p, t]) => ({ path: p, data: toBase64(bytes(t)) })) }) });
+    assert.equal((await from('203.0.113.7', 'x1')).status, 204);
+    assert.equal((await from('203.0.113.7, 10.0.0.1', 'x2')).status, 204); // (made-up session ids, one client)
+    assert.deepEqual(await seedOf(s, 'g'), []);
+    await from('198.51.100.9', 'y1'); // (a second client)
+    assert.deepEqual(await seedOf(s, 'g'), opts);
+    s.close();
+  });
+});
+
 test('profile seed server: bounded set count, quorum option', async () => {
   await withServer(async (start, learn) => {
     const s = await start();

@@ -18,8 +18,10 @@ profile (`C:\Users\Player`), so every new player paid it.
   least a minute: not a launch that failed), it is posted to `POST /api/profile-seed/<manifest>` with the game
   language and the session id.
 - **Consensus.** The server keeps, per manifest and game language, the distinct sets reported (identified by
-  content) with the sessions that reported each. A set is offered only once `--profile-seed-quorum` distinct sessions
-  (default 2) reported it identical — the most reported one wins. Identical files from independent sessions are the
+  content) with the sessions that reported each. A set is offered only once `--profile-seed-quorum` distinct reporters
+  (default 2) reported it identical — the most reported one wins. A reporter is a client address (behind the reverse
+  proxy the first `X-Forwarded-For` hop, kept hashed): one client cannot make up the quorum with invented session
+  ids; on a loopback connection without a proxy header (harness, local server) it is the session id. Identical files from independent sessions are the
   game's defaults, not one player's data. Bounded: 16 sets per manifest (least recently reported out), 32 session
   ids per set. Stored in `<learn dir>/profileseed-<manifest>.json`; a server without this feature ignores the file,
   and the page asks for it only when `/api/config` says `profileSeed: true` (old pages and servers keep working).

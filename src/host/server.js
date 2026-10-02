@@ -335,8 +335,19 @@ export function createServer(opts = {}) {
     seedsTimer.unref?.();
   };
   const seedLang = (l) => (typeof l === 'string' && /^[A-Za-z-]{0,16}$/.test(l) ? l.toLowerCase() : null);
-  /** a first session's report: { lang, session, files: [{ path, data (base64) }] } — false when refused */
-  const learnSeed = (name, rec) => {
+  /**
+   * Who reported a set, for the quorum: the client's address (behind the reverse proxy, the first X-Forwarded-For hop;
+   * hashed, not stored as such), so that one client cannot make up the quorum with invented session ids; on a loopback
+   * connection without a proxy header (the harness, a local server: one machine for every session) the session id.
+   */
+  const seedReporter = (req, sid) => {
+    const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+    const addr = fwd || String(req.socket.remoteAddress ?? '');
+    if (!fwd && /^(127\.|::1$|::ffff:127\.)/.test(addr)) return 's:' + sid;
+    return 'a:' + seedKey([{ path: addr, data: new Uint8Array(0) }]);
+  };
+  /** a first session's report: { lang, session, files: [{ path, data (base64) }] } from `reporter` — false when refused */
+  const learnSeed = (name, rec, reporter) => {
     const lang = seedLang(rec?.lang ?? ''), sid = rec?.session;
     if (lang === null || typeof sid !== 'string' || !sid || sid.length > 40 || !Array.isArray(rec.files) || rec.files.length > SEED_LIMITS.files) return false;
     const files = [];
@@ -349,7 +360,8 @@ export function createServer(opts = {}) {
       if (L.sets.length >= SEED_SETS_MAX) L.sets.splice(L.sets.reduce((o, s, i) => (s.at < L.sets[o].at ? i : o), 0), 1);
       L.sets.push(set = { lang, key, files: sel.map((f) => [f.path, toBase64(f.data)]), sessions: [], at: 0 });
     }
-    if (!set.sessions.includes(sid) && set.sessions.length < SEED_SESSIONS_MAX) set.sessions.push(sid);
+    const who = reporter ?? 's:' + sid;
+    if (!set.sessions.includes(who) && set.sessions.length < SEED_SESSIONS_MAX) set.sessions.push(who);
     set.at = Date.now();
     seedsChanged(name);
     return true;
@@ -509,7 +521,7 @@ export function createServer(opts = {}) {
             if (size > 512 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
             if (man.profileSeed === false) return send(res, 204, '');
-            send(res, learnSeed(m[1], rec) ? 204 : 400, '');
+            send(res, learnSeed(m[1], rec, seedReporter(req, rec?.session)) ? 204 : 400, '');
           });
           return;
         }
