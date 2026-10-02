@@ -68,7 +68,7 @@ export function registerDirectDraw(api, vm) {
         const size = Math.min(mem.read32(p) || 380, 380);
         mem.fill(p + 4, size - 4, 0);
         mem.write32(p + 4, 0x1 | 0x40 | 0x200 | 0x04000000); // DDCAPS_3D | BLT | BLTSTRETCH | BLTCOLORFILL
-        mem.write32(p + 8, 0x80000 | 0x20000); // DDCAPS2_WIDESURFACES | DDCAPS2_COPYFOURCC
+        mem.write32(p + 8, 0x80000 | 0x20000); // DDCAPS2_CANRENDERWINDOWED | DDCAPS2_PRIMARYGAMMA
         mem.write32(p + 56, 0x400 | 0x200 | 0x100); // dwZBufferBitDepths: DDBD_16 | DDBD_24 | DDBD_32
         if (p === c.arg(1)) { mem.write32(p + 60, VIDEO_MEMORY); mem.write32(p + 64, VIDEO_MEMORY); }
       }
