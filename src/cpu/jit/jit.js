@@ -240,6 +240,9 @@ export class Jit {
     this.abOpts = over && Object.keys(over).length ? over : null;
     for (const r of this.regions) this.table.set(r.fnIdx, null); // (the old modules become garbage)
     this.clearTables();
+    // (the cold tier starts over too: an entry it had already asked of the background worker would otherwise be
+    // interpreted up to its limit and translated here, every switch adding translation work on this thread)
+    this.cold.clear(); this.coldQueue = [];
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
   }
