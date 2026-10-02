@@ -92,7 +92,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -303,7 +303,7 @@ export class Jit {
       if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
-    this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
+    this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback; this.stats.ifcvt += stats.ifcvt ?? 0;
     return region;
   }
 

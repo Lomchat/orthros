@@ -45,9 +45,13 @@ const L_F64D = 64, L_F64E = 65, L_F64G = 66, L_F64H = 67;
 const L_XS0 = 68;
 // f64 shadows of the low qword of the XMM registers (L_XD0+r), for scalar double-precision code (Emitter.xdValid)
 const L_XD0 = 76;
+// if-conversion (Emitter.emitIfcvt): L_IC the branch condition, L_IFS0+k the value of the k-th local the arms write
+// before them, L_IFR0+k its value after the taken arm (IFCVT_SLOTS: the registers and the lazy flag state)
+const L_IC = 84, IFCVT_SLOTS = 13, L_IFS0 = 85, L_IFR0 = L_IFS0 + IFCVT_SLOTS;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64)]; // indices 16..83
-if (LOCAL_TYPES.length !== L_XD0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32)]; // indices 16..110
+if (LOCAL_TYPES.length !== L_IFR0 + IFCVT_SLOTS - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -95,7 +99,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -333,6 +337,85 @@ function regionRetSites(blocks, byEip) {
     if (!l.length) sites[i] = null;
   }
   return sites;
+}
+
+// ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
+// mirror, or a diamond `jcc T ; x ; jmp M ; T: y ; M:`) whose instructions only compute registers and flags — and read
+// memory — is translated without the branch: both arms are computed and every local they write is selected on the
+// condition (a cmov per register and lazy flag value), then the code goes on at M. A data-dependent branch (comparisons
+// of the elements of an array being sorted or searched: about half of them mispredicted) then costs a few selects
+// instead of a pipeline flush. The arm not taken must have no effect: no stores, no exits, no interpreter fallbacks;
+// its loads read guest address 0 instead of theirs (Emitter.spec, loadMem) — an address of the arm not taken may be
+// anything (a null pointer the branch tests, an address beyond the guest memory, which would trap).
+// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only branches on
+// data are converted (ifcvtDataCond): flags set from a value read from memory other than the stack (or computed from
+// one) in the branch's block — not loop counters, nor a loop-invariant local on the stack (opts.ifcvt 'all': every
+// candidate, for tests).
+/** Instructions an if-converted arm may hold (their handlers write registers and the flag locals only, without exits). */
+const IFCVT_OPS = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'ADD', 'SUB', 'ADC', 'SBB', 'AND', 'OR', 'XOR', 'CMP', 'TEST', 'INC', 'DEC',
+  'NEG', 'NOT', 'SHL', 'SHR', 'SAR', 'SETCC', 'CMOVCC', 'XCHG', 'CBW', 'CWD', 'BSWAP', 'NOP'].map((n) => OP[n]));
+/** at most this many instructions per arm (a terminating JMP not counted) and in both arms */
+const IFCVT_ARM_MAX = 3, IFCVT_TOTAL_MAX = 4;
+/** The locals an arm instruction writes: its register destinations (L_REG+r) and, if it writes flags, the flag locals. */
+function ifcvtWrites(insn, out) {
+  const reg = (o) => { if (o && o.t === OT.REG) out.add(L_REG + (o.size === 1 && o.r >= 4 ? o.r - 4 : o.r)); };
+  const op = insn.op;
+  if (op !== OP.CMP && op !== OP.TEST) reg(insn.ops[0]);
+  if (op === OP.XCHG) reg(insn.ops[1]);
+  if (op === OP.CBW) out.add(L_REG);
+  if (op === OP.CWD) { out.add(L_REG + 2); if (insn.opsize === 2) out.add(L_REG); }
+  if (!FLAGS_NONE.has(op) && op !== OP.SETCC && op !== OP.CMOVCC && op !== OP.CBW && op !== OP.CWD && op !== OP.BSWAP) for (const l of op === OP.NEG ? [L_LZOP, L_LZRES, L_LZA] : [L_LZOP, L_LZRES, L_LZA, L_LZB]) out.add(l);
+  // (a condition read with the lazy state unknown may materialize it: EFLAGS and the lazy op written)
+  if (op === OP.SETCC || op === OP.CMOVCC || op === OP.ADC || op === OP.SBB || op === OP.INC || op === OP.DEC) for (const l of [L_EFLAGS, L_LZOP]) out.add(l);
+}
+/** Whether `insn` may be part of an if-converted arm. */
+function ifcvtInsnOk(insn) {
+  if (!IFCVT_OPS.has(insn.op) || !HANDLERS[insn.op] || insn.inlineApi || insn.rep || insn.lock) return false;
+  for (let i = 0; i < insn.ops.length; i++) {
+    const o = insn.ops[i];
+    if (o.t === OT.REG || o.t === OT.IMM) continue;
+    if (o.t === OT.MEM && (i > 0 || insn.op === OP.CMP || insn.op === OP.TEST)) continue; // (a load, or LEA's address)
+    return false; // a store, a segment register, an x87/MMX/XMM operand
+  }
+  if (insn.op === OP.XCHG && (insn.ops[0].t !== OT.REG || insn.ops[1].t !== OT.REG)) return false;
+  return true;
+}
+/**
+ * Block `X` as an if-converted arm: { block, body (its instructions but a final JMP), succ (where it goes on) }, or null
+ * when it does not qualify.
+ */
+function ifcvtArm(X) {
+  if (!X || X.decodeError) return null;
+  const last = X.insns[X.insns.length - 1];
+  let body, succ;
+  if (X.term === TERM_JMP && last.ops[0].t === OT.REL && last.opsize === 4) { body = X.insns.slice(0, -1); succ = last.ops[0].v; }
+  else if (X.term === TERM_NONE) { body = X.insns; succ = X.fallthrough; }
+  else return null;
+  if (body.length > IFCVT_ARM_MAX || !body.every(ifcvtInsnOk)) return null;
+  return { block: X, body, succ };
+}
+/** a memory operand read as data (not the stack, not LEA's address) */
+const dataMem = (insn, o) => o.t === OT.MEM && insn.op !== OP.LEA && !(o.base === 4 || o.base === 5) && !(o.base < 0 && o.index < 0);
+/**
+ * Whether block A's final branch tests data (see the if-conversion comment above): the flags it reads were last written
+ * in A by an instruction reading memory other than the stack and absolute variables, or a register holding such a value
+ * (data flows through the registers written in A).
+ */
+function ifcvtDataCond(A) {
+  let regs = 0, flags = false;
+  for (let i = 0; i < A.insns.length - 1; i++) {
+    const insn = A.insns[i], op = insn.op;
+    let reads = false;
+    insn.ops.forEach((o, k) => {
+      if (dataMem(insn, o)) reads = true;
+      else if (o.t === OT.REG && (k > 0 || !(op === OP.MOV || op === OP.MOVZX || op === OP.MOVSX || op === OP.LEA)) && (regs & (1 << (o.size === 1 && o.r >= 4 ? o.r - 4 : o.r)))) reads = true;
+      else if (o.t === OT.MEM && op === OP.LEA && ((o.base >= 0 && (regs & (1 << o.base))) || (o.index >= 0 && (regs & (1 << o.index))))) reads = true;
+    });
+    const d = insn.ops[0];
+    if (d && d.t === OT.REG && op !== OP.CMP && op !== OP.TEST) { const r = d.size === 1 && d.r >= 4 ? d.r - 4 : d.r; if (reads) regs |= 1 << r; else if (d.size === 4) regs &= ~(1 << r); }
+    if (!LZ_KEEP.has(op)) flags = reads;
+  }
+  return flags;
 }
 
 /** Instructions that load the x87 control word (precision / rounding control). */
@@ -606,12 +689,14 @@ class Emitter {
     this.fcmp = null;
     this.smc = opts.smc !== false;
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
+    this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
+    this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 precision/rounding control (cw & 0xf00) the region is specialized for (null: tested at run time)
     this.fpcAssume = opts.fpcAssume ?? null;
-    this.stats = { native: 0, fallback: 0, x87Planned: 0 }; // (x87Planned: blocks entered with a planned x87 shift)
+    this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
     this.stShift = 0;
@@ -1151,6 +1236,7 @@ class Emitter {
   /** address on stack -> value */
   loadMem(size) {
     const c = this.c;
+    if (this.spec) { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); } // (an if-converted arm: see emitIfcvt)
     if (size === 4) c.i32load(0, 0); else if (size === 2) c.i32load16u(0); else c.i32load8u(0);
   }
   /** (addr, value) on stack -> store */
@@ -1536,7 +1622,12 @@ class Emitter {
     for (let i = b.insns.length - 1, l = b.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
-    for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
+    const ifc = this.ifcvt && b.term === TERM_JCC ? this.ifcvtPlan(b) : null;
+    for (const insn of b.insns) {
+      this.insnIdx++;
+      if (ifc && this.insnIdx === b.insns.length) { this.emitIfcvt(insn, b, ifc); this.c.site = -1; return; } // (it jumps to the merge)
+      this.emitInsn(insn, b);
+    }
     this.c.site = -1; // (call statistics: block-end code)
     // block end
     const n = b.insns.length;
@@ -1560,6 +1651,72 @@ class Emitter {
       }
       default: return; // JMP/RET/INDIRECT/EXIT emitted their own exits
     }
+  }
+
+  /**
+   * If-conversion of block A's final JCC (see IFCVT_OPS): { taken, not (arms, null when empty), merge, writes (the locals
+   * the arms write) }, or null. The arms are blocks of the region (still translated as such: they stay entry points of
+   * the region, for other paths into them) going on at the same merge address.
+   */
+  ifcvtPlan(A) {
+    const last = A.insns[A.insns.length - 1];
+    if (last.op !== OP.JCC || last.ops[0].t !== OT.REL) return null;
+    if (this.ifcvt !== 'all' && !ifcvtDataCond(A)) return null;
+    const tgt = last.ops[0].v >>> 0, ft = A.fallthrough >>> 0;
+    if (tgt === ft) return null;
+    const armOf = (a) => { const X = this.byEip.get(a); return X && X !== A ? ifcvtArm(X) : null; };
+    const aT = armOf(tgt), aN = armOf(ft);
+    let plan = null;
+    if (aN && aN.succ >>> 0 === tgt) plan = { taken: null, not: aN, merge: tgt };
+    else if (aT && aT.succ >>> 0 === ft) plan = { taken: aT, not: null, merge: ft };
+    else if (aT && aN && aT.succ >>> 0 === aN.succ >>> 0 && aT.block !== aN.block) plan = { taken: aT, not: aN, merge: aT.succ >>> 0 };
+    if (!plan || (plan.taken?.body.length ?? 0) + (plan.not?.body.length ?? 0) > IFCVT_TOTAL_MAX) return null;
+    const w = new Set();
+    for (const a of [plan.taken, plan.not]) if (a) for (const insn of a.body) ifcvtWrites(insn, w);
+    plan.writes = [...w].sort((x, y) => x - y);
+    if (plan.writes.length > IFCVT_SLOTS) return null;
+    return plan;
+  }
+  /**
+   * Block A's final JCC, if-converted (plan: ifcvtPlan): the condition into L_IC, each arm emitted in turn from the same
+   * state (the locals it writes saved before and restored after the first one), its loads made harmless when it is not
+   * the path taken (spec: loadMem), then every written local selected on the condition, the instruction budget charged
+   * for the path taken, and a jump to the merge block. The static lazy flag state after the merge is the arms' common
+   * one, or unknown (the locals hold it either way).
+   */
+  emitIfcvt(insn, A, plan) {
+    const c = this.c;
+    this.curOp = insn.op; c.site = insn.op;
+    this.stats.ifcvt++;
+    this.pushCond(insn.cc); c.set(L_IC);
+    const lz0 = this.lz, W = plan.writes, nA = A.insns.length;
+    const emitArm = (arm, spec) => {
+      const X = arm.block, saved = [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp];
+      const live = (this.flagsAfter = new Uint8Array(X.insns.length));
+      for (let i = X.insns.length - 1, l = X.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(X.insns[i], l); }
+      this.lz = lz0; this.lzPred = -1; this.lzPredUntil = -1; this.fcmp = null; this.insnIdx = 0;
+      this.spec = spec;
+      if (this.counterBase >= 0) { const a = this.counterBase + 4 * X.index; c.i32(0).i32(0).i32load(a).get(L_IC); if (spec === 2) c.eqz(); c.add().i32store(a); }
+      for (const i of arm.body) { this.insnIdx++; this.emitInsn(i, X); }
+      this.spec = 0;
+      const lz = this.lz;
+      [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp] = saved;
+      return lz;
+    };
+    let lzT = lz0, lzN = lz0;
+    if (plan.taken) {
+      W.forEach((l, k) => c.get(l).set(L_IFS0 + k));
+      lzT = emitArm(plan.taken, 1);
+      W.forEach((l, k) => c.get(l).set(L_IFR0 + k).get(L_IFS0 + k).set(l)); // (its results kept, the state before it back)
+    } else W.forEach((l, k) => c.get(l).set(L_IFR0 + k)); // (the taken path changes nothing)
+    if (plan.not) lzN = emitArm(plan.not, 2);
+    W.forEach((l, k) => c.get(L_IFR0 + k).get(l).get(L_IC).select().set(l));
+    const same = (a, b) => (a === null && b === null) || (a !== null && b !== null && a.kind === b.kind && a.sz === b.sz && a.kind >= 0);
+    this.lz = same(lzT, lzN) ? lzT : null;
+    const nT = plan.taken ? plan.taken.block.insns.length : 0, nN = plan.not ? plan.not.block.insns.length : 0;
+    if (nT !== nN) c.get(L_ICOUNT).i32(nT).i32(nN).get(L_IC).select().sub().set(L_ICOUNT);
+    this.insnIdx = nA;
+    this.jumpTo(plan.merge, nA + (nT === nN ? nT : 0));
   }
 
   emitInsn(insn, b) {
