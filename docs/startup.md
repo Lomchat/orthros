@@ -51,3 +51,37 @@ and reuses them at later launches:
 - Append-only records (~6 KiB per region: 27 000 BFME2 regions take ~165 MiB), a cut tail dropped at load, at most 256 MiB per game; only an index stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is
   opened for exclusive synchronous access: another tab runs without it).
 - **Off:** `?codecache=0`; harness runs use it only with a persistent browser profile (`--opfs`), `--code-cache 0`.
+
+## Measurements (2026-10-02, headless Chromium, `--gl-discard`, shared 48-core server under load)
+
+Scenarios `tools/scenarios/{bfme2,rotwk,bfme}-first.txt` (the settings a first launch writes), one private server for
+all runs (`--server-port`), A/B runs alternated or run side by side. "Menu" = the harness's `mark menu` (the menu
+frames detected, intro videos skipped by Escape), seconds from the page start.
+
+**Shared first-launch profile** (first launch, empty profile; `--memprefetch`; A `--profile-seed 0`, B seeded):
+
+| game | first frame A → B | menu A | menu B | map load A / B | frames > 100 ms, first minute of play A / B |
+|---|---|---|---|---|---|
+| BFME2 | 103-105 → 32-34 s | 129, ~121 (1) | 59, 57 | 17 / 15, 14 s | 0 / 0, 0 |
+| RotWK 2.02 | 114-133 → 34-36 s | 139, 157 | 59, 61 | (2) / 16, 14 s | (2) / 2, 2 |
+| BFME1 | 111-118 → 33-35 s | 142, 135 | 60, 58 | 23, 32 / 22, 19 s | 0, 0 / 0, 0 |
+
+(1) that run's first-launch benchmark chose 1024x768 3D settings (load-dependent), menu taken from its draws.
+(2) the unseeded RotWK runs chose other settings than the scenario's clicks expect; their menu time stands.
+Vice City: menu at 23 s on a first launch, nothing written to the profile before the first input: nothing shared.
+The learned files: BFME2/RotWK/BFME1 `Options.ini` (detail level and resolution the benchmark chose, `TimesInGame =
+1`), identical across sessions under the same conditions; a set chosen under another load (RotWK at 1024x768
+"Medium") stayed below the quorum — the consensus rule at work.
+
+**Translated code cache** (later launch: copies of one persistent browser profile, `--opfs`; A `--code-cache 0`):
+
+| game | background worker A → B | translating A → B | learned code installed by A → B | menu A / B | frames > 100 ms, first minute A / B |
+|---|---|---|---|---|---|
+| BFME2 | 14.1, 14.5 → 6.2, 6.2 s | 9.3, 9.6 → 0.17, 0.20 s | t = 16.1, 16.4 → 10.2, 10.5 s | 51, 51 / 50, 50 | 0, 0 / 0, 0 |
+| BFME1 | 13.2, 13.1 → 5.1, 5.1 s | 8.7, 8.7 → 0.11, 0.17 s | t = 15.0, 15.1 → 8.8, 8.8 s | 54, 55 / 52, 52 | 0, 0 / 0, 0 |
+| RotWK 2.02 | 17.8, 15.0 → 9.7, 8.9 s | 11.7, 9.9 → 3.0, 2.7 s | t = 19.7, 16.9 → 13.2, 12.4 s | 55, 52 / 54, 51 | 3, 4 / 3, 4 |
+
+~99 % of the lookups hit (the rest: regions new to this session). The time to the menu and the first minute's
+hitches do not move on this machine: the background translation runs on a core of its own and was already finished
+before the game needed it; the saving is ~8-9 s of a core at each launch (what a client with few cores shares with
+the game, the GPU process and the DXT helpers). Cache file: ~180-240 MiB per game, read (index) in ~40-650 ms.
