@@ -635,7 +635,8 @@ really changed (program signatures when effects switch shaders, blend and depth 
 
 ### 8.3 Browser measurements after the changes
 
-The code of this section, alternated runs per game, play phases as in 8.1. **CPU only** (`--gl-discard --timescale
+The code of this section up to the replay's fast paths (the raster watch and the thunk table came later and are
+measured in 8.2), alternated runs per game, play phases as in 8.1. **CPU only** (`--gl-discard --timescale
 1.5`, cap 45 fps). `D3D work` = `api` + `draw` per frame (the Direct3D layer, the drained state setters, the backend or
 the recording); µs per draw = `draw` / draws:
 
