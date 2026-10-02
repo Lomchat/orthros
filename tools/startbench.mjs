@@ -17,6 +17,7 @@ import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { decode, fmtInsn } from '../src/cpu/decoder.js';
 import { listRegion } from '../src/cpu/jit/listing.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
+import { NodeScenario } from './node-scenario.mjs';
 import { acct, C as ACCT, catsObject } from '../src/core/frame-acct.js';
 
 const args = process.argv.slice(2);
@@ -101,9 +102,18 @@ const report = (why) => {
 // --api-hist: the API calls dispatched to JavaScript (the WASM fast paths not counted), most frequent first, with the report
 const apiHist = args.includes('--api-hist') ? new Map() : null;
 const dispatch = vm.dispatchThunk.bind(vm);
+let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
+// --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
+// event (--phases <file>: the phase results as JSON)
+const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l)) : null;
 vm.dispatchThunk = (t, i) => {
   const th = vm.api.thunk(i);
+  if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
   if (apiHist && th) apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1);
+  if (scenario) {
+    scenario.tick();
+    if (scenario.finished) { if (opt('phases')) fs.writeFileSync(opt('phases'), JSON.stringify(scenario.results, null, 1)); report('scenario end'); process.exit(0); }
+  }
   if (th?.name === untilApi) { report(`${untilApi} reached`); if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); }
   if (performance.now() - t0 > limit * 1000) { report('time limit'); process.exit(1); }
   // --window <a>:<b> (millions of guest instructions): the CPU time per guest instruction between the two points only
@@ -122,7 +132,7 @@ vm.dispatchThunk = (t, i) => {
   if (untilInsns && vm.guestInsns >= untilInsns) { report(`${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); process.exit(0); }
   return dispatch(t, i);
 };
-vm.host.waitEvent = (ms) => { const p = acct.enter(ACCT.wait); try { return clock.sleep(Math.min(ms, 50)); } finally { acct.leave(p); } }; // (pacing: not guest time)
+vm.host.waitEvent = (ms) => { scenario?.tick(); const p = acct.enter(ACCT.wait); try { return clock.sleep(Math.min(ms, scenario ? 5 : 50)); } finally { acct.leave(p); } }; // (pacing: not guest time)
 // --stop-on <text>: stop once a log message of any kind contains that text (as the harness's --stop-on), e.g. the end of
 // a game's first-launch computation
 const stopOn = opt('stop-on', null);

@@ -347,10 +347,9 @@ function regionRetSites(blocks, byEip) {
 // instead of a pipeline flush. The arm not taken must have no effect: no stores, no exits, no interpreter fallbacks;
 // its loads read guest address 0 instead of theirs (Emitter.spec, loadMem) — an address of the arm not taken may be
 // anything (a null pointer the branch tests, an address beyond the guest memory, which would trap).
-// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only branches on
-// data are converted (ifcvtDataCond): flags set from a value read from memory other than the stack (or computed from
-// one) in the branch's block — not loop counters, nor a loop-invariant local on the stack (opts.ifcvt 'all': every
-// candidate, for tests).
+// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only comparisons of
+// data inside loops are converted (ifcvtDataCond) — not loop counters, a loop-invariant local on the stack, nor tests of
+// a value against a constant (opts.ifcvt 'all': every candidate, for tests).
 /** Instructions an if-converted arm may hold (their handlers write registers and the flag locals only, without exits). */
 const IFCVT_OPS = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'ADD', 'SUB', 'ADC', 'SBB', 'AND', 'OR', 'XOR', 'CMP', 'TEST', 'INC', 'DEC',
   'NEG', 'NOT', 'SHL', 'SHR', 'SAR', 'SETCC', 'CMOVCC', 'XCHG', 'CBW', 'CWD', 'BSWAP', 'NOP'].map((n) => OP[n]));
@@ -397,12 +396,15 @@ function ifcvtArm(X) {
 /** a memory operand read as data (not the stack, not LEA's address) */
 const dataMem = (insn, o) => o.t === OT.MEM && insn.op !== OP.LEA && !(o.base === 4 || o.base === 5) && !(o.base < 0 && o.index < 0);
 /**
- * Whether block A's final branch tests data (see the if-conversion comment above): the flags it reads were last written
- * in A by an instruction reading memory other than the stack and absolute variables, or a register holding such a value
- * (data flows through the registers written in A).
+ * Whether block A's final branch compares data (see the if-conversion comment above): the flags it reads were last
+ * written in A by a CMP / SUB of two values (no immediate) reading memory other than the stack and absolute variables, or
+ * a register holding such a value (data flows through the registers written in A) — the comparisons of a sort or a
+ * search. A test of a value against a constant (an object's state, a null pointer) is usually predictable, and its
+ * conversion makes the code wait for the load the branch would have speculated past (measured in play: guest time per
+ * instruction +17% when every data test was converted).
  */
 function ifcvtDataCond(A) {
-  let regs = 0, flags = false;
+  let regs = 0, flags = false, cmp2 = false;
   for (let i = 0; i < A.insns.length - 1; i++) {
     const insn = A.insns[i], op = insn.op;
     let reads = false;
@@ -413,9 +415,9 @@ function ifcvtDataCond(A) {
     });
     const d = insn.ops[0];
     if (d && d.t === OT.REG && op !== OP.CMP && op !== OP.TEST) { const r = d.size === 1 && d.r >= 4 ? d.r - 4 : d.r; if (reads) regs |= 1 << r; else if (d.size === 4) regs &= ~(1 << r); }
-    if (!LZ_KEEP.has(op)) flags = reads;
+    if (!LZ_KEEP.has(op)) { flags = reads; cmp2 = (op === OP.CMP || op === OP.SUB) && insn.ops.every((o) => o.t === OT.REG || o.t === OT.MEM); }
   }
-  return flags;
+  return flags && cmp2;
 }
 
 /** Instructions that load the x87 control word (precision / rounding control). */
@@ -1682,7 +1684,7 @@ class Emitter {
   ifcvtPlan(A) {
     const last = A.insns[A.insns.length - 1];
     if (last.op !== OP.JCC || last.ops[0].t !== OT.REL) return null;
-    if (this.ifcvt !== 'all' && !ifcvtDataCond(A)) return null;
+    if (this.ifcvt !== 'all' && (!ifcvtDataCond(A) || !this.pathOf[A.index].some((u) => u.loop))) return null; // (data compares in loops)
     const tgt = last.ops[0].v >>> 0, ft = A.fallthrough >>> 0;
     if (tgt === ft) return null;
     const armOf = (a) => { const X = this.byEip.get(a); return X && X !== A ? ifcvtArm(X) : null; };

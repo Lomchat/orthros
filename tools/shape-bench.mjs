@@ -6,7 +6,7 @@
 // (with --vs: the two variants alternated, each kernel's ratio printed; --trace <kernel>: its time per repetition in one
 // JIT — a large region runs in V8's baseline tier until its optimized code is ready)
 import { GuestMemory } from '../src/cpu/memory.js';
-import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
+import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 
@@ -96,6 +96,9 @@ function coldKernel(stores) {
     regs: { esi: A, edi: B }, reps: 4,
   };
 }
+// the x87 kernel under 24-bit precision (what Direct3D leaves the FPU in) and 53-bit precision
+KERNELS.x87p24 = { ...KERNELS.x87, cw: 0x007f };
+KERNELS.x87p53 = { ...KERNELS.x87, cw: 0x027f };
 KERNELS.coldst = coldKernel(true);
 KERNELS.coldalu = coldKernel(false);
 // abs with one cold block of n instructions: stores (mov), read-modify-writes (add [m], dl) or ALU only
@@ -114,6 +117,7 @@ for (const n of [50, 150, 350]) for (const k of ['mov', 'rmw', 'alu']) KERNELS[`
 function runKernel(k, opts, reps) {
   const mem = new GuestMemory(), cpu = new CpuState(mem, THREAD_STATES_BASE);
   cpu.reset(); mem.writeBytes(CODE, k.code); seed = 12345; k.setup(mem);
+  if (k.cw !== undefined) mem.write16(cpu.base + ST.FPU_CW, k.cw);
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true, ...opts }); jit.cpu = cpu;
   const end = CODE + k.code.indexOf(0xf4);
   let best = Infinity, insns = 0;
