@@ -320,9 +320,11 @@ let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn 
  * coming back later than planned is `late` (timer clamping, garbage collection, the event loop's other tasks).
  */
 const gap = { cat: -1, planned: 0, at: 0, acc0: 0 };
-/** presented frames the GPU process may still have queued before the guest is held back, the poll interval then (ms) */
+/** the JIT's cold tier (Jit.runCold) with a background translator */
 const COLD_TIER_DEFAULT = false;
-const GPU_FRAMES_MAX = 2, GPU_HOLD_POLL_MS = 2, GPU_HOLD = Object.freeze({ state: 'gpu' });
+/** how long ago (ms) the oldest frame the GPU process has not finished may have been presented before the guest is held
+ *  back; the poll interval then (ms) */
+const GPU_LAG_MAX_MS = 300, GPU_HOLD_POLL_MS = 2, GPU_HOLD = Object.freeze({ state: 'gpu' });
 let gpuHolds = 0;
 function gapBegin(r) {
   let cat = ACCT.late, planned = 0;
@@ -352,14 +354,14 @@ function pump() {
   // (debugging, --dbg ORTHROS_BG_FIRST=1: the guest waits until the learned regions of the loaded modules are installed —
   // the background translation as a very fast machine has it)
   if (globalThis.ORTHROS_BG_FIRST && bgTranslator && regionQueue && vm?.jit && (regionPos < regionQueue.length || vm.jit.bgPending())) { schedulePump(5); return; }
-  // the GPU process more than a few presented frames behind: no guest code until it catches up (the wait is the GPU's,
-  // charged to draws as when a GL call blocks). Behind a deep queue — a software rasterizer — every synchronous GL call
-  // (a program link at a draw, a framebuffer check, a readback) waited for all of it: frames of seconds.
-  // (?dbg=ORTHROS_GPU_FRAMES=N: the limit, 0 none)
-  const gpuMax = globalThis.ORTHROS_GPU_FRAMES ?? GPU_FRAMES_MAX;
-  if (gpuMax > 0 && host.gfx?.gpuFramesBehind) {
+  // the GPU process too far behind (its oldest unfinished frame presented more than GPU_LAG_MAX_MS ago): no guest code
+  // until it catches up (the wait is the GPU's, charged to draws as when a GL call blocks). Behind a deep queue — a
+  // software rasterizer — every synchronous GL call (a program link at a draw, a readback) waited for all of it:
+  // frames of seconds. (?dbg=ORTHROS_GPU_LAG_MS=N: the limit, 0 none)
+  const lagMax = globalThis.ORTHROS_GPU_LAG_MS ?? GPU_LAG_MAX_MS;
+  if (lagMax > 0 && host.gfx?.gpuLagMs) {
     acct.enter(ACCT.draw);
-    if (host.gfx.gpuFramesBehind() > gpuMax) {
+    if (host.gfx.gpuLagMs(performance.now()) > lagMax) {
       gpuHolds++;
       acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.draw);
       pumpEndAt = 0; lastPumpReturn = 'gpu';

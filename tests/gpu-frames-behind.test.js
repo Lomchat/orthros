@@ -1,5 +1,6 @@
-// The GPU process's backlog seen by the worker: every present places a fence, gpuFramesBehind() counts the presented
-// frames whose fence has not signaled yet (and frees the signaled ones) — the worker holds the guest back above a few.
+// The GPU process's backlog seen by the worker: every present places a fence, gpuLagMs() is the age of the oldest
+// presented frame whose fence has not signaled yet (the signaled ones are freed) — the worker holds the guest back
+// above a limit.
 // A render target's framebuffer is not checked with checkFramebufferStatus (a synchronous round trip that waited for
 // the whole GPU queue) outside --gl-validate.
 import { test } from 'node:test';
@@ -16,7 +17,7 @@ const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = (name) => !fs.existsSync(PE_DIR + name) && `build/pe/${name} missing (make pe-tests)`;
 
 for (const exe of ['dx.exe', 'dx9.exe']) {
-  test(`${exe}: a fence per present, gpuFramesBehind counts the unsignaled ones; no framebuffer status query`, { skip: skip(exe) }, () => {
+  test(`${exe}: a fence per present, gpuLagMs is the age of the oldest unsignaled one; no framebuffer status query`, { skip: skip(exe) }, () => {
     const G = fakeGl();
     let signaled = false;
     const gl = new Proxy(G.gl, { get: (t, k) => (k === 'getSyncParameter' ? (s, p) => { t.getSyncParameter(s, p); return signaled ? t.SIGNALED : t.UNSIGNALED; } : t[k]) });
@@ -32,11 +33,15 @@ for (const exe of ['dx.exe', 'dx9.exe']) {
     assert.ok(presents >= 1, 'frames presented');
     assert.equal(n('fenceSync'), presents, 'one fence per present (no program prewarm pending)');
     assert.equal(n('checkFramebufferStatus'), 0, 'no synchronous framebuffer check');
-    const queued = Math.min(presents, 16);
-    assert.equal(host.gfx.gpuFramesBehind(), queued, 'unsignaled frames counted (the queue keeps the last 16)');
+    const queued = Math.min(presents, 16), q = host.gfx.programCache.frameFences;
+    assert.equal(q.length, queued, 'unsignaled frames kept (the last 16)');
+    const now = performance.now();
+    assert.equal(host.gfx.gpuLagMs(now), now - q[0].t, 'the oldest unfinished frame\'s age');
+    assert.ok(q.every((f, i) => i === 0 || f.t >= q[i - 1].t));
     assert.equal(n('deleteSync'), presents - queued, 'fences beyond 16 deleted');
     signaled = true;
-    assert.equal(host.gfx.gpuFramesBehind(), 0, 'signaled frames leave the queue');
+    assert.equal(host.gfx.gpuLagMs(now), 0, 'caught up: signaled frames leave the queue');
+    assert.equal(q.length, 0);
     assert.equal(n('deleteSync'), presents, 'and their fences are deleted');
   });
 }

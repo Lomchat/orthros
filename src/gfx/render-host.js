@@ -32,7 +32,7 @@ export function createInlineGfx(canvas, log, dump, { check = false, beforePresen
     prewarm() { inner.prewarm(); },
     afterSlice() { inner.afterSlice(); },
     beforeSlice(ms) { inner.beforeSlice(ms); },
-    gpuFramesBehind() { return inner.gpuFramesBehind(); },
+    gpuLagMs(now) { return inner.gpuLagMs(now); },
     createDevice(dev) {
       replayer.mem ??= dev.proc.mem;
       const rec = new Recorder(link, dev);

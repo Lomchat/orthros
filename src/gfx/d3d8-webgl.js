@@ -472,9 +472,9 @@ export class WebGLDevice {
       for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
-    // (a fence per presented frame: the worker holds the guest back while too many frames are still queued for the GPU
-    // process — see createWebGLBackend's gpuFramesBehind)
-    if (this.pc?.frameFences) { const q = this.pc.frameFences; q.push(gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)); if (q.length > 16) gl.deleteSync(q.shift()); }
+    // (a fence per presented frame, with its time: the worker holds the guest back while the GPU process is too far
+    // behind — see createWebGLBackend's gpuLagMs)
+    if (this.pc?.frameFences) { const q = this.pc.frameFences; q.push({ sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), t: performance.now() }); if (q.length > 16) gl.deleteSync(q.shift().sync); }
     gl.flush(); this.frame++;
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
@@ -1599,14 +1599,15 @@ export function createWebGLBackend(canvas, log, dump) {
       programCache.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
     },
     /**
-     * Presented frames the GPU process has not finished yet (their fences, a query that does not wait: the status only
-     * changes between tasks). The worker runs no guest code while more than a few are queued: behind a deep queue (a
-     * software rasterizer) every synchronous GL call — a program link at a draw, a readback — waited for all of it, seconds.
+     * How far the GPU process is behind: the age (ms) of the oldest presented frame it has not finished (its fence, a
+     * query that does not wait: the status only changes between tasks), 0 when it has caught up. The worker runs no
+     * guest code while it is too far behind: behind a deep queue — a software rasterizer — every synchronous GL call (a
+     * program link at a draw, a readback) waited for all of it, frames of seconds.
      */
-    gpuFramesBehind() {
+    gpuLagMs(now) {
       const q = programCache.frameFences;
-      while (q.length && gl.getSyncParameter(q[0], gl.SYNC_STATUS) === gl.SIGNALED) gl.deleteSync(q.shift());
-      return q.length;
+      while (q.length && gl.getSyncParameter(q[0].sync, gl.SYNC_STATUS) === gl.SIGNALED) gl.deleteSync(q.shift().sync);
+      return q.length ? now - q[0].t : 0;
     },
     beforeSlice(budgetMs) {
       const f = programCache.fence;
