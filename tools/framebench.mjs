@@ -8,7 +8,8 @@
 // workloads that neither the shared machine's load on a browser's GPU process nor SwiftShader disturb.
 //   node tools/framebench.mjs <manifest id | manifest.json> [--games-dir /srv/orthros/data_games] [--profile <dir to copy>]
 //     [--gfx backend|recorder|none] [--min-draws 100] [--warm 300] [--frames 600] [--limit 900]
-//     [--input "3:key:27;10:click:320,192" (seconds after the first frame: a key's virtual-key code, a left click)]
+//     [--input "3:key:27;10:click:320,192;@12:click:10,10" (seconds after the first frame, or with @ after the start: a
+//     key's virtual-key code, a left click)]
 //     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,7 +32,12 @@ const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWi
 if (!target) { console.error('usage: node tools/framebench.mjs <manifest id | manifest.json> [--gfx backend|recorder|none] ...'); process.exit(2); }
 const gfxKind = opt('gfx', 'backend'), minDraws = Number(opt('min-draws', 100)), warm = Number(opt('warm', 300)), frames = Number(opt('frames', 600)), limit = Number(opt('limit', 900));
 const VK_SCAN = { 13: 0x1c, 27: 1, 32: 0x39 };
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, a = ''] = e.split(':'); return { t: Number(t), kind, a: a.split(',').map(Number) }; });
+const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, a = ''] = e.split(':'); return { t: Number(t.replace('@', '')), abs: t.startsWith('@'), kind, a: a.split(',').map(Number) }; });
+/** scripted input, as the harness gives it (a key held ~120 ms, a click held ~100 ms), `at` ms on the guest clock */
+const schedule = ({ kind, a }, at) => {
+  if (kind === 'key') { host.at(at, { type: 'keydown', vk: a[0], scan: VK_SCAN[a[0]], extended: false, repeat: 0 }); host.at(at + 120, { type: 'keyup', vk: a[0], scan: VK_SCAN[a[0]], extended: false }); }
+  else if (kind === 'click') { host.at(at, { type: 'mousemove', x: a[0], y: a[1] }); host.at(at + 1, { type: 'mousedown', button: 0, x: a[0], y: a[1] }); host.at(at + 100, { type: 'mouseup', button: 0, x: a[0], y: a[1] }); }
+};
 let manifest, dir;
 if (target.endsWith('.json') || fs.existsSync(target)) ({ manifest, dir } = loadManifest(target));
 else { manifest = loadGameCatalog(opt('games-dir', '/srv/orthros/data_games')).get(target); if (!manifest) throw new Error(`no manifest ${target}`); dir = manifest.folder; }
@@ -48,7 +54,7 @@ else if (gfxKind === 'recorder') {
   link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
   host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
 }
-const vm = new Vm({ vfs, clock, host, logKinds: ['crash'] });
+const vm = new Vm({ vfs, clock, host, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
 // (every guest thread waits: the worker would sleep — charged to `sleep`, as there)
@@ -73,19 +79,16 @@ host.frameHook = (dev) => {
   const cats = acct.frame(), now = performance.now();
   if (firstFrameAt === null) {
     firstFrameAt = now;
-    // (scripted input, as the harness gives it: a key held ~120 ms, a click held ~100 ms)
-    for (const { t, kind, a } of inputs) {
-      const at = clock.now() + t * 1000;
-      if (kind === 'key') { host.at(at, { type: 'keydown', vk: a[0], scan: VK_SCAN[a[0]], extended: false, repeat: 0 }); host.at(at + 120, { type: 'keyup', vk: a[0], scan: VK_SCAN[a[0]], extended: false }); }
-      else if (kind === 'click') { host.at(at, { type: 'mousemove', x: a[0], y: a[1] }); host.at(at + 1, { type: 'mousedown', button: 0, x: a[0], y: a[1] }); host.at(at + 100, { type: 'mouseup', button: 0, x: a[0], y: a[1] }); }
-    }
+    for (const e of inputs) if (!e.abs) schedule(e, clock.now() + e.t * 1000); // (times after the first frame)
   }
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
+  if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
   else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); } }
   else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };
+for (const e of inputs) if (e.abs) schedule(e, clock.now() + e.t * 1000); // ('@' times: from the start)
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 acct.enter(C.guest); // (as the browser worker's pump does around its slices)
 try { vm.run(); console.log('exited'); } catch (e) { console.log(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 160)})`); }
