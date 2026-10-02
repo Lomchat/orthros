@@ -43,7 +43,7 @@ function pixelShader() {
  * fx_2_0: R (int), S (sampler2D: AddressU = R, MinFilter = 2); technique T, pass P: ZEnable = R, ColorOp[1] = R,
  * AddressV[3] = R, Sampler[2] = S, PixelShader = the shader above, CullMode = 1 (constant: not re-applied at commit)
  */
-function effectBinary() {
+function effectBinary(constSampler = false) {
   const pool = new Words();
   pool.u32(0);
   const str = (s) => { const b = cstr(s); const o = pool.u32(b.length); pool.bytes(b); return o; };
@@ -72,7 +72,7 @@ function effectBinary() {
   t.u32(pName, 0, states.length);
   for (const s of states) t.u32(...s);
   const ps = pixelShader();
-  const refs = [[0, 0, 0, 0, 'R'], [0, 0, 0, 1, 'R'], [0, 0, 0, 2, 'R'], [0, 0, 0, 3, 'S'], [0xffffffff, 1, 0, 0, 'R']];
+  const refs = [[0, 0, 0, 0, 'R'], [0, 0, 0, 1, 'R'], [0, 0, 0, 2, 'R'], [0, 0, 0, 3, 'S'], ...(constSampler ? [] : [[0xffffffff, 1, 0, 0, 'R']])]; // (constSampler: S's AddressU stays 0)
   t.u32(0, refs.length + 1);
   t.u32(0, 0, 0, 4, 0, ps.length); t.bytes(ps);
   for (const [tq, i, e, s, name] of refs) { const b = cstr(name); t.u32(tq, i, e, s, 1, b.length); t.bytes(b); }
@@ -82,7 +82,7 @@ function effectBinary() {
   return out;
 }
 
-function setup() {
+function setup(constSampler = false) {
   const mem = new GuestMemory();
   let brk = 0x10000000;
   const heap = { alloc: (n) => { const a = brk; brk += (n + 15) & ~15; return a; }, free_() {} };
@@ -112,7 +112,7 @@ function setup() {
   const X = {};
   defineEffects(X, vm, h);
   const ctx = (...a) => ({ proc, thread: null, a, arg(i) { return (this.a[i] ?? 0) >>> 0; }, sarg(i) { return (this.a[i] ?? 0) | 0; } });
-  const fxBytes = effectBinary(), src = heap.alloc(fxBytes.length), out = heap.alloc(4);
+  const fxBytes = effectBinary(constSampler), src = heap.alloc(fxBytes.length), out = heap.alloc(4);
   mem.writeBytes(src, fxBytes);
   assert.equal(X.D3DXCreateEffect[1](ctx(devPtr, src, fxBytes.length, 0, 0, 0, 0, out, 0)), 0);
   const fxPtr = mem.read32(out), fx = com.implAt(fxPtr);
@@ -141,5 +141,21 @@ test('effect commit list: every render, stage and sampler state CommitChanges se
   // the ways covered: ZEnable, ColorOp[1], AddressV[3], AddressU of sampler 2 (Sampler[2] = S) and of s4 (the shader's)
   for (const e of [SHADOW_RS + 7, SHADOW_TSS + 40 + 1, SHADOW_SAMP + 16 * 3 + 2, SHADOW_SAMP + 16 * 2 + 1, SHADOW_SAMP + 16 * 4 + 1]) assert.ok(seen.has(e), `entry ${e} exercised`);
   assert.ok(!listed.has(SHADOW_RS + 22), 'a constant state (not re-applied by CommitChanges) is not listed');
+  fx.EndPass(ctx(fxPtr)); fx.End(ctx(fxPtr));
+});
+
+// A sampler parameter whose states are constants (AddressU = 0, MinFilter = 2): applied once, not compared again at each
+// commit while the register's states stay as applied (d3dx9-effect.js bindSampler, the state table's version), and
+// set again at the next commit once something else changed them.
+test('effect sampler of constant states: not re-applied while the device keeps them, restored once changed', () => {
+  const { dev, fx, fxPtr, ctx, log } = setup(true);
+  fx.Begin(ctx(fxPtr, 0, 0)); fx.BeginPass(ctx(fxPtr, 0));
+  assert.deepEqual([dev.samplers[2].get(1), dev.samplers[2].get(6), dev.samplers[4].get(1), dev.samplers[4].get(6)], [0, 2, 0, 2], 'applied to s2 and s4');
+  log.length = 0;
+  fx.CommitChanges(ctx(fxPtr));
+  assert.deepEqual(log.filter((e) => e >= SHADOW_SAMP), [], 'nothing set again');
+  dev.samplers[2].set(1, 5); dev.samplers[4].set(6, 1); // (the application's own SetSamplerState)
+  fx.CommitChanges(ctx(fxPtr));
+  assert.deepEqual([dev.samplers[2].get(1), dev.samplers[4].get(6)], [0, 2], 'restored');
   fx.EndPass(ctx(fxPtr)); fx.End(ctx(fxPtr));
 });

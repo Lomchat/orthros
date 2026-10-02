@@ -504,19 +504,26 @@ export function defineEffects(X, vm, h) {
           const [cls, idx] = STATES[s.op] ?? [];
           const key = `p${pi}:${el}:${k}`;
           if (cls === 'texture') { const tn = this.refs.has(key) ? this.lookup(this.refs.get(key), null) : null; return { tex: tn }; }
-          if (cls === 'samp') return { type: idx, word: this.wordOf(s, key) };
+          if (cls === 'samp') return { type: idx, word: this.wordOf(s, key), cst: !this.refs.has(key) && !this.exprs.has(key) };
           return null;
         }).filter(Boolean);
+        n.samplerConst = n.samplerOps.every((o) => o.tex !== undefined || o.cst); // (its states constants: see bindSampler)
       }
       return n.samplerOps;
     }
     bindSampler(c, n, reg) {
       // (a state the device already holds is not set again: sampler states are re-applied at every pass)
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
-      for (const o of this.samplerOpsOf(n)) {
+      const ops = this.samplerOpsOf(n);
+      // constant states already applied to this register, its state table untouched since (its version): not compared again
+      const tbl = dev !== null && n.samplerConst && !dev.recording && !apiOpt.off ? dev.samplers?.[reg] : undefined;
+      const seen = tbl !== undefined ? n.samplerSeen?.[reg] : undefined;
+      const skip = seen !== undefined && seen.tbl === tbl && seen.ver === tbl.ver;
+      for (const o of ops) {
         if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (!dev || dev.textures[reg] !== p) this.call(c, 'SetTexture', 2, reg, p); }
-        else { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
+        else if (!skip) { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
       }
+      if (tbl !== undefined && !skip) { const sv = (n.samplerSeen ??= [])[reg] ??= { tbl: null, ver: -1 }; sv.tbl = tbl; sv.ver = tbl.ver; }
     }
     /** a function giving a numeric state's raw value (a referenced parameter's first scalar, an expression, or its constant) */
     wordOf(s, key) {
