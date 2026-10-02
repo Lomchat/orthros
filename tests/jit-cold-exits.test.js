@@ -187,3 +187,33 @@ test('RangeHeat merges ranges; LearnedHeat applies module ranges once per module
   assert.equal(L.apply([{ name: 'a.dll', base: 0x400000, size: 0x1000 }]), null);
   assert.deepEqual(L.apply([{ name: 'a.dll', base: 0x400000, size: 0x1000 }, { name: 'b.exe', base: 0x800000, size: 0x2000 }]), [0x801000, 0x801010]);
 });
+
+// The x87-mode versions of a region repeat its blocks under the same numbers (a version's guard passes the block index
+// it was entered with to the next one): a version translated after the heat grew keeps the first version's extent
+// (discoverRegion opts.onlyBlocks) instead of falling back to the mode tested at run time.
+test('x87-mode versions keep the first version\'s blocks when the heat grows meanwhile', () => {
+  // E: fldz ; fld1 ; faddp ; test eax, eax ; jz L1 ; fld1 ; faddp ; L1: fld1 ; faddp ; fstp dword [esi] ; hlt
+  const code = [0xd9, 0xee, 0xd9, 0xe8, 0xde, 0xc1, 0x85, 0xc0, 0x74, 0x04, 0xd9, 0xe8, 0xde, 0xc1, 0xd9, 0xe8, 0xde, 0xc1, 0xd9, 0x1e, 0xf4];
+  const cold = CODE + 10, L1 = CODE + 14, stop = CODE + code.length - 1;
+  const mem = new GuestMemory(), cpu = new CpuState(mem, THREAD_STATES_BASE);
+  cpu.reset(); mem.writeBytes(CODE, Uint8Array.from(code));
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
+  jit.cpu = cpu;
+  const heat = new RangeHeat(); heat.add(CODE, cold); heat.add(L1, stop + 1); // (the fallthrough of the jz never ran)
+  jit.heat = heat;
+  const go = (cw, eax) => {
+    mem.write16(cpu.base + ST.FPU_CW, cw); cpu.eip = CODE; cpu.eax = eax; cpu.esi = DATA; cpu.esp = DATA + 0x800; mem.write32(DATA, 0);
+    let r; do r = jit.run({ stopAt: stop, maxInsns: 1e6 }); while (r === EXIT.TIMESLICE);
+    assert.equal(r, EXIT.HALT);
+    return mem.readF32(DATA);
+  };
+  assert.equal(go(0x027f, 0), 2);
+  const first = jit.regionAt(CODE);
+  assert.ok(!first.blocks.some((b) => b.eip === cold), 'the cold block left out');
+  heat.add(cold, L1); // (it runs now)
+  assert.equal(go(0x027f, 1), 3);
+  assert.equal(go(0x007f, 1), 3); // (another mode: a version of the region)
+  assert.equal(go(0x0c7f, 0), 2);
+  assert.ok((jit.stats.fpuVersions ?? 0) >= 2, `versions chained: ${jit.stats.fpuVersions}`);
+  for (const v of first.versions) assert.deepEqual(v.blocks.map((b) => [b.eip, b.index]), first.blocks.map((b) => [b.eip, b.index]));
+});

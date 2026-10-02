@@ -545,7 +545,10 @@ export function discoverRegion(mem, entry, opts) {
   // executed it — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
   const heat = (opts.coldExits ?? JIT_DEFAULTS.coldExits) && opts.heat ? opts.heat : null;
   const coldMin = opts.coldMin ?? JIT_DEFAULTS.coldMin;
-  const cold = (from, t) => heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t);
+  // opts.onlyBlocks (a Set of block addresses): the blocks of an earlier translation of this entry, whose extent and
+  // numbering an x87-mode version must repeat (the heat may have grown since)
+  const only = opts.onlyBlocks ?? null;
+  const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();

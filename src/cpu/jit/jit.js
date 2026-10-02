@@ -200,7 +200,10 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
     const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
-    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, this.translateOpts(this.nextFn, fpcAssume));
+    // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
+    const o = this.translateOpts(this.nextFn, fpcAssume);
+    if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
