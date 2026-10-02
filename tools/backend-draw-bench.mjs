@@ -12,6 +12,7 @@ import path from 'node:path';
 import { d3dEnv } from '../tests/d3d-random.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
+import { Replayer } from '../src/gfx/d3d-mirror.js';
 
 const GFX = new URL('../src/gfx/', import.meta.url).pathname;
 const ROUNDS = Number(process.env.ROUNDS ?? 7);
@@ -137,6 +138,15 @@ const variants = {
     const link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
     link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
     return { createDevice: (dev) => new Recorder(link, dev) };
+  },
+  // (recorded, then replayed on this thread into a mirror whose backend draws over the no-op context: minus "recorder",
+  // the render worker's work per draw)
+  replay: () => {
+    const words = new Int32Array(1 << 20), gl = noopGl();
+    let mem = null;
+    const replayer = new Replayer(words, { get mem() { return mem; }, ack: null, createBackend: (m) => new WebGLDevice(gl, m, {}) });
+    const link = new RenderLink({ words, replayer });
+    return { createDevice: (dev) => { mem = dev.proc.mem; replayer.mem = mem; return new Recorder(link, dev); } };
   },
 };
 const per = (ms) => ms * 1000 / (DRAWS * FRAMES);

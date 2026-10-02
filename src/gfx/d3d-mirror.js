@@ -53,6 +53,7 @@ export class DeviceMirror {
     this.vertexShader = 0; this.pixelShader = 0; this.vertexShaders = new Map(); this.pixelShaders = new Map();
     if (api9) { this.scissor = null; this.fvf = 0; this.vertexDecl = null; this.vsObj = null; this.psObj = null; }
     this.transforms = new Map(); this.transformSlotVersion = new Map();
+    this.transformWords = new Map(); this.constWords = [null, null]; // (word views of the matrices and float constants: Replayer.applyFast)
     for (const f of VERSION_FIELDS) this[f] = 0;
     this.lights = new Map(); this.lightEnabled = new Set(); this.material = new Float32Array(17);
     this.renderTarget = null; this.backBuffers = [];
@@ -102,7 +103,50 @@ export class Replayer {
     return g;
   }
   table(m, t) { return t === 0 ? m.rs : t <= m.tss.length ? m.tss[t - 1] : m.samplers[t - 1 - m.tss.length]; }
+  /**
+   * The commands of every draw read straight from the ring words (no decoded argument list, no views allocated); the
+   * same effects as their general cases below. Returns false for the others (and for uncommon encodings).
+   */
+  applyFast(r) {
+    const I = r.I, p = r.p, m = this.cur;
+    switch (r.op) {
+      case OP.TSETS: { const e = p + 1 + I[p]; for (let i = p + 1; i < e; i += 3) this.table(m, I[i]).set(I[i + 1], I[i + 2] >>> 0); return true; }
+      case OP.VERSION: { const t = I[p + 1]; if (t > 1) return false; m[VERSION_FIELDS[I[p]]] = t === 0 ? I[p + 2] >>> 0 : I[p + 2]; return true; }
+      case OP.TEXTURE: m.textures[I[p] >>> 0] = I[p + 1] >>> 0; return true;
+      case OP.STREAM: { // stream, id, stride (n), offset (n): the common uint32 encodings
+        if (I[p + 2] !== 0 || (I[p + 4] !== 0 && I[p + 4] !== 3)) return false;
+        const s = m.streams[I[p] >>> 0]; s.vb = I[p + 1] >>> 0; s.stride = I[p + 3] >>> 0;
+        if (I[p + 4] === 0) s.offset = I[p + 5] >>> 0; else if ('offset' in s) s.offset = undefined;
+        return true;
+      }
+      case OP.INDICES: { const t = I[p + 1]; if (t > 1) return false; m.indices.ib = I[p] >>> 0; m.indices.base = t === 0 ? I[p + 2] >>> 0 : I[p + 2]; return true; }
+      case OP.CONST: {
+        const k = I[p] >>> 0, lo = I[p + 1] >>> 0, n = I[p + 2], dst = m[CONST_FIELDS[k]];
+        if (n < 0) return false;
+        if (k < 2) { // (floats as their bits: through the array's word view, kept while the array is the same)
+          let w = m.constWords[k]; if (w === null || w.buffer !== dst.buffer || w.byteOffset !== dst.byteOffset) w = m.constWords[k] = new Int32Array(dst.buffer, dst.byteOffset, dst.length);
+          for (let i = 0; i < n; i++) w[lo + i] = I[p + 3 + i];
+        } else for (let i = 0; i < n; i++) dst[lo + i] = I[p + 3 + i];
+        m.gfx?.constTouched?.(k, lo, lo + n);
+        return true;
+      }
+      case OP.XFORM: { // slot, version (uint32), 16 words: the common case
+        if (I[p + 1] !== 0 || I[p + 3] !== 16) return false;
+        const slot = I[p] >>> 0;
+        let x = m.transforms.get(slot), w = m.transformWords.get(slot);
+        if (!x) { m.transforms.set(slot, (x = new Float32Array(16))); w = undefined; }
+        if (w === undefined || w.buffer !== x.buffer) m.transformWords.set(slot, (w = new Int32Array(x.buffer, x.byteOffset, 16)));
+        for (let i = 0; i < 16; i++) w[i] = I[p + 4 + i];
+        m.transformSlotVersion.set(slot, I[p + 2] >>> 0);
+        return true;
+      }
+      case OP.DRAW: m.gfx?.drawPrimitive(I[p] >>> 0, I[p + 1] >>> 0, I[p + 2] >>> 0); return true;
+      case OP.DRAW_INDEXED: { const t = I[p + 5]; if (t > 1) return false; m.gfx?.drawIndexedPrimitive(I[p] >>> 0, I[p + 1] >>> 0, I[p + 2] >>> 0, I[p + 3] >>> 0, I[p + 4] >>> 0, t === 0 ? I[p + 6] >>> 0 : I[p + 6]); return true; }
+      default: return false;
+    }
+  }
   apply(r) {
+    if (this.cur !== null && this.applyFast(r)) return;
     const a = r.decode(), m = this.cur, g = m?.gfx;
     switch (r.op) {
       case OP.DEVICE: { const d = new DeviceMirror(a[0], a[1], { width: a[2], height: a[3], swap: a[4], count: 1 }, this.mem, this); this.devices.set(a[0], d); this.cur = d; this.attach(d); break; }
@@ -130,7 +174,7 @@ export class Replayer {
       case OP.RT: m.renderTarget = this.res.get(a[0]) ?? null; break;
       case OP.BACKBUFFERS: m.backBuffers = Array.from(a[0], (id) => this.res.get(id)); break;
       case OP.VERSION: m[VERSION_FIELDS[a[0]]] = a[1]; break;
-      case OP.XFORMS: m.transforms = new Map(); m.transformSlotVersion = new Map(); break;
+      case OP.XFORMS: m.transforms = new Map(); m.transformSlotVersion = new Map(); m.transformWords = new Map(); break;
       case OP.XFORM: {
         if (a[2]) { let x = m.transforms.get(a[0]); if (!x) m.transforms.set(a[0], (x = new Float32Array(16))); copyBits(x, a[2]); } else m.transforms.delete(a[0]);
         if (a[1] === undefined) m.transformSlotVersion.delete(a[0]); else m.transformSlotVersion.set(a[0], a[1]);
