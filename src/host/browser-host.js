@@ -119,7 +119,8 @@ export class BrowserHost {
     this.frameAcct = new FrameStats();
     this.lastCats = null; // (the categories of the last frame: the slow-frame diagnostics)
     // (fields the worker and the audio path set later, declared here: one hidden class, see Vm's constructor)
-    this.dxtPool = null; this.wake = null; this.audioHook = null; this.interval = null; this.waitMs = 0;
+    this.dxtPool = null; this.wake = null; this.onUserInput = null; // (a click / a printable character, before the guest sees it: profile-seed.js)
+    this.audioHook = null; this.interval = null; this.waitMs = 0;
     this.audioPeak = 0; this.audioMs = 0; this.audioFrames = 0; this.audioDiag = 0; this.chunk = null;
     this.audioLead = undefined; this.audioUnderSeen = 0; this.audioCalmSince = 0;
   }
@@ -134,12 +135,12 @@ export class BrowserHost {
       tail = (tail + 1) | 0;
       switch (type) {
         case EV.MOUSEMOVE: this.inputQueue.push({ type: 'mousemove', x: a, y: b, dx: (c << 16) >> 16, dy: c >> 16 }); break;
-        case EV.MOUSEDOWN: this.inputQueue.push({ type: 'mousedown', button: a, x: b, y: c }); break;
+        case EV.MOUSEDOWN: this.inputQueue.push({ type: 'mousedown', button: a, x: b, y: c }); this.onUserInput?.(false); break;
         case EV.MOUSEUP: this.inputQueue.push({ type: 'mouseup', button: a, x: b, y: c }); break;
         case EV.WHEEL: this.inputQueue.push({ type: 'wheel', delta: a / 120, x: b, y: c }); break;
         case EV.KEYDOWN: this.inputQueue.push({ type: 'keydown', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0, repeat: c }); break;
         case EV.KEYUP: this.inputQueue.push({ type: 'keyup', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0 }); break;
-        case EV.CHAR: this.inputQueue.push({ type: 'char', code: a }); break;
+        case EV.CHAR: this.inputQueue.push({ type: 'char', code: a }); if (a >= 0x20) this.onUserInput?.(true); break;
         case EV.FOCUS: this.inputQueue.push({ type: 'focus', focused: a !== 0 }); break;
       }
     }

@@ -55,10 +55,12 @@ const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
 if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
+// --profile-seed-quorum N: distinct first sessions that must report identical profile files before the server offers
+// them to an empty profile (default 2; see src/host/profile-seed.js); --profile-seed 0: none offered, none learned
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
 // --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data_games (a manifest under test)
-const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir') });
+const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -102,6 +104,7 @@ if (opt('audiomix')) q.set('audiomix', opt('audiomix')); // (worker: the game's 
 if (opt('bgjit') === '0') q.set('bgjit', '0'); // (learned regions translated on this thread while the game waits, not in a background worker)
 if (opt('asyncreads')) q.set('asyncreads', opt('asyncreads')); // 0: synchronous file reads (default: a read of data still on the network parks its thread)
 if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)
+if (opt('profile-seed') === '0') q.set('profileseed', '0'); // (no shared first-launch profile from the server, none learned)
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)

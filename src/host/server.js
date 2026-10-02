@@ -1,12 +1,14 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N]
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
 //   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
-//            the GL programs they built and the code regions they translated (both prepared ahead by later sessions)
+//            the GL programs they built and the code regions they translated (both prepared ahead by later sessions),
+//            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
+//            distinct sessions that must report a set identical before it is offered, default 2)
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,6 +23,7 @@ import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { attachLan } from './lan.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
+import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
@@ -295,6 +298,68 @@ export function createServer(opts = {}) {
   /** [module, rva, fpc] by earliest use */
   const regionsList = (name) => [...regionsOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 40000).map(([k]) => { const [mod, rva, fpc] = k.split(':'); return [mod, Number(rva), fpc === '' ? null : Number(fpc)]; });
 
+  /**
+   * Shared first-launch profile, per manifest and game language (see profile-seed.js): the sets of small profile files
+   * first sessions reported (identical sets merged by content: `key`), with the distinct sessions that reported each.
+   * /api/profile-seed/<manifest>?lang= gives a new player's empty profile the set at least `profileSeedQuorum`
+   * (default 2) distinct sessions reported identical — the most reported one — or nothing. Bounded: a set within
+   * SEED_LIMITS, SEED_SETS_MAX sets per manifest (the least recently reported one makes room), SEED_SESSIONS_MAX session
+   * ids per set. Kept in opts.learnDir/profileseed-<manifest>.json (a server without it ignores the file). The manifest
+   * compat flag "profileSeed": false turns it off for a game.
+   */
+  const seedsLearned = new Map(); // manifest -> { sets: [{ lang, key, files: [[path, b64]], sessions: [], at }] }
+  const seedFile = (name) => opts.learnDir && path.join(opts.learnDir, `profileseed-${learnName(name)}.json`);
+  const SEED_SETS_MAX = 16, SEED_SESSIONS_MAX = 32, seedQuorum = Math.max(1, opts.profileSeedQuorum ?? 2);
+  const seedsOf = (name) => {
+    let L = seedsLearned.get(name);
+    if (!L) {
+      L = { sets: [] }; seedsLearned.set(name, L);
+      try {
+        const j = JSON.parse(fs.readFileSync(seedFile(name), 'utf8'));
+        for (const s of Array.isArray(j?.sets) ? j.sets.slice(0, SEED_SETS_MAX) : []) {
+          if (s && typeof s.lang === 'string' && typeof s.key === 'string' && Array.isArray(s.files) && Array.isArray(s.sessions)) L.sets.push({ lang: s.lang, key: s.key, files: s.files, sessions: s.sessions.slice(0, SEED_SESSIONS_MAX), at: Number(s.at) || 0 });
+        }
+      } catch { /* none yet */ }
+    }
+    return L;
+  };
+  let seedsDirty = new Set(), seedsTimer = null;
+  const seedsChanged = (name) => {
+    if (!seedFile(name)) return;
+    seedsDirty.add(name);
+    seedsTimer ??= setTimeout(() => {
+      seedsTimer = null;
+      for (const n of seedsDirty) { const f = seedFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify({ v: 1, sets: seedsOf(n).sets })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+      seedsDirty = new Set();
+    }, opts.learnWriteMs ?? 20000);
+    seedsTimer.unref?.();
+  };
+  const seedLang = (l) => (typeof l === 'string' && /^[A-Za-z-]{0,16}$/.test(l) ? l.toLowerCase() : null);
+  /** a first session's report: { lang, session, files: [{ path, data (base64) }] } — false when refused */
+  const learnSeed = (name, rec) => {
+    const lang = seedLang(rec?.lang ?? ''), sid = rec?.session;
+    if (lang === null || typeof sid !== 'string' || !sid || sid.length > 40 || !Array.isArray(rec.files) || rec.files.length > SEED_LIMITS.files) return false;
+    const files = [];
+    for (const f of rec.files) { const data = fromBase64(f?.data); if (!data || !seedPathOk(f?.path)) return false; files.push({ path: f.path, data }); }
+    const sel = seedSelect(files);
+    if (!sel.length || sel.length !== files.length) return false; // (over the limits: refused as a whole)
+    const L = seedsOf(name), key = seedKey(sel);
+    let set = L.sets.find((s) => s.lang === lang && s.key === key);
+    if (!set) {
+      if (L.sets.length >= SEED_SETS_MAX) L.sets.splice(L.sets.reduce((o, s, i) => (s.at < L.sets[o].at ? i : o), 0), 1);
+      L.sets.push(set = { lang, key, files: sel.map((f) => [f.path, toBase64(f.data)]), sessions: [], at: 0 });
+    }
+    if (!set.sessions.includes(sid) && set.sessions.length < SEED_SESSIONS_MAX) set.sessions.push(sid);
+    set.at = Date.now();
+    seedsChanged(name);
+    return true;
+  };
+  const seedFor = (name, lang) => {
+    let best = null;
+    for (const s of seedsOf(name).sets) if (s.lang === lang && s.sessions.length >= seedQuorum && (!best || s.sessions.length > best.sessions.length || (s.sessions.length === best.sessions.length && s.at > best.at))) best = s;
+    return best ? { key: best.key, files: best.files.map(([p, d]) => ({ path: p, data: d })) } : { files: [] };
+  };
+
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
@@ -350,7 +415,7 @@ export function createServer(opts = {}) {
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
         return;
       }
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;
@@ -433,6 +498,24 @@ export function createServer(opts = {}) {
         }
         return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
       }
+      m = /^\/api\/profile-seed\/([^/]+)$/.exec(p);
+      if (m) {
+        const man = getManifest(m[1]);
+        if (!man) return send(res, 404, 'no such manifest');
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 512 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 512 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            if (man.profileSeed === false) return send(res, 204, '');
+            send(res, learnSeed(m[1], rec) ? 204 : 400, '');
+          });
+          return;
+        }
+        const lang = seedLang(url.searchParams.get('lang') ?? '');
+        return send(res, 200, JSON.stringify(man.profileSeed === false || lang === null ? { files: [] } : seedFor(m[1], lang)), { 'Content-Type': 'application/json' });
+      }
       m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
       if (m) { if (!getManifest(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
@@ -458,6 +541,6 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
   for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

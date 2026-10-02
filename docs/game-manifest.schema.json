@@ -8,7 +8,7 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : mount, display, cover, registry, cdrom, etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : mount, display, cover, registry, cdrom, profileSeed, etc." },
     "versions": {
       "type": "array",
       "minItems": 1,
@@ -22,6 +22,7 @@
           "versionOrder": { "type": "number" },
           "exe": { "type": "string", "minLength": 1 },
           "languages": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z]{2}(-[A-Z]{2})?$" } },
+          "profileSeed": { "type": "boolean", "description": "false : aucun profil de premier lancement partagé pour ce jeu (src/host/profile-seed.js) — ni proposé à un profil vide, ni appris. Aussi dans defaults." },
           "cdrom": {
             "description": "Les fichiers du jeu servent aussi de lecteur de CD-ROM (jeux qui vérifient leur disque) : une lettre, ou { drive, label, serial }. Aussi dans defaults.",
             "oneOf": [

@@ -21,6 +21,7 @@ import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/r
 import { listRegion } from '../../cpu/jit/listing.js';
 import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
+import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -37,6 +38,8 @@ let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
+/** shared first-launch profile (profile-seed.js): files offered by the server to an empty profile; a first session's watch */
+let seedWatch = null, seedSink = null, profileSeeded = 0;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
 const log = (kind, msg) => post({ type: 'log', kind, msg });
@@ -56,6 +59,37 @@ async function loadProfile(mem) {
     };
     await walk(opfsDir, '');
   } catch (e) { log('warn', `OPFS unavailable (${e.message}): saves are not persisted`); opfsDir = null; }
+}
+
+/** Puts the server's shared first-launch profile in an empty profile, else watches this first session (see profile-seed.js). */
+async function seedProfile(lang, session) {
+  const url = `/api/profile-seed/${encodeURIComponent(manifestName)}`;
+  try {
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000); // (never holds the start long)
+    const r = await fetch(`${url}?lang=${encodeURIComponent(lang)}`, { signal: ac.signal }).finally(() => clearTimeout(timer));
+    const j = r.ok ? await r.json() : null;
+    for (const f of Array.isArray(j?.files) ? j.files : []) {
+      const data = fromBase64(f?.data);
+      if (!data || !seedPathOk(f.path)) continue;
+      const parts = f.path.split('/');
+      for (let i = 1; i < parts.length; i++) profile.mkdir(parts.slice(0, i).join('/'));
+      profile.open(f.path, { create: true })?.write(0, data);
+      profileSeeded++;
+    }
+  } catch { /* none: learned below */ }
+  if (profileSeeded) { log('file', `profile: ${profileSeeded} file(s) a first session of this game wrote put in place (shared first-launch profile)`); return; }
+  seedWatch = new SeedWatch({ files: () => profileFilesList() });
+  seedSink = (files) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang, session, files: files.map((f) => ({ path: f.path, data: toBase64(f.data) })) }) }).catch(() => {});
+}
+
+/** The profile's files: { path (original case, '/'-separated), data (a view: copy to keep) } */
+function profileFilesList() {
+  const out = [];
+  for (const [key, f] of profile.files) {
+    const parts = key.split('/');
+    out.push({ path: parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/'), data: f.data.subarray(0, f.len) });
+  }
+  return out;
 }
 
 async function flushProfile(force = false) {
@@ -81,15 +115,7 @@ async function flushProfile(force = false) {
 /** Every profile file as { path (original case, '/'-separated), data (base64) } — the headless harness saves them. */
 function profileDump() {
   if (!profile) return [];
-  const out = [];
-  for (const [key, f] of profile.files) {
-    const parts = key.split('/');
-    const path = parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/');
-    let bin = ''; const d = f.data.subarray(0, f.len);
-    for (let i = 0; i < d.length; i += 0x8000) bin += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000));
-    out.push({ path, data: btoa(bin) });
-  }
-  return out;
+  return profileFilesList().map((f) => ({ path: f.path, data: toBase64(f.data) }));
 }
 
 async function start(m) {
@@ -202,6 +228,10 @@ async function start(m) {
     for (let i = 1; i < parts.length; i++) profile.mkdir(parts.slice(0, i).join('/'));
     profile.open(f.path, { create: true }).write(0, Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0)));
   }
+  // (a profile still empty here: the game's first launch on this browser — the files a first session of this game
+  // wrote, as the server learned them, are put in place: the game skips its first-launch work; else this session's are
+  // learned. Manifest compat flag "profileSeed": false, ?profileseed=0: off)
+  if (m.opts.profileSeed && manifest.profileSeed !== false && profile.files.size === 0) await seedProfile(m.opts.gameLanguage ?? '', m.opts.session ?? '');
   vfs.mount('C:\\Users\\Player', profile);
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
@@ -263,8 +293,9 @@ async function start(m) {
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
   // the options this session runs with, as decided here (perf telemetry: a measurement is read with them)
-  post({ type: 'perf-options', options: { glWorker: glMode, renderWorker: !!remoteGl, asyncReads: vm.asyncReads, bgTranslate: !!bgTranslator, dxtHelpers: host.dxtPool ? dxtHelpers : 0, audioMix: audioMixDirect ? 'worklet' : 'worker', timeScale: m.opts.timeScale || 1, interp: !!m.opts.interp, programCache: !!m.opts.programCache, regionCache: !!m.opts.regionCache, prefetch: !!m.opts.prefetch, encodedRanges: !!m.opts.encodedRanges, offline: !!m.opts.offline, parallelCompile: !!host.gfx?.programCache?.parallel, jitOpts: m.opts.jitOpts || '', dbg: m.opts.dbg || '', cores: navigator.hardwareConcurrency ?? null, display: `${manifest.display.width}x${manifest.display.height}` } });
-  post({ type: 'started', profile: profileListing.slice(0, 200), firstLaunch: !m.opts.headless && profileFilesRestored === 0 && !(m.opts.profileFiles?.length) });
+  post({ type: 'perf-options', options: { glWorker: glMode, renderWorker: !!remoteGl, asyncReads: vm.asyncReads, bgTranslate: !!bgTranslator, dxtHelpers: host.dxtPool ? dxtHelpers : 0, audioMix: audioMixDirect ? 'worklet' : 'worker', timeScale: m.opts.timeScale || 1, interp: !!m.opts.interp, programCache: !!m.opts.programCache, regionCache: !!m.opts.regionCache, profileSeeded, prefetch: !!m.opts.prefetch, encodedRanges: !!m.opts.encodedRanges, offline: !!m.opts.offline, parallelCompile: !!host.gfx?.programCache?.parallel, jitOpts: m.opts.jitOpts || '', dbg: m.opts.dbg || '', cores: navigator.hardwareConcurrency ?? null, display: `${manifest.display.width}x${manifest.display.height}` } });
+  if (seedWatch) host.onUserInput = (typed) => seedWatch?.input(performance.now(), host.framesPresented, typed);
+  post({ type: 'started', profile: profileListing.slice(0, 200), firstLaunch: !m.opts.headless && profileFilesRestored === 0 && !profileSeeded && !(m.opts.profileFiles?.length) });
   channel.port1.onmessage = () => { pumpPosted = false; pump(); };
   host.wake = () => { if (running && !stopped) schedulePump(0); }; // (an asynchronous completion a guest thread waits on)
   pump();
@@ -442,6 +473,7 @@ function pump() {
     pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0;
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
+    if (seedWatch) { const files = seedWatch.step(now, host.framesPresented); if (files || seedWatch.done) { seedWatch = null; host.onUserInput = null; if (files) { log('file', `profile: ${files.length} file(s) this first session wrote reported to the server (shared first-launch profile)`); seedSink(files); } } }
   }
   // (every guest thread waits: learned GL programs started — before afterSlice's fence, which then covers their builds)
   acct.enter(ACCT.prog);
