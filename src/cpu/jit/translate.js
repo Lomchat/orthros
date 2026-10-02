@@ -12,6 +12,7 @@
 // Regions containing x87/MMX instructions ("x87 regions") also keep the x87 register stack,
 // tag word and precision control in locals between entry and the exits (translate-x87.js).
 import { Code, ModuleBuilder, T } from './wasm.js';
+import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
@@ -460,6 +461,19 @@ const regionTemplate = [null, null];
 let scratchCode = null;
 
 /**
+ * A translated body moved to table index `fnIdx`: the only place a body depends on its index is the offset of the
+ * load of its next x87-mode version's slot (JIT_ALT_BASE + 4 * fnIdx, at `altAt`: always a 5-byte LEB, the slot
+ * addresses being >= 2^28), rewritten in place. `altAt` < 0: nothing to do. Returns `code`.
+ */
+export function patchAltSlot(code, altAt, fnIdx) {
+  if (altAt < 0) return code;
+  if (!(fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) || code[altAt - 2] !== 0x28) throw new Error('patchAltSlot: not an alt slot load');
+  let v = (JIT_ALT_BASE + 4 * fnIdx) >>> 0;
+  for (let i = 0; i < 5; i++) { code[altAt + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
+  return code;
+}
+
+/**
  * Emit a complete region module. Returns { bytes, blocks } where blocks[i] = { eip, index }.
  */
 export function translateRegion(mem, entry, opts = {}) {
@@ -598,6 +612,7 @@ class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
     this.opts = opts;
+    this.altAt = -1; // (offset in the body of the alt slot load's address, see patchAltSlot)
     this.c = scratchCode ??= new Code(1 << 16);
     this.c.reset();
     this.lz = null;
@@ -656,7 +671,7 @@ class Emitter {
       const i = c.hint(false).if_();
       const fnIdx = this.opts.fnIdx ?? -1;
       if (this.chain && fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) {
-        c.i32(0).i32load(JIT_ALT_BASE + 4 * fnIdx).tee(L_T2);
+        c.i32(0); this.altAt = c.len + 2; c.i32load(JIT_ALT_BASE + 4 * fnIdx).tee(L_T2); // (altAt: the 5-byte offset LEB, see patchAltSlot)
         const alt = c.if_();
         for (let k = 0; k < L_FIRST_DECLARED; k++) c.get(k);
         c.get(L_T2).i32(1).sub().return_call_indirect(REGION_TYPE, 0);
@@ -698,7 +713,7 @@ class Emitter {
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
-    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
+    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume, altAt: this.altAt, deps: inlineDeps(blocks) };
   }
 
   /**

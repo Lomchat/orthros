@@ -104,6 +104,7 @@ if (opt('audiomix')) q.set('audiomix', opt('audiomix')); // (worker: the game's 
 if (opt('bgjit') === '0') q.set('bgjit', '0'); // (learned regions translated on this thread while the game waits, not in a background worker)
 if (opt('asyncreads')) q.set('asyncreads', opt('asyncreads')); // 0: synchronous file reads (default: a read of data still on the network parks its thread)
 if (opt('regions') === '0') q.set('regions', '0'); // (no code regions translated ahead from the server's learned list) // (no GL programs compiled ahead from the server's learned list)
+if (opt('code-cache') === '0') q.set('codecache', '0'); // (with --opfs: no translated code kept across runs, none reused)
 if (opt('profile-seed') === '0') q.set('profileseed', '0'); // (no shared first-launch profile from the server, none learned)
 if (opt('prefetch') === '0') q.set('prefetch', '0'); // plain Range requests instead of the server's compressed ranges
 if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download the whole game folder into the OPFS block store in the background

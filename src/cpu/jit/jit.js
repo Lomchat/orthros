@@ -313,9 +313,10 @@ export class Jit {
    * come back compiled, in batches (one module each), and are installed by bgInstall() when their code bytes still
    * equal the ones translated.
    */
-  attachBackground(port) {
-    this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
-    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
+  attachBackground(port, cache = null) {
+    this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0, compileMs: 0, cacheHits: 0, cache: null };
+    // (`cache`: the persistent cache of translations, see code-cache.js — { name, sources }, or null)
+    port.postMessage({ type: 'init', memory: this.mem.memory, cache, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
@@ -346,7 +347,7 @@ export class Jit {
   bgInstallNow(m) {
     const bg = this.bg; if (!bg || !bg.inflight.has(m.id)) return;
     bg.inflight.delete(m.id);
-    bg.bgMs += m.ms ?? 0;
+    bg.bgMs += m.ms ?? 0; bg.compileMs += m.compileMs ?? 0; bg.cacheHits += m.cacheHits ?? 0; if (m.cache) bg.cache = m.cache;
     const epoch = bg.epochOf?.get(m.id) ?? 0; bg.epochOf?.delete(m.id);
     if (!m.module || epoch !== (this.abEpoch ?? 0)) return;
     const t0 = performance.now();

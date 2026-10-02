@@ -82,6 +82,9 @@ async function seedProfile(lang, session) {
   seedSink = (files) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang, session, files: files.map((f) => ({ path: f.path, data: toBase64(f.data) })) }) }).catch(() => {});
 }
 
+/** the persistent cache of translated code (code-cache.js): pages, and headless runs with a persistent profile (--opfs) */
+const codeCacheOn = (o) => o.codeCache !== false && (!o.headless || !!o.opfs);
+
 /** The profile's files: { path (original case, '/'-separated), data (a view: copy to keep) } */
 function profileFilesList() {
   const out = [];
@@ -252,9 +255,11 @@ async function start(m) {
   if (vm.jit && bgWanted) {
     try {
       bgTranslator = new Worker(new URL('../../cpu/jit/bg-translate.js', import.meta.url), { type: 'module' });
-      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } };
+      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); };
       bgTranslator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); bgTranslator = null; };
-      vm.jit.attachBackground(bgTranslator);
+      // (translations kept across sessions in OPFS, keyed by the translator's own sources: ?codecache=0, off)
+      const jitUrl = (f) => new URL(`../../cpu/jit/${f}`, import.meta.url).href;
+      vm.jit.attachBackground(bgTranslator, codeCacheOn(m.opts) ? { name: manifestName, sources: [jitUrl('bg-translate.js'), jitUrl('jit.js'), jitUrl('runtime.js')] } : null);
       // cold tier (Jit.runCold): new code interpreted while the background worker translates it (?dbg=ORTHROS_COLD_TIER=0|1)
       vm.jit.coldTier = !!(globalThis.ORTHROS_COLD_TIER ?? COLD_TIER_DEFAULT);
     } catch (e) { bgTranslator = null; log('warn', `background translation unavailable: ${e.message}`); }
@@ -293,7 +298,7 @@ async function start(m) {
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
   // the options this session runs with, as decided here (perf telemetry: a measurement is read with them)
-  post({ type: 'perf-options', options: { glWorker: glMode, renderWorker: !!remoteGl, asyncReads: vm.asyncReads, bgTranslate: !!bgTranslator, dxtHelpers: host.dxtPool ? dxtHelpers : 0, audioMix: audioMixDirect ? 'worklet' : 'worker', timeScale: m.opts.timeScale || 1, interp: !!m.opts.interp, programCache: !!m.opts.programCache, regionCache: !!m.opts.regionCache, profileSeeded, prefetch: !!m.opts.prefetch, encodedRanges: !!m.opts.encodedRanges, offline: !!m.opts.offline, parallelCompile: !!host.gfx?.programCache?.parallel, jitOpts: m.opts.jitOpts || '', dbg: m.opts.dbg || '', cores: navigator.hardwareConcurrency ?? null, display: `${manifest.display.width}x${manifest.display.height}` } });
+  post({ type: 'perf-options', options: { glWorker: glMode, renderWorker: !!remoteGl, asyncReads: vm.asyncReads, bgTranslate: !!bgTranslator, dxtHelpers: host.dxtPool ? dxtHelpers : 0, audioMix: audioMixDirect ? 'worklet' : 'worker', timeScale: m.opts.timeScale || 1, interp: !!m.opts.interp, programCache: !!m.opts.programCache, regionCache: !!m.opts.regionCache, codeCache: !!vm.jit?.bg && codeCacheOn(m.opts), profileSeeded, prefetch: !!m.opts.prefetch, encodedRanges: !!m.opts.encodedRanges, offline: !!m.opts.offline, parallelCompile: !!host.gfx?.programCache?.parallel, jitOpts: m.opts.jitOpts || '', dbg: m.opts.dbg || '', cores: navigator.hardwareConcurrency ?? null, display: `${manifest.display.width}x${manifest.display.height}` } });
   if (seedWatch) host.onUserInput = (typed) => seedWatch?.input(performance.now(), host.framesPresented, typed);
   post({ type: 'started', profile: profileListing.slice(0, 200), firstLaunch: !m.opts.headless && profileFilesRestored === 0 && !profileSeeded && !(m.opts.profileFiles?.length) });
   channel.port1.onmessage = () => { pumpPosted = false; pump(); };
@@ -520,7 +525,7 @@ function feedBackground() {
   if (regionPos >= regionQueue.length && !jit.bgPending() && !bgDoneLogged && !regionLater.length) {
     bgDoneLogged = true;
     const bg = jit.bg;
-    log('file', `regions: ${bg.installed} translated ahead in the background and installed (${Math.round(bg.bgMs)} ms there, ${Math.round(jit.stats.bgInstallMs ?? 0)} ms installing here), ${bg.rejected} dropped (code changed, or translated here first), ${bg.sent - bg.installed - bg.rejected} not translatable; ${regionQueue.length - bg.sent} entries already translated or without code`);
+    log('file', `regions: ${bg.installed} translated ahead in the background and installed by t=${(performance.now() / 1000).toFixed(1)}s (${Math.round(bg.bgMs)} ms there, ${Math.round(bg.compileMs)} of them compiling, ${Math.round(jit.stats.bgInstallMs ?? 0)} ms installing here${bg.cache ? `; translated code cache: ${bg.cacheHits} reused, ${bg.cache.added} added, ${bg.cache.loaded} entries read in ${Math.round(bg.cache.loadMs)} ms, ${Math.round(bg.cache.bytes / 1048576)} MiB${bg.cache.reset ? ` (emptied: ${bg.cache.reset})` : ''}` : ''}), ${bg.rejected} dropped (code changed, or translated here first), ${bg.sent - bg.installed - bg.rejected} not translatable; ${regionQueue.length - bg.sent} entries already translated or without code`);
   }
 }
 function prewarmRegions(budgetMs) {
