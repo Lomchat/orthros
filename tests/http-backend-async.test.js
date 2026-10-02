@@ -194,3 +194,25 @@ test('missed block: a read that misses a block fetches its pieces and the whole 
   await Promise.all(ps);
   assert.equal(b.missFlights, 0); assert.equal(b.readAheadPending, 0);
 }));
+
+test('shared connection: the game\'s reads through one mount come first for the background downloads of the others', () => withFetch(async (calls) => {
+  const link = new Set();
+  const game = new HttpBackend('/game/main/', tree(), { link }), dep = new HttpBackend('/game/dep/', tree(), { link });
+  game.noteMiss = () => {}; dep.noteMiss = () => {};
+  game.lastSyncFetchAt = dep.lastSyncFetchAt = -1e9;
+  dep.want.set('f.big#0', { path: 'f.big', size: SIZE, mtime: 1, index: 0 });
+  dep.fillBackground();
+  await tick();
+  assert.equal(calls.length, 1, 'the required game\'s block fill downloads');
+  const p = game.fetchAhead('f.big', SIZE, 1, 3 * MiB, 3 * MiB + 10, false); // the game waits for a read of its own folder
+  assert.equal(calls[0].signal.aborted, true, 'the other mount\'s background download gave way');
+  assert.equal(dep.gameBusy(0), true, 'and waits while the game\'s read is in flight');
+  await tick(250);
+  assert.equal(calls.length, 2, 'no background download meanwhile');
+  calls[1].release(); await p;
+  for (let i = 0; i < 40 && calls.length < 3; i++) await tick(20);
+  assert.equal(calls.length, 3, 'the background download resumes afterwards');
+  calls[2].release();
+  for (let i = 0; i < 40 && dep.filling; i++) await tick(10);
+  assert.ok(dep.cache.has('f.big#0'));
+}));

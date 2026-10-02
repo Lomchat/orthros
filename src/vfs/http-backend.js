@@ -43,12 +43,15 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string }} [opts]
+   * @param {{ cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string, link?: Set<HttpBackend> }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
+   *   link: the backends sharing the player's connection (the game's folder and the games it requires, mounted beside
+   *   it): the game's reads through any of them come first for the background downloads of all of them
    */
   constructor(baseUrl, tree, opts = {}) {
     this.base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
     this.tree = tree;
+    this.link = opts.link ?? null; this.link?.add(this);
     this.cache = new Map(); // key "path#block" -> Uint8Array (insertion order = LRU)
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
     this.onFetch = opts.onFetch ?? null;
@@ -248,7 +251,12 @@ export class HttpBackend {
    * The game read from the network within the last `ms`, waits for an asynchronous read, or a sequential reader's next
    * blocks are on their way: background downloads wait.
    */
-  gameBusy(ms) { return this.fgPending > 0 || this.readAheadPending > 0 || performance.now() - (this.lastSyncFetchAt ?? -1e9) < ms; }
+  gameBusy(ms) {
+    if (!this.link) return this.ownBusy(ms);
+    for (const b of this.link) if (b.ownBusy(ms)) return true;
+    return false;
+  }
+  ownBusy(ms) { return this.fgPending > 0 || this.readAheadPending > 0 || performance.now() - (this.lastSyncFetchAt ?? -1e9) < ms; }
 
   /**
    * A sequential reader of `path` (a file read whole) is at `end`: when fewer than READ_AHEAD_LOW bytes past it are here
@@ -315,6 +323,9 @@ export class HttpBackend {
    * block fill's when a parked read waits for it (`spareWaited`).
    */
   abortBackground(spareWaited = false) {
+    if (this.link) { for (const b of this.link) b.abortOwn(spareWaited); } else this.abortOwn(spareWaited);
+  }
+  abortOwn(spareWaited) {
     for (const ctl of this.bgAborts) {
       if (spareWaited && this.bgCur?.ctl === ctl && this.bgCur.waiters > 0) continue;
       this.bgAborts.delete(ctl); ctl.abort();
