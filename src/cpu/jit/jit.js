@@ -3,7 +3,7 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -85,12 +85,13 @@ export class Jit {
   markFast(idx, key, def) {
     // (IUnknown::AddRef/Release of every interface Orthros implements: com.js keeps their counts in guest memory)
     const dx = def && this.opts.d3dxFast !== false ? d3dxFastId(key) : undefined;
-    if (dx !== undefined) (this.d3dxFast ??= []).push([idx, dx]);
     const fid = !def ? undefined : FAST_NAMES[key] ?? dx ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
-    if (dx !== undefined && this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0;
+    // (the fast paths of the API-layer work — D3DX math, effect parameter descriptions, raw values — switchable for
+    // measurement: setD3dxFast)
+    if (dx !== undefined || fid === FID_PARAM_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
   }
   /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */
@@ -98,10 +99,10 @@ export class Jit {
     this.refFastOff = !on;
     for (const [idx, fid] of this.refFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
   }
-  /** (measurement, dbg:ORTHROS_D3DX_FAST_OFF) pure D3DX math on the WASM fast path (fast-d3dx.js) or in JavaScript */
+  /** (measurement, dbg:ORTHROS_D3DX_FAST_OFF / ORTHROS_API_OPT_OFF) D3DX math (fast-d3dx.js), effect parameter descriptions and raw values on the WASM fast path or in JavaScript */
   setD3dxFast(on) {
     this.d3dxFastOff = !on;
-    for (const [idx, fid] of this.d3dxFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
+    for (const [idx, fid] of this.optFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
   }
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }
