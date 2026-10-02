@@ -90,6 +90,13 @@ const BITS = [0, 8, 16, 0, 32];
 const SZLOG = [0, 0, 1, 0, 2];
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 
+/**
+ * Defaults of the translation options that change only how code is laid out or addressed (each is exact either way):
+ * opts.layout (layoutBlocks), opts.foldDisp (Emitter.eaFold). ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them,
+ * so that a whole test suite runs under either setting.
+ */
+export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
  * leaves the region), and in all the RETs of a region (see regionRetSites) */
@@ -343,7 +350,53 @@ function branchTarget(insn) {
 }
 
 /**
- * Control-flow layout of a region: the blocks (address order) grouped into a tree of units, each a single
+ * Block order of the emission (opts.layout): reverse postorder of a depth-first walk from the region entry, so that
+ * every transfer that is not part of a cycle goes forward — a plain `br` to a later unit's label, where a backward
+ * transfer outside a structured loop costs a budget check and the region's br_table dispatch (an indirect jump).
+ * In address order, the return of an in-region callee placed after its caller, a block the compiler moved out of
+ * line jumping back into its function, and calls to callees placed before the caller were such transfers. The walk
+ * follows the in-region successors (fallthrough, branch targets, a call's callee and its return site, a RET's return
+ * sites, see regionRetSites); a call's callee is visited last, so that its blocks follow the call (and its return
+ * site follows them), and a conditional branch's fallthrough is visited last, so that it stays next to its block when
+ * it can (a natural fallthrough: no branch at all). Blocks no walk reaches keep their address order at the end. Only
+ * the order changes: every transfer is emitted as before (direct when forward, through the dispatch otherwise).
+ * Returns the blocks with their new indices.
+ */
+function layoutBlocks(blocks, byEip, entry) {
+  const retSites = regionRetSites(blocks, byEip);
+  const succ = (b) => {
+    const last = b.insns[b.insns.length - 1];
+    switch (b.term) {
+      case TERM_NONE: return [b.fallthrough];
+      case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
+      case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : [];
+      case TERM_CALL: return [b.fallthrough, branchTarget(last)];
+      default: return retSites[b.index] ?? []; // (RET, an import stub's inline-API JMP: their local return sites)
+    }
+  };
+  const seen = new Uint8Array(blocks.length), post = [];
+  const start = byEip.get(entry) ?? blocks[0];
+  // iterative DFS: [block, its successor blocks, next successor to visit]
+  const stack = [[start, succ(start).map((a) => byEip.get(a)).filter(Boolean), 0]];
+  seen[start.index] = 1;
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    if (top[2] < top[1].length) {
+      const t = top[1][top[2]++];
+      if (!seen[t.index]) { seen[t.index] = 1; stack.push([t, succ(t).map((a) => byEip.get(a)).filter(Boolean), 0]); }
+      continue;
+    }
+    post.push(top[0]);
+    stack.pop();
+  }
+  const order = post.reverse();
+  for (const b of blocks) if (!seen[b.index]) order.push(b);
+  order.forEach((b, i) => { b.index = i; });
+  return order;
+}
+
+/**
+ * Control-flow layout of a region: the blocks (address order, or opts.layout's) grouped into a tree of units, each a single
  * block or a structured loop [first, last] spanning a back edge's target (its header) to its latest source,
  * whose children are units in turn. Loops are kept shortest first when they are disjoint from every loop
  * kept so far or, with `nest`, contain it; the back edges of the others go through a dispatcher. Nesting is
@@ -591,6 +644,8 @@ class Emitter {
     this.xdValid = this.xdDirty = 0; this.xdOK = false; // (f64 shadows, see xmmShadowSync64)
     this.fcmp = null;
     this.smc = opts.smc !== false;
+    this.foldDisp = opts.foldDisp ?? JIT_DEFAULTS.foldDisp; // (see eaFold)
+    this.x87Logical = !!(opts.x87Logical ?? JIT_DEFAULTS.x87Logical); // (the state block's x87 layout, see loadX87)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -603,8 +658,10 @@ class Emitter {
   }
 
   run(entry) {
-    const { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
+    this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
+    if (this.layout) blocks = layoutBlocks(blocks, byEip, entry);
     this.blocks = blocks;
     this.byEip = byEip;
     if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
@@ -629,7 +686,7 @@ class Emitter {
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
-    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
+    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(true); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
@@ -683,7 +740,10 @@ class Emitter {
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
-    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
+    // (in address order whatever the layout: callers compare the blocks of translations of the same code)
+    const out = blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end }));
+    if (this.layout) out.sort((x, y) => x.eip - y.eip);
+    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume };
   }
 
   /**
@@ -874,12 +934,14 @@ class Emitter {
   x87EntryTop() {
     if (!this.x87Plan) return;
     const c = this.c, plan = this.x87Plan;
+    if (this.x87Logical) c.i32(0).set(L_T8); // (the entry's plan, for loadX87: 0 at the region entry)
     c.get(L_BLK).i32(this.x87EntryIdx).ne();
     const i = c.if_();
     c.i32(0);
     for (let k = 0; k < plan.length; k++) if (plan[k]) c.set(L_T2).i32(plan[k]).get(L_T2).get(L_BLK).i32(k).eq().select();
     c.set(L_T2);
     c.get(L_TOP).get(L_T2).sub().i32(7).and().set(L_TOP);
+    if (this.x87Logical) c.get(L_T2).set(L_T8);
     c.end(); void i;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
@@ -963,9 +1025,28 @@ class Emitter {
     this.c.get(L_TOP).i32(3).shl().set(L_T3);
     for (let i = 0; i < 8; i++) { this.stSlot(i); this.c.get(L_ST0 + i).f64store(ST.FPR); }
   }
-  /** x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block. */
-  loadX87() {
+  /**
+   * x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block.
+   * `planned`: the region prologue of a region with planned entry shifts (x87EntryTop: L_TOP already lowered by the
+   * entry block's plan, L_T8 = that plan in the logical layout).
+   * Logical layout (opts.x87Logical, ST.XL): ST(i) at a fixed offset, no address computed from TOP, which matters at
+   * every region transition of x87 code (each one writes the eight registers back and the next region reloads them);
+   * with a plan p, L_ST0+i = ST(i - p) and the tag word is rotated left by p.
+   */
+  loadX87(planned = false) {
     const c = this.c;
+    if (this.x87Logical) {
+      if (planned && this.x87Plan) {
+        c.get(L_STATE).i32load8u(ST.XL_TW).tee(L_T3).get(L_T8).shl().get(L_T3).i32(8).get(L_T8).sub().shr_u().or().i32(0xff).and().set(L_FTW);
+        c.get(L_T8).i32(3).shl().set(L_T3);
+        for (let i = 0; i < 8; i++) c.get(L_STATE).i32(8 * i).get(L_T3).sub().i32(63).and().add().f64load(ST.XL).set(L_ST0 + i);
+      } else {
+        c.get(L_STATE).i32load8u(ST.XL_TW).set(L_FTW);
+        for (let i = 0; i < 8; i++) c.get(L_STATE).f64load(ST.XL + 8 * i).set(L_ST0 + i);
+      }
+      c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC);
+      return;
+    }
     this.loadX87Tags();
     c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC);
     this.loadX87Regs();
@@ -973,7 +1054,12 @@ class Emitter {
   /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
   flushFpu() {
     const c = this.c;
-    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); } // (other regions never change TOP)
+    if (!this.usesX87) return; // (other regions never change TOP)
+    if (this.x87Logical) {
+      for (let i = 0; i < 8; i++) c.get(L_STATE).get(L_ST0 + i).f64store(ST.XL + 8 * i);
+      c.get(L_STATE).get(L_FTW).i32store8(ST.XL_TW);
+    } else { this.flushX87Regs(); this.flushX87Tags(); }
+    c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP);
   }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
@@ -1122,33 +1208,46 @@ class Emitter {
     if (r >= 4) c.get(L_REG + r - 4).i32(~0xff00).and().get(src).i32(0xff).and().i32(8).shl().or().set(L_REG + r - 4);
     else c.get(L_REG + r).i32(-0x100).and().get(src).i32(0xff).and().or().set(L_REG + r);
   }
-  /** push the effective address of memory operand o */
-  ea(o) {
+  /** push the effective address of memory operand o (without its displacement when `noDisp`: see eaFold) */
+  ea(o, noDisp = false) {
     const c = this.c;
     let first = true;
     if (o.base >= 0) { c.get(L_REG + o.base); first = false; }
     if (o.index >= 0) { c.get(L_REG + o.index); if (o.scale > 1) c.i32(Math.log2(o.scale)).shl(); if (!first) c.add(); first = false; }
-    if (o.disp !== 0 || first) { c.i32(o.disp); if (!first) c.add(); first = false; }
+    if ((o.disp !== 0 && !noDisp) || first) { c.i32(o.disp); if (!first) c.add(); first = false; }
     if (o.a16) c.i32(0xffff).and();
     if (o.seg === SEG.FS) c.get(L_FS).add();
     else if (o.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
   }
-  /** address on stack -> value */
-  loadMem(size) {
+  /**
+   * Push the effective address of memory operand o less a displacement the access adds through its memarg offset
+   * (returned; 0: the whole address pushed). The memarg offset is added without the 32-bit wrap-around of an x86
+   * address, so only a positive displacement below 64 KiB is folded, after registers: the sum differs from the
+   * x86 address only when the registers' part is within 64 KiB of 2^32, where the x86 address wraps into the
+   * first 64 KiB, never mapped on Windows (an access violation there) and beyond the guest memory here (a trap,
+   * the same fault). V8 then addresses memory with base + register + offset in one instruction instead of a
+   * 32-bit add before it.
+   */
+  eaFold(o) {
+    if (this.foldDisp && o.disp > 0 && o.disp < 0x10000 && (o.base >= 0 || o.index >= 0) && !o.a16 && o.seg !== SEG.FS && o.seg !== SEG.GS) { this.ea(o, true); return o.disp; }
+    this.ea(o); return 0;
+  }
+  /** address on stack -> value (`off`: a memarg offset, see eaFold) */
+  loadMem(size, off = 0) {
     const c = this.c;
-    if (size === 4) c.i32load(0, 0); else if (size === 2) c.i32load16u(0); else c.i32load8u(0);
+    if (size === 4) c.i32load(off, 0); else if (size === 2) c.i32load16u(off); else c.i32load8u(off);
   }
   /** (addr, value) on stack -> store */
-  storeMem(size) {
+  storeMem(size, off = 0) {
     const c = this.c;
-    if (size === 4) c.i32store(0, 0); else if (size === 2) c.i32store16(0); else c.i32store8(0);
+    if (size === 4) c.i32store(off, 0); else if (size === 2) c.i32store16(off); else c.i32store8(off);
   }
   /** push operand value (zero-extended to 32) */
   loadOp(o) {
     const c = this.c;
     switch (o.t) {
       case OT.REG: this.loadReg(o.size, o.r); return;
-      case OT.MEM: this.ea(o); this.loadMem(o.size); return;
+      case OT.MEM: { const off = this.eaFold(o); this.loadMem(o.size, off); return; }
       case OT.IMM: c.i32(o.size === 4 ? o.v | 0 : o.v & MASK[o.size]); return;
       case OT.SEG: c.get(L_STATE).i32load16u(ST.SEG + 2 * o.r); return;
     }
@@ -1204,10 +1303,15 @@ class Emitter {
    * for the 16-byte and larger forms, by a second check on every store). Stores addressed by ESP alone (the stack:
    * locals and arguments without a frame pointer) are not checked, like PUSH: stacks do not hold code.
    */
-  smcCheck(insn, bytes) {
-    if (!this.smc || !insn) return;
+  /** Whether a store of `insn` through its memory operand is followed by an SMC check (see smcCheck). */
+  smcChecked(insn) {
+    if (!this.smc) return false;
     const m = insn.ops.find((o) => o.t === OT.MEM);
-    if (m && m.base === 4 && m.index < 0 && !m.a16 && m.seg !== SEG.FS && m.seg !== SEG.GS) return;
+    return !(m && m.base === 4 && m.index < 0 && !m.a16 && m.seg !== SEG.FS && m.seg !== SEG.GS);
+  }
+  smcCheck(insn, bytes) {
+    if (!insn || !this.smcChecked(insn)) return;
+    const m = insn.ops.find((o) => o.t === OT.MEM);
     bytes ??= m && m.size > 0 ? m.size : 1;
     const c = this.c;
     c.get(L_TA).i32(12).shr_u(); this.smcFlag();
@@ -1919,7 +2023,10 @@ HANDLERS[OP.MOV] = (E, insn) => {
     if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); } else E.storeRegFrom(d.size, d.r, L_TV);
     return;
   }
-  if (d.t === OT.MEM) { E.eaTo(d); E.loadOp(s); c.set(L_TV); c.get(L_TA).get(L_TV); E.storeMem(d.size); E.smcCheck(insn); return; }
+  if (d.t === OT.MEM) {
+    if (E.foldDisp && !E.smcChecked(insn)) { const off = E.eaFold(d); E.loadOp(s); E.storeMem(d.size, off); return; } // (the stack: no SMC check, see smcCheck)
+    E.eaTo(d); E.loadOp(s); c.set(L_TV); c.get(L_TA).get(L_TV); E.storeMem(d.size); E.smcCheck(insn); return;
+  }
   E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV);
 };
 HANDLERS[OP.MOVZX] = (E, insn) => { const c = E.c; const d = insn.ops[0], s = insn.ops[1]; E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV); };

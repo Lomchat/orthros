@@ -26,6 +26,7 @@ const vfs = makeVfs(manifest, dir, saveDir);
 const clock = new RealClock();
 const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
 const vm = new Vm({ vfs, clock, host, logKinds: ['crash'] });
+globalThis.__vm = vm; // (wrappers: tools reading the VM after the run)
 if (process.env.ORTHROS_JIT_OPTS && vm.jit) Object.assign(vm.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
 if (process.env.ORTHROS_JIT_STATS && vm.jit) {
   vm.jit.stepHist = new Map();
@@ -58,6 +59,10 @@ vm.dispatchThunk = (t, i) => {
   return dispatch(t, i);
 };
 vm.host.waitEvent = (ms) => clock.sleep(Math.min(ms, 50));
+// --stop-on <text>: stop once a log message of any kind contains that text (as the harness's --stop-on), e.g. the end of
+// a game's first-launch computation
+const stopOn = opt('stop-on', null);
+if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof msg === 'string' && msg.includes(stopOn)) { report(`"${stopOn}" logged`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); } log(kind, msg); }; }
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 try { vm.run(); report('exited'); } catch (e) { report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); }
 fs.rmSync(saveDir, { recursive: true, force: true });

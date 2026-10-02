@@ -2,8 +2,8 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, X87_LOGICAL } from './runtime.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
@@ -78,6 +78,31 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     this.clearTables();
+    this.setX87Layout();
+  }
+  /**
+   * The x87 stack layout of the translations (opts.x87Logical, see ST.XL): the dispatcher converts at its boundaries
+   * only while it is on (X87_LOGICAL). Every live translation must use the current layout (switchOpts drops them all).
+   */
+  setX87Layout() {
+    this.x87Logical = !!((this.abOpts && 'x87Logical' in this.abOpts ? this.abOpts.x87Logical : this.opts.x87Logical) ?? JIT_DEFAULTS.x87Logical);
+    this.mem.write32(X87_LOGICAL, this.x87Logical ? 1 : 0);
+  }
+  /** The thread's x87 stack from the logical layout to the physical registers (JavaScript reads them). */
+  x87ToPhysical(cpu) {
+    if (!this.x87Logical) return;
+    const m = this.mem, b8 = cpu.b8, top = m.u8[cpu.base + ST.FPU_TOP] & 7;
+    for (let i = 0; i < 8; i++) m.f64[b8 + ST.FPR / 8 + ((top + i) & 7)] = m.f64[b8 + ST.XL / 8 + i];
+    const tw = m.u8[cpu.base + ST.XL_TW];
+    m.write16(cpu.base + ST.FPU_TW, ((tw << top) | (tw >>> (8 - top))) & 0xff);
+  }
+  /** The reverse (before translated code resumes after JavaScript changed the physical registers). */
+  x87ToLogical(cpu) {
+    if (!this.x87Logical) return;
+    const m = this.mem, b8 = cpu.b8, top = m.u8[cpu.base + ST.FPU_TOP] & 7;
+    for (let i = 0; i < 8; i++) m.f64[b8 + ST.XL / 8 + i] = m.f64[b8 + ST.FPR / 8 + ((top + i) & 7)];
+    const tw = m.read16(cpu.base + ST.FPU_TW) & 0xff;
+    m.u8[cpu.base + ST.XL_TW] = ((tw >>> top) | (tw << (8 - top))) & 0xff;
   }
 
   /** Mark a thunk slot as having a WASM fast path (called for every created thunk). */
@@ -195,9 +220,26 @@ export class Jit {
     return region;
   }
 
+  /**
+   * Measurement switch (harness dbg:ORTHROS_JIT_AB=<json>, empty: back to the defaults): translation options
+   * overridden from now on, every translation dropped so that the code runs retranslated under them — an A/B of a
+   * translation option within one session (same machine slot, same game state). Called between slices only.
+   */
+  switchOpts(over) {
+    this.abOpts = over && Object.keys(over).length ? over : null;
+    for (const r of this.regions) this.table.set(r.fnIdx, null); // (the old modules become garbage)
+    this.clearTables();
+    this.setX87Layout();
+    this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
+    this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
+  }
   /** translateRegion options of a region at table index `fnIdx` specialized for x87 mode `fpcAssume` (null: generic) */
   translateOpts(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags };
+    if (this.abOpts) return { ...this.translateOptsBase(fnIdx, fpcAssume), ...this.abOpts };
+    return this.translateOptsBase(fnIdx, fpcAssume);
+  }
+  translateOptsBase(fnIdx, fpcAssume) {
+    return { x87Logical: this.x87Logical, boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, foldDisp: this.opts.foldDisp, layout: this.opts.layout };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -257,7 +299,7 @@ export class Jit {
    */
   attachBackground(port) {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
-    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags } });
+    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { x87Logical: this.x87Logical, smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, foldDisp: this.opts.foldDisp, layout: this.opts.layout } });
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
@@ -276,6 +318,7 @@ export class Jit {
     if (!items.length) return 0;
     const id = bg.nextId++;
     bg.inflight.set(id, items.length); bg.sent += items.length;
+    (bg.epochOf ??= new Map()).set(id, this.abEpoch ?? 0); // (translated under the options of now: see switchOpts)
     bg.port.postMessage({ type: 'batch', id, items });
     return items.length;
   }
@@ -288,7 +331,8 @@ export class Jit {
     const bg = this.bg; if (!bg || !bg.inflight.has(m.id)) return;
     bg.inflight.delete(m.id);
     bg.bgMs += m.ms ?? 0;
-    if (!m.module) return;
+    const epoch = bg.epochOf?.get(m.id) ?? 0; bg.epochOf?.delete(m.id);
+    if (!m.module || epoch !== (this.abEpoch ?? 0)) return;
     const t0 = performance.now();
     let inst;
     try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
@@ -418,7 +462,10 @@ export class Jit {
     this.materialize();
     cpu.eip = eip;
     cpu.exit = EXIT.NONE;
+    // (called from translated code: the x87 stack is in the layout of the translations, the interpreter's around the step)
+    this.x87ToPhysical(cpu);
     const r = this.interp.step();
+    this.x87ToLogical(cpu);
     this.stats.fallbackSteps = (this.stats.fallbackSteps ?? 0) + 1;
     if (this.fallbackHist) { const op = this.interp.lastOp; this.fallbackHist.set(op, (this.fallbackHist.get(op) ?? 0) + 1); }
     if (r !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return r; }
@@ -471,6 +518,7 @@ export class Jit {
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
         this.harvest(b4);
         this.materialize();
+        this.x87ToPhysical(cpu); // (the dispatcher's own conversion did not run)
         this.lastFault = e;
         cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
         return EXIT.FAULT;
