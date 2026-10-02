@@ -149,6 +149,35 @@ const SIG_RS = [RS.SHADEMODE, 2, RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMOD
 const SIG_TSS = [TSS.COLORARG1, 2, TSS.COLORARG2, 1, TSS.COLORARG0, 1, TSS.ALPHAARG1, 2, TSS.ALPHAARG2, 1, TSS.ALPHAARG0, 1, TSS.RESULTARG, 1, TSS.TEXTURETRANSFORMFLAGS, 0];
 const U_VC = names('u_vc', 256), U_PC = names('u_pc', 32);
 const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
+/** a program's integer / boolean constant uniforms: locations (bools: [register, location, ...] of those it has) and what it last received */
+function intBoolUniforms(U) {
+  const bools = (names) => { const out = []; names.forEach((n, i) => { const l = U(n); if (l) out.push(i, l); }); return out; };
+  const seen = () => ({ iSrc: null, i: new Int32Array(64), bSrc: null, b: new Int32Array(16) });
+  return { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: bools(U_VCB), pb: bools(U_PCB), v: seen(), p: seen() };
+}
+/** integer registers to a program when they differ from what it last received (`seen`) */
+function syncInts(gl, seen, l, src) {
+  let same = seen.iSrc === src && src.length <= 64;
+  if (same) for (let i = 0; i < src.length; i++) if (seen.i[i] !== src[i]) { same = false; break; }
+  if (same) return;
+  gl.uniform4iv(l, src);
+  seen.iSrc = src; if (src.length <= 64) seen.i.set(src);
+}
+/** boolean registers likewise, one uniform each (`list`: [register, location, ...]) */
+function syncBools(gl, seen, list, src) {
+  const fresh = seen.bSrc !== src; seen.bSrc = src;
+  for (let k = 0; k < list.length; k += 2) { const r = list[k], v = src[r]; if (fresh || seen.b[r] !== v) { seen.b[r] = v; gl.uniform1i(list[k + 1], v); } }
+}
+/** constant writes remembered per stage (constTouched): a program synced fewer writes ago compares only their union */
+const CLOG_N = 256;
+/** the transform slots a program has a matrix uniform for, with their locations: [slot, location, ...] (applyState order) */
+function transformUniforms(U) {
+  const out = [], add = (slot, l) => { if (l) out.push(slot, l); };
+  for (let i = 0; i < 4; i++) add(TS_WORLD + i, U(U_WORLD[i]));
+  add(TS_VIEW, U('u_view')); add(TS_PROJECTION, U('u_proj'));
+  for (let i = 0; i < MAX_STAGES; i++) add(TS_TEXTURE0 + i, U(U_TEXMAT[i]));
+  return out;
+}
 
 export class WebGLDevice {
   /**
@@ -173,6 +202,7 @@ export class WebGLDevice {
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
     this.samplerPool = new Map(); // parameter combination -> WebGLSampler
+    this.cLog = [0, 1].map(() => ({ seq: 0, lo: new Int32Array(CLOG_N), hi: new Int32Array(CLOG_N) })); // (constant writes: constTouched)
     this.invalidateGlState();
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
@@ -898,19 +928,41 @@ export class WebGLDevice {
     if (!l0) return;
     const cs = P.cs ?? (P.cs = [null, null]);
     let c = cs[slot];
+    const g = this.cLog[slot];
     if (!c || c.src !== src) { // (first use, or the device's arrays replaced): everything differs
-      c = cs[slot] = { src, srcU: new Uint32Array(src.buffer, src.byteOffset, src.length), seen: new Uint32Array(src.length) };
+      c = cs[slot] = { src, srcU: new Uint32Array(src.buffer, src.byteOffset, src.length), seen: new Uint32Array(src.length), log: g, seq: g.seq };
       this.gl.uniform4fv(l0, src); c.seen.set(c.srcU);
       return;
     }
     const a = c.srcU, b = c.seen, n = a.length;
-    let lo = 0; while (lo < n && a[lo] === b[lo]) lo++;
-    if (lo === n) return;
-    let hi = n - 1; while (a[hi] === b[hi]) hi--;
+    // only the elements written since this program's last sync can differ (the constant write log, see constTouched;
+    // a log that wrapped since, or another device's: everything compared)
+    let lo = 0, end = n;
+    if (c.log === g && g.seq - c.seq <= CLOG_N && !this.noStateCache) {
+      if (g.seq === c.seq) { if (apiOpt.glCheck) this.checkConsts(P, slot, src); return; }
+      let L = n, H = 0;
+      for (let q = c.seq; q < g.seq; q++) { const i = q & (CLOG_N - 1), x = g.lo[i], y = g.hi[i]; if (x < L) L = x; if (y > H) H = y; }
+      lo = L; end = H < n ? H : n;
+    }
+    c.log = g; c.seq = g.seq;
+    while (lo < end && a[lo] === b[lo]) lo++;
+    if (lo >= end) { if (apiOpt.glCheck) this.checkConsts(P, slot, src); return; }
+    let hi = end - 1; while (a[hi] === b[hi]) hi--;
     const r0 = lo >> 2, r1 = hi >> 2;
     for (let i = r0 * 4, e = r1 * 4 + 4; i < e; i++) b[i] = a[i];
     const l = r0 ? U(NAMES[r0]) : l0; // (null: registers past the ones the program uses)
     if (l) this.gl.uniform4fv(l, src, r0 * 4, (r1 - r0 + 1) * 4);
+    if (apiOpt.glCheck) this.checkConsts(P, slot, src);
+  }
+  /**
+   * A constant write of the device (`k`: CONST_FIELDS order — 0 vertex floats, 1 pixel floats, elements [lo, hi)):
+   * every writer of the float arrays reports here (the Direct3D layer's Set*ShaderConstant* handlers and effect
+   * writes, the render worker's replayed CONST records), so syncConsts compares only what was written.
+   */
+  constTouched(k, lo, hi) {
+    if (k > 1) return;
+    const g = this.cLog[k], i = g.seq & (CLOG_N - 1);
+    g.lo[i] = lo; g.hi[i] = hi; g.seq++;
   }
   /** A transform slot to program uniform `l`, when its version moved since this program last received it (`seen`). */
   uploadTransform(seen, slot, l, tsv, tall) {
@@ -944,10 +996,9 @@ export class WebGLDevice {
     if (pv.t !== dev.transformVersion) {
       pv.t = dev.transformVersion;
       const seen = pv.ts ?? (pv.ts = new Map());
-      for (let i = 0; i < 4; i++) this.uploadTransform(seen, TS_WORLD + i, U(U_WORLD[i]), tsv, tall);
-      this.uploadTransform(seen, TS_VIEW, U('u_view'), tsv, tall);
-      this.uploadTransform(seen, TS_PROJECTION, U('u_proj'), tsv, tall);
-      for (let i = 0; i < MAX_STAGES; i++) this.uploadTransform(seen, TS_TEXTURE0 + i, U(U_TEXMAT[i]), tsv, tall);
+      // (the matrices this program has a uniform for — none for most shader programs: looked up once per program)
+      const xu = P.xfU ??= transformUniforms(U);
+      for (let i = 0; i < xu.length; i += 2) this.uploadTransform(seen, xu[i], xu[i + 1], tsv, tall);
     }
     if (pv.vp !== dev.viewportVersion) {
       pv.vp = dev.viewportVersion;
@@ -1021,9 +1072,11 @@ export class WebGLDevice {
       if (vsCh) this.syncConsts(P, 0, dev.vsConst, U_VC); else if (apiOpt.glCheck) this.checkConsts(P, 0, dev.vsConst);
       if (psCh) this.syncConsts(P, 1, dev.psConst, U_PC); else if (apiOpt.glCheck) this.checkConsts(P, 1, dev.psConst);
       if (dev.api9) {
-        const ib = P.ibU ??= { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: U_VCB.map((n) => U(n)), pb: U_PCB.map((n) => U(n)) }; // (locations, per program)
-        if (vsCh) { if (ib.vi) gl.uniform4iv(ib.vi, dev.vsConstI); for (let i = 0; i < 16; i++) { const a = ib.vb[i]; if (a) gl.uniform1i(a, dev.vsConstB[i]); } }
-        if (psCh) { if (ib.pi) gl.uniform4iv(ib.pi, dev.psConstI); for (let i = 0; i < 16; i++) { const b = ib.pb[i]; if (b) gl.uniform1i(b, dev.psConstB[i]); } }
+        // (locations, per program; the integer and boolean registers sent only when they differ from what this program
+        // last received — the float ones change at every draw of an effect, these rarely)
+        const ib = P.ibU ??= intBoolUniforms(U);
+        if (vsCh) { if (ib.vi) syncInts(gl, ib.v, ib.vi, dev.vsConstI); if (ib.vb.length) syncBools(gl, ib.v, ib.vb, dev.vsConstB); }
+        if (psCh) { if (ib.pi) syncInts(gl, ib.p, ib.pi, dev.psConstI); if (ib.pb.length) syncBools(gl, ib.p, ib.pb, dev.psConstB); }
       }
     }
     // textures + samplers

@@ -150,6 +150,7 @@ export class Replayer {
         if (k < 2) new Int32Array(dst.buffer, dst.byteOffset, dst.length).set(w, a[1]);
         else if (k < 4) dst.set(w, a[1]);
         else for (let i = 0; i < w.length; i++) dst[a[1] + i] = w[i];
+        g?.constTouched?.(k, a[1], a[1] + w.length); // (the backend compares only what was written, see WebGLDevice.constTouched)
         break;
       }
       // resources
