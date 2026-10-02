@@ -39,7 +39,7 @@ async function withFetch(body) {
 }
 
 test('async read: a background download aborted for a foreground fetch does not restart while that fetch runs', () => withFetch(async (calls) => {
-  const b = new HttpBackend('/game/a/', tree());
+  const b = new HttpBackend('/game/a/', tree()); b.noteMiss = () => {}; // (the block fill alone: see the missed-block test)
   b.lastSyncFetchAt = -1e9;
   b.want.set('f.big#0', { path: 'f.big', size: SIZE, mtime: 1, index: 0 });
   b.fillBackground();
@@ -60,7 +60,7 @@ test('async read: a background download aborted for a foreground fetch does not 
 
 test('async read: every background download in flight (prefetch and block fill) gives way to the game', () => withFetch(async (calls) => {
   const store = new Map(); store.map = store; store.put = (k, v) => store.set(k, v); store.failed = false;
-  const b = new HttpBackend('/game/b/', tree(), { store });
+  const b = new HttpBackend('/game/b/', tree(), { store }); b.noteMiss = () => {};
   b.lastSyncFetchAt = -1e9;
   const progress = {};
   const pf = b.prefetch([['f.big', 5]], progress);
@@ -83,7 +83,7 @@ test('async read: every background download in flight (prefetch and block fill) 
 }));
 
 test('async read: a download a parked read waits for is not aborted by another thread\'s asynchronous read', () => withFetch(async (calls) => {
-  const b = new HttpBackend('/game/c/', tree());
+  const b = new HttpBackend('/game/c/', tree()); b.noteMiss = () => {};
   b.lastSyncFetchAt = -1e9;
   b.want.set('f.big#0', { path: 'f.big', size: SIZE, mtime: 1, index: 0 });
   b.fillBackground();
@@ -104,7 +104,7 @@ test('async read: a download a parked read waits for is not aborted by another t
 
 test('async read: pieces fetched ahead stay within the piece cache bound', () => withFetch(async (calls) => {
   const size = 100 * MiB;
-  const b = new HttpBackend('/game/d/', tree(size));
+  const b = new HttpBackend('/game/d/', tree(size)); b.noteMiss = () => {};
   b.fillBackground = () => {}; // (no background downloads: the pieces alone)
   for (let bi = 0; bi < 80; bi++) {
     const p = b.fetchAhead('f.big', size, 1, bi * BLOCK, (bi + 1) * BLOCK, false); // a random read of a whole block, by pieces
@@ -171,25 +171,26 @@ test('read-ahead: a failed download leaves the read to fetch the block itself, w
   for (const c of calls) c.release();
 }));
 
-test('missed block: a block the game misses a second time is fetched whole at once; its next reads wait for it', () => withFetch(async (calls) => {
+test('missed block: a read that misses a block fetches its pieces and the whole block beside them; the next reads wait for the block', () => withFetch(async (calls) => {
   const b = new HttpBackend('/game/h/', tree());
   b.fillBackground = () => {}; // (the background fill would wait for a quiet network anyway)
   const f = b.open('f.big');
-  const parked = async (off, len) => { const p = f.prepare(off, len); if (p) { await tick(); for (const c of calls) c.release(); await p; } assert.deepEqual(f.read(off, len), bytes(off, off + len)); };
   const n0 = syncReqs.length;
-  await parked(3 * MiB + 1000, 100); // first miss: its piece only
-  assert.deepEqual(calls.map((c) => [c.start, c.end]), [[3 * MiB, 3 * MiB + CHUNK]]);
-  const p2 = f.prepare(3 * MiB + 5 * CHUNK, 100); // second miss in the same block: the piece, and the block whole
-  assert.deepEqual(calls.slice(1).map((c) => [c.start, c.end]).sort((x, y) => y[1] - x[1]), [[3 * MiB, 4 * MiB], [3 * MiB + 5 * CHUNK, 3 * MiB + 6 * CHUNK]]);
-  calls.find((c) => c.end === 3 * MiB + 6 * CHUNK).release(); await p2;
-  const p3 = f.prepare(3 * MiB + 9 * CHUNK, 100); // a third read waits for the block on its way
-  assert.ok(p3);
-  assert.equal(calls.length, 3, 'no request of its own');
-  for (const c of calls) c.release(); await p3;
+  const p1 = f.prepare(3 * MiB + 1000, 100); // a miss: its piece, and the block whole
+  assert.deepEqual(calls.map((c) => [c.start, c.end]).sort((x, y) => y[1] - x[1]), [[3 * MiB, 4 * MiB], [3 * MiB, 3 * MiB + CHUNK]]);
+  calls.find((c) => c.end === 3 * MiB + CHUNK).release(); await p1; // (the piece answers first: the read goes on)
+  assert.deepEqual(f.read(3 * MiB + 1000, 100), bytes(3 * MiB + 1000, 3 * MiB + 1100));
+  const p2 = f.prepare(3 * MiB + 9 * CHUNK, 100); // another read of the block waits for it
+  assert.ok(p2);
+  assert.equal(calls.length, 2, 'no request of its own');
+  for (const c of calls) c.release(); await p2;
   assert.ok(b.cache.has('f.big#3'));
   assert.deepEqual(f.read(3 * MiB + 9 * CHUNK, 100), bytes(3 * MiB + 9 * CHUNK, 3 * MiB + 9 * CHUNK + 100));
   assert.equal(syncReqs.length, n0, 'every read served without a synchronous request');
-  // a block missed once elsewhere: its piece only
-  await parked(6 * MiB + 77, 10);
-  assert.equal(calls.filter((c) => c.start === 6 * MiB && c.end === 7 * MiB).length, 0);
+  // at most MISSED_BLOCK_FLIGHTS (2) such downloads at once: a third missed block gets its pieces only
+  const ps = [5, 6, 7].map((bi) => f.prepare(bi * MiB + 10, 10));
+  assert.equal(calls.filter((c) => c.end - c.start === MiB).length, 3, `${calls.map((c) => [c.start / MiB, (c.end - c.start) / 1024])}`);
+  for (let i = 0; i < 10; i++) { for (const c of calls) c.release(); await tick(); }
+  await Promise.all(ps);
+  assert.equal(b.missFlights, 0); assert.equal(b.readAheadPending, 0);
 }));
