@@ -994,8 +994,9 @@ export class WebGLDevice {
       const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff); if (sv.tf !== tf) { sv.tf = tf; if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(tf, this.tmp.v4)); }
       const ar = this.rs(RS.ALPHAREF, 0) & 0xff; if (sv.ar !== ar) { sv.ar = ar; if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), ar / 255); }
       const ps = this.rs(RS.POINTSIZE, 0); if (sv.ps !== ps) { sv.ps = ps; if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), asFloat(ps) || 1); }
+      const bumpU = P.bumpU ??= U_BUMPENV.map((n) => U(n)); // (locations, per program)
       for (let i = 0; i < MAX_STAGES; i++) {
-        const l = U(U_BUMPENV[i]); if (!l) continue;
+        const l = bumpU[i]; if (!l) continue;
         const a = this.tss(i, TSS.BUMPENVMAT00, 0), b = this.tss(i, TSS.BUMPENVMAT01, 0), c = this.tss(i, TSS.BUMPENVMAT10, 0), d = this.tss(i, TSS.BUMPENVMAT11, 0);
         const prev = sv.bump ?? (sv.bump = new Float64Array(4 * MAX_STAGES).fill(NaN)), o = 4 * i;
         if (prev[o] !== a || prev[o + 1] !== b || prev[o + 2] !== c || prev[o + 3] !== d) { prev[o] = a; prev[o + 1] = b; prev[o + 2] = c; prev[o + 3] = d; gl.uniform4f(l, asFloat(a), asFloat(b), asFloat(c), asFloat(d)); }
