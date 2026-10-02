@@ -15,12 +15,15 @@ frame down, all generic (no game-specific code), and how to switch them off with
 - **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
   taken at the call. Test: `jit-defer-raw.test.js`.
 
-## Scheduler
+## Sleep(0): pacing, not work
 
-`Sleep(0)` / `SwitchToThread` at top level end the thread's slice only when another thread can run (after the wake-up
-pass a slice end would make); otherwise they return at once, as on Windows (`Scheduler.yieldFrom`, `sched-yield.test.js`).
-A thread polling with `Sleep(0)` for its frame deadline is pacing: its calls are cheaper, so it makes more of them
-before the 1 ms throttle parks it; the `api` time charged to `Sleep` is that polling, not work.
+In play, `Sleep` is the second item of the API time ranking (BFME2: 1.1-1.4 s of API time per 20 s, 30-40 k calls/s).
+Those calls are a frame limiter polling the clock with `Sleep(0)` until its next frame (the main thread: millions of
+`Sleep(0)`, its other calls `timeGetTime` on the fast path) — pacing that the accounting cannot tell from work. Making the
+call cheaper was tried (a `Sleep(0)` with no other thread runnable returning at once without ending the slice): the poll
+then ran more often, and the time charged to `Sleep` grew (per 20 s, on vs off in one session: 1438 / 1124 ms, 846 k /
+677 k calls) with no frame-time effect; it was reverted. The existing throttle (32 back-to-back `Sleep(0)` with nothing
+else to run park the thread 1 ms) is what bounds it.
 
 ## Effects (src/win32/d3dx9-effect.js)
 

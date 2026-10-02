@@ -6,7 +6,6 @@
 // the recorded result. Blocking inside a nested callback (window procedure, DllMain...) cannot
 // unwind through the host's JS frames: it runs other threads nested until the condition holds.
 import { TS } from '../win32/process.js';
-import { apiOpt } from './api-opt.js';
 
 export const INFINITE = 0xffffffff;
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
@@ -190,27 +189,11 @@ export class Scheduler {
     }
   }
 
-  /** Is a thread other than `except` runnable? (round robin untouched) */
-  hasRunnable(except) {
-    for (const t of this.threads) if (t !== except && t.isRunnable()) return true;
-    return false;
-  }
-
-  /**
-   * Give other runnable threads a turn (Sleep(0), SwitchToThread): true when one runs. At top level the current slice
-   * ends, if some other thread can run — after waking those whose wait is over, as the end of the slice would: with
-   * none, the call returns at once without leaving the slice (Windows does not switch then either; a thread polling
-   * with Sleep(0) no longer pays a slice end and a scheduler pass per call).
-   */
+  /** Give other runnable threads a turn. At top level this just ends the current slice. */
   yieldFrom(thread) {
-    if (this.vm.canUnwind(thread)) {
-      if (this.pickRunnable(thread) === null) {
-        if (apiOpt.off) { thread.yieldRequested = true; return false; } // (measurement: as before)
-        this.wakeBlocked();
-        if (!this.hasRunnable(thread)) return false;
-      }
-      thread.yieldRequested = true; return true;
-    }
+    // (a yield with no other thread runnable still ends the slice: returning at once — as Windows does — was measured to
+    // make a frame limiter polling Sleep(0) poll more often, not to make anything cheaper: see docs/api-layer.md)
+    if (this.vm.canUnwind(thread)) { thread.yieldRequested = true; return this.pickRunnable(thread) !== null; }
     const other = this.pickRunnable(thread);
     if (!other) return false;
     this.vm.runThread(other, { slice: true });
