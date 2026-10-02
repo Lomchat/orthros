@@ -628,8 +628,9 @@ export function defineEffects(X, vm, h) {
     }
     restore(c, s) {
       let k = 0;
-      for (let i = 0; i < s.rs.length; i++) this.call(c, 'SetRenderState', 2, s.rs[i], s.vals[k++]);
-      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i]; this.call(c, 'SetTextureStageState', 3, x >> 8, x & 255, s.vals[k++]); }
+      const d = this.plainDev(); // (a state the device already holds: no call, as its handler would do nothing)
+      for (let i = 0; i < s.rs.length; i++) { const v = s.vals[k++]; if (d === null || d.rs.get(s.rs[i]) !== v) this.call(c, 'SetRenderState', 2, s.rs[i], v); }
+      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i], v = s.vals[k++]; if (d === null || d.tss[x >> 8]?.get(x & 255) !== v) this.call(c, 'SetTextureStageState', 3, x >> 8, x & 255, v); }
       for (let i = 0; i < s.tex.length; i++) this.call(c, 'SetTexture', 2, s.tex[i], s.vals[k++]);
       if (s.vs !== undefined) this.call(c, 'SetVertexShader', 1, s.vs);
       if (s.ps !== undefined) this.call(c, 'SetPixelShader', 1, s.ps);
