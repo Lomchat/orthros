@@ -729,7 +729,9 @@ class Emitter {
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
     this.tierPad();
-    c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    // the FS base (TEB) only in regions reading it: an FS-segment operand, an API run inline (its TEB fields)
+    this.usesFs = blocks.some((b) => b.insns.some((i) => i.inlineApi || i.seg === SEG.FS || i.ops.some((o) => o.seg === SEG.FS)));
+    if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
@@ -907,7 +909,7 @@ class Emitter {
     c.get(L_STATE).i32load(ST.LZ_RES).set(L_LZRES);
     c.get(L_STATE).i32load(ST.LZ_SRC1).set(L_LZA);
     c.get(L_STATE).i32load(ST.LZ_SRC2).set(L_LZB);
-    c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
     this.loadXmm();
   }
