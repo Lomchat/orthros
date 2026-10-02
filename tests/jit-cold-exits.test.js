@@ -217,3 +217,41 @@ test('x87-mode versions keep the first version\'s blocks when the heat grows mea
   assert.ok((jit.stats.fpuVersions ?? 0) >= 2, `versions chained: ${jit.stats.fpuVersions}`);
   for (const v of first.versions) assert.deepEqual(v.blocks.map((b) => [b.eip, b.index]), first.blocks.map((b) => [b.eip, b.index]));
 });
+
+// Threads: three guest threads run one program (each its own registers, stack and data) alternated every few
+// instructions under cold exits from a random heat; each ends as the interpreter does on its own inputs.
+test('cold exits with threads alternated every few instructions: each thread matches the interpreter', () => {
+  for (let t = 0; t < 60; t++) {
+    const { code, end } = gen();
+    const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
+    const heat = new Map([[CODE, 1000]]);
+    for (let a = 0; a < end;) { if (rnd(3)) heat.set(CODE + a, 1000); a = decode(scratch, CODE + a).next - CODE; }
+    const inputs = [0, 1, 2].map(() => input(50 + rnd(300)));
+    const init = (cpu, inp, k) => {
+      cpu.reset(); [cpu.eax, cpu.ecx, cpu.edx, cpu.ebx] = inp.regs; cpu.edi = inp.edi; cpu.esi = DATA + 0x100 + 0x1000 * k; cpu.esp = DATA + 0x800 + 0x1000 * k; cpu.eip = CODE;
+      cpu.eflags = F.RESERVED1 | F.IF | (inp.regs[4] & ARITH);
+    };
+    const stateOf = (r, cpu, mem, k) => [r, cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.edi, cpu.eflags & ARITH, cpu.eip].map((v) => (v >>> 0).toString(16)).join(' ') + ' ' + [...mem.bytes(DATA + 0x100 + 0x1000 * k, 0x40), ...mem.bytes(DATA + 0x700 + 0x1000 * k, 0x100)].join(',');
+    const want = inputs.map((inp, k) => {
+      const { mem, cpu } = setup(code); mem.fill(DATA, 0x4000, 0); init(cpu, inp, k);
+      const r = new Interp(mem, cpu).run({ stopAt: CODE + end, maxInsns: 1e7 });
+      return stateOf(r, cpu, mem, k);
+    });
+    for (const slice of [2, 7]) {
+      const mem = new GuestMemory(); mem.fill(CODE, 0x1000, 0xcc); mem.writeBytes(CODE, code); mem.fill(DATA, 0x4000, 0);
+      const cpus = inputs.map((inp, k) => { const c = new CpuState(mem, THREAD_STATES_BASE + k * 0x1000); init(c, inp, k); return c; });
+      const jit = new Jit(mem, new Interp(mem, cpus[0]), { smc: true, coldExits: true, coldMin: 2 }); jit.heat = heat;
+      const res = [null, null, null];
+      for (let turn = 0; res.some((x) => x === null); turn++) {
+        if (turn > 1e6) throw new Error('runaway');
+        const k = turn % 3; if (res[k] !== null) continue;
+        jit.cpu = cpus[k];
+        const r = jit.run({ stopAt: CODE + end, maxInsns: slice });
+        if (r === EXIT.TIMESLICE) continue;
+        CpuState.foldLazyFlags?.(cpus[k]);
+        res[k] = stateOf(r, cpus[k], mem, k);
+      }
+      for (let k = 0; k < 3; k++) assert.equal(res[k], want[k], `program ${t} thread ${k} slice ${slice}: ${Buffer.from(code).toString('hex')}`);
+    }
+  }
+});
