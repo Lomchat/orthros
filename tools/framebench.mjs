@@ -11,6 +11,7 @@
 //     [--input "3:key:27;10:click:320,192;@12:click:10,10" (seconds after the first frame, or with @ after the start: a
 //     key's virtual-key code, a left click)]
 //     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
+// With --gfx recorder the link's counters per frame follow (bytes of buffer data copied into the ring, fence waits...).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,11 +47,13 @@ const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-framebench-'));
 if (opt('profile')) fs.cpSync(opt('profile'), saveDir, { recursive: true });
 const vfs = makeVfs(manifest, dir, saveDir);
 const clock = new RealClock();
+/** the recorder's link (--gfx recorder): its counters are reported per frame */
+let link = null, stats0 = null;
 const host = new HeadlessHost({ clock, width: manifest.display?.width ?? 1024, height: manifest.display?.height ?? 768 });
 if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => new WebGLDevice(gl, dev, {}) }; }
 else if (gfxKind === 'recorder') {
   const words = new Int32Array(new SharedArrayBuffer(16 << 20));
-  const link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
+  link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
   link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
   host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
 }
@@ -72,6 +75,7 @@ const finish = (why) => {
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
   console.log(`${why}: ${manifest.id ?? target} gfx=${gfxKind}: ${counted} frames, ${(drawsSum / counted).toFixed(0)} draws/frame, ${(wall / counted).toFixed(2)} ms/frame wall, ${((cpu.user + cpu.system) / 1000 / counted).toFixed(2)} ms/frame process CPU; mean ms/frame: ${mean.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}; guest ${(gi / counted / 1e6).toFixed(2)} M instructions/frame`);
+  if (link) console.log(`recorder per frame: ${Object.keys(link.stats).map((k) => [k, (link.stats[k] - stats0[k]) / counted]).filter(([, v]) => v).map(([k, v]) => `${k} ${+v.toFixed(2)}`).join(', ')}`);
   fs.rmSync(saveDir, { recursive: true, force: true });
   process.exit(0);
 };
@@ -84,7 +88,7 @@ host.frameHook = (dev) => {
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); } }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); } }
   else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };
