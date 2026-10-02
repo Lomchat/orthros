@@ -108,8 +108,13 @@ export class ApiRegistry {
     this.chunkFloor = THUNK_END; // ...header-less pages downwards from THUNK_END
     /** @type {Map<string, {name: string, funcs: Map<string, ApiDef>, ordinals: Map<number, string>, aliasOf?: string}>} */
     this.dlls = new Map();
-    /** @type {Array<{dll: string, name: string, def: ApiDef|null, addr: number}>} by thunk index (sparse: module headers and free slots have none) */
-    this.thunks = [];
+    /**
+     * by thunk index (module headers and free slots: null). Allocated whole: the internal pages are taken from the top of
+     * the thunk region, so a table grown by assignment would be sparse — V8 then keeps it as a dictionary, and every API
+     * call (dispatch, the deferred queue) paid a hash lookup to find its thunk.
+     * @type {Array<{dll: string, name: string, def: ApiDef|null, addr: number}|null>}
+     */
+    this.thunks = new Array((THUNK_END - THUNK_BASE) / THUNK_SIZE).fill(null);
     /** dll!name -> thunk index */
     this.thunkIndex = new Map();
     /** Signature database for unknown imports (name -> argc), so stubs can clean the stack. */
