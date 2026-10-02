@@ -30,10 +30,6 @@
 //                     fast paths step aside so the JavaScript handler receives the recorded wait result)
 //   0x1D0  PROF[16]   u32 transition counters of profiling translations (see Jit opts.profile / JIT_PROF)
 //   0x210  EXIT_LEN   u32 length of the range written by the instruction that left with EXIT.SMC (0: 16 bytes)
-//   0x240  XL[8]      f64 the x87 stack in logical order (XL[i] = ST(i)) while translated code runs with the logical
-//                     layout (Jit opts.x87Logical): the JIT dispatcher fills it from FPR on entry and writes it back
-//                     to FPR before returning to JavaScript (see runtime.js run, Jit.x87ToPhysical)
-//   0x280  XL_TW      u8 the abridged tag word in the same logical order (bit i = ST(i) non-empty)
 //   0x290  PROF2[16]  u32 more transition counters of profiling translations (JIT_PROF entries from the 17th on)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
@@ -66,8 +62,6 @@ export const ST = Object.freeze({
   RESUMING: 0x1cc,
   PROF: 0x1d0,
   EXIT_LEN: 0x210,
-  XL: 0x240,
-  XL_TW: 0x280,
   PROF2: 0x290,
   SIZE: 0x400,
 });

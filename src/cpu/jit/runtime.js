@@ -60,13 +60,7 @@ export function supportsReturnCall() {
 // Fast-path API table: one byte per thunk index (id of a WASM implementation, 0 = none), and a
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
-export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle, +4 X87_LOGICAL
-/**
- * u32, non-zero while the translations keep the x87 stack of the state block in logical order (ST.XL / ST.XL_TW,
- * Jit opts.x87Logical): the dispatcher then converts the physical registers to that layout when it is entered and
- * back before it returns (set by the Jit; every live translation uses the same layout).
- */
-export const X87_LOGICAL = PROC_CONSTS + 4;
+export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
 /**
  * Deferred COM calls: state setters of the Direct3D devices (they always succeed and their effect is
  * only observable through other device calls) are recorded by the WASM fast path in a queue in guest
@@ -554,34 +548,7 @@ export function buildRuntime(opts = {}) {
     c.br(L);
     c.end(); // loop
     c.i32(0);
-    const inner = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32], c, 'runInner');
-    // run: the dispatcher between the two conversions of the x87 layout (X87_LOGICAL): FPR[(TOP + i) & 7] -> XL[i]
-    // and the tag word rotated right by TOP on entry, the reverse before returning to JavaScript. A trap inside skips
-    // the second one: Jit.run converts in JavaScript then (Jit.x87ToPhysical).
-    const r = new Code();
-    const ST4 = 1, RES = 2, B = 3, TOP = 4, TW = 5;
-    const convert = (toLogical) => {
-      r.i32(0).i32load(X87_LOGICAL);
-      const on = r.if_();
-      r.get(ST4).i32(2).shl().set(B);
-      r.get(B).i32load8u(ST.FPU_TOP).set(TOP);
-      // the address of the physical register of ST(i): B + ((TOP + i) & 7) * 8 (+ ST.FPR in the memarg)
-      const phys = (i) => { r.get(B).get(TOP); if (i) r.i32(i).add().i32(7).and(); r.i32(3).shl().add(); };
-      if (toLogical) {
-        for (let i = 0; i < 8; i++) { r.get(B); phys(i); r.f64load(ST.FPR).f64store(ST.XL + 8 * i); }
-        // (logical bit i = physical bit (TOP + i) & 7: rotated right by TOP; the store keeps the low byte)
-        r.get(B).get(B).i32load16u(ST.FPU_TW).tee(TW).get(TOP).shr_u().get(TW).i32(8).get(TOP).sub().shl().or().i32store8(ST.XL_TW);
-      } else {
-        for (let i = 0; i < 8; i++) { phys(i); r.get(B).f64load(ST.XL + 8 * i).f64store(ST.FPR); }
-        r.get(B).get(B).i32load8u(ST.XL_TW).tee(TW).get(TOP).shl().get(TW).i32(8).get(TOP).sub().shr_u().or().i32(0xff).and().i32store16(ST.FPU_TW);
-      }
-      r.end(); void on;
-    };
-    convert(true);
-    r.get(0).get(ST4).call(inner).set(RES);
-    convert(false);
-    r.get(RES);
-    const idx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32], r, 'run');
+    const idx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32], c, 'run');
     m.exportFunc('run', idx);
   }
   return m.build();

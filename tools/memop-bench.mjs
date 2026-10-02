@@ -82,7 +82,7 @@ async function once(p) {
     cpu.esi = DATA; cpu.edi = DATA + 0x1000; cpu.esp = DATA + 0x10000; cpu.ebp = DATA + 0x10000;
     cpu.eflags = F.RESERVED1 | F.IF;
   };
-  const jit = new Jit(mem, new Interp(mem, cpu), { smc: SMC, ...JSON.parse(process.env.ORTHROS_JIT_OPTS ?? '{}') }); jit.cpu = cpu; // (ORTHROS_JIT_OPTS: translation options, e.g. '{"foldDisp":true}')
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: SMC, ...JSON.parse(process.env.ORTHROS_JIT_OPTS ?? '{}') }); jit.cpu = cpu; // (ORTHROS_JIT_OPTS: translation options, e.g. '{"maxBlocks":64}')
   let r;
   reset();
   do r = jit.run({ stopAt: p.end, maxInsns: 2e9 }); while (r === EXIT.TIMESLICE); // warm-up: translation, then
