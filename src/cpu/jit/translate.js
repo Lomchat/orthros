@@ -794,7 +794,8 @@ class Emitter {
     // the region dispatcher (top level): the targets of the backward transfers no structured loop holds are compared
     // first (opts.dispatchIf), each a conditional branch of its own, before the br_table — one indirect jump shared by
     // the region's entries and all those transfers, whose target changes from one dispatch to the next
-    if (!parent && this.dispatchIf) for (const t of this.backTargets()) c.get(L_BLK).i32(t).eq().br_if(targets[t - first]);
+    // (and the region's entry block first: the entry of every call into the region)
+    if (!parent && this.dispatchIf) for (const t of [this.x87EntryIdx, ...this.backTargets().filter((k) => k !== this.x87EntryIdx)]) c.get(L_BLK).i32(t).eq().br_if(targets[t - first]);
     c.get(L_BLK); if (first) c.i32(first).sub();
     c.br_table(targets, def);
     for (const ch of direct) { c.end(); c.i32(-1).set(L_BLK).br(ch.label); }
