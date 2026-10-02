@@ -6,6 +6,7 @@ import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
+import { RangeHeat } from './heat.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -258,7 +259,7 @@ export class Jit {
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() };
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -270,6 +271,48 @@ export class Jit {
     if (r) return r;
     for (const x of this.byEntry.values()) if (x.blocks.some((b) => eip >= b.eip && eip < b.end)) return x;
     return null;
+  }
+  /**
+   * Block heat (measurement, opts.coldExits): the guest instructions of the blocks that ran in the live translations
+   * made with block counters, with their execution counts (summed over the regions holding them). Translations from
+   * now on leave out of a region the successors a counted run never took (see discoverRegion). Returns the map's size.
+   */
+  collectHeat() {
+    const heat = new Map();
+    for (const r of this.regions) {
+      const cs = this.blockCounts(r); if (!cs) continue;
+      for (const b of r.blocks) {
+        const n = cs[b.index]; if (!n) continue;
+        for (let a = b.eip; a < b.end;) { heat.set(a, (heat.get(a) ?? 0) + n); try { a = decode(this.mem, a).next; } catch { break; } }
+      }
+    }
+    this.heat = heat;
+    return heat.size;
+  }
+  /**
+   * Add [lo, hi) ranges (pairs) of code known to have run to the heat that shapes the regions translated from now on
+   * (here and in the background translator).
+   */
+  heatAdd(pairs) {
+    if (!pairs?.length) return;
+    if (!(this.heat instanceof RangeHeat)) this.heat = new RangeHeat();
+    this.heat.addPairs(pairs);
+    this.bg?.port.postMessage({ type: 'heat', pairs: Int32Array.from(pairs) });
+  }
+  /**
+   * The blocks whose visit flag (opts.visit) was set since the last call, as pairs lo, hi, ... (added to the heat);
+   * each block is reported once.
+   */
+  harvestVisits() {
+    const u8 = this.mem.u8, out = [];
+    for (const r of this.regions) {
+      const v = r.visits; if (!v) continue;
+      let left = 0;
+      for (const e of v) { if (e[2] < 0) continue; if (u8[e[2]]) { out.push(e[0], e[1]); e[2] = -1; } else left++; }
+      if (!left) r.visits = null;
+    }
+    this.heatAdd(out);
+    return out;
   }
   /** block execution counts of a region translated with opts.blockCounts (by block index), or null */
   blockCounts(region) {
@@ -294,7 +337,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, first: version?.first ?? null, versions: null };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
@@ -322,6 +365,7 @@ export class Jit {
   attachBackground(port) {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
     port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
+    if (this.heat instanceof RangeHeat) port.postMessage({ type: 'heat', pairs: this.heat.pairs() }); // (the heat known so far)
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }

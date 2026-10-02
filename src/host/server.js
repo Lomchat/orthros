@@ -21,6 +21,7 @@ import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { attachLan } from './lan.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
+import { RangeHeat } from '../cpu/jit/heat.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon' };
@@ -295,6 +296,47 @@ export function createServer(opts = {}) {
   /** [module, rva, fpc] by earliest use */
   const regionsList = (name) => [...regionsOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 40000).map(([k]) => { const [mod, rva, fpc] = k.split(':'); return [mod, Number(rva), fpc === '' ? null : Number(fpc)]; });
 
+  /**
+   * Learned code heat, per manifest: the code ranges (module, offset, length) that ran in the sessions' translations
+   * (their visit flags), posted by the worker; /api/heat/<manifest> returns them merged per module ({ module: [rva, len,
+   * ...] }) for the JIT's region formation (src/cpu/jit/heat.js: a region leaves out the successors that never ran).
+   * Kept in opts.learnDir/heat-<manifest>.json when set.
+   */
+  const heatLearned = new Map(); // manifest -> Map(module -> RangeHeat of offsets)
+  const heatFile = (name) => opts.learnDir && path.join(opts.learnDir, `heat-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const heatOf = (name) => {
+    let m = heatLearned.get(name);
+    if (!m) {
+      m = new Map(); heatLearned.set(name, m);
+      const f = heatFile(name);
+      if (f) try { for (const [mod, list] of Object.entries(JSON.parse(fs.readFileSync(f, 'utf8')))) { const h = new RangeHeat(); for (let i = 0; i + 1 < list.length; i += 2) h.add(list[i], list[i] + list[i + 1]); m.set(mod, h); } } catch { /* none yet */ }
+    }
+    return m;
+  };
+  const heatJson = (name) => { const o = {}; for (const [mod, h] of heatOf(name)) { const p = h.pairs(), l = []; for (let i = 0; i < p.length; i += 2) l.push(p[i], p[i + 1] - p[i]); o[mod] = l; } return o; };
+  let heatDirty = new Set(), heatTimer = null;
+  const HEAT_MODULES = 256, HEAT_RANGES = 400000;
+  const learnHeat = (name, list) => {
+    const m = heatOf(name);
+    for (const e of Array.isArray(list) ? list : []) {
+      if (!Array.isArray(e) || typeof e[0] !== 'string' || e[0].length > 64 || !Number.isInteger(e[1]) || e[1] < 0 || e[1] >= 0x40000000 || !Number.isInteger(e[2]) || e[2] <= 0 || e[2] > 0x100000) continue;
+      const mod = e[0].toLowerCase();
+      let h = m.get(mod);
+      if (!h) { if (m.size >= HEAT_MODULES) continue; h = new RangeHeat(); m.set(mod, h); }
+      if (h.size + h.addLo.length < HEAT_RANGES) h.add(e[1], e[1] + e[2]);
+    }
+    for (const h of m.values()) h.merge();
+    if (heatFile(name)) {
+      heatDirty.add(name);
+      heatTimer ??= setTimeout(() => {
+        heatTimer = null;
+        for (const n of heatDirty) { const f = heatFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify(heatJson(n))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
+        heatDirty = new Set();
+      }, 20000);
+      heatTimer.unref?.();
+    }
+  };
+
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
@@ -416,6 +458,22 @@ export function createServer(opts = {}) {
           return;
         }
         return send(res, 200, JSON.stringify(regionsList(m[1])), { 'Content-Type': 'application/json' });
+      }
+      m = /^\/api\/heat\/([^/]+)$/.exec(p);
+      if (m) {
+        if (!getManifest(m[1])) return send(res, 404, 'no such manifest');
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 16 * 1024 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 16 * 1024 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            learnHeat(m[1], rec?.heat);
+            send(res, 204, '');
+          });
+          return;
+        }
+        return send(res, 200, JSON.stringify(heatJson(m[1])), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/programs\/([^/]+)$/.exec(p);
       if (m) {

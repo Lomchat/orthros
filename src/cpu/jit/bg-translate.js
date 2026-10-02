@@ -7,6 +7,7 @@
 // those bytes.
 import { GuestMemory } from '../memory.js';
 import { translateRegion, buildRegionModule, discoverRegion } from './translate.js';
+import { RangeHeat } from './heat.js';
 import './translate-x87.js'; // (the translators register their handlers on import, as jit.js does)
 import './translate-sse-float.js';
 import './translate-sse-int.js';
@@ -36,7 +37,7 @@ function translateBatch(items, over) {
       const t = translateRegion(mem, it.eip, o);
       if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks))) continue; // (the code changed meanwhile)
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
-      r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
+      r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, visits: t.stats.visits };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
     } catch { /* undecodable: left to the emulator */ }
   }
@@ -46,6 +47,7 @@ function translateBatch(items, over) {
 /** A message from the emulator's worker; the answer (if any) goes through `reply` (tests call this directly). */
 export function handleMessage(m, reply) {
   if (m.type === 'init') { mem = new GuestMemory({ memory: m.memory }); opts = m.opts; return; }
+  if (m.type === 'heat') { if (opts) { opts.heat ??= new RangeHeat(); opts.heat.addPairs(m.pairs); } return; } // (see Jit.heatAdd)
   if (m.type !== 'batch' || !mem) return;
   const t0 = performance.now();
   const { codes, names, out } = translateBatch(m.items, m.over ?? null);

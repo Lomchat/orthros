@@ -99,7 +99,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -540,6 +540,12 @@ export function discoverRegion(mem, entry, opts) {
   const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
   const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
+  // opts.coldExits with a heat map (Jit.collectHeat: guest instruction address -> executions in a counted run): a
+  // successor of a branch that ran at least opts.coldMin times is left out of the region when the counted run never
+  // executed it — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
+  const heat = (opts.coldExits ?? JIT_DEFAULTS.coldExits) && opts.heat ? opts.heat : null;
+  const coldMin = opts.coldMin ?? JIT_DEFAULTS.coldMin;
+  const cold = (from, t) => heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t);
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
@@ -549,7 +555,7 @@ export function discoverRegion(mem, entry, opts) {
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } };
+      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS && !cold(insn.addr, t)) { leaders.add(t); queue.push(t); } };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
@@ -770,6 +776,17 @@ class Emitter {
     // into a block passes there: fallthrough, branch, dispatch, chain) — which blocks of a hot region the time goes to
     this.counterBase = this.opts.blockCounts ? allocBlockCounters(this.mem, blocks.length) : -1;
     this.stats.counters = this.counterBase;
+    // visit flags (opts.visit, not with counters): a byte per block not known to have run (opts.heat), set to 1 at the
+    // block's entry; Jit.harvestVisits collects them into the heat (see heat.js). stats.visits: [eip, end, flag address]
+    this.visitAt = null;
+    if ((this.opts.visit ?? JIT_DEFAULTS.visit) && this.counterBase < 0) {
+      const heat = this.opts.heat ?? null, unknown = blocks.filter((b) => !(heat && heat.has(b.eip)));
+      const base = unknown.length ? allocBlockCounters(this.mem, (unknown.length + 3) >> 2) : -1;
+      if (base >= 0) {
+        this.visitAt = new Int32Array(blocks.length).fill(-1);
+        this.stats.visits = unknown.map((b, k) => { this.visitAt[b.index] = base + k; return [b.eip, b.end, base + k]; });
+      }
+    }
     // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
     // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through
     // memory, where an 8-byte store followed by a 16-byte load of the same register defeats store forwarding.
@@ -1673,6 +1690,7 @@ class Emitter {
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
     if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
+    if (this.visitAt !== null && this.visitAt[b.index] >= 0) this.c.i32(0).i32(1).i32store8(this.visitAt[b.index]);
     // the predicted lazy op at entry (regionLazyPrediction) holds up to the block's first instruction changing it
     this.lzPred = b.lzPred ?? -1;
     this.lzPredUntil = 0;

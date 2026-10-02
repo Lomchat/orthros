@@ -21,6 +21,7 @@ import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/r
 import { listRegion } from '../../cpu/jit/listing.js';
 import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
+import { LearnedHeat } from '../../cpu/jit/heat.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -34,6 +35,9 @@ const netStat = (k) => { let v = gameFilesStats?.[k] ?? 0; for (const st of extr
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
+// learned code heat (src/cpu/jit/heat.js): earlier sessions' ranges, applied to the JIT as modules load; this session's
+// visit flags sent back with the regions
+let learnedHeat = null, heatModules = 0, heatSink = null, heatPostedAt = 0;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
@@ -141,8 +145,14 @@ async function start(m) {
   }
   if (!m.opts.headless || m.opts.lan) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
   if (m.opts.regionCache) {
-    const url = `/api/regions/${encodeURIComponent(manifestName)}`;
-    fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
+    const url = `/api/regions/${encodeURIComponent(manifestName)}`, heatUrl = `/api/heat/${encodeURIComponent(manifestName)}`;
+    // (the heat first: the learned regions are translated with it)
+    fetch(heatUrl).then((r) => (r.ok ? r.json() : null)).then((o) => {
+      if (o && typeof o === 'object') { learnedHeat = new LearnedHeat(o); heatModules = 0; let n = 0; for (const l of Object.values(o)) n += Array.isArray(l) ? l.length / 2 : 0; if (n) log('file', `heat: ${n} code ranges learned from earlier sessions (${Object.keys(o).length} modules)`); }
+    }).catch(() => {}).finally(() => {
+      fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
+    });
+    heatSink = (list) => fetch(heatUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ heat: list }) }).catch(() => {});
     regionSink = (list) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list }) }).catch(() => {});
   }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
@@ -217,6 +227,8 @@ async function start(m) {
     await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
   }
   if (regionSink && vm.jit) vm.jit.learned = [];
+  // visit flags in the translations (the heat sent back; ?dbg=ORTHROS_JIT_VISIT=0: off)
+  if (heatSink && vm.jit && vm.jit.opts.visit === undefined && !vm.jit.opts.blockCounts) vm.jit.opts.visit = globalThis.ORTHROS_JIT_VISIT === undefined ? true : !!Number(globalThis.ORTHROS_JIT_VISIT);
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
   // while the game waits, on this thread)
   if (vm.jit && bgWanted) {
@@ -354,6 +366,7 @@ function gapEnd() {
 function pump() {
   if (!running || stopped) return;
   gapEnd();
+  if (learnedHeat && vm?.jit && vm.proc && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   if (bgTranslator && regionQueue) feedBackground();
   if (pumpEndAt) { const g = performance.now() - pumpEndAt; pumpIdleMs += g; pumpGaps++; if (g > pumpGapMax) pumpGapMax = g; }
   if (Atomics.load(host.ctl, CTL.STOP)) { stop('stopped'); return; }
@@ -396,6 +409,12 @@ function pump() {
     const list = [];
     for (const [eip, fpc, t] of vm.jit.learned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) list.push([mod.name.toLowerCase(), eip - mod.base, fpc, t]); }
     if (list.length) regionSink(list);
+  }
+  if (heatSink && vm.jit?.opts.visit && now - heatPostedAt > 10000) {
+    heatPostedAt = now;
+    const pairs = vm.jit.harvestVisits(), list = [];
+    for (let i = 0; i < pairs.length; i += 2) { const mod = vm.proc.moduleByAddr(pairs[i]); if (mod && pairs[i + 1] <= mod.base + mod.size) list.push([mod.name.toLowerCase(), pairs[i] - mod.base, pairs[i + 1] - pairs[i]]); }
+    if (list.length) heatSink(list);
   }
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
