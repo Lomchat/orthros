@@ -3,7 +3,7 @@
 // an API (the end of a phase: --until-api, default CreateProcessA) and reports the wall time, the CPU time of the
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
-//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]
+//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--until-insns <M>]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,9 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
+// --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
+// `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
+const untilInsns = Number(opt('until-insns', 0)) * 1e6;
 const { manifest, dir } = loadManifest(target);
 const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-startbench-')); // (a fresh profile: the first-launch path)
 const vfs = makeVfs(manifest, dir, saveDir);
@@ -56,6 +59,7 @@ vm.dispatchThunk = (t, i) => {
   const th = vm.api.thunk(i);
   if (th?.name === untilApi) { report(`${untilApi} reached`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); }
   if (performance.now() - t0 > limit * 1000) { report('time limit'); process.exit(1); }
+  if (untilInsns && vm.guestInsns >= untilInsns) { report(`${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); process.exit(0); }
   return dispatch(t, i);
 };
 vm.host.waitEvent = (ms) => clock.sleep(Math.min(ms, 50));
