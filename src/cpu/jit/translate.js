@@ -91,11 +91,11 @@ const SZLOG = [0, 0, 1, 0, 2];
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 
 /**
- * Defaults of the translation options (opts.maxBlocks / opts.maxInsns, discoverRegion).
+ * Defaults of the translation options (opts.logicRes, binArith; opts.maxBlocks / opts.maxInsns, discoverRegion).
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -605,6 +605,7 @@ class Emitter {
     this.xdValid = this.xdDirty = 0; this.xdOK = false; // (f64 shadows, see xmmShadowSync64)
     this.fcmp = null;
     this.smc = opts.smc !== false;
+    this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -1618,6 +1619,10 @@ function binArith(kind, opEmit, store = true) {
     loadDst(E, d); E.c.set(L_LZA);
     E.loadOp(s); E.c.set(L_LZB);
     E.c.get(L_LZA).get(L_LZB); opEmit(E.c); maskTo(E, size); E.c.set(L_LZRES);
+    // AND/OR/XOR/TEST flags depend on the result alone (CF = OF = AF = 0, as the flags helper and the inline conditions
+    // compute them): the result stands in for the lazy operands too (opts.logicRes), one value instead of three where the
+    // lazy state stays live (merges, exits) rather than copies of both operands kept in registers of their own
+    if (kind === LZ.LOGIC && E.logicRes) E.c.get(L_LZRES).tee(L_LZA).set(L_LZB);
     E.setLazy(kind, size); // before the store: an SMC exit inside storeOpFrom flushes a coherent lazy state
     if (store) E.storeOpFrom(d, L_LZRES, insn);
   };
