@@ -98,3 +98,23 @@ test('a background translation is dropped when its code changed before the insta
   assert.equal(b.jit.bg.rejected, 2);
   assert.equal(runAll(b.jit), EXIT.HALT);
 });
+
+test('learned entries that are blocks of a region the background worker translated before are skipped, not translated', () => {
+  const a = setup();
+  a.jit.learned = [];
+  assert.equal(runAll(a.jit), EXIT.HALT);
+  const blocks = a.jit.byEntry.get(CODE).blocks.map((x) => x.eip).filter((e) => e !== CODE);
+  assert.ok(blocks.length >= 2, 'the region has blocks past its entry');
+  // (the entries in one batch, interior blocks after the region holding them: the install would drop them)
+  const b = setupShared();
+  const list = [[CODE, 0], ...blocks.map((e) => [e, 0]), ...a.jit.learned.filter(([e]) => e !== CODE && !blocks.includes(e))];
+  const n = b.jit.bgPrewarm(list);
+  assert.equal(n, list.length);
+  b.jit.bgInstall(b.replies[0]);
+  assert.equal(b.jit.bg.covered, blocks.length);
+  assert.equal(b.jit.bg.rejected, 0, 'nothing translated for the install to drop');
+  assert.equal(b.jit.bg.installed, n - blocks.length);
+  for (const e of blocks) assert.equal(b.jit.blockMap.get(e).region.entry, CODE, 'reached through the region holding it');
+  assert.equal(runAll(b.jit), EXIT.HALT);
+  assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(a.mem.bytes(OUT, 0x300)).toString('hex'));
+});

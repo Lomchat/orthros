@@ -314,7 +314,7 @@ export class Jit {
    * equal the ones translated.
    */
   attachBackground(port, cache = null) {
-    this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0, compileMs: 0, translateMs: 0, cacheHits: 0, cache: null };
+    this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, covered: 0, bgMs: 0, compileMs: 0, translateMs: 0, cacheHits: 0, cache: null };
     // (`cache`: the persistent cache of translations, see code-cache.js — { name, sources }, or null)
     port.postMessage({ type: 'init', memory: this.mem.memory, cache, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
   }
@@ -349,21 +349,26 @@ export class Jit {
     bg.inflight.delete(m.id);
     bg.bgMs += m.ms ?? 0; bg.compileMs += m.compileMs ?? 0; bg.translateMs += m.translateMs ?? 0; bg.cacheHits += m.cacheHits ?? 0; if (m.cache) bg.cache = m.cache;
     const epoch = bg.epochOf?.get(m.id) ?? 0; bg.epochOf?.delete(m.id);
-    if (!m.module || epoch !== (this.abEpoch ?? 0)) return;
+    // (a batch not installed as a whole: none of its regions covers its blocks for the worker any more)
+    const dropAll = () => { const l = m.items.filter((it) => it.k >= 0).map((it) => [it.eip, it.blocks.map((b) => b.eip)]); if (l.length) bg.port.postMessage({ type: 'uncover', regions: l }); };
+    if (!m.module || epoch !== (this.abEpoch ?? 0)) { dropAll(); return; }
     const t0 = performance.now();
     let inst;
-    try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
+    try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { dropAll(); this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
     const u8 = this.mem.u8;
+    let uncover = null;
     for (const it of m.items) {
+      if (it.covered) { bg.covered++; continue; } // (a block of a region the worker translated before: see bg-translate.js)
       if (it.k < 0) continue; // (not translatable)
       // translated here meanwhile (at a miss), or its code changed since the background worker read it
       let same = !this.blockMap.has(it.eip);
       for (let i = 0, o = 0; same && i < it.blocks.length; i++) { const b = it.blocks[i]; for (let a = b.eip; a < b.end; a++, o++) if (u8[a] !== it.snap[o]) { same = false; break; } }
-      if (!same) { bg.rejected++; continue; }
+      if (!same) { bg.rejected++; (uncover ??= []).push([it.eip, it.blocks.map((b) => b.eip)]); continue; }
       this.table.set(it.fnIdx, inst.exports['r' + it.k]);
       this.register(it.eip, it.blocks, it.fnIdx, null, it.fpc, it.stats);
       bg.installed++;
     }
+    if (uncover) bg.port.postMessage({ type: 'uncover', regions: uncover });
     this.stats.bgInstallMs = (this.stats.bgInstallMs ?? 0) + performance.now() - t0;
   }
 

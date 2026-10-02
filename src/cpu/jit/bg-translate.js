@@ -15,6 +15,13 @@ import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 let mem = null, opts = null, cache = null, cacheReady = null;
+/**
+ * Block addresses of the regions this worker translated in this session. A learned entry that is a block of another
+ * of them is not translated: the emulator would drop it at install (its address is a block of a region installed
+ * before it, entered through the block hash), so translating it — and keeping it in the cache — is wasted work. The
+ * emulator says which regions it did not install ('uncover': their code changed): their blocks are free again.
+ */
+let covered = new Map(); // block address -> entry of the region holding it
 
 /** the bytes of the blocks' ranges, concatenated */
 function snapshot(blocks) {
@@ -33,6 +40,7 @@ function translateBatch(items) {
   for (const it of items) {
     const r = { eip: it.eip, fnIdx: it.fnIdx, fpc: it.fpc, k: -1 };
     out.push(r);
+    if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
     try {
       const o = { ...opts, fnIdx: it.fnIdx, fpcAssume: it.fpc };
       const found = discoverRegion(mem, it.eip, o).blocks;
@@ -47,6 +55,7 @@ function translateBatch(items) {
         r.k = codes.length; r.blocks = hit.blocks.map(([eip, end, index]) => ({ eip, end, index })); r.snap = snap; r.fpc = hit.fpcOut;
         r.stats = { ...hit.stats };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
+        for (const b of r.blocks) covered.set(b.eip, it.eip);
         continue;
       }
       const te = performance.now();
@@ -56,6 +65,7 @@ function translateBatch(items) {
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
       r.stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
+      for (const b of t.blocks) covered.set(b.eip, it.eip);
       // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between)
       if (cache && sameDeps(deps, t.deps)) cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats: r.stats, hints: t.code.hints, snap, code: t.code });
     } catch { /* undecodable: left to the emulator */ }
@@ -82,7 +92,7 @@ function batch(m, reply) {
   let module = null;
   if (codes.length) {
     try { module = new WebAssembly.Module(buildRegionModule(codes, names, mem.memory.buffer instanceof SharedArrayBuffer)); }
-    catch { for (const r of out) r.k = -1; }
+    catch { for (const r of out) { if (r.k >= 0) for (const b of r.blocks) if (covered.get(b.eip) === r.eip) covered.delete(b.eip); r.k = -1; } }
   }
   const t2 = performance.now();
   // (written records reach the disk at the next flush — a costly sync: at most every 5 s; a session ended before
@@ -94,7 +104,7 @@ function batch(m, reply) {
 /** A message from the emulator's worker; the answer (if any) goes through `reply` (tests call this directly). */
 export function handleMessage(m, reply) {
   if (m.type === 'init') {
-    mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null;
+    mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null; covered = new Map();
     if (m.cache) {
       // (batches wait for the cache, read once; without one — no OPFS, another tab holds it — nothing is kept)
       const ready = openCache(m.cache).then((c) => { cache = c; }, (e) => { cache = null; reply({ type: 'cache-error', message: String(e?.message ?? e) }); });
@@ -102,6 +112,8 @@ export function handleMessage(m, reply) {
     }
     return;
   }
+  // (a region the emulator did not install — its code changed —: its blocks are no longer covered by it)
+  if (m.type === 'uncover') { for (const [entry, eips] of m.regions) for (const e of eips) if (covered.get(e) === entry) covered.delete(e); return; }
   if (m.type !== 'batch' || !mem) return;
   if (cacheReady) cacheReady.then(() => batch(m, reply)); else batch(m, reply);
 }
