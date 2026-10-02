@@ -438,8 +438,9 @@ export function defineEffects(X, vm, h) {
       const vs = sh.vs;
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
-      const ver = dev === null ? -1 : vs ? dev.vsConstVersion : dev.psConstVersion; // (this stage's constants only)
-      const same = dev !== null && sh.constVersion === ver && sh.constRegs === regs;
+      // (this stage's constants only; dbg:ORTHROS_API_OPT_OFF=1: any constant, as before — measurement)
+      const all = globalThis.ORTHROS_API_OPT_OFF === 1, ver = dev === null ? -1 : all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion;
+      const same = dev !== null && sh.constVersion === ver && sh.constAll === all && sh.constRegs === regs;
       let wrote = false;
       for (const b of sh.consts) {
         const v = b.top.version ?? 0;
@@ -454,7 +455,7 @@ export function defineEffects(X, vm, h) {
         sh.preRuns = sh.pre.runs;
       }
       // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
-      if (dev) { sh.constVersion = vs ? dev.vsConstVersion : dev.psConstVersion; sh.constRegs = regs; } else sh.constRegs = null;
+      if (dev) { sh.constVersion = all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion; sh.constAll = all; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     /** a sampler parameter's states compiled once: { tex } (its texture) or { type, word() } (a sampler state) */

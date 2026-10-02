@@ -1155,7 +1155,7 @@ export class WebGLDevice {
     for (const b of bad) { this.glValidateLogs = (this.glValidateLogs ?? 0) + 1; if (this.glValidateLogs <= 40) this.log(`d3d-webgl: GL state cache mismatch (draw ${this.stats.draws}): ${b}`); }
   }
   /** enable/disable a GL capability through the state cache */
-  get noStateCache() { return this.noStateCacheOpt || globalThis.ORTHROS_GL_NOCACHE === 1; }
+  get noStateCache() { return this.noStateCacheOpt || globalThis.ORTHROS_GL_NOCACHE === 1 || globalThis.ORTHROS_API_OPT_OFF === 1; }
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
   invalidateGlState() {
