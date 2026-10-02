@@ -321,7 +321,7 @@ let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn 
  */
 const gap = { cat: -1, planned: 0, at: 0, acc0: 0 };
 /** the JIT's cold tier (Jit.runCold) with a background translator */
-const COLD_TIER_DEFAULT = false;
+const COLD_TIER_DEFAULT = true;
 function gapBegin(r) {
   let cat = ACCT.late, planned = 0;
   if (r.state === 'sleep' || r.state === 'idle') {
