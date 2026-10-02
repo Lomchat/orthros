@@ -705,7 +705,8 @@ It is exact on the four games, and it reduces the emulator thread's Direct3D wor
 run-to-run spread; with a software rasterizer it raises RotWK's frame rate and lowers the p99 frame time of the three
 BFME games (Vice City, at its cap, unchanged but for one run, 8.3).
 On a real GPU it also takes the WebGL calls (1.3-7 % of a frame, 2.2) and any back-pressure of the GPU process off the
-emulator thread. Hence `?glworker=1` is the default where it can run (cross-origin isolation, shared memory, a worker
+emulator thread, and with them the builds of GL programs at their first draw (108-160 ms each with ANGLE on the
+player's machine, 2.4): the render worker absorbs such a stall while the emulator runs on, up to the frames in flight. Hence `?glworker=1` is the default where it can run (cross-origin isolation, shared memory, a worker
 with WebGL2 — else the in-thread backend, logged); `?glworker=0` and the manifest compat flag `"glWorker": 0` keep the
 in-thread backend. Costs: one more thread (2.6-4.5 ms of CPU per frame here), up to 2 frames in flight (one more frame
 of latency than in-thread), the ring (16 MiB) and the mirror's copies of dynamic buffers. A write to a resource the
