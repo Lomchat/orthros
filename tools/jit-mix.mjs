@@ -50,10 +50,38 @@ export function jitMix(jit) {
     regionInsns.push([r.entry, ri]);
     void regionEntries;
   }
+  // checked stores per block that could share one check made before the first of them: stores whose address registers
+  // no instruction between them writes (a register operand written, or any instruction with implicit writes)
+  let checked = 0, groups = 0;
+  for (const r of jit.regions) {
+    const counts = jit.blockCounts(r);
+    if (!counts) continue;
+    r.blocks.forEach((b, k) => {
+      const n = counts[k]; if (!n) return;
+      let a = b.eip, open = null; // open group: Set of address registers
+      while (a < b.end) {
+        let insn; try { insn = decode(mem, a); } catch { break; }
+        const name = OP_NAMES[insn.op], m = insn.ops[0];
+        const isStore = m && m.t === OT.MEM && !READS_FIRST.has(name) && !(m.base === 4 && m.index < 0);
+        if (isStore) {
+          checked += n;
+          const regsOf = new Set([m.base, m.index].filter((x) => x >= 0));
+          if (!open) { groups += n; open = regsOf; } else for (const x of regsOf) open.add(x);
+        }
+        // writes ending the group: a register destination among the group's address registers, or an implicit writer
+        const d = insn.ops[0];
+        const writesReg = d && d.t === OT.REG ? (d.size === 1 && d.r >= 4 ? d.r - 4 : d.r) : -1;
+        if (open && ((writesReg >= 0 && open.has(writesReg)) || ['CALL', 'RET', 'PUSHA', 'POPA', 'MOVS', 'STOS', 'CMPS', 'SCAS', 'LODS', 'XCHG', 'XADD', 'CMPXCHG', 'MUL', 'IMUL', 'DIV', 'IDIV', 'CDQ', 'CWD', 'LEAVE', 'POP'].includes(name))) open = null;
+        a = insn.next;
+      }
+    });
+  }
   const pct = (x) => (100 * x / Math.max(1, insns)).toFixed(1) + '%';
+  void 0;
   const lines = [];
   lines.push(`[mix] ${regionsCounted} regions with counters, ${(insns / 1e6).toFixed(0)} M guest instructions in ${(blocks / 1e6).toFixed(0)} M block executions (${(insns / Math.max(1, blocks)).toFixed(2)} per block)`);
   lines.push(`[mix] stores: esp ${pct(stores.esp)}, ebp ${pct(stores.ebp)}, absolute ${pct(stores.abs)}, other ${pct(stores.other)} (checked: ${pct(stores.ebp + stores.abs + stores.other)})`);
+  lines.push(`[mix] checked stores (executed) ${(checked / 1e6).toFixed(0)} M in ${(groups / 1e6).toFixed(0)} M groups sharing their address registers (x${(checked / Math.max(1, groups)).toFixed(2)} per group)`);
   lines.push(`[mix] top: ${[...ops].sort((x, y) => y[1] - x[1]).slice(0, 30).map(([k, v]) => `${k} ${pct(v)}`).join(', ')}`);
   regionInsns.sort((x, y) => y[1] - x[1]);
   let acc = 0; const cum = [];

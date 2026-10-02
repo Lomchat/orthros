@@ -99,7 +99,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, tierPad: 0, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -728,6 +728,7 @@ class Emitter {
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
+    this.tierPad();
     c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
@@ -784,6 +785,24 @@ class Emitter {
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
     return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
+  }
+
+  /**
+   * V8 runs a new function in its baseline tier (Liftoff) and compiles it with TurboFan once it has used a tiering budget
+   * (--wasm-tiering-budget, "a rough approximation of bytes executed"), which Liftoff charges at returns, tail calls and
+   * loop back edges by how far in the function's bytes the code has gone: a region entered thousands of times per second
+   * but leaving after a few hundred bytes — game code in play, spread over thousands of regions — runs baseline code
+   * (2-3x slower) for many seconds. opts.tierPad: that many bytes of dead code (nops after a branch, never executed nor
+   * compiled) at the start of the function, so that every exit is charged that much more: the region tiers up after
+   * fewer entries. (tools/tierup-bench.mjs)
+   */
+  tierPad() {
+    const n = this.opts.tierPad ?? JIT_DEFAULTS.tierPad;
+    if (!n) return;
+    const c = this.c;
+    const l = c.block(); c.br(l);
+    for (let i = 0; i < n; i++) c.nop();
+    c.end();
   }
 
   /**

@@ -4,7 +4,7 @@
 // shifts by constants and CL, SETcc, CMOVcc, XCHG, CDQ/CWDE, BSWAP, 8/16-bit forms) and loads through a pointer the
 // branch guards (an arm not taken must not touch its address: some are beyond the guest memory). Whole and time-sliced
 // JIT runs, with and without if-conversion, against the interpreter: registers, arithmetic flags, EIP, exit code; the
-// translations are checked to have converted branches.
+// translations are checked to have converted branches. (Also with opts.tierPad: dead bytes at the start of each region.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -129,7 +129,7 @@ test('random branches over short arms: if-converted translations match the inter
     const { code, end } = gen();
     const regs = [val(), rnd(40), val(), val(), ptr(), rnd(0x1000)];
     const EI = makeExec(null); EI.load(code, regs); const ri = EI.run(CODE + end, 1e5);
-    for (const [opts, slice] of [[{ ifcvt: 'all' }, 0], [{ ifcvt: 'all' }, 1], [{ ifcvt: 'all' }, 3], [{ ifcvt: 'all' }, 17], [{ ifcvt: true }, 0], [{ ifcvt: false }, 0]]) {
+    for (const [opts, slice] of [[{ ifcvt: 'all' }, 0], [{ ifcvt: 'all' }, 1], [{ ifcvt: 'all' }, 3], [{ ifcvt: 'all' }, 17], [{ ifcvt: true }, 0], [{ ifcvt: false }, 0], [{ ifcvt: 'all', tierPad: 300 }, 3]]) {
       const EJ = makeExec(opts); EJ.load(code, regs);
       let r, k = 0;
       while ((r = EJ.run(CODE + end, slice || 1e5)) === EXIT.TIMESLICE && ++k < 1e6);
