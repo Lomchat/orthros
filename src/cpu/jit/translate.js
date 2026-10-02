@@ -95,7 +95,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * opts.layout (layoutBlocks), opts.foldDisp (Emitter.eaFold). ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them,
  * so that a whole test suite runs under either setting.
  */
-export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, exitStubs: false, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { layout: false, foldDisp: false, x87Logical: false, dispatchIf: false, exitStubs: false, retLoops: false, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -405,7 +405,7 @@ function layoutBlocks(blocks, byEip, entry) {
  * Returns the top-level units, the single-block unit of every block and, per block, the loops holding it
  * (outermost first).
  */
-function planUnits(blocks, byEip, nest) {
+function planUnits(blocks, byEip, nest, retSites = null) {
   const n = blocks.length;
   const last = new Map(); // header index -> latest back-edge source
   for (const b of blocks) {
@@ -413,8 +413,21 @@ function planUnits(blocks, byEip, nest) {
     if (t && t.index <= b.index) last.set(t.index, Math.max(last.get(t.index) ?? -1, b.index));
   }
   const kept = [];
-  for (const [h, e] of [...last].sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]))) {
-    if (kept.every((k) => e < k.first || h > k.last || (nest && h <= k.first && k.last <= e))) kept.push({ first: h, last: e });
+  const keep = (list) => {
+    for (const [h, e] of [...list].sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]))) {
+      if (kept.every((k) => e < k.first || h > k.last || (nest && h <= k.first && k.last <= e))) kept.push({ first: h, last: e });
+    }
+  };
+  keep(last);
+  // (opts.retLoops) then the backward local returns (a RET to a return site before it, see regionRetSites): a site
+  // whose returns all come from blocks up to some RET block becomes the header of a loop spanning them, where it does
+  // not overlap a loop kept so far — the return is a `br` to that loop instead of a region dispatch. Only an emission
+  // structure: the loop has no other back edge, and every path through it is the same as before.
+  if (retSites) {
+    const back = new Map();
+    for (const b of blocks) for (const a of retSites[b.index] ?? []) { const t = byEip.get(a); if (t && t.index <= b.index) back.set(t.index, Math.max(back.get(t.index) ?? -1, b.index)); }
+    for (const [h, e] of back) if (last.has(h)) back.delete(h); // (already a loop header candidate)
+    keep(back);
   }
   const blockUnit = new Array(n), pathOf = new Array(n);
   const build = (lo, hi, path) => {
@@ -723,12 +736,12 @@ class Emitter {
     // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
     // `end` closes labels[u] and unit u's code follows it; a forward branch to the first block of a
     // later unit is a plain `br` to that unit's label
-    const { top, blockUnit, pathOf } = planUnits(blocks, byEip, !!this.opts.nestLoops);
-    this.blockUnit = blockUnit;
-    this.pathOf = pathOf;
     // per RET block, the return sites of the region's direct calls it may return to: a RET to one of them stays in the
     // region (see HANDLERS[OP.RET])
     this.retSitesOf = regionRetSites(blocks, byEip);
+    const { top, blockUnit, pathOf } = planUnits(blocks, byEip, !!this.opts.nestLoops, (this.opts.retLoops ?? JIT_DEFAULTS.retLoops) ? this.retSitesOf : null);
+    this.blockUnit = blockUnit;
+    this.pathOf = pathOf;
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
     this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
