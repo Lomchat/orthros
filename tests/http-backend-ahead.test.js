@@ -61,7 +61,7 @@ test('learned prefetch: whole blocks from the game\'s position in the list on, t
 test('learned pieces: fetched ahead of the game, not aborted by its reads, waited for by a parked read', () => withFetch(async (calls) => {
   const store = memStore();
   const b = new HttpBackend('/game/b/', tree(), { store });
-  b.fillBackground = () => {};
+  b.fillBackground = () => {}; b.noteMiss = () => {}; // (the learned pieces alone: no block downloads for the reads that miss)
   b.lastSyncFetchAt = performance.now() + 1e9; // (the whole-block pass stays out of the way)
   const P = BLOCK / CHUNK;
   let stopped = false;

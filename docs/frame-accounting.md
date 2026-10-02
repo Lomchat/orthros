@@ -54,8 +54,9 @@ report prints the accounting's own clock reads per frame.
   the last one, as `end`, when the run stops) gets a `[frames]` report: frames > 33 / > 40 / > 50 ms (count and per
   minute), frame and work percentiles, mean time by category over all frames and over the slow (> 33.4 ms) ones, the
   slow frames' excess over the phase's median frame by category (% of the total excess) and the count of slow frames
-  by their largest excess, the worst frames with their categories, and the APIs that took the most time (estimated
-  from the samples). `--phases <file>` writes the reports as JSON.
+  by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
+  largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
+  samples). `--phases <file>` writes the reports as JSON.
 - **Slow-frame log lines** (`[slowframe]`): the frame's categories in brackets after its duration.
 - **Telemetry** (`--telemetry`): each ~0.5 s sample gains `w` (mean work per frame, ms), `c` (mean ms per frame by
   category), and when frames were slow `sc` (their categories summed, ms) and `wf` (the worst one: [ms, work ms,

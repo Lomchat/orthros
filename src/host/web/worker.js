@@ -26,8 +26,10 @@ let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', g
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
 const offlineDependencies = []; // copies of additional mounted games, counted with the primary game
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
-/** (?netlog=1: each game file read over the network is logged with the rank of its block in the learned list) */
-const learnedRank = new Map();
+/** the network read counters of the games the manifest requires (mounted beside it), counted with the game's own */
+let extraFilesStats = null;
+/** a network read counter (requests, ms, bytes) of the game's folder and the games it requires */
+const netStat = (k) => { let v = gameFilesStats?.[k] ?? 0; for (const st of extraFilesStats ?? []) v += st[k] ?? 0; return v; };
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
@@ -146,42 +148,48 @@ async function start(m) {
   const root = new MemBackend();
   vfs.mount('C:\\', root);
   for (const d of ['Windows', 'Windows/System32', 'Windows/Temp', 'Users', 'Users/Player', 'Program Files', 'Program Files/Common Files', 'Game']) root.mkdir(d);
-  // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs)
-  let store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + manifestName) : null;
-  if (!store && m.opts.memPrefetch) store = new MemBlockStore(1536 * 1048576); // (harness: prefetch measured without a persistent profile)
-  if (store) log('file', `block store: ${store.map.size} blocks (${Math.round(store.end / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
-  if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store: a stored block did not read back as written, fetched again: ${key}`); };
-  const gameFiles = new HttpBackend(`/game/${manifestName}/`, m.tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${learnedRank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${prefetch.k ?? '-'}`) : null, onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
-  gameStore = store; gameFilesStats = gameFiles.stats;
-  // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
-  // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
-  if (store && m.opts.prefetch && !m.opts.offline) {
-    fetch(`/api/prefetch/${encodeURIComponent(manifestName)}`).then((r) => (r.ok ? r.json() : [])).then((list) => {
-      prefetch.total = list.length; prefetch.t0 = performance.now();
-      if (m.opts.netLog) list.forEach(([p, b], i) => learnedRank.set(`${p}#${b}`, i));
-      if (list.length) log('file', `prefetch: ${list.length} blocks learned from earlier sessions`);
-      return gameFiles.prefetch(list, prefetch, () => stopped).then(() => log('file', `prefetch: ${prefetch.done ? 'done' : 'stopped'}, ${prefetch.blocks} blocks (${Math.round(prefetch.bytes / 1048576)} MB) downloaded in ${((performance.now() - prefetch.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
-    }).catch(() => {});
-  }
-  if (store && m.opts.offline) { gameFiles.downloadAll(offline, () => stopped).then(() => log('file', `offline copy: ${offline.done ? 'complete' : 'stopped'} (${Math.round(offline.bytes / 1048576)} MiB of ${Math.round(offline.total / 1048576)})`)); }
-  vfs.mount(manifest.mount, gameFiles);
-  mountGameCdrom(vfs, manifest, gameFiles);
+  // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs);
+  // the games the manifest requires (mounted beside it) the same way: their own store, learned prefetch and read logs,
+  // and one connection shared with the game's folder (the game's reads through either come first, see HttpBackend.link)
+  const link = new Set();
+  const mountFiles = async (name, tree, primary) => {
+    let store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + name) : null;
+    if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
+    const tag = primary ? '' : ` (${name})`;
+    if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
+    if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
+    const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
+    const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link,
+      onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${primary ? '' : name + ':'}${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${pf.k ?? '-'}`) : null,
+      onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
+    // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
+    if (store && m.opts.prefetch && !m.opts.offline) {
+      fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).then((list) => {
+        pf.total = list.length; pf.t0 = performance.now();
+        if (m.opts.netLog) list.forEach(([p, b], i) => rank.set(`${p}#${b}`, i));
+        if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
+        return files.prefetch(list, pf, () => stopped).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
+      }).catch(() => {});
+    }
+    // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
+    if (store && m.opts.offline) {
+      const progress = primary ? offline : { bytes: 0, total: 0, done: false };
+      if (!primary) offlineDependencies.push(progress);
+      files.downloadAll(progress, () => stopped).then(() => log('file', `offline copy${tag}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
+    }
+    return { files, store };
+  };
+  const main = await mountFiles(manifestName, m.tree, true);
+  gameStore = main.store; gameFilesStats = main.files.stats;
+  vfs.mount(manifest.mount, main.files);
+  mountGameCdrom(vfs, manifest, main.files);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
     const treeResponse = await fetch(`/api/tree/${encodeURIComponent(dependency.manifest)}`);
     if (!treeResponse.ok) throw new Error(`dependency ${dependency.manifest}: HTTP ${treeResponse.status}`);
-    const tree = await treeResponse.json();
-    const dependencyStore = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + dependency.manifest) : null;
-    const dependencyFiles = new HttpBackend(`/game/${dependency.manifest}/`, tree, {
-      cacheBlocks: m.opts.cacheBlocks ?? 256, store: dependencyStore, encoded: !!m.opts.encodedRanges,
-      session: m.opts.session ?? '',
-    });
-    vfs.mount(dependency.mount, dependencyFiles);
-    if (dependencyStore && m.opts.offline) {
-      const progress = { bytes: 0, total: 0, done: false };
-      offlineDependencies.push(progress);
-      dependencyFiles.downloadAll(progress, () => stopped).then(() => log('file', `offline copy ${dependency.manifest}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
-    }
+    const dep = await mountFiles(dependency.manifest, await treeResponse.json(), false);
+    vfs.mount(dependency.mount, dep.files);
+    (extraFilesStats ??= []).push(dep.files.stats);
   }
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
@@ -228,7 +236,7 @@ async function start(m) {
     } catch (e) { log('warn', `parallel DXT encoding unavailable: ${e.message}`); }
   }
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
-  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: gameFiles.stats.requests, ioMs: Math.round(gameFiles.stats.ms), ioKB: Math.round(gameFiles.stats.bytes / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '', gpuWaitMs: Math.round(host.gfx?.link?.stats.gpuWaitMs ?? 0) });
+  host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: netStat('requests'), ioMs: Math.round(netStat('ms')), ioKB: Math.round(netStat('bytes') / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '', gpuWaitMs: Math.round(host.gfx?.link?.stats.gpuWaitMs ?? 0) });
   host.slowFrameFrom = (m.opts.slowFrom ?? 0) * 1000;
   if (m.opts.headless) { longWaitMin = 150; vm.waitLogMin = 80; vm.mainWaits = new Map(); }
   if (m.opts.apiTimes) { vm.apiTimes = new Map(); vm.apiTimesPhase = new Map(); } // (harness --api-times: a clock read per API call, garbage included) // (harness: waits of 150 ms and more reported too) // (harness runs: per-frame API time in the slow-frame lines)
@@ -389,7 +397,8 @@ function pump() {
     const p = (q) => (ft.length ? ft[Math.min(ft.length - 1, Math.floor(q * ft.length))] : 0);
     const iv = host.interval ?? { max: 0, slow33: 0, slow50: 0 }; host.interval = { max: 0, slow33: 0, slow50: 0 };
     // time the game waited on the network for its files since the last report (synchronous range requests: nothing runs meanwhile)
-    const netMs = (gameFilesStats?.ms ?? 0) - lastNetMs, netReq = (gameFilesStats?.requests ?? 0) - lastNetReq; lastNetMs = gameFilesStats?.ms ?? 0; lastNetReq = gameFilesStats?.requests ?? 0;
+    const allMs = netStat('ms'), allReq = netStat('requests');
+    const netMs = allMs - lastNetMs, netReq = allReq - lastNetReq; lastNetMs = allMs; lastNetReq = allReq;
     const pc = host?.gfx?.programCache;
     // (loading progress for the page's loading screen: the learned downloads, translations and program builds done ahead)
     const load = { pfDone: prefetch.blocks, pfTotal: prefetch.total, pfFinished: prefetch.done || (prefetch.total > 0 && prefetch.blocks >= prefetch.total), pfMB: Math.round(prefetch.bytes / 1048576),

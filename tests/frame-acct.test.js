@@ -148,8 +148,37 @@ test('interval and phase statistics', () => {
   assert.deepEqual(ph.dominant, { jit: 1, prog: 1 });
   assert.equal(ph.worst[0].dt, 60);
   assert.match(ph.text, /phase start: 1000 frames/);
+  assert.deepEqual(ph.hitches, {});
   assert.equal(s.phase('next', at + 1000).frames, 0);
   assert.equal(CATS.length, N_CATS);
+  // frames of 150 ms and more, counted by their largest category (pacing included)
+  at += 400; s.add(400, frame(400, 50, { ioWait: 300 }), at);
+  at += 200; s.add(200, frame(200, 150, { net: 30 }), at);
+  at += 149; s.add(149, frame(149, 20, { ioWait: 129 }), at);
+  const ph2 = s.phase('end', at);
+  assert.deepEqual(ph2.hitches, { ioWait: 1, guest: 1 });
+  assert.match(ph2.text, /150 ms and more by their largest category: ioWait 1, guest 1/);
+});
+
+test('a timed call running guest code (a callback, a nested wait) does not count the timed calls made from it as its own', () => {
+  const clk = fakeClock(), a = new FrameAccount(clk.now);
+  a.enter(C.guest);
+  const call = (idx, own, drawMs, body) => {
+    a.apiLeft = 1; assert.equal(a.apiTimed(idx), true);
+    const outer = a.cur !== C.api, p = a.enter(C.api), a0 = a.acc[C.api], d0 = a.acc[C.draw], n0 = a.nestApi, m0 = a.nestDraw;
+    clk.t += own; if (drawMs) { const q = a.enter(C.draw); clk.t += drawMs; a.leave(q); }
+    body?.(); a.apiEnd(p, idx, a0, d0, outer, n0, m0);
+  };
+  // a 0.1 ms call whose callback runs guest code calling a 5 ms API that draws for 3 ms, itself calling back into a 0.2 ms one
+  call(1, 0.1, 0, () => { const g = a.enter(C.guest); clk.t += 1; call(2, 5, 3, () => { const h = a.enter(C.guest); clk.t += 1; call(3, 0.2, 0); a.leave(h); }); a.leave(g); });
+  assert.ok(Math.abs(a.idxMs[1] - 0.1) < 1e-9, `outer ${a.idxMs[1]}`);
+  assert.ok(Math.abs(a.idxMs[2] - 8) < 1e-9, `middle ${a.idxMs[2]}`);
+  assert.ok(Math.abs(a.idxMs[3] - 0.2) < 1e-9, `inner ${a.idxMs[3]}`);
+  assert.ok(Math.abs(a.apiSampledMs - 5.3) < 1e-9, `sampled ${a.apiSampledMs}`);
+  assert.ok(Math.abs(a.drawSampledMs - 3) < 1e-9, `sampled draws ${a.drawSampledMs}`);
+  assert.equal(a.always[1], 0); // (the outer call is not heavy: the time was its callback's)
+  const f = a.frame();
+  assert.ok(Math.abs(f[C.api] - 5.3) < 1e-9 && Math.abs(f[C.draw] - 3) < 1e-9 && Math.abs(f[C.guest] - 2) < 1e-9);
 });
 
 test('a timed call running guest code (a callback, a nested wait) does not count the timed calls made from it as its own', () => {
