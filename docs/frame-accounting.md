@@ -14,7 +14,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 | `guest` | guest code: translated code, the dispatcher, thread switches |
 | `api` | Win32 / Direct3D / D3DX handlers in JavaScript, exclusive of the categories below |
 | `draw` | Direct3D draws, clears and StretchRect submitted to WebGL (state, constants, vertex data, the GL call) or recorded for the render worker; blocks when the GPU process is behind. Sampled with the API calls, all timed while the GPU process is behind (see Cost) |
-| `interp` | instructions run by the interpreter (fallbacks of translated code) |
+| `interp` | instructions run by the interpreter (fallbacks of translated code; the JIT's cold tier: new code interpreted while the background worker translates it) |
 | `jit` | translation of new code on the game thread (first tier, consolidation) |
 | `ahead` | learned regions translated on the game thread while it waits |
 | `install` | installing regions translated by the background worker |

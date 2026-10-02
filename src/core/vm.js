@@ -317,18 +317,29 @@ export class Vm {
     // executors read it on entry)
     const runOpts = (this.runOptsByDepth ??= [])[this.depth] ??= { stopAt: -1, maxInsns: 0 };
     runOpts.stopAt = until;
+    // (debugging, ?dbg=ORTHROS_LONG_STEP_MS=N: an executor run or an API call longer than N ms logged, with where the
+    // time went — a single long step freezes the frame)
+    const longMs = globalThis.ORTHROS_LONG_STEP_MS || 0;
     try {
       for (;;) {
         exec.cpu = cpu;
         runOpts.maxInsns = budget;
+        let tl = 0, el = 0, bl = 0;
+        if (longMs) { tl = performance.now(); el = cpu.eip; bl = budget; if (this.jit) this.jit.dbgLong = { wasm: 0, calls: 0, maxWasm: 0, maxWasmEip: 0, maxWasmExit: 0, maxWasmEnd: 0, tr: 0, trN: 0, steps0: this.jit.stats.steps ?? 0, fb0: this.jit.stats.fallbackSteps ?? 0 }; }
         const exit = exec.run(runOpts);
         budget = exec.remaining();
+        if (longMs) {
+          const d = performance.now() - tl, g = this.jit?.dbgLong;
+          if (d > longMs) this.logFn('hang', `long run: ${d.toFixed(0)} ms from ${this.proc.symbolize(el)} to ${this.proc.symbolize(cpu.eip)} exit ${exit}, budget ${bl} -> ${budget}${g ? `; wasm ${g.wasm.toFixed(0)} ms in ${g.calls} calls (longest ${g.maxWasm.toFixed(0)} ms from ${this.proc.symbolize(g.maxWasmEip)} to ${this.proc.symbolize(g.maxWasmEnd)} exit ${g.maxWasmExit}), translate ${g.tr.toFixed(0)} ms x${g.trN}, steps ${(this.jit.stats.steps ?? 0) - g.steps0}, fallbacks ${(this.jit.stats.fallbackSteps ?? 0) - g.fb0}` : ''}`);
+          if (this.jit) this.jit.dbgLong = null;
+        }
         switch (exit) {
           case EXIT.HALT:
             if (until >= 0 && cpu.eip === until) return cpu.eax;
             throw new GuestCrash(this.crashReport(thread, 'HLT executed'));
           case EXIT.THUNK:
-            this.dispatchThunk(thread, cpu.exitArg);
+            if (longMs) this.dispatchThunkTimed(thread, cpu.exitArg, longMs);
+            else this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
             if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
             if (budget <= 0) { budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0; }
@@ -471,6 +482,14 @@ export class Vm {
     for (const d of this.d3dDevices ?? []) d.shadowOn?.();
   }
 
+  /** (debugging, ORTHROS_LONG_STEP_MS) dispatchThunk, logging a call longer than `longMs` */
+  dispatchThunkTimed(thread, idx, longMs) {
+    const t0 = performance.now();
+    try { return this.dispatchThunk(thread, idx); } finally {
+      const d = performance.now() - t0;
+      if (d > longMs) { const t = this.api.thunk(idx); this.logFn('hang', `long API call: ${d.toFixed(0)} ms in ${t?.dll}!${t?.name}`); }
+    }
+  }
   /**
    * An API call from guest code (thunk `idx`), timed on a sample of the calls for the frame accounting (frame-acct.js:
    * the others are counted and estimated).

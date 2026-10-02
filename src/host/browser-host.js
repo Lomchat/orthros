@@ -5,6 +5,7 @@
 // slices). Frames are explicit on purpose: a placeholder canvas committed automatically at the end
 // of a worker task showed half-drawn or missing frames under load.
 import { acct, C as ACCT, FrameStats } from '../core/frame-acct.js';
+import { encodePng } from '../gfx/codecs/png.js';
 
 export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
@@ -85,11 +86,11 @@ export class BrowserDisplay {
     this.cursorDefs ??= new Map();
     if (this.cursorDefs.has(key)) { this.host.post({ type: 'cursor-set', id: key }); return; }
     this.cursorDefs.set(key, true);
-    const enc = image.frames.map((f) => { const c = new OffscreenCanvas(f.w, f.h); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(f.rgba.buffer instanceof ArrayBuffer ? f.rgba.buffer : f.rgba.slice().buffer, f.rgba.buffer instanceof ArrayBuffer ? f.rgba.byteOffset : 0, f.w * f.h * 4), f.w, f.h), 0, 0); return c.convertToBlob({ type: 'image/png' }).then((b) => b.arrayBuffer()); });
-    Promise.all(enc).then((pngs) => {
-      this.host.post({ type: 'cursor-def', id: key, frames: image.frames.map((f, i) => ({ png: pngs[i], hotX: f.hotX, hotY: f.hotY })), steps: image.steps });
-      if (this.cursorKey === key) this.host.post({ type: 'cursor-set', id: key });
-    }).catch(() => {});
+    // (encoded here, on the CPU: a 2D canvas is drawn by the GPU process — behind a GPU backlog, creating one waited
+    // for all of it, a 7 s frame when a game switched to an animated cursor)
+    const pngs = image.frames.map((f) => { const png = encodePng(f.rgba, f.w, f.h); return png.buffer; });
+    this.host.post({ type: 'cursor-def', id: key, frames: image.frames.map((f, i) => ({ png: pngs[i], hotX: f.hotX, hotY: f.hotY })), steps: image.steps }, pngs);
+    this.host.post({ type: 'cursor-set', id: key });
   }
 }
 

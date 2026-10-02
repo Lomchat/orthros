@@ -4,13 +4,28 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
-import { OP_NAMES } from '../decoder.js';
+import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
+/**
+ * Cold tier (Jit.runCold): instructions interpreted from one missed entry before it is translated on this thread
+ * (code that turns out hot); until then its translation is asked of the background worker.
+ */
+const COLD_LIMIT = 1500;
+const COLD_CONTINUE = -1, COLD_TRANSLATE = -2;
+/** instructions the cold tier never interprets (memory written outside their operands, or rare): translated */
+const COLD_NEVER = new Uint8Array(Object.keys(OP).length);
+for (const k of ['MOVS', 'STOS', 'CMPS', 'SCAS', 'LODS', 'INS', 'OUTS', 'FXSAVE', 'FXRSTOR', 'FLDENV', 'FNSTENV', 'FRSTOR', 'FNSAVE', 'MASKMOVQ', 'MASKMOVDQU', 'ENTER', 'SYSENTER', 'INT', 'INT3', 'INTO', 'IRET', 'CALLF', 'JMPF', 'RETF', 'HLT', 'UD2', 'INVALID']) if (OP[k] !== undefined) COLD_NEVER[OP[k]] = 1;
+/** instructions writing below ESP (at most 32 bytes: PUSHA) */
+const COLD_PUSHES = new Uint8Array(Object.keys(OP).length);
+for (const k of ['PUSH', 'PUSHA', 'PUSHF', 'CALL']) if (OP[k] !== undefined) COLD_PUSHES[OP[k]] = 1;
+const COLD_BITSTRING = new Set([OP.BT, OP.BTS, OP.BTR, OP.BTC]);
+/** addresses the SMC map covers (one byte per 4 KiB page, 0x80000 pages) */
+const SMC_MAP_LIMIT = 0x80000000;
 /** x87-mode versions of a region before it is translated with the mode tested at run time */
 const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the four modes seen for code shared by a game's threads)
 
@@ -38,6 +53,10 @@ export class Jit {
     this.interp = interp;
     this.opts = opts;
     this.cpu = null;
+    this.dbgLong = null; // (debugging, ORTHROS_LONG_STEP_MS: time of the current run by part)
+    // cold tier (runCold): missed entries -> instructions interpreted from them; its decodes by address (with their
+    // bytes); entries to ask of the background worker
+    this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
     const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared }));
@@ -425,6 +444,99 @@ export class Jit {
     return 0;
   }
 
+  // ------------------------------------------------------------------ cold tier
+  /**
+   * A miss at `eip` with a background translator (coldTier): instead of translating here — a frame of new code
+   * (a menu opened, a unit selected) translated hundreds of regions on the game thread — the region is asked of the
+   * background worker and its code interpreted until it is installed: from block to block while the next one is not
+   * translated, up to COLD_LIMIT instructions per entry (the time of one translation); an entry that reaches the limit
+   * (a loop, code called often) is translated here as before. The interpreter is exact; what it would not do exactly
+   * here is left to translation: an instruction writing a page that holds translated code (no SMC exit from the
+   * interpreter — its operands' and the stack's pages are checked before each one), string and state-saving
+   * instructions (memory beyond their operands), bit strings. A decode the interpreter cached is checked against the
+   * bytes it was decoded from (code rewritten where nothing is translated). Returns COLD_CONTINUE (dispatch on),
+   * COLD_TRANSLATE (translate cpu.eip here) or an exit code.
+   */
+  runCold(eip) {
+    const p = acct.enter(ACCT.interp);
+    try { return this.runColdNow(eip); } finally { acct.leave(p); }
+  }
+  runColdNow(eip) {
+    const cpu = this.cpu, m = this.mem, interp = this.interp, b4 = cpu.b4, cold = this.cold;
+    let n = cold.get(eip);
+    if (n === undefined) {
+      if (this.coldSafe(eip) === null) return COLD_TRANSLATE; // (nothing to ask of the background worker: translated here)
+      if (cold.size >= 0x40000) cold.clear();
+      n = 0; cold.set(eip, 0);
+      const fpc = m.read16(cpu.base + ST.FPU_CW) & 0xf00;
+      this.coldQueue.push([eip, fpc]);
+      if (this.learned && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(performance.now())]);
+      this.stats.coldEntries = (this.stats.coldEntries ?? 0) + 1;
+    } else if (n >= this.coldLimit) { cold.delete(eip); this.stats.coldHot = (this.stats.coldHot ?? 0) + 1; return COLD_TRANSLATE; }
+    interp.cpu = cpu;
+    const budget = m.i32[b4 + ST.ICOUNT / 4], stopAt = m.u32[b4 + ST.STOP_AT / 4];
+    let k = 0, s = EXIT.NONE;
+    for (;;) {
+      const insn = this.coldSafe(cpu.eip >>> 0);
+      if (insn === null) break;
+      cpu.exit = EXIT.NONE;
+      s = interp.stepDecoded(insn); k++;
+      if (s !== EXIT.NONE) break;
+      if (k >= budget || n + k >= this.coldLimit) break;
+      // (after a transfer: translated code, a thunk or the stop address end the interpretation; a fall-through into a
+      // translated block goes on interpreting, as exact)
+      const e = cpu.eip >>> 0;
+      if (e !== insn.next && (e === stopAt || (e >= THUNK_BASE && e < THUNK_END) || this.blockMap.has(e))) break;
+    }
+    cold.set(eip, n + k);
+    m.i32[b4 + ST.ICOUNT / 4] = budget - k;
+    this.stats.coldSteps = (this.stats.coldSteps ?? 0) + k;
+    if (s !== EXIT.NONE) { this.lastFault = interp.lastFault; return s; }
+    if (k === 0) return COLD_TRANSLATE; // (the first instruction is not for the cold tier)
+    if (k >= budget) { cpu.exit = EXIT.TIMESLICE; return EXIT.TIMESLICE; }
+    return COLD_CONTINUE;
+  }
+  /** The instruction at `a` when the cold tier may interpret it now (see runCold), else null; its decode checked or redone. */
+  coldSafe(a) {
+    const u8 = this.mem.u8, decodes = this.coldDecodes;
+    // the cold tier's own decodes (not the interpreter's cache), each with the bytes it was made from
+    let d = decodes.get(a), insn = null;
+    if (d !== undefined) {
+      const r = d.raw;
+      let same = true;
+      for (let i = 0; i < r.length; i++) if (u8[a + i] !== r[i]) { same = false; break; }
+      if (same) insn = d.insn;
+    }
+    if (insn === null) {
+      try { insn = decode(this.mem, a); } catch { return null; } // (undecodable: the translation path reports it)
+      if (insn.next <= a || insn.next - a > 15) return null;
+      if (decodes.size >= 0x40000) decodes.clear(); // (bounded: decoded again)
+      decodes.set(a, { insn, raw: u8.slice(a, insn.next) });
+    }
+    const interp = this.interp;
+    const op = insn.op;
+    if (COLD_NEVER[op]) return null;
+    const map = SMC_MAP_BASE, bits = SMC_CODE | SMC_WATCH;
+    for (const o of insn.ops) {
+      if (o.t !== OT.MEM) continue;
+      if (COLD_BITSTRING.has(op) && insn.ops[1]?.t !== OT.IMM) return null;
+      const ea = interp.ea(o), end = (ea + Math.max(o.size, 16) - 1) >>> 0;
+      if (end >= SMC_MAP_LIMIT || end < ea || ((u8[map + (ea >>> 12)] | u8[map + (end >>> 12)]) & bits)) return null; // (outside the map: a fault, reported by translated code)
+    }
+    if (COLD_PUSHES[op]) { const sp = this.cpu.esp >>> 0; if (sp < 32 || sp > SMC_MAP_LIMIT || ((u8[map + ((sp - 32) >>> 12)] | u8[map + ((sp - 1) >>> 12)]) & bits)) return null; }
+    return insn;
+  }
+  /** The cold tier's entries since the last call to the background worker (the worker calls this between slices). */
+  flushCold() {
+    const q = this.coldQueue;
+    if (!q.length || !this.bg) return 0;
+    this.coldQueue = [];
+    let sent = 0;
+    for (let i = 0; i < q.length; i += 48) sent += this.bgPrewarm(q.slice(i, i + 48));
+    this.stats.coldRequests = (this.stats.coldRequests ?? 0) + sent;
+    return sent;
+  }
+
   /** Fold pending lazy flags into EFLAGS. */
   /** Fold the pending lazy flag operation of the current thread into EFLAGS (normally lazy: CpuState's getter does it on demand). */
   materialize() { foldLazyFlags(this.cpu); }
@@ -464,8 +576,10 @@ export class Jit {
     cpu.exit = EXIT.NONE;
     for (;;) {
       let r;
+      const dbg = this.dbgLong, tw = dbg ? performance.now() : 0, ew = dbg ? cpu.eip : 0;
       try {
         r = this.runtime.run(0, b4); // (the dispatcher reads EIP from the state block)
+        if (dbg) { const d = performance.now() - tw; dbg.wasm += d; dbg.calls++; if (d > dbg.maxWasm) { dbg.maxWasm = d; dbg.maxWasmEip = ew; dbg.maxWasmExit = r; dbg.maxWasmEnd = cpu.eip; } }
       } catch (e) {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
@@ -501,9 +615,16 @@ export class Jit {
           cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
           return EXIT.FAULT;
         }
+        if (this.coldTier && this.bg) {
+          const c = this.runCold(eip);
+          if (c === COLD_CONTINUE) continue;
+          if (c !== COLD_TRANSLATE) return c;
+        }
         this.stats.misses++;
+        const tt = this.dbgLong ? performance.now() : 0;
         try {
           this.translate(eip);
+          if (this.dbgLong) { this.dbgLong.tr += performance.now() - tt; this.dbgLong.trN++; }
         } catch (e) {
           // translation failure (e.g. undecodable): run one instruction in the interpreter
           this.interp.cpu = cpu;

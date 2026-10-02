@@ -14,7 +14,7 @@
 // the interpreter and FNSTENV/FNSAVE/FXAM, not checked (an FLD m80 onto a full stack or an FSTP m80
 // of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
 import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
-import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
+import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_I64B, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
 import { emitF80Load, emitF80Store } from './fpmath-f80.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
@@ -453,8 +453,78 @@ function arithF32(E, insn, op) {
   c.get(L_F32C).f32abs().f32c(Infinity).f32eq();
   if (op >= 6) c.get(x).f32abs(); else c.get(L_F32A).f32abs().get(L_F32B).f32abs().f32max();
   c.f32c(Infinity).f32eq().and().br_if(done);
+  nanF32(E, done);
   E.stepExit(insn);
   c.end(); // done
+}
+/**
+ * arithF32's cold path for a NaN result (L_F32C), inline (no exit, no call): X87.arith's rule on float operands as the
+ * interpreter sees them — promoted to f64 they are quiet NaNs, so they raise nothing and the result is the NaN operand
+ * (of two, the larger significand, quiet bit included, the positive one on a tie) quieted; without a NaN operand (inf -
+ * inf, 0 * inf, 0 / 0, inf / inf) IE is raised and the result is the indefinite (0xffc00000 as a float). Branches to
+ * `done` with the result in L_F32C; a non-NaN result falls through. A NaN-heavy loop (uninitialized data) left its
+ * region at every operation: 20 000 interpreter steps per second in BFME's menus.
+ */
+/**
+ * The same rule for f64 operands (L_F64A, L_F64B: registers held as doubles, m64 operands — their signaling NaNs
+ * raise IE, as in X87.nan2) and an f64 result L_F64C: with `done` (roundF32's cold path, a float result in L_F32C) the
+ * NaN must be a float — its payload in the 23 high fraction bits — else it falls through (to the interpreter step);
+ * without (roundPC's path, a double result) the NaN, or the indefinite, replaces L_F64C. Inline, like nanF32.
+ */
+function nanF64(E, done) {
+  const c = E.c, QUIET = 0x0008000000000000n, FRAC = 0x000fffffffffffffn;
+  if (done) { c.get(L_F64C).get(L_F64C).f64ne(); }
+  const isNan = done ? c.hint(false).if_() : null;
+  c.get(L_F64A).get(L_F64A).f64ne().get(L_F64B).get(L_F64B).f64ne().or();
+  const some = c.if_();
+  c.get(L_F64A).i64reinterpret_f64().set(L_I64A); c.get(L_F64B).i64reinterpret_f64().set(L_I64B);
+  // IE when a NaN operand is signaling
+  c.get(L_F64A).get(L_F64A).f64ne().get(L_I64A).i64(QUIET).i64and().i64eqz().and();
+  c.get(L_F64B).get(L_F64B).f64ne().get(L_I64B).i64(QUIET).i64and().i64eqz().and().or();
+  const ie = c.if_(); raise(E, 0); c.end(); void ie;
+  // the winner (X87.nan2 / pickNaN): a when b is not a NaN, or a's fraction is larger, or equal with a clear sign
+  c.get(L_I64A).get(L_I64B);
+  c.get(L_F64B).get(L_F64B).f64eq();
+  c.get(L_I64A).i64(FRAC).i64and().get(L_I64B).i64(FRAC).i64and().i64gt_u().or();
+  c.get(L_I64A).i64(FRAC).i64and().get(L_I64B).i64(FRAC).i64and().i64eq().get(L_I64A).i64(0n).i64ge_s().and().or();
+  c.get(L_F64A).get(L_F64A).f64ne().and();
+  c.select().i64(QUIET).i64or().set(L_I64A);
+  if (done) {
+    // a float when the 29 low fraction bits are clear: sign, all-ones exponent, the 23 high fraction bits
+    c.get(L_I64A).i64(0x1fffffffn).i64and().i64eqz();
+    const fits = c.if_();
+    c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x80000000 | 0).and().i32(0x7f800000).or();
+    c.get(L_I64A).i64(29n).i64shr_u().wrap().i32(0x7fffff).and().or().f32reinterpret_i32().set(L_F32C);
+    c.br(done);
+    c.end(); void fits;
+  } else c.get(L_I64A).f64reinterpret_i64().set(L_F64C);
+  c.else_();
+  raise(E, 0);
+  if (done) { c.i32(0xffc00000 | 0).f32reinterpret_i32().set(L_F32C); c.br(done); } else indefinite(c), c.set(L_F64C);
+  c.end(); void some;
+  if (done) c.end(); void isNan;
+}
+function nanF32(E, done) {
+  const c = E.c;
+  c.get(L_F32C).get(L_F32C).f32ne();
+  const isNan = c.hint(false).if_();
+  c.get(L_F32A).get(L_F32A).f32ne().get(L_F32B).get(L_F32B).f32ne().or();
+  const some = c.if_();
+  // L_T4 / L_T5: the operands' bits; a wins when it is a NaN and b is not, or its fraction (quiet bit forced, as the
+  // promotion does) is larger, or the same with a clear sign
+  c.get(L_F32A).i32reinterpret_f32().set(L_T4); c.get(L_F32B).i32reinterpret_f32().set(L_T5);
+  c.get(L_T4).get(L_T5);
+  c.get(L_F32B).get(L_F32B).f32eq();
+  c.get(L_T4).i32(0x7fffff).and().i32(0x400000).or().get(L_T5).i32(0x7fffff).and().i32(0x400000).or().gt_u().or();
+  c.get(L_T4).i32(0x7fffff).and().i32(0x400000).or().get(L_T5).i32(0x7fffff).and().i32(0x400000).or().eq().get(L_T4).i32(0).ge_s().and().or();
+  c.get(L_F32A).get(L_F32A).f32ne().and();
+  c.select().i32(0x400000).or().f32reinterpret_i32().set(L_F32C);
+  c.else_();
+  raise(E, 0);
+  c.i32(0xffc00000 | 0).f32reinterpret_i32().set(L_F32C);
+  c.end(); void some;
+  c.br(done);
+  c.end(); void isNan;
 }
 /**
  * 24-bit mode, round to nearest, f64 operands in L_F64A/L_F64B and their f64 result on the stack: the
@@ -483,6 +553,7 @@ function roundF32(E, insn, op) {
   c.get(L_F64B).f32demote().f64promote().get(L_F64B).f64eq().and().br_if(done);
   c.get(L_F64C).f64abs().f64c(Infinity).f64eq().get(L_F64A).f64abs().get(L_F64B).f64abs().f64max().f64c(Infinity).f64eq().and().br_if(done);
   if (op <= 5) midpointF32(E, op, done);
+  nanF64(E, done);
   E.stepExit(insn);
   c.end(); // done
 }
@@ -566,7 +637,7 @@ function arith(op, doPop, integer) {
       roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
-      if (!noNaN) { c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_(); E.stepExit(insn); c.end(); void nan; }
+      if (!noNaN) { c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_(); nanF64(E, null); c.end(); void nan; }
       c.get(L_F64C); storeSTStack(E, dst);
     }
     if (doPop) pop(E);
