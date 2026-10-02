@@ -180,6 +180,9 @@ export class WebGLDevice {
     this.frameDraws = 0;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
+    // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches;
+    // dbg:ORTHROS_GL_NOCACHE=1 switches it within a session)
+    this.noStateCacheOpt = !!opts.noStateCache;
     this.glValidate = !!globalThis.ORTHROS_GL_VALIDATE; // (debugging: cached GL state checked against GL, see validateGlState)
     if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
@@ -216,7 +219,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear();
+    this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null;
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
@@ -536,7 +539,7 @@ export class WebGLDevice {
       for (const b of this.buffers.values()) gl.deleteBuffer(b.buf);
       for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
       for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
-      this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.gamma = null; this.gammaDirty = true;
+      this.textures.clear(); this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
       const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
       for (const r of recs) { r.v = undefined; r.cs = null; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
       this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
@@ -1015,6 +1018,13 @@ export class WebGLDevice {
       const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
       const g = this.glTexture(tex);
       if (gs.tex[i] !== g.tex) { if (gs.active !== i) { gl.activeTexture(gl.TEXTURE0 + i); gs.active = i; } gl.bindTexture(g.target, g.tex); gs.tex[i] = g.tex; }
+      // the sampler of this stage's last draw when neither its states (the table's version) nor its texture changed
+      const stbl = dev.api9 ? dev.samplers[i] : dev.tss[i], sc = this.smpCache ??= [];
+      let ce = sc[i];
+      if (ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.dev === dev && !this.glValidate && !this.noStateCache) {
+        if (gs.smp[i] !== ce.smp) { gl.bindSampler(i, ce.smp); gs.smp[i] = ce.smp; }
+        continue;
+      }
       // sampler objects are pooled by parameter combination: switching settings is one bindSampler
       const au = this.samp(i, SAMP.ADDRESSU, 1), av = this.samp(i, SAMP.ADDRESSV, 1), aw = this.samp(i, SAMP.ADDRESSW, 1);
       const mag = this.samp(i, SAMP.MAGFILTER, 1), min = this.samp(i, SAMP.MINFILTER, 1), mip = this.samp(i, SAMP.MIPFILTER, 0);
@@ -1037,7 +1047,20 @@ export class WebGLDevice {
         gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod);
       }
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
+      if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, dev: null, smp: null };
+      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.dev = dev; ce.smp = smp;
     }
+    // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
+    // looked at again while none of them changed since this device's last draw (the render state table's version) and
+    // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it)
+    const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
+    if (rc.gs === gs && rc.rs === rsT && rc.ver === rsT.ver && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) return;
+    this.applyRaster(dev, gs, flip);
+    rc.gs = gs; rc.rs = rsT; rc.ver = rsT.ver; rc.flip = flip; rc.dev = dev;
+  }
+  /** the depth, stencil, blend, color mask and culling states of the draw (applyState) */
+  applyRaster(dev, gs, flip) {
+    const gl = this.gl;
     // depth / stencil
     const zEnable = this.rs(RS.ZENABLE, 1) !== 0;
     this.glEnable(gl.DEPTH_TEST, zEnable);
@@ -1132,6 +1155,7 @@ export class WebGLDevice {
     for (const b of bad) { this.glValidateLogs = (this.glValidateLogs ?? 0) + 1; if (this.glValidateLogs <= 40) this.log(`d3d-webgl: GL state cache mismatch (draw ${this.stats.draws}): ${b}`); }
   }
   /** enable/disable a GL capability through the state cache */
+  get noStateCache() { return this.noStateCacheOpt || globalThis.ORTHROS_GL_NOCACHE === 1; }
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
   /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
   invalidateGlState() {

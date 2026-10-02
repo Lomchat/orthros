@@ -309,7 +309,7 @@ export function defineEffects(X, vm, h) {
           for (let i = 0; i < n; i++) { const b = vals[vo + 4 * i] ? 1 : 0; if (dst[reg + i] !== b) { dst[reg + i] = b; changed = true; } }
           if (changed) dev.gfx?.constTouched?.(vs ? 4 : 5, reg, reg + n);
         }
-        if (changed) dev.constVersion++;
+        if (changed) { dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
         return;
       }
       const p = this.scratch(c, 0);
@@ -432,13 +432,14 @@ export function defineEffects(X, vm, h) {
      * A shader set for the pass, its constants (from the parameters, and its preshader's outputs) and samplers. A binding
      * is converted again only when its parameter changed (every write to a parameter or to any part of it moves the
      * version of its top-level parameter, see touched), and compared with the device's registers only when it changed
-     * or when some constant of the device changed since this shader's last binding (the device's constant version).
+     * or when some constant of the device's stage (vertex / pixel) changed since this shader's last binding (its version).
      */
     bindShader(c, sh) {
       const vs = sh.vs;
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
-      const same = dev !== null && sh.constVersion === dev.constVersion && sh.constRegs === regs;
+      const ver = dev === null ? -1 : vs ? dev.vsConstVersion : dev.psConstVersion; // (this stage's constants only)
+      const same = dev !== null && sh.constVersion === ver && sh.constRegs === regs;
       let wrote = false;
       for (const b of sh.consts) {
         const v = b.top.version ?? 0;
@@ -453,7 +454,7 @@ export function defineEffects(X, vm, h) {
         sh.preRuns = sh.pre.runs;
       }
       // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
-      if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; } else sh.constRegs = null;
+      if (dev) { sh.constVersion = vs ? dev.vsConstVersion : dev.psConstVersion; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     /** a sampler parameter's states compiled once: { tex } (its texture) or { type, word() } (a sampler state) */

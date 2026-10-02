@@ -393,6 +393,9 @@ export function d3dCore(vm) {
       this.programVersion = (this.programVersion ?? 0) + 1; // only by what the backend's program key depends on
       // uniform-group versions: the backend re-uploads a group only when its version moved (see WebGLDevice.applyState)
       this.transformVersion = (this.transformVersion ?? 0) + 1; this.lightVersion = (this.lightVersion ?? 0) + 1; this.viewportVersion = (this.viewportVersion ?? 0) + 1; this.constVersion = (this.constVersion ?? 0) + 1;
+      // (the vertex / pixel shader constants apart: a pixel constant changed does not make the effect runtime compare a
+      // vertex shader's bindings again, see d3dx9-effect.js bindShader)
+      this.vsConstVersion = (this.vsConstVersion ?? 0) + 1; this.psConstVersion = (this.psConstVersion ?? 0) + 1;
       // per-slot transform versions (the backend re-uploads only the matrices that moved); transformAllVersion marks a
       // wholesale change (reset, state block) that dirties every slot
       this.transformSlotVersion = new Map(); this.transformAllVersion = this.transformVersion;
@@ -626,7 +629,7 @@ export function d3dCore(vm) {
     SetVertexShader(c) { const h = c.arg(1); if (this.recording) { this.recording.vs = h; return D3D_OK; } if (this.vertexShader !== h) this.programVersion++; this.vertexShader = h; this.gfx?.setVertexShader?.(h, this.vertexShaders.get(h)); return D3D_OK; }
     GetVertexShader(c) { c.out32(1, this.vertexShader); return D3D_OK; }
     DeleteVertexShader(c) { const sh = this.vertexShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.vertexShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deleteVertexShader?.(sh); return D3D_OK; }
-    SetVertexShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(0, reg * 4, (reg + n) * 4); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
+    SetVertexShaderConstant(c) { this.constVersion++; this.vsConstVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(0, reg * 4, (reg + n) * 4); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
     GetVertexShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.vsConst[reg * 4 + i]); return D3D_OK; }
     GetVertexShaderDeclaration(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.decl.length * 4); if (!p) return D3D_OK; if (size < sh.decl.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.decl.length; i++) mem.write32(p + 4 * i, sh.decl[i]); return D3D_OK; }
     GetVertexShaderFunction(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const code = sh.code ?? new Uint32Array(0); const size = mem.read32(ps); mem.write32(ps, code.length * 4); if (!p) return D3D_OK; if (size < code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < code.length; i++) mem.write32(p + 4 * i, code[i]); return D3D_OK; }
@@ -638,7 +641,7 @@ export function d3dCore(vm) {
     SetPixelShader(c) { const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } if (this.pixelShader !== h) this.programVersion++; this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
     GetPixelShader(c) { c.out32(1, this.pixelShader); return D3D_OK; }
     DeletePixelShader(c) { const sh = this.pixelShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.pixelShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deletePixelShader?.(sh); return D3D_OK; }
-    SetPixelShaderConstant(c) { this.constVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(1, reg * 4, (reg + n) * 4); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
+    SetPixelShaderConstant(c) { this.constVersion++; this.psConstVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(1, reg * 4, (reg + n) * 4); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
     GetPixelShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.psConst[reg * 4 + i]); return D3D_OK; }
     GetPixelShaderFunction(c) { const sh = this.pixelShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.code.length * 4); if (!p) return D3D_OK; if (size < sh.code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.code.length; i++) mem.write32(p + 4 * i, sh.code[i]); return D3D_OK; }
     DrawRectPatch() { return D3DERR_INVALIDCALL; }

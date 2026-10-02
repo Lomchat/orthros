@@ -10,6 +10,8 @@ export class StateTable {
     this.extra = null;
     /** a recorder told of every set (render worker: the device's state changes, see gfx/d3d-recorder.js), or null */
     this.rec = null;
+    /** moves at every set (a consumer caching what it derived from the table compares it, with the table's identity) */
+    this.ver = 0;
     /** shadow entries in guest memory (runtime.js DEFER_F_*): u32 view, word index of key 0, number of keys */
     this.sh = null; this.shBase = 0; this.shN = 0;
     if (init) for (const [k, x] of init) this.set(k, x);
@@ -29,6 +31,7 @@ export class StateTable {
   get(k) { return k >= 0 && k < this.v.length ? this.v[k] : this.extra?.get(k); }
   has(k) { return this.get(k) !== undefined; }
   set(k, x) {
+    this.ver++;
     if (k >= 0 && k < this.v.length) { if (this.v[k] === undefined) this.order.push(k); this.v[k] = x; }
     else { if (!(this.extra ??= new Map()).has(k)) this.order.push(k); this.extra.set(k, x); }
     if (this.rec !== null) this.rec.noteSet(this, k);
