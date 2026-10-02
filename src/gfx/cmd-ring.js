@@ -83,7 +83,7 @@ export const OPS = [
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);
 /** version counters of a device, in VERSION records */
-export const VERSION_FIELDS = ['stateVersion', 'programVersion', 'transformVersion', 'lightVersion', 'viewportVersion', 'constVersion', 'transformAllVersion'];
+export const VERSION_FIELDS = ['stateVersion', 'programVersion', 'transformVersion', 'lightVersion', 'viewportVersion', 'constVersion', 'transformAllVersion', 'vsConstVersion', 'psConstVersion'];
 /** constant arrays of a device, in CONST records */
 export const CONST_FIELDS = ['vsConst', 'psConst', 'vsConstI', 'psConstI', 'vsConstB', 'psConstB'];
 

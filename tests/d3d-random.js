@@ -168,7 +168,7 @@ export function randomSession(gfx, seed, api9, after, shared = false) {
       case 31: if (rnd(4) === 0 && textures.length) { const t = com.implAt(pick(textures)); if (t?.levels && t.usage & 1 && t.levels[0].width) { const sf = t.levels[0].ptrOf(ctx([])); if (api9) call('SetRenderTarget', 0, sf); else call('SetRenderTarget', sf, 0); } } else if (rnd(3) === 0) { const bb = dev.backBuffers[0].ptrOf(ctx([])); if (api9) call('SetRenderTarget', 0, bb); else call('SetRenderTarget', bb, 0); } break;
       case 32: if (rnd(12) === 0) { assert.equal(call('Reset', pp), 0); } break;
       case 33: if (api9 && textures.length) { // effect-like direct constant writes (d3dx9-effect.js setConsts)
-        const o = 4 * rnd(250), n = 4 * (1 + rnd(2)); for (let i = 0; i < n; i++) dev.vsConst[o + i] = rnd(100) / 3; dev.gfx?.constTouched?.(0, o, o + n); dev.constVersion++;
+        const o = 4 * rnd(250), n = 4 * (1 + rnd(2)); for (let i = 0; i < n; i++) dev.vsConst[o + i] = rnd(100) / 3; dev.gfx?.constTouched?.(0, o, o + n); dev.constVersion++; dev.vsConstVersion++; // (as setConsts: both versions)
       } break;
       case 34: call('BeginScene'); break;
       case 35: call('EndScene'); break;

@@ -1003,14 +1003,20 @@ export class WebGLDevice {
     }
     if (pv.c !== dev.constVersion) {
       pv.c = dev.constVersion;
+      // only the stages whose constants changed since this program last received them (the devices' vertex / pixel
+      // constant versions; a device without them — a render worker's mirror — every time): an effect changing a few
+      // vertex registers per draw must not have the pixel registers compared, nor the int / bool ones looked up
+      const nc = this.noStateCache, vv = nc ? undefined : dev.vsConstVersion, fv = nc ? undefined : dev.psConstVersion;
+      const vsCh = vv === undefined || pv.cv !== vv, psCh = fv === undefined || pv.cf !== fv;
+      pv.cv = vv; pv.cf = fv;
       // shader constants (vertex and pixel constants have distinct uniform names): only the registers that differ
       // from what this program last received (effects change a few per draw; the whole vertex array is 4 KB)
-      this.syncConsts(P, 0, dev.vsConst, U_VC);
-      this.syncConsts(P, 1, dev.psConst, U_PC);
+      if (vsCh) this.syncConsts(P, 0, dev.vsConst, U_VC);
+      if (psCh) this.syncConsts(P, 1, dev.psConst, U_PC);
       if (dev.api9) {
-        if (U('u_vci[0]')) gl.uniform4iv(U('u_vci[0]'), dev.vsConstI);
-        if (U('u_pci[0]')) gl.uniform4iv(U('u_pci[0]'), dev.psConstI);
-        for (let i = 0; i < 16; i++) { const a = U(U_VCB[i]); if (a) gl.uniform1i(a, dev.vsConstB[i]); const b = U(U_PCB[i]); if (b) gl.uniform1i(b, dev.psConstB[i]); }
+        const ib = P.ibU ??= { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: U_VCB.map((n) => U(n)), pb: U_PCB.map((n) => U(n)) }; // (locations, per program)
+        if (vsCh) { if (ib.vi) gl.uniform4iv(ib.vi, dev.vsConstI); for (let i = 0; i < 16; i++) { const a = ib.vb[i]; if (a) gl.uniform1i(a, dev.vsConstB[i]); } }
+        if (psCh) { if (ib.pi) gl.uniform4iv(ib.pi, dev.psConstI); for (let i = 0; i < 16; i++) { const b = ib.pb[i]; if (b) gl.uniform1i(b, dev.psConstB[i]); } }
       }
     }
     // textures + samplers
