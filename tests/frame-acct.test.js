@@ -146,6 +146,14 @@ test('interval and phase statistics', () => {
   assert.deepEqual(ph.dominant, { jit: 1, prog: 1 });
   assert.equal(ph.worst[0].dt, 60);
   assert.match(ph.text, /phase start: 1000 frames/);
+  assert.deepEqual(ph.hitches, {});
   assert.equal(s.phase('next', at + 1000).frames, 0);
   assert.equal(CATS.length, N_CATS);
+  // frames of 150 ms and more, counted by their largest category (pacing included)
+  at += 400; s.add(400, frame(400, 50, { ioWait: 300 }), at);
+  at += 200; s.add(200, frame(200, 150, { net: 30 }), at);
+  at += 149; s.add(149, frame(149, 20, { ioWait: 129 }), at);
+  const ph2 = s.phase('end', at);
+  assert.deepEqual(ph2.hitches, { ioWait: 1, guest: 1 });
+  assert.match(ph2.text, /150 ms and more by their largest category: ioWait 1, guest 1/);
 });

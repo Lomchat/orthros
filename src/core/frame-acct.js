@@ -49,6 +49,8 @@ export const N_CATS = CATS.length;
 export const PACING = [C.wait, C.sleep];
 /** Frames longer than these (ms) are counted as slow (33.4: a frame of a steady 30 fps is 33.3 ms). */
 export const SLOW_MS = 33.4, VERY_SLOW_MS = 50;
+/** a hitch: a frame of this length or more (phase reports count them by their largest category) */
+export const HITCH_MS = 150;
 /** Sampled sections: mean interval between two timed calls. */
 const SAMPLE_EVERY = 16;
 /** A timed API call this long (ms, its own time) makes its API timed on every call; ALWAYS_CALLS short ones in a row, sampled again. */
@@ -244,9 +246,11 @@ export class FrameStats {
       let sum = 0; for (let f = 0; f < n; f++) { col[f] = rec[f * K + 1 + i]; sum += col[f]; }
       mean[i] = sum / n; med[i] = q(col, 0.5);
     }
-    const worst = [];
+    const worst = [], hitches = {};
     for (let f = 0; f < n; f++) {
       const o = f * K; if (rec[o] <= SLOW_MS) continue;
+      // (hitches: frames of HITCH_MS and more, counted by their largest category)
+      if (rec[o] >= HITCH_MS) { let top = 0; for (let i = 1; i < N_CATS; i++) if (rec[o + 1 + i] > rec[o + 1 + top]) top = i; hitches[CATS[top]] = (hitches[CATS[top]] ?? 0) + 1; }
       let best = -1, bestV = 0;
       for (let i = 0; i < N_CATS; i++) { const v = rec[o + 1 + i]; slowMean[i] += v; const e = v - med[i]; if (e > 0 && !PACING.includes(i)) { excess[i] += e; if (e > bestV) { bestV = e; best = i; } } }
       if (best >= 0) dominant[best]++;
@@ -264,12 +268,13 @@ export class FrameStats {
       clockReads: Math.round(reads / n),
       dt: { p50: Math.round(q(dts, 0.5) * 10) / 10, p90: Math.round(q(dts, 0.9) * 10) / 10, p99: Math.round(q(dts, 0.99) * 10) / 10, max: Math.round(q(dts, 1)) },
       work: { p50: Math.round(q(works, 0.5) * 10) / 10, p90: Math.round(q(works, 0.9) * 10) / 10, p99: Math.round(q(works, 0.99) * 10) / 10 },
-      mean: catsObject(mean, 0.1), slowMean: catsObject(slowMean, 0.1), excessShares: shares, dominant: dom, worst: worstFrames,
+      mean: catsObject(mean, 0.1), slowMean: catsObject(slowMean, 0.1), excessShares: shares, dominant: dom, worst: worstFrames, hitches,
     };
     r.text = `phase ${prev}: ${n} frames in ${r.seconds} s (${r.fps} fps); >33 ms ${s33} (${r.per33}/min), >40 ms ${s40} (${r.per40}/min), >50 ms ${s50} (${r.per50}/min); frame ms p50 ${r.dt.p50} p90 ${r.dt.p90} p99 ${r.dt.p99} max ${r.dt.max}; work ms p50 ${r.work.p50} p90 ${r.work.p90} p99 ${r.work.p99}; accounting ${r.clockReads} clock reads per frame\n` +
       `  mean frame (ms): ${fmtCats(r.mean)}\n` +
       (s33 ? `  slow frames, mean (ms): ${fmtCats(r.slowMean)}\n  slow frames, excess over the median frame (% of the excess): ${fmtCats(shares)}; largest excess per slow frame: ${fmtCats(dom)}\n` +
-        `  worst: ${worstFrames.map((w) => `${w.dt} ms (work ${w.work}: ${fmtCats(w.cats)})`).join('; ')}` : '  no slow frames');
+        `  worst: ${worstFrames.map((w) => `${w.dt} ms (work ${w.work}: ${fmtCats(w.cats)})`).join('; ')}` +
+        (Object.keys(hitches).length ? `\n  frames of ${HITCH_MS} ms and more by their largest category: ${fmtCats(hitches)}` : '') : '  no slow frames');
     return r;
   }
 }
