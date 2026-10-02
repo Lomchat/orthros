@@ -3,7 +3,7 @@
 // an API (the end of a phase: --until-api, default CreateProcessA) and reports the wall time, the CPU time of the
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
-//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]
+//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,11 +21,33 @@ const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWi
 if (!target) { console.error('usage: node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
 const { manifest, dir } = loadManifest(target);
-const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-startbench-')); // (a fresh profile: the first-launch path)
+// (a fresh profile: the first-launch path; --save <dir>: that empty directory, kept afterwards — the files the game wrote
+// compared between variants)
+const keepDir = opt('save');
+if (keepDir) fs.mkdirSync(keepDir, { recursive: true });
+const saveDir = keepDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-startbench-'));
 const vfs = makeVfs(manifest, dir, saveDir);
 const clock = new RealClock();
 const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
-const vm = new Vm({ vfs, clock, host, logKinds: ['crash'] });
+// --bg: the background translator in a worker thread (shared guest memory), its regions installed between slices;
+// --cold: with the JIT's cold tier (Jit.runCold) — what the browser worker does
+const bgWanted = args.includes('--bg') || args.includes('--cold');
+const vm = new Vm({ vfs, clock, host, logKinds: ['crash'], sharedMemory: bgWanted });
+if (bgWanted && vm.jit) {
+  const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
+  const ch = new MessageChannel();
+  const w = new Worker(`import { workerData } from 'node:worker_threads'; import { handleMessage } from ${JSON.stringify(new URL('../src/cpu/jit/bg-translate.js', import.meta.url).href)};
+    workerData.port.on('message', (m) => handleMessage(m, (r) => workerData.port.postMessage(r)));`, { eval: true, workerData: { port: ch.port2 }, transferList: [ch.port2] });
+  w.unref();
+  vm.jit.attachBackground({ postMessage: (m) => ch.port1.postMessage(m) });
+  vm.jit.coldTier = args.includes('--cold');
+  const sliceEnd = vm.sliceEnd.bind(vm);
+  vm.sliceEnd = (t, o) => {
+    if (vm.jit.coldQueue.length) vm.jit.flushCold();
+    for (let m; (m = receiveMessageOnPort(ch.port1)); ) vm.jit.bgInstall(m.message);
+    return sliceEnd(t, o);
+  };
+}
 if (process.env.ORTHROS_JIT_OPTS && vm.jit) Object.assign(vm.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
 if (process.env.ORTHROS_JIT_STATS && vm.jit) {
   vm.jit.stepHist = new Map();
@@ -53,11 +75,11 @@ const report = (why) => {
 const dispatch = vm.dispatchThunk.bind(vm);
 vm.dispatchThunk = (t, i) => {
   const th = vm.api.thunk(i);
-  if (th?.name === untilApi) { report(`${untilApi} reached`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); }
+  if (th?.name === untilApi) { report(`${untilApi} reached`); if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); }
   if (performance.now() - t0 > limit * 1000) { report('time limit'); process.exit(1); }
   return dispatch(t, i);
 };
 vm.host.waitEvent = (ms) => clock.sleep(Math.min(ms, 50));
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 try { vm.run(); report('exited'); } catch (e) { report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); }
-fs.rmSync(saveDir, { recursive: true, force: true });
+if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });
