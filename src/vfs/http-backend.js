@@ -505,8 +505,9 @@ export class HttpBackend {
       const b0 = bi * BLOCK, b1 = Math.min(size, b0 + BLOCK);
       if (waited?.index === bi) continue;
       if (bulk) {
-        // (up to 4 blocks, not past one on its way: fetched ahead since the wait above)
-        let n = 1; while (n < 4 && b0 + n * BLOCK < size && !this.blockFlights.has(`${path}#${bi + n}`)) n++;
+        // (the blocks the read covers, up to 4, not past one on its way: the reader waits for these only — the ones
+        // after them follow asynchronously once it has read, see readAhead)
+        let n = 1; while (n < 4 && b0 + n * BLOCK < Math.min(size, end) && !this.blockFlights.has(`${path}#${bi + n}`)) n++;
         const e = Math.min(size, b0 + n * BLOCK);
         jobs.push(this.fetchForeground(path, b0, e).then((d) => { if (d) for (let i = 0; b0 + i * BLOCK < e; i++) if (!this.cache.has(`${path}#${bi + i}`)) this.installBlock(path, bi + i, d.subarray(i * BLOCK, Math.min(d.length, (i + 1) * BLOCK)), `${path}#${size}#${mtime}#${bi + i}`); this.evict(); }));
         break;

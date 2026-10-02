@@ -239,3 +239,15 @@ test('near blocks: the blocks next to a missed one are fetched last, by the back
   for (let i = 0; i < 40 && b.filling; i++) await tick(10);
   assert.equal(b.filling, false);
 }));
+
+test('read-ahead: a parked read of a file read whole waits for the blocks it covers only', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/w/', tree());
+  b.fillBackground = () => {}; b.noteMiss = () => {};
+  const p1 = b.fetchAhead('f.big', SIZE, 1, 2 * MiB + 100, 2 * MiB + 100 + CHUNK, true);
+  assert.deepEqual(calls.map((c) => [c.start / MiB, c.end / MiB]), [[2, 3]], 'one block, not four');
+  calls[0].release(); await p1;
+  const p2 = b.fetchAhead('f.big', SIZE, 1, 3 * MiB, 5 * MiB + 10, true); // (a read across three blocks: all three)
+  assert.deepEqual(calls.slice(1).map((c) => [c.start / MiB, c.end / MiB]), [[3, 6]]);
+  calls[1].release(); await p2;
+  for (const i of [2, 3, 4, 5]) assert.ok(b.cache.has(`f.big#${i}`));
+}));
