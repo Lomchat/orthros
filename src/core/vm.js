@@ -324,8 +324,8 @@ export class Vm {
       for (;;) {
         exec.cpu = cpu;
         runOpts.maxInsns = budget;
-        const tl = longMs ? performance.now() : 0, el = cpu.eip, bl = budget;
-        if (longMs && this.jit) this.jit.dbgLong = { wasm: 0, calls: 0, maxWasm: 0, maxWasmEip: 0, maxWasmExit: 0, maxWasmEnd: 0, tr: 0, trN: 0, steps0: this.jit.stats.steps ?? 0, fb0: this.jit.stats.fallbackSteps ?? 0 };
+        let tl = 0, el = 0, bl = 0;
+        if (longMs) { tl = performance.now(); el = cpu.eip; bl = budget; if (this.jit) this.jit.dbgLong = { wasm: 0, calls: 0, maxWasm: 0, maxWasmEip: 0, maxWasmExit: 0, maxWasmEnd: 0, tr: 0, trN: 0, steps0: this.jit.stats.steps ?? 0, fb0: this.jit.stats.fallbackSteps ?? 0 }; }
         const exit = exec.run(runOpts);
         budget = exec.remaining();
         if (longMs) {
@@ -337,11 +337,9 @@ export class Vm {
           case EXIT.HALT:
             if (until >= 0 && cpu.eip === until) return cpu.eax;
             throw new GuestCrash(this.crashReport(thread, 'HLT executed'));
-          case EXIT.THUNK: {
-            const ta = longMs ? performance.now() : 0, ia = cpu.exitArg;
-            this.dispatchThunk(thread, cpu.exitArg);
-            if (ta && performance.now() - ta > longMs) { const t = this.api.thunk(ia); this.logFn('hang', `long API call: ${(performance.now() - ta).toFixed(0)} ms in ${t?.dll}!${t?.name}`); }
-            }
+          case EXIT.THUNK:
+            if (longMs) this.dispatchThunkTimed(thread, cpu.exitArg, longMs);
+            else this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
             if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
             if (budget <= 0) { budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0; }
@@ -484,6 +482,14 @@ export class Vm {
     for (const d of this.d3dDevices ?? []) d.shadowOn?.();
   }
 
+  /** (debugging, ORTHROS_LONG_STEP_MS) dispatchThunk, logging a call longer than `longMs` */
+  dispatchThunkTimed(thread, idx, longMs) {
+    const t0 = performance.now();
+    try { return this.dispatchThunk(thread, idx); } finally {
+      const d = performance.now() - t0;
+      if (d > longMs) { const t = this.api.thunk(idx); this.logFn('hang', `long API call: ${d.toFixed(0)} ms in ${t?.dll}!${t?.name}`); }
+    }
+  }
   /**
    * An API call from guest code (thunk `idx`), timed on a sample of the calls for the frame accounting (frame-acct.js:
    * the others are counted and estimated).
