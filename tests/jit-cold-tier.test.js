@@ -151,3 +151,30 @@ for (const exe of ['hello.exe', 'seh.exe', 'threads.exe', 'sync.exe', 'bench.exe
     assert.ok(b.jit.stats.misses < a.jit.stats.misses, `fewer translations on the game thread: ${b.jit.stats.misses} vs ${a.jit.stats.misses} (${b.jit.bg.installed} from the background)`);
   });
 }
+
+// stores the cold tier must leave to translation: a dword straddling into the next page, which holds translated code,
+// and a push whose stack slot is in a page holding translated code
+test('a store straddling into a page holding translated code, and a push onto one, are not interpreted', () => {
+  const FN = CODE + 0x3000;
+  // main: nop; mov dword [FN-2], 0x02b80000 (bytes 00 00 | b8 02: FN's first two bytes, FN becomes mov eax, 2);
+  // call FN; hlt     FN: mov eax, 1; ret
+  const code = new Uint8Array(0x3006);
+  const a = FN - 2;
+  code.set([0x90, 0xc7, 0x05, a & 255, (a >>> 8) & 255, (a >>> 16) & 255, a >>> 24, 0x00, 0x00, 0xb8, 0x02], 0);
+  const call = CODE + 11, rel = (FN - (call + 5)) >>> 0;
+  code.set([0xe8, rel & 255, (rel >>> 8) & 255, (rel >>> 16) & 255, rel >>> 24, 0xf4], 11);
+  code.set(hex('b801000000c3'), 0x3000);
+  const s = setup(code);
+  s.jit.translate(FN, null, null);
+  assert.equal(runAll(s), EXIT.HALT);
+  assert.equal(s.cpu.eax >>> 0, 2, 'the rewritten FN ran');
+
+  // a push whose slot is in a page holding translated code (ESP just past FN's first dword) is left to translation (the
+  // cold tier's gate; translated code does not catch such a push as SMC either: stack stores are not checked)
+  const t = setup(hex('68b8020000 f4'));
+  t.jit.translate(FN, null, null);
+  t.cpu.esp = FN + 4;
+  assert.equal(t.jit.coldSafe(CODE), null);
+  t.cpu.esp = FN - 0x100; // (the slot in the page before: interpreted)
+  assert.notEqual(t.jit.coldSafe(CODE), null);
+});
