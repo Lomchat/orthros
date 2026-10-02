@@ -1,0 +1,66 @@
+# API layer and draw submission: what keeps them cheap
+
+The JavaScript API layer (Win32 / Direct3D / D3DX handlers) and the Direct3D draw submission are the `api` and `draw`
+categories of the frame accounting (docs/frame-accounting.md). This page lists the mechanisms that keep their cost per
+frame down, all generic (no game-specific code), and how to switch them off within a session to measure them.
+
+## Calls that never leave the translated code (src/cpu/jit/runtime.js, fastApi)
+
+- **Pure D3DX math** (`fast-d3dx.js`): `D3DXMatrixInverse` and `D3DXVec{2,3,4}CatmullRom` for every `d3dx9_NN.dll`, in
+  WASM with the JavaScript handlers' f64 operations in the same order (bit-exact results; only a NaN's sign and payload
+  may differ, as they already do between the handler's interpreted and optimized runs). Test: `jit-fast-d3dx.test.js`.
+- **`ID3DXEffect::GetParameterDesc`** (`FID_PARAM_DESC`): the handler keeps the 44-byte description of a parameter asked by
+  handle in a direct-mapped cache after the effect's handle block; later calls with that handle are a copy. Test:
+  `jit-param-desc.test.js`.
+- **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
+  taken at the call. Test: `jit-defer-raw.test.js`.
+- **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
+  `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
+  calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
+  queued `CommitChanges` may bind. Test: `jit-defer-filter.test.js` (randomized, against executing every call), and
+  `d3dx9-effect-commit-list.test.js`.
+- The queued COM calls run straight on their object's method (`Com.callQueued`), `dispatch` only for unusual cases.
+
+## Sleep(0): pacing, not work
+
+In play, `Sleep` is the second item of the API time ranking (BFME2: 1.1-1.4 s of API time per 20 s, 30-40 k calls/s).
+Those calls are a frame limiter polling the clock with `Sleep(0)` until its next frame (the main thread: millions of
+`Sleep(0)`, its other calls `timeGetTime` on the fast path) — pacing that the accounting cannot tell from work. Making the
+call cheaper was tried (a `Sleep(0)` with no other thread runnable returning at once without ending the slice): the poll
+then ran more often, and the time charged to `Sleep` grew (per 20 s, on vs off in one session: 1438 / 1124 ms, 846 k /
+677 k calls) with no frame-time effect; it was reverted. The existing throttle (32 back-to-back `Sleep(0)` with nothing
+else to run park the thread 1 ms) is what bounds it.
+
+## Effects (src/win32/d3dx9-effect.js)
+
+- Shader constants are compared per stage: a pass's bindings are compared with the device's registers only when that
+  stage's constants changed (`vsConstVersion` / `psConstVersion` on the devices, recorded for the render worker too).
+- A pass state (render / stage / sampler state, shader) the device already holds is not sent again, at `BeginPass`
+  and at `End`'s restore (the device handler would do nothing).
+- A sampler parameter whose states are constants is not compared again at each commit while its register's state
+  table is unchanged since they were applied (`StateTable.ver`).
+- How a pass state picks its shader is resolved once per pass; a texture parameter set to the texture it holds does
+  not take and drop a reference.
+
+## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
+
+- The depth / stencil / blend / color mask / culling block is skipped while the render state table's version, the target's
+  orientation and the GL state cache are those of the previous draw (`StateTable.ver`).
+- A stage's sampler object is kept while its sampler (DX8: stage) states and its texture did not change.
+- A texture whose levels are all uploaded and clean is not scanned at each bind (`levelsClean`, cleared by
+  `Surface.dirty` / `markLocked`); its GL record is kept on the resource (`glOwner` / `glRec` / `glGen`: no lookup by
+  id; a context loss or restore moves the backend's `texGen`, a destroyed resource drops it).
+- Texture / cube / volume sampler uniform locations are resolved once per program (`P.texU`), not by name per stage
+  and draw.
+- Vertex and pixel constants are synced per stage only when that stage's constants changed; integer / boolean constant
+  and bump-environment uniform locations are cached per program.
+
+Test: `gl-state-cache.test.js` drives random Direct3D 8 / 9 sessions over a GL that tracks its effective state and checks
+that every draw sees the same GL state, and every upload the same data, with and without these caches.
+
+## Measuring within a session
+
+Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
+`dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths. Scenarios
+`tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders). Tools:
+`tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the queued setters).

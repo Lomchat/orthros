@@ -14,9 +14,10 @@ import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC } from '../cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
+import { apiOpt } from './api-opt.js';
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
@@ -471,19 +472,21 @@ export class Vm {
     const n = m.read32(DEFER_QUEUE);
     if (!n) return;
     m.write32(DEFER_QUEUE, 0); m.write32(DEFER_QUEUE + 4, 0); m.write32(DEFER_QUEUE + 8, 0);
-    const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc;
+    const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc, com = this.com;
     let calls = 0;
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end; calls++) {
-      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], words = (u32[(DEFER_SPEC >>> 2) + idx] >>> 8) & 0xff;
+      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], spec = u32[(DEFER_SPEC >>> 2) + idx], words = spec & DEFER_RAW ? u32[(p >>> 2) + 6] >>> 2 : (spec >>> 8) & 0xff; // (DEFER_RAW: the byte count argument)
       const def = thunks[idx].def;
       ctx.thread = thread; ctx.cpu = cpu; ctx.proc = proc; ctx.def = def; ctx.sp = p + 4; // (Ctx.bind; arg(i) reads the recorded arguments)
       if (hist && idx < hist.length) hist[idx]++;
-      def.fn(ctx);
+      const cm = def.com; // (a COM method: called straight on its object, see Com.callQueued)
+      if (cm !== null && cm !== undefined && !apiOpt.off) com.callQueued(ctx, u32[(p >>> 2) + 2], cm.iface, cm.index); else def.fn(ctx);
       p += 4 * (2 + argc + words);
     }
     this.apiCalls += calls;
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
     if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
+    if (this.jit?.optOnPending) { this.jit.optOnPending = false; m.write32(PROC_CONSTS + 4, 0); }
   }
 
   /**

@@ -153,7 +153,7 @@ export class ApiRegistry {
       let argc, fn, o = {};
       if (Array.isArray(spec)) { [argc, fn, o = {}] = spec; }
       else { fn = spec; argc = this.signatures.get(name); if (argc === undefined) throw new Error(`no signature for ${dll}!${name}`); }
-      d.funcs.set(name, { name, argc, cc: o.cc ?? cc, fn, dll: d.name, noreturn: !!o.noreturn });
+      d.funcs.set(name, { name, argc, cc: o.cc ?? cc, fn, dll: d.name, noreturn: !!o.noreturn, com: o.com ?? null });
       if (o.ordinal !== undefined) d.ordinals.set(o.ordinal, name);
     }
   }

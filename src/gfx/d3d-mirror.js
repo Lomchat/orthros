@@ -16,11 +16,11 @@ export class MSurface {
     this.mem = mem; this._dirty = false; this.dirtyRect = null; this.type = 1;
   }
   get dirty() { return this._dirty; }
-  set dirty(v) { this._dirty = v; this.dirtyRect = null; }
+  set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v && this.owner) this.owner.levelsClean = false; }
   /** the same union of locked rectangles as Surface.markLocked, against this mirror's own upload state */
   markLocked(r) {
     const d = this.dirtyRect, partial = r && (!this._dirty || d);
-    this._dirty = true;
+    this._dirty = true; if (this.owner) this.owner.levelsClean = false;
     this.dirtyRect = !partial ? null : !d ? [r[0], r[1], r[2], r[3]] : [Math.min(d[0], r[0]), Math.min(d[1], r[1]), Math.max(d[2], r[2]), Math.max(d[3], r[3])];
   }
   /** (a readback's memory, allocated by the recorder, is the surface's once the pixels are read: as in the backend) */

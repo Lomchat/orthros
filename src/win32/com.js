@@ -72,7 +72,7 @@ export class Com {
       const m = iface.methods[i];
       const fname = `${iface.name}::${m.name}`;
       if (!this.api.lookup('com', fname)) {
-        this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i)] });
+        this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i), { com: { iface, index: i } }] });
       }
       this.mem.write32(vt + 4 * i, this.api.thunkFor('com', fname));
     }
@@ -169,11 +169,25 @@ export class Com {
     }
     if (this.vm.traceCom && !(this.vm.traceComQuiet && (COM_QUIET.test(m.name) || this.comSiteSeen(m.name, ctx.retAddr)))) { const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16)); this.vm.logFn('com', `${iface.name}::${m.name}(${args.join(', ')}) from ${ctx.proc.symbolize(ctx.retAddr)}`); }
     const r = fn.call(obj.impl, ctx, obj);
-    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) { // failed HRESULT: traced once per method/value (fidelity diagnostics)
-      const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;
-      if (!this.failedOnce.has(k)) { this.failedOnce.add(k); this.vm.log('gfx', `com: ${iface.name}::${m.name} -> 0x${(r >>> 0).toString(16)} (first from ${ctx.proc.symbolize(ctx.retAddr)})`); }
-    }
+    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) this.failed(ctx, iface, m, r);
     return r === undefined ? S_OK : r;
+  }
+  /** a failed HRESULT: traced once per method/value (fidelity diagnostics) */
+  failed(ctx, iface, m, r) {
+    const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;
+    if (!this.failedOnce.has(k)) { this.failedOnce.add(k); this.vm.log('gfx', `com: ${iface.name}::${m.name} -> 0x${(r >>> 0).toString(16)} (first from ${ctx.proc.symbolize(ctx.retAddr)})`); }
+  }
+  /**
+   * A call the JIT queued (Vm.drainDeferred), on the object `self`: its method resolved before, called directly; anything
+   * else (an unknown object, a method not resolved yet or missing, COM tracing on) through dispatch. The result is not
+   * returned: a queued call's caller already received D3D_OK.
+   */
+  callQueued(ctx, self, iface, index) {
+    const obj = this.objects.get(self);
+    const fn = obj !== undefined && !this.vm.traceCom ? obj.fns?.[index] : undefined;
+    if (typeof fn !== 'function') { this.dispatch(ctx, iface, index); return; }
+    const r = fn.call(obj.impl, ctx, obj);
+    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) this.failed(ctx, iface, iface.methods[index], r);
   }
 
   /** CoCreateInstance backend. */

@@ -191,6 +191,8 @@ export class Scheduler {
 
   /** Give other runnable threads a turn. At top level this just ends the current slice. */
   yieldFrom(thread) {
+    // (a yield with no other thread runnable still ends the slice: returning at once — as Windows does — was measured to
+    // make a frame limiter polling Sleep(0) poll more often, not to make anything cheaper: see docs/api-layer.md)
     if (this.vm.canUnwind(thread)) { thread.yieldRequested = true; return this.pickRunnable(thread) !== null; }
     const other = this.pickRunnable(thread);
     if (!other) return false;

@@ -4,7 +4,8 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
+import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
@@ -71,7 +72,9 @@ export function defineEffects(X, vm, h) {
       this.proc = c.proc; this.dev = dev; this.fx = parsed; this.flags = flags;
       this.strAddrs = new Map();
       this.handles = new Map(); // handle -> node
-      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES);
+      // (followed by the cache of parameter descriptions the JIT's GetParameterDesc reads: runtime.js FID_PARAM_DESC)
+      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES + PARAM_DESC_BYTES);
+      mem.fill(this.handleBlock + DEFER_HANDLE_BYTES, PARAM_DESC_BYTES, 0);
       this.nextHandle = 0;
       this.params = parsed.params.map((p, i) => this.buildParam(p.type, p.value, p.annotations, `${i}`, null, p.flags));
       this.byName = new Map(this.params.map((p) => [p.name, p]));
@@ -81,7 +84,15 @@ export function defineEffects(X, vm, h) {
       this.technique = this.techniques[0] ?? null;
       this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
     }
-    handleOf(node) { if (!node.handle) { node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node); } return node.handle; }
+    handleOf(node) {
+      if (!node.handle) {
+        node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node);
+        const e = this.descEntry(node.handle); if (mem.read32(e) === node.handle) mem.write32(e, 0); // (a handle given again: its old description gone)
+      }
+      return node.handle;
+    }
+    /** the description cache entry of handle `h` (runtime.js FID_PARAM_DESC) */
+    descEntry(h) { return this.handleBlock + DEFER_HANDLE_BYTES + (((h - this.handleBlock) >>> 2) & (PARAM_DESC_SLOTS - 1)) * PARAM_DESC_ENTRY; }
     /** a parameter node: numeric words (views into one buffer per top-level parameter), objects per element leaf */
     buildParam(type, value, annotations, path, parent = null, flags = 0, words = null) {
       const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null };
@@ -133,6 +144,9 @@ export function defineEffects(X, vm, h) {
       mem.write32(p, n.name ? gstr(this, n.name) : 0); mem.write32(p + 4, n.semantic ? gstr(this, n.semantic) : 0);
       mem.write32(p + 8, t.cls); mem.write32(p + 12, t.type); mem.write32(p + 16, t.rows); mem.write32(p + 20, t.cols); mem.write32(p + 24, t.elements);
       mem.write32(p + 28, n.annotations.length); mem.write32(p + 32, t.members.length); mem.write32(p + 36, n.flags); mem.write32(p + 40, t.cls === PC.OBJECT ? 4 * Math.max(1, t.elements) : t.bytes * Math.max(1, t.elements));
+      // (a parameter given by its handle: its description kept for the JIT's fast path, which answers the next calls)
+      const h = c.arg(1) >>> 0;
+      if (n.handle === h && h - this.handleBlock < DEFER_HANDLE_BYTES && p >= 0x10000 && p < 0x7fff0000 - 64) { const e = this.descEntry(h); mem.write32(e, h); mem.copy(e + 4, p, PARAM_DESC_ENTRY - 4); }
     }
     GetTechniqueDesc(c) { const t = this.tech(c.arg(1)), p = c.arg(2); if (!t || !p) return D3DERR_INVALIDCALL; mem.write32(p, gstr(this, t.name)); mem.write32(p + 4, t.passes.length); mem.write32(p + 8, t.annotations.length); }
     GetPassDesc(c) {
@@ -215,9 +229,13 @@ export function defineEffects(X, vm, h) {
     GetString(c) { const n = this.param(c.arg(1)); if (!n?.obj || !c.arg(2)) return D3DERR_INVALIDCALL; mem.write32(c.arg(2), gstr(this, n.obj.string ?? '')); }
     setTexture(n, ptr) {
       const old = n.obj.ptr;
-      if (ptr && com.objectAt(ptr)) com.addRef(com.objectAt(ptr));
-      n.obj.ptr = ptr;
-      if (old && com.objectAt(old)) com.release(com.objectAt(old));
+      if (old !== ptr || apiOpt.off) { // (the same texture again: its reference taken then dropped — nothing to do but the touch)
+        const o = ptr ? com.objectAt(ptr) : null;
+        if (o) com.addRef(o);
+        n.obj.ptr = ptr;
+        const oo = old ? com.objectAt(old) : null;
+        if (oo) com.release(oo);
+      }
       this.touched(n);
       return D3D_OK;
     }
@@ -286,6 +304,12 @@ export function defineEffects(X, vm, h) {
       const r = dev?.[name]?.(fc, this.devObj ??= com.objectAt(this.dev));
       return r === undefined ? D3D_OK : r;
     }
+    /** the device when its own state setters receive the calls and no state block records them, else null */
+    plainDev() {
+      if (this.stateManager || apiOpt.off) return null;
+      const d = this.devImpl ??= com.implAt(this.dev);
+      return d && !d.recording ? d : null;
+    }
     scratch(c, n) { return (c.proc.fxScratch ??= c.proc.processHeap.alloc(4096)) + n; }
     /**
      * Shader constants from values (Float32Array / Int32Array, 4 per register; bools: one per register): straight into
@@ -309,7 +333,7 @@ export function defineEffects(X, vm, h) {
           for (let i = 0; i < n; i++) { const b = vals[vo + 4 * i] ? 1 : 0; if (dst[reg + i] !== b) { dst[reg + i] = b; changed = true; } }
           if (changed) dev.gfx?.constTouched?.(vs ? 4 : 5, reg, reg + n);
         }
-        if (changed) dev.constVersion++;
+        if (changed) { dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
         return;
       }
       const p = this.scratch(c, 0);
@@ -325,10 +349,14 @@ export function defineEffects(X, vm, h) {
     }
     /** the shader of element `el` of shader parameter `pi` (a resource of its own, else the object its value names) */
     paramShader(pi, el) {
-      const sh = this.shaderAt(`p${pi}:${el}`);
-      if (sh) return sh;
-      const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n;
-      return leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null;
+      // (found once: the resources and the object ids of shader parameters do not change after loading)
+      const memo = this.paramShaders ??= new Map(), mk = pi * 65536 + el;
+      let sh = memo.get(mk);
+      if (sh !== undefined && !apiOpt.off) return sh;
+      sh = this.shaderAt(`p${pi}:${el}`);
+      if (!sh) { const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n; sh = leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null; }
+      if (sh) memo.set(mk, sh);
+      return sh;
     }
     shaderAt(key) {
       const sh = this.shaders.get(key);
@@ -376,17 +404,32 @@ export function defineEffects(X, vm, h) {
     }
     /** the shader of state k of a pass (its own bytecode, a referenced parameter's, or an array selector's pick) */
     stateShader(ps, k) {
-      const key = `${ps.technique}:${ps.index}:${k}`;
-      if (this.shaders.has(key)) return this.shaderAt(key);
-      const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
-      if (ref || ex) {
-        const n = this.lookup(ref ?? ex.name, null); if (!n) return null;
-        const pi = this.params.indexOf(n);
-        const el = ex ? this.evalIndex(ex, n.elements.length || 1) : 0;
-        return this.paramShader(pi, el);
+      // how state k picks its shader, resolved once per pass (the effect's resources and parameters are fixed once loaded):
+      // [0] its own bytecode (key), [1] a parameter (n, pi) maybe indexed by an array selector (ex), [2] an object id
+      const sel = ps.shaderSel ??= [];
+      let e = sel[k];
+      if (e === undefined || apiOpt.off) {
+        const key = `${ps.technique}:${ps.index}:${k}`;
+        const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
+        if (this.shaders.has(key)) e = [0, key];
+        else if (ref || ex) { const n = this.lookup(ref ?? ex.name, null); e = n ? [1, n, this.params.indexOf(n), ex] : [1, null]; }
+        else e = [2, ps.states[k].value];
+        sel[k] = e;
       }
-      const v = ps.states[k].value; // (an object id of the table)
+      if (e[0] === 0) return this.shaderAt(e[1]);
+      if (e[0] === 1) {
+        const n = e[1]; if (!n) return null;
+        const ex = e[3], el = ex ? this.evalIndex(ex, n.elements.length || 1) : 0;
+        return this.paramShader(e[2], el);
+      }
+      const v = e[1]; // (an object id of the table)
       return v instanceof Uint32Array && v[0] ? this.objectShader(v[0]) : null;
+    }
+    /** every shader state k of pass ps may pick: each element of the array an expression indexes, else its one shader */
+    stateShaderCandidates(ps, k) {
+      const one = this.stateShader(ps, k), e = ps.shaderSel[k];
+      if (e[0] === 1 && e[1] && e[3]) { const out = []; for (let el = 0; el < Math.max(1, e[1].elements.length); el++) { const sh = this.paramShader(e[2], el); if (sh) out.push(sh); } return out; }
+      return one ? [one] : [];
     }
     evalIndex(ex, count) { const out = this.runProgram(ex.P ??= this.programOf(ex.prog)); return Math.max(0, Math.min(count - 1, Math.round(out[0]))); }
     /**
@@ -432,13 +475,15 @@ export function defineEffects(X, vm, h) {
      * A shader set for the pass, its constants (from the parameters, and its preshader's outputs) and samplers. A binding
      * is converted again only when its parameter changed (every write to a parameter or to any part of it moves the
      * version of its top-level parameter, see touched), and compared with the device's registers only when it changed
-     * or when some constant of the device changed since this shader's last binding (the device's constant version).
+     * or when some constant of the device's stage (vertex / pixel) changed since this shader's last binding (its version).
      */
     bindShader(c, sh) {
       const vs = sh.vs;
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
-      const same = dev !== null && sh.constVersion === dev.constVersion && sh.constRegs === regs;
+      // (this stage's constants only; dbg:ORTHROS_API_OPT_OFF=1: any constant, as before — measurement)
+      const all = apiOpt.off, ver = dev === null ? -1 : all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion;
+      const same = dev !== null && sh.constVersion === ver && sh.constAll === all && sh.constRegs === regs;
       let wrote = false;
       for (const b of sh.consts) {
         const v = b.top.version ?? 0;
@@ -453,7 +498,7 @@ export function defineEffects(X, vm, h) {
         sh.preRuns = sh.pre.runs;
       }
       // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
-      if (dev) { sh.constVersion = dev.constVersion; sh.constRegs = regs; } else sh.constRegs = null;
+      if (dev) { sh.constVersion = all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion; sh.constAll = all; sh.constRegs = regs; } else sh.constRegs = null;
     }
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     /** a sampler parameter's states compiled once: { tex } (its texture) or { type, word() } (a sampler state) */
@@ -465,19 +510,26 @@ export function defineEffects(X, vm, h) {
           const [cls, idx] = STATES[s.op] ?? [];
           const key = `p${pi}:${el}:${k}`;
           if (cls === 'texture') { const tn = this.refs.has(key) ? this.lookup(this.refs.get(key), null) : null; return { tex: tn }; }
-          if (cls === 'samp') return { type: idx, word: this.wordOf(s, key) };
+          if (cls === 'samp') return { type: idx, word: this.wordOf(s, key), cst: !this.refs.has(key) && !this.exprs.has(key) };
           return null;
         }).filter(Boolean);
+        n.samplerConst = n.samplerOps.every((o) => o.tex !== undefined || o.cst); // (its states constants: see bindSampler)
       }
       return n.samplerOps;
     }
     bindSampler(c, n, reg) {
       // (a state the device already holds is not set again: sampler states are re-applied at every pass)
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
-      for (const o of this.samplerOpsOf(n)) {
+      const ops = this.samplerOpsOf(n);
+      // constant states already applied to this register, its state table untouched since (its version): not compared again
+      const tbl = dev !== null && n.samplerConst && !dev.recording && !apiOpt.off ? dev.samplers?.[reg] : undefined;
+      const seen = tbl !== undefined ? n.samplerSeen?.[reg] : undefined;
+      const skip = seen !== undefined && seen.tbl === tbl && seen.ver === tbl.ver;
+      for (const o of ops) {
         if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (!dev || dev.textures[reg] !== p) this.call(c, 'SetTexture', 2, reg, p); }
-        else { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
+        else if (!skip) { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
       }
+      if (tbl !== undefined && !skip) { const sv = (n.samplerSeen ??= [])[reg] ??= { tbl: null, ver: -1 }; sv.tbl = tbl; sv.ver = tbl.ver; }
     }
     /** a function giving a numeric state's raw value (a referenced parameter's first scalar, an expression, or its constant) */
     wordOf(s, key) {
@@ -498,24 +550,27 @@ export function defineEffects(X, vm, h) {
         const word = this.wordOf(s, key);
         let f = null, touches = null; // (touches: the shadowed device states the operation sets, see commitEntries)
         switch (cls) {
-          case 'rs': f = (c) => this.call(c, 'SetRenderState', 2, idx, word()); touches = { rs: idx }; break;
-          case 'tss': f = (c) => this.call(c, 'SetTextureStageState', 3, s.index, idx, word()); touches = { tss: [s.index, idx] }; break;
-          case 'samp': f = (c) => this.call(c, 'SetSamplerState', 3, s.index, idx, word()); touches = { samp: [s.index, idx] }; break;
+          // (a state the device already holds is left alone, as its handler would: no call at all — a pass sets its
+          // states at every BeginPass)
+          case 'rs': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.rs.get(idx) !== v) this.call(c, 'SetRenderState', 2, idx, v); }; touches = { rs: idx }; break;
+          case 'tss': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.tss[s.index]?.get(idx) !== v) this.call(c, 'SetTextureStageState', 3, s.index, idx, v); }; touches = { tss: [s.index, idx] }; break;
+          case 'samp': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || s.index >= 16 || d.samplers?.[s.index]?.get(idx) !== v) this.call(c, 'SetSamplerState', 3, s.index, idx, v); }; touches = { samp: [s.index, idx] }; break;
           case 'fvf': f = (c) => this.call(c, 'SetFVF', 1, word()); break;
           case 'npatch': f = (c) => this.call(c, 'SetNPatchMode', 1, word()); break;
           case 'lightenable': f = (c) => this.call(c, 'LightEnable', 2, s.index, word()); break;
           case 'vs': case 'ps': {
             const vsState = cls === 'vs', fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
-            touches = fixed ? { shader: fixed } : { any: true };
+            touches = fixed ? { shader: fixed } : { shaderState: k }; // (picked by an expression: one of its array's, see commitEntries)
             f = (c) => {
               const sh = fixed ?? this.stateShader(ps, k);
               if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
-              this.call(c, vsState ? 'SetVertexShader' : 'SetPixelShader', 1, sh?.ptr ?? 0);
+              const d = this.plainDev(), p = sh?.ptr ?? 0; // (the shader the device already has: no call, its handler would change nothing)
+              if (d === null || ((vsState ? d.vsObj : d.psObj)?.comObject?.ptr ?? 0) !== p) this.call(c, vsState ? 'SetVertexShader' : 'SetPixelShader', 1, p);
               if (sh) this.bindShader(c, sh);
             };
             break;
           }
-          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); break; }
+          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); touches = { tex: s.index }; break; }
           case 'sampler': { const ref = this.refs.get(key); const sn = ref ? this.lookup(ref, null) : null; if (sn) { f = (c) => this.bindSampler(c, sn, s.index); touches = { sampler: [sn, s.index] }; } break; }
           case 'transform': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => { const src = tn ? tn.words : s.value; if (!src) return; const p = this.scratch(c, 2048); for (let i = 0; i < 16; i++) mem.write32(p + 4 * i, src[i] ?? (i % 5 === 0 ? 0x3f800000 : 0)); this.call(c, 'SetTransform', 2, idx + (idx === 256 || idx === 16 ? s.index : 0), p); }; break; }
           case 'const': {
@@ -548,7 +603,8 @@ export function defineEffects(X, vm, h) {
       const rs = (i) => { if (i >= 0 && i < 256) out.add(SHADOW_RS + i); };
       const tss = (st, t) => { if (st >= 0 && st < 8 && t >= 0 && t < 40) out.add(SHADOW_TSS + 40 * st + t); };
       const samp = (r, t) => { if (r >= 0 && r < 16 && t >= 0 && t < 16) out.add(SHADOW_SAMP + 16 * r + t); };
-      const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); };
+      const tex = (st) => { if (st >= 0 && st < 16) out.add(SHADOW_TEX + st); }; // (a texture bound: runtime.js DEFER_F_TEX)
+      const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); else tex(reg); };
       let any = false;
       ps.ops ??= this.compilePass(ps);
       for (const o of ps.ops) {
@@ -560,7 +616,9 @@ export function defineEffects(X, vm, h) {
         else if (t.tss) tss(t.tss[0], t.tss[1]);
         else if (t.samp) samp(t.samp[0], t.samp[1]);
         else if (t.sampler) sampler(t.sampler[0], t.sampler[1]);
+        else if (t.tex !== undefined) tex(t.tex);
         else if (t.shader) for (const x of t.shader.samplers ?? []) sampler(x.n, x.reg);
+        else if (t.shaderState !== undefined) { for (const sh of this.stateShaderCandidates(ps, t.shaderState)) for (const x of sh.samplers ?? []) sampler(x.n, x.reg); }
       }
       return (ps.commitEntries = any ? null : Uint32Array.from(out));
     }
@@ -605,8 +663,9 @@ export function defineEffects(X, vm, h) {
     }
     restore(c, s) {
       let k = 0;
-      for (let i = 0; i < s.rs.length; i++) this.call(c, 'SetRenderState', 2, s.rs[i], s.vals[k++]);
-      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i]; this.call(c, 'SetTextureStageState', 3, x >> 8, x & 255, s.vals[k++]); }
+      const d = this.plainDev(); // (a state the device already holds: no call, as its handler would do nothing)
+      for (let i = 0; i < s.rs.length; i++) { const v = s.vals[k++]; if (d === null || d.rs.get(s.rs[i]) !== v) this.call(c, 'SetRenderState', 2, s.rs[i], v); }
+      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i], v = s.vals[k++]; if (d === null || d.tss[x >> 8]?.get(x & 255) !== v) this.call(c, 'SetTextureStageState', 3, x >> 8, x & 255, v); }
       for (let i = 0; i < s.tex.length; i++) this.call(c, 'SetTexture', 2, s.tex[i], s.vals[k++]);
       if (s.vs !== undefined) this.call(c, 'SetVertexShader', 1, s.vs);
       if (s.ps !== undefined) this.call(c, 'SetPixelShader', 1, s.ps);

@@ -459,6 +459,8 @@ export class Recorder {
     if (d.viewportVersion !== V[4]) this.putVersion(4, d.viewportVersion);
     if (d.constVersion !== V[5]) this.putVersion(5, d.constVersion);
     if (d.transformAllVersion !== V[6]) this.putVersion(6, d.transformAllVersion);
+    if (d.vsConstVersion !== undefined && d.vsConstVersion !== V[7]) this.putVersion(7, d.vsConstVersion);
+    if (d.psConstVersion !== undefined && d.psConstVersion !== V[8]) this.putVersion(8, d.psConstVersion);
   }
   putVersion(i, v) {
     const W = this.w; this.s.versions[i] = v;

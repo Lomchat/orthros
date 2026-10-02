@@ -2,7 +2,8 @@
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
+import { d3dxFastId } from './fast-d3dx.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -105,16 +106,29 @@ export class Jit {
   /** Mark a thunk slot as having a WASM fast path (called for every created thunk). */
   markFast(idx, key, def) {
     // (IUnknown::AddRef/Release of every interface Orthros implements: com.js keeps their counts in guest memory)
-    const fid = !def ? undefined : FAST_NAMES[key] ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
+    const dx = def && this.opts.d3dxFast !== false ? d3dxFastId(key) : undefined;
+    const fid = !def ? undefined : FAST_NAMES[key] ?? dx ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
+    // (the fast paths of the API-layer work — D3DX math, effect parameter descriptions, raw values — switchable for
+    // measurement: setD3dxFast)
+    if (dx !== undefined || fid === FID_PARAM_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
   }
   /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */
   setRefFast(on) {
     this.refFastOff = !on;
     for (const [idx, fid] of this.refFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
+  }
+  /** (measurement, dbg:ORTHROS_D3DX_FAST_OFF / ORTHROS_API_OPT_OFF) D3DX math (fast-d3dx.js), effect parameter descriptions and raw values on the WASM fast path or in JavaScript */
+  setD3dxFast(on) {
+    this.d3dxFastOff = !on;
+    for (const [idx, fid] of this.optFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
+    // (the bindings' issued-state filter: runtime.js DEFER_F_TEX / STREAM / IB — back on only once the queue has run: sets
+    // queued while it was off did not update the shadow; Vm.drainDeferred ends optOnPending)
+    this.optOnPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
+    this.mem.write32(PROC_CONSTS + 4, on && !this.optOnPending ? 0 : 1);
   }
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }
