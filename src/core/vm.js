@@ -14,7 +14,7 @@ import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC } from '../cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
 
@@ -446,7 +446,7 @@ export class Vm {
     const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc;
     let calls = 0;
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end; calls++) {
-      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], words = (u32[(DEFER_SPEC >>> 2) + idx] >>> 8) & 0xff;
+      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], spec = u32[(DEFER_SPEC >>> 2) + idx], words = spec & DEFER_RAW ? u32[(p >>> 2) + 6] >>> 2 : (spec >>> 8) & 0xff; // (DEFER_RAW: the byte count argument)
       const def = thunks[idx].def;
       ctx.thread = thread; ctx.cpu = cpu; ctx.proc = proc; ctx.def = def; ctx.sp = p + 4; // (Ctx.bind; arg(i) reads the recorded arguments)
       if (hist && idx < hist.length) hist[idx]++;

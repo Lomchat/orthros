@@ -79,6 +79,12 @@ export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle
 export const FID_DEFER = 16;
 export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096, DEFER_OBJ = 1 << 17;
 /**
+ * ID3DXEffect::GetParameterDesc on the fast path (FID_PARAM_DESC): after its handle block (+12) an effect keeps a
+ * direct-mapped cache of PARAM_DESC_SLOTS descriptions by handle — [handle, the 44-byte D3DXPARAMETER_DESC] — filled by
+ * the JavaScript handler (a parameter's description never changes); a handle found there is answered by a copy
+ */
+export const FID_PARAM_DESC = 27, PARAM_DESC_SLOTS = 64, PARAM_DESC_ENTRY = 48, PARAM_DESC_BYTES = PARAM_DESC_SLOTS * PARAM_DESC_ENTRY;
+/**
  * Issued-state filter of the device state setters (render, texture stage, sampler states): a device keeps at +12 the
  * address of a STATE_SHADOW block — +0 enabled (0 while a state block records: every set is then recorded), entries of
  * two words (known, value) from +16: SHADOW_RS render states 0..255, SHADOW_TSS stage 0..7 x type 0..39, SHADOW_SAMP
@@ -97,6 +103,12 @@ export const DEFER_REFS = 1 << 21;
  */
 export const DEFER_STATES = 1 << 22;
 export const COMMIT_LIST = 20;
+/**
+ * a queued call whose structure is `bytes` (the argument after the pointer's: index 4, D3DX SetRawValue(h, data, offset,
+ * bytes)) long: copied after the arguments as for a fixed structure, up to DEFER_RAW_MAX bytes in whole words (others,
+ * and a null pointer, go to JavaScript at once)
+ */
+export const DEFER_RAW = 1 << 23, DEFER_RAW_MAX = 1024;
 export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_ENTRIES = SHADOW_SAMP + 16 * 16, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
 export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
@@ -129,13 +141,14 @@ export const DEFER_SPECS = {
   // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
   ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16]], DEFER_HANDLE),
   ...deferSpecs('ID3DXEffect', [['SetTexture', 3]], DEFER_HANDLE | DEFER_REFS),
+  ...deferSpecs('ID3DXEffect', [['SetRawValue', 5, 2, 0]], DEFER_HANDLE | DEFER_RAW),
   // the pass's states set again from the parameters (only device calls observe them; always D3D_OK), the pass closed
   ...deferSpecs('ID3DXEffect', [['CommitChanges', 1]], DEFER_OBJ | DEFER_REFS | DEFER_STATES),
   ...deferSpecs('ID3DXEffect', [['EndPass', 1]], DEFER_OBJ),
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
-  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 19, 'kernel32.dll!QueryPerformanceCounter': 20 };
+  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 19, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
 /** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
 export const TICK_BASE = 0x1000000;
 
@@ -302,7 +315,7 @@ export function buildRuntime(opts = {}) {
   let fastApiIdx;
   {
     const c = new Code();
-    const [FID, STATE, IDX, SP, TEB, A0, A1, A2, TM, N, P, FB, FE, FV] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    const [FID, STATE, IDX, SP, TEB, A0, A1, A2, TM, N, P, FB, FE, FV, WD] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
     c.get(STATE).i32load(ST.GPR + 16).set(SP);
     c.get(STATE).i32load(ST.FS_BASE).set(TEB);
     c.get(SP).i32load(4).set(A0); c.get(SP).i32load(8).set(A1); c.get(SP).i32load(12).set(A2);
@@ -311,7 +324,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = D3DX_FAST_LAST + 1;
+    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC) + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -369,6 +382,13 @@ export function buildRuntime(opts = {}) {
           c.end(); void handle;
           c.end(); void guarded;
           c.get(TM).i32(15).and().set(N);
+          c.get(TM).i32(8).shr_u().i32(0xff).and().set(WD); // (the structure's words)
+          c.get(TM).i32(DEFER_RAW).and();
+          const raw = c.if_(); // (WD from the byte count: whole words, a bounded size, a pointer the memory holds)
+          c.get(SP).i32load(20).tee(WD).i32(3).and().get(WD).i32(DEFER_RAW_MAX).gt_u().or().br_if(notHandled);
+          c.get(SP).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - DEFER_RAW_MAX).ge_u().or().br_if(notHandled);
+          c.get(WD).i32(2).shr_u().set(WD);
+          c.end(); void raw;
           { // issued-state filter (DEFER_F_*): FE = the shadow entry of the state set (0: none), FV = the value
             const nofilter = c.block();
             c.get(TM).i32(DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP).and().eqz().br_if(nofilter);
@@ -402,7 +422,7 @@ export function buildRuntime(opts = {}) {
             c.end(); void same;
             c.end(); void nofilter;
           }
-          c.get(N).get(TM).i32(8).shr_u().i32(0xff).and().add().i32(2).add().i32(2).shl().set(A0);
+          c.get(N).get(WD).add().i32(2).add().i32(2).shl().set(A0);
           c.i32(DEFER_QUEUE).i32load(0).tee(A1).get(A0).add().i32(DEFER_CAP).gt_u().br_if(notHandled); // full: JavaScript drains, then handles it
           c.get(A1).i32(DEFER_QUEUE + 16).add().set(P);
           c.get(P).get(IDX).i32store(0); c.get(P).get(N).i32store(4);
@@ -413,7 +433,7 @@ export function buildRuntime(opts = {}) {
           c.get(A2).i32(1).add().set(A2); c.br(lp);
           c.end(); c.end(); void copy;
           // the structure behind the pointer argument, copied after the arguments
-          c.get(TM).i32(8).shr_u().i32(0xff).and();
+          c.get(WD);
           const struct = c.if_();
           c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
           c.get(TEB);
@@ -487,15 +507,26 @@ export function buildRuntime(opts = {}) {
           c.get(A0); const nz = c.if_(); c.get(A0).call(nowIdx).f64c(10000).f64mul().f64floor().i64trunc_sat_f64_s().i64store(0, 0); c.end(); void nz;
           c.get(STATE).i32(1); ret(1); break;
         }
+        case FID_PARAM_DESC: { // GetParameterDesc(this, h, desc): a description the effect's cache holds (TM = the entry)
+          c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
+          c.get(A0).i32load(12).tee(FB).eqz().br_if(notHandled);
+          c.get(A1).get(FB).sub().tee(TM).i32(DEFER_HANDLE_BYTES).ge_u().get(TM).i32(3).and().or().br_if(notHandled);
+          c.get(FB).i32(DEFER_HANDLE_BYTES).add().get(TM).i32(2).shr_u().i32(PARAM_DESC_SLOTS - 1).and().i32(PARAM_DESC_ENTRY).mul().add().tee(TM);
+          c.i32load(0).get(A1).ne().br_if(notHandled);
+          c.get(A2).eqz().get(A2).i32(0x7fff0000 - 64).ge_u().or().br_if(notHandled);
+          c.get(A2).get(TM).i32(4).add().i32(PARAM_DESC_ENTRY - 4).memcopy();
+          c.get(STATE).i32(0); ret(3); break;
+        }
         default: // pure D3DX math (fast-d3dx.js)
-          if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: FV + 1, notHandled, ret });
+          if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: WD + 1, notHandled, ret });
           else c.br(notHandled);
           break;
       }
     }
     c.end(); // notHandled
     c.i32(0);
-    fastApiIdx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, ...Array(D3DX_F64_LOCALS).fill(T.f64)], c, 'fastApi');
+    fastApiIdx = m.func([T.i32, T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, T.i32, ...Array(D3DX_F64_LOCALS).fill(T.f64)], c, 'fastApi');
     m.exportFunc('fastApi', fastApiIdx);
   }
 

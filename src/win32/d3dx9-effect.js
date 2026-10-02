@@ -4,7 +4,7 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
@@ -72,7 +72,9 @@ export function defineEffects(X, vm, h) {
       this.proc = c.proc; this.dev = dev; this.fx = parsed; this.flags = flags;
       this.strAddrs = new Map();
       this.handles = new Map(); // handle -> node
-      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES);
+      // (followed by the cache of parameter descriptions the JIT's GetParameterDesc reads: runtime.js FID_PARAM_DESC)
+      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES + PARAM_DESC_BYTES);
+      mem.fill(this.handleBlock + DEFER_HANDLE_BYTES, PARAM_DESC_BYTES, 0);
       this.nextHandle = 0;
       this.params = parsed.params.map((p, i) => this.buildParam(p.type, p.value, p.annotations, `${i}`, null, p.flags));
       this.byName = new Map(this.params.map((p) => [p.name, p]));
@@ -82,7 +84,15 @@ export function defineEffects(X, vm, h) {
       this.technique = this.techniques[0] ?? null;
       this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
     }
-    handleOf(node) { if (!node.handle) { node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node); } return node.handle; }
+    handleOf(node) {
+      if (!node.handle) {
+        node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node);
+        const e = this.descEntry(node.handle); if (mem.read32(e) === node.handle) mem.write32(e, 0); // (a handle given again: its old description gone)
+      }
+      return node.handle;
+    }
+    /** the description cache entry of handle `h` (runtime.js FID_PARAM_DESC) */
+    descEntry(h) { return this.handleBlock + DEFER_HANDLE_BYTES + (((h - this.handleBlock) >>> 2) & (PARAM_DESC_SLOTS - 1)) * PARAM_DESC_ENTRY; }
     /** a parameter node: numeric words (views into one buffer per top-level parameter), objects per element leaf */
     buildParam(type, value, annotations, path, parent = null, flags = 0, words = null) {
       const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null };
@@ -134,6 +144,9 @@ export function defineEffects(X, vm, h) {
       mem.write32(p, n.name ? gstr(this, n.name) : 0); mem.write32(p + 4, n.semantic ? gstr(this, n.semantic) : 0);
       mem.write32(p + 8, t.cls); mem.write32(p + 12, t.type); mem.write32(p + 16, t.rows); mem.write32(p + 20, t.cols); mem.write32(p + 24, t.elements);
       mem.write32(p + 28, n.annotations.length); mem.write32(p + 32, t.members.length); mem.write32(p + 36, n.flags); mem.write32(p + 40, t.cls === PC.OBJECT ? 4 * Math.max(1, t.elements) : t.bytes * Math.max(1, t.elements));
+      // (a parameter given by its handle: its description kept for the JIT's fast path, which answers the next calls)
+      const h = c.arg(1) >>> 0;
+      if (n.handle === h && h - this.handleBlock < DEFER_HANDLE_BYTES && p >= 0x10000 && p < 0x7fff0000 - 64) { const e = this.descEntry(h); mem.write32(e, h); mem.copy(e + 4, p, PARAM_DESC_ENTRY - 4); }
     }
     GetTechniqueDesc(c) { const t = this.tech(c.arg(1)), p = c.arg(2); if (!t || !p) return D3DERR_INVALIDCALL; mem.write32(p, gstr(this, t.name)); mem.write32(p + 4, t.passes.length); mem.write32(p + 8, t.annotations.length); }
     GetPassDesc(c) {
