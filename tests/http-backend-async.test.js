@@ -125,12 +125,15 @@ test('read-ahead: a file read whole has its next blocks fetched asynchronously; 
   const f = b.open('f.big'), n0 = syncReqs.length;
   // (the first MiB by pieces, then the file is being read whole: 4 blocks at once, then the next ones ahead)
   readSeq(f, 0, 3 * MiB + (256 << 10));
-  assert.ok(calls.length >= 1, 'blocks fetched ahead of the reader');
-  assert.ok(calls.every((c) => c.start % BLOCK === 0 && c.start >= 3 * MiB && c.end <= 8 * MiB), `within the window past the reader (${calls.map((c) => [c.start / MiB, c.end / MiB])})`);
+  // (block 0, read by pieces again and again, is fetched whole too: see noteMiss)
+  assert.deepEqual(calls.filter((c) => c.start < MiB).map((c) => [c.start, c.end]), [[0, MiB]]);
+  const ahead = calls.filter((c) => c.start >= MiB);
+  assert.ok(ahead.length >= 1, 'blocks fetched ahead of the reader');
+  assert.ok(ahead.every((c) => c.start % BLOCK === 0 && c.start >= 3 * MiB && c.end <= 8 * MiB), `within the window past the reader (${ahead.map((c) => [c.start / MiB, c.end / MiB])})`);
   assert.equal(b.gameBusy(0), true, 'background downloads wait while the reader\'s blocks are on their way');
   // a parked read of a block on its way waits for that download instead of asking again
   const before = calls.length;
-  const p = f.prepare(calls[0].start, 64 << 10);
+  const p = f.prepare(ahead[0].start, 64 << 10);
   assert.ok(p, 'the block is not here yet');
   assert.equal(calls.length, before, 'no second request for a block on its way');
   for (const c of calls) c.release();
@@ -154,7 +157,7 @@ test('read-ahead: a failed download leaves the read to fetch the block itself, w
   const f = b.open('f.big');
   readSeq(f, 0, 3 * MiB + (256 << 10));
   assert.ok(calls.length >= 1);
-  const p = f.prepare(3 * MiB + (256 << 10), 2 * MiB); // (a parked read reaching block 5, on its way) // (a parked read waiting for the download)
+  const p = f.prepare(3 * MiB + (256 << 10), 2 * MiB); // (a parked read reaching block 5, on its way)
   const failed = calls.length;
   for (const c of calls) c.fail();
   let done = false; p.then(() => { done = true; });
@@ -166,4 +169,27 @@ test('read-ahead: a failed download leaves the read to fetch the block itself, w
   assert.deepEqual(f.read(3 * MiB + (256 << 10), 2 * MiB), bytes(3 * MiB + (256 << 10), 5 * MiB + (256 << 10)));
   assert.equal(syncReqs.length, n, 'the parked read\'s own fetch served the read');
   for (const c of calls) c.release();
+}));
+
+test('missed block: a block the game misses a second time is fetched whole at once; its next reads wait for it', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/h/', tree());
+  b.fillBackground = () => {}; // (the background fill would wait for a quiet network anyway)
+  const f = b.open('f.big');
+  const parked = async (off, len) => { const p = f.prepare(off, len); if (p) { await tick(); for (const c of calls) c.release(); await p; } assert.deepEqual(f.read(off, len), bytes(off, off + len)); };
+  const n0 = syncReqs.length;
+  await parked(3 * MiB + 1000, 100); // first miss: its piece only
+  assert.deepEqual(calls.map((c) => [c.start, c.end]), [[3 * MiB, 3 * MiB + CHUNK]]);
+  const p2 = f.prepare(3 * MiB + 5 * CHUNK, 100); // second miss in the same block: the piece, and the block whole
+  assert.deepEqual(calls.slice(1).map((c) => [c.start, c.end]).sort((x, y) => y[1] - x[1]), [[3 * MiB, 4 * MiB], [3 * MiB + 5 * CHUNK, 3 * MiB + 6 * CHUNK]]);
+  calls.find((c) => c.end === 3 * MiB + 6 * CHUNK).release(); await p2;
+  const p3 = f.prepare(3 * MiB + 9 * CHUNK, 100); // a third read waits for the block on its way
+  assert.ok(p3);
+  assert.equal(calls.length, 3, 'no request of its own');
+  for (const c of calls) c.release(); await p3;
+  assert.ok(b.cache.has('f.big#3'));
+  assert.deepEqual(f.read(3 * MiB + 9 * CHUNK, 100), bytes(3 * MiB + 9 * CHUNK, 3 * MiB + 9 * CHUNK + 100));
+  assert.equal(syncReqs.length, n0, 'every read served without a synchronous request');
+  // a block missed once elsewhere: its piece only
+  await parked(6 * MiB + 77, 10);
+  assert.equal(calls.filter((c) => c.start === 6 * MiB && c.end === 7 * MiB).length, 0);
 }));

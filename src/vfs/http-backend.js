@@ -21,6 +21,11 @@ const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched be
  * finds them here instead of waiting a round trip and a transfer every few blocks.
  */
 const READ_AHEAD_LOW = 2 << 20, READ_AHEAD_HIGH = 4 << 20;
+/**
+ * A block the game misses a second time (a read needing pieces not here yet, again) is one it keeps reading: the whole
+ * block is fetched at once, at most this many such downloads in flight (else it waits for the background block fill).
+ */
+const MISSED_BLOCK_FLIGHTS = 3;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
@@ -70,6 +75,8 @@ export class HttpBackend {
     this.flights = new Map();
     /** whole blocks being fetched ahead of a sequential reader: "path#block" -> promise (see readAhead) */
     this.blockFlights = new Map(); this.readAheadPending = 0;
+    /** reads that needed the network, per block not here whole ("path#block" -> count; see noteMiss) */
+    this.misses = new Map(); this.missFlights = 0;
     /** the learned prefetch list and the game's position in it (see prefetch, noteBlock) */
     this.learned = null;
   }
@@ -264,7 +271,24 @@ export class HttpBackend {
       b = e;
     }
   }
-  /** Blocks b0..b1 of a file fetched ahead of its sequential reader (see readAhead). */
+  /**
+   * A read of block `index` needs pieces from the network: from its second such read, the game keeps reading the block
+   * (a file read a little here and there, entries of an archive one after the other) — the whole block is fetched at
+   * once, as a sequential reader's next blocks are (not left to the background fill, which waits while the game reads
+   * and gives way to each of its reads: the block would come only once the game stops reading it). The reads that
+   * follow wait for it rather than each waiting for its own pieces.
+   */
+  noteMiss(path, size, mtime, index) {
+    if (typeof fetch !== 'function') return;
+    const k = `${path}#${index}`, n = (this.misses.get(k) ?? 0) + 1;
+    if (this.misses.size >= 4096) this.misses.clear(); // (bounded: blocks missed long ago start over)
+    this.misses.set(k, n);
+    if (n < 2 || this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
+    this.missFlights++;
+    this.stats.missBlocks = (this.stats.missBlocks ?? 0) + 1;
+    this.fetchBlocksAhead(path, size, mtime, index, index).finally(() => { this.missFlights--; });
+  }
+  /** Blocks b0..b1 of a file fetched ahead of its sequential reader (see readAhead), resolved when done. */
   fetchBlocksAhead(path, size, mtime, b0, b1) {
     const start = b0 * BLOCK, end = Math.min(size, (b1 + 1) * BLOCK);
     this.readAheadPending++;
@@ -280,6 +304,7 @@ export class HttpBackend {
       for (let i = b0; i <= b1; i++) if (this.blockFlights.get(`${path}#${i}`) === done) this.blockFlights.delete(`${path}#${i}`);
     });
     for (let i = b0; i <= b1; i++) this.blockFlights.set(`${path}#${i}`, done);
+    return done;
   }
   /**
    * The game needs the network: every background download in flight goes away (fetched again later), except the
@@ -378,7 +403,7 @@ export class HttpBackend {
     const k = `${path}#${index}`;
     this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
-    this.want.delete(k);
+    this.want.delete(k); this.misses.delete(k);
     for (let c = (index * BLOCK) / CHUNK, e = c + BLOCK / CHUNK; c < e; c++) { const ck = `${path}#${c}`, p = this.chunks.get(ck); if (p) { this.chunks.delete(ck); this.chunkBytes -= p.length; } }
   }
 
@@ -404,6 +429,7 @@ export class HttpBackend {
     // stream, as few round trips as whole blocks would take for a file read from start to end)
     if (m0 >= 0 && extra > 0) { const last = Math.min(Math.floor((Math.min(size, (index + 1) * BLOCK) - 1) / CHUNK), Math.floor((end - 1 + extra) / CHUNK)); while (m1 < last && !this.chunks.has(`${path}#${m1 + 1}`)) m1++; }
     if (m0 >= 0) {
+      this.noteMiss(path, size, mtime, index);
       const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
       const data = this.fetchRange(path, start, stop);
       this.addPieces(path, m0, m1, data);
@@ -460,6 +486,7 @@ export class HttpBackend {
       let m0 = -1, m1 = -1;
       for (let c = c0; c <= c1; c++) if (!this.chunks.has(`${path}#${c}`)) { if (m0 < 0) m0 = c; m1 = c; }
       if (m0 < 0) continue;
+      this.noteMiss(path, size, mtime, bi);
       const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
       jobs.push(this.fetchForeground(path, start, stop).then((d) => {
         if (d && !this.cache.has(`${path}#${bi}`)) this.addPieces(path, m0, m1, d);
