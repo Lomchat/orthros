@@ -325,10 +325,14 @@ export function defineEffects(X, vm, h) {
     }
     /** the shader of element `el` of shader parameter `pi` (a resource of its own, else the object its value names) */
     paramShader(pi, el) {
-      const sh = this.shaderAt(`p${pi}:${el}`);
-      if (sh) return sh;
-      const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n;
-      return leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null;
+      // (found once: the resources and the object ids of shader parameters do not change after loading)
+      const memo = this.paramShaders ??= new Map(), mk = pi * 65536 + el;
+      let sh = memo.get(mk);
+      if (sh !== undefined) return sh;
+      sh = this.shaderAt(`p${pi}:${el}`);
+      if (!sh) { const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n; sh = leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null; }
+      if (sh) memo.set(mk, sh);
+      return sh;
     }
     shaderAt(key) {
       const sh = this.shaders.get(key);
@@ -376,16 +380,25 @@ export function defineEffects(X, vm, h) {
     }
     /** the shader of state k of a pass (its own bytecode, a referenced parameter's, or an array selector's pick) */
     stateShader(ps, k) {
-      const key = `${ps.technique}:${ps.index}:${k}`;
-      if (this.shaders.has(key)) return this.shaderAt(key);
-      const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
-      if (ref || ex) {
-        const n = this.lookup(ref ?? ex.name, null); if (!n) return null;
-        const pi = this.params.indexOf(n);
-        const el = ex ? this.evalIndex(ex, n.elements.length || 1) : 0;
-        return this.paramShader(pi, el);
+      // how state k picks its shader, resolved once per pass (the effect's resources and parameters are fixed once loaded):
+      // [0] its own bytecode (key), [1] a parameter (n, pi) maybe indexed by an array selector (ex), [2] an object id
+      const sel = ps.shaderSel ??= [];
+      let e = sel[k];
+      if (e === undefined) {
+        const key = `${ps.technique}:${ps.index}:${k}`;
+        const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
+        if (this.shaders.has(key)) e = [0, key];
+        else if (ref || ex) { const n = this.lookup(ref ?? ex.name, null); e = n ? [1, n, this.params.indexOf(n), ex] : [1, null]; }
+        else e = [2, ps.states[k].value];
+        sel[k] = e;
       }
-      const v = ps.states[k].value; // (an object id of the table)
+      if (e[0] === 0) return this.shaderAt(e[1]);
+      if (e[0] === 1) {
+        const n = e[1]; if (!n) return null;
+        const ex = e[3], el = ex ? this.evalIndex(ex, n.elements.length || 1) : 0;
+        return this.paramShader(e[2], el);
+      }
+      const v = e[1]; // (an object id of the table)
       return v instanceof Uint32Array && v[0] ? this.objectShader(v[0]) : null;
     }
     evalIndex(ex, count) { const out = this.runProgram(ex.P ??= this.programOf(ex.prog)); return Math.max(0, Math.min(count - 1, Math.round(out[0]))); }
