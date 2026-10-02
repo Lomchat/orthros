@@ -177,3 +177,47 @@ function unpack8(row, pw, out, o, step, ctype, palette, trns) {
       break;
   }
 }
+
+// ---- encoder
+let crcTable = null;
+function crc32(b, start, end) {
+  if (!crcTable) { crcTable = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c >>> 0; } }
+  let c = 0xffffffff;
+  for (let i = start; i < end; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+/**
+ * An RGBA image as PNG (8-bit RGBA, no filter, deflate stored blocks: no compression) — small images such as cursors,
+ * encoded on the CPU and at once (a canvas' encoder can wait on the GPU process).
+ * @param {Uint8Array | Uint8ClampedArray} rgba width * height * 4 bytes, rows top-down
+ * @returns {Uint8Array}
+ */
+export function encodePng(rgba, width, height) {
+  const rowBytes = width * 4 + 1, raw = rowBytes * height;
+  const blocks = Math.max(1, Math.ceil(raw / 65535));
+  const idatLen = 2 + raw + 5 * blocks + 4;
+  const out = new Uint8Array(8 + (12 + 13) + (12 + idatLen) + 12);
+  const dv = new DataView(out.buffer);
+  out.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  let p = 8;
+  const chunk = (type, len, fill) => {
+    dv.setUint32(p, len); for (let i = 0; i < 4; i++) out[p + 4 + i] = type.charCodeAt(i);
+    fill(p + 8);
+    dv.setUint32(p + 8 + len, crc32(out, p + 4, p + 8 + len));
+    p += 12 + len;
+  };
+  chunk('IHDR', 13, (o) => { dv.setUint32(o, width); dv.setUint32(o + 4, height); out[o + 8] = 8; out[o + 9] = 6; out[o + 10] = 0; out[o + 11] = 0; out[o + 12] = 0; });
+  chunk('IDAT', idatLen, (o) => {
+    out[o] = 0x78; out[o + 1] = 0x01; o += 2;
+    let a = 1, b = 0, left = raw, pos = 0; // (adler-32 of the raw bytes, filter bytes included)
+    const put = (v) => { out[o++] = v; a = (a + v) % 65521; b = (b + a) % 65521; };
+    for (let k = 0; k < blocks; k++) {
+      const n = Math.min(65535, left); left -= n;
+      out[o] = k === blocks - 1 ? 1 : 0; out[o + 1] = n & 0xff; out[o + 2] = n >> 8; out[o + 3] = ~n & 0xff; out[o + 4] = (~n >> 8) & 0xff; o += 5;
+      for (let i = 0; i < n; i++, pos++) { const y = (pos / rowBytes) | 0, x = pos - y * rowBytes; put(x === 0 ? 0 : rgba[y * width * 4 + x - 1]); }
+    }
+    dv.setUint32(o, ((b << 16) | a) >>> 0);
+  });
+  chunk('IEND', 0, () => {});
+  return out;
+}

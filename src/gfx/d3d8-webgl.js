@@ -390,7 +390,7 @@ export class WebGLDevice {
       f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, rt.width, rt.height);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
       // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
-      // seconds behind a GPU backlog: a render target created in play froze frames 4-5 s. Diagnostics only.)
+      // up to seconds behind a GPU backlog, for a status only logged: --gl-validate or ?dbg=ORTHROS_FBO_CHECK=1)
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
       if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
