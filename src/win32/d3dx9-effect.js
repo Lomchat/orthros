@@ -425,6 +425,12 @@ export function defineEffects(X, vm, h) {
       const v = e[1]; // (an object id of the table)
       return v instanceof Uint32Array && v[0] ? this.objectShader(v[0]) : null;
     }
+    /** every shader state k of pass ps may pick: each element of the array an expression indexes, else its one shader */
+    stateShaderCandidates(ps, k) {
+      const one = this.stateShader(ps, k), e = ps.shaderSel[k];
+      if (e[0] === 1 && e[1] && e[3]) { const out = []; for (let el = 0; el < Math.max(1, e[1].elements.length); el++) { const sh = this.paramShader(e[2], el); if (sh) out.push(sh); } return out; }
+      return one ? [one] : [];
+    }
     evalIndex(ex, count) { const out = this.runProgram(ex.P ??= this.programOf(ex.prog)); return Math.max(0, Math.min(count - 1, Math.round(out[0]))); }
     /**
      * The register layout of a parameter for a constant-table entry, as a plan: for each of the 4 * count register
@@ -554,7 +560,7 @@ export function defineEffects(X, vm, h) {
           case 'lightenable': f = (c) => this.call(c, 'LightEnable', 2, s.index, word()); break;
           case 'vs': case 'ps': {
             const vsState = cls === 'vs', fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
-            touches = fixed ? { shader: fixed } : { any: true };
+            touches = fixed ? { shader: fixed } : { shaderState: k }; // (picked by an expression: one of its array's, see commitEntries)
             f = (c) => {
               const sh = fixed ?? this.stateShader(ps, k);
               if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
@@ -612,6 +618,7 @@ export function defineEffects(X, vm, h) {
         else if (t.sampler) sampler(t.sampler[0], t.sampler[1]);
         else if (t.tex !== undefined) tex(t.tex);
         else if (t.shader) for (const x of t.shader.samplers ?? []) sampler(x.n, x.reg);
+        else if (t.shaderState !== undefined) { for (const sh of this.stateShaderCandidates(ps, t.shaderState)) for (const x of sh.samplers ?? []) sampler(x.n, x.reg); }
       }
       return (ps.commitEntries = any ? null : Uint32Array.from(out));
     }
