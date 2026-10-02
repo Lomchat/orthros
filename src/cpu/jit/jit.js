@@ -275,7 +275,10 @@ export class Jit {
   blockCounts(region) {
     if (!(region.counters >= 0)) return null;
     const u32 = this.mem.u32, w = region.counters >>> 2;
-    return region.blocks.map((b) => u32[w + b.index]);
+    // (by block index — the emission order — while region.blocks is in address order)
+    const out = new Array(region.blocks.length).fill(0);
+    for (const b of region.blocks) out[b.index] = u32[w + b.index];
+    return out;
   }
 
   /** A table index for a new region (the table grows by doubling). */

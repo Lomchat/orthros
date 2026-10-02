@@ -24,7 +24,7 @@ export function jitMix(jit) {
     regionsCounted++;
     let ri = 0;
     r.blocks.forEach((b, k) => {
-      const n = counts[k];
+      const n = counts[b.index];
       if (!n) return;
       blocks += n;
       let a = b.eip;
@@ -57,7 +57,7 @@ export function jitMix(jit) {
     const counts = jit.blockCounts(r);
     if (!counts) continue;
     r.blocks.forEach((b, k) => {
-      const n = counts[k]; if (!n) return;
+      const n = counts[b.index]; if (!n) return;
       let a = b.eip, open = null; // open group: Set of address registers
       while (a < b.end) {
         let insn; try { insn = decode(mem, a); } catch { break; }

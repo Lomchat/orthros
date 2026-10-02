@@ -89,8 +89,10 @@ const report = (why) => {
   }
   // --list <hex eip,...>: the translation listing of the live regions holding these addresses (with block counts when
   // translated with them: --jit-opts '{"blockCounts":true}'), as the harness's jitlist:<eip>; --list-brief: counts only
+  // --counts-out <file>: every live region's counted guest instructions (translations with block counters), as JSON
+  if (opt('counts-out') && vm.jit) fs.writeFileSync(opt('counts-out'), JSON.stringify(vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r.entry.toString(16), ((cs) => r.blocks.reduce((n, b) => n + cs[b.index] * (b.end - b.eip), 0))(vm.jit.blockCounts(r))])));
   // --list-top <n>: the n regions that ran the most counted guest instructions (translations with block counters)
-  const top = Number(opt('list-top', 0)) && vm.jit ? vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r, vm.jit.blockCounts(r).reduce((n, c, k) => n + c * (r.blocks[k].end - r.blocks[k].eip), 0)]).sort((x, y) => y[1] - x[1]).slice(0, Number(opt('list-top'))).map(([r]) => r.entry.toString(16)) : [];
+  const top = Number(opt('list-top', 0)) && vm.jit ? vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r, ((cs) => r.blocks.reduce((n, b) => n + cs[b.index] * (b.end - b.eip), 0))(vm.jit.blockCounts(r))]).sort((x, y) => y[1] - x[1]).slice(0, Number(opt('list-top'))).map(([r]) => r.entry.toString(16)) : [];
   for (const a of [...(opt('list', '') || '').split(',').filter(Boolean), ...top]) {
     const r = vm.jit?.regionAt(parseInt(a, 16));
     if (!r) { console.log(`list ${a}: no live region`); continue; }
