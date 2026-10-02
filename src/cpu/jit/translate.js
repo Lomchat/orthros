@@ -1558,6 +1558,11 @@ class Emitter {
         this.jumpTo(ft, n);
         return;
       }
+      case TERM_EXIT:
+        // an undecodable instruction ends the block (discoverRegion): every instruction before it done, the
+        // interpreter executes it — raises its fault with the exact state (no instruction's handler exits here)
+        if (b.decodeError) { this.charge(n); this.exitCode(EXIT_STEP, b.fallthrough); }
+        return;
       default: return; // JMP/RET/INDIRECT/EXIT emitted their own exits
     }
   }
