@@ -1,13 +1,13 @@
-node_modules/
+node_modules
 build/
 *.log
 .playwright/
 /artifacts/
 /tests/generated/
 __pycache__/
-/data_games/
-/data_installers/
-/data_wine/
+/data_games
+/data_installers
+/data_wine
 /.claude/
 /.charon-uploads/
 /CLAUDE.md
