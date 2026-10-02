@@ -84,4 +84,4 @@ The learned files: BFME2/RotWK/BFME1 `Options.ini` (detail level and resolution 
 ~99 % of the lookups hit (the rest: regions new to this session). The time to the menu and the first minute's
 hitches do not move on this machine: the background translation runs on a core of its own and was already finished
 before the game needed it; the saving is ~8-9 s of a core at each launch (what a client with few cores shares with
-the game, the GPU process and the DXT helpers). Cache file: ~180-240 MiB per game, read (index) in ~40-650 ms.
+the game, the GPU process and the DXT helpers). Cache file: 206-256 MiB per game (BFME1 reached the 256 MiB bound: what comes after is not kept), its index read in 0.6-0.85 s before the first batch.
