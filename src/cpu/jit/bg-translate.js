@@ -23,13 +23,13 @@ function snapshot(blocks) {
 const sameBytes = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
 const sameExtent = (a, b) => a.length === b.length && a.every((x, i) => x.eip === b[i].eip && x.end === b[i].end);
 
-function translateBatch(items) {
+function translateBatch(items, over) {
   const codes = [], names = [], out = [];
   for (const it of items) {
     const r = { eip: it.eip, fnIdx: it.fnIdx, fpc: it.fpc, k: -1 };
     out.push(r);
     try {
-      const o = { ...opts, fnIdx: it.fnIdx, fpcAssume: it.fpc };
+      const o = { ...opts, ...over, fnIdx: it.fnIdx, fpcAssume: it.fpc };
       const before = discoverRegion(mem, it.eip, o).blocks.map((b) => ({ eip: b.eip, end: b.end }));
       if (!before.length) continue;
       const snap = snapshot(before);
@@ -48,7 +48,7 @@ export function handleMessage(m, reply) {
   if (m.type === 'init') { mem = new GuestMemory({ memory: m.memory }); opts = m.opts; return; }
   if (m.type !== 'batch' || !mem) return;
   const t0 = performance.now();
-  const { codes, names, out } = translateBatch(m.items);
+  const { codes, names, out } = translateBatch(m.items, m.over ?? null);
   let module = null;
   if (codes.length) {
     try { module = new WebAssembly.Module(buildRegionModule(codes, names, mem.memory.buffer instanceof SharedArrayBuffer)); }

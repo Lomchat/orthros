@@ -335,7 +335,7 @@ export class Jit {
     const id = bg.nextId++;
     bg.inflight.set(id, items.length); bg.sent += items.length;
     (bg.epochOf ??= new Map()).set(id, this.abEpoch ?? 0); // (translated under the options of now: see switchOpts)
-    bg.port.postMessage({ type: 'batch', id, items });
+    bg.port.postMessage({ type: 'batch', id, items, over: this.abOpts }); // (the in-session options too: one block numbering for the versions of a region, see EXIT_FPUMODE)
     return items.length;
   }
   /** A batch from the background worker: each region whose bytes are unchanged and not translated meanwhile is installed. */
@@ -697,7 +697,9 @@ export class Jit {
           const versions = (first.versions ??= [first]);
           if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
             const v = this.translate(first.entry, { first, fpc: mode });
-            if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip)) {
+            // (the same blocks under the same numbers: the guard of one version passes the block index it was entered
+            // with to the next)
+            if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip && b.index === first.blocks[i].index)) {
               this.mem.write32(JIT_ALT_BASE + 4 * versions[versions.length - 1].fnIdx, v.fnIdx + 1);
               versions.push(v);
               this.stats.fpuVersions = (this.stats.fpuVersions ?? 0) + 1;

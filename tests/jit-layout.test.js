@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
-import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
+import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 
@@ -91,5 +91,36 @@ test('reverse-postorder layout: random programs with in-region calls and backwar
       assert.equal(off.state, want.state, msg);
       assert.equal(on.slices, off.slices, `time slices: ${msg}`);
     }
+  }
+});
+
+// The x87-mode versions of a region (jit.js EXIT_FPUMODE: the guard of one version tail-calls the next with the block
+// index it was entered with) must number their blocks alike. A region whose first version was translated in another
+// layout (the background worker with other options than the emulator's translations, as after an in-session switch)
+// must not get a version under another numbering: the entry's index would select another block there.
+import { handleMessage } from '../src/cpu/jit/bg-translate.js';
+test('x87-mode versions of a region translated under different layouts are not chained (block numbers differ)', () => {
+  // L0 (lower address, reached from the entry): fld1 ; faddp ; fstp dword [esi] ; hlt — entry E: fldz ; fld1 ; faddp... ; jmp L0
+  const L0 = [0xd9, 0xe8, 0xde, 0xc1, 0xd9, 0x1e, 0xf4]; // fld1 ; faddp st1 ; fstp dword [esi] ; hlt
+  const E = [0xd9, 0xee, 0xd9, 0xe8, 0xde, 0xc1, 0xd9, 0xe8, 0xde, 0xc1, 0xe9]; // fldz ; fld1 ; faddp ; fld1 ; faddp ; jmp L0
+  const code = [...L0, 0x90, 0x90, 0x90, ...E];
+  code.push(...le(0 - (code.length + 4)));
+  const entry = CODE + L0.length + 3, stop = CODE + L0.length - 1;
+  const mem = new GuestMemory({ shared: true }), cpu = new CpuState(mem, THREAD_STATES_BASE);
+  cpu.reset(); mem.writeBytes(CODE, Uint8Array.from(code));
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true, layout: true });
+  jit.cpu = cpu;
+  const replies = [];
+  jit.attachBackground({ postMessage: (m) => handleMessage(m, (r) => replies.push(r)) }); // (its translations: layout on)
+  jit.opts.layout = false; // (the emulator's own translations: address order)
+  mem.write16(cpu.base + ST.FPU_CW, 0x027f);
+  jit.bgPrewarm([[entry, 0x200]]);
+  jit.bgInstall(replies[0]);
+  assert.equal(jit.bg.installed, 1);
+  for (const cw of [0x007f, 0x027f, 0x0c7f]) {
+    mem.write16(cpu.base + ST.FPU_CW, cw); cpu.eip = entry; cpu.esi = DATA; cpu.esp = DATA + 0x800; mem.write32(DATA, 0);
+    let r; do r = jit.run({ stopAt: stop, maxInsns: 1e6 }); while (r === EXIT.TIMESLICE);
+    assert.equal(r, EXIT.HALT, `cw ${cw.toString(16)}`);
+    assert.equal(mem.readF32(DATA), 3, `cw ${cw.toString(16)}: 0 + 1 + 1 + 1 stored`);
   }
 });
