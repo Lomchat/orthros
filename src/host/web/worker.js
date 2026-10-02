@@ -622,10 +622,18 @@ self.onmessage = (e) => {
   }
   else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_COLD_TIER' && vm?.jit?.bg) vm.jit.coldTier = !!globalThis[k]; if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_COLD_TIER' && vm?.jit?.bg) vm.jit.coldTier = !!globalThis[k]; if (k === 'ORTHROS_JIT_AB' && vm?.jit) vm.jit.switchOpts(v ? JSON.parse(v) : null); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
-    if (host) { const ph = host.frameAcct.phase(String(m.label), performance.now()); log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}`); post({ type: 'phase', report: { ...ph, text: undefined } }); }
+    // guest instructions executed in the phase: the guest category's time per instruction is the translated code's speed,
+    // whatever the scene asks of it (an A/B of the code generator less sensitive to what the game does meanwhile)
+    const guestInsns = (vm?.guestInsns ?? 0) - (markPrev?.guestInsns ?? 0);
+    if (host) {
+      const ph = host.frameAcct.phase(String(m.label), performance.now());
+      const guestMs = (ph.mean?.guest ?? 0) * (ph.frames ?? 0), perM = guestInsns > 0 ? guestMs / (guestInsns / 1e6) : 0;
+      log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}${guestInsns > 0 ? `\n  guest instructions: ${(guestInsns / 1e6).toFixed(0)} M, ${(guestInsns / 1e6 / Math.max(1, ph.frames ?? 0)).toFixed(2)} M per frame; guest time ${perM.toFixed(2)} ms per M instructions` : ''}`);
+      post({ type: 'phase', report: { ...ph, text: undefined, guestInsns, guestMsPerMInsn: perM } });
+    }
     const st = host?.gfx?.device?.stats ?? {}, prev = markPrev ?? {}, d = (k) => (st[k] ?? 0) - (prev[k] ?? 0);
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
     const top = vm?.apiTimesPhase ? [...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ') : '(--api-times off)';
@@ -639,7 +647,7 @@ self.onmessage = (e) => {
     if (fs) log('gfx', `mark ${m.label}: frames ${fs.frames} in ${fs.seconds.toFixed(1)} s (${fs.fps.toFixed(1)} fps), frame time p50 ${fs.p50.toFixed(1)} p90 ${fs.p90.toFixed(1)} p99 ${fs.p99.toFixed(1)} max ${fs.max.toFixed(0)} ms, >33 ms ${fs.over33}${g ? `; render: waits ${(g.gpuWaitMs - (gp?.gpuWaitMs ?? 0)).toFixed(0)} ms (fences ${(g.fenceMs - (gp?.fenceMs ?? 0)).toFixed(0)} ms in ${g.fenceWaits - (gp?.fenceWaits ?? 0)}, frames ${(g.frameMs - (gp?.frameMs ?? 0)).toFixed(0)} ms in ${g.frameWaits - (gp?.frameWaits ?? 0)}, readbacks ${(g.readbackMs - (gp?.readbackMs ?? 0)).toFixed(0)} ms), replay ${((g.replayMs ?? 0) - (gp?.replayMs ?? 0)).toFixed(0)} ms, buffer data ${(((g.bufDataBytes ?? 0) - (gp?.bufDataBytes ?? 0)) / 1048576).toFixed(1)} MiB, ${(g.cows ?? 0) - (gp?.cows ?? 0)} surface copies (${(((g.cowBytes ?? 0) - (gp?.cowBytes ?? 0)) / 1048576).toFixed(1)} MiB)${g.compared !== undefined ? `, ${g.compared} frames compared, ${g.differing} differing` : ''}` : ''}`);
     const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
     if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release`);
-    markPrev = { ...st, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    markPrev = { ...st, guestInsns: vm?.guestInsns ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });

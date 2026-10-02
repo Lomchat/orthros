@@ -3,7 +3,7 @@
 // an API (the end of a phase: --until-api, default CreateProcessA) and reports the wall time, the CPU time of the
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
-//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>]
+//   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>] [--until-insns <M>]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,9 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
+// --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
+// `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
+const untilInsns = Number(opt('until-insns', 0)) * 1e6;
 const { manifest, dir } = loadManifest(target);
 // (a fresh profile: the first-launch path; --save <dir>: that empty directory, kept afterwards — the files the game wrote
 // compared between variants)
@@ -48,6 +51,7 @@ if (bgWanted && vm.jit) {
     return sliceEnd(t, o);
   };
 }
+globalThis.__vm = vm; // (wrappers: tools reading the VM after the run)
 if (process.env.ORTHROS_JIT_OPTS && vm.jit) Object.assign(vm.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
 if (process.env.ORTHROS_JIT_STATS && vm.jit) {
   vm.jit.stepHist = new Map();
@@ -77,9 +81,14 @@ vm.dispatchThunk = (t, i) => {
   const th = vm.api.thunk(i);
   if (th?.name === untilApi) { report(`${untilApi} reached`); if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); }
   if (performance.now() - t0 > limit * 1000) { report('time limit'); process.exit(1); }
+  if (untilInsns && vm.guestInsns >= untilInsns) { report(`${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); process.exit(0); }
   return dispatch(t, i);
 };
 vm.host.waitEvent = (ms) => clock.sleep(Math.min(ms, 50));
+// --stop-on <text>: stop once a log message of any kind contains that text (as the harness's --stop-on), e.g. the end of
+// a game's first-launch computation
+const stopOn = opt('stop-on', null);
+if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof msg === 'string' && msg.includes(stopOn)) { report(`"${stopOn}" logged`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); } log(kind, msg); }; }
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 try { vm.run(); report('exited'); } catch (e) { report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); }
 if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });

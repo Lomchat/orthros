@@ -118,6 +118,10 @@ export class BrowserHost {
     // per-frame time accounting (frame-acct.js): every frame's categories, by interval and by phase
     this.frameAcct = new FrameStats();
     this.lastCats = null; // (the categories of the last frame: the slow-frame diagnostics)
+    // (fields the worker and the audio path set later, declared here: one hidden class, see Vm's constructor)
+    this.dxtPool = null; this.wake = null; this.audioHook = null; this.interval = null; this.waitMs = 0;
+    this.audioPeak = 0; this.audioMs = 0; this.audioFrames = 0; this.audioDiag = 0; this.chunk = null;
+    this.audioLead = undefined; this.audioUnderSeen = 0; this.audioCalmSince = 0;
   }
   /** Drain the shared input ring into the local queue. */
   pump() {

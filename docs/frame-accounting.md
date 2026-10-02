@@ -56,7 +56,7 @@ report prints the accounting's own clock reads per frame.
   slow frames' excess over the phase's median frame by category (% of the total excess) and the count of slow frames
   by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
   largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
-  samples). `--phases <file>` writes the reports as JSON.
+  samples). `--phases <file>` writes the reports as JSON. The report also gives the guest instructions executed in the phase (as charged to the executors' budgets, `Vm.guestInsns`) and the `guest` time per million of them (`guestMsPerMInsn`, i.e. ns per guest instruction): the speed of the translated code whatever the scene asks of it — the measure to compare code-generator variants with (`dbg:ORTHROS_JIT_AB=<json>` switches translation options within a session).
 - **Slow-frame log lines** (`[slowframe]`): the frame's categories in brackets after its duration.
 - **Telemetry** (`--telemetry`): each ~0.5 s sample gains `w` (mean work per frame, ms), `c` (mean ms per frame by
   category), and when frames were slow `sc` (their categories summed, ms) and `wf` (the worst one: [ms, work ms,

@@ -3,7 +3,7 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
@@ -91,11 +91,14 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0 };
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
+    // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
+    this.refFast = null; this.refFastOff = false; this.bg = null; this.stormAt = 0; this.stormCount = 0;
+    this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
 
@@ -214,9 +217,31 @@ export class Jit {
     return region;
   }
 
+  /**
+   * Measurement switch (harness dbg:ORTHROS_JIT_AB=<json>, empty: back to the defaults): translation options
+   * overridden from now on, every translation dropped so that the code runs retranslated under them — an A/B of a
+   * translation option within one session (same machine slot, same game state). Called between slices only.
+   */
+  switchOpts(over) {
+    this.abOpts = over && Object.keys(over).length ? over : null;
+    for (const r of this.regions) this.table.set(r.fnIdx, null); // (the old modules become garbage)
+    this.clearTables();
+    this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
+    this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
+  }
+  /** the code-shape options of JIT_DEFAULTS given to this Jit (the translator applies the defaults to the others) */
+  codeOpts() {
+    const o = {};
+    for (const k of Object.keys(JIT_DEFAULTS)) if (this.opts[k] !== undefined) o[k] = this.opts[k];
+    return o;
+  }
   /** translateRegion options of a region at table index `fnIdx` specialized for x87 mode `fpcAssume` (null: generic) */
   translateOpts(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags };
+    if (this.abOpts) return { ...this.translateOptsBase(fnIdx, fpcAssume), ...this.abOpts };
+    return this.translateOptsBase(fnIdx, fpcAssume);
+  }
+  translateOptsBase(fnIdx, fpcAssume) {
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -276,7 +301,7 @@ export class Jit {
    */
   attachBackground(port) {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, bgMs: 0 };
-    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags } });
+    port.postMessage({ type: 'init', memory: this.mem.memory, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
@@ -295,6 +320,7 @@ export class Jit {
     if (!items.length) return 0;
     const id = bg.nextId++;
     bg.inflight.set(id, items.length); bg.sent += items.length;
+    (bg.epochOf ??= new Map()).set(id, this.abEpoch ?? 0); // (translated under the options of now: see switchOpts)
     bg.port.postMessage({ type: 'batch', id, items });
     return items.length;
   }
@@ -307,7 +333,8 @@ export class Jit {
     const bg = this.bg; if (!bg || !bg.inflight.has(m.id)) return;
     bg.inflight.delete(m.id);
     bg.bgMs += m.ms ?? 0;
-    if (!m.module) return;
+    const epoch = bg.epochOf?.get(m.id) ?? 0; bg.epochOf?.delete(m.id);
+    if (!m.module || epoch !== (this.abEpoch ?? 0)) return;
     const t0 = performance.now();
     let inst;
     try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
@@ -556,7 +583,7 @@ export class Jit {
     if (n) { this.stats.chained += n; this.mem.u32[b4 + ST.TRANSITIONS / 4] = 0; }
     if (this.opts.profile) {
       const p = (this.stats.prof ??= Object.fromEntries(JIT_PROF.map((k) => [k, 0])));
-      JIT_PROF.forEach((k, i) => { const a = b4 + ST.PROF / 4 + i; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
+      JIT_PROF.forEach((k, i) => { const a = b4 + profOffset(i) / 4; p[k] += this.mem.u32[a]; this.mem.u32[a] = 0; });
     }
   }
   /** flags helper calls per x86 mnemonic since the last call (profiling translations), sorted */

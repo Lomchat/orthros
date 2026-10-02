@@ -90,6 +90,13 @@ const BITS = [0, 8, 16, 0, 32];
 const SZLOG = [0, 0, 1, 0, 2];
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
 
+/**
+ * Defaults of the translation options (opts.logicRes, binArith; opts.maxBlocks / opts.maxInsns, discoverRegion).
+ * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
+ * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
+ */
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
  * leaves the region), and in all the RETs of a region (see regionRetSites) */
@@ -398,6 +405,7 @@ export function discoverRegion(mem, entry, opts) {
   const queue = [entry];
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
   let total = 0;
+  const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
   const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
   // pass 1: find leaders
@@ -559,7 +567,13 @@ export function buildRegionModule(codes, names = null, shared = false) {
 }
 
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
-export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87'];
+export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87',
+  // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
+  // backward transfer to a block of the innermost loop holding both ends other than its header, a backward transfer
+  // no structured loop holds (the region dispatcher), and the local returns among the latter
+  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop'];
+/** state block offset of profiling counter k */
+export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
 /** profiling translations: flags helper calls per x86 opcode (u32 per OP value) */
 export const PROF_OPS_BASE = JIT_SCRATCH_BASE + 0xa0000;
@@ -591,6 +605,7 @@ class Emitter {
     this.xdValid = this.xdDirty = 0; this.xdOK = false; // (f64 shadows, see xmmShadowSync64)
     this.fcmp = null;
     this.smc = opts.smc !== false;
+    this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -1001,7 +1016,7 @@ class Emitter {
    */
   count(k) {
     if (!this.prof) return;
-    this.c.get(L_STATE).get(L_STATE).i32load(ST.PROF + 4 * k).i32(1).add().i32store(ST.PROF + 4 * k);
+    this.c.get(L_STATE).get(L_STATE).i32load(profOffset(k)).i32(1).add().i32store(profOffset(k));
     // flags helper calls are also counted per x86 mnemonic (JIT_PROF_OPS: opcode -> counter at PROF_OPS_BASE)
     if (k >= PF.flagsNull && k <= PF.flagsSlowArm) {
       const a = PROF_OPS_BASE + 4 * (this.curOp ?? 0);
@@ -1096,13 +1111,13 @@ class Emitter {
       this.charge(n);
       const ct = d < tp.length ? tp[d] : this.blockUnit[t];
       if (!ct.loop || ct.first === t) c.br(ct.label);
-      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(ct.label); }
+      else { this.count(PF.dispatch); this.count(PF.dispatchFwdLoop); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
       this.budget(n, target, b.flagsIn ?? FL_ALL);
       const common = d > 0 ? sp[d - 1] : null;
-      if (common) { if (t !== common.first) { this.count(PF.dispatch); c.i32(t).set(L_BLK); } c.br(common.loopL); }
-      else { this.count(PF.dispatch); c.i32(t).set(L_BLK).br(this.dispatchL); }
+      if (common) { if (t !== common.first) { this.count(PF.dispatch); this.count(PF.dispatchBackLoop); c.i32(t).set(L_BLK); } c.br(common.loopL); }
+      else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
     this.x87Restore(s);
   }
@@ -1604,6 +1619,10 @@ function binArith(kind, opEmit, store = true) {
     loadDst(E, d); E.c.set(L_LZA);
     E.loadOp(s); E.c.set(L_LZB);
     E.c.get(L_LZA).get(L_LZB); opEmit(E.c); maskTo(E, size); E.c.set(L_LZRES);
+    // AND/OR/XOR/TEST flags depend on the result alone (CF = OF = AF = 0, as the flags helper and the inline conditions
+    // compute them): the result stands in for the lazy operands too (opts.logicRes), one value instead of three where the
+    // lazy state stays live (merges, exits) rather than copies of both operands kept in registers of their own
+    if (kind === LZ.LOGIC && E.logicRes) E.c.get(L_LZRES).tee(L_LZA).set(L_LZB);
     E.setLazy(kind, size); // before the store: an SMC exit inside storeOpFrom flushes a coherent lazy state
     if (store) E.storeOpFrom(d, L_LZRES, insn);
   };
@@ -2103,7 +2122,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
     for (const site of E.retSitesOf[E.cur] ?? []) {
       c.get(L_TV).i32(site).eq();
-      const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+      const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
     }
     E.count(PF.ret);
     c.get(L_TV);
@@ -2233,7 +2252,7 @@ HANDLERS[OP.RET] = (E, insn) => {
   // instead of leaving the region and chaining back into it
   for (const site of E.retSitesOf[E.cur] ?? []) {
     c.get(L_TV).i32(site).eq();
-    const i = c.if_(); E.count(PF.retLocal); E.jumpTo(site, E.insnIdx); c.end(); void i;
+    const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
   }
   E.count(PF.ret);
   c.get(L_TV);

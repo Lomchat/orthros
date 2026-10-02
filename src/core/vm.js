@@ -111,6 +111,22 @@ export class Vm {
     this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
     this.apiTraceRets = new Uint32Array(API_TRACE_LEN);
     this.apiTraceTids = new Uint32Array(API_TRACE_LEN);
+    // Fields the hosts and the DLL modules attach later (as the game reaches them), declared here so that the Vm keeps
+    // one hidden class from the start: each late addition was a new map for the property loads of the dispatcher
+    // (runThread, runFor, dispatchThunk read `this.*` per slice and per API call), which went megamorphic — V8's
+    // stub-cache lookup on every one of those loads.
+    // (kept when registerBuiltins above has set them already)
+    const late = {
+      started: false, lastThread: null, runOptsByDepth: [], deferredCalls: 0,
+      presentThread: null, // (the thread that presents frames: d3d8.js Present)
+      waitLogMin: 0, mainWaits: null, // (diagnostics: long waits, set by the headless host)
+      asyncReads: false, readsInFlight: 0, recentFiles: null, recentReads: null, // (kernel32-file.js)
+      registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
+      firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
+      exitReport: null, execFaults: 0,
+      guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
+    };
+    for (const k of Object.keys(late)) this[k] ??= late[k];
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
@@ -328,6 +344,7 @@ export class Vm {
         if (longMs) { tl = performance.now(); el = cpu.eip; bl = budget; if (this.jit) this.jit.dbgLong = { wasm: 0, calls: 0, maxWasm: 0, maxWasmEip: 0, maxWasmExit: 0, maxWasmEnd: 0, tr: 0, trN: 0, steps0: this.jit.stats.steps ?? 0, fb0: this.jit.stats.fallbackSteps ?? 0 }; }
         const exit = exec.run(runOpts);
         budget = exec.remaining();
+        this.guestInsns += runOpts.maxInsns - budget; // (diagnostics: guest time per instruction, see the worker's phase marks)
         if (longMs) {
           const d = performance.now() - tl, g = this.jit?.dbgLong;
           if (d > longMs) this.logFn('hang', `long run: ${d.toFixed(0)} ms from ${this.proc.symbolize(el)} to ${this.proc.symbolize(cpu.eip)} exit ${exit}, budget ${bl} -> ${budget}${g ? `; wasm ${g.wasm.toFixed(0)} ms in ${g.calls} calls (longest ${g.maxWasm.toFixed(0)} ms from ${this.proc.symbolize(g.maxWasmEip)} to ${this.proc.symbolize(g.maxWasmEnd)} exit ${g.maxWasmExit}), translate ${g.tr.toFixed(0)} ms x${g.trN}, steps ${(this.jit.stats.steps ?? 0) - g.steps0}, fallbacks ${(this.jit.stats.fallbackSteps ?? 0) - g.fb0}` : ''}`);
