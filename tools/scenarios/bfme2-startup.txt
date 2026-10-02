@@ -1,0 +1,1 @@
++3:key:27;+6:key:27;+9:key:27;+12:key:27;+15:key:27;+18:key:27;+20:waitframe:150,100000;0:mark:menu;8:move:277,711;10:click:277,711;16:move:277,491;18:click:277,491;30:click:520,312;32:text:Orthros;35:move:419,463;36:click:419,463;48:move:919,732;50:click:919,732;51:mark:load;52:waitframe:1,100;0:mark:loadscreen;1:waitframe:150,100000;0:mark:play;60:mark:later;61:shot

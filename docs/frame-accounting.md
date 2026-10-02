@@ -51,8 +51,8 @@ report prints the accounting's own clock reads per frame.
 ## Where it shows
 
 - **Harness** (`tools/headless.mjs`): each `mark:<label>` input starts a phase named `<label>`; the previous phase (and
-  the last one, as `end`, when the run stops) gets a `[frames]` report: frames > 33 / > 40 / > 50 ms (count and per
-  minute), frame and work percentiles, mean time by category over all frames and over the slow (> 33.4 ms) ones, the
+  the last one, as `end`, when the run stops) gets a `[frames]` report: frames > 33 / > 40 / > 50 / > 100 ms (count
+  and per minute), frame and work percentiles, mean time by category over all frames and over the slow (> 33.4 ms) ones, the
   slow frames' excess over the phase's median frame by category (% of the total excess) and the count of slow frames
   by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
   largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
@@ -74,6 +74,11 @@ on and off every 20 s of play (its cost). Run, e.g.:
 tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 520 --profile-dir <copy of /tmp/orthros-profiles/bfme2> \
   --learn <copy of /tmp/orthros-profiles/learn-live> --phases out.json --input "$(cat tools/scenarios/bfme2-phases.txt)" [--gl-discard]
 ```
+
+`*-startup.txt` are the same journeys with the intro videos skipped where the game allows it (Escape) and a mark
+`later` one minute into the match (the `play` phase is then the first minute of play: start-up and first-use
+measurements, `--stop-on "mark later:"` ends the run there); `bfme2-first.txt` is BFME2's for the settings a first
+launch writes (800x600, 2D menu: no profile, or the shared first-launch profile of src/host/profile-seed.js).
 
 `rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
 saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless
