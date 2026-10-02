@@ -17,6 +17,7 @@ import { Jit } from '../cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
+import { apiOpt } from './api-opt.js';
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
@@ -451,7 +452,7 @@ export class Vm {
       ctx.thread = thread; ctx.cpu = cpu; ctx.proc = proc; ctx.def = def; ctx.sp = p + 4; // (Ctx.bind; arg(i) reads the recorded arguments)
       if (hist && idx < hist.length) hist[idx]++;
       const cm = def.com; // (a COM method: called straight on its object, see Com.callQueued)
-      if (cm !== null && cm !== undefined) com.callQueued(ctx, u32[(p >>> 2) + 2], cm.iface, cm.index); else def.fn(ctx);
+      if (cm !== null && cm !== undefined && !apiOpt.off) com.callQueued(ctx, u32[(p >>> 2) + 2], cm.iface, cm.index); else def.fn(ctx);
       p += 4 * (2 + argc + words);
     }
     this.apiCalls += calls;

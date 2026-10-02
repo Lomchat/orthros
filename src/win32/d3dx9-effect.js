@@ -229,7 +229,7 @@ export function defineEffects(X, vm, h) {
     GetString(c) { const n = this.param(c.arg(1)); if (!n?.obj || !c.arg(2)) return D3DERR_INVALIDCALL; mem.write32(c.arg(2), gstr(this, n.obj.string ?? '')); }
     setTexture(n, ptr) {
       const old = n.obj.ptr;
-      if (old !== ptr) { // (the same texture again: its reference taken then dropped — nothing to do but the touch)
+      if (old !== ptr || apiOpt.off) { // (the same texture again: its reference taken then dropped — nothing to do but the touch)
         const o = ptr ? com.objectAt(ptr) : null;
         if (o) com.addRef(o);
         n.obj.ptr = ptr;
@@ -352,7 +352,7 @@ export function defineEffects(X, vm, h) {
       // (found once: the resources and the object ids of shader parameters do not change after loading)
       const memo = this.paramShaders ??= new Map(), mk = pi * 65536 + el;
       let sh = memo.get(mk);
-      if (sh !== undefined) return sh;
+      if (sh !== undefined && !apiOpt.off) return sh;
       sh = this.shaderAt(`p${pi}:${el}`);
       if (!sh) { const n = this.params[pi], leaf = n?.elements.length ? n.elements[el] : n; sh = leaf?.obj?.id ? this.objectShader(leaf.obj.id) : null; }
       if (sh) memo.set(mk, sh);
@@ -408,7 +408,7 @@ export function defineEffects(X, vm, h) {
       // [0] its own bytecode (key), [1] a parameter (n, pi) maybe indexed by an array selector (ex), [2] an object id
       const sel = ps.shaderSel ??= [];
       let e = sel[k];
-      if (e === undefined) {
+      if (e === undefined || apiOpt.off) {
         const key = `${ps.technique}:${ps.index}:${k}`;
         const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null; // (an array selector names its array)
         if (this.shaders.has(key)) e = [0, key];
