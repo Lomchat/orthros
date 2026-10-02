@@ -87,3 +87,31 @@ for (const api9 of [true, false]) {
     assert.ok(compared > 300, `draws compared: ${compared}`);
   });
 }
+
+// dbg:ORTHROS_GL_CACHE_CHECK=1 (WebGLDevice.cacheMiss): on every cache hit what the cache skipped is derived anyway and
+// compared. Random sessions find no stale entry; a constant written without its stage's version moving is found.
+test('cache check: random Direct3D 8 / 9 sessions find no stale per-draw cache; a write that bypasses a version is found', async () => {
+  const { apiOpt, refreshApiOpt } = await import('../src/core/api-opt.js');
+  globalThis.ORTHROS_GL_CACHE_CHECK = 1; refreshApiOpt();
+  try {
+    assert.equal(apiOpt.glCheck, true);
+    for (const api9 of [true, false]) {
+      for (let seed = 1; seed <= 4; seed++) {
+        const logs = [], devs = [];
+        randomSession({ createDevice: (dev) => { const g = new WebGLDevice(stateGl(), dev, { log: (m) => logs.push(m) }); devs.push(g); return g; } }, seed, api9, () => {});
+        assert.deepEqual(logs.filter((l) => l.includes('GL cache check')), [], `D3D${api9 ? 9 : 8} seed ${seed}`);
+        assert.ok(devs.some((g) => g.stats.draws > 0), 'draws made');
+      }
+    }
+    // negative control: vertex constants changed behind the device's back after every draw (constVersion alone moves,
+    // as a writer missing its stage's version would do)
+    const logs = []; let gfx = null;
+    for (let seed = 1; seed <= 4 && !logs.some((l) => l.includes('GL cache check: stale vertex constant')); seed++) {
+      randomSession({ createDevice: (dev) => (gfx = new WebGLDevice(stateGl(), dev, { log: (m) => logs.push(m) })) }, seed, true, () => {
+        const d = gfx?.dev; if (!d?.vsConst) return;
+        d.vsConst[0] += 1; d.constVersion++;
+      });
+    }
+    assert.ok(logs.some((l) => l.includes('GL cache check: stale vertex constant')), 'a stale vertex constant is found');
+  } finally { delete globalThis.ORTHROS_GL_CACHE_CHECK; refreshApiOpt(); }
+});

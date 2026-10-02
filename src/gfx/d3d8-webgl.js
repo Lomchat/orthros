@@ -250,7 +250,7 @@ export class WebGLDevice {
   glTexture(t) {
     // (a texture whose levels are all uploaded and clean, bound before by this backend: its record kept on the resource —
     // no lookup by id at each bind. glOwner / glGen: this backend, and no context loss or restore since)
-    if (t.levelsClean === true && t.glOwner === this && t.glGen === this.texGen && !this.noStateCache) return t.glRec;
+    if (t.levelsClean === true && t.glOwner === this && t.glGen === this.texGen && !this.noStateCache) { if (apiOpt.glCheck) this.checkTexClean(t, t.glRec); return t.glRec; }
     const gl = this.gl;
     const cube = !!t.faces, volume = !!t.depth;
     const target = cube ? gl.TEXTURE_CUBE_MAP : volume ? gl.TEXTURE_3D : gl.TEXTURE_2D;
@@ -261,7 +261,7 @@ export class WebGLDevice {
       return g;
     }
     // (every level uploaded at an earlier bind and none dirty since — Surface.dirty / markLocked clear levelsClean)
-    if (!fresh && t.levelsClean === true && !this.noStateCache) return g;
+    if (!fresh && t.levelsClean === true && !this.noStateCache) { if (apiOpt.glCheck) this.checkTexClean(t, g); return g; }
     const faces = cube ? t.faces : [t.levels ?? []];
     let bound = false, owned = true;
     for (let f = 0; f < faces.length; f++) {
@@ -1017,8 +1017,8 @@ export class WebGLDevice {
       pv.cv = vv; pv.cf = fv;
       // shader constants (vertex and pixel constants have distinct uniform names): only the registers that differ
       // from what this program last received (effects change a few per draw; the whole vertex array is 4 KB)
-      if (vsCh) this.syncConsts(P, 0, dev.vsConst, U_VC);
-      if (psCh) this.syncConsts(P, 1, dev.psConst, U_PC);
+      if (vsCh) this.syncConsts(P, 0, dev.vsConst, U_VC); else if (apiOpt.glCheck) this.checkConsts(P, 0, dev.vsConst);
+      if (psCh) this.syncConsts(P, 1, dev.psConst, U_PC); else if (apiOpt.glCheck) this.checkConsts(P, 1, dev.psConst);
       if (dev.api9) {
         const ib = P.ibU ??= { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: U_VCB.map((n) => U(n)), pb: U_PCB.map((n) => U(n)) }; // (locations, per program)
         if (vsCh) { if (ib.vi) gl.uniform4iv(ib.vi, dev.vsConstI); for (let i = 0; i < 16; i++) { const a = ib.vb[i]; if (a) gl.uniform1i(a, dev.vsConstB[i]); } }
@@ -1039,7 +1039,8 @@ export class WebGLDevice {
       // the sampler of this stage's last draw when neither its states (the table's version) nor its texture changed
       const stbl = dev.api9 ? dev.samplers[i] : dev.tss[i], sc = this.smpCache ??= [];
       let ce = sc[i];
-      if (ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.dev === dev && !this.glValidate && !this.noStateCache) {
+      const smpHit = ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.dev === dev && !this.glValidate && !this.noStateCache;
+      if (smpHit && !apiOpt.glCheck) {
         if (gs.smp[i] !== ce.smp) { gl.bindSampler(i, ce.smp); gs.smp[i] = ce.smp; }
         continue;
       }
@@ -1064,6 +1065,7 @@ export class WebGLDevice {
         if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an);
         gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod);
       }
+      if (smpHit && smp !== ce.smp) this.cacheMiss(`sampler of stage ${i}`);
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
       if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, dev: null, smp: null };
       ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.dev = dev; ce.smp = smp;
@@ -1072,9 +1074,29 @@ export class WebGLDevice {
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
     // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it)
     const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
-    if (rc.gs === gs && rc.rs === rsT && rc.ver === rsT.ver && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) return;
+    if (rc.gs === gs && rc.rs === rsT && rc.ver === rsT.ver && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
+      if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
+      return;
+    }
     this.applyRaster(dev, gs, flip);
     rc.gs = gs; rc.rs = rsT; rc.ver = rsT.ver; rc.flip = flip; rc.dev = dev;
+  }
+  /**
+   * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
+   * cache, logged; the rendering is the uncached one's)
+   */
+  cacheMiss(what) {
+    const n = this.stats.cacheMisses = (this.stats.cacheMisses ?? 0) + 1;
+    if (n <= 20 || (n & (n - 1)) === 0) this.log(`d3d-webgl: GL cache check: stale ${what} at draw ${this.stats.draws} (${n} so far)`);
+  }
+  checkTexClean(t, g) {
+    if (this.textures.get(t.id) !== g) this.cacheMiss(`texture record of resource ${t.id}`);
+    for (const lv of t.faces ?? [t.levels ?? []]) for (const s of lv) if (s.dirty || !s.uploaded) { this.cacheMiss(`texture ${t.id}: a level not uploaded or dirty`); return; }
+  }
+  checkConsts(P, slot, src) {
+    const c = P.cs?.[slot]; if (!c || !P.u(slot ? U_PC[0] : U_VC[0])) return;
+    if (c.src !== src) { this.cacheMiss(`${slot ? 'pixel' : 'vertex'} constants (arrays replaced)`); return; }
+    for (let i = 0; i < c.seen.length; i++) if (c.seen[i] !== c.srcU[i]) { this.cacheMiss(`${slot ? 'pixel' : 'vertex'} constant ${i >> 2}`); return; }
   }
   /** the depth, stencil, blend, color mask and culling states of the draw (applyState) */
   applyRaster(dev, gs, flip) {
