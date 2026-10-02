@@ -4,7 +4,7 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
@@ -564,7 +564,7 @@ export function defineEffects(X, vm, h) {
             };
             break;
           }
-          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); break; }
+          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); touches = { tex: s.index }; break; }
           case 'sampler': { const ref = this.refs.get(key); const sn = ref ? this.lookup(ref, null) : null; if (sn) { f = (c) => this.bindSampler(c, sn, s.index); touches = { sampler: [sn, s.index] }; } break; }
           case 'transform': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => { const src = tn ? tn.words : s.value; if (!src) return; const p = this.scratch(c, 2048); for (let i = 0; i < 16; i++) mem.write32(p + 4 * i, src[i] ?? (i % 5 === 0 ? 0x3f800000 : 0)); this.call(c, 'SetTransform', 2, idx + (idx === 256 || idx === 16 ? s.index : 0), p); }; break; }
           case 'const': {
@@ -597,7 +597,8 @@ export function defineEffects(X, vm, h) {
       const rs = (i) => { if (i >= 0 && i < 256) out.add(SHADOW_RS + i); };
       const tss = (st, t) => { if (st >= 0 && st < 8 && t >= 0 && t < 40) out.add(SHADOW_TSS + 40 * st + t); };
       const samp = (r, t) => { if (r >= 0 && r < 16 && t >= 0 && t < 16) out.add(SHADOW_SAMP + 16 * r + t); };
-      const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); };
+      const tex = (st) => { if (st >= 0 && st < 16) out.add(SHADOW_TEX + st); }; // (a texture bound: runtime.js DEFER_F_TEX)
+      const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); else tex(reg); };
       let any = false;
       ps.ops ??= this.compilePass(ps);
       for (const o of ps.ops) {
@@ -609,6 +610,7 @@ export function defineEffects(X, vm, h) {
         else if (t.tss) tss(t.tss[0], t.tss[1]);
         else if (t.samp) samp(t.samp[0], t.samp[1]);
         else if (t.sampler) sampler(t.sampler[0], t.sampler[1]);
+        else if (t.tex !== undefined) tex(t.tex);
         else if (t.shader) for (const x of t.shader.samplers ?? []) sampler(x.n, x.reg);
       }
       return (ps.commitEntries = any ? null : Uint32Array.from(out));

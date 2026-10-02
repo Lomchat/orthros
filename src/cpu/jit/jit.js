@@ -3,7 +3,7 @@
 import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE } from './translate.js';
 import { OP_NAMES } from '../decoder.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -103,6 +103,10 @@ export class Jit {
   setD3dxFast(on) {
     this.d3dxFastOff = !on;
     for (const [idx, fid] of this.optFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
+    // (the bindings' issued-state filter: runtime.js DEFER_F_TEX / STREAM / IB — back on only once the queue has run: sets
+    // queued while it was off did not update the shadow; Vm.drainDeferred ends optOnPending)
+    this.optOnPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
+    this.mem.write32(PROC_CONSTS + 4, on && !this.optOnPending ? 0 : 1);
   }
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }

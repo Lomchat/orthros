@@ -7,6 +7,7 @@ import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_N
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
+import { SHADOW_IB } from '../cpu/jit/runtime.js';
 
 const IID = {
   IDirect3D9: '81bdcbca-64d4-426d-ae8d-ad0147f4275c', IDirect3DDevice9: 'd0223b96-bf7a-43fd-92bd-a43b0d82b9eb', IDirect3DResource9: '05eec05d-8f7d-4362-b999-d1baf357c704',
@@ -278,11 +279,11 @@ export function registerDirect3D9(api, vm) {
     GetVertexShaderConstantI(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.write32(p + 4 * i, this.vsConstI[reg * 4 + i]); return D3D_OK; }
     SetVertexShaderConstantB(c) { this.constVersion++; this.vsConstVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 16) return D3DERR_INVALIDCALL; for (let i = 0; i < n; i++) this.vsConstB[reg + i] = mem.read32(p + 4 * i) ? 1 : 0; this.gfx?.constTouched?.(4, reg, reg + n); return D3D_OK; }
     GetVertexShaderConstantB(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n; i++) mem.write32(p + 4 * i, this.vsConstB[reg + i]); return D3D_OK; }
-    SetStreamSource(c) { const n = c.arg(1), vb = c.arg(2), offset = c.arg(3), stride = c.arg(4); if (n >= 16) return D3DERR_INVALIDCALL; const s = this.streams[n]; if (s.vb === vb && s.offset === offset && s.stride === stride) this.sameSets++; if (s.vb !== vb) { if (vb) com.addRef(com.objectAt(vb)); if (s.vb) com.release(com.objectAt(s.vb)); s.vb = vb; } s.offset = offset; s.stride = stride; this.gfx?.setStreamSource?.(n, vb ? com.implAt(vb) : null, stride, offset); return D3D_OK; }
+    SetStreamSource(c) { const n = c.arg(1), vb = c.arg(2), offset = c.arg(3), stride = c.arg(4); if (n >= 16) return D3DERR_INVALIDCALL; const s = this.streams[n]; if (s.vb === vb && s.offset === offset && s.stride === stride) this.sameSets++; if (s.vb !== vb) { if (vb) com.addRef(com.objectAt(vb)); if (s.vb) com.release(com.objectAt(s.vb)); s.vb = vb; } s.offset = offset; s.stride = stride; if (this.shadow) this.shadowStream(n); this.gfx?.setStreamSource?.(n, vb ? com.implAt(vb) : null, stride, offset); return D3D_OK; }
     GetStreamSource(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; const s = this.streams[n]; c.out32(2, s.vb); if (s.vb) com.addRef(com.objectAt(s.vb)); c.out32(3, s.offset); c.out32(4, s.stride); return D3D_OK; }
     SetStreamSourceFreq(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; this.streams[n].freq = c.arg(2); return D3D_OK; }
     GetStreamSourceFreq(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; c.out32(2, this.streams[n].freq); return D3D_OK; }
-    SetIndices(c) { const ib = c.arg(1); if (ib && !com.implAt(ib)) return D3DERR_INVALIDCALL; if (this.indices.ib === ib) this.sameSets++; if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, 0); return D3D_OK; }
+    SetIndices(c) { const ib = c.arg(1); if (ib && !com.implAt(ib)) return D3DERR_INVALIDCALL; if (this.indices.ib === ib) this.sameSets++; if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } if (this.shadow) this.shadowSet(SHADOW_IB, ib); this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, 0); return D3D_OK; }
     GetIndices(c) { c.out32(1, this.indices.ib); if (this.indices.ib) com.addRef(com.objectAt(this.indices.ib)); return D3D_OK; }
     CreatePixelShader(c) {
       const fn = c.arg(1), pp = c.arg(2);

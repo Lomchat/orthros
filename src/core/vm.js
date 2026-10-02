@@ -14,7 +14,7 @@ import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW } from '../cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
 import { apiOpt } from './api-opt.js';
@@ -458,6 +458,7 @@ export class Vm {
     this.apiCalls += calls;
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
     if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
+    if (this.jit?.optOnPending) { this.jit.optOnPending = false; m.write32(PROC_CONSTS + 4, 0); }
   }
 
   /**

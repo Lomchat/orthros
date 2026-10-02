@@ -10,7 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
@@ -21,6 +21,7 @@ const METHODS = [
   ['com.dll!IDirect3DDevice9::SetRenderState', 2], ['com.dll!IDirect3DDevice9::SetTextureStageState', 3], ['com.dll!IDirect3DDevice9::SetSamplerState', 3],
   ['com.dll!ID3DXEffect::CommitChanges', 0], ['com.dll!IDirect3DDevice9::BeginStateBlock', 0], ['com.dll!IDirect3DDevice9::EndStateBlock', 0],
   ['com.dll!IDirect3DDevice9::DrawPrimitive', 0], ['com.dll!IDirect3DTexture9::AddRef', 0], ['com.dll!IDirect3DTexture9::Release', 0], ['com.dll!IDirect3DDevice9::SetTexture', 2],
+  ['com.dll!IDirect3DDevice9::SetStreamSource', 4], ['com.dll!IDirect3DDevice9::SetIndices', 1],
 ];
 const M = Object.fromEntries(METHODS.map(([k], i) => [k.split('::')[1] + (k.includes('Texture9::') ? '9' : ''), i]));
 
@@ -31,13 +32,23 @@ class Model {
     this.tss = Array.from({ length: 8 }, () => new StateTable(40, [[1, 4]]));
     this.samp = Array.from({ length: 20 }, () => new StateTable(16, [[5, 2]]));
     this.recording = false; this.recorded = 0; this.commits = 0; this.log = [];
+    this.textures = new Array(20).fill(0); this.streams = Array.from({ length: 16 }, () => [0, 0, 0]); this.ib = 0; // (the bindings, as d3d8.js / d3d9.js keep them)
     this.shadow = shadow;
+    if (shadow) { for (let i = 0; i < 16; i++) this.shadowSet(SHADOW_TEX + i, 0); for (let i = 0; i < 48; i++) this.shadowSet(SHADOW_STREAM + i, 0); this.shadowSet(SHADOW_IB, 0); }
     if (shadow) {
       const { u32 } = shadow, e = (i) => SB + 16 + 8 * i;
       this.rs.attachShadow(u32, e(SHADOW_RS), 256);
       this.tss.forEach((t, i) => t.attachShadow(u32, e(SHADOW_TSS + 40 * i), 40));
       this.samp.slice(0, 16).forEach((t, i) => t.attachShadow(u32, e(SHADOW_SAMP + 16 * i), 16));
     }
+  }
+  shadowSet(i, v) { if (!this.shadow) return; const a = SB + 16 + 8 * i; this.shadow.mem.write32(a, 1); this.shadow.mem.write32(a + 4, v); }
+  /** SetTexture (Device8.bindTexture): recorded while a state block records; a binding changed is logged */
+  bind(st, t) {
+    if (this.recording) { this.recorded++; return; }
+    if (st >= 20) return;
+    if (this.textures[st] !== t) { this.textures[st] = t; this.log.push(`tex${st}=${t}`); }
+    if (st < 16) this.shadowSet(SHADOW_TEX + st, t);
   }
   set(table, key, v, what) {
     if (this.recording) { this.recorded++; return; }
@@ -50,13 +61,22 @@ class Model {
       case M.SetRenderState: return this.set(this.rs, a[1], a[2], `rs${a[1]}`);
       case M.SetTextureStageState: return this.set(this.tss[a[1]], a[2], a[3], `tss${a[1]}.${a[2]}`);
       case M.SetSamplerState: return this.set(this.samp[a[1]], a[2], a[3], `samp${a[1]}.${a[2]}`);
-      case M.CommitChanges: { const n = ++this.commits; this.set(this.rs, 7, n % 3, 'rs7'); this.set(this.tss[0], 1, n % 2, 'tss0.1'); this.set(this.samp[2], 5, n % 4, 'samp2.5'); return; }
+      case M.CommitChanges: { const n = ++this.commits; this.set(this.rs, 7, n % 3, 'rs7'); this.set(this.tss[0], 1, n % 2, 'tss0.1'); this.set(this.samp[2], 5, n % 4, 'samp2.5'); this.bind(3, 0x5000 + n % 2); return; }
+      case M.SetTexture: return this.bind(a[1], a[2]);
+      case M.SetStreamSource: { // (Direct3D 9: applied even while a state block records)
+        if (a[1] >= 16) return;
+        const s = this.streams[a[1]];
+        if (s[0] !== a[2] || s[1] !== a[3] || s[2] !== a[4]) { s[0] = a[2]; s[1] = a[3]; s[2] = a[4]; this.log.push(`stream${a[1]}=${s}`); }
+        for (let i = 0; i < 3; i++) this.shadowSet(SHADOW_STREAM + 3 * a[1] + i, s[i]);
+        return;
+      }
+      case M.SetIndices: if (this.ib !== a[1]) { this.ib = a[1]; this.log.push(`ib=${a[1]}`); } this.shadowSet(SHADOW_IB, a[1]); return;
       case M.BeginStateBlock: this.recording = true; if (this.shadow) this.shadow.mem.write32(SB, 0); return;
       case M.EndStateBlock: this.recording = false; if (this.shadow) this.shadow.mem.write32(SB, 1); return;
       case M.DrawPrimitive: this.log.push('draw'); return;
     }
   }
-  state() { return JSON.stringify([[...this.rs], this.tss.map((t) => [...t]), this.samp.map((t) => [...t])]); }
+  state() { return JSON.stringify([[...this.rs], this.tss.map((t) => [...t]), this.samp.map((t) => [...t]), this.textures, this.streams, this.ib]); }
 }
 
 function randomProgram(seed, n) {
@@ -70,7 +90,10 @@ function randomProgram(seed, n) {
     else if (r < 65) calls.push([M.SetTextureStageState, [DEV, rnd(12) === 0 ? 8 : rnd(3), rnd(12) === 0 ? 40 : [1, 2, 33][rnd(3)], rnd(3)]]);
     else if (r < 88) calls.push([M.SetSamplerState, [DEV, rnd(12) === 0 ? 16 + rnd(3) : rnd(4), rnd(12) === 0 ? 16 : [5, 6][rnd(2)], rnd(4)]]);
     else if (r < 93) calls.push([M.CommitChanges, [FX]]);
-    else if (r < 96) calls.push([M.DrawPrimitive, [DEV]]);
+    else if (r < 94) calls.push([M.SetTexture, [DEV, rnd(10) === 0 ? 16 + rnd(4) : rnd(4), [0, 0x5000, 0x5001][rnd(3)]]]);
+    else if (r < 95) calls.push([M.SetStreamSource, [DEV, rnd(10) === 0 ? 16 : rnd(2), [0, 0x6000][rnd(2)], [0, 32][rnd(2)], [24, 32][rnd(2)]]]);
+    else if (r < 96) calls.push([M.SetIndices, [DEV, [0, 0x7000, 0x7100][rnd(3)]]]);
+    else if (r < 97) calls.push([M.DrawPrimitive, [DEV]]);
     else if (r < 98) calls.push([M.BeginStateBlock, [DEV]]), calls.push(...Array.from({ length: 1 + rnd(4) }, () => [M.SetRenderState, [DEV, [7, 20][rnd(2)], rnd(3)]]), [M.EndStateBlock, [DEV]]);
     else calls.push([M.DrawPrimitive, [DEV]]);
   }
@@ -129,7 +152,7 @@ test('issued-state filter: randomized call sequences end in the same state with 
     mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
     // odd seeds: the effect lists the states its CommitChanges sets (forgotten when it is queued); even: no list (the
     // filter waits for the queue to run)
-    if (seed % 2) { const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1, SHADOW_SAMP + 16 * 2 + 5]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L); }
+    if (seed % 2) { const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1, SHADOW_SAMP + 16 * 2 + 5, SHADOW_TEX + 3]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L); }
     const calls = randomProgram(seed, 400);
     const ref = new Model(null);
     for (const [m, a] of calls) ref.call(m, a);
