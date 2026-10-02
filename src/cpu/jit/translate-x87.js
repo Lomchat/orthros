@@ -453,8 +453,39 @@ function arithF32(E, insn, op) {
   c.get(L_F32C).f32abs().f32c(Infinity).f32eq();
   if (op >= 6) c.get(x).f32abs(); else c.get(L_F32A).f32abs().get(L_F32B).f32abs().f32max();
   c.f32c(Infinity).f32eq().and().br_if(done);
+  nanF32(E, done);
   E.stepExit(insn);
   c.end(); // done
+}
+/**
+ * arithF32's cold path for a NaN result (L_F32C), inline (no exit, no call): X87.arith's rule on float operands as the
+ * interpreter sees them — promoted to f64 they are quiet NaNs, so they raise nothing and the result is the NaN operand
+ * (of two, the larger significand, quiet bit included, the positive one on a tie) quieted; without a NaN operand (inf -
+ * inf, 0 * inf, 0 / 0, inf / inf) IE is raised and the result is the indefinite (0xffc00000 as a float). Branches to
+ * `done` with the result in L_F32C; a non-NaN result falls through. A NaN-heavy loop (uninitialized data) left its
+ * region at every operation: 20 000 interpreter steps per second in BFME's menus.
+ */
+function nanF32(E, done) {
+  const c = E.c;
+  c.get(L_F32C).get(L_F32C).f32ne();
+  const isNan = c.hint(false).if_();
+  c.get(L_F32A).get(L_F32A).f32ne().get(L_F32B).get(L_F32B).f32ne().or();
+  const some = c.if_();
+  // L_T4 / L_T5: the operands' bits; a wins when it is a NaN and b is not, or its fraction (quiet bit forced, as the
+  // promotion does) is larger, or the same with a clear sign
+  c.get(L_F32A).i32reinterpret_f32().set(L_T4); c.get(L_F32B).i32reinterpret_f32().set(L_T5);
+  c.get(L_T4).get(L_T5);
+  c.get(L_F32B).get(L_F32B).f32eq();
+  c.get(L_T4).i32(0x7fffff).and().i32(0x400000).or().get(L_T5).i32(0x7fffff).and().i32(0x400000).or().gt_u().or();
+  c.get(L_T4).i32(0x7fffff).and().i32(0x400000).or().get(L_T5).i32(0x7fffff).and().i32(0x400000).or().eq().get(L_T4).i32(0).ge_s().and().or();
+  c.get(L_F32A).get(L_F32A).f32ne().and();
+  c.select().i32(0x400000).or().f32reinterpret_i32().set(L_F32C);
+  c.else_();
+  raise(E, 0);
+  c.i32(0xffc00000 | 0).f32reinterpret_i32().set(L_F32C);
+  c.end(); void some;
+  c.br(done);
+  c.end(); void isNan;
 }
 /**
  * 24-bit mode, round to nearest, f64 operands in L_F64A/L_F64B and their f64 result on the stack: the
