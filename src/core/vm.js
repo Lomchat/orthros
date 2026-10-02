@@ -124,6 +124,7 @@ export class Vm {
       registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
       exitReport: null, execFaults: 0,
+      guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
   }
@@ -338,6 +339,7 @@ export class Vm {
         runOpts.maxInsns = budget;
         const exit = exec.run(runOpts);
         budget = exec.remaining();
+        this.guestInsns += runOpts.maxInsns - budget; // (diagnostics: guest time per instruction, see the worker's phase marks)
         switch (exit) {
           case EXIT.HALT:
             if (until >= 0 && cpu.eip === until) return cpu.eax;
