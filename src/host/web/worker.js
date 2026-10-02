@@ -318,9 +318,13 @@ let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn 
  * coming back later than planned is `late` (timer clamping, garbage collection, the event loop's other tasks).
  */
 const gap = { cat: -1, planned: 0, at: 0, acc0: 0 };
+/** presented frames the GPU process may still have queued before the guest is held back, the poll interval then (ms) */
+const GPU_FRAMES_MAX = 2, GPU_HOLD_POLL_MS = 2, GPU_HOLD = Object.freeze({ state: 'gpu' });
+let gpuHolds = 0;
 function gapBegin(r) {
   let cat = ACCT.late, planned = 0;
-  if (r.state === 'sleep' || r.state === 'idle') {
+  if (r === GPU_HOLD) { cat = ACCT.draw; planned = Infinity; } // (waiting for the GPU process: see pump)
+  else if (r.state === 'sleep' || r.state === 'idle') {
     planned = r.state === 'idle' ? 30 : Math.max(0, r.until - performance.now());
     // (the thread presenting frames waits for a file read, or a read is on the network and no guest timer is due soon:
     // the threads wait for the read)
@@ -345,6 +349,22 @@ function pump() {
   // (debugging, --dbg ORTHROS_BG_FIRST=1: the guest waits until the learned regions of the loaded modules are installed —
   // the background translation as a very fast machine has it)
   if (globalThis.ORTHROS_BG_FIRST && bgTranslator && regionQueue && vm?.jit && (regionPos < regionQueue.length || vm.jit.bgPending())) { schedulePump(5); return; }
+  // the GPU process more than a few presented frames behind: no guest code until it catches up (the wait is the GPU's,
+  // charged to draws as when a GL call blocks). Behind a deep queue — a software rasterizer — every synchronous GL call
+  // (a program link at a draw, a framebuffer check, a readback) waited for all of it: frames of seconds.
+  // (?dbg=ORTHROS_GPU_FRAMES=N: the limit, 0 none)
+  const gpuMax = globalThis.ORTHROS_GPU_FRAMES ?? GPU_FRAMES_MAX;
+  if (gpuMax > 0 && host.gfx?.gpuFramesBehind) {
+    acct.enter(ACCT.draw);
+    if (host.gfx.gpuFramesBehind() > gpuMax) {
+      gpuHolds++;
+      acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.draw);
+      pumpEndAt = 0; lastPumpReturn = 'gpu';
+      schedulePump(GPU_HOLD_POLL_MS); gapBegin(GPU_HOLD);
+      return;
+    }
+    acct.enter(ACCT.host);
+  }
   let r;
   if (host.gfx?.beforeSlice) { acct.enter(ACCT.prog); host.gfx.beforeSlice(2); acct.enter(ACCT.host); } // (GL programs compiled ahead, resolved when the GPU process has caught up: see createWebGLBackend)
   acct.enter(ACCT.guest);
@@ -394,8 +414,24 @@ function pump() {
     const load = { pfDone: prefetch.blocks, pfTotal: prefetch.total, pfFinished: prefetch.done || (prefetch.total > 0 && prefetch.blocks >= prefetch.total), pfMB: Math.round(prefetch.bytes / 1048576),
       rgDone: regionQueue ? regionPos : 0, rgTotal: regionQueue ? regionQueue.length : 0, pgDone: pc ? pc.started : 0, pgTotal: pc ? pc.started + pc.queue.length : 0 };
     const fa = host.frameAcct.takeInterval(); if (fa) fa.heavy = acct.heavyApis; // (frame accounting of the interval: frame-acct.js)
-    post({ type: 'stats', acct: fa, load, dt, busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', acct: fa, load, dt, busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0) } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s gpu holds ${Math.round(gpuHolds / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (hist) lastHist = hist;
+    // (debugging, dbg:ORTHROS_STEP_HIST=1: the instructions translated code leaves to the interpreter, by address, logged
+    // with a few samples of the x87 state every 10 s)
+    if (globalThis.ORTHROS_STEP_HIST && vm.jit) {
+      if (!vm.jit.stepHist) {
+        vm.jit.stepHist = new Map(); vm.jit.stepSamples = new Map(); vm.jit.stepHistAt = now;
+        vm.jit.stepSample = (cpu) => {
+          const a = cpu.eip >>> 0, list = vm.jit.stepSamples.get(a) ?? []; if (list.length >= 3 || Math.random() > 0.01) return;
+          let m = null; try { const insn = decode(vm.mem, a); const o = insn.ops.find((x) => x.t === OT.MEM); if (o) { const ea = ((o.base >= 0 ? cpu.reg(o.base) : 0) + (o.index >= 0 ? cpu.reg(o.index) << o.scale : 0) + o.disp) >>> 0; m = o.size === 8 ? vm.mem.readF64(ea) : o.size === 4 ? vm.mem.readF32?.(ea) : null; } } catch { /* best effort */ }
+          list.push(`cw=${cpu.fpuCw.toString(16)} st0=${cpu.st(0)} st1=${cpu.st(1)} m=${m}`); vm.jit.stepSamples.set(a, list);
+        };
+      } else if (now - vm.jit.stepHistAt >= 10000) {
+        const top = [...vm.jit.stepHist].sort((x, y) => y[1] - x[1]).slice(0, 10);
+        log('jit', `steps in ${((now - vm.jit.stepHistAt) / 1000).toFixed(0)} s: ${[...vm.jit.stepHist.values()].reduce((a, b) => a + b, 0)}${top.map(([a, n]) => { let d = '?'; try { d = fmtInsn(decode(vm.mem, a)); } catch { /* */ } return `\n  ${n} x ${vm.proc.symbolize(a)}  ${d}  ${(vm.jit.stepSamples.get(a) ?? []).join(' | ')}`; }).join('')}`);
+        vm.jit.stepHist.clear(); vm.jit.stepSamples.clear(); vm.jit.stepHistAt = now;
+      }
+    }
     lastFallbacks = vm.jit?.stats.fallbackSteps ?? 0; if (vm.jit?.fallbackHist) lastFbHist = new Map(vm.jit.fallbackHist);
     // --jit-profile: block transitions per second by kind (intra-region jumps, returns, chaining)
     const prof = vm.jit?.stats.prof;
@@ -406,7 +442,7 @@ function pump() {
       const sites = new Map(); for (let i = 0; i < 1024; i++) { const a = u32[base + 0x40 + i]; if (a) sites.set(a, (sites.get(a) ?? 0) + 1); u32[base + 0x40 + i] = 0; }
       if (per.length) log('jitprof', `fast API calls per s: ${per.sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}=${Math.round(n / dt)}`).join(' ')}; return sites (of the last 1024): ${[...sites].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([a, n]) => { let call = '?'; for (const len of [6, 2, 3, 5, 7, 4]) { try { const i = decode(vm.mem, a - len); if (i.next === a && OP_NAMES[i.op] === 'CALL') { call = fmtInsn(i); break; } } catch {} } return `${vm.proc.symbolize(a)} x${n} [${call}]`; }).join(', ')}`);
     }
-    pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0;
+    pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0; gpuHolds = 0;
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
   }

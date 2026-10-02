@@ -38,6 +38,7 @@ export class Jit {
     this.interp = interp;
     this.opts = opts;
     this.cpu = null;
+    this.dbgLong = null; // (debugging, ORTHROS_LONG_STEP_MS: time of the current run by part)
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
     const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared }));
@@ -464,8 +465,10 @@ export class Jit {
     cpu.exit = EXIT.NONE;
     for (;;) {
       let r;
+      const dbg = this.dbgLong, tw = dbg ? performance.now() : 0, ew = dbg ? cpu.eip : 0;
       try {
         r = this.runtime.run(0, b4); // (the dispatcher reads EIP from the state block)
+        if (dbg) { const d = performance.now() - tw; dbg.wasm += d; dbg.calls++; if (d > dbg.maxWasm) { dbg.maxWasm = d; dbg.maxWasmEip = ew; dbg.maxWasmExit = r; dbg.maxWasmEnd = cpu.eip; } }
       } catch (e) {
         // WASM trap: treat as a memory fault at an unknown instruction inside the current region
         // (the state block holds the registers as of the last dispatcher entry / non-chained exit)
@@ -502,8 +505,10 @@ export class Jit {
           return EXIT.FAULT;
         }
         this.stats.misses++;
+        const tt = this.dbgLong ? performance.now() : 0;
         try {
           this.translate(eip);
+          if (this.dbgLong) { this.dbgLong.tr += performance.now() - tt; this.dbgLong.trN++; }
         } catch (e) {
           // translation failure (e.g. undecodable): run one instruction in the interpreter
           this.interp.cpu = cpu;

@@ -389,8 +389,9 @@ export class WebGLDevice {
       }
       f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, rt.width, rt.height);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
-      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-      if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`);
+      // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
+      // seconds behind a GPU backlog: a render target created in play froze frames 4-5 s. Diagnostics only.)
+      if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
       if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
     } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
@@ -471,6 +472,9 @@ export class WebGLDevice {
       for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
+    // (a fence per presented frame: the worker holds the guest back while too many frames are still queued for the GPU
+    // process — see createWebGLBackend's gpuFramesBehind)
+    if (this.pc?.frameFences) { const q = this.pc.frameFences; q.push(gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)); if (q.length > 16) gl.deleteSync(q.shift()); }
     gl.flush(); this.frame++;
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
@@ -1574,10 +1578,10 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; programCache.frameFences.length = 0; backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
-  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set() };
+  const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set(), frameFences: [] };
   // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
   // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU
   // process stays out of its way); once the device exists, at presents.
@@ -1593,6 +1597,16 @@ export function createWebGLBackend(canvas, log, dump) {
       if (!programCache.pending) return;
       if (programCache.fence) gl.deleteSync(programCache.fence);
       programCache.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+    },
+    /**
+     * Presented frames the GPU process has not finished yet (their fences, a query that does not wait: the status only
+     * changes between tasks). The worker runs no guest code while more than a few are queued: behind a deep queue (a
+     * software rasterizer) every synchronous GL call — a program link at a draw, a readback — waited for all of it, seconds.
+     */
+    gpuFramesBehind() {
+      const q = programCache.frameFences;
+      while (q.length && gl.getSyncParameter(q[0], gl.SYNC_STATUS) === gl.SIGNALED) gl.deleteSync(q.shift());
+      return q.length;
     },
     beforeSlice(budgetMs) {
       const f = programCache.fence;
