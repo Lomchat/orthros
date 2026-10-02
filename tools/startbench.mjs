@@ -89,7 +89,9 @@ const report = (why) => {
   }
   // --list <hex eip,...>: the translation listing of the live regions holding these addresses (with block counts when
   // translated with them: --jit-opts '{"blockCounts":true}'), as the harness's jitlist:<eip>; --list-brief: counts only
-  for (const a of (opt('list', '') || '').split(',').filter(Boolean)) {
+  // --list-top <n>: the n regions that ran the most counted guest instructions (translations with block counters)
+  const top = Number(opt('list-top', 0)) && vm.jit ? vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r, vm.jit.blockCounts(r).reduce((n, c, k) => n + c * (r.blocks[k].end - r.blocks[k].eip), 0)]).sort((x, y) => y[1] - x[1]).slice(0, Number(opt('list-top'))).map(([r]) => r.entry.toString(16)) : [];
+  for (const a of [...(opt('list', '') || '').split(',').filter(Boolean), ...top]) {
     const r = vm.jit?.regionAt(parseInt(a, 16));
     if (!r) { console.log(`list ${a}: no live region`); continue; }
     try { console.log(listRegion(vm.mem, r.entry, { ...vm.jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: vm.jit.blockCounts(r), ops: !args.includes('--list-brief') }).text); } catch (e) { console.log(`list ${a}: ${e.message}`); }
@@ -109,7 +111,7 @@ const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), '
 vm.dispatchThunk = (t, i) => {
   const th = vm.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
-  if (apiHist && th) apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1);
+  if (apiHist && th) { apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1); if (th.name === 'Sleep') { const k = `Sleep(${vm.mem.read32((t.cpu.esp + 4) >>> 0)}) t${t.id} from ${(vm.mem.read32(t.cpu.esp >>> 0) >>> 0).toString(16)}`; apiHist.set(k, (apiHist.get(k) ?? 0) + 1); } }
   if (scenario) {
     scenario.tick();
     if (scenario.finished) { if (opt('phases')) fs.writeFileSync(opt('phases'), JSON.stringify(scenario.results, null, 1)); report('scenario end'); process.exit(0); }

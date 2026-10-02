@@ -99,7 +99,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, tierPad: 0, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, tierPad: 0, layout: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -435,6 +435,53 @@ function branchTarget(insn) {
 }
 
 /**
+ * Block order of the emission (opts.layout): reverse postorder of a depth-first walk from the region entry, so that
+ * every transfer that is not part of a cycle goes forward — a plain `br` to a later unit's label, where a backward
+ * transfer outside a structured loop costs a budget check and the region's br_table dispatch (an indirect jump, and
+ * at its loop header the moves of every live value into the places the header assigns them).
+ * In address order, the return of an in-region callee placed after its caller, a block the compiler moved out of
+ * line jumping back into its function, and calls to callees placed before the caller were such transfers. The walk
+ * follows the in-region successors (fallthrough, branch targets, a call's callee and its return site, a RET's return
+ * sites, see regionRetSites); a call's callee is visited last, so that its blocks follow the call (and its return
+ * site follows them), and a conditional branch's fallthrough is visited last, so that it stays next to its block when
+ * it can (a natural fallthrough: no branch at all). Blocks no walk reaches keep their address order at the end. Only
+ * the order changes: every transfer is emitted as before (direct when forward, through the dispatch otherwise).
+ * Returns the blocks with their new indices.
+ */
+function layoutBlocks(blocks, byEip, entry) {
+  const retSites = regionRetSites(blocks, byEip);
+  const succ = (b) => {
+    const last = b.insns[b.insns.length - 1];
+    switch (b.term) {
+      case TERM_NONE: return [b.fallthrough];
+      case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
+      case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : [];
+      case TERM_CALL: return [b.fallthrough, branchTarget(last)];
+      default: return retSites[b.index] ?? []; // (RET, an import stub's inline-API JMP: their local return sites)
+    }
+  };
+  const seen = new Uint8Array(blocks.length), post = [];
+  const start = byEip.get(entry) ?? blocks[0];
+  // iterative DFS: [block, its successor blocks, next successor to visit]
+  const stack = [[start, succ(start).map((a) => byEip.get(a)).filter(Boolean), 0]];
+  seen[start.index] = 1;
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    if (top[2] < top[1].length) {
+      const t = top[1][top[2]++];
+      if (!seen[t.index]) { seen[t.index] = 1; stack.push([t, succ(t).map((a) => byEip.get(a)).filter(Boolean), 0]); }
+      continue;
+    }
+    post.push(top[0]);
+    stack.pop();
+  }
+  const order = post.reverse();
+  for (const b of blocks) if (!seen[b.index]) order.push(b);
+  order.forEach((b, i) => { b.index = i; });
+  return order;
+}
+
+/**
  * Control-flow layout of a region: the blocks (address order) grouped into a tree of units, each a single
  * block or a structured loop [first, last] spanning a back edge's target (its header) to its latest source,
  * whose children are units in turn. Loops are kept shortest first when they are disjoint from every loop
@@ -705,8 +752,10 @@ class Emitter {
   }
 
   run(entry) {
-    const { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
+    this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
+    if (this.layout) blocks = layoutBlocks(blocks, byEip, entry);
     this.blocks = blocks;
     this.byEip = byEip;
     if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
@@ -788,7 +837,10 @@ class Emitter {
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
-    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume };
+    // (in address order whatever the layout: callers compare the blocks of translations of the same code)
+    const out = blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end }));
+    if (this.layout) out.sort((x, y) => x.eip - y.eip);
+    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume };
   }
 
   /**
@@ -1211,18 +1263,22 @@ class Emitter {
     let d = 0; // loops holding both
     while (d < sp.length && d < tp.length && sp[d] === tp[d]) d++;
     const s = this.x87Normalize(this.planOf(t)); // (blocks are entered with their planned shift: see x87EntryPlan)
+    // the budget is checked on the transfers to an address no higher than the block's (every cycle has one): those
+    // that are backward in address order, whatever the emission order (opts.layout) — so that time slices end at the
+    // same points as in address order, as do the threads' interleavings
+    const addrBack = b.eip <= this.blocks[this.cur].eip;
     if (t > this.cur) {
       // forward: no budget check (every cycle contains a backward edge, which checks it). The unit holding t
       // among the children of the innermost common loop (or the top level) is a later sibling of the one
       // holding the source: its label is in scope; a loop entered elsewhere than at its header dispatches
       this.count(PF.forward);
-      this.charge(n);
+      if (addrBack) this.budget(n, target, b.flagsIn ?? FL_ALL); else this.charge(n);
       const ct = d < tp.length ? tp[d] : this.blockUnit[t];
       if (!ct.loop || ct.first === t) c.br(ct.label);
       else { this.count(PF.dispatch); this.count(PF.dispatchFwdLoop); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
-      this.budget(n, target, b.flagsIn ?? FL_ALL);
+      if (addrBack || !this.layout) this.budget(n, target, b.flagsIn ?? FL_ALL); else this.charge(n);
       const common = d > 0 ? sp[d - 1] : null;
       if (common) { if (t !== common.first) { this.count(PF.dispatch); this.count(PF.dispatchBackLoop); c.i32(t).set(L_BLK); } c.br(common.loopL); }
       else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); c.i32(t).set(L_BLK).br(this.dispatchL); }

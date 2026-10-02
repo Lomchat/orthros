@@ -7,6 +7,7 @@
 // (or `+t` from the first Direct3D frame), as in the harness.
 import { acct, C as ACCT } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
+import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 
 export class NodeScenario {
   /**
@@ -97,7 +98,12 @@ export class NodeScenario {
       }
       case 'dbg': {
         const [k, v] = ev.args[0].split('=');
-        if (k === 'ORTHROS_JIT_AB' && this.vm.jit) { this.vm.jit.switchOpts(v ? JSON.parse(v) : null); this.log(`[input] dbg ${k}=${v ?? ''}`); }
+        if (k === 'ORTHROS_JIT_AB' && this.vm.jit) {
+          const o = v ? JSON.parse(v) : null;
+          // (translations with block counters from now on: the counter area restarts, so that it holds the regions of this phase)
+          if (o?.blockCounts) this.vm.mem.i32[BLOCK_COUNTS_BASE >>> 2] = 0;
+          this.vm.jit.switchOpts(o); this.log(`[input] dbg ${k}=${v ?? ''}`);
+        }
         break;
       }
       case 'mark': this.mark(ev.args[0], t); break;
