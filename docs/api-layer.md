@@ -14,6 +14,12 @@ frame down, all generic (no game-specific code), and how to switch them off with
   `jit-param-desc.test.js`.
 - **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
   taken at the call. Test: `jit-defer-raw.test.js`.
+- **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
+  `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
+  calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
+  queued `CommitChanges` may bind. Test: `jit-defer-filter.test.js` (randomized, against executing every call), and
+  `d3dx9-effect-commit-list.test.js`.
+- The queued COM calls run straight on their object's method (`Com.callQueued`), `dispatch` only for unusual cases.
 
 ## Sleep(0): pacing, not work
 
@@ -31,6 +37,8 @@ else to run park the thread 1 ms) is what bounds it.
   stage's constants changed (`vsConstVersion` / `psConstVersion` on the devices, recorded for the render worker too).
 - A pass state (render / stage / sampler state, shader) the device already holds is not sent again, at `BeginPass`
   and at `End`'s restore (the device handler would do nothing).
+- A sampler parameter whose states are constants is not compared again at each commit while its register's state
+  table is unchanged since they were applied (`StateTable.ver`).
 - How a pass state picks its shader is resolved once per pass; a texture parameter set to the texture it holds does
   not take and drop a reference.
 
