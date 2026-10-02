@@ -356,9 +356,14 @@ export class Jit {
     let inst;
     try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { dropAll(); this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
     const u8 = this.mem.u8;
-    let uncover = null;
+    let uncover = null, again = null;
     for (const it of m.items) {
-      if (it.covered) { bg.covered++; continue; } // (a block of a region the worker translated before: see bg-translate.js)
+      if (it.covered) {
+        // (a block of a region the worker translated before: see bg-translate.js. That region not installed — its code
+        // changed, or the entry was translated here first —, the entry is asked again, once: its own region)
+        if (!this.blockMap.has(it.eip) && !(bg.again ??= new Set()).has(it.eip)) { bg.again.add(it.eip); (again ??= []).push([it.eip, it.fpc]); } else bg.covered++;
+        continue;
+      }
       if (it.k < 0) continue; // (not translatable)
       // translated here meanwhile (at a miss), or its code changed since the background worker read it
       let same = !this.blockMap.has(it.eip);
@@ -369,6 +374,7 @@ export class Jit {
       bg.installed++;
     }
     if (uncover) bg.port.postMessage({ type: 'uncover', regions: uncover });
+    if (again) { bg.sent -= again.length; this.bgPrewarm(again); } // (after the 'uncover' above: the worker sees it first)
     this.stats.bgInstallMs = (this.stats.bgInstallMs ?? 0) + performance.now() - t0;
   }
 

@@ -118,3 +118,28 @@ test('learned entries that are blocks of a region the background worker translat
   assert.equal(runAll(b.jit), EXIT.HALT);
   assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(a.mem.bytes(OUT, 0x300)).toString('hex'));
 });
+
+test('entries skipped as blocks of a region the emulator then did not install are asked again, once, and installed', () => {
+  const a = setup();
+  a.jit.learned = [];
+  assert.equal(runAll(a.jit), EXIT.HALT);
+  const blocks = a.jit.byEntry.get(CODE).blocks.map((x) => x.eip).filter((e) => e !== CODE);
+  const b = setupShared();
+  b.jit.bgPrewarm([[CODE, 0], ...blocks.map((e) => [e, 0])]);
+  const old = b.mem.read8(CODE + 1);
+  b.mem.write8(CODE + 1, old ^ 1); // (the region at CODE changed before its install: dropped)
+  b.jit.bgInstall(b.replies[0]);
+  assert.equal(b.jit.bg.rejected, 1);
+  assert.equal(b.jit.bg.covered, 0, 'none of them counted as covered: asked again');
+  assert.equal(b.replies.length, 2, 'a second batch with the skipped entries');
+  b.jit.bgInstall(b.replies[1]);
+  assert.ok(b.jit.bg.installed >= 1, 'the entries are translated on their own');
+  assert.ok(blocks.some((e) => b.jit.byEntry.has(e)));
+  assert.equal(b.replies.length, 2, 'asked again once only');
+  // the same results as a run of the changed code without anything translated ahead
+  const c = setup();
+  c.mem.write8(CODE + 1, old ^ 1);
+  assert.equal(runAll(c.jit), EXIT.HALT);
+  assert.equal(runAll(b.jit), EXIT.HALT);
+  assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(c.mem.bytes(OUT, 0x300)).toString('hex'));
+});
