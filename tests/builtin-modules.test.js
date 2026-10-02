@@ -250,3 +250,15 @@ test('DirectSound3D: listener on a 3D primary buffer, 3D buffers attenuated and 
   B.SetPosition(ctx(b3, f32(-50), 0, 0, 0)); B.SetMode(ctx(b3, 2, 0));
   assert.deepEqual(buf.gains(), [1, 1]);
 });
+
+test('SystemParametersInfo: screen power saving settings', { skip }, () => {
+  const { call, mem, scratch } = boot();
+  assert.equal(call('user32.dll', 'SystemParametersInfoA', 0x54, 0, scratch, 0), 1, 'SPI_GETPOWEROFFACTIVE');
+  assert.equal(mem.read32(scratch), 0);
+  assert.equal(call('user32.dll', 'SystemParametersInfoA', 0x56, 1, 0, 0), 1, 'SPI_SETPOWEROFFACTIVE');
+  call('user32.dll', 'SystemParametersInfoA', 0x54, 0, scratch, 0);
+  assert.equal(mem.read32(scratch), 1);
+  assert.equal(call('user32.dll', 'SystemParametersInfoA', 0x51, 600, 0, 0), 1, 'SPI_SETLOWPOWERTIMEOUT');
+  call('user32.dll', 'SystemParametersInfoA', 0x4f, 0, scratch, 0);
+  assert.equal(mem.read32(scratch), 600);
+});
