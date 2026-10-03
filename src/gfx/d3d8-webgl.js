@@ -149,6 +149,35 @@ const SIG_RS = [RS.SHADEMODE, 2, RS.LIGHTING, 1, RS.FOGENABLE, 0, RS.FOGTABLEMOD
 const SIG_TSS = [TSS.COLORARG1, 2, TSS.COLORARG2, 1, TSS.COLORARG0, 1, TSS.ALPHAARG1, 2, TSS.ALPHAARG2, 1, TSS.ALPHAARG0, 1, TSS.RESULTARG, 1, TSS.TEXTURETRANSFORMFLAGS, 0];
 const U_VC = names('u_vc', 256), U_PC = names('u_pc', 32);
 const U_WORLD = names('u_world', 4), U_TEXMAT = names('u_texmat', 8), U_VCB = names('u_vcb', 16), U_PCB = names('u_pcb', 16), U_BUMPENV = names('u_bumpEnv', 8);
+/** a program's integer / boolean constant uniforms: locations (bools: [register, location, ...] of those it has) and what it last received */
+function intBoolUniforms(U) {
+  const bools = (names) => { const out = []; names.forEach((n, i) => { const l = U(n); if (l) out.push(i, l); }); return out; };
+  const seen = () => ({ iSrc: null, i: new Int32Array(64), bSrc: null, b: new Int32Array(16) });
+  return { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: bools(U_VCB), pb: bools(U_PCB), v: seen(), p: seen() };
+}
+/** integer registers to a program when they differ from what it last received (`seen`) */
+function syncInts(gl, seen, l, src) {
+  let same = seen.iSrc === src && src.length <= 64;
+  if (same) for (let i = 0; i < src.length; i++) if (seen.i[i] !== src[i]) { same = false; break; }
+  if (same) return;
+  gl.uniform4iv(l, src);
+  seen.iSrc = src; if (src.length <= 64) seen.i.set(src);
+}
+/** boolean registers likewise, one uniform each (`list`: [register, location, ...]) */
+function syncBools(gl, seen, list, src) {
+  const fresh = seen.bSrc !== src; seen.bSrc = src;
+  for (let k = 0; k < list.length; k += 2) { const r = list[k], v = src[r]; if (fresh || seen.b[r] !== v) { seen.b[r] = v; gl.uniform1i(list[k + 1], v); } }
+}
+/** constant writes remembered per stage (constTouched): a program synced fewer writes ago compares only their union */
+const CLOG_N = 256;
+/** the transform slots a program has a matrix uniform for, with their locations: [slot, location, ...] (applyState order) */
+function transformUniforms(U) {
+  const out = [], add = (slot, l) => { if (l) out.push(slot, l); };
+  for (let i = 0; i < 4; i++) add(TS_WORLD + i, U(U_WORLD[i]));
+  add(TS_VIEW, U('u_view')); add(TS_PROJECTION, U('u_proj'));
+  for (let i = 0; i < MAX_STAGES; i++) add(TS_TEXTURE0 + i, U(U_TEXMAT[i]));
+  return out;
+}
 
 export class WebGLDevice {
   /**
@@ -173,6 +202,7 @@ export class WebGLDevice {
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
     this.samplerPool = new Map(); // parameter combination -> WebGLSampler
+    this.cLog = [0, 1].map(() => ({ seq: 0, lo: new Int32Array(CLOG_N), hi: new Int32Array(CLOG_N) })); // (constant writes: constTouched)
     this.invalidateGlState();
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
@@ -767,11 +797,13 @@ export class WebGLDevice {
   /** the enabled light indices in increasing order (sorted again only after a light change) */
   enabledLights() {
     const dev = this.dev;
-    if (this.lightOrderVersion !== dev.lightVersion || this.lightOrderDev !== dev) {
+    // (the enabled set changes only with programVersion — LightEnable, state resets — or as a new set: a light's or
+    // the material's data moving lightVersion leaves the order alone)
+    if (this.lightOrderVersion !== dev.programVersion || this.lightOrderSet !== dev.lightEnabled || this.lightOrderDev !== dev || this.noStateCache) {
       const o = this.lightOrder ??= []; o.length = 0; // (the same array: light data re-sent per object moves the version)
       for (const i of dev.lightEnabled) o.push(i);
       if (o.length > 1) o.sort(byNumber);
-      this.lightOrderVersion = dev.lightVersion; this.lightOrderDev = dev;
+      this.lightOrderVersion = dev.programVersion; this.lightOrderSet = dev.lightEnabled; this.lightOrderDev = dev;
     }
     return this.lightOrder;
   }
@@ -898,19 +930,41 @@ export class WebGLDevice {
     if (!l0) return;
     const cs = P.cs ?? (P.cs = [null, null]);
     let c = cs[slot];
+    const g = this.cLog[slot];
     if (!c || c.src !== src) { // (first use, or the device's arrays replaced): everything differs
-      c = cs[slot] = { src, srcU: new Uint32Array(src.buffer, src.byteOffset, src.length), seen: new Uint32Array(src.length) };
+      c = cs[slot] = { src, srcU: new Uint32Array(src.buffer, src.byteOffset, src.length), seen: new Uint32Array(src.length), log: g, seq: g.seq };
       this.gl.uniform4fv(l0, src); c.seen.set(c.srcU);
       return;
     }
     const a = c.srcU, b = c.seen, n = a.length;
-    let lo = 0; while (lo < n && a[lo] === b[lo]) lo++;
-    if (lo === n) return;
-    let hi = n - 1; while (a[hi] === b[hi]) hi--;
+    // only the elements written since this program's last sync can differ (the constant write log, see constTouched;
+    // a log that wrapped since, or another device's: everything compared)
+    let lo = 0, end = n;
+    if (c.log === g && g.seq - c.seq <= CLOG_N && !this.noStateCache) {
+      if (g.seq === c.seq) { if (apiOpt.glCheck) this.checkConsts(P, slot, src); return; }
+      let L = n, H = 0;
+      for (let q = c.seq; q < g.seq; q++) { const i = q & (CLOG_N - 1), x = g.lo[i], y = g.hi[i]; if (x < L) L = x; if (y > H) H = y; }
+      lo = L; end = H < n ? H : n;
+    }
+    c.log = g; c.seq = g.seq;
+    while (lo < end && a[lo] === b[lo]) lo++;
+    if (lo >= end) { if (apiOpt.glCheck) this.checkConsts(P, slot, src); return; }
+    let hi = end - 1; while (a[hi] === b[hi]) hi--;
     const r0 = lo >> 2, r1 = hi >> 2;
     for (let i = r0 * 4, e = r1 * 4 + 4; i < e; i++) b[i] = a[i];
     const l = r0 ? U(NAMES[r0]) : l0; // (null: registers past the ones the program uses)
     if (l) this.gl.uniform4fv(l, src, r0 * 4, (r1 - r0 + 1) * 4);
+    if (apiOpt.glCheck) this.checkConsts(P, slot, src);
+  }
+  /**
+   * A constant write of the device (`k`: CONST_FIELDS order — 0 vertex floats, 1 pixel floats, elements [lo, hi)):
+   * every writer of the float arrays reports here (the Direct3D layer's Set*ShaderConstant* handlers and effect
+   * writes, the render worker's replayed CONST records), so syncConsts compares only what was written.
+   */
+  constTouched(k, lo, hi) {
+    if (k > 1) return;
+    const g = this.cLog[k], i = g.seq & (CLOG_N - 1);
+    g.lo[i] = lo; g.hi[i] = hi; g.seq++;
   }
   /** A transform slot to program uniform `l`, when its version moved since this program last received it (`seen`). */
   uploadTransform(seen, slot, l, tsv, tall) {
@@ -944,10 +998,9 @@ export class WebGLDevice {
     if (pv.t !== dev.transformVersion) {
       pv.t = dev.transformVersion;
       const seen = pv.ts ?? (pv.ts = new Map());
-      for (let i = 0; i < 4; i++) this.uploadTransform(seen, TS_WORLD + i, U(U_WORLD[i]), tsv, tall);
-      this.uploadTransform(seen, TS_VIEW, U('u_view'), tsv, tall);
-      this.uploadTransform(seen, TS_PROJECTION, U('u_proj'), tsv, tall);
-      for (let i = 0; i < MAX_STAGES; i++) this.uploadTransform(seen, TS_TEXTURE0 + i, U(U_TEXMAT[i]), tsv, tall);
+      // (the matrices this program has a uniform for — none for most shader programs: looked up once per program)
+      const xu = P.xfU ??= transformUniforms(U);
+      for (let i = 0; i < xu.length; i += 2) this.uploadTransform(seen, xu[i], xu[i + 1], tsv, tall);
     }
     if (pv.vp !== dev.viewportVersion) {
       pv.vp = dev.viewportVersion;
@@ -956,14 +1009,20 @@ export class WebGLDevice {
     }
     // lights are transformed by the view matrix only: its slot version, not the whole transform group
     const viewVersion = info.lighting ? Math.max(tsv.get(TS_VIEW) ?? 0, tall) : 0;
-    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion || pv.ls !== dev.stateVersion)) {
-      pv.l = dev.lightVersion; pv.lt = viewVersion; pv.ls = dev.stateVersion;
+    // (the ambient color is a render state: looked at when the states moved; the lights and the material — every
+    // change of them, and of the enabled set, moves lightVersion — when they or the view matrix moved)
+    if (info.lighting && pv.ls !== dev.stateVersion) {
+      pv.ls = dev.stateVersion;
+      const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(20).fill(NaN), amb: -1, n: -1, slots: [], ld: new Float32Array(MAX_LIGHTS * 28) });
+      const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
+    }
+    if (info.lighting && (pv.l !== dev.lightVersion || pv.lt !== viewVersion)) {
+      pv.l = dev.lightVersion; pv.lt = viewVersion;
       // each block is compared with what this program last received (a light or material re-sent per object is
       // usually the same one): only the slots that really changed reach GL
       const lv = pv.lv ?? (pv.lv = { mat: new Float32Array(20).fill(NaN), amb: -1, n: -1, slots: [], ld: new Float32Array(MAX_LIGHTS * 28) });
       const m = dev.material;
       if (!sameF32(lv.mat, m, 17)) { for (let k = 0; k < 17; k++) lv.mat[k] = m[k]; lv.mat[17] = lv.mat[18] = lv.mat[19] = 0; gl.uniform4fv(U('u_mat[0]'), lv.mat); }
-      const amb = this.rs(RS.AMBIENT, 0); if (lv.amb !== amb) { lv.amb = amb; gl.uniform4fv(U('u_ambient'), colorToVec(amb, this.tmp.v4)); }
       let n = 0, dirty = 0;
       const view = dev.transforms.get(TS_VIEW) ?? IDENTITY;
       for (const i of this.enabledLights()) {
@@ -1021,9 +1080,11 @@ export class WebGLDevice {
       if (vsCh) this.syncConsts(P, 0, dev.vsConst, U_VC); else if (apiOpt.glCheck) this.checkConsts(P, 0, dev.vsConst);
       if (psCh) this.syncConsts(P, 1, dev.psConst, U_PC); else if (apiOpt.glCheck) this.checkConsts(P, 1, dev.psConst);
       if (dev.api9) {
-        const ib = P.ibU ??= { vi: U('u_vci[0]'), pi: U('u_pci[0]'), vb: U_VCB.map((n) => U(n)), pb: U_PCB.map((n) => U(n)) }; // (locations, per program)
-        if (vsCh) { if (ib.vi) gl.uniform4iv(ib.vi, dev.vsConstI); for (let i = 0; i < 16; i++) { const a = ib.vb[i]; if (a) gl.uniform1i(a, dev.vsConstB[i]); } }
-        if (psCh) { if (ib.pi) gl.uniform4iv(ib.pi, dev.psConstI); for (let i = 0; i < 16; i++) { const b = ib.pb[i]; if (b) gl.uniform1i(b, dev.psConstB[i]); } }
+        // (locations, per program; the integer and boolean registers sent only when they differ from what this program
+        // last received — the float ones change at every draw of an effect, these rarely)
+        const ib = P.ibU ??= intBoolUniforms(U);
+        if (vsCh) { if (ib.vi) syncInts(gl, ib.v, ib.vi, dev.vsConstI); if (ib.vb.length) syncBools(gl, ib.v, ib.vb, dev.vsConstB); }
+        if (psCh) { if (ib.pi) syncInts(gl, ib.p, ib.pi, dev.psConstI); if (ib.pb.length) syncBools(gl, ib.p, ib.pb, dev.psConstB); }
       }
     }
     // textures + samplers
@@ -1074,13 +1135,17 @@ export class WebGLDevice {
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
     // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it)
+    // (the render states applyRaster reads are watched on the table: a change of another one — a fog color, a texture
+    // factor, set by effects at every pass — leaves the cache valid)
     const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
-    if (rc.gs === gs && rc.rs === rsT && rc.ver === rsT.ver && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
+    if (rc.rs !== rsT) rsT.watchKeys(WATCH_RASTER, RASTER_KEYS);
+    const wv = rsT.wv[WATCH_RASTER];
+    if (rc.gs === gs && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
       if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
       return;
     }
     this.applyRaster(dev, gs, flip);
-    rc.gs = gs; rc.rs = rsT; rc.ver = rsT.ver; rc.flip = flip; rc.dev = dev;
+    rc.gs = gs; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.dev = dev;
   }
   /**
    * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
@@ -1330,16 +1395,33 @@ export class WebGLDevice {
       const v = Q.upVaos?.get(upStride);
       if (v && vaos.get(v.key) === v) { if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
     }
+    // several streams: the same buffers, strides and offsets as this program's (and layout's) last draw — its VAO
+    // again, without building the key (each buffer still gets its pending data uploaded)
+    const lm = upStride ? undefined : Q.lastMulti;
+    if (lm !== undefined && lm.n === streams.length && vaos.get(lm.v.key) === lm.v) {
+      let same = true;
+      for (let k = 0; k < streams.length && same; k++) {
+        const [n, st] = streams[k], s = dev.streams[n], vb = this.comImpl(s?.vb);
+        if (!vb) { same = lm.ids[k] === -1; continue; }
+        const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+        this.glBuffer(vb, 'vb'); // (uploads pending data)
+        same = lm.ids[k] === vb.id && lm.strides[k] === stride && lm.bases[k] === base;
+      }
+      if (same) { const v = lm.v; if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
+    }
     let key = upStride ? `${Q.vid}|up${upStride}` : `${Q.vid}`;
     const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
+    const ids = upStride ? null : new Array(streams.length).fill(-1), strides = upStride ? null : [], bases = upStride ? null : [];
     for (const [n, st] of streams) {
       if (upStride) { bound.push([n, st.attrs, upStride, 0, this.upVbo, -1]); continue; }
-      const s = dev.streams[n], vb = this.comImpl(s?.vb);
+      const s = dev.streams[n], vb = this.comImpl(s?.vb), k = strides.length;
+      strides.push(0); bases.push(0);
       if (!vb) continue;
       const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
       const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
       key += `|${vb.id}:${stride}:${base}`;
       bound.push([n, st.attrs, stride, base, buf, vb.id]);
+      ids[k] = vb.id; strides[k] = stride; bases[k] = base;
     }
     let v = vaos.get(key);
     if (!v) {
@@ -1357,6 +1439,7 @@ export class WebGLDevice {
       }
     } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
     this.curVao = v;
+    if (!upStride) Q.lastMulti = { n: streams.length, ids, strides, bases, v };
     return true;
   }
   /**
@@ -1496,6 +1579,19 @@ export class WebGLDevice {
  * order: texture targets are rendered y-flipped (rows match D3D), back buffers bottom-up. Formats of 1 to 8 bytes per
  * pixel are packed (16-bit ones by their bit layout, others as their closest channels); never past the surface's rows.
  */
+/** the watched key group of the render states the raster cache depends on (StateTable.watchKeys) */
+const WATCH_RASTER = 0;
+/** those render states: every RS / RS9 name applyRaster's source reads (kept in step with the code by construction) */
+const RASTER_KEYS = (() => {
+  const keys = new Set();
+  for (const m of WebGLDevice.prototype.applyRaster.toString().matchAll(/\b(RS9?)\.([A-Z_0-9]+)\b/g)) {
+    const k = (m[1] === 'RS9' ? RS9 : RS)[m[2]];
+    if (k === undefined) throw new Error(`applyRaster reads an unknown render state ${m[0]}`);
+    keys.add(k);
+  }
+  return [...keys];
+})();
+
 export function packReadback(u8, base, s, rgba, w, h, flip) {
   const bpp = isDxt(s.fmt) ? 0 : surfacePitch(s.fmt, 1), fmt = s.fmt, cw = Math.min(w, s.width), ch = Math.min(h, s.height);
   for (let y = 0; y < ch; y++) {

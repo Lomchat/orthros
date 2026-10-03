@@ -262,3 +262,17 @@ test('SystemParametersInfo: screen power saving settings', { skip }, () => {
   call('user32.dll', 'SystemParametersInfoA', 0x4f, 0, scratch, 0);
   assert.equal(mem.read32(scratch), 600);
 });
+
+// The thunk table is allocated whole (src/win32/api.js): internal pages come from the top of the thunk region and DLL
+// windows from the bottom, so a table grown by assignment is sparse — V8 keeps such an array as a dictionary and every
+// API call paid a hash lookup for its thunk. Dense: one slot per thunk address, null where there is none.
+test('thunk table: one slot per thunk address, entries at both ends of the region, no holes', { skip }, () => {
+  const { vm } = boot();
+  const t = vm.api.thunks;
+  assert.equal(t.length, (THUNK_END - THUNK_BASE) / 16);
+  let n = 0, low = Infinity, high = -1;
+  for (let i = 0; i < t.length; i++) { assert.ok(i in t, `slot ${i} is not a hole`); if (t[i] !== null) { n++; low = Math.min(low, i); high = Math.max(high, i); assert.equal(t[i].addr, THUNK_BASE + 16 * i); } }
+  assert.ok(n > 100 && low < 1000 && high > t.length - 1000, `${n} thunks from ${low} to ${high}`);
+  const idx = vm.api.thunkIndex.get('kernel32.dll!GetTickCount') ?? [...vm.api.thunkIndex.values()][0];
+  assert.equal(vm.api.thunk(idx), t[idx]);
+});

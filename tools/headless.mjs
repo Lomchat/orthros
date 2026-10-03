@@ -111,7 +111,7 @@ if (args.includes('--offline')) q.set('offline', '1'); // with --opfs: download 
 if (args.includes('--gl-validate')) q.set('glvalidate', '1'); // debugging: the backend's cached GL state checked against GL (mismatches logged)
 if (opt('timescale')) q.set('timescale', opt('timescale')); // (guest ms per real ms: below 1 the guest sees a faster machine — first-launch benchmarks)
 if (args.includes('--lan')) q.set('lan', '1'); // (the virtual LAN link, as players have it; headless runs are off it by default)
-if (opt('glworker')) q.set('glworker', opt('glworker')); // render worker (docs/render-worker.md): 1 a render worker, inline / check recorded and replayed in the emulator's worker, 0 in-thread backend
+if (opt('glworker')) q.set('glworker', opt('glworker')); // render worker (docs/render-worker.md): 1 a render worker (the default), inline / check recorded and replayed in the emulator's worker, 0 in-thread backend
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
 // --block-counts: translations count each block's executions (shown by --profile-list / --profile-wasm and jitlist; the
@@ -200,7 +200,8 @@ let profileState = profileOpt ? 'armed' : 'off';
 async function workerSession() {
   const cdp = await browser.newBrowserCDPSession();
   const { targetInfos } = await cdp.send('Target.getTargets');
-  const ti = targetInfos.find((x) => (x.type === 'worker' || x.type === 'shared_worker') && /worker\.js/.test(x.url));
+  // (the emulator's worker — not the render worker, src/gfx/render-worker.js, also a worker of the page's)
+  const ti = targetInfos.find((x) => (x.type === 'worker' || x.type === 'shared_worker') && /\/host\/web\/worker\.js/.test(x.url));
   if (!ti) throw new Error('worker target not found');
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: ti.targetId, flatten: false });
   let nextId = 1; const pending = new Map();

@@ -31,6 +31,9 @@ const DYNAMIC = 0x200;
 const EMPTY_STATS = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
 /** the recorder entry points the recording probe times */
 const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'stretchRect', 'bufferUpdated', 'surfaceDirty', 'surfaceMem', 'beginScene', 'reset', 'setGamma', 'destroyResource'];
+/** parts of the recording the probe also times (inclusive, a figure each): the recorder's, then the link's */
+const REC_SUBS = ['flush', 'syncTables', 'syncTexture', 'syncStream', 'syncTransforms', 'syncLights', 'syncConsts', 'putVersion', 'workDone', 'noteSet', 'constTouched', 'transformTouched', 'lockBuffer', 'beforeWrite', 'ensureRes'];
+const LINK_SUBS = ['bufData', 'publish', 'mayRead'];
 
 /** the recorded resource (texture of a level, else the resource itself) */
 const recOf = (r) => (r.owner ?? r).rec;
@@ -233,19 +236,28 @@ export class RenderLink {
       if (--T.left > 0) return;
       for (const r of T.wrapped) for (const k of REC_ENTRIES) delete r[k];
       this.recTime = null;
+      for (const r of T.wrapped) for (const k of REC_SUBS) delete r[k];
+      for (const k of LINK_SUBS) delete this[k];
       const F = T.frames, ms = T.ms - (this.stats.gpuWaitMs - T.wait0) - T.n * T.overhead / 1000;
-      this.log(`render record: ${(ms / F).toFixed(3)} ms per frame over ${F} frames (${T.n} entry calls, ${(T.n / F).toFixed(0)} per frame, timer ${T.overhead.toFixed(3)} us each taken out; waits ${(this.stats.gpuWaitMs - T.wait0).toFixed(0)} ms excluded); commands ${((this.w.produced - T.words0) * 4 / F / 1024).toFixed(0)} KiB per frame`);
+      // (the parts, inclusive — nested parts are inside their caller's figure; the hooks run inside the Direct3D setters)
+      const parts = [...T.sub].filter(([, e]) => e.n).sort((a, b) => b[1].ms - a[1].ms).map(([k, e]) => `${k} ${((e.ms - e.n * T.inner / 1000) / F).toFixed(3)} (${(e.n / F).toFixed(0)})`).join(', ');
+      this.log(`render record: ${(ms / F).toFixed(3)} ms per frame over ${F} frames (${T.n} entry calls, ${(T.n / F).toFixed(0)} per frame, timer ${T.overhead.toFixed(3)} us each taken out; waits ${(this.stats.gpuWaitMs - T.wait0).toFixed(0)} ms excluded); commands ${((this.w.produced - T.words0) * 4 / F / 1024).toFixed(0)} KiB per frame; parts, ms per frame (calls): ${parts}`);
       return;
     }
     const want = globalThis.ORTHROS_REC_TIME; if (!want) return;
     globalThis.ORTHROS_REC_TIME = undefined;
     const now = performance.now.bind(performance);
     const t = { ms: 0, n: 0, depth: 0, left: Number(want) || 60, frames: Number(want) || 60, wait0: this.stats.gpuWaitMs, words0: this.w.produced, wrapped: [...this.recorders] };
-    { let x = 0; const c0 = now(); for (let i = 0; i < 20000; i++) { const a = now(); x += now() - a; } t.overhead = (now() - c0) * 1000 / 20000; void x; } // (a timed empty span)
+    { let x = 0; const c0 = now(); for (let i = 0; i < 20000; i++) { const a = now(); x += now() - a; } t.overhead = (now() - c0) * 1000 / 20000; t.inner = x * 1000 / 20000; } // (a timed empty span: its whole cost, and the part inside the span)
     for (const r of t.wrapped) for (const k of REC_ENTRIES) {
       const f = Recorder.prototype[k];
       r[k] = function () { if (t.depth++) { try { return f.apply(this, arguments); } finally { t.depth--; } } const t0 = now(); try { return f.apply(this, arguments); } finally { t.depth--; t.ms += now() - t0; t.n++; } };
     }
+    // (the parts: inclusive time and calls of each, whoever calls them)
+    t.sub = new Map();
+    const part = (o, k, f) => { const e = { ms: 0, n: 0 }; t.sub.set(k, e); o[k] = function () { const t0 = now(); try { return f.apply(this, arguments); } finally { e.ms += now() - t0; e.n++; } }; };
+    for (const r of t.wrapped) for (const k of REC_SUBS) part(r, k, Recorder.prototype[k]);
+    for (const k of LINK_SUBS) part(this, k, RenderLink.prototype[k]);
     this.recTime = t;
     this.log(`render record: timing the recording over ${t.frames} frames`);
   }
@@ -266,7 +278,7 @@ export class Recorder {
     this.fbos = new Set(); // surfaces the backend holds a framebuffer for (its `fbos` keys): StretchRect's GPU path
     this.s = { api9: !!dev.api9, rs: null, tss: null, samplers: null, pp: null, bb: null, rt: undefined, rtRes: null, vp: null, sc: undefined, fvf: undefined, decl: undefined, vs: undefined, ps: undefined, vs8: undefined, vs8o: undefined, ps8: undefined, ps8o: undefined,
       texArr: null, tex: [], texRes: [], streamsArr: null, sVb: [], sStride: [], sOff: [], sRes: [], indices: null, ib: undefined, ibase: undefined, ibRes: null,
-      versions: new Array(VERSION_FIELDS.length).fill(NaN), xf: null, xfSlots: null, xfVer: NaN, lights: null, lightVer: NaN, lightSize: -1, lightShadow: new Map(), enabled: [], enabledSet: null, material: null,
+      versions: new Array(VERSION_FIELDS.length).fill(NaN), xf: null, xfSlots: null, xfVer: NaN, lights: null, lightVer: NaN, lightSize: -1, lightShadow: new Map(), enabled: [], enabledSet: null, material: null, matArr: null, matW: null,
       consts: CONST_FIELDS.map(() => null), cWords: CONST_FIELDS.map(() => null), cLo: new Array(6).fill(Infinity), cHi: new Array(6).fill(-1) };
     link.curDev = this.id;
     const pp = dev.pp;
@@ -420,8 +432,8 @@ export class Recorder {
       s.tex = new Array(tx.length).fill(0); s.texRes = new Array(tx.length).fill(null); this.texHook = -1;
     }
     // (every change of a stage's texture goes through gfx.setTexture — SetTexture, state blocks — or replaces the array)
-    if (this.texHook) {
-      for (let i = 0; i < tx.length; i++) if ((this.texHook & (1 << i)) || tx[i] !== s.tex[i]) this.syncTexture(i);
+    if (this.texHook) { // (the stages it names, lowest first)
+      for (let m = this.texHook, n = tx.length; m !== 0; m &= m - 1) { const i = 31 - Math.clz32(m & -m); if (i >= n) break; this.syncTexture(i); }
       this.texHook = 0;
     }
     // vertex streams and indices
@@ -433,18 +445,16 @@ export class Recorder {
       this.streamHook = -1;
     }
     // (every change of a stream goes through gfx.setStreamSource, or replaces the array)
-    if (this.streamHook) {
-      for (let i = 0; i < st.length; i++) {
-        const x = st[i];
-        if (x.vb !== s.sVb[i] || x.stride !== s.sStride[i] || x.offset !== s.sOff[i] || (this.streamHook & (1 << i))) this.syncStream(i, x);
-      }
+    if (this.streamHook) { // (the streams it names, lowest first)
+      for (let m = this.streamHook, n = st.length; m !== 0; m &= m - 1) { const i = 31 - Math.clz32(m & -m); if (i >= n) break; this.syncStream(i, st[i]); }
       this.streamHook = 0;
     }
     if (d.indices !== s.indices || d.indices.ib !== s.ib || d.indices.base !== s.ibase) {
       const ix = d.indices; s.indices = ix; s.ib = ix.ib; s.ibase = ix.base;
       const r = ix.ib ? d.com.implAt(ix.ib) : null, nres = r ? (this.ensureRes(r), r.rec) : null;
       if (nres !== s.ibRes) { L.unbind(s.ibRes); L.bind(nres); s.ibRes = nres; }
-      W.put(OP.INDICES, r ? r.id : 0, ix.base);
+      const base = ix.base;
+      if ((base >>> 0) === base) { const p = W.begin(OP.INDICES, 3), I = W.I; I[p] = r ? r.id : 0; I[p + 1] = 0; I[p + 2] = base; } else W.put(OP.INDICES, r ? r.id : 0, base);
     }
     // transforms, lights, material, constants
     if (d.transformVersion !== s.xfVer || d.transforms !== s.xf || d.transformSlotVersion !== s.xfSlots) this.syncTransforms();
@@ -489,9 +499,13 @@ export class Recorder {
   syncStream(i, x) {
     const d = this.dev, s = this.s, L = this.link;
     const r = x.vb ? d.com.implAt(x.vb) : null, nres = r ? (this.ensureRes(r), r.rec) : null;
+    if (nres === s.sRes[i] && x.vb === s.sVb[i] && x.stride === s.sStride[i] && x.offset === s.sOff[i]) return; // (set again: nothing the mirror does not hold)
     s.sVb[i] = x.vb; s.sStride[i] = x.stride; s.sOff[i] = x.offset;
     if (nres !== s.sRes[i]) { L.unbind(s.sRes[i]); L.bind(nres); s.sRes[i] = nres; }
-    this.w.put(OP.STREAM, i, r ? r.id : 0, x.stride, x.offset);
+    const W = this.w, stride = x.stride, off = x.offset;
+    if ((stride >>> 0) === stride && (off >>> 0) === off) { const p = W.begin(OP.STREAM, 6), I = W.I; I[p] = i; I[p + 1] = r ? r.id : 0; I[p + 2] = 0; I[p + 3] = stride; I[p + 4] = 0; I[p + 5] = off; } // (the common cases, encoded in place)
+    else if ((stride >>> 0) === stride && off === undefined) { const p = W.begin(OP.STREAM, 5), I = W.I; I[p] = i; I[p + 1] = r ? r.id : 0; I[p + 2] = 0; I[p + 3] = stride; I[p + 4] = 3; } // (Direct3D 8: no offset)
+    else W.put(OP.STREAM, i, r ? r.id : 0, stride, off);
   }
   /** a transform slot changed (Device.touchTransform: every change of a matrix goes through it) */
   transformTouched(slot) { const x = this.xfDirty, n = this.nXf; for (let i = 0; i < n; i++) if (x[i] === slot) return; x[n] = slot; this.nXf = n + 1; }
@@ -519,22 +533,33 @@ export class Recorder {
   syncLights() {
     const d = this.dev, s = this.s, W = this.w;
     if (d.lights !== s.lights || d.lightEnabled !== s.enabledSet) { s.lights = d.lights; s.enabledSet = d.lightEnabled; s.lightShadow = new Map(); s.enabled = []; s.material = null; W.c0(OP.LIGHTS); }
-    for (const [i, l] of d.lights) {
-      const w = new Int32Array(l.buffer, l.byteOffset, l.length);
-      let sh = s.lightShadow.get(i), same = !!sh;
-      if (sh) for (let k = 0; k < w.length; k++) if (sh[k] !== w[k]) { same = false; break; }
+    // (each light compared as words with the copy last recorded; its word view kept while the device keeps its array)
+    const lights = d.lights, shadow = s.lightShadow;
+    for (const i of lights.keys()) {
+      const l = lights.get(i);
+      let e = shadow.get(i);
+      if (e === undefined || e.arr !== l) { const w = new Int32Array(l.buffer, l.byteOffset, l.length); e = { arr: l, w, sh: e?.sh?.length === w.length ? e.sh : null }; shadow.set(i, e); }
+      const w = e.w, n = w.length;
+      let sh = e.sh, same = sh !== null;
+      if (same) for (let k = 0; k < n; k++) if (sh[k] !== w[k]) { same = false; break; }
       if (same) continue;
-      if (!sh) s.lightShadow.set(i, (sh = new Int32Array(w.length)));
+      if (sh === null) e.sh = sh = new Int32Array(n);
       sh.set(w);
-      W.put(OP.LIGHT, i >>> 0, w);
+      const p = W.begin(OP.LIGHT, 2 + n), I = W.I; I[p] = i >>> 0; I[p + 1] = n; I.set(w, p + 2);
     }
-    s.lightSize = d.lights.size;
+    s.lightSize = lights.size;
     let en = s.enabled.length === d.lightEnabled.size, k = 0;
     if (en) for (const i of d.lightEnabled) if (s.enabled[k++] !== i) { en = false; break; }
     if (!en) { s.enabled = [...d.lightEnabled]; W.put(OP.LIGHTS_ON, s.enabled); }
-    const mt = d.material, mw = new Int32Array(mt.buffer, mt.byteOffset, mt.length);
-    let msame = !!s.material; if (msame) for (let i = 0; i < mw.length; i++) if (s.material[i] !== mw[i]) { msame = false; break; }
-    if (!msame) { s.material = mw.slice(); W.put(OP.MATERIAL, mw); }
+    const mt = d.material;
+    if (s.matArr !== mt) { s.matArr = mt; s.matW = new Int32Array(mt.buffer, mt.byteOffset, mt.length); }
+    const mw = s.matW, mn = mw.length;
+    let msame = s.material !== null && s.material.length === mn; if (msame) for (let i = 0; i < mn; i++) if (s.material[i] !== mw[i]) { msame = false; break; }
+    if (!msame) {
+      if (s.material === null || s.material.length !== mn) s.material = new Int32Array(mn);
+      s.material.set(mw);
+      const p = W.begin(OP.MATERIAL, 1 + mn), I = W.I; I[p] = mn; I.set(mw, p + 1);
+    }
     s.lightVer = d.lightVersion;
   }
   syncConsts() {
@@ -552,7 +577,7 @@ export class Recorder {
       const p = W.begin(OP.CONST, 3 + n), I = W.I;
       I[p] = k; I[p + 1] = lo; I[p + 2] = n;
       const src = s.cWords[k]; // (floats as their bits)
-      for (let i = 0; i < n; i++) I[p + 3 + i] = src[lo + i];
+      if (n > 128 && k < 2) I.set(src.subarray(lo, lo + n), p + 3); else for (let i = 0; i < n; i++) I[p + 3 + i] = src[lo + i]; // (long runs: one copy — into shared memory a copy is slower than a loop below ~128 words)
     }
   }
   // ---------------------------------------------------------------- work

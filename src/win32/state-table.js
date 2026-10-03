@@ -14,7 +14,17 @@ export class StateTable {
     this.ver = 0;
     /** shadow entries in guest memory (runtime.js DEFER_F_*): u32 view, word index of key 0, number of keys */
     this.sh = null; this.shBase = 0; this.shN = 0;
+    /**
+     * watched key groups (watchKeys): per key in [0, capacity) a bit per group, and per group a counter moving at every
+     * set of one of its keys — a consumer deriving something from a few keys compares that counter instead of `ver`
+     */
+    this.watch = null; this.wv = null;
     if (init) for (const [k, x] of init) this.set(k, x);
+  }
+  /** Watch `keys` as group `g` (0..7): `wv[g]` moves at every set of one of them from now on. */
+  watchKeys(g, keys) {
+    this.watch ??= new Uint8Array(this.v.length); this.wv ??= new Uint32Array(8);
+    for (const k of keys) if (k >= 0 && k < this.v.length) this.watch[k] |= 1 << g;
   }
   /**
    * Mirror keys [0, n) into guest memory from `addr` as (known, value) word pairs — the issued-state filter of the
@@ -35,6 +45,7 @@ export class StateTable {
     if (k >= 0 && k < this.v.length) { if (this.v[k] === undefined) this.order.push(k); this.v[k] = x; }
     else { if (!(this.extra ??= new Map()).has(k)) this.order.push(k); this.extra.set(k, x); }
     if (this.rec !== null) this.rec.noteSet(this, k);
+    if (this.watch !== null && k >= 0 && k < this.watch.length) { const b = this.watch[k]; if (b !== 0) for (let g = 0; g < 8; g++) if (b & (1 << g)) this.wv[g]++; }
     if (this.sh && k >= 0 && k < this.shN) this.writeShadow(k, x);
     return this;
   }

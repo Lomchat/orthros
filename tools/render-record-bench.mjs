@@ -14,7 +14,7 @@ function session(gfx) {
   const d3dPtr = E.defs.Direct3DCreate9[1](ctx([32]));
   com.implAt(d3dPtr).CreateDevice(ctx([d3dPtr, 0, 1, 0, 0x40, pp, out]));
   const devPtr = mem.read32(out), dev = com.implAt(devPtr);
-  const c = ctx([devPtr]), call = (name, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0) => { const A = c.args; A[1] = a1; A[2] = a2; A[3] = a3; A[4] = a4; A[5] = a5; A[6] = a6; return dev[name](c); };
+  const c = ctx([devPtr]), call = (name, ...a) => { const A = c.args; for (let i = 1; i < 9; i++) A[i] = a[i - 1] ?? 0; return dev[name](c); }; // (up to 8 arguments: CreateTexture's 7th is its out pointer)
   const tex = [], vbs = [];
   for (let i = 0; i < 24; i++) { call('CreateTexture', 64, 64, 1, 0, 21, 1, out); tex.push(mem.read32(out)); }
   for (let i = 0; i < 6; i++) { call('CreateVertexBuffer', 65536, 0x208, 0, 0, out); vbs.push(mem.read32(out)); }

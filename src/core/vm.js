@@ -107,7 +107,7 @@ export class Vm {
         return r;
       };
     }
-    if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); this.api.thunks.forEach((t, i) => this.jit.markFast(i, `${t.dll}!${t.name}`, t.def)); }
+    if (this.jit) { this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def); this.api.thunks.forEach((t, i) => { if (t) this.jit.markFast(i, `${t.dll}!${t.name}`, t.def); }); }
     registerBuiltins(this.api, this);
     this.apiTraceNames = new Array(API_TRACE_LEN).fill(null);
     this.apiTraceRets = new Uint32Array(API_TRACE_LEN);

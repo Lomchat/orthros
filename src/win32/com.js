@@ -24,6 +24,22 @@ export function writeGuid(mem, a, s) {
   for (let i = 0; i < 8; i++) mem.write8(a + 8 + i, parseInt(tail.slice(2 * i, 2 * i + 2), 16));
 }
 
+/**
+ * The JavaScript side of a guest COM object. One class (one shape, the reference count's accessors on the prototype):
+ * an object literal with its own getter / setter closures gave every object a map of its own, and the Direct3D
+ * setters' AddRef / Release of the textures and buffers they bind went through megamorphic property accesses.
+ */
+class ComObject {
+  constructor(mem, ptr, iface, impl, id, proc) {
+    this.mem = mem; this.ptr = ptr; this.iface = iface; this.impl = impl; this.id = id; this.proc = proc;
+    /** @type {any[]|null} methods resolved by index (Com.dispatch) */
+    this.fns = null;
+  }
+  /** the reference count, in guest memory (the JIT's AddRef / Release fast path updates it there) */
+  get refs() { return this.mem.read32(this.ptr + COM_REFS) | 0; }
+  set refs(v) { this.mem.write32(this.ptr + COM_REFS, v >>> 0); }
+}
+
 export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
@@ -97,8 +113,7 @@ export class Com {
     this.mem.write32(ptr + 12, 0);
     this.mem.write32(ptr + COM_REFS, 1);
     this.mem.write32(ptr + 20, 0); // (runtime.js COMMIT_LIST: an effect's)
-    const mem = this.mem;
-    const obj = { ptr, iface, impl, get refs() { return mem.read32(ptr + COM_REFS) | 0; }, set refs(v) { mem.write32(ptr + COM_REFS, v >>> 0); }, id: this.nextId++, proc };
+    const obj = new ComObject(this.mem, ptr, iface, impl, this.nextId++, proc);
     this.objects.set(ptr, obj);
     impl.comObject = obj;
     return ptr;
