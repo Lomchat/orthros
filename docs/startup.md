@@ -152,3 +152,12 @@ of it.
 
 **Shared first-launch profile, final build** (`aa2ebcc`; RotWK, first launch, empty profile, the server's seed file
 of the earlier measurement — old format, session ids — read as is): first frame 107 → 32 s, menu 132 → 57 s.
+
+**Observations left open.** A game read of data not prefetched takes ~55 ms in these runs (p50 over 259 RotWK map-load
+reads, the server separate from the harness: `--server-port`), while the server answers such a range in 3-12 ms
+(curl): the rest is on the client side (headless Chromium on a loaded machine; not measured further) — learned lists
+make these reads rare. Two failures seen once each and not reproduced in later runs of the same journeys (with or
+without these changes): Vice City stopped presenting frames 1 s into a first session with a persistent profile (its
+threads polling, ~900 API calls/s, no guest instruction retired), and BFME1 ended with exit code 666 after a menu
+click in a first session with a persistent profile (an access violation calling address 0 at `lotrbfme.exe+0x1885e0`,
+then the game's own error dialog); in that run the code cache only added entries (nothing reused).
