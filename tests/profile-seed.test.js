@@ -133,6 +133,21 @@ test('profile seed server: behind a proxy, sessions from one client address coun
   });
 });
 
+test('profile seed server: IPv6 addresses of one /64 are one client', async () => {
+  await withServer(async (start) => {
+    const s = await start();
+    const opts = [['AppData/G/Options.ini', 'Detail = Low']];
+    const from = (ip, sid) => fetch(url(s, '/api/profile-seed/g'), { method: 'POST', headers: { 'X-Forwarded-For': ip }, body: JSON.stringify({ lang: 'en', session: sid, files: opts.map(([p, t]) => ({ path: p, data: toBase64(bytes(t)) })) }) });
+    assert.equal((await from('2001:db8:1:2::1', 'x1')).status, 204);
+    await from('2001:0db8:0001:0002:abcd:ef01:2345:6789', 'x2');
+    await from('2001:db8:1:2:ffff::', 'x3');
+    assert.deepEqual(await seedOf(s, 'g'), [], 'one /64: one client');
+    await from('2001:db8:1:3::1', 'y1'); // (another /64)
+    assert.deepEqual(await seedOf(s, 'g'), opts);
+    s.close();
+  });
+});
+
 test('profile seed server: bounded set count, quorum option', async () => {
   await withServer(async (start, learn) => {
     const s = await start();

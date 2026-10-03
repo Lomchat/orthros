@@ -348,11 +348,26 @@ export function createServer(opts = {}) {
    * hashed, not stored as such), so that one client cannot make up the quorum with invented session ids; on a loopback
    * connection without a proxy header (the harness, a local server: one machine for every session) the session id.
    */
+  /**
+   * One client's network: an IPv4 address as is (an IPv4-mapped IPv6 one as IPv4); an IPv6 address by its /64 prefix
+   * (one host is handed a whole /64 and picks addresses in it at will).
+   */
+  const clientNet = (addr) => {
+    const a = addr.toLowerCase().replace(/^\[|\](:\d+)?$/g, '').replace(/%.*$/, '');
+    const v4 = /^(?:::ffff:)?(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+    if (v4) return v4[1];
+    if (!a.includes(':')) return a;
+    const [head, tail = ''] = a.split('::');
+    const h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+    if (t.length && t[t.length - 1].includes('.')) t.splice(-1, 1, '0', '0'); // (embedded IPv4: past the /64)
+    const groups = a.includes('::') ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+    return groups.slice(0, 4).map((g) => (parseInt(g, 16) || 0).toString(16)).join(':') + '::/64';
+  };
   const seedReporter = (req, sid) => {
     const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
     const addr = fwd || String(req.socket.remoteAddress ?? '');
     if (!fwd && /^(127\.|::1$|::ffff:127\.)/.test(addr)) return 's:' + sid;
-    return 'a:' + seedKey([{ path: addr, data: new Uint8Array(0) }]);
+    return 'a:' + seedKey([{ path: clientNet(addr), data: new Uint8Array(0) }]);
   };
   /** a first session's report: { lang, session, files: [{ path, data (base64) }] } from `reporter` — false when refused */
   const learnSeed = (name, rec, reporter) => {
