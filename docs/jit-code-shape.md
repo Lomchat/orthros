@@ -70,6 +70,10 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     3.36 vs 3.74 (−9.9 %, a loaded machine in one pair). Frames > 40 ms per minute: BFME2 29 vs 58, RotWK 80 vs 88,
     BFME1 2 vs 4. BFME2 first launch to the end of the startup computation (heat of an earlier first launch, 3 pairs):
     94.8 vs 96.3 s — no slowdown (the second tier of an earlier attempt cost 35 % there).
+    Review re-measurement (one alternated pair per game, same learned heat): RotWK 3.20 vs 3.49 ns (−8 %), frames
+    > 40 ms per minute 81 vs 101; BFME2 3.46 vs 3.62 (−4.5 %), 31 vs 59; BFME2 first launch 87.0 vs 97.3 s.
+  - Harvest cost (Node micro-benchmark, 100 000 regions of 7 flagged blocks): ~13 ms per call while flags stay pending,
+    ~75 ms for a call reporting 230 000 blocks — once per 10 s on the game thread.
   - The first sessions' heat was learned with one flag per block of each region: ~680 000 blocks for ~200 000 addresses
     exhausted the 320 KB flag area halfway, the heat missed half the code that ran (1.0 instead of 2.0 MiB for RotWK),
     and the next sessions left out edges they do take (RotWK then neutral in the browser). Fixed (one byte per address).
