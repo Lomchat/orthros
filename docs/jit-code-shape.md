@@ -54,19 +54,41 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
 - **Regions shaped by code heat** (`coldExits`, on when a heat is known; src/cpu/jit/heat.js): discovery leaves out a
   branch successor (jump/branch target, fallthrough, callee, return site) when the branch ran and the successor never
   did — that edge becomes an ordinary exit, so a region holds the blocks runs go through (fewer values live across
-  merges and exits, less code, room for more hot blocks within 48). Exact whatever the heat (only the extent changes).
-  The heat comes from the translations' **visit flags** (`visit`: one byte per block not already known to have run, set
-  at its entry; `Jit.harvestVisits` every 10 s in the page worker), learned per game by the server
-  (`/api/heat/<manifest>`, module + offset ranges, `heat-<manifest>.json` in the learn directory) and applied as modules
-  load, to the background translator as well. An x87-mode version repeats its first version's blocks
-  (`onlyBlocks`), the heat having possibly grown since. Measurement helpers: `Jit.collectHeat` (block counters),
+  merges and exits, less code, room for more hot blocks within 48). Exact whatever the heat (only the extent changes):
+  randomized programs against the interpreter (counted, visited and arbitrary heat, sliced, SMC, three threads), and
+  the whole JIT / CPU suites under `ORTHROS_JIT_RANDOM_HEAT=<seed>` (a quarter of the addresses "never ran"): every
+  result matches, only assertions on region structure differ.
+  The heat comes from the translations' **visit flags** (`visit`: one byte per block address not already known to
+  have run, `VisitSlots`, set at the block's entry; `Jit.harvestVisits` every 10 s in the page worker), learned per
+  game by the server (`/api/heat/<manifest>`, module + offset ranges, `heat-<manifest>.json` in the learn directory)
+  and applied as modules load, to the background translator as well. An x87-mode version repeats its first version's
+  blocks (`onlyBlocks`), the heat having possibly grown since. Measurement helpers: `Jit.collectHeat` (block counters),
   `dbg:ORTHROS_JIT_HEAT` / `dbg:ORTHROS_JIT_HARVEST` in Node scenarios, `startbench --heat <file> / --heat-out <file>`.
-  Node play, in-session A/B (4 rounds of 20 s, heat of 30 s of play): RotWK −13 % guest time per instruction with
-  visit heat (3.70 → 3.21 ns), −4 / −6 % with counted heat; BFME2 −4 % (visit), −5 % (counted); BFME1 −8 % (counted);
-  Vice City −8 % (counted), +2 % (visit; its spread ±20 %). Visit flags on every block (a first session, no heat yet):
-  +3 % (within the spread).
+  - Browser, concurrent session pairs with the same learned heat, cold exits on / off (`?jitopts={"coldExits":false}`),
+    guest time per instruction in play (`guestMsPerMInsn`; play + p2 phases, 3 pairs per game, alternated order):
+    BFME1 2.84 vs 3.04 ns (−6.6 %), BFME2 3.28 vs 3.42 (−4.0 %), RotWK 3.18 vs 3.41 (−6.7 %), Vice City driving
+    3.36 vs 3.74 (−9.9 %, a loaded machine in one pair). Frames > 40 ms per minute: BFME2 29 vs 58, RotWK 80 vs 88,
+    BFME1 2 vs 4. BFME2 first launch to the end of the startup computation (heat of an earlier first launch, 3 pairs):
+    94.8 vs 96.3 s — no slowdown (the second tier of an earlier attempt cost 35 % there).
+  - The first sessions' heat was learned with one flag per block of each region: ~680 000 blocks for ~200 000 addresses
+    exhausted the 320 KB flag area halfway, the heat missed half the code that ran (1.0 instead of 2.0 MiB for RotWK),
+    and the next sessions left out edges they do take (RotWK then neutral in the browser). Fixed (one byte per address).
+  - Node play, in-session A/B (4-6 rounds of 20 s): heat of 30 s of the same play — RotWK −13 % (visits), −4 / −6 %
+    (counters), BFME2 −4 / −5 %, BFME1 −8 % (counters), Vice City −8 % (counters); a whole earlier session's heat:
+    BFME2 −4 %, RotWK −7 % without the cold tier, 0 % with it (`--cold`; not seen in the browser, which also
+    prewarms the learned regions). Visit flags on every block (a first session): +3 %, within the spread.
+  - Open: with heat-cut regions, hot backward transfers through the region dispatcher (`dispatchBackTop`, Node
+    `--jit-profile`) tripled (775 M vs 266 M over two minutes of RotWK): the reverse postorder of the cut graph lets
+    loops overlap, and planUnits keeps disjoint loops only. A weak topological order (every cycle contiguous) brought
+    them back to 264 M but was not faster overall (RotWK +6 %, BFME2 −3 %; not kept, see below).
 
 ## Measured, not kept
+
+- Heat by time windows (visit flags re-armed every 10 s; a successor cold when it ran in fewer than a quarter of the
+  windows its branch ran in): worse than "never ran" (RotWK Node in-session: +4 % vs −7 %, and translation storms).
+- Weak topological block order (`layout: 'wto'`, Bourdoncle): Node in-session, RotWK +6 % with heat, +15 % without;
+  BFME2 −3 % with heat, +2.5 % without.
+- 96-block regions with heat: −3 % in one RotWK run, within the spread, more translation work.
 
 - Dead bytes at a region's start (`tierPad`): small regions tier up to TurboFan ~4x sooner in tierup-bench, nothing in
   play (Liftoff is <1 % of the region samples in Node play).

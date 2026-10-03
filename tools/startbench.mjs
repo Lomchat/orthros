@@ -54,8 +54,20 @@ if (bgWanted && vm.jit) {
   w.unref();
   vm.jit.attachBackground({ postMessage: (m) => ch.port1.postMessage(m) });
   vm.jit.coldTier = args.includes('--cold');
+  // --regions <file>: learned region entries (the server's regions-<manifest>.json) translated ahead in the background
+  // worker as the page worker does (feedBackground), in their order of first use
+  const learnedRegions = opt('regions') ? JSON.parse(fs.readFileSync(opt('regions'), 'utf8')).sort((x, y) => x[1] - y[1]).map(([k]) => { const [m, rva, fpc] = k.split(':'); return [m, Number(rva), fpc === '' ? null : Number(fpc)]; }) : null;
+  let regionPos = 0, regionMods = -1, modMap = null;
   const sliceEnd = vm.sliceEnd.bind(vm);
   vm.sliceEnd = (t, o) => {
+    if (learnedRegions && vm.proc) {
+      if (regionMods !== vm.proc.moduleList.length) { regionMods = vm.proc.moduleList.length; modMap = new Map(vm.proc.moduleList.map((x) => [x.name.toLowerCase(), x])); regionPos = 0; }
+      while (vm.jit.bgPending() < 2 && regionPos < learnedRegions.length) {
+        const list = [];
+        while (list.length < 48 && regionPos < learnedRegions.length) { const [m, rva, fpc] = learnedRegions[regionPos++]; const mod = modMap.get(m); if (mod && rva < mod.size) list.push([mod.base + rva, fpc]); }
+        if (list.length) vm.jit.bgPrewarm(list);
+      }
+    }
     if (vm.jit.coldQueue.length) vm.jit.flushCold();
     for (let m; (m = receiveMessageOnPort(ch.port1)); ) vm.jit.bgInstall(m.message);
     return sliceEnd(t, o);
