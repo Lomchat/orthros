@@ -54,6 +54,27 @@ and reuses them at later launches:
   opened for exclusive synchronous access: another tab runs without it).
 - **Off:** `?codecache=0`; harness runs use it only with a persistent browser profile (`--opfs`), `--code-cache 0`.
 
+## What a phase will use, prepared ahead (learned lists, D056/D058)
+
+The server learns per manifest, in the order sessions first needed them (time since the page started, the earliest
+over sessions — so menu, then map load, then play), the game file blocks read (`/api/prefetch`), the GL programs
+built at a draw (`/api/programs`) and the entries of the regions translated at a miss (`/api/regions`). A new session
+downloads the blocks in the background while the network is idle (the game's own reads first), compiles the programs
+a few per frame without waiting for them, and has the background worker translate the regions on another core: what
+a later phase needs is ready when that phase comes, without taking the game's thread. A game's dependencies (a game
+mounted beside it, e.g. an expansion's base game) have lists of their own, learned from the reads of every game
+mounting them.
+
+- **Learned entries that are blocks of an earlier learned region** (`bg-translate.js`, `Jit.bgInstallNow`). The JIT
+  enters a region at any of its blocks (block hash), so a learned entry that is a block of a region installed before
+  it was always dropped at install — after being translated (and, with the cache, stored). Sessions that reach code
+  at different points learn such entries in numbers: 45 % of RotWK's and 42 % of Vice City's learned lists. The
+  background worker now skips an entry that is a block of a region it translated before in the session (no
+  translation, nothing cached); an entry whose covering region the emulator did not install (its code changed, or it
+  was translated on the game thread first) is asked again once; and the worker reports the skipped entries to the
+  server, which forgets them (`covered` in the POST; older servers ignore it, the file format is unchanged): their
+  room in the 40 000 entries served goes to regions of later phases.
+
 ## Measurements (2026-10-02, headless Chromium, `--gl-discard`, shared 48-core server under load)
 
 Scenarios `tools/scenarios/{bfme2,rotwk,bfme}-first.txt` (the settings a first launch writes), one private server for
@@ -75,15 +96,35 @@ The learned files: BFME2/RotWK/BFME1 `Options.ini` (detail level and resolution 
 1`), identical across sessions under the same conditions; a set chosen under another load (RotWK at 1024x768
 "Medium") stayed below the quorum — the consensus rule at work.
 
-**Translated code cache** (later launch: copies of one persistent browser profile, `--opfs`; A `--code-cache 0`):
+**Translated code cache** (later launch: copies of one persistent browser profile per game made by a first session
+of the same build, `--opfs`, the learned lists of the template's start; scenarios `*-startup.txt`; A `--code-cache 0`,
+B the cache; runs of two games side by side, order alternated; 2026-10-03, build `aa2ebcc`):
 
-| game | background worker A → B | translating A → B | learned code installed by A → B | menu A / B | frames > 100 ms, first minute A / B |
-|---|---|---|---|---|---|
-| BFME2 | 14.1, 14.5 → 6.2, 6.2 s | 9.3, 9.6 → 0.17, 0.20 s | t = 16.1, 16.4 → 10.2, 10.5 s | 51, 51 / 50, 50 | 0, 0 / 0, 0 |
-| BFME1 | 13.2, 13.1 → 5.1, 5.1 s | 8.7, 8.7 → 0.11, 0.17 s | t = 15.0, 15.1 → 8.8, 8.8 s | 54, 55 / 52, 52 | 0, 0 / 0, 0 |
-| RotWK 2.02 | 17.8, 15.0 → 9.7, 8.9 s | 11.7, 9.9 → 3.0, 2.7 s | t = 19.7, 16.9 → 13.2, 12.4 s | 55, 52 / 54, 51 | 3, 4 / 3, 4 |
+| game | background worker A → B | translating A → B | learned code installed by A → B | menu A / B | map load A / B | frames > 100 ms, first minute A / B |
+|---|---|---|---|---|---|---|
+| BFME2 | 10.8, 11.1 → 4.5, 4.7 s | 7.1, 7.3 → 0.11, 0.11 s | t = 12.3, 12.6 → 7.3, 8.0 s | 48, 48 / 46, 48 s | 20.5, 19.5 / 17.1, 23.5 s | 5, 1 / 3, 0 |
+| RotWK 2.02 | 10.6, 9.8 → 4.1, 4.5 s | 6.9, 6.3 → 0.13, 0.16 s | t = 14.5, 13.5 → 9.6, 9.9 s | 54, 52 / 50, 51 s | 13.2, 16.3 / 13.2, 19.3 s | 2, 3 / 0, 1 |
+| BFME1 | 11.9, 12.8 → 5.2, 5.0 s | 7.9, 8.3 → 0.11, 0.12 s | t = 13.5, 14.5 → 8.9, 8.6 s | 49, 50 / 51, 49 s | 65.3, 64.1 / 65.3, 63.5 s | 0, 0 / 0, 0 |
+| Vice City | 3.6, 3.1 → 1.3, 1.5 s | 2.4, 2.1 → 0.04, 0.05 s | t = 11.1, 11.0 → 10.9, 11.0 s | 20, 20 / 20, 20 s | 10.1, 10.1 / 10.1, 10.1 s | 3, 4 / 3, 4 |
 
-~99 % of the lookups hit (the rest: regions new to this session). The time to the menu and the first minute's
-hitches do not move on this machine: the background translation runs on a core of its own and was already finished
-before the game needed it; the saving is ~8-9 s of a core at each launch (what a client with few cores shares with
-the game, the GPU process and the DXT helpers). Cache file: 206-256 MiB per game (BFME1 reached the 256 MiB bound: what comes after is not kept), its index read in 0.6-0.85 s before the first batch.
+99-99.6 % of the lookups hit (the rest: regions new to the session). Cache files 88-201 MiB, index read in 0.15-0.6 s
+before the first batch. The saving is the background worker's time, ~6-8 s of a core at each launch of the BFME games
+(~2 s for Vice City); the learned code is in place ~5 s earlier. Time to the menu, map load and the first minute's
+hitches do not move beyond the run-to-run spread on this 48-core machine: the background translation has a core of its
+own and finished long before the menu (map load and hitches are the game's own work: guest code, GL program builds
+under SwiftShader). It matters on a client with few cores, where that core is shared with the game, the GPU process
+and the DXT helpers. (An earlier measurement, before the skipped blocks above: BFME2 14.1-14.5 → 6.2 s, RotWK
+15.0-17.8 → 8.9-9.7 s of the background worker; RotWK's cache then reached the 256 MiB bound with entries never
+installed.)
+
+**Skipped blocks of learned regions** (first launch in a fresh browser, `--memprefetch`, learned lists of a warm
+server; A the build before, B skipping; alternated):
+
+| game | background worker A → B | translating A → B | entries translated then dropped A → B | learned code installed by A → B |
+|---|---|---|---|---|
+| RotWK 2.02 | 20.6, 18.8 → 10.6, 10.8 s | 13.5, 12.4 → 6.8, 7.0 s | 19 395, 19 416 → 389, 360 | t = 24.9, 23.3 → 16.4, 16.9 s |
+| Vice City | 5.2, 5.8 → 3.2, 3.2 s | 3.6, 4.0 → 2.2, 2.2 s | 4 214, 4 227 → 347, 351 | t = 11.1, 11.3 → 11.0, 11.0 s |
+
+Nearly the same regions are installed (23 459 / 23 337; the build measured did not yet ask again the entries whose
+covering region was not installed — with that, 23 358). After one RotWK session the server's list went from 39 630 to 28 650 entries (16 000 forgotten,
+new ones of the session learned).
