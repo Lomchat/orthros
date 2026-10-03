@@ -143,7 +143,9 @@ async function start(m) {
   // (the page's ?glworker= wins; a manifest may set the default with the compat flag "glWorker": 0 / 1 / "inline";
   // without either, the render worker where it can run — docs/render-worker.md section 8 — and ?glworker=0 the
   // in-thread backend)
-  const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '1' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
+  // (default: in-thread until an intermittent BFME1 thread race seen in both modes is understood and the render
+  // worker's higher guest cost per instruction on BFME1 is explained — see STATUS.md, 2026-10-03)
+  const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '0' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
   const workerOk = typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && !m.opts.interp;
   const renderWorker = (glMode === '1' || glMode === 'compare-worker') && workerOk, remoteGl = glMode === '1' && workerOk;
   if ((glMode === '1' || glMode === 'compare-worker') && !workerOk) log('gfx', 'render worker unavailable here (needs cross-origin isolation and shared memory): rendering in this thread');
