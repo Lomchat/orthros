@@ -30,7 +30,16 @@ async function runManifest(name, seconds, query = '') {
       if (s.status === 'exited' || s.status === 'crashed' || Date.now() - t0 > seconds * 1000) break;
       await page.waitForTimeout(200);
     }
-    const png = await page.locator('#frame').screenshot();
+    // (the last frames may still be on their way to the page: with the render worker a presented frame travels from it
+    // to the page as an ImageBitmap, after the emulator — and possibly the process — moved on; on a loaded machine that
+    // takes a while. Screenshots until three in a row, 250 ms apart, agree, 5 s at most.)
+    let png = await page.locator('#frame').screenshot();
+    for (let i = 0, same = 0; i < 20 && same < 2; i++) {
+      await page.waitForTimeout(250);
+      const next = await page.locator('#frame').screenshot();
+      same = Buffer.compare(next, png) === 0 ? same + 1 : 0;
+      png = next;
+    }
     const img = decodePng(new Uint8Array(png));
     const pixel = (x, y) => { const o = (y * img.width + x) * 4; return (img.data[o] << 16) | (img.data[o + 1] << 8) | img.data[o + 2]; };
     return { ...s, logs, img, pixel };
