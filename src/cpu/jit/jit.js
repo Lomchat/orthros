@@ -60,6 +60,8 @@ export class Jit {
     // bytes); entries to ask of the background worker
     // (testing, Node: ORTHROS_JIT_RANDOM_HEAT=<seed> gives every Jit a pseudo-random heat — about a quarter of the
     // addresses never ran — so that whole test suites run with regions cut at cold exits, see heat.js)
+    /** code heat shaping the regions (heat.js: RangeHeat, a Map of counts, or null) and this thread's visit flags */
+    this.heat = null; this.visitSlots = new VisitSlots();
     const rh = globalThis.process?.env?.ORTHROS_JIT_RANDOM_HEAT;
     if (rh) { const k = Number(rh) | 0; const hot = (a) => ((Math.imul((a ^ k) >>> 0, 0x9e3779b1) >>> 29) & 3) !== 0; this.heat = { get: (a) => (hot(a) ? VISITED : 0), has: hot }; }
     this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
@@ -266,7 +268,7 @@ export class Jit {
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: (this.visitSlots ??= new VisitSlots()), ...this.codeOpts() };
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block

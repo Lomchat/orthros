@@ -728,9 +728,13 @@ export const NOCHAIN_PROF = 0x8000;
 export function allocBlockCounters(mem, n) {
   const i32 = mem.i32, w = BLOCK_COUNTS_BASE >>> 2;
   const shared = typeof SharedArrayBuffer !== 'undefined' && i32.buffer instanceof SharedArrayBuffer;
+  // (once full the index no longer advances: requests after that would otherwise keep adding to it until it wrapped
+  // and handed out addresses outside the area — fill() with a negative start counts from the end of guest memory)
+  const now = shared ? Atomics.load(i32, w) : i32[w];
+  if (!(n > 0) || now < 0 || now + 1 + n > BLOCK_COUNTS_SLOTS) return -1;
   const at = (shared ? Atomics.add(i32, w, n) : (i32[w] += n) - n) || 0;
   const first = at + 1; // (slot 0 is the bump index)
-  if (first + n > BLOCK_COUNTS_SLOTS) return -1;
+  if (at < 0 || first + n > BLOCK_COUNTS_SLOTS) return -1;
   i32.fill(0, w + first, w + first + n);
   return BLOCK_COUNTS_BASE + 4 * first;
 }
@@ -741,13 +745,14 @@ export function allocBlockCounters(mem, n) {
  */
 const VISIT_CHUNK = 4096;
 export class VisitSlots {
-  constructor() { this.map = new Map(); this.next = 0; this.end = 0; }
+  constructor() { this.map = new Map(); this.next = 0; this.end = 0; this.full = false; }
   get(mem, eip) {
     let a = this.map.get(eip);
     if (a !== undefined) return a;
     if (this.next >= this.end) {
+      if (this.full) return -1;
       const base = allocBlockCounters(mem, VISIT_CHUNK >> 2);
-      if (base < 0) return -1;
+      if (base < 0) { this.full = true; return -1; }
       this.next = base; this.end = base + VISIT_CHUNK;
     }
     a = this.next++;

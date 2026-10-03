@@ -309,21 +309,25 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); heatLearned.set(name, m);
       const f = heatFile(name);
-      if (f) try { for (const [mod, list] of Object.entries(JSON.parse(fs.readFileSync(f, 'utf8')))) { const h = new RangeHeat(); for (let i = 0; i + 1 < list.length; i += 2) h.add(list[i], list[i] + list[i + 1]); m.set(mod, h); } } catch { /* none yet */ }
+      if (f) try { for (const [mod, list] of Object.entries(JSON.parse(fs.readFileSync(f, 'utf8')))) { const h = new RangeHeat(); for (let i = 0; i + 1 < list.length; i += 2) h.add(list[i], list[i] + list[i + 1]); h.merge(); m.set(mod, h); } } catch { /* none yet */ }
     }
     return m;
   };
-  const heatJson = (name) => { const o = {}; for (const [mod, h] of heatOf(name)) { const p = h.pairs(), l = []; for (let i = 0; i < p.length; i += 2) l.push(p[i], p[i + 1] - p[i]); o[mod] = l; } return o; };
+  const heatJson = (name) => { const o = Object.create(null); for (const [mod, h] of heatOf(name)) { const p = h.pairs(), l = []; for (let i = 0; i < p.length; i += 2) l.push(p[i], p[i + 1] - p[i]); o[mod] = l; } return o; };
   let heatDirty = new Set(), heatTimer = null;
+  // (bounds per manifest: modules, and merged ranges over all its modules — a client posting scattered ranges cannot grow
+  // the file or the answers past ~HEAT_RANGES pairs)
   const HEAT_MODULES = 256, HEAT_RANGES = 400000;
   const learnHeat = (name, list) => {
     const m = heatOf(name);
+    let total = 0; for (const h of m.values()) total += h.size;
     for (const e of Array.isArray(list) ? list : []) {
+      if (total >= HEAT_RANGES) break;
       if (!Array.isArray(e) || typeof e[0] !== 'string' || e[0].length > 64 || !Number.isInteger(e[1]) || e[1] < 0 || e[1] >= 0x40000000 || !Number.isInteger(e[2]) || e[2] <= 0 || e[2] > 0x100000) continue;
       const mod = e[0].toLowerCase();
       let h = m.get(mod);
       if (!h) { if (m.size >= HEAT_MODULES) continue; h = new RangeHeat(); m.set(mod, h); }
-      if (h.size + h.addLo.length < HEAT_RANGES) h.add(e[1], e[1] + e[2]);
+      h.add(e[1], e[1] + e[2]); total++;
     }
     for (const h of m.values()) h.merge();
     if (heatFile(name)) {
