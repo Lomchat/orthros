@@ -175,5 +175,5 @@ if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof 
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)
-try { vm.run(); report('exited'); } catch (e) { report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); }
+try { vm.run(); report('exited'); } catch (e) { if (e.report) console.log(e.report); report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); } // (a guest crash: its report first)
 if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });

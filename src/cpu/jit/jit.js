@@ -6,7 +6,7 @@ import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
-import { RangeHeat } from './heat.js';
+import { RangeHeat, VISITED } from './heat.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -58,6 +58,10 @@ export class Jit {
     this.dbgLong = null; // (debugging, ORTHROS_LONG_STEP_MS: time of the current run by part)
     // cold tier (runCold): missed entries -> instructions interpreted from them; its decodes by address (with their
     // bytes); entries to ask of the background worker
+    // (testing, Node: ORTHROS_JIT_RANDOM_HEAT=<seed> gives every Jit a pseudo-random heat — about a quarter of the
+    // addresses never ran — so that whole test suites run with regions cut at cold exits, see heat.js)
+    const rh = globalThis.process?.env?.ORTHROS_JIT_RANDOM_HEAT;
+    if (rh) { const k = Number(rh) | 0; const hot = (a) => ((Math.imul((a ^ k) >>> 0, 0x9e3779b1) >>> 29) & 3) !== 0; this.heat = { get: (a) => (hot(a) ? VISITED : 0), has: hot }; }
     this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
