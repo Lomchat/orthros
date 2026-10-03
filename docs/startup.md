@@ -128,3 +128,27 @@ server; A the build before, B skipping; alternated):
 Nearly the same regions are installed (23 459 / 23 337; the build measured did not yet ask again the entries whose
 covering region was not installed — with that, 23 358). After one RotWK session the server's list went from 39 630 to 28 650 entries (16 000 forgotten,
 new ones of the session learned).
+
+**Learned lists at a first launch in a fresh browser** (no block store, no code cache: `--memprefetch`; A the lists
+of a server that had not seen these phases — no Vice City lists at all, RotWK's lists without its map loads and an
+80-block list for the BFME2 1.06 it mounts — B the lists after one session went through them; build `aa2ebcc`, RotWK
+B also `4bedb51`):
+
+| game | first frame A / B | menu A / B | map load A / B | frames > 100 ms, first minute A / B |
+|---|---|---|---|---|
+| Vice City | 11, 11 / 11, 11 s | 23, 23 / 20, 20 s | 13.1, 13.1 / 10.1, 10.1 s | 6, 5 / 3, 5 |
+| RotWK 2.02 | 28, 29 / 34, 33 s | 53, 54 / 59, 58 s | 33.1, 32.3 / 13.2, 13.2 s | 6, 2 / 2, 2 |
+
+Vice City: its file reads at start-up and map load come from the prefetched blocks (8 MiB read on demand instead of
+61 MiB, ioWait at start-up 6.6 → 2.7 s) and 33 of its 43 GL programs are compiled ahead. RotWK: the map load waited
+~9 s for reads of the BFME2 1.06 archives it mounts (250 reads at ~50 ms each, one after the other: no learned order
+for them); with that list learned they are prefetched. With the fuller lists RotWK's first frame and menu come 4-5 s
+later (its background worker translates 23 000 regions instead of 12 000, 42 programs are compiled ahead instead of
+19, 137 MB are prefetched instead of 96 MB; `late` 2.8-3.1 → 5.1-5.5 s in that phase). Each list turned off in turn,
+with B's lists (menu / map load, two runs each): all 58, 60 / 13.2, 16.0 s; `--regions 0` 57, 55 / 19.8, 17.9 s;
+`--prefetch 0` 58, 58 / 26.4, 27.2 s; `--programs 0` 57, 57 / 14.2, 13.2 s — the regions translated ahead cost the
+start-up 1-5 s on this loaded machine (within the spread) and save 4-6 s of the map load; the prefetch saves 11-14 s
+of it.
+
+**Shared first-launch profile, final build** (`aa2ebcc`; RotWK, first launch, empty profile, the server's seed file
+of the earlier measurement — old format, session ids — read as is): first frame 107 → 32 s, menu 132 → 57 s.
