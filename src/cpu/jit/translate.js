@@ -735,6 +735,27 @@ export function allocBlockCounters(mem, n) {
   return BLOCK_COUNTS_BASE + 4 * first;
 }
 
+/**
+ * Visit flags by block address (opts.visit): the byte of a block, allocated on first use from the counter area in
+ * chunks of VISIT_CHUNK bytes (allocBlockCounters), -1 once the area is full.
+ */
+const VISIT_CHUNK = 4096;
+export class VisitSlots {
+  constructor() { this.map = new Map(); this.next = 0; this.end = 0; }
+  get(mem, eip) {
+    let a = this.map.get(eip);
+    if (a !== undefined) return a;
+    if (this.next >= this.end) {
+      const base = allocBlockCounters(mem, VISIT_CHUNK >> 2);
+      if (base < 0) return -1;
+      this.next = base; this.end = base + VISIT_CHUNK;
+    }
+    a = this.next++;
+    this.map.set(eip, a);
+    return a;
+  }
+}
+
 class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
@@ -781,14 +802,19 @@ class Emitter {
     this.stats.counters = this.counterBase;
     // visit flags (opts.visit, not with counters): a byte per block not known to have run (opts.heat), set to 1 at the
     // block's entry; Jit.harvestVisits collects them into the heat (see heat.js). stats.visits: [eip, end, flag address]
+    // One flag per block address (opts.visitSlots, shared by the translations of a thread: the regions holding a block
+    // set the same byte), from the counter area in chunks (allocVisitFlag).
     this.visitAt = null;
     if ((this.opts.visit ?? JIT_DEFAULTS.visit) && this.counterBase < 0) {
-      const heat = this.opts.heat ?? null, unknown = blocks.filter((b) => !(heat && heat.has(b.eip)));
-      const base = unknown.length ? allocBlockCounters(this.mem, (unknown.length + 3) >> 2) : -1;
-      if (base >= 0) {
-        this.visitAt = new Int32Array(blocks.length).fill(-1);
-        this.stats.visits = unknown.map((b, k) => { this.visitAt[b.index] = base + k; return [b.eip, b.end, base + k]; });
+      const heat = this.opts.heat ?? null, slots = this.opts.visitSlots ?? new VisitSlots();
+      const visits = [];
+      for (const b of blocks) {
+        if (heat && heat.has(b.eip)) continue;
+        const a = slots.get(this.mem, b.eip); if (a < 0) break; // (the area is full)
+        (this.visitAt ??= new Int32Array(blocks.length).fill(-1))[b.index] = a;
+        visits.push([b.eip, b.end, a]);
       }
+      if (visits.length) this.stats.visits = visits;
     }
     // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
     // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through

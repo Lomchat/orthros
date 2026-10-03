@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat } from './heat.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -262,7 +262,7 @@ export class Jit {
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, ...this.codeOpts() };
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: (this.visitSlots ??= new VisitSlots()), ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -307,11 +307,14 @@ export class Jit {
    * each block is reported once.
    */
   harvestVisits() {
-    const u8 = this.mem.u8, out = [];
+    const u8 = this.mem.u8, out = [], seen = new Set();
     for (const r of this.regions) {
       const v = r.visits; if (!v) continue;
       let left = 0;
-      for (const e of v) { if (e[2] < 0) continue; if (u8[e[2]]) { out.push(e[0], e[1]); e[2] = -1; } else left++; }
+      for (const e of v) {
+        if (e[2] < 0) continue;
+        if (u8[e[2]]) { if (!seen.has(e[0])) { seen.add(e[0]); out.push(e[0], e[1]); } e[2] = -1; } else left++;
+      }
       if (!left) r.visits = null;
     }
     this.heatAdd(out);

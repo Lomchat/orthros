@@ -255,3 +255,18 @@ test('cold exits with threads alternated every few instructions: each thread mat
     }
   }
 });
+
+import { VisitSlots, translateRegion } from '../src/cpu/jit/translate.js';
+import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
+test('visit flags: one byte per block address, shared by the regions holding the block', () => {
+  // A: inc eax ; jmp C — B: inc ecx ; jmp C — C: dec edi ; jnz A ; hlt (C in the regions of A and of B)
+  const code = [0x40, 0xeb, 0x02, 0x41, 0x90, 0x4f, 0x75, 0xf8, 0xf4];
+  const mem = new GuestMemory(); mem.writeBytes(CODE, Uint8Array.from(code));
+  const slots = new VisitSlots();
+  const ra = translateRegion(mem, CODE, { visit: true, visitSlots: slots }), rb = translateRegion(mem, CODE + 3, { visit: true, visitSlots: slots });
+  const flagOf = (r, eip) => r.stats.visits.find((v) => v[0] === eip)?.[2];
+  assert.ok(flagOf(ra, CODE + 5) >= BLOCK_COUNTS_BASE);
+  assert.equal(flagOf(ra, CODE + 5), flagOf(rb, CODE + 5), 'block C: the same byte in both regions');
+  assert.notEqual(flagOf(ra, CODE), flagOf(rb, CODE + 3));
+  assert.equal(new Set([...ra.stats.visits, ...rb.stats.visits].map((v) => v[2])).size, slots.map.size, 'one byte per distinct block');
+});

@@ -6,7 +6,7 @@
 // runs, the bytes are compared again), with that copy — the emulator installs it only if its memory still holds
 // those bytes.
 import { GuestMemory } from '../memory.js';
-import { translateRegion, buildRegionModule, discoverRegion } from './translate.js';
+import { translateRegion, buildRegionModule, discoverRegion, VisitSlots } from './translate.js';
 import { RangeHeat } from './heat.js';
 import './translate-x87.js'; // (the translators register their handlers on import, as jit.js does)
 import './translate-sse-float.js';
@@ -46,7 +46,7 @@ function translateBatch(items, over) {
 
 /** A message from the emulator's worker; the answer (if any) goes through `reply` (tests call this directly). */
 export function handleMessage(m, reply) {
-  if (m.type === 'init') { mem = new GuestMemory({ memory: m.memory }); opts = m.opts; return; }
+  if (m.type === 'init') { mem = new GuestMemory({ memory: m.memory }); opts = { ...m.opts, visitSlots: new VisitSlots() }; return; } // (this thread's visit flags)
   if (m.type === 'heat') { if (opts) { opts.heat ??= new RangeHeat(); opts.heat.addPairs(m.pairs); } return; } // (see Jit.heatAdd)
   if (m.type !== 'batch' || !mem) return;
   const t0 = performance.now();
