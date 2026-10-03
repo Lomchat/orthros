@@ -145,3 +145,52 @@ test('entries skipped as blocks of a region the emulator then did not install ar
   assert.equal(runAll(b.jit), EXIT.HALT);
   assert.equal(Buffer.from(b.mem.bytes(OUT, 0x300)).toString('hex'), Buffer.from(c.mem.bytes(OUT, 0x300)).toString('hex'));
 });
+
+test('a batch made only of skipped entries is handled too: counted and reported when covered, asked again when not', () => {
+  const a = setup();
+  a.jit.learned = [];
+  assert.equal(runAll(a.jit), EXIT.HALT);
+  const blocks = a.jit.byEntry.get(CODE).blocks.map((x) => x.eip).filter((e) => e !== CODE);
+  // installed covering region, its blocks in a later batch of their own (no module comes back for it)
+  const b = setupShared();
+  b.jit.coveredLearned = [];
+  b.jit.bgPrewarm([[CODE, 0]]);
+  b.jit.bgPrewarm(blocks.map((e) => [e, 0]));
+  assert.equal(b.replies[1].module, null, 'nothing translated in the second batch');
+  b.jit.bgInstall(b.replies[0]); b.jit.bgInstall(b.replies[1]);
+  assert.equal(b.jit.bg.covered, blocks.length);
+  assert.deepEqual(b.jit.coveredLearned, blocks.map((e) => [e, 0]));
+  assert.equal(b.jit.bgPending(), 0);
+  // covering region not installed: the entries of the all-skipped batch are asked again
+  const c = setupShared();
+  c.jit.coveredLearned = [];
+  c.jit.bgPrewarm([[CODE, 0]]);
+  c.jit.bgPrewarm(blocks.map((e) => [e, 0]));
+  const old = c.mem.read8(CODE + 1);
+  c.mem.write8(CODE + 1, old ^ 1);
+  c.jit.bgInstall(c.replies[0]); c.jit.bgInstall(c.replies[1]);
+  assert.equal(c.jit.bg.covered, 0);
+  assert.deepEqual(c.jit.coveredLearned, []);
+  assert.equal(c.replies.length, 3, 'asked again');
+  c.jit.bgInstall(c.replies[2]);
+  assert.ok(blocks.some((e) => c.jit.byEntry.has(e)));
+  assert.equal(c.jit.bgPending(), 0);
+});
+
+test('an entry translated as its own region is not reported as a block of another', () => {
+  const a = setup();
+  a.jit.learned = [];
+  assert.equal(runAll(a.jit), EXIT.HALT);
+  const blocks = a.jit.byEntry.get(CODE).blocks.map((x) => x.eip).filter((e) => e !== CODE);
+  const b = setupShared();
+  b.jit.coveredLearned = [];
+  b.jit.bgPrewarm([[CODE, 0]]);
+  b.jit.bgPrewarm([[blocks[0], 0]]);
+  b.mem.write8(CODE + 1, b.mem.read8(CODE + 1) ^ 1); // (the covering region is dropped)
+  b.jit.bgInstall(b.replies[0]);
+  // the game reaches the block first: translated here, as a region of its own
+  b.jit.prewarm(blocks[0], 0);
+  assert.equal(b.jit.blockMap.get(blocks[0]).region.entry, blocks[0]);
+  b.jit.bgInstall(b.replies[1]);
+  assert.deepEqual(b.jit.coveredLearned, [], 'its own region: still a learned entry');
+});

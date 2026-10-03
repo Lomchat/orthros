@@ -351,23 +351,34 @@ export class Jit {
     const epoch = bg.epochOf?.get(m.id) ?? 0; bg.epochOf?.delete(m.id);
     // (a batch not installed as a whole: none of its regions covers its blocks for the worker any more)
     const dropAll = () => { const l = m.items.filter((it) => it.k >= 0).map((it) => [it.eip, it.blocks.map((b) => b.eip)]); if (l.length) bg.port.postMessage({ type: 'uncover', regions: l }); };
-    if (!m.module || epoch !== (this.abEpoch ?? 0)) { dropAll(); return; }
+    // Entries the worker skipped as blocks of a region it translated before (see bg-translate.js), looked at once this
+    // batch's regions are installed (a batch made only of them comes back without a module). Held by another region:
+    // counted, and reported (the server need not list them). Not held — that region was not installed: its code
+    // changed, or the entry was translated here first —: asked again, once (its own region). Held by its own region
+    // (translated here at a miss meanwhile): a learned entry like any other.
+    const covered = (uncover) => {
+      let again = null;
+      for (const it of m.items) {
+        if (!it.covered) continue;
+        const at = this.blockMap.get(it.eip);
+        if (!at) {
+          if (!(bg.again ??= new Set()).has(it.eip)) { bg.again.add(it.eip); (again ??= []).push([it.eip, it.fpc]); } else bg.covered++;
+        } else {
+          bg.covered++;
+          if (at.region.entry !== it.eip) this.coveredLearned?.push([it.eip, it.fpc]);
+        }
+      }
+      if (uncover) bg.port.postMessage({ type: 'uncover', regions: uncover });
+      if (again) { bg.sent -= again.length; this.bgPrewarm(again); } // (after the 'uncover' above: the worker sees it first)
+    };
+    if (!m.module || epoch !== (this.abEpoch ?? 0)) { dropAll(); covered(null); return; }
     const t0 = performance.now();
     let inst;
-    try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { dropAll(); this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
+    try { inst = new WebAssembly.Instance(m.module, this.imports); } catch (e) { dropAll(); covered(null); this.opts.warn?.(`jit: background batch failed: ${e.message}`); return; }
     const u8 = this.mem.u8;
-    let uncover = null, again = null;
+    let uncover = null;
     for (const it of m.items) {
-      if (it.covered) {
-        // (a block of a region the worker translated before: see bg-translate.js. That region not installed — its code
-        // changed, or the entry was translated here first —, the entry is asked again, once: its own region)
-        if (!this.blockMap.has(it.eip) && !(bg.again ??= new Set()).has(it.eip)) { bg.again.add(it.eip); (again ??= []).push([it.eip, it.fpc]); } else {
-          bg.covered++;
-          this.coveredLearned?.push([it.eip, it.fpc]); // (the worker tells the server: a learned entry it need not list)
-        }
-        continue;
-      }
-      if (it.k < 0) continue; // (not translatable)
+      if (it.covered || it.k < 0) continue; // (skipped: see above; not translatable)
       // translated here meanwhile (at a miss), or its code changed since the background worker read it
       let same = !this.blockMap.has(it.eip);
       for (let i = 0, o = 0; same && i < it.blocks.length; i++) { const b = it.blocks[i]; for (let a = b.eip; a < b.end; a++, o++) if (u8[a] !== it.snap[o]) { same = false; break; } }
@@ -376,8 +387,7 @@ export class Jit {
       this.register(it.eip, it.blocks, it.fnIdx, null, it.fpc, it.stats);
       bg.installed++;
     }
-    if (uncover) bg.port.postMessage({ type: 'uncover', regions: uncover });
-    if (again) { bg.sent -= again.length; this.bgPrewarm(again); } // (after the 'uncover' above: the worker sees it first)
+    covered(uncover);
     this.stats.bgInstallMs = (this.stats.bgInstallMs ?? 0) + performance.now() - t0;
   }
 
