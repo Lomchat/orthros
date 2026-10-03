@@ -126,6 +126,9 @@ export class VMem {
     base >>>= 0;
     const r = this.regions.get(base);
     if (!r) return false;
+    // (debugging, ?dbg=ORTHROS_RELEASE_WATCH=1: a released region stays reserved for a while, its pages watched: a
+    // write through a pointer kept after the release is reported, see Vm.releaseWatch)
+    if (this.onRelease && !r.quarantined && this.onRelease(base, r)) return true;
     const p0 = this.pageOf(base), n = r.size / PAGE_SIZE;
     for (let p = p0; p < p0 + n; p++) { this.state[p] = STATE_FREE; this.prot[p] = 0; this.owner[p] = -1; }
     if (this.freeHint !== undefined && p0 < this.freeHint) this.freeHint = p0 - (p0 % (GRANULARITY / PAGE_SIZE));

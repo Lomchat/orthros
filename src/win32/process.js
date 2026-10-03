@@ -50,6 +50,7 @@ export class Thread {
     this.yieldRequested = false;
     this.baseDepth = -1;
     this.priority = 0;
+    this.readyTime = 0; this.readyPick = 0; // (when the thread last became ready: starvation, see Scheduler.pickRunnable)
     this.name = '';
     this.wakeAt = Infinity; // for Sleep / timed waits
     this.blockReason = '';
@@ -254,6 +255,7 @@ export class Process {
     cpu.eip = o.start;
     cpu.eax = 0; cpu.ebx = 0; cpu.ecx = o.start; cpu.edx = o.start; cpu.esi = 0; cpu.edi = 0; cpu.ebp = 0;
     this.setupThreadTls(t);
+    t.readyTime = this.vm.sched?.checkedAt ?? 0; t.readyPick = this.vm.sched?.picks ?? 0;
     if (o.suspended) { t.state = TS.SUSPENDED; t.suspendCount = 1; }
     t.handle = this.handles.create(t);
     this.threads.push(t);

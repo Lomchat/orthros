@@ -8,6 +8,9 @@
 import { TS } from '../win32/process.js';
 
 export const INFINITE = 0xffffffff;
+/** how long a ready thread may wait while higher-priority threads run before it runs anyway (pickRunnable): guest
+ *  milliseconds, or scheduling decisions (threads yielding with Sleep(0) let no time pass on a virtual clock) */
+export const STARVE_MS = 20, STARVE_PICKS = 1000;
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
 
 /**
@@ -36,19 +39,37 @@ export class Scheduler {
     this.nestedWaits = 0;
     /** clock time of the last wakeBlocked() pass (see nextWake) */
     this.checkedAt = -Infinity;
+    /** (measurement, ?dbg=ORTHROS_SCHED_ROUND_ROBIN=1: priorities ignored, every runnable thread in turn) */
+    this.roundRobin = !!globalThis.ORTHROS_SCHED_ROUND_ROBIN;
+    /** scheduling decisions so far (pickRunnable): starvation */
+    this.picks = 0;
   }
+
+  /** `t` ready to run (again): the time and decision count it starts waiting from (starvation, see pickRunnable) */
+  markReady(t) { t.state = TS.READY; t.readyTime = this.checkedAt; t.readyPick = this.picks; }
 
   get threads() { return this.vm.proc.threads; }
 
-  /** Next runnable thread other than `except` (round robin). */
+  /**
+   * Next runnable thread other than `except`: the highest priority first (SetThreadPriority), round robin among equals —
+   * as Windows schedules. A thread raised above the others (an audio mixer at THREAD_PRIORITY_TIME_CRITICAL) that its
+   * time slice interrupted resumes before them: it is not left paused in the middle of its work while normal threads run
+   * for whole slices (a window of thousands of their instructions where Windows has the high-priority work done at once).
+   * A thread ready for STARVE_MS (or STARVE_PICKS scheduling decisions) runs whatever its priority (Windows boosts
+   * starved threads likewise).
+   */
   pickRunnable(except) {
     const ts = this.threads;
-    const n = ts.length;
+    const n = ts.length, now = this.checkedAt, picks = ++this.picks; // (the time of the last wake-up pass: no clock read per pick)
+    let best = null, bestK = 0, bestPrio = -Infinity;
     for (let k = 0; k < n; k++) {
       const t = ts[(this.rr + k) % n];
-      if (t !== except && t.isRunnable()) { this.rr = (this.rr + k + 1) % n; return t; }
+      if (t === except || !t.isRunnable()) continue;
+      const prio = this.roundRobin ? 0 : now - t.readyTime > STARVE_MS || picks - t.readyPick > STARVE_PICKS ? 16 : (t.priority ?? 0);
+      if (prio > bestPrio) { best = t; bestPrio = prio; bestK = k; }
     }
-    return null;
+    if (best) this.rr = (this.rr + bestK + 1) % n;
+    return best;
   }
 
   /**
@@ -106,7 +127,7 @@ export class Scheduler {
       t.blockedAt = undefined;
     }
     t.wakeResult = ok; t.resuming = true; t.wait = null; t.wakeAt = Infinity; t.blockReason = null;
-    t.state = TS.READY;
+    this.markReady(t);
   }
 
   /**

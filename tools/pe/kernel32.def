@@ -36,6 +36,9 @@ LeaveCriticalSection@4
 DeleteCriticalSection@4
 InterlockedIncrement@4
 InterlockedDecrement@4
+InterlockedExchange@8
+SetThreadPriority@8
+ResumeThread@4
 GetCurrentThreadId@0
 GetModuleFileNameA@12
 LoadLibraryA@4

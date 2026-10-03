@@ -237,7 +237,7 @@ export function registerKernel32(api, vm) {
   K.CreateThread = [6, (c) => {
     const t = c.proc.createThread({ start: c.arg(2), param: c.arg(3), stackSize: c.arg(1), suspended: (c.arg(4) & 4) !== 0 });
     c.out32(5, t.id);
-    vm.log('thread', `CreateThread -> tid ${t.id} start ${c.proc.symbolize(c.arg(2))}`);
+    vm.log('thread', `CreateThread -> tid ${t.id} start ${c.proc.symbolize(c.arg(2))} stack ${(c.arg(1) >>> 0).toString(16)} flags ${(c.arg(4) >>> 0).toString(16)} -> ${t.stackLimit.toString(16)}-${t.stackBase.toString(16)}`);
     return t.handle;
   }];
   K.ExitThread = [1, (c) => vm.exitThread(c.thread, c.arg(0)), { noreturn: true }];
@@ -268,7 +268,7 @@ export function registerKernel32(api, vm) {
     const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread');
     if (!t) return c.fail(E.INVALID_HANDLE);
     const prev = t.suspendCount;
-    if (t.suspendCount > 0 && --t.suspendCount === 0 && t.state === TS.SUSPENDED) t.state = TS.READY;
+    if (t.suspendCount > 0 && --t.suspendCount === 0 && t.state === TS.SUSPENDED) vm.sched.markReady(t);
     return prev;
   }];
   K.GetThreadPriority = [1, (c) => { const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread'); return t ? t.priority : 0x7fffffff; }];
@@ -509,9 +509,9 @@ export function registerKernel32(api, vm) {
   const heapOf = (c, h) => c.proc.handles.getAs(h, 'heap');
   K.HeapCreate = [3, (c) => c.proc.createHeap({ initial: c.arg(1), max: c.arg(2), tag: 'user' }).handle];
   K.HeapDestroy = [1, (c) => { const h = heapOf(c, c.arg(0)); if (!h || h === c.proc.processHeap) return c.fail(E.INVALID_HANDLE); h.destroy(); c.proc.heaps = c.proc.heaps.filter((x) => x !== h); c.proc.handles.map.delete(c.arg(0)); return 1; }];
-  K.HeapAlloc = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.alloc(c.arg(2), (c.arg(1) & 8) !== 0); if (!p) { allocFailed(c, `HeapAlloc(0x${c.arg(0).toString(16)}, ${c.arg(2)})`); c.setLastError(E.NOT_ENOUGH_MEMORY); } return p; }];
-  K.HeapFree = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); if (!c.arg(2)) return 1; if (!h.free_(c.arg(2))) { vm.warn(`HeapFree: bad pointer ${c.arg(2).toString(16)} from ${c.proc.symbolize(c.retAddr)}`); return c.fail(E.INVALID_PARAMETER); } return 1; }];
-  K.HeapReAlloc = [4, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.realloc(c.arg(2), c.arg(3), (c.arg(1) & 8) !== 0, (c.arg(1) & 0x10) !== 0); if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; }];
+  K.HeapAlloc = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.alloc(c.arg(2), (c.arg(1) & 8) !== 0); if (vm.heapProv) vm.heapProv(c, 'alloc', p, c.arg(2)); if (!p) { allocFailed(c, `HeapAlloc(0x${c.arg(0).toString(16)}, ${c.arg(2)})`); c.setLastError(E.NOT_ENOUGH_MEMORY); } return p; }];
+  K.HeapFree = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); if (!c.arg(2)) return 1; if (vm.heapProv) vm.heapProv(c, 'free', c.arg(2), 0); if (!h.free_(c.arg(2))) { vm.warn(`HeapFree: bad pointer ${c.arg(2).toString(16)} from ${c.proc.symbolize(c.retAddr)}` + ((vm.badFrees = (vm.badFrees ?? 0) + 1) <= 2 ? '\n' + vm.crashReport(c.thread, 'HeapFree of a pointer that is no heap block') : '')); return c.fail(E.INVALID_PARAMETER); } return 1; }];
+  K.HeapReAlloc = [4, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return c.fail(E.INVALID_HANDLE); const p = h.realloc(c.arg(2), c.arg(3), (c.arg(1) & 8) !== 0, (c.arg(1) & 0x10) !== 0); if (vm.heapProv) { vm.heapProv(c, 'realloc-from', c.arg(2), 0); vm.heapProv(c, 'realloc', p, c.arg(3)); } if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; }];
   K.HeapSize = [3, (c) => { const h = heapOf(c, c.arg(0)); if (!h) return 0xffffffff; const s = h.size(c.arg(2)); return s < 0 ? 0xffffffff : s; }];
   K.HeapValidate = [3, (c) => { const h = heapOf(c, c.arg(0)); return h && h.validate(c.arg(2)) ? 1 : 0; }];
   K.HeapCompact = [2, () => 0x10000];
@@ -522,10 +522,10 @@ export function registerKernel32(api, vm) {
   K.HeapQueryInformation = [5, () => 0];
 
   // Global/Local (fixed-pointer semantics on the process heap)
-  const galloc = (c, flags, size) => { const p = c.proc.processHeap.alloc(size, (flags & 0x40) !== 0); if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; };
+  const galloc = (c, flags, size) => { const p = c.proc.processHeap.alloc(size, (flags & 0x40) !== 0); if (vm.heapProv) vm.heapProv(c, 'galloc', p, size); if (!p) c.setLastError(E.NOT_ENOUGH_MEMORY); return p; };
   K.GlobalAlloc = [2, (c) => galloc(c, c.arg(0), c.arg(1))];
   K.LocalAlloc = [2, (c) => galloc(c, c.arg(0), c.arg(1))];
-  K.GlobalFree = [1, (c) => (c.arg(0) === 0 || c.proc.processHeap.free_(c.arg(0)) ? 0 : c.arg(0))];
+  K.GlobalFree = [1, (c) => (c.arg(0) === 0 || (vm.heapProv && vm.heapProv(c, 'gfree', c.arg(0), 0), false) || c.proc.processHeap.free_(c.arg(0)) ? 0 : c.arg(0))];
   K.LocalFree = K.GlobalFree;
   K.GlobalLock = [1, (c) => c.arg(0)];
   K.LocalLock = K.GlobalLock;

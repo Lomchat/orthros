@@ -50,6 +50,8 @@ export class Vm {
     this.vfs = opts.vfs;
     this.clock = opts.clock ?? new RealClock();
     this.host = opts.host ?? null;
+    /** instructions per thread slice (tests: other interleavings) */
+    this.sliceInsns = opts.sliceInsns || Number(globalThis.ORTHROS_SLICE_INSNS) || SLICE_INSNS;
     this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
     this.api = new ApiRegistry(this.mem);
     this.interp = new Interp(this.mem, null);
@@ -58,6 +60,13 @@ export class Vm {
     this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
+    // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
+    // crash reports for the blocks the registers point into)
+    this.heapProv = null;
+    if (globalThis.ORTHROS_HEAP_PROV) {
+      const prov = this.heapProvMap = new Map(); let seq = 0;
+      this.heapProv = (c, op, addr, size) => { if (!addr) return; const a = addr >>> 0, l = prov.get(a), e = `#${++seq} ${op}${size ? `(${size})` : ''} t${c.thread.id} from ${this.proc.symbolize(c.retAddr)}`; if (l) { l.push(e); if (l.length > 4) l.shift(); } else prov.set(a, [e]); };
+    }
     this.sched = new Scheduler(this);
     this.proc = null;
     this.depth = 0;
@@ -149,6 +158,29 @@ export class Vm {
     const main = proc.createThread({ start: exe.entry, param: 0, stackSize, main: true, stackBase: 0x00130000 - stackSize });
     this.log('loader', `main thread stack: ${(stackSize / 1024).toFixed(0)} KiB (image reserve ${((exe.image.stackReserve || 0) / 1024).toFixed(0)} KiB) at ${(main.stackLimit >>> 0).toString(16)}-${(main.stackBase >>> 0).toString(16)}`);
     main.name = 'main';
+    if (globalThis.ORTHROS_WRITE_CHECK) this.writeCheck(proc.vmem);
+    if (globalThis.ORTHROS_RELEASE_WATCH) this.releaseWatch(proc.vmem);
+    // (debugging, ?dbg=ORTHROS_TRACE_EIP=<hex>[;<hex>...] with ORTHROS_INTERP_RANGES covering them: each arrival at those
+    // addresses — a function entry — recorded with the thread, the return address and the first stack arguments; the
+    // last 256 are shown in crash reports)
+    if (globalThis.ORTHROS_TRACE_EIP && this.jit) {
+      const eips = new Set(String(globalThis.ORTHROS_TRACE_EIP).split(';').map((x) => parseInt(x, 16) >>> 0));
+      const ring = this.traceRing = { a: new Array(256), i: 0 };
+      const byArg = this.traceByArg = new Map();
+      this.jit.onInterpRange = (eip, cpu) => {
+        if (!eips.has(eip)) return;
+        const sp = cpu.esp >>> 0, m = this.mem, a0 = m.read32(sp + 4) >>> 0;
+        const rets = []; for (let a = sp; a < sp + 0x400 && rets.length < 8; a += 4) { const v = m.read32(a) >>> 0; if (this.proc.moduleByAddr(v)) rets.push(this.proc.symbolize(v)); }
+        const rec = `#${ring.i + 1} t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
+        ring.a[ring.i++ & 255] = rec;
+        const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > 3) l.shift(); } else byArg.set(a0, [rec]);
+      };
+    }
+    if (globalThis.ORTHROS_NULL_WATCH && this.jit) { // (debugging: writes to the first 64 KB, an access violation on Windows)
+      this.jit.watchWrites(0, 0x10000, 'null page', 1e9);
+      const hit = this.jit.watchHit.bind(this.jit); let n = 0;
+      this.jit.watchHit = (addr, eip, len, thread) => { const h = hit(addr, eip, len, thread); if (h && addr < 0x10000 && ++n <= 20) this.warn(`write to the null page: ${addr.toString(16)} (${len} bytes) by t${thread?.id} at ${this.proc.symbolize(eip)}\n${this.crashReport(thread ?? this.proc.threads[0], 'write to the null page')}`); return h; };
+    }
     return proc;
   }
 
@@ -308,7 +340,7 @@ export class Vm {
     if (this.profile) { const k = thread.cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
     if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
     if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
-    if (opts.slice) { thread.state = TS.READY; return true; }
+    if (opts.slice) { this.sched.markReady(thread); return true; }
     return false;
   }
 
@@ -316,6 +348,9 @@ export class Vm {
     const until = opts.until ?? -1;
     const prev = this.current;
     const base = thread.onStack === 0;
+    // guest code run from inside an API handler (a callback, a nested wait running the other threads) makes API calls
+    // of its own, which rebind the shared call context: the handler's binding (thread, arguments) comes back after
+    const ctx = this.ctx, nested = this.depth > 0, cThread = ctx.thread, cCpu = ctx.cpu, cSp = ctx.sp, cDef = ctx.def;
     // (guest code run from inside an API call or another section — a callback, a nested wait running the other
     // threads — is charged to guest code; top-level slices already are)
     const acctPrev = this.depth > 0 ? acct.enter(ACCT.guest) : -1;
@@ -329,7 +364,7 @@ export class Vm {
     const exec = this.exec;
     const cpu = thread.cpu;
     // the instruction budget of a slice persists across API calls (API-dense code must yield too)
-    let budget = SLICE_INSNS;
+    let budget = this.sliceInsns;
     // (one options object per nesting depth, not per call nor per exec.run — that runs after every API call; the
     // executors read it on entry)
     const runOpts = (this.runOptsByDepth ??= [])[this.depth] ??= { stopAt: -1, maxInsns: 0 };
@@ -359,11 +394,11 @@ export class Vm {
             if (longMs) this.dispatchThunkTimed(thread, cpu.exitArg, longMs);
             else this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
-            if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { thread.state = TS.READY; return 0; } }
-            if (budget <= 0) { budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0; }
+            if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { this.sched.markReady(thread); return 0; } }
+            if (budget <= 0) { budget = this.sliceInsns; if (this.sliceEnd(thread, opts)) return 0; }
             break;
           case EXIT.TIMESLICE:
-            budget = SLICE_INSNS; if (this.sliceEnd(thread, opts)) return 0;
+            budget = this.sliceInsns; if (this.sliceEnd(thread, opts)) return 0;
             break;
           case EXIT.FAULT:
             this.onFault(thread);
@@ -387,6 +422,7 @@ export class Vm {
       throw e;
     } finally {
       if (acctPrev >= 0) acct.leave(acctPrev);
+      if (nested) { ctx.thread = cThread; ctx.cpu = cCpu; ctx.sp = cSp; ctx.def = cDef; }
       this.depth--;
       thread.onStack--;
       if (opts.top) thread.topLevel = false;
@@ -579,6 +615,59 @@ export class Vm {
     cpu.eax = (this.api.stubReturns.get(t.dll) ?? 0) >>> 0;
   }
 
+  /**
+   * (debugging, ?dbg=ORTHROS_WRITE_CHECK=1) bulk writes of the JavaScript side (API handlers: file reads, surfaces,
+   * strings...) checked to stay inside one allocation of the address space: a write running past the end of a region
+   * into the next one is reported with the API call and the thread
+   */
+  writeCheck(vmem) {
+    const mem = this.mem, P = 4096, wb = mem.writeBytes.bind(mem), fl = mem.fill.bind(mem), cp = mem.copy.bind(mem);
+    let n = 0;
+    const check = (a, len, what) => {
+      if (len <= 0) return;
+      a >>>= 0;
+      const p0 = (a / P) | 0, p1 = ((a + len - 1) / P) | 0;
+      if (p0 >= vmem.owner.length) return;
+      const o = vmem.owner[p0];
+      if (o >= 0 && vmem.regions.get(o * P)?.quarantined && ++n <= 20) this.warn(`write check: ${what} of ${len} bytes at ${a.toString(16)} into a released region (${vmem.regions.get(o * P).tag}) [t${this.current?.id ?? '?'}, last API ${this.recentApiCalls(1)[0] ?? '-'}]`);
+      if (o < 0 || p0 === p1) return;
+      for (let p = p0 + 1; p <= Math.min(p1, vmem.owner.length - 1); p++) if (vmem.owner[p] !== o || vmem.state[p] !== vmem.state[p0]) {
+        if (++n <= 20) this.warn(`write check: ${what} of ${len} bytes at ${a.toString(16)} runs past its allocation (${(o * P).toString(16)}, ${vmem.regions.get(o * P)?.tag ?? '?'}) into page ${(p * P).toString(16)} (${vmem.regions.get(vmem.owner[p] * P)?.tag ?? 'free'}) [t${this.current?.id ?? '?'}, last API ${this.recentApiCalls(1)[0] ?? '-'}]`);
+        return;
+      }
+    };
+    mem.writeBytes = (a, src) => { check(a, src.length, 'writeBytes'); wb(a, src); };
+    mem.fill = (a, len, v = 0) => { check(a, len, 'fill'); fl(a, len, v); };
+    mem.copy = (d, src, len) => { check(d, len, 'copy'); cp(d, src, len); };
+  }
+
+  /**
+   * (debugging, ?dbg=ORTHROS_RELEASE_WATCH=1) released regions of the address space (VirtualFree, textures, buffers,
+   * DIB sections, thread stacks...) stay reserved for 20 s with their pages watched before they are freed: a guest
+   * write into one (translated code: an SMC-map watch) is reported with the writer's thread and call stack
+   */
+  releaseWatch(vmem) {
+    const q = [];
+    let reported = 0;
+    vmem.onRelease = (base, r) => {
+      if (!this.jit || r.size > 64 << 20) return false;
+      r.quarantined = true; r.tag = `released ${r.tag ?? ''} (by t${this.current?.id} in ${this.recentApiCalls(1)[0] ?? '-'})`;
+      const at = performance.now();
+      q.push({ base, at });
+      this.jit.watchWrites(base, r.size, `released:${base.toString(16)}`, 1e9);
+      while (q.length && at - q[0].at > 20000) { const o = q.shift(); this.jit.unwatch(`released:${o.base.toString(16)}`); vmem.release(o.base); }
+      return true;
+    };
+    const hit = this.jit?.watchHit.bind(this.jit);
+    if (this.jit) this.jit.watchHit = (addr, eip, len, thread) => {
+      const handled = hit(addr, eip, len, thread);
+      const o = vmem.owner[(addr / 4096) | 0], reg = o >= 0 ? vmem.regions.get(o * 4096) : null;
+      const oe = vmem.owner[((addr + len - 1) / 4096) | 0]; // (a store range only touching its last bytes: a copy into the next region)
+      if (handled && reg?.quarantined && oe === o && ++reported <= 20) this.warn(`write into a released region: ${addr.toString(16)} (${len} bytes) in ${(o * 4096).toString(16)}+${reg.size.toString(16)} ${reg.tag} by t${thread?.id} at ${this.proc.symbolize(eip)}; next region ${(() => { const q = vmem.owner[((o * 4096 + reg.size) / 4096) | 0]; const nr = q >= 0 ? vmem.regions.get(q * 4096) : null; return nr ? (q * 4096).toString(16) + ' ' + nr.tag : 'free'; })()}; regs ${thread ? ['eax', 'ecx', 'edx', 'ebx', 'esi', 'edi', 'ebp', 'esp'].map((k) => k + '=' + (thread.cpu[k] >>> 0).toString(16)).join(' ') : ''}; last API of the thread ${this.recentApiCalls(3, thread?.id).join(' | ')}\n${thread ? this.threadsReport().split('\n').filter((l) => l.includes(`  ${thread.id} (`) || l.startsWith('      stack')).slice(0, 2).join('\n') : ''}`);
+      return handled;
+    };
+  }
+
   argsOf(ctx, n) { const a = []; for (let i = 0; i < n; i++) a.push(ctx.arg(i)); return a; }
 
   fmtCall(t, ctx, argc) {
@@ -655,6 +744,9 @@ export class Vm {
       const ss = t.sleepStats ? ` sleeps(0/≤2ms/long)=${t.sleepStats.zero}/${t.sleepStats.short}/${t.sleepStats.long} throttled=${t.sleepStats.throttled ?? 0}` : '';
       lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}${t.wait ? '' : ' nested'}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''}${t.callbackDepth ? ` cb=${t.callbackDepth}` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
     }
+    // (ORTHROS_HEAP_PROV: what the registers of the threads that run point to — a thread spinning in a damaged list)
+    if (this.heapProvMap) for (const t of proc.threads) if (t.state === TS.READY || t.state === TS.RUNNING) { lines.push(`  t${t.id} registers: eax=${(t.cpu.eax >>> 0).toString(16)} ecx=${(t.cpu.ecx >>> 0).toString(16)} edx=${(t.cpu.edx >>> 0).toString(16)} ebx=${(t.cpu.ebx >>> 0).toString(16)} esi=${(t.cpu.esi >>> 0).toString(16)} edi=${(t.cpu.edi >>> 0).toString(16)} ebp=${(t.cpu.ebp >>> 0).toString(16)}`); try { lines.push(...this.registerMemory(t.cpu)); } catch (e) { lines.push(`  (${e.message})`); } }
+    for (const hp of proc.heaps) if (hp.stats.badTags || hp.stats.brokenLists) lines.push(`heap ${hp.tag}: ${hp.stats.badTags ?? 0} overwritten boundary tags, ${hp.stats.brokenLists ?? 0} broken free lists${hp.badTagLog ? '\n  ' + hp.badTagLog.join('\n  ') : ''}`);
     // synchronization objects (mutexes/events/semaphores) and the last ownership transitions
     const sync = [];
     for (const [h, o] of proc.handles.map) {
@@ -699,6 +791,71 @@ export class Vm {
     }
   }
 
+  /**
+   * The instructions ending at `ret` (a return address: its call last), decoded from the earliest start up to 48 bytes
+   * before it whose instruction chain lands exactly on it — empty when `ret` is not in a module.
+   */
+  codeBefore(ret) {
+    ret >>>= 0;
+    const mem = this.mem, proc = this.proc, out = [];
+    if (!proc.moduleByAddr(ret) || !proc.moduleByAddr(ret - 48)) return out;
+    for (let s = ret - 48; s < ret; s++) {
+      const chain = [];
+      let a = s;
+      try { while (a < ret) { const insn = decode(mem, a); chain.push([a, insn]); a = insn.next; } } catch { continue; }
+      if (a !== ret) continue;
+      for (const [x, insn] of chain.slice(-12)) out.push(`  ${proc.symbolize(x)}  ${hex(mem.bytes(x, insn.len)).padEnd(20)} ${fmtInsn(insn)}`);
+      return out;
+    }
+    return out;
+  }
+
+  /** 32 bytes at each general register that holds a committed address (hex and text). */
+  registerMemory(cpu) {
+    const out = ['memory at registers:'], seen = new Set(), ptrs = [];
+    for (const r of ['eax', 'ecx', 'edx', 'ebx', 'esi', 'edi', 'ebp']) {
+      const v = cpu[r] >>> 0;
+      if (v < 0x10000 || !this.proc.vmem.isCommitted(v, 128)) continue;
+      ptrs.push([r, v]);
+      { const vm_ = this.proc.vmem, o = vm_.owner[(v / 4096) | 0], reg = o >= 0 ? vm_.regions.get(o * 4096) : null; if (reg) out.push(`  ${r} in region ${(o * 4096).toString(16)}+${reg.size.toString(16)} ${reg.tag ?? ''}`); }
+      for (let k = 0; k < 128; k += 32) {
+        const b = this.mem.bytes(v + k, 32);
+        out.push(`  ${k ? '   ' : r} ${(v + k).toString(16).padStart(8, '0')}: ${hex(b)}  ${String.fromCharCode(...[...b].map((ch) => (ch >= 32 && ch < 127 ? ch : 46)))}`);
+      }
+      for (let k = 0; k < 128; k += 4) { const p = this.mem.read32(v + k); if (p >= 0x10000) ptrs.push([`[${r}+0x${k.toString(16)}]`, p]); }
+    }
+    // what the pointers held in that memory point to (an object whose fields were overwritten: by what)
+    const shown = new Set(ptrs.filter(([w]) => !w.startsWith('[')).map(([, v]) => v));
+    for (const [what, p] of ptrs) {
+      if (!what.startsWith('[') || shown.has(p) || !this.proc.vmem.isCommitted(p, 64) || shown.size >= 40) continue;
+      shown.add(p);
+      const b = this.mem.bytes(p, 64);
+      out.push(`  ${what} -> ${p.toString(16)}: ${hex(b)}  ${String.fromCharCode(...[...b].map((ch) => (ch >= 32 && ch < 127 ? ch : 46)))}`);
+    }
+    // the heap blocks they point into (with their last operations under ORTHROS_HEAP_PROV)
+    for (const [what, p] of ptrs) {
+      const blk = this.heapBlockOf(p);
+      if (!blk || seen.has(blk.user)) continue;
+      seen.add(blk.user);
+      const b = this.mem.bytes(blk.user, Math.min(64, blk.size));
+      out.push(`  ${what}=${p.toString(16)} in ${blk.heap} block ${blk.user.toString(16)}+${blk.size.toString(16)} ${blk.used ? 'used' : 'FREE'}: ${hex(b)}  ${String.fromCharCode(...[...b].map((ch) => (ch >= 32 && ch < 127 ? ch : 46)))}${this.heapProvMap ? `\n      ${(this.heapProvMap.get(blk.user) ?? ['(no record)']).join('\n      ')}` : ''}`);
+      if (seen.size >= 24) break;
+    }
+    return out;
+  }
+
+  /** The heap block holding `addr` (any heap of the process): its user address, size, state */
+  heapBlockOf(addr) {
+    for (const h of this.proc.heaps) {
+      const ch = h.chunkOf(addr);
+      if (!ch) continue;
+      let found = null;
+      h.walk((u, s, used) => { if (!found && addr >= u - 8 && addr < u + s + 8 && u >= ch.base && u < ch.base + ch.size) found = { user: u, size: s, used, heap: h.tag }; });
+      return found;
+    }
+    return null;
+  }
+
   crashReport(thread, reason) {
     const cpu = thread.cpu, mem = this.mem, proc = this.proc;
     const h = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
@@ -711,6 +868,14 @@ export class Vm {
       try { const insn = decode(mem, a); lines.push(`  ${h(a)}  ${hex(mem.bytes(a, insn.len)).padEnd(20)} ${fmtInsn(insn)}`); a = insn.next; }
       catch (e) { lines.push(`  ${h(a)}  ?? ${e.message}`); break; }
     }
+    // a jump to no code (a call through a bad pointer): the instructions that led there, before the return address
+    // on top of the stack, and what the registers point to (the object the pointer was read from)
+    // (or, at an API call, the call site)
+    if (proc.vmem.isCommitted(cpu.esp, 4) && (!this.interp.executable(cpu.eip) || this.api.nameOf(cpu.eip))) {
+      const site = this.codeBefore(mem.read32(cpu.esp));
+      if (site.length) lines.push('code before the return address on the stack:', ...site);
+    }
+    try { lines.push(...this.registerMemory(cpu)); } catch (e) { lines.push(`(register memory: ${e.message})`); }
     lines.push('stack:');
     for (let i = 0; i < 16; i++) {
       const sa = cpu.esp + 4 * i;
@@ -723,6 +888,14 @@ export class Vm {
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);
     if (proc.threads.length > 1) lines.push(this.threadsReport());
+    if (this.traceRing) {
+      const r = this.traceRing, out = []; for (let k = 0; k < 256; k++) { const x = r.a[(r.i + k) & 255]; if (x) out.push(x); }
+      lines.push('traced entries (oldest first):\n  ' + out.slice(-64).join('\n  '));
+      // the earlier entries whose first argument is a value the registers or the stack hold now (a pointer freed twice...)
+      const vals = new Set([cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp].map((v) => v >>> 0));
+      for (let i = 0; i < 32; i++) if (proc.vmem.isCommitted(cpu.esp + 4 * i, 4)) vals.add(mem.read32(cpu.esp + 4 * i) >>> 0);
+      for (const v of vals) { for (const d of [0, 4, 8, 12]) { const l = this.traceByArg.get((v + d) >>> 0); if (l) lines.push(`traced with argument ${((v + d) >>> 0).toString(16)}:\n  ${l.join('\n  ')}`); } }
+    }
     return lines.join('\n');
   }
 }

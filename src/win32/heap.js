@@ -129,8 +129,11 @@ export class Heap {
     m.write32(addr - 4, MAGIC_FREE);
     // Neighbours are merged only when their boundary tags agree (header size = footer size, inside the chunk): a
     // program writing a few bytes past its block overwrites the footer, which Windows' heap would not notice either.
+    // (diagnostics: a block whose footer or next header the program overwrote — it wrote past the end of the block)
+    if (m.read32(addr + size) !== size) this.badTag(addr, size, 'footer');
     // coalesce forward
     const nextU = addr + size + FTR + HDR;
+    if (nextU < hi) { const nm = m.read32(nextU - 4); if (nm !== MAGIC_USED && nm !== MAGIC_FREE) this.badTag(addr, size, 'next header'); }
     if (nextU < hi && m.read32(nextU - 4) === MAGIC_FREE) {
       const ns = m.read32(nextU - 8);
       if (nextU + ns + FTR <= hi - 8 && m.read32(nextU + ns) === ns) { this.unlink(nextU, classIndex(ns)); size += FTR + HDR + ns; }
@@ -141,6 +144,12 @@ export class Heap {
     if (ps && prevU > lo && m.read32(prevU - 4) === MAGIC_FREE && m.read32(prevU - 8) === ps) { this.unlink(prevU, classIndex(ps)); size += ps + FTR + HDR; addr = prevU; }
     this.setFree(addr, size);
     return true;
+  }
+
+  /** (diagnostics) the boundary tags after block `addr` are not the heap's: counted, the first ones kept for reports */
+  badTag(addr, size, what) {
+    this.stats.badTags = (this.stats.badTags ?? 0) + 1;
+    if ((this.badTagLog ??= []).length < 8) this.badTagLog.push(`${what} after block ${addr.toString(16)}+${size.toString(16)}: ${Array.from(this.mem.bytes(addr + size, 16), (x) => x.toString(16).padStart(2, '0')).join('')}`);
   }
 
   /** whether user address `b` with header size `bs` is a free block of this heap (see alloc) */

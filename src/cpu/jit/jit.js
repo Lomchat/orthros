@@ -329,6 +329,7 @@ export class Jit {
     for (const [eip0, fpc] of list) {
       const eip = eip0 >>> 0;
       if (this.blockMap.has(eip) || !this.interp.executable(eip)) continue;
+      if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) continue; // (debugging: left to the interpreter)
       items.push({ eip, fpc: this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : fpc, fnIdx: this.reserveFn() });
     }
     if (!items.length) return 0;
@@ -379,6 +380,7 @@ export class Jit {
   prewarm(eip, fpc) {
     eip >>>= 0;
     if (this.blockMap.has(eip) || !this.interp.executable(eip)) return false;
+    if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) return false; // (debugging: left to the interpreter)
     const t0 = performance.now();
     try { this.translate(eip, null, fpc); } catch { return false; } finally { this.stats.prewarmMs = (this.stats.prewarmMs ?? 0) + performance.now() - t0; }
     this.stats.prewarmed = (this.stats.prewarmed ?? 0) + 1;
@@ -644,7 +646,7 @@ export class Jit {
           this.interp.cpu = cpu;
           let n = 0, s = EXIT.NONE;
           const budget = m.read32(cpu.base + ST.ICOUNT) | 0;
-          do { cpu.exit = EXIT.NONE; s = this.interp.step(); n++; } while (s === EXIT.NONE && n < Math.max(1, budget) && ranges.some(([lo, hi]) => cpu.eip >= lo && cpu.eip < hi));
+          do { if (this.onInterpRange) this.onInterpRange(cpu.eip >>> 0, cpu); cpu.exit = EXIT.NONE; s = this.interp.step(); n++; } while (s === EXIT.NONE && n < Math.max(1, budget) && ranges.some(([lo, hi]) => cpu.eip >= lo && cpu.eip < hi));
           m.write32(cpu.base + ST.ICOUNT, budget - n);
           this.stats.interpRangeSteps = (this.stats.interpRangeSteps ?? 0) + n;
           if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
