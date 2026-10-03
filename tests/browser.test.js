@@ -82,10 +82,10 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.match(text, /px_chk10=0x00ffffff/);
   assert.match(text, /px_chk33=0x00000000/);
   assert.match(text, /px_chk_out=0x0000ff00/, 'the quad covers exactly pixels 100..103');
-  assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker by default');
+  assert.ok(!r.logs.some((l) => l.includes('render worker: ready')), 'the in-thread backend by default (?glworker=1 for the render worker)');
 });
 
-// the render worker (docs/render-worker.md; the default, so the tests above use it): the same pixels and readbacks with
+// the render worker (docs/render-worker.md; opt-in, ?glworker=1): the same pixels and readbacks with
 // the Direct3D work recorded and replayed in this thread (inline), in a render worker that presents the frames itself
 // (1), and with the backend in the emulator's thread (0)
 for (const mode of ['inline', '1', '0']) {
