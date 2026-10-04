@@ -393,7 +393,7 @@ function planNullChecks(insns, smc, mode) {
       if (smc && k.writes && (k.write ? NC_STORE_SMC.has(insn.op) : mode === 'writes' && NC_RMW_SMC.has(insn.op)) && !k.o.a16) continue;
       const o = k.o;
       if (!k.str && !o.a16 && (o.base >= 0 || o.index >= 0)) {
-        const key = o.base + 8 * (o.index + 1) + 72 * o.scale, d = o.disp | 0, g = groups.get(key);
+        const key = (o.base + 1) + 9 * (o.index + 1) + 81 * o.scale, d = o.disp | 0, g = groups.get(key);
         if (g && Math.max(g.hi, d) - Math.min(g.lo, d) < NC_SPAN) { g.lo = Math.min(g.lo, d); g.hi = Math.max(g.hi, d); continue; }
         const ng = { key, o, lo: d, hi: d };
         groups.set(key, ng);

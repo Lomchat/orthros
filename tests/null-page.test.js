@@ -126,6 +126,9 @@ const FORMS = [
   ['mov eax,[esi+eax*4+0x20]', '8b448620', { esi: 0, eax: 0x10 }, 0, 0x60, false],
   ['mov dword [edi+ecx*2],7', 'c7044f07000000', { edi: 0x100, ecx: 0x10 }, 0, 0x120, true],
   ['sub eax,[ebp-8] (EBP is checked)', '2b45f8', { ebp: 8 }, 0, 0, false],
+  // (two operands through different registers — [edi+ecx*4] and [edx*4]: each its own check, not one group)
+  ['mov eax,[edi+ecx*4] ; mov ebx,[edx*4]', '8b048f8b1c9500000000', { edi: P, ecx: 0, edx: 0 }, 3, 0, false],
+  ['xchg [edi+ecx*4],eax ; xchg [edx*4],ebx', '87048f871c9500000000', { edi: P, ecx: 0, edx: 0, ebx: 0x2222 }, 3, 0, false],
 ];
 
 for (const mode of [true, 'writes']) for (const [jitName, jitOpts] of [['jit', {}], ['jit, if-conversion everywhere', { ifcvt: 'all' }]]) {
