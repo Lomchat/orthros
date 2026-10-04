@@ -137,13 +137,15 @@ export function imageDigest(f, kind, L = peLayout(f)) {
 
 /**
  * WinVerifyTrust's answer for a file's contents (WINTRUST_ACTION_GENERIC_VERIFY_V2 on a file).
- * @param {Uint8Array} f @returns {{ status: number, why: string }}
+ * @param {Uint8Array} f the file, or its first bytes (the headers) with `size` its whole size: then answered only
+ * when the certificate table is absent or does not fit in the file
+ * @param {number} [size] @returns {{ status: number, why: string }}
  */
-export function verifyAuthenticode(f) {
+export function verifyAuthenticode(f, size = f.length) {
   const L = peLayout(f);
   if (!L) return { status: TRUST_E_SUBJECT_FORM_UNKNOWN, why: 'not a PE file' };
   if (!L.certLen || !L.certOff) return { status: TRUST_E_NOSIGNATURE, why: 'no certificate table' };
-  if (L.certOff + L.certLen > f.length || L.certLen < 8) return { status: TRUST_E_NOSIGNATURE, why: 'certificate table past the end of the file' }; // (no signature can be read)
+  if (L.certOff + L.certLen > size || L.certLen < 8) return { status: TRUST_E_NOSIGNATURE, why: 'certificate table past the end of the file' }; // (no signature can be read)
   const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
   // WIN_CERTIFICATE entries (8-byte aligned): the first PKCS#7 one (revision 0x200, type 2) is the signature
   let pk = null;

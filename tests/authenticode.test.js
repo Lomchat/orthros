@@ -103,3 +103,10 @@ test('files without a signature, and files that are not PE', () => {
   assert.equal(verifyAuthenticode(new Uint8Array(makePe())).status, TRUST_E_NOSIGNATURE);
   assert.equal(verifyAuthenticode(new Uint8Array(Buffer.from('hello world, not a PE file at all.......................................'))).status, TRUST_E_SUBJECT_FORM_UNKNOWN);
 });
+
+test('answered from the headers alone when there is no readable certificate table', () => {
+  const pe = makePe(), { file } = sign(makePe(), 'sha256');
+  assert.equal(verifyAuthenticode(new Uint8Array(pe).subarray(0, 0x200), pe.length).status, TRUST_E_NOSIGNATURE);
+  // the table announced past the end of the file (an executable cut after signing)
+  assert.equal(verifyAuthenticode(new Uint8Array(file).subarray(0, 0x200), file.length - 64).why, 'certificate table past the end of the file');
+});

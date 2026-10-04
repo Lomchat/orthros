@@ -5,7 +5,7 @@ import { CC_CDECL } from './api.js';
 import { allocString } from './kernel32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
 import { defineWinsock } from './winsock.js';
-import { verifyAuthenticode, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN } from './authenticode.js';
+import { verifyAuthenticode, peLayout, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN } from './authenticode.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
 const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167;
@@ -234,8 +234,15 @@ export function registerMiscDlls(api, vm) {
     const key = path.toLowerCase();
     let r = trustCache.get(key);
     if (!r) {
-      const bytes = vm.vfs.readFile(path);
-      r = bytes ? verifyAuthenticode(bytes) : { status: 0x80070002, why: 'file not found' }; // (HRESULT of ERROR_FILE_NOT_FOUND)
+      // (the headers first: a file without a readable certificate table is answered without reading it whole)
+      const f = vm.vfs.open(path, {});
+      if (!f) r = { status: 0x80070002, why: 'file not found' }; // (HRESULT of ERROR_FILE_NOT_FOUND)
+      else {
+        try {
+          const size = f.size(), head = f.read(0, Math.min(size, 4096)), L = peLayout(head);
+          r = L && L.certLen && L.certOff + L.certLen <= size ? verifyAuthenticode(f.read(0, size)) : verifyAuthenticode(head, size);
+        } finally { f.close(); }
+      }
       trustCache.set(key, r);
       vm.log('file', `WinVerifyTrust ${path}: ${r.why} -> 0x${(r.status >>> 0).toString(16)}`);
     }
