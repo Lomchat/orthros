@@ -214,7 +214,7 @@ export class Vm {
       // thread yielding thousands of times per second made the reads a fifth of the switch)
       let t0 = performance.now();
       for (;;) {
-        const t = this.sched.pickRunnable(null);
+        const t = this.sched.pickRunnable(null, true);
         if (t) {
           this.runThread(t, TOP_SLICE);
           const t1 = performance.now();
@@ -344,7 +344,7 @@ export class Vm {
     if (this.profile) { const k = thread.cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
     if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
     if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
-    if (opts.slice) { this.sched.markReady(thread); return true; }
+    if (opts.slice) { this.sched.markReady(thread); if (opts.top) this.sched.sliceExpired = thread; return true; }
     return false;
   }
 
@@ -755,7 +755,7 @@ export class Vm {
       let last = '';
       for (let i = API_TRACE_LEN - 1; i >= 0; i--) { const k = (this.apiTracePos + i) & (API_TRACE_LEN - 1); if (this.apiTraceNames[k] && this.apiTraceTids[k] === t.id) { last = `${this.apiTraceNames[k].dll}!${this.apiTraceNames[k].name} from ${proc.symbolize(this.apiTraceRets[k])}`; break; } }
       const ss = t.sleepStats ? ` sleeps(0/≤2ms/long)=${t.sleepStats.zero}/${t.sleepStats.short}/${t.sleepStats.long} throttled=${t.sleepStats.throttled ?? 0}` : '';
-      lines.push(`  ${t.id} (${t.name || '-'}) ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}${t.wait ? '' : ' nested'}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''}${t.callbackDepth ? ` cb=${t.callbackDepth}` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
+      lines.push(`  ${t.id} (${t.name || '-'}) prio ${t.priority ?? 0} ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.state === 2 ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}${t.wait ? '' : ' nested'}${t.wakeAt < Infinity ? ` until +${Math.max(0, t.wakeAt - this.clock.now()).toFixed(0)}ms` : ''}]` : ''}${t.callbackDepth ? ` cb=${t.callbackDepth}` : ''} eip=${proc.symbolize(cpu.eip)}\n      stack: ${rets.join(' < ') || '-'}\n      last API: ${last || '-'}${ss}`);
     }
     // (ORTHROS_HEAP_PROV: what the registers of the threads that run point to — a thread spinning in a damaged list)
     if (this.heapProvMap) for (const t of proc.threads) if (t.state === TS.READY || t.state === TS.RUNNING) { lines.push(`  t${t.id} registers: eax=${(t.cpu.eax >>> 0).toString(16)} ecx=${(t.cpu.ecx >>> 0).toString(16)} edx=${(t.cpu.edx >>> 0).toString(16)} ebx=${(t.cpu.ebx >>> 0).toString(16)} esi=${(t.cpu.esi >>> 0).toString(16)} edi=${(t.cpu.edi >>> 0).toString(16)} ebp=${(t.cpu.ebp >>> 0).toString(16)}`); try { lines.push(...this.registerMemory(t.cpu)); } catch (e) { lines.push(`  (${e.message})`); } }

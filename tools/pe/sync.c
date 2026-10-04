@@ -112,15 +112,15 @@ void __stdcall start(void) {
   mA = CreateMutexA(0, 0, 0);
   mB = CreateMutexA(0, 1, 0);
   t = CreateThread(0, 0, aliveWorker, 0, 0, 0);
-  unsigned iters = 0;
+  unsigned iters = 0; // (the worker runs once main has used its quantum: a few million fast iterations at most)
   for (;;) {
     r = WaitForSingleObject(mA, 1);
     iters++;
-    if (r == 0) { ReleaseMutex(mA); if (iters > 200000) break; continue; }
+    if (r == 0) { ReleaseMutex(mA); if (iters > 5000000) break; continue; }
     if (r != WAIT_TIMEOUT) continue;
     break;
   }
-  report("handshake", r == WAIT_TIMEOUT); report("handshake_bounded", iters <= 200000);
+  report("handshake", r == WAIT_TIMEOUT); report("handshake_bounded", iters <= 5000000);
   ReleaseMutex(mB);
   DWORD j = WaitForSingleObject(t, 5000);
   DWORD a = WaitForSingleObject(mA, 0);

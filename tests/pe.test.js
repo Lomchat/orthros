@@ -124,7 +124,8 @@ test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off,
       'abandoned=128\n', `executor jit=${jit}`);
     assert.equal(code, 0);
     // (JIT: an uncontended mutex is taken and released without JavaScript — about 25,000 calls each otherwise)
-    if (jit) for (const n of ['WaitForSingleObject', 'ReleaseMutex']) assert.ok(vm.apiHist().get(`kernel32.dll!${n}`) < 500, `${n} calls handled in JavaScript: ${vm.apiHist().get(`kernel32.dll!${n}`)}`);
+    // (contended calls go to JavaScript: with the scheduler's quantum the threads hold their mutexes over longer runs)
+    if (jit) for (const n of ['WaitForSingleObject', 'ReleaseMutex']) assert.ok(vm.apiHist().get(`kernel32.dll!${n}`) < 2000, `${n} calls handled in JavaScript: ${vm.apiHist().get(`kernel32.dll!${n}`)}`);
   }
 });
 

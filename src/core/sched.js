@@ -9,8 +9,23 @@ import { TS } from '../win32/process.js';
 
 export const INFINITE = 0xffffffff;
 /** how long a ready thread may wait while higher-priority threads run before it runs anyway (pickRunnable): guest
- *  milliseconds, or scheduling decisions (threads yielding with Sleep(0) let no time pass on a virtual clock) */
-export const STARVE_MS = 20, STARVE_PICKS = 1000;
+ *  instructions executed (STARVE_INSNS), or scheduling decisions (threads yielding with Sleep(0) execute few) */
+export const STARVE_PICKS = 1000;
+/**
+ * Starvation and the quantum are counted in guest instructions executed (Vm.guestInsns), not in time: a quantum is
+ * processor time used, and the host's own load (the emulator descheduled for milliseconds in the middle of a few guest
+ * instructions) must not decide where a thread is interrupted. 6 M instructions: ~20 ms at this emulator's speed
+ * (~300 M guest instructions per second).
+ */
+export const STARVE_INSNS = 6_000_000;
+/**
+ * The quantum (guest instructions, see STARVE_INSNS): how long a thread whose time slice ended keeps the processor while no thread of
+ * higher priority is ready — Windows rotates threads of equal priority at the end of a quantum (two clock ticks, ~31 ms
+ * on a client system), not at every slice of this scheduler (a few hundred microseconds), and a thread preempted by a
+ * higher priority resumes before its equals (see pickRunnable). The starvation delay, which ends it for a thread kept
+ * waiting by an equal as well. 0: rotation at every slice (?dbg=ORTHROS_QUANTUM_INSNS=0).
+ */
+export const QUANTUM_INSNS = STARVE_INSNS; // (an equal ready that long is starved anyway: see pickRunnable)
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
 
 /**
@@ -43,10 +58,19 @@ export class Scheduler {
     this.roundRobin = !!globalThis.ORTHROS_SCHED_ROUND_ROBIN;
     /** scheduling decisions so far (pickRunnable): starvation */
     this.picks = 0;
+    /** (measurement, ?dbg=ORTHROS_STARVE_INSNS=<n>,ORTHROS_STARVE_PICKS=<n>: the starvation thresholds of pickRunnable) */
+    this.starveInsns = Number(globalThis.ORTHROS_STARVE_INSNS) || STARVE_INSNS; this.starvePicks = Number(globalThis.ORTHROS_STARVE_PICKS) || STARVE_PICKS;
+    /** the quantum (QUANTUM_INSNS; ?dbg=ORTHROS_QUANTUM_INSNS=<n>, 0 none), the thread holding it and where it ends (Vm.guestInsns) */
+    this.quantumInsns = globalThis.ORTHROS_QUANTUM_INSNS !== undefined ? Number(globalThis.ORTHROS_QUANTUM_INSNS) : QUANTUM_INSNS;
+    this.quantumThread = null; this.quantumEnd = 0;
+    /** a thread whose slice ended on its budget (Vm.sliceEnd), candidate to go on with its quantum (pickRunnable) */
+    this.sliceExpired = null;
+    /** { t, left }: a thread preempted by a higher priority with `left` ms of quantum: first among its equals afterwards */
+    this.preempted = null;
   }
 
   /** `t` ready to run (again): the time and decision count it starts waiting from (starvation, see pickRunnable) */
-  markReady(t) { t.state = TS.READY; t.readyTime = this.checkedAt; t.readyPick = this.picks; }
+  markReady(t) { t.state = TS.READY; t.readyTime = this.vm.guestInsns ?? 0; t.readyPick = this.picks; }
 
   get threads() { return this.vm.proc.threads; }
 
@@ -55,18 +79,33 @@ export class Scheduler {
    * as Windows schedules. A thread raised above the others (an audio mixer at THREAD_PRIORITY_TIME_CRITICAL) that its
    * time slice interrupted resumes before them: it is not left paused in the middle of its work while normal threads run
    * for whole slices (a window of thousands of their instructions where Windows has the high-priority work done at once).
-   * A thread ready for STARVE_MS (or STARVE_PICKS scheduling decisions) runs whatever its priority (Windows boosts
+   * A thread ready for STARVE_INSNS (or STARVE_PICKS scheduling decisions) runs whatever its priority (Windows boosts
    * starved threads likewise).
    */
-  pickRunnable(except) {
+  pickRunnable(except, top = false) {
     const ts = this.threads;
-    const n = ts.length, now = this.checkedAt, picks = ++this.picks; // (the time of the last wake-up pass: no clock read per pick)
+    const n = ts.length, now = this.vm.guestInsns ?? 0, picks = ++this.picks; // (instructions executed: see STARVE_INSNS)
     let best = null, bestK = 0, bestPrio = -Infinity;
     for (let k = 0; k < n; k++) {
       const t = ts[(this.rr + k) % n];
       if (t === except || !t.isRunnable()) continue;
-      const prio = this.roundRobin ? 0 : now - t.readyTime > STARVE_MS || picks - t.readyPick > STARVE_PICKS ? 16 : (t.priority ?? 0);
+      const prio = this.roundRobin ? 0 : now - t.readyTime > this.starveInsns || picks - t.readyPick > this.starvePicks ? 16 : (t.priority ?? 0);
       if (prio > bestPrio) { best = t; bestPrio = prio; bestK = k; }
+    }
+    // (the top-level pick: the thread whose slice ended — or the one a higher priority preempted — goes on with its
+    // quantum unless a thread of higher priority is ready; a starved thread counts as higher)
+    if (top && this.quantumInsns > 0 && !this.roundRobin) {
+      const cont = this.sliceExpired;
+      this.sliceExpired = null;
+      let held = null;
+      if (cont && cont === this.quantumThread && cont.isRunnable() && now < this.quantumEnd) held = { t: cont, left: this.quantumEnd - now };
+      else if (this.preempted && this.preempted.t.isRunnable()) held = this.preempted;
+      this.preempted = null;
+      if (held) {
+        if (bestPrio <= (held.t.priority ?? 0)) { this.quantumThread = held.t; this.quantumEnd = now + held.left; return held.t; }
+        this.preempted = held; // (a higher priority first: the quantum left waits for it)
+      }
+      if (best) { this.quantumThread = best; this.quantumEnd = now + this.quantumInsns; }
     }
     if (best) this.rr = (this.rr + bestK + 1) % n;
     return best;

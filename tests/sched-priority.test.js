@@ -1,5 +1,5 @@
 // Thread priorities in the scheduler (sched.js pickRunnable): the highest-priority runnable thread runs first, round
-// robin among equals, a thread kept waiting STARVE_MS by higher priorities runs anyway. priority.exe: a TIME_CRITICAL
+// robin among equals, a thread kept waiting STARVE_INSNS by higher priorities runs anyway, the quantum. priority.exe: a TIME_CRITICAL
 // thread's work spanning several time slices is never seen half done by a normal-priority thread spinning beside it
 // (round robin left it paused in the middle while the spinner ran whole slices: BFME's audio thread was interrupted in
 // the middle of its update while the game thread changed the same lists — double frees, crashes); a lower-priority
@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { Scheduler, STARVE_MS } from '../src/core/sched.js';
+import { Scheduler, STARVE_INSNS, QUANTUM_INSNS } from '../src/core/sched.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { TS } from '../src/win32/process.js';
 import { Vm } from '../src/core/vm.js';
@@ -15,14 +15,14 @@ import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { HeadlessHost } from '../src/host/display.js';
 
 function fakeSched() {
-  const vm = { clock: new VirtualClock(), proc: { threads: [], timers: [] }, warn() {}, logFn() {} };
+  const vm = { clock: new VirtualClock(), proc: { threads: [], timers: [] }, guestInsns: 0, warn() {}, logFn() {} };
   vm.sched = new Scheduler(vm);
   vm.sched.checkedAt = 0;
   return vm;
 }
 const thread = (id, priority) => ({ id, priority, state: TS.READY, onStack: 0, readyTime: 0, isRunnable() { return this.state === TS.READY && this.onStack === 0; } });
 
-test('pickRunnable: the highest priority first, round robin among equals, a starved thread after STARVE_MS', () => {
+test('pickRunnable: the highest priority first, round robin among equals, a starved thread after STARVE_INSNS', () => {
   const vm = fakeSched(), s = vm.sched;
   const a = thread(1, 0), b = thread(2, 0), hi = thread(3, 15), lo = thread(4, -15);
   vm.proc.threads.push(a, b, hi, lo);
@@ -33,12 +33,40 @@ test('pickRunnable: the highest priority first, round robin among equals, a star
   assert.deepEqual(order.map((t) => t.id).sort(), [1, 1, 2].sort().length === 3 ? order.map((t) => t.id).sort() : []);
   assert.ok(order.includes(a) && order.includes(b) && !order.includes(lo), 'equals in turn, the idle one not');
   assert.equal(s.pickRunnable(a), b);
-  s.checkedAt = STARVE_MS + 1; a.readyTime = b.readyTime = STARVE_MS; // (a and b were scheduled just now, lo never)
+  vm.guestInsns = STARVE_INSNS + 1; a.readyTime = b.readyTime = STARVE_INSNS; // (a and b were scheduled just now, lo never)
   assert.equal(s.pickRunnable(null), lo, 'starved: runs whatever its priority');
   s.roundRobin = true;
   hi.state = TS.READY;
   const rr = new Set([s.pickRunnable(null), s.pickRunnable(null), s.pickRunnable(null), s.pickRunnable(null)]);
   assert.equal(rr.size, 4, 'round robin when priorities are ignored');
+});
+
+test('the quantum: a thread whose slice ends keeps the processor among its equals for QUANTUM_INSNS, a higher priority preempts it and it resumes first', () => {
+  const vm = fakeSched(), s = vm.sched, Q = QUANTUM_INSNS, step = Q / 5;
+  const a = thread(1, 0), b = thread(2, 0), hi = thread(3, 15);
+  hi.state = TS.BLOCKED;
+  vm.proc.threads.push(a, b, hi);
+  // (a slice of `t` ends after `n` instructions in all: Vm.sliceEnd marks it ready again and offers it to go on)
+  const sliceEnds = (t, n) => { vm.guestInsns = n; s.markReady(t); s.sliceExpired = t; return s.pickRunnable(null, true); };
+  const first = s.pickRunnable(null, true), other = first === a ? b : a;
+  for (let n = step; n < Q; n += step) assert.equal(sliceEnds(first, n), first, `its quantum goes on at ${n}`);
+  assert.equal(sliceEnds(first, Q + 1), other, 'the quantum used: its equal');
+  // the other's quantum, preempted after Q/5 by a higher priority, then resumed with what was left
+  hi.state = TS.READY;
+  assert.equal(sliceEnds(other, Q + 1 + step), hi, 'a higher priority first');
+  hi.state = TS.BLOCKED; vm.guestInsns = Q + 1 + 2 * step;
+  assert.equal(s.pickRunnable(null, true), other, 'the preempted thread resumes before its equal');
+  assert.equal(sliceEnds(other, Q + 1 + 4 * step), other, 'with the quantum it had left');
+  assert.equal(sliceEnds(other, Q + 1 + 6 * step), first, 'then its equal (also starved by now)');
+  // a yield or a block is not a slice end: the next equal runs (no sliceExpired)
+  first.state = TS.BLOCKED;
+  assert.equal(s.pickRunnable(null, true), other);
+  // quantum 0: every slice rotates, as before
+  first.state = TS.READY; s.quantumInsns = 0;
+  assert.equal(sliceEnds(other, Q * 3), first);
+  // the host's own time (a descheduled emulator) plays no part: nothing changes when only the clock moves
+  s.quantumInsns = Q; const c = sliceEnds(first, Q * 3 + 1); vm.clock.t += 1e6; s.checkedAt = vm.clock.t;
+  assert.equal(sliceEnds(c, Q * 3 + 2), c);
 });
 
 const EXE = new URL('../build/pe/priority.exe', import.meta.url).pathname;
