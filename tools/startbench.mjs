@@ -158,6 +158,19 @@ const report = (why) => {
   for (const l of vm.peekReport()) console.log(l);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
 };
+// --stall <ms>:<n>[:<from>]: the process stops <ms> ms (Atomics.wait) at one budget slice end in <n> (xorshift, seed
+// --stall-seed, else the time), from <from> s of wall time on — the host descheduling the emulator in the middle of a
+// thread's work: with the real clock the guest sees its time jump between two instructions (what a loaded machine does)
+if (opt('stall')) {
+  const [ms, n, from = 0] = opt('stall').split(':').map(Number), sab = new Int32Array(new SharedArrayBuffer(4)), s0 = performance.now();
+  let x = (Number(opt('stall-seed', 0)) || Date.now()) >>> 0 || 1, stalls = 0;
+  const sliceEnd = vm.sliceEnd.bind(vm);
+  vm.sliceEnd = (t, o) => {
+    if (performance.now() - s0 >= from * 1000) { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; if (x % n === 0) { Atomics.wait(sab, 0, 0, ms); stalls++; } }
+    return sliceEnd(t, o);
+  };
+  process.on('exit', () => console.log(`[stall] ${stalls} stalls of ${ms} ms`));
+}
 // --api-hist: the API calls dispatched to JavaScript (the WASM fast paths not counted), most frequent first, with the report
 const apiHist = args.includes('--api-hist') ? new Map() : null;
 // (the tick counters' reads, the translated code's fast paths included: GetTickCount / timeGetTime by any path)

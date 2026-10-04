@@ -76,6 +76,37 @@ Tests: `tests/sched-priority.test.js` (unit test of the pick; `tools/pe/priority
 spanning several slices is never seen half done by a normal spinner — with round robin it is — and an IDLE-priority
 thread polled by main with `Sleep(0)` still runs).
 
+## The timer resolution (2026-10-04)
+
+`src/core/timer-res.js`, `Scheduler.wait(..., tick)`. Windows checks timer expirations at its clock interrupt, every
+15.625 ms by default and every `p` ms while a program holds `timeBeginPeriod(p)` (the smallest request wins). Orthros
+woke threads at the exact millisecond and ran both tick counters in 1 ms steps. Now:
+
+- a guest timeout (Sleep, WaitForSingleObject(Ex), WaitForMultipleObjects(Ex), MsgWaitForMultipleObjects(Ex), blocking
+  sockets) ends at the first interrupt at or after it: Sleep(1) lasts one tick (15.6 ms) at the default resolution and 1-2
+  ms under `timeBeginPeriod(1)`; a timeout of 0 still polls; the emulator's own short waits (file reads, the Sleep(0)
+  storm throttle, the multimedia timer thread, which keeps the precision timeSetEvent asks for) stay exact;
+- GetTickCount(64), the message time (GetMessageTime, MSG.time) and DirectInput's `dwTimeStamp` step by the 15.625 ms
+  tick (15 or 16 ms) whatever the resolution; timeGetTime and timeGetSystemTime by the current interrupt period;
+- `timeBeginPeriod` / `timeEndPeriod` are counted per period (TIMERR_NOCANDO for 0, or for an end without its begin);
+- SetTimer's timers (`WM_TIMER`) fall due at the interrupt too (SetTimer(10) fires every 15.6 ms by default);
+- the JIT's fast paths give the same values (GetTickCount has its own id, 28: `env.tickCount`; timeGetTime 19:
+  `env.mmTime`).
+
+DirectInput's buffered events carried the clock without GetTickCount's base (`TICK_BASE`): a program comparing an
+event's time with GetTickCount saw it 4.6 hours old. They now carry GetTickCount's value.
+
+BFME1, BFME2 and RotWK call `timeBeginPeriod(1)` at startup (1 ms resolution: their Sleep(1) loops now wake after 1-2 ms
+instead of exactly 1 ms; their tick counts, read ~1 M times in the skirmish-setup scenario, now step by 15.6 ms); Vice
+City does not (default resolution). Frames, Node, same tree, `ORTHROS_TIMER_RES=0` (the old behaviour) / default,
+alternated pairs: BFME2 play 3568 / 3562 against 3580 / 3580 frames in 120 s; Vice City startup load 8.1 / 11.3 / 8.2 s
+against 8.1 / 10.9 / 8.2 s, play 1749 / 1742 / 1755 against 1742 / 1749 / 1750 frames in 60 s; BFME1 menu (40 runs
+each) mean 1524 against 1533 frames in 80 s. `?dbg=ORTHROS_TIMER_RES=<ms>` sets the default resolution (0: no rounding).
+
+Tests: `tests/timer-res.test.js` (requests, ticks, the counters; the scheduler's guest and own waits; the handlers:
+GetTickCount, timeGetTime, timeBeginPeriod / timeEndPeriod, Sleep and WaitForSingleObject timeouts, SetTimer),
+`tests/jit-fast-time.test.js` (the fast paths' values).
+
 ## Nested guest code and the shared call context
 
 An API handler that calls guest code (EnumWindows, a window procedure, a COM callback) may re-read its arguments after
@@ -98,6 +129,7 @@ It now consumes the result and looks at the file's owner again.
 | `ORTHROS_SCHED_ROUND_ROBIN` | ignore thread priorities (the old scheduler) |
 | `ORTHROS_QUANTUM_INSNS=n` | the quantum in guest instructions (0: rotation at every slice, as before 2026-10-04) |
 | `ORTHROS_STARVE_INSNS=n`, `ORTHROS_STARVE_PICKS=n` | starvation thresholds |
+| `ORTHROS_TIMER_RES=ms` | the default timer resolution (15.625; 0: timeouts and tick counts exact, as before 2026-10-04) |
 | `ORTHROS_NULL_READS` | reads of the null page fault too (docs/null-page.md; writes always do) |
 | `ORTHROS_NULL_PAGE_OPEN` | the null page readable and writable (the behaviour before 2026-10-04) |
 | `ORTHROS_API_TAIL=n` | the main thread's last n API calls with arguments and results, in crash reports |
@@ -246,3 +278,43 @@ knobs — slice length, rotation among equals, the guest clock's speed against t
 slices — changes it beyond that spread. The lock-holder extension (on the multi-core machines a critical section is held for microseconds; a green thread
 interrupted inside one keeps it while the others run) did not change the rate: 7 451 of 465 740 slices were extended in
 150 s, 1 763 of them reached the bound with a section still held. It was reverted.
+
+### Follow-up 3 (2026-10-04 night): emulator differences looked for
+
+Question: what in the emulator could make the stale block be reused (or freed) where Windows would not. Looked at
+through Orthros' own traces only (`startbench --api-hist`, the `timer` log, crash reports); every run below is
+`tools/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, eight at a
+time, the two arms alternated within each batch; a failure is the main thread's access violation at
+`lotrbfme.exe+0x882c67` (the program allocator unlinking a block whose links are garbage), the same signature in every
+failing run.
+
+| what | finding / change | runs (A / B) |
+|---|---|---|
+| timer resolution | Sleep / wait timeouts ended at the exact millisecond, GetTickCount and timeGetTime ran in 1 ms steps; Windows ends them at its clock interrupt (above, "The timer resolution"). BFME1 calls `timeBeginPeriod(1)` (Miles), so its Sleep(1) loops now wake after 1-2 ms instead of 1 ms, and GetTickCount (~0.8 M reads in the scenario, timeGetTime ~1 M) steps by 15.6 ms. Kept: closer to Windows, neutral for performance | default settings, A `ORTHROS_TIMER_RES=0` (old) / B new: **1 / 40** against **0 / 40**; menu frames 1524 / 1533 |
+| DirectInput timestamps | buffered events carried the clock without GetTickCount's base: 4.6 hours older than GetTickCount for a program comparing them. Now GetTickCount's value. Kept | (with the line below) |
+| the branch against main | timer resolution + DirectInput timestamps + message times | `ORTHROS_SLICE_INSNS=5000` (an amplifier earlier): main **1 / 40**, branch **2 / 40** |
+| guest clock against the work | `--timescale 4` (the machine looks 4 times slower: ~4.7 frames per guest second in the menu) against `--timescale 0.25` (4 times faster: the game's frame cap, ~38 frames per guest second) | **0 / 40** against **0 / 40** |
+| host stalls | `startbench --stall 50:400:130` (new tool option): the process stops 50 ms at one budget slice end in 400 from 130 s on (~600 stalls, ~30 s, around the click) — the guest clock jumps in the middle of a thread's work, as when the host deschedules the emulator | no stall **1 / 24**, stalls **0 / 24** |
+| Win32 heap reuse | the game calls HeapAlloc directly (heap 0x30, HEAP_ZERO_MEMORY, ~0.27 M calls in 60 G instructions, sizes from 88 bytes up, all from lotrbfme.exe); the blocks freed twice are smaller and live in the program's own pool allocator (the fault is in its unlink), whose reuse the program decides. The Windows the game reports to (XP, 5.1.2600) reuses small blocks LIFO too (lookaside lists), as Orthros' heap does. Not changed | — |
+| thread priorities | the main thread sets another thread to `THREAD_PRIORITY_BELOW_NORMAL` repeatedly (`SetThreadPriority(0x578, -1)`); Sleep(0) does not hand the processor to it (the pick takes the highest priority; it runs when starved), as on a single processor | — |
+
+The rate on this machine that night was ~3 % (3 failures in 105 runs at the default settings — c1, c5 without stalls
+and one single run —, 3 in 80 at 5 000-instruction slices), lower than the 5-10 % of the days before, and **no variant
+changed it measurably**; with ~40 runs per arm only a
+large effect (a rate several times higher) could have been seen. Two observations:
+
+- three of the failures (c2A18 main, c2B19 and c2B20 branch) ended within the same two seconds, in the same batch of
+  eight concurrent runs, while the 35 other batches had at most one (two of them one): something common to the machine at the time of the
+  click (another project's load burst, I/O) rather than the tree. Artificial 50 ms stalls at slice ends (above) did not
+  reproduce it, so if the host matters it is not through the guest clock jumping in the middle of computation — a
+  stall elsewhere (during file reads, the parked ReadFile of msvcr71 just before the click, the render/audio paths) is
+  not excluded;
+- the window is not proportional to the guest time of a frame: at `--timescale 4` a frame lasts ~8 times more guest
+  milliseconds than at 0.25 and neither failed in 40 runs (with the window measured in guest milliseconds, ~4 times
+  the default rate would have been expected at 4).
+
+Not found: an emulator difference that makes the stale block reused. What remains consistent with every trace: the
+program holds an uncounted reference to a block of an object it rebuilds every 2-3 s, and a click landing in a short
+window after a rebuild copies it; the timing that opens that window has not been reproduced on purpose. Next leads:
+the host stall during a parked file read (`--stall` restricted to the reads), and a deterministic replay
+(`--virtual --jitter <seed>`) scanning seeds for a failing one, which would make the window measurable.
