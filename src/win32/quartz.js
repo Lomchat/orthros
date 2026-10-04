@@ -24,7 +24,7 @@ const IID = {
 const TIME_FORMAT_MEDIA_TIME = '7b785574-8c82-11cf-bc0c-00aa00ac74f6';
 export const HR = {
   E_ABORT: 0x80004004, E_NOINTERFACE: 0x80004002, FILE_NOT_FOUND: 0x80070002, VFW_E_UNKNOWN_FILE_TYPE: 0x80040240, VFW_E_UNSUPPORTED_STREAM: 0x80040265,
-  VFW_E_NOT_CONNECTED: 0x80040209, VFW_S_AUDIO_NOT_RENDERED: 0x00040258, VFW_E_NO_PALETTE_AVAILABLE: 0x80040253, VFW_E_INVALID_FILE_FORMAT: 0x8004022f,
+  VFW_E_NOT_CONNECTED: 0x80040209, VFW_S_AUDIO_NOT_RENDERED: 0x00040258, VFW_S_VIDEO_NOT_RENDERED: 0x00040257, VFW_E_NO_PALETTE_AVAILABLE: 0x80040253, VFW_E_INVALID_FILE_FORMAT: 0x8004022f,
   VFW_E_WRONG_STATE: 0x80040227, VFW_E_ALREADY_CONNECTED: 0x80040204,
 };
 export const EC_COMPLETE = 0x01, EC_USERABORT = 0x02, EC_ERRORABORT = 0x03;
@@ -133,7 +133,7 @@ export function registerQuartz(api, vm) {
         this.src = openMedia(f, { log });
       } catch (e) {
         f.close();
-        const code = e instanceof MediaError && e.code === 'unsupported' ? (e.message.includes('layer III') ? HR.VFW_E_UNSUPPORTED_STREAM : HR.VFW_E_UNKNOWN_FILE_TYPE) : HR.VFW_E_INVALID_FILE_FORMAT;
+        const code = e instanceof MediaError && e.code === 'unsupported' ? (/layer III|MPEG-2/.test(e.message) ? HR.VFW_E_UNSUPPORTED_STREAM : HR.VFW_E_UNKNOWN_FILE_TYPE) : HR.VFW_E_INVALID_FILE_FORMAT;
         vm.warn(`DirectShow: RenderFile ${path}: ${e.message} -> 0x${code.toString(16)} (not played)`);
         return code;
       }
@@ -141,6 +141,8 @@ export function registerQuartz(api, vm) {
       const s = this.src;
       if (s.video) { this.win.width = s.width; this.win.height = s.height; }
       log(`RenderFile ${path}: ${s.kind}${s.video ? `, video ${s.width}x${s.height} ${s.fps.toFixed(2)} fps` : ''}${s.audio ? `, audio ${s.audioRate} Hz ${s.audioChannels} ch` : s.audioLayer === 3 ? ', audio layer III (not decoded)' : ''}, ${s.duration.toFixed(2)} s`);
+      // (a stream left out: what the filter graph manager says when some streams could not be rendered)
+      if (s.videoUnsupported) return HR.VFW_S_VIDEO_NOT_RENDERED;
       return s.audioLayer === 3 && !s.audio ? HR.VFW_S_AUDIO_NOT_RENDERED : S_OK;
     }
 
@@ -250,8 +252,10 @@ export function registerQuartz(api, vm) {
       const s = this.src, r = this.srcRect ?? { l: 0, t: 0, w: s.width, h: s.height };
       const x = r.l & ~1, y = r.t & ~1, sw = Math.max(1, Math.min(r.w, s.width - x)), sh = Math.max(1, Math.min(r.h, s.height - y));
       const t0 = performance.now();
-      // (the planes as they are when the host converts them itself — WebCodecs in the browser; else RGBA here)
-      if (!disp.presentVideoYuv?.(p, { x, y, w: sw, h: sh }, this.screenRect())) {
+      // (an RGBA picture — AVI codecs — as it is; 4:2:0 planes as they are when the host converts them itself — WebCodecs
+      // in the browser; else converted to RGBA here)
+      if (p.rgba) disp.presentVideo(p.rgba, p.width, p.height, this.screenRect(), { x: r.l, y: r.t, w: Math.min(r.w, s.width - r.l), h: Math.min(r.h, s.height - r.t) });
+      else if (!disp.presentVideoYuv?.(p, { x, y, w: sw, h: sh }, this.screenRect())) {
         const n = sw * sh * 4;
         if (!this.rgba || this.rgba.length !== n) this.rgba = new Uint8ClampedArray(n);
         yuv420ToRgba(p, x, y, sw, sh, this.rgba);
@@ -551,7 +555,8 @@ export function registerQuartz(api, vm) {
 export class MediaClock {
   constructor(vm) { this.vm = vm; this.graphs = new Set(); this.due = Infinity; }
   tick(now) {
-    if (now < this.due || !this.graphs.size) return;
+    if (now < this.due) return;
+    if (!this.graphs.size) { this.due = Infinity; return; } // (nothing playing: the scheduler no longer calls in)
     let due = Infinity;
     for (const g of [...this.graphs]) {
       try { due = Math.min(due, g.tick(now)); } catch (e) { this.vm.warn(`DirectShow: playback of ${g.path} failed: ${e.stack ?? e}`); g.src.failed = true; g.stopPlayback(); g.queueEvent(EC_ERRORABORT, 0x80004005, 0); }

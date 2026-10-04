@@ -17,6 +17,8 @@ IMediaControl::Run()
 
 Without DirectShow (before: `REGDB_E_CLASSNOTREG`) the game waited for a key on a black screen.
 
+The formats are told apart by their content, as DirectShow's source filters do (an AVI named `.mpg` plays).
+
 ## What is implemented (src/win32/quartz.js)
 
 The filter graph manager as an application sees it (`CLSID_FilterGraph`, `CLSID_FilterGraphNoThread`), one COM object
@@ -54,6 +56,8 @@ few of the audio formats, so most are decoded here, written from the standards; 
 | MPEG audio (`.mp2`, `.mp3`, `.mpa`; also inside a WAVE file, format 0x50 / 0x55) | layers I, II | `mpeg-audio.js` |
 | | layer III (MP3) | the browser: WebCodecs `AudioDecoder` (asynchronous: `AsyncAudio`) |
 | RIFF WAVE (`.wav`) | PCM 8-32 bit, float, extensible, IMA ADPCM, Microsoft ADPCM | `wav-source.js` |
+| AVI (`.avi`) | video: uncompressed DIB (1-32 bit), Microsoft RLE (RLE8 / RLE4), Microsoft Video 1 (16-bit), Cinepak | `avi-source.js`, `vfw-codecs.js` |
+| | sound: as in WAVE files, MPEG audio | `wav-source.js`, `mpeg-audio.js` / the browser |
 
 - `mpeg-ps.js`: demultiplexer (packs, PES packets with MPEG-1 or MPEG-2 headers, time stamps), incremental.
 - `mpeg1-video.js`: half-pel motion compensation with edge extension, quantizer matrices, the inverse DCT in double
@@ -70,8 +74,18 @@ few of the audio formats, so most are decoded here, written from the standards; 
   an MP3, or the bit rate.
 - `wav-source.js`: WAVE chunks, PCM and ADPCM blocks. IMA ADPCM follows the reference algorithm's step arithmetic.
 - `yuv.js`: BT.601 studio-range Y'CbCr 4:2:0 → RGBA (when the host cannot take the planes itself).
+- `avi-source.js`: the header list (first video and audio streams; a stream without a decoder is left out:
+  `VFW_S_VIDEO_NOT_RENDERED` / `VFW_S_AUDIO_NOT_RENDERED`, as the filter graph manager answers when some streams
+  cannot be rendered), the `movi` chunks parsed as they are read (`rec ` lists, palette changes), every frame decoded in
+  order (the codecs' frames depend on the previous picture).
+- `vfw-codecs.js`: the Video for Windows decoders Windows ships with, drawing into a persistent RGBA frame: DIBs with
+  palettes, RLE8 / RLE4 (deltas, absolute runs), Microsoft Video 1 (skip / 1 / 2 / 8-color 4x4 blocks), Cinepak (strips,
+  V1 / V4 codebooks with partial updates and inheritance, intra / inter / V1-only vectors, gray codebooks). Indeo,
+  MPEG-4 or WMV video are not decoded (a codec Windows XP may have, through other components).
 
-Accuracy (tests/media-mpeg.test.js, media-audio-files.test.js against ffmpeg's decoders): MPEG-1 video 45-66 dB PSNR per
+Accuracy (tests/media-mpeg.test.js, media-audio-files.test.js, media-avi.test.js against ffmpeg's decoders): AVI video
+exact (RLE, DIB, gray Cinepak) or within 1 per component (the 5-bit expansion of 5-5-5 colors, Cinepak's color
+conversion rounding); MPEG-1 video 45-66 dB PSNR per
 picture (only the inverse DCT's rounding differs from ffmpeg's integer transform), layer I / II > 100 dB SNR, PCM and
 Microsoft ADPCM exact, IMA ADPCM ~44 dB (ffmpeg computes the step product otherwise); MP3 through WebCodecs in Chromium
 118 dB against ffmpeg (tools/media-browser-check.mjs; the browser's decoder, like Windows', plays the encoder delay and
@@ -100,12 +114,12 @@ B pictures skipped, decoding and showing time per picture on the game's worker, 
 ## Measured (Vice City, headless Chromium with SwiftShader on the shared server)
 
 `movies\Logo.mpg`: 640x480, 25 fps, 48 kHz stereo layer II, 39.5 s. Every run: 987 pictures, all shown (none dropped
-or skipped), lateness at most 10-11 ms, 39.48 s of sound mixed (no underrun). On the game's worker, per picture:
+or skipped), lateness at most 10-16 ms, 39.48 s of sound mixed (no underrun). On the game's worker, per picture:
 
-| presentation | decoding | showing |
+| presentation (2 runs each, alternated) | decoding | showing |
 |---|---|---|
-| RGBA conversion here (`?dbg=ORTHROS_VIDEO_RGBA=1`) | 2.9 ms | 3.7 ms |
-| WebCodecs VideoFrame (default) | 2.5 ms | 0.3 ms |
+| RGBA conversion here (`?dbg=ORTHROS_VIDEO_RGBA=1`) | 2.9, 2.7 ms | 2.4, 2.3 ms |
+| WebCodecs VideoFrame (default) | 2.5, 3.2 ms | 0.3, 0.6 ms |
 
-(see the commit messages for the runs). The movies can be skipped (a key or a click: the game stops and releases the
+The movies can be skipped (a key or a click: the game stops and releases the
 graph, the layer disappears) and the game goes on to its main menu.

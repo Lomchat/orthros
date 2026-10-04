@@ -202,7 +202,14 @@ export class Mpeg1VideoDecoder {
   }
   /** Parse the first sequence header in the bytes pushed so far (no picture decoded): true when found. */
   readSequenceHeader() {
-    for (let s = this.findStart(0); s >= 0; s = this.findStart(s + 4)) if (this.buf[s + 3] === 0xb3) { this.sequenceHeader(s + 4); return !!this.seq; }
+    for (let s = this.findStart(0); s >= 0; s = this.findStart(s + 4)) {
+      if (this.buf[s + 3] !== 0xb3) continue;
+      this.sequenceHeader(s + 4);
+      // MPEG-2 video: a sequence extension (extension start code, identifier 1) follows the header (13818-2 6.2.2)
+      const e = this.findStart(s + 4);
+      if (e >= 0 && this.buf[e + 3] === 0xb5 && this.buf[e + 4] >> 4 === 1) this.mpeg2 = true;
+      return !!this.seq;
+    }
     return false;
   }
   flush() { const out = this.flushRef(); if (!out) this.done = true; return out; }
@@ -363,6 +370,7 @@ export class Mpeg1VideoDecoder {
     const matrix = intra ? this.intraMatrix : this.nonIntraMatrix;
     let firstCoef = !intra;
     for (;;) {
+      if (this.pic.type === PIC_D) break; // (D pictures: the DC coefficients only)
       let run, level;
       if (firstCoef && br.peek(1) === 1) { br.skip(1); run = 0; level = br.read(1) ? -1 : 1; }
       else {

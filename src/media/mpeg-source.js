@@ -66,7 +66,10 @@ export class MpegSource {
     else if (this.kind === 'mpeg-video') vdec.push(head);
     else afr.push(head);
     vdec.readSequenceHeader();
-    if (vdec.seq) { this.video = true; this.width = vdec.seq.width; this.height = vdec.seq.height; this.fps = vdec.seq.rate; this.bitRate = vdec.seq.bitRate; }
+    // (MPEG-2 video — DVD-style program streams: no decoder here, as on a Windows without an MPEG-2 decoder: the other
+    // streams are rendered alone)
+    if (vdec.mpeg2) { this.videoUnsupported = 'MPEG-2 video'; this.log('MPEG-2 video: no decoder here, the stream plays without pictures'); }
+    else if (vdec.seq) { this.video = true; this.width = vdec.seq.width; this.height = vdec.seq.height; this.fps = vdec.seq.rate; this.bitRate = vdec.seq.bitRate; }
     const af = afr.next();
     if (af) {
       const h = af[2];
@@ -75,7 +78,7 @@ export class MpegSource {
       this.audio = h.layer !== 3 || this.audioAsync; this.audioLayer = h.layer; this.audioRate = h.rate; this.audioChannels = h.channels; this.audioBitRate = h.bitrate;
       if (h.layer === 3 && !this.audio) this.log('MPEG audio layer III: no decoder here (WebCodecs), the stream plays without sound');
     }
-    if (!this.video && !this.audio) throw new MediaError('unsupported', af ? 'MPEG audio layer III' : 'no MPEG-1 video or MPEG audio stream');
+    if (!this.video && !this.audio) throw new MediaError('unsupported', this.videoUnsupported ?? (af ? 'MPEG audio layer III' : 'no MPEG-1 video or MPEG audio stream'));
     // times: the first time stamps of the streams, relative to the earliest
     if (this.kind === 'mpeg-ps') {
       const base = Math.min(vPts ?? Infinity, aPts ?? Infinity);

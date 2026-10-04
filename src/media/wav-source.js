@@ -89,6 +89,48 @@ export function subFile(file, start, size) {
   return { size: () => size, read: (o, n) => file.read(start + o, Math.max(0, Math.min(n, size - o))), prepare: file.prepare ? (o, n) => file.prepare(start + o, Math.max(0, Math.min(n, size - o))) : undefined, close: () => file.close?.() };
 }
 
+/** Samples of a WAVE format (WAVEFORMATEX fields: tag, channels, rate, align, bits, extra), by whole blocks. */
+export class WaveDecoder {
+  constructor(fmt) {
+    const pcm = fmt.tag === TAG_PCM && [8, 16, 24, 32].includes(fmt.bits), flt = fmt.tag === TAG_FLOAT && (fmt.bits === 32 || fmt.bits === 64);
+    if (!pcm && !flt && fmt.tag !== TAG_IMAADPCM && fmt.tag !== TAG_MSADPCM) throw new MediaError('unsupported', `WAVE format tag 0x${fmt.tag.toString(16)}`);
+    if (!fmt.channels || !fmt.align) throw new MediaError('corrupt', 'WAVE format');
+    this.fmt = fmt;
+    if (fmt.tag === TAG_IMAADPCM) this.blockSamples = (fmt.align - 4 * fmt.channels) * 8 / (4 * fmt.channels) + 1;
+    else if (fmt.tag === TAG_MSADPCM) {
+      this.blockSamples = fmt.extra.length >= 4 ? u16(fmt.extra, 2) : (fmt.align - 7 * fmt.channels) * 2 / fmt.channels + 2;
+      const nc = fmt.extra.length >= 6 ? u16(fmt.extra, 4) : 0;
+      this.coefs = nc ? Array.from({ length: nc }, (_, k) => [s16(fmt.extra, 6 + 4 * k), s16(fmt.extra, 8 + 4 * k)]) : MS_COEFS;
+    } else this.blockSamples = 1;
+  }
+  /** n blocks -> float samples per channel */
+  decode(b, n) {
+    const f = this.fmt, ch = f.channels, count = n * this.blockSamples;
+    const out = Array.from({ length: ch }, () => new Float32Array(count));
+    if (f.tag === TAG_IMAADPCM || f.tag === TAG_MSADPCM) {
+      const view = Array.from({ length: ch });
+      for (let k = 0; k < n; k++) {
+        for (let c = 0; c < ch; c++) view[c] = out[c].subarray(k * this.blockSamples);
+        if (f.tag === TAG_IMAADPCM) decodeImaBlock(b, k * f.align, f.align, ch, this.blockSamples, view);
+        else decodeMsBlock(b, k * f.align, f.align, ch, this.blockSamples, view, this.coefs);
+      }
+      return out;
+    }
+    const bps = f.align / ch, dv = new DataView(b.buffer, b.byteOffset, b.length);
+    for (let s = 0; s < n; s++) for (let c = 0; c < ch; c++) {
+      const o = s * f.align + c * bps;
+      let v;
+      if (f.tag === TAG_FLOAT) v = bps === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true);
+      else if (bps === 1) v = (b[o] - 128) / 128;
+      else if (bps === 2) v = dv.getInt16(o, true) / 32768;
+      else if (bps === 3) v = ((b[o] | b[o + 1] << 8 | b[o + 2] << 16) << 8 >> 8) / 8388608;
+      else v = dv.getInt32(o, true) / 2147483648;
+      out[c][s] = v;
+    }
+    return out;
+  }
+}
+
 export class WavSource {
   constructor(file, head, opts = {}) {
     this.file = file; this.log = opts.log ?? (() => {});
@@ -97,16 +139,9 @@ export class WavSource {
     this.audioStart = 0; this.videoStart = 0; this.audioLayer = 0;
     const { fmt, dataStart, dataSize } = parseWave(file, head);
     this.dataStart = dataStart; this.dataSize = dataSize;
-    const pcm = fmt.tag === TAG_PCM && [8, 16, 24, 32].includes(fmt.bits), flt = fmt.tag === TAG_FLOAT && (fmt.bits === 32 || fmt.bits === 64);
-    if (!pcm && !flt && fmt.tag !== TAG_IMAADPCM && fmt.tag !== TAG_MSADPCM) throw new MediaError('unsupported', `WAVE format tag 0x${fmt.tag.toString(16)}`);
-    this.fmt = fmt;
+    this.dec = new WaveDecoder(fmt);
+    this.fmt = fmt; this.blockSamples = this.dec.blockSamples;
     this.audioRate = fmt.rate; this.audioChannels = fmt.channels;
-    if (fmt.tag === TAG_IMAADPCM) this.blockSamples = (fmt.align - 4 * fmt.channels) * 8 / (4 * fmt.channels) + 1;
-    else if (fmt.tag === TAG_MSADPCM) {
-      this.blockSamples = fmt.extra.length >= 4 ? u16(fmt.extra, 2) : (fmt.align - 7 * fmt.channels) * 2 / fmt.channels + 2;
-      const nc = fmt.extra.length >= 6 ? u16(fmt.extra, 4) : 0;
-      this.coefs = nc ? Array.from({ length: nc }, (_, k) => [s16(fmt.extra, 6 + 4 * k), s16(fmt.extra, 8 + 4 * k)]) : MS_COEFS;
-    } else this.blockSamples = 1;
     const blocks = Math.floor(this.dataSize / fmt.align);
     this.duration = blocks * this.blockSamples / fmt.rate;
     this.reset();
@@ -142,31 +177,6 @@ export class WavSource {
       this.audioPos += samples[0].length; this.readPos += n * align;
     }
   }
-  /** n blocks -> float samples per channel */
-  decode(b, n) {
-    const f = this.fmt, ch = f.channels, count = n * this.blockSamples;
-    const out = Array.from({ length: ch }, () => new Float32Array(count));
-    if (f.tag === TAG_IMAADPCM || f.tag === TAG_MSADPCM) {
-      const view = Array.from({ length: ch });
-      for (let k = 0; k < n; k++) {
-        for (let c = 0; c < ch; c++) view[c] = out[c].subarray(k * this.blockSamples);
-        if (f.tag === TAG_IMAADPCM) decodeImaBlock(b, k * f.align, f.align, ch, this.blockSamples, view);
-        else decodeMsBlock(b, k * f.align, f.align, ch, this.blockSamples, view, this.coefs);
-      }
-      return out;
-    }
-    const bps = f.align / ch, dv = new DataView(b.buffer, b.byteOffset, b.length);
-    for (let s = 0; s < n; s++) for (let c = 0; c < ch; c++) {
-      const o = s * f.align + c * bps;
-      let v;
-      if (f.tag === TAG_FLOAT) v = bps === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true);
-      else if (bps === 1) v = (b[o] - 128) / 128;
-      else if (bps === 2) v = dv.getInt16(o, true) / 32768;
-      else if (bps === 3) v = ((b[o] | b[o + 1] << 8 | b[o + 2] << 16) << 8 >> 8) / 8388608;
-      else v = dv.getInt32(o, true) / 2147483648;
-      out[c][s] = v;
-    }
-    return out;
-  }
+  decode(b, n) { return this.dec.decode(b, n); }
   close() { this.file.close?.(); }
 }

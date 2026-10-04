@@ -83,15 +83,17 @@ export class BrowserDisplay {
     this.videoFrames++;
   }
   /**
-   * A movie picture (RGBA, w x h) shown on the video layer, above the GDI and Direct3D layers, stretched to `rect` in
-   * screen coordinates (DirectShow's video window, quartz.js). The layer is display-sized and transparent around it.
+   * A movie picture (RGBA, w x h; its part `crop`) shown on the video layer, above the GDI and Direct3D layers, stretched
+   * to `rect` in screen coordinates (DirectShow's video window, quartz.js). The layer is display-sized and transparent
+   * around it.
    */
-  presentVideo(rgba, w, h, rect) {
+  presentVideo(rgba, w, h, rect, crop = null) {
     const ap = acct.enter(ACCT.present);
     try {
       if (!this.videoFrame || this.videoFrame.width !== w || this.videoFrame.height !== h) { this.videoFrame = new OffscreenCanvas(w, h); this.videoFrameCtx = this.videoFrame.getContext('2d'); }
       this.videoFrameCtx.putImageData(new ImageData(rgba, w, h), 0, 0);
-      this.videoCanvas().drawImage(this.videoFrame, 0, 0, w, h, rect.x, rect.y, rect.w, rect.h);
+      const c = crop ?? { x: 0, y: 0, w, h };
+      this.videoCanvas().drawImage(this.videoFrame, c.x, c.y, c.w, c.h, rect.x, rect.y, rect.w, rect.h);
       this.videoDone();
     } finally { acct.leave(ap); }
   }
