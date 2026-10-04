@@ -176,7 +176,7 @@ export class Vm {
         return [parseInt(a, 16) >>> 0, k ? { reg, off: off ? parseInt(off, 16) : 0 } : null];
       }));
       const ring = this.traceRing = { a: new Array(256), i: 0 };
-      const byArg = this.traceByArg = new Map();
+      const byArg = this.traceByArg = new Map(), depth = Number(globalThis.ORTHROS_TRACE_DEPTH) || 3; // (records kept per key)
       this.jit.onInterpRange = (eip, cpu) => {
         if (!eips.has(eip)) return;
         const key = eips.get(eip);
@@ -184,7 +184,7 @@ export class Vm {
         const rets = []; for (let a = sp; a < sp + 0x400 && rets.length < 8; a += 4) { const v = m.read32(a) >>> 0; if (this.proc.moduleByAddr(v)) rets.push(this.proc.symbolize(v)); }
         const rec = `#${ring.i + 1} t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
         ring.a[ring.i++ & 255] = rec;
-        const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > 3) l.shift(); } else { byArg.set(a0, [rec]); if (byArg.size > 200000) byArg.delete(byArg.keys().next().value); } // (bounded: the oldest arguments forgotten)
+        const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > depth) l.shift(); } else { byArg.set(a0, [rec]); if (byArg.size > 200000) byArg.delete(byArg.keys().next().value); } // (bounded: the oldest arguments forgotten)
       };
     }
     if (globalThis.ORTHROS_NULL_WATCH && this.jit) { // (debugging: writes to the first 64 KB, an access violation on Windows)
