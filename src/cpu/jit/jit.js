@@ -1,6 +1,6 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
-import { EXIT, ST, CpuState } from '../state.js';
+import { EXIT, ST, CpuState, THREAD_STATES_BASE, MAX_THREADS } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
@@ -144,7 +144,13 @@ export class Jit {
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }
 
+  /** Forget the return sites recorded by every thread (translate.js rasWrite): the table index they name may be dropped. */
+  clearRas() {
+    const u32 = this.mem.u32;
+    for (let i = 0, w = (THREAD_STATES_BASE + ST.RAS) >>> 2; i < MAX_THREADS; i++, w += ST.SIZE >>> 2) u32[w] = 0;
+  }
   clearTables() {
+    this.clearRas();
     this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
     this.mem.fill(SMC_MAP_BASE, 0x80000, 0);
     // (the pages never mapped: plain stores there leave their region, see Emitter.smcCheck — harmless for regions
@@ -567,6 +573,7 @@ export class Jit {
     (r.first ?? r).versions = null;
   }
   dropOne(r) {
+    this.clearRas();
     if (r.fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * r.fnIdx, 0);
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);

@@ -121,7 +121,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, calleeMax: 0, calleeMaxDirect: 0, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, calleeMax: 0, calleeMaxDirect: 0, ras: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -810,6 +810,19 @@ export function patchAltSlot(code, altAt, fnIdx) {
 }
 
 /**
+ * A translated body moved to table index `fnIdx`: the table index the return-site records hold (stats.selfSites, see
+ * Emitter.rasWrite: offsets of 5-byte i32.const LEBs) rewritten in place. Returns `code`.
+ */
+export function patchSelfIdx(code, sites, fnIdx) {
+  for (const at of sites ?? []) {
+    if (code[at - 1] !== 0x41) throw new Error('patchSelfIdx: not a table index constant');
+    let v = fnIdx >>> 0;
+    for (let i = 0; i < 5; i++) { code[at + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
+  }
+  return code;
+}
+
+/**
  * A translated body whose visit flags (opts.visit) move to other addresses: `sites` pairs [body offset, flag address]
  * (the offsets of stats.visitSites; the stores' 5-byte offset LEBs rewritten in place). Returns `code`.
  */
@@ -938,7 +951,7 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
   // backward transfer to a block of the innermost loop holding both ends other than its header, a backward transfer
   // no structured loop holds (the region dispatcher), and the local returns among the latter
-  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
+  'chainRas', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
   // null-page checks run (Emitter.nullCheck)
   'nullCheck'];
 /** state block offset of profiling counter k */
@@ -1010,6 +1023,10 @@ class Emitter {
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
+    // opts.ras: a call leaving the region records its return site (a block of this region: table index opts.fnIdx), so
+    // that the return chains back to it without a hash lookup (see rasWrite); not in regions specialized for an x87 mode
+    // (entered at a later version's index, a mode another version holds would not find it)
+    this.ras = this.chain && !!(opts.ras ?? JIT_DEFAULTS.ras) && opts.fnIdx >= 0 && (opts.fpcAssume ?? null) === null;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
     // (cw & 0xf00) in fpcAssume, and with X87_MODE_TOP set, the stack top at the region's entry in topAssume (see
@@ -1228,6 +1245,10 @@ class Emitter {
     c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
+    if (this.ras) { // (the return site of the last call that left its region: no hash lookup, see rasWrite)
+      c.get(L_TV).get(L_STATE).i32load(ST.RAS).eq();
+      const r = c.if_(); this.count(PF.chainRas); c.get(L_STATE).i32(ST.RAS).add().set(L_TA).br(found); c.end(); void r;
+    }
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
     for (let p = 0; p < HASH_PROBES; p++) {
       c.get(L_T2); if (p) c.i32(p).add();
@@ -1503,6 +1524,22 @@ class Emitter {
     c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a);
     c.i32(0).i32load(a + 4).get(L_TV).ne();
     const i = c.if_(); c.i32(0).i32(0).i32load(a + 8).i32(1).add().i32store(a + 8); c.i32(0).get(L_TV).i32store(a + 4); c.end(); void i;
+  }
+  /**
+   * A call leaving the region, returning to `site` (a block of this region): ST.RAS <- [site, this region's table index,
+   * the block's index] — a JIT hash entry's layout, which emitChain compares a chained target with before its hash
+   * lookup. The table index is a 5-byte i32.const (stats.selfSites: its body offsets, rewritten when the body moves to
+   * another index, see patchSelfIdx). Jit clears the entries of every thread when a region is dropped.
+   */
+  rasWrite(site) {
+    const b = this.byEip.get(site);
+    if (!this.ras || !b) return;
+    const c = this.c;
+    c.get(L_STATE).i32(site).i32store(ST.RAS);
+    c.get(L_STATE).byte(0x41); (this.stats.selfSites ??= []).push(c.len);
+    let v = this.opts.fnIdx >>> 0; for (let i = 0; i < 5; i++) { c.byte((v & 0x7f) | (i < 4 ? 0x80 : 0)); v >>>= 7; }
+    c.i32store(ST.RAS + 4);
+    c.get(L_STATE).i32(b.index).i32store(ST.RAS + 8);
   }
   /**
    * The site table's entry of indirect transfer `insn` (opts.sitePred, see sitePredOf) updated with its target (L_TV):
@@ -2791,7 +2828,9 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   const c = E.c; const t = insn.ops[0];
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
-    E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false;
+    const tgt = insn.opsize === 2 ? t.v & 0xffff : t.v;
+    if (!E.byEip.has(tgt)) E.rasWrite(insn.next); // (the call leaves the region)
+    E.inCall = true; E.jumpTo(tgt, b.insns.length); E.inCall = false;
     return;
   }
   // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
@@ -2814,6 +2853,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
   c.set(L_TV);
+  if (insn.opsize === 4) E.rasWrite(insn.next);
   if (insn.opsize === 4 && !(t.t === OT.MEM && t.base < 0 && t.index < 0)) E.sitePredRecord(insn); // (a slot's: predicted from the slot)
   E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall');
   c.get(L_TV);
