@@ -82,6 +82,7 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 page.on('crash', () => console.log('[pageerror] page crashed (renderer died)'));
 browser.on('disconnected', () => console.log('[pageerror] browser disconnected'));
 const q = new URLSearchParams({ manifest: name, headless: '1' });
+if (args.includes('--ui')) q.delete('headless'); // the player's page (header, loading screen, overlays) instead of the bare frame
 if (opt('game-lang')) q.set('gameLang', opt('game-lang'));
 if (opt('log')) q.set('log', opt('log'));
 if (args.includes('--interp')) q.set('interp', '1');
