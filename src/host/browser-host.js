@@ -23,6 +23,7 @@ export class BrowserDisplay {
     this.ctx = canvas2d.getContext('2d', { alpha: false });
     this.desk = null; this.row = null; // full desktop image on the 2D layer (transferToImageBitmap blanks the canvas)
     this.glActive = false;
+    this.videoFrame = null; this.videoFrameCtx = null; this.videoLayer = null; this.videoLayerCtx = null; this.videoShown = false; this.videoFrames = 0; this.videoYuv = null; this.videoYuvFailed = false; // (the video layer: presentVideo)
     this.resize(width, height);
   }
   resize(w, h) {
@@ -67,6 +68,64 @@ export class BrowserDisplay {
     this.host.post({ type: 'frame', layer: 'gl', bitmap }, [bitmap]);
     if (!this.glActive) { this.glActive = true; this.host.post({ type: 'gl', active: true }); }
   }
+  /** the display-sized video layer, cleared, and its context */
+  videoCanvas() {
+    if (!this.videoLayer || this.videoLayer.width !== this.width || this.videoLayer.height !== this.height) { this.videoLayer = new OffscreenCanvas(this.width, this.height); this.videoLayerCtx = this.videoLayer.getContext('2d'); }
+    const ctx = this.videoLayerCtx;
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.imageSmoothingEnabled = true;
+    return ctx;
+  }
+  videoDone() {
+    const bitmap = this.videoLayer.transferToImageBitmap();
+    if (!this.videoShown) { this.videoShown = true; this.host.post({ type: 'video', visible: true }); }
+    this.host.post({ type: 'frame', layer: 'video', bitmap }, [bitmap]);
+    this.videoFrames++;
+  }
+  /**
+   * A movie picture (RGBA, w x h) shown on the video layer, above the GDI and Direct3D layers, stretched to `rect` in
+   * screen coordinates (DirectShow's video window, quartz.js). The layer is display-sized and transparent around it.
+   */
+  presentVideo(rgba, w, h, rect) {
+    const ap = acct.enter(ACCT.present);
+    try {
+      if (!this.videoFrame || this.videoFrame.width !== w || this.videoFrame.height !== h) { this.videoFrame = new OffscreenCanvas(w, h); this.videoFrameCtx = this.videoFrame.getContext('2d'); }
+      this.videoFrameCtx.putImageData(new ImageData(rgba, w, h), 0, 0);
+      this.videoCanvas().drawImage(this.videoFrame, 0, 0, w, h, rect.x, rect.y, rect.w, rect.h);
+      this.videoDone();
+    } finally { acct.leave(ap); }
+  }
+  /**
+   * The same from the decoded 4:2:0 planes ({ y, cb, cr, stride, cstride }; `crop`: the visible part, even origin): a
+   * WebCodecs VideoFrame drawn on the layer — the color conversion and scaling are the canvas's (the GPU's), not this
+   * thread's. False when VideoFrame is unavailable (the caller converts to RGBA). (?dbg=ORTHROS_VIDEO_RGBA=1: always
+   * false, for comparisons.)
+   */
+  presentVideoYuv(p, crop, rect) {
+    if (typeof VideoFrame === 'undefined' || globalThis.ORTHROS_VIDEO_RGBA || this.videoYuvFailed) return false;
+    const ap = acct.enter(ACCT.present);
+    let vf = null;
+    try {
+      const ch = (p.y.length / p.stride) | 0, ys = p.stride * ch, cs = p.cstride * (ch >> 1);
+      if (!this.videoYuv || this.videoYuv.length !== ys + 2 * cs) this.videoYuv = new Uint8Array(ys + 2 * cs);
+      const buf = this.videoYuv;
+      buf.set(p.y.subarray(0, ys), 0); buf.set(p.cb.subarray(0, cs), ys); buf.set(p.cr.subarray(0, cs), ys + cs);
+      vf = new VideoFrame(buf, {
+        format: 'I420', codedWidth: p.stride, codedHeight: ch, timestamp: 0,
+        visibleRect: { x: crop.x, y: crop.y, width: crop.w, height: crop.h },
+        layout: [{ offset: 0, stride: p.stride }, { offset: ys, stride: p.cstride }, { offset: ys + cs, stride: p.cstride }],
+        colorSpace: { primaries: 'smpte170m', transfer: 'smpte170m', matrix: 'smpte170m', fullRange: false },
+      });
+      this.videoCanvas().drawImage(vf, rect.x, rect.y, rect.w, rect.h);
+      this.videoDone();
+      return true;
+    } catch (e) {
+      this.videoYuvFailed = true; // (from now on the RGBA path)
+      this.host.post({ type: 'log', kind: 'warn', msg: `video layer: VideoFrame path unavailable (${e.message}), RGBA conversion instead` });
+      return false;
+    } finally { vf?.close(); acct.leave(ap); }
+  }
+  hideVideo() { if (this.videoShown) { this.videoShown = false; this.host.post({ type: 'video', visible: false }); } }
   setMode(width, height, bpp, fullscreen) {
     this.fullscreen = fullscreen; this.bpp = bpp || 32;
     this.resize(width, height);

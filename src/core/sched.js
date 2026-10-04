@@ -85,6 +85,8 @@ export class Scheduler {
     for (const tm of timers) if (tm.due < w && tm.due > checked) w = tm.due;
     const host = this.vm.host?.nextWake?.();
     if (host !== undefined && host < w) w = host;
+    const media = this.vm.media?.nextWake(); // (a movie playing: its next picture or sound refill, quartz.js)
+    if (media !== undefined && media < w) w = media;
     return w;
   }
 
@@ -92,6 +94,7 @@ export class Scheduler {
   /** @param {number} [now] the clock's time when the caller has just read it */
   wakeBlocked(now = this.vm.clock.now()) {
     this.checkedAt = now;
+    if (this.vm.media && now >= this.vm.media.due) this.vm.media.tick(now); // (movies advanced first: their events may wake waiters)
     let any = false;
     for (const t of this.threads) {
       if (t.state !== TS.BLOCKED || !t.wait) continue;
