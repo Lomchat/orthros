@@ -17,7 +17,7 @@ import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS, SITE_PRED_BASE, SITE_PRED_BITS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -121,7 +121,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, calleeMax: 0, calleeMaxDirect: 0, ras: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -134,9 +134,9 @@ const TERM_NONE = 0, TERM_JMP = 1, TERM_JCC = 2, TERM_CALL = 3, TERM_RET = 4, TE
 
 function termOfInsn(insn) {
   switch (insn.op) {
-    case OP.JMP: return insn.ops[0].t === OT.REL || insn.pred ? TERM_JMP : TERM_INDIRECT;
+    case OP.JMP: return insn.ops[0].t === OT.REL ? TERM_JMP : TERM_INDIRECT;
     case OP.JCC: return TERM_JCC;
-    case OP.CALL: return insn.ops[0].t === OT.REL || insn.pred ? TERM_CALL : TERM_INDIRECT;
+    case OP.CALL: return insn.ops[0].t === OT.REL ? TERM_CALL : TERM_INDIRECT;
     case OP.RET: return TERM_RET;
     case OP.LOOP: case OP.LOOPE: case OP.LOOPNE: case OP.JECXZ: return TERM_LOOP;
     case OP.HLT: case OP.INT3: case OP.INT: case OP.INTO: case OP.UD2: case OP.INVALID: case OP.IRET: case OP.RETF: case OP.JMPF: case OP.CALLF: return TERM_EXIT;
@@ -161,44 +161,6 @@ function inlineApiOf(mem, insn) {
   if (thunk < THUNK_BASE || thunk >= THUNK_END || (thunk - THUNK_BASE) % THUNK_SIZE) return null;
   const fid = mem.u8[FAST_TABLE + (thunk - THUNK_BASE) / THUNK_SIZE];
   return INLINE_FIDS.has(fid) ? { slot, thunk, fid } : null;
-}
-
-/**
- * Indirect calls and jumps through a slot at an absolute address (`call dword ptr [slot]`, `jmp dword ptr [slot]`: an
- * import address table entry — the calls of one module into another, the import stubs —, a function-pointer variable)
- * whose slot holds guest code when the region is translated: that address is the predicted target (insn.pred), the
- * transfer is translated as a direct one to it guarded by a compare (the callee's blocks join the region, its return
- * comes back to the call's return site inside the region), and leaves the region as before when the slot holds
- * something else at run time. Exact whatever the slot holds: only the region's extent depends on it.
- * opts.slotPred (JIT_DEFAULTS) turns it on. Returns the predicted target or 0.
- */
-function slotPredOf(mem, insn) {
-  if ((insn.op !== OP.CALL && insn.op !== OP.JMP) || insn.opsize !== 4 || insn.inlineApi) return 0;
-  const o = insn.ops[0];
-  if (o.t !== OT.MEM || o.base >= 0 || o.index >= 0 || o.seg === SEG.FS || o.seg === SEG.GS || insn.adsize === 2) return 0;
-  const slot = o.disp >>> 0;
-  if (slot < NULL_PAGE_END || slot > USER_END - 4) return 0;
-  const t = mem.read32(slot) >>> 0;
-  if (t < NULL_PAGE_END || t >= USER_END || (t >= THUNK_BASE && t < THUNK_END)) return 0;
-  return t;
-}
-
-/**
- * Indirect calls and jumps through a register or a computed address (opts.sitePred): each site leaving its region records
- * the target it went to in the site table (SITE_PRED_BASE: [site, last target, times in a row], one entry per hash of
- * the site, see Emitter.sitePredRecord). A region translated after a site went SITE_PRED_MIN times in a row to the same
- * target predicts that target (insn.pred), as slotPredOf does: a direct transfer guarded by a compare. Returns the
- * predicted target or 0.
- */
-const SITE_PRED_MIN = 8;
-const sitePredEntry = (site) => SITE_PRED_BASE + 12 * (Math.imul(site, 0x9e3779b1) >>> (32 - SITE_PRED_BITS));
-function sitePredOf(mem, insn) {
-  if ((insn.op !== OP.CALL && insn.op !== OP.JMP) || insn.opsize !== 4 || insn.ops[0].t === OT.REL || insn.inlineApi) return 0;
-  const e = sitePredEntry(insn.addr);
-  if (mem.read32(e) >>> 0 !== insn.addr >>> 0 || (mem.read32(e + 8) >>> 0) < SITE_PRED_MIN) return 0;
-  const t = mem.read32(e + 4) >>> 0;
-  if (t < NULL_PAGE_END || t >= USER_END || (t >= THUNK_BASE && t < THUNK_END)) return 0;
-  return t;
 }
 
 // Lazy kinds whose CF / OF Emitter.pushCond computes inline (the same formulas as the flags helper); ZF, SF and PF
@@ -370,7 +332,7 @@ function regionRetSites(blocks, byEip) {
     switch (b.term) {
       case TERM_NONE: case TERM_CALL: return [b.fallthrough];
       case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
-      case TERM_JMP: return [branchTarget(last)];
+      case TERM_JMP: return [last.ops[0].v];
       default: return [];
     }
   };
@@ -552,7 +514,6 @@ const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.
 /** Direct in-region branch target of a block's last instruction (JMP/JCC/LOOP/CALL rel), or -1. */
 function branchTarget(insn) {
   const o = insn.ops[0];
-  if (insn.pred) return insn.pred; // (a predicted indirect call / jump, see slotPredOf)
   if (!o || o.t !== OT.REL) return -1;
   switch (insn.op) {
     case OP.JMP: case OP.JCC: case OP.LOOP: case OP.LOOPE: case OP.LOOPNE: case OP.JECXZ: return o.v;
@@ -582,7 +543,7 @@ function layoutBlocks(blocks, byEip, entry) {
     switch (b.term) {
       case TERM_NONE: return [b.fallthrough];
       case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
-      case TERM_JMP: return [branchTarget(last)];
+      case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : [];
       case TERM_CALL: return [b.fallthrough, branchTarget(last)];
       default: return retSites[b.index] ?? []; // (RET, an import stub's inline-API JMP: their local return sites)
     }
@@ -665,17 +626,7 @@ export function discoverRegion(mem, entry, opts) {
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
   let total = 0;
   const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
-  const slotPred = opts.slotPred ?? JIT_DEFAULTS.slotPred, sitePred = opts.sitePred ?? JIT_DEFAULTS.sitePred;
-  const dec = (a) => {
-    let i = decoded.get(a);
-    if (!i) {
-      i = decode(mem, a);
-      if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i);
-      const t = (slotPred ? slotPredOf(mem, i) : 0) || (sitePred ? sitePredOf(mem, i) : 0); if (t) i.pred = t;
-      decoded.set(a, i);
-    }
-    return i;
-  };
+  const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
   // opts.coldExits with a heat (opts.heat, see heat.js: get(address) = executions, VISITED for the learned / visited
   // ranges): a successor of a branch that ran at least opts.coldMin times is left out of the region when it never ran
@@ -686,79 +637,22 @@ export function discoverRegion(mem, entry, opts) {
   // numbering an x87-mode version must repeat (the heat may have grown since)
   const only = opts.onlyBlocks ?? null;
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
-  // opts.calleeMax (predicted calls) / opts.calleeMaxDirect (direct calls), when > 0: a callee joins the region only when
-  // its own blocks (from its entry: fallthroughs, branches and jumps, calls going on at their return sites, up to its
-  // returns and indirect jumps; cold edges left out as discovery does) are at most that many — a callee too large for
-  // the region is not copied in part, its call leaves the region
-  const calleeMax = opts.calleeMax ?? JIT_DEFAULTS.calleeMax, calleeMaxDirect = opts.calleeMaxDirect ?? JIT_DEFAULTS.calleeMaxDirect;
-  const calleeSize = new Map();
-  const calleeFits = (p, max) => {
-    const k = p * 64 + max; let r = calleeSize.get(k);
-    if (r !== undefined) return r;
-    const seen = new Set([p]), work = [p];
-    r = true;
-    outer: while (work.length) {
-      let a = work.pop();
-      for (let n = 0; n < MAX_INSNS; n++) {
-        if (isBoundary(a)) break;
-        let insn; try { insn = dec(a); } catch { break; }
-        const term = termOf(insn);
-        const add = (t) => { if (t < 0 || isBoundary(t) || seen.has(t) || cold(insn.addr, t)) return true; seen.add(t); work.push(t); return seen.size <= max; };
-        if (term === TERM_NONE) { a = insn.next; if (seen.has(a)) break; continue; }
-        let ok = true;
-        if (term === TERM_JMP) ok = add(branchTarget(insn));
-        else if (term === TERM_JCC || term === TERM_LOOP) ok = add(insn.ops[0].v) && add(insn.next);
-        else if (term === TERM_CALL) ok = add(insn.next);
-        if (!ok) { r = false; break outer; }
-        break;
-      }
-    }
-    calleeSize.set(k, r);
-    return r;
-  };
   // (measurement, startbench --jit-sites: the successors left out for the region's size)
   const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
-  // opts.discoverDepth: the blocks are taken by call depth (the entry's function first, then its callees, then theirs...,
-  // breadth-first within a depth) and become leaders when taken, so that the size limits cut the deepest callees rather
-  // than the entry function's own code; otherwise leaders in the order they are found (breadth-first, every depth)
-  const byDepth = opts.discoverDepth ?? JIT_DEFAULTS.discoverDepth;
-  const buckets = [[entry]], heads = [0];
-  let depth = 0;
-  const next = () => {
-    for (let d = 0; d < buckets.length; d++) {
-      const q = buckets[d];
-      while (heads[d] < q.length) {
-        const a = q[heads[d]++];
-        if (leaders.has(a) && a !== entry) continue;
-        if (leaders.size >= MAX_BLOCKS) { limited?.add(a); continue; }
-        leaders.add(a); depth = d; return a;
-      }
-    }
-    return -1;
-  };
   // pass 1: find leaders
-  while (byDepth ? leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2 : queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
-    let a = byDepth ? next() : queue.shift();
-    if (a === -1) break;
+  while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
+    let a = queue.shift();
     for (let n = 0; n < MAX_INSNS; n++) {
       if (isBoundary(a)) break;
       let insn;
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t, d = 0) => {
-        if (isBoundary(t) || leaders.has(t) || cold(insn.addr, t)) return;
-        if (byDepth) { const k = depth + d; while (buckets.length <= k) { buckets.push([]); heads.push(0); } buckets[k].push(t); return; }
-        if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t);
-      };
+      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && !cold(insn.addr, t)) { if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t); } };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
-      if (term === TERM_JMP) { addLeader(branchTarget(insn)); break; }
+      if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
-      if (term === TERM_CALL) {
-        const t = insn.pred || insn.ops[0].v, max = insn.pred ? calleeMax : calleeMaxDirect;
-        if (!(max > 0) || leaders.has(t) || calleeFits(t, max)) addLeader(t, 1);
-        addLeader(insn.next); break;
-      }
+      if (term === TERM_CALL) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
       if (term === TERM_INDIRECT || term === TERM_RET || term === TERM_EXIT) { if (term !== TERM_RET && term !== TERM_INDIRECT) addLeader(insn.next); break; }
       break;
     }
@@ -806,19 +700,6 @@ export function patchAltSlot(code, altAt, fnIdx) {
   if (!(fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) || code[altAt - 2] !== 0x28) throw new Error('patchAltSlot: not an alt slot load');
   let v = (JIT_ALT_BASE + 4 * fnIdx) >>> 0;
   for (let i = 0; i < 5; i++) { code[altAt + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
-  return code;
-}
-
-/**
- * A translated body moved to table index `fnIdx`: the table index the return-site records hold (stats.selfSites, see
- * Emitter.rasWrite: offsets of 5-byte i32.const LEBs) rewritten in place. Returns `code`.
- */
-export function patchSelfIdx(code, sites, fnIdx) {
-  for (const at of sites ?? []) {
-    if (code[at - 1] !== 0x41) throw new Error('patchSelfIdx: not a table index constant');
-    let v = fnIdx >>> 0;
-    for (let i = 0; i < 5; i++) { code[at + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
-  }
   return code;
 }
 
@@ -943,15 +824,21 @@ export function buildRegionModule(codes, names = null, shared = false) {
   return m.build();
 }
 
-/** exit sites instrumented by Emitter.siteProf: [guest address, kind, counter slots] */
+/**
+ * Measurement (startbench --jit-sites: globalThis.ORTHROS_SITE_PROF, Node only, not with block counters): the region
+ * exit sites — indirect calls and jumps, returns leaving their region, static exits (to a successor left out for the
+ * region's size: exitLim; of a call: ...Call) — count their executions, last target and target changes in three u32
+ * counter slots (allocBlockCounters) per site address and kind, shared by the regions holding the site.
+ * SITE_PROF: [guest address (static exits: the target), kind, slot address].
+ */
 export const SITE_PROF = [];
-const SITE_SLOTS = new Map(); // (one set of slots per site address and kind, shared by the regions holding it)
+const SITE_SLOTS = new Map();
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
 export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87',
   // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
   // backward transfer to a block of the innermost loop holding both ends other than its header, a backward transfer
   // no structured loop holds (the region dispatcher), and the local returns among the latter
-  'chainRas', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
+  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
   // null-page checks run (Emitter.nullCheck)
   'nullCheck'];
 /** state block offset of profiling counter k */
@@ -1023,10 +910,6 @@ class Emitter {
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
-    // opts.ras: a call leaving the region records its return site (a block of this region: table index opts.fnIdx), so
-    // that the return chains back to it without a hash lookup (see rasWrite); not in regions specialized for an x87 mode
-    // (entered at a later version's index, a mode another version holds would not find it)
-    this.ras = this.chain && !!(opts.ras ?? JIT_DEFAULTS.ras) && opts.fnIdx >= 0; // (and fpcAssume null: see run)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
     // (cw & 0xf00) in fpcAssume, and with X87_MODE_TOP set, the stack top at the region's entry in topAssume (see
@@ -1042,7 +925,7 @@ class Emitter {
 
   run(entry) {
     let { blocks, byEip, limited } = discoverRegion(this.mem, entry, this.opts);
-    this.limited = limited;
+    this.limited = limited; // (measurement: see siteProf)
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.discovered = blocks; // (address order)
     this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
@@ -1054,7 +937,6 @@ class Emitter {
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = this.topAssume = null; // (nothing to specialize; L_FPC is not even loaded)
-    if (this.fpcAssume !== null) this.ras = false;
     this.x87EntryIdx = byEip.get(entry)?.index ?? 0; // (see x87EntryTop)
     if (this.usesX87 && this.opts.x87EntryShifts !== false) this.x87Plan = x87EntryPlan(blocks, byEip, this.x87EntryIdx);
     this.stats.x87Planned = this.x87Plan ? this.x87Plan.reduce((k, p) => k + (p !== 0), 0) : 0;
@@ -1246,10 +1128,6 @@ class Emitter {
     c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
     // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
     const found = c.block();
-    if (this.ras) { // (the return site of the last call that left its region: no hash lookup, see rasWrite)
-      c.get(L_TV).get(L_STATE).i32load(ST.RAS).eq();
-      const r = c.if_(); this.count(PF.chainRas); c.get(L_STATE).i32(ST.RAS).add().set(L_TA).br(found); c.end(); void r;
-    }
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
     for (let p = 0; p < HASH_PROBES; p++) {
       c.get(L_T2); if (p) c.i32(p).add();
@@ -1510,12 +1388,7 @@ class Emitter {
   // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
   // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
-  /**
-   * Measurement (globalThis.ORTHROS_SITE_PROF, Node only, not with block counters): per exit site of kind k ('icall',
-   * 'ijmp', 'ret'), three u32 counter slots — executions, last target, target changes — so that a tool can tell how
-   * often each site leaves its region and whether its target is predictable (SITE_PROF: [addr, kind, slot address]).
-   * Target in L_TV.
-   */
+  /** Measurement (see SITE_PROF): count an exit of kind `kind` at `addr`, target in L_TV. */
   siteProf(addr, kind) {
     if (!globalThis.ORTHROS_SITE_PROF || this.opts.blockCounts) return;
     const key = kind + ':' + addr;
@@ -1525,36 +1398,6 @@ class Emitter {
     c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a);
     c.i32(0).i32load(a + 4).get(L_TV).ne();
     const i = c.if_(); c.i32(0).i32(0).i32load(a + 8).i32(1).add().i32store(a + 8); c.i32(0).get(L_TV).i32store(a + 4); c.end(); void i;
-  }
-  /**
-   * A call leaving the region, returning to `site` (a block of this region): ST.RAS <- [site, this region's table index,
-   * the block's index] — a JIT hash entry's layout, which emitChain compares a chained target with before its hash
-   * lookup. The table index is a 5-byte i32.const (stats.selfSites: its body offsets, rewritten when the body moves to
-   * another index, see patchSelfIdx). Jit clears the entries of every thread when a region is dropped.
-   */
-  rasWrite(site) {
-    const b = this.byEip.get(site);
-    if (!this.ras || !b) return;
-    const c = this.c;
-    c.get(L_STATE).i32(site).i32store(ST.RAS);
-    c.get(L_STATE).byte(0x41); (this.stats.selfSites ??= []).push(c.len);
-    let v = this.opts.fnIdx >>> 0; for (let i = 0; i < 5; i++) { c.byte((v & 0x7f) | (i < 4 ? 0x80 : 0)); v >>>= 7; }
-    c.i32store(ST.RAS + 4);
-    c.get(L_STATE).i32(b.index).i32store(ST.RAS + 8);
-  }
-  /**
-   * The site table's entry of indirect transfer `insn` (opts.sitePred, see sitePredOf) updated with its target (L_TV):
-   * times in a row + 1 when the entry is this site's and its last target, else 0; then the site and the target.
-   */
-  sitePredRecord(insn) {
-    if (!(this.opts.sitePred ?? JIT_DEFAULTS.sitePred) || insn.opsize !== 4 || insn.inlineApi) return;
-    const c = this.c, e = sitePredEntry(insn.addr);
-    c.i32(0);
-    c.i32(0).i32load(e + 8).i32(1).add().i32(0);
-    c.i32(0).i32load(e + 4).get(L_TV).eq().i32(0).i32load(e).i32(insn.addr | 0).eq().and();
-    c.select().i32store(e + 8);
-    c.i32(0).get(L_TV).i32store(e + 4);
-    c.i32(0).i32(insn.addr | 0).i32store(e);
   }
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
@@ -2805,17 +2648,8 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     c.end(); // slow
   }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
-  if (insn.pred) { // (predicted: see slotPredOf)
-    const c = E.c;
-    c.tee(L_T4).i32(insn.pred).eq();
-    const i = c.if_(); E.jumpTo(insn.pred, b.insns.length); c.end(); void i;
-    c.get(L_T4);
-  }
   E.count(PF.indirect);
-  E.c.set(L_TV);
-  if (!(t.t === OT.MEM && t.base < 0 && t.index < 0)) E.sitePredRecord(insn); // (not a slot's transfers: predicted from the slot)
-  E.siteProf(insn.addr, 'ijmp');
-  E.c.get(L_TV);
+  if (globalThis.ORTHROS_SITE_PROF) { E.c.set(L_TV); E.siteProf(insn.addr, 'ijmp'); E.c.get(L_TV); }
   E.exitToStack();
 };
 HANDLERS[OP.JCC] = (E, insn, b) => {
@@ -2829,9 +2663,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   const c = E.c; const t = insn.ops[0];
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
-    const tgt = insn.opsize === 2 ? t.v & 0xffff : t.v;
-    if (!E.byEip.has(tgt)) E.rasWrite(insn.next); // (the call leaves the region)
-    E.inCall = true; E.jumpTo(tgt, b.insns.length); E.inCall = false;
+    E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false; // (inCall: see siteProf)
     return;
   }
   // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
@@ -2847,17 +2679,9 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   }
   E.loadOp(t); c.set(L_T4);
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
-  if (insn.pred) { // (predicted: see slotPredOf; opsize 4)
-    c.get(L_T4).i32(insn.pred).eq();
-    const i = c.if_(); E.inCall = true; E.jumpTo(insn.pred, b.insns.length); E.inCall = false; c.end(); void i;
-  }
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
-  c.set(L_TV);
-  if (insn.opsize === 4) E.rasWrite(insn.next);
-  if (insn.opsize === 4 && !(t.t === OT.MEM && t.base < 0 && t.index < 0)) E.sitePredRecord(insn); // (a slot's: predicted from the slot)
-  E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall');
-  c.get(L_TV);
+  if (globalThis.ORTHROS_SITE_PROF) { c.set(L_TV); E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall'); c.get(L_TV); }
   E.exitToStack();
   if (api) c.end(); // done: the block continues after the call
 };

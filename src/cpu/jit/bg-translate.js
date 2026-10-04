@@ -8,7 +8,7 @@
 // With a persistent cache (init `cache`: code-cache.js, an OPFS file per game) a region whose extent, bytes and
 // inline-API slots are those of an earlier session's translation by the same translator is not translated again.
 import { GuestMemory } from '../memory.js';
-import { translateRegion, buildRegionModule, discoverRegion, patchAltSlot, patchVisitSlots, patchSelfIdx, VisitSlots, JIT_DEFAULTS } from './translate.js';
+import { translateRegion, buildRegionModule, discoverRegion, patchAltSlot, patchVisitSlots, VisitSlots, JIT_DEFAULTS } from './translate.js';
 import { CodeCache, inlineDeps, hashText, moduleClosureText, openOpfsStore } from './code-cache.js';
 import { RangeHeat } from './heat.js';
 import './translate-x87.js'; // (the translators register their handlers on import, as jit.js does)
@@ -105,7 +105,7 @@ function translateBatch(items, over) {
       if (hit && sites) {
         // (the bytes read just now are the entry's: an earlier session's translation of exactly this code, under the
         // same options, with the extent and the flagged blocks a translation now would have)
-        const code = patchSelfIdx(patchVisitSlots(patchAltSlot(hit.code.slice(), hit.altAt, it.fnIdx), sites.patch), hit.stats?.selfSites, it.fnIdx); code.hints = hit.hints;
+        const code = patchVisitSlots(patchAltSlot(hit.code.slice(), hit.altAt, it.fnIdx), sites.patch); code.hints = hit.hints;
         r.k = codes.length; r.blocks = hit.blocks.map(([eip, end, index]) => ({ eip, end, index })); r.snap = snap; r.fpc = hit.fpcOut;
         r.stats = { ...hit.stats, visits: sites.visits };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
@@ -138,7 +138,7 @@ function keep(eip, fpc, t, deps, snap) {
   const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
   for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
   const visits = v.map(([e, end]) => [e, end, at.get(e) ?? []]);
-  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, selfSites: t.stats.selfSites };
+  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
   return cache.add({ eip, fpcIn: fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
 }
 
