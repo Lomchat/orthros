@@ -281,10 +281,12 @@ export function registerD3DX9(api, vm) {
     for (let y = 0; y < sh; y++) sub.set(full.subarray(((sr.t + y) * im.width + sr.l) * 4, ((sr.t + y) * im.width + sr.r) * 4), y * sw * 4);
     return blitRgba(c, dst, rectOf(c.arg(2), dst.width, dst.height), sub, sw, sh, c.arg(6), c.arg(7));
   }];
+  let loadLogs = 0; // (--log d3dx: the first calls described)
   X.D3DXLoadSurfaceFromMemory = [10, (c) => { // (dst, dstPal, dstRect, src, srcFmt, srcPitch, srcPal, srcRect, filter, key)
     const dst = surfaceOf(c.arg(0)); if (!dst || !c.arg(7)) return D3DERR_INVALIDCALL;
     const fmt = c.arg(4), pitch = c.arg(5), sr = rectOf(c.arg(7), 0, 0), sw = sr.r - sr.l, sh = sr.b - sr.t;
     if (sw <= 0 || sh <= 0) return D3DERR_INVALIDCALL;
+    if (vm.logKinds?.has('d3dx') && (loadLogs = (loadLogs ?? 0) + 1) <= 64) { const d = rectOf(c.arg(2), dst.width, dst.height); vm.log('d3dx', `D3DXLoadSurfaceFromMemory fmt ${fmt} [${sr.l},${sr.t},${sr.r},${sr.b}] pitch ${pitch} -> fmt ${dst.fmt} ${dst.width}x${dst.height} [${d.l},${d.t},${d.r},${d.b}] filter 0x${(c.arg(8) >>> 0).toString(16)} key 0x${(c.arg(9) >>> 0).toString(16)}`); }
     // (same format and size, no key: a straight copy of rows — of 4x4 blocks for compressed formats — keeps the data as is)
     const dr = rectOf(c.arg(2), dst.width, dst.height);
     if (fmt === dst.fmt && !c.arg(9) && dr.r - dr.l === sw && dr.b - dr.t === sh) {

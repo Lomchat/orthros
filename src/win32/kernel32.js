@@ -106,6 +106,7 @@ export function registerKernel32(api, vm) {
 
   const createNamed = (ctx, nameArg, make) => {
     const name = nameArg;
+    if (name) vm.log('sync', `named object "${name}" ${named.has(name) ? 'opened (exists)' : 'created'} [t${ctx.thread.id}]`);
     if (name && named.has(name)) { ctx.setLastError(E.ALREADY_EXISTS); const o = named.get(name); o.refs++; return ctx.proc.handles.create(o); }
     const o = make();
     o.refs = 1;

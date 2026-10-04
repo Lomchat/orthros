@@ -246,6 +246,7 @@ export class Replayer {
         if (a[2] === 0) { b.dirty = true; g?.bufferUpdated(b, a[1], bytes.length); }
         break;
       }
+      case OP.TEX_LOD: { const t = this.res.get(a[0]); if (t) t.lod = a[1]; break; }
       case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) l.mem = a[2]; break; }
       case OP.SHADER9: { const code = Uint32Array.from(a[3]); this.shaders.set(a[0], { kind: a[1] ? 'ps' : 'vs', code, handle: a[2], version: code[0] >>> 0 }); break; }
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;
@@ -289,6 +290,7 @@ export function compareDevice(d, m, max = 20) {
   tables('rs', [d.rs], [m.rs]); tables('tss', d.tss, m.tss); tables('samplers', d.samplers, m.samplers);
   if (d.textures.length !== m.textures.length) bad(`textures.length ${d.textures.length} / ${m.textures.length}`);
   d.textures.forEach((p, i) => { if (idOf(p) !== (m.textures[i] || 0)) bad(`textures[${i}] #${idOf(p)} / #${m.textures[i]}`); });
+  d.textures.forEach((p, i) => { const t = p ? d.com.implAt(p) : null, mt = m.textures[i] ? m.com.implAt(m.textures[i]) : null; if (t && mt && (t.lod ?? 0) !== (mt.lod ?? 0)) bad(`texture #${t.id} LOD ${t.lod} / ${mt.lod}`); });
   if (d.streams.length !== m.streams.length) bad(`streams.length ${d.streams.length} / ${m.streams.length}`);
   d.streams.forEach((s, i) => { const t = m.streams[i]; if (!t || idOf(s.vb) !== (t.vb || 0) || s.stride !== t.stride || (s.offset ?? 0) !== (t.offset ?? 0)) bad(`streams[${i}] #${idOf(s.vb)}/${s.stride}/${s.offset} / #${t?.vb}/${t?.stride}/${t?.offset}`); });
   if (idOf(d.indices.ib) !== (m.indices.ib || 0) || d.indices.base !== m.indices.base) bad(`indices #${idOf(d.indices.ib)}/${d.indices.base} / #${m.indices.ib}/${m.indices.base}`);

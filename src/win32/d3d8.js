@@ -262,6 +262,9 @@ export function d3dCore(vm) {
       this.dev.gfx?.surfaceDirty?.(this, r);
     }
   }
+  // IDirect3DBaseTexture::SetLOD: the most detailed level sampled, for managed textures only (others: no effect, 0);
+  // clamped to the last level; returns the previous value
+  const setLod = (t, v) => { if (t.pool !== POOL.MANAGED) return 0; const p = t.lod; const n = (t.levels ?? t.faces?.[0] ?? [1]).length; t.lod = Math.min(v >>> 0, Math.max(0, n - 1)); if (t.lod !== p) t.dev.gfx?.textureLod?.(t); return p; };
   class Texture extends Resource {
     constructor(dev, w, h, levels, usage, fmt, pool) {
       super(dev, RTYPE.TEXTURE, pool, usage, fmt);
@@ -272,7 +275,7 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
     free() { for (const l of this.levels) l.free(); }
-    SetLOD(c) { const p = this.lod; this.lod = c.arg(1); return p; }
+    SetLOD(c) { return setLod(this, c.arg(1)); }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.levels.length; }
     GetLevelDesc(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.GetDesc({ arg: (i) => (i === 1 ? c.arg(2) : 0) }); }
@@ -294,7 +297,7 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
     free() { for (const f of this.faces) for (const l of f) l.free(); }
-    SetLOD(c) { const p = this.lod; this.lod = c.arg(1); return p; }
+    SetLOD(c) { return setLod(this, c.arg(1)); }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.faces[0].length; }
     GetLevelDesc(c) { const l = this.faces[0][c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.GetDesc({ arg: (i) => (i === 1 ? c.arg(2) : 0) }); }
@@ -316,7 +319,7 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
     free() { for (const l of this.levels) if (l.mem) { const a = l.mem; l.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
-    SetLOD(c) { const p = this.lod; this.lod = c.arg(1); return p; }
+    SetLOD(c) { return setLod(this, c.arg(1)); }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.levels.length; }
     GetLevelDesc(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, RTYPE.VOLUME); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); if (this.dev.api9) { mem.write32(p + 16, l.width); mem.write32(p + 20, l.height); mem.write32(p + 24, l.depth); } else { mem.write32(p + 16, l.bytes); mem.write32(p + 20, l.width); mem.write32(p + 24, l.height); mem.write32(p + 28, l.depth); } return D3D_OK; }

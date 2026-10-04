@@ -310,6 +310,9 @@ export class Recorder {
   surfaceMem(sf) { const rr = recOf(sf); if (rr && !rr.destroyed && !this.link.failed && sf !== this.readbackOf) this.w.c2(OP.SURF_MEM, sf.id, sf.mem); }
   volumeMem(t, i) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.c3(OP.VOL_MEM, t.id, i, t.levels[i].mem); }
   volumeUpdated(t, i) { this.volumeMem(t, i); }
+  // (IDirect3DBaseTexture::SetLOD: the mirror's texture follows it — the backend's sampler reads it; not yet recorded:
+  // ensureRes sends it with the texture)
+  textureLod(t) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.c2(OP.TEX_LOD, t.id, t.lod >>> 0); }
   bufferUpdated(b, start = 0, size = b.length) {
     const rr = b.rec; if (!rr || rr.destroyed || this.link.failed) return;
     if (rr.eager) { this.sel(); this.link.bufData(b, start, size, 0); return; }
@@ -338,6 +341,7 @@ export class Recorder {
       const list = o.faces ? o.faces.flat() : o.levels, lv = new Array(list.length * 5);
       for (let i = 0; i < list.length; i++) { const l = list[i]; lv[5 * i] = l.id ?? 0; lv[5 * i + 1] = l.width; lv[5 * i + 2] = l.height; lv[5 * i + 3] = l.depth ?? 1; lv[5 * i + 4] = l.mem; }
       W.put(OP.TEX, o.id, kind, o.fmt, o.width, o.height, o.depth ?? 1, o.usage, o.pool, rr.slot >>> 0, rr.gen, lv);
+      if (o.lod) W.c2(OP.TEX_LOD, o.id, o.lod >>> 0);
     } else if (o.length !== undefined) { // buffers
       const rr = L.newRec(o, true);
       W.put(OP.BUF, o.id, o.type, o.length, o.usage, o.fmt, o.mem, rr.slot >>> 0, rr.gen);
