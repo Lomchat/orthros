@@ -148,8 +148,9 @@ const report = (why) => {
   }
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M`); }
-  if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
+  if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
   if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
+  for (const l of vm.peekReport()) console.log(l);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
 };
 // --api-hist: the API calls dispatched to JavaScript (the WASM fast paths not counted), most frequent first, with the report

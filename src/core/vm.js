@@ -168,12 +168,18 @@ export class Vm {
     // addresses — a function entry — recorded with the thread, the return address and the first stack arguments; the
     // last 256 are shown in crash reports)
     if (globalThis.ORTHROS_TRACE_EIP && this.jit) {
-      const eips = new Set(String(globalThis.ORTHROS_TRACE_EIP).split(';').map((x) => parseInt(x, 16) >>> 0));
+      // (<hex>@<reg>[+<hex>]: the record keyed by that register plus the offset instead of the first stack argument — a
+      // value being returned, a pointer computed in a register)
+      const eips = new Map(String(globalThis.ORTHROS_TRACE_EIP).split(';').filter(Boolean).map((x) => {
+        const [a, k] = x.split('@'); const [reg, off] = (k ?? '').split('+');
+        return [parseInt(a, 16) >>> 0, k ? { reg, off: off ? parseInt(off, 16) : 0 } : null];
+      }));
       const ring = this.traceRing = { a: new Array(256), i: 0 };
       const byArg = this.traceByArg = new Map();
       this.jit.onInterpRange = (eip, cpu) => {
         if (!eips.has(eip)) return;
-        const sp = cpu.esp >>> 0, m = this.mem, a0 = m.read32(sp + 4) >>> 0;
+        const key = eips.get(eip);
+        const sp = cpu.esp >>> 0, m = this.mem, a0 = key ? (cpu[key.reg] + key.off) >>> 0 : m.read32(sp + 4) >>> 0;
         const rets = []; for (let a = sp; a < sp + 0x400 && rets.length < 8; a += 4) { const v = m.read32(a) >>> 0; if (this.proc.moduleByAddr(v)) rets.push(this.proc.symbolize(v)); }
         const rec = `#${ring.i + 1} t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
         ring.a[ring.i++ & 255] = rec;
@@ -823,6 +829,28 @@ export class Vm {
     return out;
   }
 
+  /**
+   * Debugging (`?dbg=ORTHROS_PEEK=<hex>[:<len>|:c<count>];...`, shown in crash reports and at the end of Node bench
+   * runs): for an address in a module, the instructions before it and `count` (default 8) from it; elsewhere `len` bytes
+   * (default 16) of memory.
+   */
+  peekReport() {
+    const spec = globalThis.ORTHROS_PEEK; if (!spec) return [];
+    const mem = this.mem, proc = this.proc, out = ['peek (ORTHROS_PEEK):'];
+    for (const item of String(spec).split(';').filter(Boolean)) {
+      const [as, ls] = item.split(':'); const a = parseInt(as, 16) >>> 0, len = ls ? parseInt(ls, 10) : 16;
+      try {
+        if (proc.moduleByAddr(a) && (!ls || ls[0] === 'c')) {
+          out.push(`  code at ${proc.symbolize(a)}:`, ...this.codeBefore(a));
+          let x = a;
+          for (let i = 0, n = ls ? parseInt(ls.slice(1), 10) : 8; i < n; i++) { const insn = decode(mem, x); out.push(`  ${proc.symbolize(x)}  ${hex(mem.bytes(x, insn.len)).padEnd(20)} ${fmtInsn(insn)}  <`); x = insn.next; }
+        } else if (proc.vmem.isCommitted(a, len)) out.push(`  ${a.toString(16)}: ${hex(mem.bytes(a, len))}`);
+        else out.push(`  ${a.toString(16)}: not committed`);
+      } catch (e) { out.push(`  ${a.toString(16)}: ${e.message}`); }
+    }
+    return out;
+  }
+
   /** 32 bytes at each general register that holds a committed address (hex and text). */
   registerMemory(cpu) {
     const out = ['memory at registers:'], seen = new Set(), ptrs = [];
@@ -913,6 +941,7 @@ export class Vm {
     }
     lines.push('recent API calls:');
     for (const l of this.recentApiCalls(64)) lines.push('  ' + l);
+    lines.push(...this.peekReport());
     if (this.apiTail) lines.push('main thread API calls (ORTHROS_API_TAIL, oldest first):\n  ' + this.apiTail.join('\n  '));
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);
