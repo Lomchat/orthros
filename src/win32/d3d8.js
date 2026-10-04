@@ -264,7 +264,7 @@ export function d3dCore(vm) {
   }
   // IDirect3DBaseTexture::SetLOD: the most detailed level sampled, for managed textures only (others: no effect, 0);
   // clamped to the last level; returns the previous value
-  const setLod = (t, v) => { if (t.pool !== POOL.MANAGED) return 0; const p = t.lod; const n = (t.levels ?? t.faces?.[0] ?? [1]).length; t.lod = Math.min(v >>> 0, Math.max(0, n - 1)); return p; };
+  const setLod = (t, v) => { if (t.pool !== POOL.MANAGED) return 0; const p = t.lod; const n = (t.levels ?? t.faces?.[0] ?? [1]).length; t.lod = Math.min(v >>> 0, Math.max(0, n - 1)); if (t.lod !== p) t.dev.gfx?.textureLod?.(t); return p; };
   class Texture extends Resource {
     constructor(dev, w, h, levels, usage, fmt, pool) {
       super(dev, RTYPE.TEXTURE, pool, usage, fmt);

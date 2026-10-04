@@ -6,10 +6,20 @@ import assert from 'node:assert/strict';
 import { d3dEnv } from './d3d-random.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { fakeGl } from './fake-gl.js';
+import { Replayer } from '../src/gfx/d3d-mirror.js';
+import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
 
-function setup() {
+/** recorded: the device records into a command ring replayed into a mirror (the render worker's path). */
+function setup(recorded = false) {
   const { gl, calls } = fakeGl(320, 240);
-  const E = d3dEnv({ createDevice: (dev) => new WebGLDevice(gl, dev, {}) });
+  let gfx = { createDevice: (dev) => new WebGLDevice(gl, dev, {}) }, link = null;
+  if (recorded) {
+    const words = new Int32Array(1 << 15), ack = new Int32Array(1 << 16).fill(-1);
+    const replayer = new Replayer(words, { mem: null, ack, createBackend: (m) => new WebGLDevice(gl, m, {}) });
+    link = new RenderLink({ words, replayer, ack });
+    gfx = { createDevice: (dev) => { replayer.mem = dev.proc.mem; return new Recorder(link, dev); } };
+  }
+  const E = d3dEnv(gfx);
   const { mem, ctx, com } = E;
   const pp = E.alloc(64), out = E.alloc(64), verts = E.alloc(256);
   [320, 240, 22, 1, 0, 0, 1, 0, 1, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));
@@ -23,6 +33,7 @@ function setup() {
   // the MIN_LOD set on the sampler bound to unit 0 at the draw
   const draw = () => {
     call('DrawPrimitiveUP', 4, 1, verts, 20);
+    link?.publish(true);
     const minLod = new Map();
     for (const c of calls) if (c[0] === 'samplerParameterf' && c[2] === gl.TEXTURE_MIN_LOD) minLod.set(c[1], c[3]);
     let bound = null;
@@ -66,5 +77,20 @@ test('SetLOD acts on managed textures only, returns the previous value, and the 
   assert.equal(d.impl.GetLOD(ctx([d.ptr])), 0, 'not a managed texture: no effect');
   call('SetSamplerState', 0, 9, 0);
   call('SetTexture', 0, d.ptr);
+  assert.equal(draw(), 0);
+});
+
+test('SetLOD reaches the render worker\'s mirror: the replayed draws sample from the same level', () => {
+  const { call, texture, draw, ctx } = setup(true);
+  const early = texture(1), t = texture(1);
+  assert.equal(early.impl.SetLOD(ctx([early.ptr, 1])), 0); // (before the texture was ever recorded)
+  call('SetSamplerState', 0, 6, 2); call('SetSamplerState', 0, 7, 2);
+  call('SetTexture', 0, early.ptr);
+  assert.equal(draw(), 1, 'the LOD set before the texture was recorded travels with it');
+  call('SetTexture', 0, t.ptr);
+  assert.equal(draw(), 0);
+  t.impl.SetLOD(ctx([t.ptr, 2]));
+  assert.equal(draw(), 2, 'a later SetLOD reaches the mirror');
+  t.impl.SetLOD(ctx([t.ptr, 0]));
   assert.equal(draw(), 0);
 });
