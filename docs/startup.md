@@ -48,28 +48,98 @@ and reuses them at later launches:
   load of its next x87-mode version's slot, always a 5-byte LEB) is rewritten (`patchAltSlot`). The emulator's
   install then checks the bytes against memory as for any background translation.
 - Code heat (`docs/jit-code-shape.md`: regions cut at cold exits, visit flags) is a translation input that varies by
-  session and grows during one: it is not in the key but recorded per entry — every answer the translation got from
-  the heat (discovery's cold edges: whether a branch ran, whether its successor did; which blocks get a visit flag) —
-  and an entry is reused only where the session's heat gives the same answers (`missHeat` otherwise; a heat that cuts
-  the region elsewhere already gives another extent). Its visit flags are moved to the session's own flag bytes
+  session and grows during one. It reaches a translation through two things only: the extent discovery finds (the
+  cold edges cut — compared like any extent) and the blocks given a visit flag (those the heat does not know to have
+  run). An entry is reused when it flags every block of it the heat of now does not know (`missHeat` otherwise);
+  a block it flags that the heat learned since has its flag store sent to a byte never harvested (a "sink"), so
+  the session reports the same blocks as a fresh translation would. (Until 2026-10-04 every heat answer the
+  translation got was recorded and compared — branch sources included, which only matter through the extent: most
+  "other heat" misses were entries that served.) Its visit flags are moved to the session's own flag bytes
   (`patchVisitSlots`, like the table index); a translation made when the flag area ran out is not kept. Batches
   translated under in-session options (`Jit.switchOpts`) are neither looked up nor kept. The learned entries skipped
   as blocks of an earlier region are those of the regions as cut by the heat of now: an entry a cut region no longer
   holds is translated on its own (a server that forgot it as covered relearns it at its next miss).
+- One shape per code: the learned heat only grows, so an entry whose code is in memory now (its own extent compared
+  byte for byte) but whose shape the heat of now no longer gives (another extent, or a block it leaves unflagged that
+  the heat does not know) would not serve again — the translation added for that region supersedes it (its record
+  marked unused in place). Other code at the same address (another program loaded there) keeps up to 4 variants.
+- Shapes brought up to the heat of the session's end (`bg-translate.js` refresh). The heat grows during a session
+  (visit flags harvested every 10 s): a region translated at the session's start would get another extent at the
+  next launch, under the heat this session taught, and be translated again while that launch starts. Once the heat
+  grew and no batch came for a second (the learned regions in place), the background worker discovers again the
+  regions it answered in the session — only those whose blocks or branch successors gained heat since — and keeps a
+  translation of those whose shape changed (not installed; it supersedes the earlier shape): the next launch finds
+  the shape its heat gives. Passes in 10 ms slices with as long a pause after each (half a core at most; batches
+  answered between them), again each time the heat grew, 20 s apart at the soonest; their translations' visit flags
+  point at the sink byte (relocated at reuse).
 - Measured with heat (2026-10-04, `integ-1004`, phase scenarios, one persistent browser profile and learn directory
   per game reused across runs): RotWK 2.02 run 1 (no heat yet) 12 991 entries added; run 2 (heat of run 1: 24 887
   ranges) 2 665 reused, 5 830 other extent, 3 609 other heat, the cache full and stale, emptied and refilled; run 3
   (heat 27 122 ranges) 8 122 reused, 312 other extent, 240 other heat (the rest new entries). BFME2 run 2 (heat
   24 887 ranges): 1 714 reused, 5 299 other extent, 2 413 other heat, emptied as well — a first BFME2 session alone
   writes 198 MiB of the 256 MiB, so the second one fills it (review re-run: 1 713 reused, 5 272 other extent, 2 404
-  other heat, same rendering in play). While the learned heat still grows the cache mostly misses; it serves again
-  once the heat settles.
+  other heat, same rendering in play). While the learned heat still grows the cache mostly missed; it served again
+  once the heat settled. See "Translated code cache over a game's first sessions" below for the build that followed (B there).
 - The cache key is a hash of the translator's own sources — the import closure of `bg-translate.js`, `jit.js` and
   `runtime.js`, fetched by the worker like the modules themselves — plus the translation options and the defaults they complete (`JIT_DEFAULTS`: layout, cold exits, region sizes...): any change to the
   translator or its options empties the cache. Instrumented translations (profiling, block counters) are not kept.
-- Append-only records (~6 KiB per region: 27 000 BFME2 regions take ~165 MiB), a cut tail dropped at load, at most 256 MiB per game (full, it stays as it is while its entries serve; when the entries read at load mostly miss — ≥ 2 000 misses, over 4 per hit: the game's code changed — it is emptied and refilled); only an index stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is
-  opened for exclusive synchronous access: another tab runs without it).
+- Records appended (~7 KiB per region, 70 % of it WebAssembly: 30 000 BFME2 regions take ~205 MiB), a cut tail
+  dropped at load; each record starts with a binary index (entry, x87 mode, extent, inline-API slots) — the only part
+  read at load; its meta JSON is parsed at a hit — and holds the number of the last session that added or reused
+  it. 256 MiB per game: an addition past it (up to 9/8 of it) asks for room at the next idle moment of the background
+  worker (3 s without a batch: the learned regions in place), so that no batch waits for it; past 9/8 the room is made
+  at once. Making room: the entries of earlier sessions no session used for longest are evicted down to 3/4 of the
+  bound (never this session's: a session whose own entries fill the file stops adding), then the file is compacted in
+  place (the live records moved over the unused ones, in file order; the header says a compaction is under way until
+  it is done — one cut short, the tab closed, starts the cache over at the next load). A game update (other code at
+  the same addresses) is handled the same way: its old entries stop being used and are evicted first. Only the index
+  stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is opened for exclusive
+  synchronous access: another tab runs without it).
 - **Off:** `?codecache=0`; harness runs use it only with a persistent browser profile (`--opfs`), `--code-cache 0`.
+
+### Translated code cache over a game's first sessions (measured 2026-10-04)
+
+A = `main` at 5d528a8 (heat answers per entry, emptied when full and stale), B = the build above (one shape per
+code, refresh under the grown heat, LRU eviction and compaction, binary index). Per game, consecutive sessions
+sharing one learn directory (a copy of the live one) and one browser profile (`--opfs`, the first-launch profile
+copied), A and B series side by side on the shared server, started in alternated order (run 1: A first, 4 sessions;
+run 2: B first, 6 sessions); startup scenarios (`bfme2-startup.txt`, `rotwk-startup.txt`, 200 s;
+`vicecity-drive.txt`, 110 s) with a mark at 60 s. "Reused" = cache hits / lookups of the learned regions translated
+at startup; "bg" = the background worker's time until the learned regions are installed (of which translating);
+"installed" = when the learned code is all installed (s from the page start); "index" = the cache's index read at
+load; "> 100 ms" = frames over 100 ms in the first minute. Two values: run 1, run 2.
+
+| game, session | reused A | reused B | bg A (translating) | bg B (translating) | installed A | installed B | index A | index B | > 100 ms A | > 100 ms B |
+|---|---|---|---|---|---|---|---|---|---|---|
+| BFME2 2 | 7 %, 7 % | 91 %, 91 % | 11.8 (6.6), 12.4 (6.9) | 7.3 (1.2), 6.7 (1.2) | 14.9, 15.6 | 10.7, 9.9 | 754, 769 ms | 227, 243 ms | 109, 101 | 103, 91 |
+| BFME2 3 | 58 %, 57 % | 97 %, 97 % | 8.0 (3.0), 8.9 (3.3) | 5.5 (0.4), 6.2 (0.5) | 10.8, 11.7 | 8.8, 9.2 | 351, 370 | 246, 254 | 92, 99 | 99, 100 |
+| BFME2 4 | 97 %, 97 % | 98 %, 98 % | 5.7 (0.5), 6.0 (0.6) | 6.2 (0.3), 7.7 (0.4) | 9.3, 9.3 | 9.5, 11.2 | 636, 655 | 264, 298 | 97, 99 | 100, 89 |
+| RotWK 2 | 13 %, 13 % | 82 %, 82 % | 10.9 (5.9), 9.7 (5.2) | 5.5 (1.4), 5.9 (1.5) | 14.9, 13.6 | 9.3, 9.9 | 701, 605 | 158, 165 | 67, 65 | 74, 70 |
+| RotWK 3 | 25 %, 23 % | 95 %, 95 % | 8.7 (4.5), 9.9 (5.0) | 4.7 (0.5), 5.5 (0.6) | 11.8, 13.1 | 8.4, 9.3 | 148, 142 | 225, 236 | 71, 67 | 69, 77 |
+| RotWK 4 | 91 %, 90 % | 98 %, 98 % | 5.6 (1.1), 6.1 (1.3) | 6.1 (0.4), 6.0 (0.4) | 9.6, 9.9 | 10.0, 9.7 | 549, 556 | 262, 294 | 69, 75 | 71, 67 |
+| Vice City 2 | 18 %, 18 % | 73 %, 71 % | 4.2 (2.4), 4.2 (2.4) | 2.8 (1.1), 3.0 (1.2) | 11.0, 10.9 | 10.9, 11.0 | 194, 186 | 83, 76 | 25, 22 | 22, 23 |
+| Vice City 3 | 79 %, 74 % | 91 %, 95 % | 2.8 (1.0), 2.7 (1.0) | 2.8 (0.7), 2.2 (0.4) | 10.9, 10.8 | 11.0, 11.0 | 394, 412 | 143, 127 | 21, 19 | 20, 24 |
+| Vice City 4 | 81 %, 86 % | 96 %, 96 % | 2.8 (1.0), 2.6 (0.8) | 2.2 (0.3), 2.2 (0.3) | 11.0, 10.9 | 11.0, 11.0 | 454, 425 | 133, 128 | 20, 22 | 22, 19 |
+
+- The first session (no cache yet) is alike: BFME2 26 400-26 600 regions added (189-198 MiB), installed at 18.6-24.6 s
+  in both builds (load-dependent); B's refresh passes then discover again the touched regions and keep the shapes the
+  grown heat gives (BFME2 21 000-22 000 shapes, 18-20 s of the background worker over the 200 s, at most half a core;
+  RotWK ~16 000, 12-13 s; Vice City ~4 000, 4.4 s), frames > 100 ms in the first minute 76, 65 (A) / 83, 62 (B) for
+  BFME2, 63, 61 / 63, 57 for RotWK, 31, 40 / 30, 37 for Vice City.
+- The second session reuses 71-91 % instead of 7-18 %: the background worker's translating time is divided by 4-6
+  (BFME2 6.6-6.9 → 1.2 s, RotWK 5.2-5.9 → 1.4-1.5 s) and the learned code is installed 4-5 s earlier for BFME2 and
+  RotWK (14.9-15.6 → 9.9-10.7 s, 13.6-14.9 → 9.3-9.9 s); A reaches B's level only at its fourth session. Vice City's
+  learned code is installed at ~11 s in both (its install waits for other startup work, not for the translations).
+- Index read at load 2.5-5 times faster (binary index; meta JSON at a hit): 130-300 ms instead of 350-770 ms for
+  200-250 MiB files.
+- Frames over 100 ms in the first minute: no difference beyond the runs' spread (the startup stalls are elsewhere).
+- Size: A's second session empties the file (full and stale: BFME2 85 MiB and RotWK 13-17 MiB left after it); B never
+  empties it. At the bound (BFME2 run 2 session 4, RotWK run 2 session 6) 3 369 and 1 249 entries of earlier sessions
+  were evicted and the file compacted at an idle moment of the background worker (950 ms and 1 010 ms there, at most
+  ~1 s per compaction in all runs), back to ~195 MiB; the next sessions still reused 99-100 % (BFME2 sessions 5, 6:
+  25 417 / 25 608 and 25 548 / 25 668). Vice City's run 2 compacted at session 4 without evicting (superseded shapes
+  only: 238 → 131 MiB, 679 ms), 96-98 % reused after.
+- Rendering: the same screenshots in play (pause menu over the skirmish map) for A and B sessions 3.
 
 ## What a phase will use, prepared ahead (learned lists, D056/D058)
 

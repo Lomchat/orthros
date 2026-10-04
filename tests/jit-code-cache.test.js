@@ -191,21 +191,89 @@ test('code cache: entries need the same extent, bytes and inline-API slots; anot
   // bounded
   const small = new CodeCache(new MemStore(), 'k', 400); // (bounded)
   assert.ok(small.add(e)); assert.ok(!small.add({ ...e, eip: 0x3000, code: new Uint8Array(200) }));
-  // full: kept while its entries serve (a first session: nothing read at load; a later one: hits), emptied when the
-  // entries read at load mostly miss (the game's code changed)
-  const fs2 = new MemStore(), big = { ...e, code: new Uint8Array(300) };
-  let f = new CodeCache(fs2, 'k', 800);
-  assert.ok(f.add(big));
-  f.stats.misses = 5000; assert.ok(!f.add({ ...big, eip: 0x3000 }), 'first session: nothing loaded, never emptied');
-  f = new CodeCache(fs2, 'k', 800);
-  assert.equal(f.stats.loaded, 1);
-  f.stats.hits = 1000; f.stats.misses = 2500; assert.ok(!f.add({ ...big, eip: 0x3000 }), 'entries still serve');
-  f.stats.hits = 10; f.stats.misses = 2500;
-  assert.ok(f.add({ ...big, eip: 0x3000 })); assert.match(f.stats.reset, /stale/);
-  f = new CodeCache(fs2, 'k', 800);
-  assert.equal(f.stats.loaded, 1);
-  assert.ok(f.lookup(0x3000, 0x200, ext, Uint8Array.of(1, 2, 3, 4), [0x5000, 0x7f000010, 3]));
-  assert.equal(f.lookup(0x1000, 0x200, ext, Uint8Array.of(1, 2, 3, 4), [0x5000, 0x7f000010, 3]), null);
+  // full: this session's entries are never evicted (a first session fills it and stops adding); a later session
+  // evicts the entries no session used for longest and compacts the file
+  const fs2 = new MemStore(), big = { ...e, code: new Uint8Array(300) }, at = (eip) => ({ ...big, eip, blocks: [{ eip, end: eip + 4, index: 0 }] });
+  const ext2 = (eip) => [{ eip, end: eip + 4 }], snap = Uint8Array.of(1, 2, 3, 4), deps = [0x5000, 0x7f000010, 3];
+  const probe = new CodeCache(new MemStore(), 'k'); probe.add(at(0x1000));
+  const rl = probe.end - probe.headLen, head = probe.headLen; // (one record's bytes)
+  for (const soft of [false, true]) {
+    // (soft: the 4th record fits below 9/8 of the bound — written, the room made at the next idle moment; else at once)
+    const max = head + 3 * rl + (soft ? Math.ceil(rl * 0.7) : 10), fs3 = new MemStore();
+    let f = new CodeCache(fs3, 'k', max);
+    assert.ok(f.add(at(0x1000)) && f.add(at(0x2000)) && f.add(at(0x3000)));
+    if (soft) {
+      assert.ok(f.add(at(0x5000))); assert.ok(f.end > max && f.pending, 'past the bound: room asked for an idle moment');
+      assert.ok(f.maintain()); assert.equal(f.stats.compactions, 0); assert.ok(f.full, 'first session: its own entries fill it');
+      assert.ok(!f.add(at(0x6000)));
+    }
+    else assert.ok(!f.add(at(0x4000)), 'first session: its own entries fill it');
+    f = new CodeCache(fs3, 'k', max); // (session 2: reuses 0x3000)
+    assert.equal(f.stats.loaded, soft ? 4 : 3);
+    assert.ok(f.lookup(0x3000, 0x200, ext2(0x3000), snap, deps));
+    if (soft) assert.ok(f.lookup(0x5000, 0x200, ext2(0x5000), snap, deps));
+    // (session 3: reuses 0x2000, adds 0x4000: down to 3/4 of the bound, the least recently used first — 0x1000
+    // (session 1), then 0x3000 / 0x5000 (session 2) — evicted, 0x2000 (this session's) kept)
+    f = new CodeCache(fs3, 'k', max);
+    assert.ok(f.lookup(0x2000, 0x200, ext2(0x2000), snap, deps));
+    assert.ok(f.add(at(0x4000)));
+    assert.equal(f.stats.evicted, soft ? 3 : 2); assert.equal(f.stats.compactions, 1);
+    for (const a of [0x1000, 0x3000, 0x5000]) assert.equal(f.lookup(a, 0x200, ext2(a), snap, deps), null, `evicted ${a.toString(16)}`);
+    for (const a of [0x2000, 0x4000]) assert.ok(f.lookup(a, 0x200, ext2(a), snap, deps), `kept ${a.toString(16)}`);
+    assert.ok(fs3.size() === f.end && f.end < head + 3 * rl && f.end === f.headLen + f.live && f.stats.dead === 0, 'compacted');
+    f = new CodeCache(fs3, 'k', max); // (read back after the compaction)
+    assert.equal(f.stats.loaded, 2); assert.equal(f.stats.dead, 0);
+    for (const a of [0x2000, 0x4000]) assert.deepEqual([...f.lookup(a, 0x200, ext2(a), snap, deps).code], [...big.code]);
+  }
+});
+
+test('code cache: one shape per code (superseded entries), variants for other code, LRU eviction, compaction, interrupted compaction', () => {
+  // random sessions over a small file: what a lookup returns is always what was added for exactly that entry, extent,
+  // bytes and deps; entries of the same code under another shape are superseded; the file never passes its bound
+  let rs = 12345;
+  const r = (n) => { rs = (Math.imul(rs, 1103515245) + 12345) >>> 0; return (rs >>> 8) % n; };
+  const u8 = new Uint8Array(0x10000);
+  const store = new MemStore(), MAX = 24000;
+  const model = new Map(); // "eip:fpc|extent|bytes" -> body (what was added last for it)
+  let hits = 0, superseded = 0, evicted = 0, compactions = 0, variants = 0;
+  for (let session = 0; session < 60; session++) {
+    const c = new CodeCache(store, 'k', MAX);
+    assert.ok(store.size() <= MAX + MAX / 8);
+    for (let n = 0; n < 40; n++) {
+      // (a region's shape: one of three per address, the heat of the moment)
+      const eip = 0x100 * (1 + r(24)), fpc = r(4) ? null : 0x200, shape = r(3), nb = 1 + ((eip >> 8) + shape) % 3, ext = [];
+      for (let b = 0, a = eip; b < nb; b++) { const end = a + 1 + ((a + shape) % 6); ext.push({ eip: a, end }); a = end + ((a + b) % 3); }
+      // the code there: one of two programs at that address (variants), its bytes in memory now
+      const prog = r(5) === 0 ? 1 : 0;
+      const snap = [];
+      for (const b of ext) for (let a = b.eip; a < b.end; a++) { u8[a] = (a * 7 + prog * 13) & 0xff; snap.push(u8[a]); }
+      const key = `${eip}:${fpc}|${ext.map((b) => `${b.eip}-${b.end}`).join(',')}|${prog}`;
+      const hit = c.lookup(eip, fpc, ext, Uint8Array.from(snap), [], null, u8);
+      if (hit) {
+        hits++;
+        assert.ok(model.has(key), 'a hit is for an entry added for exactly this');
+        assert.deepEqual([...hit.code], model.get(key));
+        continue;
+      }
+      const code = Array.from({ length: 50 + r(400) }, () => r(256));
+      const before = c.stats.superseded;
+      if (c.add({ eip, fpcIn: fpc, blocks: ext.map((b, i) => ({ ...b, index: i })), deps: [], stats: {}, snap: Uint8Array.from(snap), code: Uint8Array.from(code) })) model.set(key, code);
+      if (c.stats.superseded > before) superseded++;
+      assert.ok(c.end <= MAX + MAX / 8 && store.size() === c.end);
+      let perKey = 0; for (const [k, l] of c.map) { assert.ok(l.length <= 4, `variants of ${k}`); if (l.length > 1) perKey++; }
+      variants = Math.max(variants, perKey);
+      if (r(8) === 0) { c.maintain(); assert.ok(c.full || c.end <= MAX, 'room made at an idle moment'); }
+    }
+    evicted += c.stats.evicted; compactions += c.stats.compactions;
+    c.flush();
+  }
+  assert.ok(hits > 100 && superseded > 50 && evicted > 20 && compactions > 3 && variants > 0, `hits ${hits} superseded ${superseded} evicted ${evicted} compactions ${compactions} variants ${variants}`);
+  // a compaction cut short (state left in the header): the next load starts over
+  const c = new CodeCache(store, 'k', MAX);
+  assert.ok(c.stats.loaded > 0);
+  c.writeHead(1);
+  const d = new CodeCache(store, 'k', MAX);
+  assert.equal(d.stats.loaded, 0); assert.match(d.stats.reset, /interrupted/);
 });
 
 test('code cache: the key covers the import closure of the translator modules', async () => {

@@ -5,7 +5,9 @@
 // ONE cache. Each session is a new Jit with the background translator and visit flags: a heat drawn from a small pool
 // (so that sessions repeat an earlier heat — reuse — or bring another one), sometimes grown mid-session between two
 // batches of learned entries (random instruction addresses, random x87 modes: covered entries under heat cuts), flag
-// bytes and table indexes shifted. Every run ends as the interpreter does, and every region the background worker
+// bytes and table indexes shifted, half the programs with a small cache bound (entries superseded, evicted, the file
+// compacted between and during sessions), half with the worker idle after each session (shapes refreshed under the
+// grown heat). Every run ends as the interpreter does, and every region the background worker
 // answered — reused or translated — has the extent, block numbering, x87 mode and visit flags a fresh translation
 // under the session's heat of the moment gives.
 import { test } from 'node:test';
@@ -17,9 +19,9 @@ import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode } from '../src/cpu/decoder.js';
 import { RangeHeat } from '../src/cpu/jit/heat.js';
-import { translateRegion, allocBlockCounters } from '../src/cpu/jit/translate.js';
+import { translateRegion, allocBlockCounters, discoverRegion, VisitSlots } from '../src/cpu/jit/translate.js';
 import { MemStore } from '../src/cpu/jit/code-cache.js';
-import { handleMessage } from '../src/cpu/jit/bg-translate.js';
+import { handleMessage, sensitive, touched } from '../src/cpu/jit/bg-translate.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -98,13 +100,14 @@ function randomPairs(addrs) {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 test('code cache under heat, adversarial: sessions sharing one cache, heats repeated / changed / grown, x87 modes, covered entries', async () => {
-  let hits = 0, missHeat = 0, missExtent = 0, versions = 0, covered = 0, checked = 0, grown = 0;
+  let hits = 0, missHeat = 0, missExtent = 0, versions = 0, covered = 0, checked = 0, grown = 0, superseded = 0, evicted = 0, compactions = 0, refreshed = 0;
   for (let t = 0; t < 40; t++) {
     const { code, end } = gen();
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
     const addrs = [];
     for (let a = 0; a <= end;) { addrs.push(CODE + a); a = decode(scratch, CODE + a).next - CODE; }
-    const store = new MemStore();
+    const store = new MemStore(), maxBytes = rnd(2) ? undefined : 6000 + rnd(30000); // (a small bound: evictions, compactions)
+    const idle = rnd(2) === 0; // (the background worker idle after each session: room made, shapes refreshed under the grown heat)
     const pool = [null, randomPairs(addrs), randomPairs(addrs), addrs.length ? [CODE, CODE + end + 1] : null];
     const coldMin = 1 + rnd(3);
     for (let k = 0; k < 7; k++) {
@@ -118,6 +121,7 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       jit.cpu = cpu;
       for (let i = rnd(20); i > 0; i--) jit.reserveFn();
       const heat0 = pool[rnd(pool.length)];
+      let grownNow = !!heat0;
       if (heat0) jit.heatAdd(heat0);
       // the heat the background worker sees, mirrored here: the translation a reused region must equal
       const mirror = new RangeHeat(); if (heat0) mirror.addPairs(heat0);
@@ -125,7 +129,7 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       let bgOpts = null;
       jit.attachBackground({ postMessage: (msg) => {
         if (msg.type === 'init') bgOpts = msg.opts;
-        handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|adv', store } } : msg, (r) => replies.push(r));
+        handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|adv', store, maxBytes, idleMs: idle ? 1 : undefined, refreshGapMs: 0 } } : msg, (r) => replies.push(r));
       } });
       await tick();
       const learnedOf = () => addrs.filter(() => rnd(3) === 0).map((a) => [a, rnd(3) ? CWS[rnd(4)] & 0xf00 : null]);
@@ -153,7 +157,7 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       // the heat grown mid-session (visit flags harvested, a later learned list)
       if (rnd(2)) {
         const more = randomPairs(addrs);
-        if (more.length) { jit.heatAdd(more); mirror.addPairs(more); grown++; }
+        if (more.length) { jit.heatAdd(more); mirror.addPairs(more); grown++; grownNow = true; }
         jit.bgPrewarm(learnedOf()); await tick(); await tick();
         answer(!!heat0 || more.length > 0);
       }
@@ -167,13 +171,52 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       CpuState.foldLazyFlags?.(cpu);
       assert.equal(stateOf(r, mem, cpu), want, `program ${t} session ${k} slice ${slice}: ${Buffer.from(code).toString('hex')}`);
       versions += jit.stats.fpuVersions ?? 0;
-      if (jit.bg.cache) { missHeat += jit.bg.cache.missHeat; missExtent += jit.bg.cache.missExtent; }
+      if (idle) {
+        // (until the refresh pass the grown heat asks for is done, 2 s at most)
+        let st = null;
+        for (let w = 0; w < 200; w++) {
+          await new Promise((r) => setTimeout(r, 10));
+          handleMessage({ type: 'cache-stats' }, (rep) => { st = rep.cache; });
+          if (!grownNow || st?.refreshPasses > 0) break;
+        }
+        refreshed += st?.refreshed ?? 0;
+      }
+      if (jit.bg.cache) { missHeat += jit.bg.cache.missHeat; missExtent += jit.bg.cache.missExtent; superseded += jit.bg.cache.superseded; evicted += jit.bg.cache.evicted; compactions += jit.bg.cache.compactions; }
     }
   }
   assert.ok(hits > 100, `regions reused: ${hits}`);
   assert.ok(missHeat > 10, `other heat answers: ${missHeat}`);
   assert.ok(missExtent > 10, `other extents: ${missExtent}`);
+  assert.ok(superseded > 10 && evicted > 5 && compactions > 3 && refreshed > 10, `superseded ${superseded}, evicted ${evicted}, compactions ${compactions}, refreshed ${refreshed}`);
   assert.ok(versions > 5, `x87-mode versions: ${versions}`);
   assert.ok(covered > 20, `covered entries: ${covered}`);
   assert.ok(grown > 20 && checked > 500, `heat grown ${grown}, regions checked ${checked}`);
+});
+
+test('refresh filter: a region none of whose heat-sensitive addresses gained heat keeps its extent and visit flags', () => {
+  // (bg-translate.js sensitive / touched: a refresh pass discovers again only the regions the added heat touches)
+  let same = 0, rediscovered = 0, changed = 0;
+  for (let t = 0; t < 300; t++) {
+    const { code, end } = gen();
+    const mem = new GuestMemory(); mem.fill(CODE, 0x1000, 0xcc); mem.writeBytes(CODE, code);
+    const addrs = [];
+    for (let a = 0; a <= end;) { addrs.push(CODE + a); a = decode(mem, CODE + a).next - CODE; }
+    const coldMin = 1 + rnd(3), h1 = new RangeHeat();
+    if (rnd(4)) h1.addPairs(randomPairs(addrs));
+    const more = randomPairs(addrs).filter((_, i, p) => i % 2 === 0 && rnd(4) === 0).flatMap((lo) => [lo, lo + 1 + rnd(6)]);
+    const h2 = new RangeHeat(); h2.addPairs(h1.pairs()); h2.addPairs(more);
+    const delta = new RangeHeat(); delta.addPairs(more); delta.merge();
+    const opts = { coldExits: true, coldMin, visit: true };
+    const shape = (h, entry) => {
+      const blocks = discoverRegion(mem, entry, { ...opts, heat: h }).blocks;
+      const flagged = translateRegion(mem, entry, { ...opts, heat: h, visitSlots: new VisitSlots() }).stats.visits?.map((v) => v[0]) ?? [];
+      return { blocks, key: JSON.stringify([blocks.map((b) => [b.eip, b.end]), flagged]) };
+    };
+    for (const entry of addrs.filter(() => rnd(3) === 0)) {
+      const a = shape(h1, entry), b = shape(h2, entry);
+      if (!touched(sensitive(a.blocks), delta)) { same++; assert.equal(b.key, a.key, `program ${t} entry ${entry.toString(16)}: untouched, the same shape`); }
+      else { rediscovered++; if (b.key !== a.key) changed++; }
+    }
+  }
+  assert.ok(same > 200 && rediscovered > 200 && changed > 50, `untouched ${same}, rediscovered ${rediscovered} (changed ${changed})`);
 });
