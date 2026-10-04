@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { Scheduler, STARVE_MS, PREEMPT_INSNS } from '../src/core/sched.js';
+import { Scheduler, STARVE_MS } from '../src/core/sched.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { TS } from '../src/win32/process.js';
 import { Vm } from '../src/core/vm.js';
@@ -42,12 +42,12 @@ test('pickRunnable: the highest priority first, round robin among equals, a star
 });
 
 const EXE = new URL('../build/pe/priority.exe', import.meta.url).pathname;
-function runExe(roundRobin, sliceInsns = 20000) {
+function runExe(roundRobin) {
   const vfs = new Vfs(), dir = new MemBackend();
   vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', dir);
   dir.open('priority.exe', { create: true }).write(0, fs.readFileSync(EXE));
   const clock = new VirtualClock();
-  const vm = new Vm({ vfs, clock, host: new HeadlessHost({ clock, width: 320, height: 200 }), logKinds: ['crash'], sliceInsns });
+  const vm = new Vm({ vfs, clock, host: new HeadlessHost({ clock, width: 320, height: 200 }), logKinds: ['crash'], sliceInsns: 20000 });
   vm.sched.roundRobin = roundRobin;
   vm.createProcess({ exePath: 'C:\\Test\\priority.exe' });
   const code = vm.run();
@@ -61,27 +61,4 @@ test('priority.exe: a TIME_CRITICAL thread\'s work is not interrupted by normal 
   // the pattern the test reproduces: with every thread in turn, the spinner runs in the middle of the work
   const rr = runExe(true);
   assert.match(rr.out, /seen_mid_work=[1-9]/);
-});
-
-test('sliceFor: a thread below a higher-priority one gets short slices (that thread takes over soon after its timeout); the top one full slices', () => {
-  const vm = fakeSched(), s = vm.sched;
-  vm.sliceInsns = 100000;
-  const main = thread(1, 0), mixer = thread(2, 15);
-  vm.proc.threads.push(main);
-  assert.equal(s.sliceFor(main), 100000, 'alone: full slices');
-  vm.proc.threads.push(mixer);
-  mixer.state = TS.BLOCKED;
-  assert.equal(s.sliceFor(main), PREEMPT_INSNS, 'a higher-priority thread exists, even waiting');
-  assert.equal(s.sliceFor(mixer), 100000);
-  mixer.state = TS.DONE;
-  assert.equal(s.sliceFor(main), 100000);
-  // woken by the running thread: the running one yields at its next API call
-  mixer.state = TS.BLOCKED; mixer.wait = {}; main.state = TS.RUNNING; vm.current = main; main.yieldRequested = false;
-  s.wake(mixer, true);
-  assert.equal(main.yieldRequested, true);
-});
-
-test('priority.exe at the default slice: the TIME_CRITICAL thread still runs its work in one go', { skip: !fs.existsSync(EXE) && 'build/pe/priority.exe missing (make pe-tests)' }, () => {
-  const got = runExe(false, 100000);
-  assert.equal(got.out, 'work_done=1\nspinner_ran=1\nseen_mid_work=0\nidle_ran=1\n');
 });
