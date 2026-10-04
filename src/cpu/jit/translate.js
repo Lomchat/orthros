@@ -87,6 +87,8 @@ const IMP_MATH = 3;
 const IMP_EXP2M1 = IMP_MATH, IMP_LOG2 = IMP_MATH + 1, IMP_LOG2P1 = IMP_MATH + 2, IMP_SCALB = IMP_MATH + 3;
 const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8, IMP_NAN2 = IMP_MATH + 9;
 const IMP_ARITH24 = IMP_MATH + 10, IMP_F32RC = IMP_MATH + 11;
+// the runtime's shared region exit (runtime.js chain, opts.chainStub), after the kernels
+const IMP_CHAIN = IMP_MATH + 12;
 if (MATH_KERNELS.length !== 12 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
@@ -100,7 +102,21 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+/**
+ * x87 mode of a region (Jit translate / versions, opts.fpcAssume): the control word's PC/RC bits (cw & 0xf00), with
+ * X87_MODE_TOP | TOP when the region is also specialized for the stack top at its entry (opts.x87Top) — the frame of
+ * its x87 stack cache: loads, stores and tag rotations at its entry, exits and chains then address the registers at
+ * constant offsets instead of computing (TOP + i) & 7 for each. A region entered with another top (the guard compares
+ * TOP minus the entered block's planned shift) goes to the next version, as for the control word.
+ */
+export const X87_MODE_TOP = 8;
+/** the x87 mode of a thread's state at a region entry (state block at `base`; `top`: specialize for the stack top too) */
+export function x87ModeOf(mem, base, top) {
+  const fpc = mem.read16(base + ST.FPU_CW) & 0xf00;
+  return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
+}
+
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, entryFast: false, coldChain: false, x87Top: false, chainStub: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -727,6 +743,7 @@ export function buildRegionModule(codes, names = null, shared = false) {
     t.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
     t.importFunc('env', 'fallback', [T.i32], [T.i32]);
     for (const [name, params, results] of MATH_KERNELS) t.importFunc('env', name, params, results);
+    if (t.importFunc('env', 'chain', REGION_PARAMS, REGION_RESULTS) !== IMP_CHAIN) throw new Error('chain import index mismatch');
     regionTemplate[key] = t;
   }
   const m = regionTemplate[key].fork();
@@ -805,9 +822,16 @@ class Emitter {
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
+    this.entryFast = !!(opts.entryFast ?? JIT_DEFAULTS.entryFast); // (see entryFastPath)
+    this.coldChain = !!(opts.coldChain ?? JIT_DEFAULTS.coldChain); // (see emitChain)
+    this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
-    // x87 precision/rounding control (cw & 0xf00) the region is specialized for (null: tested at run time)
-    this.fpcAssume = opts.fpcAssume ?? null;
+    // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
+    // (cw & 0xf00) in fpcAssume, and with X87_MODE_TOP set, the stack top at the region's entry in topAssume (see
+    // x87ModeOf: every TOP-relative address of the x87 stack cache becomes a constant)
+    const mode = opts.fpcAssume ?? null;
+    this.fpcAssume = mode === null ? null : mode & 0xf00;
+    this.topAssume = mode !== null && (mode & X87_MODE_TOP) && (opts.x87Top ?? JIT_DEFAULTS.x87Top) ? mode & 7 : null;
     this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
@@ -826,7 +850,7 @@ class Emitter {
     if (this.opts.lazyPredict !== false) regionLazyPrediction(blocks, byEip);
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
-    if (!this.usesX87) this.fpcAssume = null; // (nothing to specialize; L_FPC is not even loaded)
+    if (!this.usesX87) this.fpcAssume = this.topAssume = null; // (nothing to specialize; L_FPC is not even loaded)
     this.x87EntryIdx = byEip.get(entry)?.index ?? 0; // (see x87EntryTop)
     if (this.usesX87 && this.opts.x87EntryShifts !== false) this.x87Plan = x87EntryPlan(blocks, byEip, this.x87EntryIdx);
     this.stats.x87Planned = this.x87Plan ? this.x87Plan.reduce((k, p) => k + (p !== 0), 0) : 0;
@@ -862,7 +886,11 @@ class Emitter {
     // the FS base (TEB) only in regions reading it: an FS-segment operand, an API run inline (its TEB fields)
     this.usesFs = blocks.some((b) => b.insns.some((i) => i.inlineApi || i.seg === SEG.FS || i.ops.some((o) => o.seg === SEG.FS)));
     if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
-    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
+    if (this.usesX87) { // (TOP: x87 regions only, the others never change it)
+      c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop();
+      // (specialized for the stack top: the stack is loaded once the guard below has made L_TOP a constant)
+      if (this.topAssume === null) this.loadX87(); else this.loadX87Fpc();
+    }
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
     this.exitJmpL = c.block();
@@ -870,7 +898,10 @@ class Emitter {
       // specialized for one x87 mode: entered under another one, tail-call the next version of this region (the
       // same blocks translated for another mode, JIT_ALT_BASE slot of this table index) with the parameters as
       // received, or leave (EIP is the entry's, stored by the dispatcher / chain) for the JIT to add a version
+      // (EXIT_ARG: the mode met, see x87ModeOf). The stack top compared is the region's (L_TOP once x87EntryTop has
+      // taken the entered block's planned shift off)
       c.get(L_FPC).i32(this.fpcAssume).ne();
+      if (this.topAssume !== null) c.get(L_TOP).i32(this.topAssume).ne().or();
       const i = c.hint(false).if_();
       const fnIdx = this.opts.fnIdx ?? -1;
       if (this.chain && fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) {
@@ -880,10 +911,13 @@ class Emitter {
         c.get(L_T2).i32(1).sub().return_call_indirect(REGION_TYPE, 0);
         c.end(); void alt;
       }
-      // (an entry block planned with a non-zero x87 shift loaded the stack for it: reloaded at shift 0 for the exit)
-      if (this.x87Plan) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
+      c.get(L_STATE).get(L_FPC).get(L_TOP).or().i32(X87_MODE_TOP).or().i32store(ST.EXIT_ARG);
+      // (an entry block planned with a non-zero x87 shift loaded the stack for it, a region specialized for the stack
+      // top has not loaded it yet: (re)loaded at shift 0 for the exit, which writes it back)
+      if (this.x87Plan || this.topAssume !== null) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
       c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
       c.end(); void i;
+      if (this.topAssume !== null) { c.i32(this.topAssume).set(L_TOP); this.loadX87Tags(); this.loadX87Regs(); }
     }
     this.dispatchL = c.loop();
     const def = c.block();
@@ -897,16 +931,25 @@ class Emitter {
     // region (see HANDLERS[OP.RET])
     this.retSitesOf = regionRetSites(blocks, byEip);
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
-    this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
+    this.emitUnits(top, () => { if (this.entryFast) this.entryFastPath(top); this.dispatchAmong(top, 0, blocks.length - 1, null, def); });
     c.end(); // def
     c.unreachable();
     c.end(); // dispatch loop
     c.end(); // exitJmpL: jump exit (tV = target eip)
-    if (this.chain) this.emitChain(); // (the budget travels as a parameter)
-    c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-    this.flushAll();
-    c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-    c.get(L_TV).return_();
+    if (this.chain && this.chainStub && !this.prof) {
+      // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
+      // runtime's shared chain function, tail-called with the target in place of the block)
+      this.flushFpu(); this.flushXmm();
+      c.get(L_TV);
+      for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+      c.return_call(IMP_CHAIN);
+    } else {
+      if (this.chain) this.emitChain(); // (the budget travels as a parameter)
+      c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
+      this.flushAll();
+      c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+      c.get(L_TV).return_();
+    }
     c.end(); // exitCodeL: exit with code (tV = eip, t2 = code)
     c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
     this.flushAll();
@@ -920,7 +963,7 @@ class Emitter {
     const out = blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end }));
     if (this.layout) out.sort((x, y) => x.eip - y.eip);
     // (deps in address order, as code-cache.js inlineDeps over a discovery pass gives them)
-    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume, altAt: this.altAt, deps: inlineDeps(this.discovered) };
+    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume === null || this.topAssume === null ? this.fpcAssume : this.fpcAssume | X87_MODE_TOP | this.topAssume, altAt: this.altAt, deps: inlineDeps(this.discovered) };
   }
 
   /**
@@ -958,6 +1001,19 @@ class Emitter {
    * the top level): a nested loop's label with L_BLK unchanged, a block through a trampoline setting L_BLK to
    * -1 first — outside a dispatch L_BLK is always -1, so a loop head only tests its sign.
    */
+  /**
+   * Region entry at its first block (opts.entryFast): a compare instead of the dispatcher's br_table (an indirect jump),
+   * taken by the chained transitions into the region's entry and the dispatches back to it.
+   */
+  entryFastPath(top) {
+    const c = this.c, e = this.x87EntryIdx;
+    const tu = top.find((u) => u.first <= e && e <= u.last) ?? null;
+    if (!tu || (tu.loop && tu.first !== e)) return;
+    c.get(L_BLK).i32(e).eq();
+    const i = c.if_();
+    c.i32(-1).set(L_BLK).br(tu.label);
+    c.end(); void i;
+  }
   dispatchAmong(units, first, last, parent, def) {
     const c = this.c;
     const childOf = (j) => { const p = this.pathOf[j], i = parent ? p.indexOf(parent) : -1; return i + 1 < p.length ? p[i + 1] : this.blockUnit[j]; };
@@ -986,7 +1042,7 @@ class Emitter {
     const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
     c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; }
     // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
-    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
+    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { if (this.coldChain) c.hint(false); const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
     // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
     // raises the access violation)
@@ -997,7 +1053,7 @@ class Emitter {
     for (let p = 0; p < HASH_PROBES; p++) {
       c.get(L_T2); if (p) c.i32(p).add();
       c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
-      c.i32load(0).get(L_TV).eq().br_if(found);
+      c.i32load(0).get(L_TV).eq(); if (this.coldChain && p === 0) c.hint(true); c.br_if(found); // (coldChain: the other probes out of line)
     }
     why(3);
     c.br(noChain);
@@ -1202,11 +1258,12 @@ class Emitter {
   }
   /** x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block. */
   loadX87() {
-    const c = this.c;
     this.loadX87Tags();
-    c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC);
+    this.loadX87Fpc();
     this.loadX87Regs();
   }
+  /** L_FPC <- the control word's PC/RC bits. */
+  loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); }
   /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
   flushFpu() {
     const c = this.c;

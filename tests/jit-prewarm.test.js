@@ -36,7 +36,7 @@ test('regions learned by one run are translated ahead by the next: no miss, same
   assert.equal(runAll(a.jit), EXIT.HALT);
   assert.ok(a.jit.learned.length >= 1);
   assert.equal(a.jit.learned.length, a.jit.stats.misses, 'one entry per miss');
-  assert.ok(a.jit.learned.some(([, fpc]) => fpc === 0), 'the x87 mode assumed (24-bit) is kept');
+  assert.ok(a.jit.learned.some(([, fpc]) => fpc !== null && (fpc & 0xf00) === 0), 'the x87 mode assumed (24-bit) is kept');
 
   const b = setup();
   for (const [eip, fpc] of a.jit.learned) assert.equal(b.jit.prewarm(eip, fpc), true);
