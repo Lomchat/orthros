@@ -637,6 +637,8 @@ export function discoverRegion(mem, entry, opts) {
   // numbering an x87-mode version must repeat (the heat may have grown since)
   const only = opts.onlyBlocks ?? null;
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
+  // (measurement, startbench --jit-sites: the successors left out for the region's size)
+  const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
@@ -646,7 +648,7 @@ export function discoverRegion(mem, entry, opts) {
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS && !cold(insn.addr, t)) { leaders.add(t); queue.push(t); } };
+      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && !cold(insn.addr, t)) { if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t); } };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
@@ -679,7 +681,7 @@ export function discoverRegion(mem, entry, opts) {
     blocks.push(b);
     byEip.set(eip, b);
   }
-  return { blocks, byEip };
+  return { blocks, byEip, limited };
 }
 
 /** the type and import sections, identical in every region module, are encoded once */
@@ -822,6 +824,15 @@ export function buildRegionModule(codes, names = null, shared = false) {
   return m.build();
 }
 
+/**
+ * Measurement (startbench --jit-sites: globalThis.ORTHROS_SITE_PROF, Node only, not with block counters): the region
+ * exit sites — indirect calls and jumps, returns leaving their region, static exits (to a successor left out for the
+ * region's size: exitLim; of a call: ...Call) — count their executions, last target and target changes in three u32
+ * counter slots (allocBlockCounters) per site address and kind, shared by the regions holding the site.
+ * SITE_PROF: [guest address (static exits: the target), kind, slot address].
+ */
+export const SITE_PROF = [];
+const SITE_SLOTS = new WeakMap(); // guest memory -> (kind:address -> slot address): the slots are allocated in that memory
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
 export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87',
   // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
@@ -913,7 +924,8 @@ class Emitter {
   }
 
   run(entry) {
-    let { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip, limited } = discoverRegion(this.mem, entry, this.opts);
+    this.limited = limited; // (measurement: see siteProf)
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.discovered = blocks; // (address order)
     this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
@@ -1376,8 +1388,20 @@ class Emitter {
   // afterwards: an exit emitted inside an `if` (SMC check, budget, JCC) must not alter the state
   // the fallthrough path continues with.
   /** exit the region jumping to the eip on the stack (charges the block's instructions so far) */
+  /** Measurement (see SITE_PROF): count an exit of kind `kind` at `addr`, target in L_TV. */
+  siteProf(addr, kind) {
+    if (!globalThis.ORTHROS_SITE_PROF || this.opts.blockCounts) return;
+    const key = kind + ':' + addr;
+    let slots = SITE_SLOTS.get(this.mem); if (!slots) SITE_SLOTS.set(this.mem, slots = new Map());
+    let a = slots.get(key);
+    if (a === undefined) { a = allocBlockCounters(this.mem, 3); if (a < 0) return; slots.set(key, a); SITE_PROF.push([addr, kind, a]); }
+    const c = this.c;
+    c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a);
+    c.i32(0).i32load(a + 4).get(L_TV).ne();
+    const i = c.if_(); c.i32(0).i32(0).i32load(a + 8).i32(1).add().i32store(a + 8); c.i32(0).get(L_TV).i32store(a + 4); c.end(); void i;
+  }
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
@@ -2626,6 +2650,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
   }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
   E.count(PF.indirect);
+  if (globalThis.ORTHROS_SITE_PROF) { E.c.set(L_TV); E.siteProf(insn.addr, 'ijmp'); E.c.get(L_TV); }
   E.exitToStack();
 };
 HANDLERS[OP.JCC] = (E, insn, b) => {
@@ -2639,7 +2664,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   const c = E.c; const t = insn.ops[0];
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
-    E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length);
+    E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false; // (inCall: see siteProf)
     return;
   }
   // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
@@ -2657,6 +2682,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
+  if (globalThis.ORTHROS_SITE_PROF) { c.set(L_TV); E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall'); c.get(L_TV); }
   E.exitToStack();
   if (api) c.end(); // done: the block continues after the call
 };
@@ -2750,6 +2776,7 @@ HANDLERS[OP.RET] = (E, insn) => {
     const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
   }
   E.count(PF.ret);
+  E.siteProf(insn.addr, 'ret');
   c.get(L_TV);
   E.exitToStack();
 };
