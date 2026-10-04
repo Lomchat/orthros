@@ -62,8 +62,11 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   have run, `VisitSlots`, set at the block's entry; `Jit.harvestVisits` every 10 s in the page worker), learned per
   game by the server (`/api/heat/<manifest>`, module + offset ranges, `heat-<manifest>.json` in the learn directory)
   and applied as modules load, to the background translator as well. An x87-mode version repeats its first version's
-  blocks (`onlyBlocks`), the heat having possibly grown since. The persistent translated-code cache (docs/startup.md) keeps with each region
-  the heat answers its translation got and reuses it only under the same answers; its visit flags are relocated. Measurement helpers: `Jit.collectHeat` (block counters),
+  blocks (`onlyBlocks`), the heat having possibly grown since. The persistent translated-code cache (docs/startup.md)
+  reuses a region where the heat of now gives its extent and it flags every block the heat does not know (its visit
+  flags relocated, those of blocks the heat learned since sent to a sink byte); a new shape of the same code
+  supersedes the old one, and the shapes of a session's regions are brought up to the heat it taught while the
+  background translator is idle. Measurement helpers: `Jit.collectHeat` (block counters),
   `dbg:ORTHROS_JIT_HEAT` / `dbg:ORTHROS_JIT_HARVEST` in Node scenarios, `startbench --heat <file> / --heat-out <file>`.
   - Browser, concurrent session pairs with the same learned heat, cold exits on / off (`?jitopts={"coldExits":false}`),
     guest time per instruction in play (`guestMsPerMInsn`; play + p2 phases, 3 pairs per game, alternated order):
