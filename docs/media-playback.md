@@ -144,3 +144,16 @@ or skipped), lateness at most 10-16 ms, 39.48 s of sound mixed (no underrun). On
 
 The movies can be skipped (a key or a click: the game stops and releases the
 graph, the layer disappears) and the game goes on to its main menu.
+
+## Checks
+
+- `make test`: tests/media-mpeg.test.js, media-audio-files.test.js, media-avi.test.js (decoders; against ffmpeg when it
+  is installed), quartz.test.js and mci.test.js (tools/pe/quartz.c and mci.c through the COM / winmm ABI, an MPEG
+  movie and an AVI each).
+- `tools/with-browser-slot.sh node tools/media-browser-check.mjs`: MP3 through WebCodecs and the VideoFrame colors in
+  headless Chromium against ffmpeg.
+- The test programs in the browser: a folder holding `build/pe/mci.exe` (or `quartz.exe`) with `movie.mpg` (and
+  `clip.avi`, written by tests/media-avi-writer.js) runs with `node tools/headless.mjs <folder> --games-dir
+  /srv/orthros/data_games --log video,stdout --audio`; its output lines match the Node test's (real time: the MPEG movie
+  ends after 1177-1201 ms, notifications, frames, from / to).
+- Vice City: `tools/scenarios/vicecity-movies.txt` (shots during the movies, Enter then a click to skip them).
