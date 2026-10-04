@@ -184,15 +184,17 @@ export class Scheduler {
    * @param {(() => any)=} claim runs as soon as cond holds — at the wake-up, before any other thread runs — to
    *   take the awaited object (mutex ownership, auto-reset event, semaphore count) exactly like the Windows kernel
    *   satisfies a wait at signal time; its value is left in `thread.wakeValue` for the re-executed call.
+   * @param {boolean=} tick a guest timeout (Sleep, the Wait functions): it ends at the first clock interrupt at or after
+   *   it, as Windows' kernel timers do (Sleep(1) lasts a tick: core/timer-res.js); the emulator's own short waits are exact
    * @returns {boolean} true if cond became true, false on timeout
    */
-  block(thread, cond, timeoutMs, reason, claim) { return this.wait(thread, cond, timeoutMs, reason, claim, false); }
+  block(thread, cond, timeoutMs, reason, claim, tick) { return this.wait(thread, cond, timeoutMs, reason, claim, false, tick); }
   /**
    * block() for a handler that returns PARK to the dispatcher instead of throwing WaitUnwind: the result is PARK when
    * the thread parks (the handler must return it at once), else block()'s result.
    */
-  park(thread, cond, timeoutMs, reason, claim) { return this.wait(thread, cond, timeoutMs, reason, claim, true); }
-  wait(thread, cond, timeoutMs, reason, claim, park) {
+  park(thread, cond, timeoutMs, reason, claim, tick) { return this.wait(thread, cond, timeoutMs, reason, claim, true, tick); }
+  wait(thread, cond, timeoutMs, reason, claim, park, tick) {
     if (thread.wakeResult !== undefined) { // re-executed call after an unwound wait: the recorded outcome
       const r = thread.wakeResult;
       thread.wakeResult = undefined; thread.resuming = false;
@@ -202,7 +204,7 @@ export class Scheduler {
     const clock = this.vm.clock;
     if (cond()) { thread.wakeValue = claim ? claim(false) : undefined; return true; }
     const now = clock.now();
-    const deadline = timeoutMs === INFINITE ? Infinity : now + timeoutMs;
+    const deadline = timeoutMs === INFINITE ? Infinity : tick && timeoutMs > 0 && this.vm.timerRes ? this.vm.timerRes.tickAt(now + timeoutMs) : now + timeoutMs;
     if (now >= deadline) return false;
     if (this.vm.canUnwind(thread)) {
       const w = { cond, deadline, reason, claim };

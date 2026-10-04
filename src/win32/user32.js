@@ -164,7 +164,8 @@ export class WindowManager {
     q.msgs.push({ hwnd: w ? w.hwnd : 0, msg, wParam: wParam >>> 0, lParam: lParam >>> 0, time: this.tick(), pt: { ...this.cursor } });
   }
 
-  tick() { return (0x1000000 + Math.floor(this.vm.clock.now())) >>> 0; }
+  /** a message's time: GetTickCount's value (the 15.625 ms tick, core/timer-res.js; 0x1000000: TICK_BASE) */
+  tick() { return (0x1000000 + (this.vm.timerRes ? this.vm.timerRes.tickCount(this.vm.clock.now()) : Math.floor(this.vm.clock.now()))) >>> 0; }
 
   writeMsg(addr, m) {
     const mem = this.mem;
@@ -367,7 +368,7 @@ export class WindowManager {
     if (inRange(WM.TIMER)) {
       const t = this.dueTimer(thread, hwndFilter);
       if (t) {
-        if (remove) { const now = this.vm.clock.now(); t.due += t.elapse; if (t.due < now) t.due = now + t.elapse; }
+        if (remove) { const now = this.vm.clock.now(); t.due += t.elapse; if (t.due < now) t.due = now + t.elapse; t.due = this.vm.timerRes?.tickAt(t.due) ?? t.due; }
         return { hwnd: t.hwnd, msg: WM.TIMER, wParam: t.id, lParam: t.proc, time: this.tick(), pt: { ...this.cursor } };
       }
     }
@@ -941,7 +942,7 @@ export function registerUser32(api, vm) {
       if (i >= 0 && (!all || objs.every((o) => isSignaled(o, t)))) { if (all) objs.forEach((o) => consumeSignal(o, t)); else consumeSignal(objs[i], t); return WAIT_OBJECT_0 + (all ? 0 : i); }
       return WAIT_OBJECT_0 + n; // a message
     };
-    const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim);
+    const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim, true);
     if (!ok) return WAIT_TIMEOUT;
     return t.wakeValue;
   }];
@@ -956,8 +957,11 @@ export function registerUser32(api, vm) {
     if (!w) id = wm().nextTimerId++;
     const timers = c.proc.timers;
     const existing = timers.find((t) => t.kind === 'wm' && t.hwnd === (w ? w.hwnd : 0) && t.id === id && (w || t.thread === c.thread));
-    if (existing) { existing.elapse = elapse; existing.due = vm.clock.now() + elapse; existing.proc = c.arg(3); return id; }
-    timers.push({ kind: 'wm', hwnd: w ? w.hwnd : 0, id, elapse, due: vm.clock.now() + elapse, proc: c.arg(3), thread: w ? w.thread : c.thread });
+    // (a USER timer expires at the clock interrupt like the kernel's: SetTimer(10) fires every 15.6 ms at the default
+    // resolution — core/timer-res.js)
+    const due = vm.timerRes.tickAt(vm.clock.now() + elapse);
+    if (existing) { existing.elapse = elapse; existing.due = due; existing.proc = c.arg(3); return id; }
+    timers.push({ kind: 'wm', hwnd: w ? w.hwnd : 0, id, elapse, due, proc: c.arg(3), thread: w ? w.thread : c.thread });
     return id;
   }];
   U.KillTimer = [2, (c) => { const before = c.proc.timers.length; c.proc.timers = c.proc.timers.filter((t) => !(t.kind === 'wm' && t.hwnd === c.arg(0) && t.id === c.arg(1))); return before !== c.proc.timers.length ? 1 : 0; }];

@@ -13,6 +13,7 @@ import { Process, TS } from '../win32/process.js';
 import { Scheduler, WaitUnwind, PARK } from './sched.js';
 import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
+import { timerResFromDebug } from './timer-res.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
@@ -50,6 +51,8 @@ export class Vm {
   constructor(opts) {
     this.vfs = opts.vfs;
     this.clock = opts.clock ?? new RealClock();
+    /** the guest's clock interrupt (timer-res.js): when timed waits end, the tick counters' steps, timeBeginPeriod */
+    this.timerRes = opts.timerRes ?? timerResFromDebug();
     this.host = opts.host ?? null;
     /** instructions per thread slice (tests: other interleavings) */
     this.sliceInsns = opts.sliceInsns || Number(globalThis.ORTHROS_SLICE_INSNS) || SLICE_INSNS;
@@ -61,7 +64,7 @@ export class Vm {
     this.interp.nullPage = nullPage;
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
