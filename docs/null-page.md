@@ -57,7 +57,9 @@ Guest time per instruction in RotWK's play (the frame accounting's `guest` per i
 within the spread: 3.57 / 3.66 / 3.51 ns with the checks, 3.57 / 3.66 / 3.74 without; in-session A/B (`dbg:ORTHROS_JIT_AB=
 {"nullPage":false}`, tools/scenarios/*-nullpage-ab.txt, three alternations, both orders) gave +1 to +6 % per session
 for the checks, but variants with half of the added code removed gave the same +2 % and −3 to −4 % — the phases of one
-session differ by ±5 %, more than what is measured. What is left of the cost in 'writes' mode is
+session differ by ±5 %, more than what is measured. BFME1 in Node (`tools/scenarios/bfme-phases.txt` to a skirmish, four runs side by side, `ORTHROS_NULL_PAGE_OPEN=1` for
+the open page; 2026-10-04 evening, main merged): play (160 s, 6 140 frames) 3.153 / 3.163 ns per guest instruction with
+the checks, 3.131 / 3.174 without; the loading screen (40 G instructions) 1.529 / 1.447 against 1.437 / 1.445. What is left of the cost in 'writes' mode is
 compilation (the explicit checks of string stores, two stores in the SMC cold path of every plain store); the
 translated code runs as fast. The cost of reads is mostly the code they add, not the compare: every check is a cold exit
 (the region's state written back), and TurboFan compiles the larger functions more slowly.
