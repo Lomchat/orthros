@@ -77,4 +77,14 @@ inside its audio update. Ruled out along the way (no hit in clean or failing run
 Interlocked semantics (syncstress), file data (`ORTHROS_VERIFY_READS`), parked-read destinations, released memory and
 COM objects, stack overflow, writes by JS outside allocated regions.
 
-Before / after numbers: see the commit message of the scheduler change and STATUS.
+Before / after (2026-10-04, headless Chromium, `--glworker 1 --gl-discard --timescale 1.5`, 180 s runs from the warm
+profile, skirmish-setup click at ~150 s, `ORTHROS_SLICE_INSNS=20000,ORTHROS_NULL_WATCH=1`, the two arms run at the same
+time, side by side, from the same tree):
+
+| arm | runs | failures | first anomaly | mean frames of clean runs |
+|---|---|---|---|---|
+| `ORTHROS_SCHED_ROUND_ROBIN=1` (old scheduler) | 40 | 6 (3 calls through 0, from +0x1885e0 twice and +0x5c5a31; 1 exception with no stack to dispatch it on; 1 other crash, then the game exits with 666; 1 hang, then the renderer crashes) | every one: the main thread's null-page write at the double free, during the click | 3219 |
+| priorities (this change) | 40 | 0 | no null-page write in any run | 3284 |
+
+(Fisher exact test, one-sided: p ≈ 0.012.) Earlier, round robin at the default slice: about 10 failures in ~175 runs
+(5-10 % depending on the machine load).
