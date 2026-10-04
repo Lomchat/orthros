@@ -37,17 +37,25 @@ fault in translated code.
 zeros (the pages stay zero: nothing can store there) and a read past 2 GiB still traps.
 
 Why: writes are what corrupt; they are checked at no cost on the JIT's hot path (below). Checking every read costs a
-compare and a branch per load that is not proven safe, which was measured (RotWK, Node, 45 G guest instructions from
-the warm profile into a skirmish, `perf stat -e instructions:u` of the whole process, alternated runs):
+compare and a branch per load that is not proven safe. Measured in Node (`tools/startbench.mjs` with the menu-to-skirmish
+scenarios, from the warm profiles, `perf stat -e instructions:u` of the whole process — the compilers' threads included
+—, the variants run side by side in pairs):
 
-| variant | host instructions | of which (perf record) |
+| variant (RotWK, first 45 G guest instructions) | host instructions | perf record |
 |---|---|---|
 | no checks | 802 / 820 / 834 / 821 G | JIT code 54.1 %, compiler threads 26.5 % |
 | reads and writes, a check per access group | 904 / 948 / 946 G (+13 %) | JIT code +7.6 %, compilation +28 % |
-| writes only | see the measurements section | |
 
-Most of the cost of reads is not the compare but the code it adds: every check is a cold exit (the region's state
-written back), and TurboFan compiles the larger functions more slowly (translation time +12 %).
+| variant (final code) | RotWK, 60 G instructions | BFME1, 50 G instructions | |
+|---|---|---|---|
+| no checks | 1008 / 1030 G | 717.0 / 715.7 G | |
+| writes only (the default) | 1019 / 1053 G (+1.1 / +2.3 %) | 727.1 / 726.9 G (+1.4 / +1.6 %) | translation time +5 % |
+
+Guest time per instruction in RotWK's play (the frame accounting's `guest` per instruction, 30 s phases) is the same:
+3.57 / 3.66 / 3.51 ns with the checks, 3.57 / 3.66 / 3.74 without. What is left of the cost in 'writes' mode is
+compilation (the explicit checks of string stores, two stores in the SMC cold path of every plain store); the
+translated code runs as fast. The cost of reads is mostly the code they add, not the compare: every check is a cold exit
+(the region's state written back), and TurboFan compiles the larger functions more slowly.
 
 ## How the JIT checks
 
