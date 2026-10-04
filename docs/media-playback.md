@@ -44,6 +44,27 @@ Files that cannot be played get the results of a Windows lacking the codec, so t
 that cannot be decoded: the video plays silent). A graph run without anything rendered (a game ignoring RenderFile's
 failure) completes at once (`EC_COMPLETE`): a movie of no length.
 
+## MCI (src/win32/mci.js)
+
+The other way Windows programs play a movie or a sound file: the Media Control Interface's digital video and wave
+audio devices (`MPEGVideo`, `AVIVideo`, `digitalvideo`, `waveaudio`; a file's type from its extension as Windows'
+[MCI Extensions] say, or `type` / `device!file`), through `mciSendString(A/W)` and `mciSendCommand(A/W)`:
+
+- `open` (alias, `parent` / `style child`, the device ID returned), `close` (`all`), `play` (`from` / `to`, `notify`,
+  `wait`, `fullscreen`, `repeat`; a file name played without `open`: opened on the fly), `stop`, `pause`, `resume`,
+  `seek` (`to start` / `end` / a position), `status` (mode, length, position, ready, time format, window handle...),
+  `set time format` (milliseconds, frames — `AVIVideo`'s default), `set audio`, `setaudio volume`, `window` (`handle`,
+  `state`), `put` / `where` (window, destination, source), `info`, `capability`; `mciGetErrorString`,
+  `mciGetDeviceID`; the command messages `MCI_OPEN`, `MCI_PLAY`, `MCI_STOP`, `MCI_PAUSE`, `MCI_RESUME`, `MCI_SEEK`,
+  `MCI_STATUS`, `MCI_SET`, `MCI_WINDOW`, `MCI_PUT`, `MCI_WHERE`, `MCI_CLOSE`.
+- The pictures: in the window given by `window handle` (its client area, at the video's size unless a destination is
+  put), as a child of `parent`, or the device's own window (centered, the video's size); full screen with `fullscreen`.
+- `notify`: `MM_MCINOTIFY` posted to the callback window (`MCI_NOTIFY_SUCCESSFUL` at the end, `SUPERSEDED` / `ABORTED`
+  when another play, a stop or a close comes first). `wait`: the calling thread waits for the end (the others run).
+- Other device types (`cdaudio`, `sequencer`...) answer `MCIERR_INVALID_DEVICE_ID` as before: programs go on without.
+
+Both APIs drive the same playback engine, `MoviePlayer` (src/win32/movie-player.js).
+
 ## Formats (src/media)
 
 What Windows plays with its own splitters and codecs (no codec pack installed). Chrome decodes none of the video and
