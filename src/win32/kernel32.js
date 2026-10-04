@@ -305,7 +305,7 @@ export function registerKernel32(api, vm) {
       return;
     }
     if (ms <= 2) st.short++; else st.long++;
-    return vm.sched.park(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep') === PARK ? PARK : undefined;
+    return vm.sched.park(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep', undefined, true) === PARK ? PARK : undefined;
   };
   function NEVER() { return false; } // (a sleep's wake condition: the timeout alone)
   K.Sleep = [1, (c) => sleep(c, c.arg(0))]; // (undefined, or PARK: the thread parks)
@@ -420,7 +420,7 @@ export function registerKernel32(api, vm) {
     const to = ms === INFINITE ? INFINITE : ms;
     if (o.type === 'mutex' && t.wakeResult === undefined) o.waiters = true; // (about to park: releases go through JavaScript)
     const ok = vm.sched.park(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, o.waitReason ??= `wait:${o.type} 0x${(o.handle ?? 0).toString(16)}`,
-      () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0));
+      () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0), true);
     if (ok === PARK) return PARK; // (the thread parks: the handlers return it to the dispatcher)
     if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
@@ -442,7 +442,7 @@ export function registerKernel32(api, vm) {
       let i = 0; while (!isSignaled(objs[i], t)) i++;
       return consumeSignal(objs[i], t) + i;
     };
-    const ok = vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany', claim);
+    const ok = vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany', claim, true);
     if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
     return t.wakeValue;
@@ -633,8 +633,9 @@ export function registerKernel32(api, vm) {
 
   // ---------------------------------------------------------------- time
   // (TICK_BASE: a fake uptime so GetTickCount does not start at 0; the JIT's fast path computes the same value)
-  K.GetTickCount = [0, () => (TICK_BASE + Math.floor(vm.clock.now())) >>> 0];
-  K.GetTickCount64 = [0, (c) => { const t = BigInt(TICK_BASE + Math.floor(vm.clock.now())); c.cpu.edx = Number(t >> 32n); return Number(t & 0xffffffffn); }];
+  // (the tick count steps by the 15.625 ms clock tick, as Windows': core/timer-res.js)
+  K.GetTickCount = [0, () => (TICK_BASE + vm.timerRes.tickCount(vm.clock.now())) >>> 0];
+  K.GetTickCount64 = [0, (c) => { const t = BigInt(TICK_BASE + vm.timerRes.tickCount(vm.clock.now())); c.cpu.edx = Number(t >> 32n); return Number(t & 0xffffffffn); }];
   K.QueryPerformanceFrequency = [1, (c) => { c.out64(0, 10000000n); return 1; }];
   K.QueryPerformanceCounter = [1, (c) => { c.out64(0, BigInt(Math.floor(vm.clock.now() * 10000))); return 1; }];
   K.GetSystemTimeAsFileTime = [1, (c) => { c.out64(0, msToFiletime(vm.clock.wall())); }];

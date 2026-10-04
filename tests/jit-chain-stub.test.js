@@ -10,7 +10,7 @@ import { buildRuntime, HASH_ENTRY, REGION_ARG_OFFSETS } from '../src/cpu/jit/run
 function instance(tailCalls) {
   const mem = new GuestMemory();
   const table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
-  const rt = new WebAssembly.Instance(new WebAssembly.Module(buildRuntime({ tailCalls })), { env: { memory: mem.memory, table, now: () => 0 } }).exports;
+  const rt = new WebAssembly.Instance(new WebAssembly.Module(buildRuntime({ tailCalls })), { env: { memory: mem.memory, table, now: () => 0, mmTime: () => 0, tickCount: () => 0 } }).exports;
   return { mem, table, rt };
 }
 

@@ -3,6 +3,7 @@
 // axes, buttons, wheel), immediate and buffered data, cooperative levels, enumeration.
 import { Com, readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG } from './com.js';
 import { wmOf } from './user32.js';
+import { TICK_BASE } from '../cpu/jit/runtime.js';
 
 const DI_OK = 0, DI_NOTATTACHED = 1, DI_BUFFEROVERFLOW = 1, DIERR_INPUTLOST = 0x8007001e, DIERR_NOTACQUIRED = 0x8007000c, DIERR_NOTINITIALIZED = 0x80070015, DIERR_INVALIDPARAM = 0x80070057, DIERR_DEVICENOTREG = 0x80040154, DIERR_UNSUPPORTED = 0x80004001, DIERR_ACQUIRED = 0x800700aa, DIERR_OTHERAPPHASPRIO = 0x80070005;
 const GUID_SysKeyboard = '6f1d2b61-d5a0-11cf-bfc7-444553540000', GUID_SysMouse = '6f1d2b60-d5a0-11cf-bfc7-444553540000';
@@ -70,7 +71,9 @@ export function registerDirectInput(api, vm) {
     push(ofs, data) {
       if (!this.bufferSize) return;
       if (this.queue.length >= this.bufferSize) { this.overflow = true; this.queue.shift(); }
-      this.queue.push({ ofs, data: data >>> 0, time: Math.floor(vm.clock.now()) >>> 0, seq: this.seq++ });
+      // (dwTimeStamp: the system time in ms, GetTickCount's value — before, the clock without GetTickCount's base: events
+      // 4.6 hours older than GetTickCount for a program comparing the two)
+      this.queue.push({ ofs, data: data >>> 0, time: (TICK_BASE + vm.timerRes.tickCount(vm.clock.now())) >>> 0, seq: this.seq++ });
       if (this.event) { const o = vm.proc.handles.getAs(this.event, 'event'); if (o) o.signaled = true; };
     }
     onRaw(ev) {

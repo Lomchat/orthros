@@ -160,6 +160,8 @@ const report = (why) => {
 };
 // --api-hist: the API calls dispatched to JavaScript (the WASM fast paths not counted), most frequent first, with the report
 const apiHist = args.includes('--api-hist') ? new Map() : null;
+// (the tick counters' reads, the translated code's fast paths included: GetTickCount / timeGetTime by any path)
+if (apiHist) for (const [k, n] of [['tickCount', 'GetTickCount (all paths)'], ['mmTime', 'timeGetTime (all paths)']]) { const f = vm.timerRes[k].bind(vm.timerRes); vm.timerRes[k] = (t) => { apiHist.set(n, (apiHist.get(n) ?? 0) + 1); return f(t); }; }
 // --threads: guest instructions per thread (nested runs charged to the outermost), with the report
 const threadInsns = args.includes('--threads') ? new Map() : null;
 if (threadInsns) {

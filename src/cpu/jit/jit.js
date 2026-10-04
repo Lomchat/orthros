@@ -69,7 +69,7 @@ export class Jit {
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
     const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared, countChains: opts.countChains, tailCalls: supportsReturnCall() }));
-    this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table, now: opts.now ?? (() => 0) } }).exports;
+    this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table, now: opts.now ?? (() => 0), mmTime: opts.mmTime ?? opts.now ?? (() => 0), tickCount: opts.tickCount ?? opts.now ?? (() => 0) } }).exports;
     this.imports = {
       env: {
         memory: mem.memory,

@@ -1,4 +1,5 @@
 // M2: PE loader + Win32 bootstrap. Runs CRT-free test programs built by tools/pe/build.sh.
+import { TimerResolution } from '../src/core/timer-res.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,7 +22,7 @@ function boot(exeName, opts = {}) {
   for (const [name, path] of Object.entries(opts.files ?? {})) test.open(name, { create: true }).write(0, fs.readFileSync(path));
   const clock = new VirtualClock();
   const host = new HeadlessHost({ clock, width: 800, height: 600 });
-  const vm = new Vm({ vfs, clock, host, jit: opts.jit, apiHist: opts.apiHist, nullPage: opts.nullPage, logKinds: opts.logKinds ?? ['warn', 'crash'] });
+  const vm = new Vm({ vfs, clock, host, jit: opts.jit, apiHist: opts.apiHist, nullPage: opts.nullPage, timerRes: opts.timerRes, logKinds: opts.logKinds ?? ['warn', 'crash'] });
   vm.createProcess({ exePath: 'C:\\Test\\' + exeName });
   return { vm, host, clock };
 }
@@ -155,7 +156,9 @@ test('gdiplus.exe: GDI+ image loading (PNG/JPEG), LockBits, HBITMAP export, alph
 });
 
 test('dx.exe: DirectSound buffers/cursors, DirectInput keyboard+mouse, Direct3D 8 device/resources', { skip: skip('dx.exe') }, () => {
-  const { vm, host } = boot('dx.exe', { jit: true });
+  // (exact sleeps — no clock-interrupt rounding, core/timer-res.js: the scripted events and the play cursors below are
+  // timed on the program's Sleep durations)
+  const { vm, host } = boot('dx.exe', { jit: true, timerRes: new TimerResolution(0) });
   const base = 2850; // virtual ms consumed by the DirectSound sleeps before the DirectInput part
   host.at(base + 20, { type: 'keydown', vk: 0x41, scan: 0x1e });
   host.at(base + 50, { type: 'mousemove', x: 100, y: 100 });

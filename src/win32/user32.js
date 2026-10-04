@@ -164,7 +164,8 @@ export class WindowManager {
     q.msgs.push({ hwnd: w ? w.hwnd : 0, msg, wParam: wParam >>> 0, lParam: lParam >>> 0, time: this.tick(), pt: { ...this.cursor } });
   }
 
-  tick() { return (0x1000000 + Math.floor(this.vm.clock.now())) >>> 0; }
+  /** a message's time: GetTickCount's value (the 15.625 ms tick, core/timer-res.js; 0x1000000: TICK_BASE) */
+  tick() { return (0x1000000 + (this.vm.timerRes ? this.vm.timerRes.tickCount(this.vm.clock.now()) : Math.floor(this.vm.clock.now()))) >>> 0; }
 
   writeMsg(addr, m) {
     const mem = this.mem;
@@ -941,7 +942,7 @@ export function registerUser32(api, vm) {
       if (i >= 0 && (!all || objs.every((o) => isSignaled(o, t)))) { if (all) objs.forEach((o) => consumeSignal(o, t)); else consumeSignal(objs[i], t); return WAIT_OBJECT_0 + (all ? 0 : i); }
       return WAIT_OBJECT_0 + n; // a message
     };
-    const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim);
+    const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim, true);
     if (!ok) return WAIT_TIMEOUT;
     return t.wakeValue;
   }];

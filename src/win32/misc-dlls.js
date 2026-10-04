@@ -8,7 +8,7 @@ import { defineWinsock } from './winsock.js';
 import { verifyAuthenticode, peLayout, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN } from './authenticode.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
-const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167;
+const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167, TIMERR_NOCANDO = 97;
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -21,11 +21,12 @@ export function registerMiscDlls(api, vm) {
 
   // ---------------------------------------------------------------- winmm
   const W = {};
-  W.timeGetTime = [0, () => (TICK_BASE + Math.floor(vm.clock.now())) >>> 0];
-  W.timeBeginPeriod = [1, () => MMSYSERR_NOERROR];
-  W.timeEndPeriod = [1, () => MMSYSERR_NOERROR];
+  // (the system timer resolution: timeGetTime's steps, when sleeps and timed waits end — core/timer-res.js)
+  W.timeGetTime = [0, () => (TICK_BASE + vm.timerRes.mmTime(vm.clock.now())) >>> 0];
+  W.timeBeginPeriod = [1, (c) => { const ok = vm.timerRes.begin(c.arg(0)); vm.log('timer', `timeBeginPeriod(${c.arg(0)}) t${c.thread.id} -> resolution ${vm.timerRes.ms} ms`); return ok ? MMSYSERR_NOERROR : TIMERR_NOCANDO; }];
+  W.timeEndPeriod = [1, (c) => { const ok = vm.timerRes.end(c.arg(0)); vm.log('timer', `timeEndPeriod(${c.arg(0)}) t${c.thread.id} -> resolution ${vm.timerRes.ms} ms`); return ok ? MMSYSERR_NOERROR : TIMERR_NOCANDO; }];
   W.timeGetDevCaps = [2, (c) => { mem.write32(c.arg(0), 1); mem.write32(c.arg(0) + 4, 1000000); return MMSYSERR_NOERROR; }];
-  W.timeGetSystemTime = [2, (c) => { mem.write32(c.arg(0), 1); mem.write32(c.arg(0) + 4, (TICK_BASE + Math.floor(vm.clock.now())) >>> 0); return MMSYSERR_NOERROR; }];
+  W.timeGetSystemTime = [2, (c) => { mem.write32(c.arg(0), 1); mem.write32(c.arg(0) + 4, (TICK_BASE + vm.timerRes.mmTime(vm.clock.now())) >>> 0); return MMSYSERR_NOERROR; }];
   W.timeSetEvent = [5, (c) => {
     const delay = Math.max(c.arg(0), 1), fn = c.arg(2), user = c.arg(3), flags = c.arg(4);
     const id = c.proc.nextMmTimer = (c.proc.nextMmTimer ?? 0x100) + 1;

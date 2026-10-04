@@ -166,6 +166,8 @@ export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
 export const FID_ADDREF = 21, FID_RELEASE = 22;
+/** GetTickCount's fast path (timeGetTime's is 19: they step differently, core/timer-res.js) */
+export const FID_TICKCOUNT = 28;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 /** +0 bytes used, +4 nonzero when a queued record may change reference counts (DEFER_REFS), +8 nonzero when one may
  * change device states (DEFER_STATES), records from +16 */
@@ -202,7 +204,7 @@ export const DEFER_SPECS = {
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
-  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 19, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
+  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
 /** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
 export const TICK_BASE = 0x1000000;
 
@@ -252,6 +254,8 @@ export function buildRuntime(opts = {}) {
   m.importMemory('env', 'memory', 32768, 32768, !!opts.shared);
   m.importTable('env', 'table', 1024, undefined);
   const nowIdx = m.importFunc('env', 'now', [], [T.f64]); // (the VM clock in ms: the time APIs' fast path)
+  // (timeGetTime's and GetTickCount's milliseconds: the VM clock at the last clock interrupt / tick, core/timer-res.js)
+  const mmTimeIdx = m.importFunc('env', 'mmTime', [], [T.f64]), tickCountIdx = m.importFunc('env', 'tickCount', [], [T.f64]);
   const regionType = m.type(REGION_PARAMS, REGION_RESULTS);
 
   // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
@@ -378,7 +382,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC) + 1;
+    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT) + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -565,8 +569,8 @@ export function buildRuntime(opts = {}) {
           c.i32(FAST_STATS).i32(FAST_STATS).i32load(4).i32(1).add().i32store(4);
           c.get(STATE).get(TM); ret(1); break;
         }
-        case 19: // timeGetTime, GetTickCount: milliseconds of the VM clock from TICK_BASE (their JavaScript handlers' value)
-          c.get(STATE).call(nowIdx).f64floor().f64c(TICK_BASE).f64add().i64trunc_sat_f64_s().wrap(); ret(0); break;
+        case 19: case FID_TICKCOUNT: // timeGetTime, GetTickCount: their JavaScript handlers' value (timer-res.js) from TICK_BASE
+          c.get(STATE).call(k === 19 ? mmTimeIdx : tickCountIdx).f64c(TICK_BASE).f64add().i64trunc_sat_f64_s().wrap(); ret(0); break;
         case 20: { // QueryPerformanceCounter(p): the VM clock in 100 ns units (QueryPerformanceFrequency: 10 MHz)
           c.get(A0); const nz = c.if_(); c.get(A0).call(nowIdx).f64c(10000).f64mul().f64floor().i64trunc_sat_f64_s().i64store(0, 0); c.end(); void nz;
           c.get(STATE).i32(1); ret(1); break;

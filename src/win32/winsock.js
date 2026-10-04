@@ -43,7 +43,7 @@ export function defineWinsock(WS, vm) {
   /** a thread waits for `cond` (a blocking socket call), or `ms` (Infinity: no limit); true when it holds */
   const waitFor = (c, cond, ms, reason) => {
     if (c.thread.wakeResult === undefined && cond()) return true;
-    return vm.sched.block(c.thread, cond, ms === Infinity ? 0xffffffff : ms, reason);
+    return vm.sched.block(c.thread, cond, ms === Infinity ? 0xffffffff : ms, reason, undefined, true);
   };
   /** WSAAsyncSelect: the window message for event `ev` of socket `s` (once per event until the call re-enables it) */
   const notify = (s, ev, error = 0) => {
