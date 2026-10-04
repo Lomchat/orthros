@@ -78,8 +78,9 @@ export class BrowserDisplay {
   }
   videoDone() {
     const bitmap = this.videoLayer.transferToImageBitmap();
-    if (!this.videoShown) { this.videoShown = true; this.host.post({ type: 'video', visible: true }); }
     this.host.post({ type: 'frame', layer: 'video', bitmap }, [bitmap]);
+    // (shown after its new picture is in place: not the previous movie's last one for a page frame)
+    if (!this.videoShown) { this.videoShown = true; this.host.post({ type: 'video', visible: true }); }
     this.videoFrames++;
   }
   /**
