@@ -5,7 +5,8 @@
 // ONE cache. Each session is a new Jit with the background translator and visit flags: a heat drawn from a small pool
 // (so that sessions repeat an earlier heat — reuse — or bring another one), sometimes grown mid-session between two
 // batches of learned entries (random instruction addresses, random x87 modes: covered entries under heat cuts), flag
-// bytes and table indexes shifted. Every run ends as the interpreter does, and every region the background worker
+// bytes and table indexes shifted, half the programs with a small cache bound (entries superseded, evicted, the file
+// compacted between and during sessions). Every run ends as the interpreter does, and every region the background worker
 // answered — reused or translated — has the extent, block numbering, x87 mode and visit flags a fresh translation
 // under the session's heat of the moment gives.
 import { test } from 'node:test';
@@ -98,13 +99,13 @@ function randomPairs(addrs) {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 test('code cache under heat, adversarial: sessions sharing one cache, heats repeated / changed / grown, x87 modes, covered entries', async () => {
-  let hits = 0, missHeat = 0, missExtent = 0, versions = 0, covered = 0, checked = 0, grown = 0;
+  let hits = 0, missHeat = 0, missExtent = 0, versions = 0, covered = 0, checked = 0, grown = 0, superseded = 0, evicted = 0, compactions = 0;
   for (let t = 0; t < 40; t++) {
     const { code, end } = gen();
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
     const addrs = [];
     for (let a = 0; a <= end;) { addrs.push(CODE + a); a = decode(scratch, CODE + a).next - CODE; }
-    const store = new MemStore();
+    const store = new MemStore(), maxBytes = rnd(2) ? undefined : 6000 + rnd(30000); // (a small bound: evictions, compactions)
     const pool = [null, randomPairs(addrs), randomPairs(addrs), addrs.length ? [CODE, CODE + end + 1] : null];
     const coldMin = 1 + rnd(3);
     for (let k = 0; k < 7; k++) {
@@ -125,7 +126,7 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       let bgOpts = null;
       jit.attachBackground({ postMessage: (msg) => {
         if (msg.type === 'init') bgOpts = msg.opts;
-        handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|adv', store } } : msg, (r) => replies.push(r));
+        handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|adv', store, maxBytes } } : msg, (r) => replies.push(r));
       } });
       await tick();
       const learnedOf = () => addrs.filter(() => rnd(3) === 0).map((a) => [a, rnd(3) ? CWS[rnd(4)] & 0xf00 : null]);
@@ -167,12 +168,13 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       CpuState.foldLazyFlags?.(cpu);
       assert.equal(stateOf(r, mem, cpu), want, `program ${t} session ${k} slice ${slice}: ${Buffer.from(code).toString('hex')}`);
       versions += jit.stats.fpuVersions ?? 0;
-      if (jit.bg.cache) { missHeat += jit.bg.cache.missHeat; missExtent += jit.bg.cache.missExtent; }
+      if (jit.bg.cache) { missHeat += jit.bg.cache.missHeat; missExtent += jit.bg.cache.missExtent; superseded += jit.bg.cache.superseded; evicted += jit.bg.cache.evicted; compactions += jit.bg.cache.compactions; }
     }
   }
   assert.ok(hits > 100, `regions reused: ${hits}`);
   assert.ok(missHeat > 10, `other heat answers: ${missHeat}`);
   assert.ok(missExtent > 10, `other extents: ${missExtent}`);
+  assert.ok(superseded > 10 && evicted > 5 && compactions > 3, `superseded ${superseded}, evicted ${evicted}, compactions ${compactions}`);
   assert.ok(versions > 5, `x87-mode versions: ${versions}`);
   assert.ok(covered > 20, `covered entries: ${covered}`);
   assert.ok(grown > 20 && checked > 500, `heat grown ${grown}, regions checked ${checked}`);

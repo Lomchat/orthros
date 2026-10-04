@@ -19,35 +19,25 @@ let mem = null, opts = null, cache = null, cacheReady = null;
 /**
  * Code heat shaping the regions (heat.js; Jit.heatAdd sends it: learned ranges, this session's visit flags) and this
  * thread's visit flags (translate.js VisitSlots). Kept apart from `opts`, the translation options hashed into the
- * cache's key: heat varies by session and grows during one — it is recorded per cache entry instead (heatRecorder).
+ * cache's key: heat varies by session and grows during one. A translation is a function of its code bytes, its options
+ * and two effects of the heat only: the extent discovery finds (cold exits) and the blocks given a visit flag (those
+ * the heat does not know to have run). A cache entry is compared on the first, and kept with the second (`visits`):
+ * see flagsCover / relocateVisits.
  */
 let heat = null, visitSlots = null;
 /** (no heat known: what discovery and the visit flags see then — the same translation as without any heat) */
 const NO_HEAT = { get: () => 0, has: () => false };
+/** (the flag byte of blocks a reused entry flags while the heat already knows them: set, never harvested) */
+const SINK = -1;
 /**
- * The heat as translations see it, every answer recorded: `log` maps an address to the queries made of it (bit 0:
- * get asked, bit 1: get(a) >= coldMin; bit 2: has asked, bit 3: has(a)). A translation is a function of its code
- * bytes, its options and these answers only (discovery's cold edges, the blocks given visit flags): a cache entry
- * keeps them, and is reused only where the heat of now gives the same answers (heatAnswers / sameHeat).
+ * Does a cache entry flag every block of it heat `h` does not know to have run (a translation now would flag those)?
+ * Its other flagged blocks are ones the heat learned since: their flag stores go to the sink byte (relocateVisits),
+ * the body otherwise the translation of now.
  */
-function heatRecorder(h, coldMin) {
-  const log = new Map();
-  return {
-    log,
-    get(a) { const v = h.get(a) ?? 0; log.set(a, (log.get(a) ?? 0) | 1 | (v >= coldMin ? 2 : 0)); return v; },
-    has(a) { const v = !!h.has(a); log.set(a, (log.get(a) ?? 0) | 4 | (v ? 8 : 0)); return v; },
-  };
-}
-/** a recorder's answers, flat [address, bits, ...] in address order (a cache entry's `heat`) */
-const heatAnswers = (log) => [...log].sort((x, y) => x[0] - y[0]).flat();
-/** does heat `h` give the answers recorded? */
-function sameHeat(answers, h, coldMin) {
-  if (!Array.isArray(answers)) return false;
-  for (let i = 0; i + 1 < answers.length; i += 2) {
-    const a = answers[i], bits = answers[i + 1];
-    if (bits & 1 && ((h.get(a) ?? 0) >= coldMin) !== !!(bits & 2)) return false;
-    if (bits & 4 && !!h.has(a) !== !!(bits & 8)) return false;
-  }
+function flagsCover(meta, h) {
+  if (!(opts.visit ?? JIT_DEFAULTS.visit)) return true; // (no visit flags: the heat is in the extent only)
+  const flagged = new Set((meta.visits ?? []).map((v) => v[0]));
+  for (const b of meta.blocks) if (!flagged.has(b[0]) && !h.has(b[0])) return false;
   return true;
 }
 /**
@@ -70,15 +60,16 @@ const sameExtent = (a, b) => a.length === b.length && a.every((x, i) => x.eip ==
 const sameDeps = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /**
- * A cache entry's visit flags ([block, end, [body offsets]]) given this thread's flag bytes: { patch: [[offset,
- * address]], visits: [[block, end, address]] (Jit.harvestVisits) }, or null when the flag area is full (the region is
- * translated instead).
+ * A cache entry's visit flags ([block, end, [body offsets]]) given this thread's flag bytes and heat `h`: { patch:
+ * [[offset, address]], visits: [[block, end, address]] (Jit.harvestVisits) }, or null when the flag area is full (the
+ * region is translated instead). A block the heat knows now flags the sink byte (a translation now would not flag
+ * it: the same blocks reported to the harvest).
  */
-function relocateVisits(list) {
+function relocateVisits(list, h) {
   const patch = [], visits = [];
   for (const [eip, end, offs] of list ?? []) {
-    const a = visitSlots.get(mem, eip); if (a < 0) return null;
-    visits.push([eip, end, a]);
+    const known = h.has(eip), a = visitSlots.get(mem, known ? SINK : eip); if (a < 0) return null;
+    if (!known) visits.push([eip, end, a]);
     for (const o of offs) patch.push([o, a]);
   }
   return { patch, visits: visits.length ? visits : undefined };
@@ -92,8 +83,8 @@ function translateBatch(items, over) {
     out.push(r);
     if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
     try {
-      const coldMin = over?.coldMin ?? opts.coldMin ?? JIT_DEFAULTS.coldMin, rec = heatRecorder(heat ?? NO_HEAT, coldMin);
-      const o = { ...opts, ...over, heat: rec, visitSlots, fnIdx: it.fnIdx, fpcAssume: it.fpc };
+      const h = heat ?? NO_HEAT;
+      const o = { ...opts, ...over, heat: h, visitSlots, fnIdx: it.fnIdx, fpcAssume: it.fpc };
       const found = discoverRegion(mem, it.eip, o).blocks;
       const before = found.map((b) => ({ eip: b.eip, end: b.end }));
       if (!before.length) continue;
@@ -101,13 +92,14 @@ function translateBatch(items, over) {
       // (in-session options, Jit.switchOpts: neither looked up nor kept — the cache's key holds the session's options)
       const useCache = cache && !over;
       const deps = useCache ? inlineDeps(found) : null;
-      // (an entry made under other heat answers is not this translation: see heatRecorder)
-      const hit = useCache ? cache.lookup(it.eip, it.fpc, before, snap, deps, (meta) => sameHeat(meta.heat, heat ?? NO_HEAT, coldMin)) : null;
+      // (the same extent, and visit flags on every block the heat of now does not know: see flagsCover; entries of
+      // the same code under an earlier heat's shape are superseded by the translation added below)
+      const hit = useCache ? cache.lookup(it.eip, it.fpc, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8) : null;
       // (its visit flags moved to this session's: one byte per block address, see VisitSlots; none left: translated)
-      const sites = hit ? relocateVisits(hit.visits) : null;
+      const sites = hit ? relocateVisits(hit.visits, h) : null;
       if (hit && sites) {
         // (the bytes read just now are the entry's: an earlier session's translation of exactly this code, under the
-        // same options and the same heat answers)
+        // same options, with the extent and the flagged blocks a translation now would have)
         const code = patchVisitSlots(patchAltSlot(hit.code.slice(), hit.altAt, it.fnIdx), sites.patch); code.hints = hit.hints;
         r.k = codes.length; r.blocks = hit.blocks.map(([eip, end, index]) => ({ eip, end, index })); r.snap = snap; r.fpc = hit.fpcOut;
         r.stats = { ...hit.stats, visits: sites.visits };
@@ -124,14 +116,14 @@ function translateBatch(items, over) {
       r.stats = { ...stats, visits: t.stats.visits };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
       for (const b of t.blocks) covered.set(b.eip, it.eip);
-      // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between; with the
-      // heat answers it was made under, and its visit flags as [block, end, body offset] — their addresses are this
-      // session's; not kept when the flag area ran out mid-region: fewer flags than the heat asked)
+      // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between; with its
+      // visit flags as [block, end, body offset] — their addresses are this session's; not kept when the flag area
+      // ran out mid-region: fewer flags than the heat asked)
       if (useCache && sameDeps(deps, t.deps) && !t.stats.visitsCut) {
         const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
         for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
         const visits = v.map(([eip, end]) => [eip, end, at.get(eip) ?? []]);
-        cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, heat: heatAnswers(rec.log), visits, snap, code: t.code });
+        cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
       }
     } catch { /* undecodable: left to the emulator */ }
   }

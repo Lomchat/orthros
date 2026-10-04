@@ -1,8 +1,9 @@
 // Translated code kept across sessions (code-cache.js, bg-translate.js) under code heat (heat.js, cold exits and
-// visit flags): a cached region is reused only where the heat of the session gives the answers its translation got —
-// another heat cutting the region otherwise (another extent) or flagging other blocks (the same extent) is another
-// translation —, its visit flags move to the session's own flag bytes, and the learned entries a heat-cut region no
-// longer holds are not skipped as covered. Every run matches the reference interpreter.
+// visit flags): a cached region is reused only where the heat of the session gives its extent and flags every block
+// the heat does not know to have run — another heat cutting the region otherwise (another extent) or leaving such a
+// block unflagged is another translation, which supersedes the earlier shape of the same code —, its visit flags move
+// to the session's own flag bytes (those of blocks the heat learned since to a byte never harvested), and the learned
+// entries a heat-cut region no longer holds are not skipped as covered. Every run matches the reference interpreter.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -67,7 +68,7 @@ async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, nu
   return { r, s: state(m.cpu), items, bg: jit.bg, ran: ran.sort((a, b) => a - b), installed: jit.bg.installed };
 }
 
-test('code cache with heat: a region cached under one heat is reused under the same heat only', async () => {
+test('code cache with heat: a region cached under one heat is reused where the heat of now gives its translation', async () => {
   const store = new MemStore(), ref = reference([0, 3, 0, 10]);
   const run = async (name, opts) => {
     const s = await session(store, H[name], opts);
@@ -86,26 +87,29 @@ test('code cache with heat: a region cached under one heat is reused under the s
   assert.equal(s.bg.cache.missExtent, 1); assert.equal(s.bg.cache.added, 1);
   s = await run('all');
   assert.equal(s.bg.cacheHits, 1);
-  // no heat: the same extent as 'all' (nothing cut either way), but every block carries a visit flag — another body
+  // no heat: the same extent as 'all' (nothing cut either way), but every block needs a visit flag — the entry of
+  // 'all' flags none: translated again (and the entry of 'all', the same code, superseded)
   s = await run('none');
-  assert.equal(s.bg.cacheHits, 0, 'the same extent under other heat answers: translated again');
-  assert.equal(s.bg.cache.missHeat, 1); assert.equal(s.bg.cache.added, 1);
+  assert.equal(s.bg.cacheHits, 0, 'the same extent, blocks the heat does not know left unflagged: translated again');
+  assert.equal(s.bg.cache.missHeat, 1); assert.equal(s.bg.cache.added, 1); assert.equal(s.bg.cache.superseded, 1);
   assert.deepEqual(s.ran, [0, 3, 7, 8], 'the blocks that ran, from the visit flags');
   s = await run('none', { shiftFlags: 777 });
   assert.equal(s.bg.cacheHits, 1, 'no heat again: reused');
   assert.deepEqual(s.ran, [0, 3, 7, 8], 'reused: its visit flags moved to this session\'s flag bytes');
-  // the jz never ran (its cold successor is not cut) but the cold block did: the same extent, other blocks flagged
-  s = await run('coldOnly');
-  assert.equal(s.bg.cacheHits, 0); assert.equal(s.bg.cache.missHeat, 1);
-  assert.deepEqual(s.ran, [0, 3, 7]);
+  // the heat grows with the same extent (the jz never ran: nothing cut; the cold block ran): the entry flagging every
+  // block serves, the flag of the block the heat knows sent to the sink byte — the harvest reports the others only
   s = await run('coldOnly', { shiftFlags: 1234 });
-  assert.equal(s.bg.cacheHits, 1);
-  assert.deepEqual(s.ran, [0, 3, 7], 'reused: its visit flags moved to this session\'s flag bytes');
-  // every heat reused under its own answers, whatever came between
-  for (const name of ['cut', 'all', 'none', 'coldOnly']) {
-    s = await run(name, { shiftFlags: 64 });
-    assert.equal(s.bg.cacheHits, 1, `${name}: reused`); assert.equal(s.bg.cache.added, 0);
-  }
+  assert.equal(s.bg.cacheHits, 1, 'a grown heat, the same extent: reused'); assert.equal(s.bg.cache.added, 0);
+  assert.deepEqual(s.ran, [0, 3, 7], 'reused: the blocks the heat knows are not reported');
+  s = await run('all', { shiftFlags: 64 });
+  assert.equal(s.bg.cacheHits, 1, 'every block known: reused, every flag to the sink');
+  assert.deepEqual(s.ran, [], 'nothing reported');
+  // a heat cutting the region: another extent, translated; the earlier shape of the same code superseded
+  s = await run('cut');
+  assert.equal(s.bg.cacheHits, 0); assert.equal(s.bg.cache.missExtent, 1); assert.equal(s.bg.cache.superseded, 1);
+  assert.equal(s.bg.cache.loaded, 1, 'one shape per code kept');
+  s = await run('cut', { shiftFlags: 99 });
+  assert.equal(s.bg.cacheHits, 1); assert.equal(s.bg.cache.loaded, 1);
 });
 
 test('code cache with heat: in-session options are neither looked up nor kept', async () => {
