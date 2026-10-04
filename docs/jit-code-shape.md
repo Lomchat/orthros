@@ -161,8 +161,9 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     / x87Top off / all off): RotWK 3.26 / 2.97 / 3.14 / 3.15 / 3.09, BFME2 3.55 / 3.26 / 2.93 / 2.80 / 2.95; Vice City
     driving (2 rounds, background translator and cold tier as in the page) 4.50 / 4.37 / 4.29 / 4.33 / 4.31.
   - Browser (`--gl-discard`, one session per game alternating the five variants ABCDE / EDCBA, 20 s warm-up + 25 s):
-    BFME1, the steadiest (each variant within ±1 % across rounds), all on 2.89 vs all off 2.70 ns (+6.8 %), each option
-    alone off 2.73-2.89; BFME2 (2 sessions) all on 3.13 vs all off 3.14, x87Top off 3.01; RotWK (2 sessions) all on 3.16
+    BFME1, the steadiest (2 sessions), all on 2.93 vs all off 2.70 ns (+8.5 %), one option off 2.78-2.90; Vice City
+    driving (2 sessions) all on 2.57 vs all off 2.23 (+15 %), one option off 2.22-2.47; BFME2 (2 sessions) all on 3.13
+    vs all off 3.14, x87Top off 3.01; RotWK (2 sessions) all on 3.16
     / 4.07 / 3.46 / 8.90 vs all off 3.21 / 3.07 / 2.86 / 2.91: the variants with x87Top on spent 4.9-77 ms per frame
     translating and interpreting late in the session (versions per stack top, regions dropped for `genericTop` and
     translated again), those without 1.8-1.9 ms; frames > 50 ms per minute 274 (all on) vs 140 (all off).
@@ -172,6 +173,11 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     a region: a table slot reached through a hash entry or an x87 version's slot after its region was dropped); not
     reproduced in Node (same scenario, background translator, 10 switches), not seen with the options off. To look at
     before turning either on again.
+  - BFME2 first launch to the end of the startup computation, this build (options off) vs main: browser, 3
+    concurrent pairs, guest time per instruction 0.577 vs 0.589 ns (0.61 / 0.54 / 0.59 vs 0.58 / 0.57 / 0.62); Node, 5
+    runs each (2 alone, 3 concurrent), process cycles per guest instruction 1.83 vs 1.96. The time to the end is no
+    measure of the code there: the main thread's guest work varies from run to run, 124-250 G instructions for the same
+    computation (Node and browser alike, all of it on the main thread), so the wall time follows it (73-130 s).
   The code stays (options for measurement, tests/jit-x87-top.test.js and tests/jit-layout.test.js cover them); the
   translated-code cache keys on JIT_DEFAULTS, so the change of defaults starts a new cache.
 
