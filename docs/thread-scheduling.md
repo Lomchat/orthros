@@ -26,6 +26,19 @@ on Windows became tens of milliseconds wide.
   polls with `Sleep(0)` for a lower-priority thread would spin forever. Both counts are needed: under a
   `VirtualClock` time does not move while threads only yield.
 
+Known cost (review, 2026-10-04): a raised thread that stays runnable without blocking now gets ~STARVE_MS of slices for
+each slice of the lower threads. A test program whose `THREAD_PRIORITY_HIGHEST` thread spins (no API call) until a
+normal thread finishes 3 M loop iterations took 492 M guest instructions / 2.5 s of virtual time with priorities, 24 M /
+0.12 s with round robin (20x). Orthros reports one processor (`NumberOfProcessors` = 1), and on a uniprocessor Windows
+the worker would starve far longer (balance-set boost every few seconds), so this is still within Windows semantics; but
+programs tested only on multi-core machines, where that worker ran on another core, may load or stream slower. A
+program spinning with `Sleep(0)` / `SwitchToThread` is not affected as much (`STARVE_PICKS`). If such a case shows up,
+the lever is `STARVE_MS` (or `ORTHROS_SCHED_ROUND_ROBIN=1` to confirm).
+
+SetThreadPriority now rejects values outside -15..15 (`ERROR_INVALID_PARAMETER`) and accepts
+`THREAD_MODE_BACKGROUND_BEGIN` / `END` for the calling thread without a level change: before, any value was stored, and
+0x10000 would have outranked every thread, starvation boost included.
+
 Preemption is not modelled. Windows preempts the running thread as soon as a higher-priority thread becomes ready;
 here threads switch only between slices, at yields and at blocking API calls. One attempt was tried and reverted
 (commits 2c630a7 / 4b8f6a7). It capped slices at 20 000 instructions while a higher-priority thread existed and
