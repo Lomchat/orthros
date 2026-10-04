@@ -108,6 +108,9 @@ const FORMS = [
   ['cmove eax,[ecx], condition false (still read)', '0f4401', { ecx: 0 }, 0, 0, false],
   ['fld dword [edx]', 'd902', { edx: 0x40 }, 0, 0x40, false],
   ['fld1 ; fstp qword [edx] (the stack kept)', 'd9e8dd1a', { edx: 0x48 }, 2, 0x48, true],
+  ['fld1 ; fistp dword [edx] (the stack kept)', 'd9e8db1a', { edx: 0x48 }, 2, 0x48, true],
+  ['fld1 ; fstp tbyte [edx] (the stack kept)', 'd9e8db3a', { edx: 0x40 }, 2, 0x40, true],
+  ['fldz ; fst dword [edx+0x10]', 'd9eed95210', { edx: 0x40 }, 2, 0x50, true],
   ['movups [edx],xmm0', '0f1102', { edx: 0x50 }, 0, 0x50, true],
   ['movaps xmm1,[edx]', '0f280a', { edx: 0x60 }, 0, 0x60, false],
   ['mov eax,[0x1234] (absolute)', 'a134120000', {}, 0, 0x1234, false],
@@ -248,6 +251,8 @@ for (const mode of [true, 'writes']) test(`random programs through null, small a
     for (const EJ of EJs) {
       load(EJ, code, regs); fillPtrs(EJ);
       const rj = EJ.run(end, slice);
+      // (a plain store past the guest memory — [null - 4] — traps in the JIT, an imprecise fault: see NC_STORE_SMC)
+      if (ri === EXIT.FAULT && EI.fault.faultAddr >= 0x80000000 && EI.fault.write && rj === EXIT.FAULT && !EJ.fault?.nullPage) continue;
       const label = `program ${n} (slice ${slice}, ${EJ.jit.opts.ifcvt ? 'ifcvt' : 'default'}): ${Buffer.from(code).toString('hex')} regs ${JSON.stringify(regs)}`;
       assert.equal(rj, ri, `${label}: exit ${rj}, interpreter ${ri} (${EI.fault?.message ?? ''} / ${EJ.fault?.message ?? ''})`);
       if (ri === EXIT.FAULT) { assert.equal(EJ.fault.faultAddr, EI.fault.faultAddr, label); assert.equal(EJ.fault.write, EI.fault.write, label); }

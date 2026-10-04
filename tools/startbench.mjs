@@ -40,7 +40,8 @@ const saveDir = keepDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-startb
 const vfs = makeVfs(manifest, dir, saveDir);
 // --virtual: a virtual clock (time advances with the guest's slices and sleeps) and the scenario timed on it — a run that
 // repeats itself exactly (thread interleavings included) as long as nothing else varies (no --bg / --cold)
-const clock = args.includes('--virtual') ? new VirtualClock() : new RealClock();
+// --timescale <x>: guest milliseconds per real millisecond (as the page's ?timescale: above 1 the guest sees a slower machine)
+const clock = args.includes('--virtual') ? new VirtualClock() : new RealClock(Number(opt('timescale', 1)));
 // --jitter <seed>: with --virtual, the clock jumps now and then at the end of a slice (seeded xorshift: 1 slice in 64, 1 to
 // 40 ms) as when the host deschedules the emulator — other interleavings of the guest's timed threads, each seed exactly
 // repeatable

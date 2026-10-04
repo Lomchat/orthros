@@ -369,17 +369,18 @@ const NC_CLOBBER_ALL = new Set(['MUL', 'DIV', 'IDIV', 'IMUL', 'CMPXCHG', 'CMPXCH
   'MASKMOVQ', 'MASKMOVDQU'].map((n) => OP[n]));
 const NC_SPAN = 0x10000;
 /**
- * Plain stores — their memory operand written, nothing else changed — at a small non-negative displacement from their
- * registers (the fields of a structure, as for a check group) need no check before them: their self-modifying
+ * Plain stores — their memory operand written, nothing else changed — need no check before them: their self-modifying
  * code check after the store (Emitter.smcCheck) reads the page's SMC map byte, where the pages never mapped carry
  * SMC_NULL; its cold path then clears the bytes written (the null page stays zero, as nothing can have stored there) and
  * leaves the region before the instruction, for the interpreter to raise the fault. No cost on the hot path. Not exact
- * in two cases of a register holding garbage, as before these checks: a store through a register past 2 GiB traps
- * (WebAssembly bounds: an imprecise fault, the process ends), and a store straddling 0x10000 from below keeps its
- * bytes from 0x10000 on.
+ * in two cases, as before these checks: a store to an address past 2 GiB ([null - 4], a register holding garbage) traps
+ * in WebAssembly (an imprecise fault: the process ends), and a store straddling 0x10000 from below keeps its bytes from
+ * 0x10000 on.
  */
 const NC_STORE_SMC = new Set(['MOV', 'SETCC', 'MOVD', 'MOVQ', 'MOVUPS', 'MOVUPD', 'MOVSS', 'MOVSD', 'MOVLPS', 'MOVLPD', 'MOVHPS',
-  'MOVHPD', 'MOVAPS', 'MOVAPD', 'MOVNTPS', 'MOVNTPD', 'MOVNTI', 'MOVNTQ', 'MOVNTDQ', 'MOVDQA', 'MOVDQU', 'STMXCSR', 'FNSTCW'].map((n) => OP[n]));
+  'MOVHPD', 'MOVAPS', 'MOVAPD', 'MOVNTPS', 'MOVNTPD', 'MOVNTI', 'MOVNTQ', 'MOVNTDQ', 'MOVDQA', 'MOVDQU', 'STMXCSR', 'FNSTCW', 'FNSTSW',
+  // (the x87 stores too: the pop of FSTP / FISTP / FISTTP, done before the check, is undone by Jit.run with the store)
+  'FST', 'FSTP', 'FIST', 'FISTP', 'FISTTP'].map((n) => OP[n]));
 /**
  * Read-modify-writes whose only other effect is the arithmetic flags, caught the same way when reads are not checked
  * (nullPage 'writes'): the region is left with the instruction's flags already in the lazy state, so the CONTEXT of the
@@ -398,10 +399,9 @@ function planNullChecks(insns, smc, mode) {
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i], nc = HANDLERS[insn.op] ? insn.nchk || nullChecks(insn) : []; // (no handler: the interpreter checks)
     for (const k of nc) {
-      // (checked by the store's SMC check: at small non-negative displacements — a negative one from a null pointer would
-      // reach past the guest memory, where the store itself traps)
       if (!nullCheckApplies(k, mode)) continue;
-      if (smc && k.writes && (k.write ? NC_STORE_SMC.has(insn.op) : mode === 'writes' && NC_RMW_SMC.has(insn.op)) && !k.o.a16 && (k.o.disp | 0) >= 0 && (k.o.disp | 0) < NULL_PAGE_END && (k.o.base >= 0 || k.o.index >= 0)) continue;
+      // (checked by the store's SMC check, see NC_STORE_SMC)
+      if (smc && k.writes && (k.write ? NC_STORE_SMC.has(insn.op) : mode === 'writes' && NC_RMW_SMC.has(insn.op)) && !k.o.a16) continue;
       const o = k.o;
       if (!k.str && !o.a16 && (o.base >= 0 || o.index >= 0)) {
         const key = o.base + 8 * (o.index + 1) + 72 * o.scale, d = o.disp | 0, g = groups.get(key);

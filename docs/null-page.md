@@ -51,14 +51,15 @@ written back), and TurboFan compiles the larger functions more slowly (translati
 
 ## How the JIT checks
 
-- **Plain stores** (`NC_STORE_SMC`: MOV, SETcc, the SSE/MMX moves, STMXCSR, FNSTCW) and, in `'writes'` mode,
-  **read-modify-writes** (`NC_RMW_SMC`: ALU, shifts, BTS/BTR/BTC) at a small non-negative displacement need no check
-  before them: their self-modifying-code check after the store already reads the page's byte in the SMC map, where the
-  unmapped pages carry `SMC_NULL`. A store there takes the existing SMC exit, with the instruction's start in
-  `ST.EXIT_PC`; `Jit.run` clears the bytes written and lets the interpreter execute the instruction again, which raises
-  the fault. Zero instructions on the hot path, a few bytes in an existing cold path.
-- **Other writes** (POP to memory, string stores, XCHG/XADD/CMPXCHG, x87 stores that pop, FXSAVE...) and stores at
-  negative or large displacements are checked before the instruction: one range test
+- **Plain stores** (`NC_STORE_SMC`: MOV, SETcc, the SSE/MMX moves, the x87 stores, STMXCSR, FNSTCW, FNSTSW) and, in
+  `'writes'` mode, **read-modify-writes** (`NC_RMW_SMC`: ALU, shifts, BTS/BTR/BTC) need no check before them: their
+  self-modifying-code check after the store already reads the page's byte in the SMC map, where the unmapped pages
+  carry `SMC_NULL`. A store there takes the existing SMC exit, with the instruction's start in `ST.EXIT_PC`; `Jit.run`
+  clears the bytes written (and undoes the pop of FSTP / FISTP / FISTTP: the register is still in its slot) and lets the
+  interpreter execute the instruction again, which raises the fault. Zero instructions on the hot path, two stores in
+  an existing cold path.
+- **Other writes** (POP to memory, string stores, XCHG/XADD/CMPXCHG, FXSAVE, FNSAVE...) are checked before the
+  instruction: one range test
   (`(addr - 0x10000) >=u 0x7ffe0000 - span`), shared by every access through the same base and index registers
   (unchanged) within 64 KiB of each other in a block (`planNullChecks`); when it fails the region is left before the
   instruction (`stepExit`) and the interpreter executes it, faulting or not.
@@ -66,8 +67,9 @@ written back), and TurboFan compiles the larger functions more slowly (translati
   the arms the region restores the state before them and leaves before the JCC, whose arm then runs as a block of its
   own; a float compare is not fused with a following SETcc/CMOVcc that may leave before itself.
 
-Not exact (garbage pointers, as before): a plain store through a register holding an address past 2 GiB traps in
-WebAssembly (the process ends); a plain store straddling 0x10000 from below keeps its bytes from 0x10000 on.
+Not exact, as before these checks: a plain store or read-modify-write to an address past 2 GiB (`[null - 4]`, a register
+holding garbage) traps in WebAssembly before its check (an imprecise fault: the process ends); a plain store straddling
+0x10000 from below keeps its bytes from 0x10000 on.
 
 ## Tests
 

@@ -829,6 +829,12 @@ export class Jit {
             const lenAt = cpu.base + ST.EXIT_LEN, len = m.read32(lenAt) || 16;
             m.write32(lenAt, 0);
             for (let k = a; k < a + len && k < 0x80000000; k++) if (m.u8[SMC_MAP_BASE + (k >>> 12)] & SMC_NULL) m.u8[k] = 0;
+            // (an x87 store that pops has popped: the register it stored is still in its slot, valid again one place lower)
+            const op = this.interp.fetch(pc).op;
+            if (op === OP.FSTP || op === OP.FISTP || op === OP.FISTTP) {
+              const top = (m.u8[cpu.base + ST.FPU_TOP] - 1) & 7;
+              m.u8[cpu.base + ST.FPU_TOP] = top; m.write16(cpu.base + ST.FPU_TW, m.read16(cpu.base + ST.FPU_TW) | (1 << top));
+            }
             cpu.eip = pc; cpu.exit = EXIT.NONE;
             this.interp.cpu = cpu;
             const s = this.interp.step();
