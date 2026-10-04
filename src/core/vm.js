@@ -364,7 +364,7 @@ export class Vm {
     const exec = this.exec;
     const cpu = thread.cpu;
     // the instruction budget of a slice persists across API calls (API-dense code must yield too)
-    let budget = this.sliceInsns;
+    let budget = this.sched.sliceFor(thread);
     // (one options object per nesting depth, not per call nor per exec.run — that runs after every API call; the
     // executors read it on entry)
     const runOpts = (this.runOptsByDepth ??= [])[this.depth] ??= { stopAt: -1, maxInsns: 0 };
@@ -395,10 +395,10 @@ export class Vm {
             else this.dispatchThunk(thread, cpu.exitArg);
             if (opts.slice && thread.state !== TS.RUNNING) return 0; // parked (unwound wait) or exited
             if (thread.yieldRequested) { thread.yieldRequested = false; if (opts.slice) { this.sched.markReady(thread); return 0; } }
-            if (budget <= 0) { budget = this.sliceInsns; if (this.sliceEnd(thread, opts)) return 0; }
+            if (budget <= 0) { budget = this.sched.sliceFor(thread); if (this.sliceEnd(thread, opts)) return 0; }
             break;
           case EXIT.TIMESLICE:
-            budget = this.sliceInsns; if (this.sliceEnd(thread, opts)) return 0;
+            budget = this.sched.sliceFor(thread); if (this.sliceEnd(thread, opts)) return 0;
             break;
           case EXIT.FAULT:
             this.onFault(thread);

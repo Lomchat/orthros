@@ -11,6 +11,8 @@ export const INFINITE = 0xffffffff;
 /** how long a ready thread may wait while higher-priority threads run before it runs anyway (pickRunnable): guest
  *  milliseconds, or scheduling decisions (threads yielding with Sleep(0) let no time pass on a virtual clock) */
 export const STARVE_MS = 20, STARVE_PICKS = 1000;
+/** longest slice of a thread while a higher-priority thread exists (sliceFor): how late that thread may take over */
+export const PREEMPT_INSNS = 20000;
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
 
 /**
@@ -49,6 +51,20 @@ export class Scheduler {
   markReady(t) { t.state = TS.READY; t.readyTime = this.checkedAt; t.readyPick = this.picks; }
 
   get threads() { return this.vm.proc.threads; }
+
+  /**
+   * Instruction budget of `t`'s next slice. While a thread of higher priority exists, at most PREEMPT_INSNS: a waiting
+   * higher-priority thread whose timeout expires (wakeBlocked runs between slices) takes over within that many
+   * instructions — on Windows it preempts the running thread at once (an audio thread at TIME_CRITICAL polling its
+   * device with timed waits runs on time instead of up to a whole long slice later).
+   */
+  sliceFor(t) {
+    const full = this.vm.sliceInsns;
+    if (this.roundRobin || full <= PREEMPT_INSNS) return full;
+    const p = t.priority ?? 0;
+    for (const u of this.threads) if (u !== t && u.state !== TS.DONE && (u.priority ?? 0) > p) return PREEMPT_INSNS;
+    return full;
+  }
 
   /**
    * Next runnable thread other than `except`: the highest priority first (SetThreadPriority), round robin among equals —
@@ -128,6 +144,10 @@ export class Scheduler {
     }
     t.wakeResult = ok; t.resuming = true; t.wait = null; t.wakeAt = Infinity; t.blockReason = null;
     this.markReady(t);
+    // a higher-priority thread made ready by the running one (an event set, a mutex released) preempts it, as on
+    // Windows: the running thread gives the processor back at its next API call (top-level slices)
+    const cur = this.vm.current;
+    if (!this.roundRobin && cur && cur !== t && cur.state === TS.RUNNING && (t.priority ?? 0) > (cur.priority ?? 0)) cur.yieldRequested = true;
   }
 
   /**
