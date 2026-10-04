@@ -207,7 +207,10 @@ Other games with the quantum (Node, same scenarios, before / after): BFME2's pla
 tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, the two trees' runs interleaved six at a time): main
 (5d528a8, `ORTHROS_NULL_WATCH=1`) **4 / 40**, this branch **4 / 40** — every failure the same release from the same frame
 (`lotrbfme.exe+0x888237 < +0x9fc4e < +0x57d1dd`, the skirmish-setup click). Headless Chromium at the default settings
-(`--gl-discard --timescale 1.5`, 290 s, the same click), alternated main / branch: see the table below. The quantum
+(`--gl-discard --timescale 1.5`, the render worker, 290 s, the same click, two at a time, alternated main / branch, load
+5-30): main (with `ORTHROS_NULL_WATCH=1`) **0 / 35**, this branch **0 / 35** (frames per run: mean 6 386 / 6 606). In the
+browser the failure has become rare in both trees since the morning's 4 / 66 with priorities — no difference to measure
+there either. The quantum
 and the instruction-counted starvation lowered the rate only where slices were made short on purpose (above); at the
 default settings neither tree fails less.
 
