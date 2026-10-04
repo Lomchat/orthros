@@ -17,7 +17,7 @@ import { loadManifest, makeVfs } from '../src/host/cli.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { decode, fmtInsn } from '../src/cpu/decoder.js';
 import { listRegion } from '../src/cpu/jit/listing.js';
-import { PROF_OPS_BASE, NOCHAIN_PROF } from '../src/cpu/jit/translate.js';
+import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF } from '../src/cpu/jit/translate.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
 import { LearnedHeat, RangeHeat } from '../src/cpu/jit/heat.js';
@@ -59,6 +59,26 @@ const host = new HeadlessHost({ clock, width: manifest.display.width, height: ma
 const bgWanted = args.includes('--bg') || args.includes('--cold');
 // --jit-profile: profiling translations (transitions by kind, chained transitions counted), printed with the report
 if (args.includes('--jit-profile')) globalThis.ORTHROS_JIT_PROFILE = true;
+// --jit-sites: every region exit site (indirect calls and jumps, returns leaving the region, static exits) counts its
+// executions and target changes (translate.js siteProf); the report lists them by kind and the hottest sites
+if (args.includes('--jit-sites')) globalThis.ORTHROS_SITE_PROF = true;
+const siteReport = () => {
+  const by = new Map();
+  for (const [addr, kind, a] of SITE_PROF) {
+    const k = kind + ':' + addr, n = vm.mem.read32(a) >>> 0, ch = vm.mem.read32(a + 8) >>> 0;
+    const e = by.get(k) ?? { addr, kind, n: 0, ch: 0, last: 0 }; e.n += n; e.ch += ch; if (n) e.last = vm.mem.read32(a + 4) >>> 0; by.set(k, e);
+  }
+  const kinds = new Map();
+  for (const e of by.values()) {
+    const s = kinds.get(e.kind) ?? { n: 0, ch: 0, sites: 0, mono: 0 }; s.n += e.n; s.ch += e.ch; if (e.n) s.sites++; if (e.ch * 20 <= e.n) s.mono += e.n; kinds.set(e.kind, s);
+  }
+  console.log(`[sites] ${[...kinds].map(([k, s]) => `${k} ${(s.n / 1e6).toFixed(1)}M at ${s.sites} sites, target changes ${(s.ch / 1e6).toFixed(1)}M, at sites changing <5%: ${(100 * s.mono / Math.max(1, s.n)).toFixed(0)}%`).join('; ')}`);
+  const all = [...by.values()].sort((x, y) => y.n - x.n);
+  const tot = all.reduce((t, e) => t + e.n, 0); let acc = 0, k90 = 0; for (const e of all) { acc += e.n; k90++; if (acc >= 0.9 * tot) break; }
+  console.log(`[sites] ${(tot / 1e6).toFixed(1)}M exits, 90% at ${k90} sites`);
+  const sym = (a) => { try { return vm.proc.symbolize(a); } catch { return a.toString(16); } };
+  for (const e of all.slice(0, Number(opt('jit-sites-top', 40)))) console.log(`  ${e.kind} ${sym(e.addr)} ${(e.n / 1e6).toFixed(2)}M changes ${(100 * e.ch / Math.max(1, e.n)).toFixed(1)}% last ${sym(e.last)}`);
+};
 // --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
 const vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
 if (bgWanted && vm.jit) {
@@ -153,6 +173,7 @@ const report = (why) => {
   }
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M; unchained (thunk, stop, budget, miss) ${[0, 1, 2, 3].map((k) => (vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k) / 1e6).toFixed(1) + 'M').join(' ')}; API calls ${(vm.apiCalls / 1e6).toFixed(1)}M`); }
+  if (globalThis.ORTHROS_SITE_PROF) siteReport();
   if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
   if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
   for (const l of vm.peekReport()) console.log(l);
