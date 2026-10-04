@@ -15,7 +15,7 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
-import { NULL_PAGE_END, USER_END, nullChecks } from '../nullpage.js';
+import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
@@ -104,7 +104,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { nullPage: true, logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -381,10 +381,17 @@ const NC_SPAN = 0x10000;
 const NC_STORE_SMC = new Set(['MOV', 'SETCC', 'MOVD', 'MOVQ', 'MOVUPS', 'MOVUPD', 'MOVSS', 'MOVSD', 'MOVLPS', 'MOVLPD', 'MOVHPS',
   'MOVHPD', 'MOVAPS', 'MOVAPD', 'MOVNTPS', 'MOVNTPD', 'MOVNTI', 'MOVNTQ', 'MOVNTDQ', 'MOVDQA', 'MOVDQU', 'STMXCSR', 'FNSTCW'].map((n) => OP[n]));
 /**
+ * Read-modify-writes whose only other effect is the arithmetic flags, caught the same way when reads are not checked
+ * (nullPage 'writes'): the region is left with the instruction's flags already in the lazy state, so the CONTEXT of the
+ * access violation holds them instead of the flags before it (the address, the record and every register are exact).
+ */
+const NC_RMW_SMC = new Set(['ADD', 'OR', 'ADC', 'SBB', 'AND', 'SUB', 'XOR', 'NOT', 'NEG', 'INC', 'DEC', 'ROL', 'ROR', 'RCL',
+  'RCR', 'SHL', 'SHR', 'SAR', 'SHLD', 'SHRD', 'BTS', 'BTR', 'BTC'].map((n) => OP[n]));
+/**
  * The null-page checks of block `insns`: per instruction, null or a list of { k } (one operand: nullChecks entry) and
  * { g } (a group { base, lo, hi } of accesses through one base register, checked as a range at its first access).
  */
-function planNullChecks(insns, smc) {
+function planNullChecks(insns, smc, mode) {
   const plan = new Array(insns.length).fill(null);
   /** @type {Map<number, { key: number, o: any, lo: number, hi: number }>} */
   const groups = new Map();
@@ -393,7 +400,8 @@ function planNullChecks(insns, smc) {
     for (const k of nc) {
       // (checked by the store's SMC check: at small non-negative displacements — a negative one from a null pointer would
       // reach past the guest memory, where the store itself traps)
-      if (smc && k.write && NC_STORE_SMC.has(insn.op) && !k.o.a16 && (k.o.disp | 0) >= 0 && (k.o.disp | 0) < NULL_PAGE_END && (k.o.base >= 0 || k.o.index >= 0)) continue;
+      if (!nullCheckApplies(k, mode)) continue;
+      if (smc && k.writes && (k.write ? NC_STORE_SMC.has(insn.op) : mode === 'writes' && NC_RMW_SMC.has(insn.op)) && !k.o.a16 && (k.o.disp | 0) >= 0 && (k.o.disp | 0) < NULL_PAGE_END && (k.o.base >= 0 || k.o.index >= 0)) continue;
       const o = k.o;
       if (!k.str && !o.a16 && (o.base >= 0 || o.index >= 0)) {
         const key = o.base + 8 * (o.index + 1) + 72 * o.scale, d = o.disp | 0, g = groups.get(key);
@@ -1559,24 +1567,16 @@ class Emitter {
     const c = this.c;
     c.get(L_TA).i32(12).shr_u(); this.smcFlag();
     const i = c.hint(false).if_();
-    if (this.nullPage && NC_STORE_SMC.has(insn.op)) {
-      // (cold) a plain store into a page never mapped: undone, and the region left before it (see NC_STORE_SMC)
-      c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_NULL).and();
-      const n = c.if_();
-      for (let k = 0; k < bytes; k += 8) {
-        const w = Math.min(8, bytes - k);
-        c.get(L_TA);
-        if (w === 8) c.i64(0n).i64store(k, 0); else if (w === 4) c.i32(0).i32store(k, 0); else if (w === 2) c.i32(0).i32store16(k); else c.i32(0).i32store8(k);
-      }
-      this.stepExit(insn);
-      c.end(); void n;
-    }
+    // (a plain store: a page never mapped takes the same exit, with the instruction's start — the host undoes the store
+    // and raises the fault there, see NC_STORE_SMC and Vm.runThread)
+    const nullStore = this.nullPage && (NC_STORE_SMC.has(insn.op) || (this.nullPage === 'writes' && NC_RMW_SMC.has(insn.op)));
     // (cold) this page, or the next one when the store reaches it
-    c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH).and();
+    c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH | (nullStore ? SMC_NULL : 0)).and();
     if (bytes > 1) c.get(L_TA).i32(0xfff).and().i32(0x1000 - bytes).gt_u().or();
     const hit = c.if_();
     c.get(L_STATE).get(L_TA).i32store(ST.EXIT_ARG);
-    if (bytes > 16) c.get(L_STATE).i32(bytes).i32store(ST.EXIT_LEN); // (the range the host invalidates: 16 bytes by default)
+    if (bytes > 16 || nullStore) c.get(L_STATE).i32(bytes).i32store(ST.EXIT_LEN); // (the range the host invalidates: 16 bytes by default)
+    if (nullStore) c.get(L_STATE).i32(insn.addr).i32store(ST.EXIT_PC);
     this.exitCode(EXIT.SMC, insn.next); // (the instruction's own flags are in the lazy state: see binArith, deadFlagsExit)
     c.end(); void hit;
     c.end(); void i;
@@ -1885,7 +1885,7 @@ class Emitter {
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
     const ifc = this.ifcvt && b.term === TERM_JCC ? this.ifcvtPlan(b) : null;
-    this.ncPlan = this.nullPage ? planNullChecks(b.insns, this.smc) : null;
+    this.ncPlan = this.nullPage ? planNullChecks(b.insns, this.smc, this.nullPage) : null;
     for (const insn of b.insns) {
       this.insnIdx++;
       if (ifc && this.insnIdx === b.insns.length) { this.emitIfcvt(insn, b, ifc); this.c.site = -1; return; } // (it jumps to the merge)
@@ -1960,7 +1960,7 @@ class Emitter {
     const lz0 = this.lz, W = plan.writes, nA = A.insns.length;
     // loads of the arm taken in the null page (see loadMem): after the arms, their effects undone and the region left
     // before the JCC, whose arm then runs as a block of its own (its accesses checked before each instruction)
-    const checked = this.nullPage && [plan.taken, plan.not].some((a) => a && a.body.some((i) => (i.nchk || nullChecks(i)).length));
+    const checked = this.nullPage === true && [plan.taken, plan.not].some((a) => a && a.body.some((i) => (i.nchk || nullChecks(i)).length));
     if (checked) c.i32(0).set(L_SPECF);
     const emitArm = (arm, spec) => {
       const X = arm.block, saved = [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp];
@@ -2006,7 +2006,7 @@ class Emitter {
     this.xsOK = XMM_SHADOW_OPS.has(insn.op); this.xdOK = XMM_SHADOW64_OPS.has(insn.op); // (read by the shadow helpers)
     if ((!this.xsOK && this.xsValid) || (!this.xdOK && this.xdValid)) this.xmmShadowRelease(insn, !this.xsOK, !this.xdOK);
     if (h && this.nullPage) {
-      if (this.spec) this.specCheck = (insn.nchk || nullChecks(insn)).length > 0;
+      if (this.spec) this.specCheck = this.nullPage === true && (insn.nchk || nullChecks(insn)).length > 0; // (arms only load)
       else { const p = this.ncPlan?.[this.insnIdx - 1]; if (p) this.nullCheck(insn, p); }
     }
     if (h) { this.stats.native++; h(this, insn, b); }
@@ -2441,7 +2441,7 @@ HANDLERS[OP.XLAT] = (E, insn) => {
   c.get(L_REG + 3).get(L_REG).i32(0xff).and().add();
   if (insn.adsize === 2) c.i32(0xffff).and();
   if (insn.seg === SEG.FS) c.get(L_FS).add(); else if (insn.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
-  if (E.nullPage) { // (the null page: its address is not an operand, see nullpage.js)
+  if (E.nullPage === true) { // (the null page, when reads are checked: its address is not an operand, see nullpage.js)
     c.tee(L_TA); E.unmappedTest();
     const j = c.hint(false).if_(); E.stepExit(insn); c.end(); void j;
     c.get(L_TA);

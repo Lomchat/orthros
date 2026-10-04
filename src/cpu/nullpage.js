@@ -18,6 +18,7 @@
 // instruction when it is in the null page; the interpreter (Interp.checkNull) then executes it and raises the fault.
 // A string instruction walking down into the null page from above is only checked at each element by the interpreter.
 //
+// Reads are checked only on request (see nullPageMode): what they cost is measurable, writes cost nothing.
 // ?dbg=ORTHROS_NULL_PAGE_OPEN=1 restores the old behaviour (the null page readable and writable), for A/B.
 import { OP, OT } from './decoder.js';
 import { SEG } from './state.js';
@@ -32,7 +33,11 @@ export const USER_END = 0x7fff0000;
 /** Whether the u32 address `a` is outside [NULL_PAGE_END, USER_END) */
 export const unmapped = (a) => a < NULL_PAGE_END || a >= USER_END;
 
-/** @typedef {{ o: any, write: boolean, str: boolean }} NullCheck */
+/**
+ * `write`: the fault is reported as a write (the instruction only writes the operand); `writes`: the instruction writes
+ * the operand (also after reading it); `str`: a string instruction's operand.
+ * @typedef {{ o: any, write: boolean, writes: boolean, str: boolean }} NullCheck
+ */
 
 const NONE = Object.freeze([]);
 // (INS/OUTS: privileged, a #GP before any access)
@@ -43,6 +48,23 @@ const WRITE_ONLY = new Set([OP.MOV, OP.MOVS, OP.STOS, OP.SETCC, OP.POP, OP.FST, 
   OP.MOVUPD, OP.MOVSS, OP.MOVSD, OP.MOVLPS, OP.MOVLPD, OP.MOVHPS, OP.MOVHPD, OP.MOVAPS, OP.MOVAPD, OP.MOVNTPS,
   OP.MOVNTPD, OP.MOVNTI, OP.MOVNTQ, OP.MOVNTDQ, OP.MOVDQA, OP.MOVDQU]);
 const BIT_OPS = new Set([OP.BT, OP.BTS, OP.BTR, OP.BTC]);
+// instructions that write their destination memory operand (ops[0]) after reading it (XCHG: either operand)
+const READ_WRITE = new Set([OP.ADD, OP.OR, OP.ADC, OP.SBB, OP.AND, OP.SUB, OP.XOR, OP.NOT, OP.NEG, OP.INC, OP.DEC, OP.ROL,
+  OP.ROR, OP.RCL, OP.RCR, OP.SHL, OP.SHR, OP.SAR, OP.SHLD, OP.SHRD, OP.XCHG, OP.XADD, OP.CMPXCHG, OP.CMPXCHG8B, OP.BTS,
+  OP.BTR, OP.BTC]);
+
+/**
+ * What faults in the null page (the executors' `nullPage` setting): 'writes' (the default) every access that writes —
+ * the corruption Windows stops — with no cost on the JIT's hot path (plain stores are caught by their self-modifying-code
+ * check); true: reads too (a compare and a branch per unproven load: measured ~4-8 % of guest time, see
+ * docs/thread-scheduling.md), ?dbg=ORTHROS_NULL_READS=1; false: none (?dbg=ORTHROS_NULL_PAGE_OPEN=1).
+ */
+export function nullPageMode() {
+  if (globalThis.ORTHROS_NULL_PAGE_OPEN) return false;
+  return globalThis.ORTHROS_NULL_READS ? true : 'writes';
+}
+/** Whether check `k` applies under mode `mode` (nullPageMode) */
+export const nullCheckApplies = (k, mode) => mode === true || (mode === 'writes' && k.writes);
 
 /** A memory operand whose address is never in the null page: ESP alone (the stack), FS/GS-relative (the TEB). */
 export function neverNull(o) {
@@ -68,7 +90,8 @@ export function nullChecks(insn) {
     insn.ops.forEach((o, i) => {
       if (o.t !== OT.MEM || neverNull(o)) return;
       const write = i === 0 && WRITE_ONLY.has(op);
-      (write ? writes : reads).push({ o, write, str: !!o.str });
+      const w = write || (READ_WRITE.has(op) && (i === 0 || op === OP.XCHG));
+      (write ? writes : reads).push({ o, write, writes: w, str: !!o.str });
     });
     if (reads.length || writes.length) r = Object.freeze([...reads, ...writes]);
   }

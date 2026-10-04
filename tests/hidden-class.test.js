@@ -22,7 +22,7 @@ function boot(exeName, jit) {
   // (the images gdiplus.exe loads: without them it uses the null bitmap data it gets, a fault as on Windows)
   if (exeName === 'gdiplus.exe') for (const f of ['rgb.png', 'base.jpg']) t.open(f, { create: true }).write(0, fs.readFileSync(new URL(`./fixtures/codec/${f}`, import.meta.url).pathname));
   const clock = new VirtualClock();
-  const vm = new Vm({ vfs, clock, host: new HeadlessHost({ clock, width: 800, height: 600 }), jit, logKinds: ['crash'] });
+  const vm = new Vm({ vfs, clock, host: new HeadlessHost({ clock, width: 800, height: 600 }), jit, logKinds: ['crash'], nullPage: exeName === 'seh.exe' ? true : undefined }); // (seh.exe: its null-page cases read)
   return vm;
 }
 

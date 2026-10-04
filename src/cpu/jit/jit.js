@@ -115,7 +115,8 @@ export class Jit {
   markFast(idx, key, def) {
     // (IUnknown::AddRef/Release of every interface Orthros implements: com.js keeps their counts in guest memory)
     const dx = def && this.opts.d3dxFast !== false ? d3dxFastId(key) : undefined;
-    const fid = !def ? undefined : FAST_NAMES[key] ?? dx ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
+    // (opts.kernelFast false: the kernel32 fast paths — critical sections, mutexes, TLS, Interlocked... — left to JavaScript, for A/B)
+    const fid = !def ? undefined : (this.opts.kernelFast !== false ? FAST_NAMES[key] : undefined) ?? dx ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
@@ -818,6 +819,24 @@ export class Jit {
         return EXIT.FAULT;
       }
       if (r === EXIT.FAULT && !this.lastFault) this.lastFault = { message: `fault ${cpu.exitArg} at ${cpu.eip.toString(16)}`, vector: cpu.exitArg };
+      if (r === EXIT.SMC) {
+        const pcAt = cpu.base + ST.EXIT_PC, pc = m.read32(pcAt) >>> 0, a = cpu.exitArg >>> 0;
+        if (pc) {
+          m.write32(pcAt, 0);
+          if (m.u8[SMC_MAP_BASE + (a >>> 12)] & SMC_NULL) {
+            // a plain store into a page never mapped (translate.js NC_STORE_SMC): undone — those pages stay zero — and
+            // executed again by the interpreter, which raises the access violation at it
+            const lenAt = cpu.base + ST.EXIT_LEN, len = m.read32(lenAt) || 16;
+            m.write32(lenAt, 0);
+            for (let k = a; k < a + len && k < 0x80000000; k++) if (m.u8[SMC_MAP_BASE + (k >>> 12)] & SMC_NULL) m.u8[k] = 0;
+            cpu.eip = pc; cpu.exit = EXIT.NONE;
+            this.interp.cpu = cpu;
+            const s = this.interp.step();
+            if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
+            continue;
+          }
+        }
+      }
       return r;
     }
   }

@@ -243,12 +243,12 @@ test('FS/GS overrides on vector loads, stores and MASKMOVQ; a16 operands', () =>
     mem.write64(cpu.mmAddr(1), 0x80ff80ff80ff80ffn);
   });
   // movups xmm1,[bx+si] ; movaps [bx+di],xmm1 ; movq mm0,[bp+si] ; movq [di],mm0 — 16-bit addressing wraps at 64 KB:
-  // every such address is in the null page, which faults as on Windows (nullpage.js) — at the first instruction, nothing
-  // done, in both executors
+  // every such address is in the null page, which faults as on Windows (nullpage.js; writes by default, reads read zeros)
+  // — at the first store, [bx+di] = 0, nothing of it done, in both executors
   const a16 = '670f1008670f2909670f6f02670f7f05';
   runBoth(a16, (mem, cpu) => { cpu.ebx = 0xffff7000; cpu.esi = 0x1000; cpu.edi = 0x9000; cpu.ebp = 0x8800; for (let i = 0; i < 0x2000; i += 4) mem.write32(0x8000 + i, 0x11111111 * ((i >> 2) & 15)); },
     { memRanges: [[0x8000, 0x2000]], expectExit: EXIT.FAULT });
-  assert.equal(EI.cpu.eip, CODE); assert.equal(EI.I.lastFault.faultAddr, 0x8000); assert.equal(EJ.jit.lastFault.faultAddr, 0x8000);
+  assert.equal(EI.cpu.eip, CODE + 4); assert.equal(EI.I.lastFault.faultAddr, 0); assert.equal(EJ.jit.lastFault.faultAddr, 0);
 });
 
 // ---------------------------------------------------------------- x87 / MMX coupling

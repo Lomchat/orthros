@@ -30,6 +30,7 @@
 //                     fast paths step aside so the JavaScript handler receives the recorded wait result)
 //   0x1D0  PROF[16]   u32 transition counters of profiling translations (see Jit opts.profile / JIT_PROF)
 //   0x210  EXIT_LEN   u32 length of the range written by the instruction that left with EXIT.SMC (0: 16 bytes)
+//   0x214  EXIT_PC    u32 the start of that instruction when it is a plain store (0 otherwise; see translate.js NC_STORE_SMC)
 //   0x290  PROF2[16]  u32 more transition counters of profiling translations (JIT_PROF entries from the 17th on)
 //   0x400  end
 import { PRIVATE_BASE } from './memory.js';
@@ -62,6 +63,7 @@ export const ST = Object.freeze({
   RESUMING: 0x1cc,
   PROF: 0x1d0,
   EXIT_LEN: 0x210,
+  EXIT_PC: 0x214,
   PROF2: 0x290,
   SIZE: 0x400,
 });

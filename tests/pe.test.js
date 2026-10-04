@@ -21,7 +21,7 @@ function boot(exeName, opts = {}) {
   for (const [name, path] of Object.entries(opts.files ?? {})) test.open(name, { create: true }).write(0, fs.readFileSync(path));
   const clock = new VirtualClock();
   const host = new HeadlessHost({ clock, width: 800, height: 600 });
-  const vm = new Vm({ vfs, clock, host, jit: opts.jit, apiHist: opts.apiHist, logKinds: opts.logKinds ?? ['warn', 'crash'] });
+  const vm = new Vm({ vfs, clock, host, jit: opts.jit, apiHist: opts.apiHist, nullPage: opts.nullPage, logKinds: opts.logKinds ?? ['warn', 'crash'] });
   vm.createProcess({ exePath: 'C:\\Test\\' + exeName });
   return { vm, host, clock };
 }
@@ -88,7 +88,7 @@ test('hello.exe: a non-zero exit code leaves a failure report with the last exce
 
 test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind, execution faults at bad addresses, an exception raised in a handler, null-page data accesses', { skip: skip('seh.exe') }, () => {
   for (const jit of [true, false]) {
-    const { vm } = boot('seh.exe', { jit });
+    const { vm } = boot('seh.exe', { jit, nullPage: true }); // (its null-page cases read: faults on reads too)
     const code = vm.run();
     const exec = (a) => `exec code 0xc0000005\nexec addr 0x${a}\nexec info 0x${a}\n`;
     const h8 = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');

@@ -130,7 +130,7 @@ function bootPe(exe, cold) {
   const vfs = new Vfs(), dir = new MemBackend(); vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', dir);
   dir.open(exe, { create: true }).write(0, fs.readFileSync(PE_DIR + exe));
   const clock = new VirtualClock(), host = new HeadlessHost({ clock, width: 800, height: 600 });
-  const vm = new Vm({ vfs, clock, host, jit: true, sharedMemory: true, logKinds: ['warn', 'crash'] });
+  const vm = new Vm({ vfs, clock, host, jit: true, sharedMemory: true, logKinds: ['warn', 'crash'], nullPage: exe === 'seh.exe' ? true : undefined }); // (seh.exe: its null-page cases read)
   if (cold) {
     const replies = [];
     vm.jit.attachBackground({ postMessage: (m) => handleMessage(m, (r) => replies.push(r)) });

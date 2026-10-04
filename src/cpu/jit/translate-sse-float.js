@@ -403,7 +403,7 @@ function comis(dbl) {
     E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
     const next = b.insns[E.insnIdx]; // (insnIdx: this instruction's index + 1)
     // (not when the reader may leave the region before itself, for its null-page check: the interpreter then reads EFLAGS)
-    const fused = next !== undefined && FCMP_READERS.has(next.op) && !(E.nullPage && (next.nchk || nullChecks(next)).length);
+    const fused = next !== undefined && FCMP_READERS.has(next.op) && !(E.nullPage === true && (next.nchk || nullChecks(next)).length);
     E.fcmp = fused ? { blk: E.cur, at: E.insnIdx + 1, a: A, b: B, p } : null;
     if (fused ? E.flagsAfter[E.insnIdx] : E.flagsLive()) compareEflags(E, A, B, p);
   };

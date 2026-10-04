@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { GuestMemory, SMC_MAP_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
+import { decode } from '../src/cpu/decoder.js';
+import { nullChecks } from '../src/cpu/nullpage.js';
 import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
@@ -21,11 +23,12 @@ const bytesOf = (s) => Uint8Array.from(s.match(/../g), (b) => parseInt(b, 16));
 function prng(seed) { let x = seed >>> 0 || 1; return () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x; }; }
 
 /** an executor: the interpreter, or the JIT with translator options */
-function makeExec(jitOpts) {
+function makeExec(jitOpts, mode = true) {
   const mem = new GuestMemory();
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
   const I = new Interp(mem, cpu);
-  const jit = jitOpts ? new Jit(mem, I, { smc: true, ...jitOpts }) : null;
+  I.nullPage = mode; // (nullpage.js nullPageMode: true reads and writes, 'writes', false)
+  const jit = jitOpts ? new Jit(mem, I, { smc: true, nullPage: mode, ...jitOpts }) : null;
   return {
     mem, cpu, I, jit,
     /** run from CODE to `end` in slices of `slice` instructions; the exit code */
@@ -122,17 +125,22 @@ const FORMS = [
   ['sub eax,[ebp-8] (EBP is checked)', '2b45f8', { ebp: 8 }, 0, 0, false],
 ];
 
-for (const [jitName, jitOpts] of [['jit', {}], ['jit, if-conversion everywhere', { ifcvt: 'all' }]]) {
-  test(`null-page accesses fault before the instruction, as on Windows (interpreter, ${jitName})`, () => {
-    const EI = makeExec(null), EJ = makeExec(jitOpts);
-    for (const [name, code, regs, at, addr, write] of FORMS) {
+for (const mode of [true, 'writes']) for (const [jitName, jitOpts] of [['jit', {}], ['jit, if-conversion everywhere', { ifcvt: 'all' }]]) {
+  test(`null-page accesses fault before the instruction, as on Windows (${mode === true ? 'reads and writes' : 'writes only, the default'}; interpreter, ${jitName})`, () => {
+    const EI = makeExec(null, mode), EJ = makeExec(jitOpts, mode);
+    for (const [name, code, regs, at0, addr, write] of FORMS) {
       const c = bytesOf(code), end = CODE + c.length;
+      // (writes only: the forms whose faulting instruction writes the operand fault the same; the others run on in both
+      // executors alike — a read of the null page gives zeros, as before)
+      let at = at0;
+      if (mode === 'writes' && at >= 0) { load(EI, c, regs); if (!write && !nullChecks(decode(EI.mem, CODE + at)).some((k) => k.writes && !k.str)) at = -2; }
       for (const slice of [1e6, 1]) {
         for (const E of [EI, EJ]) load(E, c, regs);
         const before = EJ.jit.stats.native;
         const ri = EI.run(end, slice), rj = EJ.run(end, slice);
         const si = snapshot(EI), sj = snapshot(EJ);
-        if (at < 0) {
+        if (at === -2) assert.equal(rj, ri, `${name}: jit ${rj}, interpreter ${ri}`);
+        else if (at < 0) {
           assert.equal(ri, EXIT.HALT, `${name}: interpreter ${ri} ${EI.fault?.message ?? ''}`);
           assert.equal(rj, EXIT.HALT, `${name}: jit ${rj} ${EJ.fault?.message ?? ''}`);
         } else {
@@ -144,7 +152,8 @@ for (const [jitName, jitOpts] of [['jit', {}], ['jit, if-conversion everywhere',
             assert.equal(E.fault.write, write, `${name}: ${who} read/write`);
           }
         }
-        assert.deepEqual(sj, si, `${name} (slice ${slice}): jit state differs from the interpreter`);
+        // (writes only: a read-modify-write's flags at its fault are the instruction's own in the JIT, see NC_RMW_SMC)
+        assert.deepEqual(mode === 'writes' && ri === EXIT.FAULT ? { ...sj, eflags: si.eflags } : sj, si, `${name} (slice ${slice}): jit state differs from the interpreter`);
         assert.equal(si.nullPage, 'intact', `${name}: the null page written`);
         if (slice > 1 && !/^cmpxchg8b/.test(name)) assert.ok(EJ.jit.stats.native > before, `${name}: translated natively`); // (CMPXCHG8B: an interpreter fallback)
       }
@@ -174,12 +183,12 @@ const REGS = [0, 1, 2, 3, 6, 7]; // eax ecx edx ebx esi edi (EBP: the loop count
 const modrm = (mod, reg, rm) => (mod << 6) | (reg << 3) | rm;
 /** [reg + disp8] operand bytes (no SIB: rm 4 is ESP, excluded; EBP base needs a displacement anyway) */
 const mem8 = (reg, base, disp) => [modrm(1, reg, base), disp & 0xff];
-function randomProgram(r, nInsns, nulls) {
+function randomProgram(r, nInsns, nulls, negDisp = true) {
   const pick = (a) => a[r() % a.length];
   const out = [];
   const body = [];
   for (let i = 0; i < nInsns; i++) {
-    const d = pick(REGS), b = pick(REGS), disp = r() % 4 === 0 ? 0x100 - (r() % 8) * 4 : (r() % 32) * 4;
+    const d = pick(REGS), b = pick(REGS), disp = r() % 4 === 0 && negDisp ? 0x100 - (r() % 8) * 4 : (r() % 32) * 4;
     switch (r() % 14) {
       case 0: case 1: body.push([0x8b, ...mem8(d, b, disp)]); break; // mov d,[b+disp]
       case 2: body.push([0x89, ...mem8(d, b, disp)]); break; // mov [b+disp],d
@@ -211,15 +220,17 @@ function randomProgram(r, nInsns, nulls) {
   return Uint8Array.from(out);
 }
 
-test('random programs through null, small and valid pointers: the JIT faults where the interpreter does, sliced and not', () => {
-  const EI = makeExec(null);
-  const EJs = [makeExec({}), makeExec({ ifcvt: 'all' })];
-  const r = prng(0x6e756c6c);
-  let faults = 0, clean = 0;
+for (const mode of [true, 'writes']) test(`random programs through null, small and valid pointers: the JIT faults where the interpreter does, sliced and not (${mode === true ? 'reads and writes' : 'writes only'})`, () => {
+  const EI = makeExec(null, mode);
+  const EJs = [makeExec({}, mode), makeExec({ ifcvt: 'all' }, mode)];
+  const r = prng(mode === true ? 0x6e756c6c : 0x77726974);
+  let faults = 0, clean = 0, skipped = 0;
   for (let n = 0; n < 300; n++) {
     // a third of the programs without null pointers (those reach the end), the others with rare or frequent ones
     const pNull = [0, 1 / 64, 1 / 4][n % 3 === 0 ? 0 : 1 + (r() % 2)];
-    const code = randomProgram(r, 6 + (r() % 10), pNull > 0), end = CODE + code.length;
+    // (writes only: no negative displacements — an unchecked load from [null - 8] runs past the guest memory, where the
+    // interpreter reads undefined bytes and the JIT traps: not this test's subject)
+    const code = randomProgram(r, 6 + (r() % 10), pNull > 0, mode === true), end = CODE + code.length;
     // pointers: null, small (in the null page), at its end, valid; DATA holds such pointers too (what loads bring)
     const bad = [0, 0x10 + (r() % 0x100) * 4, 0xff00], good = [DATA + 0x100 + (r() % 0x800) * 4, DATA + 0x2000, DATA + 0x4000 + (r() % 0x100) * 4];
     const ptr = (q) => (q() / 2 ** 32 < pNull ? bad[q() % bad.length] : good[q() % good.length]);
@@ -230,6 +241,9 @@ test('random programs through null, small and valid pointers: the JIT faults whe
     load(EI, code, regs); fillPtrs(EI);
     const ri = EI.run(end, slice);
     const si = snapshot(EI);
+    // (writes only: an unchecked load past the guest memory — [null - 4] — is a WebAssembly trap in the JIT, an
+    // imprecise fault, as before the null page was checked: not compared)
+    if (ri === EXIT.FAULT && !EI.fault.nullPage) { skipped++; continue; }
     if (ri === EXIT.FAULT) faults++; else clean++;
     for (const EJ of EJs) {
       load(EJ, code, regs); fillPtrs(EJ);
@@ -245,5 +259,5 @@ test('random programs through null, small and valid pointers: the JIT faults whe
     }
     assert.equal(si.nullPage, 'intact');
   }
-  assert.ok(faults > 40 && clean > 40, `both outcomes exercised (${faults} faults, ${clean} clean)`);
+  assert.ok(faults > 40 && clean > 40 && skipped < 60, `both outcomes exercised (${faults} faults, ${clean} clean, ${skipped} not compared)`);
 });

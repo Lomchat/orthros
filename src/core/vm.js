@@ -1,5 +1,6 @@
 // The virtual machine: guest memory, process, executor (interpreter; JIT later), API dispatch
 // loop, guest callbacks, crash reports. See DECISIONS.md D003/D004.
+import { nullPageMode } from '../cpu/nullpage.js';
 import { GuestMemory } from '../cpu/memory.js';
 import { EXIT, F, ST, CPU_MHZ } from '../cpu/state.js';
 import { Interp, defaultCpuid } from '../cpu/interp.js';
@@ -44,7 +45,7 @@ const RUN_RUNNING = Object.freeze({ state: 'running' }), RUN_IDLE = Object.freez
 
 export class Vm {
   /**
-   * @param {{ vfs: import('../vfs/vfs.js').Vfs, clock?: any, host?: any, log?: (kind: string, msg: string) => void, logKinds?: string[] }} opts
+   * @param {{ vfs: import('../vfs/vfs.js').Vfs, clock?: any, host?: any, log?: (kind: string, msg: string) => void, logKinds?: string[], nullPage?: boolean | 'writes' }} opts
    */
   constructor(opts) {
     this.vfs = opts.vfs;
@@ -55,9 +56,12 @@ export class Vm {
     this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
     this.api = new ApiRegistry(this.mem);
     this.interp = new Interp(this.mem, null);
+    // what faults in the null page (nullpage.js: 'writes' by default, true reads too — ?dbg=ORTHROS_NULL_READS=1 —, false)
+    const nullPage = opts.nullPage ?? nullPageMode();
+    this.interp.nullPage = nullPage;
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), ...(globalThis.ORTHROS_NULL_PAGE_OPEN ? { nullPage: false } : {}), interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
@@ -133,7 +137,7 @@ export class Vm {
       asyncReads: false, readsInFlight: 0, recentFiles: null, recentReads: null, // (kernel32-file.js)
       registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
-      exitReport: null, execFaults: 0, nullFaults: 0,
+      exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
@@ -173,7 +177,7 @@ export class Vm {
         const rets = []; for (let a = sp; a < sp + 0x400 && rets.length < 8; a += 4) { const v = m.read32(a) >>> 0; if (this.proc.moduleByAddr(v)) rets.push(this.proc.symbolize(v)); }
         const rec = `#${ring.i + 1} t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
         ring.a[ring.i++ & 255] = rec;
-        const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > 3) l.shift(); } else byArg.set(a0, [rec]);
+        const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > 3) l.shift(); } else { byArg.set(a0, [rec]); if (byArg.size > 200000) byArg.delete(byArg.keys().next().value); } // (bounded: the oldest arguments forgotten)
       };
     }
     if (globalThis.ORTHROS_NULL_WATCH && this.jit) { // (debugging: writes to the first 64 KB, an access violation on Windows)
@@ -409,6 +413,7 @@ export class Vm {
           case EXIT.SMC: {
             const lenAt = cpu.base + ST.EXIT_LEN, len = this.mem.read32(lenAt) || 16; // a string store's range, else 16 bytes
             this.mem.write32(lenAt, 0);
+
             if (this.jit?.watchHit(cpu.exitArg, cpu.eip, len, thread)) break; // write watch (debugging), not code
             this.invalidateCode(cpu.exitArg, len);
             break;
@@ -590,6 +595,9 @@ export class Vm {
       }
       if (this.apiTimes) this.noteApiTime(t, tApi);
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
+      // (debugging, ?dbg=ORTHROS_API_TAIL=<n>: the last n calls of the main thread with their arguments and results, in
+      // crash reports — what a thread did just before a corruption shows)
+      if (globalThis.ORTHROS_API_TAIL && thread === this.proc.threads[0]) { const q = (this.apiTail ??= []); q.push(`${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)}`); if (q.length > globalThis.ORTHROS_API_TAIL) q.shift(); }
       if (this.apiBurst && this.apiBurst.tid === thread.id && !(this.apiBurst.noGfx && (t.dll === 'com.dll' || t.dll.startsWith('d3dx9'))) && this.apiBurst.left-- > 0 && !APIBG_QUIET.has(t.name)) this.logFn('apiburst', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)} from ${this.proc.symbolize(this.mem.read32(sp))}`);
       if (this.traceApiSite) {
         const key = this.mem.read32(sp) + thread.id * 0x100000000;
@@ -880,6 +888,21 @@ export class Vm {
       const site = this.codeBefore(mem.read32(cpu.esp));
       if (site.length) lines.push('code before the return address on the stack:', ...site);
     }
+    // (in a module: the instructions before EIP, and before the first return addresses of the stack — where the values
+    // in the registers came from)
+    if (proc.moduleByAddr(cpu.eip)) {
+      try {
+        const before = this.codeBefore(cpu.eip);
+        if (before.length) lines.push('code before EIP:', ...before);
+        let n = 0;
+        for (let sa = cpu.esp; sa < cpu.esp + 0x400 && n < 3 && proc.vmem.isCommitted(sa, 4); sa += 4) {
+          const v = mem.read32(sa) >>> 0;
+          if (!proc.moduleByAddr(v) || v < 0x1000 || !(mem.read8(v - 5) === 0xe8 || mem.read8(v - 2) === 0xff || mem.read8(v - 3) === 0xff || mem.read8(v - 6) === 0xff)) continue;
+          const site = this.codeBefore(v);
+          if (site.length) { lines.push(`code before return address ${proc.symbolize(v)} (stack ${h(sa)}):`, ...site); n++; }
+        }
+      } catch (e) { lines.push(`(code before: ${e.message})`); }
+    }
     try { lines.push(...this.registerMemory(cpu)); } catch (e) { lines.push(`(register memory: ${e.message})`); }
     lines.push('stack:');
     for (let i = 0; i < 16; i++) {
@@ -890,6 +913,7 @@ export class Vm {
     }
     lines.push('recent API calls:');
     for (const l of this.recentApiCalls(64)) lines.push('  ' + l);
+    if (this.apiTail) lines.push('main thread API calls (ORTHROS_API_TAIL, oldest first):\n  ' + this.apiTail.join('\n  '));
     lines.push('modules:');
     for (const m of proc.moduleList) lines.push(`  ${h(m.base)}-${h(m.base + m.size)} ${m.name}`);
     if (proc.threads.length > 1) lines.push(this.threadsReport());

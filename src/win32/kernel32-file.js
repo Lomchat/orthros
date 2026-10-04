@@ -383,7 +383,8 @@ export function registerKernel32File(api, vm) {
     mem.write32(p + 28, Math.floor(e.size / 4294967296)); mem.write32(p + 32, e.size >>> 0);
     if (wide) mem.writeWString(p + 44, e.name, 260); else mem.writeCString(p + 44, e.name, 260);
   };
-  const findFirst = (c, pattern, wide) => {
+  /** `data`: the WIN32_FIND_DATA argument (the second of FindFirstFile, the third of FindFirstFileEx) */
+  const findFirst = (c, pattern, wide, data = c.arg(1)) => {
     if (!pattern) return c.fail(E.INVALID_PARAMETER) | INVALID_HANDLE;
     const full = c.proc.path(pattern);
     const slash = full.lastIndexOf('\\');
@@ -408,12 +409,16 @@ export function registerKernel32File(api, vm) {
     }
     vm.log('file', `find ${full} -> ${entries.length ? entries.map((e) => e.name).join(', ') : 'nothing'}`);
     if (!entries.length) return c.fail(E.FILE_NOT_FOUND) | INVALID_HANDLE;
-    writeFindData(c.arg(1), entries[0], wide);
+    writeFindData(data, entries[0], wide);
     return c.proc.handles.create({ type: 'find', entries, i: 1 });
   };
   K.FindFirstFileA = [2, (c) => findFirst(c, c.str(0), false)];
   K.FindFirstFileW = [2, (c) => findFirst(c, c.wstr(0), true)];
-  K.FindFirstFileExA = [6, (c) => findFirst(c, c.str(0), false)];
+  // FindFirstFileEx(name, infoLevel, data, searchOp, filter, flags): FindExInfoStandard / FindExInfoBasic (no short
+  // name — never filled here anyway); the data pointer is the third argument (it used to be taken from the second: the
+  // info level, 0 or 1 — the null page written and the caller's buffer left as it was)
+  K.FindFirstFileExA = [6, (c) => (c.arg(1) > 1 ? c.fail(E.INVALID_PARAMETER) | INVALID_HANDLE : findFirst(c, c.str(0), false, c.arg(2)))];
+  K.FindFirstFileExW = [6, (c) => (c.arg(1) > 1 ? c.fail(E.INVALID_PARAMETER) | INVALID_HANDLE : findFirst(c, c.wstr(0), true, c.arg(2)))];
   K.FindNextFileA = [2, (c) => { const f = c.proc.handles.getAs(c.arg(0), 'find'); if (!f) return c.fail(E.INVALID_HANDLE); if (f.i >= f.entries.length) return c.fail(E.NO_MORE_FILES); writeFindData(c.arg(1), f.entries[f.i++], false); return 1; }];
   K.FindNextFileW = [2, (c) => { const f = c.proc.handles.getAs(c.arg(0), 'find'); if (!f) return c.fail(E.INVALID_HANDLE); if (f.i >= f.entries.length) return c.fail(E.NO_MORE_FILES); writeFindData(c.arg(1), f.entries[f.i++], true); return 1; }];
   K.FindClose = [1, (c) => (c.proc.handles.close(c.arg(0)) ? 1 : c.fail(E.INVALID_HANDLE))];

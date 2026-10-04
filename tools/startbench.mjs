@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Vm } from '../src/core/vm.js';
 import { normalizeWin } from '../src/vfs/vfs.js';
-import { RealClock } from '../src/core/clock.js';
+import { RealClock, VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/host/display.js';
 import { Registry } from '../src/win32/registry.js';
 import { loadManifest, makeVfs } from '../src/host/cli.js';
@@ -38,7 +38,18 @@ const keepDir = opt('save');
 if (keepDir) fs.mkdirSync(keepDir, { recursive: true });
 const saveDir = keepDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-startbench-'));
 const vfs = makeVfs(manifest, dir, saveDir);
-const clock = new RealClock();
+// --virtual: a virtual clock (time advances with the guest's slices and sleeps) and the scenario timed on it — a run that
+// repeats itself exactly (thread interleavings included) as long as nothing else varies (no --bg / --cold)
+const clock = args.includes('--virtual') ? new VirtualClock() : new RealClock();
+// --jitter <seed>: with --virtual, the clock jumps now and then at the end of a slice (seeded xorshift: 1 slice in 64, 1 to
+// 40 ms) as when the host deschedules the emulator — other interleavings of the guest's timed threads, each seed exactly
+// repeatable
+if (args.includes('--virtual') && opt('jitter')) {
+  let x = Number(opt('jitter')) >>> 0 || 1;
+  const rnd = () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x; };
+  const tick = clock.tick.bind(clock);
+  clock.tick = (ms) => { tick(ms); if ((rnd() & 63) === 0) tick(1 + (rnd() % 40)); };
+}
 const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
 // --bg: the background translator in a worker thread (shared guest memory), its regions installed between slices;
 // --cold: with the JIT's cold tier (Jit.runCold) — what the browser worker does
@@ -152,7 +163,7 @@ const dispatch = vm.dispatchThunk.bind(vm);
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
-const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l)) : null;
+const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
 vm.dispatchThunk = (t, i) => {
   if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = vm.api.thunk(i);

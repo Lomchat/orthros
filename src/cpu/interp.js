@@ -7,7 +7,7 @@
 import { OP, OT, decode, fmtInsn } from './decoder.js';
 import { F, EXIT, SEG, FLAGS_ARITH, CPU_MHZ, CPU_BRAND } from './state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE } from './memory.js';
-import { NULL_PAGE_END, unmapped, nullChecks } from './nullpage.js';
+import { NULL_PAGE_END, unmapped, nullChecks, nullPageMode, nullCheckApplies } from './nullpage.js';
 
 export class CpuFault extends Error {
   /**
@@ -67,8 +67,8 @@ export class Interp {
       canExecute: null, // (eip) => boolean: committed memory (see executable)
       int: null, // (I, n) => boolean handled
     };
-    /** Windows semantics for the first 64 KiB: accesses there fault (nullpage.js); false: readable and writable */
-    this.nullPage = !globalThis.ORTHROS_NULL_PAGE_OPEN;
+    /** Windows semantics for the first 64 KiB: what faults there (nullpage.js nullPageMode: 'writes', true: all, false) */
+    this.nullPage = nullPageMode();
     // Scratch for SIMD/x87 helpers.
     this.scratch = new ArrayBuffer(64);
     this.sdv = new DataView(this.scratch);
@@ -214,7 +214,7 @@ export class Interp {
   checkNull(nc) {
     for (let i = 0; i < nc.length; i++) {
       const k = nc[i];
-      if (k.str) continue;
+      if (k.str || !nullCheckApplies(k, this.nullPage)) continue;
       const a = this.ea(k.o);
       if (unmapped(a)) throw nullPageFault(a, k.write);
     }
@@ -671,7 +671,7 @@ function bitop(kind) {
         const so = size === 2 ? (off << 16) >> 16 : off | 0;
         addr = (addr + Math.floor(so / bits) * size) >>> 0;
         off = ((so % bits) + bits) % bits;
-        if (unmapped(addr) && I.nullPage && d.seg !== SEG.FS && d.seg !== SEG.GS) throw nullPageFault(addr, false); // (not in nullChecks: see nullpage.js)
+        if (unmapped(addr) && (I.nullPage === true || (I.nullPage && kind !== 0)) && d.seg !== SEG.FS && d.seg !== SEG.GS) throw nullPageFault(addr, false); // (not in nullChecks: see nullpage.js)
       } else off &= bits - 1;
       v = I.readMem(size, addr);
     } else { off &= bits - 1; v = I.rd(d); }
@@ -820,7 +820,7 @@ H[OP.XLAT] = (I, insn) => {
   let a = (cpu.ebx + (cpu.eax & 0xff));
   if (insn.adsize === 2) a &= 0xffff;
   if (insn.seg === SEG.FS) a += cpu.fsBase; else if (insn.seg === SEG.GS) a += cpu.gsBase;
-  if (unmapped(a >>> 0) && I.nullPage) throw nullPageFault(a, false);
+  if (unmapped(a >>> 0) && I.nullPage === true) throw nullPageFault(a, false);
   I.writeReg(1, 0, I.mem.read8(a >>> 0));
 };
 
@@ -834,7 +834,7 @@ function strAddr(I, insn, o) {
   if (insn.adsize === 2) a &= 0xffff;
   if (o.seg === SEG.FS) a += cpu.fsBase; else if (o.seg === SEG.GS) a += cpu.gsBase;
   a >>>= 0;
-  if (unmapped(a) && I.nullPage) throw nullPageFault(a, o === insn.ops[0] && (insn.op === OP.MOVS || insn.op === OP.STOS));
+  if (unmapped(a) && I.nullPage) { const w = o === insn.ops[0] && (insn.op === OP.MOVS || insn.op === OP.STOS); if (w || I.nullPage === true) throw nullPageFault(a, w); }
   return a;
 }
 function strAdvance(I, insn, r, delta) {

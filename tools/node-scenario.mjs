@@ -15,8 +15,8 @@ export class NodeScenario {
    * @param {any} vm
    * @param {(line: string) => void} log
    */
-  constructor(text, vm, log) {
-    this.vm = vm; this.log = log;
+  constructor(text, vm, log, nowMs = () => performance.now()) {
+    this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
     let afterWait = false;
     this.events = text.split(';').map((e) => e.trim()).filter(Boolean).map((e) => {
       const [t, kind, ...rest] = e.split(':'); const a = rest.join(':');
@@ -24,16 +24,16 @@ export class NodeScenario {
       if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true;
       return ev;
     });
-    this.t0 = performance.now(); this.anchorAt = null; this.firstFrameAt = null;
+    this.t0 = this.nowMs(); this.anchorAt = null; this.firstFrameAt = null;
     this.pending = []; // [time ms, input event] (button releases, key ups)
     this.phase = null; this.nextCheck = 0;
     this.results = [];
   }
-  now() { return (performance.now() - this.t0) / 1000; }
+  now() { return (this.nowMs() - this.t0) / 1000; }
   push(ev) { this.vm.host.inputQueue.push(ev); }
   /** Called often (API dispatch, waits): fires the due events. */
   tick() {
-    const nowMs = performance.now();
+    const nowMs = this.nowMs();
     if (nowMs < this.nextCheck) return;
     this.nextCheck = nowMs + 5;
     while (this.pending.length && this.pending[0][0] <= nowMs) this.push(this.pending.shift()[1]);
@@ -74,7 +74,7 @@ export class NodeScenario {
     }
   }
   fire(ev, t) {
-    const [x, y] = ev.args, at = performance.now();
+    const [x, y] = ev.args, at = this.nowMs();
     switch (ev.kind) {
       case 'move': this.push({ type: 'mousemove', x, y, dx: 0, dy: 0 }); break;
       case 'click': case 'rclick': {
