@@ -3,6 +3,7 @@
 // return site are region boundaries: every iteration chains twice), for integer regions and for x87 regions
 // (each side touches the x87 stack: the cached stack is flushed and reloaded at every transition).
 // Usage: node tools/chain-bench.mjs [iterations]
+import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';

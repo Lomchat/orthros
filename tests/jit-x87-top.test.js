@@ -1,7 +1,8 @@
 // x87 regions specialized for the stack top at their entry (opts.x87Top, translate.js x87ModeOf): the region's x87
 // stack cache is loaded and written back at constant offsets, its entry guard compares TOP minus the entered block's
 // planned shift with the top it was translated for and hands any other top to the next version (or to the JIT, which
-// adds one — a version testing the top at run time once a control word has met several tops). Generated programs
+// adds one for another control word; entered with another top under a control word it has a version for, the region
+// is translated again testing the top at run time, as before the option). Generated programs
 // (pushes, pops, arithmetic, FDECSTP / FINCSTP, branches and loops over balanced groups, calls into separate regions
 // returning values on the stack, interpreter fallbacks) entered with random tops, stack contents (empty registers
 // included: their values must survive), control words, time slices down to one instruction, and the same code run
@@ -181,9 +182,9 @@ test('calls into separate regions returning values on the stack (return sites en
   EJ.extra = null;
 });
 
-test('one JIT running the same code from other tops and control words: versions, then a version testing the top', () => {
+test('one JIT running the same code from other tops and control words: versions, regions translated again testing the top', () => {
   const EI = makeExec(false), EJ = makeExec(true, { warn: () => {} });
-  let versions = 0, topless = 0;
+  let topless = 0;
   for (let seed = 1; seed <= 60; seed++) {
     const { code, end, callees } = program(seed * 3301 + 7, 24, seed & 1);
     EJ.extra = callees.map((f) => CODE + f);
@@ -194,11 +195,12 @@ test('one JIT running the same code from other tops and control words: versions,
       assert.equal(ri, EXIT.HALT); assert.equal(rj, EXIT.HALT, `seed ${seed} run ${k}: jit exit ${rj}`);
       assert.deepEqual(snapshot(EJ), snapshot(EI), `seed ${seed} run ${k} (${Buffer.from(code).toString('hex')})`);
     }
-    for (const r of EJ.J.regions) if (r.versions) { versions += r.versions.length - 1; topless += r.versions.filter((v) => v.fpc !== null && !(v.fpc & X87_MODE_TOP)).length; }
+    topless += EJ.J.regions.filter((r) => r.fpc !== null && !(r.fpc & X87_MODE_TOP)).length;
   }
   EJ.extra = null;
-  assert.ok(versions > 20, `versions added: ${versions}`);
-  assert.ok(topless > 0, `versions testing the top at run time: ${topless}`);
+  assert.ok(EJ.J.stats.fpuVersions > 20, `versions added: ${EJ.J.stats.fpuVersions}`);
+  assert.ok(EJ.J.stats.genericTop > 20, `regions translated again for another top: ${EJ.J.stats.genericTop}`);
+  assert.ok(topless > 20, `regions testing the top at run time: ${topless}`);
 });
 
 test('the specialized prologue addresses the stack registers at constant offsets', () => {

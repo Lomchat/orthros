@@ -97,6 +97,7 @@ export class Jit {
     // block eips of regions that were entered under another x87 mode than the one they were specialized
     // for: translated from then on with the precision/rounding control tested at run time
     this.genericFpu = new Set();
+    this.genericTop = new Set(); // (block addresses of regions translated testing the x87 stack top at run time: see EXIT_FPUMODE)
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
@@ -151,6 +152,7 @@ export class Jit {
     this.pageRegions.clear();
     this.byFn?.clear();
     this.genericFpu?.clear();
+    this.genericTop?.clear();
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -207,7 +209,8 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached (and the
     // stack top: see x87ModeOf)
-    const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : x87ModeOf(this.mem, this.cpu.base, this.x87Top());
+    let fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : x87ModeOf(this.mem, this.cpu.base, this.x87Top());
+    if (fpcAssume !== null && (fpcAssume & X87_MODE_TOP) && this.genericTop.has(eip)) fpcAssume &= 0xf00;
     // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
     const o = this.translateOpts(this.nextFn, fpcAssume);
     if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
@@ -407,7 +410,8 @@ export class Jit {
       const eip = eip0 >>> 0;
       if (this.blockMap.has(eip) || !this.interp.executable(eip)) continue;
       if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) continue; // (debugging: left to the interpreter)
-      const mode = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.learnedMode(fpc);
+      let mode = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.learnedMode(fpc);
+      if (mode !== null && mode !== undefined && this.genericTop.has(eip)) mode &= 0xf00;
       items.push({ eip, fpc: mode === null ? null : fpc, mode, fnIdx: this.reserveFn() }); // (fpc: as learned, for the reports below)
     }
     if (!items.length) return 0;
@@ -799,11 +803,17 @@ export class Jit {
         // (the mode the guard met, with the region's stack top: EXIT_ARG, see translate.js x87ModeOf)
         let mode = this.mem.read32(cpu.base + ST.EXIT_ARG);
         if (!this.x87Top()) mode &= 0xf00;
+        if (first && !first.first && first.fpc !== null && (mode & X87_MODE_TOP) && (first.versions ?? [first]).some((v) => v.fpc !== null && (v.fpc & X87_MODE_TOP) && (v.fpc & 0xf00) === (mode & 0xf00))) {
+          // entered with another stack top under a control word it has a version for: translated again testing the
+          // top at run time (entries with varying tops would otherwise run a failing guard before the right version)
+          for (const b of first.blocks) this.genericTop.add(b.eip);
+          this.dropRegion(first);
+          this.stats.genericTop = (this.stats.genericTop ?? 0) + 1;
+          continue;
+        }
         if (first && !first.first && first.fpc !== null && this.chaining && this.opts.fpuVersions !== false) {
           const versions = (first.versions ??= [first]);
-          // a region entered with several stack tops under one control word: its next version for that control word
-          // tests the top at run time (one version then takes them all)
-          if ((mode & X87_MODE_TOP) && (versions.length >= MAX_FPU_VERSIONS - 1 || versions.filter((v) => v.fpc !== null && (v.fpc & 0xf00) === (mode & 0xf00)).length >= 2)) mode &= 0xf00;
+          if (this.genericTop.has(first.entry)) mode &= 0xf00;
           if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
             const v = this.translate(first.entry, { first, fpc: mode });
             // (the same blocks under the same numbers: the guard of one version passes the block index it was entered

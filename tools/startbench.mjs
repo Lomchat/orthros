@@ -4,6 +4,7 @@
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
 //   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>] [--until-insns <M>]
+import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
