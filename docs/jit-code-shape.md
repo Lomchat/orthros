@@ -24,6 +24,20 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   ns per guest instruction of two variants alternated.
 - **V8 tiers** — `tools/tierup-bench.mjs`: a small region entered over and over for short runs, its speed as the entries
   accumulate (Liftoff until TurboFan; Liftoff charges the tiering budget by code position).
+- **Branch hints in Node** — Node 24's V8 (13.6) ignores WebAssembly branch hints unless
+  `--experimental-wasm-branch-hinting` is set; Chrome honours them (since 137). The translator's hints put exits, SMC
+  and fault paths, NaN rules... out of line (TurboFan's deferred blocks), so Node measurements made without the flag
+  had the cold code inline, unlike the browser (checked on the machine code: the unlikely arm inline without the
+  flag, after the function's hot code with it; RotWK play IPC 1.04 → 1.17, instruction fills from beyond L2 14.7 →
+  10.6 per 1000 host instructions). The measurement tools (startbench, shape-bench, chain-bench, tierup-bench) set
+  it (tools/node-wasm-flags.mjs); earlier Node figures in this document were measured without.
+- **Thread CPU** — node phases also report the emulator thread's CPU time (`threadCpuS`, `process.threadCpuUsage`):
+  on a loaded machine the categories' wall-clock time grows while the thread waits for a core, its CPU time does not.
+- **Instruction fetch** — `perf stat -e cycles:u,instructions:u,ic_fetch_stall.ic_stall_any:u,ic_cache_fill_l2:u,
+  ic_cache_fill_sys:u` (AMD Zen 2) around a Node play run, `perf record -e ic_cache_fill_sys:u` with `node --perf-prof`
+  and `perf inject --jit` for where the fills land (the region functions are named `r_<entry>`); `startbench
+  --blocks-out <file>` (with `dbg:ORTHROS_JIT_AB={"blockCounts":true}`) lists every counted region's blocks and
+  counts: how many regions hold a copy of each hot guest block.
 
 ## Where the time goes
 
@@ -37,6 +51,19 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   br_table loop cost an indirect jump plus the moves of every live value into the loop header's places.
   The guest category also holds the scheduler's thread switches: RotWK's frame limiter spins on Sleep(0)
   (~100 000 calls per second), so guest time per instruction in play overstates the translated code's own cost.
+- Play is bound by **instruction fetch** (RotWK, Node with branch hints, AMD EPYC 7402P: 32 KiB L1i, 512 KiB L2):
+  IPC ~1.2, the instruction fetch stalled ~55 % of the cycles, ~31 instruction-cache fills from L2 and ~11 from
+  beyond L2 per 1000 host instructions. The translated code run in play is far larger than the caches: half of the
+  region samples fall in 234 functions holding 3.5 MiB of machine code, 90 % in 1 300 functions and 15.6 MiB (a region
+  is ~12 KiB of machine code for at most 48 blocks). The hot guest code itself is small — 4 800 blocks, 77 KiB of x86,
+  run 90 % of the guest bytes — but each hot block is translated in ~3 regions on average (234 KiB of copies that
+  run; 85 % of the executions in the most used copy): callees and shared paths copied into every region reaching them.
+  Where the fills land (`perf record -e ic_cache_fill_sys`, 300 000 samples): 65 % in region code, of which region
+  prologues 16 %, the chained-exit code 26 %, the dispatch loop 5 % and the bodies 52 % — a region's entry and exit
+  code is touched once per transition, cold. A chained call/return between two small regions costs ~23 ns
+  (tools/chain-bench.mjs, everything cached; x87 regions ~36 ns, their stack cache loaded and written back); in play
+  ~1 transition per 43 guest instructions (RotWK, `--jit-profile`: returns ~50 %, indirect jumps ~30 %, static exits
+  ~25 % of the chained transitions).
 
 ## Changes
 
@@ -86,8 +113,48 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     `--jit-profile`) tripled (775 M vs 266 M over two minutes of RotWK): the reverse postorder of the cut graph lets
     loops overlap, and planUnits keeps disjoint loops only. A weak topological order (every cycle contiguous) brought
     them back to 264 M but was not faster overall (RotWK +6 %, BFME2 −3 %; not kept, see below).
+- **A shared chained exit** (`chainStub`, on): a region's jump exits write its x87 / XMM caches back and tail-call the
+  runtime module's `chain` function (runtime.js chainStubCode) with the target in place of the block index; `chain`
+  checks the budget, API thunks, the stop address and address 0, probes the hash table, and tail-calls the target's
+  region at its block, or writes the registers, flags and budget to the state block and returns the target to the
+  dispatcher — what every region carried at the end of its body (the checks, four unrolled probes, the indirect
+  call's sequence, the non-chained flush: ~300-700 bytes, a quarter of the instruction fills of region code) is one
+  function for all of them, which stays in the caches. One more tail call per transition: +3 ns per chained
+  call/return when everything is cached (chain-bench: int 22.6 → 28.9 ns, x87 29.6 → 40 ns), but the instruction
+  fetch dominates in play. Node in-session A/B (6 rounds of 25 s, x87Top in both): RotWK −5.7 % guest time per
+  instruction (emulator thread CPU −6.8 %), BFME2 −5.0 % (thread CPU −5.9 %). Profiling translations (`profile`)
+  keep the inline exit (their counters tell chains apart by source). Also tried: one copy of the function in each
+  region module (a direct tail call, no instance switch) — 3 % fewer host instructions in chain-bench, not worth the
+  copies.
+- **x87 regions specialized for the stack top** (`x87Top`, on): an x87 region's mode (`fpcAssume`, the versions, the
+  learned lists) carries the stack top at its entry (`X87_MODE_TOP | TOP`, translate.js x87ModeOf); the entry guard
+  compares the control word and TOP less the entered block's planned shift, and once it passes L_TOP is a constant:
+  the eight stack locals, the tag word and TOP are loaded and written back at constant offsets (8 loads / stores
+  instead of 8 × (3 ALU + memory), no rotation of the tag word by a run-time amount). chain-bench x87 call/return
+  36.2 → 29.7 ns (−18 %, host instructions −10 %). Another top under a control word the region has a top-specialized
+  version for: the region is translated again testing the top at run time (`genericTop`, the earlier code; Vice City
+  drive: 483 regions of 11 052, 79 versions instead of 848 when every top got a version, which made entries with
+  varying tops run a failing guard first). Learned entries without a top (earlier sessions) are translated for TOP 0
+  and reported back as learned. Exact: tests/jit-x87-top.test.js (random tops, stack contents including the values
+  of empty registers, control words, FDECSTP / FINCSTP, slices down to one instruction, calls into other regions
+  returning values on the stack, one JIT re-entered from other tops; fails when the guard ignores the top). Node
+  in-session A/B, noisy: Vice City −2.9 %, RotWK −1.2 % (6 rounds; an earlier version policy gave RotWK −3.4 %, BFME2
+  −8.6 % over 4 rounds and Vice City +5 %).
 
 ## Measured, not kept
+
+- Chained exits each with its own chain code (`siteChain`: the hash probe and tail call at every exit site, the probe
+  addresses constants for static targets) instead of one shared exit: RotWK +15 %, BFME2 +52 % (Node in-session) —
+  every tail-call site pins all sixteen values to the call's argument places, and the code grows.
+- Region parameters packed so that none goes through the stack (5 i32 + 6 f64 holding two i32 each, V8's x64 argument
+  registers): +4 % in RotWK play, and slower in a calling-convention microbenchmark (the packing costs more than the
+  stack arguments it saves).
+- Regions that end where another region already translates the block (`dedup`: an exit chaining into it, no copy): the
+  translated code shrinks (process CPU −15 %, less compilation) but the extra transitions cost more: guest time per
+  instruction RotWK +6.8 %, BFME2 +10 %.
+- Region entry at its first block by a compare instead of the br_table (`entryFast`) and the chained exit's probes
+  after the first and its non-chained path hinted out of line (`coldChain`): RotWK −1 %, BFME2 +2.8 %, within the
+  noise.
 
 - Heat by time windows (visit flags re-armed every 10 s; a successor cold when it ran in fewer than a quarter of the
   windows its branch ran in): worse than "never ran" (RotWK Node in-session: +4 % vs −7 %, and translation storms).
