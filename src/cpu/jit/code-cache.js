@@ -14,14 +14,15 @@
 //    (`visits`: [block, end, body offsets]), this session's, rewritten (patchVisitSlots).
 // Storage: one file per game (a `store`: synchronous size/read/write/truncate/flush, an OPFS sync access handle in the
 // browser): a header (magic, key length, session number, state, key), then records [u32 length][u32 meta length]
-// [u32 last session that used it, 0: unused][meta JSON][snapshot][body], appended; a damaged tail is cut. The code heat
+// [u32 last session that used it, 0: unused][u32 index length][binary index (indexBytes): read at load][meta JSON:
+// read at a hit][snapshot][body], appended; a damaged tail is cut. The code heat
 // grows over a game's first sessions and reshapes regions: a translation of the same code under a new shape
 // supersedes the earlier one (marked unused in place); a full file evicts the entries no session used for longest and
 // is compacted in place.
 
 const MAGIC = 0x324a434f; // 'OCJ2'
 /** header bytes before the key; record header bytes */
-const HEAD = 16, REC = 12;
+const HEAD = 16, REC = 16, IDX = 20;
 const enc = new TextEncoder(), dec = new TextDecoder();
 
 /** 2x32-bit FNV-1a over strings, hex (the cache key) */
@@ -90,13 +91,40 @@ export function inlineDeps(blocks) {
   return out;
 }
 
+/**
+ * A record's binary index (what a lookup compares first, read at load without the meta JSON): entry u32, x87 mode i32
+ * (-1: any), snapshot length, block count n, dependency count d, then n pairs [block, end) and d dependencies (u32).
+ */
+function indexBytes(eip, fpcIn, snapLen, blocks, deps) {
+  const b = new Uint8Array(IDX + 8 * blocks.length + 4 * deps.length), v = new DataView(b.buffer);
+  v.setUint32(0, eip >>> 0, true); v.setInt32(4, fpcIn ?? -1, true); v.setUint32(8, snapLen, true); v.setUint32(12, blocks.length, true); v.setUint32(16, deps.length, true);
+  let o = IDX;
+  for (const x of blocks) { v.setUint32(o, x.eip >>> 0, true); v.setUint32(o + 4, x.end >>> 0, true); o += 8; }
+  for (const d of deps) { v.setUint32(o, d >>> 0, true); o += 4; }
+  return b;
+}
+/** the index entry of the record at `at` (`hv`: its first REC + ilen bytes), or null when they do not hold together */
+function indexEntry(hv, at, len, ilen, mlen, used) {
+  const eip = hv.getUint32(REC, true), fpc = hv.getInt32(REC + 4, true), snapLen = hv.getUint32(REC + 8, true), nb = hv.getUint32(REC + 12, true), nd = hv.getUint32(REC + 16, true);
+  if (IDX + 8 * nb + 4 * nd !== ilen || REC + ilen + mlen + snapLen > len) return null;
+  const ext = new Uint32Array(2 * nb), deps = new Uint32Array(nd);
+  let o = REC + IDX;
+  for (let i = 0; i < 2 * nb; i++, o += 4) ext[i] = hv.getUint32(o, true);
+  for (let i = 0; i < nd; i++, o += 4) deps[i] = hv.getUint32(o, true);
+  const mo = REC + ilen;
+  return { k: `${eip}:${fpc < 0 ? 'g' : fpc}`, ext, deps, at, len, mo, so: mo + mlen, snapLen, used };
+}
+
 /** a span moved at once by a compaction (bytes) */
 const MOVE_SPAN = 4 << 20;
 /** entries kept per entry address and x87 mode for other code there (another program at that address) */
 export const VARIANTS = 4;
 
 export class CodeCache {
-  /** `store` (see MemStore), `key` (translator and options), `maxBytes`: the file's bound. */
+  /**
+   * `store` (see MemStore), `key` (translator and options), `maxBytes`: the file's bound (additions past it wait for an
+   * idle moment to make room, up to 9/8 of it).
+   */
   constructor(store, key, maxBytes = 256 * 1024 * 1024) {
     this.store = store; this.key = key; this.maxBytes = maxBytes;
     this.map = new Map(); // "eip:fpcIn" -> [entry]
@@ -105,6 +133,7 @@ export class CodeCache {
     this.live = 0; // (bytes of the records indexed: what a compaction keeps)
     this.stale = null; // (the entries the last lookup found translating the code of now under another shape)
     this.full = false; // (no room made any more in this session: see makeRoom)
+    this.pending = false; // (past the bound: room to make at the next idle moment, see maintain)
     this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, missHeat: 0, added: 0, bytes: 0, dead: 0, loadMs: 0, reset: '', superseded: 0, evicted: 0, compactions: 0, compactMs: 0, session: 0 };
     this.load();
   }
@@ -132,29 +161,25 @@ export class CodeCache {
     } else {
       this.session = (dv.getUint32(8, true) + 1) >>> 0 || 1;
       this.headLen = this.writeHead(0);
-      // (the index only: each record's header and meta, in one read; bodies and code bytes stay in the file until a hit)
+      // (the index only: each record's header and binary index, in one read; the meta, code bytes and body stay in the
+      // file until a hit)
       let at = this.headLen;
       while (at + REC <= size) {
-        const h = st.read(at, Math.min(size - at, REC + 4096));
-        const hv = new DataView(h.buffer, h.byteOffset, h.byteLength), len = hv.getUint32(0, true), mlen = hv.getUint32(4, true), used = hv.getUint32(8, true);
-        if (len < REC + mlen || at + len > size) break; // (a record cut short: the tail is dropped)
-        const mb = REC + mlen <= h.length ? h.subarray(REC, REC + mlen) : st.read(at + REC, mlen);
-        let meta; try { meta = JSON.parse(dec.decode(mb)); } catch { break; }
-        if (!(meta.snapLen >= 0) || REC + mlen + meta.snapLen > len) break;
+        let h = st.read(at, Math.min(size - at, 1024));
+        let hv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+        const len = hv.getUint32(0, true), mlen = hv.getUint32(4, true), used = hv.getUint32(8, true), ilen = hv.getUint32(12, true);
+        if (len < REC + ilen + mlen || ilen < IDX || at + len > size) break; // (a record cut short: the tail is dropped)
+        if (REC + ilen > h.length) { h = st.read(at, REC + ilen); hv = new DataView(h.buffer, h.byteOffset, h.byteLength); }
+        const e = indexEntry(hv, at, len, ilen, mlen, used);
+        if (!e) break;
         if (used === 0) this.stats.dead += len; // (superseded or evicted: its room comes back at the next compaction)
-        else { this.put(this.indexOf(meta, at, len, mlen, used)); this.live += len; this.stats.loaded++; }
+        else { this.put(e); this.live += len; this.stats.loaded++; }
         at += len;
       }
       if (at !== size) { st.truncate(at); st.flush(); }
       this.end = at;
     }
     this.stats.bytes = this.end; this.stats.session = this.session; this.stats.loadMs = performance.now() - t0;
-  }
-  /** what a lookup compares first (and where the record is) */
-  indexOf(meta, at, len, mlen, used) {
-    const ext = new Uint32Array(2 * meta.blocks.length);
-    meta.blocks.forEach((b, i) => { ext[2 * i] = b[0]; ext[2 * i + 1] = b[1]; });
-    return { k: `${meta.eip}:${meta.fpcIn ?? 'g'}`, ext, deps: Uint32Array.from(meta.deps), at, len, mlen, snapLen: meta.snapLen, used };
   }
   put(e) { const l = this.map.get(e.k); if (l) l.push(e); else this.map.set(e.k, [e]); }
   /** the entry leaves the index, its record marked unused in the file (its room comes back at a compaction) */
@@ -169,7 +194,7 @@ export class CodeCache {
   touch(e) { if (e.used !== this.session) { e.used = this.session; this.writeU32(e.at + 8, this.session); } }
   /** does memory (`u8`) hold the code the entry was translated from, over the entry's own extent? */
   sameCode(e, u8) {
-    const snap = this.store.read(e.at + REC + e.mlen, e.snapLen);
+    const snap = this.store.read(e.at + e.so, e.snapLen);
     if (snap.length !== e.snapLen) return false;
     let o = 0;
     for (let i = 0; i < e.ext.length; i += 2) {
@@ -199,11 +224,11 @@ export class CodeCache {
         for (let i = 0; same && i < deps.length; i++) same = e.deps[i] === deps[i] >>> 0;
         if (!same) { if (why !== 'missBytes') why = 'missDeps'; continue; }
         const rec = this.store.read(e.at, e.len);
-        if (rec.length !== e.len || !sameBytes(rec.subarray(REC + e.mlen, REC + e.mlen + e.snapLen), snap)) { why = 'missBytes'; continue; }
-        let meta; try { meta = JSON.parse(dec.decode(rec.subarray(REC, REC + e.mlen))); } catch { continue; }
+        if (rec.length !== e.len || !sameBytes(rec.subarray(e.so, e.so + e.snapLen), snap)) { why = 'missBytes'; continue; }
+        let meta; try { meta = JSON.parse(dec.decode(rec.subarray(e.mo, e.so))); } catch { continue; }
         if (accept && !accept(meta)) { why = 'missHeat'; if (u8) (stale ??= []).push(e); continue; }
         this.stats.hits++; this.touch(e);
-        return { ...meta, code: rec.slice(REC + e.mlen + e.snapLen) };
+        return { ...meta, code: rec.slice(e.so + e.snapLen) };
       }
     }
     this.stats.misses++; this.stats[why]++;
@@ -217,19 +242,33 @@ export class CodeCache {
    * the least recently used dropped. Appended to the store, indexed in memory; false when no room is left (makeRoom).
    */
   add(t) {
-    const meta = { eip: t.eip, fpcIn: t.fpcIn ?? null, fpcOut: t.fpcOut ?? null, altAt: t.altAt ?? -1, blocks: t.blocks.map((b) => [b.eip, b.end, b.index]), deps: t.deps, stats: t.stats, hints: t.hints ?? [], visits: t.visits ?? [], snapLen: t.snap.length };
-    const mb = enc.encode(JSON.stringify(meta)), len = REC + mb.length + t.snap.length + t.code.length;
-    const k = `${meta.eip}:${meta.fpcIn ?? 'g'}`;
+    const meta = { fpcOut: t.fpcOut ?? null, altAt: t.altAt ?? -1, blocks: t.blocks.map((b) => [b.eip, b.end, b.index]), stats: t.stats, hints: t.hints ?? [], visits: t.visits ?? [] };
+    const ib = indexBytes(t.eip, t.fpcIn, t.snap.length, t.blocks, t.deps), mb = enc.encode(JSON.stringify(meta));
+    const len = REC + ib.length + mb.length + t.snap.length + t.code.length;
+    const k = `${t.eip}:${t.fpcIn ?? 'g'}`;
     if (this.stale?.k === k) for (const e of this.stale.list) this.drop(e, 'superseded');
     this.stale = null;
     for (let l = this.map.get(k); l && l.length >= VARIANTS; l = this.map.get(k)) this.drop(l.reduce((a, b) => (b.used < a.used || (b.used === a.used && b.at < a.at) ? b : a)), 'evicted');
-    if (this.end + len > this.maxBytes && !this.makeRoom(len)) return false;
+    // (past the bound: room made at the next idle moment (maintain), or now past 9/8 of it; none once this session's
+    // own entries fill it)
+    if (this.end + len > this.maxBytes) {
+      if (this.full) return false;
+      if (this.end + len <= this.maxBytes + (this.maxBytes >> 3)) this.pending = true;
+      else if (!this.makeRoom(len)) return false;
+    }
     const rec = new Uint8Array(len), v = new DataView(rec.buffer);
-    v.setUint32(0, len, true); v.setUint32(4, mb.length, true); v.setUint32(8, this.session, true);
-    rec.set(mb, REC); rec.set(t.snap, REC + mb.length); rec.set(t.code, REC + mb.length + t.snap.length);
+    v.setUint32(0, len, true); v.setUint32(4, mb.length, true); v.setUint32(8, this.session, true); v.setUint32(12, ib.length, true);
+    rec.set(ib, REC); rec.set(mb, REC + ib.length); rec.set(t.snap, REC + ib.length + mb.length); rec.set(t.code, REC + ib.length + mb.length + t.snap.length);
     this.store.write(this.end, rec);
-    this.put(this.indexOf(meta, this.end, len, mb.length, this.session));
+    this.put(indexEntry(new DataView(rec.buffer), this.end, len, ib.length, mb.length, this.session));
     this.end += len; this.live += len; this.stats.bytes = this.end; this.stats.added++;
+    return true;
+  }
+  /** At an idle moment (no translation asked for a while): the room the additions past the bound asked for. */
+  maintain() {
+    if (!this.pending) return false;
+    this.pending = false;
+    this.makeRoom(0);
     return true;
   }
   /**
@@ -239,6 +278,7 @@ export class CodeCache {
    * tried in this session (further additions past the bound are refused).
    */
   makeRoom(len) {
+    this.pending = false;
     if (this.full) return false;
     const target = Math.floor(this.maxBytes * 3 / 4) - this.headLen - len;
     if (this.live > target) {

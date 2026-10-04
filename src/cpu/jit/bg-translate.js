@@ -16,6 +16,9 @@ import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 let mem = null, opts = null, cache = null, cacheReady = null;
+/** the cache's upkeep waits for this long without a batch (the learned regions in place, the game's new code rare) */
+const IDLE_MS = 3000;
+let idleTimer = null;
 /**
  * Code heat shaping the regions (heat.js; Jit.heatAdd sends it: learned ranges, this session's visit flags) and this
  * thread's visit flags (translate.js VisitSlots). Kept apart from `opts`, the translation options hashed into the
@@ -138,10 +141,12 @@ function translateBatch(items, over) {
 async function openCache(c) {
   if (opts.profile || opts.blockCounts) return null; // (instrumented translations: not kept)
   // (the options as sent and the defaults they complete — layout, cold exits and their threshold, visit flags, region
-  // sizes...: every option changing the code; the heat is per entry, see heatRecorder)
+  // sizes...: every option changing the code; the heat is per entry, see flagsCover)
   const key = c.key ?? `${hashText(await moduleClosureText(c.sources, (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`); return r.text(); })))}|${JSON.stringify(opts)}|${JSON.stringify(JIT_DEFAULTS)}`;
   const store = c.store ?? await openOpfsStore('orthros-jitcache', `${String(c.name).replace(/[^A-Za-z0-9._-]/g, '_')}.bin`);
-  return new CodeCache(store, key, c.maxBytes);
+  const cc = new CodeCache(store, key, c.maxBytes);
+  if (c.idleMs !== undefined) cc.idleMs = c.idleMs; // (tests)
+  return cc;
 }
 
 function batch(m, reply) {
@@ -157,6 +162,13 @@ function batch(m, reply) {
   // (written records reach the disk at the next flush — a costly sync: at most every 5 s; a session ended before
   // keeps what was flushed, a record cut short is dropped at the next load)
   if (cache && cache.stats.added && t2 - (cache.flushedAt ?? 0) > 5000) { cache.flush(); cache.flushedAt = performance.now(); }
+  // (no batch for IDLE_MS: the cache's room made (eviction, compaction: see CodeCache.maintain), what was added flushed)
+  if (cache) {
+    clearTimeout(idleTimer);
+    const c = cache;
+    idleTimer = setTimeout(() => { if (cache !== c) return; c.maintain(); if (c.stats.added) { c.flush(); c.flushedAt = performance.now(); } }, c.idleMs ?? IDLE_MS);
+    idleTimer.unref?.(); // (Node tests: no wait for it at exit)
+  }
   reply({ type: 'batch', id: m.id, module, items: out, ms: t2 - t0, compileMs: t2 - t1, translateMs: emitMs, cacheHits: hits, cache: cache ? { ...cache.stats } : null });
 }
 

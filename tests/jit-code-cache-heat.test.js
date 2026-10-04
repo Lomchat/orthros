@@ -46,7 +46,7 @@ function reference(regs) {
  * are asked, `shiftFlags` flag bytes taken first (the session's visit flags elsewhere than the last one's), `over`
  * in-session options. Returns the run, the batch items, the background stats and the visits harvested after the run.
  */
-async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, null]], shiftFlags = 0, over = null, skipFns = 0 } = {}) {
+async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, null]], shiftFlags = 0, over = null, skipFns = 0, maxBytes, idleMs } = {}) {
   const m = machine(regs);
   if (shiftFlags) allocBlockCounters(m.mem, shiftFlags);
   const jit = new Jit(m.mem, m.interp, { smc: true, visit: true, warn: (s) => { throw new Error(s); } });
@@ -54,7 +54,7 @@ async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, nu
   for (let i = 0; i < skipFns; i++) jit.reserveFn();
   if (heat) jit.heatAdd(heat);
   const replies = [];
-  jit.attachBackground({ postMessage: (msg) => handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|heat', store } } : msg, (r) => replies.push(r)) });
+  jit.attachBackground({ postMessage: (msg) => handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|heat', store, maxBytes, idleMs } } : msg, (r) => replies.push(r)) });
   if (over) jit.switchOpts(over);
   await tick();
   jit.bgPrewarm(learned); await tick(); await tick();
@@ -110,6 +110,22 @@ test('code cache with heat: a region cached under one heat is reused where the h
   assert.equal(s.bg.cache.loaded, 1, 'one shape per code kept');
   s = await run('cut', { shiftFlags: 99 });
   assert.equal(s.bg.cacheHits, 1); assert.equal(s.bg.cache.loaded, 1);
+});
+
+test('code cache with heat: past its bound, the cache makes room when the background worker is idle', async () => {
+  const store = new MemStore(), ref = reference([0, 3, 0, 10]), head = 16 + 'test|heat'.length;
+  let s = await session(store, H.none);
+  const other = new MemStore(); await session(other, H.cut);
+  const rl = store.size() - head, maxBytes = head + rl + (other.size() - head) - 1; // (the second record: 1 byte past it)
+  // another shape of the same code: added past the bound (the earlier one superseded), the file compacted only once
+  // no batch came for idleMs
+  s = await session(store, H.cut, { maxBytes, idleMs: 5 });
+  assert.equal(s.s, ref.s); assert.equal(s.bg.cache.superseded, 1); assert.equal(s.bg.cache.added, 1);
+  assert.ok(store.size() > maxBytes, 'past the bound until idle');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(store.size(), other.size(), 'compacted when idle: the superseded record gone');
+  s = await session(store, H.cut, { maxBytes });
+  assert.equal(s.bg.cacheHits, 1); assert.equal(s.bg.cache.loaded, 1); assert.equal(s.bg.cache.dead, 0);
 });
 
 test('code cache with heat: in-session options are neither looked up nor kept', async () => {
