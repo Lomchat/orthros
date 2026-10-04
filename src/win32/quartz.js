@@ -3,15 +3,13 @@
 // it, IMediaEvent(Ex) reports the end (EC_COMPLETE, an event handle, a notification message), IVideoWindow places the
 // video renderer's window over the game's, IBasicVideo / IBasicAudio / IMediaSeeking / IMediaPosition tune it.
 //
-// Files are read from the virtual file system and decoded here (src/media): MPEG-1 system streams, MPEG-1 video and
-// MPEG audio layer I / II elementary streams, the formats Windows itself decodes with its built-in splitter and decoders.
+// The file is played by a MoviePlayer (movie-player.js): read from the virtual file system and decoded in src/media —
+// MPEG-1 system streams, MPEG audio, WAVE and AVI files with the codecs Windows ships with (docs/media-playback.md).
 // Other files fail as on a Windows without the codec (VFW_E_UNKNOWN_FILE_TYPE / VFW_E_UNSUPPORTED_STREAM): a game then
 // skips its movie. Pictures are shown on the host display's video layer, above the game's own layers, in the video
-// window's rectangle; sound goes through the DirectSound mixer (dsound.js createAudioStream). Playback follows the VM
-// clock: the scheduler calls vm.media.tick() at its wake-up passes and wakes up for the next picture (sched.js).
+// window's rectangle; sound goes through the DirectSound mixer; playback follows the VM clock.
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG, E_FAIL } from './com.js';
-import { openMedia, MediaError } from '../media/open.js';
-import { yuv420ToRgba } from '../media/yuv.js';
+import { MoviePlayer, MediaClock } from './movie-player.js';
 
 const CLSID_FilterGraph = 'e436ebb3-524f-11ce-9f53-0020af0ba770', CLSID_FilterGraphNoThread = 'e436ebb8-524f-11ce-9f53-0020af0ba770';
 const IID = {
@@ -28,11 +26,10 @@ export const HR = {
   VFW_E_WRONG_STATE: 0x80040227, VFW_E_ALREADY_CONNECTED: 0x80040204,
 };
 export const EC_COMPLETE = 0x01, EC_USERABORT = 0x02, EC_ERRORABORT = 0x03;
-const State_Stopped = 0, State_Paused = 1, State_Running = 2;
+const State_Stopped = 0, State_Running = 2; // (FILTER_STATE: State_Paused = 1)
 const OATRUE = -1, OAFALSE = 0;
 const AM_SEEKING_CAPS = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20; // absolute, forwards, backwards, current / stop position, duration
 const WS_CHILD = 0x40000000, WS_OVERLAPPEDWINDOW = 0x00cf0000, WS_CLIPSIBLINGS = 0x04000000; // (the video window: its default style)
-const AUDIO_LEAD = 0.25; // seconds of sound written ahead of the play cursor
 
 const DISPATCH = [['GetTypeInfoCount', 1], ['GetTypeInfo', 3], ['GetIDsOfNames', 5], ['Invoke', 8]];
 /** IDispatch (dual interfaces): no type information */
@@ -72,25 +69,26 @@ export function registerQuartz(api, vm) {
   com.interface('IBasicVideo2', IID.IBasicVideo2, 'IBasicVideo', [['GetPreferredAspectRatio', 2]]);
   com.interface('IBasicAudio', IID.IBasicAudio, 'IDispatch', [['put_Volume', 1], ['get_Volume', 1], ['put_Balance', 1], ['get_Balance', 1]]);
 
-  const media = vm.media = new MediaClock(vm);
+  vm.media ??= new MediaClock(vm);
   const log = (m) => vm.log('video', m);
 
   // ---------------------------------------------------------------- the filter graph manager
   /** Interface name -> implementation class (one COM object per interface, all sharing the Graph). */
   const PARTS = {};
+  /** A filter graph: its COM objects, events and video window; the file played by a MoviePlayer. */
   class Graph {
     constructor(proc) {
       this.proc = proc; this.parts = new Map(); this.live = 0;
-      this.src = null; this.path = null; this.state = State_Stopped;
-      this.events = []; this.eventHandle = 0; this.notify = null; this.notifyFlags = 0; this.completed = false;
-      this.pos = 0; // stream position (seconds) while not running; at Run: the position the run started from
-      this.runAt = 0; // VM clock (ms) when the current run started
-      this.stopPos = null; // stop position (seconds; null: the end)
+      this.events = []; this.eventHandle = 0; this.notify = null; this.notifyFlags = 0;
       this.win = { visible: false, autoShow: true, owner: 0, drain: 0, style: WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS, styleEx: 0, left: 0, top: 0, width: 0, height: 0, fullScreen: false, state: 1, border: 0, caption: 'ActiveMovie Window', cursorHidden: false, placed: false };
       this.srcRect = null; this.dstRect = null; // null: the defaults (the whole picture, the whole window)
-      this.volume = 0; this.balance = 0;
-      this.voice = null; this.rgba = null; this.shown = false; this.due = 0;
-      this.presented = 0; this.presentMs = 0; this.src0 = null;
+      this.emptyCompleted = false;
+      this.player = new MoviePlayer(vm, proc, {
+        log,
+        onComplete: () => this.queueEvent(EC_COMPLETE, S_OK, 0),
+        onError: () => this.queueEvent(EC_ERRORABORT, 0x80004005, 0),
+        rect: () => this.screenRect(), source: () => this.srcRect, visible: () => this.win.visible,
+      });
     }
     /** the COM object for interface `name` (made once; the Graph lives while any of its objects does) */
     part(c, name) {
@@ -103,81 +101,57 @@ export function registerQuartz(api, vm) {
     }
     released() { if (--this.live === 0) this.destroy(); }
     destroy() {
-      this.stopPlayback(); this.hideVideo();
-      this.voice?.destroy(); this.voice = null;
-      this.src?.close(); this.src0 = this.src; this.src = null;
-      media.graphs.delete(this);
+      this.player.close();
       if (this.eventHandle) { const o = this.proc.handles.getAs(this.eventHandle, 'event'); if (o) o.signaled = false; }
-      log(`graph released${this.path ? ` (${this.path}${this.src0 ? `: ${this.report(this.src0)}` : ''})` : ''}`);
+      log(`graph released${this.player.path ? ` (${this.player.path}: ${this.player.report()})` : ''}`);
     }
-    get hasVideo() { return !!this.src?.video; }
-    get hasAudio() { return !!this.src?.audio; }
-    get duration() { return this.src?.duration ?? 0; }
-    /** where playback ends (seconds): the stop position, else the duration (unknown: no end before the streams') */
-    get stopTime() { return this.stopPos ?? (this.duration || Infinity); }
-    /** the stream position now (seconds) */
-    position(now = vm.clock.now()) {
-      if (this.state !== State_Running) return this.pos;
-      return Math.min(this.pos + (now - this.runAt) / 1000, Math.max(this.stopTime, this.pos));
-    }
+    // (the player's state, as the interfaces read it)
+    get src() { return this.player.src; }
+    get state() { return this.player.state; }
+    get completed() { return this.player.completed || this.emptyCompleted; }
+    get hasVideo() { return this.player.hasVideo; }
+    get hasAudio() { return this.player.hasAudio; }
+    get duration() { return this.player.duration; }
+    get stopTime() { return this.player.stopTime; }
+    get stopPos() { return this.player.stopPos; }
+    set stopPos(v) { this.player.stopPos = v; }
+    position() { return this.player.position(); }
+    seek(t) { this.player.seek(t); }
 
     renderFile(c, name) {
-      if (this.src) return HR.VFW_E_ALREADY_CONNECTED;
+      if (this.player.src) return HR.VFW_E_ALREADY_CONNECTED;
       if (!name) return E_POINTER;
       const path = c.proc.path(name);
-      const st = vm.vfs.stat(path);
-      if (!st || st.isDir) { log(`RenderFile ${name}: ${path} not found`); return HR.FILE_NOT_FOUND; }
-      const f = vm.vfs.open(path, {});
-      if (!f) return HR.FILE_NOT_FOUND;
-      try {
-        this.src = openMedia(f, { log });
-      } catch (e) {
-        f.close();
-        const code = e instanceof MediaError && e.code === 'unsupported' ? (/layer III|MPEG-2/.test(e.message) ? HR.VFW_E_UNSUPPORTED_STREAM : HR.VFW_E_UNKNOWN_FILE_TYPE) : HR.VFW_E_INVALID_FILE_FORMAT;
-        vm.warn(`DirectShow: RenderFile ${path}: ${e.message} -> 0x${code.toString(16)} (not played)`);
+      const r = this.player.open(path);
+      if (!r.ok) {
+        const code = r.code === 'not-found' ? HR.FILE_NOT_FOUND : r.code === 'unsupported' ? HR.VFW_E_UNSUPPORTED_STREAM : r.code === 'unknown' ? HR.VFW_E_UNKNOWN_FILE_TYPE : HR.VFW_E_INVALID_FILE_FORMAT;
+        if (r.code !== 'not-found') vm.warn(`DirectShow: RenderFile ${path}: ${r.message} -> 0x${code.toString(16)} (not played)`);
         return code;
       }
-      this.path = path;
-      const s = this.src;
-      if (s.video) { this.win.width = s.width; this.win.height = s.height; }
-      log(`RenderFile ${path}: ${s.kind}${s.video ? `, video ${s.width}x${s.height} ${s.fps.toFixed(2)} fps` : ''}${s.audio ? `, audio ${s.audioRate} Hz ${s.audioChannels} ch` : s.audioLayer === 3 ? ', audio layer III (not decoded)' : ''}, ${s.duration.toFixed(2)} s`);
+      if (this.hasVideo) { this.win.width = this.player.width; this.win.height = this.player.height; }
       // (a stream left out: what the filter graph manager says when some streams could not be rendered)
-      if (s.videoUnsupported) return HR.VFW_S_VIDEO_NOT_RENDERED;
-      return s.audioLayer === 3 && !s.audio ? HR.VFW_S_AUDIO_NOT_RENDERED : S_OK;
+      return r.left === 'video' ? HR.VFW_S_VIDEO_NOT_RENDERED : r.left === 'audio' ? HR.VFW_S_AUDIO_NOT_RENDERED : S_OK;
     }
 
     // ---- states
     run() {
       if (this.state === State_Running) return S_OK;
-      if (this.state === State_Stopped) this.completed = false;
-      this.state = State_Running; this.runAt = vm.clock.now();
-      if (this.src) {
-        media.graphs.add(this);
-        this.startAudio();
-        if (this.hasVideo && this.win.autoShow) this.win.visible = true;
-        media.wake();
-      } else if (!this.completed) { // (nothing rendered — RenderFile failed and the game ran the graph anyway: a movie of no length)
-        this.completed = true;
+      if (this.state === State_Stopped) this.emptyCompleted = false;
+      if (this.hasVideo && this.win.autoShow) this.win.visible = true;
+      this.player.run();
+      if (!this.src && !this.emptyCompleted) { // (nothing rendered — RenderFile failed and the game ran the graph anyway: a movie of no length)
+        this.emptyCompleted = true;
         this.queueEvent(EC_COMPLETE, S_OK, 0);
       }
-      log(`Run at ${this.pos.toFixed(2)} s${this.path ? ` (${this.path})` : ''}`);
+      log(`Run at ${this.player.pos.toFixed(2)} s${this.player.path ? ` (${this.player.path})` : ''}`);
       return S_OK;
     }
     pause() {
-      if (this.state === State_Running) this.pos = this.position();
-      this.stopPlayback();
-      this.state = State_Paused;
       if (this.hasVideo && this.win.autoShow) this.win.visible = true;
-      if (this.src) this.showPosition();
+      this.player.pause();
       return S_OK;
     }
-    stop() {
-      if (this.state === State_Running) this.pos = this.position();
-      this.stopPlayback();
-      this.state = State_Stopped;
-      return S_OK;
-    }
-    stopPlayback() { this.voice?.stop(); media.graphs.delete(this); }
+    stop() { this.player.stop(); return S_OK; }
 
     // ---- events
     queueEvent(code, p1, p2) {
@@ -187,7 +161,7 @@ export function registerQuartz(api, vm) {
         const w = vm.wm?.windows.get(this.notify.hwnd);
         if (w) vm.wm.post(w, this.notify.msg, 0, this.notify.data);
       }
-      log(`event ${code}${this.path ? ` (${this.path})` : ''}`);
+      log(`event ${code}${this.player.path ? ` (${this.player.path})` : ''}`);
     }
     eventHandleOf() {
       if (!this.eventHandle) this.eventHandle = this.proc.handles.create({ type: 'event', manual: true, signaled: this.events.length > 0 });
@@ -199,38 +173,7 @@ export function registerQuartz(api, vm) {
       return e;
     }
 
-    // ---- playback (vm.media.tick)
-    tick(now) {
-      const s = this.src;
-      if (!s || this.state !== State_Running) return Infinity;
-      const t = this.position(now);
-      s.load(t);
-      if (s.loadError && !this.failed) { this.failed = true; vm.warn(`DirectShow: ${this.path}: read failed (${s.loadError.message ?? s.loadError})`); this.queueEvent(EC_ERRORABORT, 0x80004005, 0); }
-      if (s.video) {
-        const p = s.pictureAt(t);
-        if (p) { this.picture = p; this.present(p); }
-      }
-      if (this.voice) this.feedAudio(now, t);
-      if (!this.completed && (s.ended(t) || t >= this.stopTime)) {
-        this.completed = true;
-        log(`complete at ${t.toFixed(2)} s: ${this.report()}`);
-        this.voice?.stop();
-        this.queueEvent(EC_COMPLETE, S_OK, 0);
-      }
-      // the next wake-up: the next picture, or the next sound refill
-      let next = Infinity;
-      if (s.video && !s.videoDone) next = this.runAt + (s.frameTime(s.frameIndex) - this.pos) * 1000;
-      if (this.voice && !this.completed) next = Math.min(next, now + 40);
-      if (!this.completed && next === Infinity) next = now + 20; // (waiting for data or for the end)
-      return this.due = Math.max(next, now + 1);
-    }
-
-    /** playback statistics (the 'video' log) */
-    report(s = this.src) {
-      if (!s) return '';
-      const st = s.stats, n = st.decoded + st.skipped;
-      return `${s.frameIndex} pictures (${this.presented} shown, ${st.overtaken} decoded and overtaken, ${st.skipped} B skipped${s.vdec?.errors ? `, ${s.vdec.errors} damaged` : ''}), decoding ${n ? (st.decodeMs / Math.max(1, st.decoded)).toFixed(1) : 0} ms per picture, showing ${(this.presentMs / Math.max(1, this.presented)).toFixed(1)} ms, lateness up to ${(st.late * 1000).toFixed(0)} ms; ${(s.audioPos / (s.audioRate || 1)).toFixed(2)} s of sound`;
-    }
+    // ---- the video window
     /** the video window's client area on the screen */
     windowRect() {
       const w = this.win;
@@ -248,106 +191,8 @@ export function registerQuartz(api, vm) {
       const r = this.windowRect(), d = this.dstRect;
       return d ? { x: r.x + d.l, y: r.y + d.t, w: d.w, h: d.h } : r;
     }
-    present(p) {
-      const disp = vm.host?.display;
-      this.shown = true;
-      if (!this.win.visible || !disp?.presentVideo) return;
-      const s = this.src, r = this.srcRect ?? { l: 0, t: 0, w: s.width, h: s.height };
-      const x = r.l & ~1, y = r.t & ~1, sw = Math.max(1, Math.min(r.w, s.width - x)), sh = Math.max(1, Math.min(r.h, s.height - y));
-      const t0 = performance.now();
-      // (an RGBA picture — AVI codecs — as it is; 4:2:0 planes as they are when the host converts them itself — WebCodecs
-      // in the browser; else converted to RGBA here)
-      if (p.rgba) disp.presentVideo(p.rgba, p.width, p.height, this.screenRect(), { x: r.l, y: r.t, w: Math.min(r.w, s.width - r.l), h: Math.min(r.h, s.height - r.t) });
-      else if (!disp.presentVideoYuv?.(p, { x, y, w: sw, h: sh }, this.screenRect())) {
-        const n = sw * sh * 4;
-        if (!this.rgba || this.rgba.length !== n) this.rgba = new Uint8ClampedArray(n);
-        yuv420ToRgba(p, x, y, sw, sh, this.rgba);
-        disp.presentVideo(this.rgba, sw, sh, this.screenRect());
-      }
-      this.presented++; this.presentMs += performance.now() - t0;
-    }
-    /**
-     * The picture at the current position (paused, or after a seek): decoded now — or the next one when none is due yet
-     * (a paused renderer shows the first picture it receives, as DirectShow's does).
-     */
-    showPosition() {
-      const s = this.src;
-      if (!s.video) return;
-      let p = s.pictureAt(this.pos) ?? s.picture;
-      if (!p && !s.videoDone) { s.load(s.frameTime(s.frameIndex)); p = s.pictureAt(s.frameTime(s.frameIndex)); }
-      if (p) this.present(p);
-    }
-    hideVideo() { if (this.shown) { this.shown = false; vm.host?.display?.hideVideo?.(); } }
-    setVisible(v) {
-      this.win.visible = v;
-      if (!v) this.hideVideo();
-      else if (this.src?.picture) this.present(this.src.picture);
-    }
-    windowChanged() { if (this.win.visible && this.src?.picture) this.present(this.src.picture); }
-
-    /** move to stream position `t` (seconds): decoders restarted at the beginning and run forward when going back */
-    seek(t) {
-      const s = this.src; if (!s) return;
-      t = Math.max(0, Math.min(t, this.duration || t));
-      const running = this.state === State_Running;
-      if (running) this.voice?.stop();
-      if (t < this.position()) s.reset();
-      // (forward: decode to the position without showing; the sound before it is dropped)
-      s.load(t, Infinity);
-      if (s.video) s.pictureAt(t);
-      s.audioUntil(t, () => {});
-      this.pending = []; // (decoded before the seek: another part of the stream)
-      this.pos = t; this.completed = false;
-      if (running) { this.runAt = vm.clock.now(); this.startAudio(); }
-      else this.showPosition();
-    }
-
-    // ---- sound: decoded samples written ahead of the DirectSound play cursor
-    startAudio() {
-      const s = this.src;
-      if (!s?.audio || !vm.createAudioStream) return;
-      if (!this.voice) {
-        this.voice = vm.createAudioStream(this.proc, s.audioRate, s.audioChannels, 1);
-        this.pending = [];
-      }
-      this.ringView().fill(0);
-      this.voice.setVolume(this.volume); this.voice.setPan(this.balance);
-      this.voiceAt = vm.clock.now(); this.voiceFrom = this.pos; this.written = 0;
-      this.pending = this.pending.filter((b) => b.start + b.samples[0].length / s.audioRate > this.pos);
-      this.voice.start();
-    }
-    /** the sound ring: 16-bit samples in guest memory */
-    ringView() { return new Int16Array(mem.u8.buffer, this.voice.addr, this.voice.frames * this.src.audioChannels); }
-    feedAudio(now, t) {
-      const s = this.src, rate = s.audioRate, ch = s.audioChannels, ring = this.ringView(), frames = this.voice.frames;
-      const played = Math.floor((now - this.voiceAt) / 1000 * rate);
-      if (this.written < played) this.written = played; // (fell behind: the part already played is lost)
-      const target = Math.min(played + Math.floor(AUDIO_LEAD * rate), played + frames - 1);
-      s.audioUntil(this.voiceFrom + target / rate, (samples, start) => this.pending.push({ samples, start }));
-      const pend = this.pending;
-      while (this.written < target) {
-        const b = pend[0];
-        const f0 = b ? Math.round((b.start - this.voiceFrom) * rate) : Infinity;
-        if (f0 > this.written) { // a gap (no sound decoded for it yet, or the stream over): silence
-          const end = Math.min(f0, target);
-          for (let f = this.written; f < end; f++) { const o = (f % frames) * ch; ring[o] = 0; if (ch > 1) ring[o + 1] = 0; }
-          this.written = end;
-          if (!b) break;
-          continue;
-        }
-        const n = b.samples[0].length, from = this.written - f0, end = Math.min(n, target - f0);
-        const L = b.samples[0], R = b.samples[ch > 1 ? 1 : 0];
-        for (let i = from; i < end; i++) {
-          const o = ((f0 + i) % frames) * ch;
-          const l = L[i] * 32768, r = R[i] * 32768;
-          ring[o] = l > 32767 ? 32767 : l < -32768 ? -32768 : l;
-          if (ch > 1) ring[o + 1] = r > 32767 ? 32767 : r < -32768 ? -32768 : r;
-        }
-        this.written = f0 + Math.max(from, end);
-        if (end >= n) pend.shift();
-      }
-      void t;
-    }
+    setVisible(v) { this.win.visible = v; this.player.refresh(); }
+    windowChanged() { if (this.win.visible) this.player.refresh(); }
   }
 
   // ---------------------------------------------------------------- the interfaces
@@ -514,10 +359,10 @@ export function registerQuartz(api, vm) {
   });
   const AUDIO = {
     ...dispatchImpl,
-    put_Volume(c) { const g = this.g, v = c.sarg(1); if (!g.hasAudio) return E_NOTIMPL; if (v > 0 || v < -10000) return E_INVALIDARG; g.volume = v; g.voice?.setVolume(v); return S_OK; },
-    get_Volume(c) { if (!this.g.hasAudio) return E_NOTIMPL; if (!c.arg(1)) return E_POINTER; mem.write32(c.arg(1), this.g.volume >>> 0); return S_OK; },
-    put_Balance(c) { const g = this.g, v = c.sarg(1); if (!g.hasAudio) return E_NOTIMPL; if (v > 10000 || v < -10000) return E_INVALIDARG; g.balance = v; g.voice?.setPan(v); return S_OK; },
-    get_Balance(c) { if (!this.g.hasAudio) return E_NOTIMPL; if (!c.arg(1)) return E_POINTER; mem.write32(c.arg(1), this.g.balance >>> 0); return S_OK; },
+    put_Volume(c) { const g = this.g, v = c.sarg(1); if (!g.hasAudio) return E_NOTIMPL; if (v > 0 || v < -10000) return E_INVALIDARG; g.player.setVolume(v); return S_OK; },
+    get_Volume(c) { if (!this.g.hasAudio) return E_NOTIMPL; if (!c.arg(1)) return E_POINTER; mem.write32(c.arg(1), this.g.player.volume >>> 0); return S_OK; },
+    put_Balance(c) { const g = this.g, v = c.sarg(1); if (!g.hasAudio) return E_NOTIMPL; if (v > 10000 || v < -10000) return E_INVALIDARG; g.player.setBalance(v); return S_OK; },
+    get_Balance(c) { if (!this.g.hasAudio) return E_NOTIMPL; if (!c.arg(1)) return E_POINTER; mem.write32(c.arg(1), this.g.player.balance >>> 0); return S_OK; },
   };
 
   /** the implementation of one interface of a graph; QueryInterface answers with the graph's other interfaces */
@@ -559,21 +404,4 @@ export function registerQuartz(api, vm) {
   };
   com.registerClass(CLSID_FilterGraph, factory);
   com.registerClass(CLSID_FilterGraphNoThread, factory);
-}
-
-/** The playing graphs, advanced by the scheduler (sched.js: wakeBlocked calls tick, nextWake asks for the next due time). */
-export class MediaClock {
-  constructor(vm) { this.vm = vm; this.graphs = new Set(); this.due = Infinity; }
-  tick(now) {
-    if (now < this.due) return;
-    if (!this.graphs.size) { this.due = Infinity; return; } // (nothing playing: the scheduler no longer calls in)
-    let due = Infinity;
-    for (const g of [...this.graphs]) {
-      try { due = Math.min(due, g.tick(now)); } catch (e) { this.vm.warn(`DirectShow: playback of ${g.path} failed: ${e.stack ?? e}`); g.src.failed = true; g.stopPlayback(); g.queueEvent(EC_ERRORABORT, 0x80004005, 0); }
-    }
-    this.due = due;
-  }
-  nextWake() { return this.graphs.size ? this.due : Infinity; }
-  /** a graph started or moved: advanced at the next pass */
-  wake() { this.due = 0; this.tick(this.vm.clock.now()); }
 }
