@@ -93,13 +93,14 @@ export function registerQuartz(api, vm) {
     /** the COM object for interface `name` (made once; the Graph lives while any of its objects does) */
     part(c, name) {
       let p = this.parts.get(name);
-      if (p && com.objectAt(p)) { com.addRef(com.objectAt(p)); return p; }
+      if (p !== undefined) { com.addRef(com.objectAt(p)); return p; }
       const impl = new PARTS[name](this);
       p = com.create(c.proc, name, impl);
       this.parts.set(name, p); this.live++;
       return p;
     }
-    released() { if (--this.live === 0) this.destroy(); }
+    /** the object of interface `name` was released: forgotten (its memory goes to the next object made), and the graph with the last one */
+    released(name) { this.parts.delete(name); if (--this.live === 0) this.destroy(); }
     destroy() {
       this.player.close();
       if (this.eventHandle) { const o = this.proc.handles.getAs(this.eventHandle, 'event'); if (o) o.signaled = false; }
@@ -228,8 +229,9 @@ export function registerQuartz(api, vm) {
       const g = this.g, timeout = c.arg(1), pc = c.arg(2);
       if (!pc) return E_POINTER;
       if (g.state !== State_Running) { mem.write32(pc, 0); return 0x80040227; /* VFW_E_WRONG_STATE */ }
-      if (!g.completed && !vm.sched.block(c.thread, () => g.completed, timeout, 'IMediaEvent::WaitForCompletion')) { mem.write32(pc, 0); return HR.E_ABORT; }
-      mem.write32(pc, EC_COMPLETE);
+      // (a read failure ends playback too: EC_ERRORABORT)
+      if (!g.completed && !g.player.failed && !vm.sched.block(c.thread, () => g.completed || g.player.failed, timeout, 'IMediaEvent::WaitForCompletion')) { mem.write32(pc, 0); return HR.E_ABORT; }
+      mem.write32(pc, g.completed ? EC_COMPLETE : EC_ERRORABORT);
       return S_OK;
     },
     CancelDefaultHandling() { return S_OK; }, RestoreDefaultHandling() { return S_OK; }, FreeEventParams() { return S_OK; },
@@ -366,12 +368,12 @@ export function registerQuartz(api, vm) {
   };
 
   /** the implementation of one interface of a graph; QueryInterface answers with the graph's other interfaces */
-  const part = (methods, iids = []) => class {
+  const part = (name, iids = []) => class {
     constructor(g) { this.g = g; this.iids = iids; }
-    queryInterface(c, iid) { const name = BY_IID.get(iid); return name ? this.g.part(c, name) : 0; }
-    destroy() { this.g.released(); }
+    queryInterface(c, iid) { const n = BY_IID.get(iid); return n ? this.g.part(c, n) : 0; }
+    destroy() { this.g.released(name); }
   };
-  const define = (name, methods, iids) => { const C = part(methods, iids); Object.assign(C.prototype, methods); PARTS[name] = C; };
+  const define = (name, methods, iids) => { const C = part(name, iids); Object.assign(C.prototype, methods); PARTS[name] = C; };
   define('IFilterGraph2', GRAPH, [IID.IFilterGraph, IID.IGraphBuilder]);
   define('IMediaControl', CONTROL);
   define('IMediaEventEx', EVENT, [IID.IMediaEvent]);

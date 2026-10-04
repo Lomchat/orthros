@@ -143,7 +143,7 @@ export function registerMci(api, vm) {
   /** wait (the caller's thread) for the end of a play started with `wait` */
   function waitEnd(c, d, started) {
     if (c.thread.wakeResult === undefined && !started) return 0;
-    vm.sched.block(c.thread, () => !devices.has(d.id) || d.player.state !== RUNNING || d.player.completed, INFINITE, 'MCI play wait');
+    vm.sched.block(c.thread, () => !devices.has(d.id) || d.player.state !== RUNNING || d.player.completed || d.player.failed, INFINITE, 'MCI play wait');
     return 0;
   }
 
