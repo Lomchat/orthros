@@ -271,7 +271,7 @@ async function start(m) {
   if (vm.jit && bgWanted) {
     try {
       bgTranslator = new Worker(new URL('../../cpu/jit/bg-translate.js', import.meta.url), { type: 'module' });
-      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); };
+      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); else if (e.data?.type === 'cache-stats' && vm.jit.bg) vm.jit.bg.cache = e.data.cache; };
       bgTranslator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); bgTranslator = null; };
       // (translations kept across sessions in OPFS, keyed by the translator's own sources: ?codecache=0, off)
       const jitUrl = (f) => new URL(`../../cpu/jit/${f}`, import.meta.url).href;
@@ -699,7 +699,7 @@ self.onmessage = (e) => {
     }
     // (the translated code cache so far: the background worker also translates the cold tier's new code)
     const bc = vm?.jit?.bg?.cache;
-    if (bc) log('file', `mark ${m.label}: translated code cache: ${vm.jit.bg.cacheHits} reused, ${bc.misses} not (${bc.missNew} new, other extent ${bc.missExtent}, other inline-API slots ${bc.missDeps}, other bytes ${bc.missBytes}, other heat ${bc.missHeat ?? 0}), ${bc.added} added, ${bc.superseded ?? 0} superseded${bc.supersededAge ? ` (last used ${Object.entries(bc.supersededAge).map(([k, n]) => `${k}${k === '4' ? '+' : ''}: ${n}`).join(', ')} sessions ago)` : ''}, ${bc.evicted ?? 0} evicted, ${Math.round(bc.bytes / 1048576)} MiB (${Math.round((bc.dead ?? 0) / 1048576)} unused), ${bc.compactions ?? 0} compaction(s) in ${Math.round(bc.compactMs ?? 0)} ms${bc.reset ? `, emptied: ${bc.reset}` : ''}; background worker ${Math.round(vm.jit.bg.bgMs)} ms, ${Math.round(vm.jit.bg.translateMs)} translating`);
+    if (bc) log('file', `mark ${m.label}: translated code cache: ${vm.jit.bg.cacheHits} reused, ${bc.misses} not (${bc.missNew} new, other extent ${bc.missExtent}, other inline-API slots ${bc.missDeps}, other bytes ${bc.missBytes}, other heat ${bc.missHeat ?? 0}), ${bc.added} added, ${bc.superseded ?? 0} superseded${bc.supersededAge ? ` (last used ${Object.entries(bc.supersededAge).map(([k, n]) => `${k}${k === '4' ? '+' : ''}: ${n}`).join(', ')} sessions ago)` : ''}, ${bc.evicted ?? 0} evicted, ${Math.round(bc.bytes / 1048576)} MiB (${Math.round((bc.dead ?? 0) / 1048576)} unused), ${bc.compactions ?? 0} compaction(s) in ${Math.round(bc.compactMs ?? 0)} ms${bc.reset ? `, emptied: ${bc.reset}` : ''}; refreshed under the grown heat: ${bc.refreshPasses ?? 0} pass(es), ${bc.refreshChecked ?? 0} regions discovered again, ${bc.refreshed ?? 0} new shapes kept (${Math.round(bc.refreshMs ?? 0)} ms translating, ${Math.round(bc.refreshBusyMs ?? 0)} ms in all); background worker ${Math.round(vm.jit.bg.bgMs)} ms, ${Math.round(vm.jit.bg.translateMs)} translating`);
     const st = host?.gfx?.device?.stats ?? {}, prev = markPrev ?? {}, d = (k) => (st[k] ?? 0) - (prev[k] ?? 0);
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
     const top = vm?.apiTimesPhase ? [...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ') : '(--api-times off)';

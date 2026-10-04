@@ -108,6 +108,7 @@ function translateBatch(items, over) {
         r.stats = { ...hit.stats, visits: sites.visits };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
         for (const b of r.blocks) covered.set(b.eip, it.eip);
+        remember(it.eip, it.fpc, r.blocks);
         continue;
       }
       const te = performance.now();
@@ -122,15 +123,84 @@ function translateBatch(items, over) {
       // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between; with its
       // visit flags as [block, end, body offset] — their addresses are this session's; not kept when the flag area
       // ran out mid-region: fewer flags than the heat asked)
-      if (useCache && sameDeps(deps, t.deps) && !t.stats.visitsCut) {
-        const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
-        for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
-        const visits = v.map(([eip, end]) => [eip, end, at.get(eip) ?? []]);
-        cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
-      }
+      if (useCache) keep(it.eip, it.fpc, t, deps, snap);
+      if (useCache) remember(it.eip, it.fpc, r.blocks);
     } catch { /* undecodable: left to the emulator */ }
   }
   return { codes, names, out, hits, emitMs };
+}
+
+/** A translation into the cache (see translateBatch); false when not kept. */
+function keep(eip, fpc, t, deps, snap) {
+  if (!sameDeps(deps, t.deps) || t.stats.visitsCut) return false;
+  const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
+  for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
+  const visits = v.map(([e, end]) => [e, end, at.get(e) ?? []]);
+  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
+  return cache.add({ eip, fpcIn: fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
+}
+
+// ---- Cached shapes brought up to the heat of the session's end. The heat grows during a session (visit flags
+// harvested every 10 s): a region translated at its start under the heat learned then gets another shape (extent) at
+// the next launch, under the heat this session taught — a miss, translated again while that session starts. When idle
+// (the learned regions in place) the worker discovers again the regions it answered this session under the heat of
+// now and keeps a translation of those whose shape changed (not installed: for the next sessions), at growing
+// intervals while the heat grows.
+/** this session's regions answered with the cache on: "eip:fpc" -> { eip, fpc, ext: [block, end, ...], h: heatAdded then } */
+let answered = new Map();
+let heatAdded = 0; // (heat pairs received so far)
+let refresh = null, refreshTimer = null, refreshDoneAt = 0, refreshNext = 0, refreshGap = 0, report = null;
+const REFRESH_SLICE_MS = 10, REFRESH_FIRST_GAP_MS = 30000, REFRESH_MAX_GAP_MS = 600000;
+/** (the visit flags of translations not installed: the sink byte, relocated at reuse) */
+const sinkSlots = { get: (m) => visitSlots.get(m, SINK) };
+const extFlat = (blocks) => { const a = new Uint32Array(2 * blocks.length); blocks.forEach((b, i) => { a[2 * i] = b.eip; a[2 * i + 1] = b.end; }); return a; };
+const sameFlat = (flat, blocks) => flat.length === 2 * blocks.length && blocks.every((b, i) => flat[2 * i] === b.eip && flat[2 * i + 1] === b.end);
+function remember(eip, fpc, blocks) {
+  const k = `${eip}:${fpc}`;
+  if (answered.size < 262144 || answered.has(k)) answered.set(k, { eip, fpc, ext: extFlat(blocks), h: heatAdded });
+}
+/** at an idle moment: a pass under way goes on, or one starts when the heat grew since the last (not too often) */
+function refreshIdle() {
+  if (!cache?.refreshOn || !heat || refreshTimer) return;
+  if (!refresh) {
+    if (heatAdded === refreshDoneAt || !answered.size) return;
+    const now = performance.now();
+    if (now < refreshNext) { refreshTimer = setTimeout(() => { refreshTimer = null; refreshIdle(); }, refreshNext - now); refreshTimer.unref?.(); return; }
+    refresh = { list: [...answered.values()], i: 0, at: heatAdded };
+  }
+  refreshStep();
+}
+function refreshStep() {
+  refreshTimer = null;
+  const r = refresh, c = cache, t0 = performance.now(), st = c.stats;
+  while (r.i < r.list.length && performance.now() - t0 < REFRESH_SLICE_MS) {
+    const it = r.list[r.i++];
+    if (it.h === r.at || (covered.has(it.eip) && covered.get(it.eip) !== it.eip)) continue; // (no heat came since)
+    it.h = r.at;
+    try {
+      const h = heat, o = { ...opts, heat: h, visitSlots: sinkSlots, fnIdx: 0, fpcAssume: it.fpc };
+      const found = discoverRegion(mem, it.eip, o).blocks;
+      st.refreshChecked = (st.refreshChecked ?? 0) + 1;
+      if (!found.length || sameFlat(it.ext, found)) continue;
+      const before = found.map((b) => ({ eip: b.eip, end: b.end })), snap = snapshot(before), deps = inlineDeps(found);
+      // (its new shape already there — another session's —, else translated; the shape it replaces superseded)
+      if (!c.lookup(it.eip, it.fpc, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8, false)) {
+        const te = performance.now(), t = translateRegion(mem, it.eip, o);
+        st.refreshMs = (st.refreshMs ?? 0) + performance.now() - te;
+        if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks)) || !keep(it.eip, it.fpc, t, deps, snap)) continue;
+        st.refreshed = (st.refreshed ?? 0) + 1;
+      }
+      it.ext = extFlat(before);
+    } catch { /* undecodable now */ }
+  }
+  st.refreshBusyMs = (st.refreshBusyMs ?? 0) + performance.now() - t0;
+  if (r.i < r.list.length) { refreshTimer = setTimeout(refreshStep, 0); refreshTimer.unref?.(); return; }
+  // (done: the next pass once the heat grew again, after twice the last interval)
+  refresh = null; refreshDoneAt = r.at; st.refreshPasses = (st.refreshPasses ?? 0) + 1;
+  refreshGap = Math.min(REFRESH_MAX_GAP_MS, refreshGap ? 2 * refreshGap : (c.refreshGapMs ?? REFRESH_FIRST_GAP_MS));
+  refreshNext = performance.now() + refreshGap;
+  if (st.refreshed) { c.flush(); c.flushedAt = performance.now(); }
+  report?.({ type: 'cache-stats', cache: { ...st } }); // (the emulator's view of the cache: no batch carries it now)
 }
 
 /**
@@ -146,10 +216,25 @@ async function openCache(c) {
   const store = c.store ?? await openOpfsStore('orthros-jitcache', `${String(c.name).replace(/[^A-Za-z0-9._-]/g, '_')}.bin`);
   const cc = new CodeCache(store, key, c.maxBytes);
   if (c.idleMs !== undefined) cc.idleMs = c.idleMs; // (tests)
+  if (c.refreshGapMs !== undefined) cc.refreshGapMs = c.refreshGapMs;
+  cc.refreshOn = c.refresh !== false; // (tests: off)
   return cc;
 }
 
+/**
+ * No batch (nor heat) for IDLE_MS: the cache's room made (eviction, compaction: see CodeCache.maintain), what was added
+ * flushed, then the shapes of this session's regions brought up to the grown heat (refreshIdle).
+ */
+function armIdle() {
+  if (!cache) return;
+  clearTimeout(idleTimer);
+  const c = cache;
+  idleTimer = setTimeout(() => { if (cache !== c) return; c.maintain(); if (c.stats.added) { c.flush(); c.flushedAt = performance.now(); } refreshIdle(); }, c.idleMs ?? IDLE_MS);
+  idleTimer.unref?.(); // (Node tests: no wait for it at exit)
+}
+
 function batch(m, reply) {
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } // (a refresh pass waits for the next idle moment)
   const t0 = performance.now();
   const { codes, names, out, hits, emitMs } = translateBatch(m.items, m.over ?? null);
   const t1 = performance.now();
@@ -162,13 +247,7 @@ function batch(m, reply) {
   // (written records reach the disk at the next flush — a costly sync: at most every 5 s; a session ended before
   // keeps what was flushed, a record cut short is dropped at the next load)
   if (cache && cache.stats.added && t2 - (cache.flushedAt ?? 0) > 5000) { cache.flush(); cache.flushedAt = performance.now(); }
-  // (no batch for IDLE_MS: the cache's room made (eviction, compaction: see CodeCache.maintain), what was added flushed)
-  if (cache) {
-    clearTimeout(idleTimer);
-    const c = cache;
-    idleTimer = setTimeout(() => { if (cache !== c) return; c.maintain(); if (c.stats.added) { c.flush(); c.flushedAt = performance.now(); } }, c.idleMs ?? IDLE_MS);
-    idleTimer.unref?.(); // (Node tests: no wait for it at exit)
-  }
+  armIdle();
   reply({ type: 'batch', id: m.id, module, items: out, ms: t2 - t0, compileMs: t2 - t1, translateMs: emitMs, cacheHits: hits, cache: cache ? { ...cache.stats } : null });
 }
 
@@ -177,6 +256,7 @@ export function handleMessage(m, reply) {
   if (m.type === 'init') {
     mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null; covered = new Map();
     heat = null; visitSlots = new VisitSlots(); // (this thread's visit flags)
+    answered = new Map(); heatAdded = 0; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; refreshGap = 0; report = reply;
     if (m.cache) {
       // (batches wait for the cache, read once; without one — no OPFS, another tab holds it — nothing is kept)
       const ready = openCache(m.cache).then((c) => { cache = c; }, (e) => { cache = null; reply({ type: 'cache-error', message: String(e?.message ?? e) }); });
@@ -184,9 +264,10 @@ export function handleMessage(m, reply) {
     }
     return;
   }
-  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); } return; } // (see Jit.heatAdd)
+  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); heatAdded += m.pairs.length >> 1; if (answered.size) armIdle(); } return; } // (see Jit.heatAdd)
   // (a region the emulator did not install — its code changed —: its blocks are no longer covered by it)
   if (m.type === 'uncover') { for (const [entry, eips] of m.regions) for (const e of eips) if (covered.get(e) === entry) covered.delete(e); return; }
+  if (m.type === 'cache-stats') { reply({ type: 'cache-stats', cache: cache ? { ...cache.stats } : null }); return; } // (tests)
   if (m.type !== 'batch' || !mem) return;
   if (cacheReady) cacheReady.then(() => batch(m, reply)); else batch(m, reply);
 }

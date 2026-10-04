@@ -16,6 +16,8 @@ import { handleMessage } from '../src/cpu/jit/bg-translate.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** (timers of the background worker's idle moments: waits until `f()`, 5 s at most) */
+const until = async (f) => { for (let t = 0; t < 500 && !f(); t++) await new Promise((r) => setTimeout(r, 10)); };
 // CODE+0  dec ecx ; jz COLD          (the cold successor: taken once, at the last iteration of ecx)
 // CODE+3  inc eax ; dec ebp ; jnz CODE
 // CODE+7  hlt                        (stopAt: never executed — its block entered, its flag set)
@@ -46,7 +48,7 @@ function reference(regs) {
  * are asked, `shiftFlags` flag bytes taken first (the session's visit flags elsewhere than the last one's), `over`
  * in-session options. Returns the run, the batch items, the background stats and the visits harvested after the run.
  */
-async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, null]], shiftFlags = 0, over = null, skipFns = 0, maxBytes, idleMs } = {}) {
+async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, null]], shiftFlags = 0, over = null, skipFns = 0, maxBytes, idleMs, refresh } = {}) {
   const m = machine(regs);
   if (shiftFlags) allocBlockCounters(m.mem, shiftFlags);
   const jit = new Jit(m.mem, m.interp, { smc: true, visit: true, warn: (s) => { throw new Error(s); } });
@@ -54,7 +56,7 @@ async function session(store, heat, { regs = [0, 3, 0, 10], learned = [[CODE, nu
   for (let i = 0; i < skipFns; i++) jit.reserveFn();
   if (heat) jit.heatAdd(heat);
   const replies = [];
-  jit.attachBackground({ postMessage: (msg) => handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|heat', store, maxBytes, idleMs } } : msg, (r) => replies.push(r)) });
+  jit.attachBackground({ postMessage: (msg) => handleMessage(msg.type === 'init' ? { ...msg, cache: { key: 'test|heat', store, maxBytes, idleMs, refresh } } : msg, (r) => replies.push(r)) });
   if (over) jit.switchOpts(over);
   await tick();
   jit.bgPrewarm(learned); await tick(); await tick();
@@ -119,13 +121,30 @@ test('code cache with heat: past its bound, the cache makes room when the backgr
   const rl = store.size() - head, maxBytes = head + rl + (other.size() - head) - 1; // (the second record: 1 byte past it)
   // another shape of the same code: added past the bound (the earlier one superseded), the file compacted only once
   // no batch came for idleMs
-  s = await session(store, H.cut, { maxBytes, idleMs: 5 });
+  s = await session(store, H.cut, { maxBytes, idleMs: 5, refresh: false });
   assert.equal(s.s, ref.s); assert.equal(s.bg.cache.superseded, 1); assert.equal(s.bg.cache.added, 1);
   assert.ok(store.size() > maxBytes, 'past the bound until idle');
-  await new Promise((r) => setTimeout(r, 30));
+  await until(() => store.size() === other.size());
   assert.equal(store.size(), other.size(), 'compacted when idle: the superseded record gone');
   s = await session(store, H.cut, { maxBytes });
   assert.equal(s.bg.cacheHits, 1); assert.equal(s.bg.cache.loaded, 1); assert.equal(s.bg.cache.dead, 0);
+});
+
+test('code cache with heat: an idle background worker keeps the shape the heat grown in the session gives', async () => {
+  // the jz never taken (ecx large): the run teaches that the jz ran and the cold block did not — the next session's
+  // heat cuts the cold block out. Refreshed when idle, the cut shape is in the cache before that session asks for it.
+  const regs = [0, 100, 0, 10], ref = reference(regs);
+  for (const refresh of [true, false]) {
+    const store = new MemStore();
+    let s = await session(store, H.none, { regs, idleMs: 1, refresh });
+    assert.equal(s.s, ref.s); assert.deepEqual(s.ran, [0, 3, 7]);
+    await until(() => { let st = null; handleMessage({ type: 'cache-stats' }, (rep) => { st = rep.cache; }); return !refresh || st?.refreshPasses > 0; });
+    s = await session(store, H.cut, { regs, shiftFlags: 321, refresh: false });
+    assert.equal(s.s, ref.s, 'like the interpreter');
+    assert.equal(s.installed, 1);
+    if (refresh) { assert.equal(s.bg.cacheHits, 1, 'refreshed: the cut shape reused'); assert.equal(s.bg.cache.loaded, 1, 'the uncut shape superseded'); }
+    else { assert.equal(s.bg.cacheHits, 0); assert.equal(s.bg.cache.missExtent, 1); }
+  }
 });
 
 test('code cache with heat: in-session options are neither looked up nor kept', async () => {

@@ -211,9 +211,10 @@ export class CodeCache {
    * takes (if given: the heat of now gives its visit flags), or null: the record read back, { fpcOut, altAt, blocks:
    * [[eip, end, index]], stats, hints, visits, code }. With `u8` (guest memory) the entries found translating the code
    * there now under another shape (another extent, or blocks left unflagged that the heat does not know: an earlier
-   * heat's) are noted: the translation added next for this region supersedes them (see add).
+   * heat's) are noted: the translation added next for this region supersedes them (see add). `count`: false, not
+   * counted in the stats (the background worker's refresh passes).
    */
-  lookup(eip, fpcIn, extent, snap, deps, accept = null, u8 = null) {
+  lookup(eip, fpcIn, extent, snap, deps, accept = null, u8 = null, count = true) {
     const k = `${eip}:${fpcIn ?? 'g'}`, l = this.map.get(k);
     let why = 'missNew', stale = null; // (miss reasons, the closest candidate's: diagnostics)
     this.stale = null;
@@ -229,11 +230,12 @@ export class CodeCache {
         if (rec.length !== e.len || !sameBytes(rec.subarray(e.so, e.so + e.snapLen), snap)) { why = 'missBytes'; continue; }
         let meta; try { meta = JSON.parse(dec.decode(rec.subarray(e.mo, e.so))); } catch { continue; }
         if (accept && !accept(meta)) { why = 'missHeat'; if (u8) (stale ??= []).push(e); continue; }
-        this.stats.hits++; this.touch(e);
+        if (count) this.stats.hits++;
+        this.touch(e);
         return { ...meta, code: rec.slice(e.so + e.snapLen) };
       }
     }
-    this.stats.misses++; this.stats[why]++;
+    if (count) { this.stats.misses++; this.stats[why]++; }
     if (stale) this.stale = { k, list: stale };
     return null;
   }
