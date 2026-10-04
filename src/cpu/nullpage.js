@@ -14,9 +14,10 @@
 //  - string instructions with a REP prefix and a zero count access nothing;
 //  - the bit-string forms of BT/BTS/BTR/BTC (memory, register offset) and XLAT compute their address themselves:
 //    their handlers check it.
-// The JIT (translate.js, Emitter.nullCheck) tests the start address of each operand and leaves the region before the
-// instruction when it is in the null page; the interpreter (Interp.checkNull) then executes it and raises the fault.
-// A string instruction walking down into the null page from above is only checked at each element by the interpreter.
+// The JIT (translate.js: planNullChecks, Emitter.nullCheck, NC_STORE_SMC) tests the start address of each operand —
+// plain stores through their self-modifying-code check, at no cost — and leaves the region before the instruction when
+// it is in the null page; the interpreter (Interp.checkNull) then executes it and raises the fault. A string instruction
+// walking down into the null page from above is only checked at each element by the interpreter. docs/null-page.md.
 //
 // Reads are checked only on request (see nullPageMode): what they cost is measurable, writes cost nothing.
 // ?dbg=ORTHROS_NULL_PAGE_OPEN=1 restores the old behaviour (the null page readable and writable), for A/B.

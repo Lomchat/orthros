@@ -344,21 +344,10 @@ function regionRetSites(blocks, byEip) {
   return sites;
 }
 
-// ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
-// mirror, or a diamond `jcc T ; x ; jmp M ; T: y ; M:`) whose instructions only compute registers and flags — and read
-// memory — is translated without the branch: both arms are computed and every local they write is selected on the
-// condition (a cmov per register and lazy flag value), then the code goes on at M. A data-dependent branch (comparisons
-// of the elements of an array being sorted or searched: about half of them mispredicted) then costs a few selects
-// instead of a pipeline flush. The arm not taken must have no effect: no stores, no exits, no interpreter fallbacks;
-// its loads read guest address 0 instead of theirs (Emitter.spec, loadMem) — an address of the arm not taken may be
-// anything (a null pointer the branch tests, an address beyond the guest memory, which would trap).
-// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only comparisons of
-// data inside loops are converted (ifcvtDataCond) — not loop counters, a loop-invariant local on the stack, nor tests of
-// a value against a constant (opts.ifcvt 'all': every candidate, for tests).
 // ---- null-page checks of a block (Emitter.nullCheck). Accesses through the same base and index registers (and
-// scale), unchanged between them, within 64 KiB of each other — the fields of one structure — share one check at the first of them, on the
-// range of their displacements: [r+lo, r+hi] inside [NULL_PAGE_END, USER_END) means every one of them is. When it is
-// not, the region is left before the first one; the interpreter executes it (faulting if it is itself outside), and
+// scale), unchanged between them, within 64 KiB of each other — the fields of one structure — share one check at the
+// first of them, on the range of their displacements: [r+lo, r+hi] inside [NULL_PAGE_END, USER_END) means every one of
+// them is. When it is not, the region is left before the first one; the interpreter executes it (faulting if it is itself outside), and
 // the code after it is entered anew, its own accesses checked from there — so the fault is still raised at the first
 // access that makes it, with the exact state.
 /** Instructions writing general registers other than their register operands (or whose effects are not listed here). */
@@ -390,7 +379,7 @@ const NC_RMW_SMC = new Set(['ADD', 'OR', 'ADC', 'SBB', 'AND', 'SUB', 'XOR', 'NOT
   'RCR', 'SHL', 'SHR', 'SAR', 'SHLD', 'SHRD', 'BTS', 'BTR', 'BTC'].map((n) => OP[n]));
 /**
  * The null-page checks of block `insns`: per instruction, null or a list of { k } (one operand: nullChecks entry) and
- * { g } (a group { base, lo, hi } of accesses through one base register, checked as a range at its first access).
+ * { g } (a group { key, o, lo, hi } of accesses through the same registers, checked as a range at its first access).
  */
 function planNullChecks(insns, smc, mode) {
   const plan = new Array(insns.length).fill(null);
@@ -421,6 +410,17 @@ function planNullChecks(insns, smc, mode) {
   return plan;
 }
 
+// ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
+// mirror, or a diamond `jcc T ; x ; jmp M ; T: y ; M:`) whose instructions only compute registers and flags — and read
+// memory — is translated without the branch: both arms are computed and every local they write is selected on the
+// condition (a cmov per register and lazy flag value), then the code goes on at M. A data-dependent branch (comparisons
+// of the elements of an array being sorted or searched: about half of them mispredicted) then costs a few selects
+// instead of a pipeline flush. The arm not taken must have no effect: no stores, no exits, no interpreter fallbacks;
+// its loads read guest address 0 instead of theirs (Emitter.spec, loadMem) — an address of the arm not taken may be
+// anything (a null pointer the branch tests, an address beyond the guest memory, which would trap).
+// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only comparisons of
+// data inside loops are converted (ifcvtDataCond) — not loop counters, a loop-invariant local on the stack, nor tests of
+// a value against a constant (opts.ifcvt 'all': every candidate, for tests).
 /** Instructions an if-converted arm may hold (their handlers write registers and the flag locals only, without exits). */
 const IFCVT_OPS = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'ADD', 'SUB', 'ADC', 'SBB', 'AND', 'OR', 'XOR', 'CMP', 'TEST', 'INC', 'DEC',
   'NEG', 'NOT', 'SHL', 'SHR', 'SAR', 'SETCC', 'CMOVCC', 'XCHG', 'CBW', 'CWD', 'BSWAP', 'NOP'].map((n) => OP[n]));
@@ -1335,16 +1335,15 @@ class Emitter {
     c.i32(eip).set(L_TV).i32(code).set(L_T2);
     const s = this.x87Normalize(); c.br(this.exitCodeL); this.x87Restore(s);
   }
-  /**
-   * Windows semantics for the null page (nullpage.js): when the start address of one of the memory operands `nc` of
-   * `insn` (nullChecks) is in the first 64 KiB or past the user address space, leave the region before the instruction;
-   * the interpreter executes it and raises the access violation with the exact state. A subtraction, a compare and a
-   * branch never taken per access (the
-   * address computation is shared with the handler's by the WebAssembly compiler). String operands: the register
-   * (ESI / EDI), not with a REP prefix and a zero count (nothing accessed).
-   */
   /** address on the stack -> 1 when outside [NULL_PAGE_END, USER_END) (one subtraction and an unsigned compare) */
   unmappedTest() { this.c.i32(-NULL_PAGE_END).add().i32(USER_END - NULL_PAGE_END).ge_u(); }
+  /**
+   * Windows semantics for the null page (nullpage.js): when an access of the block's plan for `insn` (planNullChecks:
+   * single operands and groups) is in the first 64 KiB or past the user address space, leave the region before the
+   * instruction; the interpreter executes it and raises the access violation with the exact state. A subtraction, a
+   * compare and a branch never taken per check (the address computation is shared with the handler's by the WebAssembly
+   * compiler). String operands: the register (ESI / EDI), not with a REP prefix and a zero count (nothing accessed).
+   */
   nullCheck(insn, plan) {
     const c = this.c;
     for (let i = 0; i < plan.length; i++) {
@@ -1567,8 +1566,8 @@ class Emitter {
     const c = this.c;
     c.get(L_TA).i32(12).shr_u(); this.smcFlag();
     const i = c.hint(false).if_();
-    // (a plain store: a page never mapped takes the same exit, with the instruction's start — the host undoes the store
-    // and raises the fault there, see NC_STORE_SMC and Vm.runThread)
+    // (a plain store: a page never mapped takes the same exit, with the instruction's start — Jit.run undoes the store
+    // and raises the fault there, see NC_STORE_SMC)
     const nullStore = this.nullPage && (NC_STORE_SMC.has(insn.op) || (this.nullPage === 'writes' && NC_RMW_SMC.has(insn.op)));
     // (cold) this page, or the next one when the store reaches it
     c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH | (nullStore ? SMC_NULL : 0)).and();
