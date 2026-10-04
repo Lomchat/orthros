@@ -1101,7 +1101,7 @@ export class WebGLDevice {
       // the sampler of this stage's last draw when neither its states (the table's version) nor its texture changed
       const stbl = dev.api9 ? dev.samplers[i] : dev.tss[i], sc = this.smpCache ??= [];
       let ce = sc[i];
-      const smpHit = ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.dev === dev && !this.glValidate && !this.noStateCache;
+      const smpHit = ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.lod === tex.lod && ce.dev === dev && !this.glValidate && !this.noStateCache;
       if (smpHit && !apiOpt.glCheck) {
         if (gs.smp[i] !== ce.smp) { gl.bindSampler(i, ce.smp); gs.smp[i] = ce.smp; }
         continue;
@@ -1115,8 +1115,10 @@ export class WebGLDevice {
         if (!this.approxLogs.has(k)) { this.approxLogs.add(k); this.log(`d3d-webgl: sampler state approximated: address ${au}/${av}/${aw} (4 border, 5 mirror once: clamped) border color ${(this.samp(i, SAMP.BORDERCOLOR, 0) >>> 0).toString(16)}, LOD bias bits 0x${(this.samp(i, SAMP.MIPMAPLODBIAS, 0) >>> 0).toString(16)} (not applied), texture ${tex.width}x${tex.height}`); }
       }
       const an = this.aniso && (min === 3 || mag === 3) ? Math.max(1, Math.min(16, this.samp(i, SAMP.MAXANISOTROPY, 1))) : 1;
-      const maxLod = levels > 1 ? Math.max(0, levels - 1 - this.samp(i, SAMP.MAXMIPLEVEL, 0)) : 0;
-      const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + maxLod * 0x200000;
+      // D3DSAMP_MAXMIPLEVEL / IDirect3DBaseTexture::SetLOD (managed textures): the most detailed level sampled (0: the
+      // largest) — GL's minimum LOD (mipmapped sampling; the levels below it stay in use)
+      const minLod = levels > 1 && mip ? Math.min(levels - 1, Math.max(this.samp(i, SAMP.MAXMIPLEVEL, 0) >>> 0, tex.lod ?? 0)) : 0;
+      const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + minLod * 0x200000;
       let smp = this.samplerPool.get(skey);
       if (!smp) {
         smp = gl.createSampler(); this.samplerPool.set(skey, smp);
@@ -1125,12 +1127,14 @@ export class WebGLDevice {
         gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, mag >= 2 ? gl.LINEAR : gl.NEAREST);
         gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST));
         if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an);
-        gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, maxLod);
+        gl.samplerParameterf(smp, gl.TEXTURE_MIN_LOD, minLod);
+        if (minLod && (this.minLodLogs = (this.minLodLogs ?? 0) + 1) <= 4) this.log(`d3d-webgl: sampler from mip level ${minLod} (MAXMIPLEVEL ${this.samp(i, SAMP.MAXMIPLEVEL, 0)}, texture LOD ${tex.lod ?? 0}, ${levels} levels)`);
+        if (levels <= 1) gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, 0);
       }
       if (smpHit && smp !== ce.smp) this.cacheMiss(`sampler of stage ${i}`);
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
-      if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, dev: null, smp: null };
-      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.dev = dev; ce.smp = smp;
+      if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, lod: 0, dev: null, smp: null };
+      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.lod = tex.lod; ce.dev = dev; ce.smp = smp;
     }
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
@@ -1280,7 +1284,7 @@ export class WebGLDevice {
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
     for (let i = 0; i < info.stages.length; i++) info.stages[i].tex = this.comImpl(this.dev.textures[i]); // (capture: the textures bound now)
     if (this.dump) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
-    const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}` : '').filter(Boolean).join(' ');
+    const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}[addr ${this.samp(i, SAMP.ADDRESSU, 1)}/${this.samp(i, SAMP.ADDRESSV, 1)} filt ${this.samp(i, SAMP.MINFILTER, 1)}/${this.samp(i, SAMP.MAGFILTER, 1)}/${this.samp(i, SAMP.MIPFILTER, 0)}${this.samp(i, SAMP.MAXMIPLEVEL, 0) ? ` maxmip ${this.samp(i, SAMP.MAXMIPLEVEL, 0)}` : ''}${this.samp(i, SAMP.MIPMAPLODBIAS, 0) ? ` bias ${this.samp(i, SAMP.MIPMAPLODBIAS, 0)}` : ''}]` : '').filter(Boolean).join(' ');
     this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)}${this.rs(RS.STENCILENABLE, 0) ? `[f${this.rs(RS.STENCILFUNC, 8)} ref${this.rs(RS.STENCILREF, 0)} m${(this.rs(RS.STENCILMASK, 0xffffffff) >>> 0).toString(16)} wm${(this.rs(RS.STENCILWRITEMASK, 0xffffffff) >>> 0).toString(16)} ops${this.rs(RS.STENCILFAIL, 1)}/${this.rs(RS.STENCILZFAIL, 1)}/${this.rs(RS.STENCILPASS, 1)}${this.dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0) ? ` ccw:f${this.rs(RS9.CCW_STENCILFUNC, 8)} ops${this.rs(RS9.CCW_STENCILFAIL, 1)}/${this.rs(RS9.CCW_STENCILZFAIL, 1)}/${this.rs(RS9.CCW_STENCILPASS, 1)}` : ''}]` : ''} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
   }
   /** Frame capture: a texture's level 0 as a PNG (render-target textures are read back from their FBO). */
