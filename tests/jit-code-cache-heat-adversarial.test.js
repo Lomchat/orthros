@@ -19,9 +19,9 @@ import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode } from '../src/cpu/decoder.js';
 import { RangeHeat } from '../src/cpu/jit/heat.js';
-import { translateRegion, allocBlockCounters } from '../src/cpu/jit/translate.js';
+import { translateRegion, allocBlockCounters, discoverRegion, VisitSlots } from '../src/cpu/jit/translate.js';
 import { MemStore } from '../src/cpu/jit/code-cache.js';
-import { handleMessage } from '../src/cpu/jit/bg-translate.js';
+import { handleMessage, sensitive, touched } from '../src/cpu/jit/bg-translate.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -191,4 +191,32 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
   assert.ok(versions > 5, `x87-mode versions: ${versions}`);
   assert.ok(covered > 20, `covered entries: ${covered}`);
   assert.ok(grown > 20 && checked > 500, `heat grown ${grown}, regions checked ${checked}`);
+});
+
+test('refresh filter: a region none of whose heat-sensitive addresses gained heat keeps its extent and visit flags', () => {
+  // (bg-translate.js sensitive / touched: a refresh pass discovers again only the regions the added heat touches)
+  let same = 0, rediscovered = 0, changed = 0;
+  for (let t = 0; t < 300; t++) {
+    const { code, end } = gen();
+    const mem = new GuestMemory(); mem.fill(CODE, 0x1000, 0xcc); mem.writeBytes(CODE, code);
+    const addrs = [];
+    for (let a = 0; a <= end;) { addrs.push(CODE + a); a = decode(mem, CODE + a).next - CODE; }
+    const coldMin = 1 + rnd(3), h1 = new RangeHeat();
+    if (rnd(4)) h1.addPairs(randomPairs(addrs));
+    const more = randomPairs(addrs).filter((_, i, p) => i % 2 === 0 && rnd(4) === 0).flatMap((lo) => [lo, lo + 1 + rnd(6)]);
+    const h2 = new RangeHeat(); h2.addPairs(h1.pairs()); h2.addPairs(more);
+    const delta = new RangeHeat(); delta.addPairs(more); delta.merge();
+    const opts = { coldExits: true, coldMin, visit: true };
+    const shape = (h, entry) => {
+      const blocks = discoverRegion(mem, entry, { ...opts, heat: h }).blocks;
+      const flagged = translateRegion(mem, entry, { ...opts, heat: h, visitSlots: new VisitSlots() }).stats.visits?.map((v) => v[0]) ?? [];
+      return { blocks, key: JSON.stringify([blocks.map((b) => [b.eip, b.end]), flagged]) };
+    };
+    for (const entry of addrs.filter(() => rnd(3) === 0)) {
+      const a = shape(h1, entry), b = shape(h2, entry);
+      if (!touched(sensitive(a.blocks), delta)) { same++; assert.equal(b.key, a.key, `program ${t} entry ${entry.toString(16)}: untouched, the same shape`); }
+      else { rediscovered++; if (b.key !== a.key) changed++; }
+    }
+  }
+  assert.ok(same > 200 && rediscovered > 200 && changed > 50, `untouched ${same}, rediscovered ${rediscovered} (changed ${changed})`);
 });

@@ -108,7 +108,7 @@ function translateBatch(items, over) {
         r.stats = { ...hit.stats, visits: sites.visits };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
         for (const b of r.blocks) covered.set(b.eip, it.eip);
-        remember(it.eip, it.fpc, r.blocks);
+        remember(it.eip, it.fpc, found);
         continue;
       }
       const te = performance.now();
@@ -124,7 +124,7 @@ function translateBatch(items, over) {
       // visit flags as [block, end, body offset] — their addresses are this session's; not kept when the flag area
       // ran out mid-region: fewer flags than the heat asked)
       if (useCache) keep(it.eip, it.fpc, t, deps, snap);
-      if (useCache) remember(it.eip, it.fpc, r.blocks);
+      if (useCache) remember(it.eip, it.fpc, found);
     } catch { /* undecodable: left to the emulator */ }
   }
   return { codes, names, out, hits, emitMs };
@@ -145,19 +145,51 @@ function keep(eip, fpc, t, deps, snap) {
 // the next launch, under the heat this session taught — a miss, translated again while that session starts. When idle
 // (the learned regions in place) the worker discovers again the regions it answered this session under the heat of
 // now and keeps a translation of those whose shape changed (not installed: for the next sessions), at growing
-// intervals while the heat grows.
-/** this session's regions answered with the cache on: "eip:fpc" -> { eip, fpc, ext: [block, end, ...], h: heatAdded then } */
+// intervals while the heat grows. Only the regions the heat added since touches are discovered again (sensitive /
+// touched); a pass runs in 10 ms slices, as long a pause after each (half a core at most), a batch pausing it.
+/**
+ * this session's regions answered with the cache on: "eip:fpc" -> { eip, fpc, ext: [block, end, ...], sens: [lo, hi,
+ * ...] (where the heat decides its discovery: its blocks — branch sources, visit flags — and its blocks' successors),
+ * h: heatAdded then }
+ */
 let answered = new Map();
-let heatAdded = 0; // (heat pairs received so far)
+let heatAdded = 0, heatLog = []; // (heat pairs received so far: their number, the pairs)
 let refresh = null, refreshTimer = null, refreshDoneAt = 0, refreshNext = 0, refreshGap = 0, report = null;
 const REFRESH_SLICE_MS = 10, REFRESH_FIRST_GAP_MS = 30000, REFRESH_MAX_GAP_MS = 600000;
 /** (the visit flags of translations not installed: the sink byte, relocated at reuse) */
 const sinkSlots = { get: (m) => visitSlots.get(m, SINK) };
 const extFlat = (blocks) => { const a = new Uint32Array(2 * blocks.length); blocks.forEach((b, i) => { a[2 * i] = b.eip; a[2 * i + 1] = b.end; }); return a; };
 const sameFlat = (flat, blocks) => flat.length === 2 * blocks.length && blocks.every((b, i) => flat[2 * i] === b.eip && flat[2 * i + 1] === b.end);
+/**
+ * The heat decides a discovery through its answers for the blocks found (cold edges from their branches, visit flags)
+ * and for those branches' successors only: when none of these addresses gained heat, the discovery is the same.
+ */
+export function sensitive(blocks) {
+  const a = [];
+  for (const b of blocks) {
+    a.push(b.eip, b.end);
+    const last = b.insns?.[b.insns.length - 1];
+    if (!last) continue;
+    a.push(last.next >>> 0, (last.next >>> 0) + 1);
+    const v = last.ops?.[0]?.v;
+    if (typeof v === 'number') a.push(v >>> 0, (v >>> 0) + 1); // (a direct target; any other operand: a needless check)
+  }
+  return Uint32Array.from(a);
+}
+/** does any range of `sens` overlap a range of `delta` (a merged RangeHeat)? */
+export function touched(sens, delta) {
+  const lo = delta.lo, hi = delta.hi;
+  for (let i = 0; i < sens.length; i += 2) {
+    const a = sens[i], b = sens[i + 1];
+    let l = 0, h = lo.length - 1, k = -1;
+    while (l <= h) { const m = (l + h) >> 1; if (lo[m] < b) { k = m; l = m + 1; } else h = m - 1; }
+    if (k >= 0 && hi[k] > a) return true;
+  }
+  return false;
+}
 function remember(eip, fpc, blocks) {
   const k = `${eip}:${fpc}`;
-  if (answered.size < 262144 || answered.has(k)) answered.set(k, { eip, fpc, ext: extFlat(blocks), h: heatAdded });
+  if (answered.size < 262144 || answered.has(k)) answered.set(k, { eip, fpc, ext: extFlat(blocks), sens: sensitive(blocks), h: heatAdded });
 }
 /** at an idle moment: a pass under way goes on, or one starts when the heat grew since the last (not too often) */
 function refreshIdle() {
@@ -166,7 +198,9 @@ function refreshIdle() {
     if (heatAdded === refreshDoneAt || !answered.size) return;
     const now = performance.now();
     if (now < refreshNext) { refreshTimer = setTimeout(() => { refreshTimer = null; refreshIdle(); }, refreshNext - now); refreshTimer.unref?.(); return; }
-    refresh = { list: [...answered.values()], i: 0, at: heatAdded };
+    // (the heat added since the last pass: a region none of whose sensitive addresses gained heat keeps its shape)
+    const delta = new RangeHeat(); delta.addPairs(heatLog.slice(2 * refreshDoneAt, 2 * heatAdded)); delta.merge();
+    refresh = { list: [...answered.values()], i: 0, at: heatAdded, delta };
   }
   refreshStep();
 }
@@ -177,6 +211,7 @@ function refreshStep() {
     const it = r.list[r.i++];
     if (it.h === r.at || (covered.has(it.eip) && covered.get(it.eip) !== it.eip)) continue; // (no heat came since)
     it.h = r.at;
+    if (!touched(it.sens, r.delta)) continue;
     try {
       const h = heat, o = { ...opts, heat: h, visitSlots: sinkSlots, fnIdx: 0, fpcAssume: it.fpc };
       const found = discoverRegion(mem, it.eip, o).blocks;
@@ -190,11 +225,12 @@ function refreshStep() {
         if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks)) || !keep(it.eip, it.fpc, t, deps, snap)) continue;
         st.refreshed = (st.refreshed ?? 0) + 1;
       }
-      it.ext = extFlat(before);
+      it.ext = extFlat(before); it.sens = sensitive(found);
     } catch { /* undecodable now */ }
   }
   st.refreshBusyMs = (st.refreshBusyMs ?? 0) + performance.now() - t0;
-  if (r.i < r.list.length) { refreshTimer = setTimeout(refreshStep, 0); refreshTimer.unref?.(); return; }
+  // (half of a core at most: as long a pause after each slice)
+  if (r.i < r.list.length) { refreshTimer = setTimeout(refreshStep, REFRESH_SLICE_MS); refreshTimer.unref?.(); return; }
   // (done: the next pass once the heat grew again, after twice the last interval)
   refresh = null; refreshDoneAt = r.at; st.refreshPasses = (st.refreshPasses ?? 0) + 1;
   refreshGap = Math.min(REFRESH_MAX_GAP_MS, refreshGap ? 2 * refreshGap : (c.refreshGapMs ?? REFRESH_FIRST_GAP_MS));
@@ -256,7 +292,7 @@ export function handleMessage(m, reply) {
   if (m.type === 'init') {
     mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null; covered = new Map();
     heat = null; visitSlots = new VisitSlots(); // (this thread's visit flags)
-    answered = new Map(); heatAdded = 0; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; refreshGap = 0; report = reply;
+    answered = new Map(); heatAdded = 0; heatLog = []; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; refreshGap = 0; report = reply;
     if (m.cache) {
       // (batches wait for the cache, read once; without one — no OPFS, another tab holds it — nothing is kept)
       const ready = openCache(m.cache).then((c) => { cache = c; }, (e) => { cache = null; reply({ type: 'cache-error', message: String(e?.message ?? e) }); });
@@ -264,7 +300,7 @@ export function handleMessage(m, reply) {
     }
     return;
   }
-  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); heatAdded += m.pairs.length >> 1; if (answered.size) armIdle(); } return; } // (see Jit.heatAdd)
+  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); heatAdded += m.pairs.length >> 1; for (const x of m.pairs) heatLog.push(x); if (answered.size) armIdle(); } return; } // (see Jit.heatAdd)
   // (a region the emulator did not install — its code changed —: its blocks are no longer covered by it)
   if (m.type === 'uncover') { for (const [entry, eips] of m.regions) for (const e of eips) if (covered.get(e) === entry) covered.delete(e); return; }
   if (m.type === 'cache-stats') { reply({ type: 'cache-stats', cache: cache ? { ...cache.stats } : null }); return; } // (tests)
