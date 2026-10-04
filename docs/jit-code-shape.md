@@ -40,6 +40,23 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   and `perf inject --jit` for where the fills land (the region functions are named `r_<entry>`); `startbench
   --blocks-out <file>` (with `dbg:ORTHROS_JIT_AB={"blockCounts":true}`) lists every counted region's blocks and
   counts: how many regions hold a copy of each hot guest block.
+- **Deterministic concurrent runs** — `tools/ab-virtual.mjs <manifest-id> --input <scenario> --variant A='{}' --variant
+  B='{...}' [--runs 2] [--heat <file>] [--profile-dir <dir>]`: every run of every variant at once (the same load),
+  each under `startbench --virtual` — the virtual clock makes a run repeat its guest work exactly (two runs of the same
+  build: the same 47 090 M guest instructions, 3 941 play frames), so a phase compares the same work instead of the
+  drifting play of an in-session A/B (±10-20 % per round). Each variant's JSON is the runs' `ORTHROS_JIT_DEFAULTS`. Two
+  identical runs differed by 0.4-3 % in play (RotWK); `coldExits` off measured +10 % in play (2.69 / 2.72 vs 2.99 /
+  2.99 ns per guest instruction) on a quiet machine, +3 % on one loaded by other projects' browsers and tests — compare
+  only runs made together. A variant changing where time slices end (region shapes: the budget is checked at chains and
+  backward transfers) can change the interleavings: the guest instructions of each phase are printed to tell (RotWK:
+  a few %, BFME2: up to 7 %, Vice City: 10 % fewer instructions in the same virtual time). BFME1's skirmish load never
+  reaches its loading screen under `--virtual`.
+- **Exit sites** — `startbench --jit-sites [--jit-sites-top n]`: every region exit site (indirect calls through a
+  register or a computed address, through an absolute slot, indirect jumps, returns leaving their region, static exits
+  — `exitLim`: to a successor discovery left out for the region's size; `...Call`: of a call) counts its executions,
+  last target and target changes (translate.js siteProf, three counters per site address in the block-counter area):
+  totals by kind, how many sites make 90 % of the exits, the share at sites whose target changes in less than 5 % of
+  the exits. `--jit-profile` also lists the fast-path API calls the dispatcher ran in WASM, by API.
 
 ## Where the time goes
 
@@ -183,6 +200,59 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     computation (Node and browser alike, all of it on the main thread), so the wall time follows it (73-130 s).
   The code stays (options for measurement, tests/jit-x87-top.test.js and tests/jit-layout.test.js cover them); the
   translated-code cache keys on JIT_DEFAULTS, so the change of defaults starts a new cache.
+
+## Transitions between regions (2026-10-05)
+
+What a chained transition costs, where the transitions come from, and five ways to have fewer or cheaper ones — none
+kept: fewer transitions came with more copies of the same code, and the play profile is bound by instruction fetch.
+
+- **Where they come from** (RotWK, Node play with a learned heat, `--jit-profile`: 1 222 M chained transitions over
+  54 G guest instructions, 22.6 per 1000; `--jit-sites` over the sites it could count, 750 M exits): returns leaving
+  their region 51 % (7 300 sites; 45 % of them at sites that always return to the same place), static exits 20 %
+  (`exitLim`, a successor left out for the region's size: 18 %), calls through a register or computed address 12 %
+  (2 300 sites, 98 % of the exits at sites whose target never changes: virtual calls are monomorphic), indirect jumps
+  12 % (import stubs `jmp [IAT]` into the C runtime, switch tables), calls through an absolute slot 5 % (`call [IAT]`).
+  The hottest: the C runtime's memcpy / malloc / free family entered from the game through its import stubs, and
+  their returns.
+- **What one costs.** tools/chain-bench.mjs: 22.6 ns per call/return pair between integer regions, 36 ns between x87
+  regions; `perf stat`: ~150 host instructions per transition at IPC 2.95 — the exit's checks (budget, thunk, stop
+  address, address 0), the hash computation and probe, the table's signature check, the tail call moving 16
+  parameters (11 on the stack), the callee's frame setup and the br_table to its block; the critical path is a chain
+  of dependent loads (return address → hash entry → table entry → indirect jump). In play (`perf record` cycles, a
+  hot region annotated) ~12 % of a region's cycles are its prologue (5 %) and chained exit (7.5 %), with region code
+  ~60 % of the process's cycles: transitions are ~7-10 % of the guest time. Not data TLB misses (~2 M/s over the
+  whole process, 60 % in regions: < 1 % of the cycles), not branch mispredictions (~1.8 M/s in regions).
+- **Predicted indirect transfers** (removed): `call/jmp dword [slot]` translated as a direct transfer to the slot's
+  value at translation time, guarded by a compare (the callee's blocks join the region, its RET returns locally; any
+  other value leaves the region as before), and the same for calls and jumps through registers from a per-site table of
+  last targets that their exits updated (predicted after 8 times in a row). Exact (randomized programs whose slots and
+  registers change while they run, wrong and stale predictions, sliced, against the interpreter). Transitions −5 %
+  (22.6 → 21.4 per 1000): returns leaving 604 → 490 M, indirect exits 373 → 171 M, but static exits 294 → 533 M —
+  the C runtime's large functions copied into every caller filled the 48 blocks. Concurrent virtual runs (2 + 2):
+  RotWK play +1 % (3.38 / 3.39 vs 3.47 / 3.37 ns), menu +18 %; register predictions alone: play 0 %, menu +4 %. More
+  copies of the hot code, in a profile bound by instruction fetch.
+- **Callee size limits and call-depth discovery** (removed): a predicted (and direct) callee joining the region only
+  when its whole body is at most 8 (16) blocks: 21.0 (22.1) transitions per 1000; discovery taking the entry's own
+  function first, then its callees by depth: 28.6 per 1000 (dispatches halved, transitions +25 %).
+- **Region size, re-tuned** (kept at 48 blocks / 400 instructions). Concurrent virtual runs, guest ns per instruction:
+  RotWK play 64 blocks / 530 instructions −3.3 % and −4.7 % (two batches), 96 / 800 −6.2 %; BFME2 play 64 +3.1 %, 96
+  −2.6 % but +10 % thread CPU per frame (more guest instructions per frame); Vice City driving 64 and 96 +8.6 % (10 %
+  fewer guest instructions in the same virtual time); menus faster with 96 (RotWK −5 %, BFME2 −10 %, BFME1 −10 %).
+  Translation work: BFME2's load phase +38 % process CPU (V8 compiling larger functions). Browser (`--gl-discard`, one
+  session per variant, same learned data): RotWK play 3.11 → 2.83 ns (−9 %, frames > 40 ms per minute 100 → 94, > 50 ms
+  34 → 41); BFME2 play 3.07 → 3.20 ns (+4 %, > 40 ms 27 → 59, > 50 ms 2 → 7), its first-launch computation 0.64 → 0.61
+  ns (228 → 236 s to the menu), its loading screen slower. A gain in one game, a loss in two: not changed.
+- **Return-site records** (removed): a call leaving its region wrote its return site, the region's table index and
+  the site's block into the thread's state block (a hash entry's layout; the index a relocated 5-byte constant, the
+  records cleared when a region is dropped; not in x87-specialized regions, whose later versions the hash does not
+  reach), and a chained transfer to that address skipped the hash probe. 7.5 % of RotWK's chains used it; play
+  neutral (2.98 / 3.05 vs 2.98 / 2.90 ns), chain-bench equal (its probes hit L1 anyway).
+- **Nested loops** (`nestLoops`) re-measured with heat-shaped regions (where back transfers through the region
+  dispatcher tripled, see above): neutral (3.04 / 2.94 vs 3.06 / 3.04 ns).
+- **API exits** (RotWK, whole session): the dispatcher's WASM fast paths ran `timeGetTime` 24 M times and deferred COM
+  calls 24 M times (a region exit, the dispatcher's loop and a region entry each); in JavaScript `Sleep` 5 M (4.75 M
+  `Sleep(0)` from one spinning loop), DirectInput `Acquire` / `GetDeviceData` 2.1 M each; a JavaScript API round trip
+  costs ~275 ns (tools/apicall-bench.mjs). Each is under 1 % of the session: not changed.
 
 ## Measured, not kept
 
