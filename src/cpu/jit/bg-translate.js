@@ -144,9 +144,10 @@ function keep(eip, fpc, t, deps, snap) {
 // harvested every 10 s): a region translated at its start under the heat learned then gets another shape (extent) at
 // the next launch, under the heat this session taught — a miss, translated again while that session starts. When idle
 // (the learned regions in place) the worker discovers again the regions it answered this session under the heat of
-// now and keeps a translation of those whose shape changed (not installed: for the next sessions), at growing
-// intervals while the heat grows. Only the regions the heat added since touches are discovered again (sensitive /
-// touched); a pass runs in 10 ms slices, as long a pause after each (half a core at most), a batch pausing it.
+// now and keeps a translation of those whose shape changed (not installed: for the next sessions), again each time
+// the heat grew (20 s apart at the soonest). Only the regions the heat added since touches are discovered again
+// (sensitive / touched); a pass runs in 10 ms slices, as long a pause after each (half a core at most), a batch
+// pausing it.
 /**
  * this session's regions answered with the cache on: "eip:fpc" -> { eip, fpc, ext: [block, end, ...], sens: [lo, hi,
  * ...] (where the heat decides its discovery: its blocks — branch sources, visit flags — and its blocks' successors),
@@ -154,8 +155,8 @@ function keep(eip, fpc, t, deps, snap) {
  */
 let answered = new Map();
 let heatAdded = 0, heatLog = []; // (heat pairs received so far: their number, the pairs)
-let refresh = null, refreshTimer = null, refreshDoneAt = 0, refreshNext = 0, refreshGap = 0, report = null;
-const REFRESH_SLICE_MS = 10, REFRESH_FIRST_GAP_MS = 30000, REFRESH_MAX_GAP_MS = 600000;
+let refresh = null, refreshTimer = null, refreshDoneAt = 0, refreshNext = 0, report = null;
+const REFRESH_SLICE_MS = 10, REFRESH_GAP_MS = 20000;
 /** (the visit flags of translations not installed: the sink byte, relocated at reuse) */
 const sinkSlots = { get: (m) => visitSlots.get(m, SINK) };
 const extFlat = (blocks) => { const a = new Uint32Array(2 * blocks.length); blocks.forEach((b, i) => { a[2 * i] = b.eip; a[2 * i + 1] = b.end; }); return a; };
@@ -231,10 +232,9 @@ function refreshStep() {
   st.refreshBusyMs = (st.refreshBusyMs ?? 0) + performance.now() - t0;
   // (half of a core at most: as long a pause after each slice)
   if (r.i < r.list.length) { refreshTimer = setTimeout(refreshStep, REFRESH_SLICE_MS); refreshTimer.unref?.(); return; }
-  // (done: the next pass once the heat grew again, after twice the last interval)
+  // (done: the next pass once the heat grew again, REFRESH_GAP_MS later at the soonest)
   refresh = null; refreshDoneAt = r.at; st.refreshPasses = (st.refreshPasses ?? 0) + 1;
-  refreshGap = Math.min(REFRESH_MAX_GAP_MS, refreshGap ? 2 * refreshGap : (c.refreshGapMs ?? REFRESH_FIRST_GAP_MS));
-  refreshNext = performance.now() + refreshGap;
+  refreshNext = performance.now() + (c.refreshGapMs ?? REFRESH_GAP_MS);
   if (st.refreshed) { c.flush(); c.flushedAt = performance.now(); }
   report?.({ type: 'cache-stats', cache: { ...st } }); // (the emulator's view of the cache: no batch carries it now)
 }
@@ -292,7 +292,7 @@ export function handleMessage(m, reply) {
   if (m.type === 'init') {
     mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null; covered = new Map();
     heat = null; visitSlots = new VisitSlots(); // (this thread's visit flags)
-    answered = new Map(); heatAdded = 0; heatLog = []; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; refreshGap = 0; report = reply;
+    answered = new Map(); heatAdded = 0; heatLog = []; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; report = reply;
     if (m.cache) {
       // (batches wait for the cache, read once; without one — no OPFS, another tab holds it — nothing is kept)
       const ready = openCache(m.cache).then((c) => { cache = c; }, (e) => { cache = null; reply({ type: 'cache-error', message: String(e?.message ?? e) }); });
