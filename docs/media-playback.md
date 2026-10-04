@@ -1,13 +1,14 @@
-# Movie playback: DirectShow (quartz.dll)
+# Movie and sound file playback: DirectShow (quartz.dll)
 
-Windows games of the DirectX 7-9 era play their movies with DirectShow: Vice City, for instance (traced with
-`--log comx,video`), creates the filter graph manager and plays `movies\Logo.mpg` then `movies\GTAtitles.mpg`:
+Windows games of the DirectX 7-9 era play their movies — and often their music — with DirectShow. Vice City, for
+instance (traced with `--log comx,video`), creates the filter graph manager and plays `movies\Logo.mpg` then
+`movies\GTAtitles.mpg`:
 
 ```
 CoCreateInstance(CLSID_FilterGraph e436ebb3-…, IID_IGraphBuilder 56a868a9-…)
 IGraphBuilder::RenderFile(L"movies\\Logo.mpg")           (QueryInterface: IMediaControl, IMediaEventEx, IVideoWindow, IMediaSeeking)
 IVideoWindow::put_Owner(game window), put_WindowStyle(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN)
-IMediaEventEx::SetNotifyWindow(game window, WM_APP-like message, 0)
+IMediaEventEx::SetNotifyWindow(game window, message 0x40d, 0)
 IVideoWindow::SetWindowPosition(0, 0, 640, 480), put_MessageDrain(game window)
 IMediaControl::Run()
   … the game's loop polls its input (a key or a click: IMediaControl::Stop, Release) and its messages:
@@ -35,20 +36,28 @@ per interface sharing the graph (QueryInterface answers any of them):
   answer `E_NOINTERFACE`, as the filter graph manager does without a video renderer.
 - **IBasicAudio**: volume and balance (1/100 dB), applied to the sound stream.
 
-Results for files that cannot be played are those of a Windows lacking the codec, so that games skip the movie as before:
-`HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`, `VFW_E_UNKNOWN_FILE_TYPE` (not a recognized stream),
-`VFW_E_UNSUPPORTED_STREAM` (MPEG audio layer III alone), `VFW_S_AUDIO_NOT_RENDERED` (video with layer III sound: the video
-plays silent).
+Files that cannot be played get the results of a Windows lacking the codec, so that games skip the movie as before:
+`HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`, `VFW_E_UNKNOWN_FILE_TYPE` (not a recognized format),
+`VFW_E_UNSUPPORTED_STREAM` (MPEG audio layer III with no decoder), `VFW_S_AUDIO_NOT_RENDERED` (video with a sound stream
+that cannot be decoded: the video plays silent). A graph run without anything rendered (a game ignoring RenderFile's
+failure) completes at once (`EC_COMPLETE`): a movie of no length.
 
 ## Formats (src/media)
 
-What Windows decodes with its own splitter and decoders (no codec installed): **MPEG-1 system streams** (and the MPEG-2
-program stream pack header), **MPEG-1 video** and **MPEG audio layers I / II** elementary streams. Chrome decodes none
-of these (neither media elements nor WebCodecs), so they are decoded here, written from the ISO/IEC 11172 standards:
+What Windows plays with its own splitters and codecs (no codec pack installed). Chrome decodes none of the video and
+few of the audio formats, so most are decoded here, written from the standards; the rest goes to the browser:
+
+| file | streams | decoded by |
+|---|---|---|
+| MPEG-1 system stream (`.mpg`; MPEG-2 program stream pack headers accepted) | MPEG-1 video, MPEG audio | `mpeg-ps.js` + below |
+| MPEG-1 video elementary stream (`.m1v`) | I / P / B / D pictures | `mpeg1-video.js` |
+| MPEG audio (`.mp2`, `.mp3`, `.mpa`; also inside a WAVE file, format 0x50 / 0x55) | layers I, II | `mpeg-audio.js` |
+| | layer III (MP3) | the browser: WebCodecs `AudioDecoder` (asynchronous: `AsyncAudio`) |
+| RIFF WAVE (`.wav`) | PCM 8-32 bit, float, extensible, IMA ADPCM, Microsoft ADPCM | `wav-source.js` |
 
 - `mpeg-ps.js`: demultiplexer (packs, PES packets with MPEG-1 or MPEG-2 headers, time stamps), incremental.
-- `mpeg1-video.js`: I / P / B / D pictures, half-pel motion compensation with edge extension, quantizer matrices, the
-  inverse DCT in double precision (even / odd butterflies; equal to the definition up to the rounding of exact halves).
+- `mpeg1-video.js`: half-pel motion compensation with edge extension, quantizer matrices, the inverse DCT in double
+  precision (even / odd butterflies; equal to the definition up to the rounding of exact halves).
 - `mpeg-audio.js`: layers I and II (all bit allocation tables, MPEG-2 low sampling frequencies, intensity stereo),
   polyphase synthesis. The synthesis window (`mpeg-audio-window.js`, a constant of the standard, table B.3) was
   recovered by `tools/mpa-window-fit.mjs`: the decoder's output is linear in the 512 window values, so a least-squares
@@ -56,19 +65,28 @@ of these (neither media elements nor WebCodecs), so they are decoded here, writt
   unit) and the halves mirror each other as the standard says.
 - `mpeg-source.js`: a file being played: read ahead in 256 KiB chunks (asynchronously when the range is still on the
   network: `file.prepare`), pictures and sound decoded on demand for a stream time; a caller late by more than one
-  picture has the B pictures in between dropped undecoded.
-- `yuv.js`: BT.601 studio-range Y'CbCr 4:2:0 → RGBA.
+  picture has the B pictures in between dropped undecoded. Layer III frames go to the browser's decoder 1 s ahead of
+  the time asked. The duration: from the time stamps of the first and last packs, the VBR header (Xing / Info, VBRI) of
+  an MP3, or the bit rate.
+- `wav-source.js`: WAVE chunks, PCM and ADPCM blocks. IMA ADPCM follows the reference algorithm's step arithmetic.
+- `yuv.js`: BT.601 studio-range Y'CbCr 4:2:0 → RGBA (when the host cannot take the planes itself).
 
-Accuracy (tests/media-mpeg.test.js, against ffmpeg's decoders): video 45-66 dB PSNR per picture (only the inverse
-DCT's rounding differs from ffmpeg's integer transform), audio > 110 dB SNR (float rounding).
+Accuracy (tests/media-mpeg.test.js, media-audio-files.test.js against ffmpeg's decoders): MPEG-1 video 45-66 dB PSNR per
+picture (only the inverse DCT's rounding differs from ffmpeg's integer transform), layer I / II > 100 dB SNR, PCM and
+Microsoft ADPCM exact, IMA ADPCM ~44 dB (ffmpeg computes the step product otherwise); MP3 through WebCodecs in Chromium
+118 dB against ffmpeg (tools/media-browser-check.mjs; the browser's decoder, like Windows', plays the encoder delay and
+the LAME header frame that ffmpeg drops).
 
 ## Output
 
-- **Pictures**: the host display's video layer (`BrowserDisplay.presentVideo`: a display-sized transparent layer above
-  the GDI and Direct3D layers, `#vid` on the page), the picture stretched to the video window's rectangle — the owner's
-  client area plus the window's position for a child window, the destination rectangle inside it — as the video
-  renderer's window covers the game's. The layer is hidden when the window is hidden or the graph released. Input goes to
-  the game's window (the video window is not a real window: the message drain games set is where it would go anyway).
+- **Pictures**: the host display's video layer (`#vid` on the page, a display-sized transparent layer above the GDI
+  and Direct3D layers), the picture stretched to the video window's rectangle — the owner's client area plus the
+  window's position for a child window, the destination rectangle inside it — as the video renderer's window covers
+  the game's. In the browser the decoded planes become a WebCodecs `VideoFrame` drawn on the layer
+  (`BrowserDisplay.presentVideoYuv`: the color conversion and scaling are the canvas's); without VideoFrame (or with
+  `?dbg=ORTHROS_VIDEO_RGBA=1`) `yuv.js` converts them and `presentVideo` draws the RGBA picture. The layer is hidden
+  when the window is hidden or the graph released. Input goes to the game's window (the video window is not a real
+  window: the message drain games set is where it would go anyway).
 - **Sound**: a stream voice of the DirectSound mixer (`dsound.js createAudioStream`): a looping 16-bit ring in guest
   memory mixed by the AudioWorklet like any DirectSound buffer; the graph writes the decoded samples 250 ms ahead of the
   play cursor, both following the VM clock, so pictures and sound stay together.
@@ -77,9 +95,17 @@ DCT's rounding differs from ffmpeg's integer transform), audio > 110 dB SNR (flo
   while the game's threads wait (`WaitForCompletion`, a message wait, `Sleep`).
 
 Logs: `--log video` (RenderFile, Run, completion and release with statistics: pictures shown, decoded then overtaken,
-B pictures skipped, decoding and showing time per picture, lateness).
+B pictures skipped, decoding and showing time per picture on the game's worker, lateness).
 
-## Measured
+## Measured (Vice City, headless Chromium with SwiftShader on the shared server)
 
-Vice City (640x480, 25 fps, 48 kHz stereo; headless Chromium with SwiftShader on the shared server): see the commit
-message of the feature for the figures of the run.
+`movies\Logo.mpg`: 640x480, 25 fps, 48 kHz stereo layer II, 39.5 s. Every run: 987 pictures, all shown (none dropped
+or skipped), lateness at most 10-11 ms, 39.48 s of sound mixed (no underrun). On the game's worker, per picture:
+
+| presentation | decoding | showing |
+|---|---|---|
+| RGBA conversion here (`?dbg=ORTHROS_VIDEO_RGBA=1`) | 2.9 ms | 3.7 ms |
+| WebCodecs VideoFrame (default) | 2.5 ms | 0.3 ms |
+
+(see the commit messages for the runs). The movies can be skipped (a key or a click: the game stops and releases the
+graph, the layer disappears) and the game goes on to its main menu.

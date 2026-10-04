@@ -1,0 +1,1 @@
+4:shot;8:shot;12:mark:logo;12.5:shot;14:key:13;17:shot;20:shot;22:mark:titles;24:click:320,240;30:shot;35:mark:menu;36:shot

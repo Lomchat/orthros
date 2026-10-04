@@ -10,7 +10,7 @@
 // window's rectangle; sound goes through the DirectSound mixer (dsound.js createAudioStream). Playback follows the VM
 // clock: the scheduler calls vm.media.tick() at its wake-up passes and wakes up for the next picture (sched.js).
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG, E_FAIL } from './com.js';
-import { MpegSource, MediaError } from '../media/mpeg-source.js';
+import { openMedia, MediaError } from '../media/open.js';
 import { yuv420ToRgba } from '../media/yuv.js';
 
 const CLSID_FilterGraph = 'e436ebb3-524f-11ce-9f53-0020af0ba770', CLSID_FilterGraphNoThread = 'e436ebb8-524f-11ce-9f53-0020af0ba770';
@@ -130,7 +130,7 @@ export function registerQuartz(api, vm) {
       const f = vm.vfs.open(path, {});
       if (!f) return HR.FILE_NOT_FOUND;
       try {
-        this.src = new MpegSource(f, { log });
+        this.src = openMedia(f, { log });
       } catch (e) {
         f.close();
         const code = e instanceof MediaError && e.code === 'unsupported' ? (e.message.includes('layer III') ? HR.VFW_E_UNSUPPORTED_STREAM : HR.VFW_E_UNKNOWN_FILE_TYPE) : HR.VFW_E_INVALID_FILE_FORMAT;
