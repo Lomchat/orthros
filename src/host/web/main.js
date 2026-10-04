@@ -109,7 +109,7 @@ async function start(name, language = null) {
   if (headless) document.body.classList.add('nobar');
   else { $('topbar').classList.remove('hidden'); $('tbGame').textContent = state.title; showLoader(name); }
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
-  state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer');
+  state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
   const ctlSab = new SharedArrayBuffer(CTL.SIZE * 4), inputSab = new SharedArrayBuffer(IN_RING * 4), audioSab = new SharedArrayBuffer(AUDIO_RING_FRAMES * 2 * 4);
   state.ctl = new Int32Array(ctlSab); state.inputRing = new Int32Array(inputSab);

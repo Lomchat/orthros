@@ -85,7 +85,7 @@ export class Scheduler {
     for (const tm of timers) if (tm.due < w && tm.due > checked) w = tm.due;
     const host = this.vm.host?.nextWake?.();
     if (host !== undefined && host < w) w = host;
-    const media = this.vm.media?.nextWake(); // (a movie playing: its next picture or sound refill, quartz.js)
+    const media = this.vm.media?.nextWake(); // (a movie playing: its next picture or sound refill, movie-player.js)
     if (media !== undefined && media < w) w = media;
     return w;
   }
