@@ -56,6 +56,12 @@ and reuses them at later launches:
   translated under in-session options (`Jit.switchOpts`) are neither looked up nor kept. The learned entries skipped
   as blocks of an earlier region are those of the regions as cut by the heat of now: an entry a cut region no longer
   holds is translated on its own (a server that forgot it as covered relearns it at its next miss).
+- Measured with heat (2026-10-04, `integ-1004`, phase scenarios, one persistent browser profile and learn directory
+  per game reused across runs): RotWK 2.02 run 1 (no heat yet) 12 991 entries added; run 2 (heat of run 1: 24 887
+  ranges) 1 714 reused, 5 299 other extent, 2 413 other heat, the cache full and stale, emptied and refilled; run 3
+  (heat 27 122 ranges) 8 122 reused, 312 other extent, 240 other heat (the rest new entries). BFME2 run 2: 2 665
+  reused, 5 830 other extent, 3 609 other heat. While the learned heat still grows the cache mostly misses; it serves
+  again once the heat settles.
 - The cache key is a hash of the translator's own sources — the import closure of `bg-translate.js`, `jit.js` and
   `runtime.js`, fetched by the worker like the modules themselves — plus the translation options and the defaults they complete (`JIT_DEFAULTS`: layout, cold exits, region sizes...): any change to the
   translator or its options empties the cache. Instrumented translations (profiling, block counters) are not kept.
