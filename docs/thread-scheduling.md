@@ -294,19 +294,20 @@ failing run.
 | DirectInput timestamps | buffered events carried the clock without GetTickCount's base: 4.6 hours older than GetTickCount for a program comparing them. Now GetTickCount's value. Kept | (with the line below) |
 | the branch against main | timer resolution + DirectInput timestamps + message times | `ORTHROS_SLICE_INSNS=5000` (an amplifier earlier): main **1 / 40**, branch **2 / 40** |
 | guest clock against the work | `--timescale 4` (the machine looks 4 times slower: ~4.7 frames per guest second in the menu) against `--timescale 0.25` (4 times faster: the game's frame cap, ~38 frames per guest second) | **0 / 40** against **0 / 40** |
-| host stalls | `startbench --stall 50:400:130` (new tool option): the process stops 50 ms at one budget slice end in 400 from 130 s on (~600 stalls, ~30 s, around the click) — the guest clock jumps in the middle of a thread's work, as when the host deschedules the emulator | no stall **1 / 24**, stalls **0 / 24** |
+| host stalls | `startbench --stall 50:400:130` (new tool option): the process stops 50 ms at one budget slice end in 400 from 130 s on (~600 stalls, ~30 s, around the click) — the guest clock jumps in the middle of a thread's work, as when the host deschedules the emulator | no stall **1 / 24**, stalls **0 / 24**; a load burst instead (`--stall 5:10:148`: 5 ms after one slice in 10 from 148 s, ~8 500 stalls, the work ~10 times slower around the click): **1 / 24** against **0 / 24** |
+| deterministic replay | `--virtual --jitter <seed>` (time advances 0.5 ms per slice and with sleeps, random 1-40 ms jumps), seeds 1-64 | **0 / 64** |
 | Win32 heap reuse | the game calls HeapAlloc directly (heap 0x30, HEAP_ZERO_MEMORY, ~0.27 M calls in 60 G instructions, sizes from 88 bytes up, all from lotrbfme.exe); the blocks freed twice are smaller and live in the program's own pool allocator (the fault is in its unlink), whose reuse the program decides. The Windows the game reports to (XP, 5.1.2600) reuses small blocks LIFO too (lookaside lists), as Orthros' heap does. Not changed | — |
 | thread priorities | the main thread sets another thread to `THREAD_PRIORITY_BELOW_NORMAL` repeatedly (`SetThreadPriority(0x578, -1)`); Sleep(0) does not hand the processor to it (the pick takes the highest priority; it runs when starved), as on a single processor | — |
 
-The rate on this machine that night was ~3 % (3 failures in 105 runs at the default settings — c1, c5 without stalls
-and one single run —, 3 in 80 at 5 000-instruction slices), lower than the 5-10 % of the days before, and **no variant
+The rate on this machine that night was ~3 % (4 failures in 129 runs at the default settings — c1, c5 and c6 without
+stalls, one single run —, 3 in 80 at 5 000-instruction slices), lower than the 5-10 % of the days before, and **no variant
 changed it measurably**; with ~40 runs per arm only a
 large effect (a rate several times higher) could have been seen. Two observations:
 
 - three of the failures (c2A18 main, c2B19 and c2B20 branch) ended within the same two seconds, in the same batch of
-  eight concurrent runs, while the 35 other batches had at most one (two of them one): something common to the machine at the time of the
-  click (another project's load burst, I/O) rather than the tree. Artificial 50 ms stalls at slice ends (above) did not
-  reproduce it, so if the host matters it is not through the guest clock jumping in the middle of computation — a
+  eight concurrent runs, while the 41 other batches had at most one (three of them one): something common to the machine at the time of the
+  click (another project's load burst, I/O) rather than the tree. Artificial stalls at slice ends (above: 50 ms ones, or a
+  burst slowing the work ten times around the click) did not reproduce it, so if the host matters it is not through the guest clock jumping in the middle of computation — a
   stall elsewhere (during file reads, the parked ReadFile of msvcr71 just before the click, the render/audio paths) is
   not excluded;
 - the window is not proportional to the guest time of a frame: at `--timescale 4` a frame lasts ~8 times more guest
@@ -316,5 +317,5 @@ large effect (a rate several times higher) could have been seen. Two observation
 Not found: an emulator difference that makes the stale block reused. What remains consistent with every trace: the
 program holds an uncounted reference to a block of an object it rebuilds every 2-3 s, and a click landing in a short
 window after a rebuild copies it; the timing that opens that window has not been reproduced on purpose. Next leads:
-the host stall during a parked file read (`--stall` restricted to the reads), and a deterministic replay
-(`--virtual --jitter <seed>`) scanning seeds for a failing one, which would make the window measurable.
+the host stall during a parked file read (`--stall` restricted to the reads); more replay seeds (none of 64 failed: a
+failing one would make the window measurable).
