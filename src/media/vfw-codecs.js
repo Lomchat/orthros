@@ -25,6 +25,7 @@ const c555 = (v) => rgb(((v >> 10) & 31) * 255 / 31 | 0, ((v >> 5) & 31) * 255 /
  */
 export function vfwDecoder(info, handler = 0) {
   const c = info.compression, w = info.width, h = info.height;
+  if (!(w > 0 && h > 0 && w <= 8192 && h <= 8192)) return null; // (a damaged header: no decompressor takes it)
   const frame = new Uint32Array(w * h).fill(0xff000000);
   const P = new Uint32Array(256); for (let i = 0; i < 256; i++) P[i] = pal(info.palette[i]);
   const base = { frame, width: w, height: h, setPalette(first, entries) { for (let i = 0; i < entries.length && first + i < 256; i++) P[first + i] = pal(entries[i]); } };

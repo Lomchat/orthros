@@ -34,7 +34,7 @@ export class AviSource {
           for (let j = i + 12; j + 8 <= i + 8 + n;) {
             const cid = id4(b, j), cn = u32(b, j + 4);
             if (cid === 'avih') { usPerFrame = u32(b, j + 8); frames = u32(b, j + 24); }
-            else if (cid === 'LIST' && id4(b, j + 8) === 'strl') streams.push(this.streamList(b, j + 12, j + 8 + cn));
+            else if (cid === 'LIST' && id4(b, j + 8) === 'strl') streams.push(this.streamList(b, j + 12, Math.min(j + 8 + cn, i + 8 + n))); // (a damaged size: not past the header list)
             j += 8 + cn + (cn & 1);
           }
         }
@@ -71,6 +71,7 @@ export class AviSource {
   /** a strl list: { type, handler, scale, rate, start, length, sampleSize, bih | wfx } */
   streamList(b, i, end) {
     const s = {};
+    end = Math.min(end, b.length);
     for (let j = i; j + 8 <= end;) {
       const cid = id4(b, j), n = u32(b, j + 4), d = j + 8;
       if (cid === 'strh') { s.type = id4(b, d); s.handlerName = id4(b, d + 4); s.handler = u32(b, d + 4); s.scale = u32(b, d + 20); s.rate = u32(b, d + 24); s.start = u32(b, d + 28); s.length = u32(b, d + 32); s.sampleSize = u32(b, d + 44); }

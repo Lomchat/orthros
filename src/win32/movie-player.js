@@ -194,7 +194,11 @@ export class MoviePlayer {
   startAudio() {
     const s = this.src, vm = this.vm;
     if (!s?.audio || !vm.createAudioStream) return;
-    if (!this.voice) this.voice = vm.createAudioStream(this.proc, s.audioRate, s.audioChannels, 1);
+    if (!this.voice) {
+      // (a stream format no sound device takes — a damaged header: played without sound rather than failing the API call)
+      if (!(s.audioRate >= 1 && s.audioRate <= 1000000 && s.audioChannels >= 1 && s.audioChannels <= 32)) { if (!this.noSound) { this.noSound = true; vm.warn(`media: ${this.path}: sound ${s.audioRate} Hz ${s.audioChannels} ch not played`); } return; }
+      this.voice = vm.createAudioStream(this.proc, s.audioRate, s.audioChannels, 1);
+    }
     this.ringView().fill(0);
     this.voice.setVolume(this.volume); this.voice.setPan(this.balance);
     this.voiceAt = vm.clock.now(); this.voiceFrom = this.pos; this.written = 0;

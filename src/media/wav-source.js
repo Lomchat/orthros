@@ -94,7 +94,11 @@ export class WaveDecoder {
   constructor(fmt) {
     const pcm = fmt.tag === TAG_PCM && [8, 16, 24, 32].includes(fmt.bits), flt = fmt.tag === TAG_FLOAT && (fmt.bits === 32 || fmt.bits === 64);
     if (!pcm && !flt && fmt.tag !== TAG_IMAADPCM && fmt.tag !== TAG_MSADPCM) throw new MediaError('unsupported', `WAVE format tag 0x${fmt.tag.toString(16)}`);
-    if (!fmt.channels || !fmt.align) throw new MediaError('corrupt', 'WAVE format');
+    // (a damaged header: no channel, a rate no sound device plays, or PCM blocks that are not whole samples per channel —
+    // refused as a parser does, rather than decoded as garbage or a 64 Ki-channel / 4 GHz stream allocated)
+    if (!fmt.channels || fmt.channels > 32 || !fmt.align || !fmt.rate || fmt.rate > 1000000) throw new MediaError('corrupt', 'WAVE format');
+    if ((pcm || flt) && (fmt.align % fmt.channels || ![1, 2, 3, 4, 8].includes(fmt.align / fmt.channels) || (flt && fmt.align / fmt.channels < 4))) throw new MediaError('corrupt', 'WAVE format: block align');
+    if ((fmt.tag === TAG_IMAADPCM && fmt.align <= 4 * fmt.channels) || (fmt.tag === TAG_MSADPCM && fmt.align <= 7 * fmt.channels)) throw new MediaError('corrupt', 'WAVE format: ADPCM block align');
     this.fmt = fmt;
     if (fmt.tag === TAG_IMAADPCM) this.blockSamples = (fmt.align - 4 * fmt.channels) * 8 / (4 * fmt.channels) + 1;
     else if (fmt.tag === TAG_MSADPCM) {
