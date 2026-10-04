@@ -18,7 +18,9 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
 - **Dynamic mix** — `startbench --mix` (with block counters; `--list-top n` lists the hottest regions,
   `dbg:ORTHROS_JIT_AB={"blockCounts":true}` in a scenario counts one phase only): instructions by mnemonic, stores
   checked for self-modifying code and how many share their address registers, region duplication, WASM operations
-  per guest instruction kind (tools/jit-mix.mjs). `--jit-profile`: transitions by kind (chains, dispatches, returns).
+  per guest instruction kind (tools/jit-mix.mjs). `--jit-profile`: transitions by kind (chains, dispatches, returns), the jump exits not chained by
+  reason (API thunk, stop address, budget, miss) and the API calls (RotWK play: 1.1 G chained transitions, 43 M
+  exits to API thunks, 29 M API calls run in JavaScript, 0.2 M budget exits over 48 G guest instructions).
 - **Kernels** — `tools/shape-bench.mjs --opts <json> --vs <json>`: small x86 kernels written for it (binary search, abs,
   array read-modify-write, calls, predictable branches, x87 at 24/53/64-bit precision, a hot loop next to cold code),
   ns per guest instruction of two variants alternated.
@@ -113,7 +115,7 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     `--jit-profile`) tripled (775 M vs 266 M over two minutes of RotWK): the reverse postorder of the cut graph lets
     loops overlap, and planUnits keeps disjoint loops only. A weak topological order (every cycle contiguous) brought
     them back to 264 M but was not faster overall (RotWK +6 %, BFME2 −3 %; not kept, see below).
-- **A shared chained exit** (`chainStub`, on): a region's jump exits write its x87 / XMM caches back and tail-call the
+- **A shared chained exit** (`chainStub`, off since the re-measurement below): a region's jump exits write its x87 / XMM caches back and tail-call the
   runtime module's `chain` function (runtime.js chainStubCode) with the target in place of the block index; `chain`
   checks the budget, API thunks, the stop address and address 0, probes the hash table, and tail-calls the target's
   region at its block, or writes the registers, flags and budget to the state block and returns the target to the
@@ -126,7 +128,7 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   keep the inline exit (their counters tell chains apart by source). Also tried: one copy of the function in each
   region module (a direct tail call, no instance switch) — 3 % fewer host instructions in chain-bench, not worth the
   copies.
-- **x87 regions specialized for the stack top** (`x87Top`, on): an x87 region's mode (`fpcAssume`, the versions, the
+- **x87 regions specialized for the stack top** (`x87Top`, off since the re-measurement below): an x87 region's mode (`fpcAssume`, the versions, the
   learned lists) carries the stack top at its entry (`X87_MODE_TOP | TOP`, translate.js x87ModeOf); the entry guard
   compares the control word and TOP less the entered block's planned shift, and once it passes L_TOP is a constant:
   the eight stack locals, the tag word and TOP are loaded and written back at constant offsets (8 loads / stores
@@ -143,12 +145,35 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   in-session A/B, noisy: Vice City −2.9 %, RotWK −1.2 % (6 rounds; an earlier version policy gave RotWK −3.4 %, BFME2
   −8.6 % over 4 rounds and Vice City +5 %).
 
-- **No dispatch loop when nothing goes back through the dispatcher** (`dispatchBlock`, on unless
-  `dispatchBlock: false`): a region whose backward transfers all stay in structured loops (no `dispatchBackTop` /
+- **No dispatch loop when nothing goes back through the dispatcher** (`dispatchBlock`, off since the re-measurement
+  below): a region whose backward transfers all stay in structured loops (no `dispatchBackTop` /
   `dispatchRetTop`) has its dispatcher's `loop` turned into a `block` once emitted (one opcode byte: nothing branches
   to its start, so the control flow is the same) — TurboFan then neither aligns a loop header nor checks the stack
   there nor merges every live value into it at each entry. Node in-session A/B (6 rounds): BFME2 −6.0 % (5 rounds of
   6, thread CPU −6.2 %), RotWK 0.0 % (±11 % per round).
+
+- **Re-measurement of the three (2026-10-04): no gain, all off.** The figures above came from 4-6 Node rounds whose
+  spread (±10-20 % per round: the game's work drifts during play) is larger than the effects. Measured again with
+  longer series and in the browser, each option with the others on (leave-one-out) and all together, guest time per
+  instruction in play (`guestMsPerMInsn`), in-session switches (`dbg:ORTHROS_JIT_AB`) with a warm-up phase after each:
+  - Node, all three on vs all off, 8 rounds ABBA of 25 s: RotWK +4.8 % (on slower; per round −12 to +23 %), BFME2
+    +4.3 % (−6 to +21 %). Leave-one-out, 3 rounds (ns per guest instruction, all on / chainStub off / dispatchBlock off
+    / x87Top off / all off): RotWK 3.26 / 2.97 / 3.14 / 3.15 / 3.09, BFME2 3.55 / 3.26 / 2.93 / 2.80 / 2.95; Vice City
+    driving (2 rounds, background translator and cold tier as in the page) 4.50 / 4.37 / 4.29 / 4.33 / 4.31.
+  - Browser (`--gl-discard`, one session per game alternating the five variants ABCDE / EDCBA, 20 s warm-up + 25 s):
+    BFME1, the steadiest (each variant within ±1 % across rounds), all on 2.89 vs all off 2.70 ns (+6.8 %), each option
+    alone off 2.73-2.89; BFME2 (2 sessions) all on 3.13 vs all off 3.14, x87Top off 3.01; RotWK (2 sessions) all on 3.16
+    / 4.07 / 3.46 / 8.90 vs all off 3.21 / 3.07 / 2.86 / 2.91: the variants with x87Top on spent 4.9-77 ms per frame
+    translating and interpreting late in the session (versions per stack top, regions dropped for `genericTop` and
+    translated again), those without 1.8-1.9 ms; frames > 50 ms per minute 274 (all on) vs 140 (all off).
+  - Concurrent browser session pairs (one per game, all on vs all off, same learned data): all off faster in all four
+    games (BFME1 p2 phase 2.52 vs 3.07 ns, BFME2 2.75 vs 3.17, RotWK 2.85 vs 3.02, Vice City 2.47 vs 3.00).
+  - One Vice City session crashed under chainStub + x87Top during in-session switches (a WASM "null function" trap in
+    a region: a table slot reached through a hash entry or an x87 version's slot after its region was dropped); not
+    reproduced in Node (same scenario, background translator, 10 switches), not seen with the options off. To look at
+    before turning either on again.
+  The code stays (options for measurement, tests/jit-x87-top.test.js and tests/jit-layout.test.js cover them); the
+  translated-code cache keys on JIT_DEFAULTS, so the change of defaults starts a new cache.
 
 ## Measured, not kept
 
