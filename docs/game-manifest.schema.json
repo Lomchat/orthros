@@ -8,7 +8,7 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : mount, display, cover, registry, cdrom, profileSeed, etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : mount, display, cover, registry, cdrom, profileSeed, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
       "minItems": 1,

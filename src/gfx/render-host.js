@@ -8,6 +8,20 @@ import { Replayer, compareDevice } from './d3d-mirror.js';
 import { RenderLink, Recorder } from './d3d-recorder.js';
 import { CTL, CTL_WORDS, ACK_SLOTS } from './cmd-ring.js';
 
+/**
+ * The rendering mode (`?glworker=` values: '1' render worker, '0' in-thread backend, 'inline', 'check', 'compare',
+ * 'compare-worker'): the page's `?glworker=` wins, else the manifest's compat flag `glWorker` (false / 0: in-thread,
+ * true / 1: render worker, or a mode name), else the render worker (the default since 2026-10-04, docs/render-worker.md
+ * section 8.8). Where a render worker cannot run (no cross-origin isolation or shared memory), the worker falls back
+ * to the in-thread backend.
+ */
+export function renderMode(pageOpt, manifestFlag) {
+  if (pageOpt !== undefined && pageOpt !== null && pageOpt !== '') return String(pageOpt);
+  if (manifestFlag === undefined || manifestFlag === null || manifestFlag === true) return '1';
+  if (manifestFlag === false) return '0';
+  return String(manifestFlag);
+}
+
 /** command ring size in words (16 MiB) */
 export const RING_WORDS = 1 << 22;
 

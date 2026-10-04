@@ -13,7 +13,7 @@ import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js
 import { VOICE_TABLE_BYTES } from '../../win32/dsound.js';
 import { LAN } from '../lan-proto.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
-import { createInlineGfx, createRemoteGfx, createCompareGfx } from '../../gfx/render-host.js';
+import { createInlineGfx, createRemoteGfx, createCompareGfx, renderMode } from '../../gfx/render-host.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../../cpu/jit/translate.js';
@@ -144,12 +144,9 @@ async function start(m) {
   // recorded for a render worker that owns its own canvas — ?glworker=inline / check: recorded and replayed here
   // (?glworker=compare / compare-worker: the in-thread backend presents, the recorded work is replayed beside it — here
   // or in a render worker — and the two back buffers compared every 60 frames)
-  // (the page's ?glworker= wins; a manifest may set the default with the compat flag "glWorker": 0 / 1 / "inline";
-  // without either, the render worker where it can run — docs/render-worker.md section 8 — and ?glworker=0 the
-  // in-thread backend)
-  // (default: in-thread until an intermittent BFME1 thread race seen in both modes is understood and the render
-  // worker's higher guest cost per instruction on BFME1 is explained — see STATUS.md, 2026-10-03)
-  const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '0' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
+  // (the page's ?glworker= wins, then the manifest's compat flag "glWorker": 0 / 1 / "inline"; without either the render
+  // worker where it can run, the default since 2026-10-04 — docs/render-worker.md section 8.8; renderMode)
+  const glMode = renderMode(m.opts.glWorker, manifest.glWorker);
   const workerOk = typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && !m.opts.interp;
   const renderWorker = (glMode === '1' || glMode === 'compare-worker') && workerOk, remoteGl = glMode === '1' && workerOk;
   if ((glMode === '1' || glMode === 'compare-worker') && !workerOk) log('gfx', `render worker unavailable here (${m.opts.interp ? 'reference interpreter: no shared memory' : 'needs cross-origin isolation and shared memory'}): rendering in this thread`);

@@ -1,8 +1,9 @@
 # Render worker — measurements and design (phase 1), implementation (phase 2)
 
-Status: the render worker is the default since 2026-10-02 (section 8; `?glworker=0` or the manifest flag
-`"glWorker": 0` keep the in-thread backend; measured end to end against the in-thread main in 8.6), implemented in
-section 7. Phase 1 added for the measurements: the probes `ORTHROS_GL_TIME` and
+Status: the render worker is the default (section 8.8, 2026-10-04; it was the default from 2026-10-02, then off
+again from 2026-10-03 until the measurements of 8.8 — sections 8.5-8.7 were written while it was on). `?glworker=0`
+or the manifest flag `"glWorker": 0` / `false` keep the in-thread backend; where a render worker cannot run (no
+cross-origin isolation or shared memory) the in-thread backend is used. Implemented in section 7. Phase 1 added for the measurements: the probes `ORTHROS_GL_TIME` and
 `ORTHROS_GL_NULL` and readback / buffer-byte counters (`src/gfx/d3d8-webgl.js`, test `tests/gl-probe.test.js`),
 `GL timing` reports forwarded to the telemetry (`src/host/web/main.js`), and `tools/cmdring-bench.mjs`.
 
@@ -837,7 +838,103 @@ The emulator thread's Direct3D work is lower with the render worker in the three
 frame), equal in Vice City (its `api` is its pacing, 8.6); the frame rate is equal or higher but in BFME2's first pair,
 whose render-worker run spent 4 ms more per frame in guest code (another scene: guest code does not depend on the
 backend; the second pair is the other way round). Exact and not slower: `?glworker=1` stays the default
-(`?glworker=0` and the manifest flag `"glWorker": 0` keep the in-thread backend).
+(`?glworker=0` and the manifest flag `"glWorker": 0` keep the in-thread backend). (In fact the code on main had been
+switched back to the in-thread backend on 2026-10-03, pending the BFME1 race and the guest cost per instruction of
+8.6; section 8.8 settles both.)
+
+### 8.8 The default decided again: three to four alternated pairs per game (2026-10-04)
+
+**Question.** The render worker had been turned off again on 2026-10-03 for two reasons: an intermittent BFME1
+failure (since traced to a stale reference inside the game, same failure rate with both backends: STATUS.md) and a
+guest cost per instruction 5-10 % higher with it in BFME1 (8.6). This section measures the two modes again on the
+current tree and looks for the cause of the per-instruction difference.
+
+**Method.** The tree of main 0b474c8 plus the measurement additions of this section, `--gl-discard --timescale 1.5`,
+warm profiles and a copy of learn-live, the play phases of `tools/scenarios/{bfme,bfme2,rotwk}-phases.txt` (BFME1
+140-160 s, BFME2 110 s, RotWK 210 s of play) and the drive of `vicecity-drive.txt` (22 s). Each pair: `--glworker 0`
+and `--glworker 1` **at the same time** (same machine load), launch order swapped from one pair to the next. The
+machine's load average was 14-45 (other projects). Per frame: `D3D` = `api` + `draw` (Vice City: its `api` is its
+pacing loop, `draw` alone compares), `busy` = the emulator thread's own work (every category but the waits),
+`render` = waits for the render worker, `ns/insn` = guest category per guest instruction, `picks` = scheduling
+decisions per frame (new in the phase report).
+
+| Game, pair | mode | fps | > 33 / > 40 / > 50 ms per min | p99 ms | D3D ms | busy ms | render ms | ns/insn | picks |
+|---|---|---|---|---|---|---|---|---|---|
+| BFME1 1 | 0 / 1 | 47.0 / 49.2 | 200 125 70 / 140 91 59 | 69.3 / 70.7 | 6.5 / 4.1 | 20.2 / 17.7 | 0 / 0.4 | 3.27 / 3.41 | 703 / 1372 |
+| BFME1 2 | 0 / 1 | 49.5 / 52.9 | 9 7 2 / 12 8 6 | 29.0 / 28.4 | 6.0 / 4.0 | 19.8 / 17.8 | 0 / 0 | 3.34 / 3.43 | 183 / 548 |
+| BFME1 3 | 0 / 1 | 53.2 / 56.1 | 9 4 2 / 6 4 2 | 26.2 / 23.9 | 6.0 / 3.6 | 18.1 / 15.9 | 0 / 0 | 3.03 / 3.09 | 347 / 1057 |
+| BFME2 1 (126 draws) | 0 / 1 | 41.3 / 42.8 | 67 26 10 / 43 19 8 | 40.4 / 35.9 | 6.6 / 5.1 | 22.8 / 21.2 | 0 / 0 | 3.19 / 3.27 | 888 / 1341 |
+| BFME2 2 (211 draws, load 30) | 0 / 1 | 28.7 / 28.6 | 791 278 69 / 722 329 123 | 83.3 / 82.6 | 11.7 / 9.5 | 34.2 / 32.5 | 0 / 1.6 | 3.67 / 3.76 | 119 / 137 |
+| BFME2 3 (125 draws, load 37) | 0 / 1 | 22.4 / 25.8 | 620 473 290 / 462 372 269 | 291 / 222 | 12.6 / 7.3 | 42.9 / 36.2 | 0 / 0.5 | 4.73 / 4.68 | 469 / 1097 |
+| RotWK 1 | 0 / 1 | 34.3 / 35.7 | 407 209 94 / 362 191 85 | 78.3 / 69.0 | 6.3 / 4.6 | 27.8 / 25.7 | 0 / 0 | 3.25 / 3.29 | 709 / 1067 |
+| RotWK 2 | 0 / 1 | 35.2 / 37.4 | 379 179 79 / 275 144 71 | 65.1 / 65.1 | 6.4 / 4.7 | 27.1 / 24.4 | 0 / 0 | 3.30 / 3.30 | 625 / 1172 |
+| RotWK 3 | 0 / 1 | 36.7 / 37.3 | 286 145 68 / 276 152 72 | 63.0 / 65.2 | 6.0 / 4.8 | 25.4 / 24.5 | 0 / 0 | 3.04 / 3.02 | 911 / 1321 |
+| Vice City 1 | 0 / 1 | 42.7 / 43.7 | 69 19 14 / 63 27 11 | 38.1 / 40.0 | `draw` 3.1 / 1.0 | 22.7 / 22.2 | 0 / 0 | 2.48 / 2.70 | 109 / 152 |
+| Vice City 2 | 0 / 1 | 40.7 / 43.7 | 160 80 30 / 61 19 8 | 53.2 / 36.8 | `draw` 3.9 / 1.1 | 23.9 / 22.2 | 0 / 0 | 2.75 / 2.69 | 104 / 152 |
+| Vice City 3 | 0 / 1 | 39.3 / 42.0 | 208 118 38 / 123 63 26 | 56.4 / 50.2 | `draw` 3.6 / 1.2 | 24.7 / 22.9 | 0 / 0 | 3.27 / 3.00 | 90 / 129 |
+| Vice City 4 | 0 / 1 | 41.3 / 44.1 | 115 74 38 / 52 25 6 | 61.1 / 39.5 | `draw` 3.7 / 1.0 | 23.6 / 22.0 | 0 / 0 | 2.49 / 2.49 | 111 / 173 |
+
+Left out: two BFME2 pairs whose runs started at different places of the map (126 against 210 draws per frame: other
+scenes, as in 8.6) and one Vice City pair run at a load average of 44, where both runs fell to 10-14 fps.
+
+**End to end the render worker is equal or better in every comparable pair**: frame rate −0.1 to +3.4 fps (BFME1
++4.7 to +7 %, RotWK +1.6 to +6 %, Vice City +2.3 to +7 %, BFME2 −0.3 to +15 %), the emulator thread's own work 0.5-6.7
+ms per frame lower, its Direct3D work 1.2-2.4 ms lower (BFME2 under load 5.3; Vice City's `draw` 2.1-2.8), slow-frame counts lower or within the
+spread. The one mixed result is BFME2's pair 2, measured at a load average of 30: the same frame rate, fewer frames
+over 33 ms but more over 40 and 50 ms — there the render worker itself was starved (1.6 ms of waits per frame, one
+frame waited 850 ms for it: with more busy threads than idle cores, the second thread is descheduled like any other).
+**Start-up**: the first Direct3D frame and the main menu come at the same times (within 1-2 s in every pair).
+
+**The guest cost per instruction.** In the concurrent pairs the guest category costs +2.0 to +4.3 % per instruction
+with the render worker in BFME1, −0.7 to +1.2 % in RotWK, −1.1 to +2.5 % in BFME2 and −8 to +9 % in Vice City (whose
+22 s drives differ in scene). Where it shows (BFME1), it is not the render worker's synchronization: the Atomics
+stores and notifications, the ring writes and the buffer data copied into the ring are charged to `draw` / `api`,
+which fall by 2.4 ms per frame, and the emulator waits for the render worker 0-0.4 ms per frame. Three experiments
+looked for the cause:
+
+1. *V8 CPU profiles* of the emulator thread (30 s of BFME1 play in each mode, two concurrent pairs, each sample
+   weighted by its real interval): the translated code itself (the `r_*` functions) runs at 2.55 / 2.69 ns per guest
+   instruction (in-thread / render worker) in one pair and 2.46 (in-thread with the control thread of 3.) / 2.78
+   (render worker) in the other. The extra time is spread over the hot regions (the regions of more than 50 ms: +4.7 %),
+   not in a few: the code runs uniformly slower, as under contention for the core, its caches or the memory.
+2. *More thread switches?* With the render worker the game's frames are cheaper and its threads poll more: BFME1 makes
+   2-3 times as many scheduling decisions and `Sleep` calls per frame. An in-session A/B without a second thread —
+   the in-thread backend with its WebGL calls made no-ops (`dbg:ORTHROS_GL_NULL=1`) every other 30 s phase, two
+   sessions, six phases each — shows no such effect: per phase 2.66-3.34 ns per instruction, *lower* in the phases with
+   more scheduling decisions (585-599 per frame: 2.66-2.73) than in those with fewer (136-247: 3.15-3.34), and the
+   spread between phases of one session (±11 %) is larger than the difference between the backends. The polling is a
+   consequence of faster frames, not a cost: the earlier reading (8.6) is not confirmed.
+3. *Any second busy thread?* A control thread (harness input `spin:25`: a page worker busy streaming through 4 MiB 25 %
+   of every 10 ms, about the render worker's share) beside the in-thread backend: guest category +6.3 % per instruction
+   against an in-thread run of the same pair (3.23 / 3.04), translated code equal (2.80 / 2.80 ns); against the render
+   worker the control run was 6 % faster per instruction (2.87 / 3.06). The noise of a loaded shared machine (the in-thread backend's translated code measured 2.55 and 2.80 ns per
+   instruction in two sessions) is of the order of the effect.
+
+Conclusion: the per-instruction difference is small (BFME1 +2-4 %, none measurable in the other games), it is not in
+the render worker's protocol, nor in the extra polling; what remains is consistent with a second busy thread sharing
+the machine (a core of an SMT pair, L3, memory bandwidth) and the run-to-run noise. Its cost (≤ 0.5 ms per frame in
+BFME1) is smaller than what the render worker removes from the emulator thread (2-2.5 ms of Direct3D work per frame),
+which is why frame rates rise. On a player's machine with idle cores the contention is lower and the GPU-process
+back-pressure and program builds the render worker absorbs (8.5) higher.
+
+**Exactness** (rendered, SwiftShader, `?glworker=compare-worker`, every 10th frame compared): Vice City menu to drive
+247 frames, BFME1 menu to the skirmish setup 432, BFME2 menu to play 515, RotWK menu to play 175 (95 of them in play)
+— 0 differing. Screenshots with the render worker presenting: Vice City's logo and title movies (video layer) and its
+menu identical to the in-thread run's; Vice City's drive frames as in-thread. **Context loss** in the render worker
+(BFME2, `--lose-context-at 200` during the intro movie): `context restored, resources recreated on use`, the game went
+on to its menu, the skirmish setup and the loading screen, rendered correctly (one 2 s batch while SwiftShader rebuilt
+the programs). The unit and browser tests pass with the render worker by default (`tests/browser.test.js`:
+`dx.exe`, `dx9.exe`, `window.exe`, `text.exe` by default; `?glworker=0`, `1`, `inline`).
+
+**Decision: the render worker is the default again** (`src/gfx/render-host.js` `renderMode`: the page's `?glworker=`
+first, then the manifest's `"glWorker"` — `false` / `0` the in-thread backend —, else the render worker;
+`tests/render-mode.test.js`). Risk kept in view: on a machine with fewer idle cores than busy threads the render
+worker can be descheduled and the emulator then waits for frames in flight (BFME2 pair 2); the HUD's `render` category
+and the telemetry's `c.render` show it, and `?glworker=0` is the remedy.
+
+**Measurement additions** (kept): the phase reports give the scheduling decisions and slices per frame; the render
+worker logs batches of commands taking 50 ms or more (with the last command) and returns to its loop 50 ms late (the
+first 20 of each: what makes the emulator wait for frames); harness input `spin:<percent>` (the control thread of 3.).
 
 ## Appendix: how the numbers were taken
 
