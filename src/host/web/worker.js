@@ -152,7 +152,7 @@ async function start(m) {
   const glMode = String(m.opts.glWorker ?? (manifest.glWorker === undefined ? '0' : manifest.glWorker === false ? '0' : manifest.glWorker === true ? '1' : manifest.glWorker));
   const workerOk = typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && !m.opts.interp;
   const renderWorker = (glMode === '1' || glMode === 'compare-worker') && workerOk, remoteGl = glMode === '1' && workerOk;
-  if ((glMode === '1' || glMode === 'compare-worker') && !workerOk) log('gfx', 'render worker unavailable here (needs cross-origin isolation and shared memory): rendering in this thread');
+  if ((glMode === '1' || glMode === 'compare-worker') && !workerOk) log('gfx', `render worker unavailable here (${m.opts.interp ? 'reference interpreter: no shared memory' : 'needs cross-origin isolation and shared memory'}): rendering in this thread`);
   const threadBackend = () => { try { const g = createWebGLBackend(canvasGl, (msg) => log('gfx', msg), dump); if (!g) log('warn', 'WebGL2 unavailable: Direct3D will run without rendering'); return g; } catch (e) { log('warn', `WebGL2 init failed: ${e.message}`); return null; } };
   let renderer = null; // (the render worker's link)
   if (renderWorker) renderer = createRemoteGfx({ log: (msg) => log('gfx', msg), workerUrl: new URL('../../gfx/render-worker.js', import.meta.url), onFail: (reason, recorders) => (remoteGl ? renderInThread(recorders, threadBackend) : log('gfx', 'render compare: stopped (render worker gone)')) });
@@ -691,11 +691,13 @@ self.onmessage = (e) => {
     // guest instructions executed in the phase: the guest category's time per instruction is the translated code's speed,
     // whatever the scene asks of it (an A/B of the code generator less sensitive to what the game does meanwhile)
     const guestInsns = (vm?.guestInsns ?? 0) - (markPrev?.guestInsns ?? 0);
+    // (scheduling decisions and slices of the phase: the thread switches whose cost the guest category also carries)
+    const picks = (vm?.sched?.picks ?? 0) - (markPrev?.picks ?? 0), slices = (vm?.slices ?? 0) - (markPrev?.slices ?? 0);
     if (host) {
       const ph = host.frameAcct.phase(String(m.label), performance.now());
       const guestMs = (ph.mean?.guest ?? 0) * (ph.frames ?? 0), perM = guestInsns > 0 ? guestMs / (guestInsns / 1e6) : 0;
-      log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}${guestInsns > 0 ? `\n  guest instructions: ${(guestInsns / 1e6).toFixed(0)} M, ${(guestInsns / 1e6 / Math.max(1, ph.frames ?? 0)).toFixed(2)} M per frame; guest time ${perM.toFixed(2)} ms per M instructions` : ''}`);
-      post({ type: 'phase', report: { ...ph, text: undefined, guestInsns, guestMsPerMInsn: perM } });
+      log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}${guestInsns > 0 ? `\n  guest instructions: ${(guestInsns / 1e6).toFixed(0)} M, ${(guestInsns / 1e6 / Math.max(1, ph.frames ?? 0)).toFixed(2)} M per frame; guest time ${perM.toFixed(2)} ms per M instructions; ${(picks / Math.max(1, ph.frames ?? 0)).toFixed(0)} scheduling decisions and ${(slices / Math.max(1, ph.frames ?? 0)).toFixed(1)} slices per frame` : ''}`);
+      post({ type: 'phase', report: { ...ph, text: undefined, guestInsns, guestMsPerMInsn: perM, picks, slices } });
     }
     // (the translated code cache so far: the background worker also translates the cold tier's new code)
     const bc = vm?.jit?.bg?.cache;
@@ -714,7 +716,7 @@ self.onmessage = (e) => {
     const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
     const same = [...(vm?.d3dDevices ?? [])].reduce((a, d) => a + (d.sameSets ?? 0), 0);
     if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release; ${same - (markPrev.same ?? 0)} texture / stream / index sets changing nothing ran in JavaScript`);
-    markPrev = { ...st, guestInsns: vm?.guestInsns ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    markPrev = { ...st, guestInsns: vm?.guestInsns ?? 0, picks: vm?.sched?.picks ?? 0, slices: vm?.slices ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });
