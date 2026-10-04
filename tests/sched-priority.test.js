@@ -56,7 +56,7 @@ function runExe(roundRobin) {
 
 test('priority.exe: a TIME_CRITICAL thread\'s work is not interrupted by normal threads; a lower-priority thread still runs', { skip: !fs.existsSync(EXE) && 'build/pe/priority.exe missing (make pe-tests)' }, () => {
   const got = runExe(false);
-  assert.equal(got.out, 'work_done=1\nspinner_ran=1\nseen_mid_work=0\nidle_ran=1\n');
+  assert.equal(got.out, 'work_done=1\nspinner_ran=1\nseen_mid_work=0\nidle_ran=1\nbad_levels_rejected=1\n');
   assert.equal(got.code, 0);
   // the pattern the test reproduces: with every thread in turn, the spinner runs in the middle of the work
   const rr = runExe(true);

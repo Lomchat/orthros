@@ -9,6 +9,7 @@
 #define THREAD_PRIORITY_IDLE (-15)
 DLLIMPORT BOOL WINAPI SetThreadPriority(HANDLE, int);
 DLLIMPORT DWORD WINAPI ResumeThread(HANDLE);
+DLLIMPORT int WINAPI GetThreadPriority(HANDLE);
 
 static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 static HANDLE out;
@@ -54,5 +55,11 @@ void __stdcall start(void) {
   unsigned polls = 0;
   while (!idleRan && polls < 10000000) { polls++; Sleep(0); }
   report("idle_ran", idleRan);
-  ExitProcess(seenMidWork || !workDone || !idleRan ? 1 : 0);
+  // values outside the priority levels are rejected (THREAD_MODE_BACKGROUND_BEGIN is accepted for the calling thread
+  // without changing its level: stored, it would have outranked every thread)
+  HANDLE self = (HANDLE)-2;
+  int bad = SetThreadPriority(self, 99) || SetThreadPriority(self, -16) || !SetThreadPriority(self, 0x10000)
+    || GetThreadPriority(self) != 0 || !SetThreadPriority(self, 0x20000) || !SetThreadPriority(self, 2) || GetThreadPriority(self) != 2;
+  report("bad_levels_rejected", !bad);
+  ExitProcess(seenMidWork || !workDone || !idleRan || bad ? 1 : 0);
 }

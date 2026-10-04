@@ -272,7 +272,14 @@ export function registerKernel32(api, vm) {
     return prev;
   }];
   K.GetThreadPriority = [1, (c) => { const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread'); return t ? t.priority : 0x7fffffff; }];
-  K.SetThreadPriority = [2, (c) => { const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread'); if (!t) return c.fail(E.INVALID_HANDLE); t.priority = c.sarg(1); return 1; }];
+  K.SetThreadPriority = [2, (c) => { const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread'); if (!t) return c.fail(E.INVALID_HANDLE);
+    // the scheduler orders threads by this value (sched.js pickRunnable): only the relative levels are taken (-15..15);
+    // THREAD_MODE_BACKGROUND_BEGIN / END (0x10000 / 0x20000, the calling thread only) are accepted without a priority
+    // change; anything else fails as on Windows (stored, 0x10000 would have outranked every thread)
+    const p = c.sarg(1);
+    if (p === 0x10000 || p === 0x20000) return t === c.thread ? 1 : c.fail(E.INVALID_PARAMETER);
+    if (p < -15 || p > 15) return c.fail(E.INVALID_PARAMETER);
+    t.priority = p; return 1; }];
   K.SetThreadPriorityBoost = [2, () => 1];
   K.SetThreadAffinityMask = [2, () => 1];
   K.SetThreadIdealProcessor = [2, () => 0];
