@@ -121,7 +121,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -686,20 +686,45 @@ export function discoverRegion(mem, entry, opts) {
   // numbering an x87-mode version must repeat (the heat may have grown since)
   const only = opts.onlyBlocks ?? null;
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
+  // (measurement, startbench --jit-sites: the successors left out for the region's size)
+  const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
+  // opts.discoverDepth: the blocks are taken by call depth (the entry's function first, then its callees, then theirs...,
+  // breadth-first within a depth) and become leaders when taken, so that the size limits cut the deepest callees rather
+  // than the entry function's own code; otherwise leaders in the order they are found (breadth-first, every depth)
+  const byDepth = opts.discoverDepth ?? JIT_DEFAULTS.discoverDepth;
+  const buckets = [[entry]], heads = [0];
+  let depth = 0;
+  const next = () => {
+    for (let d = 0; d < buckets.length; d++) {
+      const q = buckets[d];
+      while (heads[d] < q.length) {
+        const a = q[heads[d]++];
+        if (leaders.has(a) && a !== entry) continue;
+        if (leaders.size >= MAX_BLOCKS) { limited?.add(a); continue; }
+        leaders.add(a); depth = d; return a;
+      }
+    }
+    return -1;
+  };
   // pass 1: find leaders
-  while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
-    let a = queue.shift();
+  while (byDepth ? leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2 : queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
+    let a = byDepth ? next() : queue.shift();
+    if (a === -1) break;
     for (let n = 0; n < MAX_INSNS; n++) {
       if (isBoundary(a)) break;
       let insn;
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS && !cold(insn.addr, t)) { leaders.add(t); queue.push(t); } };
+      const addLeader = (t, d = 0) => {
+        if (isBoundary(t) || leaders.has(t) || cold(insn.addr, t)) return;
+        if (byDepth) { const k = depth + d; while (buckets.length <= k) { buckets.push([]); heads.push(0); } buckets[k].push(t); return; }
+        if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t);
+      };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(branchTarget(insn)); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
-      if (term === TERM_CALL) { addLeader(insn.pred || insn.ops[0].v); addLeader(insn.next); break; }
+      if (term === TERM_CALL) { addLeader(insn.pred || insn.ops[0].v, 1); addLeader(insn.next); break; }
       if (term === TERM_INDIRECT || term === TERM_RET || term === TERM_EXIT) { if (term !== TERM_RET && term !== TERM_INDIRECT) addLeader(insn.next); break; }
       break;
     }
@@ -728,7 +753,7 @@ export function discoverRegion(mem, entry, opts) {
     blocks.push(b);
     byEip.set(eip, b);
   }
-  return { blocks, byEip };
+  return { blocks, byEip, limited };
 }
 
 /** the type and import sections, identical in every region module, are encoded once */
@@ -965,7 +990,8 @@ class Emitter {
   }
 
   run(entry) {
-    let { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip, limited } = discoverRegion(this.mem, entry, this.opts);
+    this.limited = limited;
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.discovered = blocks; // (address order)
     this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
@@ -1459,7 +1485,7 @@ class Emitter {
     c.i32(0).i32(insn.addr | 0).i32store(e);
   }
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, 'exit'); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, this.limited?.has(eip) ? 'exitLim' : 'exit'); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
