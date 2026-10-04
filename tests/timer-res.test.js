@@ -27,7 +27,7 @@ test('TimerResolution: requests, ticks, tick counters', () => {
   assert.equal(r.begin(5), true); assert.equal(r.ms, 5);
   assert.equal(r.begin(1), true); assert.equal(r.begin(1), true); assert.equal(r.ms, 1);
   assert.equal(r.tickAt(10.3 + 1), 12, 'Sleep(1) under timeBeginPeriod(1): 1 to 2 ms');
-  assert.equal(r.mmTime(10.7), 10);
+  assert.equal(r.mmTime(30.7), 30);
   assert.equal(r.tickCount(20.5), 15, 'GetTickCount keeps the 15.625 ms tick under timeBeginPeriod');
   assert.equal(r.end(1), true); assert.equal(r.ms, 1, 'one request of 1 ms left');
   assert.equal(r.end(1), true); assert.equal(r.ms, 5);
@@ -39,6 +39,31 @@ test('TimerResolution: requests, ticks, tick counters', () => {
   exact.begin(1);
   assert.deepEqual([exact.ms, exact.tickAt(10.3), exact.tickCount(20.5), exact.mmTime(20.5)], [0, 10.3, 20, 20]);
   assert.equal(r.tickAt(Infinity), Infinity);
+});
+
+test('TimerResolution: timeGetTime never goes back when the resolution changes', () => {
+  const r = new TimerResolution();
+  r.begin(1);
+  assert.equal(r.mmTime(1010.3), 1010);
+  r.end(1); // back to 15.625 ms: the last interrupt of that grid (1000) is before the value already returned
+  assert.equal(r.mmTime(1010.4), 1010, 'holds until the next interrupt');
+  assert.equal(r.mmTime(1015.7), 1015);
+  r.begin(1); assert.equal(r.mmTime(1016.2), 1016);
+  r.end(1); r.begin(7); // a period that does not divide the old one
+  assert.equal(r.mmTime(1016.5), 1016);
+  assert.equal(r.mmTime(1022.1), 1022);
+  // randomized: any sequence of requests, the clock moving forward
+  let x = 12345, now = 0, last = 0;
+  const rnd = () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x; };
+  const q = new TimerResolution(), held = [];
+  for (let i = 0; i < 20000; i++) {
+    now += (rnd() % 1000) / 100;
+    const k = rnd() % 8;
+    if (k === 0) { const p = 1 + (rnd() % 20); q.begin(p); held.push(p); } else if (k === 1 && held.length) q.end(held.splice(rnd() % held.length, 1)[0]);
+    const v = q.mmTime(now);
+    assert.ok(v >= last && v <= now, `timeGetTime ${v} after ${last} at ${now}`);
+    last = v;
+  }
 });
 
 test('Scheduler: a guest timeout ends at a tick, the emulator\'s own waits are exact', () => {

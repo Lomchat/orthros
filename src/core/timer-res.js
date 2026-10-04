@@ -23,6 +23,8 @@ export class TimerResolution {
     /** @type {Map<number, number>} active timeBeginPeriod requests: period -> count */
     this.requests = new Map();
     this.ms = defaultMs;
+    /** timeGetTime's last value: it never goes back when the resolution gets coarser (timeEndPeriod) */
+    this.lastMm = 0;
   }
 
   /** timeBeginPeriod(p): false (TIMERR_NOCANDO) for a period outside 1..1000000 */
@@ -62,11 +64,13 @@ export class TimerResolution {
     return Math.floor(Math.floor(now / DEFAULT_TIMER_RES) * DEFAULT_TIMER_RES);
   }
 
-  /** timeGetTime's milliseconds at clock time `now`: the last interrupt (integer ms) */
+  /** timeGetTime's milliseconds at clock time `now`: the last interrupt (integer ms). Monotonic: after a switch to a
+   * coarser period (timeEndPeriod(1) at 1010.3 ms: the 15.625 ms grid's last interrupt is 1000) the value holds until the
+   * next interrupt of the new period instead of going back, as Windows' interrupt time never does */
   mmTime(now) {
     const r = this.ms;
-    if (!(r > 0)) return Math.floor(now);
-    return Math.floor(Math.floor(now / r) * r);
+    const v = !(r > 0) ? Math.floor(now) : Math.floor(Math.floor(now / r) * r);
+    return v >= this.lastMm ? (this.lastMm = v) : this.lastMm;
   }
 }
 
