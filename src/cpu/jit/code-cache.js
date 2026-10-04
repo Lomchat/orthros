@@ -134,7 +134,7 @@ export class CodeCache {
     this.stale = null; // (the entries the last lookup found translating the code of now under another shape)
     this.full = false; // (no room made any more in this session: see makeRoom)
     this.pending = false; // (past the bound: room to make at the next idle moment, see maintain)
-    this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, missHeat: 0, added: 0, bytes: 0, dead: 0, loadMs: 0, reset: '', superseded: 0, evicted: 0, compactions: 0, compactMs: 0, session: 0 };
+    this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, missHeat: 0, added: 0, bytes: 0, dead: 0, loadMs: 0, reset: '', superseded: 0, evicted: 0, compactions: 0, compactMs: 0, session: 0, supersededAge: {} };
     this.load();
   }
   /** the file's header: magic, key length, session, state (1: a compaction under way), key; returns its length */
@@ -189,6 +189,8 @@ export class CodeCache {
     l.splice(i, 1); if (!l.length) this.map.delete(e.k);
     this.writeU32(e.at + 8, 0);
     this.live -= e.len; this.stats.dead += e.len; this.stats[why]++;
+    // (diagnostics: how many sessions ago a superseded entry was last used — 1: reshaped since the last session)
+    if (why === 'superseded') { const age = Math.min(4, this.session - e.used); this.stats.supersededAge[age] = (this.stats.supersededAge[age] ?? 0) + 1; }
   }
   /** reused or added in this session (the least recently used go first when room is needed) */
   touch(e) { if (e.used !== this.session) { e.used = this.session; this.writeU32(e.at + 8, this.session); } }
