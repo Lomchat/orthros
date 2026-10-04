@@ -112,9 +112,9 @@ export class MoviePlayer {
     const running = this.state === RUNNING;
     if (running) this.voice?.stop();
     if (t < this.position()) s.reset();
-    // (forward: decode to the position without showing; the sound before it is dropped)
+    // (forward: decode to the position without showing; the sound before it is dropped; not lateness)
     s.load(t, Infinity);
-    if (s.video) s.pictureAt(t);
+    if (s.video) { const late = s.stats.late; s.pictureAt(t); s.stats.late = late; }
     s.audioUntil(t, () => {});
     this.pending = []; // (decoded before the seek: another part of the stream)
     this.pos = t; this.completed = false;
