@@ -15,8 +15,9 @@ import { Code, ModuleBuilder, T } from './wasm.js';
 import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
+import { NULL_PAGE_END, USER_END, nullChecks } from '../nullpage.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -49,10 +50,13 @@ const L_XD0 = 76;
 // if-conversion (Emitter.emitIfcvt): L_IC the branch condition, L_IFS0+k the value of the k-th local the arms write
 // before them, L_IFR0+k its value after the taken arm (IFCVT_SLOTS: the registers and the lazy flag state)
 const L_IC = 84, IFCVT_SLOTS = 13, L_IFS0 = 85, L_IFR0 = L_IFS0 + IFCVT_SLOTS;
+// null page (Emitter.nullCheck): L_SPECF set when a load of an if-converted arm on the path taken is in the null page,
+// L_NCK the address of that load
+const L_SPECF = L_IFR0 + IFCVT_SLOTS, L_NCK = L_SPECF + 1;
 const L_FIRST_DECLARED = 16;
 const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
-  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32)]; // indices 16..110
-if (LOCAL_TYPES.length !== L_IFR0 + IFCVT_SLOTS - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32]; // indices 16..112
+if (LOCAL_TYPES.length !== L_NCK + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -100,7 +104,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: true, logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -351,6 +355,64 @@ function regionRetSites(blocks, byEip) {
 // A predictable branch costs nothing when predicted, while both arms and the selects always cost: only comparisons of
 // data inside loops are converted (ifcvtDataCond) — not loop counters, a loop-invariant local on the stack, nor tests of
 // a value against a constant (opts.ifcvt 'all': every candidate, for tests).
+// ---- null-page checks of a block (Emitter.nullCheck). Accesses through the same base and index registers (and
+// scale), unchanged between them, within 64 KiB of each other — the fields of one structure — share one check at the first of them, on the
+// range of their displacements: [r+lo, r+hi] inside [NULL_PAGE_END, USER_END) means every one of them is. When it is
+// not, the region is left before the first one; the interpreter executes it (faulting if it is itself outside), and
+// the code after it is entered anew, its own accesses checked from there — so the fault is still raised at the first
+// access that makes it, with the exact state.
+/** Instructions writing general registers other than their register operands (or whose effects are not listed here). */
+const NC_CLOBBER_ALL = new Set(['MUL', 'DIV', 'IDIV', 'IMUL', 'CMPXCHG', 'CMPXCHG8B', 'CBW', 'CWD', 'MOVS', 'CMPS', 'STOS',
+  'LODS', 'SCAS', 'INS', 'OUTS', 'XLAT', 'PUSHA', 'POPA', 'ENTER', 'LEAVE', 'CPUID', 'RDTSC', 'RDPMC', 'RDMSR', 'LAHF', 'DAA',
+  'DAS', 'AAA', 'AAS', 'AAM', 'AAD', 'SALC', 'IN', 'OUT', 'CALL', 'CALLF', 'JMP', 'JMPF', 'RET', 'RETF', 'LOOP', 'LOOPE',
+  'LOOPNE', 'JECXZ', 'INT', 'INT3', 'INTO', 'IRET', 'SYSENTER', 'SYSEXIT', 'BOUND', 'INVALID', 'MOVCR', 'MOVDR', 'WRMSR',
+  'MASKMOVQ', 'MASKMOVDQU'].map((n) => OP[n]));
+const NC_SPAN = 0x10000;
+/**
+ * Plain stores — their memory operand written, nothing else changed — at a small non-negative displacement from their
+ * registers (the fields of a structure, as for a check group) need no check before them: their self-modifying
+ * code check after the store (Emitter.smcCheck) reads the page's SMC map byte, where the pages never mapped carry
+ * SMC_NULL; its cold path then clears the bytes written (the null page stays zero, as nothing can have stored there) and
+ * leaves the region before the instruction, for the interpreter to raise the fault. No cost on the hot path. Not exact
+ * in two cases of a register holding garbage, as before these checks: a store through a register past 2 GiB traps
+ * (WebAssembly bounds: an imprecise fault, the process ends), and a store straddling 0x10000 from below keeps its
+ * bytes from 0x10000 on.
+ */
+const NC_STORE_SMC = new Set(['MOV', 'SETCC', 'MOVD', 'MOVQ', 'MOVUPS', 'MOVUPD', 'MOVSS', 'MOVSD', 'MOVLPS', 'MOVLPD', 'MOVHPS',
+  'MOVHPD', 'MOVAPS', 'MOVAPD', 'MOVNTPS', 'MOVNTPD', 'MOVNTI', 'MOVNTQ', 'MOVNTDQ', 'MOVDQA', 'MOVDQU', 'STMXCSR', 'FNSTCW'].map((n) => OP[n]));
+/**
+ * The null-page checks of block `insns`: per instruction, null or a list of { k } (one operand: nullChecks entry) and
+ * { g } (a group { base, lo, hi } of accesses through one base register, checked as a range at its first access).
+ */
+function planNullChecks(insns, smc) {
+  const plan = new Array(insns.length).fill(null);
+  /** @type {Map<number, { key: number, o: any, lo: number, hi: number }>} */
+  const groups = new Map();
+  for (let i = 0; i < insns.length; i++) {
+    const insn = insns[i], nc = HANDLERS[insn.op] ? insn.nchk || nullChecks(insn) : []; // (no handler: the interpreter checks)
+    for (const k of nc) {
+      // (checked by the store's SMC check: at small non-negative displacements — a negative one from a null pointer would
+      // reach past the guest memory, where the store itself traps)
+      if (smc && k.write && NC_STORE_SMC.has(insn.op) && !k.o.a16 && (k.o.disp | 0) >= 0 && (k.o.disp | 0) < NULL_PAGE_END && (k.o.base >= 0 || k.o.index >= 0)) continue;
+      const o = k.o;
+      if (!k.str && !o.a16 && (o.base >= 0 || o.index >= 0)) {
+        const key = o.base + 8 * (o.index + 1) + 72 * o.scale, d = o.disp | 0, g = groups.get(key);
+        if (g && Math.max(g.hi, d) - Math.min(g.lo, d) < NC_SPAN) { g.lo = Math.min(g.lo, d); g.hi = Math.max(g.hi, d); continue; }
+        const ng = { key, o, lo: d, hi: d };
+        groups.set(key, ng);
+        (plan[i] ??= []).push({ g: ng });
+      } else (plan[i] ??= []).push({ k });
+    }
+    if (!groups.size) continue;
+    if (NC_CLOBBER_ALL.has(insn.op)) { groups.clear(); continue; }
+    let w = 0;
+    for (const o of insn.ops) if (o.t === OT.REG) w |= 1 << (o.size === 1 && o.r >= 4 ? o.r - 4 : o.r);
+    if (insn.op === OP.PUSH || insn.op === OP.POP || insn.op === OP.PUSHF || insn.op === OP.POPF) w |= 1 << 4;
+    if (w) for (const [key, g] of groups) if ((g.o.base >= 0 && (w >> g.o.base) & 1) || (g.o.index >= 0 && (w >> g.o.index) & 1)) groups.delete(key);
+  }
+  return plan;
+}
+
 /** Instructions an if-converted arm may hold (their handlers write registers and the flag locals only, without exits). */
 const IFCVT_OPS = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'ADD', 'SUB', 'ADC', 'SBB', 'AND', 'OR', 'XOR', 'CMP', 'TEST', 'INC', 'DEC',
   'NEG', 'NOT', 'SHL', 'SHR', 'SAR', 'SETCC', 'CMOVCC', 'XCHG', 'CBW', 'CWD', 'BSWAP', 'NOP'].map((n) => OP[n]));
@@ -739,7 +801,9 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
   // backward transfer to a block of the innermost loop holding both ends other than its header, a backward transfer
   // no structured loop holds (the region dispatcher), and the local returns among the latter
-  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop'];
+  'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
+  // null-page checks run (Emitter.nullCheck)
+  'nullCheck'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -803,6 +867,9 @@ class Emitter {
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
     this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
+    this.ncPlan = null; // null-page checks of the block being emitted (planNullChecks)
+    this.specCheck = false; // (the arm instruction being emitted has a memory operand to check: see nullCheck)
+    this.nullPage = opts.nullPage ?? JIT_DEFAULTS.nullPage; // accesses to the first 64 KiB fault (see nullCheck)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -1261,6 +1328,37 @@ class Emitter {
     const s = this.x87Normalize(); c.br(this.exitCodeL); this.x87Restore(s);
   }
   /**
+   * Windows semantics for the null page (nullpage.js): when the start address of one of the memory operands `nc` of
+   * `insn` (nullChecks) is in the first 64 KiB or past the user address space, leave the region before the instruction;
+   * the interpreter executes it and raises the access violation with the exact state. A subtraction, a compare and a
+   * branch never taken per access (the
+   * address computation is shared with the handler's by the WebAssembly compiler). String operands: the register
+   * (ESI / EDI), not with a REP prefix and a zero count (nothing accessed).
+   */
+  /** address on the stack -> 1 when outside [NULL_PAGE_END, USER_END) (one subtraction and an unsigned compare) */
+  unmappedTest() { this.c.i32(-NULL_PAGE_END).add().i32(USER_END - NULL_PAGE_END).ge_u(); }
+  nullCheck(insn, plan) {
+    const c = this.c;
+    for (let i = 0; i < plan.length; i++) {
+      const { k, g } = plan[i];
+      if (g) {
+        // (a group: its address at displacement lo inside [NULL_PAGE_END, USER_END - (hi - lo)) — [null - 4] and a
+        // register holding garbage past 2 GiB included, which would otherwise trap)
+        this.ea({ ...g.o, disp: (g.lo - NULL_PAGE_END) | 0, seg: -1 });
+        c.i32(USER_END - NULL_PAGE_END - (g.hi - g.lo)).ge_u();
+      } else if (k.str) {
+        c.get(L_REG + k.o.base); if (insn.adsize === 2) c.i32(0xffff).and();
+        this.unmappedTest();
+        if (insn.rep) { c.get(L_REG + 1); if (insn.adsize === 2) c.i32(0xffff).and(); c.i32(0).ne().and(); }
+      } else { this.ea(k.o); this.unmappedTest(); }
+      if (i) c.or();
+    }
+    this.count(PF.nullCheck);
+    const j = c.hint(false).if_();
+    this.stepExit(insn);
+    c.end(); void j;
+  }
+  /**
    * Leave the region before `insn` (none of its effects applied) for the interpreter to execute it: the
    * rare cases whose exact handling would otherwise put a call in hot code (V8 keeps no register across
    * a call, so a call even on a cold path costs spills on the hot one). Charges the instructions before it.
@@ -1377,7 +1475,14 @@ class Emitter {
   /** address on stack -> value */
   loadMem(size) {
     const c = this.c;
-    if (this.spec) { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); } // (an if-converted arm: see emitIfcvt)
+    if (this.spec) { // (an if-converted arm: see emitIfcvt)
+      if (this.specCheck) { // (a null-page load on the path taken: noted — it reads address 0 too — and the arms' effects undone after them, see emitIfcvt)
+        c.tee(L_NCK); this.unmappedTest(); c.get(L_IC); if (this.spec === 2) c.eqz();
+        c.and().get(L_SPECF).or().set(L_SPECF);
+        c.get(L_NCK).i32(0).get(L_IC); if (this.spec === 2) c.eqz();
+        c.get(L_NCK); this.unmappedTest(); c.eqz().and().select();
+      } else { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); }
+    }
     if (size === 4) c.i32load(0, 0); else if (size === 2) c.i32load16u(0); else c.i32load8u(0);
   }
   /** (addr, value) on stack -> store */
@@ -1454,6 +1559,18 @@ class Emitter {
     const c = this.c;
     c.get(L_TA).i32(12).shr_u(); this.smcFlag();
     const i = c.hint(false).if_();
+    if (this.nullPage && NC_STORE_SMC.has(insn.op)) {
+      // (cold) a plain store into a page never mapped: undone, and the region left before it (see NC_STORE_SMC)
+      c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_NULL).and();
+      const n = c.if_();
+      for (let k = 0; k < bytes; k += 8) {
+        const w = Math.min(8, bytes - k);
+        c.get(L_TA);
+        if (w === 8) c.i64(0n).i64store(k, 0); else if (w === 4) c.i32(0).i32store(k, 0); else if (w === 2) c.i32(0).i32store16(k); else c.i32(0).i32store8(k);
+      }
+      this.stepExit(insn);
+      c.end(); void n;
+    }
     // (cold) this page, or the next one when the store reaches it
     c.get(L_TA).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH).and();
     if (bytes > 1) c.get(L_TA).i32(0xfff).and().i32(0x1000 - bytes).gt_u().or();
@@ -1768,6 +1885,7 @@ class Emitter {
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
     const ifc = this.ifcvt && b.term === TERM_JCC ? this.ifcvtPlan(b) : null;
+    this.ncPlan = this.nullPage ? planNullChecks(b.insns, this.smc) : null;
     for (const insn of b.insns) {
       this.insnIdx++;
       if (ifc && this.insnIdx === b.insns.length) { this.emitIfcvt(insn, b, ifc); this.c.site = -1; return; } // (it jumps to the merge)
@@ -1840,6 +1958,10 @@ class Emitter {
     this.stats.ifcvt++;
     this.pushCond(insn.cc); c.set(L_IC);
     const lz0 = this.lz, W = plan.writes, nA = A.insns.length;
+    // loads of the arm taken in the null page (see loadMem): after the arms, their effects undone and the region left
+    // before the JCC, whose arm then runs as a block of its own (its accesses checked before each instruction)
+    const checked = this.nullPage && [plan.taken, plan.not].some((a) => a && a.body.some((i) => (i.nchk || nullChecks(i)).length));
+    if (checked) c.i32(0).set(L_SPECF);
     const emitArm = (arm, spec) => {
       const X = arm.block, saved = [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp];
       const live = (this.flagsAfter = new Uint8Array(X.insns.length));
@@ -1860,6 +1982,14 @@ class Emitter {
       W.forEach((l, k) => c.get(l).set(L_IFR0 + k).get(L_IFS0 + k).set(l)); // (its results kept, the state before it back)
     } else W.forEach((l, k) => c.get(l).set(L_IFR0 + k)); // (the taken path changes nothing)
     if (plan.not) lzN = emitArm(plan.not, 2);
+    if (checked) {
+      c.get(L_SPECF);
+      const f = c.hint(false).if_();
+      const pre = plan.taken ? L_IFS0 : L_IFR0; // (the state before the arms: saved for the taken arm, or unchanged by it)
+      if (plan.not) W.forEach((l, k) => c.get(pre + k).set(l));
+      this.stepExit(insn);
+      c.end(); void f;
+    }
     W.forEach((l, k) => c.get(L_IFR0 + k).get(l).get(L_IC).select().set(l));
     const same = (a, b) => (a === null && b === null) || (a !== null && b !== null && a.kind === b.kind && a.sz === b.sz && a.kind >= 0);
     this.lz = same(lzT, lzN) ? lzT : null;
@@ -1875,8 +2005,13 @@ class Emitter {
     const h = HANDLERS[insn.op];
     this.xsOK = XMM_SHADOW_OPS.has(insn.op); this.xdOK = XMM_SHADOW64_OPS.has(insn.op); // (read by the shadow helpers)
     if ((!this.xsOK && this.xsValid) || (!this.xdOK && this.xdValid)) this.xmmShadowRelease(insn, !this.xsOK, !this.xdOK);
+    if (h && this.nullPage) {
+      if (this.spec) this.specCheck = (insn.nchk || nullChecks(insn)).length > 0;
+      else { const p = this.ncPlan?.[this.insnIdx - 1]; if (p) this.nullCheck(insn, p); }
+    }
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
+    this.specCheck = false;
   }
 
   /** Execute one instruction with the interpreter. */
@@ -2306,6 +2441,11 @@ HANDLERS[OP.XLAT] = (E, insn) => {
   c.get(L_REG + 3).get(L_REG).i32(0xff).and().add();
   if (insn.adsize === 2) c.i32(0xffff).and();
   if (insn.seg === SEG.FS) c.get(L_FS).add(); else if (insn.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
+  if (E.nullPage) { // (the null page: its address is not an operand, see nullpage.js)
+    c.tee(L_TA); E.unmappedTest();
+    const j = c.hint(false).if_(); E.stepExit(insn); c.end(); void j;
+    c.get(L_TA);
+  }
   c.i32load8u(0).set(L_TV);
   E.storeRegFrom(1, 0, L_TV);
 };

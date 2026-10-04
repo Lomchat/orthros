@@ -86,14 +86,21 @@ test('hello.exe: a non-zero exit code leaves a failure report with the last exce
   assert.match(vm.exitReport, /exceptions raised: 1, the last ones:\n  t\d+ 0xe06d7363 \.\?AVFailure@@ at /);
 });
 
-test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind, execution faults at bad addresses, an exception raised in a handler', { skip: skip('seh.exe') }, () => {
+test('seh.exe: frame-based SEH dispatch, fault continuation, RtlUnwind, execution faults at bad addresses, an exception raised in a handler, null-page data accesses', { skip: skip('seh.exe') }, () => {
   for (const jit of [true, false]) {
     const { vm } = boot('seh.exe', { jit });
     const code = vm.run();
     const exec = (a) => `exec code 0xc0000005\nexec addr 0x${a}\nexec info 0x${a}\n`;
+    const h8 = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
+    const av = (w, a, ecx) => `av code 0xc0000005\nav info ${h8(w)}\nav addr ${h8(a)}\nav at insn 0x00000001\nav ecx ${h8(ecx)}\n`;
     assert.equal(vm.stdout.join(''), 'div result 0x0000004d\ninner code 0xc0000094\ninner hits after unwind 0x00000065\ntop is outer 0x00000001\n' +
       exec('00000000') + exec('fffffff0') + exec('ffffffff') +
-      'nested inner 0x0000004d\nnested inner code 0xc0000094\nnested outer 0x00000037\n', `jit=${jit}`);
+      'nested inner 0x0000004d\nnested inner code 0xc0000094\nnested outer 0x00000037\n' +
+      // null-page data accesses (src/cpu/nullpage.js): read, write, call through a null vtable, rep movsd from null
+      // (ECX kept), [null-4] past the user address space, then LEA (no access)
+      av(0, 8, 0) + av(1, 0x7ffc, 0) + av(0, 0x10, 0) + av(0, 0, 4) + av(0, 0xfffffffc, 0) +
+      'av code 0x00000000\nav info 0xeeeeeeee\nav addr 0xeeeeeeee\nav at insn 0x00000001\nav ecx 0x00000000\n' +
+      'av faults 0x000005dc\nav faults per round 0x00000005\n', `jit=${jit}`);
     assert.equal(code, 0);
   }
 });

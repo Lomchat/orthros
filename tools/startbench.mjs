@@ -45,7 +45,8 @@ const host = new HeadlessHost({ clock, width: manifest.display.width, height: ma
 const bgWanted = args.includes('--bg') || args.includes('--cold');
 // --jit-profile: profiling translations (transitions by kind, chained transitions counted), printed with the report
 if (args.includes('--jit-profile')) globalThis.ORTHROS_JIT_PROFILE = true;
-const vm = new Vm({ vfs, clock, host, logKinds: ['crash'], sharedMemory: bgWanted });
+// --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
+const vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
 if (bgWanted && vm.jit) {
   const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
   const ch = new MessageChannel();

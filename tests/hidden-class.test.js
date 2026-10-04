@@ -19,6 +19,8 @@ function boot(exeName, jit) {
   vfs.mount('C:\\', new MemBackend());
   vfs.mount('C:\\Test', t);
   t.open(exeName, { create: true }).write(0, fs.readFileSync(PE_DIR + exeName));
+  // (the images gdiplus.exe loads: without them it uses the null bitmap data it gets, a fault as on Windows)
+  if (exeName === 'gdiplus.exe') for (const f of ['rgb.png', 'base.jpg']) t.open(f, { create: true }).write(0, fs.readFileSync(new URL(`./fixtures/codec/${f}`, import.meta.url).pathname));
   const clock = new VirtualClock();
   const vm = new Vm({ vfs, clock, host: new HeadlessHost({ clock, width: 800, height: 600 }), jit, logKinds: ['crash'] });
   return vm;

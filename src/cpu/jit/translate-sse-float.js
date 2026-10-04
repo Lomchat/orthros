@@ -11,6 +11,7 @@
 // are the exact f32(1/x) / f32(1/sqrt(x in f64)) of the interpreter. DAZ/FTZ are ignored (WASM
 // SIMD has no flush-to-zero). Every MM access mirrors opAddr (tag word 0xff, TOP 0) through the
 // common helpers. Not registered here: FXSAVE/FXRSTOR (interpreter fallback).
+import { nullChecks } from '../nullpage.js';
 import { HANDLERS, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, L_STATE, L_REG, L_EFLAGS, L_TA, L_F64A, L_F64B, L_V0, L_V1, L_V2, L_F32A, L_F32B, L_XS0, L_XD0 } from './translate.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
@@ -401,7 +402,8 @@ function comis(dbl) {
     else { scalarF32(E, d); c.set(A); scalarF32(E, s); c.set(B); }
     E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
     const next = b.insns[E.insnIdx]; // (insnIdx: this instruction's index + 1)
-    const fused = next !== undefined && FCMP_READERS.has(next.op);
+    // (not when the reader may leave the region before itself, for its null-page check: the interpreter then reads EFLAGS)
+    const fused = next !== undefined && FCMP_READERS.has(next.op) && !(E.nullPage && (next.nchk || nullChecks(next)).length);
     E.fcmp = fused ? { blk: E.cur, at: E.insnIdx + 1, a: A, b: B, p } : null;
     if (fused ? E.flagsAfter[E.insnIdx] : E.flagsLive()) compareEflags(E, A, B, p);
   };

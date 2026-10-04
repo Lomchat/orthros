@@ -55,6 +55,17 @@ static int __cdecl handler_nested(EXCEPTION_RECORD* rec, void* frame, CONTEXT* c
   return 0;
 }
 
+// Handler 5: a data access in the null page (or past the user address space): records the exception and resumes after
+// the faulting instruction (av_skip bytes, measured by the case)
+static DWORD av_code, av_info0, av_info1, av_addr, av_ecx, av_faults, av_skip;
+static int __cdecl handler_av(EXCEPTION_RECORD* rec, void* frame, CONTEXT* ctx, void* disp) {
+  if (rec->ExceptionFlags & 2) return 1;
+  av_code = rec->ExceptionCode; av_info0 = rec->ExceptionInformation[0]; av_info1 = rec->ExceptionInformation[1];
+  av_addr = (DWORD)rec->ExceptionAddress == ctx->Eip ? ctx->Eip : 0; av_ecx = ctx->Ecx; av_faults++;
+  ctx->Eip += av_skip;
+  return 0;
+}
+
 static void install(REG* r, void* handler) {
   r->handler = handler; r->code = 0; r->hits = 0;
   __asm__ volatile("movl %%fs:0, %%eax; movl %%eax, (%0); movl %0, %%fs:0" : : "r"(r) : "eax", "memory");
@@ -94,5 +105,31 @@ void __stdcall start(void) {
   __asm__ volatile("xorl %%ecx, %%ecx; movl $10, %%eax; xorl %%edx, %%edx; divl %%ecx" : "=a"(qn) : : "ecx", "edx");
   uninstall(&n);
   put(out, "nested inner "); puthex(out, nested_q); put(out, "nested inner code "); puthex(out, nested_code); put(out, "nested outer "); puthex(out, qn);
+  // 6. data accesses through null pointers: read, write, a call through a null vtable, a string copy from null, a
+  // negative offset from null (past the user address space), and LEA (no access). Repeated so that the JIT translates
+  // the code (the last round printed): each faults at the instruction (EIP and ExceptionAddress at its label, ECX as
+  // before it) with [0 read / 1 write, address].
+  REG av; install(&av, handler_av);
+  DWORD at[6], ecxs[6], codes[6], i0[6], i1[6], pc[6], faults0 = 0;
+  static DWORD buf[4];
+  for (int round = 0; round < 300; round++) {
+    DWORD e, x, y;
+#define AV_BEGIN() av_code = 0; av_addr = 1; av_info0 = av_info1 = 0xeeeeeeee; e = 0
+#define AV_END(k) codes[k] = av_code; i0[k] = av_info0; i1[k] = av_info1; pc[k] = av_addr; ecxs[k] = e
+#define AV_ASM(text) "movl $2f-1f, %[skip]\n\tmovl $1f, %[at]\n1:\t" text "\n2:"
+    AV_BEGIN(); __asm__ volatile(AV_ASM("movl 8(%%ecx), %%eax") : [skip] "=m"(av_skip), [at] "=m"(at[0]), "+c"(e), "=a"(x) : : "memory"); AV_END(0);
+    AV_BEGIN(); __asm__ volatile(AV_ASM("movl %%eax, 0x7ffc(%%ecx)") : [skip] "=m"(av_skip), [at] "=m"(at[1]), "+c"(e) : "a"(5) : "memory"); AV_END(1);
+    AV_BEGIN(); __asm__ volatile(AV_ASM("call *0x10(%%ecx)") : [skip] "=m"(av_skip), [at] "=m"(at[2]), "+c"(e) : : "eax", "edx", "memory"); AV_END(2);
+    AV_BEGIN(); e = 4; __asm__ volatile(AV_ASM("rep movsl") : [skip] "=m"(av_skip), [at] "=m"(at[3]), "+c"(e), "=S"(x), "=D"(y) : "S"(0), "D"(buf) : "memory"); AV_END(3);
+    AV_BEGIN(); __asm__ volatile(AV_ASM("movl -4(%%ecx), %%eax") : [skip] "=m"(av_skip), [at] "=m"(at[4]), "+c"(e), "=a"(x) : : "memory"); AV_END(4);
+    AV_BEGIN(); __asm__ volatile(AV_ASM("leal 8(%%ecx), %%eax") : [skip] "=m"(av_skip), [at] "=m"(at[5]), "+c"(e), "=a"(x) : : "memory"); AV_END(5);
+    if (round == 0) faults0 = av_faults;
+  }
+  uninstall(&av);
+  for (int k = 0; k < 6; k++) {
+    put(out, "av code "); puthex(out, codes[k]); put(out, "av info "); puthex(out, i0[k]); put(out, "av addr "); puthex(out, i1[k]);
+    put(out, "av at insn "); puthex(out, codes[k] ? pc[k] == at[k] : pc[k]); put(out, "av ecx "); puthex(out, ecxs[k]);
+  }
+  put(out, "av faults "); puthex(out, av_faults); put(out, "av faults per round "); puthex(out, faults0);
   ExitProcess(q == 77 && inner.code == 0xC0000094 && inner.hits == 101 && top == &outer ? 0 : 1);
 }

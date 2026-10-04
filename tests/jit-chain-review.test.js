@@ -116,15 +116,16 @@ test('a chained loop made only of cross-region edges still delivers time slices'
 });
 
 test('a WASM trap inside a chained callee reports the entry of the faulting region', () => {
-  // L0: mov eax, 5 ; mov ecx, 0x90000000 ; jmp L1      L1: mov [ecx], eax (out of the 2 GB memory: trap)
+  // L0: mov eax, 5 ; mov esp, 0x90000000 ; jmp L1      L1: mov [esp], eax (out of the 2 GB memory: trap — a stack
+  // access: operands addressed otherwise are checked before the access and fault precisely, see nullpage.js)
   const a = new Asm(CODE);
-  a.label('L0').movRegImm(0, 5).movRegImm(1, 0x90000000).jmp('L1');
-  a.label('L1').movRegImm(2, 9).emit(0x89, 0x01).hlt(); // mov [ecx], eax
+  a.label('L0').movRegImm(0, 5).movRegImm(4, 0x90000000).jmp('L1');
+  a.label('L1').movRegImm(2, 9).emit(0x89, 0x04, 0x24).hlt(); // mov [esp], eax
   const code = a.finish();
-  const L1 = a.at('L1'), end = a.at('L1') + 5 + 2;
+  const L1 = a.at('L1'), end = a.at('L1') + 5 + 3;
   const EJ = makeExec(true);
   // translate L1 first (so that the L0 -> L1 jump chains), then run from L0
-  load(EJ, code); EJ.cpu.eip = L1; EJ.cpu.ecx = DATA;
+  load(EJ, code); EJ.cpu.eip = L1; EJ.cpu.esp = DATA + 0x100;
   assert.equal(EJ.run(end, [L1]), EXIT.HALT);
   load(EJ, code);
   const chainedBefore = EJ.jit.stats.chained;

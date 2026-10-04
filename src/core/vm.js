@@ -57,7 +57,7 @@ export class Vm {
     this.interp = new Interp(this.mem, null);
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), ...(globalThis.ORTHROS_NULL_PAGE_OPEN ? { nullPage: false } : {}), interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
@@ -133,7 +133,7 @@ export class Vm {
       asyncReads: false, readsInFlight: 0, recentFiles: null, recentReads: null, // (kernel32-file.js)
       registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
-      exitReport: null, execFaults: 0,
+      exitReport: null, execFaults: 0, nullFaults: 0,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
@@ -688,13 +688,18 @@ export class Vm {
     const vec = cpu.exitArg;
     const precise = !(fault instanceof WebAssembly.RuntimeError) && !(fault instanceof RangeError);
     if (precise && this.mem.read32(thread.teb) !== 0xffffffff) {
-      const map = { 0: [EXC.INT_DIVIDE_BY_ZERO, []], 6: [EXC.ILLEGAL_INSTRUCTION, []], 13: [EXC.ACCESS_VIOLATION, [0, 0xffffffff]], 14: [EXC.ACCESS_VIOLATION, [0, fault?.faultAddr ?? 0]], 3: [EXC.BREAKPOINT, []], 4: [EXC.INT_OVERFLOW, []], 5: [EXC.ARRAY_BOUNDS, []] };
+      const map = { 0: [EXC.INT_DIVIDE_BY_ZERO, []], 6: [EXC.ILLEGAL_INSTRUCTION, []], 13: [EXC.ACCESS_VIOLATION, [0, 0xffffffff]], 14: [EXC.ACCESS_VIOLATION, [fault?.write ? 1 : 0, fault?.faultAddr ?? 0]], 3: [EXC.BREAKPOINT, []], 4: [EXC.INT_OVERFLOW, []], 5: [EXC.ARRAY_BOUNDS, []] };
       const [code, params] = map[vec] ?? [EXC.ILLEGAL_INSTRUCTION, []];
       if (vec === 14 && /^(cpu fault #14 )?execution at/.test(fault?.message ?? '') && (this.execFaults = (this.execFaults ?? 0) + 1) <= 8) {
         this.warn(`${fault.message} (thread ${thread.id}, return address on the stack: ${this.proc.symbolize(this.mem.read32(cpu.esp))}): access violation raised`);
         // (the first one in full — a jump to nowhere usually means an overwritten return address: what ran before it,
         // which files it read and the stack's bytes are what tell why; it goes to the crash telemetry with the log)
         if (this.execFaults === 1) { try { this.warn(`${this.crashReport(thread, 'first jump to unmapped memory')}\n${this.stackBytes(cpu.esp)}${this.recentFiles?.length ? `\nfiles opened last (oldest first):\n  ${this.recentFiles.join('\n  ')}` : ''}`); } catch { /* best effort */ } }
+      }
+      if (vec === 14 && fault?.nullPage && (this.nullFaults = (this.nullFaults ?? 0) + 1) <= 8) {
+        // (a null pointer used: the program's handlers see it as on Windows; the first ones are logged in full, with
+        // the threads — the first is usually where a corruption becomes visible)
+        try { this.warn(`${fault.message} at ${this.proc.symbolize(cpu.eip)} (thread ${thread.id}): access violation raised${this.nullFaults === 1 ? `\n${this.crashReport(thread, 'first null-page access')}` : ''}`); } catch { /* best effort */ }
       }
       cpu.exit = EXIT.NONE;
       this.seh.raise(thread, code, 0, cpu.eip, params);

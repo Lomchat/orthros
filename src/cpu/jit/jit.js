@@ -1,7 +1,8 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots } from './translate.js';
@@ -143,6 +144,10 @@ export class Jit {
   clearTables() {
     this.mem.fill(JIT_HASH_BASE, HASH_ENTRY << JIT_HASH_BITS, 0);
     this.mem.fill(SMC_MAP_BASE, 0x80000, 0);
+    // (the pages never mapped: plain stores there leave their region, see Emitter.smcCheck — harmless for regions
+    // translated without null-page checks, whose stores go on)
+    this.mem.fill(SMC_MAP_BASE, NULL_PAGE_END >>> 12, SMC_NULL);
+    this.mem.fill(SMC_MAP_BASE + (USER_END >>> 12), (0x80000000 - USER_END) >>> 12, SMC_NULL);
     this.regions = [];
     this.pending = [];
     this.blockMap.clear();

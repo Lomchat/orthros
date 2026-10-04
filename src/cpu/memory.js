@@ -31,7 +31,9 @@ export const JIT_HASH_BASE = 0x7fb00000 - (16 << JIT_HASH_BITS);
 // holds translated code, SMC_WATCH a write watch (debugging), SMC_NEXT the next page holds translated code (a store
 // ending past the last byte of this page writes it: found without a second lookup on the store's hot path)
 export const SMC_MAP_BASE = 0x7fe00000;
-export const SMC_CODE = 1, SMC_WATCH = 2, SMC_NEXT = 4;
+// SMC_NULL: a page never mapped on Windows (the first 64 KiB, the last 64 KiB of the user space): a plain store there
+// leaves the region before the instruction (Emitter.smcCheck, see nullpage.js)
+export const SMC_CODE = 1, SMC_WATCH = 2, SMC_NEXT = 4, SMC_NULL = 8;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
 // Block execution counters of profiling translations (Jit opts.blockCounts): word 0 is the bump allocator (next free
 // counter index, shared by the background translator through the shared memory), then one u32 per translated block

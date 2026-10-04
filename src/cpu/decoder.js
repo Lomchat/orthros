@@ -369,6 +369,8 @@ export class Insn {
     this.imm = 0;
     this.next = 0; // address of the following instruction
     this.ext = 0; // extra byte for misc uses (e.g. ENTER level)
+    /** @type {readonly any[] | null} memory operands checked against the null page (nullpage.js nullChecks, cached) */
+    this.nchk = null;
   }
 }
 
