@@ -145,9 +145,9 @@ function keep(eip, fpc, t, deps, snap) {
 // the next launch, under the heat this session taught — a miss, translated again while that session starts. When idle
 // (the learned regions in place) the worker discovers again the regions it answered this session under the heat of
 // now and keeps a translation of those whose shape changed (not installed: for the next sessions), again each time
-// the heat grew (20 s apart at the soonest). Only the regions the heat added since touches are discovered again
-// (sensitive / touched); a pass runs in 10 ms slices, as long a pause after each (half a core at most), a batch
-// pausing it.
+// the heat grew (20 s apart at the soonest, once no batch came for a second). Only the regions the heat added since
+// touches are discovered again (sensitive / touched); a pass runs in 10 ms slices, as long a pause after each (half a
+// core at most), batches answered between them.
 /**
  * this session's regions answered with the cache on: "eip:fpc" -> { eip, fpc, ext: [block, end, ...], sens: [lo, hi,
  * ...] (where the heat decides its discovery: its blocks — branch sources, visit flags — and its blocks' successors),
@@ -156,7 +156,8 @@ function keep(eip, fpc, t, deps, snap) {
 let answered = new Map();
 let heatAdded = 0, heatLog = []; // (heat pairs received so far: their number, the pairs)
 let refresh = null, refreshTimer = null, refreshDoneAt = 0, refreshNext = 0, report = null;
-const REFRESH_SLICE_MS = 10, REFRESH_GAP_MS = 20000;
+const REFRESH_SLICE_MS = 10, REFRESH_GAP_MS = 20000, REFRESH_QUIET_MS = 1000;
+let lastBatchAt = 0;
 /** (the visit flags of translations not installed: the sink byte, relocated at reuse) */
 const sinkSlots = { get: (m) => visitSlots.get(m, SINK) };
 const extFlat = (blocks) => { const a = new Uint32Array(2 * blocks.length); blocks.forEach((b, i) => { a[2 * i] = b.eip; a[2 * i + 1] = b.end; }); return a; };
@@ -192,13 +193,16 @@ function remember(eip, fpc, blocks) {
   const k = `${eip}:${fpc}`;
   if (answered.size < 262144 || answered.has(k)) answered.set(k, { eip, fpc, ext: extFlat(blocks), sens: sensitive(blocks), h: heatAdded });
 }
-/** at an idle moment: a pass under way goes on, or one starts when the heat grew since the last (not too often) */
+/**
+ * A pass starts when the heat grew since the last one, REFRESH_GAP_MS after it at the soonest, once no batch came for
+ * REFRESH_QUIET_MS (the learned regions translated first); once started it goes on between batches.
+ */
 function refreshIdle() {
   if (!cache?.refreshOn || !heat || refreshTimer) return;
   if (!refresh) {
     if (heatAdded === refreshDoneAt || !answered.size) return;
-    const now = performance.now();
-    if (now < refreshNext) { refreshTimer = setTimeout(() => { refreshTimer = null; refreshIdle(); }, refreshNext - now); refreshTimer.unref?.(); return; }
+    const now = performance.now(), wait = Math.max(refreshNext - now, lastBatchAt + REFRESH_QUIET_MS - now);
+    if (wait > 0) { refreshTimer = setTimeout(() => { refreshTimer = null; refreshIdle(); }, wait); refreshTimer.unref?.(); return; }
     // (the heat added since the last pass: a region none of whose sensitive addresses gained heat keeps its shape)
     const delta = new RangeHeat(); delta.addPairs(heatLog.slice(2 * refreshDoneAt, 2 * heatAdded)); delta.merge();
     refresh = { list: [...answered.values()], i: 0, at: heatAdded, delta };
@@ -270,8 +274,7 @@ function armIdle() {
 }
 
 function batch(m, reply) {
-  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } // (a refresh pass waits for the next idle moment)
-  const t0 = performance.now();
+  const t0 = lastBatchAt = performance.now();
   const { codes, names, out, hits, emitMs } = translateBatch(m.items, m.over ?? null);
   const t1 = performance.now();
   let module = null;
@@ -292,7 +295,7 @@ export function handleMessage(m, reply) {
   if (m.type === 'init') {
     mem = new GuestMemory({ memory: m.memory }); opts = m.opts; cache = null; cacheReady = null; covered = new Map();
     heat = null; visitSlots = new VisitSlots(); // (this thread's visit flags)
-    answered = new Map(); heatAdded = 0; heatLog = []; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; report = reply;
+    answered = new Map(); heatAdded = 0; heatLog = []; refresh = null; clearTimeout(refreshTimer); refreshTimer = null; refreshDoneAt = 0; refreshNext = 0; lastBatchAt = 0; report = reply;
     if (m.cache) {
       // (batches wait for the cache, read once; without one — no OPFS, another tab holds it — nothing is kept)
       const ready = openCache(m.cache).then((c) => { cache = c; }, (e) => { cache = null; reply({ type: 'cache-error', message: String(e?.message ?? e) }); });
@@ -300,7 +303,7 @@ export function handleMessage(m, reply) {
     }
     return;
   }
-  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); heatAdded += m.pairs.length >> 1; for (const x of m.pairs) heatLog.push(x); if (answered.size) armIdle(); } return; } // (see Jit.heatAdd)
+  if (m.type === 'heat') { if (opts) { heat ??= new RangeHeat(); heat.addPairs(m.pairs); heatAdded += m.pairs.length >> 1; for (const x of m.pairs) heatLog.push(x); if (answered.size) { armIdle(); refreshIdle(); } } return; } // (see Jit.heatAdd)
   // (a region the emulator did not install — its code changed —: its blocks are no longer covered by it)
   if (m.type === 'uncover') { for (const [entry, eips] of m.regions) for (const e of eips) if (covered.get(e) === entry) covered.delete(e); return; }
   if (m.type === 'cache-stats') { reply({ type: 'cache-stats', cache: cache ? { ...cache.stats } : null }); return; } // (tests)
