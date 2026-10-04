@@ -1026,7 +1026,7 @@ class Emitter {
     // opts.ras: a call leaving the region records its return site (a block of this region: table index opts.fnIdx), so
     // that the return chains back to it without a hash lookup (see rasWrite); not in regions specialized for an x87 mode
     // (entered at a later version's index, a mode another version holds would not find it)
-    this.ras = this.chain && !!(opts.ras ?? JIT_DEFAULTS.ras) && opts.fnIdx >= 0 && (opts.fpcAssume ?? null) === null;
+    this.ras = this.chain && !!(opts.ras ?? JIT_DEFAULTS.ras) && opts.fnIdx >= 0; // (and fpcAssume null: see run)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
     // (cw & 0xf00) in fpcAssume, and with X87_MODE_TOP set, the stack top at the region's entry in topAssume (see
@@ -1054,6 +1054,7 @@ class Emitter {
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = this.topAssume = null; // (nothing to specialize; L_FPC is not even loaded)
+    if (this.fpcAssume !== null) this.ras = false;
     this.x87EntryIdx = byEip.get(entry)?.index ?? 0; // (see x87EntryTop)
     if (this.usesX87 && this.opts.x87EntryShifts !== false) this.x87Plan = x87EntryPlan(blocks, byEip, this.x87EntryIdx);
     this.stats.x87Planned = this.x87Plan ? this.x87Plan.reduce((k, p) => k + (p !== 0), 0) : 0;
