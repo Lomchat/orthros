@@ -131,7 +131,9 @@ export function registerKernel32File(api, vm) {
    * the file pointer under the parked read. True when the call parked (thrown at top level) or consumed its wait.
    */
   const ioWait = (c, f) => {
-    if (c.thread.wakeResult !== undefined) { vm.sched.block(c.thread, () => true, 0, 'file busy'); return true; }
+    // a call re-executed after its wait: the recorded outcome consumed, then the file looked at again — another thread
+    // may have parked a read of it meanwhile (taking the turn this one waited for would read at that read's position)
+    if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file busy');
     const o = f.ioOwner;
     if (!o || o === c.thread || !vm.proc.threads.includes(o) || !vm.canUnwind(c.thread)) return false;
     vm.sched.block(c.thread, () => !f.ioOwner, 60000, 'file busy');
@@ -155,11 +157,13 @@ export function registerKernel32File(api, vm) {
       // (a nested wait elsewhere blocks the event loop, so the fetch cannot complete during it: the parked read then
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
       // (readsInFlight: the worker's frame accounting tells a wait for a read from the game's own pacing)
+      if (p && globalThis.ORTHROS_READ_DEST_CHECK) c.thread.parkedRead = { buf: c.arg(1) >>> 0, n, snap: mem.bytes(c.arg(1), Math.min(n, 0x10000)).slice(), path: f.path }; // (debugging: what happens to the destination while parked)
       if (p) { let done = false; vm.readsInFlight = (vm.readsInFlight ?? 0) + 1; const end = () => { done = true; vm.readsInFlight--; vm.host?.wake?.(); }; p.then(end, end); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
     const d = f.file.read(pos, n);
     if (f.ioOwner === c.thread) f.ioOwner = null;
+    { const pr = c.thread.parkedRead; if (pr) { c.thread.parkedRead = null; if (pr.buf === (c.arg(1) >>> 0)) { const now = mem.bytes(pr.buf, pr.snap.length); let k = 0; while (k < now.length && now[k] === pr.snap[k]) k++; if (k < now.length && (vm.destChanges = (vm.destChanges ?? 0) + 1) <= 20) vm.warn(`read destination written while its read was parked: ${pr.path} ${pr.n} bytes into ${pr.buf.toString(16)} [t${c.thread.id}], first change at +${k}: ${Array.from(now.subarray(k, k + 16), (x) => x.toString(16).padStart(2, '0')).join('')}\n${vm.registerMemory({ eax: pr.buf + k, ecx: 0, edx: 0, ebx: 0, esi: 0, edi: 0, ebp: 0 }).join('\n')}`); } } }
     if (globalThis.ORTHROS_VERIFY_READS && f.file.verify) { const bad = f.file.verify(pos, d); if (bad && (vm.readMismatches = (vm.readMismatches ?? 0) + 1) <= 20) vm.warn(`read mismatch: ${f.path ?? '?'} @${pos} ${n} -> ${d.length}: byte ${bad.at} is ${bad.got}, the file has ${bad.want} [t${c.thread.id}${c.thread.wakeResult !== undefined ? ' parked' : ''}]`); }
     if (d.length) mem.writeBytes(c.arg(1), d);
     if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay

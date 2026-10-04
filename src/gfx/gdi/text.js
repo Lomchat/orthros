@@ -64,7 +64,7 @@ export class TextEngine {
     this.pending = 0; // font files still being decoded by the browser
     this.version = 0; // bumped when a registered face finishes loading (realized fonts are recomputed)
     this.canvas = null; this.ctx = null;
-    this.hasCanvas = typeof OffscreenCanvas !== 'undefined' && typeof FontFace !== 'undefined';
+    this.hasCanvas = typeof OffscreenCanvas !== 'undefined' && typeof FontFace !== 'undefined' && !globalThis.ORTHROS_GDI_BITMAP_FONTS; // (debugging: ?dbg=ORTHROS_GDI_BITMAP_FONTS=1, the built-in bitmap font only)
     this.fontSet = this.hasCanvas ? (globalThis.fonts ?? globalThis.document?.fonts ?? null) : null;
     this.files = new Map(); // registered path (lower case) -> families
   }

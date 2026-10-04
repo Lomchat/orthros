@@ -140,7 +140,12 @@ export class Com {
   dispose(obj) {
     this.objects.delete(obj.ptr);
     this.mem.write32(obj.ptr + 4, 0); // (no longer an object for the fast paths)
-    try { obj.impl.destroy?.(obj); } finally { obj.proc.processHeap.free_(obj.ptr); }
+    // (debugging, ?dbg=ORTHROS_RELEASE_WATCH=1: the guest memory of a released object is reused only 4096 releases later —
+    // a call through a pointer kept after the release then reaches no object, reported, instead of the next object)
+    try { obj.impl.destroy?.(obj); } finally {
+      if (globalThis.ORTHROS_RELEASE_WATCH) { (this.quarantine ??= []).push(obj); if (this.quarantine.length > 4096) { const o = this.quarantine.shift(); o.proc.processHeap.free_(o.ptr); } }
+      else obj.proc.processHeap.free_(obj.ptr);
+    }
     return 0;
   }
 
@@ -156,7 +161,7 @@ export class Com {
     const m = iface.methods[index];
     const self = ctx.arg(0);
     const obj = this.objects.get(self);
-    if (!obj) { this.vm.warn(`COM: ${iface.name}::${m.name} on unknown object ${self.toString(16)} from ${ctx.proc.symbolize(ctx.retAddr)}`); return E_POINTER; }
+    if (!obj) { const dead = this.quarantine?.find((o) => o.ptr === self); this.vm.warn(`COM: ${iface.name}::${m.name} on unknown object ${self.toString(16)} from ${ctx.proc.symbolize(ctx.retAddr)}${dead ? ` (released: ${dead.iface.name} #${dead.id})` : ''} [t${ctx.thread.id}]`); return E_POINTER; }
     switch (index) {
       case 0: { // QueryInterface(riid, ppv)
         const riid = readGuid(this.mem, ctx.arg(1)), ppv = ctx.arg(2);
