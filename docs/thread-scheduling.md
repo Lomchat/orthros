@@ -114,11 +114,11 @@ slice: about 10 failures in ~175 runs (5-10 % depending on the machine load). So
 is measured.
 
 Review re-run (2026-10-04 05:45-06:45, same scenarios — slow / fast click alternated — same tree with priorities, two
-runs at a time, load 12-16): at `ORTHROS_SLICE_INSNS=20000` with the render worker, **1 failure in 17 runs** (P-12:
+runs at a time, load 12-16): at `ORTHROS_SLICE_INSNS=20000` with the render worker, **1 failure in 18 runs** (P-12:
 the same null-page write at the double free, then an out-of-bounds fault on the Miles mixer thread; the audio thread
 was *blocked* in its event wait at the double free, not cut off mid-work); at the default slice without the render
 worker, **2 failures in 16 runs** (D-7, D-13: same null-page write). So the 0/40 above does not hold up: combined with
-it, 1/57 with priorities against 6/40 with round robin at 20 000-instruction slices (still a reduction, p ≈ 0.02), and
+it, 1/58 with priorities against 6/40 with round robin at 20 000-instruction slices (still a reduction, p ≈ 0.02), and
 no reduction at the default slice (4/66 with priorities over both sessions, against ~5-10 % before). The audio thread
 being cut off mid-update is not the cause of the remaining failures. bfme2 and rotwk-202 reach their menus with
 priorities (one run each).
