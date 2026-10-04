@@ -813,6 +813,32 @@ runs that go through): a race between the game's threads whose outcome Orthros' 
 the main thread's frames cheaper), left to the CPU / Win32 work with these traces. The harness runs that measure BFME1
 are retried when it happens.
 
+### 8.7 Re-evaluation with the null page and the scheduler's quantum (2026-10-04)
+
+The tree of the null-page / quantum branch (docs/null-page.md, docs/thread-scheduling.md), main merged. **Fidelity**
+(`?glworker=compare-worker`, SwiftShader, every 10th frame compared): Vice City drive 240 frames, BFME1 menu to the
+skirmish loading screen 300, BFME2 menu 580, RotWK menu to its loading screen 160 — 0 differing (a loaded machine:
+the rendered runs did not reach play in their time; 8.6 covers play). **Work per frame**, CPU only (`--gl-discard
+--timescale 1.5`), `--glworker 0` / `1` alternated (0, 1, then 1, 0), the play phase of `tools/scenarios/*-phases.txt`
+and the drive of `vicecity-drive.txt`, warm profiles; `busy` and `D3D work` as in 8.6 (ms per frame):
+
+| Game | `--glworker` | fps | p99 ms | emulator busy | D3D work | guest |
+|---|---|---|---|---|---|---|
+| BFME1 | 0 | 55.7 / 52.6 | 24.8 / 28.8 | 17.0 / 18.2 | 5.6 / 6.2 | 11.1 / 11.7 |
+| BFME1 | 1 | 56.3 / 56.5 | 23.7 / 25.0 | 15.9 / 15.7 | 3.9 / 3.8 | 11.9 / 11.8 |
+| BFME2 | 0 | 40.7 / 38.1 | 43.1 / 63.5 | 23.5 / 25.5 | 8.0 / 8.7 | 15.1 / 16.2 |
+| BFME2 | 1 | 35.7 / 39.2 | 49.2 / 44.5 | 27.2 / 24.4 | 7.6 / 7.4 | 19.3 / 16.8 |
+| RotWK | 0 | 36.5 / 38.0 | 66.2 / 60.7 | 25.6 / 24.3 | 5.6 / 5.7 | 19.5 / 18.2 |
+| RotWK | 1 | 37.9 / 37.7 | 62.5 / 65.9 | 23.9 / 23.9 | 4.4 / 4.2 | 19.3 / 19.5 |
+| Vice City | 0 | 38.9 / 43.9 | 52.6 / 38.1 | 24.8 / 22.2 | 8.4 / 9.5 | 15.9 / 12.5 |
+| Vice City | 1 | 44.3 / 43.8 | 38.6 / 38.5 | 22.0 / 22.4 | 9.0 / 8.4 | 12.9 / 13.8 |
+
+The emulator thread's Direct3D work is lower with the render worker in the three BFME games (−1.8 / −0.9 / −1.4 ms per
+frame), equal in Vice City (its `api` is its pacing, 8.6); the frame rate is equal or higher but in BFME2's first pair,
+whose render-worker run spent 4 ms more per frame in guest code (another scene: guest code does not depend on the
+backend; the second pair is the other way round). Exact and not slower: `?glworker=1` stays the default
+(`?glworker=0` and the manifest flag `"glWorker": 0` keep the in-thread backend).
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of

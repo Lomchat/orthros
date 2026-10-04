@@ -106,7 +106,8 @@ It now consumes the result and looks at the file's owner again.
 | `ORTHROS_HEAP_PROV` | record which call allocated / freed each heap block; crash reports show the provenance of blocks registers point into |
 | `ORTHROS_RELEASE_WATCH` | released virtual memory and COM objects are quarantined (not reused), so a use after release is reported |
 | `ORTHROS_WRITE_CHECK` | bulk writes by API handlers (file reads, surfaces, fills, copies) checked: into a quarantined region, or past the end of their allocation |
-| `ORTHROS_TRACE_EIP=<hex>[;<hex>]` + `ORTHROS_INTERP_RANGES` | each arrival at those addresses (inside the interpreted ranges) recorded with thread, return addresses and first argument; the last 256 shown in crash reports (the ranges are kept out of prewarm) |
+| `ORTHROS_TRACE_EIP=<hex>[;<hex>]` + `ORTHROS_INTERP_RANGES` | each arrival at those addresses (inside the interpreted ranges) recorded with the guest clock, thread, return addresses and first argument; the last 256 shown in crash reports (the ranges are kept out of prewarm). `<hex>@<reg>[+<off>]` keys the record by a register plus an offset instead of the first argument (a pointer being returned); crash reports list the records of every key the registers and stack hold, `ORTHROS_TRACE_DEPTH=n` of them per key (default 3) |
+| `ORTHROS_PEEK=<hex>[:<len>\|:c<n>];...` | in crash reports and at the end of Node bench runs: the instructions before and from (`n`, default 8) an address in a module, or `len` bytes of memory elsewhere (a flag or a function pointer the code around a crash reads) |
 | `ORTHROS_READ_DEST_CHECK` | warn when a parked read's destination buffer changes while the read waits |
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 
@@ -199,3 +200,46 @@ the main thread is hit proportionally more often — not something a scheduler c
 Other games with the quantum (Node, same scenarios, before / after): BFME2's play 3569 / 3569 frames in 120 s, guest
 3.54 / 3.65 ns per instruction, API time 31.7 / 27.0 s; Vice City's drive 656 / 654 frames, 3.74 / 3.64 ns. RotWK's play
 3.57-3.74 ns per instruction in both.
+
+### Follow-up 2 (2026-10-04 evening): what the traces show; what was tried
+
+**Node at the default settings, main against this branch** (`tools/startbench.mjs bfme-vanilla --input
+tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, the two trees' runs interleaved six at a time): main
+(5d528a8, `ORTHROS_NULL_WATCH=1`) **4 / 40**, this branch **4 / 40** — every failure the same release from the same frame
+(`lotrbfme.exe+0x888237 < +0x9fc4e < +0x57d1dd`, the skirmish-setup click). Headless Chromium at the default settings
+(`--gl-discard --timescale 1.5`, 290 s, the same click), alternated main / branch: see the table below. The quantum
+and the instruction-counted starvation lowered the rate only where slices were made short on purpose (above); at the
+default settings neither tree fails less.
+
+**The stale reference.** The program allocator's entry points traced (`ORTHROS_TRACE_EIP` on its free entry, on its two
+allocation paths keyed by the block returned, `@ebx+c` / `@esi+4`, and on the reference-count decrement of the release
+that faults, keyed by `@eax`; guest clock in every record). In each failing run, the function of the click releases a
+reference-counted block that was already freed, through a reference it took from somewhere else:
+
+- a block of a periodically rebuilt object (allocated and freed every 2-3 s on the main thread for minutes) was freed
+  by its owner at t = 233 275 ms; the click's object was allocated 39 ms later and released the freed block 110 ms
+  after the free — the free list's link inside it already overwritten by the profile name's letters ("THRO");
+- in other runs the freed block had been, in between, allocated by an audio path and freed again — by the main
+  thread, the game's audio-manager thread or the Miles thread (the block's previous owners vary).
+
+So the click's code copies a reference whose count had already reached zero: a reference held without a count somewhere
+in the program. In the runs traced the free and the stale copy happen on the main thread (no other thread involved
+between them); the interleaving with other threads only decides which object last reused the memory.
+
+**Tried, no effect, reverted or not kept:**
+
+| experiment (Node, same scenario) | failures |
+|---|---|
+| 983ac2e (null page, priorities, starvation in wall time), 5 000-instruction slices | 2 / 16, 2 / 16 (traced), 2 / 20 |
+| same + a thread holding a critical section not interrupted at the end of its slice (TEB.CountOfOwnedCriticalSections kept by kernel32 and the JIT's inline paths, slice extended by 2 000 instructions up to 100 000) | 1 / 20 |
+| this branch, `ORTHROS_QUANTUM_INSNS=0` (rotation at every slice), 5 000-instruction slices | 0 / 12 |
+| this branch, default settings, another session (load 23-30) | 0 / 24 |
+| this branch, guest clock 3 times faster (`--timescale 3`: sounds, timers and Sleep 3 times shorter against the work done) | 1 / 16 |
+| this branch, guest clock at half speed (`--timescale 0.5`: the machine looks twice as fast to the game) | 0 / 18, 2 / 25 |
+| this branch, allocator and string code interpreted for tracing | 0 / 18 (wide ranges), 1 / 24 (narrow) |
+
+The rate moves between sessions as much as between variants (this branch: 4 / 40, then 0 / 24): none of these
+knobs — slice length, rotation among equals, the guest clock's speed against the work, critical sections held across
+slices — changes it beyond that spread. The lock-holder extension (on the multi-core machines a critical section is held for microseconds; a green thread
+interrupted inside one keeps it while the others run) did not change the rate: 7 451 of 465 740 slices were extended in
+150 s, 1 763 of them reached the bound with a section still held. It was reverted.
