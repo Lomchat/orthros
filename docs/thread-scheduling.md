@@ -26,6 +26,11 @@ on Windows became tens of milliseconds wide.
   polls with `Sleep(0)` for a lower-priority thread would spin forever. Both counts are needed: under a
   `VirtualClock` time does not move while threads only yield.
 
+Preemption is not modelled. Windows preempts the running thread as soon as a higher-priority thread becomes ready;
+here threads switch only between slices, at yields and at blocking API calls. One attempt was tried and reverted
+(commits 2c630a7 / 4b8f6a7). It capped slices at 20 000 instructions while a higher-priority thread existed and
+yielded on wake of a higher-priority thread. It measured no improvement on BFME1 (see below) and cost ~3-4 % frames.
+
 `markReady(t)` stamps `readyTime` / `readyPick` whenever a thread becomes ready (wake, end of slice, yield, ResumeThread,
 CreateThread). `?dbg=ORTHROS_SCHED_ROUND_ROBIN=1` (or `vm.sched.roundRobin = true`) restores the old behaviour, for A/B.
 
@@ -86,5 +91,18 @@ time, side by side, from the same tree):
 | `ORTHROS_SCHED_ROUND_ROBIN=1` (old scheduler) | 40 | 6 (3 calls through 0, from +0x1885e0 twice and +0x5c5a31; 1 exception with no stack to dispatch it on; 1 other crash, then the game exits with 666; 1 hang, then the renderer crashes) | every one: the main thread's null-page write at the double free, during the click | 3219 |
 | priorities (this change) | 40 | 0 | no null-page write in any run | 3284 |
 
-(Fisher exact test, one-sided: p ≈ 0.012.) Earlier, round robin at the default slice: about 10 failures in ~175 runs
-(5-10 % depending on the machine load).
+(Fisher exact test, one-sided: p ≈ 0.012.)
+
+**The fix is partial.** At the default slice (100 000 instructions), with priorities: 2 failures in 50 runs (25 with
+and 25 without the render worker). Both have the same signature: the main thread's null-page write at the double
+free. In both, the audio thread was blocked in its timed wait, not interrupted mid-work. With the reverted preemption
+attempt: 2 failures in 32 runs, same signature, audio thread again blocked. Earlier, with round robin at the default
+slice: about 10 failures in ~175 runs (5-10 % depending on the machine load). So at the default slice, no reduction
+is measured.
+
+Priorities remove one way to reach the double free: a high-priority thread cut off mid-update, which short slices make
+frequent. Another cause remains, not yet found. Next leads:
+- which code freed the 68-byte record first: a trace of the program allocator's free entry, `ORTHROS_TRACE_EIP`. In
+  the browser runs so far it recorded nothing; check why;
+- whether the main thread's parked ReadFile from msvcr71, ~80 ms just before the click in every run, matters;
+- an abandoned mutex (0x9dc, left by an exited Miles thread).
