@@ -1,6 +1,6 @@
 // The system timer resolution (core/timer-res.js): timed waits end at the clock interrupt (15.625 ms by default, the
 // smallest timeBeginPeriod request otherwise), GetTickCount steps by the 15.625 ms tick whatever the resolution,
-// timeGetTime by the interrupt; the same values from the JIT's fast paths as from the handlers.
+// timeGetTime by the interrupt, USER timers fall due at the interrupt too.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -100,4 +100,8 @@ test('handlers: GetTickCount, timeGetTime, timeBeginPeriod, Sleep and WaitForSin
   clock.t = 40.5;
   assert.equal(call('kernel32.dll', 'WaitForSingleObject', ev, 3), 0x102);
   assert.equal(clock.t, 46.875);
+  // a USER timer (SetTimer without a window): 10 ms from 50 ms falls due at the tick at 62.5 ms
+  clock.t = 50;
+  const id = call('user32.dll', 'SetTimer', 0, 0, 10, 0);
+  assert.equal(vm.proc.timers.find((x) => x.kind === 'wm' && x.id === id).due, 62.5);
 });

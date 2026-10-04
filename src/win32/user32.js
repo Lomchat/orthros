@@ -368,7 +368,7 @@ export class WindowManager {
     if (inRange(WM.TIMER)) {
       const t = this.dueTimer(thread, hwndFilter);
       if (t) {
-        if (remove) { const now = this.vm.clock.now(); t.due += t.elapse; if (t.due < now) t.due = now + t.elapse; }
+        if (remove) { const now = this.vm.clock.now(); t.due += t.elapse; if (t.due < now) t.due = now + t.elapse; t.due = this.vm.timerRes?.tickAt(t.due) ?? t.due; }
         return { hwnd: t.hwnd, msg: WM.TIMER, wParam: t.id, lParam: t.proc, time: this.tick(), pt: { ...this.cursor } };
       }
     }
@@ -957,8 +957,11 @@ export function registerUser32(api, vm) {
     if (!w) id = wm().nextTimerId++;
     const timers = c.proc.timers;
     const existing = timers.find((t) => t.kind === 'wm' && t.hwnd === (w ? w.hwnd : 0) && t.id === id && (w || t.thread === c.thread));
-    if (existing) { existing.elapse = elapse; existing.due = vm.clock.now() + elapse; existing.proc = c.arg(3); return id; }
-    timers.push({ kind: 'wm', hwnd: w ? w.hwnd : 0, id, elapse, due: vm.clock.now() + elapse, proc: c.arg(3), thread: w ? w.thread : c.thread });
+    // (a USER timer expires at the clock interrupt like the kernel's: SetTimer(10) fires every 15.6 ms at the default
+    // resolution — core/timer-res.js)
+    const due = vm.timerRes.tickAt(vm.clock.now() + elapse);
+    if (existing) { existing.elapse = elapse; existing.due = due; existing.proc = c.arg(3); return id; }
+    timers.push({ kind: 'wm', hwnd: w ? w.hwnd : 0, id, elapse, due, proc: c.arg(3), thread: w ? w.thread : c.thread });
     return id;
   }];
   U.KillTimer = [2, (c) => { const before = c.proc.timers.length; c.proc.timers = c.proc.timers.filter((t) => !(t.kind === 'wm' && t.hwnd === c.arg(0) && t.id === c.arg(1))); return before !== c.proc.timers.length ? 1 : 0; }];
