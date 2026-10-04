@@ -466,5 +466,24 @@ export function registerDirectSound(api, vm) {
   const factory = (v8) => (c) => { const ds = new DirectSound(v8); ds.initialized = false; return com.create(c.proc, v8 ? 'IDirectSound8' : 'IDirectSound', ds); };
   com.registerClass(CLSID_DirectSound, factory(false));
   com.registerClass(CLSID_DirectSound8, factory(true));
+  /**
+   * A sound stream of the runtime's own components (the DirectShow audio renderer, quartz.js): a looping 16-bit PCM
+   * ring in guest memory mixed like any DirectSound buffer (the same mixer, volume and play cursor clock); its owner
+   * writes the samples ahead of the play cursor.
+   */
+  vm.createAudioStream = (proc, rate, channels, seconds = 1) => {
+    const align = 2 * channels, frames = Math.ceil(rate * seconds);
+    const fmt = { tag: WAVE_FORMAT_PCM, channels, rate, bits: 16, align, avg: align * rate, cb: 0, raw: null };
+    const b = new Buffer(proc, null, DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLPAN, frames * align, fmt);
+    return {
+      addr: b.mem, frames, channels, rate, buffer: b,
+      /** play from the ring's start, looping (the play cursor then advances with the VM clock) */
+      start() { b.pos = 0; b.posFrac = 0; b.looping = true; b.playing = true; b.lastTime = vm.clock.now() / 1000; b.mixPos = null; b.notifyPos = 0; b.gen++; b.publish(); },
+      stop() { b.cursor(); b.playing = false; b.publish(); },
+      setVolume(v) { b.volume = v; b.publish(); },
+      setPan(v) { b.pan = v; b.publish(); },
+      destroy() { b.destroy(); },
+    };
+  };
   void readGuid; void S_OK; void E_POINTER; void DSBCAPS_STATIC; void DSBCAPS_LOCHARDWARE; void DSBCAPS_GLOBALFOCUS; void DSBCAPS_GETCURRENTPOSITION2; void DSBSTATUS_BUFFERLOST; void DSSCL_EXCLUSIVE; void DSERR_UNSUPPORTED; void DSERR_BUFFERLOST; void DSERR_UNINITIALIZED;
 }

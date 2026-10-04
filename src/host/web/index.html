@@ -13,7 +13,8 @@
   html:fullscreen #stage, body.nobar #stage, body.nobar #loader { top: 0; }
   #frame { position: relative; }
   #frame canvas { position: absolute; left: 0; top: 0; }
-  #gl { pointer-events: none; }
+  #gl, #vid { pointer-events: none; }
+  #vid { z-index: 3; visibility: hidden; }
   #softcursor { position: absolute; display: none; pointer-events: none; z-index: 5; image-rendering: pixelated; }
   :root { --bar: 44px; --gold: #c9a55a; }
   /* the header: brand, game, frame rate, full screen, back to the games (hidden in full screen: only the game) */
@@ -118,7 +119,7 @@
   </div>
 </div>
 <div id="dmParking" hidden><input type="checkbox" id="offlineToggle"><input type="checkbox" id="logToggle"></div>
-<div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
+<div id="stage" class="hidden"><div id="frame"><canvas id="c2d" width="1024" height="768"></canvas><canvas id="gl" width="1024" height="768"></canvas><canvas id="vid" width="1024" height="768"></canvas><img id="softcursor" alt=""></div></div>
 <div id="status" class="hidden"><div class="title"></div><div class="detail"></div><div><button class="hidden">Restart</button> <button class="hidden" title="the saved settings and saves are moved aside (kept), the game starts as on its first launch">Restart with a fresh game profile</button> <button class="hidden">Back to the games</button></div><pre class="hidden"></pre></div>
 <div id="busy" class="hidden"></div>
 <div id="topbar" class="hidden">

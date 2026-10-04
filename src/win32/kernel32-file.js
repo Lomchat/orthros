@@ -397,7 +397,7 @@ export function registerKernel32File(api, vm) {
       if (st) { const real = vm.vfs.readdir(dir)?.find((e) => e.name.toLowerCase() === glob.toLowerCase()); if (real) entries[0].name = real.name; }
     } else {
       const list = vm.vfs.readdir(dir);
-      if (!list) return c.fail(E.PATH_NOT_FOUND) | INVALID_HANDLE;
+      if (!list) { vm.log('file', `find ${full} -> no such directory`); return c.fail(E.PATH_NOT_FOUND) | INVALID_HANDLE; }
       const re = globToRe(glob);
       entries = [];
       if (re.test('.')) entries.push({ name: '.', size: 0, isDir: true, mtime: 0 }, { name: '..', size: 0, isDir: true, mtime: 0 });

@@ -13,6 +13,8 @@ import { registerDirectSound } from './dsound.js';
 import { registerDirect3D8 } from './d3d8.js';
 import { registerDirect3D9 } from './d3d9.js';
 import { registerD3DX9 } from './d3dx9.js';
+import { registerQuartz } from './quartz.js';
+import { registerMci } from './mci.js';
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -33,6 +35,8 @@ export function registerBuiltins(api, vm) {
   registerDirect3D8(api, vm);
   registerDirect3D9(api, vm);
   registerD3DX9(api, vm);
+  registerQuartz(api, vm);
+  registerMci(api, vm);
   // Module images of the builtin DLLs (their HMODULE values) are made on first use in the thunk area (ApiRegistry.window);
   // kernel32's first, at its 1 MB-aligned start, as software locating kernel32 by its address expects an aligned base.
   api.window('kernel32.dll');

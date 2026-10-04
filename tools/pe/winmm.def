@@ -1,0 +1,6 @@
+LIBRARY winmm.dll
+EXPORTS
+mciSendStringA@16
+mciSendCommandA@16
+mciGetErrorStringA@12
+mciGetDeviceIDA@4

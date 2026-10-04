@@ -91,6 +91,7 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
 - Rendu : `--capture-at @s` (une image : états de chaque draw, textures, cohérence GPU ↔ mémoire invitée ;
   `--capture-draws` : cible après chaque draw), `--gl-validate` (cache d'état GL, états approchés), `--dump-shaders`.
 - Journaux `--log kinds` : `api`, `apisite` (premiers appels de chaque site), `com` / `comx` (COM sans les appels par
-  draw), `file`, `filectx`, `procctx`, `reg`, `cpuid`, `debug` / `debugctx` (messages du jeu), `gfx`, `tex`, `jit`.
+  draw), `file`, `filectx`, `procctx`, `reg`, `cpuid`, `debug` / `debugctx` (messages du jeu), `gfx`, `tex`, `jit`, `video`
+  (vidéos et fichiers son lus par DirectShow ou MCI : docs/media-playback.md).
 - Outils : `tools/vfs-check.mjs` (octets servis), `tools/sse-bench.mjs`, `tools/x87-bench.mjs`, `tools/chain-bench.mjs`,
   `tools/jit-dump.mjs` (WASM émis par instruction).

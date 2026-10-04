@@ -127,7 +127,7 @@ export function randomSession(gfx, seed, api9, after, shared = false) {
       case 5: if (api9) { const d2 = pick(surfaces); call('GetRenderTargetData', dev.backBuffers[0].ptrOf(ctx([])), d2); } else call('GetFrontBuffer', sp); break;
       case 6: { const ramp = E.alloc(1536); for (let i = 0; i < 768; i++) mem.write16(ramp + 2 * i, rnd(2) ? (i % 256) * 257 : (i % 256) * 128); if (api9) call('SetGammaRamp', 0, 0, ramp); else call('SetGammaRamp', 0, ramp); break; }
       case 7: if (textures.length > 1) { const a = com.implAt(pick(textures)), b = com.implAt(pick(textures)); if (a?.levels && b?.levels && a !== b) call('UpdateTexture', a.comObject.ptr, b.comObject.ptr); } break;
-      case 8: { const t = textures.length ? com.implAt(pick(textures)) : null; if (t?.levels && !t.depth) t.AddDirtyRect(ctx([])); else if (surfaces.length > 4) release(surfaces); break; }
+      case 8: { const t = textures.length ? com.implAt(pick(textures)) : null; if (t && rnd(3) === 0) t.SetLOD(ctx([t.comObject.ptr, rnd(4)])); else if (t?.levels && !t.depth) t.AddDirtyRect(ctx([])); else if (surfaces.length > 4) release(surfaces); break; } // (SetLOD: the most detailed level sampled, managed textures)
     }
   };
   // (a vertex buffer on stream 0 from the start: the backend's first-draw diagnostics read it)

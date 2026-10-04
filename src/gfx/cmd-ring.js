@@ -79,6 +79,7 @@ export const OPS = [
   ['STRETCH', 'uuuww'], // source id, destination id, filter, source rectangle, destination rectangle (none: whole)
   ['GAMMA', 'b'],
   ['CANVAS', 'uu'], // the display's size (the canvas the frames are presented on)
+  ['TEX_LOD', 'uu'], // texture id, its IDirect3DBaseTexture::SetLOD level (the most detailed level sampled)
 ];
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);

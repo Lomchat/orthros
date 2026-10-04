@@ -109,7 +109,7 @@ async function start(name, language = null) {
   if (headless) document.body.classList.add('nobar');
   else { $('topbar').classList.remove('hidden'); $('tbGame').textContent = state.title; showLoader(name); }
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
-  state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer');
+  state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
   const ctlSab = new SharedArrayBuffer(CTL.SIZE * 4), inputSab = new SharedArrayBuffer(IN_RING * 4), audioSab = new SharedArrayBuffer(AUDIO_RING_FRAMES * 2 * 4);
   state.ctl = new Int32Array(ctlSab); state.inputRing = new Int32Array(inputSab);
@@ -128,7 +128,7 @@ function resizeTo(w, h) {
   state.mode = { width: w, height: h };
   const frame = $('frame');
   frame.style.width = w + 'px'; frame.style.height = h + 'px';
-  for (const id of ['c2d', 'gl']) { const c = $(id); if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } }
+  for (const id of ['c2d', 'gl', 'vid']) { const c = $(id); if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } }
   fit();
 }
 function fit() {
@@ -150,10 +150,11 @@ function onWorkerMessage(m) {
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'stats': state.stats = m; state.statsAt = Date.now();
-      if (m.frames !== state.lastFrames) { state.lastFrames = m.frames; state.lastNewFrameAt = Date.now(); }
-      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, or a few GDI frames) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
+      if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
-    case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
+    case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
+    case 'video': $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
     case 'mode': resizeTo(m.width, m.height); break;
     case 'lan': { state.lan = { ip: m.ip, peers: m.peers }; const el = $('tbLan'); el.classList.toggle('hidden', !m.ip || headless); el.querySelector('b').textContent = m.peers; el.title = `Local network of the players of this game on this server — your address: ${m.ip}. ${m.peers} player${m.peers > 1 ? 's' : ''} connected: in the game, Multiplayer → LAN / Network shows their games.`; break; }
     case 'title': document.title = m.title || 'Orthros'; break;

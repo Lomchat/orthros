@@ -140,7 +140,7 @@ export class Seh {
   recentReport() { return (this.recent?.length ? `exceptions raised: ${this.raised}, the last ones:\n  ${this.recent.join('\n  ')}` : 'no exception raised') + (this.cppContexts?.length ? '\n' + this.cppContexts.join('\n') : ''); }
 
   /** 'seh' log capped at 80 lines per process (an exception storm would otherwise flood the console). */
-  sehLog(msg) { if ((this.logCount = (this.logCount ?? 0) + 1) <= 80) this.vm.log('seh', msg); }
+  sehLog(msg) { if ((this.logCount = (this.logCount ?? 0) + 1) <= (globalThis.ORTHROS_SEH_LOG_MAX ?? 80)) this.vm.log('seh', msg); }
 
   /** __seh_return: a handler returned with a disposition in EAX. */
   onHandlerReturn(ctx) {

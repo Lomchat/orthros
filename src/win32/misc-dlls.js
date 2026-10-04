@@ -5,6 +5,7 @@ import { CC_CDECL } from './api.js';
 import { allocString } from './kernel32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
 import { defineWinsock } from './winsock.js';
+import { verifyAuthenticode, peLayout, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN } from './authenticode.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
 const MMSYSERR_NOERROR = 0, MMSYSERR_NODRIVER = 6, MMSYSERR_NOTSUPPORTED = 8, MMSYSERR_BADDEVICEID = 2, JOYERR_UNPLUGGED = 167;
@@ -217,7 +218,39 @@ export function registerMiscDlls(api, vm) {
   api.define('netapi32.dll', { Netbios: [1, () => 0x23], NetApiBufferFree: [1, () => 0], NetWkstaGetInfo: [3, () => 53], NetGetJoinInformation: [3, () => 53] });
   api.define('avifil32.dll', { AVIFileInit: [0, () => {}], AVIFileExit: [0, () => {}], AVIFileOpenA: [4, () => E_FAIL], AVIFileRelease: [1, () => 0], AVIStreamRelease: [1, () => 0], AVIFileGetStream: [4, () => E_FAIL], AVIStreamGetFrameOpen: [2, () => 0], AVIStreamGetFrameClose: [1, () => 0], AVIStreamInfoA: [3, () => E_FAIL], AVIStreamStart: [1, () => 0], AVIStreamLength: [1, () => 0], AVIStreamReadFormat: [4, () => E_FAIL], AVIStreamRead: [7, () => E_FAIL], AVIStreamOpenFromFileA: [6, () => E_FAIL] });
   api.define('psapi.dll', { GetProcessMemoryInfo: [3, (c) => { const p = c.arg(1); mem.write32(p + 12, 0x2000000); return 1; }], EnumProcessModules: [4, (c) => { c.out32(3, 4); if (c.arg(2) >= 4) mem.write32(c.arg(1), c.proc.exe.base); return 1; }], GetModuleFileNameExA: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); const s = c.proc.moduleFileName(m); mem.writeCString(c.arg(2), s, c.arg(3)); return Math.min(s.length, c.arg(3) - 1); }], GetModuleBaseNameA: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); const s = m?.name ?? ''; mem.writeCString(c.arg(2), s, c.arg(3)); return s.length; }], GetModuleInformation: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); if (!m) return 0; mem.write32(c.arg(2), m.base); mem.write32(c.arg(2) + 4, m.size); mem.write32(c.arg(2) + 8, m.entry); return 1; }], EnumProcesses: [3, (c) => { mem.write32(c.arg(0), c.proc.pid); c.out32(2, 4); return 1; }] });
-  api.define('wintrust.dll', { WinVerifyTrust: [3, () => 0x800b0100] });
+  // WinVerifyTrust on a file (WINTRUST_DATA dwUnionChoice WTD_CHOICE_FILE): its Authenticode signature checked
+  // (src/win32/authenticode.js: digest, signer's signature; not the chain to a root). Games verify their own executable.
+  const trustCache = new Map();
+  api.define('wintrust.dll', { WinVerifyTrust: [3, (c) => {
+    const d = c.arg(2);
+    if (!d) return 0x80070057; // (E_INVALIDARG)
+    const choice = mem.read32(d + 20), action = mem.read32(d + 28);
+    if (action === 2) { mem.write32(d + 32, 0); return 0; } // WTD_STATEACTION_CLOSE
+    if (choice !== 1) { vm.log('file', `WinVerifyTrust: union choice ${choice} unsupported`); return TRUST_E_NOSIGNATURE; }
+    const fi = mem.read32(d + 24), pathPtr = fi ? mem.read32(fi + 4) : 0, hFile = fi ? mem.read32(fi + 8) : 0;
+    let path = pathPtr ? c.proc.path(mem.readWString(pathPtr)) : null;
+    if (!path && hFile) path = c.proc.handles.get(hFile)?.path ?? null;
+    if (!path) return TRUST_E_SUBJECT_FORM_UNKNOWN;
+    const key = path.toLowerCase();
+    let r = trustCache.get(key);
+    if (!r) {
+      // (the headers first: a file without a readable certificate table is answered without reading it whole)
+      const f = vm.vfs.open(path, {});
+      if (!f) r = { status: 0x80070002, why: 'file not found' }; // (HRESULT of ERROR_FILE_NOT_FOUND)
+      else {
+        try {
+          const size = f.size(), head = f.read(0, Math.min(size, 4096)), L = peLayout(head);
+          // (whole: a certificate table inside the file, or MZ headers longer than the first 4 KiB)
+          const whole = L ? L.certLen && L.certOff + L.certLen <= size : size > head.length && head[0] === 0x4d && head[1] === 0x5a;
+          r = whole ? verifyAuthenticode(f.read(0, size)) : verifyAuthenticode(head, size);
+        } finally { f.close(); }
+      }
+      trustCache.set(key, r);
+      vm.log('file', `WinVerifyTrust ${path}: ${r.why} -> 0x${(r.status >>> 0).toString(16)}`);
+    }
+    if (action === 1) mem.write32(d + 32, 0x5157); // WTD_STATEACTION_VERIFY: a state handle the CLOSE call gives back
+    return r.status;
+  }] });
   api.define('secur32.dll', { GetUserNameExA: [3, (c) => { mem.writeCString(c.arg(1), 'Player', mem.read32(c.arg(2))); mem.write32(c.arg(2), 7); return 1; }] });
   api.define('rasapi32.dll', { RasEnumConnectionsA: [3, (c) => { mem.write32(c.arg(2), 0); return 0; }], RasGetConnectStatusA: [2, () => 0] });
   api.define('iphlpapi.dll', { GetAdaptersInfo: [2, (c) => { mem.write32(c.arg(1), 0); return 232; }], GetNetworkParams: [2, () => 232], GetBestInterface: [2, () => 1], GetIfTable: [3, () => 1], GetIpAddrTable: [3, () => 1] });
