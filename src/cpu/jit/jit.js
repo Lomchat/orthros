@@ -101,7 +101,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -217,7 +217,7 @@ export class Jit {
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
-    if (stats.dispatchBlock) this.stats.dispatchBlocks = (this.stats.dispatchBlocks ?? 0) + 1; // (regions whose dispatcher is no loop)
+    if (stats.dispatchBlock) this.stats.dispatchBlocks++; // (regions whose dispatcher is no loop)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
     const t2 = performance.now();
     let inst;
@@ -808,7 +808,7 @@ export class Jit {
           // top at run time (entries with varying tops would otherwise run a failing guard before the right version)
           for (const b of first.blocks) this.genericTop.add(b.eip);
           this.dropRegion(first);
-          this.stats.genericTop = (this.stats.genericTop ?? 0) + 1;
+          this.stats.genericTop++;
           continue;
         }
         if (first && !first.first && first.fpc !== null && this.chaining && this.opts.fpuVersions !== false) {

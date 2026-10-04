@@ -72,7 +72,7 @@ function run(code, end, regs, jitOpts, slice) {
   }
   if (jit) CpuState.foldLazyFlags?.(cpu);
   const state = [cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.edi, cpu.eflags & ARITH, cpu.eip].map((v) => (v >>> 0).toString(16)).join(' ') + ' ' + [...mem.bytes(DATA + 0x700, 0x100)].join(',');
-  return { r, state, slices: slices.join(' ') };
+  return { r, state, slices: slices.join(" "), jit };
 }
 const V = [0, 1, 0x7f, 0x80, 0xffff, 0x7fffffff, 0x80000000, 0xffffffff, 0x12345678];
 const val = () => (rnd(2) ? V[rnd(V.length)] : ((rnd(65536) << 16) | rnd(65536)) >>> 0);
@@ -93,6 +93,31 @@ test('reverse-postorder layout: random programs with in-region calls and backwar
       assert.equal(on.slices, off.slices, `time slices: ${msg}`);
     }
   }
+});
+
+// A region none of whose transfers goes back through its dispatcher has a block instead of the dispatch loop
+// (translate.js dispatchBlock): the same random programs, whole and sliced, match the interpreter and give the same time
+// slices with and without it; both kinds of region occur.
+test('a dispatcher no transfer goes back through is a block: random programs match the interpreter, same time slices', () => {
+  let blocks = 0, regions = 0;
+  for (let t = 0; t < 200; t++) {
+    const { code, end } = gen();
+    const regs = [val(), val(), val(), val(), rnd(0x1000)];
+    const s0 = seed;
+    const want = run(code, end, regs, null, 0);
+    for (const slice of [1e7, 1, 5]) {
+      seed = s0; const off = run(code, end, regs, { dispatchBlock: false }, slice);
+      seed = s0; const on = run(code, end, regs, { dispatchBlock: true }, slice);
+      const msg = `program ${t} slice ${slice}: ${Buffer.from(code).toString('hex')}`;
+      assert.equal(on.r, want.r, msg);
+      assert.equal(on.state, want.state, msg);
+      assert.equal(off.state, want.state, msg);
+      assert.equal(on.slices, off.slices, `time slices: ${msg}`);
+      blocks += on.jit.stats.dispatchBlocks ?? 0; regions += on.jit.stats.regions;
+      assert.equal(off.jit.stats.dispatchBlocks ?? 0, 0);
+    }
+  }
+  assert.ok(blocks > 0 && blocks < regions, `regions with a dispatch block: ${blocks} of ${regions}`);
 });
 
 // The x87-mode versions of a region (jit.js EXIT_FPUMODE: the guard of one version tail-calls the next with the block
