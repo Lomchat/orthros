@@ -40,6 +40,10 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // slow frames' excess over the median frame by category, the worst frames (src/core/frame-acct.js); --phases <file>
 // writes them as JSON. dbg:ORTHROS_API_FAST_OFF=1 / dbg:ORTHROS_API_FAST_OFF= switches the
 // COM AddRef/Release fast path and the Direct3D issued-state filter off / on again (Vm.setApiFastPaths).
+// Fidelity traces: dbg:ORTHROS_TRACE_API=1 (or --dbg at start) logs every completed API call with its arguments, result,
+// last error and caller as [api] (2: COM / D3DX calls too; =: off again) — e.g. around a click whose effect differs
+// from Windows; --dbg ORTHROS_SEH_LOG_MAX=<n> lifts the 80-line cap of --log seh; --log sync names the named kernel
+// objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
