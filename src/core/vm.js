@@ -182,7 +182,7 @@ export class Vm {
         const key = eips.get(eip);
         const sp = cpu.esp >>> 0, m = this.mem, a0 = key ? (cpu[key.reg] + key.off) >>> 0 : m.read32(sp + 4) >>> 0;
         const rets = []; for (let a = sp; a < sp + 0x400 && rets.length < 8; a += 4) { const v = m.read32(a) >>> 0; if (this.proc.moduleByAddr(v)) rets.push(this.proc.symbolize(v)); }
-        const rec = `#${ring.i + 1} t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
+        const rec = `#${ring.i + 1} @${this.clock.now().toFixed(1)}ms t${this.current?.id} ${this.proc.symbolize(eip)} arg ${a0.toString(16)} ${(m.read32(sp + 8) >>> 0).toString(16)} ecx ${(cpu.ecx >>> 0).toString(16)} stack ${rets.join(' < ')}`;
         ring.a[ring.i++ & 255] = rec;
         const l = byArg.get(a0); if (l) { l.push(rec); if (l.length > depth) l.shift(); } else { byArg.set(a0, [rec]); if (byArg.size > 200000) byArg.delete(byArg.keys().next().value); } // (bounded: the oldest arguments forgotten)
       };
@@ -902,7 +902,7 @@ export class Vm {
   crashReport(thread, reason) {
     const cpu = thread.cpu, mem = this.mem, proc = this.proc;
     const h = (v) => '0x' + (v >>> 0).toString(16).padStart(8, '0');
-    const lines = [`*** ${reason} in thread ${thread.id} (${thread.name}) at ${proc.symbolize(cpu.eip)}`];
+    const lines = [`*** ${reason} in thread ${thread.id} (${thread.name}) at ${proc.symbolize(cpu.eip)} (guest clock ${this.clock.now().toFixed(1)} ms)`];
     lines.push(cpu.dump());
     // disassembly around EIP
     lines.push('code:');
