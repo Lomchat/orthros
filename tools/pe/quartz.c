@@ -104,6 +104,12 @@ void __stdcall start(void) {
   C0(mc, 9); C4(ms, 14, &zero, 1, 0, 0); C0(mc, 7);
   hex("short wait", C2(me, 9, 10, &code));
   C0(mc, 9);
+  // the destination rectangle inside the window, the window's position, a paused graph shows its picture, hidden
+  LONG l = 0, t = 0, w2 = 0, h2 = 0;
+  hex("destination", C4(bv, 31, 4, 2, 64, 48)); C4(bv, 32, &l, &t, &w2, &h2); num("dest l", l); num("dest t", t); num("dest w", w2); num("dest h", h2);
+  C4(vw, 40, &l, &t, &w2, &h2); num("win l", l); num("win t", t); num("win w", w2); num("win h", h2);
+  hex("pause", C0(mc, 8)); C2(mc, 10, 0, &state); num("paused state", state);
+  hex("hide", C1(vw, 19, 0));
   RELEASE(ms); RELEASE(ba); RELEASE(bv); RELEASE(vw); RELEASE(me); RELEASE(mc);
   num("last release", RELEASE(gb));
   CoUninitialize();

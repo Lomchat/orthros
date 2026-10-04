@@ -74,14 +74,23 @@ function checkPlayback({ vm, code, res, shown, hidden, peak, mixed }, { fps, w, 
   const n = Math.round(1.2 * fps);
   assert.ok(shown.length >= 2 * (n - 2), `${shown.length} pictures shown`);
   const owner = [...vm.wm.windows.values()].find((x) => x.title === 'movie');
-  for (const s of shown) {
+  const moved = shown.findIndex((x) => x.rect.w === 64); // (the pictures shown after SetDestinationPosition)
+  assert.ok(moved > 0 && shown.length - moved === 2, `the picture shown again by SetDestinationPosition and by Pause (${moved}, ${shown.length}: ${shown.slice(-4).map((x) => x.at + ':' + x.rect.w).join(' ')})`);
+  for (const s of shown.slice(0, moved)) {
     assert.equal(s.w, w); assert.equal(s.h, h);
     assert.deepEqual(s.rect, { x: owner.client.l + 8, y: owner.client.t + 6, w: 128, h: 96 });
   }
+  // the destination rectangle (4, 2, 64 x 48) in the window: the picture shown by Pause goes there; then hidden
+  assert.equal(res.destination, '0x00000000');
+  assert.deepEqual([res['dest l'], res['dest t'], res['dest w'], res['dest h']], ['4', '2', '64', '48']);
+  assert.deepEqual([res['win l'], res['win t'], res['win w'], res['win h']], ['8', '6', '128', '96']);
+  assert.equal(res.pause, '0x00000000'); assert.equal(res['paused state'], '1');
+  for (const s of shown.slice(moved)) assert.deepEqual(s.rect, { x: owner.client.l + 12, y: owner.client.t + 8, w: 64, h: 48 });
+  assert.equal(res.hide, '0x00000000');
   const gaps = shown.slice(1, n - 2).map((s, i) => s.at - shown[i].at), period = 1000 / fps;
   assert.ok(Math.max(...gaps) <= period + 5 && Math.min(...gaps) >= period - 5, `picture intervals ${gaps.join(' ')}`);
   assert.ok(shown.some((s) => s.center.some((v) => v > 40)), 'pictures are not black');
-  assert.ok(hidden >= 1, 'the video layer hidden when the graph is released');
+  assert.ok(hidden >= 1, 'the video layer hidden (put_Visible(OAFALSE), release)');
   // sound: a stream voice of the DirectSound mixer, stopped at the end
   assert.ok(vm.audio, 'mixer created');
   assert.equal([...vm.audio.buffers].filter((b) => b.playing).length, 0);

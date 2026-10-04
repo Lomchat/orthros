@@ -231,8 +231,8 @@ export function registerQuartz(api, vm) {
       const st = s.stats, n = st.decoded + st.skipped;
       return `${s.frameIndex} pictures (${this.presented} shown, ${st.overtaken} decoded and overtaken, ${st.skipped} B skipped${s.vdec?.errors ? `, ${s.vdec.errors} damaged` : ''}), decoding ${n ? (st.decodeMs / Math.max(1, st.decoded)).toFixed(1) : 0} ms per picture, showing ${(this.presentMs / Math.max(1, this.presented)).toFixed(1)} ms, lateness up to ${(st.late * 1000).toFixed(0)} ms; ${(s.audioPos / (s.audioRate || 1)).toFixed(2)} s of sound`;
     }
-    /** the window's video rectangle on the screen */
-    screenRect() {
+    /** the video window's client area on the screen */
+    windowRect() {
       const w = this.win;
       if (w.fullScreen) { const sc = vm.wm?.screen ?? { width: 640, height: 480 }; return { x: 0, y: 0, w: sc.width, h: sc.height }; }
       let x = w.left, y = w.top, ww = w.width, hh = w.height;
@@ -241,9 +241,12 @@ export function registerQuartz(api, vm) {
       if (!w.placed) { // (never placed: a child fills its owner's client area; a top-level window is centered)
         if (owner && w.style & WS_CHILD) { x = area.x; y = area.y; ww = area.w; hh = area.h; } else { x = area.x + ((area.w - ww) >> 1); y = area.y + ((area.h - hh) >> 1); }
       } else if (owner && w.style & WS_CHILD) { x += area.x; y += area.y; } // (a child window: in its owner's client area)
-      const d = this.dstRect;
-      if (d) { x += d.l; y += d.t; ww = d.w; hh = d.h; }
       return { x, y, w: ww, h: hh };
+    }
+    /** where the picture goes on the screen: the destination rectangle in the window (default: all of it) */
+    screenRect() {
+      const r = this.windowRect(), d = this.dstRect;
+      return d ? { x: r.x + d.l, y: r.y + d.t, w: d.w, h: d.h } : r;
     }
     present(p) {
       const disp = vm.host?.display;
@@ -263,9 +266,15 @@ export function registerQuartz(api, vm) {
       }
       this.presented++; this.presentMs += performance.now() - t0;
     }
-    /** the picture at the current position (paused, or after a seek): decoded now */
+    /**
+     * The picture at the current position (paused, or after a seek): decoded now — or the next one when none is due yet
+     * (a paused renderer shows the first picture it receives, as DirectShow's does).
+     */
     showPosition() {
-      const p = this.src.pictureAt(this.pos) ?? this.src.picture;
+      const s = this.src;
+      if (!s.video) return;
+      let p = s.pictureAt(this.pos) ?? s.picture;
+      if (!p && !s.videoDone) { s.load(s.frameTime(s.frameIndex)); p = s.pictureAt(s.frameTime(s.frameIndex)); }
       if (p) this.present(p);
     }
     hideVideo() { if (this.shown) { this.shown = false; vm.host?.display?.hideVideo?.(); } }
@@ -290,7 +299,7 @@ export function registerQuartz(api, vm) {
       this.pending = []; // (decoded before the seek: another part of the stream)
       this.pos = t; this.completed = false;
       if (running) { this.runAt = vm.clock.now(); this.startAudio(); }
-      else if (s.picture) this.present(s.picture);
+      else this.showPosition();
     }
 
     // ---- sound: decoded samples written ahead of the DirectSound play cursor
@@ -469,8 +478,10 @@ export function registerQuartz(api, vm) {
     SetWindowForeground() { return S_OK; },
     NotifyOwnerMessage() { return S_OK; },
     SetWindowPosition(c) { const w = this.g.win; w.left = c.sarg(1); w.top = c.sarg(2); w.width = c.sarg(3); w.height = c.sarg(4); placed(this.g); return S_OK; },
-    GetWindowPosition(c) { const r = this.g.screenRect(), w = this.g.win; c.out32(1, w.placed ? w.left : r.x); c.out32(2, w.placed ? w.top : r.y); c.out32(3, r.w); c.out32(4, r.h); return S_OK; },
-    GetRestorePosition(c) { const r = this.g.screenRect(), w = this.g.win; c.out32(1, w.placed ? w.left : r.x); c.out32(2, w.placed ? w.top : r.y); c.out32(3, r.w); c.out32(4, r.h); return S_OK; },
+    GetWindowPosition(c) { const [x, y, w, h] = this.position(); c.out32(1, x); c.out32(2, y); c.out32(3, w); c.out32(4, h); return S_OK; },
+    GetRestorePosition(c) { const [x, y, w, h] = this.position(); c.out32(1, x); c.out32(2, y); c.out32(3, w); c.out32(4, h); return S_OK; },
+    /** the window's position as SetWindowPosition takes it (a child's: in its owner's client area) */
+    position() { const g = this.g, r = g.windowRect(), w = g.win, child = w.owner && w.style & WS_CHILD && !w.fullScreen; return w.placed && !w.fullScreen ? [w.left, w.top, r.w, r.h] : child ? [0, 0, r.w, r.h] : [r.x, r.y, r.w, r.h]; },
     GetMinIdealImageSize(c) { c.out32(1, this.g.src.width); c.out32(2, this.g.src.height); return S_OK; },
     GetMaxIdealImageSize(c) { c.out32(1, this.g.src.width); c.out32(2, this.g.src.height); return S_OK; },
     HideCursor(c) { this.g.win.cursorHidden = c.sarg(1) !== OAFALSE; return S_OK; },
@@ -525,7 +536,7 @@ export function registerQuartz(api, vm) {
   define('IBasicVideo2', VIDEO, [IID.IBasicVideo]);
   define('IBasicAudio', AUDIO);
   Object.assign(PARTS.IBasicVideo2.prototype, {
-    rect(which) { const g = this.g; return (which === 'src' ? g.srcRect : g.dstRect) ?? (which === 'src' ? { l: 0, t: 0, w: g.src.width, h: g.src.height } : { l: 0, t: 0, w: g.screenRectNoDst().w, h: g.screenRectNoDst().h }); },
+    rect(which) { const g = this.g; return (which === 'src' ? g.srcRect : g.dstRect) ?? (which === 'src' ? { l: 0, t: 0, w: g.src.width, h: g.src.height } : { l: 0, t: 0, w: g.windowRect().w, h: g.windowRect().h }); },
     setRect(which, r) {
       const g = this.g;
       if (r.w <= 0 || r.h <= 0 || r.l < 0 || r.t < 0) return E_INVALIDARG;
@@ -534,7 +545,6 @@ export function registerQuartz(api, vm) {
       return S_OK;
     },
   });
-  Graph.prototype.screenRectNoDst = function () { const d = this.dstRect; this.dstRect = null; try { return this.screenRect(); } finally { this.dstRect = d; } };
   /** IID -> the part answering it */
   const BY_IID = new Map([
     [IID.IFilterGraph, 'IFilterGraph2'], [IID.IGraphBuilder, 'IFilterGraph2'], [IID.IFilterGraph2, 'IFilterGraph2'],
