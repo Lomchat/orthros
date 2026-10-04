@@ -89,6 +89,7 @@ const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IM
 const IMP_ARITH24 = IMP_MATH + 10, IMP_F32RC = IMP_MATH + 11;
 // the runtime's shared region exit (runtime.js chain, opts.chainStub), after the kernels
 const IMP_CHAIN = IMP_MATH + 12;
+
 if (MATH_KERNELS.length !== 12 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
@@ -116,7 +117,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, entryFast: false, coldChain: false, x87Top: false, chainStub: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: true, chainStub: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -822,8 +823,6 @@ class Emitter {
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
-    this.entryFast = !!(opts.entryFast ?? JIT_DEFAULTS.entryFast); // (see entryFastPath)
-    this.coldChain = !!(opts.coldChain ?? JIT_DEFAULTS.coldChain); // (see emitChain)
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
@@ -931,7 +930,7 @@ class Emitter {
     // region (see HANDLERS[OP.RET])
     this.retSitesOf = regionRetSites(blocks, byEip);
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
-    this.emitUnits(top, () => { if (this.entryFast) this.entryFastPath(top); this.dispatchAmong(top, 0, blocks.length - 1, null, def); });
+    this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
     c.unreachable();
     c.end(); // dispatch loop
@@ -1001,19 +1000,6 @@ class Emitter {
    * the top level): a nested loop's label with L_BLK unchanged, a block through a trampoline setting L_BLK to
    * -1 first — outside a dispatch L_BLK is always -1, so a loop head only tests its sign.
    */
-  /**
-   * Region entry at its first block (opts.entryFast): a compare instead of the dispatcher's br_table (an indirect jump),
-   * taken by the chained transitions into the region's entry and the dispatches back to it.
-   */
-  entryFastPath(top) {
-    const c = this.c, e = this.x87EntryIdx;
-    const tu = top.find((u) => u.first <= e && e <= u.last) ?? null;
-    if (!tu || (tu.loop && tu.first !== e)) return;
-    c.get(L_BLK).i32(e).eq();
-    const i = c.if_();
-    c.i32(-1).set(L_BLK).br(tu.label);
-    c.end(); void i;
-  }
   dispatchAmong(units, first, last, parent, def) {
     const c = this.c;
     const childOf = (j) => { const p = this.pathOf[j], i = parent ? p.indexOf(parent) : -1; return i + 1 < p.length ? p[i + 1] : this.blockUnit[j]; };
@@ -1042,7 +1028,7 @@ class Emitter {
     const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
     c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; }
     // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
-    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { if (this.coldChain) c.hint(false); const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
+    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
     // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
     // raises the access violation)
@@ -1053,7 +1039,7 @@ class Emitter {
     for (let p = 0; p < HASH_PROBES; p++) {
       c.get(L_T2); if (p) c.i32(p).add();
       c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
-      c.i32load(0).get(L_TV).eq(); if (this.coldChain && p === 0) c.hint(true); c.br_if(found); // (coldChain: the other probes out of line)
+      c.i32load(0).get(L_TV).eq().br_if(found);
     }
     why(3);
     c.br(noChain);
