@@ -4,9 +4,13 @@
 //  - the translator itself and its options: the cache's `key` (a hash of the translator's sources, closure of their
 //    imports, and the options; another key empties the cache);
 //  - the region's entry and the x87 mode it was asked for;
+//  - the answers of the code heat its translation asked (translate.js discoverRegion's cold exits, the blocks given
+//    visit flags: `heat`, checked by the caller's `accept`) — the heat varies by session, an entry made under other
+//    answers is another region shape;
 //  - its extent (blocks, as a discovery pass finds them now) and the code bytes there, compared byte for byte;
 //  - the import slots holding a fast API's thunk it runs inline (slot, thunk, fast id: `deps`);
-//  - its table index, the one place a body depends on it, rewritten (patchAltSlot).
+//  - its table index, the one place a body depends on it, rewritten (patchAltSlot), and its visit flags' addresses
+//    (`visits`: [block, end, body offsets]), this session's, rewritten (patchVisitSlots).
 // Storage: one append-only file per game (a `store`: synchronous size/read/write/truncate/flush, an OPFS sync access
 // handle in the browser), records [u32 length][meta JSON length u32][meta JSON][snapshot][body]; a damaged tail is cut.
 
@@ -84,7 +88,7 @@ export class CodeCache {
   constructor(store, key, maxBytes = 256 * 1024 * 1024) {
     this.store = store; this.key = key; this.maxBytes = maxBytes;
     this.map = new Map(); // "eip:fpcIn" -> [entry]
-    this.end = 0; this.flushedAt = 0; this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, added: 0, bytes: 0, loadMs: 0, reset: '' };
+    this.end = 0; this.flushedAt = 0; this.stats = { loaded: 0, hits: 0, misses: 0, missNew: 0, missExtent: 0, missDeps: 0, missBytes: 0, missHeat: 0, added: 0, bytes: 0, loadMs: 0, reset: '' };
     this.load();
   }
   load() {
@@ -124,10 +128,11 @@ export class CodeCache {
   }
   put(e) { const k = `${e.eip}:${e.fpcIn ?? 'g'}`; const l = this.map.get(k); if (l) l.push(e); else this.map.set(k, [e]); }
   /**
-   * An entry for this region as discovered now (extent [{eip, end}], code bytes `snap`, inline deps), or null: the
-   * record read back, { fpcOut, altAt, blocks: [[eip, end, index]], stats, hints, code }.
+   * An entry for this region as discovered now (extent [{eip, end}], code bytes `snap`, inline deps) that `accept(meta)`
+   * takes (if given: the heat answers), or null: the record read back, { fpcOut, altAt, blocks: [[eip, end, index]],
+   * stats, hints, heat, visits, code }.
    */
-  lookup(eip, fpcIn, extent, snap, deps) {
+  lookup(eip, fpcIn, extent, snap, deps, accept = null) {
     const l = this.map.get(`${eip}:${fpcIn ?? 'g'}`);
     let why = 'missNew'; // (miss reasons, the closest candidate's: diagnostics)
     if (l) {
@@ -141,6 +146,7 @@ export class CodeCache {
         const rec = this.store.read(e.at, e.len);
         if (rec.length !== e.len || !sameBytes(rec.subarray(8 + e.mlen, 8 + e.mlen + e.snapLen), snap)) { why = 'missBytes'; continue; }
         let meta; try { meta = JSON.parse(dec.decode(rec.subarray(8, 8 + e.mlen))); } catch { continue; }
+        if (accept && !accept(meta)) { why = 'missHeat'; continue; }
         this.stats.hits++;
         return { ...meta, code: rec.slice(8 + e.mlen + e.snapLen) };
       }
@@ -149,11 +155,12 @@ export class CodeCache {
     return null;
   }
   /**
-   * A new translation: { eip, fpcIn, fpcOut, altAt, blocks: [{eip, end, index}], deps, stats, hints, snap, code }.
+   * A new translation: { eip, fpcIn, fpcOut, altAt, blocks: [{eip, end, index}], deps, stats, hints, heat, visits, snap,
+   * code } (heat: the heat answers its translation got, [address, bits, ...]; visits: [block, end, [body offsets]]).
    * Appended to the store (not past maxBytes), indexed in memory.
    */
   add(t) {
-    const meta = { eip: t.eip, fpcIn: t.fpcIn ?? null, fpcOut: t.fpcOut ?? null, altAt: t.altAt ?? -1, blocks: t.blocks.map((b) => [b.eip, b.end, b.index]), deps: t.deps, stats: t.stats, hints: t.hints ?? [], snapLen: t.snap.length };
+    const meta = { eip: t.eip, fpcIn: t.fpcIn ?? null, fpcOut: t.fpcOut ?? null, altAt: t.altAt ?? -1, blocks: t.blocks.map((b) => [b.eip, b.end, b.index]), deps: t.deps, stats: t.stats, hints: t.hints ?? [], heat: t.heat ?? [], visits: t.visits ?? [], snapLen: t.snap.length };
     const mb = enc.encode(JSON.stringify(meta)), len = 8 + mb.length + t.snap.length + t.code.length;
     if (this.end + len > this.maxBytes) {
       // full: kept as it is while it serves this game's code; emptied (a new start) when the entries read at load

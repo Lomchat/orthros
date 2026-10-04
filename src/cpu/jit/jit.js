@@ -4,8 +4,9 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
+import { RangeHeat, VISITED } from './heat.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -57,6 +58,12 @@ export class Jit {
     this.dbgLong = null; // (debugging, ORTHROS_LONG_STEP_MS: time of the current run by part)
     // cold tier (runCold): missed entries -> instructions interpreted from them; its decodes by address (with their
     // bytes); entries to ask of the background worker
+    // (testing, Node: ORTHROS_JIT_RANDOM_HEAT=<seed> gives every Jit a pseudo-random heat — about a quarter of the
+    // addresses never ran — so that whole test suites run with regions cut at cold exits, see heat.js)
+    /** code heat shaping the regions (heat.js: RangeHeat, a Map of counts, or null) and this thread's visit flags */
+    this.heat = null; this.visitSlots = new VisitSlots();
+    const rh = globalThis.process?.env?.ORTHROS_JIT_RANDOM_HEAT;
+    if (rh) { const k = Number(rh) | 0; const hot = (a) => ((Math.imul((a ^ k) >>> 0, 0x9e3779b1) >>> 29) & 3) !== 0; this.heat = { get: (a) => (hot(a) ? VISITED : 0), has: hot }; }
     this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
@@ -92,7 +99,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -199,7 +206,10 @@ export class Jit {
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
     // x87 regions are specialized for the precision/rounding control in force when they are first reached
     const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
-    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, this.translateOpts(this.nextFn, fpcAssume));
+    // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
+    const o = this.translateOpts(this.nextFn, fpcAssume);
+    if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
+    const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
@@ -240,6 +250,9 @@ export class Jit {
     this.abOpts = over && Object.keys(over).length ? over : null;
     for (const r of this.regions) this.table.set(r.fnIdx, null); // (the old modules become garbage)
     this.clearTables();
+    // (the cold tier starts over too: an entry it had already asked of the background worker would otherwise be
+    // interpreted up to its limit and translated here, every switch adding translation work on this thread)
+    this.cold.clear(); this.coldQueue = [];
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
   }
@@ -255,7 +268,7 @@ export class Jit {
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() };
+    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -268,11 +281,59 @@ export class Jit {
     for (const x of this.byEntry.values()) if (x.blocks.some((b) => eip >= b.eip && eip < b.end)) return x;
     return null;
   }
+  /**
+   * Block heat (measurement, opts.coldExits): the guest instructions of the blocks that ran in the live translations
+   * made with block counters, with their execution counts (summed over the regions holding them). Translations from
+   * now on leave out of a region the successors a counted run never took (see discoverRegion). Returns the map's size.
+   */
+  collectHeat() {
+    const heat = new Map();
+    for (const r of this.regions) {
+      const cs = this.blockCounts(r); if (!cs) continue;
+      for (const b of r.blocks) {
+        const n = cs[b.index]; if (!n) continue;
+        for (let a = b.eip; a < b.end;) { heat.set(a, (heat.get(a) ?? 0) + n); try { a = decode(this.mem, a).next; } catch { break; } }
+      }
+    }
+    this.heat = heat;
+    return heat.size;
+  }
+  /**
+   * Add [lo, hi) ranges (pairs) of code known to have run to the heat that shapes the regions translated from now on
+   * (here and in the background translator).
+   */
+  heatAdd(pairs) {
+    if (!pairs?.length) return;
+    if (!(this.heat instanceof RangeHeat)) this.heat = new RangeHeat();
+    this.heat.addPairs(pairs);
+    this.bg?.port.postMessage({ type: 'heat', pairs: Int32Array.from(pairs) });
+  }
+  /**
+   * The blocks whose visit flag (opts.visit) was set since the last call, as pairs lo, hi, ... (added to the heat);
+   * each block is reported once.
+   */
+  harvestVisits() {
+    const u8 = this.mem.u8, out = [], seen = new Set();
+    for (const r of this.regions) {
+      const v = r.visits; if (!v) continue;
+      let left = 0;
+      for (const e of v) {
+        if (e[2] < 0) continue;
+        if (u8[e[2]]) { if (!seen.has(e[0])) { seen.add(e[0]); out.push(e[0], e[1]); } e[2] = -1; } else left++;
+      }
+      if (!left) r.visits = null;
+    }
+    this.heatAdd(out);
+    return out;
+  }
   /** block execution counts of a region translated with opts.blockCounts (by block index), or null */
   blockCounts(region) {
     if (!(region.counters >= 0)) return null;
     const u32 = this.mem.u32, w = region.counters >>> 2;
-    return region.blocks.map((b) => u32[w + b.index]);
+    // (by block index — the emission order — while region.blocks is in address order)
+    const out = new Array(region.blocks.length).fill(0);
+    for (const b of region.blocks) out[b.index] = u32[w + b.index];
+    return out;
   }
 
   /** A table index for a new region (the table grows by doubling). */
@@ -288,7 +349,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, first: version?.first ?? null, versions: null };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
@@ -303,7 +364,7 @@ export class Jit {
       if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
       let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(region);
     }
-    this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback;
+    this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback; this.stats.ifcvt += stats.ifcvt ?? 0;
     return region;
   }
 
@@ -317,6 +378,7 @@ export class Jit {
     this.bg = { port, nextId: 1, inflight: new Map(), sent: 0, installed: 0, rejected: 0, covered: 0, bgMs: 0, compileMs: 0, translateMs: 0, cacheHits: 0, cache: null };
     // (`cache`: the persistent cache of translations, see code-cache.js — { name, sources }, or null)
     port.postMessage({ type: 'init', memory: this.mem.memory, cache, opts: { smc: this.opts.smc !== false, chain: this.chaining, profile: !!this.opts.profile, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, interpRanges: this.opts.interpRanges, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, ...this.codeOpts() } });
+    if (this.heat instanceof RangeHeat) port.postMessage({ type: 'heat', pairs: this.heat.pairs() }); // (the heat known so far)
   }
   /** batches sent and not answered yet */
   bgPending() { return this.bg ? this.bg.inflight.size : 0; }
@@ -337,7 +399,7 @@ export class Jit {
     const id = bg.nextId++;
     bg.inflight.set(id, items.length); bg.sent += items.length;
     (bg.epochOf ??= new Map()).set(id, this.abEpoch ?? 0); // (translated under the options of now: see switchOpts)
-    bg.port.postMessage({ type: 'batch', id, items });
+    bg.port.postMessage({ type: 'batch', id, items, over: this.abOpts }); // (the in-session options too: one block numbering for the versions of a region, see EXIT_FPUMODE)
     return items.length;
   }
   /** A batch from the background worker: each region whose bytes are unchanged and not translated meanwhile is installed. */
@@ -724,7 +786,9 @@ export class Jit {
           const versions = (first.versions ??= [first]);
           if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
             const v = this.translate(first.entry, { first, fpc: mode });
-            if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip)) {
+            // (the same blocks under the same numbers: the guard of one version passes the block index it was entered
+            // with to the next)
+            if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip && b.index === first.blocks[i].index)) {
               this.mem.write32(JIT_ALT_BASE + 4 * versions[versions.length - 1].fnIdx, v.fnIdx + 1);
               versions.push(v);
               this.stats.fpuVersions = (this.stats.fpuVersions ?? 0) + 1;

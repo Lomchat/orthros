@@ -260,6 +260,54 @@ test('learned regions: listed by first use across sessions', async () => {
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Learned code heat: sessions post the code ranges that ran (module, offset, length); the server merges them per module
+// (names folded to lower case, malformed entries dropped) and keeps them in its learn directory across restarts.
+test('learned heat: ranges merged per module, kept across server restarts', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-heat-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const learnDir = path.join(dir, 'learn'); fs.mkdirSync(learnDir);
+  const start = async () => { const s = createServer({ manifests: path.join(dir, 'man'), learnDir }); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
+  let server = await start();
+  const url = () => `http://127.0.0.1:${server.address().port}/api/heat/g`;
+  const post = (heat) => fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ heat }) });
+  try {
+    assert.equal((await post([['Game.exe', 0x1000, 0x10], ['game.exe', 0x1008, 0x10], ['x.dll', -1, 4], ['game.exe', 0x3000, 0], ['a.dll', 0x20, 4]])).status, 204);
+    assert.equal((await post([['GAME.EXE', 0x2000, 8]])).status, 204);
+    const want = { 'game.exe': [0x1000, 0x18, 0x2000, 8], 'a.dll': [0x20, 4] };
+    assert.deepEqual(await (await fetch(url())).json(), want);
+    for (let i = 0; i < 300 && !fs.existsSync(path.join(learnDir, 'heat-g.json')); i++) await new Promise((r) => setTimeout(r, 100));
+    server.close(); server = await start();
+    assert.deepEqual(await (await fetch(url())).json(), want, 'read back');
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Adversarial clients: scattered ranges (none merging) cannot grow a manifest's heat past its bound, malformed bodies
+// are refused or ignored, and a module named __proto__ stays an ordinary key.
+test('learned heat: bounded per manifest, malformed input ignored', async () => {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createServer } = await import('../src/host/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-heat-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man') }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/heat/g`;
+  const post = (body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+  try {
+    for (const bad of ['{', '[]', 'null', '{"heat":5}', '{"heat":[[1,2,3],["m",1.5,2],["m",1,"x"],null,["' + 'x'.repeat(65) + '",0,1]]}']) assert.ok([204, 400].includes((await post(bad)).status), bad);
+    assert.equal((await post(JSON.stringify({ heat: [['__proto__', 0x10, 4]] }))).status, 204);
+    for (let k = 0; k < 3; k++) {
+      const heat = []; for (let i = 0; i < 200000; i++) heat.push([k ? 'b.dll' : 'a.dll', 8 * (i + 200000 * k), 1]);
+      assert.equal((await post(JSON.stringify({ heat }))).status, 204);
+    }
+    const got = await (await fetch(url)).json();
+    assert.deepEqual(got.__proto__ ?? null, [0x10, 4]);
+    let n = 0; for (const l of Object.values(got)) n += l.length / 2;
+    assert.ok(n <= 400000 && n >= 390000, `ranges kept: ${n}`);
+    assert.ok(Object.getOwnPropertyNames(got).every((k) => ['__proto__', 'a.dll', 'b.dll'].includes(k)), Object.keys(got).join());
+  } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // The OPFS block store (synchronous access handles, faked in memory here): every block carries a checksum written with
 // it; a block that does not read back as written is dropped and reported; an index of the earlier format (no checksums)
 // empties the store.

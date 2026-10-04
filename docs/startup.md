@@ -47,8 +47,17 @@ and reuses them at later launches:
   thunks for the calls it runs inline. Its table index is the only other input: the body's one reference to it (the
   load of its next x87-mode version's slot, always a 5-byte LEB) is rewritten (`patchAltSlot`). The emulator's
   install then checks the bytes against memory as for any background translation.
+- Code heat (`docs/jit-code-shape.md`: regions cut at cold exits, visit flags) is a translation input that varies by
+  session and grows during one: it is not in the key but recorded per entry — every answer the translation got from
+  the heat (discovery's cold edges: whether a branch ran, whether its successor did; which blocks get a visit flag) —
+  and an entry is reused only where the session's heat gives the same answers (`missHeat` otherwise; a heat that cuts
+  the region elsewhere already gives another extent). Its visit flags are moved to the session's own flag bytes
+  (`patchVisitSlots`, like the table index); a translation made when the flag area ran out is not kept. Batches
+  translated under in-session options (`Jit.switchOpts`) are neither looked up nor kept. The learned entries skipped
+  as blocks of an earlier region are those of the regions as cut by the heat of now: an entry a cut region no longer
+  holds is translated on its own (a server that forgot it as covered relearns it at its next miss).
 - The cache key is a hash of the translator's own sources — the import closure of `bg-translate.js`, `jit.js` and
-  `runtime.js`, fetched by the worker like the modules themselves — plus the translation options: any change to the
+  `runtime.js`, fetched by the worker like the modules themselves — plus the translation options and the defaults they complete (`JIT_DEFAULTS`: layout, cold exits, region sizes...): any change to the
   translator or its options empties the cache. Instrumented translations (profiling, block counters) are not kept.
 - Append-only records (~6 KiB per region: 27 000 BFME2 regions take ~165 MiB), a cut tail dropped at load, at most 256 MiB per game (full, it stays as it is while its entries serve; when the entries read at load mostly miss — ≥ 2 000 misses, over 4 per hit: the game's code changed — it is emptied and refilled); only an index stays in memory, a record is read back on a hit; one tab at a time (the OPFS file is
   opened for exclusive synchronous access: another tab runs without it).

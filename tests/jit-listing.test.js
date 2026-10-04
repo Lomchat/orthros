@@ -35,7 +35,7 @@ test('block counters count every entry of every block (whole and time-sliced run
     const r = jit.regionAt(CODE);
     assert.ok(r && r.counters >= 0, 'the region has counters');
     const counts = jit.blockCounts(r);
-    const byEip = new Map(r.blocks.map((b, i) => [b.eip, counts[i]]));
+    const byEip = new Map(r.blocks.map((b) => [b.eip, counts[b.index]])); // (counts by block index)
     // (time slices re-enter the region: the loop block still counts one entry per iteration)
     assert.equal(byEip.get(CODE + 2), 100, `loop body entries (slices of ${slice}): ${[...byEip]}`);
     assert.equal(jit.blockCounts(jit.regionAt(CODE + 2)).length, r.blocks.length);

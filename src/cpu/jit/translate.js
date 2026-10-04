@@ -46,9 +46,13 @@ const L_F64D = 64, L_F64E = 65, L_F64G = 66, L_F64H = 67;
 const L_XS0 = 68;
 // f64 shadows of the low qword of the XMM registers (L_XD0+r), for scalar double-precision code (Emitter.xdValid)
 const L_XD0 = 76;
+// if-conversion (Emitter.emitIfcvt): L_IC the branch condition, L_IFS0+k the value of the k-th local the arms write
+// before them, L_IFR0+k its value after the taken arm (IFCVT_SLOTS: the registers and the lazy flag state)
+const L_IC = 84, IFCVT_SLOTS = 13, L_IFS0 = 85, L_IFR0 = L_IFS0 + IFCVT_SLOTS;
 const L_FIRST_DECLARED = 16;
-const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64)]; // indices 16..83
-if (LOCAL_TYPES.length !== L_XD0 + 8 - L_FIRST_DECLARED || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32)]; // indices 16..110
+if (LOCAL_TYPES.length !== L_IFR0 + IFCVT_SLOTS - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -96,7 +100,7 @@ const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
  * ORTHROS_JIT_DEFAULTS (JSON, Node only) overrides them, so that a whole test suite runs under either setting; the
  * harness's dbg:ORTHROS_JIT_AB=<json> switches them within a session (Jit.switchOpts).
  */
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -336,6 +340,87 @@ function regionRetSites(blocks, byEip) {
   return sites;
 }
 
+// ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
+// mirror, or a diamond `jcc T ; x ; jmp M ; T: y ; M:`) whose instructions only compute registers and flags — and read
+// memory — is translated without the branch: both arms are computed and every local they write is selected on the
+// condition (a cmov per register and lazy flag value), then the code goes on at M. A data-dependent branch (comparisons
+// of the elements of an array being sorted or searched: about half of them mispredicted) then costs a few selects
+// instead of a pipeline flush. The arm not taken must have no effect: no stores, no exits, no interpreter fallbacks;
+// its loads read guest address 0 instead of theirs (Emitter.spec, loadMem) — an address of the arm not taken may be
+// anything (a null pointer the branch tests, an address beyond the guest memory, which would trap).
+// A predictable branch costs nothing when predicted, while both arms and the selects always cost: only comparisons of
+// data inside loops are converted (ifcvtDataCond) — not loop counters, a loop-invariant local on the stack, nor tests of
+// a value against a constant (opts.ifcvt 'all': every candidate, for tests).
+/** Instructions an if-converted arm may hold (their handlers write registers and the flag locals only, without exits). */
+const IFCVT_OPS = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'ADD', 'SUB', 'ADC', 'SBB', 'AND', 'OR', 'XOR', 'CMP', 'TEST', 'INC', 'DEC',
+  'NEG', 'NOT', 'SHL', 'SHR', 'SAR', 'SETCC', 'CMOVCC', 'XCHG', 'CBW', 'CWD', 'BSWAP', 'NOP'].map((n) => OP[n]));
+/** at most this many instructions per arm (a terminating JMP not counted) and in both arms */
+const IFCVT_ARM_MAX = 3, IFCVT_TOTAL_MAX = 4;
+/** The locals an arm instruction writes: its register destinations (L_REG+r) and, if it writes flags, the flag locals. */
+function ifcvtWrites(insn, out) {
+  const reg = (o) => { if (o && o.t === OT.REG) out.add(L_REG + (o.size === 1 && o.r >= 4 ? o.r - 4 : o.r)); };
+  const op = insn.op;
+  if (op !== OP.CMP && op !== OP.TEST) reg(insn.ops[0]);
+  if (op === OP.XCHG) reg(insn.ops[1]);
+  if (op === OP.CBW) out.add(L_REG);
+  if (op === OP.CWD) { out.add(L_REG + 2); if (insn.opsize === 2) out.add(L_REG); }
+  if (!FLAGS_NONE.has(op) && op !== OP.SETCC && op !== OP.CMOVCC && op !== OP.CBW && op !== OP.CWD && op !== OP.BSWAP) for (const l of op === OP.NEG ? [L_LZOP, L_LZRES, L_LZA] : [L_LZOP, L_LZRES, L_LZA, L_LZB]) out.add(l);
+  // (a condition read with the lazy state unknown may materialize it: EFLAGS and the lazy op written)
+  if (op === OP.SETCC || op === OP.CMOVCC || op === OP.ADC || op === OP.SBB || op === OP.INC || op === OP.DEC) for (const l of [L_EFLAGS, L_LZOP]) out.add(l);
+}
+/** Whether `insn` may be part of an if-converted arm. */
+function ifcvtInsnOk(insn) {
+  if (!IFCVT_OPS.has(insn.op) || !HANDLERS[insn.op] || insn.inlineApi || insn.rep || insn.lock) return false;
+  for (let i = 0; i < insn.ops.length; i++) {
+    const o = insn.ops[i];
+    if (o.t === OT.REG || o.t === OT.IMM) continue;
+    if (o.t === OT.MEM && (i > 0 || insn.op === OP.CMP || insn.op === OP.TEST)) continue; // (a load, or LEA's address)
+    return false; // a store, a segment register, an x87/MMX/XMM operand
+  }
+  if (insn.op === OP.XCHG && (insn.ops[0].t !== OT.REG || insn.ops[1].t !== OT.REG)) return false;
+  return true;
+}
+/**
+ * Block `X` as an if-converted arm: { block, body (its instructions but a final JMP), succ (where it goes on) }, or null
+ * when it does not qualify.
+ */
+function ifcvtArm(X) {
+  if (!X || X.decodeError) return null;
+  const last = X.insns[X.insns.length - 1];
+  let body, succ;
+  if (X.term === TERM_JMP && last.ops[0].t === OT.REL && last.opsize === 4) { body = X.insns.slice(0, -1); succ = last.ops[0].v; }
+  else if (X.term === TERM_NONE) { body = X.insns; succ = X.fallthrough; }
+  else return null;
+  if (body.length > IFCVT_ARM_MAX || !body.every(ifcvtInsnOk)) return null;
+  return { block: X, body, succ };
+}
+/** a memory operand read as data (not the stack, not LEA's address) */
+const dataMem = (insn, o) => o.t === OT.MEM && insn.op !== OP.LEA && !(o.base === 4 || o.base === 5) && !(o.base < 0 && o.index < 0);
+/**
+ * Whether block A's final branch compares data (see the if-conversion comment above): the flags it reads were last
+ * written in A by a CMP / SUB of two values (no immediate) reading memory other than the stack and absolute variables, or
+ * a register holding such a value (data flows through the registers written in A) — the comparisons of a sort or a
+ * search. A test of a value against a constant (an object's state, a null pointer) is usually predictable, and its
+ * conversion makes the code wait for the load the branch would have speculated past (measured in play: guest time per
+ * instruction +17% when every data test was converted).
+ */
+function ifcvtDataCond(A) {
+  let regs = 0, flags = false, cmp2 = false;
+  for (let i = 0; i < A.insns.length - 1; i++) {
+    const insn = A.insns[i], op = insn.op;
+    let reads = false;
+    insn.ops.forEach((o, k) => {
+      if (dataMem(insn, o)) reads = true;
+      else if (o.t === OT.REG && (k > 0 || !(op === OP.MOV || op === OP.MOVZX || op === OP.MOVSX || op === OP.LEA)) && (regs & (1 << (o.size === 1 && o.r >= 4 ? o.r - 4 : o.r)))) reads = true;
+      else if (o.t === OT.MEM && op === OP.LEA && ((o.base >= 0 && (regs & (1 << o.base))) || (o.index >= 0 && (regs & (1 << o.index))))) reads = true;
+    });
+    const d = insn.ops[0];
+    if (d && d.t === OT.REG && op !== OP.CMP && op !== OP.TEST) { const r = d.size === 1 && d.r >= 4 ? d.r - 4 : d.r; if (reads) regs |= 1 << r; else if (d.size === 4) regs &= ~(1 << r); }
+    if (!LZ_KEEP.has(op)) { flags = reads; cmp2 = (op === OP.CMP || op === OP.SUB) && insn.ops.every((o) => o.t === OT.REG || o.t === OT.MEM); }
+  }
+  return flags && cmp2;
+}
+
 /** Instructions that load the x87 control word (precision / rounding control). */
 const FPU_MODE_WRITERS = new Set([OP.FLDCW, OP.FNINIT, OP.FLDENV, OP.FRSTOR, OP.FXRSTOR, OP.FNSAVE]);
 
@@ -348,6 +433,53 @@ function branchTarget(insn) {
     case OP.CALL: return insn.opsize === 2 ? o.v & 0xffff : o.v;
     default: return -1;
   }
+}
+
+/**
+ * Block order of the emission (opts.layout): reverse postorder of a depth-first walk from the region entry, so that
+ * every transfer that is not part of a cycle goes forward — a plain `br` to a later unit's label, where a backward
+ * transfer outside a structured loop costs a budget check and the region's br_table dispatch (an indirect jump, and
+ * at its loop header the moves of every live value into the places the header assigns them).
+ * In address order, the return of an in-region callee placed after its caller, a block the compiler moved out of
+ * line jumping back into its function, and calls to callees placed before the caller were such transfers. The walk
+ * follows the in-region successors (fallthrough, branch targets, a call's callee and its return site, a RET's return
+ * sites, see regionRetSites); a call's callee is visited last, so that its blocks follow the call (and its return
+ * site follows them), and a conditional branch's fallthrough is visited last, so that it stays next to its block when
+ * it can (a natural fallthrough: no branch at all). Blocks no walk reaches keep their address order at the end. Only
+ * the order changes: every transfer is emitted as before (direct when forward, through the dispatch otherwise).
+ * Returns the blocks with their new indices.
+ */
+function layoutBlocks(blocks, byEip, entry) {
+  const retSites = regionRetSites(blocks, byEip);
+  const succ = (b) => {
+    const last = b.insns[b.insns.length - 1];
+    switch (b.term) {
+      case TERM_NONE: return [b.fallthrough];
+      case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
+      case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : [];
+      case TERM_CALL: return [b.fallthrough, branchTarget(last)];
+      default: return retSites[b.index] ?? []; // (RET, an import stub's inline-API JMP: their local return sites)
+    }
+  };
+  const seen = new Uint8Array(blocks.length), post = [];
+  const start = byEip.get(entry) ?? blocks[0];
+  // iterative DFS: [block, its successor blocks, next successor to visit]
+  const stack = [[start, succ(start).map((a) => byEip.get(a)).filter(Boolean), 0]];
+  seen[start.index] = 1;
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    if (top[2] < top[1].length) {
+      const t = top[1][top[2]++];
+      if (!seen[t.index]) { seen[t.index] = 1; stack.push([t, succ(t).map((a) => byEip.get(a)).filter(Boolean), 0]); }
+      continue;
+    }
+    post.push(top[0]);
+    stack.pop();
+  }
+  const order = post.reverse();
+  for (const b of blocks) if (!seen[b.index]) order.push(b);
+  order.forEach((b, i) => { b.index = i; });
+  return order;
 }
 
 /**
@@ -409,6 +541,15 @@ export function discoverRegion(mem, entry, opts) {
   const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
   const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
   const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
+  // opts.coldExits with a heat (opts.heat, see heat.js: get(address) = executions, VISITED for the learned / visited
+  // ranges): a successor of a branch that ran at least opts.coldMin times is left out of the region when it never ran
+  // itself — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
+  const heat = (opts.coldExits ?? JIT_DEFAULTS.coldExits) && opts.heat ? opts.heat : null;
+  const coldMin = opts.coldMin ?? JIT_DEFAULTS.coldMin;
+  // opts.onlyBlocks (a Set of block addresses): the blocks of an earlier translation of this entry, whose extent and
+  // numbering an x87-mode version must repeat (the heat may have grown since)
+  const only = opts.onlyBlocks ?? null;
+  const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
@@ -418,7 +559,7 @@ export function discoverRegion(mem, entry, opts) {
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } };
+      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && leaders.size < MAX_BLOCKS && !cold(insn.addr, t)) { leaders.add(t); queue.push(t); } };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
@@ -470,6 +611,19 @@ export function patchAltSlot(code, altAt, fnIdx) {
   if (!(fnIdx >= 0 && fnIdx < JIT_ALT_SLOTS) || code[altAt - 2] !== 0x28) throw new Error('patchAltSlot: not an alt slot load');
   let v = (JIT_ALT_BASE + 4 * fnIdx) >>> 0;
   for (let i = 0; i < 5; i++) { code[altAt + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
+  return code;
+}
+
+/**
+ * A translated body whose visit flags (opts.visit) move to other addresses: `sites` pairs [body offset, flag address]
+ * (the offsets of stats.visitSites; the stores' 5-byte offset LEBs rewritten in place). Returns `code`.
+ */
+export function patchVisitSlots(code, sites) {
+  for (const [at, addr] of sites) {
+    if (code[at - 2] !== 0x3a || !(addr >= BLOCK_COUNTS_BASE && addr < BLOCK_COUNTS_BASE + 4 * BLOCK_COUNTS_SLOTS)) throw new Error('patchVisitSlots: not a visit flag store');
+    let v = addr >>> 0;
+    for (let i = 0; i < 5; i++) { code[at + i] = (v & 0x7f) | (i < 4 ? 0x80 : 0); v >>>= 7; }
+  }
   return code;
 }
 
@@ -601,11 +755,37 @@ export const NOCHAIN_PROF = 0x8000;
 export function allocBlockCounters(mem, n) {
   const i32 = mem.i32, w = BLOCK_COUNTS_BASE >>> 2;
   const shared = typeof SharedArrayBuffer !== 'undefined' && i32.buffer instanceof SharedArrayBuffer;
+  // (once full the index no longer advances: requests after that would otherwise keep adding to it until it wrapped
+  // and handed out addresses outside the area — fill() with a negative start counts from the end of guest memory)
+  const now = shared ? Atomics.load(i32, w) : i32[w];
+  if (!(n > 0) || now < 0 || now + 1 + n > BLOCK_COUNTS_SLOTS) return -1;
   const at = (shared ? Atomics.add(i32, w, n) : (i32[w] += n) - n) || 0;
   const first = at + 1; // (slot 0 is the bump index)
-  if (first + n > BLOCK_COUNTS_SLOTS) return -1;
+  if (at < 0 || first + n > BLOCK_COUNTS_SLOTS) return -1;
   i32.fill(0, w + first, w + first + n);
   return BLOCK_COUNTS_BASE + 4 * first;
+}
+
+/**
+ * Visit flags by block address (opts.visit): the byte of a block, allocated on first use from the counter area in
+ * chunks of VISIT_CHUNK bytes (allocBlockCounters), -1 once the area is full.
+ */
+const VISIT_CHUNK = 4096;
+export class VisitSlots {
+  constructor() { this.map = new Map(); this.next = 0; this.end = 0; this.full = false; }
+  get(mem, eip) {
+    let a = this.map.get(eip);
+    if (a !== undefined) return a;
+    if (this.next >= this.end) {
+      if (this.full) return -1;
+      const base = allocBlockCounters(mem, VISIT_CHUNK >> 2);
+      if (base < 0) { this.full = true; return -1; }
+      this.next = base; this.end = base + VISIT_CHUNK;
+    }
+    a = this.next++;
+    this.map.set(eip, a);
+    return a;
+  }
 }
 
 class Emitter {
@@ -621,20 +801,25 @@ class Emitter {
     this.fcmp = null;
     this.smc = opts.smc !== false;
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
+    this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
+    this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 precision/rounding control (cw & 0xf00) the region is specialized for (null: tested at run time)
     this.fpcAssume = opts.fpcAssume ?? null;
-    this.stats = { native: 0, fallback: 0, x87Planned: 0 }; // (x87Planned: blocks entered with a planned x87 shift)
+    this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
     this.stShift = 0;
   }
 
   run(entry) {
-    const { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip } = discoverRegion(this.mem, entry, this.opts);
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
+    this.discovered = blocks; // (address order)
+    this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;
+    if (this.layout) blocks = layoutBlocks(blocks, byEip, entry);
     this.blocks = blocks;
     this.byEip = byEip;
     if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
@@ -649,6 +834,22 @@ class Emitter {
     // into a block passes there: fallthrough, branch, dispatch, chain) — which blocks of a hot region the time goes to
     this.counterBase = this.opts.blockCounts ? allocBlockCounters(this.mem, blocks.length) : -1;
     this.stats.counters = this.counterBase;
+    // visit flags (opts.visit, not with counters): a byte per block not known to have run (opts.heat), set to 1 at the
+    // block's entry; Jit.harvestVisits collects them into the heat (see heat.js). stats.visits: [eip, end, flag address]
+    // One flag per block address (opts.visitSlots, shared by the translations of a thread: the regions holding a block
+    // set the same byte), from the counter area in chunks (allocVisitFlag).
+    this.visitAt = null;
+    if ((this.opts.visit ?? JIT_DEFAULTS.visit) && this.counterBase < 0) {
+      const heat = this.opts.heat ?? null, slots = this.opts.visitSlots ?? new VisitSlots();
+      const visits = [];
+      for (const b of blocks) {
+        if (heat && heat.has(b.eip)) continue;
+        const a = slots.get(this.mem, b.eip); if (a < 0) { this.stats.visitsCut = true; break; } // (the area is full)
+        (this.visitAt ??= new Int32Array(blocks.length).fill(-1))[b.index] = a;
+        visits.push([b.eip, b.end, a]);
+      }
+      if (visits.length) this.stats.visits = visits;
+    }
     // XMM registers named by the region's instructions live in v128 locals between entry and the exits (the state
     // block is written at exits, chains and around interpreter fallbacks): scalar SSE results no longer go through
     // memory, where an 8-byte store followed by a 16-byte load of the same register defeats store forwarding.
@@ -658,7 +859,9 @@ class Emitter {
     const c = this.c;
     // registers/flags arrive as parameters; only the x87 TOP cache is loaded from the state block
     // (plus the whole x87 stack in x87 regions)
-    c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    // the FS base (TEB) only in regions reading it: an FS-segment operand, an API run inline (its TEB fields)
+    this.usesFs = blocks.some((b) => b.insns.some((i) => i.inlineApi || i.seg === SEG.FS || i.ops.some((o) => o.seg === SEG.FS)));
+    if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop(); this.loadX87(); } // (TOP: x87 regions only, the others never change it)
     this.loadXmm(); // (before any exit path: they write the cached registers back)
     this.exitCodeL = c.block();
@@ -713,7 +916,11 @@ class Emitter {
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
-    return { code: c.finish(), blocks: blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end })), stats: this.stats, fpcAssume: this.fpcAssume, altAt: this.altAt, deps: inlineDeps(blocks) };
+    // (in address order whatever the layout: callers compare the blocks of translations of the same code)
+    const out = blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end }));
+    if (this.layout) out.sort((x, y) => x.eip - y.eip);
+    // (deps in address order, as code-cache.js inlineDeps over a discovery pass gives them)
+    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume, altAt: this.altAt, deps: inlineDeps(this.discovered) };
   }
 
   /**
@@ -818,7 +1025,7 @@ class Emitter {
     c.get(L_STATE).i32load(ST.LZ_RES).set(L_LZRES);
     c.get(L_STATE).i32load(ST.LZ_SRC1).set(L_LZA);
     c.get(L_STATE).i32load(ST.LZ_SRC2).set(L_LZB);
-    c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
     if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
     this.loadXmm();
   }
@@ -1118,18 +1325,22 @@ class Emitter {
     let d = 0; // loops holding both
     while (d < sp.length && d < tp.length && sp[d] === tp[d]) d++;
     const s = this.x87Normalize(this.planOf(t)); // (blocks are entered with their planned shift: see x87EntryPlan)
+    // the budget is checked on the transfers to an address no higher than the block's (every cycle has one): those
+    // that are backward in address order, whatever the emission order (opts.layout) — so that time slices end at the
+    // same points as in address order, as do the threads' interleavings
+    const addrBack = b.eip <= this.blocks[this.cur].eip;
     if (t > this.cur) {
       // forward: no budget check (every cycle contains a backward edge, which checks it). The unit holding t
       // among the children of the innermost common loop (or the top level) is a later sibling of the one
       // holding the source: its label is in scope; a loop entered elsewhere than at its header dispatches
       this.count(PF.forward);
-      this.charge(n);
+      if (addrBack) this.budget(n, target, b.flagsIn ?? FL_ALL); else this.charge(n);
       const ct = d < tp.length ? tp[d] : this.blockUnit[t];
       if (!ct.loop || ct.first === t) c.br(ct.label);
       else { this.count(PF.dispatch); this.count(PF.dispatchFwdLoop); c.i32(t).set(L_BLK).br(ct.label); }
     } else {
       this.count(PF.backward);
-      this.budget(n, target, b.flagsIn ?? FL_ALL);
+      if (addrBack || !this.layout) this.budget(n, target, b.flagsIn ?? FL_ALL); else this.charge(n);
       const common = d > 0 ? sp[d - 1] : null;
       if (common) { if (t !== common.first) { this.count(PF.dispatch); this.count(PF.dispatchBackLoop); c.i32(t).set(L_BLK); } c.br(common.loopL); }
       else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); c.i32(t).set(L_BLK).br(this.dispatchL); }
@@ -1166,6 +1377,7 @@ class Emitter {
   /** address on stack -> value */
   loadMem(size) {
     const c = this.c;
+    if (this.spec) { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); } // (an if-converted arm: see emitIfcvt)
     if (size === 4) c.i32load(0, 0); else if (size === 2) c.i32load16u(0); else c.i32load8u(0);
   }
   /** (addr, value) on stack -> store */
@@ -1542,6 +1754,10 @@ class Emitter {
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
     if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
+    if (this.visitAt !== null && this.visitAt[b.index] >= 0) {
+      // (stats.visitSites: the body offset of each flag address, a 5-byte LEB — the area is above 2^28 —: see patchVisitSlots)
+      this.c.i32(0).i32(1); (this.stats.visitSites ??= []).push(b.eip, this.c.len + 2); this.c.i32store8(this.visitAt[b.index]);
+    }
     // the predicted lazy op at entry (regionLazyPrediction) holds up to the block's first instruction changing it
     this.lzPred = b.lzPred ?? -1;
     this.lzPredUntil = 0;
@@ -1551,7 +1767,12 @@ class Emitter {
     for (let i = b.insns.length - 1, l = b.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(b.insns[i], l); }
     /** x87 mode (cw & 0xf00) known at this point of the emission, or null (L_FPC tested at run time) */
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
-    for (const insn of b.insns) { this.insnIdx++; this.emitInsn(insn, b); }
+    const ifc = this.ifcvt && b.term === TERM_JCC ? this.ifcvtPlan(b) : null;
+    for (const insn of b.insns) {
+      this.insnIdx++;
+      if (ifc && this.insnIdx === b.insns.length) { this.emitIfcvt(insn, b, ifc); this.c.site = -1; return; } // (it jumps to the merge)
+      this.emitInsn(insn, b);
+    }
     this.c.site = -1; // (call statistics: block-end code)
     // block end
     const n = b.insns.length;
@@ -1580,6 +1801,72 @@ class Emitter {
         return;
       default: return; // JMP/RET/INDIRECT/EXIT emitted their own exits
     }
+  }
+
+  /**
+   * If-conversion of block A's final JCC (see IFCVT_OPS): { taken, not (arms, null when empty), merge, writes (the locals
+   * the arms write) }, or null. The arms are blocks of the region (still translated as such: they stay entry points of
+   * the region, for other paths into them) going on at the same merge address.
+   */
+  ifcvtPlan(A) {
+    const last = A.insns[A.insns.length - 1];
+    if (last.op !== OP.JCC || last.ops[0].t !== OT.REL) return null;
+    if (this.ifcvt !== 'all' && (!ifcvtDataCond(A) || !this.pathOf[A.index].some((u) => u.loop))) return null; // (data compares in loops)
+    const tgt = last.ops[0].v >>> 0, ft = A.fallthrough >>> 0;
+    if (tgt === ft) return null;
+    const armOf = (a) => { const X = this.byEip.get(a); return X && X !== A ? ifcvtArm(X) : null; };
+    const aT = armOf(tgt), aN = armOf(ft);
+    let plan = null;
+    if (aN && aN.succ >>> 0 === tgt) plan = { taken: null, not: aN, merge: tgt };
+    else if (aT && aT.succ >>> 0 === ft) plan = { taken: aT, not: null, merge: ft };
+    else if (aT && aN && aT.succ >>> 0 === aN.succ >>> 0 && aT.block !== aN.block) plan = { taken: aT, not: aN, merge: aT.succ >>> 0 };
+    if (!plan || (plan.taken?.body.length ?? 0) + (plan.not?.body.length ?? 0) > IFCVT_TOTAL_MAX) return null;
+    const w = new Set();
+    for (const a of [plan.taken, plan.not]) if (a) for (const insn of a.body) ifcvtWrites(insn, w);
+    plan.writes = [...w].sort((x, y) => x - y);
+    if (plan.writes.length > IFCVT_SLOTS) return null;
+    return plan;
+  }
+  /**
+   * Block A's final JCC, if-converted (plan: ifcvtPlan): the condition into L_IC, each arm emitted in turn from the same
+   * state (the locals it writes saved before and restored after the first one), its loads made harmless when it is not
+   * the path taken (spec: loadMem), then every written local selected on the condition, the instruction budget charged
+   * for the path taken, and a jump to the merge block. The static lazy flag state after the merge is the arms' common
+   * one, or unknown (the locals hold it either way).
+   */
+  emitIfcvt(insn, A, plan) {
+    const c = this.c;
+    this.curOp = insn.op; c.site = insn.op;
+    this.stats.ifcvt++;
+    this.pushCond(insn.cc); c.set(L_IC);
+    const lz0 = this.lz, W = plan.writes, nA = A.insns.length;
+    const emitArm = (arm, spec) => {
+      const X = arm.block, saved = [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp];
+      const live = (this.flagsAfter = new Uint8Array(X.insns.length));
+      for (let i = X.insns.length - 1, l = X.flagsOut ?? FL_ALL; i >= 0; i--) { live[i] = l; l = flagsLiveBefore(X.insns[i], l); }
+      this.lz = lz0; this.lzPred = -1; this.lzPredUntil = -1; this.fcmp = null; this.insnIdx = 0;
+      this.spec = spec;
+      if (this.counterBase >= 0) { const a = this.counterBase + 4 * X.index; c.i32(0).i32(0).i32load(a).get(L_IC); if (spec === 2) c.eqz(); c.add().i32store(a); }
+      for (const i of arm.body) { this.insnIdx++; this.emitInsn(i, X); }
+      this.spec = 0;
+      const lz = this.lz;
+      [this.flagsAfter, this.insnIdx, this.lzPred, this.lzPredUntil, this.fcmp] = saved;
+      return lz;
+    };
+    let lzT = lz0, lzN = lz0;
+    if (plan.taken) {
+      W.forEach((l, k) => c.get(l).set(L_IFS0 + k));
+      lzT = emitArm(plan.taken, 1);
+      W.forEach((l, k) => c.get(l).set(L_IFR0 + k).get(L_IFS0 + k).set(l)); // (its results kept, the state before it back)
+    } else W.forEach((l, k) => c.get(l).set(L_IFR0 + k)); // (the taken path changes nothing)
+    if (plan.not) lzN = emitArm(plan.not, 2);
+    W.forEach((l, k) => c.get(L_IFR0 + k).get(l).get(L_IC).select().set(l));
+    const same = (a, b) => (a === null && b === null) || (a !== null && b !== null && a.kind === b.kind && a.sz === b.sz && a.kind >= 0);
+    this.lz = same(lzT, lzN) ? lzT : null;
+    const nT = plan.taken ? plan.taken.block.insns.length : 0, nN = plan.not ? plan.not.block.insns.length : 0;
+    if (nT !== nN) c.get(L_ICOUNT).i32(nT).i32(nN).get(L_IC).select().sub().set(L_ICOUNT);
+    this.insnIdx = nA;
+    this.jumpTo(plan.merge, nA + (nT === nN ? nT : 0));
   }
 
   emitInsn(insn, b) {
