@@ -159,3 +159,43 @@ frequent. Another cause remains, not yet found. Next leads:
   the browser runs so far it recorded nothing; check why;
 - whether the main thread's parked ReadFile from msvcr71, ~80 ms just before the click in every run, matters;
 - an abandoned mutex (0x9dc, left by an exited Miles thread).
+
+### Follow-up (2026-10-04): the null page, the quantum
+
+**Null-page faults** (docs/null-page.md): stores into the first 64 KiB now raise the access violation Windows raises. The
+first anomaly of a failing run is now a fault at that store (`lotrbfme.exe+0x882c67`, the program allocator unlinking a
+block whose links are garbage), on which the game's crash handler ends the process (exit through its dialog) — earlier
+and clearer than the calls through garbage pointers that followed before.
+
+**Reproduced in Node.** `tools/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the
+warm profile (menu, SOLO PLAY, SKIRMISH) fails like the browser — same faulting store, same stacks — in a few percent of
+the runs at the default slice, more on a loaded machine, and in 12-25 % with `ORTHROS_SLICE_INSNS=20000` / `5000`
+(amplifiers: more points where threads are interrupted). Tens of runs in parallel, no browser slot.
+
+**What is freed twice.** With `ORTHROS_TRACE_EIP` on the program's `free` wrapper (its address from the crash report's
+"code before return address" — the instructions around the crash) and `ORTHROS_INTERP_RANGES` covering it, a failing
+run shows the block's history: the main thread freed it through one path (an owner of the block at the time), then,
+later, a reference-counted string's destructor on the main thread released it again — the string still pointed at data
+whose count had already reached zero (in another failing run the free list held "THRO", the profile name's letters,
+written into the freed block). The same string functions run on the main thread, on the game's audio-manager thread
+(normal priority, a `Sleep(1)` loop) and on the Miles service thread (TIME_CRITICAL, game callbacks): a count updated
+by two threads around a moment where one of them is interrupted. Such a race exists on Windows too; how often it is hit
+depends on where and how often threads are interrupted.
+
+**The quantum** (above) made those points Windows-like for threads of equal priority and independent of the host's load.
+Node runs of the scenario, the tree before (983ac2e) and after, run side by side:
+
+| slices | before | after |
+|---|---|---|
+| 20 000 instructions | 2 / 16 | 0 / 16 |
+| 5 000 instructions | 4 / 20 | 0 / 20 |
+| default (100 000) | 1 / 30 | 1 / 30 |
+
+(amplified: 6/36 against 0/36, one-sided Fisher p = 0.012). At the default slice the rate is too low in Node to tell
+the difference. Remaining: the Miles service thread wakes every 5 ms of real time and preempts at any point, as on
+Windows, but the emulated game runs several times slower than on the hardware it was written for, so a given window of
+the main thread is hit proportionally more often — not something a scheduler can make faithful without slowing time.
+
+Other games with the quantum (Node, same scenarios, before / after): BFME2's play 3569 / 3569 frames in 120 s, guest
+3.54 / 3.65 ns per instruction, API time 31.7 / 27.0 s; Vice City's drive 656 / 654 frames, 3.74 / 3.64 ns. RotWK's play
+3.57-3.74 ns per instruction in both.

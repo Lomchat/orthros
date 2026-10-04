@@ -51,8 +51,13 @@ scenarios, from the warm profiles, `perf stat -e instructions:u` of the whole pr
 | no checks | 1008 / 1030 G | 717.0 / 715.7 G | |
 | writes only (the default) | 1019 / 1053 G (+1.1 / +2.3 %) | 727.1 / 726.9 G (+1.4 / +1.6 %) | translation time +5 % |
 
-Guest time per instruction in RotWK's play (the frame accounting's `guest` per instruction, 30 s phases) is the same:
-3.57 / 3.66 / 3.51 ns with the checks, 3.57 / 3.66 / 3.74 without. What is left of the cost in 'writes' mode is
+Split by `perf record -e instructions:u` (RotWK, 60 G, one pair): the translated code itself +0.6 % (322.8 K against
+320.8 K samples of 2 M instructions), the compiler threads +3.1 %, the JavaScript thread +2.9 %, the whole +1.3 %.
+Guest time per instruction in RotWK's play (the frame accounting's `guest` per instruction, 30 s phases) is the same
+within the spread: 3.57 / 3.66 / 3.51 ns with the checks, 3.57 / 3.66 / 3.74 without; in-session A/B (`dbg:ORTHROS_JIT_AB=
+{"nullPage":false}`, tools/scenarios/*-nullpage-ab.txt, three alternations, both orders) gave +1 to +6 % per session
+for the checks, but variants with half of the added code removed gave the same +2 % and −3 to −4 % — the phases of one
+session differ by ±5 %, more than what is measured. What is left of the cost in 'writes' mode is
 compilation (the explicit checks of string stores, two stores in the SMC cold path of every plain store); the
 translated code runs as fast. The cost of reads is mostly the code they add, not the compare: every check is a cold exit
 (the region's state written back), and TurboFan compiles the larger functions more slowly.
