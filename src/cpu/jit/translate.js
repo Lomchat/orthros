@@ -832,7 +832,7 @@ export function buildRegionModule(codes, names = null, shared = false) {
  * SITE_PROF: [guest address (static exits: the target), kind, slot address].
  */
 export const SITE_PROF = [];
-const SITE_SLOTS = new Map();
+const SITE_SLOTS = new WeakMap(); // guest memory -> (kind:address -> slot address): the slots are allocated in that memory
 /** Transition counters of profiling translations (opts.profile), ST.PROF + 4 * index. */
 export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect', 'exit', 'chainSelf', 'chainOther', 'dispatch', 'retLocal', 'flagsNull', 'flagsStatic', 'flagsEager', 'flagsSlowArm', 'chainFromX87',
   // (from here on in ST.PROF2) the dispatches by kind: a forward transfer into a loop elsewhere than at its header, a
@@ -1392,8 +1392,9 @@ class Emitter {
   siteProf(addr, kind) {
     if (!globalThis.ORTHROS_SITE_PROF || this.opts.blockCounts) return;
     const key = kind + ':' + addr;
-    let a = SITE_SLOTS.get(key);
-    if (a === undefined) { a = allocBlockCounters(this.mem, 3); if (a < 0) return; SITE_SLOTS.set(key, a); SITE_PROF.push([addr, kind, a]); }
+    let slots = SITE_SLOTS.get(this.mem); if (!slots) SITE_SLOTS.set(this.mem, slots = new Map());
+    let a = slots.get(key);
+    if (a === undefined) { a = allocBlockCounters(this.mem, 3); if (a < 0) return; slots.set(key, a); SITE_PROF.push([addr, kind, a]); }
     const c = this.c;
     c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a);
     c.i32(0).i32load(a + 4).get(L_TV).ne();
