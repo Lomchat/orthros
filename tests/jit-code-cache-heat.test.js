@@ -121,7 +121,7 @@ test('code cache with heat: past its bound, the cache makes room when the backgr
   const rl = store.size() - head, maxBytes = head + rl + (other.size() - head) - 1; // (the second record: 1 byte past it)
   // another shape of the same code: added past the bound (the earlier one superseded), the file compacted only once
   // no batch came for idleMs
-  s = await session(store, H.cut, { maxBytes, idleMs: 5, refresh: false });
+  s = await session(store, H.cut, { maxBytes, idleMs: 200, refresh: false });
   assert.equal(s.s, ref.s); assert.equal(s.bg.cache.superseded, 1); assert.equal(s.bg.cache.added, 1);
   assert.ok(store.size() > maxBytes, 'past the bound until idle');
   await until(() => store.size() === other.size());
