@@ -121,7 +121,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, slotPred: true, sitePred: true, discoverDepth: false, calleeMax: 0, calleeMaxDirect: 0, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -686,6 +686,36 @@ export function discoverRegion(mem, entry, opts) {
   // numbering an x87-mode version must repeat (the heat may have grown since)
   const only = opts.onlyBlocks ?? null;
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
+  // opts.calleeMax (predicted calls) / opts.calleeMaxDirect (direct calls), when > 0: a callee joins the region only when
+  // its own blocks (from its entry: fallthroughs, branches and jumps, calls going on at their return sites, up to its
+  // returns and indirect jumps; cold edges left out as discovery does) are at most that many — a callee too large for
+  // the region is not copied in part, its call leaves the region
+  const calleeMax = opts.calleeMax ?? JIT_DEFAULTS.calleeMax, calleeMaxDirect = opts.calleeMaxDirect ?? JIT_DEFAULTS.calleeMaxDirect;
+  const calleeSize = new Map();
+  const calleeFits = (p, max) => {
+    const k = p * 64 + max; let r = calleeSize.get(k);
+    if (r !== undefined) return r;
+    const seen = new Set([p]), work = [p];
+    r = true;
+    outer: while (work.length) {
+      let a = work.pop();
+      for (let n = 0; n < MAX_INSNS; n++) {
+        if (isBoundary(a)) break;
+        let insn; try { insn = dec(a); } catch { break; }
+        const term = termOf(insn);
+        const add = (t) => { if (t < 0 || isBoundary(t) || seen.has(t) || cold(insn.addr, t)) return true; seen.add(t); work.push(t); return seen.size <= max; };
+        if (term === TERM_NONE) { a = insn.next; if (seen.has(a)) break; continue; }
+        let ok = true;
+        if (term === TERM_JMP) ok = add(branchTarget(insn));
+        else if (term === TERM_JCC || term === TERM_LOOP) ok = add(insn.ops[0].v) && add(insn.next);
+        else if (term === TERM_CALL) ok = add(insn.next);
+        if (!ok) { r = false; break outer; }
+        break;
+      }
+    }
+    calleeSize.set(k, r);
+    return r;
+  };
   // (measurement, startbench --jit-sites: the successors left out for the region's size)
   const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
   // opts.discoverDepth: the blocks are taken by call depth (the entry's function first, then its callees, then theirs...,
@@ -724,7 +754,11 @@ export function discoverRegion(mem, entry, opts) {
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(branchTarget(insn)); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
-      if (term === TERM_CALL) { addLeader(insn.pred || insn.ops[0].v, 1); addLeader(insn.next); break; }
+      if (term === TERM_CALL) {
+        const t = insn.pred || insn.ops[0].v, max = insn.pred ? calleeMax : calleeMaxDirect;
+        if (!(max > 0) || leaders.has(t) || calleeFits(t, max)) addLeader(t, 1);
+        addLeader(insn.next); break;
+      }
       if (term === TERM_INDIRECT || term === TERM_RET || term === TERM_EXIT) { if (term !== TERM_RET && term !== TERM_INDIRECT) addLeader(insn.next); break; }
       break;
     }
@@ -1485,7 +1519,7 @@ class Emitter {
     c.i32(0).i32(insn.addr | 0).i32store(e);
   }
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, this.limited?.has(eip) ? 'exitLim' : 'exit'); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
@@ -2757,7 +2791,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   const c = E.c; const t = insn.ops[0];
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
-    E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length);
+    E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false;
     return;
   }
   // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
@@ -2775,7 +2809,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
   if (insn.pred) { // (predicted: see slotPredOf; opsize 4)
     c.get(L_T4).i32(insn.pred).eq();
-    const i = c.if_(); E.jumpTo(insn.pred, b.insns.length); c.end(); void i;
+    const i = c.if_(); E.inCall = true; E.jumpTo(insn.pred, b.insns.length); E.inCall = false; c.end(); void i;
   }
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
