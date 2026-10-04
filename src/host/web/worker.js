@@ -683,9 +683,9 @@ self.onmessage = (e) => {
     const ext = host?.gfx?.gl.getExtension('WEBGL_lose_context');
     if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), m.ms ?? 500); } else log('warn', 'WEBGL_lose_context unavailable');
   }
-  else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start)
+  else if (m.type === 'dbg') { // (harness dbg:NAME=value: a worker debug global changed while the game runs, as --dbg sets them at start; ORTHROS_TRACE_API=1: every API call logged with its result as [api], 2: COM / D3DX calls too)
     const [k, v] = String(m.kv ?? '').split('=');
-    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); refreshApiOpt(); if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_COLD_TIER' && vm?.jit?.bg) vm.jit.coldTier = !!globalThis[k]; if (k === 'ORTHROS_JIT_AB' && vm?.jit) vm.jit.switchOpts(v ? JSON.parse(v) : null); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
+    if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_TRACE_API' && vm) vm.traceApiRet = Number(globalThis[k] ?? 0); refreshApiOpt(); if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_COLD_TIER' && vm?.jit?.bg) vm.jit.coldTier = !!globalThis[k]; if (k === 'ORTHROS_JIT_AB' && vm?.jit) vm.jit.switchOpts(v ? JSON.parse(v) : null); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
     // guest instructions executed in the phase: the guest category's time per instruction is the translated code's speed,

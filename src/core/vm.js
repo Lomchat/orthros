@@ -74,6 +74,7 @@ export class Vm {
     this.logKinds = new Set(opts.logKinds ?? ['loader', 'warn', 'crash']);
     this.traceApi = this.logKinds.has('api') || this.logKinds.has('all');
     this.traceApiBg = opts.logKinds?.includes('apibg') ?? false;
+    this.traceApiRet = Number(globalThis.ORTHROS_TRACE_API ?? 0); // (debugging: every completed API call logged with its result as [api]; 1: without COM / D3DX, 2: all; --dbg / dbg: in the harness)
     // 'apisite': the first calls of every (thread, call site) pair with arguments and result — a bounded trace of
     // how each thread uses the API (handles, timeouts, results) without the volume of a full trace.
     this.traceApiSite = opts.logKinds?.includes('apisite') ? new Map() : null;
@@ -591,6 +592,7 @@ export class Vm {
       if (this.apiTimes) this.noteApiTime(t, tApi);
       if (thread.resuming) { thread.resuming = false; thread.wakeResult = undefined; } // re-executed call completed without blocking again
       if (this.apiBurst && this.apiBurst.tid === thread.id && !(this.apiBurst.noGfx && (t.dll === 'com.dll' || t.dll.startsWith('d3dx9'))) && this.apiBurst.left-- > 0 && !APIBG_QUIET.has(t.name)) this.logFn('apiburst', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)} from ${this.proc.symbolize(this.mem.read32(sp))}`);
+      if (this.traceApiRet && !APIBG_QUIET.has(t.name) && (this.traceApiRet > 1 || !(t.dll === 'com.dll' || t.dll.startsWith('d3dx9')))) this.logFn('api', `[t${thread.id}] ${this.fmtCall(t, ctx, def.argc)} -> ${r === undefined ? '-' : r === TAIL_CALL ? 'tail' : '0x' + (r >>> 0).toString(16)} err ${thread.lastError ?? '?'}`); // (debugging: dbg:ORTHROS_TRACE_API=1 in the harness)
       if (this.traceApiSite) {
         const key = this.mem.read32(sp) + thread.id * 0x100000000;
         const n = this.traceApiSite.get(key) ?? 0;
