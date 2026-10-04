@@ -67,7 +67,7 @@ export class Jit {
     this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
-    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared, countChains: opts.countChains }));
+    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared, countChains: opts.countChains, tailCalls: supportsReturnCall() }));
     this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table, now: opts.now ?? (() => 0) } }).exports;
     this.imports = {
       env: {
