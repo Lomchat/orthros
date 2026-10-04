@@ -117,7 +117,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: true, chainStub: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: true, chainStub: true, dispatchBlock: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -939,7 +939,7 @@ class Emitter {
     // no transfer went back through the dispatcher (every backward one stays in a structured loop): its loop is a block
     // (the same control flow — nothing branches to its start —, but TurboFan aligns a loop header, checks the stack
     // there and merges every live value into it: code run at each entry of the region)
-    if (!this.dispatchUsed && this.opts.dispatchBlock !== false) { if (c.buf[this.dispatchAt] !== 0x03) throw new Error('dispatch loop not found'); c.buf[this.dispatchAt] = 0x02; this.stats.dispatchBlock = 1; }
+    if (!this.dispatchUsed && (this.opts.dispatchBlock ?? JIT_DEFAULTS.dispatchBlock)) { if (c.buf[this.dispatchAt] !== 0x03) throw new Error('dispatch loop not found'); c.buf[this.dispatchAt] = 0x02; this.stats.dispatchBlock = 1; }
     c.end(); // exitJmpL: jump exit (tV = target eip)
     if (this.chain && this.chainStub && !this.prof) {
       // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
