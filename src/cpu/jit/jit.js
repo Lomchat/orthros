@@ -217,6 +217,7 @@ export class Jit {
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
+    if (stats.dispatchBlock) this.stats.dispatchBlocks = (this.stats.dispatchBlocks ?? 0) + 1; // (regions whose dispatcher is no loop)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
     const t2 = performance.now();
     let inst;
@@ -262,14 +263,13 @@ export class Jit {
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
   }
   /**
-   * The x87 mode to translate a learned region for: as learned, the stack top assumed empty (TOP 0, what a function
-   * entered with no value pushed finds) when it was learned without one (an earlier build) — another top at run time
-   * takes the version path — and without the top when the option is off.
+   * The x87 mode to translate a learned region for: as learned (an entry learned by an earlier build has no stack top:
+   * translated testing it at run time — assuming one would drop and translate again, on the game's thread, every such
+   * region entered with another top), without the top when the option is off.
    */
   learnedMode(fpc) {
     if (fpc === null || fpc === undefined) return fpc;
-    if (!this.x87Top()) return fpc & 0xf00;
-    return fpc & X87_MODE_TOP ? fpc : fpc | X87_MODE_TOP;
+    return this.x87Top() ? fpc : fpc & 0xf00;
   }
   /** are x87 regions specialized for the stack top at their entry (opts.x87Top, see x87ModeOf)? */
   x87Top() { return !!(this.abOpts?.x87Top ?? this.opts.x87Top ?? JIT_DEFAULTS.x87Top); }

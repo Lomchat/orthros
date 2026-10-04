@@ -918,6 +918,8 @@ class Emitter {
       c.end(); void i;
       if (this.topAssume !== null) { c.i32(this.topAssume).set(L_TOP); this.loadX87Tags(); this.loadX87Regs(); }
     }
+    // (a loop only when some transfer goes back through the dispatcher: see the end of the region)
+    this.dispatchAt = c.len; this.dispatchUsed = false;
     this.dispatchL = c.loop();
     const def = c.block();
     // one label per unit: the last unit's is outermost, the first's innermost, so that the u-th
@@ -934,6 +936,10 @@ class Emitter {
     c.end(); // def
     c.unreachable();
     c.end(); // dispatch loop
+    // no transfer went back through the dispatcher (every backward one stays in a structured loop): its loop is a block
+    // (the same control flow — nothing branches to its start —, but TurboFan aligns a loop header, checks the stack
+    // there and merges every live value into it: code run at each entry of the region)
+    if (!this.dispatchUsed && this.opts.dispatchBlock !== false) { if (c.buf[this.dispatchAt] !== 0x03) throw new Error('dispatch loop not found'); c.buf[this.dispatchAt] = 0x02; this.stats.dispatchBlock = 1; }
     c.end(); // exitJmpL: jump exit (tV = target eip)
     if (this.chain && this.chainStub && !this.prof) {
       // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
@@ -1386,7 +1392,7 @@ class Emitter {
       if (addrBack || !this.layout) this.budget(n, target, b.flagsIn ?? FL_ALL); else this.charge(n);
       const common = d > 0 ? sp[d - 1] : null;
       if (common) { if (t !== common.first) { this.count(PF.dispatch); this.count(PF.dispatchBackLoop); c.i32(t).set(L_BLK); } c.br(common.loopL); }
-      else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); c.i32(t).set(L_BLK).br(this.dispatchL); }
+      else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); this.dispatchUsed = true; c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
     this.x87Restore(s);
   }

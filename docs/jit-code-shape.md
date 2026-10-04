@@ -134,12 +134,21 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   36.2 → 29.7 ns (−18 %, host instructions −10 %). Another top under a control word the region has a top-specialized
   version for: the region is translated again testing the top at run time (`genericTop`, the earlier code; Vice City
   drive: 483 regions of 11 052, 79 versions instead of 848 when every top got a version, which made entries with
-  varying tops run a failing guard first). Learned entries without a top (earlier sessions) are translated for TOP 0
-  and reported back as learned. Exact: tests/jit-x87-top.test.js (random tops, stack contents including the values
+  varying tops run a failing guard first). Learned entries without a top (sessions of an earlier build) are
+  translated testing the top at run time (assuming TOP 0 made the first browser session drop and translate again,
+  on the game's thread, the learned regions entered with another top: `jit` and `interp` time in slow frames); the
+  entries a session learns carry their top. Exact: tests/jit-x87-top.test.js (random tops, stack contents including the values
   of empty registers, control words, FDECSTP / FINCSTP, slices down to one instruction, calls into other regions
   returning values on the stack, one JIT re-entered from other tops; fails when the guard ignores the top). Node
   in-session A/B, noisy: Vice City −2.9 %, RotWK −1.2 % (6 rounds; an earlier version policy gave RotWK −3.4 %, BFME2
   −8.6 % over 4 rounds and Vice City +5 %).
+
+- **No dispatch loop when nothing goes back through the dispatcher** (`dispatchBlock`, on unless
+  `dispatchBlock: false`): a region whose backward transfers all stay in structured loops (no `dispatchBackTop` /
+  `dispatchRetTop`) has its dispatcher's `loop` turned into a `block` once emitted (one opcode byte: nothing branches
+  to its start, so the control flow is the same) — TurboFan then neither aligns a loop header nor checks the stack
+  there nor merges every live value into it at each entry. Node in-session A/B (6 rounds): BFME2 −6.0 % (5 rounds of
+  6, thread CPU −6.2 %), RotWK 0.0 % (±11 % per round).
 
 ## Measured, not kept
 
