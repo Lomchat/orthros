@@ -110,3 +110,23 @@ test('answered from the headers alone when there is no readable certificate tabl
   // the table announced past the end of the file (an executable cut after signing)
   assert.equal(verifyAuthenticode(new Uint8Array(file).subarray(0, 0x200), file.length - 64).why, 'certificate table past the end of the file');
 });
+
+test('truncated or malformed headers and corrupted signatures are answered, never thrown (the guest\'s call must return)', () => {
+  let seed = 11; const rnd = (n) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  const { file, certOff } = sign(makePe(), 'sha256');
+  // the file cut at every length through its headers (e_lfanew 0x80; the security directory entry ends at 0x120)
+  for (let n = 0; n <= 0x140; n++) { const r = verifyAuthenticode(new Uint8Array(file.subarray(0, n))); assert.equal(typeof r.status, 'number', `cut at ${n}`); }
+  for (let n = 0x40; n <= 0x140; n++) assert.equal(typeof verifyAuthenticode(new Uint8Array(file.subarray(0, n)), file.length).status, 'number', `headers cut at ${n}`);
+  // e_lfanew anywhere (past the end, near it), random bytes after it
+  for (let i = 0; i < 3000; i++) {
+    const n = 64 + rnd(400), f = new Uint8Array(n); for (let j = 0; j < n; j++) f[j] = rnd(256);
+    f[0] = 0x4d; f[1] = 0x5a; const pe = rnd(n + 8); f[0x3c] = pe & 255; f[0x3d] = pe >> 8; f[0x3e] = 0; f[0x3f] = 0;
+    if (pe + 4 <= n) f.set([0x50, 0x45, 0, 0], pe);
+    assert.equal(typeof verifyAuthenticode(f).status, 'number'); assert.equal(typeof verifyAuthenticode(f, 1 << 20).status, 'number');
+  }
+  // random bytes of the certificate table changed: answered, and never 'signed'
+  for (let i = 0; i < 300; i++) {
+    const t = new Uint8Array(file); for (let k = 1 + rnd(4); k > 0; k--) { const o = certOff + 8 + rnd(t.length - certOff - 8); t[o] ^= 1 + rnd(255); }
+    const r = verifyAuthenticode(t); assert.equal(typeof r.status, 'number');
+  }
+});

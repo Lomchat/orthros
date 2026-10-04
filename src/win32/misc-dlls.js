@@ -240,7 +240,9 @@ export function registerMiscDlls(api, vm) {
       else {
         try {
           const size = f.size(), head = f.read(0, Math.min(size, 4096)), L = peLayout(head);
-          r = L && L.certLen && L.certOff + L.certLen <= size ? verifyAuthenticode(f.read(0, size)) : verifyAuthenticode(head, size);
+          // (whole: a certificate table inside the file, or MZ headers longer than the first 4 KiB)
+          const whole = L ? L.certLen && L.certOff + L.certLen <= size : size > head.length && head[0] === 0x4d && head[1] === 0x5a;
+          r = whole ? verifyAuthenticode(f.read(0, size)) : verifyAuthenticode(head, size);
         } finally { f.close(); }
       }
       trustCache.set(key, r);

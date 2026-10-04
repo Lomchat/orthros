@@ -118,11 +118,11 @@ export function peLayout(f) {
   if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
   const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
   const pe = dv.getUint32(0x3c, true);
-  if (pe + 24 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
+  if (pe + 26 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
   const opt = pe + 24, magic = dv.getUint16(opt, true);
-  const dirs = opt + (magic === 0x20b ? 112 : 96), nDirs = dv.getUint32(dirs - 4, true);
-  const checksum = opt + 64, secEntry = dirs + 4 * 8;
-  if (secEntry + 8 > f.length) return null;
+  const dirs = opt + (magic === 0x20b ? 112 : 96), checksum = opt + 64, secEntry = dirs + 4 * 8;
+  if (secEntry + 8 > f.length) return null; // (a truncated or malformed header: not a PE file — never a read past the buffer)
+  const nDirs = dv.getUint32(dirs - 4, true);
   const certOff = nDirs > 4 ? dv.getUint32(secEntry, true) : 0, certLen = nDirs > 4 ? dv.getUint32(secEntry + 4, true) : 0;
   return { checksum, secEntry, certOff, certLen };
 }
@@ -146,6 +146,7 @@ export function verifyAuthenticode(f, size = f.length) {
   if (!L) return { status: TRUST_E_SUBJECT_FORM_UNKNOWN, why: 'not a PE file' };
   if (!L.certLen || !L.certOff) return { status: TRUST_E_NOSIGNATURE, why: 'no certificate table' };
   if (L.certOff + L.certLen > size || L.certLen < 8) return { status: TRUST_E_NOSIGNATURE, why: 'certificate table past the end of the file' }; // (no signature can be read)
+  if (L.certOff + L.certLen > f.length) return { status: TRUST_E_NOSIGNATURE, why: 'certificate table not in the bytes given (the whole file is needed)' };
   const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
   // WIN_CERTIFICATE entries (8-byte aligned): the first PKCS#7 one (revision 0x200, type 2) is the signature
   let pk = null;
