@@ -58,6 +58,51 @@ export function supportsReturnCall() {
     return WebAssembly.validate(m.build());
   } catch { return false; }
 }
+/**
+ * chain(target, state, registers / flags / budget as the region parameters after the block) -> next EIP | 0: the exit
+ * of a region translated with opts.chainStub (its x87 / XMM caches already written back), shared by many regions: when
+ * the target is translated, not an API thunk nor the stop address and the budget is left, tail-call its region (the
+ * block from the hash entry) with the values received; otherwise write them to the state block and return the target
+ * to the dispatcher. The same checks and probe sequence as translate.js emitChain, in one place instead of in every
+ * region: the code a transition runs stays in the instruction cache (the translated code of a game in play is many
+ * times the size of the caches, and region exits are where it is entered and left).
+ */
+function chainStubCode(regionType, countChains, tailCalls = true) {
+  const c = new Code();
+  const TGT = 0, STATE = 1, ICOUNT = 15, E = 16;
+  const noChain = c.block();
+  // (an engine without tail calls: the module must still validate — the JIT then never chains, see Jit — so the stub
+  // only writes the state back and returns the target)
+  if (!tailCalls) c.br(noChain);
+  else {
+    c.get(ICOUNT).i32(0).le_s().br_if(noChain);
+    c.get(TGT).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u().br_if(noChain);
+    c.get(TGT).get(STATE).i32load(ST.STOP_AT).eq().br_if(noChain);
+    c.get(TGT).eqz().br_if(noChain);
+    const found = c.block();
+    c.get(TGT).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(E + 1);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      c.get(E + 1); if (p) c.i32(p).add();
+      c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(E);
+      c.i32load(0).get(TGT).eq();
+      if (p === 0) c.hint(true);
+      c.br_if(found);
+    }
+    c.br(noChain);
+    c.end(); // found
+    c.get(STATE).get(TGT).i32store(ST.EIP);
+    if (countChains) c.get(STATE).get(STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS);
+    c.get(E).i32load(8);
+    for (let i = STATE; i <= ICOUNT; i++) c.get(i);
+    c.get(E).i32load(4).return_call_indirect(regionType, 0);
+  }
+  c.end(); // noChain
+  REGION_ARG_OFFSETS.forEach((off, k) => c.get(STATE).get(2 + k).i32store(off));
+  c.get(STATE).get(TGT).i32store(ST.EIP);
+  c.get(TGT);
+  return c;
+}
+
 // Fast-path API table: one byte per thunk index (id of a WASM implementation, 0 = none), and a
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
@@ -605,6 +650,12 @@ export function buildRuntime(opts = {}) {
     c.i32(0);
     const idx = m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.i32, T.i32], c, 'run');
     m.exportFunc('run', idx);
+  }
+
+  // ---- chain: see chainStubCode
+  {
+    const idx = m.func(REGION_PARAMS, REGION_RESULTS, [T.i32, T.i32], chainStubCode(regionType, opts.countChains !== false, opts.tailCalls ?? supportsReturnCall()), 'chain');
+    m.exportFunc('chain', idx);
   }
   return m.build();
 }

@@ -93,7 +93,9 @@ function translateBatch(items, over) {
     if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
     try {
       const coldMin = over?.coldMin ?? opts.coldMin ?? JIT_DEFAULTS.coldMin, rec = heatRecorder(heat ?? NO_HEAT, coldMin);
-      const o = { ...opts, ...over, heat: rec, visitSlots, fnIdx: it.fnIdx, fpcAssume: it.fpc };
+      // (it.mode: the x87 mode to translate for, Jit.learnedMode; it.fpc: as the entry was learned, reported back)
+      const mode = it.mode !== undefined ? it.mode : it.fpc;
+      const o = { ...opts, ...over, heat: rec, visitSlots, fnIdx: it.fnIdx, fpcAssume: mode };
       const found = discoverRegion(mem, it.eip, o).blocks;
       const before = found.map((b) => ({ eip: b.eip, end: b.end }));
       if (!before.length) continue;
@@ -102,7 +104,7 @@ function translateBatch(items, over) {
       const useCache = cache && !over;
       const deps = useCache ? inlineDeps(found) : null;
       // (an entry made under other heat answers is not this translation: see heatRecorder)
-      const hit = useCache ? cache.lookup(it.eip, it.fpc, before, snap, deps, (meta) => sameHeat(meta.heat, heat ?? NO_HEAT, coldMin)) : null;
+      const hit = useCache ? cache.lookup(it.eip, mode, before, snap, deps, (meta) => sameHeat(meta.heat, heat ?? NO_HEAT, coldMin)) : null;
       // (its visit flags moved to this session's: one byte per block address, see VisitSlots; none left: translated)
       const sites = hit ? relocateVisits(hit.visits) : null;
       if (hit && sites) {
@@ -131,7 +133,7 @@ function translateBatch(items, over) {
         const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
         for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
         const visits = v.map(([eip, end]) => [eip, end, at.get(eip) ?? []]);
-        cache.add({ eip: it.eip, fpcIn: it.fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, heat: heatAnswers(rec.log), visits, snap, code: t.code });
+        cache.add({ eip: it.eip, fpcIn: mode, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, heat: heatAnswers(rec.log), visits, snap, code: t.code });
       }
     } catch { /* undecodable: left to the emulator */ }
   }

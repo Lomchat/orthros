@@ -5,7 +5,7 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MA
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
-import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots } from './translate.js';
+import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -68,7 +68,7 @@ export class Jit {
     this.coldTier = !!opts.coldTier; this.coldLimit = opts.coldLimit ?? COLD_LIMIT; this.cold = new Map(); this.coldDecodes = new Map(); this.coldQueue = [];
     this.table = new WebAssembly.Table({ initial: 4096, element: 'anyfunc' });
     this.shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer; // (see bg-translate.js)
-    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared }));
+    const rtModule = new WebAssembly.Module(buildRuntime({ profile: !!opts.profile, shared: this.shared, countChains: opts.countChains, tailCalls: supportsReturnCall() }));
     this.runtime = new WebAssembly.Instance(rtModule, { env: { memory: mem.memory, table: this.table, now: opts.now ?? (() => 0) } }).exports;
     this.imports = {
       env: {
@@ -76,6 +76,7 @@ export class Jit {
         table: this.table,
         flags: this.runtime.flags,
         round24: this.runtime.round24,
+        chain: this.runtime.chain,
         fallback: (eip) => this.fallback(eip),
       },
     };
@@ -97,10 +98,11 @@ export class Jit {
     // block eips of regions that were entered under another x87 mode than the one they were specialized
     // for: translated from then on with the precision/rounding control tested at run time
     this.genericFpu = new Set();
+    this.genericTop = new Set(); // (block addresses of regions translated testing the x87 stack top at run time: see EXIT_FPUMODE)
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -156,6 +158,7 @@ export class Jit {
     this.pageRegions.clear();
     this.byFn?.clear();
     this.genericFpu?.clear();
+    this.genericTop?.clear();
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -210,14 +213,17 @@ export class Jit {
     // translation storm diagnostic: thousands of new regions per second means code is being retranslated
     if (!this.stormAt || t0 - this.stormAt > 1000) { this.stormAt = t0; this.stormCount = 0; }
     if (++this.stormCount === 2000 && this.opts.warn) this.opts.warn(`jit: translation storm (${this.stormCount} regions in ${(t0 - this.stormAt).toFixed(0)} ms) at ${eip.toString(16)}; stats ${JSON.stringify(this.stats)}`);
-    // x87 regions are specialized for the precision/rounding control in force when they are first reached
-    const fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : this.mem.read16(this.cpu.base + ST.FPU_CW) & 0xf00;
+    // x87 regions are specialized for the precision/rounding control in force when they are first reached (and the
+    // stack top: see x87ModeOf)
+    let fpcAssume = version ? version.fpc : this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : assume !== undefined ? assume : x87ModeOf(this.mem, this.cpu.base, this.x87Top());
+    if (fpcAssume !== null && (fpcAssume & X87_MODE_TOP) && this.genericTop.has(eip)) fpcAssume &= 0xf00;
     // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
     const o = this.translateOpts(this.nextFn, fpcAssume);
     if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
+    if (stats.dispatchBlock) this.stats.dispatchBlocks++; // (regions whose dispatcher is no loop)
     const bytes = buildRegionModule([code], ['r_' + eip.toString(16)], this.shared);
     const t2 = performance.now();
     let inst;
@@ -262,6 +268,17 @@ export class Jit {
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
   }
+  /**
+   * The x87 mode to translate a learned region for: as learned (an entry learned by an earlier build has no stack top:
+   * translated testing it at run time — assuming one would drop and translate again, on the game's thread, every such
+   * region entered with another top), without the top when the option is off.
+   */
+  learnedMode(fpc) {
+    if (fpc === null || fpc === undefined) return fpc;
+    return this.x87Top() ? fpc : fpc & 0xf00;
+  }
+  /** are x87 regions specialized for the stack top at their entry (opts.x87Top, see x87ModeOf)? */
+  x87Top() { return !!(this.abOpts?.x87Top ?? this.opts.x87Top ?? JIT_DEFAULTS.x87Top); }
   /** the code-shape options of JIT_DEFAULTS given to this Jit (the translator applies the defaults to the others) */
   codeOpts() {
     const o = {};
@@ -399,7 +416,9 @@ export class Jit {
       const eip = eip0 >>> 0;
       if (this.blockMap.has(eip) || !this.interp.executable(eip)) continue;
       if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) continue; // (debugging: left to the interpreter)
-      items.push({ eip, fpc: this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : fpc, fnIdx: this.reserveFn() });
+      let mode = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.learnedMode(fpc);
+      if (mode !== null && mode !== undefined && this.genericTop.has(eip)) mode &= 0xf00;
+      items.push({ eip, fpc: mode === null ? null : fpc, mode, fnIdx: this.reserveFn() }); // (fpc: as learned, for the reports below)
     }
     if (!items.length) return 0;
     const id = bg.nextId++;
@@ -475,7 +494,7 @@ export class Jit {
     if (this.blockMap.has(eip) || !this.interp.executable(eip)) return false;
     if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) return false; // (debugging: left to the interpreter)
     const t0 = performance.now();
-    try { this.translate(eip, null, fpc); } catch { return false; } finally { this.stats.prewarmMs = (this.stats.prewarmMs ?? 0) + performance.now() - t0; }
+    try { this.translate(eip, null, this.learnedMode(fpc)); } catch { return false; } finally { this.stats.prewarmMs = (this.stats.prewarmMs ?? 0) + performance.now() - t0; }
     this.stats.prewarmed = (this.stats.prewarmed ?? 0) + 1;
     return true;
   }
@@ -604,7 +623,7 @@ export class Jit {
       if (this.coldSafe(eip) === null) return COLD_TRANSLATE; // (nothing to ask of the background worker: translated here)
       if (cold.size >= 0x40000) cold.clear();
       n = 0; cold.set(eip, 0);
-      const fpc = m.read16(cpu.base + ST.FPU_CW) & 0xf00;
+      const fpc = x87ModeOf(m, cpu.base, this.x87Top());
       this.coldQueue.push([eip, fpc]);
       if (this.learned && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(performance.now())]);
       this.stats.coldEntries = (this.stats.coldEntries ?? 0) + 1;
@@ -787,9 +806,20 @@ export class Jit {
         // MAX_FPU_VERSIONS), else replace the region by one testing the mode at run time
         this.stats.fpuModeMisses = (this.stats.fpuModeMisses ?? 0) + 1;
         const h = this.hashLookup(cpu.eip), first = h && this.byFn.get(h.fnIdx);
-        const mode = this.mem.read16(cpu.base + ST.FPU_CW) & 0xf00;
+        // (the mode the guard met, with the region's stack top: EXIT_ARG, see translate.js x87ModeOf)
+        let mode = this.mem.read32(cpu.base + ST.EXIT_ARG);
+        if (!this.x87Top()) mode &= 0xf00;
+        if (first && !first.first && first.fpc !== null && (mode & X87_MODE_TOP) && (first.versions ?? [first]).some((v) => v.fpc !== null && (v.fpc & X87_MODE_TOP) && (v.fpc & 0xf00) === (mode & 0xf00))) {
+          // entered with another stack top under a control word it has a version for: translated again testing the
+          // top at run time (entries with varying tops would otherwise run a failing guard before the right version)
+          for (const b of first.blocks) this.genericTop.add(b.eip);
+          this.dropRegion(first);
+          this.stats.genericTop++;
+          continue;
+        }
         if (first && !first.first && first.fpc !== null && this.chaining && this.opts.fpuVersions !== false) {
           const versions = (first.versions ??= [first]);
+          if (this.genericTop.has(first.entry)) mode &= 0xf00;
           if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
             const v = this.translate(first.entry, { first, fpc: mode });
             // (the same blocks under the same numbers: the guard of one version passes the block index it was entered

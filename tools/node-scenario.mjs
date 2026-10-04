@@ -118,14 +118,18 @@ export class NodeScenario {
   mark(label, t) {
     const cats = acct.frame(), d3d = this.vm.d3dDevice;
     const cpu = process.cpuUsage();
+    // (the emulator thread's own CPU time: unlike the categories' wall-clock time, not inflated while the thread waits
+    // for a core on a loaded machine)
+    const tcpu = process.threadCpuUsage?.() ?? null;
     if (this.phase) {
       const p = this.phase, g = this.vm.guestInsns - p.g0, frames = (d3d?.frames ?? 0) - p.f0, secs = t - p.t;
       const cpuS = (cpu.user - p.cpu.user) / 1e6;
-      const r = { label: p.label, seconds: secs, frames, guestInsns: g, guestMs: cats[ACCT.guest], guestMsPerMInsn: g ? cats[ACCT.guest] * 1e6 / g : 0, cpuS, apiMs: cats[ACCT.api], jitMs: cats[ACCT.jit], interpMs: cats[ACCT.interp] };
+      const threadCpuS = tcpu && p.tcpu ? (tcpu.user + tcpu.system - p.tcpu.user - p.tcpu.system) / 1e6 : null;
+      const r = { label: p.label, seconds: secs, startMs: p.epoch, endMs: Date.now(), frames, guestInsns: g, guestMs: cats[ACCT.guest], guestMsPerMInsn: g ? cats[ACCT.guest] * 1e6 / g : 0, cpuS, threadCpuS, apiMs: cats[ACCT.api], jitMs: cats[ACCT.jit], interpMs: cats[ACCT.interp] };
       this.results.push(r);
-      this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s`);
+      this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}`);
     }
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu };
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now() }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /** Every event fired (the scenario is over). */
   get finished() { return this.events.every((e) => e.done); }

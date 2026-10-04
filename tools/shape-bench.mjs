@@ -5,6 +5,7 @@
 //   node tools/shape-bench.mjs [--opts '{"ifcvt":true}'] [--vs '{"ifcvt":false}'] [--only name,name]
 // (with --vs: the two variants alternated, each kernel's ratio printed; --trace <kernel>: its time per repetition in one
 // JIT — a large region runs in V8's baseline tier until its optimized code is ready)
+import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
