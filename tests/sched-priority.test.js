@@ -43,6 +43,7 @@ test('pickRunnable: the highest priority first, round robin among equals, a star
 
 test('the quantum: a thread whose slice ends keeps the processor among its equals for QUANTUM_INSNS, a higher priority preempts it and it resumes first', () => {
   const vm = fakeSched(), s = vm.sched, Q = QUANTUM_INSNS, step = Q / 5;
+  assert.equal(s.quantumInsns, 0, 'off by default'); s.quantumInsns = Q;
   const a = thread(1, 0), b = thread(2, 0), hi = thread(3, 15);
   hi.state = TS.BLOCKED;
   vm.proc.threads.push(a, b, hi);

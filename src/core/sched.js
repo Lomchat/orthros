@@ -23,7 +23,10 @@ export const STARVE_INSNS = 6_000_000;
  * higher priority is ready — Windows rotates threads of equal priority at the end of a quantum (two clock ticks, ~31 ms
  * on a client system), not at every slice of this scheduler (a few hundred microseconds), and a thread preempted by a
  * higher priority resumes before its equals (see pickRunnable). The starvation delay, which ends it for a thread kept
- * waiting by an equal as well. 0: rotation at every slice (?dbg=ORTHROS_QUANTUM_INSNS=0).
+ * waiting by an equal as well. Off by default (rotation at every slice): on a multi-core Windows machine threads of
+ * equal priority run side by side, which every-slice rotation approximates better, and the quantum showed no gain
+ * (BFME1 failure rate 4/40 both ways) while delaying hand-offs between polling threads by up to a quantum;
+ * ?dbg=ORTHROS_QUANTUM_INSNS=<n> turns it on (QUANTUM_INSNS: the Windows-like value).
  */
 export const QUANTUM_INSNS = STARVE_INSNS; // (an equal ready that long is starved anyway: see pickRunnable)
 export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
@@ -61,7 +64,7 @@ export class Scheduler {
     /** (measurement, ?dbg=ORTHROS_STARVE_INSNS=<n>,ORTHROS_STARVE_PICKS=<n>: the starvation thresholds of pickRunnable) */
     this.starveInsns = Number(globalThis.ORTHROS_STARVE_INSNS) || STARVE_INSNS; this.starvePicks = Number(globalThis.ORTHROS_STARVE_PICKS) || STARVE_PICKS;
     /** the quantum (QUANTUM_INSNS; ?dbg=ORTHROS_QUANTUM_INSNS=<n>, 0 none), the thread holding it and where it ends (Vm.guestInsns) */
-    this.quantumInsns = globalThis.ORTHROS_QUANTUM_INSNS !== undefined ? Number(globalThis.ORTHROS_QUANTUM_INSNS) : QUANTUM_INSNS;
+    this.quantumInsns = globalThis.ORTHROS_QUANTUM_INSNS !== undefined ? Number(globalThis.ORTHROS_QUANTUM_INSNS) : 0;
     this.quantumThread = null; this.quantumEnd = 0;
     /** a thread whose slice ended on its budget (Vm.sliceEnd), candidate to go on with its quantum (pickRunnable) */
     this.sliceExpired = null;
