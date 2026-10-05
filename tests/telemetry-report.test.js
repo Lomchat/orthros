@@ -83,6 +83,10 @@ test('report and bench comparison', () => {
   assert.deepEqual(report(buildSessions(batches()), { bench: true }).map((r) => r.session), ['sessB', 'sessC']);
   assert.deepEqual(report(buildSessions(batches()), { bench: 'other' }), []);
   assert.equal(machineLine(null), 'machine unknown');
+  // a phase only some runs have keeps the scenario's order
+  const extra = benchRecord(50, 30); extra.phases.splice(1, 0, { label: 'loadscreen', seconds: 9, fps: 12, per33: 1 });
+  const cmp2 = benchComparison(report(buildSessions([...batches(), { at: '2026-10-05T10:00:00.000Z', session: 'sessD', env, samples: [extra] }]), { bench: true }));
+  assert.deepEqual(cmp2[0].phases, ['start', 'loadscreen', 'play']);
 });
 
 test('command line: a directory, a date range, --bench, --json', () => {

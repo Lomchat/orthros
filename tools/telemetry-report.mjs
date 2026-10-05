@@ -163,7 +163,9 @@ export function benchComparison(reports) {
   const by = new Map();
   for (const r of reports) for (const b of r.benches) {
     let g = by.get(b.bench); if (!g) by.set(b.bench, (g = { bench: b.bench, title: b.title ?? null, phases: [], runs: [] }));
-    for (const p of b.phases ?? []) if (!g.phases.includes(p.label)) g.phases.push(p.label);
+    // (a phase new to the bench goes after the phase that precedes it in this run: the scenario's order)
+    let at = -1;
+    for (const p of b.phases ?? []) { const i = g.phases.indexOf(p.label); if (i >= 0) at = i; else g.phases.splice(++at, 0, p.label); }
     g.runs.push({ session: r.session, at: r.first, manifest: b.manifest, machine: machineLine(b.env ?? r.env), cores: (b.env ?? r.env)?.cores ?? null, version: b.version ?? r.version, render: b.options ? (b.options.renderWorker ? 'worker' : `glworker=${b.options.glWorker}`) : r.render, outcome: b.outcome, firstLaunch: !!b.firstLaunch, display: b.display ?? null, interrupted: b.interrupted ?? null,
       marks: b.marks ?? [], phases: Object.fromEntries((b.phases ?? []).map((p) => [p.label, p])) });
   }
