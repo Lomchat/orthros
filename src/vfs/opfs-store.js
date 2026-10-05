@@ -1,12 +1,26 @@
 // Persistent block store for the HTTP game backend: file blocks fetched once are kept in the origin
 // private file system (OPFS) and read back synchronously on later runs, so a game folder served over the
 // network is downloaded once instead of at every launch (and a block needed in the middle of a match is a
-// local read, not a synchronous round trip). One append-only data file plus a JSON index, both through
+// local read, not a synchronous round trip). One append-only data file plus an append-only index log, both through
 // synchronous access handles (dedicated workers only). Keys carry the file size and mtime of the server
 // listing: a changed file simply misses. Any storage error (quota, a second tab holding the handles)
 // disables the store; the backend then keeps fetching over HTTP.
-/** index format: { v: 2, entries: [[key, offset, length, checksum]] } (1: [[key, offset, length]], no checksum) */
-const STORE_FORMAT = 2;
+//
+// Index format 3 (index.bin): an 8-byte header ('OBSI', u32 3) then records, each
+//   u16 key length, u8 kind (1: block stored, 2: block dropped), u8 0, u32 offset low, u32 offset high, u32 length,
+//   u32 block checksum, the key's UTF-8 bytes, u32 checksum of the record's previous bytes
+// (little-endian). A later record of a key replaces the earlier one. Records are appended, never rewritten: the earlier
+// format (index.json, { v: 2, entries: [[key, offset, length, checksum]] }) rewrote and synced the whole index every 16
+// blocks — 2.2 s of the game thread over a first launch. Records wait in memory and are written at a sync point, after
+// the data file's flush (an indexed block is always on disk): once >= 2 s passed since the last one or >= 256 records
+// wait, and when the caller forces it (prefetch end, stop, close). A crash loses at most the records of the last sync
+// interval: those blocks are fetched again. Reading stops at the first incomplete or damaged record (the log is cut there).
+const INDEX_MAGIC = 0x4953424f; // 'OBSI'
+const INDEX_VERSION = 3;
+const HEADER_BYTES = 8, RECORD_FIXED = 20;
+const REC_PUT = 1, REC_DROP = 2;
+/** sync cadence of the index: at most every SYNC_MS (unless forced), sooner once SYNC_BLOCKS records wait */
+export const SYNC_MS = 2000, SYNC_BLOCKS = 256;
 
 /**
  * A 32-bit checksum of a block (multiply-xor over 32-bit words, then the tail bytes, then the length): ~1 ms for 1 MiB,
@@ -20,19 +34,68 @@ export function blockHash(bytes) {
   return (h ^ (h >>> 16)) >>> 0;
 }
 
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+/** The index log's bytes for `records` ([kind, key, offset, length, checksum]), preceded by the header when `header`. */
+export function encodeIndex(records, header = false) {
+  const keys = records.map((r) => enc.encode(r[1]));
+  let n = header ? HEADER_BYTES : 0;
+  for (const k of keys) n += RECORD_FIXED + k.length + 4;
+  const out = new Uint8Array(n), dv = new DataView(out.buffer);
+  let p = 0;
+  if (header) { dv.setUint32(0, INDEX_MAGIC, true); dv.setUint32(4, INDEX_VERSION, true); p = HEADER_BYTES; }
+  for (let i = 0; i < records.length; i++) {
+    const [kind, , off, len, h] = records[i], k = keys[i], at = p;
+    dv.setUint16(p, k.length, true); out[p + 2] = kind; out[p + 3] = 0;
+    dv.setUint32(p + 4, off >>> 0, true); dv.setUint32(p + 8, Math.floor(off / 0x100000000), true);
+    dv.setUint32(p + 12, len >>> 0, true); dv.setUint32(p + 16, h >>> 0, true);
+    out.set(k, p + RECORD_FIXED); p += RECORD_FIXED + k.length;
+    dv.setUint32(p, blockHash(out.subarray(at, p)), true); p += 4;
+  }
+  return out;
+}
+
+/**
+ * Replay an index log into `map` (key -> [offset, length, checksum]). Returns the byte length of its valid part (up to
+ * the last complete, undamaged record), or -1 when the header is not this format's.
+ */
+export function decodeIndex(buf, map) {
+  if (buf.length < HEADER_BYTES) return -1;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.length);
+  if (dv.getUint32(0, true) !== INDEX_MAGIC || dv.getUint32(4, true) !== INDEX_VERSION) return -1;
+  let p = HEADER_BYTES;
+  while (p + RECORD_FIXED + 4 <= buf.length) {
+    const kl = dv.getUint16(p, true), kind = buf[p + 2], end = p + RECORD_FIXED + kl;
+    if (end + 4 > buf.length) break;
+    if (dv.getUint32(end, true) !== blockHash(buf.subarray(p, end))) break;
+    const key = dec.decode(buf.subarray(p + RECORD_FIXED, end));
+    if (kind === REC_PUT) map.set(key, [dv.getUint32(p + 4, true) + dv.getUint32(p + 8, true) * 0x100000000, dv.getUint32(p + 12, true), dv.getUint32(p + 16, true)]);
+    else if (kind === REC_DROP) map.delete(key);
+    else break;
+    p = end + 4;
+  }
+  return p;
+}
+
 export class OpfsBlockStore {
   /**
    * @param {FileSystemSyncAccessHandle} data
-   * @param {FileSystemSyncAccessHandle} index
-   * @param {Map<string, [number, number]>} map key -> [offset, length]
+   * @param {FileSystemSyncAccessHandle} index the index log (format 3), its valid part `indexEnd` bytes long
+   * @param {Map<string, [number, number, number]>} map key -> [offset, length, checksum]
    */
-  constructor(data, index, map) {
+  constructor(data, index, map, indexEnd = index.getSize()) {
     this.data = data; this.indexHandle = index; this.map = map;
     this.end = data.getSize();
-    this.dirty = 0;
+    this.indexEnd = indexEnd;
+    /** @type {Array<[number, string, number, number, number]>} index records not written yet */
+    this.pending = [];
+    this.lastSync = performance.now();
     this.failed = false;
     this.stats = { hits: 0, puts: 0, bytes: 0 };
   }
+
+  /** Index records waiting for the next sync point. */
+  get dirty() { return this.pending.length; }
 
   /** Open (or create) the store in OPFS directory `name`; null when OPFS or sync handles are unavailable. */
   static async open(name) {
@@ -41,26 +104,48 @@ export class OpfsBlockStore {
       const dir = await root.getDirectoryHandle(name, { create: true });
       const data = await (await dir.getFileHandle('blocks.bin', { create: true })).createSyncAccessHandle();
       let index;
-      try { index = await (await dir.getFileHandle('index.json', { create: true })).createSyncAccessHandle(); } catch (e) { data.close(); throw e; }
-      const map = new Map();
-      const n = index.getSize();
-      let reset = n > 0 ? 'unreadable index' : null;
-      if (n > 0) {
-        const buf = new Uint8Array(n); index.read(buf, { at: 0 });
-        try {
-          const j = JSON.parse(new TextDecoder().decode(buf));
-          if (j && j.v === STORE_FORMAT && Array.isArray(j.entries)) { for (const [k, off, len, h] of j.entries) map.set(k, [off, len, h]); reset = null; }
-          else reset = 'an earlier format without block checksums';
-        } catch { map.clear(); }
-      }
-      // a store of an earlier format (no checksums) or with an unreadable index starts over, its data file emptied
-      if (reset) { map.clear(); data.truncate(0); index.truncate(0); }
-      // entries past the end of the data file (a write lost before the index flush) are dropped
-      const size = data.getSize();
-      for (const [k, [off, len]] of map) if (off + len > size) map.delete(k);
-      const store = new OpfsBlockStore(data, index, map);
-      store.resetReason = reset;
-      return store;
+      try { index = await (await dir.getFileHandle('index.bin', { create: true })).createSyncAccessHandle(); } catch (e) { data.close(); throw e; }
+      try {
+        const map = new Map();
+        let reset = null, migrated = false, end = -1, cut = 0;
+        // an index of the earlier format (index.json): read once (when there is no log yet), rewritten as a log, removed
+        let old = null;
+        try { old = await dir.getFileHandle('index.json'); } catch { /* none */ }
+        const n = index.getSize();
+        if (n > 0) {
+          const buf = new Uint8Array(n); index.read(buf, { at: 0 });
+          end = decodeIndex(buf, map);
+          if (end < 0) reset = 'unreadable index'; else cut = n - end;
+        } else if (old) {
+          const h = await old.createSyncAccessHandle();
+          try {
+            const m = h.getSize();
+            const buf = new Uint8Array(m); if (m) h.read(buf, { at: 0 });
+            if (!m) { if (data.getSize() > 0) reset = 'no index'; } // (created, never written)
+            else try {
+              const j = JSON.parse(dec.decode(buf));
+              if (j && j.v === 2 && Array.isArray(j.entries)) { for (const [k, off, len, hh] of j.entries) map.set(k, [off, len, hh]); migrated = true; }
+              else reset = 'an earlier format without block checksums';
+            } catch { reset = 'unreadable index'; }
+          } finally { h.close(); }
+        } else if (data.getSize() > 0) reset = 'no index';
+        // a store of an earlier format (no checksums) or with an unreadable index starts over, its data file emptied
+        if (reset) { map.clear(); data.truncate(0); }
+        // entries past the end of the data file (a write lost before the index sync) are dropped
+        const size = data.getSize();
+        for (const [k, [off, len]] of map) if (off + len > size) map.delete(k);
+        if (end < 0 || reset || migrated) {
+          // a new log: the header and, migrating, every entry, as one write
+          const bytes = encodeIndex([...map].map(([k, [off, len, h]]) => [REC_PUT, k, off, len, h]), true);
+          index.truncate(0); index.write(bytes, { at: 0 }); index.flush(); end = bytes.length;
+        } else if (cut > 0) { index.truncate(end); index.flush(); } // (an incomplete or damaged tail: the log is cut there)
+        if (old) { try { await dir.removeEntry('index.json'); } catch { /* left behind: ignored once the log exists */ } }
+        const store = new OpfsBlockStore(data, index, map, end);
+        store.resetReason = reset;
+        store.migrated = migrated;
+        store.indexCut = cut;
+        return store;
+      } catch (e) { data.close(); index.close(); throw e; }
     } catch {
       return null;
     }
@@ -78,7 +163,7 @@ export class OpfsBlockStore {
     const out = new Uint8Array(e[1]);
     try { if (this.data.read(out, { at: e[0] }) !== e[1]) return null; } catch { this.fail(); return null; }
     if (blockHash(out) !== e[2]) {
-      this.map.delete(key); this.dirty++;
+      this.drop(key);
       this.stats.corrupt = (this.stats.corrupt ?? 0) + 1;
       this.onCorrupt?.(key);
       return null;
@@ -94,36 +179,50 @@ export class OpfsBlockStore {
     try {
       const n = this.data.write(bytes, { at: this.end });
       if (n !== bytes.length) { this.fail(); return; }
-      this.map.set(key, [this.end, n, blockHash(bytes)]);
+      const h = blockHash(bytes);
+      this.map.set(key, [this.end, n, h]);
+      this.pending.push([REC_PUT, key, this.end, n, h]);
       this.end += n;
       this.stats.puts++; this.stats.bytes += n;
-      if (++this.dirty >= 16) this.flush();
+      this.flush();
     } catch { this.fail(); }
     this.stats.putMs = (this.stats.putMs ?? 0) + performance.now() - t0;
   }
 
-  /** Persist the index (data first, so every indexed block is on disk). */
-  flush() {
-    if (this.failed || !this.dirty) return;
+  /**
+   * A sync point: the data file flushed, then the waiting index records appended and the index flushed — when `force`,
+   * once SYNC_MS passed since the last one, or once SYNC_BLOCKS records wait; otherwise nothing (cheap to call often).
+   */
+  flush(force = false) {
+    if (this.failed || !this.pending.length) return;
     const t0 = performance.now();
+    if (!force && this.pending.length < SYNC_BLOCKS && t0 - this.lastSync < SYNC_MS) return;
     this.stats.flushes = (this.stats.flushes ?? 0) + 1;
     try {
       this.data.flush();
-      const json = new TextEncoder().encode(JSON.stringify({ v: STORE_FORMAT, entries: [...this.map].map(([k, [off, len, h]]) => [k, off, len, h]) }));
-      this.indexHandle.truncate(0);
-      this.indexHandle.write(json, { at: 0 });
-      this.indexHandle.flush();
-      this.dirty = 0;
+      const bytes = encodeIndex(this.pending);
+      if (this.indexHandle.write(bytes, { at: this.indexEnd }) !== bytes.length) this.fail();
+      else {
+        this.indexHandle.flush();
+        this.indexEnd += bytes.length;
+        this.pending = [];
+      }
     } catch { this.fail(); }
-    this.stats.flushMs = (this.stats.flushMs ?? 0) + performance.now() - t0;
+    this.lastSync = performance.now();
+    this.stats.flushMs = (this.stats.flushMs ?? 0) + this.lastSync - t0;
   }
 
   /** Forget `key` (a block found unusable by the reader): fetched and stored again. */
-  drop(key) { if (this.map.delete(key)) this.dirty++; }
+  drop(key) {
+    const e = this.map.get(key);
+    if (!e) return;
+    this.map.delete(key);
+    this.pending.push([REC_DROP, key, e[0], e[1], e[2]]);
+  }
 
   fail() { this.failed = true; }
 
-  close() { try { this.flush(); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
+  close() { try { this.flush(true); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
 }
 
 /**

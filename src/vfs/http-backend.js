@@ -194,7 +194,7 @@ export class HttpBackend {
       e.skip = true; if (n === 2) f.skip = true;
       progress.bytes += data.length; progress.blocks += n;
     }
-    store.flush?.();
+    store.flush?.(true); // (a sync point: the prefetch is over)
     progress.done = true;
   }
 
@@ -606,7 +606,7 @@ export class HttpBackend {
         progress.bytes += bytes;
       }
     }
-    store.flush();
+    store.flush(true);
     progress.done = true;
   }
   evict() { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } }

@@ -26,6 +26,8 @@ import { LearnedHeat } from '../../cpu/jit/heat.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
+/** the block stores of the game files (the game's and the games it requires): their index synced by flushProfile */
+const fileStores = [];
 const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
 const offlineDependencies = []; // copies of additional mounted games, counted with the primary game
 const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
@@ -102,7 +104,7 @@ function profileFilesList() {
 async function flushProfile(force = false) {
   const now = Date.now();
   if (!force && now - lastFlush < 2000) return;
-  gameStore?.flush(); // (the game file block store's index)
+  for (const s of fileStores) s.flush(force); // (the game file block stores' index: a sync point every 2 s, at once when forced)
   if (!opfsDir || !profile) { lastFlush = now; return; }
   const dirty = [...profile.files].filter(([, f]) => f.mtime > lastFlush);
   lastFlush = now;
@@ -199,6 +201,7 @@ async function start(m) {
     if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
     const tag = primary ? '' : ` (${name})`;
     if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
+    if (store) fileStores.push(store);
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
     const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
     const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link,

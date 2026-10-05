@@ -322,13 +322,16 @@ test('block store: checksummed blocks, a damaged block dropped, an earlier-forma
     flush() {} close() {}
   }
   const files = new Map();
-  const dir = { getFileHandle: async (name) => ({ createSyncAccessHandle: async () => { if (!files.has(name)) files.set(name, new FakeHandle()); return files.get(name); } }) };
+  const dir = {
+    getFileHandle: async (name, o) => { if (!o?.create && !files.has(name)) throw new Error('NotFoundError'); return { createSyncAccessHandle: async () => { if (!files.has(name)) files.set(name, new FakeHandle()); return files.get(name); } }; },
+    removeEntry: async (name) => { files.delete(name); },
+  };
   const realNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', { value: { storage: { getDirectory: async () => ({ getDirectoryHandle: async () => dir }) } }, configurable: true });
   try {
     const a = FILE.slice(0, MiB), b = FILE.slice(MiB, 2 * MiB);
     let s = await OpfsBlockStore.open('x');
-    s.put('f#1#0#0', a); s.put('f#1#0#1', b); s.flush();
+    s.put('f#1#0#0', a); s.put('f#1#0#1', b); s.flush(true);
     s = await OpfsBlockStore.open('x'); // a later run
     assert.equal(s.resetReason, null);
     assert.deepEqual(s.get('f#1#0#0'), a);
@@ -338,7 +341,7 @@ test('block store: checksummed blocks, a damaged block dropped, an earlier-forma
     assert.deepEqual(bad, ['f#1#0#1']);
     assert.equal(s.map.has('f#1#0#1'), false, 'and forgotten (fetched again)');
     // an index of the earlier format: the store starts over
-    files.get('index.json').b = new TextEncoder().encode(JSON.stringify([['f#1#0#0', 0, MiB]]));
+    files.delete('index.bin'); files.set('index.json', new FakeHandle()); files.get('index.json').b = new TextEncoder().encode(JSON.stringify([['f#1#0#0', 0, MiB]]));
     s = await OpfsBlockStore.open('x');
     assert.equal(s.resetReason, 'an earlier format without block checksums');
     assert.equal(s.map.size, 0);
