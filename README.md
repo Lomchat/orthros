@@ -87,7 +87,14 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
   rapport `[frames]` — images > 33 / 40 / 50 ms par minute, percentiles, temps par catégorie (code invité, API, draws,
   JIT, programmes GL, textures, lectures, attentes, réveils tardifs…) des images et des images lentes, pires images ;
   `--phases <fichier>` les écrit en JSON (docs/frame-accounting.md). Télémétrie des joueurs :
-  `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry`.
+  `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
+  (machine, version, mode de rendu, résumés de 20 s : percentiles, images lentes, draws et appels GL par image, temps
+  GPU par image quand le navigateur le mesure, attentes du worker de rendu ; mesures `bench` et leur comparaison).
+- Mesures sur une vraie machine (docs/real-machine-bench.md) : ouvrir un lien de mesure dans Chrome, cliquer « Start
+  the measurement », ne plus toucher la souris ni le clavier jusqu'au résumé ; les résultats partent dans la télémétrie
+  du serveur. BFME II : <https://orthros.chalco.website/?bench=bfme2-skirmish> (1.06 : ajouter `&manifest=bfme2-106`),
+  Vice City : <https://orthros.chalco.website/?bench=vicecity-drive>. Scénarios : `tools/scenarios/bench/` (vérifier
+  au harnais : `--ui --bench <nom> --telemetry <dossier>` ; `--input-file <fichier>` joue un fichier de scénario).
 - Rendu : `--capture-at @s` (une image : états de chaque draw, textures, cohérence GPU ↔ mémoire invitée ;
   `--capture-draws` : cible après chaque draw), `--gl-validate` (cache d'état GL, états approchés), `--dump-shaders`.
 - Journaux `--log kinds` : `api`, `apisite` (premiers appels de chaque site), `com` / `comx` (COM sans les appels par

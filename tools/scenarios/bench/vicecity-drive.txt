@@ -1,0 +1,51 @@
+# Vice City: the intro skipped, the main menu, a new game started, a drive of ~25 s (the drive of
+# tools/scenarios/vicecity-startup.txt). Coordinates for 640x480 (the display a first launch uses). Phases:
+# start (launch to the menu: downloads, intro), menu, load (new game to the first 3D frames), play (the drive), end.
+# The clicks at 10,10 skip the intro videos (absolute times for a fast start, after the first frame for a slow one).
+10:click:10,10
+13:click:10,10
++2:click:10,10
++5:click:10,10
++8:waitframe:5,40
+0:mark:menu
+2:click:320,192
+4:click:320,177
+4:mark:load
+8:waitframe:150,100000
+0:mark:play
+3:key:13
+25:key:70
+30:keydown:87
+31.2:keyup:87
+32.2:keydown:83
+32.2:keydown:65
+33.1:keyup:83
+33.1:keyup:65
+33.4:keydown:87
+33.4:keydown:68
+34:keyup:68
+35:keyup:87
+35.5:keydown:87
+35.5:keydown:65
+36.2:keyup:65
+37.7:keyup:87
+38:keydown:87
+38:keydown:65
+38.35:keyup:65
+41.35:keyup:87
+41.5:keydown:83
+42.1:keyup:83
+42.1:keydown:87
+42.1:keydown:68
+42.8:keyup:68
+45.8:keyup:87
+46:keydown:65
+46:keydown:87
+46.6:keyup:65
+50:keydown:68
+50.5:keyup:68
+52:keyup:87
+52:keydown:83
+53.5:keyup:83
+55:key:70
+60:mark:end

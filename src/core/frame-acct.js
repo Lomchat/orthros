@@ -51,6 +51,41 @@ export const PACING = [C.wait, C.sleep];
 export const SLOW_MS = 33.4, VERY_SLOW_MS = 50;
 /** a hitch: a frame of this length or more (phase reports count them by their largest category) */
 export const HITCH_MS = 150;
+/**
+ * Frame-time histogram (telemetry summaries, bench phases, GPU time): bucket indices for a duration in ms — 1 ms wide
+ * below 100 ms, 5 ms to 300, 25 ms to 1000, 250 ms to 5000, then one open bucket. Incrementing one is the only
+ * per-frame work; percentiles are read from the counts (resolution: the bucket's width).
+ */
+export const HIST_N = 185;
+/** @param {number} ms */
+export function histBucket(ms) {
+  if (!(ms > 0)) return 0;
+  if (ms < 100) return Math.floor(ms);
+  if (ms < 300) return 100 + Math.floor((ms - 100) / 5);
+  if (ms < 1000) return 140 + Math.floor((ms - 300) / 25);
+  if (ms < 5000) return 168 + Math.floor((ms - 1000) / 250);
+  return 184;
+}
+/** The upper bound of bucket `b` (ms; Infinity for the open one). */
+export function histUpper(b) { return b < 100 ? b + 1 : b < 140 ? 100 + (b - 99) * 5 : b < 168 ? 300 + (b - 139) * 25 : b < 184 ? 1000 + (b - 167) * 250 : Infinity; }
+/**
+ * The `q` quantile of the durations counted in `hist` (dense counts), as FrameStats.phase reads it from sorted
+ * durations (the element at floor(q * n)): the upper bound of its bucket, never above `max` (the largest duration,
+ * when known). null without frames.
+ */
+export function histQuantile(hist, q, max = Infinity) {
+  let n = 0; for (let i = 0; i < hist.length; i++) n += hist[i];
+  if (!n) return null;
+  const k = Math.min(n - 1, Math.floor(q * n));
+  let c = 0;
+  for (let i = 0; i < hist.length; i++) { c += hist[i]; if (c > k) return Math.min(histUpper(i), max); }
+  return max;
+}
+/** Dense counts as a flat list of [bucket, count] pairs (the non-empty buckets). */
+export function histSparse(hist) { const out = []; for (let i = 0; i < hist.length; i++) if (hist[i]) out.push(i, hist[i]); return out; }
+/** Add a sparse list (histSparse) into dense counts. */
+export function histAddSparse(dense, sparse) { for (let i = 0; i + 1 < (sparse?.length ?? 0); i += 2) if (sparse[i] >= 0 && sparse[i] < dense.length) dense[sparse[i]] += sparse[i + 1]; return dense; }
+
 /** Sampled sections: mean interval between two timed calls. */
 const SAMPLE_EVERY = 16;
 /** A timed API call this long (ms, its own time) makes its API timed on every call; ALWAYS_CALLS short ones in a row, sampled again. */
@@ -197,16 +232,16 @@ export class FrameStats {
     this.ring = ring; this.rec = new Float32Array(ring * (N_CATS + 1)); this.n = 0; this.phaseStart = null; this.label = 'start';
     this.iv = this.newInterval();
   }
-  newInterval() { return { reads: 0, frames: 0, slow33: 0, slow50: 0, max: 0, dt: 0, work: 0, cats: new Float64Array(N_CATS), slowCats: new Float64Array(N_CATS), slowN: 0, worst: null }; }
+  newInterval() { return { reads: 0, frames: 0, slow33: 0, slow40: 0, slow50: 0, slow100: 0, hist: new Uint16Array(HIST_N), max: 0, dt: 0, work: 0, cats: new Float64Array(N_CATS), slowCats: new Float64Array(N_CATS), slowN: 0, worst: null }; }
   /** One frame: its duration `dt` (ms) and categories (FrameAccount.frame()); `at`: when it was presented. */
   add(dt, cats, at = 0, reads = 0) {
     const iv = this.iv, w = workOf(cats);
     iv.reads += reads; this.phaseReads = (this.phaseReads ?? 0) + reads;
     if (this.phaseStart === null) this.phaseStart = at - dt;
-    iv.frames++; iv.dt += dt; iv.work += w; if (dt > iv.max) iv.max = dt;
+    iv.frames++; iv.dt += dt; iv.work += w; if (dt > iv.max) iv.max = dt; iv.hist[histBucket(dt)]++;
     for (let i = 0; i < N_CATS; i++) iv.cats[i] += cats[i];
     if (dt > SLOW_MS) {
-      iv.slow33++; iv.slowN++; if (dt > VERY_SLOW_MS) iv.slow50++;
+      iv.slow33++; iv.slowN++; if (dt > 40) iv.slow40++; if (dt > VERY_SLOW_MS) iv.slow50++; if (dt > 100) iv.slow100++;
       for (let i = 0; i < N_CATS; i++) iv.slowCats[i] += cats[i];
       if (!iv.worst || dt > iv.worst.dt) iv.worst = { dt, work: w, cats: Float64Array.from(cats) };
     }
@@ -216,12 +251,13 @@ export class FrameStats {
   }
   /**
    * The interval since the last call (then reset), compact for telemetry: frames, slow counts, mean work and
-   * categories per frame (`c`), the slow frames' categories summed (`sc`) and the worst slow frame (`wf`).
+   * categories per frame (`c`), the slow frames' categories summed (`sc`) and the worst slow frame (`wf`); frames
+   * > 40 / > 100 ms (`s40`, `s100`) and the frame-time histogram (`h`, histSparse) for the page's summaries.
    */
   takeInterval() {
     const iv = this.iv; this.iv = this.newInterval();
     if (!iv.frames) return null;
-    const r = { frames: iv.frames, s33: iv.slow33, s50: iv.slow50, max: Math.round(iv.max), w: Math.round(iv.work / iv.frames * 10) / 10, c: catsObject(iv.cats, 0.3, N_CATS, 1 / iv.frames) };
+    const r = { frames: iv.frames, s33: iv.slow33, s40: iv.slow40, s50: iv.slow50, s100: iv.slow100, h: histSparse(iv.hist), max: Math.round(iv.max), w: Math.round(iv.work / iv.frames * 10) / 10, c: catsObject(iv.cats, 0.3, N_CATS, 1 / iv.frames) };
     if (iv.slowN) { r.sc = catsObject(iv.slowCats, 1); r.wf = [Math.round(iv.worst.dt), Math.round(iv.worst.work), catsObject(iv.worst.cats, 1, 5)]; }
     return r;
   }
