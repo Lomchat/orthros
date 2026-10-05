@@ -9,7 +9,8 @@ import { createServer } from '../src/host/server.js';
 import { folderManifest } from '../src/host/manifest.js';
 import { defaultGameManifest } from '../src/host/game-catalog.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
-import { scanCodeOfVk } from '../src/win32/dinput8.js';
+import { scanCodeOfVk } from '../src/win32/vk-scan.js';
+import { inRanges } from '../src/host/scenario.js';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -47,7 +48,9 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 let afterWait = false;
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
-const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+// --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
+const inputText = opt('input-file') ? fs.readFileSync(opt('input-file'), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).map((l) => l.trim()).join(';') : opt('input', '') || '';
+const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -64,7 +67,11 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
 // --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data_games (a manifest under test)
-const server = opt('server-port') ? null : createServer({ extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
+// --telemetry <dir>: the server keeps the page's telemetry there (as the live server does; the page sends it with --ui)
+// --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
+// plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record
+if (opt('telemetry')) fs.mkdirSync(opt('telemetry'), { recursive: true });
+const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -88,6 +95,8 @@ browser.on('disconnected', () => console.log('[pageerror] browser disconnected')
 const q = new URLSearchParams({ manifest: name, headless: '1' });
 if (args.includes('--ui')) q.delete('headless'); // the player's page (header, loading screen, overlays) instead of the bare frame
 if (opt('game-lang')) q.set('gameLang', opt('game-lang'));
+const bench = opt('bench');
+if (bench) q.set('bench', bench); // (the manifest named first must be one of the bench's)
 if (opt('log')) q.set('log', opt('log'));
 if (args.includes('--interp')) q.set('interp', '1');
 if (args.includes('--dump-shaders')) q.set('dump', '1');
@@ -159,6 +168,7 @@ async function saveProfile() {
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
 }
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
+if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
 let lastShot = 0, shot = 0, hangDumped = false;
 /**
@@ -464,7 +474,7 @@ for (;;) {
       if (!d3d || (prev && d3d.frames === prev.frames)) break; // (no new frame in this sample: a slow loading screen)
       ev.prev = { draws: d3d.draws, frames: d3d.frames };
       const dpf = prev ? (d3d.draws - prev.draws) / (d3d.frames - prev.frames) : -1;
-      ev.streak = dpf >= ev.args[0] && dpf <= ev.args[1] ? (ev.streak ?? 0) + 1 : 0;
+      ev.streak = inRanges(dpf, ev.args) ? (ev.streak ?? 0) + 1 : 0; // (min,max[,min2,max2...]: any of the ranges)
       if (ev.streak >= 3) { ev.done = true; anchorAt = t; console.log(`[input] waitframe ${ev.args.join(',')}: ${dpf.toFixed(0)} draws/frame, anchor at ${t.toFixed(0)}s`); }
       break;
     }
@@ -551,6 +561,16 @@ for (;;) {
   }
   if (nDumps) console.log(`[capture] ${nDumps} image(s) saved to ${path.join(out, 'capture')}`);
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
+  if (bench) { // (the page's bench finished: its record, the summary panel's screenshot)
+    const r = await page.evaluate(() => (window.orthros.benchResult ? { record: window.orthros.benchResult, sent: window.orthros.benchSent } : null)).catch(() => null);
+    if (r && r.sent !== undefined) {
+      console.log(`[bench] ${r.record.outcome}${r.record.detail ? ` (${r.record.detail})` : ''} after ${r.record.seconds} s, record ${r.sent ? 'sent' : 'not sent'}`);
+      for (const p of r.record.phases) console.log(`[bench] phase ${p.label}: ${p.seconds} s ${p.fps} fps, frame ms p50 ${p.dt?.p50} p90 ${p.dt?.p90} p99 ${p.dt?.p99}, >33 ms ${p.per33}/min, >50 ${p.per50}/min, >100 ${p.per100}/min, draws/frame ${p.drawsPerFrame}, gpu ${p.gpu?.state ?? '-'}${p.gpu?.frames ? ` p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : ''}, GL calls/frame ${p.glCalls?.perFrame ?? p.glCalls?.state ?? '-'}`);
+      if (opt('phases')) fs.writeFileSync(opt('phases'), JSON.stringify(r.record, null, 1));
+      const f = path.join(out, `${name}-bench.png`); await page.screenshot({ path: f }).then(() => console.log(`[shot] ${f}`), () => {});
+      break;
+    }
+  }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
   if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000)) {
     if (stopSeen !== null) console.log(`[end] stop text seen at ${((stopSeen - t0) / 1000).toFixed(1)} s${stopCpu !== null ? `, worker thread ${stopCpu.toFixed(1)} s CPU` : ''}`);
@@ -567,7 +587,7 @@ for (;;) {
   await page.waitForTimeout(1000);
 }
 const f = path.join(out, `${name}-final.png`);
-await page.locator('#frame').screenshot({ path: f }).catch(() => page.screenshot({ path: f }));
+await page.locator('#frame').screenshot({ path: f }).catch(() => page.screenshot({ path: f })).catch((e) => console.log(`[shot] final screenshot failed: ${e.message.split('\n')[0]}`));
 console.log(`[shot] ${f}`);
 logFile.end();
 await browser.close();

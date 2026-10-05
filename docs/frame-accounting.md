@@ -62,7 +62,10 @@ report prints the accounting's own clock reads per frame.
   category), and when frames were slow `sc` (their categories summed, ms) and `wf` (the worst one: [ms, work ms,
   {category: ms}]); the old fields are unchanged. An `options` event gives the options the worker runs with (render
   worker, asynchronous reads, background translation, DXT helpers, ...) and the served build (`version`: commit,
-  `+` when `src/` differs from it, newest source modification time), also in `env.version`.
+  `+` when `src/` differs from it, newest source modification time), also in `env.version`. Every ~20 s a `summary`
+  record (frame-time percentiles from the intervals' histograms, frames > 33 / 40 / 50 / 100 ms, time by category,
+  draws, GL calls and GPU time per frame, render worker waits) and the bench mode's `bench` records: see
+  docs/real-machine-bench.md.
 
 ## Phase scenarios (the shared measurement)
 

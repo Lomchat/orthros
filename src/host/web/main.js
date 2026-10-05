@@ -3,6 +3,8 @@
 // headless harness (status, stats, screenshots, logs).
 import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host.js';
 import { mountHome } from './home.js';
+import { loadBench, BenchRun } from './bench.js';
+import { SummaryClock } from '../perf-summary.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -68,10 +70,27 @@ async function main() {
   state.profileSeed = !!config.profileSeed && params.get('profileseed') !== '0'; // (shared first-launch profile: profile-seed.js; ?profileseed=0: off)
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
+  if (state.telemetry || params.has('bench')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
+  $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
+  // ?bench=<name>: a scripted measurement of tools/scenarios/bench (bench.js, docs/real-machine-bench.md); ?manifest= picks one of its versions
+  if (params.has('bench')) { await startBench(params.get('bench'), params.get('manifest')); return; }
   // the server's default game starts directly (a deployment for players); ?menu shows the picker
   const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
   if (auto) start(auto, params.get('gameLang')); else await showMenu();
-  $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
+}
+
+/** Bench mode: the banner (a click starts it: audio may then play), then the game with the scenario's player. */
+async function startBench(name, manifest) {
+  let def;
+  try { def = await loadBench(name, manifest); } catch (e) { showStatus('This measurement cannot run', e.message ?? String(e), null, true); return; }
+  const run = state.bench = new BenchRun(def, {
+    state, push, EV, typeText, headless, log,
+    postWorker: (m) => state.worker?.postMessage(m),
+    machine: () => state.envPromise ?? machine(),
+    sendRecord: async (rec) => { if (!state.telemetry) return false; (state.queue ??= []).push({ t: Date.now(), ...rec }); return flushTelemetry(); },
+  });
+  const go = () => { run.begin(); start(def.manifest, params.get('gameLang')); };
+  if (headless || params.get('benchauto') === '1') go(); else run.intro(go, backToGames);
 }
 
 /** The home screen (home.js): the game list, one card per manifest; started games hand over to start(). */
@@ -117,7 +136,7 @@ async function start(name, language = null) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: params.get('dbg') ?? '', jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined };
+  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
@@ -149,7 +168,7 @@ function onWorkerMessage(m) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
-    case 'stats': state.stats = m; state.statsAt = Date.now();
+    case 'stats': state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m);
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
@@ -173,7 +192,7 @@ function onWorkerMessage(m) {
     // the options the worker runs with (render worker, asynchronous reads, ...): with the build version, the context of
     // this session's frame measurements
     case 'perf-options': state.perfOptions = m.options; telemetryEvent({ event: 'options', version: state.version, options: m.options }); break;
-    case 'phase': (state.phases ??= []).push(m.report); if (state.phases.length > 100) state.phases.shift(); break; // (harness marks: frame report of the phase)
+    case 'phase': (state.phases ??= []).push(m.report); if (state.phases.length > 100) state.phases.shift(); state.bench?.onPhase(m.report); break; // (harness marks: frame report of the phase)
     case 'dump': { const u8 = new Uint8Array(m.data); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); (state.dumps ??= []).push({ name: m.name, data: btoa(bin) }); break; } // frame-capture PNGs, collected by the headless harness
   }
 }
@@ -356,23 +375,43 @@ function recordSample(m) {
   state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);
+  // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,
+  // GL calls, render worker waits), at most 720 per session
+  const sum = (state.summaries ??= new SummaryClock()).add(m, { t: smp.t, visible: smp.vis, fullscreen: smp.fs, status: state.status });
+  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum });
   if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
 }
 function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= []).push({ t: Date.now(), ...ev }); flushTelemetry(); }
+/** Send the queued records; resolves to whether the server took them. */
 function flushTelemetry() {
   state.flushTimer = null;
   const samples = state.queue ?? []; state.queue = [];
-  if (!samples.length && state.envSent) return;
+  if (!samples.length && state.envSent) return Promise.resolve(true);
   const body = { session: state.session, game: state.manifest ?? null, samples };
-  if (!state.envSent) { state.envSent = true; body.env = environment(); }
-  fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).catch(() => {});
+  if (!state.envSent) { state.envSent = true; body.env = state.env ?? environment(); }
+  return fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).then((r) => r.ok, () => false);
 }
 addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
-/** What the measurements depend on: browser, GPU, screen, cores. */
+/**
+ * What the measurements depend on: browser, GPU (WebGL's unmasked renderer and vendor), screen, cores, memory,
+ * cross-origin isolation. Nothing else is collected.
+ */
 function environment() {
-  let gpu = null;
-  try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); } catch { /* unknown */ }
-  return { version: state.version ?? null, ua: navigator.userAgent, gpu, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}` };
+  let gpu = null, gpuVendor = null;
+  try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); gpuVendor = gl.getParameter(ext ? ext.UNMASKED_VENDOR_WEBGL : gl.VENDOR); gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* unknown */ }
+  return { version: state.version ?? null, ua: navigator.userAgent, gpu, gpuVendor, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}`, coi: !!globalThis.crossOriginIsolated };
+}
+/** environment() with the WebGPU adapter's description when the browser has one (asked once, 2 s at most). */
+async function machine() {
+  const env = environment();
+  if (!navigator.gpu) { env.webgpu = null; return env; }
+  try {
+    const ad = await Promise.race([navigator.gpu.requestAdapter(), new Promise((r) => setTimeout(() => r(undefined), 2000))]);
+    if (ad === undefined) env.webgpu = { state: 'timeout' };
+    else if (!ad) env.webgpu = { state: 'no adapter' };
+    else { const i = ad.info ?? (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {}); env.webgpu = { vendor: i.vendor || null, architecture: i.architecture || null, device: i.device || null, description: i.description || null, fallback: !!(i.isFallbackAdapter ?? ad.isFallbackAdapter) }; }
+  } catch { env.webgpu = { state: 'error' }; }
+  return env;
 }
 
 // ---------------------------------------------------------------- input
@@ -455,19 +494,21 @@ function vkOf(e) {
 
 function setupInput() {
   const c = $('c2d');
-  document.addEventListener('mousemove', (e) => { if (state.status !== 'running') return; const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
+  document.addEventListener('mousemove', (e) => { if (state.status !== 'running' || state.benchActive) return; const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
+  // (a bench running: the player's mouse, keys and focus changes do not reach the game — bench.js plays the scenario)
   c.addEventListener('mousedown', (e) => {
+    if (state.benchActive) return;
     const [x, y] = canvasPos(e); push(EV.MOUSEDOWN, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault();
     // a click in the game captures the mouse (it stays in the window; Escape releases it)
     if (!headless && state.status === 'running' && !state.pointerLocked) capturePointer();
   });
-  c.addEventListener('mouseup', (e) => { const [x, y] = canvasPos(e); push(EV.MOUSEUP, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
+  c.addEventListener('mouseup', (e) => { if (state.benchActive) return; const [x, y] = canvasPos(e); push(EV.MOUSEUP, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
-  c.addEventListener('wheel', (e) => { const [x, y] = canvasPos(e); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, x, y); e.preventDefault(); }, { passive: false });
-  addEventListener('keydown', (e) => { if (e.code === 'F12' && !e.shiftKey) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOf(e), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
-  addEventListener('keyup', (e) => { push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
-  addEventListener('blur', () => push(EV.FOCUS, 0, 0, 0));
-  addEventListener('focus', () => push(EV.FOCUS, 1, 0, 0));
+  c.addEventListener('wheel', (e) => { if (state.benchActive) return; const [x, y] = canvasPos(e); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, x, y); e.preventDefault(); }, { passive: false });
+  addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOf(e), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
+  addEventListener('keyup', (e) => { if (state.benchActive) return; push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
+  addEventListener('blur', () => { if (!state.benchActive) push(EV.FOCUS, 0, 0, 0); });
+  addEventListener('focus', () => { if (!state.benchActive) push(EV.FOCUS, 1, 0, 0); });
   document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } applyCursor(); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });

@@ -10,6 +10,7 @@ import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 }
 import { programSourceKey, programSourceId } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
+import { GpuProbe } from './gpu-probe.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -207,6 +208,8 @@ export class WebGLDevice {
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer();
     this.vao = gl.createVertexArray();
     this.stats = { draws: 0, programs: 0, uploads: 0, errors: 0, vaos: 0 };
+    this.probe = opts.probe ?? null; // (GPU time and GL calls per frame: gpu-probe.js, shared by the context's devices)
+    if (this.probe) { this.stats.gpu = this.probe.stats.gpu; this.stats.glCalls = this.probe.stats.glCalls; }
     this.tmp = { v4: new Float32Array(4) };
     this.fvfCache = new Map();
     this.frameDraws = 0;
@@ -515,6 +518,8 @@ export class WebGLDevice {
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
     gl.flush(); this.frame++;
+    // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
+    if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts);
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
@@ -523,6 +528,7 @@ export class WebGLDevice {
       if (this.countFrames) { this.countLeft = this.countFrames; this.startGlCount(); } // (count only: no dump, no per-draw log)
       else { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
     }
+    this.probe?.frame();
   }
   /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
   startGlCount() {
@@ -1739,9 +1745,11 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; probe?.reset(); backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
+  // GPU time per frame and GL calls per frame for telemetry (gpu-probe.js; dbg ORTHROS_GL_PROBES=0: off)
+  const probe = globalThis.ORTHROS_GL_PROBES === 0 ? null : new GpuProbe(gl);
   const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set() };
   // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
   // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU
@@ -1768,7 +1776,7 @@ export function createWebGLBackend(canvas, log, dump) {
       const prog = resolvePrewarmed(gl, programCache, log, budgetMs);
       if (prog) for (const d of programCache.devices) d.gs.prog = prog; // (resolveProgram left it in use: every device's GL state cache — several devices share the context)
     },
-    createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache }); },
+    createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache, probe }); },
   };
   return backend;
 }
