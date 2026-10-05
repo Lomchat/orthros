@@ -377,6 +377,12 @@ compilation left the game's thread; growth stayed short of 96 / 800 in every gam
 the same slow frames. Residual cost: the misses translated on the game's thread (and the cold tier's hot entries)
 compile there lazily, at 96 / 800 (RotWK's load phase above).
 
+Review re-measure (one more concurrent RotWK pair, `--gl-discard`, same learned data and profile; the 48 / 400 run's
+`[report] JIT:` line confirms it ran 48 / 400: 692 k blocks, 10 MiB of WASM, against 961 k, 19 MiB): play 2.51 /
+2.74 ns per instruction (−8.3 %), frames > 40 ms per minute 40 / 81, p99 47.5 / 57.1 ms; menu 2.71 / 3.07 (−11.5 %).
+An unparsable `?jitopts` is now reported (`[warn] jitopts ignored`), and `tools/headless.mjs --jit-opts` refuses
+one that is not JSON.
+
 ## Measured, not kept
 
 - Chained exits each with its own chain code (`siteChain`: the hash probe and tail call at every exit site, the probe
