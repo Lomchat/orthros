@@ -257,18 +257,41 @@ test('GL call counter: windows of GL_FRAMES frames every GL_PERIOD_MS, unwrapped
   const { gl, st } = fakeTimerGl({ ext: false });
   const p = new GpuProbe(gl, { now: () => now, wrapGl: true });
   const frame = (calls) => { for (let i = 0; i < calls; i++) { gl.uniform4fv(); if (i % 10 === 0) gl.drawElements(); } p.frame(); now += 20; };
+  const proto = Object.getPrototypeOf(gl), orig = proto.uniform4fv;
   while (now <= 5000) frame(50);
-  assert.ok(Object.prototype.hasOwnProperty.call(gl, 'uniform4fv'), 'wrapped during the window');
+  assert.notEqual(proto.uniform4fv, orig, 'wrapped during the window');
+  assert.ok(!Object.prototype.hasOwnProperty.call(gl, 'uniform4fv'), 'never an own property of the context (V8 dictionary mode)');
   for (let i = 0; i < GL_FRAMES; i++) frame(50);
-  assert.ok(!Object.prototype.hasOwnProperty.call(gl, 'uniform4fv'), 'unwrapped after');
+  assert.equal(proto.uniform4fv, orig, 'unwrapped after'); assert.deepEqual(Object.getOwnPropertyNames(gl), []);
   assert.equal(p.stats.glCalls.frames, GL_FRAMES); assert.equal(p.stats.glCalls.calls / GL_FRAMES, 55); assert.equal(p.stats.glCalls.draws / GL_FRAMES, 5);
   assert.ok(st.calls > 0);
   // busy (a capture or GL timing wraps methods itself): the window is dropped and no new one starts
   while (now < 5000 + GL_PERIOD_MS + 50) frame(5);
   assert.ok(p.glWrapped);
-  p.busy = true; assert.ok(!p.glWrapped); assert.ok(!Object.prototype.hasOwnProperty.call(gl, 'uniform4fv'));
+  p.busy = true; assert.ok(!p.glWrapped); assert.equal(proto.uniform4fv, orig);
   for (let i = 0; i < 2000; i++) frame(1);
   assert.equal(p.stats.glCalls.frames, GL_FRAMES);
+});
+
+test('GL call counter: contexts sharing a prototype count their own calls; the methods come back in any stop order', () => {
+  let now = 0;
+  const a = fakeTimerGl({ ext: false }), proto = Object.getPrototypeOf(a.gl);
+  const b = { gl: new a.gl.constructor() }, origU = proto.uniform4fv, origD = proto.drawElements;
+  const pa = new GpuProbe(a.gl, { now: () => now, wrapGl: true }), pb = new GpuProbe(b.gl, { now: () => now, wrapGl: true });
+  for (const [first, second] of [[pa, pb], [pb, pa]]) {
+    now += GL_PERIOD_MS + 5000;
+    pa.frame(); pb.frame();
+    assert.ok(pa.glWrapped && pb.glWrapped);
+    for (let i = 0; i < 7; i++) a.gl.uniform4fv(); for (let i = 0; i < 3; i++) b.gl.drawElements();
+    assert.equal(pa.glCount, 7); assert.equal(pa.glDraws, 0); assert.equal(pb.glCount, 3); assert.equal(pb.glDraws, 3);
+    first.busy = true; first.busy = false;
+    assert.notEqual(proto.uniform4fv, origU, 'still counting for the other context');
+    b.gl.drawElements(); a.gl.uniform4fv();
+    assert.equal((second === pa ? pa : pb).glCount, second === pa ? 8 : 4);
+    for (let i = 0; i < GL_FRAMES; i++) second.frame();
+    assert.equal(proto.uniform4fv, origU); assert.equal(proto.drawElements, origD);
+    assert.deepEqual(Object.getOwnPropertyNames(a.gl), []); assert.deepEqual(Object.getOwnPropertyNames(b.gl), []);
+  }
 });
 
 test('bench definitions: each scenario parses, plays in the page, names its manifests and coordinates', () => {

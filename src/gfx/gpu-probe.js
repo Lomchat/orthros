@@ -6,7 +6,8 @@
 //   frequency change, another context) discards the results in flight. Without the extension the measurement is
 //   reported as unavailable — never estimated.
 // - WebGL calls per frame: every GL_PERIOD_MS, the calls made through the context object over GL_FRAMES frames are
-//   counted (methods wrapped by counting closures for that window only; the draw calls among them apart).
+//   counted (the context prototype's methods wrapped by counting closures for that window only, then restored; the
+//   draw calls among them apart).
 // Both keep cumulative counters in `stats` (the device statistics that reach the emulator worker and the page);
 // readers take differences.
 import { HIST_N, histBucket } from '../core/frame-acct.js';
@@ -90,22 +91,50 @@ export class GpuProbe {
     this.startGlCount();
   }
   startGlCount() {
-    const gl = this.gl, proto = Object.getPrototypeOf(gl), self = this;
-    const wrapped = [];
-    for (const k of Object.getOwnPropertyNames(proto)) {
-      const d = Object.getOwnPropertyDescriptor(proto, k);
-      if (typeof d?.value !== 'function' || k === 'constructor' || Object.prototype.hasOwnProperty.call(gl, k)) continue;
-      const f = d.value;
-      gl[k] = DRAW_FNS.has(k) ? function () { self.glCount++; self.glDraws++; return f.apply(gl, arguments); } : function () { self.glCount++; return f.apply(gl, arguments); };
-      wrapped.push(k);
-    }
-    this.glWrapped = wrapped; this.glLeft = GL_FRAMES; this.glCount = 0; this.glDraws = 0;
+    const proto = Object.getPrototypeOf(this.gl);
+    if (!proto || proto === Object.prototype) return;
+    glCounting(proto).set(this.gl, this);
+    this.glWrapped = proto; this.glLeft = GL_FRAMES; this.glCount = 0; this.glDraws = 0;
   }
   /** Unwrap; `keep`: the window completed (its counts added), else dropped. */
   stopGlCount(keep) {
     if (!this.glWrapped) return;
-    for (const k of this.glWrapped) delete this.gl[k];
+    glUncount(this.glWrapped, this.gl);
     this.glWrapped = null;
     if (keep) { const c = this.stats.glCalls; c.frames += GL_FRAMES; c.calls += this.glCount; c.draws += this.glDraws; }
   }
+}
+
+// The counting wrappers live on the context's prototype, installed while a window is open and then put back: own
+// properties added to (then deleted from) the context object would leave it in V8's dictionary mode for the rest of the
+// session — every later GL call measured ~30 ns slower in Chromium (63 -> 95 ns for bindBuffer / enable) — while a
+// prototype restored to its own methods is fast again. A wrapper counts for the probe of its receiver only (several
+// contexts share the prototype: the mirror mode, other pages' contexts in the realm).
+/** @type {Map<object, { orig: Map<string, Function>, probes: Map<object, GpuProbe> }>} */
+const counting = new Map();
+/** The receivers counted on `proto` (the wrappers installed with the first one). */
+function glCounting(proto) {
+  let c = counting.get(proto);
+  if (c) return c.probes;
+  c = { orig: new Map(), probes: new Map() }; counting.set(proto, c);
+  const probes = c.probes;
+  for (const k of Object.getOwnPropertyNames(proto)) {
+    const d = Object.getOwnPropertyDescriptor(proto, k);
+    if (typeof d?.value !== 'function' || k === 'constructor' || !d.writable) continue;
+    const f = d.value;
+    c.orig.set(k, f);
+    proto[k] = DRAW_FNS.has(k)
+      ? function () { const p = probes.get(this); if (p) { p.glCount++; p.glDraws++; } return f.apply(this, arguments); }
+      : function () { const p = probes.get(this); if (p) p.glCount++; return f.apply(this, arguments); };
+  }
+  return probes;
+}
+/** `gl` no longer counted; the prototype's own methods back once no receiver is. */
+function glUncount(proto, gl) {
+  const c = counting.get(proto);
+  if (!c) return;
+  c.probes.delete(gl);
+  if (c.probes.size) return;
+  for (const [k, f] of c.orig) proto[k] = f;
+  counting.delete(proto);
 }
