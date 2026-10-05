@@ -420,7 +420,9 @@ function pump() {
   vm.onProgress ??= (t) => { if ((longSliceLogs = (longSliceLogs ?? 0) + 1) <= 40) log('hang', `worker busy for ${((performance.now() - longSliceStart) / 1000).toFixed(1)} s in one slice: thread ${t.id}${t.callbackDepth ? ` (nested call depth ${t.callbackDepth})` : ''} at ${vm.proc.symbolize(t.cpu.eip)}, VM depth ${vm.depth}; last API calls: ${vm.recentApiCalls(6, t.id).join(', ')}`); };
   longSliceStart = tRun;
   try {
-    r = vm.runFor(tRun + 12);
+    // (a file read on the network: short slices, so the read's completion — several event-loop tasks for one fetch —
+    // is not held behind a 12 ms slice at each step; --dbg ORTHROS_READ_SLICE_MS=12 is the earlier behaviour)
+    r = vm.runFor(tRun + (vm.readsInFlight > 0 ? globalThis.ORTHROS_READ_SLICE_MS ?? 2 : 12));
     acct.enter(ACCT.host);
     if (vm.jit?.coldQueue.length) vm.jit.flushCold(); // (the cold tier's entries to the background translator)
   } catch (e) {

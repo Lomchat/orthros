@@ -223,6 +223,7 @@ export class Vm {
       // (one clock read per slice: it ends the slice's time, starts the next one's and dates the wake-up pass — a
       // thread yielding thousands of times per second made the reads a fifth of the switch)
       let t0 = performance.now();
+      const tStart = t0;
       for (;;) {
         const t = this.sched.pickRunnable(null, true);
         if (t) {
@@ -231,6 +232,8 @@ export class Vm {
           t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)
           this.sched.wakeBlocked(this.clock.at ? this.clock.at(t1) : undefined);
           if (untilMs !== Infinity && t1 >= untilMs) return RUN_RUNNING;
+          // (a file read went to the network during this call: the host's event loop completes it, back to it soon)
+          if (untilMs !== Infinity && this.readsInFlight > 0 && t1 - tStart >= 2) return RUN_RUNNING;
           t0 = t1;
           continue;
         }
