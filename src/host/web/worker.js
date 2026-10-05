@@ -38,7 +38,7 @@ let programSink = null, programsPostedAt = 0; // (GL programs this session built
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
 // learned code heat (src/cpu/jit/heat.js): earlier sessions' ranges, applied to the JIT as modules load; this session's
 // visit flags sent back with the regions
-let learnedHeat = null, heatModules = 0, heatSink = null, heatPostedAt = 0;
+let learnedHeat = null, heatModules = 0, heatSink = null;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
@@ -400,6 +400,39 @@ function gapEnd() {
   if (over > 0 && gap.cat !== ACCT.late) acct.move(gap.cat, ACCT.late, Math.min(over, acct.acc[gap.cat] - gap.acc0));
   gap.cat = -1;
 }
+/**
+ * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), at most ~1 ms per pump: a harvest pass every
+ * 10 s, cut into steps, then its blocks mapped to module + offset (also cut) and posted.
+ */
+const heatPost = { pairs: null, at: 0, list: [], passAt: 0, mod: null, maxMs: 0, steps: 0, passes: 0 };
+function heatStep(now) {
+  const t0 = performance.now(), h = heatPost;
+  if (!h.pairs && (vm.jit.harvestAt > 0 || now - h.passAt >= 10000)) {
+    if (!vm.jit.harvestAt) h.passAt = now;
+    h.pairs = vm.jit.harvestVisitsStep(1); h.at = 0; h.mod = null; h.steps++;
+    if (h.pairs) h.passes++;
+  } else if (h.pairs) {
+    const pairs = h.pairs, list = h.list;
+    let i = h.at;
+    for (; i < pairs.length; i += 2) {
+      if ((i & 511) === 0 && i > h.at && performance.now() - t0 >= 1) break;
+      const a = pairs[i];
+      let mod = h.mod;
+      if (!mod || a < mod.base || a >= mod.base + mod.size) mod = h.mod = vm.proc.moduleByAddr(a);
+      if (mod && pairs[i + 1] <= mod.base + mod.size) list.push([mod.name.toLowerCase(), a - mod.base, pairs[i + 1] - a]);
+    }
+    h.at = i;
+    if (i >= pairs.length) {
+      h.pairs = null;
+      if (list.length) { // (passes 10 s apart: a post each)
+        heatSink(list); h.list = [];
+        log('jit', `heat: ${list.length} blocks posted (harvest: ${h.passes} passes in ${h.steps} steps, longest ${h.maxMs.toFixed(2)} ms per pump; ${vm.jit.visitRegions.length} regions with flags left)`);
+        h.maxMs = 0; h.passes = h.steps = 0;
+      }
+    }
+  }
+  const dt = performance.now() - t0; if (dt > h.maxMs) h.maxMs = dt;
+}
 function pump() {
   if (!running || stopped) return;
   gapEnd();
@@ -448,12 +481,7 @@ function pump() {
     for (const [eip, fpc] of vm.jit.coveredLearned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) covered.push([mod.name.toLowerCase(), eip - mod.base, fpc]); }
     if (list.length || covered.length) regionSink(list, covered);
   }
-  if (heatSink && vm.jit?.opts.visit && now - heatPostedAt > 10000) {
-    heatPostedAt = now;
-    const pairs = vm.jit.harvestVisits(), list = [];
-    for (let i = 0; i < pairs.length; i += 2) { const mod = vm.proc.moduleByAddr(pairs[i]); if (mod && pairs[i + 1] <= mod.base + mod.size) list.push([mod.name.toLowerCase(), pairs[i] - mod.base, pairs[i + 1] - pairs[i]]); }
-    if (list.length) heatSink(list);
-  }
+  if (heatSink && vm.jit?.opts.visit) heatStep(now);
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const hist = vm.apiHist();

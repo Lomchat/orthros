@@ -166,7 +166,8 @@ test('visit flags: the harvested ranges are the translated blocks that ran, each
     const jit = new Jit(mem, new Interp(mem, cpu), { smc: true, visit: true });
     const half = run(mem, cpu, jit, end, inp, 1e7);
     void half;
-    const pairs = jit.harvestVisits();
+    // (odd programs: the pass cut into steps of budget 0 — a time check every 64 regions)
+    let pairs; if (t & 1) { while (!(pairs = jit.harvestVisitsStep(0))); } else pairs = jit.harvestVisits();
     assert.equal(jit.harvestVisits().length, 0, 'reported once');
     const covered = new Set();
     for (let i = 0; i < pairs.length; i += 2) {

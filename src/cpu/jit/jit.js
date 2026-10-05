@@ -90,6 +90,9 @@ export class Jit {
     if (opts.log) opts.log(`jit: region chaining ${this.chaining ? 'on' : 'off'}`);
     /** @type {Array<{entry: number, start: number, end: number, blocks: any[], fnIdx: number}>} */
     this.regions = [];
+    // regions with visit flags not seen set yet, in registration order, and the state of a harvest pass over them
+    // (harvestVisitsStep: next to look at, kept so far — the list is compacted in place)
+    this.visitRegions = []; this.harvestAt = 0; this.harvestKept = 0; this.harvestOut = null; this.harvestSeen = null;
     this.pending = []; // regions still living in their own single-function module
     this.blockMap = new Map(); // block eip -> { region, block } for every live region (re-insertion after hash eviction)
     this.consolidateEvery = opts.consolidateEvery ?? CONSOLIDATE_EVERY;
@@ -152,6 +155,7 @@ export class Jit {
     this.mem.fill(SMC_MAP_BASE, NULL_PAGE_END >>> 12, SMC_NULL);
     this.mem.fill(SMC_MAP_BASE + (USER_END >>> 12), (0x80000000 - USER_END) >>> 12, SMC_NULL);
     this.regions = [];
+    this.visitRegions = []; this.harvestAt = 0; this.harvestKept = 0; // (a pass under way keeps what it found)
     this.pending = [];
     this.blockMap.clear();
     this.byEntry.clear();
@@ -333,19 +337,39 @@ export class Jit {
   }
   /**
    * The blocks whose visit flag (opts.visit) was set since the last call, as pairs lo, hi, ... (added to the heat);
-   * each block is reported once.
+   * each block is reported once. (A whole harvest pass at once: see harvestVisitsStep.)
    */
   harvestVisits() {
-    const u8 = this.mem.u8, out = [], seen = new Set();
-    for (const r of this.regions) {
-      const v = r.visits; if (!v) continue;
-      let left = 0;
-      for (const e of v) {
-        if (e[2] < 0) continue;
-        if (u8[e[2]]) { if (!seen.has(e[0])) { seen.add(e[0]); out.push(e[0], e[1]); } e[2] = -1; } else left++;
+    let out;
+    while (!(out = this.harvestVisitsStep(Infinity)));
+    return out;
+  }
+  /**
+   * A harvest pass cut into steps of about `budgetMs` (time checked every 64 regions): null while the pass is not done,
+   * then the pairs lo, hi, ... of the blocks whose visit flag was set (added to the heat), as harvestVisits.
+   * The pass goes over the regions with flags not seen set yet (visitRegions, registration order — regions registered
+   * meanwhile included, dropped ones skipped), and keeps only those flags: a block's entry leaves its region's list once
+   * reported, a region leaves the list once it has none.
+   */
+  harvestVisitsStep(budgetMs = Infinity) {
+    const u8 = this.mem.u8, list = this.visitRegions;
+    const out = (this.harvestOut ??= []), seen = (this.harvestSeen ??= new Set());
+    const t0 = budgetMs === Infinity ? 0 : performance.now();
+    let i = this.harvestAt, w = this.harvestKept, n = 0;
+    while (i < list.length) {
+      const r = list[i++], v = r.visits;
+      if (v) {
+        let k = v.length;
+        for (let j = 0; j < k;) {
+          const e = v[j];
+          if (u8[e[2]]) { if (!seen.has(e[0])) { seen.add(e[0]); out.push(e[0], e[1]); } v[j] = v[--k]; } else j++;
+        }
+        if (k) { v.length = k; list[w++] = r; } else r.visits = null;
       }
-      if (!left) r.visits = null;
+      if ((++n & 63) === 0 && i < list.length && performance.now() - t0 >= budgetMs) { this.harvestAt = i; this.harvestKept = w; return null; }
     }
+    list.length = w;
+    this.harvestAt = this.harvestKept = 0; this.harvestOut = null; this.harvestSeen = null;
     this.heatAdd(out);
     return out;
   }
@@ -375,6 +399,7 @@ export class Jit {
     const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
+    if (region.visits) this.visitRegions.push(region);
     this.stats.live = this.regions.length;
     if (fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * fnIdx, 0); // (no next version yet)
     if (!version) {
@@ -571,6 +596,7 @@ export class Jit {
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
+    r.visits = null; // (its flags are no longer harvested: harvestVisitsStep drops it from visitRegions)
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
       if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }

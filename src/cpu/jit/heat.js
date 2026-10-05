@@ -18,19 +18,45 @@ export class RangeHeat {
   add(lo, hi) { if (hi > lo) { this.addLo.push(lo); this.addHi.push(hi); } }
   /** pairs lo, hi, ... */
   addPairs(pairs) { for (let i = 0; i + 1 < pairs.length; i += 2) this.add(pairs[i], pairs[i + 1]); }
+  /**
+   * Fold the added ranges into lo/hi: the k new ranges are sorted by start (a native numeric sort of packed keys), then
+   * merged in one linear pass with the sorted, coalesced lo/hi, coalescing overlapping or adjacent ranges —
+   * O(n + k log k), the same lo/hi as sorting everything.
+   */
   merge() {
-    if (!this.addLo.length) return;
-    const n = this.lo.length + this.addLo.length, idx = new Array(n), L = new Float64Array(n), H = new Float64Array(n);
-    for (let i = 0; i < this.lo.length; i++) { L[i] = this.lo[i]; H[i] = this.hi[i]; }
-    for (let i = 0; i < this.addLo.length; i++) { L[this.lo.length + i] = this.addLo[i]; H[this.lo.length + i] = this.addHi[i]; }
-    for (let i = 0; i < n; i++) idx[i] = i;
-    idx.sort((a, b) => L[a] - L[b]);
-    const lo = [], hi = [];
-    for (const i of idx) {
-      if (lo.length && L[i] <= hi[hi.length - 1]) { if (H[i] > hi[hi.length - 1]) hi[hi.length - 1] = H[i]; } else { lo.push(L[i]); hi.push(H[i]); }
+    const k = this.addLo.length;
+    if (!k) return;
+    const aLo = this.addLo, aHi = this.addHi;
+    // (key: start * 2^22 + index, exact below 2^53 — addresses < 2 GB, fewer than 4 M ranges per merge)
+    const order = new Int32Array(k);
+    if (k < SORT_PACK) {
+      const keys = new Float64Array(k);
+      for (let i = 0; i < k; i++) keys[i] = (aLo[i] | 0) * SORT_PACK + i;
+      keys.sort();
+      for (let i = 0; i < k; i++) { const x = keys[i]; order[i] = x - Math.floor(x / SORT_PACK) * SORT_PACK; }
+    } else {
+      for (let i = 0; i < k; i++) order[i] = i;
+      order.sort((a, b) => (aLo[a] | 0) - (aLo[b] | 0));
     }
-    this.lo = Int32Array.from(lo); this.hi = Int32Array.from(hi); this.addLo = []; this.addHi = [];
-    this.size = lo.length;
+    const oLo = this.lo, oHi = this.hi, n = oLo.length;
+    const lo = new Int32Array(n + k), hi = new Int32Array(n + k);
+    let m = 0, i = 0, j = 0;
+    const bulk = k * 32 < n; // (few new ranges: long runs between them)
+    while (i < n || j < k) {
+      // (a long run of old ranges before the next new one, the first not touching the last range out: copied as is — old
+      // ranges neither overlap nor touch)
+      if (bulk && i < n && (!m || oLo[i] > hi[m - 1])) {
+        let p = n;
+        if (j < k) { const x = aLo[order[j]] | 0; let l = i, h = n; while (l < h) { const c = (l + h) >> 1; if (oLo[c] <= x) l = c + 1; else h = c; } p = l; }
+        if (p - i > 8) { lo.set(oLo.subarray(i, p), m); hi.set(oHi.subarray(i, p), m); m += p - i; i = p; continue; }
+      }
+      let L, H;
+      if (j >= k || (i < n && oLo[i] <= (aLo[order[j]] | 0))) { L = oLo[i]; H = oHi[i]; i++; } else { const x = order[j++]; L = aLo[x] | 0; H = aHi[x] | 0; }
+      if (m && L <= hi[m - 1]) { if (H > hi[m - 1]) hi[m - 1] = H; } else { lo[m] = L; hi[m] = H; m++; }
+    }
+    this.lo = m === n + k ? lo : lo.slice(0, m); this.hi = m === n + k ? hi : hi.slice(0, m);
+    this.addLo = []; this.addHi = [];
+    this.size = m;
   }
   get(a) {
     this.merge();
@@ -42,6 +68,8 @@ export class RangeHeat {
   /** the merged ranges as pairs lo, hi, ... */
   pairs() { this.merge(); const out = new Int32Array(2 * this.lo.length); for (let i = 0; i < this.lo.length; i++) { out[2 * i] = this.lo[i]; out[2 * i + 1] = this.hi[i]; } return out; }
 }
+/** (merge: sort keys pack a start and an index below 2^53) */
+const SORT_PACK = 1 << 22;
 /** the count a visited address reports (above any opts.coldMin) */
 export const VISITED = 0x7fffffff;
 
