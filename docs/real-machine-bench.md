@@ -60,7 +60,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `work`, `cats` | mean work per frame and mean time per frame by category (docs/frame-accounting.md: `guest`, `api`, `draw`, `jit`, `prog`, `tex`, `render`, `wait`, `sleep`, `late`...) |
 | `slowCats`, `worst` | the slow frames' categories summed (ms); the worst frame [ms, work ms, categories] |
 | `drawsPerFrame`, `d3dFrames` | Direct3D draw calls per presented Direct3D frame |
-| `glCalls` | WebGL calls (and GL draw calls) per frame, counted over a window of 30 frames every 20 s; `{state: 'unavailable'}` where not measured |
+| `glCalls` | WebGL calls (and GL draw calls) per frame, counted over a window of 30 frames every 20 s in bench runs only (`{state: 'off'}` in ordinary sessions: swapping the context prototype's methods makes V8 drop code optimized against them; `?dbg=ORTHROS_GL_COUNT=1` forces it); `{state: 'unavailable'}` where not measured |
 | `gpu` | GPU time per frame: `mean`, `p50`, `p90`, `p99`, `max` (ms), `over33`, `frames` timed, `disjoint` results dropped, `h`; `{state: 'unavailable'}` without `EXT_disjoint_timer_query_webgl2`, `{state: 'none'}` without a Direct3D device (or with the probes off) |
 | `render` | render worker: the emulator's waits for it (`waitMs`, `fenceMs`, `frameMs`, `readbackMs`) and its replay time (`replayMs`), ms per frame |
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |

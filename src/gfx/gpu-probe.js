@@ -5,8 +5,9 @@
 //   frames every PERIOD_MS. Results are read at later presents, when available; a disjoint operation (GPU reset,
 //   frequency change, another context) discards the results in flight. Without the extension the measurement is
 //   reported as unavailable — never estimated.
-// - WebGL calls per frame: every GL_PERIOD_MS, the calls made through the context object over GL_FRAMES frames are
-//   counted (the context prototype's methods wrapped by counting closures for that window only, then restored; the
+// - WebGL calls per frame (bench runs only: ORTHROS_GL_COUNT, set by the page's ?bench mode — swapping the
+//   prototype's methods makes V8 drop the code optimized against them, a cost ordinary sessions need not pay): every
+//   GL_PERIOD_MS, the calls made through the context object over GL_FRAMES frames are counted (the context prototype's methods wrapped by counting closures for that window only, then restored; the
 //   draw calls among them apart).
 // Both keep cumulative counters in `stats` (the device statistics that reach the emulator worker and the page);
 // readers take differences.
@@ -30,11 +31,12 @@ export class GpuProbe {
     this.gl = gl; this.now = opts.now ?? (() => performance.now());
     this.ext = null;
     try { this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2'); } catch { this.ext = null; }
-    this.wrapGl = opts.wrapGl ?? (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
+    const real = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    this.wrapGl = opts.wrapGl ?? (real && !!globalThis.ORTHROS_GL_COUNT);
     // gpu: cumulative; `state`: 'on' | 'unavailable' (no extension) | 'off' (switched off) ; hist: frames by GPU ms (frame-acct.js buckets)
     this.stats = {
       gpu: { state: this.ext ? 'on' : 'unavailable', frames: 0, ms: 0, max: 0, over16: 0, over33: 0, disjoint: 0, lost: 0, hist: new Array(HIST_N).fill(0) },
-      glCalls: { state: this.wrapGl ? 'on' : 'unavailable', frames: 0, calls: 0, draws: 0 },
+      glCalls: { state: this.wrapGl ? 'on' : real ? 'off' : 'unavailable', frames: 0, calls: 0, draws: 0 },
     };
     this.cur = null; this.pending = []; this.left = 0; this.nextWindow = this.now() + 3000; // (the first window soon after the start)
     this.glLeft = 0; this.glNext = this.now() + 5000; this.glWrapped = null; this.glCount = 0; this.glDraws = 0;
