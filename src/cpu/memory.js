@@ -35,6 +35,9 @@ export const SMC_MAP_BASE = 0x7fe00000;
 // leaves the region before the instruction (Emitter.smcCheck, see nullpage.js)
 export const SMC_CODE = 1, SMC_WATCH = 2, SMC_NEXT = 4, SMC_NULL = 8;
 export const JIT_SCRATCH_BASE = 0x7fd50000;
+// a state block no guest thread uses: the background translator calls its regions there once, to compile them
+// (bg-translate.js compileHere; past the runtime's tables in the JIT scratch area)
+export const JIT_WARM_STATE = JIT_SCRATCH_BASE + 0xae000;
 // Block execution counters of profiling translations (Jit opts.blockCounts): word 0 is the bump allocator (next free
 // counter index, shared by the background translator through the shared memory), then one u32 per translated block
 export const BLOCK_COUNTS_BASE = 0x7fe80000, BLOCK_COUNTS_SLOTS = 0x14000;

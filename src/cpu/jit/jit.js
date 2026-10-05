@@ -14,6 +14,8 @@ import './translate-sse-float.js';
 import './translate-sse-int.js';
 
 const CONSOLIDATE_EVERY = 128;
+/** slice-end samples per window of region growth (Jit.sample: a region's samples count within one window) */
+const GROW_WINDOW = 8192;
 /**
  * Cold tier (Jit.runCold): instructions interpreted from one missed entry before it is translated on this thread
  * (code that turns out hot); until then its translation is asked of the background worker.
@@ -110,6 +112,7 @@ export class Jit {
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
     this.refFast = null; this.refFastOff = false; this.bg = null; this.stormAt = 0; this.stormCount = 0;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
+    this.sampleN = 0; this.sampleEpoch = 0; // (region growth: see sample)
     this.clearTables();
   }
 
@@ -200,12 +203,12 @@ export class Jit {
    * Translate the region at `eip`. `version` ({ first, fpc }): another version of region `first` specialized for
    * x87 mode `fpc`, reached only through the entry guard of the previous version (not in the hash table).
    */
-  translate(eip, version = null, assume = undefined) {
+  translate(eip, version = null, assume = undefined, over = null) {
     // (frame accounting: a translation ahead of need — prewarm, while the game waits — stays in that category)
     const p = acct.enter(acct.cur === ACCT.ahead ? ACCT.ahead : ACCT.jit);
-    try { return this.translateNow(eip, version, assume); } finally { acct.leave(p); }
+    try { return this.translateNow(eip, version, assume, over); } finally { acct.leave(p); }
   }
-  translateNow(eip, version, assume) {
+  translateNow(eip, version, assume, over = null) {
     const t0 = performance.now();
     // already translated (its hash entry was evicted): re-insert instead of retranslating
     const known = version ? null : this.blockMap.get(eip);
@@ -219,8 +222,10 @@ export class Jit {
     if (fpcAssume !== null && (fpcAssume & X87_MODE_TOP) && this.genericTop.has(eip)) fpcAssume &= 0xf00;
     // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
     const o = this.translateOpts(this.nextFn, fpcAssume);
+    if (over) Object.assign(o, over);
     if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
+    if (over?.grown) stats.grown = over.grown;
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     if (stats.dispatchBlock) this.stats.dispatchBlocks++; // (regions whose dispatcher is no loop)
@@ -267,6 +272,47 @@ export class Jit {
     this.cold.clear(); this.coldQueue = [];
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
+  }
+  /**
+   * Region growth (opts.grow, a factor > 1): the slice ends sample where the threads are (an instruction-weighted
+   * sample, Vm.sliceEnd); a region that left code out for its size (stats.full) and collects opts.growMin samples
+   * within one window of GROW_WINDOW samples is translated again with its size limits multiplied by opts.grow.
+   */
+  sample(eip) {
+    const f = this.growFactor(); if (!f) return;
+    if (++this.sampleN >= GROW_WINDOW) { this.sampleN = 0; this.sampleEpoch++; }
+    const at = this.blockMap.get(eip >>> 0); if (!at) return;
+    const r = at.region;
+    if (!r.full || r.grown) return;
+    if (r.sampleEpoch !== this.sampleEpoch) { r.sampleEpoch = this.sampleEpoch; r.samples = 0; }
+    if (++r.samples < this.growMin()) return;
+    this.grow(r, f);
+  }
+  growFactor() { const g = this.abOpts?.grow ?? this.opts.grow ?? JIT_DEFAULTS.grow; return g > 1 ? g : 0; }
+  growMin() { return this.abOpts?.growMin ?? this.opts.growMin ?? JIT_DEFAULTS.growMin; }
+  /** translate region `r` again with its size limits multiplied by `f` (see sample) */
+  grow(r, f) {
+    r.grown = -1; // (tried once)
+    if (r.first || r.versions || this.byEntry.get(r.entry) !== r || this.blockMap.get(r.entry)?.region !== r) return;
+    this.stats.grown = (this.stats.grown ?? 0) + 1;
+    // (with a background translator: translated there, installed in place of `r` if it is still live then)
+    if (this.bg) { this.bgGrow(r, f); return; }
+    this.dropRegion(r);
+    try { this.translate(r.entry, null, r.fpc, this.growOver(f)); } catch { /* translated again at its next miss */ }
+  }
+  /** translation options of a region grown by factor `f` (its x87-mode versions too: the same blocks) */
+  growOver(f) {
+    const o = this.translateOpts(0, null);
+    return { maxBlocks: Math.round((o.maxBlocks ?? JIT_DEFAULTS.maxBlocks) * f), maxInsns: Math.round((o.maxInsns ?? JIT_DEFAULTS.maxInsns) * f), grown: f };
+  }
+  /** region `r` grown by the background translator (see grow): one batch of one item, `grow` its size factor */
+  bgGrow(r, f) {
+    const bg = this.bg, id = bg.nextId++;
+    const items = [{ eip: r.entry, fpc: r.fpc, mode: r.fpc, fnIdx: this.reserveFn(), grow: f }];
+    (bg.growing ??= new Map()).set(r.entry, r);
+    bg.inflight.set(id, 1); bg.sent++;
+    (bg.epochOf ??= new Map()).set(id, this.abEpoch ?? 0);
+    bg.port.postMessage({ type: 'batch', id, items, over: this.abOpts });
   }
   /**
    * The x87 mode to translate a learned region for: as learned (an entry learned by an earlier build has no stack top:
@@ -372,7 +418,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null, full: !!stats.full, grown: stats.grown ?? 0, samples: 0, sampleEpoch: 0 };
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     this.stats.live = this.regions.length;
@@ -467,12 +513,16 @@ export class Jit {
     let uncover = null;
     for (const it of m.items) {
       if (it.covered || it.k < 0) continue; // (skipped: see above; not translatable)
-      // translated here meanwhile (at a miss), or its code changed since the background worker read it
-      let same = !this.blockMap.has(it.eip);
+      // translated here meanwhile (at a miss), or its code changed since the background worker read it; a grown
+      // region (see grow) replaces the region it grows if that one is still live
+      const old = it.grow ? bg.growing?.get(it.eip) : null;
+      if (it.grow) bg.growing?.delete(it.eip);
+      let same = it.grow ? !!old && this.byEntry.get(it.eip) === old && this.blockMap.get(it.eip)?.region === old : !this.blockMap.has(it.eip);
       for (let i = 0, o = 0; same && i < it.blocks.length; i++) { const b = it.blocks[i]; for (let a = b.eip; a < b.end; a++, o++) if (u8[a] !== it.snap[o]) { same = false; break; } }
       if (!same) { bg.rejected++; (uncover ??= []).push([it.eip, it.blocks.map((b) => b.eip)]); continue; }
+      if (old) this.dropRegion(old);
       this.table.set(it.fnIdx, inst.exports['r' + it.k]);
-      this.register(it.eip, it.blocks, it.fnIdx, null, it.fpc, it.stats);
+      this.register(it.eip, it.blocks, it.fnIdx, null, it.fpc, it.size ? { ...it.stats, grown: it.size } : it.stats); // (size: translated larger, see grow / opts.bgSize)
       bg.installed++;
     }
     covered(uncover);
@@ -821,7 +871,7 @@ export class Jit {
           const versions = (first.versions ??= [first]);
           if (this.genericTop.has(first.entry)) mode &= 0xf00;
           if (versions.length < MAX_FPU_VERSIONS && !versions.some((v) => v.fpc === mode) && this.nextFn < JIT_ALT_SLOTS && versions.every((v) => v.fnIdx < JIT_ALT_SLOTS)) {
-            const v = this.translate(first.entry, { first, fpc: mode });
+            const v = this.translate(first.entry, { first, fpc: mode }, undefined, first.grown > 0 ? this.growOver(first.grown) : null); // (a grown region's versions: its size limits)
             // (the same blocks under the same numbers: the guard of one version passes the block index it was entered
             // with to the next)
             if (v.blocks.length === first.blocks.length && v.blocks.every((b, i) => b.eip === first.blocks[i].eip && b.index === first.blocks[i].index)) {

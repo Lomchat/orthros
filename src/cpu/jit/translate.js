@@ -121,7 +121,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 48, maxInsns: 400, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, grow: 0, growMin: 16, bgSize: 0, bgCompile: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 48;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -639,16 +639,19 @@ export function discoverRegion(mem, entry, opts) {
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
   // (measurement, startbench --jit-sites: the successors left out for the region's size)
   const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
+  // (full: a successor, or code past a block's instruction cap, was left out for the region's size — see Jit.sample)
+  let full = false;
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
-    for (let n = 0; n < MAX_INSNS; n++) {
+    for (let n = 0; ; n++) {
+      if (n >= MAX_INSNS) { full = true; break; }
       if (isBoundary(a)) break;
       let insn;
       try { insn = dec(a); } catch { break; }
       total++;
       const term = termOf(insn);
-      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && !cold(insn.addr, t)) { if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t); } };
+      const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && !cold(insn.addr, t)) { if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else { full = true; limited?.add(t); } } };
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
@@ -657,6 +660,7 @@ export function discoverRegion(mem, entry, opts) {
       break;
     }
   }
+  if (queue.length) full = true; // (the instruction cap reached with leaders left)
   // pass 2: decode blocks up to the next leader / terminator
   const sorted = [...leaders].sort((x, y) => x - y);
   const blocks = [];
@@ -674,14 +678,14 @@ export function discoverRegion(mem, entry, opts) {
       const term = termOf(insn);
       a = insn.next;
       if (term !== TERM_NONE) { b.term = term; b.fallthrough = a; break; }
-      if (count > MAX_INSNS * 2) { b.fallthrough = a; break; }
+      if (count > MAX_INSNS * 2) { b.fallthrough = a; full = true; break; }
     }
     b.end = a;
     if (b.insns.length === 0 && b.term === TERM_NONE) continue; // empty (boundary) block
     blocks.push(b);
     byEip.set(eip, b);
   }
-  return { blocks, byEip, limited };
+  return { blocks, byEip, limited, full };
 }
 
 /** the type and import sections, identical in every region module, are encoded once */
@@ -924,8 +928,9 @@ class Emitter {
   }
 
   run(entry) {
-    let { blocks, byEip, limited } = discoverRegion(this.mem, entry, this.opts);
+    let { blocks, byEip, limited, full } = discoverRegion(this.mem, entry, this.opts);
     this.limited = limited; // (measurement: see siteProf)
+    this.stats.full = full; // (something left out for the region's size: a region Jit.sample may grow)
     if (!blocks.length) throw new Error(`no code at ${entry.toString(16)}`);
     this.discovered = blocks; // (address order)
     this.layout = this.opts.layout ?? JIT_DEFAULTS.layout;

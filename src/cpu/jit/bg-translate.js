@@ -7,7 +7,8 @@
 // those bytes.
 // With a persistent cache (init `cache`: code-cache.js, an OPFS file per game) a region whose extent, bytes and
 // inline-API slots are those of an earlier session's translation by the same translator is not translated again.
-import { GuestMemory } from '../memory.js';
+import { GuestMemory, JIT_WARM_STATE } from '../memory.js';
+import { buildRuntime, supportsReturnCall, MATH_KERNELS } from './runtime.js';
 import { translateRegion, buildRegionModule, discoverRegion, patchAltSlot, patchVisitSlots, VisitSlots, JIT_DEFAULTS } from './translate.js';
 import { CodeCache, inlineDeps, hashText, moduleClosureText, openOpfsStore } from './code-cache.js';
 import { RangeHeat } from './heat.js';
@@ -84,12 +85,18 @@ function translateBatch(items, over) {
   for (const it of items) {
     const r = { eip: it.eip, fnIdx: it.fnIdx, fpc: it.fpc, k: -1 };
     out.push(r);
-    if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
+    if (it.grow) r.grow = it.grow; // (a region grown, see Jit.grow: installed in place of the one it grows)
+    else if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
     try {
       const h = heat ?? NO_HEAT;
       // (it.mode: the x87 mode to translate for, Jit.learnedMode; it.fpc: as the entry was learned, reported back)
       const mode = it.mode !== undefined ? it.mode : it.fpc;
       const o = { ...opts, ...over, heat: h, visitSlots, fnIdx: it.fnIdx, fpcAssume: mode };
+      // (opts.bgSize: the regions translated here — ahead of need, off the game's thread — larger by that factor)
+      const f = it.grow || ((o.bgSize ?? JIT_DEFAULTS.bgSize) > 1 ? (o.bgSize ?? JIT_DEFAULTS.bgSize) : 0);
+      if (f) { o.maxBlocks = Math.round((o.maxBlocks ?? JIT_DEFAULTS.maxBlocks) * f); o.maxInsns = Math.round((o.maxInsns ?? JIT_DEFAULTS.maxInsns) * f); r.size = f; }
+      // (the cache keeps a grown region apart from the region it grows: their extents differ, and neither supersedes the other)
+      const key = it.grow ? grownKey(mode, it.grow) : mode;
       const found = discoverRegion(mem, it.eip, o).blocks;
       const before = found.map((b) => ({ eip: b.eip, end: b.end }));
       if (!before.length) continue;
@@ -99,7 +106,7 @@ function translateBatch(items, over) {
       const deps = useCache ? inlineDeps(found) : null;
       // (the same extent, and visit flags on every block the heat of now does not know: see flagsCover; entries of
       // the same code under an earlier heat's shape are superseded by the translation added below)
-      const hit = useCache ? cache.lookup(it.eip, mode, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8) : null;
+      const hit = useCache ? cache.lookup(it.eip, key, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8) : null;
       // (its visit flags moved to this session's: one byte per block address, see VisitSlots; none left: translated)
       const sites = hit ? relocateVisits(hit.visits, h) : null;
       if (hit && sites) {
@@ -110,7 +117,7 @@ function translateBatch(items, over) {
         r.stats = { ...hit.stats, visits: sites.visits };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
         for (const b of r.blocks) covered.set(b.eip, it.eip);
-        remember(it.eip, mode, found);
+        if (!it.grow) remember(it.eip, mode, found);
         continue;
       }
       const te = performance.now();
@@ -118,19 +125,25 @@ function translateBatch(items, over) {
       emitMs += performance.now() - te;
       if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks))) continue; // (the code changed meanwhile)
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
-      const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
+      const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, full: t.stats.full };
       r.stats = { ...stats, visits: t.stats.visits };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
       for (const b of t.blocks) covered.set(b.eip, it.eip);
       // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between; with its
       // visit flags as [block, end, body offset] — their addresses are this session's; not kept when the flag area
       // ran out mid-region: fewer flags than the heat asked)
-      if (useCache) keep(it.eip, mode, t, deps, snap);
-      if (useCache) remember(it.eip, mode, found);
+      if (useCache) keep(it.eip, key, t, deps, snap);
+      if (useCache && !it.grow) remember(it.eip, mode, found); // (grown regions: not refreshed under the grown heat)
     } catch { /* undecodable: left to the emulator */ }
   }
   return { codes, names, out, hits, emitMs };
 }
+
+/**
+ * The cache key's x87 mode of a region grown by factor `f` (Jit.grow) for x87 mode `mode` (null: generic): bit 16 and
+ * the factor above it, apart from every mode (x87ModeOf: at most 0xf0f).
+ */
+export function grownKey(mode, f) { return (mode === null || mode === undefined ? 0x8000 : mode) | 0x10000 | (Math.round(f * 4) << 17); }
 
 /** A translation into the cache (see translateBatch); false when not kept. */
 function keep(eip, fpc, t, deps, snap) {
@@ -138,7 +151,7 @@ function keep(eip, fpc, t, deps, snap) {
   const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
   for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
   const visits = v.map(([e, end]) => [e, end, at.get(e) ?? []]);
-  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
+  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, full: t.stats.full };
   return cache.add({ eip, fpcIn: fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
 }
 
@@ -221,6 +234,8 @@ function refreshStep() {
     if (!touched(it.sens, r.delta)) continue;
     try {
       const h = heat, o = { ...opts, heat: h, visitSlots: sinkSlots, fnIdx: 0, fpcAssume: it.fpc };
+      const f = o.bgSize ?? JIT_DEFAULTS.bgSize; // (the size the batch translated it at: see translateBatch)
+      if (f > 1) { o.maxBlocks = Math.round((o.maxBlocks ?? JIT_DEFAULTS.maxBlocks) * f); o.maxInsns = Math.round((o.maxInsns ?? JIT_DEFAULTS.maxInsns) * f); }
       const found = discoverRegion(mem, it.eip, o).blocks;
       st.refreshChecked = (st.refreshChecked ?? 0) + 1;
       if (!found.length || sameFlat(it.ext, found)) continue;
@@ -275,6 +290,28 @@ function armIdle() {
   idleTimer.unref?.(); // (Node tests: no wait for it at exit)
 }
 
+// ---- Compiled here, not at the first call. V8 compiles a WebAssembly function lazily, at its first call, on the
+// calling thread: a region translated here was compiled (Liftoff, ~35 ns per byte of WASM here) by the game's thread
+// when it first ran — a frame of new code (Vice City driving into a new area) paid the compilation of every region it
+// entered, the larger the regions the longer each stop. With opts.bgCompile each region of a batch is called once here
+// before the batch is sent: V8 compiles it, and the module's compiled code is the same for every instance of it, in
+// every worker. The call runs nothing of the guest: its state block is JIT_WARM_STATE (no thread's), its block index -1
+// (none: the region's dispatcher traps after the prologue's loads); an x87 region entered under another x87 mode
+// leaves through its guard (to its next version through this worker's own empty table — a trap — or with
+// EXIT_FPUMODE written to JIT_WARM_STATE).
+let warmImports = null;
+function compileHere(module, n) {
+  if (!warmImports) {
+    const table = new WebAssembly.Table({ initial: 1024, element: 'anyfunc' }), memory = mem.memory, shared = memory.buffer instanceof SharedArrayBuffer;
+    const rt = new WebAssembly.Instance(new WebAssembly.Module(buildRuntime({ shared, tailCalls: supportsReturnCall() })), { env: { memory, table, now: () => 0, mmTime: () => 0, tickCount: () => 0 } }).exports;
+    warmImports = { env: { memory, table, flags: rt.flags, round24: rt.round24, chain: rt.chain, fallback: () => 0 } };
+    for (const [name] of MATH_KERNELS) warmImports.env[name] = rt[name];
+  }
+  let inst;
+  try { inst = new WebAssembly.Instance(module, warmImports); } catch { return; }
+  for (let k = 0; k < n; k++) { try { inst.exports['r' + k](-1, JIT_WARM_STATE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); } catch { /* (the trap after the prologue: compiled) */ } }
+}
+
 function batch(m, reply) {
   const t0 = lastBatchAt = performance.now();
   const { codes, names, out, hits, emitMs } = translateBatch(m.items, m.over ?? null);
@@ -283,6 +320,7 @@ function batch(m, reply) {
   if (codes.length) {
     try { module = new WebAssembly.Module(buildRegionModule(codes, names, mem.memory.buffer instanceof SharedArrayBuffer)); }
     catch { for (const r of out) { if (r.k >= 0) for (const b of r.blocks) if (covered.get(b.eip) === r.eip) covered.delete(b.eip); r.k = -1; } }
+    if (module && (opts.bgCompile ?? JIT_DEFAULTS.bgCompile)) compileHere(module, codes.length);
   }
   const t2 = performance.now();
   // (written records reach the disk at the next flush — a costly sync: at most every 5 s; a session ended before
