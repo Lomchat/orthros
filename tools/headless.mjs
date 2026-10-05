@@ -100,7 +100,7 @@ if (opt('interp-range') && !opt('interp-range-at')) q.set('interprange', opt('in
 if (opt('encoded') === '0') q.set('encoded', '0');
 if (args.includes('--memprefetch')) q.set('memprefetch', '1');
 if (args.includes('--net-log')) q.set('netlog', '1'); // (each game file read over the network logged as [net], with its block's rank in the learned prefetch list)
-if (opt('jit-opts')) q.set('jitopts', opt('jit-opts')); // debugging: JIT options as JSON (e.g. {"consolidateEvery":1000000})
+if (opt('jit-opts')) { try { JSON.parse(opt('jit-opts')); } catch (e) { console.error(`--jit-opts is not JSON (${e.message}): ${opt('jit-opts')}`); process.exit(2); } q.set('jitopts', opt('jit-opts')); } // debugging: JIT options as JSON (e.g. {"consolidateEvery":1000000})
 if (opt('dbg')) q.set('dbg', opt('dbg')); // (worker debug globals: NAME=value,...)
 if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API function in the slow-frame lines; adds a clock read per call)
 if (opt('programs') === '0') q.set('programs', '0');
