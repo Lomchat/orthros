@@ -93,7 +93,8 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
 - Mesures sur une vraie machine (docs/real-machine-bench.md) : ouvrir un lien de mesure dans Chrome, cliquer « Start
   the measurement », ne plus toucher la souris ni le clavier jusqu'au résumé ; les résultats partent dans la télémétrie
   du serveur. BFME II : <https://orthros.chalco.website/?bench=bfme2-skirmish> (1.06 : ajouter `&manifest=bfme2-106`),
-  Vice City : <https://orthros.chalco.website/?bench=vicecity-drive>. Scénarios : `tools/scenarios/bench/` (vérifier
+  Vice City : <https://orthros.chalco.website/?bench=vicecity-drive>, RotWK : `?bench=rotwk-skirmish`, BFME :
+  `?bench=bfme1-skirmish`. Scénarios : `tools/scenarios/bench/` (vérifier
   au harnais : `--ui --bench <nom> --telemetry <dossier>` ; `--input-file <fichier>` joue un fichier de scénario).
 - Rendu : `--capture-at @s` (une image : états de chaque draw, textures, cohérence GPU ↔ mémoire invitée ;
   `--capture-draws` : cible après chaque draw), `--gl-validate` (cache d'état GL, états approchés), `--dump-shaders`.

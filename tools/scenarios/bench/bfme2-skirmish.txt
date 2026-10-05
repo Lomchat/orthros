@@ -1,8 +1,10 @@
 # BFME II: the intro videos skipped, the main menu, a skirmish started (the steps of tools/scenarios/bfme2-first.txt),
 # one minute of play. Coordinates for 800x600 (the settings a first launch writes; another display is scaled). The menu
-# is the 2D one of a first launch (10-30 draws per frame) or the 3D one of richer settings (150 and more). Phases:
-# start (launch to the menu: downloads, the game's first-launch setup, videos), menu, load (the skirmish's loading
-# screen), play (its first minute).
+# is the 2D one of a first launch (10-30 draws per frame) or the 3D one (150 and more). The waits count draws per
+# frame, not frames per second (a slow machine is what is measured; a fast one runs the loading screen at 30 fps):
+# loading screen 1-100, play 120 and more (~140 at a first launch's settings, ~240 at richer ones). Phases: start
+# (launch to the menu: downloads, the game's first-launch setup, videos), menu, load (the click to the loading
+# screen), loadscreen, play (the first minute).
 +3:key:27
 +6:key:27
 +9:key:27
@@ -22,6 +24,8 @@
 48:move:718,572
 50:click:718,572
 51:mark:load
-53:waitfps:15
+52:waitframe:1,100
+0:mark:loadscreen
+1:waitframe:120,100000
 0:mark:play
 60:mark:end

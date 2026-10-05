@@ -1,6 +1,7 @@
 # The Rise of the Witch-king: the intro videos skipped, the main menu, a skirmish started (the steps of
 # tools/scenarios/rotwk-first.txt), one minute of play with a few orders. Coordinates for 800x600 (a first launch's
 # settings; another display is scaled). The menu is the 2D one of a first launch or the 3D one of richer settings.
+# The waits count draws per frame (loading screen 60-110, play 150 and more), not frames per second.
 +3:key:27
 +6:key:27
 +9:key:27
@@ -19,7 +20,7 @@
 28:mark:load
 30:waitframe:60,110
 0:mark:loadscreen
-1:waitfps:12
+1:waitframe:150,100000
 0:mark:play
 10:click:398,266
 13:down:470,320
