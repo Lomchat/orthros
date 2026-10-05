@@ -7,7 +7,8 @@
 // results match the interpreter.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GuestMemory, JIT_ALT_BASE, JIT_WARM_STATE } from '../src/cpu/memory.js';
+import { GuestMemory, JIT_ALT_BASE, JIT_WARM_STATE, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../src/cpu/memory.js';
+import { PROF_OPS_BASE } from '../src/cpu/jit/translate.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
@@ -80,9 +81,9 @@ function smcExit(jit, m) {
   m.mem.write32(lenAt, 0); jit.invalidate(m.cpu.exitArg, len);
 }
 /** a session with the background translator (shared memory), its batches installed between slices */
-async function bgSession(p, regs, { maxBlocks, slice, learned = null, bgCompile = false, onPrewarm = null }) {
+async function bgSession(p, regs, { maxBlocks, slice, learned = null, bgCompile = false, onPrewarm = null, extra = {} }) {
   const m = machine(p.code, regs, true);
-  const jit = new Jit(m.mem, m.interp, { smc: true, maxBlocks, maxInsns: 400, bgCompile, warn: (msg) => { throw new Error(msg); } });
+  const jit = new Jit(m.mem, m.interp, { smc: true, maxBlocks, maxInsns: 400, bgCompile, ...extra, warn: (msg) => { throw new Error(msg); } });
   jit.cpu = m.cpu;
   const replies = [];
   jit.attachBackground({ postMessage: (msg) => handleMessage(msg, (rep) => replies.push(rep)) });
@@ -126,4 +127,23 @@ test('opts.bgCompile: the background translator compiles its regions by calling 
     assert.equal(b.s, ref.s, `program ${i}: state`);
   }
   assert.ok(warmed > 0, 'some calls left through their guard (x87 mode) writing the warm state block');
+});
+
+test('opts.bgCompile with instrumented translations (visit flags, block counters, transition profiling): the compiling calls set no flag and count nothing', async () => {
+  // (the instrumentation memory outside the state block: visit flags / block counters, the unchained-transition counters)
+  const snap = (m) => [m.mem.bytes(CODE, 0x1000), m.mem.bytes(DATA, 0x1000), m.mem.bytes(THREAD_STATES_BASE, 0x400), m.mem.bytes(JIT_ALT_BASE, 0x1000), m.mem.bytes(BLOCK_COUNTS_BASE + 4, 4 * BLOCK_COUNTS_SLOTS - 4), m.mem.bytes(PROF_OPS_BASE, 0x1000)].map((b) => Buffer.from(b).toString('base64')).join('|');
+  const modes = [{ visit: true }, { blockCounts: true }, { profile: true }];
+  for (let i = 0; i < 12; i++) {
+    const extra = modes[i % 3];
+    const p = gen({ x87: i % 2 === 0, smc: false });
+    const regs = [val(), val(), val(), val(), val()];
+    const ref = reference(p, regs);
+    const a = await bgSession(p, regs, { maxBlocks: 48, slice: 7, extra });
+    const b = await bgSession(p, regs, { maxBlocks: 48, slice: 5, learned: a.learned, bgCompile: true, extra, onPrewarm: (m, before) => {
+      if (before === undefined) { m.mem.fill(JIT_WARM_STATE, 0x400, 0); if (i % 4 !== 1) m.mem.write16(JIT_WARM_STATE + ST.FPU_CW, 0x0f7f); return snap(m); }
+      assert.equal(snap(m), before, `program ${i} (${JSON.stringify(extra)}): memory written by the compiling calls`);
+    } });
+    assert.equal(b.r, ref.r, `program ${i}: exit`);
+    assert.equal(b.s, ref.s, `program ${i}: state`);
+  }
 });
