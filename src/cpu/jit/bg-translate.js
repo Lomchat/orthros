@@ -85,18 +85,12 @@ function translateBatch(items, over) {
   for (const it of items) {
     const r = { eip: it.eip, fnIdx: it.fnIdx, fpc: it.fpc, k: -1 };
     out.push(r);
-    if (it.grow) r.grow = it.grow; // (a region grown, see Jit.grow: installed in place of the one it grows)
-    else if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
+    if (covered.has(it.eip) && covered.get(it.eip) !== it.eip) { r.covered = true; continue; }
     try {
       const h = heat ?? NO_HEAT;
       // (it.mode: the x87 mode to translate for, Jit.learnedMode; it.fpc: as the entry was learned, reported back)
       const mode = it.mode !== undefined ? it.mode : it.fpc;
       const o = { ...opts, ...over, heat: h, visitSlots, fnIdx: it.fnIdx, fpcAssume: mode };
-      // (opts.bgSize: the regions translated here — ahead of need, off the game's thread — larger by that factor)
-      const f = it.grow || ((o.bgSize ?? JIT_DEFAULTS.bgSize) > 1 ? (o.bgSize ?? JIT_DEFAULTS.bgSize) : 0);
-      if (f) { o.maxBlocks = Math.round((o.maxBlocks ?? JIT_DEFAULTS.maxBlocks) * f); o.maxInsns = Math.round((o.maxInsns ?? JIT_DEFAULTS.maxInsns) * f); r.size = f; }
-      // (the cache keeps a grown region apart from the region it grows: their extents differ, and neither supersedes the other)
-      const key = it.grow ? grownKey(mode, it.grow) : mode;
       const found = discoverRegion(mem, it.eip, o).blocks;
       const before = found.map((b) => ({ eip: b.eip, end: b.end }));
       if (!before.length) continue;
@@ -106,7 +100,7 @@ function translateBatch(items, over) {
       const deps = useCache ? inlineDeps(found) : null;
       // (the same extent, and visit flags on every block the heat of now does not know: see flagsCover; entries of
       // the same code under an earlier heat's shape are superseded by the translation added below)
-      const hit = useCache ? cache.lookup(it.eip, key, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8) : null;
+      const hit = useCache ? cache.lookup(it.eip, mode, before, snap, deps, (meta) => flagsCover(meta, h), mem.u8) : null;
       // (its visit flags moved to this session's: one byte per block address, see VisitSlots; none left: translated)
       const sites = hit ? relocateVisits(hit.visits, h) : null;
       if (hit && sites) {
@@ -117,7 +111,7 @@ function translateBatch(items, over) {
         r.stats = { ...hit.stats, visits: sites.visits };
         codes.push(code); names.push('r_' + it.eip.toString(16)); hits++;
         for (const b of r.blocks) covered.set(b.eip, it.eip);
-        if (!it.grow) remember(it.eip, mode, found);
+        remember(it.eip, mode, found);
         continue;
       }
       const te = performance.now();
@@ -125,25 +119,19 @@ function translateBatch(items, over) {
       emitMs += performance.now() - te;
       if (!sameExtent(before, t.blocks) || !sameBytes(snap, snapshot(t.blocks))) continue; // (the code changed meanwhile)
       r.k = codes.length; r.blocks = t.blocks; r.snap = snap; r.fpc = t.fpcAssume;
-      const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, full: t.stats.full };
+      const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
       r.stats = { ...stats, visits: t.stats.visits };
       codes.push(t.code); names.push('r_' + it.eip.toString(16));
       for (const b of t.blocks) covered.set(b.eip, it.eip);
       // (kept when the translation saw the inline-API slots this discovery saw: nothing changed in between; with its
       // visit flags as [block, end, body offset] — their addresses are this session's; not kept when the flag area
       // ran out mid-region: fewer flags than the heat asked)
-      if (useCache) keep(it.eip, key, t, deps, snap);
-      if (useCache && !it.grow) remember(it.eip, mode, found); // (grown regions: not refreshed under the grown heat)
+      if (useCache) keep(it.eip, mode, t, deps, snap);
+      if (useCache) remember(it.eip, mode, found);
     } catch { /* undecodable: left to the emulator */ }
   }
   return { codes, names, out, hits, emitMs };
 }
-
-/**
- * The cache key's x87 mode of a region grown by factor `f` (Jit.grow) for x87 mode `mode` (null: generic): bit 16 and
- * the factor above it, apart from every mode (x87ModeOf: at most 0xf0f).
- */
-export function grownKey(mode, f) { return (mode === null || mode === undefined ? 0x8000 : mode) | 0x10000 | (Math.round(f * 4) << 17); }
 
 /** A translation into the cache (see translateBatch); false when not kept. */
 function keep(eip, fpc, t, deps, snap) {
@@ -151,7 +139,7 @@ function keep(eip, fpc, t, deps, snap) {
   const v = t.stats.visits ?? [], at = new Map(), sitesOf = t.stats.visitSites ?? [];
   for (let i = 0; i + 1 < sitesOf.length; i += 2) { const l = at.get(sitesOf[i]); if (l) l.push(sitesOf[i + 1]); else at.set(sitesOf[i], [sitesOf[i + 1]]); }
   const visits = v.map(([e, end]) => [e, end, at.get(e) ?? []]);
-  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters, full: t.stats.full };
+  const stats = { native: t.stats.native, fallback: t.stats.fallback, calls: t.stats.calls, counters: t.stats.counters };
   return cache.add({ eip, fpcIn: fpc, fpcOut: t.fpcAssume, altAt: t.altAt, blocks: t.blocks, deps, stats, hints: t.code.hints, visits, snap, code: t.code });
 }
 
@@ -234,8 +222,6 @@ function refreshStep() {
     if (!touched(it.sens, r.delta)) continue;
     try {
       const h = heat, o = { ...opts, heat: h, visitSlots: sinkSlots, fnIdx: 0, fpcAssume: it.fpc };
-      const f = o.bgSize ?? JIT_DEFAULTS.bgSize; // (the size the batch translated it at: see translateBatch)
-      if (f > 1) { o.maxBlocks = Math.round((o.maxBlocks ?? JIT_DEFAULTS.maxBlocks) * f); o.maxInsns = Math.round((o.maxInsns ?? JIT_DEFAULTS.maxInsns) * f); }
       const found = discoverRegion(mem, it.eip, o).blocks;
       st.refreshChecked = (st.refreshChecked ?? 0) + 1;
       if (!found.length || sameFlat(it.ext, found)) continue;
@@ -301,7 +287,7 @@ function armIdle() {
 // EXIT_FPUMODE written to JIT_WARM_STATE).
 let warmImports = null;
 function compileHere(module, n) {
-  if (!warmImports) {
+  if (warmImports?.env.memory !== mem.memory) { // (built for this worker's guest memory: again after another 'init')
     const table = new WebAssembly.Table({ initial: 1024, element: 'anyfunc' }), memory = mem.memory, shared = memory.buffer instanceof SharedArrayBuffer;
     const rt = new WebAssembly.Instance(new WebAssembly.Module(buildRuntime({ shared, tailCalls: supportsReturnCall() })), { env: { memory, table, now: () => 0, mmTime: () => 0, tickCount: () => 0 } }).exports;
     warmImports = { env: { memory, table, flags: rt.flags, round24: rt.round24, chain: rt.chain, fallback: () => 0 } };

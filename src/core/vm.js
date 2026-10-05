@@ -352,7 +352,6 @@ export class Vm {
     this.clock.tick?.(0.5);
     this.slices++;
     if (this.profile) { const k = thread.cpu.eip >>> 6; this.profile.set(k, (this.profile.get(k) ?? 0) + 1); }
-    if (this.jit !== null) this.jit.sample(thread.cpu.eip); // (region growth: where the threads are, see Jit.sample)
     if (this.deadline && performance.now() > this.deadline) throw new Error('time limit');
     if (this.progressAt && performance.now() > this.progressAt) { this.progressAt += this.progressEvery; this.onProgress?.(thread); }
     if (opts.slice) { this.sched.markReady(thread); if (opts.top) this.sched.sliceExpired = thread; return true; }

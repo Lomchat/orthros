@@ -241,7 +241,9 @@ kept: fewer transitions came with more copies of the same code, and the play pro
   Translation work: BFME2's load phase +38 % process CPU (V8 compiling larger functions). Browser (`--gl-discard`, one
   session per variant, same learned data): RotWK play 3.11 → 2.83 ns (−9 %, frames > 40 ms per minute 100 → 94, > 50 ms
   34 → 41); BFME2 play 3.07 → 3.20 ns (+4 %, > 40 ms 27 → 59, > 50 ms 2 → 7), its first-launch computation 0.64 → 0.61
-  ns (228 → 236 s to the menu), its loading screen slower. A gain in one game, a loss in two: not changed.
+  ns (228 → 236 s to the menu), its loading screen slower. A gain in one game, a loss in two: not changed. (Those
+  browser sessions did not run 96 / 800, and the Node losses were the virtual clock's other interleavings: see "Region
+  size" below — 96 / 800 is now the default, with the regions compiled by the background translator.)
 - **Return-site records** (removed): a call leaving its region wrote its return site, the region's table index and
   the site's block into the thread's state block (a hash entry's layout; the index a relocated 5-byte constant, the
   records cleared when a region is dropped; not in x87-specialized regions, whose later versions the hash does not
@@ -253,6 +255,120 @@ kept: fewer transitions came with more copies of the same code, and the play pro
   calls 24 M times (a region exit, the dispatcher's loop and a region entry each); in JavaScript `Sleep` 5 M (4.75 M
   `Sleep(0)` from one spinning loop), DirectInput `Acquire` / `GetDeviceData` 2.1 M each; a JavaScript API round trip
   costs ~275 ns (tools/apicall-bench.mjs). Each is under 1 % of the session: not changed.
+
+## Region size (2026-10-05): 96 blocks / 800 instructions, compiled off the game's thread
+
+Why larger regions (96 blocks / 800 instructions instead of 48 / 400) seemed to help RotWK and hurt BFME2 and Vice
+City, the per-region size policies tried, and what was kept: **96 / 800 for every region, and the background
+translator compiles the regions it sends (`bgCompile`)**. Node: concurrent `--virtual` runs, 2 per variant, `perf
+stat -I` per phase, `perf record` of the play phase with the regions dumped at the end; browser: concurrent session
+pairs (`--gl-discard`, the same learned data and heat, variant order alternated within a game), play-phase guest ns
+per instruction (`guestMsPerMInsn`) and frames > 40 / > 50 ms per minute.
+
+**The earlier browser comparison (bullet "Region size, re-tuned" above) did not run 96 / 800.** A run queue passing
+`--jit-opts '{"maxBlocks":96,...}'` through `xargs -I{}` loses the JSON's quotes, the page's `JSON.parse` fails
+silently, and every "96" session ran 48 / 400 — the same region and block counts in the `[report] JIT:` line. Check
+that line in any variant run. Its BFME2 +4 % and Vice City +8.6 % (Node) are not reproduced below.
+
+### Where the difference comes from
+
+- **The hot code is in regions that stop for their size.** At 48 / 400, 35-38 % of the regions stop at the limit
+  (RotWK 8 046 of 21 263, BFME2 7 510 of 20 330, Vice City 2 097 of 5 968) and they run 56 % (RotWK), 48 % (BFME2),
+  75 % (Vice City) of the region code's time. At 96 / 800 a quarter still stop at 96 and hold 40-50 %: the hot code is
+  in large functions that no fixed size closes.
+- **Fewer transitions, fewer instruction-cache fills.** 96 / 800 (profiled runs, play): chained transitions −22 %
+  (RotWK 1 137 → 889 M, BFME2 1 657 → 1 293 M), static exits −50 to −67 %, exits for space (`exitLim`) −50 %; but
+  dispatches through a region's own br_table +20 % (RotWK) / +46 % (BFME2: backward transfers outside structured loops
+  381 → 575 M). Instruction-cache fills from L2 −10 %, from beyond L2 −10 to −30 % per host instruction, IPC +2-4 %:
+  the entry and exit code no longer touched outweighs the larger bodies.
+- **Per region** (RotWK play, perf samples per guest instruction, regions matched by entry): regions whose shape did not
+  change −5 % (less pressure from the others), the grown regions and those they absorbed −13 % together. BFME2: same
+  shape +1 %, the changed ones −7 %.
+- **V8 tiers, register pressure, translation work**: Liftoff's share of the region samples 5.7 → 5.0 % (RotWK), 8.4 →
+  6.9 % (BFME2) — larger functions tier up no later; TurboFan on V8's background threads +13 % (RotWK), −9 % (BFME2);
+  translation on the game thread in play lower (fewer misses); the background worker translates more (BFME2 load,
+  process CPU +25-30 % in Node).
+- **BFME2's apparent loss in Node is the virtual clock**: a region shape moves where time slices end, the deterministic
+  interleaving changes, and the 96 run executes 7-8 % more guest instructions for the same frames (more API calls:
+  JavaScript 20.6 → 23.8 % of the main thread), so the emulator's CPU per frame rose while every guest instruction
+  got cheaper (play −5.5 %, menu −16 %). Vice City likewise (+11 % instructions in the same virtual time).
+- **Vice City's slow frames: V8's lazy compilation.** V8 compiles a WebAssembly function at its first call, on the
+  calling thread (`--wasm-lazy-compilation`, on in Node 24 and Chrome): a region the background worker translated was
+  compiled by the game's thread when it first ran. Liftoff costs ~35 ns per byte of WASM on this machine (eager
+  `WebAssembly.Module`: 48 blocks ~20 KiB ≈ 1.5 ms, 96 ~39 KiB ≈ 3.4 ms, 144 ~55 KiB ≈ 4.9 ms), and a frame entering
+  new code (Vice City driving into a new area) pays it for each region it enters — the larger the regions, the longer
+  each stop. Vice City drive + drive-end, frames > 40 ms per minute: 48 / 400 13-32 (mean 18, 14 sessions), 96 / 800 22,
+  26, 33, 39, 41; with Chrome's `--js-flags=--no-wasm-lazy-compilation` (compiled where the background worker builds
+  the module): 48 10, 11, 11, 11, 8 (16 and 24 for the lazy session of the same pair), 96 9, 13, 12, 9 (41 lazy);
+  96 vs 48, both eager, 9 / 10, 13 / 11, 12 / 8.
+
+### Policies tried
+
+1. **One size for all** (`maxBlocks` / `maxInsns`): 96 / 800.
+2. **Growth of hot full regions** (removed; commit ce9b658): the slice ends (every 100 000 guest instructions,
+   Vm.sliceEnd) sampled where the threads were; a region that had left code out for its size and collected 16 samples
+   in a window of 8 192 was translated again with its limits ×2 or ×3 — by the background worker, installed in place of
+   the region if still live — its x87-mode versions at the same limits, the code cache keeping the grown shape apart
+   from the region it grows (neither superseding the other). ~420 regions grown in RotWK play (×2, 16 samples), ~1 070
+   with 4 samples. A variant admitting past the usual size only successors in recently sampled regions: no better (RotWK
+   −4.5 vs −6 %, BFME2 +2 vs 0 %).
+3. **Larger off the game's thread** (removed): the background translator's regions (learned regions, cold-tier
+   requests) ×2, misses translated on the game's thread at 48 / 400.
+4. **Compiled off the game's thread** (`bgCompile`, kept): not a size policy — what makes any size cheap for the game's
+   thread. The background worker calls each region of a batch once before sending it (bg-translate.js compileHere):
+   block index −1, on a state block no thread uses (memory.js JIT_WARM_STATE); the prologue's loads run, then the
+   dispatcher traps (or an x87 region's guard leaves, writing that block, or tail-calls the worker's own empty table: a
+   trap). V8 compiled the function on the way, and a module's code is shared by all its instances in every worker.
+   Node, Vice City drive with the background translator: V8 compilation on the game's thread 2.2 → 0.7 % of its samples.
+   Exact: tests/jit-bg-compile.test.js (randomized programs, x87 modes, SMC, sliced; the code, data, thread state block
+   and x87-version slots unchanged by the calls).
+
+### Results
+
+Node (concurrent virtual runs, play-phase guest ns per instruction vs 48 / 400; `--cold`: background translator and
+cold tier as in the page):
+
+| variant | RotWK | BFME2 | BFME2 menu | Vice City drive |
+|---|---|---|---|---|
+| 96 / 800 | −8 to −12 % | −5.5 % | −16 % | −13 to −17 % (other interleaving) |
+| grow ×2 | −6 % | | | −8 % |
+| grow ×3 | −5 to −6 % | −3 / 0 % | −5 to −8 % | −13 % (other interleaving) |
+| 96 / 800 + grow ×2 | −8 % | −5 % | −18 % | −15 % |
+| `--cold` 96 / 800 + bgCompile | −7 % | −3.5 % | −12 % | |
+| `--cold` background ×2 + bgCompile | −4 % | −6.6 % | −13 % | |
+
+Browser, lazy compilation (no bgCompile), pairs vs 48 / 400 — play ns, frames > 40 ms per minute (variant / 48):
+
+| variant | BFME2 | RotWK | BFME1 | Vice City (drive + drive-end) |
+|---|---|---|---|---|
+| 96 / 800 | −12.6 %, 10 / 10; −11.7 %, 16 / 7 | −5.5 %, 24 / 55; −6.2 %, 32 / 43 | −3.8 %, −3.5 %; 0-1 / 0-1 | 33 / 14, 26 / 13, 22 / 18, 39 / 32 |
+| grow ×3 | −5.9 %, 19 / 11; −1.4 %, 15 / 23 | −1.5 %, 29 / 48; −6.2 %, 23 / 42 | −5.3 %, −6.5 %; 0-1 | 24 / 16, 55 / 20, 21 / 15, 30 / 14 |
+| background ×2 | | | | 28 / 23, 17 / 17 |
+
+Browser with bgCompile, pairs vs 48 / 400 without it (the default until now):
+
+| variant | BFME2 | RotWK | BFME1 | Vice City |
+|---|---|---|---|---|
+| 96 / 800 + bgCompile | −7.9 %, 6 / 8 | −7.7 %, 36 / 65 | −4.3 %, 1 / 1 | 5 / 16, 24 / 58, 10 / 13 |
+| background ×2 + bgCompile | −5.9 %, 11 / 15 | −5.4 %, 35 / 56 | −2.6 %, 1 / 0 | 9 / 17 |
+| 48 / 400 + bgCompile | −5.5 %, 18 / 20 | −4.7 %, 57 / 41 | +2.6 %, 1 / 1 | 11 / 14, 11 / 17, 6 / 17 |
+
+96 + bgCompile against background ×2 + bgCompile, same pairs: BFME2 2.43 / 2.38 ns, RotWK 2.38 / 2.38, BFME1 2.17 /
+2.20, Vice City 13 / 11 frames > 40 ms per minute. Vice City's guest ns per instruction follows its instruction mix
+(15-24 G instructions for the same 3 100 frames, the game's frames fully busy), not the code: its guest ms per frame
+(drive-end) 11.7 / 13.0, 14.2 / 16.1, 13.0 / 12.6 for 96 + bgCompile / 48. Menus: BFME1 −8 %, RotWK −14 %, BFME2
+−21 % (frames > 40 ms per minute 250 / 354). Loading screens: the same length (map loads end on the game's
+`waitframe`), the game thread's translation time in RotWK's load phase 22-24 → 35 ms per frame (larger regions at the
+misses), its guest time lower. BFME2 first launch (`bfme2-first.txt`, no profile, 560 s — the first-launch
+computation did not end within it in any run on this loaded machine): guest ns per instruction 0.600 / 0.585 (48) →
+0.445 / 0.447 (96 + bgCompile) and 0.445 / 0.450 (background ×2 + bgCompile), 13 % more guest work done in the same
+time, frames > 40 ms per minute ~310 → ~60.
+
+**Kept**: 96 / 800 and bgCompile by default (translate.js JIT_DEFAULTS; the translated-code cache keys on them: the
+first session after the change translates again). The per-region policies did not beat one larger size once the
+compilation left the game's thread; growth stayed short of 96 / 800 in every game and, compiled lazily, cost Vice City
+the same slow frames. Residual cost: the misses translated on the game's thread (and the cold tier's hot entries)
+compile there lazily, at 96 / 800 (RotWK's load phase above).
 
 ## Measured, not kept
 
@@ -279,7 +395,7 @@ kept: fewer transitions came with more copies of the same code, and the play pro
   play (Liftoff is <1 % of the region samples in Node play).
 - Lazy flags rebuilt at exits from the registers the flag instruction read (so that the lazy values die at their
   branch instead of living to every exit): exact (randomized test against the interpreter), +1 to +2 % in play.
-- Region size 24 blocks (+6 to +11 % in the browser), 96 blocks (−2.5 % in Node play alone, neutral with the layout,
-  slower first launch), nested loops on top of the layout (neutral), `L_BLK` set before back edges (+3 %).
+- Region size 24 blocks (+6 to +11 % in the browser), 96 blocks (before 2026-10-05: −2.5 % in Node play alone, neutral
+  with the layout, slower first launch; see "Region size"), nested loops on top of the layout (neutral), `L_BLK` set before back edges (+3 %).
 - Dropping the lazy flags at exits entirely (an inexact experiment to bound the previous one): the games misbehave
   within seconds — exits do resume where flags are read.
