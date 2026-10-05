@@ -144,6 +144,13 @@ minute, GPU p99), and the marks (time to each phase).
   172.1 s; the record and 8 summaries written by the harness's server, read back by the report.
 - `bfme2-skirmish`, fresh browser (the game's first-launch setup: first frame after ~2 min): outcome `done` after
   354 s, 2D menu at 800x600, skirmish played (play phase screenshot), record written.
+- After the waits moved to draws per frame: `bfme2-skirmish` fresh, `--ui --telemetry`: `done` after 266 s (menu
+  140 s, load 191 s, loadscreen 197.4 s, play 205.8-266.1 s at 22.8 fps, 133 draws per frame), the summary panel
+  over the skirmish, the record sent; `rotwk-skirmish` fresh (headless): `done` after 235 s, play at 305 draws per
+  frame (the earlier `waitfps:12` never fired at SwiftShader's 7.6 fps: outcome `timeout` with the waiting step named).
+- Warm profiles at 1024x768 (pointer coordinates scaled from 800x600, 3D menus), `--gl-discard`: `bfme2-skirmish`
+  `done` (191 s, play 30.1 fps, 239 draws per frame), `rotwk-skirmish` `done` (172 s), `bfme1-skirmish` `done`
+  (352 s, play 38.2 fps, 360 draws per frame).
 - `bfme2-skirmish` with the warm 1024x768 profile (3D menu; coordinates scaled from 800x600), probes on and
   `?dbg=ORTHROS_GL_PROBES=0` side by side: both ~2.8 fps in the 3D menu (load 32: SwiftShader's GPU process bound,
   replay 338.5 / 338.7 ms per frame); the GPU timer reported 351 ms per frame, matching the render worker's replay and
