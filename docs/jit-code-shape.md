@@ -364,6 +364,13 @@ computation did not end within it in any run on this loaded machine): guest ns p
 0.445 / 0.447 (96 + bgCompile) and 0.445 / 0.450 (background ×2 + bgCompile), 13 % more guest work done in the same
 time, frames > 40 ms per minute ~310 → ~60.
 
+Final build, new defaults against the old ones set through `?jitopts` (`{"maxBlocks":48,"maxInsns":400,
+"bgCompile":false}`), one concurrent pair per game (two for Vice City): BFME2 play 2.31 / 2.50 ns (−7.4 %), frames
+> 40 ms per minute 7 / 17, menu −19 %; RotWK play 2.26 / 2.48 (−9.1 %), 31 / 40, menu −14 %; BFME1 play 2.13 / 2.25
+(−5.7 %), 1 / 1, menu −8 %; Vice City frames > 40 ms per minute 12 / 17 and 12 / 15, guest ms per frame (drive-end)
+12.4 / 13.1 and 12.5 / 13.3, p99 35-36 / 37-38 ms (its ns per instruction +13 % and +4 %, with 15.2 / 18.1 and
+17.4 / 19.0 G instructions for the same frames: the mix, see above).
+
 **Kept**: 96 / 800 and bgCompile by default (translate.js JIT_DEFAULTS; the translated-code cache keys on them: the
 first session after the change translates again). The per-region policies did not beat one larger size once the
 compilation left the game's thread; growth stayed short of 96 / 800 in every game and, compiled lazily, cost Vice City
