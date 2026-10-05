@@ -59,7 +59,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `slowCats`, `worst` | the slow frames' categories summed (ms); the worst frame [ms, work ms, categories] |
 | `drawsPerFrame`, `d3dFrames` | Direct3D draw calls per presented Direct3D frame |
 | `glCalls` | WebGL calls (and GL draw calls) per frame, counted over a window of 30 frames every 20 s; `{state: 'unavailable'}` where not measured |
-| `gpu` | GPU time per frame: `mean`, `p50`, `p90`, `p99`, `max` (ms), `over33`, `frames` timed, `disjoint` results dropped, `h`; `{state: 'unavailable'}` without `EXT_disjoint_timer_query_webgl2`, `{state: 'none'}` without a Direct3D device |
+| `gpu` | GPU time per frame: `mean`, `p50`, `p90`, `p99`, `max` (ms), `over33`, `frames` timed, `disjoint` results dropped, `h`; `{state: 'unavailable'}` without `EXT_disjoint_timer_query_webgl2`, `{state: 'none'}` without a Direct3D device (or with the probes off) |
 | `render` | render worker: the emulator's waits for it (`waitMs`, `fenceMs`, `frameMs`, `readbackMs`) and its replay time (`replayMs`), ms per frame |
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
@@ -134,6 +134,23 @@ frames per minute, draws and GL calls per frame, GPU time, render worker waits, 
 frames' shares); the bench runs with their phases. Then per bench: one line per run (date, session, version,
 outcome, first launch, machine, build, render mode, display) and its phases side by side (fps, p99, > 33 ms per
 minute, GPU p99), and the marks (time to each phase).
+
+## Checks made (2026-10-05, this server: headless Chromium, SwiftShader, shared 48 cores under load 16-32)
+
+- `vicecity-drive`, fresh browser (no profile, `--learn` copy of learn-live), `--ui --telemetry`: banner, scenario and
+  summary panel as a player sees them; outcome `done` after 172 s; marks menu 25.8 s, load 45.3 s, play 112 s, end
+  172.1 s; the record and 8 summaries written by the harness's server, read back by the report.
+- `bfme2-skirmish`, fresh browser (the game's first-launch setup: first frame after ~2 min): outcome `done` after
+  354 s, 2D menu at 800x600, skirmish played (play phase screenshot), record written.
+- `bfme2-skirmish` with the warm 1024x768 profile (3D menu; coordinates scaled from 800x600), probes on and
+  `?dbg=ORTHROS_GL_PROBES=0` side by side: both ~2.8 fps in the 3D menu (load 32: SwiftShader's GPU process bound,
+  replay 338.5 / 338.7 ms per frame); the GPU timer reported 351 ms per frame, matching the render worker's replay and
+  waits — the measurement is plausible even on SwiftShader. With the page's compositor on the same saturated GPU
+  process, `--ui` runs of 3D scenes stalled the page's main thread for tens of seconds (screenshots time out, the
+  scenario's later steps wait): an artifact of software rendering under load; use headless runs (`--gl-discard` to
+  check a scenario's flow) here.
+- Page cost: `FrameStats.add` with the histogram 0.69-0.86 µs per frame vs 0.42-0.82 before (Node, alternated, noisy
+  machine: within the noise; < 0.003 % of a 33 ms frame); the page's summary work 2 µs per 0.5 s stats message.
 
 ## Tests
 

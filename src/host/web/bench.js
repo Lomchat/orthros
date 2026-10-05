@@ -80,6 +80,8 @@ export class BenchRun {
     if (now > (this.def.maxSeconds ?? 900)) { const w = this.player.waiting; this.finish('timeout', `not finished after ${this.def.maxSeconds ?? 900} s${w ? `; waiting at step "${w.src}"` : ''}`); return; }
     for (const a of this.player.tick(now, st.stats)) this.perform(a);
     if (this.player.done) { this.finish('done', null); return; }
+    if (Math.floor(now) === this.shownAt) return; // (the banner's line once a second)
+    this.shownAt = Math.floor(now);
     const [k, n] = this.player.progress, w = this.player.waiting;
     const line = this.el.querySelector('.st');
     if (line) line.textContent = `${fmtTime(now)} · phase ${this.label} · step ${k}/${n}${w ? ` · waiting for ${w.kind === 'waitfps' ? 'the game to run' : 'the next screen'}` : ''}${st.stats ? ` · ${Math.round(st.stats.fps ?? 0)} fps` : ''}`;

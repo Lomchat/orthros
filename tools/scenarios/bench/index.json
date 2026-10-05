@@ -2,6 +2,8 @@
  "about": "Bench scenarios of the page's bench mode (?bench=<name>, docs/real-machine-bench.md). file: the scenario (tools/headless.mjs language, src/host/scenario.js); manifests: the versions it plays (the first one by default, ?manifest= picks another); coords: the display its pointer coordinates were written for (scaled to the game's display); minutes: the usual duration once the game files are in the browser; maxSeconds: the bench stops there (a first launch downloads the files first).",
  "benches": [
   { "name": "bfme2-skirmish", "title": "BFME II: menu, skirmish start, one minute of play", "manifests": ["bfme2", "bfme2-106"], "file": "bfme2-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200 },
+  { "name": "rotwk-skirmish", "title": "Rise of the Witch-king: menu, skirmish start, one minute of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200 },
+  { "name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla", "bfme1-103"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200 },
   { "name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 900 }
  ]
 }
