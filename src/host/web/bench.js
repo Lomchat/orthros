@@ -53,6 +53,7 @@ export class BenchRun {
     this.label = 'start'; this.hiddenSeconds = 0; this.blurs = 0; this.finished = false; this.t0 = null;
     if (!document.getElementById('benchCss')) { const st = document.createElement('style'); st.id = 'benchCss'; st.textContent = CSS; document.head.appendChild(st); }
     this.el = document.createElement('div'); this.el.id = 'bench'; document.body.appendChild(this.el);
+    if (deps.headless) this.el.style.display = 'none'; // (the harness's bare frame: its screenshots without the banner)
   }
   /** The banner before the start: what will happen; `onStart` once the player agrees (a click: audio may start). */
   intro(onStart, onCancel) {
