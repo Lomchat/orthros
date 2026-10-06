@@ -134,11 +134,14 @@ export class OpfsBlockStore {
         } else if (data.getSize() > 0) reset = 'no index';
         // a store of an earlier format (no checksums) or with an unreadable index starts over, its data file emptied
         if (reset) { map.clear(); data.truncate(0); }
-        // entries past the end of the data file (a write lost before the index sync) are dropped
+        // entries past the end of the data file (its tail lost in a crash while their index records were synced) are
+        // dropped — and the log rewritten without them: blocks appended later fill that range again, where the stale
+        // records would come back as entries pointing into other blocks' bytes
         const size = data.getSize();
-        for (const [k, [off, len]] of map) if (off + len > size) map.delete(k);
-        if (end < 0 || reset || migrated) {
-          // a new log: the header and, migrating, every entry, as one write
+        let pastEnd = 0;
+        for (const [k, [off, len]] of map) if (off + len > size) { map.delete(k); pastEnd++; }
+        if (end < 0 || reset || migrated || pastEnd) {
+          // a new log: the header and every entry, as one write
           const bytes = encodeIndex([...map].map(([k, [off, len, h]]) => [REC_PUT, k, off, len, h]), true);
           index.truncate(0); index.write(bytes, { at: 0 }); index.flush(); end = bytes.length;
         } else if (cut > 0) { index.truncate(end); index.flush(); } // (an incomplete or damaged tail: the log is cut there)
@@ -147,6 +150,7 @@ export class OpfsBlockStore {
         store.resetReason = reset;
         store.migrated = migrated;
         store.indexCut = cut;
+        store.pastEnd = pastEnd;
         return store;
       } catch (e) { data.close(); index.close(); throw e; }
     } catch {

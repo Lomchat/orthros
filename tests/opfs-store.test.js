@@ -180,3 +180,24 @@ test('block store: index sync cadence — every 256 blocks or 2 s, at once when 
     assert.equal(again.map.size, SYNC_BLOCKS + 2);
   });
 });
+
+test('block store: a record dropped at open (past the data file) does not come back once later blocks fill that range', async () => {
+  await withFakeOpfs(async (files) => {
+    let s = await OpfsBlockStore.open('x');
+    for (let i = 0; i < 3; i++) s.put(key(i), block(i));
+    s.close();
+    const d = files.get('blocks.bin');
+    d.b = d.b.slice(0, d.getSize() - 10); // (a crash lost the data file's tail; the index record of key 2 survived)
+    s = await OpfsBlockStore.open('x');
+    assert.equal(s.map.has(key(2)), false);
+    s.put(key(7), block(7, 3000)); // (appended where key 2's bytes were: its old record now lies inside the file)
+    s.close();
+    s = await OpfsBlockStore.open('x');
+    const bad = []; s.onCorrupt = (k) => bad.push(k);
+    assert.equal(s.map.has(key(2)), false, 'the stale record stays dropped');
+    assert.equal(s.get(key(2)), null);
+    assert.deepEqual(bad, []);
+    assert.deepEqual(s.get(key(7)), block(7, 3000));
+    assert.equal(s.map.size, 3);
+  });
+});
