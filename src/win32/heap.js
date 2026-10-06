@@ -57,7 +57,7 @@ export class Heap {
     this.chunks = [];
     /** @type {Uint16Array | null} granule -> chunk index + 1 (see MAP_FROM) */
     this.gmap = null;
-    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one; loopedLists: cut where they looped back; see alloc)
     this.total = 0;
     this.grow(Math.max(opts.initial ?? MIN_CHUNK, MIN_CHUNK));
   }
@@ -283,7 +283,7 @@ export class Heap {
     for (const c of this.chunks) this.vmem.release(c.base);
     this.chunks = [];
     this.gmap = null;
-    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one; loopedLists: cut where they looped back; see alloc)
     this.heads.fill(0);
   }
 }
