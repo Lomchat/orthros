@@ -45,6 +45,19 @@ export function loadGameFolder(gameDir) {
       saveDir: path.resolve(gameDir, '../../build/saves', id) });
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
     if (!resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
+    if (manifest.languageFileAliases !== undefined) {
+      const aliases = manifest.languageFileAliases;
+      if (!aliases || Array.isArray(aliases) || typeof aliases !== 'object') fail(file, `${id}: languageFileAliases invalide`);
+      for (const [language, paths] of Object.entries(aliases)) {
+        if (!manifest.languages?.includes(language) || !paths || Array.isArray(paths) || typeof paths !== 'object') fail(file, `${id}: languageFileAliases.${language} invalide`);
+        const seen = new Set();
+        for (const [from, to] of Object.entries(paths)) {
+          if (!safePath(from) || !safePath(to) || seen.has(from.toLowerCase()) || !resolveGameFile(manifest, from) || !resolveGameFile(manifest, to))
+            fail(file, `${id}: alias de fichier invalide: ${from} -> ${to}`);
+          seen.add(from.toLowerCase());
+        }
+      }
+    }
     versions.set(id, { manifest, requires: requires ?? [] });
   }
   if (!versions.has(spec.defaultVersion)) fail(file, 'defaultVersion doit désigner une version');
