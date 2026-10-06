@@ -5,7 +5,9 @@
 //
 // Rules (generic: they depend on the measured link only):
 // - the game's reads (demand) come first: a background download starts only while no demand read is in flight and the
-//   link has been quiet for the download's own delay; at most maxBackground() of them at once (one on a thin link);
+//   link has been quiet for the download's own delay; the background requests in flight carry at most about
+//   BG_SECONDS of the link together (several small ones at once — a latency-bound run of small files fills the link —
+//   or one larger one), and at most maxBackground() of them;
 // - a background request carries at most backgroundBytes() (about BG_SECONDS of the link): a demand read that comes
 //   while it is on its way waits for it at most that long, and nothing needs to be aborted (an abort throws away what
 //   the request had already received);
@@ -16,8 +18,8 @@
 export const BG_SECONDS = 0.35;
 /** a demand read rounds up by at most this much of the link's time (s) */
 export const DEMAND_SECONDS = 0.25;
-/** at or above this rate (bytes/s) the link is "fast": the policies of a local network (sizes, concurrency) apply */
-export const FAST_BPS = 24 << 20;
+/** at or above this rate (bytes/s, measured) the link is "fast": the earlier policies (whole blocks, block fill, aborts) apply — measured at 5 MB/s with a 50 ms round trip, they reach the menu and the game sooner there (round trips cost more than bytes) */
+export const FAST_BPS = 3 << 20;
 /** below this rate (bytes/s) the link is "thin": no speculative whole blocks in the background (see thin()) */
 export const THIN_BPS = 1536 << 10;
 const MIN_BG = 64 << 10, MAX_BG = 4 << 20;
@@ -56,7 +58,9 @@ export class NetLink {
     this.reserved = [];
   }
   /** background requests in flight or about to be (turns given within the last 500 ms) */
-  bgCount() { const now = this.now(); while (this.reserved.length && now - this.reserved[0] > 500) this.reserved.shift(); return this.inflight.bg + this.reserved.length; }
+  bgCount() { const now = this.now(); while (this.reserved.length && now - this.reserved[0].t > 500) this.reserved.shift(); return this.inflight.bg + this.reserved.length; }
+  /** file bytes of the background requests in flight or about to be */
+  bgBytes() { let n = 0; for (const t of this.bgFlights) n += t.bytes; for (const r of this.reserved) n += r.bytes; return n; }
 
   /** wire bytes per file byte so far (compressed ranges: below 1), 1 until known */
   ratio() { const t = this.totals; return t.rawBytes >= 256 << 10 ? Math.max(0.15, Math.min(1, (t.demandBytes + t.bgBytes) / t.rawBytes)) : 1; }
@@ -73,8 +77,8 @@ export class NetLink {
     if (this.bw === null) return this.fixed ? MAX_BG : UNKNOWN_BG;
     return Math.max(MIN_BG, Math.min(MAX_BG, Math.floor(this.bw * BG_SECONDS / this.ratio() / MIN_BG) * MIN_BG));
   }
-  /** background requests at once: one per ~4 MB/s of link (one on a thin link), up to 8 */
-  maxBackground() { return this.bw === null ? (this.fixed ? 8 : 1) : Math.max(1, Math.min(8, Math.floor(this.bw / (4 << 20)))); }
+  /** background requests at once at most (within the bytes of backgroundBytes(), see mayStart) */
+  maxBackground() { return this.bw === null && !this.fixed ? 2 : 8; }
   /** bytes a demand read may fetch past what the game asked for (`cap`: the caller's own limit) */
   demandExtra(cap) { return this.bw === null ? (this.fixed ? cap : Math.min(cap, UNKNOWN_BG)) : Math.min(cap, Math.floor(this.bw * DEMAND_SECONDS / this.ratio())); }
 
@@ -83,7 +87,7 @@ export class NetLink {
     const t = { kind, t0: this.now(), bytes, abort, range };
     if (this.inflight.demand + this.inflight.bg === 0) { this.busySince = t.t0; this.winIdleStarts++; }
     this.inflight[kind]++;
-    if (kind === 'bg') { this.bgFlights.add(t); this.reserved.shift(); }
+    if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); }
     return t;
   }
   /**
@@ -152,9 +156,12 @@ export class NetLink {
   }
 
   /** True when a background download of priority `quietMs` may start now. */
-  mayStart(quietMs, urgent = false) {
+  mayStart(quietMs, urgent = false, bytes = 0) {
     if (urgent) return true;
-    if (this.bgCount() >= this.maxBackground()) return false;
+    const n = this.bgCount();
+    if (n >= this.maxBackground()) return false;
+    // (together the background requests carry about BG_SECONDS of the link: one at least)
+    if (n > 0 && !this.fast() && this.bgBytes() + bytes > this.backgroundBytes()) return false;
     if (this.fast()) return quietMs <= 0 || this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
     return this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
   }
@@ -163,7 +170,8 @@ export class NetLink {
    * game's last read it waits for (0 on a fast link: no wait). `w.urgent` set meanwhile (a parked read waits for this
    * download) lets it start at once. Resolves to true, or false once `stop()` holds.
    */
-  turn(prio, quietMs, stop = () => false, w = {}) {
+  turn(prio, quietMs, stop = () => false, w = {}, bytes = 0) {
+    w.bytes = bytes;
     if (this.tryTurn(quietMs, w)) return Promise.resolve(true);
     return new Promise((resolve) => {
       Object.assign(w, { prio, quietMs, resolve, stop });
@@ -173,9 +181,9 @@ export class NetLink {
     });
   }
   /** The turn of a background download that may start now (none waits before it): taken, true; else false. */
-  tryTurn(quietMs, w = {}) {
-    if (this.waiters.length || !this.mayStart(quietMs, w.urgent)) return false;
-    this.reserved.push(this.now());
+  tryTurn(quietMs, w = {}, bytes = w.bytes ?? 0) {
+    if (this.waiters.length || !this.mayStart(quietMs, w.urgent, bytes)) return false;
+    this.reserved.push({ t: this.now(), bytes });
     return true;
   }
   /** Let the waiting downloads whose turn has come start (in priority order); wake up again when a quiet delay ends. */
@@ -186,7 +194,7 @@ export class NetLink {
     for (let i = 0; i < this.waiters.length; i++) {
       const w = this.waiters[i];
       // (the request starts after this resolves: counted as in flight now so the next ones see it)
-      if (this.mayStart(w.quietMs, w.urgent)) { this.waiters.splice(i--, 1); this.reserved.push(this.now()); w.resolve(true); continue; }
+      if (this.mayStart(w.quietMs, w.urgent, w.bytes ?? 0)) { this.waiters.splice(i--, 1); this.reserved.push({ t: this.now(), bytes: w.bytes ?? 0 }); w.resolve(true); continue; }
       if (!w.urgent) break; // (strict priority: a later one does not pass one that waits)
     }
     if (this.waiters.length) {

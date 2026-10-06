@@ -21,7 +21,7 @@ const flush = () => new Promise((r) => setImmediate(r));
 test('net link: the rate is measured from what crossed the link over its busy time, less the round trips', () => {
   const c = clock(), n = new NetLink(c);
   assert.equal(n.bw, null); assert.ok(!n.fast(), 'not measured: careful (small requests, one at a time)');
-  assert.equal(n.maxBackground(), 1); assert.equal(n.backgroundBytes(), 256 << 10); assert.ok(!n.thin());
+  assert.equal(n.maxBackground(), 2); assert.equal(n.backgroundBytes(), 256 << 10); assert.ok(!n.thin());
   assert.ok(new NetLink({ fixed: true }).fast(), 'never measured (tests, tools): the local-network policies');
   // 85 KB/s with a 50 ms round trip: a small answer (times the round trip), then 64 KiB requests one after the other
   const s = n.begin('demand', 2048); c.advance(50 + 2048 / 85); n.end(s, 2048, 2048); c.advance(20);
@@ -35,9 +35,15 @@ test('net link: the rate is measured from what crossed the link over its busy ti
   assert.ok(Math.abs(n.bw - 85000) / 85000 < 0.15, `measured ${Math.round(n.bw)} B/s`);
   assert.ok(!n.fast());
   assert.ok(n.rtt >= 50 && n.rtt < 900);
-  // sizes from the measure: a background request about BG_SECONDS of the link (at least 64 KiB), one at a time
+  // sizes from the measure: the background requests in flight carry about BG_SECONDS of the link together (at least
+  // one request of 64 KiB)
   assert.equal(n.backgroundBytes(), 64 << 10);
-  assert.equal(n.maxBackground(), 1);
+  const b1 = n.begin('bg', 65536);
+  assert.equal(n.mayStart(0, false, 65536), false, 'a second 64 KiB request would hold the game up twice as long');
+  n.end(b1, 65536);
+  const c3 = clock(), m3 = new NetLink({ ...c3, bw: 3.5e6 });
+  for (let i = 0; i < 8; i++) { assert.ok(m3.tryTurn(0, {}, 20000), `small request ${i} (a run of small files fills the link)`); m3.begin('bg', 20000); }
+  assert.equal(m3.tryTurn(0, {}, 20000), false, 'at most maxBackground() at once');
   assert.ok(n.demandExtra(1 << 20) <= 85000 * 0.3);
   // two transfers at once share the link: the busy time counts once
   const c2 = clock(), m = new NetLink(c2);
@@ -62,8 +68,8 @@ test('net link: background turns wait for the game\'s reads, in priority order, 
   const c = clock(), n = new NetLink({ ...c, bw: 85000 });
   const order = [];
   const d = n.begin('demand', 65536);
-  const p3 = n.turn(3, 150).then((ok) => order.push(['fill', ok]));
-  const p1 = n.turn(1, 0).then((ok) => order.push(['readAhead', ok]));
+  const p3 = n.turn(3, 150, () => false, {}, 65536).then((ok) => order.push(['fill', ok]));
+  const p1 = n.turn(1, 0, () => false, {}, 65536).then((ok) => order.push(['readAhead', ok]));
   await flush();
   assert.deepEqual(order, [], 'nothing starts while the game reads');
   c.advance(800); n.end(d, 65536); await flush();

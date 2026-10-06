@@ -49,7 +49,7 @@ this server (localhost), where none of this shows.
   a block whose pieces are all here is assembled and stored whole (its pieces dropped). A second launch reads them
   locally.
 
-A fast link (measured at 24 MB/s and more: a local network) keeps the earlier policies (whole blocks, block fill,
+A fast link (measured at 3 MB/s and more: 5 MB/s with a 50 ms round trip measures ~3.9 MB/s) keeps the earlier policies (whole blocks, block fill,
 several background requests, aborts on demand).
 
 ## What the page says

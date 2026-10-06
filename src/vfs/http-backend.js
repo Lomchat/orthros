@@ -40,6 +40,10 @@ const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
+/** learned pieces ahead on a link neither fast nor thin: more requests at once (small files are latency-bound) */
+const AHEAD_REQUESTS_MID = 8;
+/** prefetch requests queued at once on a link that is not fast (see prefetch) */
+const PREFETCH_PARTS = 6;
 /** a pause this long (ms) between two learned entries ends a step of the game (see stepEstimate) */
 const STEP_GAP_MS = 5000;
 const RETRY_WAITS = [250, 1000, 2000, 4000, 8000]; // ms before each new attempt of a failed range request
@@ -220,6 +224,7 @@ export class HttpBackend {
       }
       return null;
     };
+    const parts = new Set(); let failed = false;
     for (;;) {
       if (stop() || store.failed) return;
       // (the game's own reads first; the block fill, when it has blocks to fetch, runs beside this pass rather than
@@ -227,14 +232,19 @@ export class HttpBackend {
       // starved this pass for whole sessions)
       while (this.gameBusy(300)) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
       if (!this.net.fast()) {
+        // (up to PREFETCH_PARTS requests queued at once: each waits for its turn on the link, which lets several small
+        // ones run together — a run of small files is latency-bound — within the link's background bytes)
+        if (parts.size >= PREFETCH_PARTS) { await Promise.race(parts); continue; }
         const job = nextPart();
-        if (!job) { if (this.flights.size) { await new Promise((res) => setTimeout(res, 200)); if (next() >= 0 || nextPart()) continue; } break; }
+        if (!job) { if (parts.size || this.flights.size) { await (parts.size ? Promise.race(parts) : new Promise((res) => setTimeout(res, 200))); if (parts.size || next() >= 0 || nextPart()) continue; } break; }
         progress.k = job.r;
-        const r = await this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], PRIO.prefetch, stop);
-        if (r === null) { if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); continue; }
-        if (r === false) continue;
-        if (r === undefined) job.e.skip = true;
-        else progress.bytes += Math.min(job.e.size, (job.run[1] + 1) * CHUNK) - job.run[0] * CHUNK;
+        const pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], PRIO.prefetch, stop).then((r) => {
+          if (r === null) failed = true;
+          else if (r === undefined) job.e.skip = true;
+          else if (r === true) progress.bytes += Math.min(job.e.size, (job.run[1] + 1) * CHUNK) - job.run[0] * CHUNK;
+        }).finally(() => parts.delete(pr));
+        parts.add(pr);
+        if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
         continue;
       }
       const k = next(); progress.k = k;
@@ -298,7 +308,7 @@ export class HttpBackend {
   pumpAhead() {
     const L = this.learned; if (!L || L.stop() || this.store?.failed || typeof fetch !== 'function') return;
     const P = BLOCK / CHUNK;
-    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < AHEAD_REQUESTS; r++) {
+    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < (this.net.fast() || this.net.thin() ? AHEAD_REQUESTS : AHEAD_REQUESTS_MID); r++) {
       const e = L.entries[r];
       if (e.ahead || e.seen || !e.mask || this.doneWith(e.path)) continue;
       e.ahead = true;
@@ -516,7 +526,7 @@ export class HttpBackend {
     // now starts the request now)
     if (turn) {
       const quiet = this.net.fast() ? 0 : turn.prio[1], w = turn.w ?? {};
-      if (!this.net.tryTurn(quiet, w)) return this.net.turn(turn.prio[0], quiet, turn.stop, w).then((go) => (go ? this.fetchBackgroundNow(path, start, end, onStart, abortable, learn) : null));
+      if (!this.net.tryTurn(quiet, w, end - start)) return this.net.turn(turn.prio[0], quiet, turn.stop, w, end - start).then((go) => (go ? this.fetchBackgroundNow(path, start, end, onStart, abortable, learn) : null));
     }
     return this.fetchBackgroundNow(path, start, end, onStart, abortable, learn);
   }
