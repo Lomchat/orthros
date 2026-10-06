@@ -9,6 +9,8 @@
 // - swizzle: 32-bit texels with red and blue exchanged and an alpha mask ORed (A8R8G8B8 / X8R8G8B8 <-> RGBA8), rows
 //   `pitch` bytes apart.
 // - halve: the 2:1 box filter of mip levels, (a + b + c + d + 2) >> 2 per channel, on 16-bit lanes.
+// - unpack<fmt> / pack<fmt>: the 16-bit formats (R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4) to and from RGBA8,
+//   eight texels at a time (FMT16).
 // The module imports its memory: a private one on the calling thread, or the DXT pool's shared memory in the helpers
 // (dxt-pool.js), which then encode their block rows in place.
 import { ModuleBuilder, Code, T } from '../cpu/jit/wasm.js';
@@ -325,6 +327,110 @@ function halveCode() {
   return { code: c, locals: [T.i32, T.i32, T.i32, T.i32, T.i32, T.v128, T.v128, T.v128] };
 }
 
+/**
+ * 16-bit formats (D3DFORMAT numbers) the kernels convert: [shift, bits] of R, G, B, A (null: none — 255 decoded) and
+ * the bits an encoding always sets. Decoding expands a channel k of b bits to k * 255 / (2^b - 1) truncated (the
+ * JavaScript conversions' `| 0`), by table lookups (i8x16.swizzle on tables made by that same expression) for 5 and 6
+ * bits, k * 17 for 4, k * 255 for 1; encoding rounds v * (2^b - 1) / 255 to nearest as Math.round does, computed
+ * exactly as floor((v (2^b - 1) + 127) / 255) = (z + 1 + (z >> 8)) >> 8 (checked for every value by the tests).
+ */
+export const FMT16 = Object.freeze({
+  23: { ch: [[11, 5], [5, 6], [0, 5], null], set: 0 }, // R5G6B5
+  24: { ch: [[10, 5], [5, 5], [0, 5], null], set: 0x8000 }, // X1R5G5B5
+  25: { ch: [[10, 5], [5, 5], [0, 5], [15, 1]], set: 0 }, // A1R5G5B5
+  26: { ch: [[8, 4], [4, 4], [0, 4], [12, 4]], set: 0 }, // A4R4G4B4
+  30: { ch: [[8, 4], [4, 4], [0, 4], null], set: 0xf000 }, // X4R4G4B4
+});
+const i16x8c = (v) => { const b = new Uint8Array(16); for (let i = 0; i < 8; i++) { b[2 * i] = v & 255; b[2 * i + 1] = (v >> 8) & 255; } return b; };
+/** unpack16(src, pitch, dst, w, h): w x h texels of a FMT16 format (rows `pitch` bytes apart) to packed RGBA8 */
+function unpack16Code(f) {
+  const c = new Code();
+  const SRC = 0, PITCH = 1, DST = 2, W = 3, H = 4, Y = 5, X = 6, S = 7, D = 8, V0 = 9, V1 = 10, CH = [11, 12, 13, 14], RG = 15, GR = 16, BA = 17, AB = 18;
+  const WORD = 19, K = 20;
+  const ZIP_LO = [0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23], ZIP_HI = ZIP_LO.map((i) => i + 8);
+  const ZIP16_LO = [0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23], ZIP16_HI = ZIP16_LO.map((i) => i + 8);
+  c.i32(0).set(Y);
+  const yd = c.block(); const yl = c.loop();
+  c.get(Y).get(H).ge_s().br_if(yd);
+  c.get(SRC).get(Y).get(PITCH).mul().add().set(S); c.get(DST).get(Y).get(W).mul().i32(2).shl().add().set(D);
+  c.i32(0).set(X);
+  const xd = c.block(); const xl = c.loop(); // (sixteen texels at a time: each channel's 16 values in the byte lanes of one vector)
+  c.get(X).i32(16).add().get(W).gt_s().br_if(xd);
+  c.get(S).v128load(0).set(V0); c.get(S).v128load(16).set(V1);
+  f.ch.forEach((ch, i) => {
+    if (!ch) { c.v128const(new Uint8Array(16).fill(255)).set(CH[i]); return; }
+    const [shift, bits] = ch, m = (1 << bits) - 1;
+    for (const v of [V0, V1]) {
+      c.get(v); if (shift) c.i32(shift).i16x8shr_u(); c.v128const(i16x8c(m)).v128and();
+      if (bits === 1 || bits === 4) c.v128const(i16x8c(bits === 1 ? 255 : 17)).i16x8mul();
+    }
+    c.i8x16narrow_i16x8_u().set(CH[i]);
+    if (bits === 1 || bits === 4) return;
+    for (let t = 0; t < (m + 1) / 16; t++) { // (16 entries of k * 255 / m per table; an index past them gives 0)
+      c.v128const(Uint8Array.from({ length: 16 }, (_, j) => ((16 * t + j) * 255 / m) | 0)).get(CH[i]); if (t) c.i32(16 * t).i8x16splat().i8x16sub(); c.i8x16swizzle();
+      if (t) c.v128or();
+    }
+    c.set(CH[i]);
+  });
+  // R,G,B,A byte vectors to 64 bytes of R,G,B,A texels
+  c.get(CH[0]).get(CH[1]).i8x16shuffle(ZIP_LO).set(RG); c.get(CH[0]).get(CH[1]).i8x16shuffle(ZIP_HI).set(GR);
+  c.get(CH[2]).get(CH[3]).i8x16shuffle(ZIP_LO).set(BA); c.get(CH[2]).get(CH[3]).i8x16shuffle(ZIP_HI).set(AB);
+  c.get(D).get(RG).get(BA).i8x16shuffle(ZIP16_LO).v128store(0);
+  c.get(D).get(RG).get(BA).i8x16shuffle(ZIP16_HI).v128store(16);
+  c.get(D).get(GR).get(AB).i8x16shuffle(ZIP16_LO).v128store(32);
+  c.get(D).get(GR).get(AB).i8x16shuffle(ZIP16_HI).v128store(48);
+  c.get(S).i32(32).add().set(S); c.get(D).i32(64).add().set(D); c.get(X).i32(16).add().set(X); c.br(xl);
+  c.end(); c.end(); void xd;
+  const td = c.block(); const tl = c.loop(); // (the last texels of the row, one at a time)
+  c.get(X).get(W).ge_s().br_if(td);
+  c.get(S).i32load16u(0).set(K); c.i32(0).set(WORD);
+  f.ch.forEach((ch, i) => {
+    if (!ch) c.i32(255);
+    else { const [shift, bits] = ch, m = (1 << bits) - 1; c.get(K); if (shift) c.i32(shift).shr_u(); c.i32(m).and().i32(255).mul().i32(m).div_u(); }
+    if (i) c.i32(8 * i).shl();
+    c.get(WORD).or().set(WORD);
+  });
+  c.get(D).get(WORD).i32store(0, 0);
+  c.get(S).i32(2).add().set(S); c.get(D).i32(4).add().set(D); c.get(X).i32(1).add().set(X); c.br(tl);
+  c.end(); c.end(); void td;
+  c.get(Y).i32(1).add().set(Y); c.br(yl);
+  c.end(); c.end(); void yd;
+  return { code: c, locals: [T.i32, T.i32, T.i32, T.i32, ...Array(10).fill(T.v128), T.i32, T.i32] };
+}
+/** pack16(src, dst, n): n packed RGBA8 texels to a FMT16 format */
+function pack16Code(f) {
+  const c = new Code();
+  const SRC = 0, DST = 1, N = 2, I = 3, V0 = 4, V1 = 5, RG = 6, BA = 7, CH = [8, 9, 10, 11], Z = 12, ACC = 13, P = 14, Q = 15;
+  // q = (z + 1 + (z >> 8)) >> 8, z = v * m + 127
+  const quantV = (i, m) => { c.get(CH[i]).v128const(i16x8c(m)).i16x8mul().v128const(i16x8c(127)).i16x8add().tee(Z).v128const(i16x8c(1)).i16x8add().get(Z).i32(8).i16x8shr_u().i16x8add().i32(8).i16x8shr_u(); };
+  c.i32(0).set(I);
+  const vd = c.block(); const vl = c.loop(); // (eight texels at a time)
+  c.get(I).i32(8).add().get(N).gt_s().br_if(vd);
+  c.get(SRC).v128load(0).set(V0); c.get(SRC).v128load(16).set(V1);
+  c.get(V0).get(V1).i8x16shuffle([0, 4, 8, 12, 16, 20, 24, 28, 1, 5, 9, 13, 17, 21, 25, 29]).set(RG);
+  c.get(V0).get(V1).i8x16shuffle([2, 6, 10, 14, 18, 22, 26, 30, 3, 7, 11, 15, 19, 23, 27, 31]).set(BA);
+  c.get(RG).i16x8extend_low_i8x16_u().set(CH[0]); c.get(RG).i16x8extend_high_i8x16_u().set(CH[1]);
+  c.get(BA).i16x8extend_low_i8x16_u().set(CH[2]); c.get(BA).i16x8extend_high_i8x16_u().set(CH[3]);
+  c.v128const(i16x8c(f.set)).set(ACC);
+  f.ch.forEach((ch, i) => { if (!ch) return; const [shift, bits] = ch; quantV(i, (1 << bits) - 1); if (shift) c.i32(shift).i16x8shl(); c.get(ACC).v128or().set(ACC); });
+  c.get(DST).get(ACC).v128store(0);
+  c.get(SRC).i32(32).add().set(SRC); c.get(DST).i32(16).add().set(DST); c.get(I).i32(8).add().set(I); c.br(vl);
+  c.end(); c.end(); void vd;
+  const td = c.block(); const tl = c.loop(); // (the last texels, one at a time: q = floor((v m + 127) / 255))
+  c.get(I).get(N).ge_s().br_if(td);
+  c.get(SRC).i32load(0, 0).set(P); c.i32(f.set).set(Q);
+  f.ch.forEach((ch, i) => {
+    if (!ch) return; const [shift, bits] = ch, m = (1 << bits) - 1;
+    c.get(P); if (i) c.i32(8 * i).shr_u(); c.i32(255).and().i32(m).mul().i32(127).add().i32(255).div_u();
+    if (shift) c.i32(shift).shl();
+    c.get(Q).or().set(Q);
+  });
+  c.get(DST).get(Q).i32store16(0);
+  c.get(SRC).i32(4).add().set(SRC); c.get(DST).i32(2).add().set(DST); c.get(I).i32(1).add().set(I); c.br(tl);
+  c.end(); c.end(); void td;
+  return { code: c, locals: [T.i32, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.i32, T.i32] };
+}
+
 const moduleBytes = new Map();
 /** The kernels' module bytes (its memory imported as env.memory, shared or not). */
 export function imageModuleBytes(shared) {
@@ -340,6 +446,10 @@ export function imageModuleBytes(shared) {
   m.exportFunc('encodeRows', f(encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3), Array(8).fill(T.i32), 'encodeRows'));
   m.exportFunc('swizzle', f(swizzleCode(), Array(6).fill(T.i32), 'swizzle'));
   m.exportFunc('halve', f(halveCode(), Array(4).fill(T.i32), 'halve'));
+  for (const [fmt, desc] of Object.entries(FMT16)) {
+    m.exportFunc(`unpack${fmt}`, f(unpack16Code(desc), Array(5).fill(T.i32), `unpack${fmt}`));
+    m.exportFunc(`pack${fmt}`, f(pack16Code(desc), Array(3).fill(T.i32), `pack${fmt}`));
+  }
   b = m.build();
   moduleBytes.set(shared, b);
   return b;
@@ -354,7 +464,8 @@ export function imageWasmSupported() {
 
 /**
  * The kernels on `memory` (a WebAssembly.Memory): encodeRows(kind, w, h, by0, by1, src, dst, scratch),
- * swizzle(src, pitch, dst, w, h, alphaOr), halve(src, dst, dw, dh).
+ * swizzle(src, pitch, dst, w, h, alphaOr), halve(src, dst, dw, dh), and per FMT16 format unpack<fmt>(src, pitch, dst,
+ * w, h) / pack<fmt>(src, dst, n).
  */
 export function instantiateImage(memory) {
   const shared = typeof SharedArrayBuffer !== 'undefined' && memory.buffer instanceof SharedArrayBuffer;

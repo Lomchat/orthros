@@ -95,6 +95,35 @@ test('mip chains (D3DXFilterTexture, D3DX\'s mip filter): resize and re-encode l
   for (const [dw, dh] of [[17, 9], [100, 61], [50, 1], [3, 30]]) for (const point of [false, true]) assert.deepEqual(cur.resizeRgba(px, 50, 30, dw, dh, point), base.resizeRgba(px, 50, 30, dw, dh, point), `${dw}x${dh}`);
 });
 
+test('32-bit and 16-bit conversions: every texel value, odd widths (the kernels\' tails), pitches and alignments as the base', () => {
+  const r = rng(11);
+  // 16-bit formats: every value (65536 texels) laid out in rows of several widths and pitches; and 8-bit samples
+  const all16 = new Uint8Array(2 * 65536 + 64); for (let v = 0; v < 65536; v++) { all16[2 * v] = v & 255; all16[2 * v + 1] = v >> 8; }
+  for (let i = 2 * 65536; i < all16.length; i++) all16[i] = r();
+  for (const fmt of [FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.X4R4G4B4, FMT.A8L8, 81]) {
+    for (const [w, pitch, off] of [[256, 512, 0], [251, 512, 0], [37, 80, 1], [1027, 2054, 2], [7, 14, 0]]) {
+      const h = Math.min(400, Math.floor((all16.length - off - 2 * w) / pitch) + 1), src = all16.subarray(off, off + (h - 1) * pitch + 2 * w);
+      assert.deepEqual(cur.toRgbaRows(fmt, src, w, h, pitch), base.toRgbaRows(fmt, src, w, h, pitch), `decode ${fmt} ${w}x${h} pitch ${pitch} at ${off}`);
+    }
+  }
+  // 32-bit formats: random texels, pitches with gaps, odd addresses
+  const buf = Uint8Array.from({ length: 300 * 1024 }, () => r());
+  for (const fmt of [FMT.A8R8G8B8, FMT.X8R8G8B8]) for (const [w, pitch, off] of [[256, 1024, 0], [61, 260, 3], [1030, 4120, 1], [33, 132, 0]]) {
+    const h = Math.min(60, Math.floor((buf.length - off - 4 * w) / pitch) + 1), src = buf.subarray(off, off + (h - 1) * pitch + 4 * w);
+    assert.deepEqual(cur.toRgbaRows(fmt, src, w, h, pitch), base.toRgbaRows(fmt, src, w, h, pitch), `decode ${fmt} ${w}x${h} pitch ${pitch} at ${off}`);
+  }
+  // encodes: every channel value, texel counts that are not a multiple of 8, unaligned views
+  for (const fmt of [FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.X4R4G4B4, FMT.A8R8G8B8, FMT.X8R8G8B8]) for (const [w, h, off] of [[64, 67, 0], [131, 9, 1], [1025, 1, 2], [3, 345, 0]]) {
+    const px = buf.subarray(off, off + w * h * 4); for (let i = 0; i < 1024; i++) px[i] = i >> 2;
+    assert.deepEqual(cur.fromRgba(fmt, px, w, h), base.fromRgba(fmt, px, w, h), `encode ${fmt} ${w}x${h} at ${off}`);
+  }
+  // 2:1 filter: odd output widths, unaligned sources
+  for (const [dw, dh, off] of [[33, 17, 0], [64, 1, 1], [1, 64, 0], [129, 40, 2]]) {
+    const src = buf.subarray(off, off + dw * dh * 16);
+    assert.deepEqual(cur.resizeRgba(src, 2 * dw, 2 * dh, dw, dh), base.resizeRgba(src, 2 * dw, 2 * dh, dw, dh), `halve to ${dw}x${dh} at ${off}`);
+  }
+});
+
 // ---- image information (D3DXGetImageInfoFromFile*): the header-only TGA / BMP paths against the full parse
 const fields = (im) => (im ? { width: im.width, height: im.height, depth: im.depth, mips: im.mips, fmt: im.fmt, infoFmt: im.infoFmt, fileFormat: im.fileFormat, kind: im.kind } : null);
 /** the base's information as D3DX reported it: an exception while parsing counts as invalid data */

@@ -5,7 +5,7 @@ import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
 import { decodeJpeg, isJpeg, jpegSize } from '../gfx/codecs/jpeg.js';
 import { decodePng, isPng } from '../gfx/codecs/png.js';
 import { decodeDxt } from '../gfx/d3d8-webgl.js';
-import { imageWasmSupported, instantiateImage, KIND as WASM_KIND, SCRATCH_BYTES as WASM_SCRATCH_BYTES } from './d3dx9-image-wasm.js';
+import { imageWasmSupported, instantiateImage, KIND as WASM_KIND, SCRATCH_BYTES as WASM_SCRATCH_BYTES, FMT16 } from './d3dx9-image-wasm.js';
 
 /** D3DXIMAGE_FILEFORMAT */
 export const IFF = { BMP: 0, JPG: 1, TGA: 2, PNG: 3, DDS: 4, PPM: 5, DIB: 6, HDR: 7, PFM: 8 };
@@ -227,6 +227,7 @@ function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
   // 8- and 16-bit formats: the RGBA8 of every possible texel value in a table (built once per format from the same
   // per-texel conversion), one lookup per texel
   if (bpp <= 2 && TO_RGBA[fmt]) {
+    const r = bpp === 2 ? wasmUnpack16(fmt, u8, pitch, w, h) : null; if (r) return r;
     const lut = texelTable(fmt, bpp, texel), dst = new Uint32Array(out.buffer);
     if (bpp === 1) { for (let y = 0; y < h; y++) for (let x = 0, s = y * pitch, o = y * w; x < w; x++) dst[o + x] = lut[u8[s + x]]; }
     else if (((u8.byteOffset | pitch) & 1) === 0) { const src = new Uint16Array(u8.buffer, u8.byteOffset, u8.length >> 1); for (let y = 0; y < h; y++) for (let x = 0, s = (y * pitch) >> 1, o = y * w; x < w; x++) dst[o + x] = lut[src[s + x]]; }
@@ -263,6 +264,7 @@ export function fromRgba(fmt, rgba, w, h) {
     return out;
   }
   if (fmt === FMT.R5G6B5 || fmt === FMT.X1R5G5B5 || fmt === FMT.A1R5G5B5 || fmt === FMT.A4R4G4B4 || fmt === FMT.X4R4G4B4) {
+    const r = wasmPack16(fmt, rgba, w, h); if (r) return r;
     const dst = new Uint16Array(out.buffer), q4 = QUANT[4], q5 = QUANT[5], q6 = QUANT[6]; // (pitch = 2 w)
     const n = w * h;
     if (fmt === FMT.R5G6B5) for (let i = 0, j = 0; i < n; i++, j += 4) dst[i] = (q5[rgba[j]] << 11) | (q6[rgba[j + 1]] << 5) | q5[rgba[j + 2]];
@@ -446,6 +448,26 @@ function wasmSwizzle(u8, pitch, w, h, alphaOr) {
   m.set(u8.subarray(0, inBytes), WASM_IN);
   wl.exports.swizzle(WASM_IN, pitch, out, w, h, alphaOr | 0);
   return m.slice(out, out + n * 4);
+}
+/** w x h texels of a 16-bit format of FMT16 (rows `pitch` bytes apart) as RGBA8, or null (as wasmSwizzle) */
+function wasmUnpack16(fmt, u8, pitch, w, h) {
+  const n = w * h, inBytes = (h - 1) * pitch + w * 2;
+  if (!FMT16[fmt] || n < WASM_MIN_TEXELS || pitch < w * 2 || u8.length < inBytes) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const [m, out] = wasmRoom(wl, inBytes, n * 4);
+  m.set(u8.subarray(0, inBytes), WASM_IN);
+  wl.exports[`unpack${fmt}`](WASM_IN, pitch, out, w, h);
+  return m.slice(out, out + n * 4);
+}
+/** w x h RGBA8 texels in a 16-bit format of FMT16 (packed rows), or null (as wasmSwizzle) */
+function wasmPack16(fmt, rgba, w, h) {
+  const n = w * h;
+  if (!FMT16[fmt] || n < WASM_MIN_TEXELS || rgba.length < n * 4) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const [m, out] = wasmRoom(wl, n * 4, n * 2);
+  m.set(rgba.subarray(0, n * 4), WASM_IN);
+  wl.exports[`pack${fmt}`](WASM_IN, out, n);
+  return m.slice(out, out + n * 2);
 }
 /** The 2:1 box filter of a 2 dw x 2 dh RGBA8 image (resizeRgba's mip levels), or null (as wasmSwizzle) */
 function wasmHalve(src, dw, dh) {
