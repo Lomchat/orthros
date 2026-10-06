@@ -11,7 +11,7 @@ function fakeVm(onSlice) {
   const t = { id: 1, state: 1 };
   const vm = Object.create(Vm.prototype);
   Object.assign(vm, {
-    started: true, readsInFlight: 0, slices: 0,
+    started: true, readsInFlight: 0, readSliceMs: 2, slices: 0,
     proc: { threads: [t], moduleList: [], exe: {} },
     clock: {},
     host: { cooperative: true },
@@ -42,6 +42,11 @@ test('runFor: a read put in flight mid-slice ends the slice after ~2 ms with the
   assert.ok(performance.now() - t0 < 7);
   // the read done: full slices again
   vm.readsInFlight = 0;
+  t0 = performance.now();
+  vm.runFor(t0 + 12);
+  assert.ok(performance.now() - t0 >= 12);
+  // ORTHROS_READ_SLICE_MS=12 (the worker sets readSliceMs): the earlier behaviour, slices to their deadline
+  vm.readsInFlight = 1; vm.readSliceMs = 12;
   t0 = performance.now();
   vm.runFor(t0 + 12);
   assert.ok(performance.now() - t0 >= 12);
