@@ -45,3 +45,19 @@ test('catalog enforces the manifest and resolves declared game dependencies', (t
   fs.writeFileSync(file, JSON.stringify(bad));
   assert.throws(() => loadGameCatalog(root), /dépendance introuvable/);
 });
+
+test('catalog accepts only language aliases to installed files', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-games-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = game(root, 'alpha', { versions: [{ id: 'alpha-1', dir: '1.0', version: '1.0', exe: 'Game.exe', languages: ['en', 'fr'] }] });
+  fs.writeFileSync(path.join(dir, 'base', 'english.txt'), 'English');
+  fs.writeFileSync(path.join(dir, 'base', 'french.txt'), 'Français');
+  const file = path.join(dir, 'manifest.json');
+  const spec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  spec.defaults = { languageFileAliases: { fr: { 'english.txt': 'french.txt' } } };
+  fs.writeFileSync(file, JSON.stringify(spec));
+  assert.equal(loadGameCatalog(root).get('alpha-1').languageFileAliases.fr['english.txt'], 'french.txt');
+  spec.defaults.languageFileAliases.fr['english.txt'] = 'missing.txt';
+  fs.writeFileSync(file, JSON.stringify(spec));
+  assert.throws(() => loadGameCatalog(root), /alias de fichier invalide/);
+});

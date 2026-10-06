@@ -6,6 +6,7 @@ import { setDxtEncoder } from '../../win32/d3dx9-image.js';
 import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js';
+import { FileAliasBackend } from '../../vfs/file-alias-backend.js';
 import { HttpBackend, BLOCK } from '../../vfs/http-backend.js';
 import { NetLink } from '../../vfs/net-link.js';
 import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
@@ -231,8 +232,10 @@ async function start(m) {
   };
   const main = await mountFiles(manifestName, m.tree, true);
   gameStore = main.store; gameFilesStats = main.files.stats; primaryFiles = main.files;
-  vfs.mount(manifest.mount, main.files);
-  mountGameCdrom(vfs, manifest, main.files);
+  const aliases = manifest.languageFileAliases?.[m.opts.gameLanguage];
+  const gameFiles = aliases ? new FileAliasBackend(main.files, aliases) : main.files;
+  vfs.mount(manifest.mount, gameFiles);
+  mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
     const treeResponse = await fetch(`/api/tree/${encodeURIComponent(dependency.manifest)}`);
