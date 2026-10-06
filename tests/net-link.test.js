@@ -56,6 +56,17 @@ test('net link: the rate is measured from what crossed the link over its busy ti
   assert.ok(m.backgroundBytes() >= 1 << 20 && m.backgroundBytes() <= Math.ceil(5e6 * BG_SECONDS));
 });
 
+test('net link: the round trip from the first byte of any answer; large answers alone then measure the rate', () => {
+  const c = clock(), n = new NetLink(c);
+  for (let i = 0; i < 8; i++) {
+    const t = n.begin('demand', 262144);
+    c.advance(50); n.firstByte(t); // (headers after the round trip)
+    c.advance(262144 / 1000); n.end(t, 262144, 262144); // (1 MB/s)
+  }
+  assert.equal(n.rtt, 50);
+  assert.ok(Math.abs(n.bw - 1e6) / 1e6 < 0.1, `measured ${Math.round(n.bw)} B/s`);
+});
+
 test('net link: compressed answers — sizes are in file bytes, the rate in wire bytes', () => {
   const c = clock(), n = new NetLink(c);
   for (let i = 0; i < 10; i++) { const t = n.begin('demand', 262144); c.advance(1000); n.end(t, 100000, 262144); }

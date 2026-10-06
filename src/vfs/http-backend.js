@@ -541,6 +541,7 @@ export class HttpBackend {
     let wire = 0, ok = false;
     try {
       const res = await fetch(this.rangeUrl(path, start, end, !learn, learn), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
+      this.net.firstByte(tok);
       if (res.status !== 206 && res.status !== 200) return undefined;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));
@@ -783,6 +784,7 @@ export class HttpBackend {
     try {
       const url = this.rangeUrl(path, start, end);
       const res = await fetch(url, this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } });
+      this.net.firstByte(tok);
       if (res.status !== 206 && res.status !== 200) return null;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));

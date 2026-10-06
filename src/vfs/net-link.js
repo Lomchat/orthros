@@ -94,6 +94,11 @@ export class NetLink {
     if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); } else this.demandFlights.add(t);
     return t;
   }
+  /** The answer of request `t` began to arrive (its headers): its time to the first byte, the round trip (about). */
+  firstByte(t) {
+    const ms = this.now() - t.t0;
+    if (ms >= 0) this.rtt = this.rtt === null ? ms : Math.min(this.rtt, ms);
+  }
   /**
    * A request ended: `wire` bytes received (the encoded body), `raw` the bytes they decode to; ok false: failed or
    * aborted (its bytes are not counted).

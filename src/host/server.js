@@ -92,7 +92,7 @@ export function createServer(opts = {}) {
   // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip, its bytes
   // crossing one link shared by the answers in flight (see SimLink)
   const link = opts.net ? new SimLink(opts.net) : null;
-  const viaLink = (res, bytes, go) => { const cancel = link.send(bytes, go); res.on('close', cancel); };
+  const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
   const sendFile = (req, res, file, mime) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
@@ -469,8 +469,10 @@ export function createServer(opts = {}) {
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       if (encoding) h['Content-Encoding'] = encoding;
-      const go = () => { res.writeHead(200, h); res.end(body); };
-      if (link) viaLink(res, body.length, go); else go();
+      const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
+      // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
+      // byte is the round trip, as on a real connection)
+      if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }); else go();
     };
     const hit = encodedCache.get(key);
     if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }

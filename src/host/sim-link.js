@@ -22,11 +22,13 @@ export class SimLink {
 
   /**
    * Send an answer of `bytes` bytes: `go()` runs when its last byte has crossed the link (a round trip, then its share
-   * of the link). Returns a cancel function (the client went away: the transfer leaves the link).
+   * of the link); `onStart()` (optional) when its first byte arrives, after the round trip (the answer's headers: a
+   * client sees its time to the first byte, as on a real link). Returns a cancel function (the client went away: the
+   * transfer leaves the link).
    */
-  send(bytes, go) {
+  send(bytes, go, onStart = null) {
     const t = { left: Math.max(1, bytes), go, cancelled: false };
-    const startTimer = this.setTimer(() => { if (t.cancelled) return; this.advance(); this.active.push(t); this.schedule(); }, this.delayMs);
+    const startTimer = this.setTimer(() => { if (t.cancelled) return; onStart?.(); this.advance(); this.active.push(t); this.schedule(); }, this.delayMs);
     return () => {
       if (t.cancelled) return;
       t.cancelled = true; this.clearTimer(startTimer);
