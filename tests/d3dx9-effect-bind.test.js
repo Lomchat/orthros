@@ -310,3 +310,30 @@ test('effect setters: a write of the value held moves no version (negative float
     assert.ok((st.version ?? 0) > v3, 'block apply with a change moves the version');
   }
 });
+
+test('parameter blocks: an entry whose parameter has not changed since the block last wrote it is skipped, any change of it (setter, its array, raw bytes, another block) restored', () => {
+  for (const ref of [false, true]) {
+    const S = session(ref), { mem } = S, fx = S.fxs[0];
+    const h = (nm) => fx.fx.GetParameterByName(S.ctx([fx.ptr, 0, S.name(nm)])) >>> 0;
+    const call = (name, ...a) => S.run(() => fx.fx[name](S.ctx([fx.ptr, ...a])));
+    const words = (nm) => Array.from(fx.fx.param(h(nm)).words);
+    const put = (vals) => { vals.forEach((v, i) => mem.writeF32(S.scratch + 4 * i, v)); return S.scratch; };
+    const top = fx.fx.param(h('Arr')), elem = top.elements[1], eh = fx.fx.handleOf(elem);
+    // block A: Color and Arr[1] (an element: its top-level parameter Arr); block B: Color only
+    call('BeginParameterBlock'); call('SetVector', h('Color'), put([1, 2, 3, 4])); call('SetVector', eh, put([1, 2, 3, 4])); const A = call('EndParameterBlock');
+    call('BeginParameterBlock'); call('SetVector', h('Color'), put([5, 6, 7, 8])); const B = call('EndParameterBlock');
+    const wa = [1, 2, 3, 4].map((v) => { mem.writeF32(S.scratch, v); return mem.read32(S.scratch); });
+    call('ApplyParameterBlock', A); assert.deepEqual(words('Color'), wa, 'applied');
+    const v0 = top.version; call('ApplyParameterBlock', A); if (!ref) assert.equal(top.version, v0, 'applied again: nothing moves');
+    call('ApplyParameterBlock', B); assert.notDeepEqual(words('Color'), wa, 'another block');
+    call('ApplyParameterBlock', A); assert.deepEqual(words('Color'), wa, 'restored after another block');
+    call('SetVectorArray', h('Arr'), put(new Array(12).fill(9)), 3); // (the whole array: the element's words change)
+    call('ApplyParameterBlock', A); assert.deepEqual(Array.from(elem.words), wa, 'restored after a write of its array');
+    mem.write32(S.scratch, 0x12345678); call('SetRawValue', h('Arr'), S.scratch, 16, 4);
+    call('ApplyParameterBlock', A); assert.deepEqual(Array.from(elem.words), wa, 'restored after raw bytes');
+    // applied while another block records: the entry skipped is recorded all the same
+    call('BeginParameterBlock'); call('ApplyParameterBlock', A); const C = call('EndParameterBlock');
+    call('SetVector', h('Color'), put([0, 0, 0, 0])); call('SetVector', eh, put([0, 0, 0, 0]));
+    call('ApplyParameterBlock', C); assert.deepEqual([words('Color'), Array.from(elem.words)], [wa, wa], 'a block recorded from an applied one');
+  }
+});

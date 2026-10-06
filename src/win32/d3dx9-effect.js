@@ -323,12 +323,29 @@ export function defineEffects(X, vm, h) {
     SetStateManager(c) { const m = c.arg(1); if (m && com.objectAt(m)) com.addRef(com.objectAt(m)); this.stateManager = m; mem.write32(c.arg(0) + 12, m ? 0 : this.handleBlock); if (m) vm.log('gfx', `d3dx effect: state manager set (guest object 0x${m.toString(16)})`); }
     GetStateManager(c) { if (c.arg(1)) mem.write32(c.arg(1), this.stateManager); }
     BeginParameterBlock() { this.recording = new Set(); }
-    EndParameterBlock() { if (!this.recording) return 0; const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90)); this.blocks.set(id, [...this.recording].map((n) => ({ n, words: n.words?.slice(), ptr: n.obj?.ptr }))); this.recording = null; return id; }
+    /**
+     * A parameter block: per parameter recorded, its words (numbers) or object, and (ver) the version of its top-level
+     * parameter when its words last equalled the block's — recorded, or applied since: any write changing a word of the
+     * parameter moves that version (see touched), so while it has not moved the block's words are there already.
+     */
+    EndParameterBlock() {
+      if (!this.recording) return 0;
+      const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90));
+      this.blocks.set(id, [...this.recording].map((n) => { let top = n; while (top.parent !== null) top = top.parent; return { n, top, words: n.words ? n.words.slice() : null, ptr: n.obj?.ptr, ver: top.version }; }));
+      this.recording = null; return id;
+    }
     ApplyParameterBlock(c) {
       const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL;
-      for (const e of b) {
-        if (e.words && !apiOpt.fxRef) { const w = e.n.words, x = e.words; let ch = false; for (let i = 0; i < x.length; i++) if (w[i] !== x[i]) { w[i] = x[i]; ch = true; } this.wrote(e.n, ch); continue; } // (a version move only for a real change, as the setters)
-        if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr);
+      for (let k = 0; k < b.length; k++) {
+        const e = b[k];
+        if (e.words !== null && !apiOpt.fxRef) { // (a version move only for a real change, as the setters)
+          if (e.top.version === e.ver) { if (this.recording) this.recording.add(e.n); continue; } // (the block's words there already)
+          const w = e.n.words, x = e.words; let ch = false;
+          for (let i = 0; i < x.length; i++) if (w[i] !== x[i]) { w[i] = x[i]; ch = true; }
+          this.wrote(e.n, ch); e.ver = e.top.version;
+          continue;
+        }
+        if (e.words !== null) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr);
         this.touched(e.n);
       }
     }
