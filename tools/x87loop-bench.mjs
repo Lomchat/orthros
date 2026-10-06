@@ -7,7 +7,7 @@
 // its operand from a 1024-entry float table indexed by the loop counter; `rand` tables hold random signs, `pos` tables
 // only positive values. Each case: ecx = N iterations, esi -> table, edi -> constants (+0: 0.0f, +4: 0.5f, +8: 3.0f,
 // +0x100: a 4x4 float matrix), ebx -> output table; ends on HLT. Results are checked against the interpreter first.
-// Usage: node tools/x87loop-bench.mjs [iterations] [--runs 7] [--cw 0x7f] [--cases name,...] [--pos|--rand] [--ab <dir>]
+// Usage: node tools/x87loop-bench.mjs [iterations] [--runs 7] [--cw 0x7f] [--cases name,...] [--pos|--rand] [--full] [--ab <dir>]
 //   --ab <dir>: A/B in one process — <dir>/src (an extraction of the src tree of an earlier revision) against this
 //   tree's src, runs alternated (base, new, base, new...) so that both see the same machine load.
 //   --stats: interpreter steps (EXIT_STEP) per iteration; --no-warm: no discarded first round.
@@ -15,6 +15,7 @@
 // steadier: run one case with `perf record -e cycles:u` on `node --no-liftoff --perf-prof tools/x87loop-bench.mjs N
 // --runs 1 --no-warm --cases <case> --pos`, `perf inject -j`, and divide the period of the JS:r_* symbols by 2N (each
 // run executes the loop twice: warm-up and timed).
+import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome: cold paths out of line)
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -33,7 +34,9 @@ const RUNS = +opt('--runs', 7);
 const CW = parseInt(opt('--cw', '0x7f'), 16);
 const ONLY = opt('--cases', null)?.split(',');
 const AB = opt('--ab', null);
-const NEW = await loadImpl(path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+const FULL = args.includes('--full');
+// (--src <dir>: the src tree of <dir> instead of this one's — one variant per process, e.g. under perf)
+const NEW = await loadImpl(opt('--src', null) ? path.resolve(opt('--src', null)) : path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const BASE = AB ? await loadImpl(path.resolve(AB)) : null;
 const hex = (s) => Uint8Array.from(s.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
 
@@ -83,6 +86,13 @@ const CASES = [
   ['recurrence', 'd9ee | d84f04 d80486'],
   // fild word [esi+eax*2] (the table's halves as 16-bit integers) ; fmul [edi+4] ; fadd [edi+8] ; fstp [ebx+eax*4]
   ['fild+fmul+fstp', 'df0446 d84f04 d84708 d91c83'],
+  // sums of squares of differences with an accumulator kept on the stack across iterations (the shape of a fitting /
+  // statistics loop: 41 x87 instructions per iteration, m32 operands, values spilled to float temporaries):
+  // fldz | a = (x0 - c0) * c1 -> [ebx+20], b = (x1 - c1) * c2 -> [ebx+24], c = (x2 - c2) * c1 (st0);
+  // s = b + c + a: acc += s * s; [ebx+28] += (a + b - c)^2; [ebx+2c] += (a - b + c)^2; [ebx+30] += (c - (a - b))^2
+  ['sums of squares', 'd9ee | d90486 d827 d84f04 d95b20 d9448604 d86704 d84f08 d95b24 d9448608 d86708 d84f04' +
+    ' d94324 d8c1 d84320 d9c0 d8c9 dec3 ddd8 d94324 d84320 d8e1 d9c0 d8c9 d84328 d95b28 ddd8' +
+    ' d94320 d86324 d9c0 d8c2 d9c0 d8c9 d8432c d95b2c ddd8 dee1 d9c0 d8c9 d84330 d95b30 ddd8'],
 ];
 
 function setup({ ST, F }, mem, cpu, bytes, rand) {
@@ -91,7 +101,9 @@ function setup({ ST, F }, mem, cpu, bytes, rand) {
   let s = 12345;
   for (let k = 0; k < 1024; k++) {
     s = (s * 1103515245 + 12345) >>> 0;
-    const v = ((s >>> 8) & 0xffff) / 4096 + 0.125;
+    // (--full: values with full 24-bit significands, whose products and sums mostly fall off the 24-bit grid; else 16-bit
+    // fixed-point values, whose results are often exact)
+    const v = FULL ? Math.fround(0.125 + 16 * (s / 2 ** 32) * (1 + (Math.imul(s, 0x9e3779b1) >>> 0) / 2 ** 40)) : ((s >>> 8) & 0xffff) / 4096 + 0.125;
     mem.writeF32(TAB + 4 * k, rand && (s & 0x80000000) ? -v : v);
   }
   mem.writeF32(CONST, 0); mem.writeF32(CONST + 4, 0.5); mem.writeF32(CONST + 8, 3);

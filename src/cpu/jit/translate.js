@@ -921,6 +921,7 @@ class Emitter {
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
     this.stShift = 0;
+    this.f32Mask = this.g24Mask = 0; // (per block, see emitBlock)
   }
 
   run(entry) {
@@ -1211,9 +1212,10 @@ class Emitter {
    * the rotation has moved.
    */
   x87Normalize(target = 0) {
-    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
+    const saved = { shift: this.stShift, f32: this.f32Mask, g24: this.g24Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
     this.materializeF32();
     this.f32Mask = 0;
+    this.g24Mask = 0; // (the locals rotate: what was known of their values is dropped, as the f32 shadows are)
     this.xmmShadowSync(this.xsDirty); // (XMM lane-0 shadows: the same discipline, see xsValid)
     this.xmmShadowSync64(this.xdDirty);
     this.xsDirty = this.xdDirty = 0;
@@ -1255,7 +1257,7 @@ class Emitter {
     c.end(); void i;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
-  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.g24Mask = saved.g24; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
   // ---- XMM lane-0 shadows. Scalar single-precision code (MOVSS / ADDSS / MULSS / CVTSI2SS / COMISS...) keeps lane 0
   // of an XMM register in an f32 local L_XS0+r: xsValid bit r = the shadow holds lane 0; xsDirty bit r (a subset) =
   // the v128 local's lane 0 is stale. A chain of scalar operations then runs on f32 values (the host's mulss /
@@ -1363,7 +1365,7 @@ class Emitter {
     c.i32(0).set(L_TOP);
     this.loadX87Regs(); this.loadX87Tags();
     c.end(); void i;
-    this.f32Mask = 0; // the f64 locals were written back (x87Normalize) and possibly reloaded
+    this.f32Mask = this.g24Mask = 0; // the f64 locals were written back (x87Normalize) and possibly reloaded
   }
 
   // ------------------------------------------------------------------ exits & jumps
@@ -1936,6 +1938,7 @@ class Emitter {
     this.stValid = 0; // bit i: the tag of ST(i) is known set (a store in this block set it), x87 regions
     this.stShift = this.planOf(b.index); // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
+    this.g24Mask = 0; // x87 locals known to hold a value whose significand fits in 24 bits (translate-x87.js narrow)
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
@@ -2103,7 +2106,7 @@ class Emitter {
     this.reloadAll();
     this.lz = { kind: LZ.NONE, sz: 2 };
     this.stValid = 0;
-    this.f32Mask = 0; // x87 values reloaded as f64
+    this.f32Mask = this.g24Mask = 0; // x87 values reloaded as f64, nothing known of them
     this.tagSet = this.tagClr = 0; // (applied by x87Normalize before the flush, the tag word reloaded)
     this.c1Clear = false; // (the interpreter may have set C1: FPREM's quotient bit)
     // did the instruction branch?

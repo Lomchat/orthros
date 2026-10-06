@@ -166,10 +166,12 @@ const report = (why) => {
   if (opt('blocks-out') && vm.jit) fs.writeFileSync(opt('blocks-out'), JSON.stringify(vm.jit.regions.filter((r) => r.counters >= 0).map((r) => { const cs = vm.jit.blockCounts(r); return [r.entry, r.fnIdx, r.fpc ?? null, r.blocks.map((b) => [b.eip, b.end, cs[b.index]])]; })));
   if (opt('counts-out') && vm.jit) fs.writeFileSync(opt('counts-out'), JSON.stringify(vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r.entry.toString(16), ((cs) => r.blocks.reduce((n, b) => n + cs[b.index] * (b.end - b.eip), 0))(vm.jit.blockCounts(r))])));
   // --list-top <n>: the n regions that ran the most counted guest instructions (translations with block counters)
-  const top = Number(opt('list-top', 0)) && vm.jit ? vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r, ((cs) => r.blocks.reduce((n, b) => n + cs[b.index] * (b.end - b.eip), 0))(vm.jit.blockCounts(r))]).sort((x, y) => y[1] - x[1]).slice(0, Number(opt('list-top'))).map(([r]) => r.entry.toString(16)) : [];
+  const top = Number(opt('list-top', 0)) && vm.jit ? vm.jit.regions.filter((r) => r.counters >= 0).map((r) => [r, ((cs) => r.blocks.reduce((n, b) => n + cs[b.index] * (b.end - b.eip), 0))(vm.jit.blockCounts(r))]).sort((x, y) => y[1] - x[1]).slice(0, Number(opt('list-top'))).map(([r]) => r) : [];
+  // (--list-top lists the counted regions themselves — an x87-mode version included —, with their x87 mode)
   for (const a of [...(opt('list', '') || '').split(',').filter(Boolean), ...top]) {
-    const r = vm.jit?.regionAt(parseInt(a, 16));
+    const r = typeof a === 'string' ? vm.jit?.regionAt(parseInt(a, 16)) : a;
     if (!r) { console.log(`list ${a}: no live region`); continue; }
+    if (typeof a !== 'string') console.log(`list ${r.entry.toString(16)}: x87 mode ${r.fpc === null || r.fpc === undefined ? 'generic' : '0x' + r.fpc.toString(16)}${r.first ? ' (a version)' : ''}`);
     try { console.log(listRegion(vm.mem, r.entry, { ...vm.jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: vm.jit.blockCounts(r), ops: !args.includes('--list-brief') }).text); } catch (e) { console.log(`list ${a}: ${e.message}`); }
   }
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
@@ -214,6 +216,18 @@ let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
 const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
+// --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)
+if (scenario && args.includes('--jit-profile') && vm.jit) {
+  let last = null;
+  scenario.jitProf = () => {
+    for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4);
+    const cur = { ...(vm.jit.stats.prof ?? {}), chained: vm.jit.stats.chained, fallbackSteps: vm.jit.stats.fallbackSteps, steps: vm.jit.stats.steps ?? 0, misses: vm.jit.stats.misses, apiCalls: vm.apiCalls };
+    for (let k = 0; k < 4; k++) cur['nochain' + ['Thunk', 'Stop', 'Budget', 'Miss'][k]] = vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k) >>> 0;
+    const d = Object.entries(cur).map(([k, v]) => [k, v - (last?.[k] ?? 0)]).filter(([, v]) => v);
+    last = cur;
+    return d.map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ');
+  };
+}
 vm.dispatchThunk = (t, i) => {
   if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = vm.api.thunk(i);
