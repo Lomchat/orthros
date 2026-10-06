@@ -51,7 +51,9 @@ export class NetLink {
     /** totals: wire bytes received, requests, ms the game's reads were on their way */
     this.totals = { demandBytes: 0, demandRequests: 0, demandMs: 0, bgBytes: 0, bgRequests: 0, abortedRequests: 0, rawBytes: 0 };
     // bandwidth window: bytes received and link busy time since the last sample
-    this.busySince = null; this.winBusy = 0; this.winBytes = 0; this.winIdleStarts = 0;
+    // (bandwidth window: the transfer intervals of the answers that ended in it — from their first byte, else from their
+    // start plus a round trip, to their end — and their wire bytes; see sample)
+    this.winStart = this.now(); this.winIntervals = []; this.winBytes = 0;
     /** background downloads waiting for their turn: { prio, quietMs, resolve, urgent } */
     this.waiters = []; this.timer = null;
     /** background requests in flight: Set of { bytes, t0, abort } */
@@ -90,15 +92,15 @@ export class NetLink {
 
   /** A request starts: `kind` 'demand' (the game waits for it) or 'bg'. Returns its token for end(). */
   begin(kind, bytes = 0, abort = null, range = null) {
-    const t = { kind, t0: this.now(), bytes, abort, range };
-    if (this.inflight.demand + this.inflight.bg === 0) { this.busySince = t.t0; this.winIdleStarts++; }
+    const t = { kind, t0: this.now(), bytes, abort, range, tx: null };
     this.inflight[kind]++;
     if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); } else this.demandFlights.add(t);
     return t;
   }
   /** The answer of request `t` began to arrive (its headers): its time to the first byte, the round trip (about). */
   firstByte(t) {
-    const ms = this.now() - t.t0;
+    const now = this.now(), ms = now - t.t0;
+    if (t.tx === null) t.tx = now;
     if (ms >= 0) this.rtt = this.rtt === null ? ms : Math.min(this.rtt, ms);
   }
   /**
@@ -110,7 +112,6 @@ export class NetLink {
     const now = this.now(), ms = now - t.t0;
     this.inflight[t.kind]--;
     if (t.kind === 'bg') this.bgFlights.delete(t); else this.demandFlights.delete(t);
-    if (this.inflight.demand + this.inflight.bg === 0 && this.busySince !== null) { this.winBusy += now - this.busySince; this.busySince = null; }
     if (t.kind === 'demand') { this.lastDemandEnd = now; this.totals.demandMs += ms; }
     if (ok) {
       if (t.kind === 'demand') { this.totals.demandBytes += wire; this.totals.demandRequests++; } else { this.totals.bgBytes += wire; this.totals.bgRequests++; }
@@ -118,25 +119,32 @@ export class NetLink {
       // (the round trip from small answers only: a large one's time is mostly its transfer)
       if (wire <= RTT_BYTES) this.rtt = this.rtt === null ? ms : Math.min(this.rtt, ms);
       this.winBytes += wire;
+      this.winIntervals.push([t.tx ?? Math.min(now, t.t0 + (this.rtt ?? 0)), now]);
       this.sample(now);
     } else if (t.kind === 'bg') this.totals.abortedRequests++;
     this.kick();
   }
   /**
-   * A bandwidth sample once the window holds enough: bytes over the time the link was busy, less one round trip per
-   * busy stretch (the wait for the first byte carries nothing).
+   * A bandwidth sample once the window holds enough: its answers' wire bytes over the time bytes were arriving (the
+   * union of their transfer intervals: concurrent answers count once, the waits for a first byte not at all).
    */
   sample(now) {
     if (this.fixed) return;
-    const busy = this.winBusy + (this.busySince !== null ? now - this.busySince : 0);
-    const enough = busy >= 600 || (!this.measured && this.winBytes >= 48 << 10 && busy >= 40);
+    const iv = this.winIntervals.sort((a, b) => a[0] - b[0]);
+    let busy = 0, cs = -Infinity, ce = -Infinity;
+    for (const [a0, b] of iv) {
+      const a = Math.max(a0, this.winStart - 60000); // (a long answer that began well before: its recent part only)
+      if (a > ce) { if (ce > cs) busy += ce - cs; cs = a; ce = b; } else if (b > ce) ce = b;
+    }
+    if (ce > cs) busy += ce - cs;
+    // (when nothing else is on its way — an answer ending now would count without its bytes — or the window is long)
+    const idle = this.inflight.demand + this.inflight.bg === 0;
+    const enough = busy >= 2000 || (idle && (busy >= 400 || (!this.measured && this.winBytes >= 48 << 10 && busy >= 20)));
     if (!enough) return;
-    const lat = Math.min(busy * 0.85, this.winIdleStarts * (this.rtt ?? 0) * 0.9);
-    const s = this.winBytes / Math.max(1, busy - lat) * 1000;
+    const s = this.winBytes / Math.max(1, busy) * 1000;
     this.bw = this.measured && this.bw ? this.bw * 0.6 + s * 0.4 : s;
     this.measured = true;
-    this.winBytes = 0; this.winBusy = 0; this.winIdleStarts = this.busySince !== null ? 1 : 0;
-    if (this.busySince !== null) this.busySince = now;
+    this.winBytes = 0; this.winIntervals = []; this.winStart = now;
   }
 
   /**
