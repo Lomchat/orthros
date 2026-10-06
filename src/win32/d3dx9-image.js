@@ -17,9 +17,11 @@ const fourcc = (s) => (s.charCodeAt(0) | (s.charCodeAt(1) << 8) | (s.charCodeAt(
  *   kind: 'tex'|'cube'|'volume', images: Uint8Array[][] }} ImageFile  images[face][level]: raw data in `fmt` layout
  */
 
+/** A DDS file (parseImage parses it as such; its levels are views of `bytes`, nothing else of it is kept) */
+export const isDdsFile = (bytes) => bytes.length >= 128 && bytes[0] === 0x44 && bytes[1] === 0x44 && bytes[2] === 0x53 && bytes[3] === 0x20;
 /** Parse an image file; null when the data is not a supported image. */
 export function parseImage(bytes) {
-  if (bytes.length >= 128 && bytes[0] === 0x44 && bytes[1] === 0x44 && bytes[2] === 0x53 && bytes[3] === 0x20) return parseDds(bytes);
+  if (isDdsFile(bytes)) return parseDds(bytes);
   if (bytes.length > 54 && bytes[0] === 0x42 && bytes[1] === 0x4d) return parseBmp(bytes);
   if (isJpeg(bytes)) { const im = decodeJpeg(bytes); return rgbaFile(im.width, im.height, im.data, IFF.JPG, false); }
   if (isPng(bytes)) { const im = decodePng(bytes); return rgbaFile(im.width, im.height, im.data, IFF.PNG, true); }
@@ -41,7 +43,7 @@ export function parseImageInfo(bytes, shared = false) {
     if (w && h) return info(w, h, true, IFF.PNG);
   }
   else if (isPng(bytes)) { /* (no IHDR first: decoded) */ }
-  else if (bytes.length >= 128 && bytes[0] === 0x44 && bytes[1] === 0x44 && bytes[2] === 0x53 && bytes[3] === 0x20) return parseDds(bytes);
+  else if (isDdsFile(bytes)) return parseDds(bytes);
   else if (bytes.length > 54 && bytes[0] === 0x42 && bytes[1] === 0x4d) { const r = bmpInfo(bytes); if (r !== undefined) return r; }
   else { const r = tgaInfo(bytes); if (r !== undefined) return r; }
   return parseImage(shared ? bytes.slice() : bytes);
@@ -187,7 +189,7 @@ function parseBmp(b) {
 
 /** Raw pixels of `fmt` (w x h) to RGBA8. */
 export function toRgba(fmt, data, w, h) {
-  if (isDxt(fmt)) return decodeDxt(fmt, data, w, h);
+  if (isDxt(fmt)) return wasmDecodeDxt(fmt, data, w, h) ?? decodeDxt(fmt, data, w, h);
   return surfaceToRgbaLocal(fmt, data, w, h, surfacePitch(fmt, w));
 }
 
@@ -468,6 +470,16 @@ function wasmPack16(fmt, rgba, w, h) {
   m.set(rgba.subarray(0, n * 4), WASM_IN);
   wl.exports[`pack${fmt}`](WASM_IN, out, n);
   return m.slice(out, out + n * 2);
+}
+/** DXT1-5 blocks of a w x h image decoded to RGBA8 (decodeDxt's bytes), or null (as wasmSwizzle; blocks missing) */
+function wasmDecodeDxt(fmt, data, w, h) {
+  const n = w * h, inBytes = dxtBytes(fmt, w, h);
+  if (n < WASM_MIN_TEXELS || data.length < inBytes) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const [m, out] = wasmRoom(wl, inBytes, n * 4);
+  m.set(data.subarray(0, inBytes), WASM_IN);
+  wl.exports.decodeDxt(dxtKind(fmt), WASM_IN, w, h, out, 0);
+  return m.slice(out, out + n * 4);
 }
 /** The 2:1 box filter of a 2 dw x 2 dh RGBA8 image (resizeRgba's mip levels), or null (as wasmSwizzle) */
 function wasmHalve(src, dw, dh) {

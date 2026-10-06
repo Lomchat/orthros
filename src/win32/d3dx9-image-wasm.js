@@ -9,6 +9,7 @@
 // - swizzle: 32-bit texels with red and blue exchanged and an alpha mask ORed (A8R8G8B8 / X8R8G8B8 <-> RGBA8), rows
 //   `pitch` bytes apart.
 // - halve: the 2:1 box filter of mip levels, (a + b + c + d + 2) >> 2 per channel, on 16-bit lanes.
+// - decodeDxt: DXT1/3/5 blocks to RGBA8 (d3d8-webgl.js decodeDxt), integer arithmetic throughout.
 // - unpack<fmt> / pack<fmt>: the 16-bit formats (R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4) to and from RGBA8,
 //   eight texels at a time (FMT16).
 // The module imports its memory: a private one on the calling thread, or the DXT pool's shared memory in the helpers
@@ -431,6 +432,119 @@ function pack16Code(f) {
   return { code: c, locals: [T.i32, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.v128, T.i32, T.i32] };
 }
 
+/**
+ * decodeDxt(kind, src, w, h, dst, scratch): the DXT1/3/5 blocks at src decoded to w x h RGBA8 at dst, as the JavaScript
+ * decoder (d3d8-webgl.js decodeDxt) computes them: endpoints expanded k * 255 / 31 (63) truncated, the 4-color palette
+ * (2 c0 + c1) / 3 and (c0 + 2 c1) / 3 truncated, DXT1's 3-color mode (c0 <= c1) (c0 + c1) >> 1 and transparent black;
+ * DXT3 alpha nibble * 17, DXT5 alpha levels ((7 - i) a0 + i a1) / 7 (a0 > a1) or ((5 - i) a0 + i a1) / 5 with 0 and 255,
+ * truncated. The palette is built per block with integer arithmetic; each row's four texels are gathered from it with
+ * i8x16.swizzle (byte indices made from the 2-bit color / 3-bit alpha indices). Blocks past the image's edge write their
+ * texels inside it only (through `scratch`, 64 bytes).
+ */
+function decodeDxtCode() {
+  const c = new Code();
+  const KINDP = 0, SRC = 1, W = 2, H = 3, DST = 4, SCR = 5;
+  let n = 6;
+  const BW = n++, BH = n++, BX = n++, BY = n++, P = n++, C0 = n++, C1 = n++, R0 = n++, G0 = n++, B0 = n++, R1 = n++, G1 = n++, B1 = n++;
+  const W2 = n++, W3 = n++, IDX = n++, A0 = n++, A1 = n++, ALO = n++, AHI = n++, ROW = n++, D = n++, Y = n++, X = n++, T0 = n++, EDGE = n++;
+  const i32Count = n - 6;
+  const PAL = n++, APAL = n++, K = n++, COL = n++; const v128Count = 4;
+  c.get(W).i32(3).add().i32(2).shr_u().tee(BW).eqz(); c.if_(); c.i32(1).set(BW); c.end();
+  c.get(H).i32(3).add().i32(2).shr_u().tee(BH).eqz(); c.if_(); c.i32(1).set(BH); c.end();
+  c.get(SRC).set(P);
+  c.i32(0).set(BY);
+  const byd = c.block(); const byl = c.loop();
+  c.get(BY).get(BH).ge_s().br_if(byd);
+  c.i32(0).set(BX);
+  const bxd = c.block(); const bxl = c.loop();
+  c.get(BX).get(BW).ge_s().br_if(bxd);
+  // ---- alpha (DXT3: nibbles, DXT5: 8-level palette and 3-bit indices); P moves past it
+  c.get(KINDP).i32(1).ne(); c.if_();
+  {
+    c.get(KINDP).i32(3).eq(); c.if_();
+    c.else_();
+    {
+      c.get(P).i32load8u(0).set(A0); c.get(P).i32load8u(1).set(A1);
+      // levels as bytes of APAL: [a0, a1, l2..l7]
+      const lvl = (k, num, den) => { c.i32(num - k).get(A0).mul().i32(k).get(A1).mul().add().i32(den).div_u(); };
+      c.get(A0).get(A1).gt_u(); c.if_();
+      c.get(A0).get(A1).i32(8).shl().or(); lvl(1, 7, 7); c.i32(16).shl().or(); lvl(2, 7, 7); c.i32(24).shl().or().set(T0);
+      lvl(3, 7, 7); lvl(4, 7, 7); c.i32(8).shl().or(); lvl(5, 7, 7); c.i32(16).shl().or(); lvl(6, 7, 7); c.i32(24).shl().or().set(EDGE);
+      c.else_();
+      c.get(A0).get(A1).i32(8).shl().or(); lvl(1, 5, 5); c.i32(16).shl().or(); lvl(2, 5, 5); c.i32(24).shl().or().set(T0);
+      lvl(3, 5, 5); lvl(4, 5, 5); c.i32(8).shl().or(); c.i32(0xff000000 | 0).or().set(EDGE); // (level 6: 0, level 7: 255)
+      c.end();
+      c.v128const(new Uint8Array(16)).get(T0).i32x4replacelane(0).get(EDGE).i32x4replacelane(1).set(APAL);
+      c.get(P).i32load16u(2).get(P).i32load8u(4).i32(16).shl().or().set(ALO);
+      c.get(P).i32load16u(5).get(P).i32load8u(7).i32(16).shl().or().set(AHI);
+    }
+    c.end();
+    c.get(P).i32(8).add().set(P);
+  }
+  c.end();
+  // ---- color palette: 4 RGBA words in PAL
+  c.get(P).i32load16u(0).set(C0); c.get(P).i32load16u(2).set(C1); c.get(P).i32load(4, 0).set(IDX);
+  const exp = (cv, shift, mask, dst) => { c.get(cv); if (shift) c.i32(shift).shr_u(); c.i32(mask).and().i32(255).mul().i32(mask).div_u().set(dst); };
+  exp(C0, 11, 31, R0); exp(C0, 5, 63, G0); exp(C0, 0, 31, B0); exp(C1, 11, 31, R1); exp(C1, 5, 63, G1); exp(C1, 0, 31, B1);
+  const word = (r, g, b, a) => { r(); g(); c.i32(8).shl().or(); b(); c.i32(16).shl().or(); if (a) c.i32(0xff000000 | 0).or(); };
+  const third = (x, y) => () => { c.get(x).i32(1).shl().get(y).add().i32(3).div_u(); };
+  c.get(KINDP).i32(1).ne().get(C0).get(C1).gt_u().or(); c.if_();
+  word(third(R0, R1), third(G0, G1), third(B0, B1), true); c.set(W2);
+  word(third(R1, R0), third(G1, G0), third(B1, B0), true); c.set(W3);
+  c.else_();
+  const half = (x, y) => () => { c.get(x).get(y).add().i32(1).shr_u(); };
+  word(half(R0, R1), half(G0, G1), half(B0, B1), true); c.set(W2);
+  c.i32(0).set(W3);
+  c.end();
+  word(() => c.get(R0), () => c.get(G0), () => c.get(B0), true); c.i32x4splat();
+  word(() => c.get(R1), () => c.get(G1), () => c.get(B1), true); c.i32x4replacelane(1);
+  c.get(W2).i32x4replacelane(2).get(W3).i32x4replacelane(3).set(PAL);
+  // ---- the 4 rows: inside the image straight to dst, at the edge through the scratch
+  c.get(BX).i32(2).shl().i32(3).add().get(W).ge_s().get(BY).i32(2).shl().i32(3).add().get(H).ge_s().or().set(EDGE);
+  c.get(DST).get(BY).i32(2).shl().get(W).mul().get(BX).i32(2).shl().add().i32(2).shl().add().set(D);
+  for (let r = 0; r < 4; r++) {
+    // color indices of the row's texels j: (byte >> 2j) & 3, as byte indices 4k..4k+3 of the palette
+    c.get(IDX); if (r) c.i32(8 * r).shr_u(); c.i32(255).and().i32x4splat().v128const(i32x4c(64, 16, 4, 1)).i32x4mul().i32(6).i32x4shr_u().v128const(i32x4c(3, 3, 3, 3)).v128and();
+    c.v128const(i32x4c(0x04040404, 0x04040404, 0x04040404, 0x04040404)).i32x4mul().v128const(i32x4c(0x03020100, 0x03020100, 0x03020100, 0x03020100)).i32x4add().set(K);
+    c.get(PAL).get(K).i8x16swizzle().set(COL);
+    c.get(KINDP).i32(1).ne(); c.if_();
+    c.get(KINDP).i32(3).eq(); c.if_();
+    // DXT3: nibble j of the row's 16 bits, * 17, in byte 3
+    c.get(P).i32(8).sub().i32load16u(2 * r).i32x4splat().v128const(i32x4c(4096, 256, 16, 1)).i32x4mul().i32(12).i32x4shr_u().v128const(i32x4c(15, 15, 15, 15)).v128and();
+    c.v128const(i32x4c(17, 17, 17, 17)).i32x4mul().i32(24).i32x4shl().set(K);
+    c.else_();
+    // DXT5: index j = (row bits >> 3j) & 7, the level byte swizzled into byte 3 (bytes 0..2: index 16, out of range: 0)
+    c.get(r < 2 ? ALO : AHI); if (r & 1) c.i32(12).shr_u(); c.i32(0xfff).and().i32x4splat().v128const(i32x4c(512, 64, 8, 1)).i32x4mul().i32(9).i32x4shr_u().v128const(i32x4c(7, 7, 7, 7)).v128and();
+    c.i32(24).i32x4shl().v128const(i32x4c(0x00101010, 0x00101010, 0x00101010, 0x00101010)).v128or().set(K);
+    c.get(APAL).get(K).i8x16swizzle().set(K);
+    c.end();
+    c.get(COL).v128const(i32x4c(0x00ffffff, 0x00ffffff, 0x00ffffff, 0x00ffffff)).v128and().get(K).v128or().set(COL);
+    c.end();
+    c.get(EDGE); c.if_(); c.get(SCR).get(COL).v128store(16 * r); c.else_(); c.get(D).get(COL).v128store(0); c.get(D).get(W).i32(2).shl().add().set(D); c.end();
+  }
+  // edge block: its texels inside the image from the scratch
+  c.get(EDGE); c.if_();
+  c.i32(0).set(Y);
+  const eyd = c.block(); const eyl = c.loop();
+  c.get(Y).i32(4).ge_s().get(BY).i32(2).shl().get(Y).add().get(H).ge_s().or().br_if(eyd);
+  c.i32(0).set(X);
+  const exd = c.block(); const exl = c.loop();
+  c.get(X).i32(4).ge_s().get(BX).i32(2).shl().get(X).add().get(W).ge_s().or().br_if(exd);
+  c.get(DST).get(BY).i32(2).shl().get(Y).add().get(W).mul().get(BX).i32(2).shl().add().get(X).add().i32(2).shl().add();
+  c.get(SCR).get(Y).i32(4).shl().add().get(X).i32(2).shl().add().i32load(0).i32store(0, 0);
+  c.get(X).i32(1).add().set(X); c.br(exl);
+  c.end(); c.end(); void exd;
+  c.get(Y).i32(1).add().set(Y); c.br(eyl);
+  c.end(); c.end(); void eyd;
+  c.end();
+  c.get(P).i32(8).add().set(P);
+  c.get(BX).i32(1).add().set(BX); c.br(bxl);
+  c.end(); c.end(); void bxd;
+  c.get(BY).i32(1).add().set(BY); c.br(byl);
+  c.end(); c.end(); void byd;
+  return { code: c, locals: [...Array(i32Count).fill(T.i32), ...Array(v128Count).fill(T.v128)] };
+}
+
 const moduleBytes = new Map();
 /** The kernels' module bytes (its memory imported as env.memory, shared or not). */
 export function imageModuleBytes(shared) {
@@ -446,6 +560,7 @@ export function imageModuleBytes(shared) {
   m.exportFunc('encodeRows', f(encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3), Array(8).fill(T.i32), 'encodeRows'));
   m.exportFunc('swizzle', f(swizzleCode(), Array(6).fill(T.i32), 'swizzle'));
   m.exportFunc('halve', f(halveCode(), Array(4).fill(T.i32), 'halve'));
+  m.exportFunc('decodeDxt', f(decodeDxtCode(), Array(6).fill(T.i32), 'decodeDxt'));
   for (const [fmt, desc] of Object.entries(FMT16)) {
     m.exportFunc(`unpack${fmt}`, f(unpack16Code(desc), Array(5).fill(T.i32), `unpack${fmt}`));
     m.exportFunc(`pack${fmt}`, f(pack16Code(desc), Array(3).fill(T.i32), `pack${fmt}`));
@@ -464,7 +579,7 @@ export function imageWasmSupported() {
 
 /**
  * The kernels on `memory` (a WebAssembly.Memory): encodeRows(kind, w, h, by0, by1, src, dst, scratch),
- * swizzle(src, pitch, dst, w, h, alphaOr), halve(src, dst, dw, dh), and per FMT16 format unpack<fmt>(src, pitch, dst,
+ * swizzle(src, pitch, dst, w, h, alphaOr), halve(src, dst, dw, dh), decodeDxt(kind, src, w, h, dst, scratch), and per FMT16 format unpack<fmt>(src, pitch, dst,
  * w, h) / pack<fmt>(src, dst, n).
  */
 export function instantiateImage(memory) {

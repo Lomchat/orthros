@@ -95,6 +95,21 @@ test('mip chains (D3DXFilterTexture, D3DX\'s mip filter): resize and re-encode l
   for (const [dw, dh] of [[17, 9], [100, 61], [50, 1], [3, 30]]) for (const point of [false, true]) assert.deepEqual(cur.resizeRgba(px, 50, 30, dw, dh, point), base.resizeRgba(px, 50, 30, dw, dh, point), `${dw}x${dh}`);
 });
 
+test('DXT decoding: random blocks (both color modes, both DXT5 alpha modes, every index) decode to the base\'s bytes', () => {
+  const r = rng(13);
+  for (const fmt of DXT) for (const [w, h] of [[64, 64], [32, 33], [37, 50], [256, 4], [5, 300], [1024, 1], [2, 600]]) {
+    const n = cur.dxtBytes(fmt, w, h), blocks = Uint8Array.from({ length: n + 3 }, () => r());
+    if (fmt !== FMT.DXT1) for (let o = 0; o < n; o += 32) { blocks[o] = blocks[o + 1]; } // (some a0 = a1)
+    for (const off of [0, 3]) { const b = blocks.subarray(off, off + n); assert.deepEqual(cur.toRgba(fmt, b, w, h), base.toRgba(fmt, b, w, h), `fmt ${fmt} ${w}x${h} at ${off}`); }
+  }
+  // the colors of a decoded image re-encoded and decoded again (smooth data: few random blocks)
+  const px = image(r, 128, 96, 1);
+  for (const fmt of DXT) { const enc = base.fromRgba(fmt, px, 128, 96); assert.deepEqual(cur.toRgba(fmt, enc, 128, 96), base.toRgba(fmt, enc, 128, 96)); }
+  // blocks missing (a truncated file): the JavaScript decoder's zeros, as before
+  const short = Uint8Array.from({ length: 100 }, () => r());
+  assert.deepEqual(cur.toRgba(FMT.DXT5, short, 64, 64), base.toRgba(FMT.DXT5, short, 64, 64));
+});
+
 test('32-bit and 16-bit conversions: every texel value, odd widths (the kernels\' tails), pitches and alignments as the base', () => {
   const r = rng(11);
   // 16-bit formats: every value (65536 texels) laid out in rows of several widths and pitches; and 8-bit samples
