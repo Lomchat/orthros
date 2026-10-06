@@ -134,8 +134,8 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     + 50 new 4.9 → 0.12 ms (Node); a synthetic pass over 30 000 regions × 40 flags 64-82 ms in one call → steps of at
     most 1.2-1.5 ms; in the browser the longest step 0.7-2 ms (pass end, mapping + post up to ~3 ms at load). Browser
     pairs run together (`--gl-discard`, phases scenarios, play phase), main / branch: host-dominated frames > 40 ms at
-    a 10.0 s period 3.3-4.4 → 0 per minute (BFME1, 3 pairs), 4.5-5.9 → 0 (BFME2, 4 pairs), 1.8-4.0 → 0 (RotWK, 4
-    pairs); frames > 40 ms per minute BFME1 4/6/5 → 1/1/0 (bound, visit flags off: 1); BFME2 33/15/14/49 →
+    a 10.0 s period 3.3-4.4 → 0 per minute (BFME1, 4 pairs), 4.5-5.9 → 0 (BFME2, 4 pairs), 1.8-4.0 → 0 (RotWK, 4
+    pairs); frames > 40 ms per minute BFME1 4/6/5/4 → 1/1/0/0 (bound, visit flags off: 1); BFME2 33/15/14/49 →
     16/24/11/60 and RotWK 70/65/168 → 77/99/179 (main with the flags off: 65 vs 80) follow the guest work per frame,
     which varies by up to 15 % between sessions of the same scenario (6.4-7.0 M instructions per frame for main alone).
     Same heat as before once a pass completes (tests/jit-heat-harvest.test.js: randomized against copies of the old
