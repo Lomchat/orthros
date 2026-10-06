@@ -147,7 +147,7 @@ function runReference(seed, n, api9) {
   return { draws: st.draws };
 }
 
-function runJitted(seed, n, api9) {
+function runJitted(seed, n, api9, switching = false) {
   const W = d3dWorld(api9), { mem } = W, data = writeData(mem);
   const calls = randomProgram(seed, n, api9, data, W);
   const methods = methodsOf(api9), names = methods.map(([k]) => k.split('::')[1]);
@@ -174,11 +174,17 @@ function runJitted(seed, n, api9) {
     }
   };
   const dropped0 = mem.read32(FAST_STATS);
-  let r;
+  let r, x = seed * 7919;
+  const rnd = () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) >>> 24;
   for (let k = 0; k < 100000; k++) {
-    r = jit.run({ maxInsns: 1e7 });
+    // (switching: short time slices — the measurement switch, dbg:ORTHROS_DRAW_OPT_OFF, arrives between slices, calls
+    // queued or not; and now and then at a call left to JavaScript, before its queue runs)
+    r = jit.run({ maxInsns: switching ? 1 + rnd() : 1e7 });
+    if (r === EXIT.TIMESLICE) { if (rnd() < 32) jit.setDrawOpt(!!jit.drawOptOff); continue; }
     if (r !== EXIT.THUNK) break;
+    if (switching && rnd() < 32) jit.setDrawOpt(!!jit.drawOptOff);
     drain();
+    if (jit.drawOptPending) { jit.drawOptPending = false; jit.setFxSpecs(true); } // (as Vm.drainDeferred)
     const idx = cpu.exitArg, argc = methods[idx][1] + 1, args = Array.from({ length: argc }, (_, i) => mem.read32(cpu.esp + 4 + 4 * i));
     const eax = call(W, api9, names[idx], args, st) ?? 0;
     cpu.eip = mem.read32(cpu.esp); cpu.esp += 4 + 4 * argc; cpu.eax = eax >>> 0;
@@ -201,6 +207,14 @@ for (const api9 of [true, false]) {
       dropped += jit.dropped;
     }
     assert.ok(dropped > 1000, `the filter drops the redundant calls (${dropped})`);
+  });
+  test(`lights / material / FVF filter (Direct3D ${api9 ? 9 : 8}): the same with the measurement switch (queued draws and this filter off / on) flipped at random points`, () => {
+    for (let seed = 101; seed <= 115; seed++) {
+      const ref = runReference(seed, 300, api9);
+      const jit = runJitted(seed, 300, api9, true);
+      assert.equal(jit.draws.length, ref.draws.length);
+      for (let i = 0; i < ref.draws.length; i++) assert.equal(jit.draws[i], ref.draws[i], `seed ${seed}, draw ${i}`);
+    }
   });
 }
 

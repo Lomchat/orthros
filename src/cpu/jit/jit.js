@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -56,6 +56,7 @@ export class Jit {
     this.interp = interp;
     this.opts = opts;
     this.cpu = null;
+    this.drawOptOff = !!globalThis.ORTHROS_DRAW_OPT_OFF; // (measurement: setDrawOpt)
     this.dbgLong = null; // (debugging, ORTHROS_LONG_STEP_MS: time of the current run by part)
     // cold tier (runCold): missed entries -> instructions interpreted from them; its decodes by address (with their
     // bytes); entries to ask of the background worker
@@ -130,7 +131,22 @@ export class Jit {
     // measurement: setD3dxFast)
     if (dx !== undefined || fid === FID_PARAM_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+    // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
+    if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+    if (defer !== undefined && (defer & DEFER_FX_MASK)) { (this.fxSpecs ??= []).push([idx, defer]); if (this.drawOptOff) this.mem.write32(DEFER_SPEC + 4 * idx, defer & ~(DEFER_FX_MASK | DEFER_F_FORGET)); }
   }
+  /**
+   * (measurement, dbg:ORTHROS_DRAW_OPT_OFF) the draws queued or handled at the call, and the lights / material / FVF
+   * filter (runtime.js DEFER_FX_*) on or off. The filter comes back on only once the queue has run (calls queued while
+   * it was off did not keep their shadow entries; Vm.drainDeferred ends drawOptPending).
+   */
+  setDrawOpt(on) {
+    this.drawOptOff = !on;
+    for (const idx of this.drawFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? FID_DEFER : 0;
+    this.drawOptPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
+    if (!this.drawOptPending) this.setFxSpecs(on);
+  }
+  setFxSpecs(on) { for (const [idx, spec] of this.fxSpecs ?? []) this.mem.write32(DEFER_SPEC + 4 * idx, on ? spec : spec & ~(DEFER_FX_MASK | DEFER_F_FORGET)); }
   /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */
   setRefFast(on) {
     this.refFastOff = !on;
