@@ -2,8 +2,10 @@
 // tools/startbench.mjs --input <file>. Mouse and keyboard events are queued on the headless host as the browser host
 // queues them; `waitframe:min,max` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
 // a phase and prints its guest instructions and the guest category's time per instruction (frame accounting, as the
-// browser's phase reports), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts), the
-// API-layer switches (dbg:ORTHROS_API_OPT_OFF=1, ORTHROS_FX_BIND_OFF=1...) are set as the browser worker sets them. Other
+// browser's phase reports), its frame-time percentiles and the APIs that took the most time ([apitop]: ms and calls per
+// frame, µs per call), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts), the
+// API-layer switches (dbg:ORTHROS_API_OPT_OFF=1, ORTHROS_FX_BIND_OFF=1...) and other ORTHROS_* debug globals are set as
+// the browser worker sets them. Other
 // kinds (shot, profile, capture...) are ignored. Times are real seconds from the start, from the anchor after a wait
 // (or `+t` from the first Direct3D frame), as in the harness.
 import { acct, C as ACCT } from '../src/core/frame-acct.js';
@@ -30,6 +32,9 @@ export class NodeScenario {
     this.pending = []; // [time ms, input event] (button releases, key ups)
     this.phase = null; this.nextCheck = 0;
     this.results = [];
+    // (frame intervals per phase, from the Direct3D presents: percentiles in the phase report)
+    this.frameDts = []; this.lastPresentAt = 0;
+    if (!vm.host.frameHook) vm.host.frameHook = () => { const n = this.nowMs(); if (this.lastPresentAt) this.frameDts.push(n - this.lastPresentAt); this.lastPresentAt = n; };
   }
   now() { return (this.nowMs() - this.t0) / 1000; }
   push(ev) { this.vm.host.inputQueue.push(ev); }
@@ -117,6 +122,9 @@ export class NodeScenario {
           if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') this.vm.jit?.setD3dxFast?.(!globalThis[k]);
           if (k === 'ORTHROS_API_FAST_OFF') this.vm.setApiFastPaths?.(!globalThis[k]);
           this.log(`[input] dbg ${k}=${v ?? ''}`);
+        } else if (/^ORTHROS_[A-Z0-9_]+$/.test(k) && !/^ORTHROS_(JIT_AB|JIT_HEAT|JIT_HARVEST)$/.test(k)) { // (other worker debug globals, as the browser worker sets them)
+          globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v);
+          this.log(`[input] dbg ${k}=${v ?? ''}`);
         }
         break;
       }
@@ -135,11 +143,30 @@ export class NodeScenario {
       const p = this.phase, g = this.vm.guestInsns - p.g0, frames = (d3d?.frames ?? 0) - p.f0, secs = t - p.t;
       const cpuS = (cpu.user - p.cpu.user) / 1e6;
       const threadCpuS = tcpu && p.tcpu ? (tcpu.user + tcpu.system - p.tcpu.user - p.tcpu.system) / 1e6 : null;
-      const r = { label: p.label, seconds: secs, startMs: p.epoch, endMs: Date.now(), frames, guestInsns: g, guestMs: cats[ACCT.guest], guestMsPerMInsn: g ? cats[ACCT.guest] * 1e6 / g : 0, cpuS, threadCpuS, apiMs: cats[ACCT.api], jitMs: cats[ACCT.jit], interpMs: cats[ACCT.interp] };
+      const r = { label: p.label, seconds: secs, startMs: p.epoch, endMs: Date.now(), frames, guestInsns: g, guestMs: cats[ACCT.guest], guestMsPerMInsn: g ? cats[ACCT.guest] * 1e6 / g : 0, cpuS, threadCpuS, apiMs: cats[ACCT.api], waitMs: cats[ACCT.wait], jitMs: cats[ACCT.jit], interpMs: cats[ACCT.interp] };
+      const dts = this.frameDts.sort((a, b) => a - b), q = (x) => dts.length ? dts[Math.min(dts.length - 1, Math.floor(x * dts.length))] : 0;
+      r.dt = { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1] ?? 0, over34: dts.filter((d) => d > 34).length, over40: dts.filter((d) => d > 40).length };
+      r.apiTop = this.apiTop();
       this.results.push(r);
-      this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}`);
+      this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
+      this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
     }
+    if (!this.phase) this.apiTop();
+    this.frameDts = [];
     this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now() }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+  }
+  /**
+   * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed
+   * calls (frame-acct.js samples them) scaled to all its calls; [name, ms, calls, µs per call], most time first.
+   */
+  apiTop(n = 30) {
+    const cur = { ms: Float64Array.from(acct.idxMs), n: Float64Array.from(acct.idxN), calls: Float64Array.from(acct.idxCalls) }, prev = this.apiPrev; this.apiPrev = cur;
+    const out = [];
+    for (let i = 0; i < cur.calls.length; i++) {
+      const calls = cur.calls[i] - (prev?.calls[i] ?? 0), k = (cur.n[i] ?? 0) - (prev?.n[i] ?? 0), ms = (cur.ms[i] ?? 0) - (prev?.ms[i] ?? 0);
+      if (calls > 0 && k > 0) { const t = this.vm.api.thunk(i); out.push([t ? t.name : String(i), ms * Math.max(1, calls / k), calls, 1000 * ms / k]); }
+    }
+    return out.sort((a, b) => b[1] - a[1]).slice(0, n);
   }
   /** Every event fired (the scenario is over). */
   get finished() { return this.events.every((e) => e.done); }
