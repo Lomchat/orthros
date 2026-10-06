@@ -10,7 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
@@ -210,7 +210,77 @@ test('COM AddRef/Release: counted in guest memory by the fast path; the last Rel
   const r = env.jit.run({ maxInsns: 1e6 });
   assert.equal(r, EXIT.THUNK);
   assert.equal(cpu.exitArg, M.AddRef9, 'AddRef with a SetTexture queued goes to JavaScript');
-  assert.equal(mem.read32(DEFER_QUEUE + 4), 1);
+  assert.equal(mem.read32(DEFER_QUEUE + 4), REFS_ANY, 'a device without its shadow block: anyone\'s count may change');
+});
+
+test('COM AddRef/Release with Direct3D 9 bindings queued: only the objects bound or replaced wait for JavaScript; counts and results as executing every call', () => {
+  const OBJS = [0x10004400, 0x10004440, 0x10004480, 0x100044c0, 0x10004500]; // (textures, a vertex buffer, an index buffer: COM objects)
+  for (let seed = 1; seed <= 40; seed++) {
+    const env = setup(), { mem, cpu } = env;
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    for (const o of OBJS) { mem.write32(o + 4, COM_MARKER); mem.write32(o + COM_REFS, 3); }
+    // the device as d3d9.js keeps it (bindings take and drop references; the shadow follows), and its reference twin
+    const world = (refsOf, setRefs, shadow) => {
+      const tex = new Array(16).fill(0), streams = Array.from({ length: 16 }, () => [0, 0, 0]); let ib = 0, commits = 0;
+      const sh = (i, v) => { if (shadow) { mem.write32(SB + 16 + 8 * i, 1); mem.write32(SB + 16 + 8 * i + 4, v); } };
+      if (shadow) { for (let i = 0; i < 16; i++) sh(SHADOW_TEX + i, 0); for (let i = 0; i < 48; i++) sh(SHADOW_STREAM + i, 0); sh(SHADOW_IB, 0); }
+      const swap = (old, nu) => { if (old === nu) return; if (nu) setRefs(nu, refsOf(nu) + 1); if (old) setRefs(old, refsOf(old) - 1); };
+      return {
+        call(m, a) {
+          if (m === M.SetTexture) { if (a[1] >= 16) return; swap(tex[a[1]], a[2]); tex[a[1]] = a[2]; sh(SHADOW_TEX + a[1], a[2]); }
+          else if (m === M.SetStreamSource) { if (a[1] >= 16) return; const s = streams[a[1]]; swap(s[0], a[2]); s[0] = a[2]; s[1] = a[3]; s[2] = a[4]; for (let i = 0; i < 3; i++) sh(SHADOW_STREAM + 3 * a[1] + i, s[i]); }
+          else if (m === M.SetIndices) { swap(ib, a[1]); ib = a[1]; sh(SHADOW_IB, a[1]); }
+          else if (m === M.AddRef9) { const n = refsOf(a[0]) + 1; setRefs(a[0], n); return n; }
+          else if (m === M.Release9) { const n = refsOf(a[0]) - 1; setRefs(a[0], n); return n; }
+          else if (m === M.BeginScene) { // (as an effect commit: textures bound behind the shadow's back, its entries forgotten — their values stale)
+            commits++;
+            for (let i = 0; i < 3; i++) { const t = OBJS[(i + commits) % 3]; swap(tex[i], t); tex[i] = t; if (shadow) mem.write32(SB + 16 + 8 * (SHADOW_TEX + i), 0); }
+          }
+          return 0;
+        },
+      };
+    };
+    const refRefs = new Map(OBJS.map((o) => [o, 3]));
+    const ref = world((o) => refRefs.get(o), (o, n) => refRefs.set(o, n), false);
+    const dev = world((o) => mem.read32(o + COM_REFS), (o, n) => mem.write32(o + COM_REFS, n), true);
+    let x = seed;
+    const rnd = (k) => { x = (Math.imul(x, 1664525) + 1013904223) >>> 0; return (x >>> 8) % k; };
+    const calls = [];
+    for (let i = 0; i < 300; i++) {
+      const r = rnd(100), o = OBJS[rnd(OBJS.length)];
+      if (r < 25) calls.push([M.SetTexture, [DEV, rnd(3), [0, OBJS[0], OBJS[1], OBJS[2]][rnd(4)]]]);
+      else if (r < 35) calls.push([M.SetStreamSource, [DEV, rnd(2), [0, OBJS[3]][rnd(2)], 0, 32]]);
+      else if (r < 42) calls.push([M.SetIndices, [DEV, [0, OBJS[4]][rnd(2)]]]);
+      else if (r < 70) calls.push([M.AddRef9, [o]]);
+      else if (r < 97) calls.push([M.Release9, [o]]);
+      else calls.push([M.BeginScene, [DEV]]); // (handled in JavaScript: the queue runs; then textures bound behind the shadow)
+    }
+    // (the program stores EAX after every AddRef / Release)
+    const code = [], want = [];
+    calls.forEach(([m, a], i) => { for (let k = a.length - 1; k >= 0; k--) code.push(...push(a[k])); code.push(...callSlot(m)); if (m === M.AddRef9 || m === M.Release9) code.push(0xa3, ...le(0x10008000 + 4 * i)); const r = ref.call(m, a); if (m === M.AddRef9 || m === M.Release9) want.push([i, r]); });
+    code.push(0xf4);
+    mem.writeBytes(CODE, Uint8Array.from(code)); env.jit.invalidate?.(CODE, code.length);
+    cpu.eip = CODE; cpu.esp = STACK; cpu.eflags = F.RESERVED1 | F.IF;
+    const drain = () => {
+      const nb = mem.read32(DEFER_QUEUE); mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 4, 0); mem.write32(DEFER_QUEUE + 8, 0);
+      for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) { const idx = mem.read32(p), argc = mem.read32(p + 4); dev.call(idx, Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i))); p += 4 * (2 + argc); }
+    };
+    let fastRefs = 0, jsRefs = 0;
+    for (;;) {
+      const r = env.jit.run({ maxInsns: 1e7 });
+      if (r !== EXIT.THUNK) { assert.equal(r, EXIT.HALT); break; }
+      drain();
+      const idx = cpu.exitArg, argc = METHODS[idx][1] + 1, args = Array.from({ length: argc }, (_, i) => mem.read32(cpu.esp + 4 + 4 * i));
+      if (idx === M.AddRef9 || idx === M.Release9) jsRefs++;
+      const eax = dev.call(idx, args) ?? 0;
+      cpu.eip = mem.read32(cpu.esp); cpu.esp += 4 + 4 * argc; cpu.eax = eax >>> 0;
+    }
+    drain();
+    for (const [i, r] of want) assert.equal(mem.read32(0x10008000 + 4 * i) | 0, r, `seed ${seed}: call ${i} returns`);
+    for (const o of OBJS) assert.equal(mem.read32(o + COM_REFS) | 0, refRefs.get(o), `seed ${seed}: count of ${o.toString(16)}`);
+    fastRefs += want.length - jsRefs;
+    assert.ok(fastRefs > 0);
+  }
 });
 
 test('issued-state filter: an effect commit list that misses a state it sets is caught by the randomized comparison', () => {

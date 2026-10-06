@@ -107,6 +107,8 @@ function chainStubCode(regionType, countChains, tailCalls = true) {
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
 export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle, +4 non-zero: the bindings' filter off (DEFER_F_TEX / STREAM / IB; measurement)
+/** the objects whose reference counts queued calls may change (REFS_SLOTS words, see DEFER_REFS) */
+export const REFS_SET = PROC_CONSTS + 0x100;
 /**
  * Deferred COM calls: state setters of the Direct3D devices (they always succeed and their effect is
  * only observable through other device calls) are recorded by the WASM fast path in a queue in guest
@@ -156,11 +158,17 @@ export const DEFER_F_TEX = 1 << 24, DEFER_F_STREAM = 1 << 25, DEFER_F_IB = 1 << 
  * instead: DEFER_FX_DECL (SetVertexDeclaration, which resets the FVF) is never filtered and forgets SHADOW_FVF. A queued
  * effect commit (DEFER_STATES) forgets SHADOW_FVF and SHADOW_LIGHTON as well: a pass may set them.
  */
-export const DEFER_FX_SHIFT = 27, DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_MASK = 7 << 27;
+export const DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_MASK = 7 << 27;
 export const DEFER_F_FORGET = 1 << 30;
 export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB | DEFER_FX_MASK;
-/** a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them) */
+/**
+ * a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them). The
+ * queue's +4 word says whose: 0 nobody, REFS_ANY anyone, else the number of objects listed at REFS_SET — a Direct3D 9
+ * binding whose shadow entry was known adds the object it binds and the one it replaces; any other, anyone. AddRef /
+ * Release of an object not concerned stay on the fast path (their count is final).
+ */
 export const DEFER_REFS = 1 << 21;
+export const REFS_ANY = 0xffffffff, REFS_SLOTS = 16;
 /**
  * a queued call that may change device states (an effect's CommitChanges applying its pass): the shadow entries listed
  * by the object's commit list (+20: COMMIT_LIST) are forgotten when it is queued — [shadow block, count, entry
@@ -546,7 +554,24 @@ export function buildRuntime(opts = {}) {
           c.end(); void nonNull;
           c.end(); void struct;
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
-          c.get(TM).i32(DEFER_REFS).and(); const refs = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(4); c.end(); void refs;
+          c.get(TM).i32(DEFER_REFS).and();
+          const refs = c.if_();
+          { // whose reference counts may change (DEFER_REFS): the binding replaced — the shadow entry's value, not yet
+            // overwritten below — and the new one, when the filter knew the entry (FE); else anyone (FV = count, WD = object)
+            const done = c.block(); const any = c.block();
+            c.get(FE).eqz().br_if(any);
+            c.get(FE).i32load(0).eqz().br_if(any);
+            c.i32(DEFER_QUEUE).i32load(4).tee(FV).i32(REFS_SLOTS - 1).ge_u().br_if(any); // (anyone already, or no room for two)
+            const add = (load) => { load(); c.tee(WD); const nz = c.if_(); c.get(FV).i32(2).shl().get(WD).i32store(REFS_SET); c.get(FV).i32(1).add().set(FV); c.end(); void nz; };
+            add(() => c.get(FE).i32load(4));
+            add(() => c.get(VP).i32load(0));
+            c.i32(DEFER_QUEUE).get(FV).i32store(4);
+            c.br(done);
+            c.end(); void any;
+            c.i32(DEFER_QUEUE).i32(REFS_ANY | 0).i32store(4);
+            c.end(); void done;
+          }
+          c.end(); void refs;
           c.get(FE);
           const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j, WD = the word, TEB = the kind)
           c.get(TM).i32(DEFER_FX_MASK).and().set(TEB);
@@ -618,7 +643,15 @@ export function buildRuntime(opts = {}) {
           // (only while no queued call may change counts: the value returned counts every reference taken so far)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
           c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled);
-          c.i32(DEFER_QUEUE).i32load(4).br_if(notHandled);
+          c.i32(DEFER_QUEUE).i32load(4).tee(TM);
+          const pend = c.if_(); // (an object whose count a queued call may change, or anyone's: JavaScript runs the queue first)
+          c.get(TM).i32(REFS_SLOTS).gt_u().br_if(notHandled);
+          c.i32(0).set(N);
+          const scan = c.loop();
+          c.get(N).i32(2).shl().i32load(REFS_SET).get(A0).eq().br_if(notHandled);
+          c.get(N).i32(1).add().tee(N).get(TM).lt_u().br_if(scan);
+          c.end(); void scan;
+          c.end(); void pend;
           if (k === FID_ADDREF) c.get(A0).i32load(COM_REFS).i32(1).add().set(TM);
           else { c.get(A0).i32load(COM_REFS).i32(1).sub().tee(TM).i32(1).lt_s().br_if(notHandled); } // (the last reference: JavaScript destroys)
           c.get(A0).get(TM).i32store(COM_REFS);
