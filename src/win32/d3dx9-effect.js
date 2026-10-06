@@ -94,7 +94,7 @@ export function defineEffects(X, vm, h) {
       this.params = parsed.params.map((p, i) => this.buildParam(p.type, p.value, p.annotations, `${i}`, null, p.flags));
       this.byName = new Map(this.params.map((p) => [p.name, p]));
       // (techniques and passes, as parameter nodes, with every field they get later: see buildParam)
-      this.techniques = parsed.techniques.map((t, ti) => ({ kind: 'technique', name: t.name, handle: 0, touched: null, restoreList: 0, restoreShadow: 0, annotations: t.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}a${k}`)),
+      this.techniques = parsed.techniques.map((t, ti) => ({ kind: 'technique', name: t.name, handle: 0, touched: null, restoreList: 0, restoreShadow: 0, restoreVals: null, annotations: t.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}a${k}`)),
         passes: t.passes.map((ps, pi) => ({ kind: 'pass', name: ps.name, handle: 0, index: pi, technique: ti, states: ps.states, ops: null, allFns: null, dynFns: null, shaderSel: null, commitEntries: undefined, annotations: ps.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}p${pi}a${k}`)) })) }));
       for (const t of this.techniques) { this.handleOf(t); for (const ps of t.passes) this.handleOf(ps); }
       ({ shaders: this.shaders, exprs: this.exprs, refs: this.refs } = effectResources(parsed));
@@ -917,24 +917,29 @@ export function defineEffects(X, vm, h) {
       return s;
     }
     /**
-     * The shadow entries (runtime.js COMMIT_LIST format) the restore at End may set for technique `t` (`saving`: Begin
-     * saved the states; else none): its render and stage states and its textures — a queued End forgets them (DEFER_END).
-     * Written once per technique and device shadow; 0 when the device keeps no shadow.
+     * The restore list of a Begin (runtime.js DEFER_END): the shadow entries its End sets, each with the value it saved —
+     * a queued End gives them these values (the issued state); textures are marked to be forgotten instead (bit 31: a
+     * texture released meanwhile is not bound again). Entries once per technique and device shadow, values at every
+     * Begin; `saving` false (nothing saved): no entries. 0 when the device keeps no shadow.
      */
     restoreList(c, t, saving) {
       const dev = this.devImpl ??= com.implAt(this.dev), shadow = dev?.shadow ?? 0;
       if (!shadow) return 0;
       if (!saving) return this.emptyList(c, shadow);
-      if (t.restoreList !== 0 && t.restoreShadow === shadow) return t.restoreList;
-      const s = t.touched, e = [];
-      for (let i = 0; i < s.rs.length; i++) if (s.rs[i] >= 0 && s.rs[i] < 256) e.push(SHADOW_RS + s.rs[i]);
-      for (let i = 0; i < s.tss.length; i++) { const st = s.tss[i] >> 8, ty = s.tss[i] & 255; if (st >= 0 && st < 8 && ty < 40) e.push(SHADOW_TSS + 40 * st + ty); }
-      for (let i = 0; i < s.tex.length; i++) if (s.tex[i] >= 0 && s.tex[i] < 16) e.push(SHADOW_TEX + s.tex[i]);
-      const list = t.restoreList || (t.restoreList = c.proc.processHeap.alloc(4 * COMMIT_LIST_WORDS));
-      mem.write32(list, shadow);
-      if (e.length > COMMIT_LIST_WORDS - 2) mem.write32(list + 4, 0xffffffff);
-      else { mem.write32(list + 4, e.length); for (let i = 0; i < e.length; i++) mem.write32(list + 8 + 4 * i, e[i]); }
-      t.restoreShadow = shadow;
+      const s = t.touched;
+      if (t.restoreList === 0 || t.restoreShadow !== shadow) {
+        const e = [], k = []; // (entry, index of its saved value: s.vals holds render states, stage states, textures in that order)
+        let j = 0;
+        for (let i = 0; i < s.rs.length; i++, j++) if (s.rs[i] >= 0 && s.rs[i] < 256) { e.push(SHADOW_RS + s.rs[i]); k.push(j); }
+        for (let i = 0; i < s.tss.length; i++, j++) { const st = s.tss[i] >> 8, ty = s.tss[i] & 255; if (st >= 0 && st < 8 && ty < 40) { e.push(SHADOW_TSS + 40 * st + ty); k.push(j); } }
+        for (let i = 0; i < s.tex.length; i++, j++) if (s.tex[i] >= 0 && s.tex[i] < 16) { e.push((SHADOW_TEX + s.tex[i]) | 0x80000000); k.push(j); }
+        const list = t.restoreList || (t.restoreList = c.proc.processHeap.alloc(8 + 8 * e.length));
+        mem.write32(list, shadow); mem.write32(list + 4, e.length);
+        for (let i = 0; i < e.length; i++) mem.write32(list + 8 + 8 * i, e[i] >>> 0);
+        t.restoreShadow = shadow; t.restoreVals = Int32Array.from(k);
+      }
+      const list = t.restoreList, map = t.restoreVals;
+      for (let i = 0; i < map.length; i++) mem.write32(list + 12 + 8 * i, s.vals[map[i]]);
       return list;
     }
     /** a list of no entries (Begin without saving states: nothing to restore at End) */

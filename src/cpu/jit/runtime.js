@@ -133,12 +133,14 @@ export const FID_PARAM_DESC = 27, PARAM_DESC_SLOTS = 64, PARAM_DESC_ENTRY = 48, 
  * ID3DXEffect's technique calls on the deferred queue (with DEFER_HANDLE / DEFER_OBJ): after its description cache an
  * effect keeps FX_SLOT_BYTES (from FX_SLOTS past its handle block) — +0 the pass count of its technique as of every call
  * issued so far (0: none, or a technique without passes: JavaScript answers), +4 the restore list of its open Begin
- * ([shadow block, count, entries], as COMMIT_LIST; 0: none) — and the word at each technique's handle holds its pass
- * count (0 at every other handle). DEFER_TECH (SetTechnique): the handle's word must be non-zero, and becomes +0.
- * DEFER_BEGIN (Begin): +0 must be non-zero; it is written at once where the pass-count pointer points (when given), and
- * the record's pointer cleared (the handler, run later, must not write there again). DEFER_END (End, with
- * DEFER_STATES): the shadow entries its restore may set are +4's list, taken (+4 cleared); none: the filter off until
- * the queue has run.
+ * ([shadow block, count, then per state its shadow entry — bit 31 set: to forget — and the value Begin saved]; 0: none)
+ * — and the word at each
+ * technique's handle holds its pass count (0 at every other handle). DEFER_TECH (SetTechnique): the handle's word must
+ * be non-zero, and becomes +0. DEFER_BEGIN (Begin): +0 must be non-zero; it is written at once where the pass-count
+ * pointer points (when given), the record's pointer cleared (the handler, run later, must not write there again), and +4
+ * cleared (that Begin's list is not the one of the Begin queued). DEFER_END (End, with DEFER_STATES): +4's list, taken
+ * (+4 cleared), gives the shadow entries the values the restore leaves — the issued state; none (its Begin still
+ * queued), or a state block recording: the filter off until the queue has run.
  */
 export const DEFER_TECH = 1 << 27, DEFER_BEGIN = 1 << 28, DEFER_END = 1 << 29;
 export const FX_SLOTS = DEFER_HANDLE_BYTES + PARAM_DESC_BYTES, FX_SLOT_BYTES = 8;
@@ -542,6 +544,7 @@ export function buildRuntime(opts = {}) {
           const bg = c.if_(); // (the pass count answered; the record's pointer cleared)
           c.get(SP).i32load(8).tee(FV); const out = c.if_(); c.get(FV).get(FB).i32load(0).i32store(0); c.end(); void out;
           c.get(P).i32(0).i32store(12);
+          c.get(FB).i32(0).i32store(4); // (the restore list of an earlier Begin: not this one's)
           c.end(); void bg;
           c.end(); void fx;
           c.get(FE);
@@ -558,13 +561,31 @@ export function buildRuntime(opts = {}) {
           { // forget the shadow entries of the object's commit list (FB = the list, FE = the shadow block, FV = count, A2 = i)
             const done = c.block(); const stale = c.block();
             c.get(TM).i32(DEFER_END).and();
-            const end = c.if_(); // (End: its Begin's restore list, taken)
-            c.get(SP).i32load(4).i32load(12).i32(FX_SLOTS).add().tee(FE).i32load(4).set(FB);
-            c.get(FE).i32(0).i32store(4);
-            c.else_();
-            c.get(SP).i32load(4).i32load(COMMIT_LIST).set(FB);
+            const end = c.if_();
+            { // End: its Begin's restore list, taken — the entries get the values the restore leaves, or are forgotten (an
+              // entry with bit 31 set: a binding the restore may fail to make); TEB = the pair, KC = its entry
+              c.get(SP).i32load(4).i32load(12).i32(FX_SLOTS).add().tee(FE).i32load(4).set(FB);
+              c.get(FE).i32(0).i32store(4);
+              c.get(FB).eqz().br_if(stale);
+              c.get(FB).i32(0x7fff0000 - 8 - 8 * SHADOW_ENTRIES).ge_u().br_if(stale);
+              c.get(FB).i32load(0).tee(FE).eqz().br_if(stale);
+              c.get(FE).i32(0x7fff0000 - SHADOW_BYTES).ge_u().br_if(stale);
+              c.get(FE).i32load(0).eqz().br_if(stale); // (a state block records: the restore will not change the device)
+              c.get(FB).i32load(4).tee(FV).i32(SHADOW_ENTRIES).gt_u().br_if(stale);
+              c.i32(0).set(A2);
+              const pEnd = c.block(); const pl = c.loop();
+              c.get(A2).get(FV).ge_u().br_if(pEnd);
+              c.get(FB).get(A2).i32(3).shl().add().tee(TEB).i32load(8).tee(KC).i32(0x7fffffff).and().i32(SHADOW_ENTRIES).lt_u();
+              const ok = c.if_();
+              c.get(FE).get(KC).i32(0x7fffffff).and().i32(3).shl().add().tee(VP).get(KC).i32(31).shr_u().i32(1).xor().i32store(16);
+              c.get(VP).get(TEB).i32load(12).i32store(20);
+              c.end(); void ok;
+              c.get(A2).i32(1).add().set(A2); c.br(pl);
+              c.end(); c.end(); void pEnd;
+              c.br(done);
+            }
             c.end(); void end;
-            c.get(FB).eqz().br_if(stale);
+            c.get(SP).i32load(4).i32load(COMMIT_LIST).tee(FB).eqz().br_if(stale);
             c.get(FB).i32(0x7fff0000 - 4 * COMMIT_LIST_WORDS).ge_u().br_if(stale);
             c.get(FB).i32load(0).tee(FE).eqz().br_if(stale);
             c.get(FE).i32(0x7fff0000 - SHADOW_BYTES).ge_u().br_if(stale);

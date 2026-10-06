@@ -12,7 +12,7 @@ import { THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, COM_MARKER, FAST_STATS, FX_SLOTS } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, COM_MARKER, FAST_STATS, FX_SLOTS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX } from '../src/cpu/jit/runtime.js';
 import { d3dEnv } from './d3d-random.js';
 import { defineEffects } from '../src/win32/d3dx9-effect.js';
 import { effectBinary, shader, op } from './fx-build.js';
@@ -115,6 +115,7 @@ function program(S, seed, n) {
     if (rnd(4) === 0) calls.push([M.SetTexture, [f.ptr, [f.Tex0, f.Tex1][rnd(2)], [0, ...textures][rnd(4)]]]);
     calls.push([M.Begin, [f.ptr, rnd(5) === 0 ? 0 : RESULTS + 4 * (out++ % 1024), [0, 0, 1, 2, 6][rnd(5)]]]);
     if (rnd(6) === 0) continue; // (Begin without the rest)
+    if (rnd(12) === 0) { calls.push([M.End, [f.ptr]]); continue; } // (End at once: its Begin still queued)
     const passes = 1 + rnd(2);
     for (let p = 0; p < passes; p++) {
       calls.push([M.BeginPass, [f.ptr, rnd(8) === 0 ? 2 : p]]);
@@ -170,6 +171,16 @@ function runJit(S, calls, hook) {
 /** the reference: every call in order, its result stored as the guest program stores EAX */
 function runRef(S, calls) { calls.forEach(([m, args], i) => S.mem.write32(RESULTS + 0x10000 + 4 * i, S.call(m, args))); }
 
+/** every shadow entry the filter trusts (known) holds the device's state (after the last drain) */
+function shadowCheck(S, where) {
+  const { mem, dev } = S, sb = dev.shadow;
+  const check = (i, v, what) => { const a = sb + 16 + 8 * i; if (mem.read32(a)) assert.equal(mem.read32(a + 4), (v ?? 0) >>> 0, `${where}: shadow ${what}`); };
+  for (let k = 0; k < 256; k++) if (dev.rs.get(k) !== undefined || mem.read32(sb + 16 + 8 * (SHADOW_RS + k))) check(SHADOW_RS + k, dev.rs.get(k), `rs${k}`);
+  for (let st = 0; st < 8; st++) for (let t = 0; t < 40; t++) if (dev.tss[st].get(t) !== undefined) check(SHADOW_TSS + 40 * st + t, dev.tss[st].get(t), `tss${st}.${t}`);
+  for (let r = 0; r < 16; r++) for (let t = 0; t < 16; t++) if (dev.samplers[r].get(t) !== undefined) check(SHADOW_SAMP + 16 * r + t, dev.samplers[r].get(t), `samp${r}.${t}`);
+  for (let st = 0; st < 16; st++) check(SHADOW_TEX + st, dev.textures[st], `tex${st}`);
+}
+
 function compare(A, B, calls, where) {
   for (let i = 0; i < calls.length; i++) assert.equal(A.mem.read32(RESULTS + 0x10000 + 4 * i), B.mem.read32(RESULTS + 0x10000 + 4 * i), `${where}: result of call ${i} (${METHODS[calls[i][0]][0]})`);
   for (let i = 0; i < 1024; i++) assert.equal(A.mem.read32(RESULTS + 4 * i), B.mem.read32(RESULTS + 4 * i), `${where}: pass count ${i}`);
@@ -187,6 +198,7 @@ test('effect technique calls queued: the same results, pass counts and device st
     const toJs = runJit(A, calls);
     runRef(B, calls);
     compare(A, B, calls, `seed ${seed}`);
+    shadowCheck(A, `seed ${seed}`);
     dropped += A.mem.read32(FAST_STATS) - d0;
     for (const [m] of calls) { total[m]++; queued[m]++; }
     toJs.forEach((n, m) => { queued[m] -= n; });
@@ -252,4 +264,17 @@ test('queued setters carrying a structure (SetTransform, an effect\'s SetVector)
   assert.deepEqual([mem.read32(list + 4), mem.read32(f.fx.handleBlock + FX_SLOTS + 4), mem.read32(f.fx.handleBlock + FX_SLOTS)], [entries, restore, slot], 'the effect\'s lists and technique slot untouched');
   const rec = DEFER_QUEUE + 16 + 4 * (2 + 3 + 16);
   assert.deepEqual([mem.read32(rec + 8), mem.read32(rec + 12)], [f.ptr, f.R], 'SetVector recorded with its handle');
+});
+
+test('effect technique calls queued: an End whose Begin is not the one that published the restore list (a Begin queued again, no End between) leaves the filter right', () => {
+  const A = session(true), B = session(false), f = A.fxs[0], d = A.devPtr;
+  // Begin of T0 run (BeginPass in JavaScript), no End; T1 begun again and ended while queued; then the states T0's and
+  // T1's restores set, sent again with the values they had before (redundant only if the shadow is right)
+  const calls = [[M.SetRenderState, [d, 27, 0]], [M.SetRenderState, [d, 20, 2]], [M.SetRenderState, [d, 14, 0]], [M.SetTexture9, [d, 3, 0]],
+    [M.SetTechnique, [f.ptr, f.techs[0]]], [M.Begin, [f.ptr, RESULTS, 0]], [M.BeginPass, [f.ptr, 0]], [M.CommitChanges, [f.ptr]], [M.EndPass, [f.ptr]],
+    [M.SetTechnique, [f.ptr, f.techs[1]]], [M.Begin, [f.ptr, RESULTS + 4, 0]], [M.End, [f.ptr]],
+    [M.SetRenderState, [d, 27, 0]], [M.SetRenderState, [d, 20, 2]], [M.SetRenderState, [d, 14, 0]], [M.SetTexture9, [d, 3, 0]], [M.SetRenderState, [d, 7, 1]], [M.Observe, [d]]];
+  runJit(A, calls); runRef(B, calls);
+  compare(A, B, calls, 'begun twice');
+  shadowCheck(A, 'begun twice');
 });
