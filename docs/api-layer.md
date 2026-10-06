@@ -19,7 +19,29 @@ frame down, all generic (no game-specific code), and how to switch them off with
   calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
   queued `CommitChanges` may bind. Test: `jit-defer-filter.test.js` (randomized, against executing every call), and
   `d3dx9-effect-commit-list.test.js`.
+- **Fixed-function lights, material, FVF that change nothing** (`DEFER_FX_*`): `LightEnable` of lights 0..7, `SetLight` of
+  lights 0..7 and `SetMaterial` compared word for word with the structure they point to, Direct3D 9 `SetFVF` — Direct3D 8
+  and 9. Engines re-send their lights before every object: BFME1's 3D menu issued ~2 100 `LightEnable` and ~2 100
+  `SetLight` per frame (830 draws), 98-100 % of them no-ops, each one queued, copied (26 words) and run in JavaScript.
+  The shadow entries are known only for words with which the call is a no-op of its handler (a light's type below 2^24,
+  stored in a float; a member compared as a float not a NaN). Test: `jit-defer-filter-fx.test.js` (randomized sequences
+  through the JIT against the real Direct3D 8 / 9 devices executing every call: -0 for +0, NaN members, odd types, null
+  pointers, lights 8+, odd BOOLs, declarations resetting the FVF, state blocks, Reset, an effect commit setting lights
+  and the FVF; the devices agree at every draw, version counters included).
+- **Draws from buffers are queued** (`DEFER_DRAWS`: `DrawIndexedPrimitive`, `DrawPrimitive`, Direct3D 8 and 9): they
+  always return `D3D_OK`, and what they read changes only through queued calls (run before them) or calls handled in
+  JavaScript (which run the queue first: a buffer lock, a texture lock, `Present`, a query's `GetData`...). A frame's
+  draws and state setters then reach JavaScript in batches, at the next call handled there, instead of one round trip
+  out of the translated code per draw. (The UP draws read the caller's memory at the call: not queued.) Consequences
+  for the measurements: a draw's time is now part of the JavaScript call that runs the queue (in the per-API ranking,
+  `[apitop]`, `DrawIndexedPrimitive` no longer appears: its time is in `Lock`, `Unlock`, `Present`...). Jit option
+  `deferDraws: false` (Node: `ORTHROS_JIT_OPTS`) handles them at the call again.
 - The queued COM calls run straight on their object's method (`Com.callQueued`), `dispatch` only for unusual cases.
+- Fixed (2026-10-06): a queued call carrying a structure (`SetTransform`, `SetViewport`, `SetLight`, `SetMaterial`, the
+  effect `SetVector` / `SetMatrix` / `SetRawValue`) overwrote the local holding its spec with the address of the copy, so
+  the spec's `DEFER_STATES` test read a bit of that address (always set: the queue lives at 0x7fdb0000) and switched the
+  issued-state filter off until the next call handled in JavaScript. Every redundant state, texture, stream or index set
+  after a transform (in practice: after the first object's world matrix of every draw) reached JavaScript.
 
 ## Sleep(0): pacing, not work
 

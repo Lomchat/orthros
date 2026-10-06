@@ -20,7 +20,7 @@ const callSlot = (i) => [0xff, 0x15, ...le(SLOTS + 4 * i)];
 const METHODS = [
   ['com.dll!IDirect3DDevice9::SetRenderState', 2], ['com.dll!IDirect3DDevice9::SetTextureStageState', 3], ['com.dll!IDirect3DDevice9::SetSamplerState', 3],
   ['com.dll!ID3DXEffect::CommitChanges', 0], ['com.dll!IDirect3DDevice9::BeginStateBlock', 0], ['com.dll!IDirect3DDevice9::EndStateBlock', 0],
-  ['com.dll!IDirect3DDevice9::DrawPrimitive', 0], ['com.dll!IDirect3DTexture9::AddRef', 0], ['com.dll!IDirect3DTexture9::Release', 0], ['com.dll!IDirect3DDevice9::SetTexture', 2],
+  ['com.dll!IDirect3DDevice9::BeginScene', 0], ['com.dll!IDirect3DTexture9::AddRef', 0], ['com.dll!IDirect3DTexture9::Release', 0], ['com.dll!IDirect3DDevice9::SetTexture', 2],
   ['com.dll!IDirect3DDevice9::SetStreamSource', 4], ['com.dll!IDirect3DDevice9::SetIndices', 1],
 ];
 const M = Object.fromEntries(METHODS.map(([k], i) => [k.split('::')[1] + (k.includes('Texture9::') ? '9' : ''), i]));
@@ -73,7 +73,7 @@ class Model {
       case M.SetIndices: if (this.ib !== a[1]) { this.ib = a[1]; this.log.push(`ib=${a[1]}`); } this.shadowSet(SHADOW_IB, a[1]); return;
       case M.BeginStateBlock: this.recording = true; if (this.shadow) this.shadow.mem.write32(SB, 0); return;
       case M.EndStateBlock: this.recording = false; if (this.shadow) this.shadow.mem.write32(SB, 1); return;
-      case M.DrawPrimitive: this.log.push('draw'); return;
+      case M.BeginScene: this.log.push('draw'); return;
     }
   }
   state() { return JSON.stringify([[...this.rs], this.tss.map((t) => [...t]), this.samp.map((t) => [...t]), this.textures, this.streams, this.ib]); }
@@ -93,9 +93,9 @@ function randomProgram(seed, n) {
     else if (r < 94) calls.push([M.SetTexture, [DEV, rnd(10) === 0 ? 16 + rnd(4) : rnd(4), [0, 0x5000, 0x5001][rnd(3)]]]);
     else if (r < 95) calls.push([M.SetStreamSource, [DEV, rnd(10) === 0 ? 16 : rnd(2), [0, 0x6000][rnd(2)], [0, 32][rnd(2)], [24, 32][rnd(2)]]]);
     else if (r < 96) calls.push([M.SetIndices, [DEV, [0, 0x7000, 0x7100][rnd(3)]]]);
-    else if (r < 97) calls.push([M.DrawPrimitive, [DEV]]);
+    else if (r < 97) calls.push([M.BeginScene, [DEV]]);
     else if (r < 98) calls.push([M.BeginStateBlock, [DEV]]), calls.push(...Array.from({ length: 1 + rnd(4) }, () => [M.SetRenderState, [DEV, [7, 20][rnd(2)], rnd(3)]]), [M.EndStateBlock, [DEV]]);
-    else calls.push([M.DrawPrimitive, [DEV]]);
+    else calls.push([M.BeginScene, [DEV]]);
   }
   return calls;
 }

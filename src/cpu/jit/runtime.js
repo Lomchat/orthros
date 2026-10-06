@@ -145,7 +145,20 @@ export const DEFER_F_RS = 1 << 18, DEFER_F_TSS = 1 << 19, DEFER_F_SAMP = 1 << 20
  * kept by the device (Device8.syncRefShadow and its setters) and forgotten by a queued effect commit that may bind them
  */
 export const DEFER_F_TEX = 1 << 24, DEFER_F_STREAM = 1 << 25, DEFER_F_IB = 1 << 26;
-export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB;
+/**
+ * The same filter for the fixed-function lights, the material and the Direct3D 9 FVF: a kind number in bits 27-29 of the
+ * spec (DEFER_FX_*) — LightEnable of lights 0..7 (SHADOW_LIGHTON: the BOOL), SetLight of lights 0..7 and SetMaterial
+ * compared word for word with the structure they point to (SHADOW_LIGHT: 26 words per light, SHADOW_MATERIAL: 17),
+ * SetFVF (SHADOW_FVF). An entry is known only with a word for which the call changes nothing: the handlers compare a
+ * light's type as an integer (stored in a float: known below 2^24) and the other members as floats (a NaN, never equal
+ * to itself, is unknown; -0 and +0 are equal: either one found changes nothing) — d3d8.js shadowLight / shadowMaterial
+ * write them so, and the fast path likewise when it queues a call. DEFER_F_FORGET: queuing the call forgets the entries
+ * instead: DEFER_FX_DECL (SetVertexDeclaration, which resets the FVF) is never filtered and forgets SHADOW_FVF. A queued
+ * effect commit (DEFER_STATES) forgets SHADOW_FVF and SHADOW_LIGHTON as well: a pass may set them.
+ */
+export const DEFER_FX_SHIFT = 27, DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_MASK = 7 << 27;
+export const DEFER_F_FORGET = 1 << 30;
+export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB | DEFER_FX_MASK;
 /** a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them) */
 export const DEFER_REFS = 1 << 21;
 /**
@@ -161,7 +174,11 @@ export const COMMIT_LIST = 20;
  * and a null pointer, go to JavaScript at once)
  */
 export const DEFER_RAW = 1 << 23, DEFER_RAW_MAX = 1024;
-export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_TEX = SHADOW_SAMP + 16 * 16, SHADOW_STREAM = SHADOW_TEX + 16, SHADOW_IB = SHADOW_STREAM + 3 * 16, SHADOW_ENTRIES = SHADOW_IB + 1, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
+export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_TEX = SHADOW_SAMP + 16 * 16, SHADOW_STREAM = SHADOW_TEX + 16, SHADOW_IB = SHADOW_STREAM + 3 * 16;
+/** D3DLIGHT8/9 and D3DMATERIAL8/9 in words; lights 0..SHADOW_LIGHTS-1 shadowed */
+export const LIGHT_WORDS = 26, MATERIAL_WORDS = 17, SHADOW_LIGHTS = 8;
+export const SHADOW_FVF = SHADOW_IB + 1, SHADOW_LIGHTON = SHADOW_FVF + 1, SHADOW_LIGHT = SHADOW_LIGHTON + SHADOW_LIGHTS, SHADOW_MATERIAL = SHADOW_LIGHT + LIGHT_WORDS * SHADOW_LIGHTS;
+export const SHADOW_ENTRIES = SHADOW_MATERIAL + MATERIAL_WORDS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
 export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
@@ -183,16 +200,25 @@ export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice9', [['SetTextureStageState', 4]], DEFER_F_TSS),
   ...deferSpecs('IDirect3DDevice9', [['SetSamplerState', 4]], DEFER_F_SAMP),
-  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3],
-    ['SetMaterial', 2, 1, 17], ['SetFVF', 2], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetVertexDeclaration', 2],
+  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2],
     ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4], ['SetSoftwareVertexProcessing', 2]]),
+  ...deferSpecs('IDirect3DDevice9', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
+  ...deferSpecs('IDirect3DDevice9', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
+  ...deferSpecs('IDirect3DDevice9', [['LightEnable', 3]], DEFER_FX_LIGHTON),
+  ...deferSpecs('IDirect3DDevice9', [['SetFVF', 2]], DEFER_FX_FVF),
+  ...deferSpecs('IDirect3DDevice9', [['SetVertexDeclaration', 2]], DEFER_FX_DECL | DEFER_F_FORGET),
+  // draws from buffers (DEFER_DRAWS)
+  ...deferSpecs('IDirect3DDevice9', [['DrawIndexedPrimitive', 7], ['DrawPrimitive', 4]]),
+  ...deferSpecs('IDirect3DDevice8', [['DrawIndexedPrimitive', 6], ['DrawPrimitive', 4]]),
   ...deferSpecs('IDirect3DDevice9', [['SetStreamSource', 5]], DEFER_REFS | DEFER_F_STREAM),
   ...deferSpecs('IDirect3DDevice9', [['SetIndices', 2]], DEFER_REFS | DEFER_F_IB),
   ...deferSpecs('IDirect3DDevice9', [['SetTexture', 3]], DEFER_REFS | DEFER_F_TEX),
   ...deferSpecs('IDirect3DDevice8', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice8', [['SetTextureStageState', 4]], DEFER_F_TSS),
-  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3], ['SetMaterial', 2, 1, 17],
-    ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
+  ...deferSpecs('IDirect3DDevice8', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
+  ...deferSpecs('IDirect3DDevice8', [['LightEnable', 3]], DEFER_FX_LIGHTON),
   ...deferSpecs('IDirect3DDevice8', [['SetStreamSource', 4], ['SetIndices', 3], ['SetTexture', 3]], DEFER_REFS),
   // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
   ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16]], DEFER_HANDLE),
@@ -202,6 +228,13 @@ export const DEFER_SPECS = {
   ...deferSpecs('ID3DXEffect', [['CommitChanges', 1]], DEFER_OBJ | DEFER_REFS | DEFER_STATES),
   ...deferSpecs('ID3DXEffect', [['EndPass', 1]], DEFER_OBJ),
 };
+/**
+ * The draws from vertex / index buffers are queued too: they always return D3D_OK, and what they read — the device state,
+ * buffers, textures, render targets — changes only through queued calls (run before them, in order) or calls handled in
+ * JavaScript, which run the queue first (Vm.dispatchThunkBody): a draw sees what it would have seen at its call. (The UP
+ * draws read the caller's memory at the call: not queued.) Jit opts.deferDraws false: handled at the call (measurement).
+ */
+export const DEFER_DRAWS = new Set(['IDirect3DDevice9::DrawIndexedPrimitive', 'IDirect3DDevice9::DrawPrimitive', 'IDirect3DDevice8::DrawIndexedPrimitive', 'IDirect3DDevice8::DrawPrimitive']);
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
   'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
@@ -465,10 +498,19 @@ export function buildRuntime(opts = {}) {
             kind(DEFER_F_SAMP, () => { c.get(A1).i32(16).ge_u().get(A2).i32(16).ge_u().or().br_if(nofilter); c.get(A1).i32(16).mul().get(A2).add().i32(SHADOW_SAMP).add().set(TEB); c.get(SP).i32(16).add().set(VP); });
             kind(DEFER_F_TEX, () => { c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.get(A1).i32(16).ge_u().br_if(nofilter); c.get(A1).i32(SHADOW_TEX).add().set(TEB); c.get(SP).i32(12).add().set(VP); });
             kind(DEFER_F_STREAM, () => { c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.get(A1).i32(16).ge_u().br_if(nofilter); c.get(A1).i32(3).mul().i32(SHADOW_STREAM).add().set(TEB); c.get(SP).i32(12).add().set(VP); c.i32(3).set(KC); });
+            // (lights, material, FVF: DEFER_FX_*; a structure's words from VP = its pointer)
+            const xkind = (k, emit) => { c.get(TM).i32(DEFER_FX_MASK).and().i32(k).eq(); const i = c.if_(); emit(); c.br(picked); c.end(); void i; };
+            const ptrOk = (p, words) => { c.get(p).eqz().get(p).i32(0x7fff0000 - 4 * words).ge_u().or().br_if(nofilter); };
+            xkind(DEFER_FX_LIGHTON, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); c.get(A1).i32(SHADOW_LIGHTON).add().set(TEB); c.get(SP).i32(12).add().set(VP); });
+            xkind(DEFER_FX_LIGHT, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); ptrOk(A2, LIGHT_WORDS); c.get(A1).i32(LIGHT_WORDS).mul().i32(SHADOW_LIGHT).add().set(TEB); c.get(A2).set(VP); c.i32(LIGHT_WORDS).set(KC); });
+            xkind(DEFER_FX_MATERIAL, () => { ptrOk(A1, MATERIAL_WORDS); c.i32(SHADOW_MATERIAL).set(TEB); c.get(A1).set(VP); c.i32(MATERIAL_WORDS).set(KC); });
+            xkind(DEFER_FX_FVF, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); });
+            xkind(DEFER_FX_DECL, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); }); // (never dropped: forgets the FVF)
             c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.i32(SHADOW_IB).set(TEB); c.get(SP).i32(8).add().set(VP); // (DEFER_F_IB)
             c.end(); void picked;
             c.get(FB).get(TEB).i32(3).shl().add().i32(16).add().set(FE); // (TEB reused: the entry index)
             const differs = c.block();
+            c.get(TM).i32(DEFER_FX_MASK).and().i32(DEFER_FX_DECL).eq().br_if(differs);
             c.i32(0).set(A2);
             const cmp = c.loop(); // every entry known and holding its value
             c.get(FE).get(A2).i32(3).shl().add().tee(FV).i32load(0).eqz().br_if(differs);
@@ -492,24 +534,36 @@ export function buildRuntime(opts = {}) {
           c.get(P).get(A2).i32(2).shl().add().get(SP).get(A2).i32(2).shl().add().i32load(4).i32store(8);
           c.get(A2).i32(1).add().set(A2); c.br(lp);
           c.end(); c.end(); void copy;
-          // the structure behind the pointer argument, copied after the arguments
+          // the structure behind the pointer argument, copied after the arguments (FB = the copy: TM keeps the spec,
+          // whose flags are read below)
           c.get(WD);
           const struct = c.if_();
           c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
           c.get(TEB);
           const nonNull = c.if_();
-          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(TM).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
-          c.get(A2).get(TM).i32store(8);
+          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(FB).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
+          c.get(A2).get(FB).i32store(8);
           c.end(); void nonNull;
           c.end(); void struct;
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
           c.get(TM).i32(DEFER_REFS).and(); const refs = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(4); c.end(); void refs;
           c.get(FE);
-          const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j)
+          const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j, WD = the word, TEB = the kind)
+          c.get(TM).i32(DEFER_FX_MASK).and().set(TEB);
           c.i32(0).set(A2);
           const wr = c.loop();
-          c.get(FE).get(A2).i32(3).shl().add().tee(FV).i32(1).i32store(0);
-          c.get(FV).get(VP).get(A2).i32(2).shl().add().i32load(0).i32store(4);
+          c.get(VP).get(A2).i32(2).shl().add().i32load(0).set(WD);
+          c.get(FE).get(A2).i32(3).shl().add().tee(FV);
+          { // known: not DEFER_F_FORGET; a light's type below 2^24 (stored as a float: exact); a member the handler
+            // compares as a float not a NaN (never equal to itself)
+            c.get(TM).i32(DEFER_F_FORGET).and(); const fg = c.if_(T.i32); c.i32(0); c.else_();
+            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(A2).eqz().and(); const ty = c.if_(T.i32); c.get(WD).i32(0x1000000).lt_u(); c.else_();
+            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(TEB).i32(DEFER_FX_MATERIAL).eq().or(); const fl = c.if_(T.i32); c.get(WD).i32(0x7fffffff).and().i32(0x7f800000).le_u(); c.else_(); c.i32(1); c.end(); void fl;
+            c.end(); void ty;
+            c.end(); void fg;
+          }
+          c.i32store(0);
+          c.get(FV).get(WD).i32store(4);
           c.get(A2).i32(1).add().tee(A2).get(KC).lt_u().br_if(wr);
           c.end(); void wr;
           c.end(); void known;
@@ -529,6 +583,8 @@ export function buildRuntime(opts = {}) {
             const inRange = c.if_(); c.get(FE).get(TEB).i32(3).shl().add().i32(0).i32store(16); c.end(); void inRange;
             c.get(A2).i32(1).add().set(A2); c.br(lp);
             c.end(); c.end(); void lpEnd;
+            // (and the FVF and the lights' switches, which commit lists do not name: a pass may set them)
+            for (let i = SHADOW_FVF; i < SHADOW_LIGHTON + SHADOW_LIGHTS; i++) c.get(FE).i32(0).i32store(16 + 8 * i);
             c.br(done);
             c.end(); void stale;
             c.i32(DEFER_QUEUE).i32(1).i32store(8);

@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -122,7 +122,8 @@ export class Jit {
     const dx = def && this.opts.d3dxFast !== false ? d3dxFastId(key) : undefined;
     // (opts.kernelFast false: the kernel32 fast paths — critical sections, mutexes, TLS, Interlocked... — left to JavaScript, for A/B)
     const fid = !def ? undefined : (this.opts.kernelFast !== false ? FAST_NAMES[key] : undefined) ?? dx ?? (key.startsWith('com.dll!') && this.opts.comRefs !== false ? (key.endsWith('::AddRef') ? FID_ADDREF : key.endsWith('::Release') ? FID_RELEASE : undefined) : undefined);
-    const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
+    const name = key.slice(key.indexOf('!') + 1);
+    const defer = def && this.opts.deferCom !== false && (this.opts.deferDraws !== false || !DEFER_DRAWS.has(name)) ? DEFER_SPECS[name] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
     // (the fast paths of the API-layer work — D3DX math, effect parameter descriptions, raw values — switchable for
