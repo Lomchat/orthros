@@ -138,6 +138,25 @@ test('WM_SETCURSOR sent by host input while the window thread waits: one pending
   assert.equal(user('GetCursor'), w.cls.hCursor);
 });
 
+test('WM_SETCURSOR sent synchronously: a handler reading the mouse (GetCursorPos) does not re-process the input', { skip }, async () => {
+  const env = boot(), { host, wm, vm, user, scratch } = env;
+  const { TS } = await import('../src/win32/process.js');
+  window(env, 0);
+  const th = vm.proc.threads[0]; vm.current = th; th.state = TS.RUNNING; // (the window's thread pumps: sends run at once)
+  let calls = 0; const def = wm.defWindowProc.bind(wm);
+  wm.defWindowProc = (w, msg, a, b) => {
+    if (msg !== 0x20) return def(w, msg, a, b);
+    if (++calls > 10) throw new Error('WM_SETCURSOR re-entered');
+    user('GetCursorPos', scratch); user('GetAsyncKeyState', 1); user('ShowCursor', 0); return 1;
+  };
+  host.inputQueue.push({ type: 'mousemove', x: 10, y: 10 }, { type: 'mousemove', x: 20, y: 10 }, { type: 'mousemove', x: 30, y: 12 });
+  wm.pump();
+  assert.equal(calls, 3, 'one WM_SETCURSOR per move');
+  assert.equal(wm.mouseStats.moves, 3, 'each move processed once');
+  assert.equal(env.mem.read32(scratch), 30);
+  assert.equal(env.visible(), false);
+});
+
 /** A DirectInput 8 system mouse with the cooperative level `coop`. */
 function diMouse(env, coop) {
   const { vm, mem, heap, call, ctx, scratch } = env;
@@ -163,6 +182,12 @@ test('DirectInput: an exclusive mouse hides the cursor while acquired; a non-exc
   user('ShowCursor', 1); assert.equal(visible(), false, 'whatever the display count');
   user('ShowCursor', 0);
   excl.unacquire(); assert.equal(visible(), true, 'unacquire restores it');
+  excl.acquire(); assert.equal(visible(), false);
+  env.host.inputQueue.push({ type: 'focus', focused: false }); env.wm.pump();
+  assert.equal(visible(), true, 'the application deactivated (alt-tab): shown over its window');
+  env.host.inputQueue.push({ type: 'focus', focused: true }); env.wm.pump();
+  assert.equal(visible(), false, 'back in the foreground, still acquired: hidden again');
+  excl.unacquire();
   excl.acquire(); assert.equal(visible(), false);
   excl.destroy(); assert.equal(visible(), true, 'released while acquired: restored');
   // the display count and DirectInput are independent: shown only when neither hides it

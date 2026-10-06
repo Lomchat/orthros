@@ -231,21 +231,26 @@ export class WindowManager {
     const evs = this.host?.pollInput?.();
     if (evs) (this.pendingInput ??= []).push(...evs);
     const q = this.pendingInput;
-    if (!q?.length) return;
+    // (not re-entered: a message sent synchronously while an event is processed — WM_SETCURSOR at each mouse move, an
+    // activation — runs the game's window procedure, which may call GetCursorPos / GetAsyncKeyState; those see the
+    // state so far and leave the remaining events to this loop, as Windows reads input only in GetMessage / PeekMessage)
+    if (!q?.length || this.pumping) return;
     const dev = this.vm.d3dDevice, frames = dev && !dev.lost ? dev.frames : null, now = this.vm.clock.now();
     if (now - this.mouseStats.at >= 5000) this.logMouseStats(now);
-    let i = 0;
-    for (; i < q.length; i++) {
-      const ev = q[i];
-      if (ev.type === 'mouseup' && frames !== null) {
-        const d = this.pressedAt?.[ev.button];
-        if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
+    this.pumping = true;
+    try {
+      while (q.length) {
+        const ev = q[0];
+        if (ev.type === 'mouseup' && frames !== null) {
+          const d = this.pressedAt?.[ev.button];
+          if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
+        }
+        if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
+        if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
+        q.shift(); // (taken before it is processed: never processed twice)
+        this.inputEvent(ev);
       }
-      if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
-      if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
-      this.inputEvent(ev);
-    }
-    q.splice(0, i);
+    } finally { this.pumping = false; }
     this.reportCursor();
   }
   /** The 'input' log: how the game read the mouse over the last seconds (which of its paths a camera uses). */
@@ -332,7 +337,9 @@ export class WindowManager {
   showCursor(show) { this.showCursorCount += show ? 1 : -1; this.updateCursor(); return this.showCursorCount; }
   /** An exclusive DirectInput mouse acquired (`on`) or unacquired / released: the cursor is hidden while one is. */
   cursorHiddenBy(dev, on) { const n = this.cursorHiders.size; if (on) this.cursorHiders.add(dev); else this.cursorHiders.delete(dev); if (this.cursorHiders.size !== n) this.updateCursor(); }
-  cursorVisible() { return this.showCursorCount >= 0 && this.cursorHandle !== 0 && this.cursorHiders.size === 0; }
+  // (DirectInput's hiding lasts while the application is in the foreground: deactivated — the page lost the focus — its
+  // foreground devices are unacquired on Windows, the cursor shows again over its window)
+  cursorVisible() { return this.showCursorCount >= 0 && this.cursorHandle !== 0 && (this.cursorHiders.size === 0 || this.appInactive === true); }
   /** The cursor's state to the host (its shape, then whether it shows); logged ('input') when it changes. */
   updateCursor() {
     const d = this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
@@ -455,6 +462,7 @@ export class WindowManager {
         };
         if (w && this.deferSends && this.mustDefer(w)) this.deferToThread(w, { fn: activate }); else activate();
         if (!ev.focused) this.keyState.fill(0);
+        this.appInactive = !ev.focused; this.updateCursor();
         break;
       }
       case 'close': {
