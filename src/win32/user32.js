@@ -158,18 +158,28 @@ export class WindowManager {
   // ------------------------------------------------------------------ messages
   queueOf(thread) { return thread.msgQueue ?? (thread.msgQueue = { msgs: [], quit: null, thread }); }
 
+  /**
+   * Host input's sent message for window `w` waits for the window's thread unless that thread is the one running now
+   * (host input pumped by its own PeekMessage / GetMessage or another call of its own: delivered at once, as before)
+   * with nothing sent to it still waiting (the order kept).
+   */
+  mustDefer(w) {
+    const wt = w.thread ?? this.proc.threads[0], cur = this.vm.current;
+    return cur !== wt || cur.state !== TS.RUNNING || (this.queueOf(wt).sent?.length ?? 0) > 0;
+  }
+  /** A sent message (or a step of host input, `fn`) waiting for the thread of window `w` (deliverSent). */
+  deferToThread(w, item) {
+    const q = this.queueOf(w.thread ?? this.proc.threads[0]);
+    (q.sent ??= []).push(item);
+    if (q.sent.length > 256) q.sent.shift();
+  }
   send(w, msg, wParam, lParam) {
     if (!w || w.destroyed && msg !== WM.NCDESTROY) return 0;
     // (host input — focus changes, a click activating the window — is processed wherever the queue is pumped: in
     // a wait condition no guest thread runs, in another thread's API call not the window's thread. Its sent messages
     // wait in the window thread's queue and are delivered by that thread's next GetMessage / PeekMessage, as Windows
     // delivers messages sent from another thread)
-    if (this.deferSends) {
-      const q = this.queueOf(w.thread ?? this.proc.threads[0]);
-      (q.sent ??= []).push({ w, msg, wParam: wParam >>> 0, lParam: lParam >>> 0 });
-      if (q.sent.length > 256) q.sent.shift();
-      return 0;
-    }
+    if (this.deferSends && this.mustDefer(w)) { this.deferToThread(w, { w, msg, wParam: wParam >>> 0, lParam: lParam >>> 0 }); return 0; }
     const proc = w.wndProc;
     if (typeof proc === 'number') return this.vm.callGuest(this.vm.current, proc, [w.hwnd, msg, wParam >>> 0, lParam >>> 0]) >>> 0;
     return this.defWindowProc(w, msg, wParam >>> 0, lParam >>> 0) >>> 0;
@@ -369,8 +379,14 @@ export class WindowManager {
       }
       case 'focus': {
         const w = this.windows.get(this.active);
-        for (const d of this.vm.d3dDevices ?? []) d.onActivate(ev.focused); // (fullscreen Direct3D devices are lost meanwhile)
-        if (w) this.send(w, WM.ACTIVATEAPP, ev.focused ? 1 : 0, 0);
+        // (the device's loss / reactivation and the WM_ACTIVATEAPP that tells the game go together: deferred as one to
+        // the window's thread like the message — a focus loss and return taken in one batch then reach the game as
+        // deactivated (device lost), WM_ACTIVATEAPP 0, reactivated, WM_ACTIVATEAPP 1, not both device changes first)
+        const activate = () => {
+          for (const d of this.vm.d3dDevices ?? []) d.onActivate(ev.focused); // (fullscreen Direct3D devices are lost meanwhile)
+          if (w) this.send(w, WM.ACTIVATEAPP, ev.focused ? 1 : 0, 0);
+        };
+        if (w && this.deferSends && this.mustDefer(w)) this.deferToThread(w, { fn: activate }); else activate();
         if (!ev.focused) this.keyState.fill(0);
         break;
       }
@@ -446,7 +462,7 @@ export class WindowManager {
   /** The messages sent to `thread` by host input (send() while deferSends), delivered in order on that thread. */
   deliverSent(thread) {
     const q = this.queueOf(thread);
-    while (q.sent?.length) { const s = q.sent.shift(); this.send(s.w, s.msg, s.wParam, s.lParam); }
+    while (q.sent?.length) { const s = q.sent.shift(); if (s.fn) s.fn(); else this.send(s.w, s.msg, s.wParam, s.lParam); }
   }
 
   /** WM_QUIT handling and dispatch of a retrieved message. */
@@ -925,7 +941,9 @@ export function registerUser32(api, vm) {
     let m = w.peek(t, hf, min, max, true, true);
     while (!m) { // (woken by a sent message only: delivered, and the wait goes on)
       w.present();
-      vm.sched.block(t, () => w.hasMessage(t, hf, min, max), INFINITE, 'GetMessage');
+      // (false: no message will come — the thread is being terminated (TerminateThread while it waits nested): a
+      // nested wait keeps returning false at once, so looping on would hang every thread; WM_QUIT's 0 ends its loop)
+      if (!vm.sched.block(t, () => w.hasMessage(t, hf, min, max), INFINITE, 'GetMessage')) return 0;
       m = w.peek(t, hf, min, max, true, true);
     }
     w.writeMsg(p, m);

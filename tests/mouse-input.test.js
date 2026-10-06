@@ -182,3 +182,49 @@ test('host input in a wait condition: sent messages delivered by the window thre
   assert.deepEqual(Array.from({ length: mem.read32(rec) }, (_, i) => mem.read32(rec + 4 + 4 * i)), [0x1c, 0x1c]);
   assert.equal(wm.hasMessage(t, 0, 0, 0), false);
 });
+
+test('a focus loss and return taken in one batch: each device change goes with its WM_ACTIVATEAPP, in order', { skip }, () => {
+  const env = boot(), { vm, wm, mem, heap, call, scratch } = env;
+  const rec = heap.alloc(256, true), code = heap.alloc(64, true);
+  const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
+  // the window procedure records wParam of each message (WM_ACTIVATEAPP's active flag)
+  mem.writeBytes(code, [0x8b, 0x44, 0x24, 0x0c, 0x8b, 0x0d, ...le(rec), 0x89, 0x04, 0x8d, ...le(rec + 4), 0xff, 0x05, ...le(rec), 0x31, 0xc0, 0xc2, 16, 0]);
+  const w = wm.makeWindow({ cls: null, style: 0x10000000, exStyle: 0, x: 0, y: 0, w: 640, h: 480, parent: wm.desktop, title: 'game' });
+  w.wndProc = code; w.thread = vm.proc.threads[0]; wm.zorder.unshift(w); wm.active = w.hwnd; wm.focus = w.hwnd;
+  const seen = [];
+  const saved = vm.d3dDevices; vm.d3dDevices = [{ onActivate: (a) => seen.push(`device ${a ? 1 : 0} after ${mem.read32(rec)} message(s)`) }];
+  try {
+    env.input({ type: 'focus', focused: false }, { type: 'focus', focused: true });
+    const cur = vm.current; vm.current = null; // (pumped by a wait condition: no thread runs)
+    wm.pump();
+    vm.current = cur;
+    assert.deepEqual(seen, [], 'nothing changes before the window thread takes its messages');
+    vm.current = vm.proc.threads[0];
+    call('user32.dll', 'PeekMessageA', scratch, 0, 0, 0, 1);
+    assert.deepEqual(seen, ['device 0 after 0 message(s)', 'device 1 after 1 message(s)']);
+    assert.deepEqual([mem.read32(rec), mem.read32(rec + 4), mem.read32(rec + 8)], [2, 0, 1], 'WM_ACTIVATEAPP 0 then 1');
+  } finally { vm.d3dDevices = saved; }
+});
+
+test('host input pumped by the window thread itself: its sent messages at once, after the ones still waiting', { skip }, () => {
+  const env = boot(), { vm, wm, mem, heap } = env;
+  const rec = heap.alloc(256, true), code = heap.alloc(64, true);
+  const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
+  mem.writeBytes(code, [0x8b, 0x44, 0x24, 0x0c, 0x8b, 0x0d, ...le(rec), 0x89, 0x04, 0x8d, ...le(rec + 4), 0xff, 0x05, ...le(rec), 0x31, 0xc0, 0xc2, 16, 0]);
+  const w = wm.makeWindow({ cls: null, style: 0x10000000, exStyle: 0, x: 0, y: 0, w: 640, h: 480, parent: wm.desktop, title: 'game' });
+  const t = vm.proc.threads[0];
+  w.wndProc = code; w.thread = t; wm.zorder.unshift(w); wm.active = w.hwnd; wm.focus = w.hwnd;
+  const cur = vm.current;
+  try {
+    env.input({ type: 'focus', focused: false }); vm.current = null; wm.pump(); // (a wait condition: deferred)
+    assert.equal(mem.read32(rec), 0);
+    vm.current = t; t.state = 1; // (the window thread running an API call of its own, e.g. GetAsyncKeyState)
+    env.input({ type: 'focus', focused: true }); wm.pump();
+    assert.equal(mem.read32(rec), 0, 'still behind the deferred one: the order kept');
+    wm.deliverSent(t);
+    assert.deepEqual([mem.read32(rec), mem.read32(rec + 4), mem.read32(rec + 8)], [2, 0, 1]);
+    t.state = 1; // (the test's thread is on no stack: the callback left it ready)
+    env.input({ type: 'focus', focused: false }); wm.pump();
+    assert.deepEqual([mem.read32(rec), mem.read32(rec + 12)], [3, 0], 'nothing waiting: sent at once on its own thread');
+  } finally { vm.current = cur; }
+});
