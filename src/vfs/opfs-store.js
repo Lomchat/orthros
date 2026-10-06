@@ -11,10 +11,13 @@
 //   u32 block checksum, the key's UTF-8 bytes, u32 checksum of the record's previous bytes
 // (little-endian). A later record of a key replaces the earlier one. Records are appended, never rewritten: the earlier
 // format (index.json, { v: 2, entries: [[key, offset, length, checksum]] }) rewrote and synced the whole index every 16
-// blocks — 2.2 s of the game thread over a first launch. Records wait in memory and are written at a sync point, after
-// the data file's flush (an indexed block is always on disk): once >= 2 s passed since the last one or >= 256 records
-// wait, and when the caller forces it (prefetch end, stop, close). A crash loses at most the records of the last sync
-// interval: those blocks are fetched again. Reading stops at the first incomplete or damaged record (the log is cut there).
+// blocks — 2.7 s of the game thread over a BFME2 first launch. Records wait in memory and are written (and the index
+// flushed) at a sync point: once >= 2 s passed since the last one or >= 256 records wait, and when the caller forces it
+// (prefetch end, stop, close). A crash loses at most the records of the last sync interval: those blocks are fetched
+// again. Reading stops at the first incomplete or damaged record (the log is cut there).
+// The data file is flushed only at close: its flush writes back every block written since the last one (~150 ms of the
+// game thread per 50 MiB, 2.2 s over a first launch's prefetch, whatever the cadence). An indexed block whose bytes a
+// crash lost is caught by its checksum at read (or lies past the end of the data file) and fetched again.
 const INDEX_MAGIC = 0x4953424f; // 'OBSI'
 const INDEX_VERSION = 3;
 const HEADER_BYTES = 8, RECORD_FIXED = 20;
@@ -190,8 +193,9 @@ export class OpfsBlockStore {
   }
 
   /**
-   * A sync point: the data file flushed, then the waiting index records appended and the index flushed — when `force`,
-   * once SYNC_MS passed since the last one, or once SYNC_BLOCKS records wait; otherwise nothing (cheap to call often).
+   * A sync point: the waiting index records appended and the index flushed — when `force`, once SYNC_MS passed since the
+   * last one, or once SYNC_BLOCKS records wait; otherwise nothing (cheap to call often). The data file is not flushed
+   * (see the top of this file).
    */
   flush(force = false) {
     if (this.failed || !this.pending.length) return;
@@ -199,7 +203,6 @@ export class OpfsBlockStore {
     if (!force && this.pending.length < SYNC_BLOCKS && t0 - this.lastSync < SYNC_MS) return;
     this.stats.flushes = (this.stats.flushes ?? 0) + 1;
     try {
-      this.data.flush();
       const bytes = encodeIndex(this.pending);
       if (this.indexHandle.write(bytes, { at: this.indexEnd }) !== bytes.length) this.fail();
       else {
@@ -222,7 +225,7 @@ export class OpfsBlockStore {
 
   fail() { this.failed = true; }
 
-  close() { try { this.flush(true); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
+  close() { try { this.data.flush(); this.flush(true); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
 }
 
 /**

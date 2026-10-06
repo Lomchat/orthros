@@ -158,7 +158,7 @@ test('block store: index sync cadence — every 256 blocks or 2 s, at once when 
     assert.equal(s.stats.flushes, 1, 'synced at 256 blocks');
     assert.equal(idx.writes, w0 + 1, 'one append');
     assert.equal(idx.flushes, f0 + 1);
-    assert.equal(data.flushes, 1, 'the data flushed with it');
+    assert.equal(data.flushes, 0, 'the data file is not flushed at a sync point (checksums catch a lost block)');
     assert.equal(idx.truncates, 1, 'no rewrite (the one truncate is the new log at open)');
     // time-based: the next put syncs once SYNC_MS passed
     s.put(key(1000), small);
@@ -173,6 +173,9 @@ test('block store: index sync cadence — every 256 blocks or 2 s, at once when 
     s.flush(true);
     assert.equal(s.stats.flushes, 3);
     assert.equal(s.dirty, 0);
+    assert.equal(data.flushes, 0);
+    s.close();
+    assert.equal(data.flushes, 1, 'the data file flushed at close');
     const again = await OpfsBlockStore.open('x');
     assert.equal(again.map.size, SYNC_BLOCKS + 2);
   });
