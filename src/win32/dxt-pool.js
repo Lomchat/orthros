@@ -10,8 +10,12 @@ import { encodeDxtRowsJs, dxtBytes, dxtKind } from './d3dx9-image.js';
 import { imageWasmSupported, instantiateImage, SCRATCH_BYTES } from './d3dx9-image-wasm.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 
-/** Images with fewer blocks than this are encoded by the caller alone (the hand-off costs more than it saves). */
-export const MIN_PARALLEL_BLOCKS = 1024;
+/**
+ * Images with fewer blocks than this are encoded by the caller alone (the hand-off costs more than it saves). With the
+ * WebAssembly encoder (~75 ns per block on one thread), measured with 4 helper threads on a loaded server: 128 x 128
+ * (1024 blocks) 92 µs through the pool against 80 µs alone, 256 x 128 even, 256 x 256 270-330 µs against 310-440 µs.
+ */
+export const MIN_PARALLEL_BLOCKS = 2048;
 /** Largest image handed to the helpers (texels): the shared buffers are allocated once at this size. */
 export const MAX_PARALLEL_TEXELS = 2048 * 2048;
 /** Most helpers a pool takes (their scratch areas lie before the image). */

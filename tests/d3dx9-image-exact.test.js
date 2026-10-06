@@ -215,7 +215,7 @@ test('helper pool on shared WebAssembly memory: the base encoder\'s blocks, enco
     const r = rng(9);
     for (const off of [false, true]) {
       if (off) globalThis.ORTHROS_DXT_WASM = 0;
-      for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) for (const [w, h] of [[128, 128], [130, 250]]) {
+      for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) for (const [w, h] of [[256, 136], [130, 250]]) {
         const px = image(r, w, h, w + fmt);
         assert.deepEqual(pool.encode(fmt, px, w, h), base.fromRgba(fmt, px, w, h), `fmt ${fmt} ${w}x${h} ${off ? 'JavaScript' : 'WebAssembly'}`);
       }

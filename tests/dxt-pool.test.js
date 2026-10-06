@@ -18,7 +18,7 @@ test('helper threads: the same blocks as one thread', async () => {
   const spawn = () => { const w = new Worker(`import('${url}').then(({ helperLoop }) => require('node:worker_threads').parentPort.once('message', helperLoop));`, { eval: true }); threads.push(w); return w; };
   const pool = new DxtPool(3, spawn);
   try {
-    for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) for (const [w, h] of [[256, 256], [128, 132], [512, 128], [130, 250]]) {
+    for (const fmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) for (const [w, h] of [[256, 256], [256, 132], [512, 128], [130, 250]]) {
       const px = image(w, h, w + h + fmt);
       const got = pool.encode(fmt, px, w, h);
       assert.ok(got, `${w}x${h} encoded by the pool`);
