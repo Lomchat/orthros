@@ -269,3 +269,44 @@ test('effect binding: float words reach the registers bit for bit (-0, NaN paylo
     assert.deepEqual(got, ref ? [0, 0x7fc0beef, 0x7fc00001, 0x3f800000] : words);
   }
 });
+
+test('effect setters: a write of the value held moves no version (negative floats, high ints, bools), a change does; the reference path moves it always', () => {
+  for (const ref of [false, true]) {
+    const S = session(ref), { mem } = S, fx = S.fxs[0], fx2 = S.fxs[2];
+    const h = (f, nm) => f.fx.GetParameterByName(S.ctx([f.ptr, 0, S.name(nm)])) >>> 0;
+    const node = (f, nm) => f.fx.param(h(f, nm));
+    const ver = (f, nm) => node(f, nm).version ?? 0;
+    const check = (f, nm, write) => {
+      S.run(write); const v1 = ver(f, nm);
+      S.run(write); const v2 = ver(f, nm);
+      assert.equal(v2 - v1, ref ? 1 : 0, `${nm} rewritten (ref ${ref})`);
+    };
+    [-1.5, -0.25, -3e38, 2].forEach((x, i) => mem.writeF32(S.scratch + 4 * i, x));
+    check(fx, 'Color', () => fx.fx.SetVector(S.ctx([fx.ptr, h(fx, 'Color'), S.scratch])));
+    check(fx, 'Arr', () => fx.fx.SetVectorArray(S.ctx([fx.ptr, h(fx, 'Arr'), S.scratch, 3])));
+    for (let i = 0; i < 16; i++) mem.writeF32(S.scratch + 256 + 4 * i, -i - 0.5);
+    check(fx, 'M', () => fx.fx.SetMatrix(S.ctx([fx.ptr, h(fx, 'M'), S.scratch + 256])));
+    check(fx, 'MRow', () => fx.fx.SetMatrixTranspose(S.ctx([fx.ptr, h(fx, 'MRow'), S.scratch + 256])));
+    check(fx, 'Fs', () => fx.fx.SetFloat(S.ctx([fx.ptr, h(fx, 'Fs'), 0xbf800000])));
+    check(fx, 'Iref', () => fx.fx.SetInt(S.ctx([fx.ptr, h(fx, 'Iref'), 0xfffffff0])));
+    check(fx, 'B', () => fx.fx.SetBool(S.ctx([fx.ptr, h(fx, 'B'), 2])));
+    check(fx2, 'I4', () => fx2.fx.SetValue(S.ctx([fx2.ptr, h(fx2, 'I4'), S.scratch, 32])));
+    check(fx, 'St', () => fx.fx.SetRawValue(S.ctx([fx.ptr, h(fx, 'St'), S.scratch, 4, 12])));
+    // a member's change moves its top-level parameter, the element's own write unchanged does not
+    const col = S.name('St[1].Color'); // (a member by name: GetParameterByName takes top-level names)
+    const st = node(fx, 'St'); const v0 = st.version ?? 0;
+    mem.writeF32(S.scratch, 7);
+    S.run(() => fx.fx.SetVector(S.ctx([fx.ptr, col, S.scratch])));
+    assert.equal((st.version ?? 0) - v0, 1, 'member change');
+    // a recorded parameter block keeps an unchanged write, and its apply restores the value
+    S.run(() => fx.fx.BeginParameterBlock(S.ctx([fx.ptr])));
+    S.run(() => fx.fx.SetVector(S.ctx([fx.ptr, col, S.scratch])));
+    const id = S.run(() => fx.fx.EndParameterBlock(S.ctx([fx.ptr])));
+    mem.writeF32(S.scratch, 9);
+    S.run(() => fx.fx.SetVector(S.ctx([fx.ptr, col, S.scratch])));
+    const v3 = st.version ?? 0;
+    S.run(() => fx.fx.ApplyParameterBlock(S.ctx([fx.ptr, id])));
+    assert.equal(fx.fx.param(col).words[0], 0x40e00000, 'block applied');
+    assert.ok((st.version ?? 0) > v3, 'block apply with a change moves the version');
+  }
+});

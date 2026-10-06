@@ -79,14 +79,14 @@ export function effectBinary({ params, techniques }) {
   const pool = new Words(); pool.u32(0);
   const str = (s) => { const b = cstr(s); const o = pool.u32(b.length); pool.bytes(b); return o; };
   const typeOf = (t, name = '') => {
-    const w = [t.type, t.cls, str(name), str(''), t.elements ?? 0];
-    if (t.cls <= PC.VECTOR) w.push(t.cols ?? 1, t.rows ?? 1);
-    else if (t.cls <= PC.MATRIX_COLUMNS) w.push(t.rows ?? 1, t.cols ?? 1);
-    else if (t.cls === PC.STRUCT) { w.push(t.members.length); const at = pool.u32(...w); for (const m of t.members) typeInline(m.t, m.name); return at; }
-    return pool.u32(...w);
+    // (the member names' strings written first: the members' type words follow their struct's inline, nothing between)
+    const names = [], strs = (x, nm) => { names.push([str(nm), str('')]); if (x.cls === PC.STRUCT) for (const m of x.members) strs(m.t, m.name); };
+    strs(t, name);
+    let k = 0; // (the same traversal order as strs)
+    const words = (x) => { const w = [x.type, x.cls, ...names[k++], x.elements ?? 0]; if (x.cls <= PC.VECTOR) w.push(x.cols ?? 1, x.rows ?? 1); else if (x.cls <= PC.MATRIX_COLUMNS) w.push(x.rows ?? 1, x.cols ?? 1); else if (x.cls === PC.STRUCT) w.push(x.members.length); return w; };
+    const inline = (x) => { const at = pool.u32(...words(x)); if (x.cls === PC.STRUCT) for (const m of x.members) inline(m.t); return at; };
+    return inline(t);
   };
-  // (struct members follow their struct's type inline)
-  const typeInline = (t, name) => { const w = [t.type, t.cls, str(name), str(''), t.elements ?? 0]; if (t.cls <= PC.VECTOR) w.push(t.cols ?? 1, t.rows ?? 1); else if (t.cls <= PC.MATRIX_COLUMNS) w.push(t.rows ?? 1, t.cols ?? 1); pool.u32(...w); if (t.cls === PC.STRUCT) { pool.u32(t.members.length); for (const m of t.members) typeInline(m.t, m.name); } };
   const intType = typeOf({ cls: PC.SCALAR, type: PT.INT });
   const resources = []; // [technique, index, element, state, usage, bytes]
   let nextObj = 1;
