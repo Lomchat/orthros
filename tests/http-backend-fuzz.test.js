@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
+import { NetLink } from '../src/vfs/net-link.js';
 
 function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 
@@ -28,7 +29,8 @@ class MemStore {
   flush() {}
 }
 
-async function run(seed) {
+/** `bw`: a measured link rate (bytes/s, fixed) shared by both folders — thin and mid links take other paths (pieces kept in the store, background turns) */
+async function run(seed, bw = null) {
   const R = rng(seed), ri = (n) => Math.floor(R() * n);
   const xhrFaults = [];
   const pending = []; // fetches (background, prefetch, offline copy, prepare) not answered yet
@@ -64,6 +66,7 @@ async function run(seed) {
   const tick = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
   const settleSome = async () => { for (let n = ri(3); n > 0 && pending.length; n--) settle(pending.splice(ri(pending.length), 1)[0]); await tick(); };
   let sides = [], finished = false;
+  const net = bw ? new NetLink({ bw, fixed: true }) : null;
   try {
     const store = R() < 0.7 ? new MemStore() : null;
     const tree = (mtime) => ({ dirs: { Data: { files: Object.fromEntries(Object.entries(SIZES).map(([n, size]) => [n, { size, mtime }])) } }, files: {} });
@@ -71,7 +74,7 @@ async function run(seed) {
     // (odd seeds: the two folders share one connection, as a game and a game it requires do: see HttpBackend.link)
     const link = seed % 2 ? new Set() : undefined;
     sides = [7, 8].map((v) => {
-      const b = new HttpBackend(`/game/v${v}/`, tree(v), { store, cacheBlocks, retryWaits: [0, 0], link });
+      const b = new HttpBackend(`/game/v${v}/`, tree(v), { store, cacheBlocks, retryWaits: [0, 0], link, ...(net ? { net } : {}) });
       return { v, b, files: VERSIONS[v], handles: NAMES.map((n) => b.open(`Data/${n}`)), offline: null };
     });
     const doRead = (s, fi, off, len) => {
@@ -126,7 +129,9 @@ async function run(seed) {
       }
       if (store) for (const [k, v] of store.m) {
         const [p, , mtime, i] = k.split('#'), d = VERSIONS[mtime][p.split('/').pop()];
-        assert.ok(Buffer.from(v).equals(Buffer.from(d.subarray(+i * BLOCK, +i * BLOCK + BLOCK))), `seed ${seed}: stored ${k}`);
+        // (a piece kept from a link that is not fast: '#c<piece>')
+        const want = i.startsWith('c') ? d.subarray(+i.slice(1) * CHUNK, +i.slice(1) * CHUNK + CHUNK) : d.subarray(+i * BLOCK, +i * BLOCK + BLOCK);
+        assert.ok(Buffer.from(v).equals(Buffer.from(want)), `seed ${seed}${bw ? ` bw ${bw}` : ''}: stored ${k}`);
       }
     }
     for (let i = 0; i < 200 && pending.length; i++) { settle(pending.shift()); await tick(); }
@@ -136,6 +141,7 @@ async function run(seed) {
     finished = true;
     for (const { b } of sides) { b.want.clear(); b.near.clear(); b.lastSyncFetchAt = -Infinity; }
     for (const p of pending.splice(0)) p.reject(new Error('NetworkError'));
+    if (net) { for (const w of net.waiters.splice(0)) w.resolve(false); if (net.timer !== null) { net.clearTimer(net.timer); net.timer = null; } }
     globalThis.XMLHttpRequest = realXhr; globalThis.fetch = realFetch; performance.now = realNow;
   }
 }
@@ -183,4 +189,9 @@ test('http backend (randomized): pieces evicted in the middle of a read (past 64
 test('http backend (randomized): reads return exactly the file bytes under pieces, blocks, background fills and failures', async () => {
   const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : 30;
   for (let s = 1; s <= seeds; s++) await run(s * 7919);
+});
+
+test('http backend (randomized): exact bytes on a thin and a mid link too (pieces kept in the store, background turns, overlap aborts)', async () => {
+  const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : 20;
+  for (let s = 1; s <= seeds; s++) { await run(s * 104729, 85000); await run(s * 15485863, 1000000); }
 });

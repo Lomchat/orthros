@@ -163,6 +163,15 @@
   background: rgba(248, 144, 31, .12); color: var(--ember-hi); font: 700 13px var(--sans); cursor: pointer; transition: background .25s, color .25s, border-color .25s, box-shadow .25s; }
 #menu .hm-card:hover .hm-play, #menu .hm-card:focus-visible .hm-play { background: var(--ember); border-color: var(--ember); color: #1a0f05; box-shadow: 0 6px 20px rgba(248, 144, 31, .35); }
 #menu .hm-play:focus-visible { outline: 2px solid var(--bone); outline-offset: 2px; }
+#menu .hm-dl { position: relative; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 8px 8px; border-radius: 8px; background: rgba(255, 255, 255, .03); font: 11.5px var(--mono); color: var(--faint); cursor: default; }
+#menu .hm-dl[hidden] { display: none; }
+#menu .hm-dl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu .hm-dl[data-state="running"] .hm-dl-text, #menu .hm-dl[data-state="done"] .hm-dl-text { color: var(--bone); }
+#menu .hm-dl-bar { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .06); overflow: hidden; }
+#menu .hm-dl-bar i { display: block; height: 100%; width: 0; background: var(--ember); transition: width .4s; }
+#menu .hm-dl-btn { flex: none; height: 24px; padding: 0 10px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, .18); background: transparent; color: var(--bone); font: 11.5px var(--mono); cursor: pointer; }
+#menu .hm-dl-btn:hover, #menu .hm-dl-btn:focus-visible { border-color: var(--ember); color: var(--ember); }
+#menu .hm-dl-btn[hidden] { display: none; }
 #menu .hm-card.unavailable { cursor: default; filter: saturate(.3); opacity: .55; }
 #menu .hm-card.unavailable:hover { transform: none; border-color: var(--line); box-shadow: 0 10px 30px rgba(0, 0, 0, .38); }
 #menu .hm-card.skeleton { cursor: default; pointer-events: none; }

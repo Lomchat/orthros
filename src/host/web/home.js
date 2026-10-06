@@ -3,6 +3,10 @@
 import { startEmbers } from './embers.js';
 import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
 import { h } from './dom.js';
+import { Downloads, downloadStatus } from './download.js';
+
+/** the "download the whole game first" downloads (one at a time, see download.js) */
+const downloads = new Downloads();
 
 const $ = (id) => document.getElementById(id);
 const LOGO = '/src/host/web/orthros_logo.png';
@@ -18,6 +22,8 @@ const STRINGS = {
     errorTitle: 'Cannot reach the server', retry: 'Try again',
     settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
+    dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
+    dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
   fr: {
     tagline: 'Vos jeux Windows, lancés depuis leurs propres fichiers, directement dans le navigateur.',
@@ -29,6 +35,8 @@ const STRINGS = {
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
+    dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
+    dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
   },
 };
 
@@ -192,7 +200,8 @@ export function mountHome({ onPlay }) {
     const wanted = explicit ? [explicit, ...browserLangs()] : [...browserLangs(), lang];
     return wanted.find((l) => options.includes(l)) ?? (options.includes('en') ? 'en' : options[0] ?? null);
   };
-  const play = (g) => { const v = chosen(g); if (v?.available) onPlay(v.name, gameLang(g, v)); };
+  // (a download running stops first: the game's worker opens the same stores)
+  const play = async (g) => { const v = chosen(g); if (!v?.available) return; await downloads.stop(); onPlay(v.name, gameLang(g, v)); };
   function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
 
   // the cover of the game's chosen version behind the page (added, updated or removed as the choice changes)
@@ -216,6 +225,19 @@ export function mountHome({ onPlay }) {
   function card(g, i) {
     const el = h('article', { class: 'hm-card' + (drawn ? ' still' : ''), 'data-name': g.id, style: `--i:${i}`, role: 'group', 'aria-label': g.title });
     const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('span', { class: 'hm-meta' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
+    // "download the whole game first": status line and its button (download, pause, resume)
+    const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
+    const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
+    function syncDownload() {
+      const v = chosen(g); dlRow.hidden = !v?.available; if (!v?.available) return;
+      const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
+      dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      dlRow.dataset.state = st.state;
+      dlBtn.hidden = st.state === 'done';
+      dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
+      dlBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name); };
+    }
+    cleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
     let shown = null, langRow = null;
     // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
     const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
@@ -245,13 +267,14 @@ export function mountHome({ onPlay }) {
         onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); } }) : null;
       langRow?.set(gameLang(g, v));
       langSlot.replaceChildren(...(langRow ? [langRow.el] : []));
+      syncDownload();
     }
 
     el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
       h('div', { class: 'hm-choices' }, versions?.el, langSlot),
-      h('div', { class: 'hm-foot-row' }, meta, playBtn)));
+      h('div', { class: 'hm-foot-row' }, meta, playBtn), dlRow));
     sync();
-    el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label')) play(g); };
+    el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label, .hm-dl')) play(g); };
     for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],
       ['focus', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['blur', () => { setBackdrop(resume?.id ?? null); heat(false); }]]) el.addEventListener(type, fn);
     return el;

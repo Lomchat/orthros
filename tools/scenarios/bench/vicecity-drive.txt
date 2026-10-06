@@ -2,15 +2,21 @@
 # tools/scenarios/vicecity-startup.txt). Coordinates for 640x480 (the display a first launch uses). Phases:
 # start (launch to the menu: downloads, intro), menu, load (new game to the first 3D frames), play (the drive), end.
 # The clicks at 10,10 skip the intro videos (absolute times for a fast start, after the first frame for a slow one).
+# The pointer reaches each menu item a second before its click (as a person's does): a press in the very frame the
+# pointer arrives was sometimes not taken by the menu at a few hundred frames per second; and "new game" is clicked a
+# second time 3 s later (a click lost in the submenu's opening: in the loading screen that follows, a click does nothing).
 10:click:10,10
 13:click:10,10
 +2:click:10,10
 +5:click:10,10
 +8:waitframe:5,40
 0:mark:menu
+1:move:320,192
 2:click:320,192
+3:move:320,177
 4:click:320,177
 4:mark:load
+7:click:320,177
 8:waitframe:150,100000
 0:mark:play
 3:key:13

@@ -5,6 +5,7 @@ import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host
 import { mountHome } from './home.js';
 import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
+import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -136,7 +137,7 @@ async function start(name, language = null) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined };
+  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
@@ -168,7 +169,7 @@ function onWorkerMessage(m) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
-    case 'stats': state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m);
+    case 'stats': state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m); noteNet(m.net);
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
@@ -228,10 +229,23 @@ function log(kind, msg) {
   else if (state.telemetry && kind === 'slowframe' && Number(/ ([\d.]+)ms:/.exec(msg)?.[1]) >= 150 && (state.slowSent = (state.slowSent ?? 0) + 1) <= 150) (state.queue ??= []).push({ t: Date.now(), event: 'slow', msg: String(msg).slice(0, 1000) });
   const line = `[${kind}] ${msg}`;
   state.logs.push(line); if (state.logs.length > 5000) state.logs.shift();
-  if (headless) console.log(line);
+  if (headless || window.__orthrosConsoleLog) console.log(line); // (__orthrosConsoleLog: the harness's --ui runs keep the log)
   const el = $('log');
   if (el.style.display !== 'none') { el.textContent += line + '\n'; el.scrollTop = el.scrollHeight; }
 }
+
+// ---------------------------------------------------------------- network
+/** the link rate this browser measured last time (bytes/s): the worker's estimate until it measures its own */
+function savedNetBw() { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : undefined; } catch { return undefined; } }
+/** The worker's connection figures: the rate kept for the next visit (written when the page goes), the last time the game waited. */
+function noteNet(net) {
+  if (!net) return;
+  if (net.waiting) state.netWaitAt = Date.now();
+  if (net.measured && net.bw > 0) { state.netBw = Math.round(net.bw); if (!state.netSaveHooked) { state.netSaveHooked = true; addEventListener('pagehide', () => { try { localStorage.setItem('orthros.netBw', String(state.netBw)); } catch { /* storage off */ } }); } }
+}
+/** the game waits for the network now (or did within the last 2 s: no flicker between two reads) */
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const netWaiting = (s) => !!s?.net && (s.net.waiting || Date.now() - (state.netWaitAt ?? 0) < 2000);
 
 // ---------------------------------------------------------------- loading screen
 const TIPS = [
@@ -279,6 +293,7 @@ function updateLoader(m) {
   state.speed = state.speed == null ? speed : state.speed * 0.7 + speed * 0.3;
   if (pf !== null) { parts.push([0.45, pf]); set('files', L.pfFinished || pf >= 1 ? 'done' : 'active', `${fmtMB(L.pfMB ?? 0)}${!L.pfFinished && state.speed > 0.05 ? ` · ${state.speed.toFixed(1)} MB/s` : ''}`); }
   else set('files', (m.ioMB ?? 0) > 0 ? 'active' : '', `${fmtMB(m.ioMB ?? 0)} read`);
+  if (m.net && (m.net.bw > 0 || received(m.net) > 0)) set('files', netWaiting(m) ? 'active' : el.querySelector('li[data-k="files"]').className, `${fmtBytes(received(m.net))} received${m.net.bw > 0 ? ` · ${fmtRate(m.net.bw)}` : ''}`);
   // code
   const rg = L.rgTotal ? Math.min(1, L.rgDone / L.rgTotal) : null;
   if (rg !== null) { parts.push([0.15, rg]); set('code', rg >= 1 ? 'done' : 'active', `${Math.round(rg * 100)}%`); } else set('code', 'skip', '');
@@ -294,7 +309,8 @@ function updateLoader(m) {
   state.loadPct = Math.max(state.loadPct, Math.min(99, Math.floor(p * 100)));
   el.querySelector('.fill').style.width = state.loadPct + '%';
   el.querySelector('.pct').textContent = state.loadPct + '%';
-  el.querySelector('.phase').textContent = pf !== null && pf < 1 && !L.pfFinished ? `Downloading the game files — ${fmtMB(L.pfMB ?? 0)}` : rg !== null && rg < 1 ? 'Preparing the game\'s code…' : 'Starting the game…';
+  const nw = netWaiting(m) ? netWaitText({ ...m.net, waiting: true }) : null;
+  el.querySelector('.phase').textContent = nw ? `${nw.title} · ${nw.detail}` : pf !== null && pf < 1 && !L.pfFinished ? `Downloading the game files — ${fmtMB(L.pfMB ?? 0)}` : rg !== null && rg < 1 ? 'Preparing the game\'s code…' : 'Starting the game…';
 }
 function toast(text, ms = 5000) {
   if (headless) return;
@@ -314,7 +330,9 @@ function renderHud() {
   const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
   const busy = $('busy'), paused = !document.hasFocus(), showBusy = state.status === 'running' && $('loader').classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
+  const nw = showBusy && !paused && netWaiting(s) ? netWaitText({ ...s.net, waiting: true }) : null;
   if (showBusy) busy.innerHTML = paused ? `${state.title ?? 'The game'} is paused while its window is inactive <small>click the game to resume</small>`
+    : nw ? `${esc(nw.title)}<br><small>${esc(nw.detail)} · ${Math.round(still)} s</small>`
     : `${state.title ?? 'The game'} is loading…<br><small>${Math.round(still)} s · emulated CPU ${Math.round(s.mips)} MIPS · game files ${fmtMB(s.ioMB ?? 0)}</small>`;
   // background preload still going after the start
   const L = s.load ?? {}, pre = $('tbPreload');
@@ -368,7 +386,7 @@ function recordSample(m) {
   const progs = m.d3d?.programs ?? 0, progMs = m.d3d?.programMs ?? 0, pp = state.lastProg ?? { n: progs, ms: progMs }; state.lastProg = { n: progs, ms: progMs };
   const jitMs = m.jitMs ?? 0, pj = state.lastJitMs ?? jitMs; state.lastJitMs = jitMs;
   // (busy: % of the interval the worker spent running the game; jit: ms spent translating code in the interval)
-  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, busy: m.busy ?? null, jit: jitMs - pj, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible' };
+  const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, busy: m.busy ?? null, jit: jitMs - pj, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible', ...(m.net ? { bw: m.net.bw, nw: m.net.waiting ? 1 : 0, rx: Math.round(received(m.net) / 1048576) } : {}) }; // (bw: measured link bytes/s, nw: the game waits for the network, rx: MB received)
   // frame accounting of the interval (frame-acct.js): mean work and time by category per frame (ms), the slow frames'
   // categories summed and the worst one [ms, work ms, categories] — what made frames slow
   const fa = m.acct; if (fa) { smp.w = fa.w; smp.c = fa.c; if (fa.sc) { smp.sc = fa.sc; smp.wf = fa.wf; } }

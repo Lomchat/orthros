@@ -5,8 +5,11 @@
 import { parseScenario, unsupportedSteps, ScenarioPlayer } from '../scenario.js';
 import { PerfWindow, compactPhase } from '../perf-summary.js';
 import { scanCodeOfVk } from '../../win32/vk-scan.js';
+import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
 
 export const BENCH_DIR = '/tools/scenarios/bench/';
+/** the pointer steps, and the least time between two of them (ms) */
+const INPUT_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']), INPUT_GAP_MS = 300;
 
 /**
  * The bench `name` (tools/scenarios/bench/index.json), its scenario parsed. `manifest`: the version asked for in the
@@ -79,13 +82,23 @@ export class BenchRun {
     const now = (performance.now() - this.t0) / 1000, st = this.state;
     if (st.status === 'exited' || st.status === 'crashed') { this.finish(st.status, st.status === 'crashed' ? 'emulation error' : `the game exited (code ${st.exitCode})`); return; }
     if (now > (this.def.maxSeconds ?? 900)) { const w = this.player.waiting; this.finish('timeout', `not finished after ${this.def.maxSeconds ?? 900} s${w ? `; waiting at step "${w.src}"` : ''}`); return; }
-    for (const a of this.player.tick(now, st.stats)) this.perform(a);
-    if (this.player.done) { this.finish('done', null); return; }
+    // (pointer steps that fell due together — the page's timer late under load — go one per INPUT_GAP_MS: two clicks
+    // delivered in the same instant reach the game as down, down, up, up, and the menu takes neither)
+    (this.pending ??= []).push(...this.player.tick(now, st.stats));
+    while (this.pending.length) {
+      const a = this.pending[0], input = INPUT_KINDS.has(a.kind);
+      if (input && performance.now() - (this.lastInputAt ?? -1e9) < INPUT_GAP_MS) break;
+      this.pending.shift(); this.perform(a);
+      if (input) this.lastInputAt = performance.now();
+    }
+    if (this.player.done && !this.pending.length) { this.finish('done', null); return; }
     if (Math.floor(now) === this.shownAt) return; // (the banner's line once a second)
     this.shownAt = Math.floor(now);
     const [k, n] = this.player.progress, w = this.player.waiting;
     const line = this.el.querySelector('.st');
-    if (line) line.textContent = `${fmtTime(now)} · phase ${this.label} · step ${k}/${n}${w ? ` · waiting for ${w.kind === 'waitfps' ? 'the game to run' : 'the next screen'}` : ''}${st.stats ? ` · ${Math.round(st.stats.fps ?? 0)} fps` : ''}`;
+    // (the game waiting for its files: the banner says so, with the rate — a slow link's results read as such)
+    const net = st.stats?.net, dl = net?.waiting ? ` · downloading game data ${net.bw > 0 ? fmtRate(net.bw) : ''} (${fmtBytes(received(net))} received)` : '';
+    if (line) line.textContent = `${fmtTime(now)} · phase ${this.label} · step ${k}/${n}${w ? ` · waiting for ${w.kind === 'waitfps' ? 'the game to run' : 'the next screen'}` : ''}${dl}${st.stats ? ` · ${Math.round(st.stats.fps ?? 0)} fps` : ''}`;
   }
   perform(a) {
     const { push, EV, typeText } = this.d, [x, y] = a.args;
@@ -107,7 +120,9 @@ export class BenchRun {
   mark(label, at) {
     this.d.postWorker({ type: 'mark', label });
     this.extras.push({ label: this.label, at: this.marks.length ? this.marks[this.marks.length - 1].at : 0, window: this.win.take() });
-    this.marks.push({ label, at: Math.round(at * 10) / 10 });
+    // (what the network had carried by then: the time of a phase on a slow link reads with it)
+    const net = this.state.stats?.net;
+    this.marks.push({ label, at: Math.round(at * 10) / 10, ...(net ? { netBytes: received(net), netDemandMs: Math.round(net.demandMs ?? 0) } : {}) });
     this.label = label;
   }
   async finish(outcome, detail) {
@@ -131,6 +146,7 @@ export class BenchRun {
       seconds: Math.round(seconds), firstLaunch: !!st.firstLaunch, display: st.mode ? `${st.mode.width}x${st.mode.height}` : null,
       options: st.perfOptions ?? null, marks: this.marks, anchors: this.anchors, phases,
       interrupted: { hiddenSeconds: Math.round(this.hiddenSeconds), blurs: this.blurs },
+      network: benchNetwork(st.stats?.net), // (the measured link: bytes/s, round trip, the game's reads and the background downloads)
       env: await this.d.machine().catch(() => null),
     };
     st.benchResult = record;
@@ -147,7 +163,7 @@ export class BenchRun {
     const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
     const e = r.env ?? {};
     el.innerHTML = `<h2>Measurement ${r.outcome === 'done' ? 'complete' : `stopped (${esc(r.outcome)})`} — ${esc(r.title ?? r.bench)}</h2>
-<div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? 'GPU unknown')} · ${e.cores ?? '?'} cores${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · render ${r.options?.renderWorker ? 'worker' : 'in-thread'} · display ${esc(r.display ?? '?')}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\nwarning: the tab was hidden ${r.interrupted.hiddenSeconds} s / lost the focus ${r.interrupted.blurs} time(s): those phases are not representative` : ''}</div>
+<div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? 'GPU unknown')} · ${e.cores ?? '?'} cores${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · render ${r.options?.renderWorker ? 'worker' : 'in-thread'} · display ${esc(r.display ?? '?')}${r.network?.bw ? `\nconnection ${fmtRate(r.network.bw)}${r.network.rtt ? `, round trip ${r.network.rtt} ms` : ''}: ${fmtBytes(r.network.demandBytes + r.network.bgBytes)} received (game reads ${fmtBytes(r.network.demandBytes)}, background ${fmtBytes(r.network.bgBytes)})` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\nwarning: the tab was hidden ${r.interrupted.hiddenSeconds} s / lost the focus ${r.interrupted.blurs} time(s): those phases are not representative` : ''}</div>
 <table><tr><th>phase</th><th>time</th><th>fps</th><th>frame ms p50 / p90 / p99</th><th>&gt;33 ms /min</th><th>&gt;50</th><th>&gt;100</th><th>GPU ms p50 / p99</th><th>draws /frame</th><th>mean frame (ms)</th></tr>${rows}</table>
 <div class="m">${r.sent ? 'The results were sent to the server. Thank you!' : 'The results could not be sent (telemetry is off on this server): use "Copy the results".'}</div>
 <button id="benchCopy">Copy the results</button><button class="quiet" id="benchClose">Close</button>`;

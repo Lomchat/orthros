@@ -122,8 +122,9 @@ test('server: the learned list carries the pieces sessions read in each block', 
     const byKey = Object.fromEntries(list.map(([p, b, m]) => [`${p}#${b}`, m]));
     assert.equal(byKey['a.big#1'], 0b1101001, 'pieces 0, 3 (session 1), 5 and 6 (session 2)');
     assert.equal(byKey['a.big#0'], 0b11);
-    assert.equal(byKey['a.big#2'], undefined, 'no mask learned yet');
-    assert.equal(list.find(([p, b]) => b === 2).length, 2);
+    assert.equal(byKey['a.big#2'], 0, 'no mask learned yet (0: unknown)');
+    const e2 = list.find(([p, b]) => b === 2);
+    assert.equal(e2.length, 4); assert.ok(Number.isInteger(e2[3]) && e2[3] >= 0, 'the time it was first needed (ms)');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
