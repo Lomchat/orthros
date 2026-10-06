@@ -19,7 +19,10 @@ node bin/orthros.mjs cli <dossier-du-jeu>            # exécution Node sans rend
 (installateurs, désinstalleurs, lanceurs et outils écartés ; nom proche de celui du dossier, puis le plus gros). Un
 `manifest.json` dans le dossier, ou `--exe` / `--args`, imposent un autre choix. Le navigateur garde les fichiers du jeu
 lus une fois dans son stockage privé (OPFS) : les lancements suivants ne les retéléchargent pas. L'option « Copie hors ligne »
-des paramètres du menu (bouton ⚙, onglet Général, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau.
+des paramètres du menu (bouton ⚙, onglet Général, ou `?offline=1`) télécharge tout le dossier en arrière-plan pour ne plus rien lire sur le réseau ;
+le bouton « Télécharger d'abord » de chaque jeu de l'accueil télécharge tout le jeu avant de jouer (taille, débit mesuré, temps
+restant, reprise à la visite suivante). Sur une connexion lente, les lectures du jeu passent avant tout téléchargement
+d'arrière-plan, et la page affiche le débit mesuré et le temps estimé de l'étape en cours (docs/slow-network.md).
 
 Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
@@ -90,6 +93,10 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
   `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
   (machine, version, mode de rendu, résumés de 20 s : percentiles, images lentes, draws et appels GL par image, temps
   GPU par image quand le navigateur le mesure, attentes du worker de rendu ; mesures `bench` et leur comparaison).
+- Réseau lent (docs/slow-network.md) : `--net <ms>:<Mbit/s>` simule le lien d'un joueur (85 Ko/s : `50:0.68`, 1 Mo/s :
+  `50:8`, 5 Mo/s : `50:40`), `--net-trace <fichier>` journalise chaque plage servie ; validation standard d'un lien fin :
+  `node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m --learn-from <copie du dossier
+  learn du serveur> --games-dir /srv/orthros/data_games` (profil neuf, temps des phases, octets demandés / d'arrière-plan).
 - Mesures sur une vraie machine (docs/real-machine-bench.md) : ouvrir un lien de mesure dans Chrome, cliquer « Start
   the measurement », ne plus toucher la souris ni le clavier jusqu'au résumé ; les résultats partent dans la télémétrie
   du serveur. BFME II : <https://orthros.chalco.website/?bench=bfme2-skirmish> (1.06 : ajouter `&manifest=bfme2-106`),

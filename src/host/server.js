@@ -465,7 +465,7 @@ export function createServer(opts = {}) {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
       let finished = false;
-      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       if (encoding) h['Content-Encoding'] = encoding;

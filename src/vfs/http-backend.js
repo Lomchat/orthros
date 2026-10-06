@@ -14,6 +14,8 @@ export const CHUNK = 1 << 16;
 const MAX_CHUNK_BYTES = 64 << 20;
 /** sequential bytes after which a file is being read whole (whole blocks ahead) rather than streamed */
 const STREAM_BYTES = 1 << 20;
+/** sequential bytes and reads after which a file is a stream for the learned prefetch (see doneWith) */
+const STREAM_SKIP = 256 << 10, STREAM_READS = 16;
 /** at most this many bytes fetched ahead of a stream's read while the game waits (the rest comes in the background) */
 const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched behind them replace them)
 /**
@@ -110,6 +112,8 @@ export class HttpBackend {
     this.learned = null;
     /** open handles of the game per file: a file opened then closed again is done with for now (see doneWith) */
     this.opened = new Map();
+    /** files the game reads as a stream (in sequence, past STREAM_SKIP bytes): fetched ahead of their reader only */
+    this.streams = new Set();
   }
 
   /** Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. */
@@ -354,9 +358,12 @@ export class HttpBackend {
   }
   /**
    * The game opened `path` in this session and holds no handle on it now: what earlier sessions read further in it is
-   * not fetched ahead (a movie skipped, a file parsed then closed) until the game opens it again.
+   * not fetched ahead (a movie skipped, a file parsed then closed) until the game opens it again. Nor, on a link that is
+   * not fast, a file the game reads as a stream (a movie, music): its next bytes come ahead of its reader (readAhead),
+   * and not at all once the game stops reading it — earlier sessions that played a movie through read all of it, this
+   * one may skip it.
    */
-  doneWith(path) { return this.opened.get(path) === 0; }
+  doneWith(path) { return this.opened.get(path) === 0 || (this.streams.has(path) && !this.net.fast()); }
   /** A handle of the game on `path` closed: when it was the last one, the background requests for the file go away. */
   noteClose(path) {
     const n = (this.opened.get(path) ?? 1) - 1;
@@ -793,6 +800,7 @@ export class HttpBackend {
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
         if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
+        if (this.net.thin()) { this.want.clear(); this.near.clear(); break; } // (queued before the link was measured thin)
         if (!this.net.fast()) {
           // (a link that is not fast: the block's missing pieces, a background request of the link's size at a time —
           // what came is kept whatever happens next, and the block is installed whole once all its pieces are here)
@@ -938,6 +946,11 @@ class HttpFile {
     // bytes read in sequence so far: a bulk read (loading a file whole) fetches whole blocks ahead synchronously; a
     // stream read a little at a time (audio, video while playing) goes by pieces, its next blocks in the background
     this.run = sequential ? this.run + (end - off) : 0;
+    // (a stream: many reads in sequence — a movie, music; an archive entry loaded in one go is not, and a read elsewhere
+    // in the file ends it)
+    this.runReads = sequential ? (this.runReads ?? 0) + 1 : 0;
+    if (this.run >= STREAM_SKIP && this.runReads >= STREAM_READS) this.b.streams.add(this.path);
+    else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
     while (pos < end) {
