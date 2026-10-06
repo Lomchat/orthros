@@ -47,7 +47,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 /**
  * One bench run in this page. `deps`: the page's pieces — state (window.orthros), push / EV / typeText (input ring),
  * postWorker, sendRecord(record) → Promise<boolean> (telemetry; false: not sent), machine() → Promise<object>,
- * headless (no banner interaction: starts at once).
+ * headless (no banner interaction: starts at once), capture() (the mouse captured: the summary closed to play).
  */
 export class BenchRun {
   constructor(def, deps) {
@@ -169,9 +169,11 @@ export class BenchRun {
 <div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? 'GPU unknown')} · ${e.cores ?? '?'} cores${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · render ${r.options?.renderWorker ? 'worker' : 'in-thread'} · display ${esc(r.display ?? '?')}${r.network?.bw ? `\nconnection ${fmtRate(r.network.bw)}${r.network.rtt ? `, round trip ${r.network.rtt} ms` : ''}: ${fmtBytes(r.network.demandBytes + r.network.bgBytes)} received (game reads ${fmtBytes(r.network.demandBytes)}, background ${fmtBytes(r.network.bgBytes)})` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\nwarning: the tab was hidden ${r.interrupted.hiddenSeconds} s / lost the focus ${r.interrupted.blurs} time(s): those phases are not representative` : ''}</div>
 <table><tr><th>phase</th><th>time</th><th>fps</th><th>frame ms p50 / p90 / p99</th><th>&gt;33 ms /min</th><th>&gt;50</th><th>&gt;100</th><th>GPU ms p50 / p99</th><th>draws /frame</th><th>mean frame (ms)</th></tr>${rows}</table>
 <div class="m">${r.sent ? 'The results were sent to the server. Thank you!' : 'The results could not be sent (telemetry is off on this server): use "Copy the results".'}</div>
-<button id="benchCopy">Copy the results</button><button class="quiet" id="benchClose">Close</button>`;
+<div class="m">The game is yours now: click it to capture the mouse, Escape releases it.</div>
+<button id="benchCopy">Copy the results</button><button class="quiet" id="benchClose">Close and play</button>`;
     document.body.appendChild(el);
     el.querySelector('#benchCopy').onclick = async (ev) => { try { await navigator.clipboard.writeText(JSON.stringify(r, null, 1)); ev.target.textContent = 'Copied'; } catch { ev.target.textContent = 'Copy failed'; } };
-    el.querySelector('#benchClose').onclick = () => el.remove();
+    // (the game is the player's from here: closing the summary captures the mouse, as a click in the game does)
+    el.querySelector('#benchClose').onclick = () => { el.remove(); this.d.capture?.(); };
   }
 }

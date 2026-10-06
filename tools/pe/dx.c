@@ -107,7 +107,7 @@ void __stdcall start(void) {
   line(out, "kbstate", C2(kb, 9, 256, keys), 1);
   line(out, "key_a", keys[0x1e], 1);
   void* ms = 0; line(out, "msdev", C3(di, 3, &GUID_SysMouse, &ms, 0), 1);
-  DIDATAFORMAT mfmt = { 24, 16, 1, 16, 7, 0 };
+  DIDATAFORMAT mfmt = { 24, 16, 2, 16, 7, 0 }; // (DIDF_RELAXIS, as c_dfDIMouse)
   line(out, "msformat", C1(ms, 11, &mfmt), 1);
   DIPROPDWORD bs = { { 20, 16, 0, 0 }, 16 };
   line(out, "msbuffer", C2(ms, 6, 1, &bs), 1);

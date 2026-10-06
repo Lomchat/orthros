@@ -29,7 +29,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | blur | focus (window focus loss / return). Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -46,11 +46,12 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // from Windows; --dbg ORTHROS_SEH_LOG_MAX=<n> lifts the 80-line cap of --log seh; --log sync names the named kernel
 // objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
 let afterWait = false;
+let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
 // --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
 const inputText = opt('input-file') ? fs.readFileSync(opt('input-file'), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).map((l) => l.trim()).join(';') : opt('input', '') || '';
-const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -467,7 +468,7 @@ for (;;) {
       for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
         if (line === 'quit') { control.quit = true; continue; }
         const [kind, ...rest] = line.split(':'); const a = rest.join(':');
-        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [a] : a ? a.split(',').map(Number) : [], done: false });
       }
     }
     if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
@@ -535,6 +536,35 @@ for (;;) {
       await page.evaluate(({ b, x, y }) => { const { push, EV } = window.orthrosInput; push(EV.MOUSEUP, b, x, y); }, { b, x: ev.args[0], y: ev.args[1] });
       continue;
     }
+    // look:dx,dy[,n[,ms]] — a captured mouse (pointer lock) moved n times by dx,dy (CSS pixels, movementX/Y), ms apart
+    // (default 1 time; 16 ms): the page's captured-pointer path (pointer.js), as a person turning a mouse-look camera.
+    // (A page without pointer.js: its former captured path — a virtual cursor clamped to the screen, the motion beside.)
+    if (ev.kind === 'look') {
+      const [dx, dy, n = 1, ms = 16] = ev.args;
+      for (let i = 0; i < n; i++) {
+        await page.evaluate(({ dx, dy }) => {
+          const o = window.orthros, inp = window.orthrosInput;
+          if (inp.pointer) { inp.pointer.lockedMove(dx, dy, o.scale || 1); return; }
+          const { width: w, height: h } = o.mode;
+          o.vx = Math.max(0, Math.min(w - 1, (o.vx ?? w / 2) + dx)); o.vy = Math.max(0, Math.min(h - 1, (o.vy ?? h / 2) + dy));
+          inp.push(inp.EV.MOUSEMOVE, Math.round(o.vx), Math.round(o.vy), ((dy & 0xffff) << 16) | (dx & 0xffff));
+        }, { dx, dy });
+        if (i + 1 < n) await page.waitForTimeout(ms);
+      }
+      continue;
+    }
+    // The browser's own events (Playwright's mouse: trusted, as a person's — with --ui the page captures the mouse on a
+    // click): uiclick:<CSS selector> clicks a page element; pageclick:x,y clicks the game at screen pixel x,y;
+    // pagemove:dx,dy[,n] moves the mouse n times by dx,dy CSS pixels; lockstate logs the capture and the drawn cursor.
+    if (ev.kind === 'uiclick') { await page.locator(String(ev.args[0])).click({ timeout: 5000 }).then(() => console.log(`[ui] clicked ${ev.args[0]}`), (e) => console.log(`[ui] no ${ev.args[0]}: ${e.message.split('\n')[0]}`)); continue; }
+    if (ev.kind === 'pageclick' || ev.kind === 'pagemove') {
+      const box = await page.locator('#c2d').boundingBox(), sc = await page.evaluate(() => window.orthros.scale || 1);
+      if (ev.kind === 'pageclick') { const [x, y] = [box.x + ev.args[0] * sc, box.y + ev.args[1] * sc]; await page.mouse.move(x, y); await page.mouse.down(); await page.waitForTimeout(100); await page.mouse.up(); pagePointer = { x, y }; }
+      else { const [dx, dy, n = 1] = ev.args; pagePointer ??= { x: box.x + box.width / 2, y: box.y + box.height / 2 }; for (let i = 0; i < n; i++) { pagePointer.x += dx; pagePointer.y += dy; await page.mouse.move(pagePointer.x, pagePointer.y); await page.waitForTimeout(16); } }
+      continue;
+    }
+    if (ev.kind === 'unlock') { await page.evaluate(() => document.exitPointerLock()); continue; } // (the capture released, as Escape does)
+    if (ev.kind === 'lockstate') { console.log(`[ui] ${await page.evaluate(() => `pointer lock ${document.pointerLockElement ? document.pointerLockElement.id : 'none'}, bench ${window.orthros.benchActive ? 'running' : 'off'}, drawn cursor ${window.orthros.pointer?.vx},${window.orthros.pointer?.vy}`)}`); continue; }
     // a key press likewise: held ~100 ms, with the physical key's scan code (DirectInput sees scan codes only)
     if (ev.kind === 'key') {
       const vk = ev.args[0], scan = ev.args[1] || scanCodeOfVk(vk);
@@ -576,7 +606,8 @@ for (;;) {
   }
   if (nDumps) console.log(`[capture] ${nDumps} image(s) saved to ${path.join(out, 'capture')}`);
   if (t - lastShot >= shotEvery) { lastShot = t; const f = path.join(out, `${name}-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); try { await page.locator('#frame').screenshot({ path: f, timeout: 10000 }); console.log(`[shot] ${f}`); } catch (e) { console.log(`[shot] failed: ${e.message.split('\n')[0]}`); } }
-  if (bench) { // (the page's bench finished: its record, the summary panel's screenshot)
+  if (bench && !benchDone) { // (the page's bench finished: its record, the summary panel's screenshot; the run ends there unless
+    // --input steps remain — the player's own play after a bench)
     const r = await page.evaluate(() => (window.orthros.benchResult ? { record: window.orthros.benchResult, sent: window.orthros.benchSent } : null)).catch(() => null);
     if (r && r.sent !== undefined) {
       console.log(`[bench] ${r.record.outcome}${r.record.detail ? ` (${r.record.detail})` : ''} after ${r.record.seconds} s, record ${r.sent ? 'sent' : 'not sent'}`);
@@ -588,7 +619,8 @@ for (;;) {
       await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })).catch(() => {}); await page.waitForTimeout(500);
       const rep = await page.evaluate(() => window.orthros.report).catch(() => null); if (rep) console.log(rep.split('\n').filter((l) => /^\[report\] (connection|game files)/.test(l)).join('\n'));
       const f = path.join(out, `${name}-bench.png`); await page.screenshot({ path: f }).then(() => console.log(`[shot] ${f}`), () => {});
-      break;
+      benchDone = true;
+      if (inputs.every((e) => e.done)) break;
     }
   }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }

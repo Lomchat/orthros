@@ -9,7 +9,28 @@ import { encodePng } from '../gfx/codecs/png.js';
 
 export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
-export const EV = { MOUSEMOVE: 1, MOUSEDOWN: 2, MOUSEUP: 3, WHEEL: 4, KEYDOWN: 5, KEYUP: 6, CHAR: 7, FOCUS: 8 };
+// (MOUSEREL: a captured mouse's motion — a, b the device counts (movementX/Y), c the cursor's motion in screen pixels
+// packed as two int16 (y high), the type word's bits 8+ the page's sequence number of the move. A button event's `a`
+// with BUTTON_AT_CURSOR: pressed where the guest cursor is — the captured mouse's position is the guest's)
+export const EV = { MOUSEMOVE: 1, MOUSEDOWN: 2, MOUSEUP: 3, WHEEL: 4, KEYDOWN: 5, KEYUP: 6, CHAR: 7, FOCUS: 8, MOUSEREL: 9 };
+export const BUTTON_AT_CURSOR = 0x100;
+/**
+ * One input ring entry as the window manager's event (user32.js inputEvent), or null.
+ * @param {number} word the type word (type in bits 0-7, a sequence number above)
+ */
+export function decodeInput(word, a, b, c) {
+  switch (word & 0xff) {
+    case EV.MOUSEMOVE: return { type: 'mousemove', x: a, y: b, dx: (c << 16) >> 16, dy: c >> 16 };
+    case EV.MOUSEREL: return { type: 'mousemove', rel: true, dx: a, dy: b, gdx: (c << 16) >> 16, gdy: c >> 16, seq: word >>> 8 };
+    case EV.MOUSEDOWN: case EV.MOUSEUP: { const ev = { type: (word & 0xff) === EV.MOUSEDOWN ? 'mousedown' : 'mouseup', button: a & 0xff, x: b, y: c }; if (a & BUTTON_AT_CURSOR) ev.rel = true; return ev; }
+    case EV.WHEEL: return { type: 'wheel', delta: a / 120, x: b, y: c };
+    case EV.KEYDOWN: return { type: 'keydown', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0, repeat: c };
+    case EV.KEYUP: return { type: 'keyup', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0 };
+    case EV.CHAR: return { type: 'char', code: a };
+    case EV.FOCUS: return { type: 'focus', focused: a !== 0 };
+  }
+  return null;
+}
 export const AUDIO_RING_FRAMES = 16384; // stereo frames
 export const AUDIO_RATE = 44100;
 
@@ -193,18 +214,12 @@ export class BrowserHost {
     let tail = Atomics.load(ctl, CTL.IN_TAIL);
     while (tail !== head) {
       const i = (tail % (IN_RING / 4)) * 4;
-      const type = ring[i], a = ring[i + 1], b = ring[i + 2], c = ring[i + 3];
+      const word = ring[i], ev = decodeInput(word, ring[i + 1], ring[i + 2], ring[i + 3]);
       tail = (tail + 1) | 0;
-      switch (type) {
-        case EV.MOUSEMOVE: this.inputQueue.push({ type: 'mousemove', x: a, y: b, dx: (c << 16) >> 16, dy: c >> 16 }); break;
-        case EV.MOUSEDOWN: this.inputQueue.push({ type: 'mousedown', button: a, x: b, y: c }); this.onUserInput?.(false); break;
-        case EV.MOUSEUP: this.inputQueue.push({ type: 'mouseup', button: a, x: b, y: c }); break;
-        case EV.WHEEL: this.inputQueue.push({ type: 'wheel', delta: a / 120, x: b, y: c }); break;
-        case EV.KEYDOWN: this.inputQueue.push({ type: 'keydown', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0, repeat: c }); break;
-        case EV.KEYUP: this.inputQueue.push({ type: 'keyup', vk: a, scan: b & 0xff, extended: (b & 0x100) !== 0 }); break;
-        case EV.CHAR: this.inputQueue.push({ type: 'char', code: a }); if (a >= 0x20) this.onUserInput?.(true); break;
-        case EV.FOCUS: this.inputQueue.push({ type: 'focus', focused: a !== 0 }); break;
-      }
+      if (!ev) continue;
+      this.inputQueue.push(ev);
+      if (ev.type === 'mousedown') this.onUserInput?.(false);
+      else if (ev.type === 'char' && ev.code >= 0x20) this.onUserInput?.(true);
     }
     Atomics.store(ctl, CTL.IN_TAIL, tail);
   }
@@ -226,6 +241,8 @@ export class BrowserHost {
     this.pump();
   }
   pollInput() { this.pump(); return this.inputQueue.length ? this.inputQueue.splice(0) : null; }
+  /** The guest cursor moved (SetCursorPos, ClipCursor, the input up to the page's move `seq`): the page's captured cursor follows. */
+  cursorPos(x, y, seq) { this.post({ type: 'cursor-pos', x, y, seq }); }
   onExit(code) { this.exitCode = code; } // (the worker posts the exit, with the failure report)
   /** Frame-time percentiles over the frames presented after `fromMs` (performance.now() based). */
   frameStats(fromMs = 0) {

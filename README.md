@@ -24,6 +24,13 @@ le bouton « Télécharger d'abord » de chaque jeu de l'accueil télécharge to
 restant, reprise à la visite suivante). Sur une connexion lente, les lectures du jeu passent avant tout téléchargement
 d'arrière-plan, et la page affiche le débit mesuré et le temps estimé de l'étape en cours (docs/slow-network.md).
 
+Souris, la même pour tous les jeux : un clic dans le jeu la capture (verrouillage du pointeur ; Échap la libère, un
+nouveau clic la reprend, aussi après une perte de focus ou la fin d'une mesure `?bench=`). Capturée, seuls ses
+mouvements relatifs existent : DirectInput les reçoit sans bornage (caméras à la souris), le curseur du jeu part de sa
+position à lui (un `SetCursorPos` de recentrage compris) et s'arrête aux bords de l'écran et du rectangle `ClipCursor`
+(défilement par les bords) ; la page le dessine. Libre, le pointeur ne transmet de mouvement que tant qu'il reste
+sur le jeu (src/host/web/pointer.js).
+
 Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
 pour ajouter un jeu, il suffit d'ajouter son dossier et de recharger la page. Le contrat du manifeste est décrit dans
