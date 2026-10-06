@@ -60,6 +60,8 @@ const casesOf = (img, mips = mipsOf(img)) => [
   // D3DXFilterTexture as the handler runs it (the whole chain at once where the tree has mipChain)
   ['filter DXT1 256 (RGBA kept)', () => img.mipChain?.(FMT.DXT1, T256, 256, 256, chain(256, 256)) ?? mips(FMT.DXT1, T256, 256, 256)],
   ['filter A1R5G5B5 256 (decoded)', () => img.mipChain?.(FMT.A1R5G5B5, A1_256, 256, 256, chain(256, 256), FMT.A1R5G5B5) ?? mips(FMT.A1R5G5B5, img.toRgba(FMT.A1R5G5B5, A1_256, 256, 256), 256, 256)],
+  // D3DXCreateTextureFromFileInMemoryEx: a DDS level converted to the texture's (smaller) size
+  ['convert DXT5 256 -> 128', () => img.mipChain?.(FMT.DXT5, DXT5_256, 256, 256, [[128, 128]], FMT.DXT5)?.[0] ?? img.fromRgba(FMT.DXT5, img.resizeRgba(img.toRgba(FMT.DXT5, DXT5_256, 256, 256), 256, 256, 128, 128), 128, 128)],
   // ... from a compressed level (no RGBA kept)
   ['decode DXT1 256', () => (img.toRgba(FMT.DXT1, DXT1_256, 256, 256))],
   ['decode DXT5 256', () => (img.toRgba(FMT.DXT5, DXT5_256, 256, 256))],

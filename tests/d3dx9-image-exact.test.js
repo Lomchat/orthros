@@ -167,7 +167,18 @@ test('mipChain (D3DXFilterTexture\'s levels at once): the base\'s resize + encod
     assert.equal(got.length, want.length);
     got.forEach((g, i) => assert.deepEqual(g, want[i], `raw ${fmt} ${w}x${h} level ${i}`));
   }
-  assert.equal(cur.mipChain(FMT.DXT1, new Uint8Array(8), 4, 4, [[2, 2]], FMT.DXT1), null, 'a DXT source is decoded by the caller');
+  // DXT sources (decoded by the kernels), into DXT and other formats, to smaller, equal and larger sizes (D3DX's level
+  // conversions: one target level, any size)
+  for (const srcFmt of [FMT.DXT1, FMT.DXT3, FMT.DXT5]) for (const [w, h] of [[64, 64], [20, 12], [1, 1], [4, 2]]) {
+    const raw = base.fromRgba(srcFmt, image(r, w, h, w + srcFmt), w, h);
+    for (const fmt of [srcFmt, FMT.DXT1, FMT.A8R8G8B8, FMT.A4R4G4B4]) for (const sz of [chainSizes(w, h), [[w, h]], [[w * 2, h + 3]], [[Math.max(1, w >> 1), Math.max(1, h >> 1)]]]) {
+      if (!sz.length) continue;
+      let from = base.toRgba(srcFmt, raw, w, h), fw = w, fh = h;
+      const got = cur.mipChain(fmt, raw, w, h, sz, srcFmt);
+      sz.forEach(([lw, lh], i) => { from = base.resizeRgba(from, fw, fh, lw, lh); fw = lw; fh = lh; assert.deepEqual(got[i], base.fromRgba(fmt, from, lw, lh), `DXT source ${srcFmt} ${w}x${h} -> ${fmt} level ${i} ${lw}x${lh}`); });
+    }
+  }
+  assert.equal(cur.mipChain(FMT.DXT1, new Uint8Array(4), 4, 4, [[2, 2]], FMT.DXT1), null, 'blocks missing: the caller decodes');
 });
 
 // ---- image information (D3DXGetImageInfoFromFile*): the header-only TGA / BMP paths against the full parse

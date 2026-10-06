@@ -106,6 +106,8 @@ export function registerD3DX9(api, vm) {
     const src = im.images[f][Math.min(i, im.mips - 1)];
     const sw = Math.max(1, im.width >> Math.min(i, im.mips - 1)), sh = Math.max(1, im.height >> Math.min(i, im.mips - 1)), sd = Math.max(1, im.depth >> Math.min(i, im.mips - 1));
     if (i < im.mips && sw === w && sh === h && sd === d && fmt === im.fmt && !colorKey) return src;
+    // (a 2D level with the box filter: decoded, resized and encoded in the kernels' memory — the loop's bytes)
+    if (d === 1 && sd === 1 && !colorKey && (filter & 0xff) !== FILTER_POINT && mipChainReady(fmt)) { const r = mipChain(fmt, src, sw, sh, [[w, h]], im.fmt); if (r) return r[0]; }
     // through RGBA8 (slice by slice for volumes)
     const out = new Uint8Array(surfaceBytes(fmt, w, h) * d);
     for (let z = 0; z < d; z++) {
@@ -154,7 +156,11 @@ export function registerD3DX9(api, vm) {
           const tg = tp ? performance.now() : 0;
           const prevW = Math.max(1, w >> (i - 1)), prevH = Math.max(1, h >> (i - 1));
           const prev = kind === 'volume' ? null : kind === 'cube' ? t.faces[f][i - 1] : t.levels[i - 1];
-          if (prev && prev.mem) data = fromRgba(fmt, resizeRgba(toRgba(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH), prevW, prevH, lw, lh, (o.mipFilter & 0xff) === FILTER_POINT), lw, lh);
+          if (prev && prev.mem) {
+            // (from the previous level's data as written: decoded, resized, encoded — in the kernels' memory for a box filter)
+            const kernels = (o.mipFilter & 0xff) !== FILTER_POINT && mipChainReady(fmt) ? mipChain(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH, [[lw, lh]], fmt) : null;
+            data = kernels ? kernels[0] : fromRgba(fmt, resizeRgba(toRgba(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH), prevW, prevH, lw, lh, (o.mipFilter & 0xff) === FILTER_POINT), lw, lh);
+          }
           else data = levelData(im, srcFace, Math.min(i, im.mips - 1), fmt, lw, lh, ld, o.filter, o.colorKey);
           if (tg) prof(`CreateTexture level generated fmt ${fmt}`, tg);
         }

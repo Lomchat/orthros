@@ -496,23 +496,26 @@ function wasmHalve(src, dw, dh) {
  * ([w, h] pairs, in order) resized from the previous level's RGBA and encoded in `fmt` — the bytes of resizeRgba and
  * fromRgba level after level. The images stay in the kernels' memory (one copy in, the encoded levels copied out
  * together); large DXT levels still go to the parallel encoder. `srcFmt`: `from` is the source level's own data in
- * that format (a 16-bit format of FMT16, A8R8G8B8 or X8R8G8B8: unpacked there, as toRgba would) rather than RGBA8.
+ * that format (DXT1-5, a 16-bit format of FMT16, A8R8G8B8 or X8R8G8B8: decoded there, as toRgba would) rather than RGBA8.
  * Null when the kernels cannot do it (no WebAssembly, a format without a kernel): the caller goes level by level.
  */
 export const mipChainReady = (fmt) => (isDxt(fmt) || !!FMT16[fmt] || fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && !!localWasm();
 export function mipChain(fmt, from, w, h, sizes, srcFmt = null) {
   const dxt = isDxt(fmt), k16 = !!FMT16[fmt], k32 = fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8;
-  const srcBpp = srcFmt === null ? 4 : FMT16[srcFmt] ? 2 : srcFmt === FMT.A8R8G8B8 || srcFmt === FMT.X8R8G8B8 ? 4 : 0;
-  if (!(dxt || k16 || k32) || !srcBpp || !sizes.length || from.length < w * h * srcBpp) return null;
+  const srcDxt = srcFmt !== null && isDxt(srcFmt);
+  const srcBytes = srcFmt === null ? w * h * 4 : srcDxt ? dxtBytes(srcFmt, w, h) : FMT16[srcFmt] ? w * h * 2 : srcFmt === FMT.A8R8G8B8 || srcFmt === FMT.X8R8G8B8 ? w * h * 4 : 0;
+  if (!(dxt || k16 || k32) || !srcBytes || !sizes.length || from.length < srcBytes) return null;
   const wl = localWasm(); if (!wl) return null;
-  const encBytes = sizes.map(([lw, lh]) => surfaceBytes(fmt, lw, lh)), region = (w * h * 4 + 15) & ~15;
+  const encBytes = sizes.map(([lw, lh]) => surfaceBytes(fmt, lw, lh));
+  const region = (Math.max(srcBytes, w * h * 4, ...sizes.map(([lw, lh]) => lw * lh * 4)) + 15) & ~15; // (levels may be larger than the source)
   const total = encBytes.reduce((a, b) => a + b, 0);
   let [m] = wasmRoom(wl, 2 * region, total);
   const A = WASM_IN, B = WASM_IN + region, OUT = WASM_IN + 2 * region;
   if (srcFmt === null) m.set(from.subarray(0, w * h * 4), A);
-  else { // (the source level's data unpacked into A, through B)
-    m.set(from.subarray(0, w * h * srcBpp), B);
-    if (srcBpp === 2) wl.exports[`unpack${srcFmt}`](B, w * 2, A, w, h);
+  else { // (the source level's data decoded / unpacked into A, through B)
+    m.set(from.subarray(0, srcBytes), B);
+    if (srcDxt) wl.exports.decodeDxt(dxtKind(srcFmt), B, w, h, A, 0);
+    else if (FMT16[srcFmt]) wl.exports[`unpack${srcFmt}`](B, w * 2, A, w, h);
     else wl.exports.swizzle(B, w * 4, A, w, h, srcFmt === FMT.X8R8G8B8 ? 0xff000000 | 0 : 0);
   }
   let cur = A, nxt = B, cw = w, ch = h, o = OUT;
