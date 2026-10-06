@@ -8,6 +8,8 @@ import { scanCodeOfVk } from '../../win32/vk-scan.js';
 import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
 
 export const BENCH_DIR = '/tools/scenarios/bench/';
+/** the pointer steps, and the least time between two of them (ms) */
+const INPUT_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']), INPUT_GAP_MS = 300;
 
 /**
  * The bench `name` (tools/scenarios/bench/index.json), its scenario parsed. `manifest`: the version asked for in the
@@ -80,8 +82,16 @@ export class BenchRun {
     const now = (performance.now() - this.t0) / 1000, st = this.state;
     if (st.status === 'exited' || st.status === 'crashed') { this.finish(st.status, st.status === 'crashed' ? 'emulation error' : `the game exited (code ${st.exitCode})`); return; }
     if (now > (this.def.maxSeconds ?? 900)) { const w = this.player.waiting; this.finish('timeout', `not finished after ${this.def.maxSeconds ?? 900} s${w ? `; waiting at step "${w.src}"` : ''}`); return; }
-    for (const a of this.player.tick(now, st.stats)) this.perform(a);
-    if (this.player.done) { this.finish('done', null); return; }
+    // (pointer steps that fell due together — the page's timer late under load — go one per INPUT_GAP_MS: two clicks
+    // delivered in the same instant reach the game as down, down, up, up, and the menu takes neither)
+    (this.pending ??= []).push(...this.player.tick(now, st.stats));
+    while (this.pending.length) {
+      const a = this.pending[0], input = INPUT_KINDS.has(a.kind);
+      if (input && performance.now() - (this.lastInputAt ?? -1e9) < INPUT_GAP_MS) break;
+      this.pending.shift(); this.perform(a);
+      if (input) this.lastInputAt = performance.now();
+    }
+    if (this.player.done && !this.pending.length) { this.finish('done', null); return; }
     if (Math.floor(now) === this.shownAt) return; // (the banner's line once a second)
     this.shownAt = Math.floor(now);
     const [k, n] = this.player.progress, w = this.player.waiting;
