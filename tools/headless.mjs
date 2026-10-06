@@ -57,6 +57,8 @@ if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-fold
 fs.mkdirSync(out, { recursive: true });
 
 // --net <ms>:<Mbit/s>: game file range requests answered after that round trip and transfer rate (a player's connection)
+// (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/slow-net-check.mjs runs a bench at such speeds);
+// --net-trace <file>: one line per compressed range answered (start s, duration s, demand/bg, file, range, bytes)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
 // --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
 // programs compiled ahead; --memprefetch: the page prefetches
@@ -71,7 +73,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
 // plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record
 if (opt('telemetry')) fs.mkdirSync(opt('telemetry'), { recursive: true });
-const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
+const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -167,9 +169,20 @@ async function saveProfile() {
     console.log(`[profile] ${files.length} file(s) saved to ${profileDir}`);
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
 }
+if (args.includes('--ui')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file)
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
+/** The server's transport totals: compressed ranges, the game's own reads (demand) and the background downloads apart. */
+async function printNetStats() {
+  try {
+    const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json();
+    if (!ns.requests) return;
+    const MB = (n) => (n / 1048576).toFixed(1);
+    console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`);
+    if (ns.demand) console.log(`[net] demand ${ns.demand.requests} requests ${MB(ns.demand.sent)} MB (mean ${(ns.demand.ms / Math.max(1, ns.demand.requests)).toFixed(0)} ms); background ${ns.bg.requests} requests ${MB(ns.bg.sent)} MB delivered, ${ns.bg.aborted} aborted`);
+  } catch { /* no stats */ }
+}
 let lastShot = 0, shot = 0, hangDumped = false;
 /**
  * The worker stopped posting stats: pause its JS thread through the browser-level CDP session
@@ -507,6 +520,8 @@ for (;;) {
       const ticks = workerThreadTicks(), frames = s.stats?.frames ?? 0;
       if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
       markState = { ticks, frames, t, label: ev.args[0] };
+      // (what the network had carried by then: time to a phase on a simulated link reads with it)
+      try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB)`); } catch { /* no stats */ }
       await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
       continue;
     }
@@ -566,7 +581,12 @@ for (;;) {
     if (r && r.sent !== undefined) {
       console.log(`[bench] ${r.record.outcome}${r.record.detail ? ` (${r.record.detail})` : ''} after ${r.record.seconds} s, record ${r.sent ? 'sent' : 'not sent'}`);
       for (const p of r.record.phases) console.log(`[bench] phase ${p.label}: ${p.seconds} s ${p.fps} fps, frame ms p50 ${p.dt?.p50} p90 ${p.dt?.p90} p99 ${p.dt?.p99}, >33 ms ${p.per33}/min, >50 ${p.per50}/min, >100 ${p.per100}/min, draws/frame ${p.drawsPerFrame}, gpu ${p.gpu?.state ?? '-'}${p.gpu?.frames ? ` p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : ''}, GL calls/frame ${p.glCalls?.perFrame ?? p.glCalls?.state ?? '-'}`);
+      if (r.record.marks) console.log(`[bench] marks: ${r.record.marks.map((m) => `${m.label}@${m.at}s${m.netBytes !== undefined ? ` (${(m.netBytes / 1048576).toFixed(1)} MB received)` : ''}`).join(', ')}`);
+      if (r.record.network) { const n = r.record.network; console.log(`[bench] network: ${n.bw ? `${Math.round(n.bw / 1024)} KB/s` : 'not measured'}, rtt ${n.rtt ?? '-'} ms, demand ${n.demandRequests} req ${(n.demandBytes / 1048576).toFixed(1)} MB (${Math.round(n.demandMs / 1000)} s in flight), background ${n.bgRequests} req ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.aborted} aborted`); }
       if (opt('phases')) fs.writeFileSync(opt('phases'), JSON.stringify(r.record, null, 1));
+      await printNetStats();
+      await page.evaluate(() => window.orthros.worker?.postMessage({ type: 'report' })).catch(() => {}); await page.waitForTimeout(500);
+      const rep = await page.evaluate(() => window.orthros.report).catch(() => null); if (rep) console.log(rep.split('\n').filter((l) => /^\[report\] (connection|game files)/.test(l)).join('\n'));
       const f = path.join(out, `${name}-bench.png`); await page.screenshot({ path: f }).then(() => console.log(`[shot] ${f}`), () => {});
       break;
     }
@@ -575,7 +595,7 @@ for (;;) {
   if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000)) {
     if (stopSeen !== null) console.log(`[end] stop text seen at ${((stopSeen - t0) / 1000).toFixed(1)} s${stopCpu !== null ? `, worker thread ${stopCpu.toFixed(1)} s CPU` : ''}`);
     console.log(`[end] time limit ${seconds}s`);
-    try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.requests) console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`); } catch { /* no stats */ }
+    await printNetStats();
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
     // --corpus <file>: distinct instruction forms of the translated code (input of the `corpus` conformance suite)

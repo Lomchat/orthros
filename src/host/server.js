@@ -169,7 +169,8 @@ export function createServer(opts = {}) {
       learnTimer.unref?.(); // (does not keep a finished process alive)
     }
   };
-  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1))]; if (v.mask) e.push(v.mask); return e; });
+  // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)])
+  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)]; });
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
@@ -442,11 +443,16 @@ export function createServer(opts = {}) {
   };
 
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0 };
+  // (split by kind: `demand` the game's own reads (&s=), `bg` the background downloads (&p=1); `ms` the time from the
+  // request to the last byte handed to the socket, simulated link included)
+  // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent)
+  const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
-  const sendRangeEncoded = (req, res, file, r) => {
+  const sendRangeEncoded = (req, res, file, r, kind = 'demand') => {
+    const tReq = performance.now();
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     const rm = /^(\d+)-(\d+)$/.exec(r);
     if (!rm) return send(res, 400, 'bad range');
@@ -457,6 +463,10 @@ export function createServer(opts = {}) {
     const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
+      const k = netStats[kind]; k.requests++;
+      let finished = false;
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
+      res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { res.writeHead(200, h); res.end(body); };
@@ -545,7 +555,7 @@ export function createServer(opts = {}) {
         const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
-        return sendRangeEncoded(req, res, file, r);
+        return sendRangeEncoded(req, res, file, r, url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand');
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
       if (m) {

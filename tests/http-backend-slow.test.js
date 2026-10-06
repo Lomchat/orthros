@@ -1,0 +1,106 @@
+// HTTP game file backend on a thin link (docs/slow-network.md): the game's reads fetch what they need (pieces, plus a
+// little measured past a stream), the pieces are kept in the persistent store (a second launch reads them locally) and
+// become whole blocks once all are here, no speculative whole blocks go in the background, the learned pieces come in
+// the learned order, and the offline copy follows the learned order first and resumes.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
+import { NetLink } from '../src/vfs/net-link.js';
+import { MemBlockStore } from '../src/vfs/opfs-store.js';
+
+const MiB = 1 << 20;
+const SIZE = 6 * MiB + 4321;
+const byteAt = (i) => (i * 11 + (i >> 10)) & 0xff;
+const bytes = (a, b) => Uint8Array.from({ length: b - a }, (_, k) => byteAt(a + k));
+const tree = () => ({ dirs: {}, files: { 'f.big': { size: SIZE, mtime: 3 }, 'g.big': { size: 2 * MiB, mtime: 3 } } });
+const thin = () => new NetLink({ bw: 85000, fixed: true });
+
+const syncReqs = [];
+globalThis.XMLHttpRequest = class {
+  open(m, url) { this.url = url; }
+  setRequestHeader(k, v) { this.range = v; }
+  getResponseHeader() { return null; }
+  send() { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(this.range); syncReqs.push([+a, +b + 1]); this.status = 206; this.response = bytes(+a, +b + 1).buffer; }
+};
+/** fetch stand-in answering at once (a microtask later) */
+function withFetch(body) {
+  const real = globalThis.fetch, calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const m = /bytes=(\d+)-(\d+)/.exec(init.headers?.Range ?? '') ?? /[?&]r=(\d+)-(\d+)/.exec(url);
+    const a = +m[1], e = init.headers?.Range ? +m[2] + 1 : +m[2];
+    calls.push({ url, start: a, end: e });
+    return { status: 206, headers: { get: () => null }, arrayBuffer: async () => bytes(a, e).buffer };
+  };
+  return Promise.resolve(body(calls)).finally(() => { globalThis.fetch = real; });
+}
+const settle = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 1)); };
+
+test('thin link: a random read fetches its pieces only, keeps them in the store; a second launch reads them locally', () => withFetch(async (calls) => {
+  const store = new MemBlockStore();
+  const b = new HttpBackend('/game/s/', tree(), { store, net: thin() });
+  const f = b.open('f.big'), n0 = syncReqs.length;
+  assert.deepEqual(f.read(2 * MiB + 1000, 300), bytes(2 * MiB + 1000, 2 * MiB + 1300));
+  assert.deepEqual(syncReqs.slice(n0), [[2 * MiB, 2 * MiB + CHUNK]], 'one piece');
+  await settle();
+  assert.equal(calls.length, 0, 'no whole block in the background (16 times the bytes on a thin link)');
+  assert.equal(b.want.size, 0);
+  assert.ok(store.map.has(`f.big#${SIZE}#3#c${(2 * MiB) / CHUNK}`), 'the piece is kept');
+  // a later session (same store): no request
+  const b2 = new HttpBackend('/game/s/', tree(), { store, net: thin() }), n1 = syncReqs.length;
+  assert.deepEqual(b2.open('f.big').read(2 * MiB + 1000, 300), bytes(2 * MiB + 1000, 2 * MiB + 1300));
+  assert.equal(syncReqs.length, n1, 'read from the stored piece');
+  // all of a block's pieces here: the block itself is stored, its pieces dropped
+  const g = b2.open('g.big');
+  for (let c = 0; c < BLOCK / CHUNK; c++) g.read(c * CHUNK + 5, 10);
+  assert.ok(store.map.has(`g.big#${2 * MiB}#3#0`), 'block 0 assembled and stored');
+  assert.ok(![...store.map.keys()].some((k) => k.startsWith(`g.big#${2 * MiB}#3#c`) && Number(k.split('#c')[1]) < 16), 'its pieces dropped');
+  assert.deepEqual(g.read(BLOCK - 100, 200), bytes(BLOCK - 100, BLOCK + 100));
+}));
+
+test('thin link: a file read in sequence is fetched a little past each read, never 4 MiB at once; the rest comes ahead in small requests', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/q/', tree(), { net: thin() });
+  const f = b.open('f.big'), n0 = syncReqs.length;
+  for (let pos = 0; pos < 2 * MiB; pos += 32 << 10) { assert.deepEqual(f.read(pos, 32 << 10), bytes(pos, pos + (32 << 10))); await settle(2); }
+  const sync = syncReqs.slice(n0);
+  assert.ok(sync.length > 0);
+  assert.ok(sync.every(([a, z]) => z - a <= 2 * CHUNK), `sync requests small (${sync.map(([a, z]) => (z - a) / 1024)} KiB)`);
+  assert.ok(calls.length > 0, 'pieces fetched ahead of the reader');
+  assert.ok(calls.every((c) => c.end - c.start <= b.net.backgroundBytes()), 'background requests of the link\'s size');
+  assert.ok(calls.every((c) => c.start < 2 * MiB + 256 * 1024), 'not far past the reader');
+}));
+
+test('thin link: the learned prefetch fetches the learned pieces in order from the game\'s position, nothing else', () => withFetch(async (calls) => {
+  const store = new MemBlockStore();
+  const b = new HttpBackend('/game/p/', tree(), { store, encoded: true, net: thin() });
+  b.gameBusy = () => false;
+  const progress = {};
+  // block 4 of f.big: pieces 1 and 2; block 0 of g.big: piece 0; block 1 of f.big: mask unknown (0)
+  await b.prefetch([['f.big', 4, 0b110, 0], ['g.big', 0, 0b1, 100], ['f.big', 1, 0, 200]], progress);
+  // (one 64 KiB piece per request: what 85 KB/s carries in BG_SECONDS, rounded up to a piece)
+  assert.deepEqual(calls.map((c) => [c.url.split('?')[0].split('/').pop(), c.start, c.end]), [['f.big', 4 * MiB + CHUNK, 4 * MiB + 2 * CHUNK], ['f.big', 4 * MiB + 2 * CHUNK, 4 * MiB + 3 * CHUNK], ['g.big', 0, CHUNK]]);
+  assert.ok(calls.every((c) => c.url.endsWith('&p=1')), 'asked as background downloads');
+  assert.ok(progress.done);
+  assert.ok(store.map.has(`f.big#${SIZE}#3#c${4 * 16 + 1}`) && store.map.has(`g.big#${2 * MiB}#3#c0`));
+  // the step estimate: what the learned entries past the position still need
+  const b2 = new HttpBackend('/game/p/', tree(), { store: new MemBlockStore(), encoded: true, net: thin() });
+  b2.learned = { entries: [{ path: 'f.big', size: SIZE, mtime: 3, index: 4, mask: 0b110, t: 0 }, { path: 'g.big', size: 2 * MiB, mtime: 3, index: 0, mask: 1, t: 100 }, { path: 'f.big', size: SIZE, mtime: 3, index: 1, mask: 0, t: 60000 }], pos: -1, rankOf: new Map() };
+  assert.equal(b2.stepEstimate().bytes, 3 * CHUNK, 'up to the pause: two pieces and one piece');
+}));
+
+test('offline copy: the learned blocks first, then the rest; a second start resumes (stored blocks skipped)', () => withFetch(async (calls) => {
+  const store = new MemBlockStore();
+  const b = new HttpBackend('/game/o/', tree(), { store, encoded: true, net: thin() });
+  let n = 0;
+  const p1 = {};
+  await b.downloadAll(p1, () => ++n > 3, { alone: true, order: [['g.big', 1], ['f.big', 5]] });
+  assert.deepEqual(calls.slice(0, 2).map((c) => [c.url.split('?')[0].split('/').pop(), c.start]), [['g.big', MiB], ['f.big', 5 * MiB]], 'the learned blocks first');
+  assert.ok(calls.every((c) => c.url.includes('&p=1')), 'not learned as the game\'s own reads');
+  assert.ok(!p1.done);
+  const p2 = {};
+  await b.downloadAll(p2, () => false, { alone: true, order: [['g.big', 1], ['f.big', 5]] });
+  assert.ok(p2.done); assert.ok(p2.stored > 0, 'resumed: bytes already here');
+  assert.equal(p2.bytes, p2.total);
+  for (let i = 0; i * BLOCK < SIZE; i++) assert.ok(store.map.has(`f.big#${SIZE}#3#${i}`));
+  const asked = new Map(); for (const c of calls) { const k = `${c.url.split('?')[0]}#${c.start}`; asked.set(k, (asked.get(k) ?? 0) + 1); }
+  assert.ok([...asked.values()].every((v) => v === 1), 'no range asked twice');
+}));
