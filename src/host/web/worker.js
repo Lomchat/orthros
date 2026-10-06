@@ -401,25 +401,38 @@ function gapEnd() {
   gap.cat = -1;
 }
 /**
- * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), about 1-2 ms per pump at most: a harvest pass
- * every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges them),
- * one per pump: a whole pass at once was a 15-50 ms stall every 10 s, its post alone 5-20 ms for 20-40 k blocks.
+ * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), in steps of about `budgetMs`: a harvest
+ * pass every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges
+ * them), one per step — a whole pass at once was a 15-50 ms stall every 10 s, its post alone 5-20 ms for 20-40 k
+ * blocks. The steps run while every guest thread waits (heatSlack: the time before the next wake-up, which frames do
+ * not wait for), or after the slice when no such wait came for a second (heatDue).
  * (timing: the longest step of each kind of the pass, logged with it)
  */
-const heatPost = { pairs: null, at: 0, n: 0, posts: 0, passAt: 0, mod: null, steps: 0, max: { harvest: 0, end: 0, map: 0 } };
-function heatStep(now) {
+const heatPost = { pairs: null, at: 0, n: 0, posts: 0, passAt: 0, lastAt: 0, dueAt: 0, mod: null, steps: 0, slack: 0, max: { harvest: 0, end: 0, map: 0 } };
+const heatWork = (now) => heatSink && vm.jit?.opts.visit && (heatPost.pairs || vm.jit.harvestAt > 0 || now - heatPost.passAt >= 10000);
+/** a step after the slice: work pending and no wait used for it for a second */
+function heatDue(now) {
+  const h = heatPost;
+  if (!heatWork(now)) { h.dueAt = 0; return; }
+  if (!h.dueAt) h.dueAt = now;
+  if (now - Math.max(h.dueAt, h.lastAt) > 1000) heatStep(now, 1);
+}
+/** a step in a wait of the guest threads (`ms` before the next wake-up) */
+function heatSlack(ms) { const now = performance.now(); if (ms >= 2 && heatWork(now)) { heatPost.slack++; heatStep(now, Math.min(1, ms - 1)); } }
+function heatStep(now, budgetMs) {
   const t0 = performance.now(), h = heatPost;
+  h.lastAt = t0;
   let kind;
   if (!h.pairs && (vm.jit.harvestAt > 0 || now - h.passAt >= 10000)) {
     if (!vm.jit.harvestAt) h.passAt = now;
-    h.pairs = vm.jit.harvestVisitsStep(1); h.at = 0; h.mod = null; h.steps++;
+    h.pairs = vm.jit.harvestVisitsStep(budgetMs); h.at = 0; h.mod = null; h.steps++;
     kind = h.pairs ? 'end' : 'harvest';
   } else if (h.pairs) {
     kind = 'map';
     const pairs = h.pairs, out = [];
     let i = h.at;
     for (; i < pairs.length; i += 2) {
-      if ((i & 127) === 0 && i > h.at && performance.now() - t0 >= 0.5) break;
+      if ((i & 127) === 0 && i > h.at && performance.now() - t0 >= budgetMs / 2) break;
       const a = pairs[i];
       let mod = h.mod;
       if (!mod || a < mod.base || a >= mod.base + mod.size) mod = h.mod = vm.proc.moduleByAddr(a);
@@ -431,8 +444,8 @@ function heatStep(now) {
       h.pairs = null;
       const dt = performance.now() - t0; if (dt > h.max.map) h.max.map = dt;
       const m = h.max;
-      if (h.n) log('jit', `heat: ${h.n} blocks posted in ${h.posts} requests (pass in ${h.steps} steps; longest step: harvest ${m.harvest.toFixed(2)} ms, pass end ${m.end.toFixed(2)} ms, mapping and post ${m.map.toFixed(2)} ms; ${vm.jit.visitRegions.length} regions with flags left)`);
-      h.n = h.posts = h.steps = 0; h.max = { harvest: 0, end: 0, map: 0 };
+      if (h.n) log('jit', `heat: ${h.n} blocks posted in ${h.posts} requests (pass in ${h.steps} steps, ${h.slack} of all in waits; longest step: harvest ${m.harvest.toFixed(2)} ms, pass end ${m.end.toFixed(2)} ms, mapping and post ${m.map.toFixed(2)} ms; ${vm.jit.visitRegions.length} regions with flags left)`);
+      h.n = h.posts = h.steps = h.slack = 0; h.max = { harvest: 0, end: 0, map: 0 };
       return;
     }
   }
@@ -486,7 +499,7 @@ function pump() {
     for (const [eip, fpc] of vm.jit.coveredLearned.splice(0)) { const mod = vm.proc.moduleByAddr(eip); if (mod) covered.push([mod.name.toLowerCase(), eip - mod.base, fpc]); }
     if (list.length || covered.length) regionSink(list, covered);
   }
-  if (heatSink && vm.jit?.opts.visit) heatStep(now);
+  heatDue(now);
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const hist = vm.apiHist();
@@ -543,11 +556,12 @@ function pump() {
   if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); return; }
   if (r.state === 'sleep') {
     if (r.until - pumpEndAt >= 3) { acct.enter(ACCT.ahead); prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); acct.enter(ACCT.host); } // (the wait, used to translate ahead)
+    heatSlack(r.until - performance.now());
     const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; schedulePump(Math.max(1, ms));
     // every thread waiting a second or more: what for (a wait Windows would end sooner shows up here)
     if (ms >= (longWaitMin ?? 1000) && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
   }
-  else if (r.state === 'idle') { pumpStats.idles++; acct.enter(ACCT.ahead); prewarmRegions(8); acct.enter(ACCT.host); schedulePump(30); }
+  else if (r.state === 'idle') { pumpStats.idles++; acct.enter(ACCT.ahead); prewarmRegions(8); acct.enter(ACCT.host); heatSlack(20); schedulePump(30); }
   else schedulePump(0);
   gapBegin(r);
 }
