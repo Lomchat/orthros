@@ -111,7 +111,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.bg = null; this.stormAt = 0; this.stormCount = 0;
+    this.refFast = null; this.refFastOff = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
