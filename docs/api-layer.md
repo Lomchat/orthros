@@ -52,6 +52,11 @@ else to run park the thread 1 ms) is what bounds it.
 - A shader's sampler binding keeps the register state table it applied its constant states to: while that table is
   unchanged only the texture is compared. Device methods are resolved once per effect (no lookup by name per call);
   parameter handles index a slot array.
+- Measured (2026-10-06): `tools/effect-bind-bench.mjs` 1.4-1.8 ms -> 0.65-0.7 ms per frame of 300 objects; BFME2
+  play in Node, in-session A/B with `dbg:ORTHROS_FX_BIND_OFF` (5 pairs of 20 s phases, 2 runs): api -0.25 and -0.37 ms
+  per frame, every pair lower; RotWK -0.14 / -0.16 ms; browser, concurrent BFME2 phase runs against the previous
+  build (`--gl-discard`): api -0.8 ms per frame (every 20 s phase -0.7 to -1.0) and -0.3 to -1.0 ms in a second
+  pair, `BeginPass` (which also runs the queued setters) -0.2 to -0.3 ms.
 - Not kept: register ownership (each register remembering the binding that wrote it, so that a binding left unchanged
   but on a stage changed by others needs no comparison). BFME2 play: 79 % of shader binds find their stage unchanged,
   the bindings of the others changed with their parameters; unchanged bindings on a changed stage were 0.25 % of the
