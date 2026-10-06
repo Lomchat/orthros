@@ -16,6 +16,7 @@ const DIDFT_AXIS = 3, DIDFT_PSHBUTTON = 4, DIDFT_RELAXIS = 1;
 const DISCL_EXCLUSIVE = 1, DISCL_NONEXCLUSIVE = 2, DISCL_FOREGROUND = 4, DISCL_BACKGROUND = 8;
 const DIPROP_BUFFERSIZE = 1, DIPROP_AXISMODE = 2, DIPROP_GRANULARITY = 3, DIPROP_RANGE = 4, DIPROP_DEADZONE = 5, DIPROP_SATURATION = 6, DIPROP_FFGAIN = 7, DIPROP_FFLOAD = 8, DIPROP_AUTOCENTER = 9, DIPROP_CALIBRATIONMODE = 10, DIPROP_CALIBRATION = 11, DIPROP_GUIDANDPATH = 12, DIPROP_INSTANCENAME = 13, DIPROP_PRODUCTNAME = 14;
 const DIPROPAXISMODE_ABS = 0, DIPROPAXISMODE_REL = 1;
+const DIDF_ABSAXIS = 1; // (DIDATAFORMAT.dwFlags; DIDF_RELAXIS 2)
 
 import { VK_TO_SCAN, scanCodeOfVk } from './vk-scan.js';
 export { scanCodeOfVk }; // (the table lives in vk-scan.js: the page loads it without the rest of DirectInput)
@@ -50,6 +51,12 @@ export function registerDirectInput(api, vm) {
       this.listener = (ev) => this.onRaw(ev);
       wmOf(vm).rawListeners.push(this.listener);
     }
+    /**
+     * The host's pending input taken (the window manager's queue pumped): DirectInput's data does not wait for the
+     * game's message loop — a game reading its devices from a thread of its own, or before its PeekMessage of the
+     * frame, sees the motion so far.
+     */
+    takeInput() { wmOf(vm).pump(); }
     destroy() { const l = wmOf(vm).rawListeners; const i = l.indexOf(this.listener); if (i >= 0) l.splice(i, 1); }
     push(ofs, data) {
       if (!this.bufferSize) return;
@@ -159,6 +166,7 @@ export function registerDirectInput(api, vm) {
       if (!this.format) return DIERR_INVALIDPARAM;
       if (!this.acquired) return DIERR_NOTACQUIRED;
       if (!p || size !== this.format.size) return DIERR_INVALIDPARAM; // (the buffer is the data format's size exactly, as DirectInput checks)
+      this.takeInput(); if (this.kind === 'mouse') wmOf(vm).mouseStats.diState++;
       mem.fill(p, size, 0);
       if (this.kind === 'keyboard') { mem.writeBytes(p, this.keys.subarray(0, Math.min(256, size))); return DI_OK; }
       const m = this.mouse;
@@ -174,8 +182,10 @@ export function registerDirectInput(api, vm) {
       if (!this.acquired) return DIERR_NOTACQUIRED;
       if (!this.bufferSize) return DIERR_NOTINITIALIZED;
       if (cbData !== 16 && cbData !== 20) return DIERR_INVALIDPARAM;
+      this.takeInput();
       const max = mem.read32(pInOut);
       const n = Math.min(max, this.queue.length);
+      if (this.kind === 'mouse') { const st = wmOf(vm).mouseStats; st.diData++; if (rgdod) st.diItems += n; }
       const peek = (flags & 1) !== 0; // DIGDD_PEEK
       for (let i = 0; i < n && rgdod; i++) {
         const e = this.queue[i], a = rgdod + i * cbData;
@@ -195,8 +205,11 @@ export function registerDirectInput(api, vm) {
       void size; void nobj;
       if (this.acquired) return DIERR_ACQUIRED;
       const kind = this.kind === 'keyboard' ? 'keyboard' : dataSize >= 20 ? 'mouse2' : 'mouse';
-      this.format = { size: dataSize, kind, abs: (flags & 2) !== 0 };
-      if (this.kind === 'mouse') this.axisMode = flags & 2 ? DIPROPAXISMODE_ABS : DIPROPAXISMODE_REL;
+      // (dwFlags: DIDF_ABSAXIS 1, DIDF_RELAXIS 2 — c_dfDIMouse / c_dfDIMouse2 are RELAXIS: a mouse's axes are relative
+      // unless the format asks for absolute ones. Taken the other way round before: every DirectInput mouse read the
+      // cursor's clamped position as its "motion" — a mouse-look camera turned by where the cursor was, stuck at edges)
+      this.format = { size: dataSize, kind, abs: (flags & DIDF_ABSAXIS) !== 0 };
+      if (this.kind === 'mouse') this.axisMode = flags & DIDF_ABSAXIS ? DIPROPAXISMODE_ABS : DIPROPAXISMODE_REL;
       return DI_OK;
     }
     SetEventNotification(c) { this.event = c.arg(1); return DI_OK; }
@@ -235,7 +248,7 @@ export function registerDirectInput(api, vm) {
     SendForceFeedbackCommand() { return DIERR_UNSUPPORTED; }
     EnumCreatedEffectObjects() { return DI_OK; }
     Escape() { return DIERR_UNSUPPORTED; }
-    Poll() { return this.acquired ? DI_OK : DIERR_NOTACQUIRED; }
+    Poll() { if (!this.acquired) return DIERR_NOTACQUIRED; this.takeInput(); return DI_OK; }
     SendDeviceData() { return DIERR_UNSUPPORTED; }
     BuildActionMap() { return DI_OK; }
     SetActionMap() { return DI_OK; }

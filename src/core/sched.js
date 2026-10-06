@@ -142,7 +142,7 @@ export class Scheduler {
       if (t.state !== TS.BLOCKED || !t.wait) continue;
       if (t.pendingExit) { this.wake(t, false); any = true; continue; }
       let ok;
-      try { ok = t.wait.cond(); } catch (e) { this.vm.warn(`wait condition threw: ${e.message}`); ok = true; }
+      try { ok = t.wait.cond(); } catch (e) { this.vm.warn(`wait condition threw: ${e.message} (t${t.id} ${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}; ${String(e.stack ?? '').split('\n').slice(1, 4).map((l) => l.trim().replace(/^at /, '').replace(/\(?\S*\/src\//, '(')).join(' < ')})`); ok = true; }
       if (ok) { if (t.wait.claim) { t.wakeValue = t.wait.claim(true); this.vm.proc.syncTrace?.(`wake t${t.id} [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}] -> ${t.wakeValue}`); } this.wake(t, true); any = true; }
       else if (now >= t.wait.deadline) { this.wake(t, false); any = true; }
     }

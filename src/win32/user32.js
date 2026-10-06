@@ -57,6 +57,12 @@ export class WindowManager {
     this.asyncPressed = new Uint8Array(256); // keys and buttons pressed since the last GetAsyncKeyState of each (its bit 0)
     /** @type {((ev: any) => void)[]} */
     this.rawListeners = [];
+    this.clip = null; // ClipCursor's rectangle (screen coordinates), null: none
+    this.inputSeq = 0; // the host's latest captured-mouse move taken (reportCursor: the page reconciles its cursor with it)
+    this.deferSends = false;
+    // how the game reads the mouse (the 'input' log's summary every 5 s): moves taken, GetCursorPos / SetCursorPos
+    // calls, DirectInput mouse reads (dinput8.js)
+    this.mouseStats = { moves: 0, get: 0, set: 0, clip: 0, diState: 0, diData: 0, diItems: 0, at: 0, shown: '' };
     this.showCursorCount = 0;
     this.dirty = false;
     this.lastPresent = -1;
@@ -154,6 +160,16 @@ export class WindowManager {
 
   send(w, msg, wParam, lParam) {
     if (!w || w.destroyed && msg !== WM.NCDESTROY) return 0;
+    // (host input — focus changes, a click activating the window — is processed wherever the queue is pumped: in
+    // a wait condition no guest thread runs, in another thread's API call not the window's thread. Its sent messages
+    // wait in the window thread's queue and are delivered by that thread's next GetMessage / PeekMessage, as Windows
+    // delivers messages sent from another thread)
+    if (this.deferSends) {
+      const q = this.queueOf(w.thread ?? this.proc.threads[0]);
+      (q.sent ??= []).push({ w, msg, wParam: wParam >>> 0, lParam: lParam >>> 0 });
+      if (q.sent.length > 256) q.sent.shift();
+      return 0;
+    }
     const proc = w.wndProc;
     if (typeof proc === 'number') return this.vm.callGuest(this.vm.current, proc, [w.hwnd, msg, wParam >>> 0, lParam >>> 0]) >>> 0;
     return this.defWindowProc(w, msg, wParam >>> 0, lParam >>> 0) >>> 0;
@@ -197,6 +213,7 @@ export class WindowManager {
     const q = this.pendingInput;
     if (!q?.length) return;
     const dev = this.vm.d3dDevice, frames = dev && !dev.lost ? dev.frames : null, now = this.vm.clock.now();
+    if (now - this.mouseStats.at >= 5000) this.logMouseStats(now);
     let i = 0;
     for (; i < q.length; i++) {
       const ev = q[i];
@@ -209,6 +226,15 @@ export class WindowManager {
       this.inputEvent(ev);
     }
     q.splice(0, i);
+    this.reportCursor();
+  }
+  /** The 'input' log: how the game read the mouse over the last seconds (which of its paths a camera uses). */
+  logMouseStats(now) {
+    const s = this.mouseStats; s.at = now;
+    if (!this.vm.logKinds?.has('input')) return;
+    const line = `moves ${s.moves}, GetCursorPos ${s.get}, SetCursorPos ${s.set}, ClipCursor ${s.clip}${this.clip ? ` (${this.clip.l},${this.clip.t}-${this.clip.r},${this.clip.b})` : ''}, DirectInput mouse state ${s.diState} / buffered ${s.diData} (${s.diItems} items), cursor ${this.cursor.x},${this.cursor.y}`;
+    s.moves = s.get = s.set = s.clip = s.diState = s.diData = s.diItems = 0;
+    if (line !== s.shown) { s.shown = line; this.vm.log('input', `mouse reads (5 s): ${line}`); }
   }
 
   windowAt(x, y) {
@@ -250,17 +276,50 @@ export class WindowManager {
     return f;
   }
 
+  /** The cursor's bounds: the screen, within the ClipCursor rectangle when one is set (inclusive pixel limits). */
+  cursorBounds() {
+    let l = 0, t = 0, r = this.screen.width - 1, b = this.screen.height - 1;
+    const c = this.clip;
+    if (c) { l = Math.max(l, c.l); t = Math.max(t, c.t); r = Math.min(r, c.r - 1); b = Math.min(b, c.b - 1); if (r < l) r = l; if (b < t) b = t; }
+    return { l, t, r, b };
+  }
+  /** A position inside the cursor's bounds. */
+  clampCursor(x, y) { const k = this.cursorBounds(); return { x: Math.max(k.l, Math.min(k.r, x | 0)), y: Math.max(k.t, Math.min(k.b, y | 0)) }; }
+  /** SetCursorPos: the cursor moves there (within its bounds), without any mouse motion for the raw input readers. */
+  setCursorPos(x, y) { this.cursor = this.clampCursor(x, y); this.mouseStats.set++; this.reportCursor(); }
+  /** The guest cursor's position to the host (the page draws the captured mouse's cursor there), when it changed. */
+  reportCursor() {
+    const c = this.cursor, r = this.reported;
+    if (r && r.x === c.x && r.y === c.y && r.seq === this.inputSeq) return;
+    this.reported = { x: c.x, y: c.y, seq: this.inputSeq };
+    this.host?.cursorPos?.(c.x, c.y, this.inputSeq);
+  }
+
   inputEvent(ev) {
-    if (ev.type === 'mousemove' && ev.dx === undefined) { ev.dx = ev.x - this.cursor.x; ev.dy = ev.y - this.cursor.y; }
+    const defer = this.deferSends; this.deferSends = true; // (its sent messages wait for the window's thread: send())
+    try { this.inputEvent1(ev); } finally { this.deferSends = defer; }
+  }
+  inputEvent1(ev) {
+    if (ev.type === 'mousemove') {
+      // a captured mouse (ev.rel): relative motion — ev.dx/dy the device's counts (raw input readers, unclamped), the
+      // cursor moved by gdx/gdy screen pixels from where it is (a SetCursorPos warp included), within its bounds; an
+      // absolute position otherwise. The cursor stays in its bounds (screen, ClipCursor) either way.
+      if (ev.rel) { ev.x = this.cursor.x + (ev.gdx ?? ev.dx); ev.y = this.cursor.y + (ev.gdy ?? ev.dy); if (ev.seq !== undefined) this.inputSeq = ev.seq; }
+      const p = this.clampCursor(ev.x, ev.y); ev.x = p.x; ev.y = p.y;
+      if (ev.dx === undefined) { ev.dx = ev.x - this.cursor.x; ev.dy = ev.y - this.cursor.y; }
+    }
     for (const l of this.rawListeners) l(ev); // raw input consumers (DirectInput devices)
     switch (ev.type) {
       case 'mousemove': {
+        this.mouseStats.moves++;
         this.cursor = { x: ev.x, y: ev.y };
         const w = this.capture ? this.windows.get(this.capture) : this.windowAt(ev.x, ev.y);
         if (w && !w.desktop) this.post(w, WM.MOUSEMOVE, this.mkFlags(), ((ev.y - w.client.t) & 0xffff) << 16 | ((ev.x - w.client.l) & 0xffff));
         break;
       }
       case 'mousedown': case 'mouseup': {
+        // (a captured mouse's buttons press where the guest cursor is; else at the host pointer's position)
+        if (ev.rel || ev.x === undefined) { ev.x = this.cursor.x; ev.y = this.cursor.y; } else { const p = this.clampCursor(ev.x, ev.y); ev.x = p.x; ev.y = p.y; }
         this.cursor = { x: ev.x, y: ev.y };
         const vk = [VK.LBUTTON, VK.RBUTTON, VK.MBUTTON][ev.button] ?? VK.LBUTTON;
         this.keyState[vk] = ev.type === 'mousedown' ? 0x80 : 0;
@@ -351,9 +410,10 @@ export class WindowManager {
   /**
    * PeekMessage core. Returns a message object or null.
    */
-  peek(thread, hwndFilter, min, max, remove) {
+  peek(thread, hwndFilter, min, max, remove, deliver = false) {
     this.pump();
     const q = this.queueOf(thread);
+    if (deliver) this.deliverSent(thread); // (the thread's own GetMessage / PeekMessage: messages sent to it first)
     for (let i = 0; i < q.msgs.length; i++) {
       const m = q.msgs[i];
       if (!this.matches(m, hwndFilter, min, max)) continue;
@@ -380,7 +440,14 @@ export class WindowManager {
     return null;
   }
 
-  hasMessage(thread, hwndFilter, min, max) { return this.peek(thread, hwndFilter, min, max, false) !== null; }
+  /** a message to take (wait conditions): a posted one, or one sent to the thread (its GetMessage delivers it) */
+  hasMessage(thread, hwndFilter, min, max) { return this.peek(thread, hwndFilter, min, max, false) !== null || this.queueOf(thread).sent?.length > 0; }
+
+  /** The messages sent to `thread` by host input (send() while deferSends), delivered in order on that thread. */
+  deliverSent(thread) {
+    const q = this.queueOf(thread);
+    while (q.sent?.length) { const s = q.sent.shift(); this.send(s.w, s.msg, s.wParam, s.lParam); }
+  }
 
   /** WM_QUIT handling and dispatch of a retrieved message. */
   dispatch(m) {
@@ -853,11 +920,13 @@ export function registerUser32(api, vm) {
   const getMessage = (c, wide) => {
     const p = c.arg(0), hf = c.arg(1), min = c.arg(2), max = c.arg(3);
     const w = wm();
-    let m = w.peek(c.thread, hf, min, max, true);
-    if (!m) {
+    // (the thread taken now: the wait condition runs later, when the shared call context is another call's)
+    const t = c.thread;
+    let m = w.peek(t, hf, min, max, true, true);
+    while (!m) { // (woken by a sent message only: delivered, and the wait goes on)
       w.present();
-      vm.sched.block(c.thread, () => w.hasMessage(c.thread, hf, min, max), INFINITE, 'GetMessage');
-      m = w.peek(c.thread, hf, min, max, true);
+      vm.sched.block(t, () => w.hasMessage(t, hf, min, max), INFINITE, 'GetMessage');
+      m = w.peek(t, hf, min, max, true, true);
     }
     w.writeMsg(p, m);
     if (m.msg === WM.QUIT) return 0;
@@ -931,7 +1000,7 @@ export function registerUser32(api, vm) {
     const p = c.arg(0), hf = c.arg(1), min = c.arg(2), max = c.arg(3), flags = c.arg(4);
     const w = wm();
     w.present();
-    const m = w.peek(c.thread, hf, min, max, (flags & PM_REMOVE) !== 0);
+    const m = w.peek(c.thread, hf, min, max, (flags & PM_REMOVE) !== 0, true);
     if (!m) {
       const t = c.thread, ms = peekIdleMs(), wait = ms > 0 ? peekIdle(t, ms) : 0;
       if (wait > 0) {
@@ -1001,7 +1070,7 @@ export function registerUser32(api, vm) {
   U.SetMessageExtraInfo = [1, () => 0];
   U.GetQueueStatus = [1, (c) => { const q = wm().queueOf(c.thread); wm().pump(); const any = q.msgs.length > 0 || wm().paintPending(c.thread, 0) || wm().dueTimer(c.thread, 0); return any ? 0x00ff00ff : 0; }];
   U.GetInputState = [0, (c) => { wm().pump(); return wm().queueOf(c.thread).msgs.some((m) => m.msg >= 0x100 && m.msg <= 0x20e) ? 1 : 0; }];
-  U.WaitMessage = [0, (c) => { vm.sched.block(c.thread, () => wm().hasMessage(c.thread, 0, 0, 0), INFINITE, 'WaitMessage'); return 1; }];
+  U.WaitMessage = [0, (c) => { const t = c.thread; vm.sched.block(t, () => wm().hasMessage(t, 0, 0, 0), INFINITE, 'WaitMessage'); return 1; }];
   U.InSendMessage = [0, () => 0];
   U.ReplyMessage = [1, () => 1];
   U.RegisterWindowMessageA = [1, (c) => { const s = c.str(0) ?? ''; let a = [...c.proc.atoms].find(([, v]) => v === s)?.[0]; if (!a) { a = c.proc.nextAtom++; c.proc.atoms.set(a, s); } return a; }];
@@ -1046,9 +1115,12 @@ export function registerUser32(api, vm) {
   U.GetAsyncKeyState = [1, (c) => { const w = wm(); w.pump(); const vk = c.arg(0) & 0xff, s = w.keyState[vk], p = w.asyncPressed[vk]; w.asyncPressed[vk] = 0; return ((s & 0x80 ? 0x8000 : 0) | p) >>> 0; }];
   U.GetKeyboardState = [1, (c) => { mem.writeBytes(c.arg(0), wm().keyState); return 1; }];
   U.SetKeyboardState = [1, (c) => { wm().keyState.set(mem.bytes(c.arg(0), 256)); return 1; }];
-  U.GetCursorPos = [1, (c) => { const p = c.arg(0); mem.write32(p, wm().cursor.x); mem.write32(p + 4, wm().cursor.y); return 1; }];
-  U.SetCursorPos = [2, (c) => { wm().cursor = { x: c.sarg(0), y: c.sarg(1) }; vm.host?.setCursorPos?.(c.sarg(0), c.sarg(1)); return 1; }];
-  U.ClipCursor = [1, (c) => { wm().clip = c.arg(0) ? readRect(c.arg(0)) : null; return 1; }];
+  // (GetCursorPos takes the host's pending input first, as the real cursor moves between two calls: a game re-centering
+  // the cursor every frame — SetCursorPos then GetCursorPos the next frame — reads the motion of that frame)
+  U.GetCursorPos = [1, (c) => { const w = wm(); w.pump(); w.mouseStats.get++; const p = c.arg(0); if (!p) return 0; mem.write32(p, w.cursor.x); mem.write32(p + 4, w.cursor.y); return 1; }];
+  U.SetCursorPos = [2, (c) => { const w = wm(); w.pump(); w.setCursorPos(c.sarg(0), c.sarg(1)); return 1; }];
+  // (the cursor is moved inside the new rectangle at once, as Windows does)
+  U.ClipCursor = [1, (c) => { const w = wm(); w.mouseStats.clip++; const r = c.arg(0) ? readRect(c.arg(0)) : null; w.clip = r && r.r > r.l && r.b > r.t ? r : null; w.cursor = w.clampCursor(w.cursor.x, w.cursor.y); w.reportCursor(); return 1; }];
   U.GetClipCursor = [1, (c) => { writeRect(c.arg(0), wm().clip ?? { l: 0, t: 0, r: wm().screen.width, b: wm().screen.height }); return 1; }];
   // the cursor shows when the display count is >= 0 and a cursor shape is set (SetCursor(NULL) removes the shape until
   // the next SetCursor: the two are independent, as in Windows)

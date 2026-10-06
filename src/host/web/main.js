@@ -6,11 +6,12 @@ import { mountHome } from './home.js';
 import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
+import { PointerInput, winButton } from './pointer.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const headless = params.get('headless') === '1';
-const state = { status: 'menu', loadT0: performance.now(), loadPct: 0, stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false, lastX: 0, lastY: 0 };
+const state = { status: 'menu', loadT0: performance.now(), loadPct: 0, stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false };
 window.orthros = state;
 
 /** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
@@ -85,7 +86,7 @@ async function startBench(name, manifest) {
   let def;
   try { def = await loadBench(name, manifest); } catch (e) { showStatus('This measurement cannot run', e.message ?? String(e), null, true); return; }
   const run = state.bench = new BenchRun(def, {
-    state, push, EV, typeText, headless, log,
+    state, push, EV, typeText, headless, log, capture: () => capturePointer(),
     postWorker: (m) => state.worker?.postMessage(m),
     machine: () => state.envPromise ?? machine(),
     sendRecord: async (rec) => { if (!state.telemetry) return false; (state.queue ??= []).push({ t: Date.now(), ...rec }); return flushTelemetry(); },
@@ -179,6 +180,7 @@ function onWorkerMessage(m) {
     case 'lan': { state.lan = { ip: m.ip, peers: m.peers }; const el = $('tbLan'); el.classList.toggle('hidden', !m.ip || headless); el.querySelector('b').textContent = m.peers; el.title = `Local network of the players of this game on this server — your address: ${m.ip}. ${m.peers} player${m.peers > 1 ? 's' : ''} connected: in the game, Multiplayer → LAN / Network shows their games.`; break; }
     case 'title': document.title = m.title || 'Orthros'; break;
     case 'cursor': state.cursorVisible = m.visible; applyCursor(); break;
+    case 'cursor-pos': pointer.cursorReport(m.x, m.y, m.seq); if (state.pointerLocked) drawSoftCursor(); break; // (the guest cursor: SetCursorPos warps, clipping, the moves taken)
     case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
@@ -273,7 +275,7 @@ function hideLoader(now = false) {
   try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ }
   el.querySelector('.fill').style.width = '100%'; el.querySelector('.pct').textContent = '100%'; el.querySelector('.phase').textContent = 'Ready';
   setTimeout(() => { el.classList.add('gone'); setTimeout(done, 600); }, 250);
-  toast('Click the game to capture the mouse · Esc releases it · ⛶ for full screen', 7000);
+  if (!state.benchActive) toast('Click the game to capture the mouse · Esc releases it · ⛶ for full screen', 7000); // (a bench plays alone: its summary says it)
 }
 const fmtMB = (mb) => (mb >= 1000 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB');
 /**
@@ -453,20 +455,15 @@ function typeText(text) {
     push(EV.KEYDOWN, vk, scan, 0); push(EV.CHAR, ch.charCodeAt(0), 0, 0); push(EV.KEYUP, vk, scan, 0);
   }
 }
-window.orthrosInput = { push, EV, typeText };
+window.orthrosInput = { push, EV, typeText, get pointer() { return pointer; } }; // (pointer: the harness's captured-mouse moves, pointer.js)
 
-function canvasPos(e) {
-  if (state.pointerLocked) { // captured mouse: a virtual cursor inside the game screen, moved by the relative motion
-    const s = state.scale || 1, { width: w, height: h } = state.mode;
-    state.vx = Math.max(0, Math.min(w - 1, (state.vx ?? w / 2) + e.movementX / s));
-    state.vy = Math.max(0, Math.min(h - 1, (state.vy ?? h / 2) + e.movementY / s));
-    drawSoftCursor();
-    return [Math.round(state.vx), Math.round(state.vy)];
-  }
-  const r = $('c2d').getBoundingClientRect();
-  const s = state.scale || 1, { width: w, height: h } = state.mode;
-  // (clamped: the mouse in the page's margins beside the game is at the game's edge — screen-edge scrolling without pointer lock)
-  return [Math.max(0, Math.min(w - 1, Math.round((e.clientX - r.left) / s))), Math.max(0, Math.min(h - 1, Math.round((e.clientY - r.top) / s)))];
+/** The page's mouse → the input ring (pointer.js): captured relative motion, or the free pointer's position. */
+const pointer = new PointerInput((type, a, b, c) => push(type, a, b, c), () => state.mode);
+state.pointer = pointer;
+/** A mouse event's position in the game's screen pixels (unclamped: the page's margins are outside the screen). */
+function screenPos(e) {
+  const r = $('c2d').getBoundingClientRect(), s = state.scale || 1;
+  return [(e.clientX - r.left) / s, (e.clientY - r.top) / s];
 }
 /**
  * Play mode: fullscreen + pointer lock (the mouse cannot leave the game, screen-edge scrolling works) + keyboard lock
@@ -477,9 +474,11 @@ function canvasPos(e) {
  * (#softcursor). With the system's pointer acceleration, as the desktop cursor moves (no unadjustedMovement).
  */
 async function capturePointer() {
-  if (document.pointerLockElement) return;
-  try { await $('c2d').requestPointerLock(); } catch { /* denied (no gesture, or released a moment ago) */ }
+  if (document.pointerLockElement || headless) return;
+  try { await $('c2d').requestPointerLock(); }
+  catch { if (state.status === 'running') toast('Click the game again to capture the mouse', 3000); } // (denied: released a moment ago, or no gesture)
 }
+state.capturePointer = capturePointer;
 async function enterPlayMode() {
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch { /* not allowed */ }
   try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable */ }
@@ -494,7 +493,7 @@ function drawSoftCursor() {
   if (url) { if (el.src !== url[1]) el.src = url[1]; el.style.marginLeft = -url[2] + 'px'; el.style.marginTop = -url[3] + 'px'; }
   else { if (!el.dataset.arrow) { el.dataset.arrow = '1'; el.src = ARROW; } el.style.marginLeft = el.style.marginTop = '0px'; }
   el.style.display = 'block';
-  el.style.left = state.vx + 'px'; el.style.top = state.vy + 'px';
+  el.style.left = pointer.vx + 'px'; el.style.top = pointer.vy + 'px';
 }
 /** A plain arrow (SVG) for the software cursor when the guest shows a system cursor. */
 const ARROW = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="19"><path d="M0.5 0.5v16l4-4 3 6 2.5-1-3-6h5.5z" fill="white" stroke="black"/></svg>');
@@ -512,22 +511,38 @@ function vkOf(e) {
 
 function setupInput() {
   const c = $('c2d');
-  document.addEventListener('mousemove', (e) => { if (state.status !== 'running' || state.benchActive) return; const [x, y] = canvasPos(e); const dx = state.pointerLocked ? e.movementX : x - state.lastX, dy = state.pointerLocked ? e.movementY : y - state.lastY; state.lastX = x; state.lastY = y; push(EV.MOUSEMOVE, x, y, ((dy & 0xffff) << 16) | (dx & 0xffff)); });
   // (a bench running: the player's mouse, keys and focus changes do not reach the game — bench.js plays the scenario)
-  c.addEventListener('mousedown', (e) => {
-    if (state.benchActive) return;
-    const [x, y] = canvasPos(e); push(EV.MOUSEDOWN, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault();
-    // a click in the game captures the mouse (it stays in the window; Escape releases it)
-    if (!headless && state.status === 'running' && !state.pointerLocked) capturePointer();
+  const live = () => state.status === 'running' && !state.benchActive;
+  document.addEventListener('mousemove', (e) => {
+    if (!live()) return;
+    if (state.pointerLocked) {
+      if (state.lockFresh) { state.lockFresh = false; return; } // (the first move of a capture: its movement is measured from the pointer's position before the lock in some browsers — a spurious jump)
+      pointer.lockedMove(e.movementX, e.movementY, state.scale || 1); drawSoftCursor();
+    }
+    else pointer.freeMove(...screenPos(e));
   });
-  c.addEventListener('mouseup', (e) => { if (state.benchActive) return; const [x, y] = canvasPos(e); push(EV.MOUSEUP, e.button === 2 ? 1 : e.button === 1 ? 2 : e.button, x, y); e.preventDefault(); });
+  document.documentElement.addEventListener('mouseleave', () => pointer.left()); // (the pointer left the window)
+  c.addEventListener('mousedown', (e) => {
+    if (!live()) return;
+    pointer.button(true, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault();
+    // a click in the game captures the mouse (it stays in the game, which gets all of its motion; Escape releases it)
+    if (!state.pointerLocked) capturePointer();
+  });
+  c.addEventListener('mouseup', (e) => { if (!live()) return; pointer.button(false, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
-  c.addEventListener('wheel', (e) => { if (state.benchActive) return; const [x, y] = canvasPos(e); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, x, y); e.preventDefault(); }, { passive: false });
+  c.addEventListener('wheel', (e) => { if (!live()) return; const [x, y] = state.pointerLocked ? [pointer.vx, pointer.vy] : screenPos(e).map(Math.round); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, pointer.clampX(x), pointer.clampY(y)); e.preventDefault(); }, { passive: false });
   addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOf(e), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
   addEventListener('keyup', (e) => { if (state.benchActive) return; push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
-  addEventListener('blur', () => { if (!state.benchActive) push(EV.FOCUS, 0, 0, 0); });
+  addEventListener('blur', () => { pointer.left(); if (!state.benchActive) push(EV.FOCUS, 0, 0, 0); });
   addEventListener('focus', () => { if (!state.benchActive) push(EV.FOCUS, 1, 0, 0); });
-  document.addEventListener('pointerlockchange', () => { state.pointerLocked = document.pointerLockElement === c; if (state.pointerLocked) { state.vx = state.lastX; state.vy = state.lastY; } applyCursor(); });
+  document.addEventListener('pointerlockchange', () => {
+    const was = state.pointerLocked;
+    state.pointerLocked = document.pointerLockElement === c;
+    if (state.pointerLocked) { pointer.locked(); state.lockFresh = true; } else pointer.unlocked();
+    if (was && !state.pointerLocked && state.status === 'running') toast('Mouse released · click the game to capture it again', 4000);
+    applyCursor();
+  });
+  document.addEventListener('pointerlockerror', () => { if (state.status === 'running') toast('Click the game again to capture the mouse', 3000); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
   $('tbFull').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
