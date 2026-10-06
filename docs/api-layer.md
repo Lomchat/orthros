@@ -36,6 +36,18 @@ frame down, all generic (no game-specific code), and how to switch them off with
   for the measurements: a draw's time is now part of the JavaScript call that runs the queue (in the per-API ranking,
   `[apitop]`, `DrawIndexedPrimitive` no longer appears: its time is in `Lock`, `Unlock`, `Present`...). Jit option
   `deferDraws: false` (Node: `ORTHROS_JIT_OPTS`) handles them at the call again.
+- **AddRef / Release while bindings are queued** (`REFS_SET`): COM `AddRef` / `Release` stay on the fast path only while no
+  queued call may change the object's count. That was "no queued binding at all"; with the draws queued the queue holds
+  bindings much longer, and in BFME1's play `IDirect3DTexture9::Release` became a JavaScript call 1.4 M times in 270 s
+  (against 0.28 M), each running the queue. A queued Direct3D 9 `SetTexture` / `SetStreamSource` / `SetIndices` whose
+  shadow entry was known now records +1 for the object it binds and −1 (a release) for the one it replaces, per object
+  (16 entries; any other binding call — Direct3D 8, effects — or more objects: anyone, as before). `AddRef` / `Release`
+  then stay on the fast path: the count in memory moves at once, the queued calls move it later, and the value returned
+  is the count once both have (the immediate execution's). A `Release` goes to JavaScript (which runs the queue first)
+  when the count could reach 0 at the queue's lowest point — all of the object's queued releases before its bindings —
+  so that no queued release destroys an object still referenced. Test: `jit-defer-filter.test.js` (randomized bindings,
+  `AddRef` / `Release` with counts kept low, and bindings made behind the shadow's back: every result and final count as
+  executing every call, and no count reaching 0 on the way).
 - The queued COM calls run straight on their object's method (`Com.callQueued`), `dispatch` only for unusual cases.
 - Fixed (2026-10-06): a queued call carrying a structure (`SetTransform`, `SetViewport`, `SetLight`, `SetMaterial`, the
   effect `SetVector` / `SetMatrix` / `SetRawValue`) overwrote the local holding its spec with the address of the copy, so
@@ -159,3 +171,40 @@ Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phas
 over a counting GL), `tools/setter-bench.mjs` (the queued setters), `tools/effect-bind-bench.mjs` (effect setters and
 binds, `--base <tree>` against another checkout). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
+`dbg:ORTHROS_DRAW_OPT_OFF=1` handles the draws at their call again and switches the lights / material / FVF filter off
+(`=`: back on, the filter once the queue has run): `Jit.setDrawOpt`. (The fix of the clobbered spec, section 1, has no
+switch.)
+
+## Draw submission per draw (2026-10-06)
+
+**Where it went.** BFME1's 3D main menu in Node (`tools/framebench.mjs --gfx recorder`, the render worker's recording
+with its commands dropped; 830-890 draws per frame), V8 profile of 300 frames, per frame: the JavaScript API calls 5.0
+ms, of which `IDirect3DVertexBuffer9::Unlock` 1.1 ms (all of it the copy of the written ranges into the command ring,
+2.5-2.7 MB per frame), `DrawIndexedPrimitive` 0.7 ms (the recorder's `flush` 0.6), the queued calls 1.3 ms (7 000-8 000 per
+frame: `LightEnable` 2 100, `SetLight` 2 100, `SetTransform` 750, `SetTextureStageState` 630, `SetRenderState` 420,
+`SetIndices` 350...), the dispatcher's own work 0.6 ms (2 700 calls handled in JavaScript per frame: 840 draws, 165 + 145
+vertex / index buffer Lock / Unlock pairs, heap calls). Counted per queued method, the calls that changed the device:
+`SetLight` 0 of 2 078, `LightEnable` 33 of 2 095, `SetSamplerState` / `SetTextureStageState` / `SetIndices` hundreds that
+the filter should have dropped — the clobbered spec of section 1.
+
+**Changes** (section 1): the spec kept (the filter stays on after a queued structure), lights / material / FVF in the
+filter, draws queued.
+
+**Measured.**
+- Deterministic in-session A/B (Node, `startbench --virtual`: the same guest work in both runs; BFME1 3D main menu, 40 s
+  of virtual time in 8 phases of 5 s, `dbg:ORTHROS_DRAW_OPT_OFF` alternated, run A starting on, run B off, both at
+  once, the render worker's recording as backend): `api` on − off = −2.63 ms per frame (every phase lower: −1.35 to
+  −4.02; api off 6.8-12.9 ms per frame in this slow virtual run); the emulator thread's CPU −0.96 ms per frame with a
+  spread of ±5 ms per phase between the runs (warm-up, V8 tiering), host instructions of the thread −6.8 M per frame
+  (spread ±15 M): within the noise of whole-thread measures.
+- Base against this branch (same deterministic run, both at once, everything included): BFME1 menu phase of
+  `bfme-phases.txt` (1 046 frames, 28.13 G guest instructions in both) `api` 6.88 → 5.92 ms per frame, thread CPU 62.6 →
+  60.2 ms per frame; Node `framebench` pairs before the queued draws (filter only): `api` 4.38 → 3.97 and 3.66 → 3.45 ms per
+  frame, wall per frame −1.4 / +0.7 ms (noise).
+
+**Measured, not done.** Of the 2.5 MB per frame copied into the ring at `Unlock` in that menu, a whole-buffer lock of a
+dynamic vertex buffer without flags (1 per frame, 0.5-0.63 MB) never changes a byte, and the `NOOVERWRITE` / `DISCARD`
+ranges change 30-50 % of their bytes but 70-85 % of their 256-byte blocks (a shadow copy compared at each `Unlock`). Sending
+only the changed ranges would read twice the bytes it saves writing (the comparison against the shadow, then the shadow
+updated); in JavaScript the comparison is slower than the copy (~1-2 GB/s against 5-6 GB/s for a typed-array copy into
+shared memory, this machine). Only the unchanged whole-buffer lock would gain, ~0.1-0.2 ms per frame: not done.

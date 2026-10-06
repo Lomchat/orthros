@@ -163,12 +163,14 @@ export const DEFER_F_FORGET = 1 << 30;
 export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB | DEFER_FX_MASK;
 /**
  * a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them). The
- * queue's +4 word says whose: 0 nobody, REFS_ANY anyone, else the number of objects listed at REFS_SET — a Direct3D 9
- * binding whose shadow entry was known adds the object it binds and the one it replaces; any other, anyone. AddRef /
- * Release of an object not concerned stay on the fast path (their count is final).
+ * queue's +4 word says whose: 0 nobody, REFS_ANY anyone, else the number of entries at REFS_SET — [object, change of its
+ * count once the queue has run, releases among it]: a Direct3D 9 binding whose shadow entry was known adds +1 to the
+ * object it binds and -1 to the one it replaces; any other, anyone. AddRef / Release stay on the fast path and return the
+ * count the object will have once the queue has run (unlisted: no change); a Release that would leave 0 at the queue's
+ * lowest point (all its releases before its bindings), the last reference included, goes to JavaScript.
  */
 export const DEFER_REFS = 1 << 21;
-export const REFS_ANY = 0xffffffff, REFS_SLOTS = 16;
+export const REFS_ANY = 0xffffffff, REFS_SLOTS = 16, REFS_ENTRY = 12;
 /**
  * a queued call that may change device states (an effect's CommitChanges applying its pass): the shadow entries listed
  * by the object's commit list (+20: COMMIT_LIST) are forgotten when it is queued — [shadow block, count, entry
@@ -556,15 +558,37 @@ export function buildRuntime(opts = {}) {
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
           c.get(TM).i32(DEFER_REFS).and();
           const refs = c.if_();
-          { // whose reference counts may change (DEFER_REFS): the binding replaced — the shadow entry's value, not yet
-            // overwritten below — and the new one, when the filter knew the entry (FE); else anyone (FV = count, WD = object)
+          { // whose reference counts change (DEFER_REFS): the new binding +1, the one it replaces — the shadow entry's value,
+            // not yet overwritten below — -1, when the filter knew the entry (FE); else anyone (FV = entries, WD = object,
+            // A2 = entry index, TEB = entry address)
             const done = c.block(); const any = c.block();
             c.get(FE).eqz().br_if(any);
             c.get(FE).i32load(0).eqz().br_if(any);
-            c.i32(DEFER_QUEUE).i32load(4).tee(FV).i32(REFS_SLOTS - 1).ge_u().br_if(any); // (anyone already, or no room for two)
-            const add = (load) => { load(); c.tee(WD); const nz = c.if_(); c.get(FV).i32(2).shl().get(WD).i32store(REFS_SET); c.get(FV).i32(1).add().set(FV); c.end(); void nz; };
-            add(() => c.get(FE).i32load(4));
-            add(() => c.get(VP).i32load(0));
+            c.i32(DEFER_QUEUE).i32load(4).tee(FV).i32(REFS_SLOTS).gt_u().br_if(any); // (anyone already)
+            c.get(FE).i32load(4).get(VP).i32load(0).eq().br_if(done); // (the same buffer, another offset or stride: no count changes)
+            const add = (load, delta) => {
+              load(); c.tee(WD);
+              const nz = c.if_();
+              const have = c.block();
+              c.i32(0).set(A2);
+              const scan = c.loop(); // (its entry; a new one at the end)
+              c.get(A2).i32(REFS_ENTRY).mul().i32(REFS_SET).add().set(TEB);
+              c.get(A2).get(FV).eq();
+              const fresh = c.if_();
+              c.get(FV).i32(REFS_SLOTS).ge_u().br_if(any); // (no room: anyone)
+              c.get(TEB).get(WD).i32store(0); c.get(TEB).i32(0).i32store(4); c.get(TEB).i32(0).i32store(8);
+              c.get(FV).i32(1).add().set(FV); c.br(have);
+              c.end(); void fresh;
+              c.get(TEB).i32load(0).get(WD).eq().br_if(have);
+              c.get(A2).i32(1).add().set(A2); c.br(scan);
+              c.end(); void scan;
+              c.end(); void have;
+              c.get(TEB).get(TEB).i32load(4).i32(delta).add().i32store(4); // (the count's change once the queue has run)
+              if (delta < 0) c.get(TEB).get(TEB).i32load(8).i32(1).add().i32store(8); // (its releases: the queue's lowest point)
+              c.end(); void nz;
+            };
+            add(() => c.get(FE).i32load(4), -1);
+            add(() => c.get(VP).i32load(0), 1);
             c.i32(DEFER_QUEUE).get(FV).i32store(4);
             c.br(done);
             c.end(); void any;
@@ -643,20 +667,31 @@ export function buildRuntime(opts = {}) {
           // (only while no queued call may change counts: the value returned counts every reference taken so far)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
           c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled);
+          // (queued bindings: P = the change of this object's count once the queue has run, FB = the releases among it;
+          // anyone's count: JavaScript runs the queue first)
+          c.i32(0).set(P); c.i32(0).set(FB);
           c.i32(DEFER_QUEUE).i32load(4).tee(TM);
-          const pend = c.if_(); // (an object whose count a queued call may change, or anyone's: JavaScript runs the queue first)
+          const pend = c.if_();
           c.get(TM).i32(REFS_SLOTS).gt_u().br_if(notHandled);
           c.i32(0).set(N);
+          const found = c.block();
           const scan = c.loop();
-          c.get(N).i32(2).shl().i32load(REFS_SET).get(A0).eq().br_if(notHandled);
-          c.get(N).i32(1).add().tee(N).get(TM).lt_u().br_if(scan);
+          c.get(N).get(TM).ge_u().br_if(found);
+          c.get(N).i32(REFS_ENTRY).mul().i32(REFS_SET).add().tee(VP).i32load(0).get(A0).eq();
+          const hit = c.if_(); c.get(VP).i32load(4).set(P); c.get(VP).i32load(8).set(FB); c.br(found); c.end(); void hit;
+          c.get(N).i32(1).add().set(N); c.br(scan);
           c.end(); void scan;
+          c.end(); void found;
           c.end(); void pend;
+          // the count in memory moves now, the queued calls move it later; the value returned is the count once both have
           if (k === FID_ADDREF) c.get(A0).i32load(COM_REFS).i32(1).add().set(TM);
-          else { c.get(A0).i32load(COM_REFS).i32(1).sub().tee(TM).i32(1).lt_s().br_if(notHandled); } // (the last reference: JavaScript destroys)
+          else { // (the last reference — or one the queued releases could reach before their bindings: JavaScript; the count
+            // once the queue has run, at least this lowest point, is then at least 1 too)
+            c.get(A0).i32load(COM_REFS).i32(1).sub().tee(TM).get(FB).sub().i32(1).lt_s().br_if(notHandled);
+          }
           c.get(A0).get(TM).i32store(COM_REFS);
           c.i32(FAST_STATS).i32(FAST_STATS).i32load(4).i32(1).add().i32store(4);
-          c.get(STATE).get(TM); ret(1); break;
+          c.get(STATE).get(TM).get(P).add(); ret(1); break;
         }
         case 19: case FID_TICKCOUNT: // timeGetTime, GetTickCount: their JavaScript handlers' value (timer-res.js) from TICK_BASE
           c.get(STATE).call(k === 19 ? mmTimeIdx : tickCountIdx).f64c(TICK_BASE).f64add().i64trunc_sat_f64_s().wrap(); ret(0); break;
