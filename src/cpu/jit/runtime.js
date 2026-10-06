@@ -130,6 +130,19 @@ export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096, DEFER_OBJ = 
  */
 export const FID_PARAM_DESC = 27, PARAM_DESC_SLOTS = 64, PARAM_DESC_ENTRY = 48, PARAM_DESC_BYTES = PARAM_DESC_SLOTS * PARAM_DESC_ENTRY;
 /**
+ * ID3DXEffect's technique calls on the deferred queue (with DEFER_HANDLE / DEFER_OBJ): after its description cache an
+ * effect keeps FX_SLOT_BYTES (from FX_SLOTS past its handle block) — +0 the pass count of its technique as of every call
+ * issued so far (0: none, or a technique without passes: JavaScript answers), +4 the restore list of its open Begin
+ * ([shadow block, count, entries], as COMMIT_LIST; 0: none) — and the word at each technique's handle holds its pass
+ * count (0 at every other handle). DEFER_TECH (SetTechnique): the handle's word must be non-zero, and becomes +0.
+ * DEFER_BEGIN (Begin): +0 must be non-zero; it is written at once where the pass-count pointer points (when given), and
+ * the record's pointer cleared (the handler, run later, must not write there again). DEFER_END (End, with
+ * DEFER_STATES): the shadow entries its restore may set are +4's list, taken (+4 cleared); none: the filter off until
+ * the queue has run.
+ */
+export const DEFER_TECH = 1 << 27, DEFER_BEGIN = 1 << 28, DEFER_END = 1 << 29;
+export const FX_SLOTS = DEFER_HANDLE_BYTES + PARAM_DESC_BYTES, FX_SLOT_BYTES = 8;
+/**
  * Issued-state filter of the device state setters (render, texture stage, sampler states): a device keeps at +12 the
  * address of a STATE_SHADOW block — +0 enabled (0 while a state block records: every set is then recorded), entries of
  * two words (known, value) from +16: SHADOW_RS render states 0..255, SHADOW_TSS stage 0..7 x type 0..39, SHADOW_SAMP
@@ -201,6 +214,11 @@ export const DEFER_SPECS = {
   // the pass's states set again from the parameters (only device calls observe them; always D3D_OK), the pass closed
   ...deferSpecs('ID3DXEffect', [['CommitChanges', 1]], DEFER_OBJ | DEFER_REFS | DEFER_STATES),
   ...deferSpecs('ID3DXEffect', [['EndPass', 1]], DEFER_OBJ),
+  // the technique set, a technique begun (its pass count answered at once, the device states saved when the queue runs),
+  // ended (the states restored: they may change device states and reference counts)
+  ...deferSpecs('ID3DXEffect', [['SetTechnique', 2]], DEFER_HANDLE | DEFER_TECH),
+  ...deferSpecs('ID3DXEffect', [['Begin', 3]], DEFER_OBJ | DEFER_BEGIN),
+  ...deferSpecs('ID3DXEffect', [['End', 1]], DEFER_OBJ | DEFER_REFS | DEFER_STATES | DEFER_END),
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
@@ -438,6 +456,16 @@ export function buildRuntime(opts = {}) {
           const handle = c.if_();
           c.get(A1).get(A0).i32load(12).sub().i32(DEFER_HANDLE_BYTES).ge_u().br_if(notHandled);
           c.end(); void handle;
+          c.get(TM).i32(DEFER_TECH).and();
+          const tech = c.if_(); // (a technique's handle: its word, the pass count, non-zero)
+          c.get(A1).i32(3).and().br_if(notHandled);
+          c.get(A1).i32load(0).eqz().br_if(notHandled);
+          c.end(); void tech;
+          c.get(TM).i32(DEFER_BEGIN).and();
+          const begin = c.if_(); // (a technique set, a pass-count pointer null or writable)
+          c.get(A0).i32load(12).i32load(FX_SLOTS).eqz().br_if(notHandled);
+          c.get(A1).i32(0x7fff0000 - 4).ge_u().br_if(notHandled);
+          c.end(); void begin;
           c.end(); void guarded;
           c.get(TM).i32(15).and().set(N);
           c.get(TM).i32(8).shr_u().i32(0xff).and().set(WD); // (the structure's words)
@@ -498,12 +526,24 @@ export function buildRuntime(opts = {}) {
           c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
           c.get(TEB);
           const nonNull = c.if_();
-          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(TM).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
-          c.get(A2).get(TM).i32store(8);
+          // (FV the copy's address: TM keeps the spec, read again below)
+          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(FV).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
+          c.get(A2).get(FV).i32store(8);
           c.end(); void nonNull;
           c.end(); void struct;
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
           c.get(TM).i32(DEFER_REFS).and(); const refs = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(4); c.end(); void refs;
+          c.get(TM).i32(DEFER_TECH | DEFER_BEGIN).and();
+          const fx = c.if_(); // (an effect's technique: FB = its slots)
+          c.get(SP).i32load(4).i32load(12).i32(FX_SLOTS).add().set(FB);
+          c.get(TM).i32(DEFER_TECH).and();
+          const tq = c.if_(); c.get(FB).get(SP).i32load(8).i32load(0).i32store(0); c.end(); void tq; // (its pass count)
+          c.get(TM).i32(DEFER_BEGIN).and();
+          const bg = c.if_(); // (the pass count answered; the record's pointer cleared)
+          c.get(SP).i32load(8).tee(FV); const out = c.if_(); c.get(FV).get(FB).i32load(0).i32store(0); c.end(); void out;
+          c.get(P).i32(0).i32store(12);
+          c.end(); void bg;
+          c.end(); void fx;
           c.get(FE);
           const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j)
           c.i32(0).set(A2);
@@ -517,7 +557,14 @@ export function buildRuntime(opts = {}) {
           const states = c.if_();
           { // forget the shadow entries of the object's commit list (FB = the list, FE = the shadow block, FV = count, A2 = i)
             const done = c.block(); const stale = c.block();
-            c.get(SP).i32load(4).i32load(COMMIT_LIST).tee(FB).eqz().br_if(stale);
+            c.get(TM).i32(DEFER_END).and();
+            const end = c.if_(); // (End: its Begin's restore list, taken)
+            c.get(SP).i32load(4).i32load(12).i32(FX_SLOTS).add().tee(FE).i32load(4).set(FB);
+            c.get(FE).i32(0).i32store(4);
+            c.else_();
+            c.get(SP).i32load(4).i32load(COMMIT_LIST).set(FB);
+            c.end(); void end;
+            c.get(FB).eqz().br_if(stale);
             c.get(FB).i32(0x7fff0000 - 4 * COMMIT_LIST_WORDS).ge_u().br_if(stale);
             c.get(FB).i32load(0).tee(FE).eqz().br_if(stale);
             c.get(FE).i32(0x7fff0000 - SHADOW_BYTES).ge_u().br_if(stale);

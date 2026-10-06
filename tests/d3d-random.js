@@ -5,9 +5,13 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { registerDirect3D9 } from '../src/win32/d3d9.js';
 import { registerDirect3D8 } from '../src/win32/d3d8.js';
 
-/** A minimal VM for Direct3D: guest memory, allocator, COM objects (pointers reused once released), a call context. */
-export function d3dEnv(gfx, shared = false) {
-  const mem = new GuestMemory({ sizeBytes: 64 << 20, shared });
+/**
+ * A minimal VM for Direct3D: guest memory, allocator, COM objects (pointers reused once released), a call context.
+ * `opts.fullMemory`: the whole guest address space (lazily committed, as the VM's: for tests running guest code through
+ * the JIT); `opts.objectBytes`: the guest size of a COM object (com.js: 24, its words up to an effect's commit list).
+ */
+export function d3dEnv(gfx, shared = false, opts = {}) {
+  const mem = new GuestMemory(opts.fullMemory ? { shared } : { sizeBytes: 64 << 20, shared });
   let top = 0x100000; const freed = new Map(); // size -> addresses (reused: memory recycled like a real heap)
   const alloc = (n) => { n = (Math.max(n, 16) + 15) & ~15; const l = freed.get(n); if (l?.length) return l.pop(); const a = top; top += n; if (top > (60 << 20)) throw new Error('test heap full'); return a; };
   const sizes = new Map();
@@ -16,7 +20,7 @@ export function d3dEnv(gfx, shared = false) {
   const objects = new Map();
   const com = {
     objects, interface() {}, supports: () => true,
-    create(p, iface, impl) { const ptr = proc.processHeap.alloc(16); const obj = { ptr, impl, refs: 1, proc: p }; objects.set(ptr, obj); impl.comObject = obj; return ptr; },
+    create(p, iface, impl) { const ptr = proc.processHeap.alloc(opts.objectBytes ?? 16); const obj = { ptr, impl, refs: 1, proc: p }; objects.set(ptr, obj); impl.comObject = obj; return ptr; },
     objectAt: (ptr) => objects.get(ptr >>> 0) ?? null, implAt: (ptr) => objects.get(ptr >>> 0)?.impl ?? null,
     addRef: (o) => ++o.refs,
     release(o) { if (--o.refs > 0) return o.refs; if (o.impl.keepAlive) { o.refs = 0; return 0; } com.dispose(o); return 0; },

@@ -60,6 +60,11 @@ export function preshader({ literals = [], insns = [], inputs = [], outRanges = 
   return inner;
 }
 
+/** an effect expression ('FX' token stream: a state's value, an array index) — a preshader program, out[0] its value */
+export const expression = (prog) => preshader(prog).toBytes();
+/** an array selector: the array parameter's name, then the expression giving the element */
+export function selector(array, prog) { const w = new Words(), b = cstr(array); w.u32(b.length); w.bytes(b); w.bytes(expression(prog)); return w.toBytes(); }
+
 /** shader bytecode: version token, CTAB (`consts`: [name, set, reg, count, T]), an optional preshader, then `body` */
 export function shader(vs, consts, pre = null, body = []) {
   const version = vs ? 0xfffe0300 : 0xffff0300;
@@ -71,9 +76,11 @@ export function shader(vs, consts, pre = null, body = []) {
 }
 
 /**
- * An effect: `params` [{ name, t: T, value?: number[] (raw words), samplers?: [[op, index, refName | value]...] per element }],
- * `techniques` [{ name, passes: [{ name, states: [{ op, index, value?: raw word | shader bytes, ref?: name }] }] }].
- * Shader states take their own bytecode (value: Uint8Array) or a shader parameter's (ref).
+ * An effect: `params` [{ name, t: T, value?: number[] (raw words), samplers?: [[op, index, refName | value]...] per element,
+ * shaders?: [bytes per element] (shader parameters) }], `techniques` [{ name, passes: [{ name, states: [{ op, index,
+ * value?: raw word | shader bytes, ref?: name, expr?: program (the value an expression computes), select?: { array, expr }
+ * (a shader parameter's element an expression picks) }] }] }]. Shader states take their own bytecode (value: Uint8Array),
+ * a shader parameter's (ref) or an element of a shader array (select).
  */
 export function effectBinary({ params, techniques }) {
   const pool = new Words(); pool.u32(0);
@@ -120,11 +127,14 @@ export function effectBinary({ params, techniques }) {
     if (cls === 'vs' || cls === 'ps') {
       const ty = typeOf({ cls: PC.OBJECT, type: cls === 'vs' ? PT.VERTEXSHADER : PT.PIXELSHADER });
       const v = pool.u32(nextObj++);
-      if (s.ref) resources.push([ti, pi, 0, si, 1, cstr(s.ref)]); else resources.push([ti, pi, 0, si, 0, s.value]);
+      if (s.ref) resources.push([ti, pi, 0, si, 1, cstr(s.ref)]);
+      else if (s.select) resources.push([ti, pi, 0, si, 2, selector(s.select.array, s.select.expr)]);
+      else resources.push([ti, pi, 0, si, 0, s.value]);
       return [s.op, s.index ?? 0, ty, v];
     }
     if (cls === 'sampler') { const ty = typeOf({ cls: PC.OBJECT, type: PT.SAMPLER2D }); resources.push([ti, pi, 0, si, 1, cstr(s.ref)]); return [s.op, s.index ?? 0, ty, pool.u32(0)]; }
     if (s.ref) resources.push([ti, pi, 0, si, 1, cstr(s.ref)]);
+    else if (s.expr) resources.push([ti, pi, 0, si, 0, expression(s.expr)]);
     return [s.op, s.index ?? 0, intType, pool.u32(s.value ?? 0)];
   })])]);
   void objects;

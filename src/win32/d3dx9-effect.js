@@ -4,7 +4,7 @@
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, FX_SLOTS, FX_SLOT_BYTES } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
@@ -54,12 +54,21 @@ export function effectResources(parsed) {
     const key = r.technique === 0xffffffff ? `p${r.index}:${r.element}:${r.state}` : `${r.technique}:${r.index}:${r.state}`;
     // usage 0: compiled code — a shader, or (version token 'FX') an expression computing the state's value from
     // parameters (e.g. AlphaTestEnable = (a bool parameter)), evaluated whenever the pass is applied
-    if (r.usage === 0 && r.data.length >= 4 && (new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true) >>> 16) === 0x4658) exprs.set(key, { name: null, prog: expressionInfo(r.data) });
-    else if (r.usage === 0) shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, { bytes: r.data, ptr: 0, info: null });
+    if (r.usage === 0 && r.data.length >= 4 && (new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true) >>> 16) === 0x4658) exprs.set(key, { name: null, prog: expressionInfo(r.data), P: null });
+    else if (r.usage === 0) shaders.set(r.technique === 0xffffffff ? `p${r.index}:${r.element}` : key, shaderRecord(r.data));
     else if (r.usage === 1) refs.set(key, cstrOf(r.data));
-    else if (r.usage === 2) { const n = new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true); const name = cstrOf(r.data.subarray(4, 4 + n)); exprs.set(key, { name, prog: expressionInfo(r.data.subarray(4 + ((n + 3) & ~3))) }); }
+    else if (r.usage === 2) { const n = new DataView(r.data.buffer, r.data.byteOffset).getUint32(0, true); const name = cstrOf(r.data.subarray(4, 4 + n)); exprs.set(key, { name, prog: expressionInfo(r.data.subarray(4 + ((n + 3) & ~3))), P: null }); }
   }
   return { shaders, exprs, refs };
+}
+
+/**
+ * A shader of an effect (its bytecode; the device object and the constant-table bindings made at its first use, see
+ * shaderAt), every field present from the start: the binding loops read these records (and the parameter nodes, see
+ * buildParam) at every pass and commit, and objects of one shape keep those reads monomorphic.
+ */
+function shaderRecord(bytes) {
+  return { bytes, ptr: 0, impl: null, info: null, vs: false, consts: null, samplers: null, pre: null, constVersion: -1, constAll: false, constRegs: null, preRuns: -1, guestCode: 0 };
 }
 
 export function defineEffects(X, vm, h) {
@@ -77,31 +86,44 @@ export function defineEffects(X, vm, h) {
       this.strAddrs = new Map();
       this.handles = new Map(); // handle -> node
       this.handleNodes = []; // (the same by slot: (handle - handleBlock) / 4, see param)
-      // (followed by the cache of parameter descriptions the JIT's GetParameterDesc reads: runtime.js FID_PARAM_DESC)
-      this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES + PARAM_DESC_BYTES);
-      mem.fill(this.handleBlock + DEFER_HANDLE_BYTES, PARAM_DESC_BYTES, 0);
+      // (followed by the cache of parameter descriptions the JIT's GetParameterDesc reads, runtime.js FID_PARAM_DESC, and
+      // the technique slots of the queued technique calls, FX_SLOTS; the word at each technique's handle: its pass count)
+      this.handleBlock = c.proc.processHeap.alloc(FX_SLOTS + FX_SLOT_BYTES);
+      mem.fill(this.handleBlock, FX_SLOTS + FX_SLOT_BYTES, 0);
       this.nextHandle = 0;
       this.params = parsed.params.map((p, i) => this.buildParam(p.type, p.value, p.annotations, `${i}`, null, p.flags));
       this.byName = new Map(this.params.map((p) => [p.name, p]));
-      this.techniques = parsed.techniques.map((t, ti) => ({ kind: 'technique', name: t.name, annotations: t.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}a${k}`)), passes: t.passes.map((ps, pi) => ({ kind: 'pass', name: ps.name, index: pi, technique: ti, states: ps.states, annotations: ps.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}p${pi}a${k}`)) })) }));
+      // (techniques and passes, as parameter nodes, with every field they get later: see buildParam)
+      this.techniques = parsed.techniques.map((t, ti) => ({ kind: 'technique', name: t.name, handle: 0, touched: null, restoreList: 0, restoreShadow: 0, annotations: t.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}a${k}`)),
+        passes: t.passes.map((ps, pi) => ({ kind: 'pass', name: ps.name, handle: 0, index: pi, technique: ti, states: ps.states, ops: null, allFns: null, dynFns: null, shaderSel: null, commitEntries: undefined, annotations: ps.annotations.map((a, k) => this.buildParam(a.type, a.value, [], `t${ti}p${pi}a${k}`)) })) }));
       for (const t of this.techniques) { this.handleOf(t); for (const ps of t.passes) this.handleOf(ps); }
       ({ shaders: this.shaders, exprs: this.exprs, refs: this.refs } = effectResources(parsed));
       this.technique = this.techniques[0] ?? null;
+      mem.write32(this.handleBlock + FX_SLOTS, this.technique?.passes.length ?? 0);
       this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
+      // (filled at first use; declared here so that every effect object has one shape: the per-call methods read them)
+      this.comObject = null; this.devImpl = null; this.devObj = null; this.fastCtx = null; this.devFns = null; this.vsRegsRaw = undefined; this.psRegsRaw = undefined;
+      this.paramShaders = null; this.missing = null; this.unknownOps = null; this.commitBlock = 0; this.commitPublished = null; this.commitShadow = 0; this.noRestore = 0;
     }
     handleOf(node) {
       if (!node.handle) {
         const k = this.nextHandle++ % (DEFER_HANDLE_BYTES / 4);
         node.handle = this.handleBlock + 4 * k; this.handles.set(node.handle, node); this.handleNodes[k] = node;
+        mem.write32(node.handle, node.kind === 'technique' ? node.passes.length : 0); // (runtime.js DEFER_TECH: a technique's pass count)
         const e = this.descEntry(node.handle); if (mem.read32(e) === node.handle) mem.write32(e, 0); // (a handle given again: its old description gone)
       }
       return node.handle;
     }
     /** the description cache entry of handle `h` (runtime.js FID_PARAM_DESC) */
     descEntry(h) { return this.handleBlock + DEFER_HANDLE_BYTES + (((h - this.handleBlock) >>> 2) & (PARAM_DESC_SLOTS - 1)) * PARAM_DESC_ENTRY; }
-    /** a parameter node: numeric words (views into one buffer per top-level parameter), objects per element leaf */
+    /**
+     * A parameter node: numeric words (views into one buffer per top-level parameter), objects per element leaf. Every
+     * field a node gets later is there from the start (its handle, its version, its compiled sampler states): the setters
+     * and the bindings read nodes of every parameter at the same sites, which stay monomorphic with one shape for all.
+     */
     buildParam(type, value, annotations, path, parent = null, flags = 0, words = null) {
-      const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null };
+      const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, handle: 0, version: 0, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null,
+        samplerOps: null, samplerConst: false, samplerTexOps: null, samplerSeen: null };
       const count = Math.max(1, type.elements);
       if (type.cls === PC.OBJECT) {
         if (isSamplerType(type.type)) node.samplerStates = value?.samplers ?? [];
@@ -178,7 +200,7 @@ export function defineEffects(X, vm, h) {
     GetAnnotationByName(c) { const name = c.arg(2) ? mem.readCString(c.arg(2), 256) : ''; const a = this.annotationsOf(c.arg(1)).find((x) => x.name === name); return a ? this.handleOf(a) : 0; }
 
     // ---- values
-    touched(n) { if (this.recording) this.recording.add(n); for (let p = n; p; p = p.parent) p.version = (p.version ?? 0) + 1; }
+    touched(n) { if (this.recording) this.recording.add(n); for (let p = n; p !== null; p = p.parent) p.version++; }
     /**
      * A numeric parameter written (`ch`: a word changed): its version moves only on a real change — games set most
      * parameters again with the values they hold (three writes in four in BFME2 play), and an unmoved version spares
@@ -282,7 +304,7 @@ export function defineEffects(X, vm, h) {
 
     // ---- techniques and passes
     GetPool(c) { if (c.arg(1)) mem.write32(c.arg(1), 0); return D3D_OK; }
-    SetTechnique(c) { const t = this.tech(c.arg(1)); if (!t) return D3DERR_INVALIDCALL; this.technique = t; }
+    SetTechnique(c) { const t = this.tech(c.arg(1)); if (!t) return D3DERR_INVALIDCALL; this.technique = t; mem.write32(this.handleBlock + FX_SLOTS, t.passes.length); }
     GetCurrentTechnique() { return this.technique?.handle ?? 0; }
     ValidateTechnique(c) { return this.tech(c.arg(1)) ? D3D_OK : D3DERR_INVALIDCALL; }
     FindNextValidTechnique(c) { const t = c.arg(1) ? this.tech(c.arg(1)) : null; const i = t ? this.techniques.indexOf(t) + 1 : 0; const n = this.techniques[i]; if (c.arg(2)) mem.write32(c.arg(2), n ? n.handle : 0); return D3D_OK; }
@@ -311,12 +333,13 @@ export function defineEffects(X, vm, h) {
       if (c.arg(1)) mem.write32(c.arg(1), t.passes.length);
       const flags = c.arg(2);
       this.saved = (flags & 1) ? null : this.snapshot(c, t, flags);
+      mem.write32(this.handleBlock + FX_SLOTS + 4, this.restoreList(c, t, this.saved !== null)); // (for a queued End: runtime.js DEFER_END)
       return D3D_OK;
     }
     BeginPass(c) { const ps = this.technique?.passes[c.arg(1)]; if (!ps) return D3DERR_INVALIDCALL; this.pass = ps; this.apply(c, ps, false); this.publishCommit(c, ps); if (globalThis.ORTHROS_FX_BURST && (vm.fxPasses = (vm.fxPasses ?? 0) + 1) === globalThis.ORTHROS_FX_BURST) vm.startApiBurst(c.thread, 3000); }
     CommitChanges(c) { if (this.pass) this.apply(c, this.pass, true); }
     EndPass() { this.pass = null; }
-    End(c) { if (this.saved) this.restore(c, this.saved); this.saved = null; this.pass = null; }
+    End(c) { if (this.saved) this.restore(c, this.saved); this.saved = null; this.pass = null; mem.write32(this.handleBlock + FX_SLOTS + 4, 0); }
     destroy() {
       for (const p of this.allParams()) if (p.obj?.ptr && isTextureType(p.type.type) && com.objectAt(p.obj.ptr)) com.release(com.objectAt(p.obj.ptr));
       for (const sh of this.shaders.values()) if (sh.ptr && com.objectAt(sh.ptr)) com.release(com.objectAt(sh.ptr));
@@ -387,7 +410,7 @@ export function defineEffects(X, vm, h) {
     /** the shader object with this id (its bytecode in the effect's object table), created once */
     objectShader(id) {
       const key = `o${id}`;
-      if (!this.shaders.has(key)) { const data = this.fx.objects.get(id); if (!data || data.length < 8) return null; this.shaders.set(key, { bytes: data, ptr: 0, info: null }); }
+      if (!this.shaders.has(key)) { const data = this.fx.objects.get(id); if (!data || data.length < 8) return null; this.shaders.set(key, shaderRecord(data)); }
       return this.shaderAt(key);
     }
     /** the shader of element `el` of shader parameter `pi` (a resource of its own, else the object its value names) */
@@ -411,7 +434,7 @@ export function defineEffects(X, vm, h) {
         const out = this.proc.processHeap.alloc(4);
         const ctx = vm.effectCtx;
         const r = h.callMethod(ctx, this.dev, sh.vs ? 'CreateVertexShader' : 'CreatePixelShader', [code, out]);
-        sh.ptr = r ? 0 : mem.read32(out);
+        sh.ptr = r ? 0 : mem.read32(out); sh.impl = sh.ptr ? com.implAt(sh.ptr) : null;
         if (r) vm.log('gfx', `d3dx effect: ${sh.vs ? 'vertex' : 'pixel'} shader creation failed (0x${(r >>> 0).toString(16)})`);
         this.proc.processHeap.free_(out); this.proc.processHeap.free_(code);
         // constant-table bindings resolved once: parameter, register layout plan, sampler parameters
@@ -443,10 +466,10 @@ export function defineEffects(X, vm, h) {
     runProgram(P) {
       // (the version of the input's top-level parameter: a write to the whole parameter moves it, not its elements')
       let changed = !P.versions;
-      if (!changed) for (let i = 0; i < P.inputs.length; i++) if ((P.inputs[i].top.version ?? 0) !== P.versions[i]) { changed = true; break; }
+      if (!changed) for (let i = 0; i < P.inputs.length; i++) if (P.inputs[i].top.version !== P.versions[i]) { changed = true; break; }
       if (!changed) return P.out;
       const vs = P.versions ??= new Float64Array(P.inputs.length);
-      for (let i = 0; i < P.inputs.length; i++) vs[i] = P.inputs[i].top.version ?? 0;
+      for (let i = 0; i < P.inputs.length; i++) vs[i] = P.inputs[i].top.version;
       for (const i of P.inputs) this.fill(i.plan, P.regs, 4 * i.e.reg);
       P.run(P.regs, P.out);
       P.runs++;
@@ -474,6 +497,19 @@ export function defineEffects(X, vm, h) {
       }
       const v = e[1]; // (an object id of the table)
       return v instanceof Uint32Array && v[0] ? this.objectShader(v[0]) : null;
+    }
+    /**
+     * stateShader for a pass state whose shader an expression picks in an array (the other kinds resolve once, see
+     * compilePass): the array's shaders kept by element on the state's resolution (sel[k][4]), the expression evaluated.
+     */
+    pickShader(ps, k) {
+      if (apiOpt.off) return this.stateShader(ps, k);
+      const e = ps.shaderSel?.[k];
+      if (e === undefined || e[0] !== 1 || e[1] === null || !e[3]) return this.stateShader(ps, k);
+      const el = this.evalIndex(e[3], e[1].elements.length || 1), cands = e[4] ??= [];
+      let sh = cands[el];
+      if (sh === undefined) { sh = this.paramShader(e[2], el); if (sh !== null) cands[el] = sh; }
+      return sh;
     }
     /** every shader state k of pass ps may pick: each element of the array an expression indexes, else its one shader */
     stateShaderCandidates(ps, k) {
@@ -566,7 +602,7 @@ export function defineEffects(X, vm, h) {
       const raw = ra.w, consts = sh.consts;
       let wrote = false;
       for (let i = 0; i < consts.length; i++) {
-        const b = consts[i], v = b.top.version ?? 0;
+        const b = consts[i], v = b.top.version;
         if (b.u && b.plan.allFloat) {
           if (b.dv === v && same) continue;
           this.setFloatPlan(dev, vs, raw, b.reg, b.count, b.plan);
@@ -617,7 +653,7 @@ export function defineEffects(X, vm, h) {
       const same = dev !== null && sh.constVersion === ver && sh.constAll === all && sh.constRegs === regs;
       let wrote = false;
       for (const b of sh.consts) {
-        const v = b.top.version ?? 0;
+        const v = b.top.version;
         if (b.ver !== v) { this.fill(b.plan, b.vals); b.ver = v; }
         else if (same) continue;
         this.setConsts(c, vs, b.e.set, b.e.reg, b.e.count, b.vals); wrote = true;
@@ -696,7 +732,19 @@ export function defineEffects(X, vm, h) {
       const v = s.value instanceof Uint32Array ? s.value[0] ?? 0 : 0;
       return () => v;
     }
-    /** a pass compiled once into state operations: [function(c), dynamic (depends on parameters)] */
+    /**
+     * A pass compiled once into state operations ({ f(c, d), dyn: depends on parameters, touches }), with their functions
+     * listed for BeginPass (all) and CommitChanges (the dynamic ones). `d` (apply): the device when its own setters
+     * receive the calls and no state block records them (plainDev), else null — found once per pass applied.
+     */
+    opsOf(ps) {
+      if (ps.ops === null) {
+        const ops = this.compilePass(ps);
+        ps.allFns = ops.map((o) => o.f); ps.dynFns = ops.filter((o) => o.dyn).map((o) => o.f);
+        ps.ops = ops;
+      }
+      return ps.ops;
+    }
     compilePass(ps) {
       const ops = [];
       ps.states.forEach((s, k) => {
@@ -708,21 +756,38 @@ export function defineEffects(X, vm, h) {
         switch (cls) {
           // (a state the device already holds is left alone, as its handler would: no call at all — a pass sets its
           // states at every BeginPass)
-          case 'rs': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.rs.get(idx) !== v) this.call(c, M.SetRenderState, 2, idx, v); }; touches = { rs: idx }; break;
-          case 'tss': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.tss[s.index]?.get(idx) !== v) this.call(c, M.SetTextureStageState, 3, s.index, idx, v); }; touches = { tss: [s.index, idx] }; break;
-          case 'samp': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || s.index >= 16 || d.samplers?.[s.index]?.get(idx) !== v) this.call(c, M.SetSamplerState, 3, s.index, idx, v); }; touches = { samp: [s.index, idx] }; break;
+          // (a constant value — no parameter, no expression — taken once)
+          case 'rs': {
+            const v0 = dyn ? 0 : word() >>> 0;
+            f = dyn ? (c, d) => { const v = word() >>> 0; if (d === null || d.rs.get(idx) !== v) this.call(c, M.SetRenderState, 2, idx, v, 0); }
+              : (c, d) => { if (d === null || d.rs.get(idx) !== v0) this.call(c, M.SetRenderState, 2, idx, v0, 0); };
+            touches = { rs: idx }; break;
+          }
+          case 'tss': {
+            const st = s.index, v0 = dyn ? 0 : word() >>> 0;
+            f = dyn ? (c, d) => { const v = word() >>> 0; if (d === null || d.tss[st]?.get(idx) !== v) this.call(c, M.SetTextureStageState, 3, st, idx, v); }
+              : (c, d) => { if (d === null || d.tss[st]?.get(idx) !== v0) this.call(c, M.SetTextureStageState, 3, st, idx, v0); };
+            touches = { tss: [st, idx] }; break;
+          }
+          case 'samp': {
+            const r = s.index, v0 = dyn ? 0 : word() >>> 0;
+            f = dyn ? (c, d) => { const v = word() >>> 0; if (d === null || r >= 16 || d.samplers?.[r]?.get(idx) !== v) this.call(c, M.SetSamplerState, 3, r, idx, v); }
+              : (c, d) => { if (d === null || r >= 16 || d.samplers?.[r]?.get(idx) !== v0) this.call(c, M.SetSamplerState, 3, r, idx, v0); };
+            touches = { samp: [r, idx] }; break;
+          }
           case 'fvf': f = (c) => this.call(c, M.SetFVF, 1, word()); break;
           case 'npatch': f = (c) => this.call(c, M.SetNPatchMode, 1, word()); break;
           case 'lightenable': f = (c) => this.call(c, M.LightEnable, 2, s.index, word()); break;
           case 'vs': case 'ps': {
-            const vsState = cls === 'vs', fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
+            const vsState = cls === 'vs', setId = vsState ? M.SetVertexShader : M.SetPixelShader, fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
             touches = fixed ? { shader: fixed } : { shaderState: k }; // (picked by an expression: one of its array's, see commitEntries)
-            f = (c) => {
-              const sh = fixed ?? this.stateShader(ps, k);
-              if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
-              const d = this.plainDev(), p = sh?.ptr ?? 0; // (the shader the device already has: no call, its handler would change nothing)
-              if (d === null || ((vsState ? d.vsObj : d.psObj)?.comObject?.ptr ?? 0) !== p) this.call(c, vsState ? M.SetVertexShader : M.SetPixelShader, 1, p);
-              if (sh) this.bindShader(c, sh);
+            f = (c, d) => {
+              const sh = fixed ?? this.pickShader(ps, k);
+              if (sh === null || !sh.ptr) this.noShader(key, cls, ps, k);
+              // (the shader the device already has: no call, its handler would change nothing — the device's shader
+              // object compared with the one created for this record, sh.impl)
+              if (d === null || (vsState ? d.vsObj : d.psObj) !== (sh === null ? null : sh.impl)) this.call(c, setId, 1, sh === null ? 0 : sh.ptr, 0, 0);
+              if (sh !== null) this.bindShader(c, sh);
             };
             break;
           }
@@ -747,6 +812,10 @@ export function defineEffects(X, vm, h) {
       });
       return ops;
     }
+    /** a pass state with no shader to set (its log line, once per state) */
+    noShader(key, cls, ps, k) {
+      if ((this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
+    }
     /**
      * The device states CommitChanges may set for pass `ps`, for the JIT's issued-state filter (runtime.js COMMIT_LIST):
      * the shadow entries of the render / stage / sampler states its dynamic operations set — a queued CommitChanges
@@ -762,8 +831,7 @@ export function defineEffects(X, vm, h) {
       const tex = (st) => { if (st >= 0 && st < 16) out.add(SHADOW_TEX + st); }; // (a texture bound: runtime.js DEFER_F_TEX)
       const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); else tex(reg); };
       let any = false;
-      ps.ops ??= this.compilePass(ps);
-      for (const o of ps.ops) {
+      for (const o of this.opsOf(ps)) {
         if (!o.dyn) continue;
         const t = o.touches;
         if (!t) continue;
@@ -782,17 +850,24 @@ export function defineEffects(X, vm, h) {
     publishCommit(c, ps) {
       const self = this.comObject?.ptr; if (!self) return;
       const dev = this.devImpl ??= com.implAt(this.dev);
-      const list = this.commitBlock ??= c.proc.processHeap.alloc(4 * COMMIT_LIST_WORDS);
-      const e = dev?.shadow ? this.commitEntries(ps) : null;
-      mem.write32(list, dev?.shadow ?? 0);
+      const list = this.commitBlock ||= c.proc.processHeap.alloc(4 * COMMIT_LIST_WORDS);
+      const shadow = dev?.shadow ?? 0;
+      // (the block holds this pass's list already — the same pass begun again on the same device shadow: nothing to
+      // write; only this function writes the block)
+      if (this.commitPublished === ps && this.commitShadow === shadow && !apiOpt.off) { mem.write32(self + COMMIT_LIST, list); return; }
+      this.commitPublished = ps; this.commitShadow = shadow;
+      const e = shadow ? this.commitEntries(ps) : null;
+      mem.write32(list, shadow);
       if (!e || e.length > COMMIT_LIST_WORDS - 2) mem.write32(list + 4, 0xffffffff);
       else { mem.write32(list + 4, e.length); for (let i = 0; i < e.length; i++) mem.write32(list + 8 + 4 * i, e[i]); }
       mem.write32(self + COMMIT_LIST, list);
     }
     apply(c, ps, commit) {
-    vm.effectCtx = c;
-      const ops = ps.ops ??= this.compilePass(ps);
-      for (let i = 0; i < ops.length; i++) { const o = ops[i]; if (!commit || o.dyn) o.f(c); } // (CommitChanges: what depends on parameters)
+      vm.effectCtx = c;
+      if (ps.ops === null) this.opsOf(ps);
+      const fns = commit ? ps.dynFns : ps.allFns; // (CommitChanges: what depends on parameters)
+      const d = this.plainDev(); // (no operation starts or ends a state block, nor sets a state manager: one answer for all)
+      for (let i = 0; i < fns.length; i++) fns[i](c, d);
     }
     /**
      * The device states a technique touches, as they are now (restored at End): the states are listed once per
@@ -816,6 +891,33 @@ export function defineEffects(X, vm, h) {
       for (let i = 0; i < s.tex.length; i++) s.vals[k++] = dev.textures[s.tex[i]] ?? 0;
       s.vs = (flags & 2) ? undefined : dev.vsObj?.comObject?.ptr ?? 0; s.ps = (flags & 2) ? undefined : dev.psObj?.comObject?.ptr ?? 0;
       return s;
+    }
+    /**
+     * The shadow entries (runtime.js COMMIT_LIST format) the restore at End may set for technique `t` (`saving`: Begin
+     * saved the states; else none): its render and stage states and its textures — a queued End forgets them (DEFER_END).
+     * Written once per technique and device shadow; 0 when the device keeps no shadow.
+     */
+    restoreList(c, t, saving) {
+      const dev = this.devImpl ??= com.implAt(this.dev), shadow = dev?.shadow ?? 0;
+      if (!shadow) return 0;
+      if (!saving) return this.emptyList(c, shadow);
+      if (t.restoreList !== 0 && t.restoreShadow === shadow) return t.restoreList;
+      const s = t.touched, e = [];
+      for (let i = 0; i < s.rs.length; i++) if (s.rs[i] >= 0 && s.rs[i] < 256) e.push(SHADOW_RS + s.rs[i]);
+      for (let i = 0; i < s.tss.length; i++) { const st = s.tss[i] >> 8, ty = s.tss[i] & 255; if (st >= 0 && st < 8 && ty < 40) e.push(SHADOW_TSS + 40 * st + ty); }
+      for (let i = 0; i < s.tex.length; i++) if (s.tex[i] >= 0 && s.tex[i] < 16) e.push(SHADOW_TEX + s.tex[i]);
+      const list = t.restoreList || (t.restoreList = c.proc.processHeap.alloc(4 * COMMIT_LIST_WORDS));
+      mem.write32(list, shadow);
+      if (e.length > COMMIT_LIST_WORDS - 2) mem.write32(list + 4, 0xffffffff);
+      else { mem.write32(list + 4, e.length); for (let i = 0; i < e.length; i++) mem.write32(list + 8 + 4 * i, e[i]); }
+      t.restoreShadow = shadow;
+      return list;
+    }
+    /** a list of no entries (Begin without saving states: nothing to restore at End) */
+    emptyList(c, shadow) {
+      const list = this.noRestore ||= c.proc.processHeap.alloc(8);
+      mem.write32(list, shadow); mem.write32(list + 4, 0);
+      return list;
     }
     restore(c, s) {
       let k = 0;
