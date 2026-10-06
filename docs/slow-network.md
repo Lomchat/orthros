@@ -21,8 +21,11 @@ this server (localhost), where none of this shows.
 `src/vfs/net-link.js` (`NetLink`, one per page, shared by the game's folder and the games it requires):
 
 - **Bandwidth measured** from the transfers themselves: wire bytes (the encoded body: `Content-Length`) over the time
-  the link was busy (concurrent requests count once), less one round trip per busy stretch; the round trip is the
-  shortest time to the first byte of an answer (`firstByte`: when `fetch` resolves, before the body). Kept by the page
+  the link was busy (concurrent requests count once), from the first byte of each answer to its end; the round trip is
+  the shortest time to the first byte of an answer (`firstByte`: when `fetch` resolves, before the body). The rate is
+  taken over the answers ended within the last 20 s, up to the first byte of the oldest answer still arriving (it
+  shares the link without its bytes counted yet), an answer begun before that horizon counted pro rata — without
+  this, a long game read beside small background answers read an 85 KB/s link as 20-35 KB/s. Kept by the page
   (`localStorage['orthros.netBw']`) as the next visit's first estimate. Until measured, the link is treated with care
   (256 KiB requests, two background requests at most).
 - **Three regimes** by the measured rate:
