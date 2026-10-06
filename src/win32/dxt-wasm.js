@@ -1,0 +1,294 @@
+// The DXT1/3/5 block encoder of d3dx9-image.js (encodeDxtRows) as a WebAssembly SIMD kernel: the same blocks, bit for
+// bit. Every decision of the JavaScript encoder is taken on the same values computed the same way: endpoint texels by
+// integer luminance (first minimum / maximum), the palette on f64 (k * 255 / 31...), each texel's projection on the
+// endpoint axis in f64 with the same operations in the same order (two texels per f64x2: IEEE results do not depend on
+// the lane), the same thresholds and comparisons; the DXT5 alpha levels and distances in f64 with the same strict
+// "nearer than every earlier level" scan. No fused multiply-add (WebAssembly has none outside relaxed SIMD).
+// The module imports its memory: a private one on the calling thread, or the DXT pool's shared memory in the helpers
+// (dxt-pool.js), which then encode their block rows in place.
+import { ModuleBuilder, Code, T } from '../cpu/jit/wasm.js';
+
+/** fmt argument of encodeRows: 1 DXT1 (with its transparent mode), 3 DXT2/3 (explicit alpha), 5 DXT4/5 (interpolated alpha) */
+export const KIND = Object.freeze({ DXT1: 1, DXT3: 3, DXT5: 5 });
+/** bytes of scratch a call needs (the 4 x 4 texels of the block, 16-byte aligned) */
+export const SCRATCH_BYTES = 64;
+
+const i32x4c = (a, b, c, d) => { const v = new Uint8Array(16), dv = new DataView(v.buffer); [a, b, c, d].forEach((x, i) => dv.setInt32(4 * i, x, true)); return v; };
+const HI_TO_LO = [8, 9, 10, 11, 12, 13, 14, 15, 8, 9, 10, 11, 12, 13, 14, 15]; // (i32 lanes 2, 3 -> 0, 1)
+const SWAP64 = [8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7], SWAP32 = [4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11];
+
+/**
+ * colorBlock(px, out): one color block (8 bytes at out) of the 16 RGBA texels at px. `transparent`: DXT1's 3-color mode
+ * for texels whose alpha is below 128 (the function for DXT1), else the 4-color mode only (DXT3/5's color half).
+ */
+function colorBlockCode(transparent) {
+  const c = new Code();
+  const PX = 0, OUT = 1;
+  let n = 2;
+  const R = [n++, n++, n++, n++], TM = [n++, n++, n++, n++]; // v128: the rows; their transparent-texel masks
+  const V = n++, W = n++, MN = n++, MX = n++; // v128 scratch
+  const BR = n++, BG = n++, BB = n++, DR = n++, DG = n++, DB = n++, HI0 = n++, MID = n++, LOW = n++, NN = n++, NH = n++; // v128 (f64x2)
+  const v128Count = n - 2;
+  const LO = n++, HI = n++, ANYT = n++, C0 = n++, C1 = n++, IDX = n++, MLO = n++, MHI = n++, B0 = n++, B1 = n++, TB = n++, TT = n++;
+  const i32Count = n - 2 - v128Count;
+  const AR = n++, AG = n++, AB = n++, FBR = n++, FBG = n++, FBB = n++, FDR = n++, FDG = n++, FDB = n++, DD = n++;
+  const f64Count = n - 2 - v128Count - i32Count;
+  const k255 = i32x4c(255, 255, 255, 255);
+  // the rows, each texel's luminance r * 2 + g * 4 + b, with transparent texels out of the minimum and maximum
+  for (let k = 0; k < 4; k++) {
+    c.get(PX).v128load(16 * k).set(R[k]);
+    // l = (r << 1) + (g << 2) + b
+    c.get(R[k]).v128const(k255).v128and().i32(1).i32x4shl();
+    c.get(R[k]).i32(8).i32x4shr_u().v128const(k255).v128and().i32(2).i32x4shl().i32x4add();
+    c.get(R[k]).i32(16).i32x4shr_u().v128const(k255).v128and().i32x4add().set(V);
+    if (transparent) {
+      c.get(R[k]).v128const(i32x4c(-1, -1, -1, -1)).i32x4gt_s().set(TM[k]); // (alpha < 128: the word's sign bit clear)
+      // minimum: transparent texels at 0x7fffffff; maximum: at -1 (luminances are 0..1785)
+      if (k === 0) { c.get(V).get(TM[k]).i32(1).i32x4shr_u().v128or().set(MN); c.get(V).get(TM[k]).v128or().set(MX); }
+      else { c.get(MN).get(V).get(TM[k]).i32(1).i32x4shr_u().v128or().i32x4min_s().set(MN); c.get(MX).get(V).get(TM[k]).v128or().i32x4max_s().set(MX); }
+      // (the per-row values again for the index search below: kept in TM's companions)
+    } else if (k === 0) { c.get(V).set(MN); c.get(V).set(MX); } else { c.get(MN).get(V).i32x4min_s().set(MN); c.get(MX).get(V).i32x4max_s().set(MX); }
+    c.get(V).set(k === 0 ? NN : k === 1 ? NH : k === 2 ? W : V); // (row luminances kept: rows 0..2 in NN, NH, W; row 3 stays in V)
+  }
+  // horizontal minimum / maximum, splatted
+  c.get(MN).get(MN).get(MN).i8x16shuffle(SWAP64).i32x4min_s().set(MN); c.get(MN).get(MN).get(MN).i8x16shuffle(SWAP32).i32x4min_s().set(MN);
+  c.get(MX).get(MX).get(MX).i8x16shuffle(SWAP64).i32x4max_s().set(MX); c.get(MX).get(MX).get(MX).i8x16shuffle(SWAP32).i32x4max_s().set(MX);
+  // first texel at the minimum (lo) and at the maximum (hi): bitmasks of the rows' equalities, lowest bit set
+  const rowLum = (k) => {
+    const v = k === 0 ? NN : k === 1 ? NH : k === 2 ? W : V;
+    c.get(v);
+  };
+  const firstEq = (ext, toward, dst) => { // ext: MN or MX; toward: transparent texels' value
+    for (let k = 0; k < 4; k++) {
+      rowLum(k);
+      if (transparent) { c.get(TM[k]); if (toward === 'min') c.i32(1).i32x4shr_u(); c.v128or(); }
+      c.get(ext).i32x4eq().i32x4bitmask();
+      if (k) c.i32(4 * k).shl().or();
+    }
+    c.ctz().set(dst);
+  };
+  firstEq(MN, 'min', LO); firstEq(MX, 'max', HI);
+  if (transparent) c.get(TM[0]).get(TM[1]).v128or().get(TM[2]).get(TM[3]).v128or().v128or().v128anytrue().set(ANYT);
+  // endpoints: to565 of the brightest (c0) and darkest (c1) texels
+  const to565 = (texelIdx) => {
+    c.get(PX).get(texelIdx).i32(2).shl().add().i32load(0).set(TT);
+    c.get(TT).i32(0xf8).and().i32(8).shl().get(TT).i32(5).shr_u().i32(0x7e0).and().or().get(TT).i32(19).shr_u().i32(0x1f).and().or();
+  };
+  to565(HI); c.set(C0); to565(LO); c.set(C1);
+  const swap = () => { c.get(C0).set(TT); c.get(C1).set(C0); c.get(TT).set(C1); };
+  const opaqueOrder = () => {
+    c.get(C0).get(C1).lt_u(); c.if_(); swap(); c.end();
+    c.get(C0).get(C1).eq(); c.if_();
+    c.get(C1).i32(0).gt_u(); c.if_(); c.get(C1).i32(1).sub().set(C1); c.else_(); c.get(C0).i32(1).add().set(C0); c.end();
+    c.end();
+  };
+  if (transparent) { c.get(ANYT); c.if_(); c.get(C0).get(C1).gt_u(); c.if_(); swap(); c.end(); c.else_(); opaqueOrder(); c.end(); }
+  else opaqueOrder();
+  // the palette's ends as JavaScript computes them: (k * 255) / 31 (or / 63)
+  const expand = (cv, shift, mask, div, dst) => { c.get(cv); if (shift) c.i32(shift).shr_u(); c.i32(mask).and().i32(255).mul().f64convert_i32_s().f64c(div).f64div().set(dst); };
+  expand(C0, 11, 31, 31, AR); expand(C0, 5, 63, 63, AG); expand(C0, 0, 31, 31, AB);
+  expand(C1, 11, 31, 31, FBR); expand(C1, 5, 63, 63, FBG); expand(C1, 0, 31, 31, FBB);
+  c.get(AR).get(FBR).f64sub().set(FDR); c.get(AG).get(FBG).f64sub().set(FDG); c.get(AB).get(FBB).f64sub().set(FDB);
+  c.get(FDR).get(FDR).f64mul().get(FDG).get(FDG).f64mul().f64add().get(FDB).get(FDB).f64mul().f64add().set(DD);
+  c.i32(0).set(IDX);
+  // transparent texels: index 3 (both bits), whatever the projection
+  c.get(DD).f64c(0).f64gt();
+  c.if_();
+  {
+    c.get(FBR).f64x2splat().set(BR); c.get(FBG).f64x2splat().set(BG); c.get(FBB).f64x2splat().set(BB);
+    c.get(FDR).f64x2splat().set(DR); c.get(FDG).f64x2splat().set(DG); c.get(FDB).f64x2splat().set(DB);
+    const thresholds = (hi0, mid) => { c.get(DD).f64c(hi0).f64mul().f64x2splat().set(HI0); c.get(DD).f64c(mid).f64mul().f64x2splat().set(MID); };
+    if (transparent) { c.get(ANYT); c.if_(); thresholds(0.75, 0.25); c.else_(); thresholds(5 / 6, 0.5); c.end(); }
+    else thresholds(5 / 6, 0.5);
+    c.get(DD).f64c(1 / 6).f64mul().f64x2splat().set(LOW);
+    // n = (r - br) * dr + (g - bg) * dg + (b - bb) * db, two texels per f64x2 (lanes 0, 1 then 2, 3 of the row)
+    const proj = (k, high, dst) => {
+      const conv = (shift) => { c.get(R[k]); if (shift) c.i32(shift).i32x4shr_u(); c.v128const(k255).v128and(); if (high) { c.set(W); c.get(W).get(W).i8x16shuffle(HI_TO_LO); } c.f64x2convert_low_i32x4_s(); };
+      conv(0); c.get(BR).f64x2sub().get(DR).f64x2mul();
+      conv(8); c.get(BG).f64x2sub().get(DG).f64x2mul().f64x2add();
+      conv(16); c.get(BB).f64x2sub().get(DB).f64x2mul().f64x2add().set(dst);
+    };
+    // per pair: bit0 / bit1 masks of the index (general forms: no ordering of the thresholds assumed)
+    //   4-color: A = n >= hi0, B = n >= mid, C = n > low: best = A ? 0 : B ? 2 : C ? 3 : 1 -> bit0 = !A & !B, bit1 = !A & (B | C)
+    //   3-color: A = n >= hi0, M = n > mid: best = A ? 0 : M ? 2 : 1 -> bit0 = !A & !M, bit1 = !A & M
+    const bits = (nv, three) => { // leaves bitmask(bit0) | bitmask(bit1) << 2 of the pair on the stack (2 + 2 bits)
+      // bit0
+      c.get(nv).get(HI0).f64x2ge().get(nv).get(MID); if (three) c.f64x2gt(); else c.f64x2ge(); c.v128or().v128not().i64x2bitmask();
+      // bit1
+      c.get(nv).get(MID); if (three) c.f64x2gt(); else { c.f64x2ge().get(nv).get(LOW).f64x2gt().v128or(); }
+      c.get(nv).get(HI0).f64x2ge().v128andnot().i64x2bitmask().i32(2).shl().or();
+    };
+    const rows = (three) => {
+      for (let k = 0; k < 4; k++) {
+        proj(k, false, NN); proj(k, true, NH);
+        bits(NN, three); c.set(MLO); bits(NH, three); c.set(MHI);
+        // b0 = 4 bits (texels 0..3 of the row), b1 likewise
+        c.get(MLO).i32(3).and().get(MHI).i32(3).and().i32(2).shl().or().set(B0);
+        c.get(MLO).i32(2).shr_u().get(MHI).i32(2).shr_u().i32(2).shl().or().set(B1);
+        if (transparent) { c.get(TM[k]).i32x4bitmask().tee(TB).get(B0).or().set(B0); c.get(TB).get(B1).or().set(B1); }
+        spreadInto(k);
+      }
+    };
+    if (transparent) { c.get(ANYT); c.if_(); rows(true); c.else_(); rows(false); c.end(); }
+    else rows(false);
+  }
+  if (transparent) { // dd = 0 (equal endpoints, 3-color mode): opaque texels 0, transparent ones 3
+    c.else_();
+    c.get(ANYT); c.if_();
+    for (let k = 0; k < 4; k++) { c.get(TM[k]).i32x4bitmask().tee(B0).set(B1); spreadInto(k); }
+    c.end();
+  }
+  c.end();
+  c.get(OUT).get(C0).i32store16(0); c.get(OUT).get(C1).i32store16(2); c.get(OUT).get(IDX).i32store(4, 0);
+  function spreadInto(k) { // IDX |= (spread(B0) | spread(B1) << 1) << 8k, spread: 4 bits to every other bit of 8
+    const spread = (v) => { c.get(v).get(v).i32(2).shl().or().i32(0x33).and().tee(TT).get(TT).i32(1).shl().or().i32(0x55).and(); };
+    spread(B0); spread(B1); c.i32(1).shl().or();
+    if (k) c.i32(8 * k).shl();
+    c.get(IDX).or().set(IDX);
+  }
+  return { code: c, locals: [...Array(v128Count).fill(T.v128), ...Array(i32Count).fill(T.i32), ...Array(f64Count).fill(T.f64)] };
+}
+
+/** alphaBlock(px, out): DXT4/5 interpolated alpha (8 bytes at out), as d3dx9-image.js alphaBlock */
+function alphaBlockCode() {
+  const c = new Code();
+  const PX = 0, OUT = 1;
+  let n = 2;
+  const A = [n++, n++, n++, n++]; // v128: the rows' alphas (i32 lanes)
+  const MN = n++, MX = n++, X = n++, BD = n++, BEST = n++, D = n++, LT = n++;
+  const v128Count = n - 2;
+  const A0 = n++, A1 = n++; const i32Count = n - 2 - v128Count;
+  const BITS = n++; const i64Count = 1;
+  const PAL = Array.from({ length: 8 }, () => n++); const f64Count = 8;
+  for (let k = 0; k < 4; k++) {
+    c.get(PX).v128load(16 * k).i32(24).i32x4shr_u().set(A[k]);
+    if (k === 0) { c.get(A[0]).set(MN); c.get(A[0]).set(MX); } else { c.get(MN).get(A[k]).i32x4min_s().set(MN); c.get(MX).get(A[k]).i32x4max_s().set(MX); }
+  }
+  c.get(MN).get(MN).get(MN).i8x16shuffle(SWAP64).i32x4min_s().set(MN); c.get(MN).get(MN).get(MN).i8x16shuffle(SWAP32).i32x4min_s().i32x4extractlane(0).set(A1);
+  c.get(MX).get(MX).get(MX).i8x16shuffle(SWAP64).i32x4max_s().set(MX); c.get(MX).get(MX).get(MX).i8x16shuffle(SWAP32).i32x4max_s().i32x4extractlane(0).set(A0);
+  c.get(A0).get(A1).eq(); c.if_(); c.get(A1).i32(0).gt_u(); c.if_(); c.get(A1).i32(1).sub().set(A1); c.else_(); c.get(A0).i32(1).add().set(A0); c.end(); c.end();
+  // levels: a0, a1, then ((7 - k) a0 + k a1) / 7 for k = 1..6
+  c.get(A0).f64convert_i32_s().set(PAL[0]); c.get(A1).f64convert_i32_s().set(PAL[1]);
+  for (let k = 1; k < 7; k++) c.i32(7 - k).get(A0).mul().i32(k).get(A1).mul().add().f64convert_i32_s().f64c(7).f64div().set(PAL[k + 1]);
+  c.i64(0).set(BITS);
+  // each texel: the first level strictly nearer than every earlier one (distances |level - a| in f64), two texels per f64x2
+  for (let p = 0; p < 8; p++) {
+    const k = p >> 1, high = p & 1;
+    c.get(A[k]); if (high) c.get(A[k]).i8x16shuffle(HI_TO_LO);
+    c.f64x2convert_low_i32x4_s().set(X);
+    c.get(PAL[0]).f64x2splat().get(X).f64x2sub().f64x2abs().set(BD);
+    c.v128const(new Uint8Array(16)).set(BEST);
+    for (let l = 1; l < 8; l++) {
+      c.get(PAL[l]).f64x2splat().get(X).f64x2sub().f64x2abs().tee(D).get(BD).f64x2lt().set(LT);
+      c.get(D).get(BD).get(LT).v128bitselect().set(BD);
+      c.i64(l).i64x2splat().get(BEST).get(LT).v128bitselect().set(BEST);
+    }
+    // texels 2p, 2p + 1: their 3-bit indexes at bit 6p
+    c.get(BEST).i64x2extractlane(0).get(BEST).i64x2extractlane(1).i64(3).i64shl().i64or();
+    if (p) c.i64(6 * p).i64shl();
+    c.get(BITS).i64or().set(BITS);
+  }
+  c.get(OUT).get(A0).i32store8(0); c.get(OUT).get(A1).i32store8(1);
+  c.get(OUT).get(BITS).i64store32(2); c.get(OUT).get(BITS).i64(32).i64shr_u().wrap().i32store16(6);
+  return { code: c, locals: [...Array(v128Count).fill(T.v128), ...Array(i32Count).fill(T.i32), ...Array(i64Count).fill(T.i64), ...Array(f64Count).fill(T.f64)] };
+}
+
+/** explicitAlpha(px, out): DXT2/3 4-bit alphas (8 bytes at out): byte i = (a(2i) >> 4) | (a(2i + 1) >> 4) << 4 */
+function explicitAlphaCode() {
+  const c = new Code();
+  const PX = 0, OUT = 1, V = 2;
+  // nibbles a >> 4 per texel (i32 lanes) narrowed to 16 bytes in texel order, then pairs joined: (lo & 15) | (hi << 4)
+  c.get(PX).v128load(0).i32(28).i32x4shr_u().get(PX).v128load(16).i32(28).i32x4shr_u().i16x8narrow_i32x4_u();
+  c.get(PX).v128load(32).i32(28).i32x4shr_u().get(PX).v128load(48).i32(28).i32x4shr_u().i16x8narrow_i32x4_u();
+  c.i8x16narrow_i16x8_u().set(V);
+  c.get(V).v128const(i32x4c(0x000f000f, 0x000f000f, 0x000f000f, 0x000f000f)).v128and();
+  c.get(V).i32(4).i16x8shr_u().v128const(i32x4c(0x00f000f0, 0x00f000f0, 0x00f000f0, 0x00f000f0)).v128and().v128or();
+  c.set(V);
+  c.get(OUT).get(V).get(V).i8x16narrow_i16x8_u().v128store64lane(0, 0);
+  return { code: c, locals: [T.v128] };
+}
+
+/**
+ * encodeRows(kind, w, h, by0, by1, src, dst, scratch): block rows [by0, by1) of the RGBA8 image at src (w x h), written
+ * at their place in the image's blocks at dst; edge blocks repeat the last row / column (as encodeDxtRows).
+ */
+function encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3) {
+  const c = new Code();
+  const KINDP = 0, W = 1, H = 2, BY0 = 3, BY1 = 4, SRC = 5, DST = 6, S = 7;
+  const BW = 8, UNIT = 9, BY = 10, BX = 11, O = 12, Y = 13, X = 14, SY = 15, ROW = 16;
+  c.get(W).i32(3).add().i32(2).shr_u().tee(BW).eqz(); c.if_(); c.i32(1).set(BW); c.end();
+  c.get(KINDP).i32(1).eq(); c.if_(T.i32); c.i32(8); c.else_(); c.i32(16); c.end(); c.set(UNIT);
+  c.get(BY0).set(BY);
+  const rowsDone = c.block(); const rowLoop = c.loop();
+  c.get(BY).get(BY1).ge_s().br_if(rowsDone);
+  c.i32(0).set(BX);
+  const colsDone = c.block(); const colLoop = c.loop();
+  c.get(BX).get(BW).ge_s().br_if(colsDone);
+  // the block's 16 texels into the scratch
+  c.get(BX).i32(2).shl().i32(3).add().get(W).lt_s().get(BY).i32(2).shl().i32(3).add().get(H).lt_s().and();
+  c.if_();
+  { // inside the image: four rows of four texels
+    c.get(SRC).get(BY).i32(2).shl().get(W).mul().get(BX).i32(2).shl().add().i32(2).shl().add().set(ROW);
+    for (let y = 0; y < 4; y++) { c.get(S).get(ROW).v128load(0).v128store(16 * y); if (y < 3) c.get(ROW).get(W).i32(2).shl().add().set(ROW); }
+  }
+  c.else_();
+  { // an edge block: coordinates clamped to the last row / column
+    c.i32(0).set(Y);
+    const yl = c.loop();
+    c.get(BY).i32(2).shl().get(Y).add().tee(SY).get(H).i32(1).sub().tee(ROW).get(SY).get(ROW).lt_s().select().set(SY);
+    c.i32(0).set(X);
+    const xl = c.loop();
+    c.get(S).get(Y).i32(4).shl().add().get(X).i32(2).shl().add(); // (destination)
+    c.get(BX).i32(2).shl().get(X).add().tee(ROW).get(W).i32(1).sub().tee(O).get(ROW).get(O).lt_s().select(); // sx
+    c.get(SY).get(W).mul().add().i32(2).shl().get(SRC).add().i32load(0, 0).i32store(0, 0);
+    c.get(X).i32(1).add().tee(X).i32(4).lt_s().br_if(xl);
+    c.end(); void xl;
+    c.get(Y).i32(1).add().tee(Y).i32(4).lt_s().br_if(yl);
+    c.end(); void yl;
+  }
+  c.end();
+  c.get(DST).get(BY).get(BW).mul().get(BX).add().get(UNIT).mul().add().set(O);
+  c.get(KINDP).i32(1).eq(); c.if_();
+  c.get(S).get(O).call(fColor1);
+  c.else_();
+  c.get(KINDP).i32(3).eq(); c.if_(); c.get(S).get(O).call(fAlpha3); c.else_(); c.get(S).get(O).call(fAlpha5); c.end();
+  c.get(S).get(O).i32(8).add().call(fColor);
+  c.end();
+  c.get(BX).i32(1).add().set(BX); c.br(colLoop);
+  c.end(); c.end(); void colsDone;
+  c.get(BY).i32(1).add().set(BY); c.br(rowLoop);
+  c.end(); c.end(); void rowsDone;
+  return { code: c, locals: Array(9).fill(T.i32) };
+}
+
+const moduleBytes = new Map();
+/** The encoder module's bytes (its memory imported as env.memory, shared or not). */
+export function dxtModuleBytes(shared) {
+  let b = moduleBytes.get(shared);
+  if (b) return b;
+  const m = new ModuleBuilder();
+  m.importMemory('env', 'memory', 1, shared ? 65536 : undefined, shared);
+  const f = (gen, params, name) => { const { code, locals } = gen; return m.func(params, [], locals, code, name); };
+  const fColor1 = f(colorBlockCode(true), [T.i32, T.i32], 'colorBlockDxt1');
+  const fColor = f(colorBlockCode(false), [T.i32, T.i32], 'colorBlock');
+  const fAlpha5 = f(alphaBlockCode(), [T.i32, T.i32], 'alphaBlock');
+  const fAlpha3 = f(explicitAlphaCode(), [T.i32, T.i32], 'explicitAlpha');
+  const fRows = f(encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3), Array(8).fill(T.i32), 'encodeRows');
+  m.exportFunc('encodeRows', fRows);
+  b = m.build();
+  moduleBytes.set(shared, b);
+  return b;
+}
+
+let supported = null;
+/** WebAssembly SIMD available (and the module valid here)? */
+export function dxtWasmSupported() {
+  if (supported === null) { try { supported = typeof WebAssembly === 'object' && WebAssembly.validate(dxtModuleBytes(false)); } catch { supported = false; } }
+  return supported;
+}
+
+/** An encoder instance on `memory` (a WebAssembly.Memory): encodeRows(kind, w, h, by0, by1, src, dst, scratch). */
+export function instantiateDxt(memory) {
+  const shared = typeof SharedArrayBuffer !== 'undefined' && memory.buffer instanceof SharedArrayBuffer;
+  return new WebAssembly.Instance(new WebAssembly.Module(dxtModuleBytes(shared)), { env: { memory } }).exports;
+}

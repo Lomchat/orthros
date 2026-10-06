@@ -86,7 +86,8 @@ export function registerD3DX9(api, vm) {
   /** D3DXIMAGE_INFO: Width, Height, Depth, MipLevels, Format, ResourceType, ImageFileFormat */
   const writeInfo = (p, im) => { if (!p) return; mem.write32(p, im.width); mem.write32(p + 4, im.height); mem.write32(p + 8, im.depth); mem.write32(p + 12, im.mips); mem.write32(p + 16, im.infoFmt ?? im.fmt); mem.write32(p + 20, im.kind === 'cube' ? 5 : im.kind === 'volume' ? 4 : 3); mem.write32(p + 24, im.fileFormat); };
   /** the image file at guest [a, a+n) (infoOnly: its D3DXIMAGE_INFO fields, pixels decoded only when that needs them) */
-  const imageAt = (c, a, n, infoOnly = false) => { if (!a || !n) return null; try { return (infoOnly ? parseImageInfo : parseImage)(mem.bytes(a, n).slice()); } catch (e) { vm.log('gfx', `d3dx: image decode failed: ${e.message}`); return null; } };
+  // (information only: the file read in place — its header, or a copy when it has to be decoded)
+  const imageAt = (c, a, n, infoOnly = false) => { if (!a || !n) return null; try { return infoOnly ? parseImageInfo(mem.bytes(a, n), true) : parseImage(mem.bytes(a, n).slice()); } catch (e) { vm.log('gfx', `d3dx: image decode failed: ${e.message}`); return null; } };
   X.D3DXGetImageInfoFromFileInMemory = [3, (c) => { const im = imageAt(c, c.arg(0), c.arg(1), true); if (!im) return D3DXERR_INVALIDDATA; writeInfo(c.arg(2), im); return D3D_OK; }];
   const TEXTURE_OK = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.Q8W8V8U8]);
   /** the texture format D3DX picks for a requested one and the file's: a format the device takes (R8G8B8 -> X8R8G8B8...) */
@@ -115,7 +116,7 @@ export function registerD3DX9(api, vm) {
     return out;
   };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
-  const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
+  const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc, data.length >= s.bytes); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
   const fillVolume = (c, t, i, data) => { const l = t.levels[i]; t.dev.gfx?.beforeWrite?.(t); if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
 
   /**

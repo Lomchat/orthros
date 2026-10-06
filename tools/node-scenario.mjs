@@ -150,10 +150,14 @@ export class NodeScenario {
       this.results.push(r);
       this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
+      // (startbench --d3dx-prof: D3DX image work by kind, and the surface lock patterns, as the browser worker reports them)
+      const prof = this.vm.d3dxProf, ls = d3d?.lockStats, lp = p.locks ?? {};
+      if (prof?.size) { this.log(`[d3dx] ${p.label} D3DX image work (ms, count): ${[...prof].sort((a, b) => b[1].ms - a[1].ms).slice(0, 16).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); prof.clear(); }
+      if (ls && this.vm.apiTimes) { const dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0); this.log(`[d3dx] ${p.label} locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only`); }
     }
     if (!this.phase) this.apiTop();
     this.frameDts = [];
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now() }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /**
    * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed

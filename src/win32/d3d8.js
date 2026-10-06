@@ -179,7 +179,7 @@ export function d3dCore(vm) {
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
      * contents (gfx.beforeWrite).
      */
-    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    ensureMem(proc, overwrite = false) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); if (!overwrite) mem.fill(this.mem, this.bytes, 0); } return this.mem; } // (overwrite: the caller writes every byte at once, no zeroing first)
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
@@ -232,22 +232,24 @@ export function d3dCore(vm) {
       if (this.locked) return D3DERR_INVALIDCALL;
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
       const base = this.ensureMem(c.proc);
-      let off = 0;
+      let off = 0, rectPx = 0;
       this.lockRect = null;
       if (pRect) {
-        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4);
+        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4), r0 = mem.readS32(pRect + 8), b0 = mem.readS32(pRect + 12);
         // (the rectangle written, for a partial upload: clamped; an empty or inverted one counts as the whole surface)
-        const r = Math.min(this.width, mem.readS32(pRect + 8)), b = Math.min(this.height, mem.readS32(pRect + 12)), cl = Math.max(0, l), ct = Math.max(0, t);
+        const r = Math.min(this.width, r0), b = Math.min(this.height, b0), cl = Math.max(0, l), ct = Math.max(0, t);
         if (r > cl && b > ct) this.lockRect = [cl, ct, r, b];
         const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
         off = blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width));
+        rectPx = Math.max(0, (r0 - l) * (b0 - t));
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
-      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += Math.max(0, (mem.readS32(pRect + 8) - mem.readS32(pRect)) * (mem.readS32(pRect + 12) - mem.readS32(pRect + 4))); k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
+      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += rectPx; k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
       if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
-      if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
+      const watch = globalThis.ORTHROS_WATCH_TEX;
+      if (watch && watch === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
       return D3D_OK;
     }

@@ -110,6 +110,9 @@ if (bgWanted && vm.jit) {
   };
 }
 globalThis.__vm = vm; // (wrappers: tools reading the VM after the run)
+// --d3dx-prof: D3DX image work timed by kind of operation (d3dx9.js prof, as the harness's --api-times), printed with
+// the surface lock patterns at each scenario mark ([d3dx] lines); a clock read per API call
+if (args.includes('--d3dx-prof')) vm.apiTimes = new Map();
 if (process.env.ORTHROS_JIT_OPTS && vm.jit) Object.assign(vm.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
 // --mix: translations count their blocks' executions; the report adds the dynamic instruction mix (tools/jit-mix.mjs)
 if (args.includes('--mix') && vm.jit) vm.jit.opts.blockCounts = true;
