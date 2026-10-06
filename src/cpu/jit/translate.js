@@ -127,7 +127,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, x87Cold: 'call', x87ExitRotate: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -1037,26 +1037,50 @@ class Emitter {
     // there and merges every live value into it: code run at each entry of the region)
     if (!this.dispatchUsed && (this.opts.dispatchBlock ?? JIT_DEFAULTS.dispatchBlock)) { if (c.buf[this.dispatchAt] !== 0x03) throw new Error('dispatch loop not found'); c.buf[this.dispatchAt] = 0x02; this.stats.dispatchBlock = 1; }
     c.end(); // exitJmpL: jump exit (tV = target eip)
-    if (this.chain && this.chainStub && !this.prof) {
-      // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
-      // runtime's shared chain function, tail-called with the target in place of the block)
+    if (this.opts.exitShare ?? JIT_DEFAULTS.exitShare) {
+      // one exit tail for both kinds: the x87 / XMM caches and the registers written back by one copy of the code
+      // (the flushes were emitted once per kind, three times for the x87 stack: the chained path, the jump exit's
+      // and the code exit's — ~200 operations of an x87 region's epilogue); a jump exit tries the chain first
+      c.i32(-1).set(L_T2); // (a jump exit: no exit code — code exits set L_T2 >= 0)
+      c.end(); // exitCodeL: every exit (tV = eip or jump target, t2 = exit code, -1 for a jump)
       this.flushFpu(true); this.flushXmm();
-      c.get(L_TV);
-      for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
-      c.return_call(IMP_CHAIN);
+      c.get(L_T2).i32(-1).eq();
+      const jmp = c.hint(true).if_();
+      if (this.chain && this.chainStub && !this.prof) {
+        c.get(L_TV);
+        for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+        c.return_call(IMP_CHAIN);
+      } else if (this.chain) this.emitChain(false); // (falls through when the target is not chained)
+      c.end(); void jmp;
+      c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
+      this.flushRegs();
+      c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+      c.get(L_T2).i32(-1).ne();
+      const code = c.if_(); c.get(L_STATE).get(L_T2).i32store(ST.EXIT); c.end(); void code;
+      c.get(L_TV).i32(0).get(L_T2).i32(-1).eq().select(); // (the next EIP for a jump, 0: the code in the state block)
     } else {
-      if (this.chain) this.emitChain(); // (the budget travels as a parameter)
+      // (measurement: exitShare off, the earlier separate tails)
+      if (this.chain && this.chainStub && !this.prof) {
+        // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
+        // runtime's shared chain function, tail-called with the target in place of the block)
+        this.flushFpu(true); this.flushXmm();
+        c.get(L_TV);
+        for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+        c.return_call(IMP_CHAIN);
+      } else {
+        if (this.chain) this.emitChain(); // (the budget travels as a parameter)
+        c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
+        this.flushAll(true);
+        c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+        c.get(L_TV).return_();
+      }
+      c.end(); // exitCodeL: exit with code (tV = eip, t2 = code)
       c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
       this.flushAll(true);
       c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-      c.get(L_TV).return_();
+      c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
+      c.i32(0);
     }
-    c.end(); // exitCodeL: exit with code (tV = eip, t2 = code)
-    c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-    this.flushAll(true);
-    c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-    c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
-    c.i32(0);
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
@@ -1123,7 +1147,7 @@ class Emitter {
    * state (TOP, and the cached stack of an x87 region) goes through the state block. Falls
    * through (to the flush + return path) otherwise.
    */
-  emitChain() {
+  emitChain(flush = true) {
     const c = this.c;
     const noChain = c.block();
     // profiling translations count why a transition is not chained (PROF_OPS_BASE + NOCHAIN_PROF: thunk, stop, budget, miss)
@@ -1150,8 +1174,7 @@ class Emitter {
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-    this.flushFpu(true);
-    this.flushXmm();
+    if (flush) { this.flushFpu(true); this.flushXmm(); } // (else written back before: the shared exit tail)
     if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS); // (stats)
     c.get(L_TA).i32load(8); // block index in the target region
     for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
@@ -1184,7 +1207,8 @@ class Emitter {
     const c = this.c;
     for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).get(L_XMM0 + r).v128store(ST.XMM + 16 * r);
   }
-  flushAll(exit = false) {
+  /** Write the guest registers, EFLAGS and the lazy flag state back to the state block. */
+  flushRegs() {
     const c = this.c;
     for (let i = 0; i < 8; i++) c.get(L_STATE).get(L_REG + i).i32store(ST.GPR + 4 * i);
     c.get(L_STATE).get(L_EFLAGS).i32store(ST.EFLAGS);
@@ -1192,6 +1216,9 @@ class Emitter {
     c.get(L_STATE).get(L_LZRES).i32store(ST.LZ_RES);
     c.get(L_STATE).get(L_LZA).i32store(ST.LZ_SRC1);
     c.get(L_STATE).get(L_LZB).i32store(ST.LZ_SRC2);
+  }
+  flushAll(exit = false) {
+    this.flushRegs();
     this.flushFpu(exit);
     this.flushXmm();
   }

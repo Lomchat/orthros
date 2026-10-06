@@ -450,8 +450,8 @@ function settleF32(E, insn, done) {
  * cold path, which settles the exact cases — a zero (a sum is exact at zero; a product or quotient
  * only with a zero dividend/factor or an infinite divisor), an infinity coming from an infinite operand, a NaN
  * by the x87 rule — and leaves everything else (overflow and underflow into the x87 range) to the interpreter
- * (stepExit). The zero test stays inline (a product by zero is common in 3D code: an integer test, no call); the rest
- * is the x87ArithF32 kernel's (fpmath-x87cold.js), called on the hinted-unlikely path. Result in L_F32C.
+ * (stepExit). The zero test stays inline (a product by zero is common in 3D code: no call for it); the rest is the
+ * x87ArithF32 kernel's (fpmath-x87cold.js), called on the hinted-unlikely path. Result in L_F32C.
  */
 function arithF32(E, insn, op) {
   const c = E.c;
@@ -460,10 +460,11 @@ function arithF32(E, insn, op) {
   const done = c.block();
   c.get(L_F32C).i32reinterpret_f32().i32(23).shr_u().i32(0xff).and().i32(1).sub().i32(254).lt_u().hint(true).br_if(done);
   if (!coldCall(E)) { emitArithF32Cold(c, COLD_F32, op, done); E.stepExit(insn); c.end(); return; }
-  // an exact zero (emitArithF32Cold's first test, on the bit patterns: x << 1 is 0 for +-0, 0xff000000 for +-inf)
-  c.get(L_F32C).i32reinterpret_f32().i32(1).shl().eqz();
-  if (op === 1) { c.get(L_F32A).i32reinterpret_f32().i32(1).shl().eqz().get(L_F32B).i32reinterpret_f32().i32(1).shl().eqz().or().and(); }
-  else if (op >= 6) { c.get(x).i32reinterpret_f32().i32(1).shl().eqz().get(y).i32reinterpret_f32().i32(1).shl().i32(0xff000000 | 0).eq().or().and(); }
+  // an exact zero (emitArithF32Cold's first test; float compares: the result's bits as an integer, shared with the
+  // exponent test above, would stay live past it — one more register copy on the hot path)
+  c.get(L_F32C).f32c(0).f32eq();
+  if (op === 1) c.get(L_F32A).f32c(0).f32eq().get(L_F32B).f32c(0).f32eq().or().and();
+  else if (op >= 6) c.get(x).f32c(0).f32eq().get(y).f32abs().f32c(Infinity).f32eq().or().and();
   c.br_if(done);
   c.get(L_STATE).get(L_F32A).get(L_F32B).get(L_F32C).i32(op).call(IMP_X87_ARITHF32);
   settleF32(E, insn, done);

@@ -102,10 +102,27 @@ export function jitMix(jit) {
 export function jitShape(jit, listRegion, max = 4000) {
   const byOp = new Map(), parts = { insn: 0, blockEnd: 0, prologue: 0, epilogue: 0 }, dyn = { insn: 0, blockEnd: 0 };
   let insns = 0, regions = 0, bytes = 0, dynInsns = 0;
+  // x87 regions apart (a region holding an x87 instruction caches the register stack: translate.js usesX87): their
+  // count, WASM body bytes, guest instructions and operations by part, and the share of their operations in x87
+  // arithmetic (FADD..FDIVR, FIADD..FIDIVR and their popping forms)
+  const x87 = { regions: 0, bytes: 0, insns: 0, ops: 0, arith: 0, arithN: 0, prologue: 0, epilogue: 0, blockEnd: 0 };
+  const ARITH = /^f(i?add|i?mul|i?sub|i?subr|i?div|i?divr|addp|mulp|subp|subrp|divp|divrp)$/;
   for (const r of jit.regions.slice(0, max)) {
     let L;
     try { L = listRegion(jit.mem, r.entry, { ...jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: jit.blockCounts(r), ops: false }); } catch { continue; }
     regions++; bytes += L.result.code.length;
+    const isX87 = L.groups.some((g) => g.block >= 0 && !g.head && !g.tail && /^f/.test(g.label.trim().split(/\s+/)[1] ?? ''));
+    if (isX87) {
+      x87.regions++; x87.bytes += L.result.code.length;
+      for (const g of L.groups) {
+        if (g.head) continue;
+        const n = g.ops.length; x87.ops += n;
+        if (g.block < 0) { if (/prologue/.test(g.label)) x87.prologue += n; else x87.epilogue += n; continue; }
+        if (g.tail) { x87.blockEnd += n; continue; }
+        x87.insns++;
+        if (ARITH.test(g.label.trim().split(/\s+/)[1] ?? '')) { x87.arith += n; x87.arithN++; }
+      }
+    }
     const counts = jit.blockCounts(r);
     for (const g of L.groups) {
       const n = g.ops.length, w = counts && g.block >= 0 ? counts[g.block] ?? 0 : 0;
@@ -125,6 +142,7 @@ export function jitShape(jit, listRegion, max = 4000) {
   { const seen = new Set(); let all = 0; for (const r of jit.regions) for (const b of r.blocks) { all += b.end - b.eip; for (let a = b.eip; a < b.end; a++) seen.add(a); }
     lines.push(`[shape] duplication: ${jit.regions.length} live regions translate ${(all / 1024).toFixed(0)} KiB of guest code, ${(seen.size / 1024).toFixed(0)} KiB distinct (x${(all / Math.max(1, seen.size)).toFixed(2)})`); }
   lines.push(`[shape] ${regions} regions, ${insns} guest instructions, ${(bytes / insns).toFixed(1)} body bytes and ${(total / insns).toFixed(1)} operations per instruction: instructions ${(100 * parts.insn / total).toFixed(0)}%, block ends ${(100 * parts.blockEnd / total).toFixed(0)}%, prologues ${(100 * parts.prologue / total).toFixed(0)}%, epilogues ${(100 * parts.epilogue / total).toFixed(0)}%`);
+  if (x87.regions) lines.push(`[shape] x87 regions: ${x87.regions} of ${regions}, ${(x87.bytes / 1024).toFixed(0)} KiB of ${(bytes / 1024).toFixed(0)} KiB WASM bodies, ${x87.insns} guest instructions, ${(x87.ops / x87.insns).toFixed(1)} operations per instruction; x87 arithmetic ${x87.arithN} instructions, ${(x87.arith / Math.max(1, x87.arithN)).toFixed(1)} operations each, ${(100 * x87.arith / x87.ops).toFixed(1)} % of the operations; prologues ${(100 * x87.prologue / x87.ops).toFixed(1)} %, epilogues ${(100 * x87.epilogue / x87.ops).toFixed(1)} %, block ends ${(100 * x87.blockEnd / x87.ops).toFixed(1)} %`);
   if (dynInsns) lines.push(`[shape] executed: ${((dyn.insn + dyn.blockEnd) / dynInsns).toFixed(1)} operations per instruction (block ends ${(100 * dyn.blockEnd / (dyn.insn + dyn.blockEnd)).toFixed(0)}%)`);
   const top = [...byOp].sort((a, b) => (b[1].dynOps || b[1].ops) - (a[1].dynOps || a[1].ops)).slice(0, 25);
   lines.push(`[shape] by instruction (static ops/insn, executed share of operations): ${top.map(([k, e]) => `${k} ${(e.ops / e.n).toFixed(1)}${dynInsns ? ` ${(100 * e.dynOps / Math.max(1, dyn.insn + dyn.blockEnd)).toFixed(1)}%` : ''}`).join(', ')}`);
