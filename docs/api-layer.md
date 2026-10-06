@@ -41,6 +41,21 @@ else to run park the thread 1 ms) is what bounds it.
   table is unchanged since they were applied (`StateTable.ver`).
 - How a pass state picks its shader is resolved once per pass; a texture parameter set to the texture it holds does
   not take and drop a reference.
+- A parameter's version moves only when a setter changed one of its words: BFME2 play sets ~1 600 parameters per frame,
+  three in four to the value they hold, and an unmoved version leaves the shader bindings (and preshaders) reading it
+  alone. Parameter blocks still record such writes.
+- Float constants are moved as raw words: a binding whose components are all float words (or zeros) is gathered from
+  the parameter's words and compared with the registers' words in one pass (no copy, no float decode / encode); the
+  float setters store the words they are given. Bits are kept (-0, NaN payloads): -0 against +0 counts as a change (one
+  upload more), never the other way round. Other bindings (integers or bools in float registers, integer / bool
+  registers) go through fillers specialised by output type.
+- A shader's sampler binding keeps the register state table it applied its constant states to: while that table is
+  unchanged only the texture is compared. Device methods are resolved once per effect (no lookup by name per call);
+  parameter handles index a slot array.
+- Not kept: register ownership (each register remembering the binding that wrote it, so that a binding left unchanged
+  but on a stage changed by others needs no comparison). BFME2 play: 79 % of shader binds find their stage unchanged,
+  the bindings of the others changed with their parameters; unchanged bindings on a changed stage were 0.25 % of the
+  visits, 3 % of those still owned — less than the bookkeeping cost.
 
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
@@ -61,6 +76,10 @@ that every draw sees the same GL state, and every upload the same data, with and
 ## Measuring within a session
 
 Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
-`dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths. Scenarios
-`tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders). Tools:
-`tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the queued setters).
+`dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
+`dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods).
+Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
+`{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding. Tools: `tools/draw-bench.mjs` (device + backend per draw
+over a counting GL), `tools/setter-bench.mjs` (the queued setters), `tools/effect-bind-bench.mjs` (effect setters and
+binds, `--base <tree>` against another checkout). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
+sessions against the reference path, registers bit for bit).

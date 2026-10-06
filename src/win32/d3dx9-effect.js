@@ -295,7 +295,14 @@ export function defineEffects(X, vm, h) {
     GetStateManager(c) { if (c.arg(1)) mem.write32(c.arg(1), this.stateManager); }
     BeginParameterBlock() { this.recording = new Set(); }
     EndParameterBlock() { if (!this.recording) return 0; const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90)); this.blocks.set(id, [...this.recording].map((n) => ({ n, words: n.words?.slice(), ptr: n.obj?.ptr }))); this.recording = null; return id; }
-    ApplyParameterBlock(c) { const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL; for (const e of b) { if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr); this.touched(e.n); } }
+    ApplyParameterBlock(c) {
+      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL;
+      for (const e of b) {
+        if (e.words && !apiOpt.fxRef) { const w = e.n.words, x = e.words; let ch = false; for (let i = 0; i < x.length; i++) if (w[i] !== x[i]) { w[i] = x[i]; ch = true; } this.wrote(e.n, ch); continue; } // (a version move only for a real change, as the setters)
+        if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr);
+        this.touched(e.n);
+      }
+    }
     DeleteParameterBlock(c) { return this.blocks.delete(c.arg(1) >>> 0) ? D3D_OK : D3DERR_INVALIDCALL; }
     CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), createEffect(c, e)); com.addRef(com.objectAt(e.dev)); }
 
