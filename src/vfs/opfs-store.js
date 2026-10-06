@@ -15,8 +15,8 @@
 // flushed) at a sync point: once >= 2 s passed since the last one or >= 256 records wait, and when the caller forces it
 // (prefetch end, stop, close). A crash loses at most the records of the last sync interval: those blocks are fetched
 // again. Reading stops at the first incomplete or damaged record (the log is cut there).
-// The data file is flushed only at close: its flush writes back every block written since the last one (~150 ms of the
-// game thread per 50 MiB, 2.2 s over a first launch's prefetch, whatever the cadence). An indexed block whose bytes a
+// The data file is flushed only at close: its flush writes back every block written since the last one (~4 ms of the
+// game thread per MiB, 2.2 s over a first launch's prefetch, whatever the cadence). An indexed block whose bytes a
 // crash lost is caught by its checksum at read (or lies past the end of the data file) and fetched again.
 const INDEX_MAGIC = 0x4953424f; // 'OBSI'
 const INDEX_VERSION = 3;

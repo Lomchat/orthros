@@ -141,6 +141,7 @@ It now consumes the result and looks at the file's owner again.
 | `ORTHROS_TRACE_EIP=<hex>[;<hex>]` + `ORTHROS_INTERP_RANGES` | each arrival at those addresses (inside the interpreted ranges) recorded with the guest clock, thread, return addresses and first argument; the last 256 shown in crash reports (the ranges are kept out of prewarm). `<hex>@<reg>[+<off>]` keys the record by a register plus an offset instead of the first argument (a pointer being returned); crash reports list the records of every key the registers and stack hold, `ORTHROS_TRACE_DEPTH=n` of them per key (default 3) |
 | `ORTHROS_PEEK=<hex>[:<len>\|:c<n>];...` | in crash reports and at the end of Node bench runs: the instructions before and from (`n`, default 8) an address in a module, or `len` bytes of memory elsewhere (a flag or a function pointer the code around a crash reads) |
 | `ORTHROS_READ_DEST_CHECK` | warn when a parked read's destination buffer changes while the read waits |
+| `ORTHROS_READ_SLICE_MS=n` | slice length while a file read is on the network (default 2: the pump and `runFor` end slices early so the read completes; 12: the behaviour before 2026-10-06; docs/startup.md) |
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 
 Crash reports also show the instructions before each return address and 128 bytes around each register, with the

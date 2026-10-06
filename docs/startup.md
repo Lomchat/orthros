@@ -248,3 +248,58 @@ without these changes): Vice City stopped presenting frames 1 s into a first ses
 threads polling, ~900 API calls/s, no guest instruction retired), and BFME1 ended with exit code 666 after a menu
 click in a first session with a persistent profile (an access violation calling address 0 at `lotrbfme.exe+0x1885e0`,
 then the game's own error dialog); in that run the code cache only added entries (nothing reused).
+
+## Game file reads on the network: short slices, block store index log (2026-10-06)
+
+**Short slices while a read is in flight** (`src/host/web/worker.js` pump, `Vm.runFor`). A ReadFile of data still on
+the network parks its thread while the others run; the fetch then needs several event-loop tasks of the worker (the
+response, its body, the promise chain), and each waited behind a 12 ms pump slice of the other threads. While
+`vm.readsInFlight > 0` the pump now asks for 2 ms slices, and `runFor` ends a slice once a read went in flight during
+it and 2 ms have passed (`vm.readSliceMs`; `?dbg=ORTHROS_READ_SLICE_MS=12` restores the earlier behaviour, also
+switchable within a session). This was the "~55 ms per read on the client side" left open above.
+
+**Block store index log** (`src/vfs/opfs-store.js`). The JSON index was rewritten whole and synced, with the data
+file, every 16 blocks: 55-59 times over a BFME2 first launch, 2.5-2.9 s of the game thread. The index is now an
+append-only binary log (`index.bin`, format 3: fixed fields + key + record checksum), appended and flushed every 2 s
+or 256 blocks and when forced (prefetch end, stop); a v2 `index.json` is read once and rewritten as a log. Most of the
+old cost was the data file's flush (write-back of every block since the last one, ~4 ms per MiB at any
+cadence): the data file is now flushed only at close — a block a crash lost fails its checksum at read and is fetched
+again, as a damaged one already was.
+
+Measured A = `main` (cab0b4c), B = this build, concurrent pairs on the shared server (other sessions' browsers
+running), order alternated, fresh copy of the live learn dir per run, `--games-dir`, no block store (fresh browser):
+RotWK 2.02 with `rotwk-startup.txt` and the `rotwk-202` profile, `--net-log`. "Parked" = fetch time of the reads that
+parked their thread (`[net]` lines, ~570 per run); "ioWait" = the `ioWait` category of the load and loadscreen phases;
+"match drawn" = the first second after the loadscreen mark whose frames carry > 150 draws (the loading screen draws
+60-110). The scenario's `waitfps:12` (play mark) is unusable on this loaded server: the match runs at 9-14 fps in
+both builds, so the play mark came 20-170 s after the match in either build at random.
+
+| pair (first) | parked p50 / p90 ms | ioWait s | first frame s | menu s | load click → match drawn s | page start → match drawn s |
+|---|---|---|---|---|---|---|
+| 1 (A) | 56 / 66 → 14 / 27 | 11.9 → 3.1 | 32 → 29 | 57 → 54 | 27 → 19 | 114 → 105 |
+| 2 (B) | 56 / 66 → 15 / 27 | 11.8 → 3.1 | 31 → 27 | 57 → 51 | 26 → 28 | 114 → 107 |
+| 3 (A) | 56 / 66 → 15 / 29 | 12.1 → 3.5 | 31 → 28 | 57 → 52 | 30 → 28 | 117 → 109 |
+| 4 (B) | 56 / 65 → 14 / 27 | 11.9 → 3.3 | 31 → 28 | 57 → 52 | 28 → 23 | 115 → 102 |
+| `--net 40:100` (A) | 84 / 116 → 59 / 93 | 23.3 → 17.4 | 41 → 40 | 66 → 66 | 34 → 33 | 131 → 129 |
+
+- The parked reads are 4 times faster and the idle time waiting for them drops by 8.5 s per run, but most of the gain
+  is before the map: the first frame comes 3-4 s and the menu 5-6 s earlier (the start-up's own parked reads). The map
+  load itself (click → match drawn) gains −8, +2, −2, −5 s (and −1 s at 40 ms RTT): after an earlier menu the click
+  comes while more of the background work (code translated ahead, prefetch) is still pending. From page start to the
+  drawn match: 7-13 s earlier in every pair, 2 s at 40 ms RTT (where the round trip itself dominates the read).
+- Vice City (`vicecity-drive.txt`, 4 pairs, 2 with `--net-log`): frames > 40 ms per minute in the drive 100 → 109,
+  187 → 218, 79 → 81, 128 → 78 (A → B; mean 124 → 122), 29.8-29.9 fps and 0.2 ms host per frame in both builds; 1-3
+  network reads during the drive (~1 470 parked reads per run, p50 5-6 ms in both builds: answered within a slice).
+
+Block store, BFME2 first launch, `--opfs` (fresh browser profiles), 50 s, 2 pairs (A first, B first), then a second
+launch on each profile (40 s):
+
+| pair | store writes ms (index syncs, of which ms) A | B | second launch |
+|---|---|---|---|
+| 3 (A first) | 3 482 (55, 2 477) | 1 141 (15, 59) | 818 / 818 blocks read back, no store emptied |
+| 4 (B first) | 3 573 (59, 2 928) | 1 260 (15, 122) | 818 / 813 blocks read back, no store emptied |
+
+An intermediate build that kept the data file's flush at each sync point: 3 218 and 3 287 ms (15 syncs, 2 153-2 167 ms)
+against 3 558 and 3 846 ms for A — the syncs' cost was the data file's write-back, not the JSON. The remaining ~1.2 s is
+the 1 MiB block writes themselves. No Direct3D frame came within the 50 s of a BFME2 first launch in any run (its
+first-launch work), so first-frame and `late` times were not comparable there.
