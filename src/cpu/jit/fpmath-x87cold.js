@@ -3,18 +3,20 @@
 // double operand —, emitted once here as runtime kernels (pure WebAssembly, D004) instead of inline in every arithmetic
 // instruction of every region. The same emitters produce the inline form (translation option x87Cold: 'inline', the
 // earlier code, kept for measurement), so both forms run the same operations on the same values.
-//   arithF32(state, a, b, r, op) -> (f32 result, i32 settled): 24-bit precision, round to nearest, float operands a / b
+//   x87ArithF32(state, a, b, r, op) -> (f32 result, i32 settled): 24-bit precision, round to nearest, float operands a / b
 //     (ST(dst) or ST(0), the other operand: L_F32A / L_F32B, not swapped for the reversed operations) whose f32 result r
 //     has an exponent field of 0 or 255 — an exact zero, an infinity from an infinite operand, a NaN by the x87 rule;
 //     settled 0: anything else (underflow / overflow into the x87's wider exponent range), left to the interpreter.
-//   roundF32(state, a, b, p, op) -> (f32 result, i32 settled): the same mode, double operands and their f64 result p,
+//   x87RoundF32(state, a, b, p, op) -> (f32 result, i32 settled): the same mode, double operands and their f64 result p,
 //     after the inline tests (a zero, a result in the float range from float operands): an infinity from an infinite
 //     operand, a 24-bit midpoint settled by the error of the f64 operation, a NaN by the x87 rule when it is a float.
-//   nanArith(state, a, b) -> f64: the x87 NaN result of an operation on double operands whose f64 result is a NaN.
+//   x87NanArith(state, a, b) -> f64: the x87 NaN result of an operation on double operands whose f64 result is a NaN.
 // IE is raised in the state block's status word (ES as well when IE is unmasked), as X87.raise does.
-// Why calls are fine here: the paths are cold (branch-hinted: TurboFan places them out of line and spills around the call
-// there only — docs/jit-code-shape.md "x87 cold paths"), and a call costs a few nanoseconds where an inline copy of
-// this code cost ~100-250 WASM operations and ~0.3-1.5 KiB of machine code per arithmetic instruction.
+// Why calls are fine here: the paths are cold and branch-hinted — TurboFan places them out of line with the spills around
+// the call (the hot loops measured kept or lowered their host instruction counts: docs/jit-code-shape.md "x87 regions:
+// the size of the arithmetic"; without the hints, as in Node by default, a call on a cold path does cost spills on the
+// hot one) — and a call costs a few nanoseconds where an inline copy of this code cost ~100-250 WASM operations and
+// ~0.3-1.5 KiB of machine code per arithmetic instruction.
 import { Code, T } from './wasm.js';
 import { ST } from '../state.js';
 import { INDEFINITE_BITS } from './fpmath-exp.js';

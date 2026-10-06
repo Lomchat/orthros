@@ -455,6 +455,11 @@ emits the base commit's code (tools/x87-size.mjs: the same WASM and machine-code
 
 ## Measured, not kept
 
+- x87 arithmetic cold path (2026-10-06, tools/x87-size.mjs and host instructions per iteration of x87loop-bench's
+  `xform` under `perf record`, branch hints on): the inline zero test of a float result on its bit pattern (`x << 1 ==
+  0`) instead of float compares — the result's bits, shared with the hot path's exponent test, then stay live past it:
+  221 host instructions per iteration against 207; no inline zero test at all (exact zeros through the kernel too):
+  203, but every product by zero would be a call. Kept: float compares (207; the earlier code 215).
 - Chained exits each with its own chain code (`siteChain`: the hash probe and tail call at every exit site, the probe
   addresses constants for static targets) instead of one shared exit: RotWK +15 %, BFME2 +52 % (Node in-session) —
   every tail-call site pins all sixteen values to the call's argument places, and the code grows.
