@@ -479,6 +479,48 @@ function wasmHalve(src, dw, dh) {
   wl.exports.halve(WASM_IN, out, dw, dh);
   return m.slice(out, out + dw * dh * 4);
 }
+/**
+ * A mip chain as D3DXFilterTexture builds it (box filter): from the w x h RGBA8 image `from`, each level of `sizes`
+ * ([w, h] pairs, in order) resized from the previous level's RGBA and encoded in `fmt` — the bytes of resizeRgba and
+ * fromRgba level after level. The images stay in the kernels' memory (one copy in, the encoded levels copied out
+ * together); large DXT levels still go to the parallel encoder. `srcFmt`: `from` is the source level's own data in
+ * that format (a 16-bit format of FMT16, A8R8G8B8 or X8R8G8B8: unpacked there, as toRgba would) rather than RGBA8.
+ * Null when the kernels cannot do it (no WebAssembly, a format without a kernel): the caller goes level by level.
+ */
+export const mipChainReady = (fmt) => (isDxt(fmt) || !!FMT16[fmt] || fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && !!localWasm();
+export function mipChain(fmt, from, w, h, sizes, srcFmt = null) {
+  const dxt = isDxt(fmt), k16 = !!FMT16[fmt], k32 = fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8;
+  const srcBpp = srcFmt === null ? 4 : FMT16[srcFmt] ? 2 : srcFmt === FMT.A8R8G8B8 || srcFmt === FMT.X8R8G8B8 ? 4 : 0;
+  if (!(dxt || k16 || k32) || !srcBpp || !sizes.length || from.length < w * h * srcBpp) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const encBytes = sizes.map(([lw, lh]) => surfaceBytes(fmt, lw, lh)), region = (w * h * 4 + 15) & ~15;
+  const total = encBytes.reduce((a, b) => a + b, 0);
+  let [m] = wasmRoom(wl, 2 * region, total);
+  const A = WASM_IN, B = WASM_IN + region, OUT = WASM_IN + 2 * region;
+  if (srcFmt === null) m.set(from.subarray(0, w * h * 4), A);
+  else { // (the source level's data unpacked into A, through B)
+    m.set(from.subarray(0, w * h * srcBpp), B);
+    if (srcBpp === 2) wl.exports[`unpack${srcFmt}`](B, w * 2, A, w, h);
+    else wl.exports.swizzle(B, w * 4, A, w, h, srcFmt === FMT.X8R8G8B8 ? 0xff000000 | 0 : 0);
+  }
+  let cur = A, nxt = B, cw = w, ch = h, o = OUT;
+  for (let i = 0; i < sizes.length; i++) {
+    const [lw, lh] = sizes[i];
+    if (lw * 2 === cw && lh * 2 === ch) wl.exports.halve(cur, nxt, lw, lh);
+    else if (lw === cw && lh === ch) m.copyWithin(nxt, cur, cur + lw * lh * 4);
+    else m.set(resizeRgba(m.slice(cur, cur + cw * ch * 4), cw, ch, lw, lh), nxt); // (the general filter, in JavaScript)
+    const n = lw * lh;
+    if (dxt) {
+      const r = n >= WASM_MIN_TEXELS && dxtEncoder ? dxtEncoder(fmt, m.subarray(nxt, nxt + n * 4), lw, lh) : null;
+      if (r) m.set(r, o); else wl.exports.encodeRows(dxtKind(fmt), lw, lh, 0, Math.max(1, (lh + 3) >> 2), nxt, o, 0);
+    } else if (k16) wl.exports[`pack${fmt}`](nxt, o, n);
+    else wl.exports.swizzle(nxt, lw * 4, o, lw, lh, fmt === FMT.X8R8G8B8 ? 0xff000000 | 0 : 0);
+    o += encBytes[i]; cw = lw; ch = lh; const t = cur; cur = nxt; nxt = t;
+  }
+  const all = m.slice(OUT, OUT + total), out = [];
+  for (let i = 0, p = 0; i < sizes.length; p += encBytes[i++]) out.push(all.subarray(p, p + encBytes[i]));
+  return out;
+}
 /** Block rows [by0, by1) of the DXT encoding of an RGBA8 image, written at their place in `out` (the whole image's blocks). */
 export function encodeDxtRows(fmt, rgba, w, h, by0, by1, out) {
   const inBytes = w * h * 4, wl = by1 > by0 && rgba.length >= inBytes ? localWasm() : null;

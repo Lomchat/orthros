@@ -4,7 +4,7 @@
 import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
-import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
+import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt, mipChain, mipChainReady } from './d3dx9-image.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
@@ -327,6 +327,22 @@ export function registerD3DX9(api, vm) {
     const chains = t.faces ?? (t.levels && !t.depth ? [t.levels] : null);
     if (!chains) return D3D_OK;
     for (const lv of chains) {
+      // the whole chain below the first level holding data at once (d3dx9-image.js mipChain: the same levels as the
+      // loop below computes one by one), for a box filter and a format with kernels
+      let first = src + 1;
+      while (first < lv.length && !lv[first - 1].mem) first++;
+      if (!point && first < lv.length && lv.slice(first - 1).every((s) => s.fmt === lv[first].fmt)) {
+        const p = lv[first - 1], tp = profOn() ? performance.now() : 0, sizes = lv.slice(first).map((s) => [s.width, s.height]);
+        // (the source level's RGBA: kept by the load, else its data unpacked by the kernels, else decoded here)
+        const encs = !mipChainReady(p.fmt) ? null : p.rgbaCache ? mipChain(p.fmt, p.rgbaCache, p.width, p.height, sizes)
+          : isDxt(p.fmt) ? mipChain(p.fmt, toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height), p.width, p.height, sizes)
+            : mipChain(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height, sizes, p.fmt);
+        if (encs) {
+          for (let i = 0; i < encs.length; i++) fillSurface(c, lv[first + i], encs[i]);
+          if (tp) prof(`FilterTexture chain fmt ${p.fmt} from ${p.width}x${p.height} (${p.rgbaCache ? 'cached' : 'decoded'})`, tp);
+          continue;
+        }
+      }
       let rgba = null; // (the level just filtered, as RGBA: the next one comes from it rather than from its re-encoded form)
       for (let i = src + 1; i < lv.length; i++) {
         const p = lv[i - 1], s = lv[i];

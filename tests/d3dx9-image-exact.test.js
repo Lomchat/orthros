@@ -124,6 +124,37 @@ test('32-bit and 16-bit conversions: every texel value, odd widths (the kernels\
   }
 });
 
+test('mipChain (D3DXFilterTexture\'s levels at once): the base\'s resize + encode level after level, every kernel format and size', () => {
+  const r = rng(12);
+  const chainSizes = (w, h) => { const s = []; while (w > 1 || h > 1) { w = Math.max(1, w >> 1); h = Math.max(1, h >> 1); s.push([w, h]); } return s; };
+  const formats = [FMT.DXT1, FMT.DXT3, FMT.DXT5, FMT.A1R5G5B5, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A4R4G4B4, FMT.X4R4G4B4, FMT.A8R8G8B8, FMT.X8R8G8B8];
+  for (const [w, h] of [[256, 256], [128, 32], [64, 1], [1, 16], [12, 20], [6, 6], [2, 1]]) for (const fmt of formats) {
+    const px = image(r, w, h, (w * 3 + h + fmt) % 7);
+    const sizes = chainSizes(w, h);
+    // (and a chain that starts with an equal size, and one with a general resize step: the handler's levels need not halve)
+    for (const sz of [sizes, ...(w >= 4 ? [[[w, h], ...sizes], [[w - 1, Math.max(1, h - 3)], ...sizes.slice(1)]] : [])]) {
+      const got = cur.mipChain(fmt, px, w, h, sz);
+      assert.ok(got, `${fmt} ${w}x${h}: the kernels take it`);
+      let from = px, fw = w, fh = h;
+      sz.forEach(([lw, lh], i) => {
+        from = base.resizeRgba(from, fw, fh, lw, lh); fw = lw; fh = lh;
+        assert.deepEqual(got[i], base.fromRgba(fmt, from, lw, lh), `fmt ${fmt} ${w}x${h} level ${i} (${lw}x${lh})`);
+      });
+    }
+  }
+  assert.equal(cur.mipChain(FMT.L8, image(r, 8, 8, 1), 8, 8, [[4, 4]]), null, 'no kernel for L8: level by level');
+  // the source level given as its own data (unpacked by the kernels): as decoding it with toRgba first
+  for (const fmt of [FMT.A1R5G5B5, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A4R4G4B4, FMT.X4R4G4B4, FMT.A8R8G8B8, FMT.X8R8G8B8]) for (const [w, h] of [[64, 64], [24, 6], [1, 4]]) {
+    const raw = base.fromRgba(fmt, image(r, w, h, w + fmt), w, h), sizes = chainSizes(w, h);
+    const want = []; let from = base.toRgba(fmt, raw, w, h), fw = w, fh = h;
+    for (const [lw, lh] of sizes) { from = base.resizeRgba(from, fw, fh, lw, lh); fw = lw; fh = lh; want.push(base.fromRgba(fmt, from, lw, lh)); }
+    const got = cur.mipChain(fmt, raw, w, h, sizes, fmt);
+    assert.equal(got.length, want.length);
+    got.forEach((g, i) => assert.deepEqual(g, want[i], `raw ${fmt} ${w}x${h} level ${i}`));
+  }
+  assert.equal(cur.mipChain(FMT.DXT1, new Uint8Array(8), 4, 4, [[2, 2]], FMT.DXT1), null, 'a DXT source is decoded by the caller');
+});
+
 // ---- image information (D3DXGetImageInfoFromFile*): the header-only TGA / BMP paths against the full parse
 const fields = (im) => (im ? { width: im.width, height: im.height, depth: im.depth, mips: im.mips, fmt: im.fmt, infoFmt: im.infoFmt, fileFormat: im.fileFormat, kind: im.kind } : null);
 /** the base's information as D3DX reported it: an exception while parsing counts as invalid data */

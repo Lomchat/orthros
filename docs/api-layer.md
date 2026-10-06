@@ -14,6 +14,12 @@ frame down, all generic (no game-specific code), and how to switch them off with
   `jit-param-desc.test.js`.
 - **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
   taken at the call. Test: `jit-defer-raw.test.js`.
+- **`IDirect3DSurface8/9::GetDesc`** (`FID_SURF_DESC`): a surface's description never changes; its COM object carries
+  the 32 bytes the handler writes right after itself (`Com.create`'s `extra` bytes, address at +12, written by
+  `Surface.ptrOf`), and the call is a copy. Map loads that write textures texel by texel ask it ~130 k times per load
+  (BFME2), with a `LockRect` / `UnlockRect` pair each. A null output, a released object (marker cleared) or an object
+  without a description go to JavaScript. Switched with the D3DX fast paths (`ORTHROS_D3DX_FAST_OFF`). Test:
+  `jit-surface-desc.test.js` (every kind of surface, D3D8 and D3D9, against the handler).
 - **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
   `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
   calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
