@@ -41,7 +41,7 @@ test('net link: the rate is measured from what crossed the link over its busy ti
   const b1 = n.begin('bg', 65536);
   assert.equal(n.mayStart(0, false, 65536), false, 'a second 64 KiB request would hold the game up twice as long');
   n.end(b1, 65536);
-  const c3 = clock(), m3 = new NetLink({ ...c3, bw: 3.5e6 });
+  const c3 = clock(), m3 = new NetLink({ ...c3, bw: 2.5e6 });
   for (let i = 0; i < 8; i++) { assert.ok(m3.tryTurn(0, {}, 20000), `small request ${i} (a run of small files fills the link)`); m3.begin('bg', 20000); }
   assert.equal(m3.tryTurn(0, {}, 20000), false, 'at most maxBackground() at once');
   assert.ok(n.demandExtra(1 << 20) <= 85000 * 0.3);
@@ -109,7 +109,7 @@ test('net link: a fast link keeps the local-network policies (no quiet time, sev
   assert.ok(n.fast() && n.bw >= FAST_BPS);
   n.begin('demand', 1 << 20);
   assert.equal(n.tryTurn(0), true, 'no wait for the game\'s reads');
-  assert.equal(n.maxBackground(), 8);
+  assert.equal(n.maxBackground(), 64, "as before: no real cap");
   assert.equal(n.backgroundBytes(), 4 << 20);
 });
 
