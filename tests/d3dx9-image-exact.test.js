@@ -1,5 +1,5 @@
 // D3DX image work against the implementation it replaced (tests/fixtures/d3dx9-image-base.js, verbatim): the
-// WebAssembly DXT encoder (dxt-wasm.js), the JavaScript one it falls back to, the helper pool on shared WebAssembly
+// WebAssembly kernels (d3dx9-image-wasm.js: DXT encoder, 32-bit swizzle, 2:1 mip filter), the JavaScript one it falls back to, the helper pool on shared WebAssembly
 // memory, mip chains (box / point filters, odd sizes) and the header-only image information give the same bytes and
 // fields for random images of every size, format and alpha pattern.
 import { test } from 'node:test';
@@ -8,7 +8,7 @@ import { Worker } from 'node:worker_threads';
 import * as cur from '../src/win32/d3dx9-image.js';
 import * as base from './fixtures/d3dx9-image-base.js';
 import { FMT } from '../src/win32/d3d8.js';
-import { dxtWasmSupported } from '../src/win32/dxt-wasm.js';
+import { imageWasmSupported } from '../src/win32/d3dx9-image-wasm.js';
 import { DxtPool } from '../src/win32/dxt-pool.js';
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s >>> 24; }; }
@@ -66,7 +66,7 @@ test('DXT: random blocks in volume, both encoders against the base', () => {
 });
 
 test('the WebAssembly encoder is there (Node and Chrome have WebAssembly SIMD), and switching it off changes nothing', () => {
-  assert.ok(dxtWasmSupported());
+  assert.ok(imageWasmSupported());
   const r = rng(4), px = image(r, 40, 24, 3);
   const on = cur.fromRgba(FMT.DXT1, px, 40, 24);
   globalThis.ORTHROS_DXT_WASM = 0;

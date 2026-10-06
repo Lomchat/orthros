@@ -120,12 +120,12 @@ export class Com {
    * `impl` may list extra interface names it answers to in `impl.iids` (array of IIDs or names).
    * @returns {number} guest pointer (refcount 1)
    */
-  create(proc, iface, impl) {
+  create(proc, iface, impl, extra = 0) {
     if (typeof iface === 'string') iface = this.interfaces.get(iface);
-    // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow),
-    // reference count, an effect's commit list] — the count in guest memory: AddRef/Release run on the JIT's fast path
-    // (runtime.js FID_ADDREF)
-    const ptr = proc.processHeap.alloc(24);
+    // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow,
+    // surface description), reference count, an effect's commit list] — the count in guest memory: AddRef/Release run
+    // on the JIT's fast path (runtime.js FID_ADDREF); `extra` bytes after them for the implementation (freed with it)
+    const ptr = proc.processHeap.alloc(24 + extra);
     this.mem.write32(ptr, this.vtableOf(proc, iface));
     this.mem.write32(ptr + 4, MARKER);
     this.mem.write32(ptr + 8, this.nextId);

@@ -5,7 +5,7 @@ import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
 import { decodeJpeg, isJpeg, jpegSize } from '../gfx/codecs/jpeg.js';
 import { decodePng, isPng } from '../gfx/codecs/png.js';
 import { decodeDxt } from '../gfx/d3d8-webgl.js';
-import { dxtWasmSupported, instantiateDxt, KIND as DXT_KIND, SCRATCH_BYTES as DXT_SCRATCH_BYTES } from './dxt-wasm.js';
+import { imageWasmSupported, instantiateImage, KIND as WASM_KIND, SCRATCH_BYTES as WASM_SCRATCH_BYTES } from './d3dx9-image-wasm.js';
 
 /** D3DXIMAGE_FILEFORMAT */
 export const IFF = { BMP: 0, JPG: 1, TGA: 2, PNG: 3, DDS: 4, PPM: 5, DIB: 6, HDR: 7, PFM: 8 };
@@ -71,13 +71,18 @@ function bmpInfo(b) {
   return { width: w, height: h, depth: 1, mips: 1, fmt: FMT.X8R8G8B8, infoFmt: bpp === 24 ? FMT.R8G8B8 : bpp === 32 ? FMT.X8R8G8B8 : bpp === 16 ? FMT.X1R5G5B5 : FMT.P8, fileFormat: IFF.BMP, kind: 'tex', images: null };
 }
 
-/** An RGBA8 image as a one-level A8R8G8B8 / X8R8G8B8 file */
-function rgbaFile(w, h, rgba, fileFormat, alpha, infoFmt) {
+/** R,G,B,A texels to B,G,R,A (alpha 255 without `alpha`) */
+function rgbaToBgra(rgba, w, h, alpha) {
   const out = new Uint8Array(w * h * 4);
   if ((rgba.byteOffset & 3) === 0) { // (whole pixels as little-endian words: R,G,B,A -> B,G,R,A)
     const s32 = new Int32Array(rgba.buffer, rgba.byteOffset, w * h), d32 = new Int32Array(out.buffer), a = alpha ? 0 : 0xff000000;
     for (let i = 0; i < w * h; i++) { const v = s32[i]; d32[i] = (v & 0xff00ff00) | ((v >>> 16) & 0xff) | ((v & 0xff) << 16) | a; }
   } else for (let i = 0; i < w * h; i++) { out[4 * i] = rgba[4 * i + 2]; out[4 * i + 1] = rgba[4 * i + 1]; out[4 * i + 2] = rgba[4 * i]; out[4 * i + 3] = alpha ? rgba[4 * i + 3] : 255; }
+  return out;
+}
+/** An RGBA8 image as a one-level A8R8G8B8 / X8R8G8B8 file */
+function rgbaFile(w, h, rgba, fileFormat, alpha, infoFmt) {
+  const out = wasmSwizzle(rgba, w * 4, w, h, alpha ? 0 : 0xff000000) ?? rgbaToBgra(rgba, w, h, alpha);
   return { width: w, height: h, depth: 1, mips: 1, fmt: alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8, infoFmt: infoFmt ?? (alpha ? FMT.A8R8G8B8 : FMT.X8R8G8B8), fileFormat, kind: 'tex', images: [[out]] };
 }
 
@@ -211,6 +216,7 @@ const TO_RGBA = {
 const TO_RGBA_DEFAULT = [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }];
 
 function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
+  if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) { const r = wasmSwizzle(u8, pitch, w, h, fmt === FMT.X8R8G8B8 ? 0xff000000 : 0); if (r) return r; }
   const out = new Uint8Array(w * h * 4);
   if ((fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && ((u8.byteOffset | pitch) & 3) === 0) { // (whole texels: B,G,R,A -> R,G,B,A on 32-bit lanes)
     const src = new Uint32Array(u8.buffer, u8.byteOffset, u8.length >> 2), dst = new Uint32Array(out.buffer), alpha = fmt === FMT.X8R8G8B8 ? 0xff000000 : 0;
@@ -248,6 +254,7 @@ const QUANT = [4, 5, 6].reduce((m, bits) => { m[bits] = Uint8Array.from({ length
 /** RGBA8 to raw pixels of `fmt` (uncompressed formats; null when not encodable here). */
 export function fromRgba(fmt, rgba, w, h) {
   if (isDxt(fmt)) return encodeDxt(fmt, rgba, w, h);
+  if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) { const r = wasmSwizzle(rgba, w * 4, w, h, fmt === FMT.X8R8G8B8 ? 0xff000000 : 0); if (r) return r; }
   const pitch = surfacePitch(fmt, w), out = new Uint8Array(surfaceBytes(fmt, w, h));
   // the common formats a texel at a time on whole words (the same values as the general loop below)
   if ((rgba.byteOffset & 3) === 0 && (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8)) {
@@ -290,6 +297,7 @@ export function fromRgba(fmt, rgba, w, h) {
 export function resizeRgba(src, sw, sh, dw, dh, point = false) {
   if (sw === dw && sh === dh) return src;
   if (!point && dw * 2 === sw && dh * 2 === sh) { // (a mip level: each texel the average of 2 x 2, as the general loop computes it)
+    const r = wasmHalve(src, dw, dh); if (r) return r;
     const out = new Uint8Array(dw * dh * 4), row = sw * 4;
     if ((src.byteOffset & 3) === 0) { // (whole texels: the channels summed in two 16-bit lanes per word, (sum + 2) >> 2 each)
       const s32 = new Uint32Array(src.buffer, src.byteOffset, sw * sh), o32 = new Uint32Array(out.buffer), M = 0x00ff00ff;
@@ -398,34 +406,66 @@ export const dxtBytes = (fmt, w, h) => Math.max(1, (w + 3) >> 2) * Math.max(1, (
 let dxtEncoder = null;
 /** Install an encoder that may split the work (returns null to decline: the encoder here runs). */
 export function setDxtEncoder(f) { dxtEncoder = f; }
-/** The block kind of dxt-wasm.js encodeRows for a DXT format. */
-export const dxtKind = (fmt) => (fmt === FMT.DXT1 ? DXT_KIND.DXT1 : fmt === FMT.DXT2 || fmt === FMT.DXT3 ? DXT_KIND.DXT3 : DXT_KIND.DXT5);
+/** The block kind of d3dx9-image-wasm.js encodeRows for a DXT format. */
+export const dxtKind = (fmt) => (fmt === FMT.DXT1 ? WASM_KIND.DXT1 : fmt === FMT.DXT2 || fmt === FMT.DXT3 ? WASM_KIND.DXT3 : WASM_KIND.DXT5);
+
+// ---------------------------------------------------------------- WebAssembly kernels (d3dx9-image-wasm.js)
 /**
- * The WebAssembly encoder on this thread (dxt-wasm.js: the same blocks as encodeDxtRowsJs), with a private memory —
- * [scratch, image, blocks] — grown to the largest image met; null without WebAssembly SIMD, or switched off for a
- * measurement (?dbg=ORTHROS_DXT_WASM=0).
+ * The WebAssembly kernels on this thread, with a private memory — [scratch, input, output] for one call at a time —
+ * grown to the largest image met; null without WebAssembly SIMD, or switched off for a measurement
+ * (?dbg=ORTHROS_DXT_WASM=0: the JavaScript code everywhere, the same bytes).
  */
-let wasmDxt;
-function localWasmDxt() {
+let wasmLocal;
+function localWasm() {
   if (globalThis.ORTHROS_DXT_WASM === 0) return null;
-  if (wasmDxt === undefined) {
-    wasmDxt = null;
-    try { if (dxtWasmSupported()) { const memory = new WebAssembly.Memory({ initial: 1 }); wasmDxt = { memory, exports: instantiateDxt(memory) }; } } catch { wasmDxt = null; }
+  if (wasmLocal === undefined) {
+    wasmLocal = null;
+    try { if (imageWasmSupported()) { const memory = new WebAssembly.Memory({ initial: 1 }); wasmLocal = { memory, exports: instantiateImage(memory) }; } } catch { wasmLocal = null; }
   }
-  return wasmDxt;
+  return wasmLocal;
+}
+/** Images below this many texels stay in JavaScript (a call and two copies cost more than the work) */
+const WASM_MIN_TEXELS = 1024;
+/** The local memory with room for `inBytes` at IN and `outBytes` after it: [u8 view of the memory, output offset] */
+function wasmRoom(wl, inBytes, outBytes) {
+  const out = WASM_IN + ((inBytes + 15) & ~15), need = out + outBytes, have = wl.memory.buffer.byteLength;
+  if (need > have) wl.memory.grow(Math.ceil((need - have) / 65536));
+  return [new Uint8Array(wl.memory.buffer), out];
+}
+const WASM_IN = WASM_SCRATCH_BYTES;
+/**
+ * w x h 32-bit texels (rows `pitch` bytes apart) with bytes 0 and 2 of each exchanged and `alphaOr` ORed into the word:
+ * A8R8G8B8 / X8R8G8B8 <-> RGBA8, as a new packed image; null when the JavaScript code is to do it (small image, no
+ * WebAssembly, a source shorter than its rows or rows overlapping).
+ */
+function wasmSwizzle(u8, pitch, w, h, alphaOr) {
+  const n = w * h, inBytes = (h - 1) * pitch + w * 4;
+  if (n < WASM_MIN_TEXELS || pitch < w * 4 || u8.length < inBytes) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const [m, out] = wasmRoom(wl, inBytes, n * 4);
+  m.set(u8.subarray(0, inBytes), WASM_IN);
+  wl.exports.swizzle(WASM_IN, pitch, out, w, h, alphaOr | 0);
+  return m.slice(out, out + n * 4);
+}
+/** The 2:1 box filter of a 2 dw x 2 dh RGBA8 image (resizeRgba's mip levels), or null (as wasmSwizzle) */
+function wasmHalve(src, dw, dh) {
+  const inBytes = dw * dh * 16;
+  if (dw * dh * 4 < WASM_MIN_TEXELS || src.length < inBytes) return null;
+  const wl = localWasm(); if (!wl) return null;
+  const [m, out] = wasmRoom(wl, inBytes, dw * dh * 4);
+  m.set(src.subarray(0, inBytes), WASM_IN);
+  wl.exports.halve(WASM_IN, out, dw, dh);
+  return m.slice(out, out + dw * dh * 4);
 }
 /** Block rows [by0, by1) of the DXT encoding of an RGBA8 image, written at their place in `out` (the whole image's blocks). */
 export function encodeDxtRows(fmt, rgba, w, h, by0, by1, out) {
-  const wd = by1 > by0 ? localWasmDxt() : null;
-  if (!wd) return encodeDxtRowsJs(fmt, rgba, w, h, by0, by1, out);
-  const inBytes = w * h * 4, outBytes = dxtBytes(fmt, w, h), src = DXT_SCRATCH_BYTES, dst = src + ((inBytes + 15) & ~15);
-  const need = dst + outBytes, have = wd.memory.buffer.byteLength;
-  if (need > have) wd.memory.grow(Math.ceil((need - have) / 65536));
-  const u8 = new Uint8Array(wd.memory.buffer);
-  u8.set(rgba.subarray(0, inBytes), src);
-  wd.exports.encodeRows(dxtKind(fmt), w, h, by0, by1, src, dst, 0);
+  const inBytes = w * h * 4, wl = by1 > by0 && rgba.length >= inBytes ? localWasm() : null;
+  if (!wl) return encodeDxtRowsJs(fmt, rgba, w, h, by0, by1, out);
+  const outBytes = dxtBytes(fmt, w, h), [m, dst] = wasmRoom(wl, inBytes, outBytes);
+  m.set(rgba.subarray(0, inBytes), WASM_IN);
+  wl.exports.encodeRows(dxtKind(fmt), w, h, by0, by1, WASM_IN, dst, 0);
   const rowBytes = outBytes / Math.max(1, (h + 3) >> 2), a = by0 * rowBytes, b = Math.min(outBytes, by1 * rowBytes);
-  out.set(u8.subarray(dst + a, dst + b), a);
+  out.set(m.subarray(dst + a, dst + b), a);
   return out;
 }
 /** encodeDxtRows in JavaScript (the reference of the WebAssembly encoder; the encoder where WebAssembly SIMD is missing) */

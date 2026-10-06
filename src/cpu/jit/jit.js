@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -125,9 +125,9 @@ export class Jit {
     const defer = def && this.opts.deferCom !== false ? DEFER_SPECS[key.slice(key.indexOf('!') + 1)] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
-    // (the fast paths of the API-layer work — D3DX math, effect parameter descriptions, raw values — switchable for
+    // (the fast paths of the API-layer work — D3DX math, effect parameter and surface descriptions, raw values — switchable for
     // measurement: setD3dxFast)
-    if (dx !== undefined || fid === FID_PARAM_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+    if (dx !== undefined || fid === FID_PARAM_DESC || fid === FID_SURF_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
   }
   /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */

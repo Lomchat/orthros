@@ -168,6 +168,12 @@ export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
 export const FID_ADDREF = 21, FID_RELEASE = 22;
 /** GetTickCount's fast path (timeGetTime's is 19: they step differently, core/timer-res.js) */
 export const FID_TICKCOUNT = 28;
+/**
+ * IDirect3DSurface8/9::GetDesc on the fast path (FID_SURF_DESC): a surface's COM object keeps at +12 the address of its
+ * D3DSURFACE_DESC (SURF_DESC_BYTES, right after the object: d3d8.js Surface.ptrOf — a surface's description never
+ * changes), copied to the caller's structure
+ */
+export const FID_SURF_DESC = 29, SURF_DESC_BYTES = 32;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 /** +0 bytes used, +4 nonzero when a queued record may change reference counts (DEFER_REFS), +8 nonzero when one may
  * change device states (DEFER_STATES), records from +16 */
@@ -204,7 +210,8 @@ export const DEFER_SPECS = {
 };
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
-  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
+  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27,
+  'com.dll!IDirect3DSurface8::GetDesc': 29, 'com.dll!IDirect3DSurface9::GetDesc': 29 };
 /** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
 export const TICK_BASE = 0x1000000;
 
@@ -382,7 +389,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT) + 1;
+    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT, FID_SURF_DESC) + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -585,6 +592,14 @@ export function buildRuntime(opts = {}) {
           c.get(A2).eqz().get(A2).i32(0x7fff0000 - 64).ge_u().or().br_if(notHandled);
           c.get(A2).get(TM).i32(4).add().i32(PARAM_DESC_ENTRY - 4).memcopy();
           c.get(STATE).i32(0); ret(3); break;
+        }
+        case FID_SURF_DESC: { // GetDesc(this, desc): the surface's description, kept after its object (FB)
+          c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
+          c.get(A0).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled);
+          c.get(A1).eqz().get(A1).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled); // (null: JavaScript's error)
+          c.get(A1).get(FB).i32(SURF_DESC_BYTES).memcopy();
+          c.get(STATE).i32(0); ret(2); break;
         }
         default: // pure D3DX math (fast-d3dx.js)
           if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: VP + 1, notHandled, ret });

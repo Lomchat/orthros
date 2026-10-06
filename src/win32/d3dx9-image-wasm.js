@@ -1,9 +1,14 @@
-// The DXT1/3/5 block encoder of d3dx9-image.js (encodeDxtRows) as a WebAssembly SIMD kernel: the same blocks, bit for
-// bit. Every decision of the JavaScript encoder is taken on the same values computed the same way: endpoint texels by
-// integer luminance (first minimum / maximum), the palette on f64 (k * 255 / 31...), each texel's projection on the
-// endpoint axis in f64 with the same operations in the same order (two texels per f64x2: IEEE results do not depend on
-// the lane), the same thresholds and comparisons; the DXT5 alpha levels and distances in f64 with the same strict
-// "nearer than every earlier level" scan. No fused multiply-add (WebAssembly has none outside relaxed SIMD).
+// WebAssembly SIMD kernels of D3DX's image work (d3dx9-image.js), each giving the bytes of the JavaScript code it
+// stands for, bit for bit:
+// - encodeRows: the DXT1/3/5 block encoder (encodeDxtRowsJs). Every decision of the JavaScript encoder is taken on the
+//   same values computed the same way: endpoint texels by integer luminance (first minimum / maximum), the palette on
+//   f64 (k * 255 / 31...), each texel's projection on the endpoint axis in f64 with the same operations in the same
+//   order (two texels per f64x2: IEEE results do not depend on the lane), the same thresholds and comparisons; the
+//   DXT5 alpha levels and distances in f64 with the same strict "nearer than every earlier level" scan. No fused
+//   multiply-add (WebAssembly has none outside relaxed SIMD).
+// - swizzle: 32-bit texels with red and blue exchanged and an alpha mask ORed (A8R8G8B8 / X8R8G8B8 <-> RGBA8), rows
+//   `pitch` bytes apart.
+// - halve: the 2:1 box filter of mip levels, (a + b + c + d + 2) >> 2 per channel, on 16-bit lanes.
 // The module imports its memory: a private one on the calling thread, or the DXT pool's shared memory in the helpers
 // (dxt-pool.js), which then encode their block rows in place.
 import { ModuleBuilder, Code, T } from '../cpu/jit/wasm.js';
@@ -261,9 +266,68 @@ function encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3) {
   return { code: c, locals: Array(9).fill(T.i32) };
 }
 
+/** swizzle(src, pitch, dst, w, h, alphaOr): w x h 32-bit texels, rows `pitch` bytes apart at src, to packed rows at dst */
+function swizzleCode() {
+  const c = new Code();
+  const SRC = 0, PITCH = 1, DST = 2, W = 3, H = 4, AO = 5, Y = 6, X = 7, S = 8, D = 9, V = 10, AV = 11, SH = 12;
+  c.get(AO).i32x4splat().set(AV);
+  c.v128const(Uint8Array.from([2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15])).set(SH);
+  c.i32(0).set(Y);
+  const yd = c.block(); const yl = c.loop();
+  c.get(Y).get(H).ge_s().br_if(yd);
+  c.get(SRC).get(Y).get(PITCH).mul().add().set(S); c.get(DST).get(Y).get(W).mul().i32(2).shl().add().set(D);
+  c.i32(0).set(X);
+  const xd = c.block(); const xl = c.loop(); // (four texels at a time)
+  c.get(X).i32(4).add().get(W).gt_s().br_if(xd);
+  c.get(D).get(S).v128load(0).get(SH).i8x16swizzle().get(AV).v128or().v128store(0);
+  c.get(S).i32(16).add().set(S); c.get(D).i32(16).add().set(D); c.get(X).i32(4).add().set(X); c.br(xl);
+  c.end(); c.end(); void xd;
+  const td = c.block(); const tl = c.loop(); // (the last ones of the row)
+  c.get(X).get(W).ge_s().br_if(td);
+  c.get(D).get(S).i32load(0, 0).tee(V).i32(0xff00ff00 | 0).and().get(V).i32(0xff).and().i32(16).shl().or().get(V).i32(16).shr_u().i32(0xff).and().or().get(AO).or().i32store(0, 0);
+  c.get(S).i32(4).add().set(S); c.get(D).i32(4).add().set(D); c.get(X).i32(1).add().set(X); c.br(tl);
+  c.end(); c.end(); void td;
+  c.get(Y).i32(1).add().set(Y); c.br(yl);
+  c.end(); c.end(); void yd;
+  return { code: c, locals: [T.i32, T.i32, T.i32, T.i32, T.i32, T.v128, T.v128] };
+}
+
+/** halve(src, dst, dw, dh): the 2 dw x 2 dh RGBA8 image at src box-filtered to dw x dh at dst */
+function halveCode() {
+  const c = new Code();
+  const SRC = 0, DST = 1, DW = 2, DH = 3, Y = 4, X = 5, S = 6, D = 7, ROW = 8, A = 9, B = 10, TWO = 11;
+  c.v128const(Uint8Array.from([2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0])).set(TWO);
+  c.get(DW).i32(3).shl().set(ROW); // (a source row: 2 dw texels)
+  c.i32(0).set(Y);
+  const yd = c.block(); const yl = c.loop();
+  c.get(Y).get(DH).ge_s().br_if(yd);
+  c.get(SRC).get(Y).get(ROW).mul().i32(1).shl().add().set(S); c.get(DST).get(Y).get(DW).mul().i32(2).shl().add().set(D);
+  c.i32(0).set(X);
+  const xd = c.block(); const xl = c.loop(); // (two output texels from 4 x 2 source texels)
+  c.get(X).i32(2).add().get(DW).gt_s().br_if(xd);
+  // channels on 16-bit lanes: the two rows summed (A: source texels 0, 1; B: 2, 3), then horizontal pairs
+  c.get(S).v128load(0).i16x8extend_low_i8x16_u().get(S).get(ROW).add().v128load(0).i16x8extend_low_i8x16_u().i16x8add().set(A);
+  c.get(S).v128load(0).i16x8extend_high_i8x16_u().get(S).get(ROW).add().v128load(0).i16x8extend_high_i8x16_u().i16x8add().set(B);
+  c.get(A).get(B).i8x16shuffle([0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]);
+  c.get(A).get(B).i8x16shuffle([8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
+  c.i16x8add().get(TWO).i16x8add().i32(2).i16x8shr_u().set(A);
+  c.get(D).get(A).get(A).i8x16narrow_i16x8_u().v128store64lane(0, 0);
+  c.get(S).i32(16).add().set(S); c.get(D).i32(8).add().set(D); c.get(X).i32(2).add().set(X); c.br(xl);
+  c.end(); c.end(); void xd;
+  const td = c.block(); // (an odd width: the last texel from 2 x 2)
+  c.get(X).get(DW).ge_s().br_if(td);
+  c.get(S).v128load64zero(0).i16x8extend_low_i8x16_u().get(S).get(ROW).add().v128load64zero(0).i16x8extend_low_i8x16_u().i16x8add().set(A);
+  c.get(A).get(A).i8x16shuffle([8, 9, 10, 11, 12, 13, 14, 15, 8, 9, 10, 11, 12, 13, 14, 15]).get(A).i16x8add().get(TWO).i16x8add().i32(2).i16x8shr_u().set(A);
+  c.get(D).get(A).get(A).i8x16narrow_i16x8_u().v128store32lane(0, 0);
+  c.end(); void td;
+  c.get(Y).i32(1).add().set(Y); c.br(yl);
+  c.end(); c.end(); void yd;
+  return { code: c, locals: [T.i32, T.i32, T.i32, T.i32, T.i32, T.v128, T.v128, T.v128] };
+}
+
 const moduleBytes = new Map();
-/** The encoder module's bytes (its memory imported as env.memory, shared or not). */
-export function dxtModuleBytes(shared) {
+/** The kernels' module bytes (its memory imported as env.memory, shared or not). */
+export function imageModuleBytes(shared) {
   let b = moduleBytes.get(shared);
   if (b) return b;
   const m = new ModuleBuilder();
@@ -273,8 +337,9 @@ export function dxtModuleBytes(shared) {
   const fColor = f(colorBlockCode(false), [T.i32, T.i32], 'colorBlock');
   const fAlpha5 = f(alphaBlockCode(), [T.i32, T.i32], 'alphaBlock');
   const fAlpha3 = f(explicitAlphaCode(), [T.i32, T.i32], 'explicitAlpha');
-  const fRows = f(encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3), Array(8).fill(T.i32), 'encodeRows');
-  m.exportFunc('encodeRows', fRows);
+  m.exportFunc('encodeRows', f(encodeRowsCode(fColor1, fColor, fAlpha5, fAlpha3), Array(8).fill(T.i32), 'encodeRows'));
+  m.exportFunc('swizzle', f(swizzleCode(), Array(6).fill(T.i32), 'swizzle'));
+  m.exportFunc('halve', f(halveCode(), Array(4).fill(T.i32), 'halve'));
   b = m.build();
   moduleBytes.set(shared, b);
   return b;
@@ -282,13 +347,16 @@ export function dxtModuleBytes(shared) {
 
 let supported = null;
 /** WebAssembly SIMD available (and the module valid here)? */
-export function dxtWasmSupported() {
-  if (supported === null) { try { supported = typeof WebAssembly === 'object' && WebAssembly.validate(dxtModuleBytes(false)); } catch { supported = false; } }
+export function imageWasmSupported() {
+  if (supported === null) { try { supported = typeof WebAssembly === 'object' && WebAssembly.validate(imageModuleBytes(false)); } catch { supported = false; } }
   return supported;
 }
 
-/** An encoder instance on `memory` (a WebAssembly.Memory): encodeRows(kind, w, h, by0, by1, src, dst, scratch). */
-export function instantiateDxt(memory) {
+/**
+ * The kernels on `memory` (a WebAssembly.Memory): encodeRows(kind, w, h, by0, by1, src, dst, scratch),
+ * swizzle(src, pitch, dst, w, h, alphaOr), halve(src, dst, dw, dh).
+ */
+export function instantiateImage(memory) {
   const shared = typeof SharedArrayBuffer !== 'undefined' && memory.buffer instanceof SharedArrayBuffer;
-  return new WebAssembly.Instance(new WebAssembly.Module(dxtModuleBytes(shared)), { env: { memory } }).exports;
+  return new WebAssembly.Instance(new WebAssembly.Module(imageModuleBytes(shared)), { env: { memory } }).exports;
 }

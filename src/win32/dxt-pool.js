@@ -3,11 +3,11 @@
 // synchronous for the guest. Every block is encoded by the same code as the sequential encoder (encodeDxtRows): the
 // bytes are identical. Images travel through shared memory (a cross-origin isolated page): one shared
 // WebAssembly.Memory — [scratch per thread, image, blocks] — on which every thread runs the WebAssembly encoder
-// (dxt-wasm.js) in place, or the JavaScript one where WebAssembly SIMD is missing (or ?dbg=ORTHROS_DXT_WASM=0, decided
+// (d3dx9-image-wasm.js) in place, or the JavaScript one where WebAssembly SIMD is missing (or ?dbg=ORTHROS_DXT_WASM=0, decided
 // per job); the helpers sleep in Atomics.wait on a job counter (no message per job: a wake-up costs microseconds, not an
 // event-loop round trip).
 import { encodeDxtRowsJs, dxtBytes, dxtKind } from './d3dx9-image.js';
-import { dxtWasmSupported, instantiateDxt, SCRATCH_BYTES } from './dxt-wasm.js';
+import { imageWasmSupported, instantiateImage, SCRATCH_BYTES } from './d3dx9-image-wasm.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 
 /** Images with fewer blocks than this are encoded by the caller alone (the hand-off costs more than it saves). */
@@ -21,7 +21,7 @@ const IN = (MAX_HELPERS + 1) * SCRATCH_BYTES, OUT = IN + MAX_PARALLEL_TEXELS * 4
 // control words: parts finished by the helpers, job number, format, width, height, parts, encoder (1 WebAssembly, 0 JavaScript)
 const DONE = 0, SEQ = 1, FMT_ = 2, W = 3, H = 4, PARTS = 5, WASM = 6;
 const cut = (k, bh, parts) => Math.round((k * bh) / parts);
-const useWasm = () => globalThis.ORTHROS_DXT_WASM !== 0 && dxtWasmSupported();
+const useWasm = () => globalThis.ORTHROS_DXT_WASM !== 0 && imageWasmSupported();
 
 export class DxtPool {
   /**
@@ -34,7 +34,7 @@ export class DxtPool {
     this.log = log; this.timeouts = { firstMs: timeouts.firstMs ?? 10000, ms: timeouts.ms ?? 2000 };
     this.ctl = new Int32Array(new SharedArrayBuffer(64));
     // (a shared WebAssembly memory when WebAssembly SIMD is there: the encoder runs on it; else a plain shared buffer)
-    this.memory = dxtWasmSupported() ? new WebAssembly.Memory({ initial: Math.ceil(BYTES / 65536), maximum: Math.ceil(BYTES / 65536), shared: true }) : null;
+    this.memory = imageWasmSupported() ? new WebAssembly.Memory({ initial: Math.ceil(BYTES / 65536), maximum: Math.ceil(BYTES / 65536), shared: true }) : null;
     this.buffer = this.memory ? this.memory.buffer : new SharedArrayBuffer(BYTES);
     this.wasm = null; // (this thread's encoder instance on the shared memory, made at the first job)
     this.workers = [];
@@ -56,7 +56,7 @@ export class DxtPool {
     ctl[FMT_] = fmt; ctl[W] = w; ctl[H] = h; ctl[PARTS] = parts; ctl[WASM] = wasm ? 1 : 0;
     Atomics.store(ctl, DONE, 0);
     Atomics.add(ctl, SEQ, 1); Atomics.notify(ctl, SEQ);
-    if (wasm) (this.wasm ??= instantiateDxt(this.memory)).encodeRows(dxtKind(fmt), w, h, cut(helpers, bh, parts), bh, IN, OUT, 0);
+    if (wasm) (this.wasm ??= instantiateImage(this.memory)).encodeRows(dxtKind(fmt), w, h, cut(helpers, bh, parts), bh, IN, OUT, 0);
     else encodeDxtRowsJs(fmt, new Uint8Array(this.buffer, IN, inBytes), w, h, cut(helpers, bh, parts), bh, out);
     const t0 = performance.now(), limit = this.firstJob ? this.timeouts.firstMs : this.timeouts.ms; // (the first job waits for the helpers to load)
     const ap = acct.enter(ACCT.tex); // (frame accounting: waiting for the helpers)
@@ -88,7 +88,7 @@ export class DxtPool {
 export function helperLoop(m) {
   const ctl = new Int32Array(m.ctl), index = m.index;
   let wasm = null;
-  try { if (m.memory) wasm = instantiateDxt(m.memory); } catch { wasm = null; } // (then the JavaScript encoder: the same bytes)
+  try { if (m.memory) wasm = instantiateImage(m.memory); } catch { wasm = null; } // (then the JavaScript encoder: the same bytes)
   let seen = 0; // (jobs are numbered from 1: a helper starting late still takes the job waiting for it)
   for (;;) {
     Atomics.wait(ctl, SEQ, seen);

@@ -10,7 +10,7 @@ import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
-import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB } from '../cpu/jit/runtime.js';
+import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SURF_DESC_BYTES } from '../cpu/jit/runtime.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -184,7 +184,15 @@ export function d3dCore(vm) {
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
-    ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
+    // (the object carries the surface's description after it, its address at +12: GetDesc on the JIT's fast path,
+    // runtime.js FID_SURF_DESC — the same 32 bytes GetDesc writes)
+    ptrOf(c) {
+      if (!this.ptr || !com.objectAt(this.ptr)) {
+        const p = this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this, SURF_DESC_BYTES);
+        mem.write32(p + 12, p + 24); this.GetDesc({ arg: () => p + 24 });
+      } else com.addRef(com.objectAt(this.ptr));
+      return this.ptr;
+    }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     /**
      * Released to no reference, the surface stays a valid object at the same address while its owner lives (a device's
