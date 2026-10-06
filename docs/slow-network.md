@@ -38,7 +38,7 @@ this server (localhost), where none of this shows.
   rest); only those that would hold the game up longer than 1.5 × `BG_SECONDS` are aborted (sized before the link was
   measured, or the link slowed down); a synchronous read aborts the background requests for the same bytes (the worker
   cannot receive their answers while it waits: they would cross the link twice).
-- **Thin link** (below 1.5 MB/s): no speculative whole blocks — no block fill for a piece read, no "near" blocks, the
+- **Thin link** (measured below 384 KB/s): no speculative whole blocks — no block fill for a piece read, no "near" blocks, the
   learned prefetch fetches the learned pieces (the masks: what earlier sessions read) only. A file the game opened and
   closed again (a movie skipped, a file parsed) is not fetched ahead any more until the game opens it again.
 - **Learned order**: the server's prefetch list (`/api/prefetch/<manifest>`: `[path, block, mask, t]`, sorted by the

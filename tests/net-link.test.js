@@ -102,6 +102,19 @@ test('net link: a fast link keeps the local-network policies (no quiet time, sev
   assert.equal(n.backgroundBytes(), 4 << 20);
 });
 
+test('net link: between thin and fast, background requests go beside the game\'s reads within the link\'s bytes', () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1e6 });
+  assert.ok(!n.fast() && !n.thin());
+  const budget = n.backgroundBytes();
+  assert.ok(budget >= 256 << 10 && budget <= 512 << 10, `${budget}`);
+  n.begin('demand', 65536);
+  assert.ok(n.mayStart(300, false, 65536), 'a small one beside a game read, no quiet time');
+  assert.ok(!n.mayStart(0, false, budget), 'not one that would hold the game read up longer than the budget');
+  const thin = new NetLink({ ...c, bw: 85000 });
+  thin.begin('demand', 65536);
+  assert.ok(!thin.mayStart(0, false, 1024), 'a thin link: the game\'s read alone');
+});
+
 test('net link: only the background requests that would hold the game up long are aborted', () => {
   const c = clock(), n = new NetLink({ ...c, bw: 100000 });
   let aborted = [];
