@@ -124,7 +124,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -913,6 +913,7 @@ class Emitter {
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
+    this.swLocal = !!(opts.swLocal ?? JIT_DEFAULTS.swLocal); // (the x87 status word in a local: see L_SW)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
     // (cw & 0xf00) in fpcAssume, and with X87_MODE_TOP set, the stack top at the region's entry in topAssume (see
@@ -1346,13 +1347,17 @@ class Emitter {
     this.loadX87Fpc();
     this.loadX87Regs();
   }
-  /** L_FPC <- the control word's PC/RC bits; L_SW <- the status word. */
-  loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); this.c.get(L_STATE).i32load16u(ST.FPU_SW).set(L_SW); }
+  /** L_FPC <- the control word's PC/RC bits; L_SW <- the status word (opts.swLocal). */
+  loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); if (this.swLocal) this.c.get(L_STATE).i32load16u(ST.FPU_SW).set(L_SW); }
   /** Write the cached x87 state back (shift 0): TOP always, the stack values, tag word and status word in x87 regions. */
   flushFpu() {
     const c = this.c;
-    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); c.get(L_STATE).get(L_SW).i32store16(ST.FPU_SW); } // (other regions never change TOP)
+    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); if (this.swLocal) c.get(L_STATE).get(L_SW).i32store16(ST.FPU_SW); } // (other regions never change TOP)
   }
+  /** push the x87 status word: its local (opts.swLocal, x87 regions), else the state block's */
+  swGet() { if (this.swLocal) this.c.get(L_SW); else this.c.get(L_STATE).i32load16u(ST.FPU_SW); }
+  /** x87 status word <- the i32 on the stack (16 bits) */
+  swSet() { const c = this.c; c.set(L_SW); if (!this.swLocal) c.get(L_STATE).get(L_SW).i32store16(ST.FPU_SW); }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
    * physical registers: when TOP is not already 0 the values are written back with the old TOP
@@ -2916,4 +2921,4 @@ HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[O
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
 export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter };
-export { HANDLERS, L_STATE, L_SW, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
