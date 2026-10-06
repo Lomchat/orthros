@@ -29,7 +29,11 @@ nouveau clic la reprend, aussi après une perte de focus ou la fin d'une mesure 
 mouvements relatifs existent : DirectInput les reçoit sans bornage (caméras à la souris), le curseur du jeu part de sa
 position à lui (un `SetCursorPos` de recentrage compris) et s'arrête aux bords de l'écran et du rectangle `ClipCursor`
 (défilement par les bords) ; la page le dessine. Libre, le pointeur ne transmet de mouvement que tant qu'il reste
-sur le jeu (src/host/web/pointer.js).
+sur le jeu (src/host/web/pointer.js). Au-dessus du jeu, la page montre le curseur système du jeu et lui seul, visible
+quand Windows le montrerait : compteur de `ShowCursor` ≥ 0, une forme posée (`SetCursor(NULL)` l'ôte ; `WM_SETCURSOR`
+envoyé à chaque mouvement, `DefWindowProc` pose le curseur de la classe), aucune souris DirectInput exclusive acquise.
+Caché (un jeu qui dessine son propre curseur), la page n'en montre aucun, capturée ou non ; montré, sa forme (curseur
+CSS, ou curseur dessiné par la page sous capture) — jamais la flèche du navigateur par-dessus le curseur du jeu.
 
 Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :

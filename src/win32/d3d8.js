@@ -487,7 +487,7 @@ export function d3dCore(vm) {
     GetCreationParameters(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.adapter); mem.write32(p + 4, this.devType); mem.write32(p + 8, this.hFocus); mem.write32(p + 12, this.behavior); return D3D_OK; }
     SetCursorProperties(c) { const s = com.implAt(c.arg(3)); this.cursor.hot = [c.arg(1), c.arg(2)]; this.cursor.surface = s instanceof Surface ? s : null; this.gfx?.setCursor?.(this.cursor); return D3D_OK; }
     SetCursorPosition(c) { this.cursor.x = c.sarg(1); this.cursor.y = c.sarg(2); if (vm.wm) vm.wm.cursor = { x: this.cursor.x, y: this.cursor.y }; return D3D_OK; }
-    ShowCursor(c) { const was = this.cursor.visible; this.cursor.visible = c.arg(1) !== 0; return was ? 1 : 0; }
+    ShowCursor(c) { const was = this.cursor.visible; this.cursor.visible = c.arg(1) !== 0; if (was !== this.cursor.visible) vm.log('input', `Direct3D device cursor ${this.cursor.visible ? 'shown' : 'hidden'}${this.cursor.surface ? '' : ' (no cursor image set)'}`); return was ? 1 : 0; }
     CreateAdditionalSwapChain(c) { c.out32(2, 0); return D3DERR_NOTAVAILABLE; }
     Reset(c) {
       const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL;

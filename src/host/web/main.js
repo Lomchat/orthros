@@ -7,7 +7,7 @@ import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
-import { PointerInput, winButton } from './pointer.js';
+import { PointerInput, winButton, cursorView } from './pointer.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -208,13 +208,14 @@ function applyCursor() {
   clearTimeout(state.cursorTimer);
   const frame = $('frame');
   $('c2d').style.cursor = '';
-  if (state.cursorVisible === false) { frame.style.cursor = 'none'; drawSoftCursor(); return; }
+  const view = cursorView(state.cursorVisible, state.pointerLocked);
+  if (!view.soft && view.css === 'none') { frame.style.cursor = 'none'; drawSoftCursor(); return; }
   const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
-  if (!def) { frame.style.cursor = state.pointerLocked ? 'none' : SYSTEM_CURSORS[cur?.system] ?? 'default'; drawSoftCursor(); return; }
+  if (!def) { frame.style.cursor = view.css === 'none' ? 'none' : SYSTEM_CURSORS[cur?.system] ?? 'default'; drawSoftCursor(); return; }
   let step = 0;
   const show = () => {
     const s = def.steps[step % def.steps.length];
-    frame.style.cursor = state.pointerLocked ? 'none' : def.frames[s.frame];
+    frame.style.cursor = view.css === 'none' ? 'none' : def.frames[s.frame];
     state.softStep = step; drawSoftCursor();
     if (def.steps.length > 1) { step++; state.cursorTimer = setTimeout(show, Math.max(16, s.ms)); }
   };
@@ -488,7 +489,7 @@ async function enterPlayMode() {
 }
 function drawSoftCursor() {
   const el = $('softcursor');
-  if (!state.pointerLocked || state.cursorVisible === false) { el.style.display = 'none'; return; }
+  if (!cursorView(state.cursorVisible, state.pointerLocked).soft) { el.style.display = 'none'; return; }
   const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
   const frame = def ? def.frames[def.steps[(state.softStep ?? 0) % def.steps.length].frame] : null;
   const url = frame ? frame.match(/url\((.*?)\) (\d+) (\d+)/) : null;

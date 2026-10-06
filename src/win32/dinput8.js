@@ -57,7 +57,7 @@ export function registerDirectInput(api, vm) {
      * frame, sees the motion so far.
      */
     takeInput() { wmOf(vm).pump(); }
-    destroy() { const l = wmOf(vm).rawListeners; const i = l.indexOf(this.listener); if (i >= 0) l.splice(i, 1); }
+    destroy() { if (this.kind === 'mouse') wmOf(vm).cursorHiddenBy(this, false); const l = wmOf(vm).rawListeners; const i = l.indexOf(this.listener); if (i >= 0) l.splice(i, 1); }
     push(ofs, data) {
       if (!this.bufferSize) return;
       if (this.queue.length >= this.bufferSize) { this.overflow = true; this.queue.shift(); }
@@ -158,9 +158,16 @@ export function registerDirectInput(api, vm) {
       this.acquired = true; this.queue.length = 0; this.overflow = false;
       this.mouse.x = this.mouse.y = this.mouse.z = 0;
       vm.log('input', `dinput: ${this.kind} acquired (coop ${this.coop.toString(16)})`);
+      // (an exclusive mouse hides the system cursor while it is acquired, as DirectInput does on Windows)
+      if (this.kind === 'mouse' && (this.coop & DISCL_EXCLUSIVE)) wmOf(vm).cursorHiddenBy(this, true);
       return DI_OK;
     }
-    Unacquire() { const was = this.acquired; this.acquired = false; return was ? DI_OK : DI_NOTATTACHED; }
+    Unacquire() {
+      const was = this.acquired; this.acquired = false;
+      if (was) vm.log('input', `dinput: ${this.kind} unacquired`);
+      if (this.kind === 'mouse') wmOf(vm).cursorHiddenBy(this, false);
+      return was ? DI_OK : DI_NOTATTACHED;
+    }
     GetDeviceState(c) {
       const size = c.arg(1), p = c.arg(2);
       if (!this.format) return DIERR_INVALIDPARAM;
@@ -213,7 +220,11 @@ export function registerDirectInput(api, vm) {
       return DI_OK;
     }
     SetEventNotification(c) { this.event = c.arg(1); return DI_OK; }
-    SetCooperativeLevel(c) { this.hwnd = c.arg(1); this.coop = c.arg(2); return DI_OK; }
+    SetCooperativeLevel(c) {
+      this.hwnd = c.arg(1); this.coop = c.arg(2);
+      vm.log('input', `dinput: ${this.kind} cooperative level ${[[DISCL_EXCLUSIVE, 'EXCLUSIVE'], [DISCL_NONEXCLUSIVE, 'NONEXCLUSIVE'], [DISCL_FOREGROUND, 'FOREGROUND'], [DISCL_BACKGROUND, 'BACKGROUND'], [0x10, 'NOWINKEY']].filter(([b]) => this.coop & b).map(([, n]) => n).join(' | ') || '0'}`);
+      return DI_OK;
+    }
     GetObjectInfo(c) {
       const p = c.arg(1), obj = c.arg(2), how = c.arg(3);
       if (!p) return DIERR_INVALIDPARAM;
@@ -314,5 +325,5 @@ export function registerDirectInput(api, vm) {
   };
   api.define('dinput8.dll', { DirectInput8Create: [5, (c) => create(c, 2, 3, c.arg(1))] });
   api.define('dinput.dll', { DirectInputCreateA: [4, (c) => create(c, -1, 2, c.arg(1))], DirectInputCreateW: [4, (c) => create(c, -1, 2, c.arg(1))], DirectInputCreateEx: [5, (c) => create(c, 2, 3, c.arg(1))] });
-  void E_NOTIMPL; void E_INVALIDARG; void S_OK; void DISCL_EXCLUSIVE; void DISCL_BACKGROUND; void DIERR_INPUTLOST; void DIERR_OTHERAPPHASPRIO; void DIPROP_FFLOAD; void DIPROP_CALIBRATION; void DIPROP_GUIDANDPATH; void Com;
+  void E_NOTIMPL; void E_INVALIDARG; void S_OK; void DIERR_INPUTLOST; void DIERR_OTHERAPPHASPRIO; void DIPROP_FFLOAD; void DIPROP_CALIBRATION; void DIPROP_GUIDANDPATH; void Com;
 }
