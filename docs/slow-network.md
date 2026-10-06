@@ -90,6 +90,38 @@ The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8
 is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:
 start, duration, demand/bg, file, range, bytes), and every `mark:` step prints the bytes sent by then.
 
-## Measurements
+## Measurements (2026-10-06)
 
-See the end of this file (filled in with each change).
+Harness, page mode (`--ui --bench`), a fresh browser profile for each run (as a new player), the server with a copy of
+the live server's learned data (`/var/lib/orthros2/learn`: prefetch order, programs, regions), simulated link with a
+50 ms round trip. Times in seconds from the launch, from the page's marks: *menu* (the main menu on screen), *in game*
+(the scenario's `play` mark: the first frames of play). "before" is main at a031b61 (same harness, same scenario fixes),
+"after" this change. One run each unless noted; the shared machine adds noise (runs of the same build at 5 MB/s
+varied by up to 40 s: the page sometimes stalls 20-30 s after the menu appears, in both builds — SwiftShader / GPU
+process stalls under load).
+
+**Vice City** (`vicecity-drive`, 1.5 GB):
+
+| link | before: menu / in game | after: menu / in game | after: received by then |
+|---|---|---|---|
+| 85 KB/s | 1427 / 1875 (the 900 s bench limit of the incident: menu not reached; 75 MB sent, 89 % background, demand reads 4.8 s each) | 808 / 1117 (another run: 845 / 1145) | 61 / 84 MB |
+| 85 KB/s, second launch (same browser) | — | 57 / 85 | 1.6 / 2.7 MB |
+| 1 MB/s | 125 / 168 | 83 / 163 | 70 / 124 MB |
+| 5 MB/s (4 pairs run at once) | 50, 50, 51, 50 / 70, 107, 69, 109 | 49, 44, 66, 61 / 105, 100, 111, 103 | 120-157 / 232-251 MB |
+| local | 62 / 79 | 61 / 79 | |
+
+**BFME II** (`bfme2-skirmish`, 6.9 GB):
+
+| link | before: menu / in game | after: menu / in game | after: received by then |
+|---|---|---|---|
+| 85 KB/s | 781 / 1456 (first image 747 s) | 501 / 753 (first image 478 s) | 36 / 56 MB |
+| 1 MB/s | 190 / 340 (505 MB sent) | 167 / 297 | 121 / 222 MB |
+| 5 MB/s | (the scenario stuck at the profile dialog twice) | 149 / 354 | 379 / 390 MB |
+
+At 85 KB/s the link now carries what the game reads (and what earlier sessions read next) at the link's rate
+(measured 80-89 KB/s): Vice City needs ~60 MB to its menu (its first-launch reads: hundreds of mission sound files, the
+sound bank, the intro movie it plays) — 12 minutes at that rate is the physical floor, 13.5 reached. The second launch
+reads everything locally (pieces and blocks kept in OPFS). At 5 MB/s and on a local link the fast policies apply (as
+before). At 5 MB/s the menu comes as soon as before, but every "after" run had the 20-30 s page stall after the menu
+(half of the "before" runs did): its time in game is not settled (pairs: +35, −7, +42, −5 s) — to look at again
+(what stalls the page's main thread there: the harness's evaluations stop too).
