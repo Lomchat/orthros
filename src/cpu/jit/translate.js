@@ -846,7 +846,10 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // no structured loop holds (the region dispatcher), and the local returns among the latter
   'unused15', 'dispatchFwdLoop', 'dispatchBackLoop', 'dispatchBackTop', 'dispatchRetTop',
   // null-page checks run (Emitter.nullCheck)
-  'nullCheck'];
+  'nullCheck',
+  // x87 arithmetic (translate-x87.js arith): operations run on the 24-bit float / double paths, their entries into the
+  // cold path (a result the hot tests sent aside), and the calls of the cold-path kernels (fpmath-x87cold.js)
+  'x87Arith', 'x87ColdEntry', 'x87ColdCall'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -2976,5 +2979,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter };
+export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter, PF };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_XSH, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, IMP_X87_ARITHF32, IMP_X87_ROUNDF32, IMP_X87_NANARITH, MASK, SIGN, BITS, touchesFpu };

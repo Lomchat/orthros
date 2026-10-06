@@ -443,6 +443,27 @@ options for measurement, defaults on):
   epilogue (chained path, jump exit, code exit), the registers twice; L_T2 = -1 marks a jump exit, which tries the
   chain first (the hash probe's home slot moves to L_T3 there).
 
+Size (static):
+
+- tools/x87-size.mjs, the 36 synthetic regions (9 loops x control words 0x7f, 0x27f, 0x37f, 0xc7f): WASM bodies
+  122 055 → 73 603 bytes (−39.7 %), TurboFan machine code 193 920 → 162 900 bytes (−16.0 %), Liftoff code 318 064 →
+  229 952 bytes (−27.7 %). By change: kernels −24.0 % WASM / −8.4 % machine code, unrotated exits −3.1 / −1.4 %
+  more, one exit tail −12.6 / −6.2 % more (a constant ~430 bytes of WASM per region: a large share of these small
+  regions). Operations per x87 arithmetic instruction: float operands (24-bit, round to nearest) 181 → 64, double
+  operands in that mode 301 → 92, 53 / 64-bit precision 126 → 23, 24-bit directed rounding 111 → 81 (its cold tail
+  was already shared; only the exits shrank).
+- BFME1, the bfme-phases scenario in Node with block counters (`startbench --mix`, `ORTHROS_X87_DUMP`): the 2 970 x87
+  regions live at the end of the run (of 17 017), each translated both ways (the same blocks): WASM
+  bodies 53 128 → 40 001 KiB (17.9 → 13.5 KiB per region, −24.7 %), operations per guest instruction in x87 regions
+  29.9 → 22.6; the 41 086 x87 arithmetic instructions 204.5 → 69.0 operations each, 30.6 % → 13.7 % of the x87
+  regions' operations (prologues 6.0 → 7.9 %, epilogues 5.2 → 4.0 %). Modules compiled (TurboFan, eager, hints):
+  54.30 → 41.32 MiB (−23.9 %; per region median −18 %, p10 −39 %, p90 −3 %), machine code 79.89 → 69.36 MiB
+  (−13.2 %; per region median −11 %, p10 −25 %, p90 −2 %).
+- How often the cold paths run (BFME1 phases, profiling translations, `startbench --jit-profile`, counters
+  `x87Arith` / `x87ColdEntry` / `x87ColdCall`): 18 150 M arithmetic operations on these paths (12 % of the run's
+  146 G guest instructions), 1 167 M (6.4 % of them) entering the cold path — zeros and midpoints of float operands, still
+  inline —, 4.3 M (0.02 %) calling a kernel.
+
 Exactness: tests/jit-x87-cold.test.js — operands of every class (zeros, float and double denormals, the float range's
 edges, overflowing / underflowing products, infinities, quiet and signaling NaNs of both signs, payloads that fit a
 float or not, midpoints from 0.9 / 0.1 / 1/3 / 2^-24+2^-60) through float, double and register operands under

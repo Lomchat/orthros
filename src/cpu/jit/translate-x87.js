@@ -13,7 +13,7 @@
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
 // the interpreter and FNSTENV/FNSAVE/FXAM, not checked (an FLD m80 onto a full stack or an FSTP m80
 // of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
-import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
+import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, PF } from './translate.js';
 import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_I64B, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, IMP_X87_ARITHF32, IMP_X87_ROUNDF32, IMP_X87_NANARITH, L_F64C } from './translate.js';
 import { emitRaise, emitNanF64, emitArithF32Cold, emitRoundF32Rare } from './fpmath-x87cold.js';
 import { emitF80Load, emitF80Store } from './fpmath-f80.js';
@@ -456,9 +456,11 @@ function settleF32(E, insn, done) {
 function arithF32(E, insn, op) {
   const c = E.c;
   const [x, y] = op === 5 || op === 7 ? [L_F32B, L_F32A] : [L_F32A, L_F32B];
+  E.count(PF.x87Arith); // (profiling translations only, as every count below)
   c.get(x).get(y); F32_OP[op === 5 || op === 7 ? op - 1 : op](c); c.set(L_F32C);
   const done = c.block();
   c.get(L_F32C).i32reinterpret_f32().i32(23).shr_u().i32(0xff).and().i32(1).sub().i32(254).lt_u().hint(true).br_if(done);
+  E.count(PF.x87ColdEntry);
   if (!coldCall(E)) { emitArithF32Cold(c, COLD_F32, op, done); E.stepExit(insn); c.end(); return; }
   // an exact zero (emitArithF32Cold's first test; float compares: the result's bits as an integer, shared with the
   // exponent test above, would stay live past it — one more register copy on the hot path)
@@ -466,6 +468,7 @@ function arithF32(E, insn, op) {
   if (op === 1) c.get(L_F32A).f32c(0).f32eq().get(L_F32B).f32c(0).f32eq().or().and();
   else if (op >= 6) c.get(x).f32c(0).f32eq().get(y).f32abs().f32c(Infinity).f32eq().or().and();
   c.br_if(done);
+  E.count(PF.x87ColdCall);
   c.get(L_STATE).get(L_F32A).get(L_F32B).get(L_F32C).i32(op).call(IMP_X87_ARITHF32);
   settleF32(E, insn, done);
   c.end(); // done
@@ -484,6 +487,7 @@ function arithF32(E, insn, op) {
 function roundF32(E, insn, op) {
   const c = E.c;
   c.set(L_F64C);
+  E.count(PF.x87Arith);
   const done = c.block();
   const cold = c.block();
   c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
@@ -491,12 +495,13 @@ function roundF32(E, insn, op) {
   c.get(L_F64C).f32demote().set(L_F32C);
   c.br(done);
   c.end(); // cold
+  E.count(PF.x87ColdEntry);
   c.get(L_F64C).f32demote().set(L_F32C);
   c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // zero: exact
   c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u();
   c.get(L_F64A).f32demote().f64promote().get(L_F64A).f64eq().and();
   c.get(L_F64B).f32demote().f64promote().get(L_F64B).f64eq().and().br_if(done);
-  if (coldCall(E)) { c.get(L_STATE).get(L_F64A).get(L_F64B).get(L_F64C).i32(op).call(IMP_X87_ROUNDF32); settleF32(E, insn, done); }
+  if (coldCall(E)) { E.count(PF.x87ColdCall); c.get(L_STATE).get(L_F64A).get(L_F64B).get(L_F64C).i32(op).call(IMP_X87_ROUNDF32); settleF32(E, insn, done); }
   else { emitRoundF32Rare(c, COLD_F64, op, done); E.stepExit(insn); }
   c.end(); // done
 }
@@ -544,8 +549,10 @@ function arith(op, doPop, integer) {
       roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
+      E.count(PF.x87Arith);
       if (!noNaN) {
         c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_();
+        E.count(PF.x87ColdEntry); if (coldCall(E)) E.count(PF.x87ColdCall);
         if (coldCall(E)) c.get(L_STATE).get(L_F64A).get(L_F64B).call(IMP_X87_NANARITH).set(L_F64C); else emitNanF64(c, COLD_F64, null);
         c.end(); void nan;
       }

@@ -34,12 +34,14 @@ export function emitRaise(c, state, bit) {
  * promoted to f64 they are quiet NaNs, so they raise nothing and the result is the NaN operand (of two, the larger
  * significand, quiet bit included, the positive one on a tie) quieted; without a NaN operand (inf - inf, 0 * inf, 0 / 0,
  * inf / inf) IE is raised and the result is the indefinite (0xffc00000 as a float). Branches to `done` with the result in
- * L.C; a non-NaN result falls through. L: { state, A, B, C (f32), T4, T5 (i32 scratch) }.
+ * L.C; a non-NaN result falls through. L: { state, A, B, C (f32), T4, T5 (i32 scratch) }; `hinted`: the NaN test
+ * branch-hinted unlikely.
  */
-export function emitNanF32(c, L, done) {
+export function emitNanF32(c, L, done, hinted = true) {
   const { A, B, C, T4, T5 } = L;
   c.get(C).get(C).f32ne();
-  const isNan = c.hint(false).if_();
+  if (hinted) c.hint(false); // (unlikely in a region; not where the caller already knows the result is a NaN)
+  const isNan = c.if_();
   c.get(A).get(A).f32ne().get(B).get(B).f32ne().or();
   const some = c.if_();
   // T4 / T5: the operands' bits; a wins when it is a NaN and b is not, or its fraction (quiet bit forced, as the
@@ -66,10 +68,10 @@ export function emitNanF32(c, L, done) {
  * double paths) L.C is a NaN on entry and the NaN, or the indefinite, replaces it.
  * L: { state, A, B, C (f64), I64A, I64B (i64 scratch), F32C (f32) }.
  */
-export function emitNanF64(c, L, done) {
+export function emitNanF64(c, L, done, hinted = true) {
   const { A, B, C, I64A, I64B } = L, QUIET = 0x0008000000000000n, FRAC = 0x000fffffffffffffn;
-  if (done) { c.get(C).get(C).f64ne(); }
-  const isNan = done ? c.hint(false).if_() : null;
+  if (done) { c.get(C).get(C).f64ne(); if (hinted) c.hint(false); }
+  const isNan = done ? c.if_() : null;
   c.get(A).get(A).f64ne().get(B).get(B).f64ne().or();
   const some = c.if_();
   c.get(A).i64reinterpret_f64().set(I64A); c.get(B).i64reinterpret_f64().set(I64B);
@@ -188,6 +190,13 @@ export function addX87ColdKernels(m) {
     const c = new Code();
     // params: 0 state, 1 a, 2 b, 3 r, 4 op ; locals: 5 t4, 6 t5
     const L = { state: 0, A: 1, B: 2, C: 3, T4: 5, T5: 6 };
+    // a NaN result first (the rule does not depend on the operation, and a NaN fails emitArithF32Cold's zero and
+    // infinity tests anyway): a loop over NaN data (uninitialized memory) calls this for every operation
+    c.get(L.C).get(L.C).f32ne();
+    const isNan = c.if_();
+    { const done = c.block(); emitNanF32(c, L, done, false); c.end(); void done; } // (a NaN result always branches to done)
+    c.get(L.C).i32(1).return_();
+    c.end(); void isNan;
     perOp(c, 4, (op) => {
       const done = c.block();
       emitArithF32Cold(c, L, op, done);
@@ -204,6 +213,13 @@ export function addX87ColdKernels(m) {
     const L = { state: 0, A: 1, B: 2, C: 3, I64A: 5, I64B: 6, F32C: 7, D: 8, Er: 9, G: 10, H: 11 };
     c.get(L.C).i64reinterpret_f64().set(L.I64A);
     c.get(L.C).f32demote().set(L.F32C);
+    // a NaN result first, as in x87ArithF32 (it fails the infinity and midpoint tests anyway): settled when the NaN is a
+    // float, else left to the interpreter
+    c.get(L.C).get(L.C).f64ne();
+    const isNan = c.if_();
+    { const done = c.block(); emitNanF64(c, L, done, false); c.get(L.F32C).i32(0).return_(); c.end(); void done; }
+    c.get(L.F32C).i32(1).return_();
+    c.end(); void isNan;
     perOp(c, 4, (op) => {
       const done = c.block();
       emitRoundF32Rare(c, L, op, done);

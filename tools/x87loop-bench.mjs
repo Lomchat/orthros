@@ -83,6 +83,11 @@ const CASES = [
   ['recurrence', 'd9ee | d84f04 d80486'],
   // fild word [esi+eax*2] (the table's halves as 16-bit integers) ; fmul [edi+4] ; fadd [edi+8] ; fstp [ebx+eax*4]
   ['fild+fmul+fstp', 'df0446 d84f04 d84708 d91c83'],
+  // fld [esi+eax*4] ; fadd qword [edi+0x208] (a float with 24 significant bits, as a double) ; fstp [ebx+eax*4]   (a double operand holding a float: the
+  // sums land on 24-bit midpoints often, settled in roundF32's cold path from the operands being floats)
+  ['fadd m64 midpoints', 'd90486 dc8708020000 d91c83'],
+  // fld [esi+eax*4] ; fmul qword [edi+0x200] (0.9) ; fadd qword [edi+0x208] ; fstp [ebx+eax*4]   (a non-float double)
+  ['fmul m64 0.9', 'd90486 dc8f00020000 dc8708020000 d91c83'],
 ];
 
 function setup({ ST, F }, mem, cpu, bytes, rand) {
@@ -95,6 +100,7 @@ function setup({ ST, F }, mem, cpu, bytes, rand) {
     mem.writeF32(TAB + 4 * k, rand && (s & 0x80000000) ? -v : v);
   }
   mem.writeF32(CONST, 0); mem.writeF32(CONST + 4, 0.5); mem.writeF32(CONST + 8, 3);
+  mem.writeF64(CONST + 0x200, 0.9); mem.writeF64(CONST + 0x208, Math.fround(1.1)); // (doubles of the m64 cases: 0.9, a float with 24 significant bits)
   for (let i = 0; i < 16; i++) mem.writeF32(CONST + 0x100 + 4 * i, 0.5 + 0.37 * Math.sin(i + 1)); // (xform's matrix)
   mem.write16(cpu.base + ST.FPU_CW, CW);
   cpu.eip = CODE; cpu.esp = DATA + 0x10000; cpu.esi = TAB; cpu.edi = CONST; cpu.ebx = OUT; cpu.edx = 0;
