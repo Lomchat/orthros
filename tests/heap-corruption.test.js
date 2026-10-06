@@ -50,3 +50,30 @@ test('heap: a free-list link overwritten after free never hands out memory outsi
     assert.notEqual(p, victim);
   }
 });
+
+// Links of freed blocks rewritten into a loop (each pointing at the other, both valid free blocks too small for the
+// request): the search through that list never ended. It is cut where it closes; the blocks stay usable.
+test('heap: a free list the program turned into a loop is cut, the allocation goes on', () => {
+  const mem = new GuestMemory();
+  const heap = new Heap({ mem, vmem: new VMem() });
+  const a = heap.alloc(1100), x = heap.alloc(16), b = heap.alloc(1200), y = heap.alloc(16);
+  assert.ok(x && y);
+  assert.equal(heap.free_(a), true); assert.equal(heap.free_(b), true); // (one list: b -> a)
+  assert.equal(mem.read32(b), a);
+  mem.write32(a, b); // (a's next link now leads back to b)
+  const p = heap.alloc(1500);
+  assert.ok(p && p !== a && p !== b, 'served from elsewhere');
+  assert.equal(heap.stats.loopedLists, 1);
+  assert.equal(heap.alloc(1150), b, 'the blocks of the list are still found');
+  assert.equal(heap.alloc(1050), a);
+  // a block linked to itself behind another one (c -> d -> d ...)
+  const c = heap.alloc(1300), z = heap.alloc(496), d = heap.alloc(1100), w = heap.alloc(496); // (separators of a size no free block has)
+  assert.ok(z && w);
+  assert.equal(heap.free_(d), true); assert.equal(heap.free_(c), true); // (c -> d)
+  mem.write32(d, d);
+  assert.ok(![c, d].includes(heap.alloc(1900)));
+  assert.equal(heap.stats.loopedLists, 2);
+  assert.equal(mem.read32(d), 0);
+  assert.equal(heap.alloc(1250), c);
+  assert.equal(heap.alloc(1050), d);
+});
