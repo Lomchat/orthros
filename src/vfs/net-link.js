@@ -86,7 +86,7 @@ export class NetLink {
     return Math.max(MIN_BG, Math.min(MAX_BG, Math.floor(this.bw * BG_SECONDS / this.ratio() / MIN_BG) * MIN_BG));
   }
   /** background requests at once at most (within the bytes of backgroundBytes(), see mayStart) */
-  maxBackground() { return this.bw === null && !this.fixed ? 2 : 8; }
+  maxBackground() { return this.bw === null && !this.fixed ? 2 : this.fast() ? 64 : 8; }
   /** bytes a demand read may fetch past what the game asked for (`cap`: the caller's own limit) */
   demandExtra(cap) { return this.bw === null ? (this.fixed ? cap : Math.min(cap, UNKNOWN_BG)) : Math.min(cap, Math.floor(this.bw * DEMAND_SECONDS / this.ratio())); }
 

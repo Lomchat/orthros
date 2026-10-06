@@ -169,7 +169,7 @@ async function saveProfile() {
     console.log(`[profile] ${files.length} file(s) saved to ${profileDir}`);
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
 }
-if (args.includes('--ui')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file)
+if (args.includes('--ui') && !args.includes('--quiet-page')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file; --quiet-page: not)
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
