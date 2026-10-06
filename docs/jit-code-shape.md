@@ -458,11 +458,28 @@ Size (static):
   29.9 → 22.6; the 41 086 x87 arithmetic instructions 204.5 → 69.0 operations each, 30.6 % → 13.7 % of the x87
   regions' operations (prologues 6.0 → 7.9 %, epilogues 5.2 → 4.0 %). Modules compiled (TurboFan, eager, hints):
   54.30 → 41.32 MiB (−23.9 %; per region median −18 %, p10 −39 %, p90 −3 %), machine code 79.89 → 69.36 MiB
-  (−13.2 %; per region median −11 %, p10 −25 %, p90 −2 %).
+  (−13.2 %; per region median −11 %, p10 −25 %, p90 −2 %); Liftoff code 121.0 → 96.2 MiB (−20.5 %). Compiling the
+  2 970 modules eagerly (`x87-size.mjs --modules <dir> --time`, best of 3 alternated rounds on the loaded machine):
+  Liftoff 3.09 → 2.62 s (−15 %), TurboFan 31.3 → 30.3 s (−3 %; rounds 46 / 41 / 31 against 36 / 31 / 30 s).
 - How often the cold paths run (BFME1 phases, profiling translations, `startbench --jit-profile`, counters
   `x87Arith` / `x87ColdEntry` / `x87ColdCall`): 18 150 M arithmetic operations on these paths (12 % of the run's
   146 G guest instructions), 1 167 M (6.4 % of them) entering the cold path — zeros and midpoints of float operands, still
   inline —, 4.3 M (0.02 %) calling a kernel.
+
+Hot paths (x87loop-bench loops under `perf record`, branch hints on, host instructions per iteration in the region,
+two runs each, base commit → this code; cycles moved with the machine's load, by −10 to +10 % between runs of the same
+code, and were lower for the new code in 14 of the 18 pairs): `xform` 215 → 206; `recurrence` 46 → 42;
+`arith across blocks` 134.5 → 133; `exp in loop` 233 → 229; `fild+fmul+fstp` 57.4 → 52.3; `fadd m64 midpoints` (a
+double operand holding a float, its sums on a 24-bit midpoint 14 % of the time: the warm inline part of roundF32's
+cold path) 50.6 → 47.6; `fmul m64 0.9` 69.2 → 62.2; xform at 53-bit precision 157.8 → 155.8, with truncation (0xc7f)
+527.8 → 523.6. The machine code shows why: no extra spill on the hot paths, and roundF32's midpoint
+test fused into compare-and-branch (`and; cmp; jz` instead of `and; cmp; setz; movzx; test; jnz`, the shared
+condition gone from the cold path). Loops over NaN data (every operation calls a kernel; uninitialized memory in
+BFME's menus did that): float operands (xform, 9 NaN operations per iteration) region + kernels 411 + 188 = 599
+cycles against 739 inline — once the kernels test for a NaN result first (75 cycles per call before, 21 after);
+double operands at 24-bit 107 against 100; xform at 53-bit precision 376 + 237 = 613 against 339 (x87NanArith ~26
+cycles a call, plus the spills around it): the cost of the call where every operation is a NaN, a case seen in no
+game measured (4.3 M kernel calls in the whole BFME1 run above).
 
 Exactness: tests/jit-x87-cold.test.js — operands of every class (zeros, float and double denormals, the float range's
 edges, overflowing / underflowing products, infinities, quiet and signaling NaNs of both signs, payloads that fit a

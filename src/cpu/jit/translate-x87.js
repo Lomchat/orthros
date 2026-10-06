@@ -548,12 +548,13 @@ function arith(op, doPop, integer) {
       const noNaN = roundPCExcludesNaN(E);
       roundPC(E, op, insn); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
-      // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
+      // x87NanArith kernel on the hinted-unlikely path (emitNanF64 inline with x87Cold 'inline')
       E.count(PF.x87Arith);
       if (!noNaN) {
         c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_();
-        E.count(PF.x87ColdEntry); if (coldCall(E)) E.count(PF.x87ColdCall);
-        if (coldCall(E)) c.get(L_STATE).get(L_F64A).get(L_F64B).call(IMP_X87_NANARITH).set(L_F64C); else emitNanF64(c, COLD_F64, null);
+        E.count(PF.x87ColdEntry);
+        if (coldCall(E)) { E.count(PF.x87ColdCall); c.get(L_STATE).get(L_F64A).get(L_F64B).call(IMP_X87_NANARITH).set(L_F64C); }
+        else emitNanF64(c, COLD_F64, null);
         c.end(); void nan;
       }
       c.get(L_F64C); storeSTStack(E, dst);
