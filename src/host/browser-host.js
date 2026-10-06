@@ -275,6 +275,9 @@ export class BrowserHost {
       const pk = audio.voicesF[1]; if (pk > (this.audioPeak ?? 0)) this.audioPeak = pk; audio.voicesF[1] = 0;
       return;
     }
+    // (the play cursors follow the VM clock even when nothing is rendered: an output that does not consume — an
+    // AudioContext suspended until the player's first click — must not stop the game's cursors and notifications)
+    audio.tick();
     const ctl = this.ctl;
     const now = performance.now(), under = Atomics.load(ctl, CTL.AUDIO_UNDERRUNS);
     if (this.audioLead === undefined) { this.audioLead = 4096; this.audioUnderSeen = under; this.audioCalmSince = now; }

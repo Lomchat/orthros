@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HIST_N, histAddSparse, histQuantile } from '../src/core/frame-acct.js';
+import { audioVerdict, audioText } from '../src/host/web/sound.js';
 
 const FILE_DATE = /telemetry-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
@@ -147,7 +148,7 @@ export function report(sessions, { minSeconds = 60, bench = undefined } = {}) {
     const benches = bench === undefined ? s.benches : s.benches.filter((b) => bench === true || b.bench === bench);
     if (bench !== undefined && !benches.length) continue;
     if (seconds < minSeconds && !benches.length) continue;
-    const r = { session: s.id, game: s.game, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), benches };
+    const r = { session: s.id, game: s.game, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), benches };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -185,6 +186,7 @@ export function formatReport(reports, comparison) {
       L.push(`  ${st.at} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps busy ${st.busy}% >33 ms ${st.per33}/min >50 ms ${st.per50}/min${st.work !== null ? `; work ${st.work} ms/frame: ${st.cats}` : ''}`);
       if (st.slowShares) L.push(`      slow frames' time (%): ${st.slowShares}; worst ${st.worst[0]} ms (work ${st.worst[1]}: ${Object.entries(st.worst[2]).map(([k, v]) => `${k} ${v}`).join(', ')})`);
     }
+    if (r.audio && r.audio.verdict !== 'none') L.push(`  ${audioText(r.audio)}`);
     if (r.summaryStretches.length) L.push('  summaries (every ~20 s), merged per stretch:');
     for (const st of r.summaryStretches) {
       L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
@@ -192,6 +194,7 @@ export function formatReport(reports, comparison) {
     }
     for (const b of r.benches) {
       L.push(`  bench ${b.bench} (${b.manifest}): ${b.outcome}${b.detail ? ` — ${b.detail}` : ''}, ${b.seconds} s, display ${b.display ?? '?'}${b.firstLaunch ? ', first launch' : ''}${b.interrupted && (b.interrupted.hiddenSeconds || b.interrupted.blurs) ? `, INTERRUPTED (hidden ${b.interrupted.hiddenSeconds} s, ${b.interrupted.blurs} focus losses)` : ''}; marks ${(b.marks ?? []).map((m) => `${m.label}@${m.at}s`).join(' ')}`);
+      if (b.audio) L.push(`    ${audioText(audioVerdict([b.audio]))}`);
       for (const p of b.phases ?? []) {
         L.push(`    ${String(p.label).padEnd(12)} ${String(p.seconds ?? '?').padStart(6)} s ${String(p.fps ?? '?').padStart(5)} fps; frame ms p50 ${p.dt?.p50 ?? '-'} p90 ${p.dt?.p90 ?? '-'} p99 ${p.dt?.p99 ?? '-'} max ${p.dt?.max ?? '-'}; >33 ${p.per33}/min >50 ${p.per50} >100 ${p.per100}; draws/frame ${p.drawsPerFrame ?? '-'}, GL calls/frame ${p.glCalls?.perFrame ?? p.glCalls?.state ?? '-'}; GPU ${p.gpu?.frames ? `p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : p.gpu?.state ?? '-'}${p.render ? `; render waits ${p.render.waitMs} ms/frame` : ''}`);
         if (p.mean) L.push(`      mean frame (ms): ${Object.entries(p.mean).slice(0, 6).map(([k, v]) => `${k} ${v}`).join(', ')}${p.excessShares && Object.keys(p.excessShares).length ? `; slow frames' excess (%): ${Object.entries(p.excessShares).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${p.hitches && Object.keys(p.hitches).length ? `; hitches: ${Object.entries(p.hitches).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);

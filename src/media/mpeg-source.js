@@ -221,6 +221,9 @@ export function vbrFrames(b, at, h) {
   return 0;
 }
 
+/** failures of the browser's audio decoder in this worker (telemetry: a movie or stream without sound) */
+export const audioDecodeStats = { failures: 0 };
+
 /**
  * A browser audio decoder (WebCodecs AudioDecoder) behind the synchronous interface: frames submitted with their start
  * time, decoded samples taken later (float, one array per channel, as many channels as the stream declares).
@@ -237,13 +240,13 @@ export class AsyncAudio {
           this.ready.push({ samples, start: d.timestamp / 1e6 });
         } finally { d.close(); }
       },
-      error: (e) => { if (!this.failed) log(`audio decoder (${codec}) failed: ${e.message ?? e}`); this.failed = true; },
+      error: (e) => { if (!this.failed) { audioDecodeStats.failures++; log(`audio decoder (${codec}) failed: ${e.message ?? e}`); } this.failed = true; },
     });
-    try { this.dec.configure({ codec, sampleRate: rate, numberOfChannels: channels }); } catch (e) { this.failed = true; log(`audio decoder (${codec}) unavailable: ${e.message}`); }
+    try { this.dec.configure({ codec, sampleRate: rate, numberOfChannels: channels }); } catch (e) { this.failed = true; audioDecodeStats.failures++; log(`audio decoder (${codec}) unavailable: ${e.message}`); }
   }
   submit(bytes, start) {
     if (this.failed) return;
-    try { this.dec.decode(new globalThis.EncodedAudioChunk({ type: 'key', timestamp: Math.round(start * 1e6), data: bytes })); } catch (e) { this.failed = true; }
+    try { this.dec.decode(new globalThis.EncodedAudioChunk({ type: 'key', timestamp: Math.round(start * 1e6), data: bytes })); } catch (e) { if (!this.failed) audioDecodeStats.failures++; this.failed = true; }
   }
   flush() {
     if (this.flushing) return;

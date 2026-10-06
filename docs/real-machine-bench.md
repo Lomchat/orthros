@@ -65,6 +65,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `render` | render worker: the emulator's waits for it (`waitMs`, `fenceMs`, `frameMs`, `readbackMs`) and its replay time (`replayMs`), ms per frame |
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
+| `audio` | the sound output over the window (`src/host/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
 
 **GPU time** (`src/gfx/gpu-probe.js`): a `TIME_ELAPSED_EXT` query from one present to the next (the GPU execution time
 of the frame's commands, the final blit included), over windows of 120 consecutive frames every 10 s, read at later
@@ -79,7 +80,7 @@ the GL null mode wraps the methods themselves).
 **Bench record** (`event: "bench"`): `bench`, `manifest`, `version` (build), `outcome` (`done`, `timeout`,
 `aborted`, `exited`, `crashed`) and `detail`, `seconds`, `firstLaunch`, `display`, `options`, `marks` (each phase's
 start, seconds from the launch: the time to the menu, the map load...), `anchors` (when each wait was satisfied),
-`interrupted` (seconds hidden, focus losses), `env`, and per phase: the worker's phase report (frame-acct.js
+`interrupted` (seconds hidden, focus losses), `audio` (as in the summaries, over the whole run), `env` (with `audioDecoder` / `audioWorklet`: WebCodecs audio and AudioWorklet available), and per phase: the worker's phase report (frame-acct.js
 `FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute, frame and work percentiles,
 mean time by category, slow frames' excess shares, hitches, the 3 worst frames) with, from the stats of the phase,
 draws per frame, GL calls per frame, GPU time, render worker waits, busy and visible shares. Phases: `start` (launch to

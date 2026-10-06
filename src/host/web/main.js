@@ -6,6 +6,7 @@ import { mountHome } from './home.js';
 import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
+import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -140,7 +141,7 @@ async function start(name, language = null) {
   const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
   setupInput();
-  if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => log('warn', `audio unavailable: ${e.message}`));
+  if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => { state.audioStats.noteError(e.message ?? String(e)); log('warn', `audio unavailable: ${e.message}`); });
   if (performance.measureUserAgentSpecificMemory) { const tick = async () => { try { const m = await performance.measureUserAgentSpecificMemory(); state.memoryMB = Math.round(m.bytes / 1048576); } catch { /* not available */ } setTimeout(tick, 5000); }; tick(); }
 }
 
@@ -171,7 +172,7 @@ function onWorkerMessage(m) {
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'stats': state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m); noteNet(m.net);
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
-      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } recordSample(m); renderHud(); break;
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } noteAudio(m); recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'video': $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
@@ -378,6 +379,7 @@ function drawHudGraph(cv, big = false) {
 
 // ---------------------------------------------------------------- measurements sent to the server (--telemetry)
 state.samples = [];
+state.audioStats = new AudioStats();
 state.session = Math.random().toString(36).slice(2, 10);
 /** One stats message (~0.5 s) as a sample: kept for the display, queued for the server. */
 function recordSample(m) {
@@ -396,7 +398,7 @@ function recordSample(m) {
   // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,
   // GL calls, render worker waits), at most 720 per session
   const sum = (state.summaries ??= new SummaryClock()).add(m, { t: smp.t, visible: smp.vis, fullscreen: smp.fs, status: state.status });
-  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum });
+  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take() }); // (audio: sound.js AudioStats — context, worklet, mix level, buffers)
   if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
 }
 function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= []).push({ t: Date.now(), ...ev }); flushTelemetry(); }
@@ -412,12 +414,12 @@ function flushTelemetry() {
 addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
 /**
  * What the measurements depend on: browser, GPU (WebGL's unmasked renderer and vendor), screen, cores, memory,
- * cross-origin isolation. Nothing else is collected.
+ * cross-origin isolation, the browser's audio decoder and AudioWorklet. Nothing else is collected.
  */
 function environment() {
   let gpu = null, gpuVendor = null;
   try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); gpuVendor = gl.getParameter(ext ? ext.UNMASKED_VENDOR_WEBGL : gl.VENDOR); gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* unknown */ }
-  return { version: state.version ?? null, ua: navigator.userAgent, gpu, gpuVendor, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}`, coi: !!globalThis.crossOriginIsolated };
+  return { version: state.version ?? null, ua: navigator.userAgent, gpu, gpuVendor, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}`, coi: !!globalThis.crossOriginIsolated, audioDecoder: typeof globalThis.AudioDecoder === 'function', audioWorklet: typeof globalThis.AudioWorkletNode === 'function' }; // (audioDecoder: WebCodecs, the MP3 of movies and streams)
 }
 /** environment() with the WebGPU adapter's description when the browser has one (asked once, 2 s at most). */
 async function machine() {
@@ -534,16 +536,44 @@ function setupInput() {
   $('tbGames').addEventListener('click', (e) => { e.preventDefault(); if (state.status !== 'running' || confirm(`Quit ${state.title}? Unsaved progress is lost.`)) backToGames(); });
 }
 
+/**
+ * The sound output: an AudioContext and the AudioWorklet playing the game's mix (audio-worklet.js). Created suspended
+ * when the page has had no user activation yet (Chrome's autoplay policy, e.g. a game started by the URL): resumed at
+ * the player's next gesture (sound.js), with a "click to enable sound" button meanwhile.
+ */
 async function setupAudio(audioSab, ctlSab) {
   const ctx = new AudioContext({ sampleRate: AUDIO_RATE, latencyHint: 'interactive' });
+  state.audio = ctx; state.audioNotRunningSince = ctx.state === 'running' ? null : performance.now();
+  resumeOnGesture(ctx, window, () => state.audioStats.noteResume()); // (before the worklet loads: a click meanwhile counts)
+  ctx.addEventListener('statechange', () => {
+    state.audioStats.noteChange();
+    if (ctx.state === 'running') state.audioNotRunningSince = null; else state.audioNotRunningSince ??= performance.now();
+    updateSoundHint();
+  });
+  $('soundHint').onclick = () => ctx.resume().then(updateSoundHint, () => {}); // (the gesture listeners resume too: this one hides the button at once)
+  ctx.addEventListener('error', (e) => { const why = e.error?.message ?? e.message ?? 'output device'; state.audioStats.noteError(`context error: ${why}`); log('warn', `audio output error: ${why}`); }); // (Chrome: the output device failed)
   await ctx.audioWorklet.addModule('/src/host/web/audio-worklet.js');
   const node = new AudioWorkletNode(ctx, 'orthros-output', { outputChannelCount: [2], processorOptions: { audio: audioSab, ctl: ctlSab, frames: AUDIO_RING_FRAMES, write: CTL.AUDIO_WRITE, read: CTL.AUDIO_READ, underruns: CTL.AUDIO_UNDERRUNS } });
+  node.onprocessorerror = () => { state.audioStats.noteError('worklet processor error'); log('warn', 'audio unavailable: the AudioWorklet processor failed'); };
   node.connect(ctx.destination);
   state.audioNode = node;
   if (state.audioVoices) node.port.postMessage(state.audioVoices); // (the worker's voice table, if it came first)
-  const resume = () => { if (ctx.state !== 'running') ctx.resume(); };
-  addEventListener('mousedown', resume); addEventListener('keydown', resume);
-  state.audio = ctx;
+  updateSoundHint();
+}
+/** One stats message's audio part for the telemetry (sound.js AudioStats), with the frames the AudioWorklet played. */
+function noteAudio(m) {
+  const v = state.audioVoices ? new Int32Array(state.audioVoices.voices) : null;
+  const direct = !!v && v[2] === 1, frames = !state.audio ? null : direct ? v[0] : Atomics.load(state.ctl, CTL.AUDIO_READ); // (voice table counter, or the ring's read index)
+  const ctx = state.audio, now = performance.now();
+  state.audioStats.add(m, ctx, frames, now, direct ? 'voices' : 'ring');
+  state.bench?.audio.add(m, ctx, frames, now, direct ? 'voices' : 'ring');
+  updateSoundHint();
+}
+/** The "click to enable sound" button: shown while the context is not running (autoplay policy, system interruption). */
+function updateSoundHint() {
+  const el = $('soundHint'); if (!el || headless) return;
+  const show = soundHintNeeded({ status: state.status, ctxState: state.audio?.state ?? null, notRunningSince: state.audioNotRunningSince ?? null, now: performance.now() });
+  el.classList.toggle('hidden', !show);
 }
 
 main();

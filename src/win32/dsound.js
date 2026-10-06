@@ -40,6 +40,13 @@ export const VOICE_BASE = 16, VOICE_INTS = 16, MAX_VOICES = 128, VOICE_TABLE_BYT
  * @param {import('./api.js').ApiRegistry} api
  * @param {import('../core/vm.js').Vm} vm
  */
+/** the secondary buffers of `audio` (the process' mixer, vm.audio) playing now (the primary has no storage: it is the mix) */
+export function audioPlaying(audio) {
+  let n = 0;
+  if (audio) for (const b of audio.buffers) if (b.playing && !b.primary && b.size) n++;
+  return n;
+}
+
 export function registerDirectSound(api, vm) {
   const mem = vm.mem, com = vm.com;
   com.interface('IDirectSound', IID_IDirectSound, 'IUnknown', [['CreateSoundBuffer', 3], ['GetCaps', 1], ['DuplicateSoundBuffer', 2], ['SetCooperativeLevel', 2], ['Compact', 0], ['GetSpeakerConfig', 1], ['SetSpeakerConfig', 1], ['Initialize', 1]]);

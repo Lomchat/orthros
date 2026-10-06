@@ -6,6 +6,7 @@ import { parseScenario, unsupportedSteps, ScenarioPlayer } from '../scenario.js'
 import { PerfWindow, compactPhase } from '../perf-summary.js';
 import { scanCodeOfVk } from '../../win32/vk-scan.js';
 import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
+import { AudioStats } from './sound.js';
 
 export const BENCH_DIR = '/tools/scenarios/bench/';
 /** the pointer steps, and the least time between two of them (ms) */
@@ -53,6 +54,7 @@ export class BenchRun {
     this.def = def; this.d = deps; this.state = deps.state;
     this.player = new ScenarioPlayer(def.steps, { from: def.coords ?? null, display: () => (this.state.mode ? [this.state.mode.width, this.state.mode.height] : null) });
     this.win = new PerfWindow(); this.phases = []; this.extras = []; this.marks = []; this.anchors = [];
+    this.audio = new AudioStats(); // (the page feeds it: the sound of the run, sent with the record)
     this.label = 'start'; this.hiddenSeconds = 0; this.blurs = 0; this.finished = false; this.t0 = null;
     if (!document.getElementById('benchCss')) { const st = document.createElement('style'); st.id = 'benchCss'; st.textContent = CSS; document.head.appendChild(st); }
     this.el = document.createElement('div'); this.el.id = 'bench'; document.body.appendChild(this.el);
@@ -146,6 +148,7 @@ export class BenchRun {
       seconds: Math.round(seconds), firstLaunch: !!st.firstLaunch, display: st.mode ? `${st.mode.width}x${st.mode.height}` : null,
       options: st.perfOptions ?? null, marks: this.marks, anchors: this.anchors, phases,
       interrupted: { hiddenSeconds: Math.round(this.hiddenSeconds), blurs: this.blurs },
+      audio: this.audio.take(), // (sound.js: context state, worklet output, mix level, buffers over the run)
       network: benchNetwork(st.stats?.net), // (the measured link: bytes/s, round trip, the game's reads and the background downloads)
       env: await this.d.machine().catch(() => null),
     };
