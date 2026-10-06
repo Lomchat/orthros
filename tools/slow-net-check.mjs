@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,6 +58,11 @@ export function parseRun(text) {
   return r;
 }
 
+/** a TCP port free on 127.0.0.1 now (each run's fresh profile needs no fixed port; another project's server may hold any) */
+function freePort() {
+  return new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+}
+
 function run(cmd, argv, logFile) {
   return new Promise((resolve) => {
     const log = fs.createWriteStream(logFile);
@@ -71,7 +77,6 @@ function run(cmd, argv, logFile) {
 async function main() {
   fs.mkdirSync(out, { recursive: true });
   const rows = [];
-  let port = 8300 + Math.floor(Math.random() * 500);
   for (const bench of benches) {
     const def = index.benches.find((b) => b.name === bench);
     if (!def) { console.error(`no bench ${bench} in tools/scenarios/bench/index.json`); process.exit(2); }
@@ -81,7 +86,7 @@ async function main() {
       if (learnFrom) for (const f of fs.readdirSync(learnFrom)) fs.copyFileSync(path.join(learnFrom, f), path.join(learn, f));
       const net = netArg(speed, rtt);
       const argv = [path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/headless.mjs', def.manifests[0], '--bench', bench, '--ui', '--seconds', String(seconds),
-        '--shots', '120', '--out', path.join(out, tag), '--opfs', path.join(tmp, 'profile'), '--port', String(port++), '--learn', learn, '--telemetry', path.join(tmp, 'telemetry'),
+        '--shots', '120', '--out', path.join(out, tag), '--opfs', path.join(tmp, 'profile'), '--port', String(await freePort()), '--learn', learn, '--telemetry', path.join(tmp, 'telemetry'),
         ...(gamesDir ? ['--games-dir', gamesDir] : []), ...(net ? ['--net', net] : [])];
       console.log(`[slow-net] ${tag}: ${net ? `--net ${net}` : 'no simulated link'}, fresh profile${learnFrom ? `, learned data from ${learnFrom}` : ', nothing learned'}`);
       const t0 = Date.now();
