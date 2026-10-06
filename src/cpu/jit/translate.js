@@ -25,7 +25,10 @@ import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, S
 // by the prologue into a declared local
 const L_BLK = 0, L_STATE = 1, L_REG = 2, L_EFLAGS = 10, L_LZOP = 11, L_LZRES = 12, L_LZA = 13, L_LZB = 14, L_ICOUNT = 15;
 const L_TA = 16, L_TV = 17, L_T2 = 18, L_T3 = 19, L_T4 = 20, L_T5 = 21, L_T6 = 22, L_T7 = 23;
-const L_I64A = 24, L_I64B = 25, L_F64A = 26, L_F64B = 27, L_TOP = 28, L_T8 = 29;
+const L_I64A = 24, L_I64B = 25, L_F64A = 26, L_F64B = 27, L_TOP = 28;
+// the x87 stack shift pending at a region exit (Emitter.x87ExitState): set just before the branch to an exit block, which
+// stores TOP = (L_TOP + L_XSH) & 7; 0 on every other path (a declared local starts at 0, and a path setting it leaves)
+const L_XSH = 29;
 const L_V0 = 30, L_V1 = 31, L_V2 = 32; // v128 temporaries (SSE/MMX translation)
 // x87 register stack cached in locals (x87 regions only, see Emitter.usesX87): L_ST0+i holds
 // ST(i) (logical order, physical slot (L_TOP+i)&7), L_FTW the abridged tag word in the same
@@ -91,10 +94,13 @@ const IMP_MATH = 3;
 const IMP_EXP2M1 = IMP_MATH, IMP_LOG2 = IMP_MATH + 1, IMP_LOG2P1 = IMP_MATH + 2, IMP_SCALB = IMP_MATH + 3;
 const IMP_SIN = IMP_MATH + 4, IMP_COS = IMP_MATH + 5, IMP_TAN = IMP_MATH + 6, IMP_ATAN2 = IMP_MATH + 7, IMP_SINCOS = IMP_MATH + 8, IMP_NAN2 = IMP_MATH + 9;
 const IMP_ARITH24 = IMP_MATH + 10, IMP_F32RC = IMP_MATH + 11;
+// the x87 arithmetic's cold paths (fpmath-x87cold.js)
+const IMP_X87_ARITHF32 = IMP_MATH + 12, IMP_X87_ROUNDF32 = IMP_MATH + 13, IMP_X87_NANARITH = IMP_MATH + 14;
 // the runtime's shared region exit (runtime.js chain, opts.chainStub), after the kernels
-const IMP_CHAIN = IMP_MATH + 12;
+const IMP_CHAIN = IMP_MATH + 15;
 
-if (MATH_KERNELS.length !== 12 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc') throw new Error('math kernel import layout mismatch');
+if (MATH_KERNELS.length !== 15 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc'
+  || MATH_KERNELS[12][0] !== 'x87ArithF32' || MATH_KERNELS[13][0] !== 'x87RoundF32' || MATH_KERNELS[14][0] !== 'x87NanArith') throw new Error('math kernel import layout mismatch');
 
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
 const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
@@ -121,7 +127,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, x87Cold: 'call', x87ExitRotate: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -917,6 +923,9 @@ class Emitter {
     const mode = opts.fpcAssume ?? null;
     this.fpcAssume = mode === null ? null : mode & 0xf00;
     this.topAssume = mode !== null && (mode & X87_MODE_TOP) && (opts.x87Top ?? JIT_DEFAULTS.x87Top) ? mode & 7 : null;
+    // x87 arithmetic's cold paths: 'call' — a call to the runtime's kernels (fpmath-x87cold.js) on the hinted-unlikely
+    // path; 'inline' — the same code emitted in every instruction (the earlier translation, for measurement)
+    this.x87Cold = opts.x87Cold ?? JIT_DEFAULTS.x87Cold;
     this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
@@ -1031,20 +1040,20 @@ class Emitter {
     if (this.chain && this.chainStub && !this.prof) {
       // (opts.chainStub: the x87 / XMM caches written back here, the rest of the exit — chained or not — in the
       // runtime's shared chain function, tail-called with the target in place of the block)
-      this.flushFpu(); this.flushXmm();
+      this.flushFpu(true); this.flushXmm();
       c.get(L_TV);
       for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
       c.return_call(IMP_CHAIN);
     } else {
       if (this.chain) this.emitChain(); // (the budget travels as a parameter)
       c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-      this.flushAll();
+      this.flushAll(true);
       c.get(L_STATE).get(L_TV).i32store(ST.EIP);
       c.get(L_TV).return_();
     }
     c.end(); // exitCodeL: exit with code (tV = eip, t2 = code)
     c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-    this.flushAll();
+    this.flushAll(true);
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
     c.i32(0);
@@ -1141,7 +1150,7 @@ class Emitter {
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
-    this.flushFpu();
+    this.flushFpu(true);
     this.flushXmm();
     if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS); // (stats)
     c.get(L_TA).i32load(8); // block index in the target region
@@ -1175,7 +1184,7 @@ class Emitter {
     const c = this.c;
     for (let r = 0; r < 8; r++) if (this.xmmMask & (1 << r)) c.get(L_STATE).get(L_XMM0 + r).v128store(ST.XMM + 16 * r);
   }
-  flushAll() {
+  flushAll(exit = false) {
     const c = this.c;
     for (let i = 0; i < 8; i++) c.get(L_STATE).get(L_REG + i).i32store(ST.GPR + 4 * i);
     c.get(L_STATE).get(L_EFLAGS).i32store(ST.EFLAGS);
@@ -1183,7 +1192,7 @@ class Emitter {
     c.get(L_STATE).get(L_LZRES).i32store(ST.LZ_RES);
     c.get(L_STATE).get(L_LZA).i32store(ST.LZ_SRC1);
     c.get(L_STATE).get(L_LZB).i32store(ST.LZ_SRC2);
-    this.flushFpu();
+    this.flushFpu(exit);
     this.flushXmm();
   }
 
@@ -1253,6 +1262,28 @@ class Emitter {
     c.set(L_T2);
     c.get(L_TOP).get(L_T2).sub().i32(7).and().set(L_TOP);
     c.end(); void i;
+  }
+  /**
+   * x87Normalize for a branch to an exit block (exitTo / exitToStack / exitCode): the f32 and XMM shadows written back
+   * and the tag changes applied, but no rotation of the stack locals. Local L_ST0+k holds physical register
+   * (L_TOP + k) & 7 whatever the pending shift (ST(i) = L_ST0+((i+shift)&7), physical (L_TOP+shift+i)&7), and so does
+   * bit k of L_FTW: the exit block's flush writes the same registers and tags from the unrotated locals; only TOP
+   * differs, (L_TOP + shift) & 7, the shift travelling in L_XSH (flushFpu(true)). An exit used to rotate the eight
+   * locals, the tag word and L_TOP (~30 operations, and as many moves into the exit block's merge in machine code) —
+   * every exit in the middle of a block that pushed: the step exits of x87 arithmetic, SMC checks, budget exits.
+   * Returns the pending static state, as x87Normalize (the caller restores it after the exit's branch).
+   */
+  x87ExitState() {
+    const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
+    if (this.opts.x87ExitRotate ?? JIT_DEFAULTS.x87ExitRotate) { this.x87Normalize(); return saved; } // (measurement: the earlier exits)
+    this.materializeF32();
+    this.f32Mask = 0;
+    this.xmmShadowSync(this.xsDirty);
+    this.xmmShadowSync64(this.xdDirty);
+    this.xsDirty = this.xdDirty = 0;
+    this.applyTags();
+    if (this.stShift) this.c.i32(this.stShift).set(L_XSH);
+    return saved;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
   x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
@@ -1343,10 +1374,15 @@ class Emitter {
   }
   /** L_FPC <- the control word's PC/RC bits. */
   loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); }
-  /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
-  flushFpu() {
+  /**
+   * Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. `exit`: in an
+   * exit block, where the branch left a pending shift in L_XSH (x87ExitState): TOP = (L_TOP + L_XSH) & 7.
+   */
+  flushFpu(exit = false) {
     const c = this.c;
-    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); } // (other regions never change TOP)
+    if (!this.usesX87) return; // (other regions never change TOP)
+    this.flushX87Regs(); this.flushX87Tags();
+    c.get(L_STATE).get(L_TOP); if (exit) c.get(L_XSH).add().i32(7).and(); c.i32store8(ST.FPU_TOP);
   }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
@@ -1400,13 +1436,13 @@ class Emitter {
     c.i32(0).i32load(a + 4).get(L_TV).ne();
     const i = c.if_(); c.i32(0).i32(0).i32load(a + 8).i32(1).add().i32store(a + 8); c.i32(0).get(L_TV).i32store(a + 4); c.end(); void i;
   }
-  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87Normalize(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87ExitState(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87ExitState(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
     c.i32(eip).set(L_TV).i32(code).set(L_T2);
-    const s = this.x87Normalize(); c.br(this.exitCodeL); this.x87Restore(s);
+    const s = this.x87ExitState(); c.br(this.exitCodeL); this.x87Restore(s);
   }
   /** address on the stack -> 1 when outside [NULL_PAGE_END, USER_END) (one subtraction and an unsigned compare) */
   unmappedTest() { this.c.i32(-NULL_PAGE_END).add().i32(USER_END - NULL_PAGE_END).ge_u(); }
@@ -2910,4 +2946,4 @@ HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[O
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
 export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter };
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_XSH, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, IMP_X87_ARITHF32, IMP_X87_ROUNDF32, IMP_X87_NANARITH, MASK, SIGN, BITS, touchesFpu };
