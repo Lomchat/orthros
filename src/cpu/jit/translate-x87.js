@@ -14,7 +14,7 @@
 // the interpreter and FNSTENV/FNSAVE/FXAM, not checked (an FLD m80 onto a full stack or an FSTP m80
 // of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
 import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H } from './translate.js';
-import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_I64B, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
+import { HANDLERS, L_STATE, L_SW, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_I64B, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, L_F64C } from './translate.js';
 import { emitF80Load, emitF80Store } from './fpmath-f80.js';
 import { OP, OT } from '../decoder.js';
 import { ST, F } from '../state.js';
@@ -404,19 +404,19 @@ function loadIntOperand(E, o) {
 }
 function setCC(E, c0, c2, c3) { // constants 0/1
   const c = E.c;
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or().i32store16(ST.FPU_SW);
+  c.get(L_SW).i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or().set(L_SW);
 }
 /** compare F64A (a) with F64B (b): sets C0/C2/C3 */
 function compareCC(E) {
   const c = E.c;
   // bits = a<b ? C0 : a==b ? C3 : (a>b ? 0 : C0|C2|C3)
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and();
+  c.get(L_SW).i32(~SW_CC).and();
   c.get(L_F64A).get(L_F64B).f64lt(); const i1 = c.if_(T.i32); c.i32(C0); c.else_();
   c.get(L_F64A).get(L_F64B).f64eq(); const i2 = c.if_(T.i32); c.i32(C3); c.else_();
   c.get(L_F64A).get(L_F64B).f64gt(); const i3 = c.if_(T.i32); c.i32(0); c.else_(); c.i32(C0 | C2 | C3); c.end(); void i3;
   c.end(); void i2;
   c.end(); void i1;
-  c.or().i32store16(ST.FPU_SW);
+  c.or().set(L_SW);
 }
 /** compare F64A with F64B into EFLAGS (FCOMI family) */
 function compareEflags(E) {
@@ -774,7 +774,7 @@ HANDLERS[OP.FUCOMI] = cmp(0, false, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, 
 HANDLERS[OP.FXAM] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and();
+  c.get(L_SW).i32(~SW_CC).and();
   c.get(L_F64A).i64reinterpret_f64().i64(63).i64shr_u().wrap().i32(9).shl().or(); // C1 = sign (NaN and -0 included)
   const bit = E.stTagBit(0);
   const known = (E.stValid & 1) || (E.tagSet & bit) ? 0 : (E.tagClr & bit) ? 1 : -1; // (0 valid, 1 empty, -1 run time)
@@ -786,7 +786,7 @@ HANDLERS[OP.FXAM] = (E) => {
   c.get(L_F64A).f64abs().f64c(2.2250738585072014e-308).f64lt(); const i4 = c.if_(T.i32); c.i32(C2 | C3); c.else_(); c.i32(C2); c.end();
   c.end(); c.end(); c.end(); c.end();
   void ie; void i1; void i2; void i3; void i4;
-  c.or().i32store16(ST.FPU_SW);
+  c.or().set(L_SW);
 };
 HANDLERS[OP.FTST] = (E) => { const c = E.c; loadST(E, 0); c.set(L_F64A); c.f64c(0).set(L_F64B); compareCC(E); };
 
@@ -819,16 +819,16 @@ HANDLERS[OP.FRNDINT] = (E) => { loadST(E, 0); roundRC(E, false); storeSTStack(E,
  */
 function inlineTrans() { return !globalThis.ORTHROS_NO_X87_INLINE; }
 /** status word |= bits (C2 for an out-of-range trig argument) */
-function orSW(E, bits) { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(bits).or().i32store16(ST.FPU_SW); }
+function orSW(E, bits) { E.c.get(L_SW).i32(bits).or().set(L_SW); }
 /**
  * Raise the exception `bit` (0 IE ... 5 PE) like X87.raise: the flag is set; ES (the summary bit)
  * only when the exception is unmasked in the control word (mask bit `bit` clear), SDM 8.1.3.
  */
 function raise(E, bit) {
   const c = E.c;
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(1 << bit).or();
+  c.get(L_SW).i32(1 << bit).or();
   c.get(L_STATE).i32load16u(ST.FPU_CW).i32(bit).shr_u().i32(1).and().i32(1).xor().i32(7).shl().or();
-  c.i32store16(ST.FPU_SW);
+  c.set(L_SW);
 }
 function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
 /**
@@ -1030,10 +1030,10 @@ HANDLERS[OP.FLDCW] = (E, insn) => {
 HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); E.smcCheck(insn, 2); };
 HANDLERS[OP.FNSTSW] = (E, insn) => {
   const c = E.c; const o = insn.ops[0];
-  c.get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
+  c.get(L_SW).i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
   if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.eaTo(o); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); }
 };
-HANDLERS[OP.FNCLEX] = (E) => { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x80ff).and().i32store16(ST.FPU_SW); };
+HANDLERS[OP.FNCLEX] = (E) => { E.c.get(L_SW).i32(~0x80ff).and().set(L_SW); };
 HANDLERS[OP.FCMOVCC] = (E, insn) => {
   const c = E.c; const i = insn.ops[0].r;
   E.applyTags(); // the tag update below is conditional (run time)
@@ -1043,7 +1043,7 @@ HANDLERS[OP.FCMOVCC] = (E, insn) => {
 };
 function fninit(E) {
   const c = E.c;
-  c.get(L_STATE).i32(0x037f).i32store16(ST.FPU_CW); c.get(L_STATE).i32(0).i32store16(ST.FPU_SW);
+  c.get(L_STATE).i32(0x037f).i32store16(ST.FPU_CW); c.i32(0).set(L_SW);
   E.x87SetTop0(); // register contents are kept (as the interpreter does), only re-based on TOP = 0
   c.i32(0).set(L_FTW); E.stValid = 0;
   c.i32(0x300).set(L_FPC);
@@ -1067,7 +1067,7 @@ const DBL_MIN = 2.2250738585072014e-308;
 function storeEnv(E) {
   const c = E.c;
   c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32(0xffff0000 | 0).or().i32store(0, 0);
-  c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800 & 0xffff).and().get(L_TOP).i32(11).shl().or().i32(0xffff0000 | 0).or().i32store(4, 0);
+  c.get(L_TA).get(L_SW).i32(~0x3800 & 0xffff).and().get(L_TOP).i32(11).shl().or().i32(0xffff0000 | 0).or().i32store(4, 0);
   // tags in ST order (tag of ST(i) at bits 2i), then rotated left by 2 TOP into physical order
   for (let i = 0; i < 8; i++) {
     c.get(L_ST0 + i).f64abs().set(L_F64A);
@@ -1095,7 +1095,7 @@ function loadEnv(E, keepRegs) {
   c.get(L_T4).i32(0xf00).and().set(L_FPC);
   E.fpcStatic = null;
   c.get(L_TA).i32load16u(4).set(L_TV);
-  c.get(L_STATE).get(L_TV).i32(~0x3800 & 0xffff).and().i32store16(ST.FPU_SW);
+  c.get(L_TV).i32(~0x3800 & 0xffff).and().set(L_SW);
   c.get(L_TV).i32(11).shr_u().i32(7).and();
   if (keepRegs) {
     // a new TOP re-bases the locals on the physical registers (written back, reloaded); the usual restore of
@@ -1175,7 +1175,7 @@ for (const name of C1_CLEARING) {
   const op = OP[name], h = HANDLERS[op];
   if (op === undefined || !h) continue;
   HANDLERS[op] = (E, insn, b) => {
-    if (!E.c1Clear) { E.c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~(1 << 9)).and().i32store16(ST.FPU_SW); E.c1Clear = true; }
+    if (!E.c1Clear) { E.c.get(L_SW).i32(~(1 << 9)).and().set(L_SW); E.c1Clear = true; }
     h(E, insn, b);
   };
 }

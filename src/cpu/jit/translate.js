@@ -53,10 +53,13 @@ const L_IC = 84, IFCVT_SLOTS = 13, L_IFS0 = 85, L_IFR0 = L_IFS0 + IFCVT_SLOTS;
 // null page (Emitter.nullCheck): L_SPECF set when a load of an if-converted arm on the path taken is in the null page,
 // L_NCK the address of that load
 const L_SPECF = L_IFR0 + IFCVT_SLOTS, L_NCK = L_SPECF + 1;
+// the x87 status word (x87 regions: loaded with the stack cache, written back with it), so that the compares, FNSTSW and
+// the condition codes' updates chain through a register instead of a store and a load of the state block each
+const L_SW = L_NCK + 1;
 const L_FIRST_DECLARED = 16;
 const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
-  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32]; // indices 16..112
-if (LOCAL_TYPES.length !== L_NCK + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32, T.i32]; // indices 16..113
+if (LOCAL_TYPES.length !== L_SW + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -1343,12 +1346,12 @@ class Emitter {
     this.loadX87Fpc();
     this.loadX87Regs();
   }
-  /** L_FPC <- the control word's PC/RC bits. */
-  loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); }
-  /** Write the cached x87 state back (shift 0): TOP always, the stack values and tag word in x87 regions. */
+  /** L_FPC <- the control word's PC/RC bits; L_SW <- the status word. */
+  loadX87Fpc() { this.c.get(L_STATE).i32load16u(ST.FPU_CW).i32(0xf00).and().set(L_FPC); this.c.get(L_STATE).i32load16u(ST.FPU_SW).set(L_SW); }
+  /** Write the cached x87 state back (shift 0): TOP always, the stack values, tag word and status word in x87 regions. */
   flushFpu() {
     const c = this.c;
-    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); } // (other regions never change TOP)
+    if (this.usesX87) { this.flushX87Regs(); this.flushX87Tags(); c.get(L_STATE).get(L_TOP).i32store8(ST.FPU_TOP); c.get(L_STATE).get(L_SW).i32store16(ST.FPU_SW); } // (other regions never change TOP)
   }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the
@@ -2913,4 +2916,4 @@ HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[O
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
 export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter };
-export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
+export { HANDLERS, L_STATE, L_SW, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_T8, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, MASK, SIGN, BITS, touchesFpu };
