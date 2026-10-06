@@ -407,6 +407,13 @@ one that is not JSON.
 - Region parameters packed so that none goes through the stack (5 i32 + 6 f64 holding two i32 each, V8's x64 argument
   registers): +4 % in RotWK play, and slower in a calling-convention microbenchmark (the packing costs more than the
   stack arguments it saves).
+- 11 i32 region parameters (block, state, 8 registers, budget), EFLAGS and the 4 lazy-flag values in the state block
+  (loaded by every region's prologue, stored before every chained tail call) — 2026-10-06, stopped at the gate:
+  `tools/chain-bench.mjs` (Node 24 / V8 13.6, alternated with main) int 22.7 → 26.6 ns, x87 36.2 → 43.0 ns per
+  call/return pair. The parameter count itself is worth ~0.3 ns per pair (the same 11-parameter code without the five
+  loads and stores — exact for that bench only — 22.2 ns); the prologue loads cost ~3.5 ns per pair and the stores
+  ~2.2 ns, so skipping the loads for blocks whose flags are dead cannot pay either. The exactness suite passed on the
+  prototype (only the listing / code-shape tests needed their local numbering updated).
 - Regions that end where another region already translates the block (`dedup`: an exit chaining into it, no copy): the
   translated code shrinks (process CPU −15 %, less compilation) but the extra transitions cost more: guest time per
   instruction RotWK +6.8 %, BFME2 +10 %.
