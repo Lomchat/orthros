@@ -46,6 +46,8 @@ const AHEAD_REQUESTS_MID = 8;
 const PREFETCH_PARTS = 6;
 /** a pause this long (ms) between two learned entries ends a step of the game (see stepEstimate) */
 const STEP_GAP_MS = 5000;
+/** the download of the whole game before playing, on a link that is not fast: a request carries about this much of the link (s) */
+const ALONE_SECONDS = 8;
 const RETRY_WAITS = [250, 1000, 2000, 4000, 8000]; // ms before each new attempt of a failed range request
 /** fetchBackground's answer for a download aborted because the game needed the network (fetched again later) */
 const ABORTED = Symbol('aborted');
@@ -880,7 +882,9 @@ export class HttpBackend {
       if (!opts.alone) while (this.gameBusy(500)) { if (stop()) return; await new Promise((r) => setTimeout(r, 200)); }
       if (opts.alone || this.net.backgroundBytes() >= BLOCK) {
         // (consecutive missing blocks of the file in one request, up to 4: those next in the order)
-        let n = 1; const most = opts.alone || this.net.fast() ? 4 : Math.max(1, Math.floor(this.net.backgroundBytes() / BLOCK));
+        // (alone on a link that is not fast: about ALONE_SECONDS of the link per request, one block until measured — a
+        // 4 MiB request takes 50 s at 85 KB/s: the progress would move by jumps, and a pause would lose it)
+        let n = 1; const most = this.net.fast() ? 4 : opts.alone ? Math.max(1, Math.min(4, Math.floor((this.net.bw ?? 0) * ALONE_SECONDS / this.net.ratio() / BLOCK))) : Math.max(1, Math.floor(this.net.backgroundBytes() / BLOCK));
         while (n < most && k + n < jobs.length && jobs[k + n][0] === f && jobs[k + n][1] === b + n && !store.map.has(key(f, b + n))) n++;
         const start = b * BLOCK, end = Math.min(f.size, (b + n) * BLOCK);
         const data = await this.fetchBackground(f.path, start, end, null, !opts.alone, false, { prio: PRIO.offline, stop });

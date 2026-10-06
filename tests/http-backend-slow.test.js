@@ -104,3 +104,57 @@ test('offline copy: the learned blocks first, then the rest; a second start resu
   const asked = new Map(); for (const c of calls) { const k = `${c.url.split('?')[0]}#${c.start}`; asked.set(k, (asked.get(k) ?? 0) + 1); }
   assert.ok([...asked.values()].every((v) => v === 1), 'no range asked twice');
 }));
+
+test('thin link: a parked read of pieces whose background request waits for its turn makes it go at once (no wait behind the game\'s other reads)', () => withFetch(async (calls) => {
+  const net = thin(), b = new HttpBackend('/game/u/', tree(), { net });
+  const f = b.open('f.big');
+  const busy = net.begin('demand', CHUNK); // (another thread's read on its way: background turns wait on a thin link)
+  const part = b.fetchPartBg('f.big', SIZE, 3, 32, 33, [5, 300]);
+  await settle();
+  assert.equal(calls.length, 0, 'waits for its turn');
+  const p = f.prepare(32 * CHUNK + 10, 100);
+  assert.ok(p, 'the read parks');
+  await settle();
+  assert.equal(calls.length, 1, 'promoted: started although a game read is in flight');
+  assert.equal(await part, true);
+  await p;
+  const n0 = syncReqs.length;
+  assert.deepEqual(f.read(32 * CHUNK + 10, 100), bytes(32 * CHUNK + 10, 32 * CHUNK + 110));
+  assert.equal(syncReqs.length, n0, 'the read finds the pieces here');
+  net.end(busy, CHUNK);
+}));
+
+test('thin link: a synchronous read aborts a background request for the same bytes; the read is exact and the aborted pieces are not kept half', async () => {
+  const real = globalThis.fetch, pending = [];
+  globalThis.fetch = (url, init = {}) => new Promise((resolve, reject) => {
+    const m = /bytes=(\d+)-(\d+)/.exec(init.headers?.Range ?? ''), a = +m[1], e = +m[2] + 1;
+    const p = { a, e, resolve: () => resolve({ status: 206, headers: { get: () => null }, arrayBuffer: async () => bytes(a, e).buffer }) };
+    init.signal?.addEventListener('abort', () => { p.aborted = true; reject(new DOMException('aborted', 'AbortError')); });
+    pending.push(p);
+  });
+  try {
+    const store = new MemBlockStore(), net = thin(), b = new HttpBackend('/game/v/', tree(), { store, net });
+    const f = b.open('f.big');
+    const part = b.fetchPartBg('f.big', SIZE, 3, 48, 48, [5, 0]);
+    await settle();
+    assert.equal(pending.length, 1);
+    assert.deepEqual(f.read(48 * CHUNK + 7, 1000), bytes(48 * CHUNK + 7, 48 * CHUNK + 1007));
+    assert.ok(pending[0].aborted, 'the background request for the same bytes went away');
+    assert.equal(await part, false);
+    assert.ok(store.map.has(`f.big#${SIZE}#3#c48`), 'the piece kept from the read');
+    assert.deepEqual(store.get(`f.big#${SIZE}#3#c48`), bytes(48 * CHUNK, 49 * CHUNK));
+    assert.equal(net.inflight.bg, 0); assert.equal(net.bgFlights.size, 0);
+  } finally { globalThis.fetch = real; }
+});
+
+test('download first on a thin link: one block per request (a 4 MiB request would take 50 s), four on a fast one', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/w/', tree(), { store: new MemBlockStore(), encoded: true, net: thin() });
+  const p = {};
+  await b.downloadAll(p, () => false, { alone: true });
+  assert.ok(p.done);
+  assert.ok(calls.every((c) => c.end - c.start <= BLOCK), `request sizes ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
+  calls.length = 0;
+  const f = new HttpBackend('/game/w2/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 20 << 20, fixed: true }) });
+  await f.downloadAll({}, () => false, { alone: true });
+  assert.ok(calls.some((c) => c.end - c.start === 4 * BLOCK));
+}));

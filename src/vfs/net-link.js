@@ -29,6 +29,8 @@ const MIN_BG = 64 << 10, MAX_BG = 4 << 20;
 const UNKNOWN_BG = 256 << 10;
 /** answers at most this large (wire bytes) time the round trip */
 const RTT_BYTES = 16 << 10;
+/** the rate is measured over the answers that ended within this much time (ms, see sample) */
+const HORIZON_MS = 20000;
 
 export class NetLink {
   /**
@@ -54,6 +56,8 @@ export class NetLink {
     // (bandwidth window: the transfer intervals of the answers that ended in it — from their first byte, else from their
     // start plus a round trip, to their end — and their wire bytes; see sample)
     this.winStart = this.now(); this.winIntervals = []; this.winBytes = 0;
+    /** the answers ended within HORIZON_MS: [transfer start, end, wire bytes] (see sample) */
+    this.hist = [];
     /** background downloads waiting for their turn: { prio, quietMs, resolve, urgent } */
     this.waiters = []; this.timer = null;
     /** background requests in flight: Set of { bytes, t0, abort } */
@@ -119,32 +123,53 @@ export class NetLink {
       // (the round trip from small answers only: a large one's time is mostly its transfer)
       if (wire <= RTT_BYTES) this.rtt = this.rtt === null ? ms : Math.min(this.rtt, ms);
       this.winBytes += wire;
-      this.winIntervals.push([t.tx ?? Math.min(now, t.t0 + (this.rtt ?? 0)), now]);
+      const a = t.tx ?? Math.min(now, t.t0 + (this.rtt ?? 0));
+      this.winIntervals.push([a, now]);
+      this.hist.push([a, now, wire]);
       this.sample(now);
     } else if (t.kind === 'bg') this.totals.abortedRequests++;
     this.kick();
   }
   /**
-   * A bandwidth sample once the window holds enough: its answers' wire bytes over the time bytes were arriving (the
-   * union of their transfer intervals: concurrent answers count once, the waits for a first byte not at all).
+   * A bandwidth sample once the window (the answers ended since the last sample) holds enough: the wire bytes of the
+   * answers ended within HORIZON_MS over the time bytes were arriving (the union of their transfer intervals: concurrent
+   * answers count once, the waits for a first byte not at all). The time since the first answer still on its way began
+   * to arrive is left out, and an answer that began before the horizon counts with its part inside it only (its bytes
+   * pro rata): an answer still arriving shares the link without its bytes counted yet, and a long one that ends brings
+   * its whole time back — either way the rate of a thin link carrying a long game read beside small background answers
+   * read 4 times too low (85 KB/s measured as 20-35).
    */
   sample(now) {
     if (this.fixed) return;
-    const iv = this.winIntervals.sort((a, b) => a[0] - b[0]);
-    let busy = 0, cs = -Infinity, ce = -Infinity;
-    for (const [a0, b] of iv) {
-      const a = Math.max(a0, this.winStart - 60000); // (a long answer that began well before: its recent part only)
-      if (a > ce) { if (ce > cs) busy += ce - cs; cs = a; ce = b; } else if (b > ce) ce = b;
-    }
-    if (ce > cs) busy += ce - cs;
+    const busyOf = (iv) => {
+      iv.sort((a, b) => a[0] - b[0]);
+      let busy = 0, cs = -Infinity, ce = -Infinity;
+      for (const [a, b] of iv) { if (a > ce) { if (ce > cs) busy += ce - cs; cs = a; ce = b; } else if (b > ce) ce = b; }
+      if (ce > cs) busy += ce - cs;
+      return busy;
+    };
+    const busy = busyOf(this.winIntervals.map(([a, b]) => [Math.max(a, this.winStart), b]));
     // (when nothing else is on its way — an answer ending now would count without its bytes — or the window is long)
     const idle = this.inflight.demand + this.inflight.bg === 0;
     const enough = busy >= 2000 || (idle && (busy >= 400 || (!this.measured && this.winBytes >= 48 << 10 && busy >= 20)));
     if (!enough) return;
-    const s = this.winBytes / Math.max(1, busy) * 1000;
+    this.winBytes = 0; this.winIntervals = []; this.winStart = now;
+    const lo = now - HORIZON_MS;
+    while (this.hist.length && this.hist[0][1] <= lo) this.hist.shift();
+    let hi = now;
+    for (const set of [this.demandFlights, this.bgFlights]) for (const t of set) if (!t.ended) hi = Math.min(hi, t.tx ?? t.t0 + (this.rtt ?? 0));
+    let bytes = 0; const iv = [];
+    for (const [a, b, w] of this.hist) {
+      const ca = Math.max(a, lo), cb = Math.min(b, hi);
+      if (cb <= ca) continue;
+      bytes += b > a ? w * (cb - ca) / (b - a) : w;
+      iv.push([ca, cb]);
+    }
+    const span = busyOf(iv);
+    if (span < (this.measured ? 300 : 20) || bytes <= 0) return;
+    const s = bytes / span * 1000;
     this.bw = this.measured && this.bw ? this.bw * 0.6 + s * 0.4 : s;
     this.measured = true;
-    this.winBytes = 0; this.winIntervals = []; this.winStart = now;
   }
 
   /**

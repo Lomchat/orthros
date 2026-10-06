@@ -158,3 +158,34 @@ test('download first: the home screen line from the kept progress', () => {
   assert.equal(downloadStatus({ bytes: 1.5e9, total: 1.5e9, done: true }, 1.5e9, 'fr').state, 'done');
   assert.match(downloadStatus({ running: true, bytes: 1e8, total: 1e9, bw: 1e6 }, 1e9, 'fr').text, /restantes/);
 });
+
+/**
+ * A link of `rate` bytes/s shared equally by the answers on it (as the harness's SimLink: a 50 ms round trip, then the
+ * bytes), `pattern(now, active, start)` starting requests; the estimates after the first 20 s.
+ */
+function shared(rate, pattern, seconds = 120) {
+  let now = 0; const n = new NetLink({ now: () => now, setTimer: () => 0, clearTimer: () => {} });
+  const active = [], seen = [];
+  const start = (kind, bytes) => active.push({ tok: n.begin(kind, bytes), left: bytes, bytes, wait: 50 });
+  while (now < seconds * 1000) {
+    pattern(now, active, start);
+    const flowing = active.filter((a) => a.wait <= 0);
+    for (const a of active) if (a.wait > 0 && (a.wait -= 10) <= 0) n.firstByte(a.tok);
+    for (const a of flowing) a.left -= rate * 0.01 / flowing.length;
+    now += 10;
+    for (const a of [...active]) if (a.left <= 0) { active.splice(active.indexOf(a), 1); n.end(a.tok, a.bytes, a.bytes); }
+    if (now > 20000 && now % 1000 === 0 && n.bw) seen.push(n.bw);
+  }
+  return { min: Math.min(...seen), max: Math.max(...seen) };
+}
+
+test('net link: answers sharing the link, a long one beside small ones — the rate is not read several times too low', () => {
+  for (const rate of [85000, 1e6]) {
+    // three answers of different sizes always on the link (a long one's time no longer counts without its bytes)
+    const a = shared(rate, (now, active, start) => { while (active.length < 3) start('bg', 65536 * (1 + active.length)); });
+    assert.ok(a.min > rate * 0.85 && a.max < rate * 1.15, `${rate} B/s, three at once: measured ${Math.round(a.min)}-${Math.round(a.max)}`);
+    // a game read of 1 MiB every 20 s, small background answers one after the other beside it
+    const b = shared(rate, (now, active, start) => { if (now % 20000 === 0) start('demand', 1 << 20); if (!active.some((x) => x.tok.kind === 'bg')) start('bg', 65536); });
+    assert.ok(b.min > rate * 0.75 && b.max < rate * 1.15, `${rate} B/s, long and small: measured ${Math.round(b.min)}-${Math.round(b.max)}`);
+  }
+});
