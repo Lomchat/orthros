@@ -491,6 +491,8 @@ function wasmHalve(src, dw, dh) {
   wl.exports.halve(WASM_IN, out, dw, dh);
   return m.slice(out, out + dw * dh * 4);
 }
+/** Whether mipChain can produce `fmt` (a kernel for it, the kernels available). */
+export const mipChainReady = (fmt) => (isDxt(fmt) || !!FMT16[fmt] || fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && !!localWasm();
 /**
  * A mip chain as D3DXFilterTexture builds it (box filter): from the w x h RGBA8 image `from`, each level of `sizes`
  * ([w, h] pairs, in order) resized from the previous level's RGBA and encoded in `fmt` — the bytes of resizeRgba and
@@ -499,7 +501,6 @@ function wasmHalve(src, dw, dh) {
  * that format (DXT1-5, a 16-bit format of FMT16, A8R8G8B8 or X8R8G8B8: decoded there, as toRgba would) rather than RGBA8.
  * Null when the kernels cannot do it (no WebAssembly, a format without a kernel): the caller goes level by level.
  */
-export const mipChainReady = (fmt) => (isDxt(fmt) || !!FMT16[fmt] || fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && !!localWasm();
 export function mipChain(fmt, from, w, h, sizes, srcFmt = null) {
   const dxt = isDxt(fmt), k16 = !!FMT16[fmt], k32 = fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8;
   const srcDxt = srcFmt !== null && isDxt(srcFmt);
@@ -509,7 +510,7 @@ export function mipChain(fmt, from, w, h, sizes, srcFmt = null) {
   const encBytes = sizes.map(([lw, lh]) => surfaceBytes(fmt, lw, lh));
   const region = (Math.max(srcBytes, w * h * 4, ...sizes.map(([lw, lh]) => lw * lh * 4)) + 15) & ~15; // (levels may be larger than the source)
   const total = encBytes.reduce((a, b) => a + b, 0);
-  let [m] = wasmRoom(wl, 2 * region, total);
+  const [m] = wasmRoom(wl, 2 * region, total);
   const A = WASM_IN, B = WASM_IN + region, OUT = WASM_IN + 2 * region;
   if (srcFmt === null) m.set(from.subarray(0, w * h * 4), A);
   else { // (the source level's data decoded / unpacked into A, through B)
