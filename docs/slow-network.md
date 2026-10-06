@@ -110,6 +110,10 @@ process stalls under load).
 | 5 MB/s (4 pairs run at once) | 50, 50, 51, 50 / 70, 107, 69, 109 | 49, 44, 66, 61 / 105, 100, 111, 103 | 120-157 / 232-251 MB |
 | local | 62 / 79 | 61 / 79 | |
 
+Local link, other games (plain 240 s runs, fresh profile, first Direct3D frame, before / after): BFME II 83 / 83 s,
+BFME 107 / 104 s, RotWK 102 / 102 s (a first pair gave 102 / 180 s: the game's own first-launch computation, no network
+wait in either run — the second pair 102 / 102 s).
+
 **BFME II** (`bfme2-skirmish`, 6.9 GB):
 
 | link | before: menu / in game | after: menu / in game | after: received by then |
@@ -124,4 +128,10 @@ sound bank, the intro movie it plays) — 12 minutes at that rate is the physica
 reads everything locally (pieces and blocks kept in OPFS). At 5 MB/s and on a local link the fast policies apply (as
 before). At 5 MB/s the menu comes as soon as before, but every "after" run had the 20-30 s page stall after the menu
 (half of the "before" runs did): its time in game is not settled (pairs: +35, −7, +42, −5 s) — to look at again
-(what stalls the page's main thread there: the harness's evaluations stop too).
+(what stalls the page's main thread there: the harness's evaluations stop too; coalescing the render worker's frames
+on the page did not remove it). The bench's waits read the page's stats, so a stalled page also delays the `load` and
+`play` marks: the time in game at 5 MB/s is an upper bound in those runs.
+
+The home screen's "download first" was checked in the page over a simulated 1 MB/s link: progress, measured rate and
+time left update every 5 s (~950 KB/s, "about 24 min left" for Vice City's 1.5 GB), a reload shows "1% downloaded (27 MB
+of 1.5 GB) · about 24 min more" with Resume, which continues from 27 MB; Pause stops it.
