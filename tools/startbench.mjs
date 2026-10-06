@@ -174,6 +174,12 @@ const report = (why) => {
     if (typeof a !== 'string') console.log(`list ${r.entry.toString(16)}: x87 mode ${r.fpc === null || r.fpc === undefined ? 'generic' : '0x' + r.fpc.toString(16)}${r.first ? ' (a version)' : ''}`);
     try { console.log(listRegion(vm.mem, r.entry, { ...vm.jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: vm.jit.blockCounts(r), ops: !args.includes('--list-brief') }).text); } catch (e) { console.log(`list ${a}: ${e.message}`); }
   }
+  // --x87-modes: the live regions by x87 mode (generic, or precision / rounding control bits: 0x000 24-bit nearest,
+  // 0xc00 24-bit toward zero, 0x200 53-bit, 0x300 64-bit...) — which arithmetic paths a session's code runs
+  if (args.includes('--x87-modes') && vm.jit) {
+    const h = new Map(); for (const r of vm.jit.regions) { const k = r.fpc === null || r.fpc === undefined ? 'none' : '0x' + (r.fpc & 0xf00).toString(16); h.set(k, (h.get(k) ?? 0) + 1); }
+    console.log(`[x87modes] live regions by x87 mode: ${[...h].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}`);
+  }
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M; unchained (thunk, stop, budget, miss) ${[0, 1, 2, 3].map((k) => (vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k) / 1e6).toFixed(1) + 'M').join(' ')}; API calls ${(vm.apiCalls / 1e6).toFixed(1)}M`);
     // (the fast-path API calls the dispatcher ran in WASM, per API)
