@@ -16,16 +16,20 @@ const rng = (seed) => () => {
   return (t ^ (t >>> 14)) >>> 0;
 };
 
-/** the heap before the granule map: linear chunk scan, the allocation walk as it was (reads through read32) */
+const alignUp = (x, a) => Math.ceil(x / a) * a;
+const classIndex = (s) => { if (s <= 512) return s >> 3; let c = 65; for (let k = 1024; k < s && c < 127; k <<= 1) c++; return c; };
+const plausible = (p) => p === 0 || (p >= 0x10000 && p < 0x7eb00000 && (p & 7) === 0);
+
+/**
+ * The heap before the granule map: linear chunk scan, the allocation walk and the reallocation as they were (reads
+ * through read32, zeroing through fill); free_, size, freeBlockOk are unchanged (they look chunks up by this.chunkOf).
+ */
 class LinearHeap extends Heap {
   chunkOf(addr) { return this.chunkScan(addr); }
   alloc(size, zero = false) {
-    const alignUp = (x, a) => Math.ceil(x / a) * a;
     size = Math.max(16, alignUp(size >>> 0, 8));
     if (size > 0x7fffffff) return 0;
     const m = this.mem;
-    const classIndex = (s) => { if (s <= 512) return s >> 3; let c = 65; for (let k = 1024; k < s && c < 127; k <<= 1) c++; return c; };
-    const plausible = (p) => p === 0 || (p >= 0x10000 && p < 0x7eb00000 && (p & 7) === 0);
     for (let attempt = 0; attempt < 2; attempt++) {
       for (let c = classIndex(size); c < 128; c++) {
         let b = this.heads[c], prev = 0, mark = b, steps = 0, span = 1;
@@ -50,6 +54,34 @@ class LinearHeap extends Heap {
       if (!this.grow(size + 48)) return 0;
     }
     return 0;
+  }
+  realloc(addr, size, zero = false, inPlaceOnly = false) {
+    const m = this.mem;
+    if (!addr) return inPlaceOnly ? 0 : this.alloc(size, zero);
+    const old = this.size(addr);
+    if (old < 0) return 0;
+    size = Math.max(16, alignUp(size >>> 0, 8));
+    if (size <= old) return addr;
+    const nextU = addr + old + 16;
+    if (m.read32(nextU - 4) === MAGIC_FREE && this.freeBlockOk(nextU, m.read32(nextU - 8))) {
+      const ns = m.read32(nextU - 8);
+      const avail = old + 16 + ns;
+      if (avail >= size) {
+        this.unlink(nextU, classIndex(ns));
+        const rem = avail - size;
+        if (rem >= 32) { m.write32(addr - 8, size); m.write32(addr + size, size); this.setFree(addr + size + 16, rem - 16); }
+        else { m.write32(addr - 8, avail); m.write32(addr + avail, avail); }
+        if (zero) m.fill(addr + old, m.read32(addr - 8) - old, 0);
+        return addr;
+      }
+    }
+    if (inPlaceOnly) return 0;
+    const n = this.alloc(size, false);
+    if (!n) return 0;
+    m.copy(n, addr, old);
+    if (zero) m.fill(n + old, size - old, 0);
+    this.free_(addr);
+    return n;
   }
 }
 
@@ -98,31 +130,38 @@ function differential(seed, ops) {
     const live = [], freed = [], out = [];
     const pick = (arr) => arr[rnd() % arr.length];
     const recent = (arr) => arr[arr.length - 1 - rnd() % Math.min(arr.length, 12)]; // (blocks likely still free)
+    /** what the program reads back from a block it got (zeroed or not): a digest of its first and last bytes */
+    const digest = (p, n) => {
+      let d = 0x811c9dc5;
+      n = Math.min(n, 0x7f000000 - p);
+      for (let o = 0; o + 4 <= n; o += o < 4096 || o + 4096 >= n ? 4 : n - 4096 - o) d = Math.imul(d ^ mem.read32(p + o), 16777619) >>> 0;
+      return d;
+    };
     for (let i = 0; i < ops; i++) {
       const r = rnd() % 100, h = rnd() % 4 === 0 ? other : heap;
-      if (r < 40 || !live.length) {
+      if (r < 35 || !live.length) {
         const big = rnd() % 50 === 0, size = big ? 0x40000 + (rnd() % 0x180000) : rnd() % 4 === 0 ? 513 + (rnd() % 6000) : 1 + (rnd() % 600);
         const p = h.alloc(size, rnd() % 3 === 0);
-        out.push(p); if (p) live.push([h, p]);
-      } else if (r < 75) {
+        out.push(p, p && digest(p, h.size(p))); if (p) live.push([h, p]);
+      } else if (r < 65) {
         const k = rnd() % live.length, [lh, p] = live[k];
         live.splice(k, 1); freed.push([lh, p]);
         out.push(lh.free_(p));
-      } else if (r < 85) {
+      } else if (r < 80) {
         const k = rnd() % live.length, [lh, p] = live[k];
         const n = lh.realloc(p, rnd() % 3000, rnd() % 2 === 0, rnd() % 4 === 0);
-        out.push(n); if (n) live[k] = [lh, n];
-      } else if (r < 88 && freed.length) {
+        out.push(n, n && digest(n, lh.size(n))); if (n) live[k] = [lh, n];
+      } else if (r < 83 && freed.length) {
         const [fh, p] = pick(freed); out.push(fh.free_(p)); // (double free)
-      } else if (r < 90) {
+      } else if (r < 85) {
         out.push(h.free_((rnd() & 0x7ffffff8) >>> 0), h.size(rnd() >>> 1)); // (no block)
-      } else if (r < 93 && freed.length) {
+      } else if (r < 88 && freed.length) {
         // writes into a freed block (still free or reused since): its next / prev links or its header's size
         const [, p] = recent(freed), w = rnd() % 9;
         const target = w === 0 && live.length ? pick(live)[1] : w === 1 ? pick(freed)[1] : w === 2 ? 0x90000000 : w === 3 ? (p + 8 + (rnd() % 64) * 8)
           : w === 4 ? rnd() >>> 0 : w === 5 ? rnd() % 0x10000 : w === 6 ? 0x7eb00000 + (rnd() % 0x1000) * 8 : (rnd() & 0x7ffffff8) >>> 0;
         if (w === 8) mem.write32(p - 8, rnd() % 4096); else mem.write32(p + (rnd() % 2) * 4, target);
-      } else if (r < 95 && freed.length) {
+      } else if (r < 90 && freed.length) {
         // a link to a fake free block (header, magic, footer as the program left them): inside the freed block, or ending
         // at its chunk's end sentinel; with sizes small, unaligned, aligned
         const [fh, p] = recent(freed), ch = fh.chunkScan(p);
@@ -131,6 +170,13 @@ function differential(seed, ops) {
         if (q + fs < 0x7f000000) {
           mem.write32(q - 8, fs); mem.write32(q - 4, rnd() % 5 ? MAGIC_FREE : 0x4f524855); mem.write32(q + fs, rnd() % 5 ? fs : fs + 8);
           mem.write32(p, q);
+        }
+      } else if (r < 97 && live.length) {
+        // the program's data in a live block (what a block handed out again, zeroed or not, still holds)
+        const [lh, p] = pick(live), s = lh.size(p);
+        if (s >= 8 && p + s < 0x7f000000) {
+          mem.write32(p, rnd() | 1); mem.write32(p + s - 4, rnd() | 1);
+          for (let k = 0; k < 4; k++) mem.write32(p + 4 * (rnd() % (s >> 2)), rnd() | 1);
         }
       } else if (live.length) {
         // writes past the end of a live block: its footer, the next block's header

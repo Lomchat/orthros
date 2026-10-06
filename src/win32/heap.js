@@ -21,6 +21,17 @@ const plausible = (p) => p === 0 || (p >= 0x10000 && p < 0x7eb00000 && (p & 7) =
 // by the linear scan. (A heap grown to hundreds of chunks spent most of its allocations in that scan.)
 const GRAN_SHIFT = 16, MAP_FROM = 8, SHARED = 0xffff;
 
+/**
+ * Zero `n` bytes at `a` (HEAP_ZERO_MEMORY), as `mem.fill(a, n, 0)`: an 8-aligned range is filled as doubles (+0: eight
+ * zero bytes) — on a shared buffer (background translator, render worker) a typed array's fill stores one element at a
+ * time, so bytes ran at ~2.4 GB/s against ~6.6 GB/s for doubles.
+ * @param {import('../cpu/memory.js').GuestMemory} m
+ */
+function zeroFill(m, a, n) {
+  if (((a | n) & 7) === 0 && a >= 0 && a + n <= m.size) m.f64.fill(0, a / 8, (a + n) / 8);
+  else m.fill(a, n, 0);
+}
+
 /** size class of an 8-aligned user size: exact classes up to 512 bytes, then powers of two */
 function classIndex(size) {
   if (size <= 512) return size >> 3;
@@ -119,7 +130,7 @@ export class Heap {
               this.setFree(b + size + FTR + HDR, rem - FTR - HDR);
             }
             m.write32(b - 4, MAGIC_USED);
-            if (zero) m.fill(b, m.read32(b - 8), 0);
+            if (zero) zeroFill(m, b, u32[(b - 8) >>> 2]);
             if (globalThis.ORTHROS_HEAP_WATCH && (b >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: alloc(${size}) -> ${b.toString(16)} from free block of ${bs} in class ${c} (chunk ${JSON.stringify(this.chunkOf(b))})`);
             return b;
           }
@@ -220,7 +231,7 @@ export class Heap {
         const rem = avail - size;
         if (rem >= SPLIT_MIN) { m.write32(addr - 8, size); m.write32(addr + size, size); this.setFree(addr + size + FTR + HDR, rem - FTR - HDR); }
         else { m.write32(addr - 8, avail); m.write32(addr + avail, avail); }
-        if (zero) m.fill(addr + old, m.read32(addr - 8) - old, 0);
+        if (zero) zeroFill(m, addr + old, m.read32(addr - 8) - old);
         if (globalThis.ORTHROS_HEAP_WATCH && (addr >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: realloc in place ${addr.toString(16)} ${old} -> ${size} with next free ${nextU.toString(16)} of ${ns} (chunk ${JSON.stringify(this.chunkOf(addr))})`);
         return addr;
       }
@@ -229,7 +240,7 @@ export class Heap {
     const n = this.alloc(size, false);
     if (!n) return 0;
     m.copy(n, addr, old);
-    if (zero) m.fill(n + old, size - old, 0);
+    if (zero) zeroFill(m, n + old, size - old);
     this.free_(addr);
     return n;
   }
