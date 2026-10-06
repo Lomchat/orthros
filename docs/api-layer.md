@@ -31,6 +31,51 @@ then ran more often, and the time charged to `Sleep` grew (per 20 s, on vs off i
 677 k calls) with no frame-time effect; it was reverted. The existing throttle (32 back-to-back `Sleep(0)` with nothing
 else to run park the thread 1 ms) is what bounds it.
 
+## PeekMessage polling: pacing that now waits (src/win32/user32.js, peekIdle)
+
+Vice City's `api` time (19.5 ms per frame on the owner's PC, 17-19 ms here, 60 % of the emulator thread) was not
+Direct3D work: its frame limiter calls `PeekMessage` (and `QueryPerformanceCounter`, on the WASM fast path) in a loop
+until its clock reaches the next frame — ~24 000 empty `PeekMessage` calls per frame, nothing else between them
+(`tools/startbench.mjs --api-seq 600@45 --jit-profile`: `PeekMessageA [+1 fast timer] x599`). In Node, per frame of the
+drive: `PeekMessageA` 9.6 ms (24 k calls, 0.4 µs each), `DrawIndexedPrimitive` (with the queued setters it runs) 0.6 ms,
+everything else < 0.5 ms. The game's state setters reach JavaScript non-redundant (counted over a drive: 120 render /
+stage states the filter dropped, 23 of 960 k `SetTexture`, 1 of 660 k `SetIndices` changing nothing): filtering more
+would not pay there. Windows would burn a core the same way; here it burns the emulator thread, and the frame
+accounting charged it as work.
+
+**Decision.** An empty `PeekMessage` that is part of such polling waits instead of spinning: after 64 empty calls in a
+row (each within 50 µs of the previous one, at most one other JavaScript API call of the thread between them) with no
+other thread runnable, the call parks the thread (woken early by a message), and again every 8 calls while the
+polling goes on — to the guest, an OS preempting a spinning thread. So that it is never made late: the times at which
+the thread's bouts of polling ended (its next frame) give the shortest interval between them; the thread waits (at most
+2 ms at a time: the browser worker stays in `Atomics.wait`) until 0.4 ms plus the latest overshoot of its waits before
+the expected end, then spins until shortly after it — a limiter polling at a steady rate, relative or absolute
+deadline, sees its clock reach the deadline at full speed. Without an estimate, or past it, the waits are 0.25 ms. A
+bout that ended right after a wait counts up to the start of that wait (shorter: more spinning, never later); waits
+that last longer than asked (a host whose timed waits follow a coarse system timer, as Windows timed waits may, other
+threads run after the wake-up) widen the margin by their
+overshoot. The time waited is `wait` in the frame accounting (pacing). `?dbg=ORTHROS_PEEK_IDLE_MS=0` (or the harness
+input `dbg:ORTHROS_PEEK_IDLE_MS=0`) turns it off; `=<ms>` sets the short waits. Test: `peek-idle.test.js` (a frame
+loop on the virtual clock: calls per frame, frames on time once learned, absolute deadlines, a higher rate, waits
+rounded to 1 ms and to a 15.625 ms timer, no wait with other calls between or with a message).
+
+Also: `dueTimer` (every `PeekMessage`) reads the clock only when the thread has a timer; DirectSound logs its
+diagnostic lines (creation, first plays and unlocks with a scan of the contents) for the first 32 buffers only (Vice
+City creates or duplicates a buffer per sound: ~11 log lines, each posted to the page, per frame) and copies 3D
+parameters without `structuredClone`.
+
+Measured (2026-10-06, `tools/scenarios/vicecity-drive.txt`, this tree against main, both at once, launch order
+alternated, `--gl-discard`; 4 pairs, the 22 s drive and the 38 s after it), per frame: `api` 4.1 / 3.5 ms against 16.4 /
+17.5 ms (-75 / -80 %), `guest` 11.2 / 10.1 against 14.8 / 14.4 ms (the polling loop's own code); 29.8 / 30.0 fps both;
+frames > 40 ms 49 / 14 per minute against 69 / 24, > 50 ms 12 / 4 against 20 / 7 (fewer in every pair); p99 40-48 ms
+against 45-58 ms. Emulator worker CPU over the drive: 10-11 s against 21-22 s of 22 s. With SwiftShader drawing (2 pairs)
+the same `api` figures (3.7 / 3.0 against 17.2 / 18.4 ms). Node (`startbench.mjs --input vicecity-drive.txt`, on vs
+`dbg:ORTHROS_PEEK_IDLE_MS=0` at once): `api` 1.5 against 11.2 ms per frame, thread CPU 8.0 against 22.0 s, 654 / 656
+frames, p50 33.3 both. What remains of `api` in the browser: `DrawIndexedPrimitive` with the setters it runs and the
+render-worker recording (~2.4 ms; recording 1.3 ms of it by `ORTHROS_REC_TIME`), `PeekMessage` spinning near the
+expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no wait taken): unchanged (30.2 fps both,
+`api` 4.4 / 4.3 ms).
+
 ## Effects (src/win32/d3dx9-effect.js)
 
 - Shader constants are compared per stage: a pass's bindings are compared with the device's registers only when that

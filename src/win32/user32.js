@@ -2,7 +2,7 @@
 // modes, and the DefWindowProc behaviour games rely on. Rendering goes through the software GDI
 // (src/gfx/gdi) onto per-window client surfaces which are presented by the host display.
 import { E } from './errors.js';
-import { INFINITE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED } from '../core/sched.js';
+import { INFINITE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
 import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit, dcFont } from './gdi32.js';
 import { allocSurface, freeSurface } from '../gfx/gdi/surface.js';
 import { clipRect, rectEmpty } from '../gfx/gdi/raster.js';
@@ -338,10 +338,11 @@ export class WindowManager {
   }
 
   dueTimer(thread, hwndFilter) {
-    const now = this.vm.clock.now();
+    let now = -1; // (the clock read only when a timer of the thread is there: PeekMessage polling loops call this)
     for (const t of this.proc.timers) {
       if (t.kind !== 'wm' || t.thread !== thread) continue;
       if (hwndFilter && t.hwnd !== hwndFilter) continue;
+      if (now < 0) now = this.vm.clock.now();
       if (t.due <= now) return t;
     }
     return null;
@@ -864,12 +865,77 @@ export function registerUser32(api, vm) {
   };
   U.GetMessageA = [4, (c) => getMessage(c, false)];
   U.GetMessageW = [4, (c) => getMessage(c, true)];
+  // Message-loop polling: a thread calling PeekMessage over and over with no message to get (a frame limiter waiting
+  // for its clock to reach the next frame: tens of thousands of calls per frame, no other API call between them but
+  // its clock reads) would burn the worker. After PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN empty calls in a row, each within
+  // 50 µs of the previous one with at most one other JS API call of the thread between them, and no other thread
+  // runnable, the call waits (or until a message arrives), and again after every PEEK_IDLE_AGAIN calls while the
+  // polling goes on — what an OS preempting a spinning thread looks like to it.
+  // How long, so that the waits do not make the guest late: the times at which the last bouts of polling ended (the
+  // thread went on with other calls: its next frame) give the shortest interval between them, hence when the current
+  // bout should end. The thread waits until a margin before that (PEEK_IDLE_MARGIN plus the latest overshoot of its
+  // waits: a host whose timed waits follow a coarse system timer, other threads run after the wake-up; at most
+  // PEEK_IDLE_MAX ms at a time), then spins until shortly after it: a guest polling at a steady rate sees its clock
+  // reach its deadline at full speed, whatever its deadline rule. Without such an estimate (or past it) the waits are
+  // peekIdleMs() long (default 0.25 ms; ORTHROS_PEEK_IDLE_MS=0: never wait). A bout that ended right after a wait may
+  // have ended during it: its interval counts up to the start of that wait (shorter: more spinning, never later).
+  const PEEK_IDLE_STREAK = 56, PEEK_IDLE_AGAIN = 8, PEEK_IDLE_MARGIN = 0.4, PEEK_IDLE_AFTER = 0.5;
+  const PEEK_IDLE_MAX = 2; // (2 ms: the browser worker waits in Atomics.wait; longer waits go back to its event loop and its timers)
+  const peekIdleMs = () => { const v = globalThis.ORTHROS_PEEK_IDLE_MS; return v === undefined || v === '' ? 0.25 : Number(v); };
+  /** An empty PeekMessage of `t`: how long it should wait (ms, 0: not at all; see above). */
+  const peekIdle = (t, ms) => {
+    const st = t.peekIdle ??= { streak: 0, last: -1, lastPeek: -1, lastApi: 0, polled: false, waitAt: -1, waitEnd: -1, sinceWait: -1, over: 0, endAt: -1, ivs: [], predEnd: -1,
+      parks: 0, longParks: 0, ends: 0, cut: 0, near: 0, late: 0, lateMs: 0 };
+    const now = vm.clock.now(), own = t.apiCalls - st.lastApi <= 2;
+    if (st.waitEnd >= 0) { const o = now - st.waitEnd; if (own) st.over = Math.max(o > 0 ? o : 0, st.over * 0.995); st.waitEnd = -1; } // (the call after a wait, none between)
+    if (!own) {
+      // the end of a bout of empty calls: when it was polling, the time of its last call
+      if (st.polled) {
+        st.ends++; if (st.predEnd >= 0 && st.lastPeek > st.predEnd) { st.late++; st.lateMs += st.lastPeek - st.predEnd; }
+        if (st.endAt >= 0) {
+          const cut = st.sinceWait >= 0 && st.sinceWait <= PEEK_IDLE_AGAIN + 1; // (ended right after a wait)
+          const iv = (cut ? st.waitAt : st.lastPeek) - st.endAt; if (cut) st.cut++;
+          if (iv >= 2 && iv <= 250) { st.ivs.push(iv); if (st.ivs.length > 8) st.ivs.shift(); }
+        }
+        st.endAt = st.lastPeek;
+        st.predEnd = st.ivs.length >= 3 ? st.endAt + Math.min(...st.ivs) : -1;
+      }
+      st.polled = false; st.sinceWait = -1;
+    }
+    // (the call after a wait goes on with the run when it comes within 0.2 ms of the wait's planned end)
+    st.streak = own && now - st.last < (st.streak >= PEEK_IDLE_STREAK ? 0.2 : 0.05) ? st.streak + 1 : 0;
+    st.last = now; st.lastPeek = now; st.lastApi = t.apiCalls;
+    if (st.sinceWait >= 0) st.sinceWait++;
+    if (st.streak < PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN) return 0;
+    st.polled = true;
+    let wait = ms;
+    if (st.predEnd >= 0 && now <= st.predEnd + PEEK_IDLE_AFTER + st.over) {
+      const room = st.predEnd - PEEK_IDLE_MARGIN - st.over - now;
+      if (room < ms) { st.near++; return 0; } // (close to the expected end: spin)
+      wait = Math.min(room, PEEK_IDLE_MAX);
+    }
+    if (vm.sched.pickRunnable(t)) return 0;
+    st.parks++; if (wait > ms) st.longParks++;
+    st.streak = PEEK_IDLE_STREAK; st.last = st.waitEnd = now + wait; st.waitAt = now; st.sinceWait = 0;
+    return wait;
+  };
   const peekMessage = (c) => {
     const p = c.arg(0), hf = c.arg(1), min = c.arg(2), max = c.arg(3), flags = c.arg(4);
     const w = wm();
     w.present();
     const m = w.peek(c.thread, hf, min, max, (flags & PM_REMOVE) !== 0);
-    if (!m) { if (++w.idleSpins > 64) { w.idleSpins = 0; vm.sched.yieldFrom(c.thread); vm.clock.tick?.(0.1); } return 0; }
+    if (!m) {
+      const t = c.thread, ms = peekIdleMs(), wait = ms > 0 ? peekIdle(t, ms) : 0;
+      if (wait > 0) {
+        const r = vm.sched.park(t, () => w.hasMessage(t, hf, min, max), wait, 'peek');
+        if (r === PARK) return PARK; // (the call runs again once woken: that is the bout's latest call)
+        t.peekIdle.lastPeek = vm.clock.now(); // (a nested wait, over: the bout's latest moment)
+        return 0;
+      }
+      if (++w.idleSpins > 64) { w.idleSpins = 0; vm.sched.yieldFrom(c.thread); vm.clock.tick?.(0.1); }
+      return 0;
+    }
+    if (c.thread.peekIdle) { const st = c.thread.peekIdle; st.streak = 0; st.polled = false; st.endAt = -1; st.sinceWait = -1; } // (a message: the polling's timing chain restarts)
     w.idleSpins = 0;
     w.writeMsg(p, m);
     return 1;

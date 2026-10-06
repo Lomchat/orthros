@@ -582,7 +582,7 @@ export class Vm {
     const def = t.def;
     const ctx = this.ctx.bind(thread, def);
     const sp = cpu.esp;
-    this.apiCalls++;
+    this.apiCalls++; thread.apiCalls++;
     if (globalThis.ORTHROS_STACK_PATTERN && !this.stackPatSeen) this.stackPatternCheck(thread, t, sp);
     if ((sp & 3) && !this.warnedMisaligned) { this.warnedMisaligned = true; this.warn(`misaligned ESP ${sp.toString(16)} at API call ${t.dll}!${t.name}\n` + this.crashReport(thread, 'misaligned stack')); }
     if (this.apiHistCounts) { if (idx >= this.apiHistCounts.length) { const n = new Uint32Array(Math.max(idx + 1, this.apiHistCounts.length * 2)); n.set(this.apiHistCounts); this.apiHistCounts = n; } this.apiHistCounts[idx]++; }

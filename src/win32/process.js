@@ -46,6 +46,8 @@ export class Thread {
     this.topLevel = false; // running as a top-level slice (blocking calls unwind, see sched.js)
     this.wait = null; // parked wait { cond, deadline, reason }
     this.wakeResult = undefined; // result handed to the re-executed blocking call
+    this.apiCalls = 0; // API calls dispatched to JavaScript (user32 PeekMessage: the polling it does between them)
+    this.peekIdle = null; // (user32.js peekIdle: the thread's message-loop polling)
     this.wakeValue = undefined; // what the wait's claim took at wake-up time (wait result code)
     this.yieldRequested = false;
     this.baseDepth = -1;

@@ -55,6 +55,12 @@ export function registerDirectSound(api, vm) {
   // rolloff), sound cones, and a stereo pan from the direction relative to the listener; Doppler is not rendered.
   // Settings applied with DS3D_DEFERRED wait for CommitDeferredSettings.
   const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
+  // (diagnostic log lines — creation, first plays and unlocks with a sample of the contents — for the first DIAG_BUFFERS
+  // buffers only: a game creating or duplicating a buffer per sound played would otherwise log several lines per frame)
+  const DIAG_BUFFERS = 32;
+  /** a copy of a listener's or a 3D buffer's parameters (numbers and { x, y, z } vectors; structuredClone costs µs) */
+  const clone3d = (o) => { const r = {}; for (const k in o) { const v = o[k]; r[k] = typeof v === 'object' && v !== null ? vec(v.x, v.y, v.z) : v; } return r; };
+  let diagBuffers = 0;
   const readVec = (a) => vec(mem.readF32(a), mem.readF32(a + 4), mem.readF32(a + 8));
   const writeVec = (a, v) => { mem.writeF32(a, v.x); mem.writeF32(a + 4, v.y); mem.writeF32(a + 8, v.z); };
   const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
@@ -99,7 +105,7 @@ export function registerDirectSound(api, vm) {
     /** a setter: applied now, or kept until CommitDeferredSettings */
     set(c, applyArg, fn) {
       const l = listener();
-      if (c.arg(applyArg) & DS3D_DEFERRED) { l.deferred ??= structuredClone(l.now); fn(l.deferred); return DS_OK; }
+      if (c.arg(applyArg) & DS3D_DEFERRED) { l.deferred ??= clone3d(l.now); fn(l.deferred); return DS_OK; }
       fn(l.now); if (l.deferred) fn(l.deferred); republish3d(); return DS_OK;
     }
     GetAllParameters(c) {
@@ -136,7 +142,7 @@ export function registerDirectSound(api, vm) {
     get st() { return this.b.ds3d.deferred ?? this.b.ds3d.now; }
     set(c, applyArg, fn) {
       const d = this.b.ds3d;
-      if (c.arg(applyArg) & DS3D_DEFERRED) { d.deferred ??= structuredClone(d.now); fn(d.deferred); return DS_OK; }
+      if (c.arg(applyArg) & DS3D_DEFERRED) { d.deferred ??= clone3d(d.now); fn(d.deferred); return DS_OK; }
       fn(d.now); if (d.deferred) fn(d.deferred); this.b.publish(); return DS_OK;
     }
     GetAllParameters(c) {
@@ -218,6 +224,8 @@ export function registerDirectSound(api, vm) {
       this.iids = [IID_IDirectSoundBuffer, IID_IDirectSoundBuffer8];
       this.stoppedEvents = [];
       this.slot = -1; this.gen = 0;
+      this.diagOn = !this.primary && bytes > 0 && ++diagBuffers <= DIAG_BUFFERS;
+      if (diagBuffers === DIAG_BUFFERS + 1 && !this.primary && bytes > 0) vm.log('audio', `dsound: ${DIAG_BUFFERS} buffers created, the next ones not logged`);
       // 3D parameters (DS3DBUFFER defaults) of a DSBCAPS_CTRL3D secondary buffer
       this.ds3d = !this.primary && (flags & DSBCAPS_CTRL3D) ? { now: { pos: vec(), vel: vec(), coneInner: 360, coneOuter: 360, coneOrient: vec(0, 0, 1), coneOutside: 0, min: 1, max: 1e9, mode: DS3DMODE_NORMAL }, deferred: null } : null;
       audio().buffers.add(this);
@@ -350,7 +358,7 @@ export function registerDirectSound(api, vm) {
       this.looping = (flags & DSBPLAY_LOOPING) !== 0;
       if (!this.playing) { this.playing = true; this.lastTime = vm.clock.now() / 1000; this.notifyPos = this.pos; this.mixPos = null; this.gen++; }
       this.publish();
-      if ((this.diag = (this.diag ?? 0) + 1) <= 4) vm.log('audio', `dsound: play ${this.size} bytes ${this.looping ? 'looping' : 'once'} volume ${this.volume} freq ${this.freq} pos ${this.pos} nonzero ${this.nonZero()}`);
+      if (this.diagOn && (this.diag = (this.diag ?? 0) + 1) <= 4) vm.log('audio', `dsound: play ${this.size} bytes ${this.looping ? 'looping' : 'once'} volume ${this.volume} freq ${this.freq} pos ${this.pos} nonzero ${this.nonZero()}`);
       return DS_OK;
     }
     SetCurrentPosition(c) { const p = c.arg(1); if (p >= this.size) return DSERR_INVALIDPARAM; this.pos = p - (p % this.fmt.align); this.posFrac = 0; this.mixPos = null; this.notifyPos = this.pos; this.gen++; this.publish(); return DS_OK; }
@@ -369,7 +377,7 @@ export function registerDirectSound(api, vm) {
     Stop() { if (this.primary) return DS_OK; this.cursor(); if (this.playing) { this.playing = false; this.onStop(); } this.publish(); return DS_OK; }
     Unlock(c) {
       if (this.locks > 0) this.locks--;
-      if ((this.unlockDiag = (this.unlockDiag ?? 0) + 1) <= 6 || this.unlockDiag % 500 === 0) vm.log('audio', `dsound: unlock ${c.arg(2)}+${c.arg(4)} bytes at ${(c.arg(1) - this.mem) >>> 0} (playing ${this.playing} pos ${this.pos}) nonzero ${this.nonZero()}`);
+      if (this.diagOn && ((this.unlockDiag = (this.unlockDiag ?? 0) + 1) <= 6 || this.unlockDiag % 500 === 0)) vm.log('audio', `dsound: unlock ${c.arg(2)}+${c.arg(4)} bytes at ${(c.arg(1) - this.mem) >>> 0} (playing ${this.playing} pos ${this.pos}) nonzero ${this.nonZero()}`);
       return DS_OK;
     }
     /** Diagnostic: number of non-zero bytes in a 4 KB sample spread over the buffer. */
@@ -403,7 +411,7 @@ export function registerDirectSound(api, vm) {
       const b = new Buffer(c.proc, this, flags, bytes - (bytes % fmt.align), fmt);
       if (!b.mem) return DSERR_OUTOFMEMORY;
       mem.write32(pp, com.create(c.proc, this.v8 ? 'IDirectSoundBuffer8' : 'IDirectSoundBuffer', b));
-      vm.log('audio', `dsound: buffer ${bytes} bytes ${fmt.rate} Hz ${fmt.bits}-bit ${fmt.channels}ch flags 0x${flags.toString(16)}`);
+      if (b.diagOn) vm.log('audio', `dsound: buffer ${bytes} bytes ${fmt.rate} Hz ${fmt.bits}-bit ${fmt.channels}ch flags 0x${flags.toString(16)}`);
       return DS_OK;
     }
     GetCaps(c) {
@@ -420,7 +428,7 @@ export function registerDirectSound(api, vm) {
       const b = new Buffer(c.proc, this, src.flags, src.size, src.fmt);
       if (!b.mem) return DSERR_OUTOFMEMORY;
       mem.copy(b.mem, src.mem, src.size);
-      b.volume = src.volume; b.pan = src.pan; b.freq = src.freq; if (src.ds3d) b.ds3d = { now: structuredClone(src.ds3d.now), deferred: null };
+      b.volume = src.volume; b.pan = src.pan; b.freq = src.freq; if (src.ds3d) b.ds3d = { now: clone3d(src.ds3d.now), deferred: null };
       mem.write32(pp, com.create(c.proc, this.v8 ? 'IDirectSoundBuffer8' : 'IDirectSoundBuffer', b));
       return DS_OK;
     }

@@ -181,6 +181,7 @@ const report = (why) => {
   if (globalThis.ORTHROS_SITE_PROF) siteReport();
   if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
   if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
+  for (const t of vm.proc?.threads ?? []) if (t.peekIdle) { const s = t.peekIdle; console.log(`[peekidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms)`); }
   for (const l of vm.peekReport()) console.log(l);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
 };
@@ -208,6 +209,7 @@ if (threadInsns) {
   vm.runThread = (t, o) => { const g0 = vm.guestInsns; try { return runThread(t, o); } finally { if (t.onStack === 0) threadInsns.set(t.id, (threadInsns.get(t.id) ?? 0) + vm.guestInsns - g0); } };
 }
 const dispatch = vm.dispatchThunk.bind(vm);
+let apiSeq = opt('api-seq') ? (([n, at]) => ({ n: Number(n), at: Number(at ?? 0), list: [], fast: 0 }))(opt('api-seq').split('@')) : null;
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
@@ -216,6 +218,14 @@ vm.dispatchThunk = (t, i) => {
   if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = vm.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
+  // --api-seq <n>@<s>: the next n API calls dispatched to JavaScript after s seconds, run-length encoded (thread, name,
+  // and, with --jit-profile, the clock reads the dispatcher's fast path ran in between), printed once recorded — e.g.
+  // a loop polling an API, and what else it calls
+  if (apiSeq && th && performance.now() - t0 >= apiSeq.at * 1000) {
+    const u32 = vm.mem.u32, b = FAST_PROF >>> 2, fast = u32[b + 19] + u32[b + 20] + u32[b + 28], k = `t${t.id} ${th.name}${fast !== apiSeq.fast ? ` [+${fast - apiSeq.fast} fast timer]` : ''}`; apiSeq.fast = fast;
+    const l = apiSeq.list; if (l.length && l[l.length - 1][0] === k) l[l.length - 1][1]++; else l.push([k, 1]);
+    if (--apiSeq.n === 0) { console.log(`[apiseq] ${l.map(([x, c]) => c > 1 ? `${x} x${c}` : x).join('\n  ')}`); apiSeq = null; }
+  }
   if (apiHist && th) { apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1); if (th.name === 'Sleep') { const k = `Sleep(${vm.mem.read32((t.cpu.esp + 4) >>> 0)}) t${t.id} from ${(vm.mem.read32(t.cpu.esp >>> 0) >>> 0).toString(16)}`; apiHist.set(k, (apiHist.get(k) ?? 0) + 1); } }
   if (scenario) {
     scenario.tick();
