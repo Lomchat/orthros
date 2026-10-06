@@ -21,26 +21,37 @@ this server (localhost), where none of this shows.
 `src/vfs/net-link.js` (`NetLink`, one per page, shared by the game's folder and the games it requires):
 
 - **Bandwidth measured** from the transfers themselves: wire bytes (the encoded body: `Content-Length`) over the time
-  the link was busy (concurrent requests count once), less one round trip per busy stretch (the round trip timed on
-  small answers). Kept by the page (`localStorage['orthros.netBw']`) as the next visit's first estimate. Until
-  measured, the link is treated with care (256 KiB requests, one background request at a time).
-- **Demand first**: a background download waits for its turn (`turn(prio, quietMs)`): no game read in flight, the link
-  quiet for the download's own delay, at most `maxBackground()` at once (one per ~4 MB/s of link: one on a thin link).
-  Priorities: a sequential reader's next bytes and the learned pieces just ahead of the game first (its next reads),
-  then the block fill, the learned prefetch, the blocks next to missed ones, the offline copy. A waiting download a
-  parked read now waits for is promoted (it is demand now).
-- **Sizes from the measure**: a background request carries about `BG_SECONDS` (0.35 s) of the link (64 KiB at 85 KB/s,
-  ~0.5 MiB at 1 MB/s, 4 MiB on a fast link); a demand read rounds up by at most `DEMAND_SECONDS` (0.25 s) of the link
-  past what the game asked (a stream's window grows with the stream, within that bound). A file read whole no longer
-  fetches 1-4 MiB blocks synchronously on a link that is not fast: it goes by pieces, its next bytes come ahead in
-  background requests of the link's size (`readAheadParts`, 2 s of the link ahead).
+  the link was busy (concurrent requests count once), less one round trip per busy stretch; the round trip is the
+  shortest time to the first byte of an answer (`firstByte`: when `fetch` resolves, before the body). Kept by the page
+  (`localStorage['orthros.netBw']`) as the next visit's first estimate. Until measured, the link is treated with care
+  (256 KiB requests, two background requests at most).
+- **Three regimes** by the measured rate:
+  - *thin* (below 384 KB/s, the incident's 85 KB/s): the game's reads alone on the link — a background download waits
+    for its turn (`turn(prio, quietMs)`): no game read in flight and the link quiet for the download's own delay;
+  - *between* (384 KB/s to 3 MB/s): background requests go beside the game's reads, the bytes in flight (the game's
+    and the background's) within about `BG_SECONDS` (0.35 s) of the link — a game read waits at most that much longer,
+    and a latency-bound run of small reads (hundreds of sound files at a start) no longer leaves the link idle;
+  - *fast* (3 MB/s and more: 5 MB/s with a 50 ms round trip measures ~3.6-3.9 MB/s): the earlier policies (whole blocks,
+    block fill, several background requests, aborts on demand) — measured as fast or faster there (round trips cost
+    more than bytes).
+- **Priorities** of the background downloads (`PRIO` in `http-backend.js`): a sequential reader's next bytes and the
+  learned pieces just ahead of the game first (its next reads), then the block fill, the learned prefetch, the blocks
+  next to missed ones, the offline copy. A waiting download a parked read now waits for is promoted (it is demand now).
+  Together the background requests in flight carry at most `backgroundBytes()` (about `BG_SECONDS` of the link), up to 8.
+- **Sizes from the measure**: a background request carries about `BG_SECONDS` of the link (64 KiB at 85 KB/s, ~0.4 MiB
+  at 1 MB/s, 4 MiB on a fast link); a demand read rounds up by at most `DEMAND_SECONDS` (0.25 s) of the link past what
+  the game asked (a stream's window grows with the stream, within that bound). A file read whole no longer fetches
+  1-4 MiB blocks synchronously on a link that is not fast: it goes by pieces, its next bytes come ahead in background
+  requests of the link's size (`readAheadParts`, 2 s of the link ahead).
 - **No abort waste**: background requests are small enough to finish (a demand read that comes waits at most their
   rest); only those that would hold the game up longer than 1.5 × `BG_SECONDS` are aborted (sized before the link was
   measured, or the link slowed down); a synchronous read aborts the background requests for the same bytes (the worker
   cannot receive their answers while it waits: they would cross the link twice).
-- **Thin link** (measured below 384 KB/s): no speculative whole blocks — no block fill for a piece read, no "near" blocks, the
-  learned prefetch fetches the learned pieces (the masks: what earlier sessions read) only. A file the game opened and
-  closed again (a movie skipped, a file parsed) is not fetched ahead any more until the game opens it again.
+- **Only what the game needs on a thin link**: no speculative whole blocks — no block fill for a piece read, no "near"
+  blocks, the learned prefetch fetches the learned pieces (the masks: what earlier sessions read) only. On any link that
+  is not fast, a file the game opened and closed again (a movie skipped, a file parsed), or reads as a stream (16 reads
+  and 256 KiB in sequence: a movie, music), is not fetched ahead from the learned order (earlier sessions that played a
+  movie through read all of it; this one may skip it) — a stream's next bytes come ahead of its reader only.
 - **Learned order**: the server's prefetch list (`/api/prefetch/<manifest>`: `[path, block, mask, t]`, sorted by the
   time `t` the earliest sessions needed it) drives the pieces fetched ahead of the game's position in it and the
   background pass; `t` also gives the current step's size (`HttpBackend.stepEstimate`: the learned pieces past the
@@ -48,9 +59,6 @@ this server (localhost), where none of this shows.
 - **Kept**: on a link that is not fast, the pieces themselves go to the OPFS store (keys `path#size#mtime#c<piece>`);
   a block whose pieces are all here is assembled and stored whole (its pieces dropped). A second launch reads them
   locally.
-
-A fast link (measured at 3 MB/s and more: 5 MB/s with a 50 ms round trip measures ~3.9 MB/s) keeps the earlier policies (whole blocks, block fill,
-several background requests, aborts on demand).
 
 ## What the page says
 

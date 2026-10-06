@@ -4,8 +4,10 @@
 // it requires share it.
 //
 // Rules (generic: they depend on the measured link only):
-// - the game's reads (demand) come first: a background download starts only while no demand read is in flight and the
-//   link has been quiet for the download's own delay; the background requests in flight carry at most about
+// - the game's reads (demand) come first: on a thin link (below THIN_BPS) a background download starts only while no
+//   demand read is in flight and the link has been quiet for the download's own delay; between thin and fast it goes
+//   beside them, the bytes in flight (the game's and the background's) within about BG_SECONDS of the link; a fast
+//   link (FAST_BPS and more) keeps the local-network policies. The background requests in flight carry at most about
 //   BG_SECONDS of the link together (several small ones at once — a latency-bound run of small files fills the link —
 //   or one larger one), and at most maxBackground() of them;
 // - a background request carries at most backgroundBytes() (about BG_SECONDS of the link): a demand read that comes
