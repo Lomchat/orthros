@@ -139,6 +139,7 @@ export class Vm {
       presentThread: null, // (the thread that presents frames: d3d8.js Present)
       waitLogMin: 0, mainWaits: null, // (diagnostics: long waits, set by the headless host)
       asyncReads: false, readsInFlight: 0, recentFiles: null, recentReads: null, // (kernel32-file.js)
+      readSliceMs: 2, // (runFor: a slice ends this long after its start once a file read is in flight)
       registry: null, wm: null, winsock: null, lanDeliver: null, textEngine: null, d3dCore: null, d3dx: null,
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
       exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
@@ -223,6 +224,7 @@ export class Vm {
       // (one clock read per slice: it ends the slice's time, starts the next one's and dates the wake-up pass — a
       // thread yielding thousands of times per second made the reads a fifth of the switch)
       let t0 = performance.now();
+      const tStart = t0;
       for (;;) {
         const t = this.sched.pickRunnable(null, true);
         if (t) {
@@ -231,6 +233,8 @@ export class Vm {
           t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)
           this.sched.wakeBlocked(this.clock.at ? this.clock.at(t1) : undefined);
           if (untilMs !== Infinity && t1 >= untilMs) return RUN_RUNNING;
+          // (a file read went to the network during this call: the host's event loop completes it, back to it soon)
+          if (untilMs !== Infinity && this.readsInFlight > 0 && t1 - tStart >= this.readSliceMs) return RUN_RUNNING;
           t0 = t1;
           continue;
         }
