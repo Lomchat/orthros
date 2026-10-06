@@ -5,6 +5,8 @@
 # (default half the CPU count). Otherwise it waits (every 20 s) for a slot.
 # Usage: tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 120 ...
 set -u
+# (no browser while Orthros' scratch is over its disk budget or the disk is too full: CLAUDE.md "Disk budget")
+"$(dirname "$0")/disk-check.sh" -q || exit 3
 max=${ORTHROS_BROWSERS:-3}
 loadmax=${ORTHROS_LOAD_MAX:-$(( $(nproc) / 2 ))}
 while :; do
