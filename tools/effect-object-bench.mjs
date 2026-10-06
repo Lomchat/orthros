@@ -10,7 +10,7 @@
 // --jit: the calls made by guest code run through the JIT instead (frames of generated x86 calling the methods' thunks),
 // the deferred queue drained before every call handled in JavaScript as the VM does — what the queued calls save shows
 // (no drawing: the device's draws are not called). Under `perf stat -e instructions:u`, a measure insensitive to load.
-// Usage: node tools/effect-object-bench.mjs [--base /path/to/other/tree] [--only branch|ref|base] [--jit] [--objects 40] [--frames 1500] [--rounds 7] [--parts 4] [--effects 6] [--run 3]
+// Usage: node tools/effect-object-bench.mjs [--base /path/to/other/tree] [--only branch|ref|base] [--jit [--no-defer]] [--objects 40] [--frames 1500] [--rounds 7] [--parts 4] [--effects 6] [--run 3]
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { effectBinary, shader, op } from '../tests/fx-build.js';
@@ -181,8 +181,10 @@ async function makeJitSession(root) {
   const names = METHODS.map((m) => m.split('::')[1]), argcOf = names.map((m) => ARGC[m]), Mi = Object.fromEntries(names.map((m, i) => [m, i]));
   const cpu = new CpuState(mem, THREAD_STATES_BASE); cpu.reset();
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true }); jit.cpu = cpu;
+  const noDefer = argv.includes('--no-defer'); // (this tree with its technique calls in JavaScript: Jit.setFxDefer)
   const SLOTS = 0x10000100, CODE = 0x20000000, STACK = 0x10090000, THUNK_SIZE = 16, CYCLE = 2, FRAME_BYTES = 1 << 20;
   METHODS.forEach((m, i) => { jit.markFast(i, `com.dll!${m}`, true); mem.write32(SLOTS + 4 * i, THUNK_BASE + i * THUNK_SIZE); });
+  if (noDefer) jit.setFxDefer?.(false);
   const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
   let k = 0;
   for (let fn = 1; fn <= CYCLE; fn++) { // (the frames of frame(), as x86: push the arguments, call [slot])
