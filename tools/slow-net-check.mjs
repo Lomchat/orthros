@@ -49,9 +49,11 @@ export function parseRun(text) {
     else if ((m = /^\[net\] demand (.*)$/.exec(line))) r.net = m[1];
     else if ((m = /^\[input\] first Direct3D frame at (\d+)s/.exec(line))) r.firstFrame = Number(m[1]);
   }
-  // times from the launch: to the menu (end of 'start'), to the first image in game (end of 'load')
-  let t = 0; r.at = {};
-  for (const p of r.phases) { if (p.label === 'play') r.inGame = Math.round(t); t += p.seconds; r.at[p.label] = Math.round(t); }
+  // times from the launch (the page's marks: when the scenario reached them): the menu, the first image in game (the
+  // 'play' mark), and the bytes received by then
+  r.at = {}; r.rx = {};
+  for (const m of (r.marks ?? '').matchAll(/(\w+)@([\d.]+)s(?: \(([\d.]+) MB received\))?/g)) { r.at[m[1]] = Number(m[2]); if (m[3]) r.rx[m[1]] = Number(m[3]); }
+  r.inGame = r.at.play ?? null;
   return r;
 }
 
@@ -86,14 +88,14 @@ async function main() {
       const { text } = await run('bash', argv, path.join(out, `${tag}.txt`));
       const r = parseRun(text);
       rows.push({ tag, speed, ...r, wall: Math.round((Date.now() - t0) / 1000) });
-      console.log(`[slow-net] ${tag}: ${r.outcome ?? 'no bench result'}${r.detail ? ` (${r.detail})` : ''}; first frame ${r.firstFrame ?? '-'} s; ${Object.entries(r.at).map(([k, v]) => `${k} done at ${v} s`).join(', ')}`);
+      console.log(`[slow-net] ${tag}: ${r.outcome ?? 'no bench result'}${r.detail ? ` (${r.detail})` : ''}; first frame ${r.firstFrame ?? '-'} s; ${Object.entries(r.at).map(([k, v]) => `${k} at ${v} s${r.rx[k] !== undefined ? ` (${r.rx[k]} MB received)` : ''}`).join(', ')}`);
       if (r.network) console.log(`[slow-net]   page: ${r.network}`);
       if (r.net) console.log(`[slow-net]   server: demand ${r.net}`);
       if (!args.includes('--keep')) fs.rmSync(tmp, { recursive: true, force: true });
     }
   }
   console.log('\nbench / speed            outcome   1st frame  menu   in game  network (page)');
-  for (const r of rows) console.log(`${r.tag.padEnd(25)}${String(r.outcome ?? '-').padEnd(10)}${String(r.firstFrame ?? '-').padStart(8)} s${String(r.at.start ?? '-').padStart(6)} s${String(r.inGame ?? '-').padStart(7)} s  ${r.network ?? '-'}`);
+  for (const r of rows) console.log(`${r.tag.padEnd(25)}${String(r.outcome ?? '-').padEnd(10)}${String(r.firstFrame ?? '-').padStart(8)} s${String(r.at.menu ?? '-').padStart(6)} s${String(r.inGame ?? '-').padStart(7)} s  ${r.network ?? '-'}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
