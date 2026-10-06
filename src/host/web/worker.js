@@ -336,7 +336,7 @@ function netInfo() {
   const n = netLink.snapshot();
   n.waiting = (vm?.readsInFlight ?? 0) > 0 || !!vm?.frameThreadWaitsForRead?.() || n.demandInFlight > 0;
   n.ratio = Math.round(netLink.ratio() * 100) / 100;
-  const step = primaryFiles?.stepEstimate();
+  const step = n.waiting ? primaryFiles?.stepEstimate() : null; // (only while the game waits: the page shows it then)
   if (step) { n.stepBytes = step.bytes; n.stepWire = Math.round(step.bytes * netLink.ratio()); }
   return n;
 }
