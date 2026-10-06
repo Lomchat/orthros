@@ -33,6 +33,10 @@ export const EFFECT_METHODS = [['GetDesc', 1], ['GetParameterDesc', 2], ['GetTec
 /** ID3DXEffectStateManager methods in vtable order (after IUnknown) */
 const SM = { SetTransform: 3, SetMaterial: 4, SetLight: 5, LightEnable: 6, SetRenderState: 7, SetTexture: 8, SetTextureStageState: 9, SetSamplerState: 10, SetNPatchMode: 11, SetFVF: 12,
   SetVertexShader: 13, SetVertexShaderConstantF: 14, SetVertexShaderConstantI: 15, SetVertexShaderConstantB: 16, SetPixelShader: 17, SetPixelShaderConstantF: 18, SetPixelShaderConstantI: 19, SetPixelShaderConstantB: 20 };
+/** the device methods the effect runtime calls, by number (M.<name>): each resolved once per effect, see Effect.call */
+const DEV_METHODS = ['SetRenderState', 'SetTextureStageState', 'SetSamplerState', 'SetFVF', 'SetNPatchMode', 'LightEnable', 'SetVertexShader', 'SetPixelShader', 'SetTexture', 'SetTransform',
+  'SetVertexShaderConstantF', 'SetVertexShaderConstantI', 'SetVertexShaderConstantB', 'SetPixelShaderConstantF', 'SetPixelShaderConstantI', 'SetPixelShaderConstantB'];
+const M = Object.fromEntries(DEV_METHODS.map((n, i) => [n, i]));
 
 /**
  * @param {Record<string, [number, Function]>} X d3dx9 function table
@@ -72,6 +76,7 @@ export function defineEffects(X, vm, h) {
       this.proc = c.proc; this.dev = dev; this.fx = parsed; this.flags = flags;
       this.strAddrs = new Map();
       this.handles = new Map(); // handle -> node
+      this.handleNodes = []; // (the same by slot: (handle - handleBlock) / 4, see param)
       // (followed by the cache of parameter descriptions the JIT's GetParameterDesc reads: runtime.js FID_PARAM_DESC)
       this.handleBlock = c.proc.processHeap.alloc(DEFER_HANDLE_BYTES + PARAM_DESC_BYTES);
       mem.fill(this.handleBlock + DEFER_HANDLE_BYTES, PARAM_DESC_BYTES, 0);
@@ -86,7 +91,8 @@ export function defineEffects(X, vm, h) {
     }
     handleOf(node) {
       if (!node.handle) {
-        node.handle = this.handleBlock + 4 * (this.nextHandle++ % (DEFER_HANDLE_BYTES / 4)); this.handles.set(node.handle, node);
+        const k = this.nextHandle++ % (DEFER_HANDLE_BYTES / 4);
+        node.handle = this.handleBlock + 4 * k; this.handles.set(node.handle, node); this.handleNodes[k] = node;
         const e = this.descEntry(node.handle); if (mem.read32(e) === node.handle) mem.write32(e, 0); // (a handle given again: its old description gone)
       }
       return node.handle;
@@ -115,7 +121,8 @@ export function defineEffects(X, vm, h) {
     }
     /** a parameter by handle or name ("a", "a.b", "a[2]", "a[2].b"), relative to `parentH` (null: top level) */
     param(h, parentH = 0) {
-      const n = this.handles.get(h >>> 0);
+      const k = (h - this.handleBlock) >>> 0; // (a handle: its slot in handleNodes, no hash lookup)
+      const n = k < DEFER_HANDLE_BYTES && (k & 3) === 0 && !apiOpt.fxRef ? this.handleNodes[k >>> 2] : this.handles.get(h >>> 0);
       if (n) return n.kind === 'param' ? n : null;
       if (!h) return null;
       return this.lookup(mem.readCString(h, 256), parentH ? this.handles.get(parentH >>> 0) : null);
@@ -171,13 +178,19 @@ export function defineEffects(X, vm, h) {
     GetAnnotationByName(c) { const name = c.arg(2) ? mem.readCString(c.arg(2), 256) : ''; const a = this.annotationsOf(c.arg(1)).find((x) => x.name === name); return a ? this.handleOf(a) : 0; }
 
     // ---- values
-    touched(n) { if (this.recording) this.recording.add(n); for (let p = n; p; p = p.parent) p.version = (p.version ?? 0) + 1; this.dirty = true; }
+    touched(n) { if (this.recording) this.recording.add(n); for (let p = n; p; p = p.parent) p.version = (p.version ?? 0) + 1; }
+    /**
+     * A numeric parameter written (`ch`: a word changed): its version moves only on a real change — games set most
+     * parameters again with the values they hold (three writes in four in BFME2 play), and an unmoved version spares
+     * the shader bindings and the preshaders reading it (dbg:ORTHROS_API_OPT_OFF=1: moved at every write, as before).
+     */
+    wrote(n, ch) { if (ch || apiOpt.fxRef) this.touched(n); else if (this.recording) this.recording.add(n); }
     /** set `count` scalars of a numeric parameter from numbers */
-    setNums(n, nums) { if (!n?.words) return D3DERR_INVALIDCALL; const t = this.leafType(n), cnt = Math.min(nums.length, n.words.length); for (let i = 0; i < cnt; i++) n.words[i] = numToWord(t, nums[i]); this.touched(n); return D3D_OK; }
+    setNums(n, nums) { if (!n?.words) return D3DERR_INVALIDCALL; const t = this.leafType(n), cnt = Math.min(nums.length, n.words.length); let ch = false; for (let i = 0; i < cnt; i++) { const w = numToWord(t, nums[i]); if (n.words[i] !== w) { n.words[i] = w; ch = true; } } this.wrote(n, ch); return D3D_OK; }
     getNums(n, count) { const t = this.leafType(n), out = []; for (let i = 0; i < Math.min(count, n.words.length); i++) out.push(wordToNum(t, n.words[i])); return out; }
     SetValue(c) {
       const n = this.param(c.arg(1)), src = c.arg(2), bytes = c.arg(3); if (!n || !src) return D3DERR_INVALIDCALL;
-      if (n.words) { const k = Math.min(bytes >>> 2, n.words.length); for (let i = 0; i < k; i++) n.words[i] = mem.read32(src + 4 * i); this.touched(n); return D3D_OK; }
+      if (n.words) { const k = Math.min(bytes >>> 2, n.words.length), w = n.words; let ch = false; for (let i = 0; i < k; i++) { const x = mem.read32(src + 4 * i); if (w[i] !== x) { w[i] = x; ch = true; } } this.wrote(n, ch); return D3D_OK; }
       if (n.obj && isTextureType(n.type.type)) return this.setTexture(n, mem.read32(src));
       const leaves = n.elements.length ? n.elements : [n];
       leaves.forEach((l, i) => { if (l.obj && 4 * i < bytes) { if (isTextureType(l.type.type)) this.setTexture(l, mem.read32(src + 4 * i)); else l.obj.ptr = mem.read32(src + 4 * i); } });
@@ -203,19 +216,34 @@ export function defineEffects(X, vm, h) {
     SetFloatArray(c) { const nums = []; for (let i = 0; i < c.arg(3); i++) nums.push(mem.readF32(c.arg(2) + 4 * i)); return this.setNums(this.param(c.arg(1)), nums); }
     GetFloatArray(c) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; this.getNums(n, c.arg(3)).forEach((v, i) => mem.writeF32(c.arg(2) + 4 * i, v)); }
     /** a vector (4 floats at `src`) into element leaf `n`: its columns (vector) or all its scalars up to 4 */
-    vecInto(n, src) { const t = this.leafType(n), k = Math.min(4, n.words.length); for (let i = 0; i < k; i++) n.words[i] = numToWord(t, mem.readF32(src + 4 * i)); }
-    SetVector(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.vecInto(n, c.arg(2)); this.touched(n); }
+    vecInto(n, src) {
+      const t = this.leafType(n), k = Math.min(4, n.words.length), w = n.words;
+      let ch = false; // (whether a word changed)
+      if (t === PT.FLOAT && !apiOpt.fxRef) { for (let i = 0; i < k; i++) { const x = mem.read32(src + 4 * i); if (w[i] !== x) { w[i] = x; ch = true; } } return ch; } // (float words as they are: bits kept)
+      for (let i = 0; i < k; i++) { const x = numToWord(t, mem.readF32(src + 4 * i)); if (w[i] !== x) { w[i] = x; ch = true; } }
+      return ch;
+    }
+    SetVector(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.wrote(n, this.vecInto(n, c.arg(2))); }
     GetVector(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; const v = this.getNums(n, 4); for (let i = 0; i < 4; i++) mem.writeF32(c.arg(2) + 4 * i, v[i] ?? 0); }
-    SetVectorArray(c) { const n = this.param(c.arg(1)); if (!n) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; for (let i = 0; i < Math.min(c.arg(3), els.length); i++) this.vecInto(els[i], c.arg(2) + 16 * i); this.touched(n); }
+    SetVectorArray(c) { const n = this.param(c.arg(1)); if (!n) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; let ch = false; for (let i = 0; i < Math.min(c.arg(3), els.length); i++) if (this.vecInto(els[i], c.arg(2) + 16 * i)) ch = true; this.wrote(n, ch); }
     GetVectorArray(c) { const n = this.param(c.arg(1)); if (!n) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; for (let i = 0; i < Math.min(c.arg(3), els.length); i++) { const v = this.getNums(els[i], 4); for (let k = 0; k < 4; k++) mem.writeF32(c.arg(2) + 16 * i + 4 * k, v[k] ?? 0); } }
     /** a 4x4 row-major matrix at `src` (transposed when `tr`) into leaf `n`: its rows x cols top-left block */
-    matInto(n, src, tr) { const t = n.type, rows = Math.max(1, t.rows), cols = Math.max(1, t.cols), lt = this.leafType(n); for (let r = 0; r < rows && r < 4; r++) for (let k = 0; k < cols && k < 4; k++) n.words[r * cols + k] = numToWord(lt, mem.readF32(src + 4 * (tr ? k * 4 + r : r * 4 + k))); }
+    matInto(n, src, tr) {
+      const t = n.type, rows = Math.max(1, t.rows), cols = Math.max(1, t.cols), lt = this.leafType(n), w = n.words;
+      let ch = false; // (whether a word changed)
+      if (lt === PT.FLOAT && !apiOpt.fxRef) { // (float words as they are: bits kept)
+        for (let r = 0; r < rows && r < 4; r++) for (let k = 0; k < cols && k < 4; k++) { const x = mem.read32(src + 4 * (tr ? k * 4 + r : r * 4 + k)), i = r * cols + k; if (w[i] !== x) { w[i] = x; ch = true; } }
+        return ch;
+      }
+      for (let r = 0; r < rows && r < 4; r++) for (let k = 0; k < cols && k < 4; k++) { const x = numToWord(lt, mem.readF32(src + 4 * (tr ? k * 4 + r : r * 4 + k))), i = r * cols + k; if (w[i] !== x) { w[i] = x; ch = true; } }
+      return ch;
+    }
     matOut(n, dst, tr) { const t = n.type, rows = Math.max(1, t.rows), cols = Math.max(1, t.cols), lt = this.leafType(n); for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) { const v = r < rows && k < cols ? wordToNum(lt, n.words[r * cols + k]) : r === k ? 1 : 0; mem.writeF32(dst + 4 * (tr ? k * 4 + r : r * 4 + k), v); } }
-    setMats(c, tr, ptrs) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; const cnt = ptrs ? c.arg(3) : c.arg(3) ?? 1; for (let i = 0; i < Math.min(cnt, els.length); i++) this.matInto(els[i], ptrs ? mem.read32(c.arg(2) + 4 * i) : c.arg(2) + 64 * i, tr); this.touched(n); return D3D_OK; }
+    setMats(c, tr, ptrs) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; const cnt = ptrs ? c.arg(3) : c.arg(3) ?? 1; let ch = false; for (let i = 0; i < Math.min(cnt, els.length); i++) if (this.matInto(els[i], ptrs ? mem.read32(c.arg(2) + 4 * i) : c.arg(2) + 64 * i, tr)) ch = true; this.wrote(n, ch); return D3D_OK; }
     getMats(c, tr, ptrs) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; const els = n.elements.length ? n.elements : [n]; for (let i = 0; i < Math.min(c.arg(3), els.length); i++) this.matOut(els[i], ptrs ? mem.read32(c.arg(2) + 4 * i) : c.arg(2) + 64 * i, tr); return D3D_OK; }
-    SetMatrix(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.matInto(n.elements[0] ?? n, c.arg(2), false); this.touched(n); }
+    SetMatrix(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.wrote(n, this.matInto(n.elements[0] ?? n, c.arg(2), false)); }
     GetMatrix(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.matOut(n.elements[0] ?? n, c.arg(2), false); }
-    SetMatrixTranspose(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.matInto(n.elements[0] ?? n, c.arg(2), true); this.touched(n); }
+    SetMatrixTranspose(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.wrote(n, this.matInto(n.elements[0] ?? n, c.arg(2), true)); }
     GetMatrixTranspose(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; this.matOut(n.elements[0] ?? n, c.arg(2), true); }
     SetMatrixArray(c) { return this.setMats(c, false, false); }
     GetMatrixArray(c) { return this.getMats(c, false, false); }
@@ -247,8 +275,9 @@ export function defineEffects(X, vm, h) {
     SetArrayRange() { return D3D_OK; }
     SetRawValue(c) {
       const n = this.param(c.arg(1)), src = c.arg(2), off = c.arg(3), bytes = c.arg(4); if (!n?.words || !src) return D3DERR_INVALIDCALL;
-      for (let i = 0; i < bytes >>> 2 && (off >>> 2) + i < n.words.length; i++) n.words[(off >>> 2) + i] = mem.read32(src + 4 * i);
-      this.touched(n);
+      let ch = false;
+      for (let i = 0; i < bytes >>> 2 && (off >>> 2) + i < n.words.length; i++) { const x = mem.read32(src + 4 * i), k = (off >>> 2) + i; if (n.words[k] !== x) { n.words[k] = x; ch = true; } }
+      this.wrote(n, ch);
     }
 
     // ---- techniques and passes
@@ -266,7 +295,14 @@ export function defineEffects(X, vm, h) {
     GetStateManager(c) { if (c.arg(1)) mem.write32(c.arg(1), this.stateManager); }
     BeginParameterBlock() { this.recording = new Set(); }
     EndParameterBlock() { if (!this.recording) return 0; const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90)); this.blocks.set(id, [...this.recording].map((n) => ({ n, words: n.words?.slice(), ptr: n.obj?.ptr }))); this.recording = null; return id; }
-    ApplyParameterBlock(c) { const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL; for (const e of b) { if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr); this.touched(e.n); } }
+    ApplyParameterBlock(c) {
+      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL;
+      for (const e of b) {
+        if (e.words && !apiOpt.fxRef) { const w = e.n.words, x = e.words; let ch = false; for (let i = 0; i < x.length; i++) if (w[i] !== x[i]) { w[i] = x[i]; ch = true; } this.wrote(e.n, ch); continue; } // (a version move only for a real change, as the setters)
+        if (e.words) e.n.words.set(e.words); else if (e.n.obj && isTextureType(e.n.type.type)) this.setTexture(e.n, e.ptr);
+        this.touched(e.n);
+      }
+    }
     DeleteParameterBlock(c) { return this.blocks.delete(c.arg(1) >>> 0) ? D3D_OK : D3DERR_INVALIDCALL; }
     CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), createEffect(c, e)); com.addRef(com.objectAt(e.dev)); }
 
@@ -291,9 +327,9 @@ export function defineEffects(X, vm, h) {
     // ---- applying states
     /** the device (or the application's state manager) receiving a state call */
     /** device method `name` with `n` arguments x0..x2 (the state manager's instead when the application set one) */
-    call(c, name, n, x0, x1, x2) {
+    call(c, id, n, x0, x1, x2) {
       if (this.stateManager) {
-        const vt = mem.read32(this.stateManager), fn = mem.read32(vt + 4 * SM[name]);
+        const vt = mem.read32(this.stateManager), fn = mem.read32(vt + 4 * SM[DEV_METHODS[id]]);
         return vm.callGuest(c.thread, fn, [this.stateManager, x0, x1, x2].slice(0, n + 1));
       }
       // (the device's own method, with a reused argument holder: no guest stack, no object per call)
@@ -301,7 +337,14 @@ export function defineEffects(X, vm, h) {
       const fc = this.fastCtx ??= fastCtx(this.dev);
       fc.proc = c.proc; fc.thread = c.thread;
       const a = fc.a; a[1] = x0; a[2] = x1; a[3] = x2; // (a fixed-size holder: a method reads only its own arguments)
-      const r = dev?.[name]?.(fc, this.devObj ??= com.objectAt(this.dev));
+      let r;
+      if (apiOpt.fxRef) r = dev?.[DEV_METHODS[id]]?.(fc, this.devObj ??= com.objectAt(this.dev));
+      else { // (the method found once: no lookup by name per call)
+        const fns = this.devFns ??= new Array(DEV_METHODS.length).fill(undefined);
+        let fn = fns[id];
+        if (fn === undefined) { const m = dev?.[DEV_METHODS[id]]; fn = fns[id] = typeof m === 'function' ? m : null; }
+        if (fn !== null) r = fn.call(dev, fc, this.devObj ??= com.objectAt(this.dev));
+      }
       return r === undefined ? D3D_OK : r;
     }
     /** the device when its own state setters receive the calls and no state block records them, else null */
@@ -337,9 +380,9 @@ export function defineEffects(X, vm, h) {
         return;
       }
       const p = this.scratch(c, 0);
-      if (set === RSET.FLOAT4) { for (let i = 0; i < 4 * count; i++) mem.writeF32(p + 4 * i, vals[vo + i]); this.call(c, vs ? 'SetVertexShaderConstantF' : 'SetPixelShaderConstantF', 3, reg, p, count); }
-      else if (set === RSET.INT4) { for (let i = 0; i < 4 * count; i++) mem.write32(p + 4 * i, vals[vo + i] >>> 0); this.call(c, vs ? 'SetVertexShaderConstantI' : 'SetPixelShaderConstantI', 3, reg, p, count); }
-      else { for (let i = 0; i < count; i++) mem.write32(p + 4 * i, vals[vo + 4 * i] ? 1 : 0); this.call(c, vs ? 'SetVertexShaderConstantB' : 'SetPixelShaderConstantB', 3, reg, p, count); }
+      if (set === RSET.FLOAT4) { for (let i = 0; i < 4 * count; i++) mem.writeF32(p + 4 * i, vals[vo + i]); this.call(c, vs ? M.SetVertexShaderConstantF : M.SetPixelShaderConstantF, 3, reg, p, count); }
+      else if (set === RSET.INT4) { for (let i = 0; i < 4 * count; i++) mem.write32(p + 4 * i, vals[vo + i] >>> 0); this.call(c, vs ? M.SetVertexShaderConstantI : M.SetPixelShaderConstantI, 3, reg, p, count); }
+      else { for (let i = 0; i < count; i++) mem.write32(p + 4 * i, vals[vo + 4 * i] ? 1 : 0); this.call(c, vs ? M.SetVertexShaderConstantB : M.SetPixelShaderConstantB, 3, reg, p, count); }
     }
     /** the shader object with this id (its bytecode in the effect's object table), created once */
     objectShader(id) {
@@ -375,8 +418,14 @@ export function defineEffects(X, vm, h) {
         sh.consts = []; sh.samplers = [];
         for (const e of sh.info.constants) {
           const n = this.lookup(e.name, null); if (!n) continue;
-          if (e.set === RSET.SAMPLER) sh.samplers.push({ n, reg: (sh.vs ? 257 : 0) + e.reg });
-          else { let top = n; while (top.parent) top = top.parent; sh.consts.push({ e, top, ver: -1, plan: this.planOf(n, e.type, e.count, e.set), vals: e.set === RSET.FLOAT4 ? new Float32Array(4 * e.count) : new Int32Array(4 * e.count) }); }
+          if (e.set === RSET.SAMPLER) sh.samplers.push({ n, reg: (sh.vs ? 257 : 0) + e.reg, tbl: null, ver: -1 });
+          else {
+            let top = n; while (top.parent) top = top.parent;
+            const vals = e.set === RSET.FLOAT4 ? new Float32Array(4 * e.count) : new Int32Array(4 * e.count);
+            // (ver: the parameter version vals were filled at; dv: the version last compared with the device's registers
+            // straight from the parameter (all-float plans); u: float registers; vi: vals' raw words)
+            sh.consts.push({ e, top, ver: -1, dv: -1, set: e.set, reg: e.reg, count: e.count, plan: this.planOf(n, e.type, e.count, e.set), vals, u: e.set === RSET.FLOAT4, vi: new Int32Array(vals.buffer) });
+          }
         }
         if (sh.info.preshader) sh.pre = this.programOf(sh.info.preshader);
       }
@@ -387,7 +436,8 @@ export function defineEffects(X, vm, h) {
       const inputs = prog.inputs.map((e) => { const n = this.lookup(e.name, null); if (!n) return null; let top = n; while (top.parent) top = top.parent; return { e, n, top, plan: this.planOf(n, e.type, e.count, e.set) }; }).filter(Boolean);
       let maxReg = 0; for (const i of inputs) maxReg = Math.max(maxReg, i.e.reg + i.e.count);
       const regs = new Float64Array(4 * Math.max(1, maxReg));
-      return { prog, inputs, regs, out: new Float32Array(4 * 256), versions: null, runs: 0, run: compilePreshader(prog, regs.length) };
+      const out = new Float32Array(4 * 256);
+      return { prog, inputs, regs, out, outW: new Int32Array(out.buffer), versions: null, runs: 0, run: compilePreshader(prog, regs.length) };
     }
     /** run a program if one of its inputs changed since its last run (outputs kept otherwise) */
     runProgram(P) {
@@ -459,7 +509,32 @@ export function defineEffects(X, vm, h) {
         }
       };
       if (root) walk(n, ctype);
-      return { root, src, kind };
+      // (allFloat: every component a float word or zero — compared with the registers as raw words, rootW, see
+      // bindShader; a gather by src: matrices by columns take every third or fourth word, no runs to copy)
+      let allFloat = true;
+      for (let i = 0; i < src.length; i++) if (src[i] >= 0 && kind[i] !== 0) allFloat = false;
+      return { root, rootW: root ? new Int32Array(root.buffer, root.byteOffset, root.length) : null, src, kind, allFloat };
+    }
+    // (fill for one output type each, the call sites monomorphic: fillF32, fillI32; fill itself for the preshaders' inputs)
+    /** a plan with integer or bool components into float registers (`out` a Float32Array): as fill */
+    fillF32(plan, out) {
+      const root = plan.root, src = plan.src, kind = plan.kind;
+      for (let i = 0; i < src.length; i++) {
+        const w = src[i];
+        if (w < 0) { out[i] = 0; continue; }
+        const v = root[w], k = kind[i];
+        out[i] = k === 0 ? bitsf(v) : k === 2 ? (v ? 1 : 0) : v | 0;
+      }
+    }
+    /** a plan into integer or bool registers (`out` an Int32Array): as fill */
+    fillI32(plan, out) {
+      const root = plan.root, src = plan.src, kind = plan.kind;
+      for (let i = 0; i < src.length; i++) {
+        const w = src[i];
+        if (w < 0) { out[i] = 0; continue; }
+        const v = root[w], k = kind[i];
+        out[i] = k === 0 ? bitsf(v) : k === 2 ? (v ? 1 : 0) : v | 0;
+      }
     }
     /** values of a plan into `out` from offset `o` (numbers: float bits decoded, ints, bools as 0/1) */
     fill(plan, out, o = 0) {
@@ -476,8 +551,64 @@ export function defineEffects(X, vm, h) {
      * is converted again only when its parameter changed (every write to a parameter or to any part of it moves the
      * version of its top-level parameter, see touched), and compared with the device's registers only when it changed
      * or when some constant of the device's stage (vertex / pixel) changed since this shader's last binding (its version).
+     * Float registers are compared and written as raw words in one pass — bits kept, -0 against +0 or another NaN
+     * payload a change (an upload more, never a value lost) — straight from the parameter's words when every component
+     * is a float word or zero (no copy, no decoding; dv: the parameter version compared last).
      */
     bindShader(c, sh) {
+      if (apiOpt.fxRef || this.stateManager) return this.bindShaderRef(c, sh);
+      const dev = this.devImpl ??= com.implAt(this.dev);
+      if (!dev) return;
+      const vs = sh.vs, regs = vs ? dev.vsConst : dev.psConst;
+      const same = sh.constVersion === (vs ? dev.vsConstVersion : dev.psConstVersion) && sh.constAll === false && sh.constRegs === regs;
+      let ra = vs ? this.vsRegsRaw : this.psRegsRaw; // (the registers' raw words, as Int32Array: kept per register array)
+      if (ra === undefined || ra.f !== regs) { ra = { f: regs, w: new Int32Array(regs.buffer, regs.byteOffset, regs.length) }; if (vs) this.vsRegsRaw = ra; else this.psRegsRaw = ra; }
+      const raw = ra.w, consts = sh.consts;
+      let wrote = false;
+      for (let i = 0; i < consts.length; i++) {
+        const b = consts[i], v = b.top.version ?? 0;
+        if (b.u && b.plan.allFloat) {
+          if (b.dv === v && same) continue;
+          this.setFloatPlan(dev, vs, raw, b.reg, b.count, b.plan);
+          b.dv = v; wrote = true;
+          continue;
+        }
+        if (b.ver !== v) { if (b.u) this.fillF32(b.plan, b.vals); else this.fillI32(b.plan, b.vals); b.ver = v; }
+        else if (same) continue;
+        if (b.u) this.setFloatWords(dev, vs, raw, b.reg, b.count, b.vi, 0);
+        else this.setConsts(c, vs, b.set, b.reg, b.count, b.vals);
+        wrote = true;
+      }
+      const smp = sh.samplers;
+      for (let i = 0; i < smp.length; i++) this.bindShaderSampler(c, dev, smp[i]);
+      const P = sh.pre;
+      if (P) { // (after the constants, as always: its outputs win where they share registers)
+        const runs = P.runs;
+        this.runProgram(P);
+        if (!same || wrote || runs !== P.runs || sh.preRuns !== runs) { const r = P.prog.outRanges; for (let k = 0; k < r.length; k++) this.setFloatWords(dev, vs, raw, r[k][0], r[k][1], P.outW, 4 * r[k][0]); }
+        sh.preRuns = P.runs;
+      }
+      sh.constVersion = vs ? dev.vsConstVersion : dev.psConstVersion; sh.constAll = false; sh.constRegs = regs;
+    }
+    /** float constants (raw words `vals` from index vo, 4 per register) compared with and written into the registers' raw words `dst` */
+    setFloatWords(dev, vs, dst, reg, count, vals, vo) {
+      const o = 4 * reg, n = Math.min(4 * count, dst.length - o);
+      if (n <= 0) return;
+      let changed = false;
+      for (let i = 0; i < n; i++) { const w = vals[vo + i]; if (dst[o + i] !== w) { dst[o + i] = w; changed = true; } }
+      if (changed) { dev.gfx?.constTouched?.(vs ? 0 : 1, o, o + n); dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
+    }
+    /** the float registers of an all-float plan compared with and written from the parameter's words (zeros where it has none) */
+    setFloatPlan(dev, vs, dst, reg, count, plan) {
+      const o = 4 * reg, n = Math.min(4 * count, dst.length - o);
+      if (n <= 0) return;
+      const root = plan.rootW, src = plan.src;
+      let changed = false;
+      for (let i = 0; i < n; i++) { const k = src[i], w = k < 0 ? 0 : root[k]; if (dst[o + i] !== w) { dst[o + i] = w; changed = true; } }
+      if (changed) { dev.gfx?.constTouched?.(vs ? 0 : 1, o, o + n); dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
+    }
+    /** bindShader as it was (dbg:ORTHROS_API_OPT_OFF=1: the reference; and with a state manager) */
+    bindShaderRef(c, sh) {
       const vs = sh.vs;
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const regs = dev ? (vs ? dev.vsConst : dev.psConst) : null;
@@ -514,8 +645,28 @@ export function defineEffects(X, vm, h) {
           return null;
         }).filter(Boolean);
         n.samplerConst = n.samplerOps.every((o) => o.tex !== undefined || o.cst); // (its states constants: see bindSampler)
+        n.samplerTexOps = n.samplerOps.filter((o) => o.tex !== undefined);
       }
       return n.samplerOps;
+    }
+    /**
+     * bindSampler for sampler binding `s` of a shader ({ n, reg }), the device's own setters receiving the calls: the
+     * register's state table it last applied its constant states to (and that table's version) kept on the binding.
+     */
+    bindShaderSampler(c, dev, s) {
+      const n = s.n, reg = s.reg, ops = n.samplerOps ?? this.samplerOpsOf(n);
+      const tbl = n.samplerConst && !dev.recording && dev.samplers !== undefined ? dev.samplers[reg] : undefined;
+      if (tbl !== undefined && s.tbl === tbl && s.ver === tbl.ver) { // (only its texture may differ: the state operations not walked)
+        const t = n.samplerTexOps;
+        for (let i = 0; i < t.length; i++) { const p = t[i].tex?.obj?.ptr ?? 0; if (dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
+        return;
+      }
+      for (let i = 0; i < ops.length; i++) {
+        const o = ops[i];
+        if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
+        else { const v = o.word() >>> 0; if ((dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, M.SetSamplerState, 3, reg, o.type, v); }
+      }
+      if (tbl !== undefined) { s.tbl = tbl; s.ver = tbl.ver; }
     }
     bindSampler(c, n, reg) {
       // (a state the device already holds is not set again: sampler states are re-applied at every pass)
@@ -525,9 +676,14 @@ export function defineEffects(X, vm, h) {
       const tbl = dev !== null && n.samplerConst && !dev.recording && !apiOpt.off ? dev.samplers?.[reg] : undefined;
       const seen = tbl !== undefined ? n.samplerSeen?.[reg] : undefined;
       const skip = seen !== undefined && seen.tbl === tbl && seen.ver === tbl.ver;
+      if (skip) { // (only its texture may differ: the state operations not walked)
+        const t = n.samplerTexOps;
+        for (let i = 0; i < t.length; i++) { const p = t[i].tex?.obj?.ptr ?? 0; if (dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
+        return;
+      }
       for (const o of ops) {
-        if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (!dev || dev.textures[reg] !== p) this.call(c, 'SetTexture', 2, reg, p); }
-        else if (!skip) { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, 'SetSamplerState', 3, reg, o.type, v); }
+        if (o.tex !== undefined) { const p = o.tex?.obj?.ptr ?? 0; if (!dev || dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
+        else if (!skip) { const v = o.word() >>> 0; if (!dev || (dev.samplers?.[reg]?.get(o.type) ?? -1) !== v) this.call(c, M.SetSamplerState, 3, reg, o.type, v); }
       }
       if (tbl !== undefined && !skip) { const sv = (n.samplerSeen ??= [])[reg] ??= { tbl: null, ver: -1 }; sv.tbl = tbl; sv.ver = tbl.ver; }
     }
@@ -552,12 +708,12 @@ export function defineEffects(X, vm, h) {
         switch (cls) {
           // (a state the device already holds is left alone, as its handler would: no call at all — a pass sets its
           // states at every BeginPass)
-          case 'rs': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.rs.get(idx) !== v) this.call(c, 'SetRenderState', 2, idx, v); }; touches = { rs: idx }; break;
-          case 'tss': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.tss[s.index]?.get(idx) !== v) this.call(c, 'SetTextureStageState', 3, s.index, idx, v); }; touches = { tss: [s.index, idx] }; break;
-          case 'samp': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || s.index >= 16 || d.samplers?.[s.index]?.get(idx) !== v) this.call(c, 'SetSamplerState', 3, s.index, idx, v); }; touches = { samp: [s.index, idx] }; break;
-          case 'fvf': f = (c) => this.call(c, 'SetFVF', 1, word()); break;
-          case 'npatch': f = (c) => this.call(c, 'SetNPatchMode', 1, word()); break;
-          case 'lightenable': f = (c) => this.call(c, 'LightEnable', 2, s.index, word()); break;
+          case 'rs': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.rs.get(idx) !== v) this.call(c, M.SetRenderState, 2, idx, v); }; touches = { rs: idx }; break;
+          case 'tss': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || d.tss[s.index]?.get(idx) !== v) this.call(c, M.SetTextureStageState, 3, s.index, idx, v); }; touches = { tss: [s.index, idx] }; break;
+          case 'samp': f = (c) => { const v = word() >>> 0, d = this.plainDev(); if (d === null || s.index >= 16 || d.samplers?.[s.index]?.get(idx) !== v) this.call(c, M.SetSamplerState, 3, s.index, idx, v); }; touches = { samp: [s.index, idx] }; break;
+          case 'fvf': f = (c) => this.call(c, M.SetFVF, 1, word()); break;
+          case 'npatch': f = (c) => this.call(c, M.SetNPatchMode, 1, word()); break;
+          case 'lightenable': f = (c) => this.call(c, M.LightEnable, 2, s.index, word()); break;
           case 'vs': case 'ps': {
             const vsState = cls === 'vs', fixed = this.exprs.has(key) ? null : this.stateShader(ps, k);
             touches = fixed ? { shader: fixed } : { shaderState: k }; // (picked by an expression: one of its array's, see commitEntries)
@@ -565,14 +721,14 @@ export function defineEffects(X, vm, h) {
               const sh = fixed ?? this.stateShader(ps, k);
               if (!sh?.ptr && (this.missing ??= new Set()).size < 32 && !this.missing.has(key)) { this.missing.add(key); vm.log('gfx', `d3dx effect: no ${cls} for technique ${this.techniques[ps.technique]?.name} pass ${ps.index} state ${k}`); }
               const d = this.plainDev(), p = sh?.ptr ?? 0; // (the shader the device already has: no call, its handler would change nothing)
-              if (d === null || ((vsState ? d.vsObj : d.psObj)?.comObject?.ptr ?? 0) !== p) this.call(c, vsState ? 'SetVertexShader' : 'SetPixelShader', 1, p);
+              if (d === null || ((vsState ? d.vsObj : d.psObj)?.comObject?.ptr ?? 0) !== p) this.call(c, vsState ? M.SetVertexShader : M.SetPixelShader, 1, p);
               if (sh) this.bindShader(c, sh);
             };
             break;
           }
-          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, 'SetTexture', 2, s.index, tn?.obj?.ptr ?? 0); touches = { tex: s.index }; break; }
+          case 'texture': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => this.call(c, M.SetTexture, 2, s.index, tn?.obj?.ptr ?? 0); touches = { tex: s.index }; break; }
           case 'sampler': { const ref = this.refs.get(key); const sn = ref ? this.lookup(ref, null) : null; if (sn) { f = (c) => this.bindSampler(c, sn, s.index); touches = { sampler: [sn, s.index] }; } break; }
-          case 'transform': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => { const src = tn ? tn.words : s.value; if (!src) return; const p = this.scratch(c, 2048); for (let i = 0; i < 16; i++) mem.write32(p + 4 * i, src[i] ?? (i % 5 === 0 ? 0x3f800000 : 0)); this.call(c, 'SetTransform', 2, idx + (idx === 256 || idx === 16 ? s.index : 0), p); }; break; }
+          case 'transform': { const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null; f = (c) => { const src = tn ? tn.words : s.value; if (!src) return; const p = this.scratch(c, 2048); for (let i = 0; i < 16; i++) mem.write32(p + 4 * i, src[i] ?? (i % 5 === 0 ? 0x3f800000 : 0)); this.call(c, M.SetTransform, 2, idx + (idx === 256 || idx === 16 ? s.index : 0), p); }; break; }
           case 'const': {
             const ref = this.refs.get(key); const tn = ref ? this.lookup(ref, null) : null;
             const vs = idx.startsWith('vs'), set = idx.includes('b') ? RSET.BOOL : idx.includes('i') ? RSET.INT4 : RSET.FLOAT4;
@@ -664,11 +820,11 @@ export function defineEffects(X, vm, h) {
     restore(c, s) {
       let k = 0;
       const d = this.plainDev(); // (a state the device already holds: no call, as its handler would do nothing)
-      for (let i = 0; i < s.rs.length; i++) { const v = s.vals[k++]; if (d === null || d.rs.get(s.rs[i]) !== v) this.call(c, 'SetRenderState', 2, s.rs[i], v); }
-      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i], v = s.vals[k++]; if (d === null || d.tss[x >> 8]?.get(x & 255) !== v) this.call(c, 'SetTextureStageState', 3, x >> 8, x & 255, v); }
-      for (let i = 0; i < s.tex.length; i++) this.call(c, 'SetTexture', 2, s.tex[i], s.vals[k++]);
-      if (s.vs !== undefined) this.call(c, 'SetVertexShader', 1, s.vs);
-      if (s.ps !== undefined) this.call(c, 'SetPixelShader', 1, s.ps);
+      for (let i = 0; i < s.rs.length; i++) { const v = s.vals[k++]; if (d === null || d.rs.get(s.rs[i]) !== v) this.call(c, M.SetRenderState, 2, s.rs[i], v); }
+      for (let i = 0; i < s.tss.length; i++) { const x = s.tss[i], v = s.vals[k++]; if (d === null || d.tss[x >> 8]?.get(x & 255) !== v) this.call(c, M.SetTextureStageState, 3, x >> 8, x & 255, v); }
+      for (let i = 0; i < s.tex.length; i++) this.call(c, M.SetTexture, 2, s.tex[i], s.vals[k++]);
+      if (s.vs !== undefined) this.call(c, M.SetVertexShader, 1, s.vs);
+      if (s.ps !== undefined) this.call(c, M.SetPixelShader, 1, s.ps);
     }
   }
 

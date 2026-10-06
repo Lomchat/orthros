@@ -2,12 +2,14 @@
 // tools/startbench.mjs --input <file>. Mouse and keyboard events are queued on the headless host as the browser host
 // queues them; `waitframe:min,max` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
 // a phase and prints its guest instructions and the guest category's time per instruction (frame accounting, as the
-// browser's phase reports), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts). Other
+// browser's phase reports), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts), the
+// API-layer switches (dbg:ORTHROS_API_OPT_OFF=1, ORTHROS_FX_BIND_OFF=1...) are set as the browser worker sets them. Other
 // kinds (shot, profile, capture...) are ignored. Times are real seconds from the start, from the anchor after a wait
 // (or `+t` from the first Direct3D frame), as in the harness.
 import { acct, C as ACCT } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
+import { refreshApiOpt } from '../src/core/api-opt.js';
 
 export class NodeScenario {
   /**
@@ -108,6 +110,14 @@ export class NodeScenario {
         if (k === 'ORTHROS_JIT_HEAT' && this.vm.jit) this.log(`[input] dbg ${k}: ${this.vm.jit.collectHeat()} instructions executed`);
         // the visit flags of the translations made so far (opts.visit), added to the heat (Jit.harvestVisits)
         if (k === 'ORTHROS_JIT_HARVEST' && this.vm.jit) this.log(`[input] dbg ${k}: ${this.vm.jit.harvestVisits().length / 2} blocks visited`);
+        // the API-layer switches, as the browser worker sets them (ORTHROS_API_OPT_OFF, ORTHROS_FX_BIND_OFF, ...: src/core/api-opt.js)
+        if (/^ORTHROS_(API_OPT_OFF|FX_BIND_OFF|GL_NOCACHE|D3DX_FAST_OFF|API_FAST_OFF)$/.test(k)) {
+          globalThis[k] = v === undefined || v === '' ? undefined : Number(v);
+          refreshApiOpt();
+          if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') this.vm.jit?.setD3dxFast?.(!globalThis[k]);
+          if (k === 'ORTHROS_API_FAST_OFF') this.vm.setApiFastPaths?.(!globalThis[k]);
+          this.log(`[input] dbg ${k}=${v ?? ''}`);
+        }
         break;
       }
       case 'mark': this.mark(ev.args[0], t); break;
