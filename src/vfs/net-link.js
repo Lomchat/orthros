@@ -21,7 +21,7 @@ export const DEMAND_SECONDS = 0.25;
 /** at or above this rate (bytes/s, measured) the link is "fast": the earlier policies (whole blocks, block fill, aborts) apply — measured at 5 MB/s with a 50 ms round trip, they reach the menu and the game sooner there (round trips cost more than bytes) */
 export const FAST_BPS = 3 << 20;
 /** below this rate (bytes/s) the link is "thin": no speculative whole blocks in the background (see thin()) */
-export const THIN_BPS = 1536 << 10;
+export const THIN_BPS = 384 << 10;
 const MIN_BG = 64 << 10, MAX_BG = 4 << 20;
 /** request size bound while the link is not measured yet */
 const UNKNOWN_BG = 256 << 10;
@@ -56,9 +56,13 @@ export class NetLink {
     this.bgFlights = new Set();
     /** turns given to background downloads that have not begun their request yet (times given) */
     this.reserved = [];
+    /** the game's reads in flight (their tokens) */
+    this.demandFlights = new Set();
   }
   /** background requests in flight or about to be (turns given within the last 500 ms) */
   bgCount() { const now = this.now(); while (this.reserved.length && now - this.reserved[0].t > 500) this.reserved.shift(); return this.inflight.bg + this.reserved.length; }
+  /** file bytes of the game's reads in flight */
+  demandBytes() { let n = 0; for (const t of this.demandFlights) n += t.bytes; return n; }
   /** file bytes of the background requests in flight or about to be */
   bgBytes() { let n = 0; for (const t of this.bgFlights) n += t.bytes; for (const r of this.reserved) n += r.bytes; return n; }
 
@@ -87,7 +91,7 @@ export class NetLink {
     const t = { kind, t0: this.now(), bytes, abort, range };
     if (this.inflight.demand + this.inflight.bg === 0) { this.busySince = t.t0; this.winIdleStarts++; }
     this.inflight[kind]++;
-    if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); }
+    if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); } else this.demandFlights.add(t);
     return t;
   }
   /**
@@ -98,7 +102,7 @@ export class NetLink {
     if (t.ended) return; t.ended = true;
     const now = this.now(), ms = now - t.t0;
     this.inflight[t.kind]--;
-    if (t.kind === 'bg') this.bgFlights.delete(t);
+    if (t.kind === 'bg') this.bgFlights.delete(t); else this.demandFlights.delete(t);
     if (this.inflight.demand + this.inflight.bg === 0 && this.busySince !== null) { this.winBusy += now - this.busySince; this.busySince = null; }
     if (t.kind === 'demand') { this.lastDemandEnd = now; this.totals.demandMs += ms; }
     if (ok) {
@@ -163,7 +167,11 @@ export class NetLink {
     // (together the background requests carry about BG_SECONDS of the link: one at least)
     if (n > 0 && !this.fast() && this.bgBytes() + bytes > this.backgroundBytes()) return false;
     if (this.fast()) return quietMs <= 0 || this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
-    return this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
+    // (a thin link: the game's reads alone on it, then a quiet time; between thin and fast: beside them, the bytes in
+    // flight — the game's and the background's — within about BG_SECONDS of the link: a game read waits at most that
+    // long more, and the round trips of a run of small reads no longer leave the link idle)
+    if (this.thin()) return this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
+    return n + this.inflight.demand === 0 || this.bgBytes() + this.demandBytes() + bytes <= this.backgroundBytes();
   }
   /**
    * Wait for a background download's turn: `prio` orders the waiting ones (lower first), `quietMs` the time since the
