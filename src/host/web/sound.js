@@ -108,7 +108,9 @@ export function audioVerdict(records) {
     peak: max('peak'), play: max('play'), bufs: max('bufs'), dec: max('dec'), resumes: max('resumes'), changes: max('changes'),
     err: rs.find((r) => r.err)?.err ?? null, mix: rs.findLast((r) => r.mix)?.mix ?? null,
   };
-  const verdict = f.err && !ran.length ? 'error' : !ran.length ? 'suspended' : f.out !== null && f.out < 1000 ? 'stalled' : f.peak > 0 ? 'ok' : f.play > 0 ? 'silent' : 'quiet';
+  // (the level while the context ran: the worker mixes into the ring before the first click too — a peak then was never heard)
+  const heard = Math.max(0, ...ran.map((r) => r.peak ?? 0));
+  const verdict = f.err && !ran.length ? 'error' : !ran.length ? 'suspended' : f.out !== null && f.out < 1000 ? 'stalled' : heard > 0 ? 'ok' : f.play > 0 ? 'silent' : 'quiet';
   return { verdict, ...f };
 }
 

@@ -36,10 +36,6 @@ const dbToGain = (v) => (v <= -10000 ? 0 : Math.pow(10, v / 2000));
  */
 export const VOICE_BASE = 16, VOICE_INTS = 16, MAX_VOICES = 128, VOICE_TABLE_BYTES = 4 * (VOICE_BASE + VOICE_INTS * MAX_VOICES);
 
-/**
- * @param {import('./api.js').ApiRegistry} api
- * @param {import('../core/vm.js').Vm} vm
- */
 /** the secondary buffers of `audio` (the process' mixer, vm.audio) playing now (the primary has no storage: it is the mix) */
 export function audioPlaying(audio) {
   let n = 0;
@@ -47,6 +43,10 @@ export function audioPlaying(audio) {
   return n;
 }
 
+/**
+ * @param {import('./api.js').ApiRegistry} api
+ * @param {import('../core/vm.js').Vm} vm
+ */
 export function registerDirectSound(api, vm) {
   const mem = vm.mem, com = vm.com;
   com.interface('IDirectSound', IID_IDirectSound, 'IUnknown', [['CreateSoundBuffer', 3], ['GetCaps', 1], ['DuplicateSoundBuffer', 2], ['SetCooperativeLevel', 2], ['Compact', 0], ['GetSpeakerConfig', 1], ['SetSpeakerConfig', 1], ['Initialize', 1]]);

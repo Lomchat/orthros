@@ -142,6 +142,7 @@ test('audioVerdict: what the summaries say about a session\'s sound', async () =
   assert.equal(audioVerdict([rec({ out: 0 })]).verdict, 'stalled');
   assert.equal(audioVerdict([rec({ peak: 0 })]).verdict, 'silent');
   assert.equal(audioVerdict([rec({ peak: 0, play: 0 })]).verdict, 'quiet');
+  assert.equal(audioVerdict([rec({ ctx: 'suspended', run: 0, out: 0, peak: 0.4 }), rec({ peak: 0 })]).verdict, 'silent', 'a level mixed before the first click (never heard) is not sound reaching the output');
   const v = audioVerdict([rec({ ctx: 'suspended', run: 0, out: 0, peak: 0 }), rec({ run: 0.5, resumes: 1, changes: 1 }), rec({ dec: 2 })]);
   assert.equal(v.verdict, 'ok'); assert.equal(v.states, 'suspended/running'); assert.equal(v.run, 0.5); assert.equal(v.out, 44100); assert.equal(v.dec, 2); assert.equal(v.resumes, 1);
   assert.match(audioText(v), /^sound: OK — context suspended\/running @44100 Hz, running 50% .* 2 audio decoder failure/);
