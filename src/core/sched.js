@@ -221,7 +221,7 @@ export class Scheduler {
     let idleSince = -1;
     // (for the host's frame accounting: a wait for a file read — this thread's, or one another thread's read holds up,
     // or while the thread presenting frames waits for one — is not the game's pacing)
-    const ioReason = reason === 'file read' || reason === 'file busy' || (this.vm.readsInFlight > 0 && reason !== 'sleep' && reason !== 'mmtimer');
+    const ioReason = reason === 'file read' || reason === 'file busy' || (this.vm.readsInFlight > 0 && reason !== 'sleep' && reason !== 'mmtimer' && reason !== 'peek'); // (peek: PeekMessage polling waits, user32.js peekIdle — pacing)
     const io = () => ioReason || !!this.vm.frameThreadWaitsForRead?.();
     const note = (ms) => { const k = `t${thread.id} ${reason}${io() ? ' (io)' : ''}`, m = (this.vm.nestedWaitLog ??= new Map()); if (m.size < 64 || m.has(k)) m.set(k, (m.get(k) ?? 0) + ms); }; // (diagnostics: who waits nested, for what)
     for (;;) {

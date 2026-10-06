@@ -44,7 +44,9 @@ would not pay there. Windows would burn a core the same way; here it burns the e
 accounting charged it as work.
 
 **Decision.** An empty `PeekMessage` that is part of such polling waits instead of spinning: after 64 empty calls in a
-row (each within 50 µs of the previous one, at most one other JavaScript API call of the thread between them) with no
+row (each within 50 µs of the previous one, at most one other JavaScript API call of the thread and 4096 guest
+instructions between them — Vice City's polling runs 64-127; a loop pumping messages between small chunks of computation
+with no API call is work, not polling, and is not slowed down) with no
 other thread runnable, the call parks the thread (woken early by a message), and again every 8 calls while the
 polling goes on — to the guest, an OS preempting a spinning thread. So that it is never made late: the times at which
 the thread's bouts of polling ended (its next frame) give the shortest interval between them; the thread waits (at most

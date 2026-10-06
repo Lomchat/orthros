@@ -120,3 +120,16 @@ test('PeekMessage: no wait with ORTHROS_PEEK_IDLE_MS=0, nor when other calls com
     assert.equal(env.clock.now(), t0);
   }
 });
+
+test('PeekMessage: a loop pumping messages between small chunks of guest work (no API call) is not slowed down', { skip }, () => {
+  for (const [chunkMs, insns] of [[0.005, 5000], [0.02, 20000], [0.049, 50000]]) {
+    const env = setup(), t0 = env.clock.now(), n = 20000;
+    for (let i = 0; i < n; i++) { env.peek(); env.clock.t += chunkMs; env.vm.guestInsns += insns; }
+    assert.ok(Math.abs(env.clock.now() - t0 - n * chunkMs) < 1e-6, `${chunkMs} ms chunks: ${(env.clock.now() - t0).toFixed(1)} ms for ${(n * chunkMs).toFixed(1)}`);
+    assert.equal(env.th.peekIdle.parks, 0);
+  }
+  // a polling loop of ~100 guest instructions per call still waits
+  const env = setup();
+  for (let i = 0; i < 2000; i++) { env.peek(); env.clock.t += 0.001; env.vm.guestInsns += 100; }
+  assert.ok(env.th.peekIdle.parks > 0);
+});

@@ -868,7 +868,8 @@ export function registerUser32(api, vm) {
   // Message-loop polling: a thread calling PeekMessage over and over with no message to get (a frame limiter waiting
   // for its clock to reach the next frame: tens of thousands of calls per frame, no other API call between them but
   // its clock reads) would burn the worker. After PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN empty calls in a row, each within
-  // 50 µs of the previous one with at most one other JS API call of the thread between them, and no other thread
+  // 50 µs of the previous one with at most one other JS API call of the thread and PEEK_IDLE_INSNS guest instructions
+  // between them (Vice City's polling: 64-127; a loop doing small chunks of work between its calls is not polling), and no other thread
   // runnable, the call waits (or until a message arrives), and again after every PEEK_IDLE_AGAIN calls while the
   // polling goes on — what an OS preempting a spinning thread looks like to it.
   // How long, so that the waits do not make the guest late: the times at which the last bouts of polling ended (the
@@ -880,13 +881,20 @@ export function registerUser32(api, vm) {
   // peekIdleMs() long (default 0.25 ms; ORTHROS_PEEK_IDLE_MS=0: never wait). A bout that ended right after a wait may
   // have ended during it: its interval counts up to the start of that wait (shorter: more spinning, never later).
   const PEEK_IDLE_STREAK = 56, PEEK_IDLE_AGAIN = 8, PEEK_IDLE_MARGIN = 0.4, PEEK_IDLE_AFTER = 0.5;
+  const PEEK_IDLE_INSNS = 4096; // (guest instructions between two calls of the polling, at most)
   const PEEK_IDLE_MAX = 2; // (2 ms: the browser worker waits in Atomics.wait; longer waits go back to its event loop and its timers)
   const peekIdleMs = () => { const v = globalThis.ORTHROS_PEEK_IDLE_MS; return v === undefined || v === '' ? 0.25 : Number(v); };
   /** An empty PeekMessage of `t`: how long it should wait (ms, 0: not at all; see above). */
   const peekIdle = (t, ms) => {
     const st = t.peekIdle ??= { streak: 0, last: -1, lastPeek: -1, lastApi: 0, polled: false, waitAt: -1, waitEnd: -1, sinceWait: -1, over: 0, endAt: -1, ivs: [], predEnd: -1,
-      parks: 0, longParks: 0, ends: 0, cut: 0, near: 0, late: 0, lateMs: 0 };
-    const now = vm.clock.now(), own = t.apiCalls - st.lastApi <= 2;
+      parks: 0, longParks: 0, ends: 0, cut: 0, near: 0, late: 0, lateMs: 0, insns: 0, loose: 0 };
+    const now = vm.clock.now(), own = t.apiCalls - st.lastApi <= 2, insns = vm.guestInsns - st.insns;
+    // (polling, not work: a few guest instructions since the previous call — a loop pumping messages between small
+    // chunks of computation, none calling an API, is not slowed down; the call after a wait, other threads ran)
+    const tight = own && (st.waitEnd >= 0 || insns <= PEEK_IDLE_INSNS);
+    if (globalThis.ORTHROS_PEEK_INSNS_HIST && own && st.waitEnd < 0) { const h = (st.hist ??= new Array(33).fill(0)); h[32 - Math.clz32(insns)]++; }
+    if (own && !tight && st.streak >= PEEK_IDLE_STREAK) st.loose++;
+    st.insns = vm.guestInsns;
     if (st.waitEnd >= 0) { const o = now - st.waitEnd; if (own) st.over = Math.max(o > 0 ? o : 0, st.over * 0.995); st.waitEnd = -1; } // (the call after a wait, none between)
     if (!own) {
       // the end of a bout of empty calls: when it was polling, the time of its last call
@@ -903,7 +911,7 @@ export function registerUser32(api, vm) {
       st.polled = false; st.sinceWait = -1;
     }
     // (the call after a wait goes on with the run when it comes within 0.2 ms of the wait's planned end)
-    st.streak = own && now - st.last < (st.streak >= PEEK_IDLE_STREAK ? 0.2 : 0.05) ? st.streak + 1 : 0;
+    st.streak = tight && now - st.last < (st.streak >= PEEK_IDLE_STREAK ? 0.2 : 0.05) ? st.streak + 1 : 0;
     st.last = now; st.lastPeek = now; st.lastApi = t.apiCalls;
     if (st.sinceWait >= 0) st.sinceWait++;
     if (st.streak < PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN) return 0;
