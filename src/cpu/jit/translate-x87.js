@@ -261,23 +261,27 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   // the exponent field of s outside [2, 0x7fe] (zero, denormal, the lowest normal binade, infinite, NaN)
   const pushOutOfRange = () => { c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00200000).sub().i32(0x7fd00000).ge_u(); };
   const pushMasked = () => { c.get(L_I64A).i64(~0x1fffffffn).i64and().f64reinterpret_i64().set(L_F64D); };
-  if (narrowOps && (op === 1 || op === 6 || op === 7)) {
+  const exactProduct = narrowOps && (op === 1 || op === 6 || op === 7);
+  if (exactProduct) {
     pushOutOfRange(); c.hint(false).br_if(cold);
     pushMasked();
     c.br(done);
   } else {
+    // (not hinted: results on the grid — exact sums of values with few significant bits, zeros — are common in some
+    // code, and an out-of-line path costs them a jump there and back)
     const grid = c.block();
-    c.get(L_I64A).wrap().i32(0x1fffffff).and().eqz().hint(false).br_if(grid);
+    c.get(L_I64A).wrap().i32(0x1fffffff).and().eqz().br_if(grid);
     pushOutOfRange(); c.hint(false).br_if(cold);
     pushMasked();
     c.br(done);
-    c.end(); // grid: s on the 24-bit grid
-    pushOutOfRange(); c.br_if(cold);
+    c.end(); // grid: s on the 24-bit grid — a zero as computed (+0 for x - x), or itself when in range and exact
     c.get(L_F64C).set(L_F64D);
-    pushExactOnGridAt(E, op); c.br_if(done);
+    c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done);
+    pushOutOfRange(); c.hint(false).br_if(cold);
+    pushExactOnGridAt(E, op); c.hint(true).br_if(done);
   }
   c.end(); // cold
-  c.get(L_F64C).set(L_F64D).get(L_F64C).f64c(0).f64eq().br_if(done); // a zero as computed: +0 for x - x
+  if (exactProduct) c.get(L_F64C).set(L_F64D).get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // a zero as computed
   E.stepExit(insn);
   c.end(); // done
   c.get(L_F64D);
@@ -338,14 +342,15 @@ function pushExactOnGrid(E, op) {
  */
 function pushTwoSumExact(E, op) {
   const c = E.c;
-  // TwoSum: s = x + y computed; err = (x - (s - (s - x))) + (y - (s - x)) with y = B (add), -B (sub), and x = B, y = -A (subr)
+  // TwoSum: s = x + y computed; err = (x - (s - (s - x))) + (y - (s - x)) with y = B (add), -B (sub), and x = B, y = -A
+  // (subr) — for a negated y written err = (x - (s - bb)) - (|y| + bb): the same values (negation is exact and rounding to
+  // nearest symmetric) without the sign flip's constant
   const [x, y, negY] = op === 0 ? [L_F64A, L_F64B, false] : op === 4 ? [L_F64A, L_F64B, true] : [L_F64B, L_F64A, true];
-  const pushY = () => { c.get(y); if (negY) c.f64neg(); };
   // bb = s - x (in L_F64B's place would clobber an operand: computed twice instead)
   const pushBB = () => { c.get(L_F64C).get(x).f64sub(); };
   c.get(x); c.get(L_F64C); pushBB(); c.f64sub(); c.f64sub(); // x - (s - bb)
-  pushY(); pushBB(); c.f64sub(); // y - bb
-  c.f64add().f64c(0).f64eq();
+  c.get(y); pushBB(); if (negY) c.f64add().f64sub(); else c.f64sub().f64add(); // - (|y| + bb) / + (y - bb)
+  c.f64c(0).f64eq();
 }
 /**
  * i32 1 when the f64 result s (L_F64C, on the 24-bit grid, its exponent field at least 2) of operation `op` on L_F64A /
