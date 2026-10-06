@@ -214,8 +214,10 @@ export class BrowserHost {
    * file read (frame accounting: `ioWait`, else `wait` — the game's pacing).
    */
   waitEvent(ms, io = false) {
-    const t = Math.min(ms, 50);
+    let t = Math.min(ms, 50);
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
+    // (deferrable work of the worker done in the wait first — the game waits anyway: see idleWork in worker.js)
+    if (this.idleWork && t >= 1) { const t0 = performance.now(), p = acct.enter(ACCT.host); this.idleWork(t); acct.leave(p); t = Math.max(0, t - (performance.now() - t0)); }
     const ap = acct.enter(io ? ACCT.ioWait : ACCT.wait);
     const t0 = acct.stamp();
     Atomics.wait(this.ctl, CTL.WAKE, 0, t);

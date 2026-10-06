@@ -105,7 +105,11 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   the whole JIT / CPU suites under `ORTHROS_JIT_RANDOM_HEAT=<seed>` (a quarter of the addresses "never ran"): every
   result matches, only assertions on region structure differ.
   The heat comes from the translations' **visit flags** (`visit`: one byte per block address not already known to
-  have run, `VisitSlots`, set at the block's entry; `Jit.harvestVisits` every 10 s in the page worker), learned per
+  have run, `VisitSlots`, set at the block's entry; harvested every 10 s in the page worker by `Jit.harvestVisitsStep`:
+  a pass over the regions with flags not seen set yet only — consumed entries leave their region's list, a region with
+  none leaves the pass's list — cut into ≤ 1 ms steps run while the guest waits (pump sleeps, nested waits), the
+  mapping to module + offset and the posts cut the same way; `RangeHeat.merge` sorts only the new ranges and merges
+  them linearly, see below), learned per
   game by the server (`/api/heat/<manifest>`, module + offset ranges, `heat-<manifest>.json` in the learn directory)
   and applied as modules load, to the background translator as well. An x87-mode version repeats its first version's
   blocks (`onlyBlocks`), the heat having possibly grown since. The persistent translated-code cache (docs/startup.md)
@@ -124,6 +128,18 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
     > 40 ms per minute 81 vs 101; BFME2 3.46 vs 3.62 (−4.5 %), 31 vs 59; BFME2 first launch 87.0 vs 97.3 s.
   - Harvest cost (Node micro-benchmark, 100 000 regions of 7 flagged blocks): ~13 ms per call while flags stay pending,
     ~75 ms for a call reporting 230 000 blocks — once per 10 s on the game thread.
+    In play that was a 15-50 ms host stall exactly every 10 s in every game (the walk over every region's flags, the
+    merge re-sorting all ranges with a closure comparator — 5-15 ms at 26-40 k ranges, paid again by the background
+    translator —, the post's JSON). Now incremental (2026-10-06): merge at 40 k ranges + 2 k new 5.2-5.9 → 0.7 ms,
+    + 50 new 4.9 → 0.12 ms (Node); a synthetic pass over 30 000 regions × 40 flags 64-82 ms in one call → steps of at
+    most 1.2-1.5 ms; in the browser the longest step 0.7-2 ms (pass end, mapping + post up to ~3 ms at load). Browser
+    pairs run together (`--gl-discard`, phases scenarios, play phase), main / branch: host-dominated frames > 40 ms at
+    a 10.0 s period 3.3-4.4 → 0 per minute (BFME1, 3 pairs), 4.5-5.9 → 0 (BFME2, 4 pairs), 1.8-4.0 → 0 (RotWK, 4
+    pairs); frames > 40 ms per minute BFME1 4/6/5 → 1/1/0 (bound, visit flags off: 1); BFME2 33/15/14/49 →
+    16/24/11/60 and RotWK 70/65/168 → 77/99/179 (main with the flags off: 65 vs 80) follow the guest work per frame,
+    which varies by up to 15 % between sessions of the same scenario (6.4-7.0 M instructions per frame for main alone).
+    Same heat as before once a pass completes (tests/jit-heat-harvest.test.js: randomized against copies of the old
+    harvest and merge).
   - The first sessions' heat was learned with one flag per block of each region: ~680 000 blocks for ~200 000 addresses
     exhausted the 320 KB flag area halfway, the heat missed half the code that ran (1.0 instead of 2.0 MiB for RotWK),
     and the next sessions left out edges they do take (RotWK then neutral in the browser). Fixed (one byte per address).

@@ -404,8 +404,9 @@ function gapEnd() {
  * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), in steps of about `budgetMs`: a harvest
  * pass every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges
  * them), one per step — a whole pass at once was a 15-50 ms stall every 10 s, its post alone 5-20 ms for 20-40 k
- * blocks. The steps run while every guest thread waits (heatSlack: the time before the next wake-up, which frames do
- * not wait for), or after the slice when no such wait came for a second (heatDue).
+ * blocks. The steps run while the guest waits (heatSlack: every thread asleep until a wake-up, or a nested wait in an
+ * API — BrowserHost.waitEvent —: time frames do not wait for), or after the slice when no such wait came for a
+ * second (heatDue).
  * (timing: the longest step of each kind of the pass, logged with it)
  */
 const heatPost = { pairs: null, at: 0, n: 0, posts: 0, passAt: 0, lastAt: 0, dueAt: 0, mod: null, steps: 0, slack: 0, max: { harvest: 0, end: 0, map: 0 } };
@@ -418,7 +419,7 @@ function heatDue(now) {
   if (now - Math.max(h.dueAt, h.lastAt) > 1000) heatStep(now, 1);
 }
 /** a step in a wait of the guest threads (`ms` before the next wake-up) */
-function heatSlack(ms) { const now = performance.now(); if (ms >= 2 && heatWork(now)) { heatPost.slack++; heatStep(now, Math.min(1, ms - 1)); } }
+function heatSlack(ms) { const now = performance.now(); if (ms >= 1 && heatWork(now)) { heatPost.slack++; heatStep(now, Math.min(1, 0.6 * ms)); } }
 function heatStep(now, budgetMs) {
   const t0 = performance.now(), h = heatPost;
   h.lastAt = t0;
@@ -489,6 +490,7 @@ function pump() {
   if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
   acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.host);
   host.audioHook ??= () => { const p = acct.enter(ACCT.audio); host.renderAudio(vm); acct.leave(p); };
+  host.idleWork ??= heatSlack; // (a nested wait of the guest: the heat harvest's steps, see heatSlack)
   const now = acct.stamp();
   pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (programSink && (host.gfx.programCache.learned.length || host.gfx.programCache.used.length) && now - programsPostedAt > 5000) { programsPostedAt = now; programSink(host.gfx.programCache.learned.splice(0), host.gfx.programCache.used.splice(0)); }
