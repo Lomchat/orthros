@@ -1,4 +1,4 @@
-// x87 arithmetic producing a NaN (translate-x87.js nanF32 / nanF64): settled inline with the interpreter's rule — the
+// x87 arithmetic producing a NaN (fpmath-x87cold.js emitNanF32 / emitNanF64): settled with the interpreter's rule — the
 // NaN operand quieted (of two, the larger significand, the positive one on a tie; a signaling one raises IE), the
 // indefinite and IE for an invalid operation — without leaving the region for an interpreter step: float operands
 // under 24-bit precision (registers in float shadows), double operands (m64) under 24-bit precision when the NaN is a

@@ -1,4 +1,4 @@
-// x87 NaN results settled inline (translate-x87.js nanF32 / nanF64) under the control words jit-x87-nan-f32.test.js
+// x87 NaN results settled in the region (fpmath-x87cold.js emitNanF32 / emitNanF64, called as kernels) under the control words jit-x87-nan-f32.test.js
 // does not cover: IE unmasked (ES set), directed rounding (the f32 fast paths are for round-to-nearest), 64-bit
 // precision; and registers loaded from m64 (signaling double NaNs held in registers). Bits of the result and the status
 // word compared with the interpreter's for every operand pair.

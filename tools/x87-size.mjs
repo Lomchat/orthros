@@ -5,12 +5,19 @@
 // code bytes per region (V8's --print-wasm-code, eager TurboFan compilation with branch hints honoured, as in Chrome).
 // Usage: node tools/x87-size.mjs [--ab <root>] [--cw 0x7f,0x27f,...] [--cases a,b] [--disasm <case>@<cw>]
 //   --ab <root>: also measure the src tree under <root> (e.g. a worktree of an earlier revision) and print both
-//   --disasm <case>@<cw>: print the machine code of that region (this tree)
-import { spawnSync } from 'node:child_process';
+//   --disasm <case>@<cw>: print the machine code of that region (this tree); --liftoff: Liftoff's code, not TurboFan's
+//        node tools/x87-size.mjs --modules <dir>: the region modules a game run dumped (startbench --mix with
+//   ORTHROS_X87_DUMP=<dir>, tools/jit-mix.mjs: <dir>/new and <dir>/old, the same regions translated both ways),
+//   compiled the same way: WASM and machine code totals, per-region ratios
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const SELF = fileURLToPath(import.meta.url);
+// --liftoff: the baseline tier's code instead of TurboFan's (what a region runs before it tiers up)
+const TIER = process.argv.includes('--liftoff') ? ['--liftoff', '--no-wasm-tier-up'] : ['--no-liftoff'];
 const ROOT = path.join(path.dirname(SELF), '..');
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
@@ -51,6 +58,17 @@ const CWS = (opt('--cw', '0x7f,0x27f,0x37f,0xc7f')).split(',').map((x) => parseI
 const ONLY = opt('--cases', null)?.split(',');
 const ARITH = /^(fadd|faddp|fiadd|fmul|fmulp|fimul|fsub|fsubp|fisub|fsubr|fsubrp|fisubr|fdiv|fdivp|fidiv|fdivr|fdivrp|fidivr)$/;
 
+if (args[0] === '--child-modules') {
+  // compile every module of a directory (V8 prints each function's code: parsed by the parent)
+  let ms = 0;
+  for (const f of fs.readdirSync(args[1]).filter((x) => x.endsWith('.wasm')).sort()) {
+    const b = fs.readFileSync(path.join(args[1], f)), t0 = performance.now();
+    new WebAssembly.Module(b);
+    ms += performance.now() - t0;
+  }
+  process.stderr.write(`X87TIME ${ms}\n`);
+  process.exit(0);
+}
 if (args[0] === '--child') {
   // (run under V8's code printing flags: translate every case, compile the modules eagerly, report the WASM side on stderr)
   const root = args[1];
@@ -89,7 +107,7 @@ if (args[0] === '--child') {
 }
 
 function measure(root, disasm) {
-  const r = spawnSync(process.execPath, ['--no-liftoff', '--no-wasm-lazy-compilation', '--experimental-wasm-branch-hinting', '--print-wasm-code', SELF, '--child', root, ...args],
+  const r = spawnSync(process.execPath, [...TIER, '--no-wasm-lazy-compilation', '--experimental-wasm-branch-hinting', '--print-wasm-code', SELF, '--child', root, ...args],
     { encoding: 'utf8', maxBuffer: 1 << 30 });
   if (r.status !== 0) throw new Error(`child failed: ${r.stderr}`);
   const line = r.stderr.split('\n').find((l) => l.startsWith('X87SIZE '));
@@ -107,6 +125,46 @@ function measure(root, disasm) {
   for (const row of rows) row.machine = machine.get(row.fname)?.size ?? NaN;
   if (disasm) { const [c, w] = disasm.split('@'); const f = `r_${c}_${parseInt(w, 16).toString(16)}`; console.log(machine.get(f)?.text.join('\n') ?? `no ${f}`); }
   return rows;
+}
+
+/** machine code size by function name of every module in `dir` (streamed: V8's listing of thousands of regions is large) */
+function compileDir(dir) {
+  return new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, [...TIER, '--no-wasm-lazy-compilation', '--experimental-wasm-branch-hinting', '--print-wasm-code', SELF, '--child-modules', dir], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const sizes = new Map(); let cur = null;
+    readline.createInterface({ input: c.stdout }).on('line', (l) => {
+      if (l.startsWith('name: ')) cur = l.slice(6).trim();
+      else if (cur && l.startsWith('Instructions (size = ')) { sizes.set(cur, parseInt(l.slice(21), 10)); cur = null; }
+    });
+    c.on('exit', (code) => (code === 0 ? resolve(sizes) : reject(new Error(`compile ${dir}: exit ${code}`))));
+  });
+}
+if (opt('--modules', null)) {
+  const dir = opt('--modules');
+  const res = {};
+  for (const v of ['old', 'new']) {
+    const d = path.join(dir, v), files = fs.readdirSync(d).filter((x) => x.endsWith('.wasm'));
+    const sizes = await compileDir(d);
+    res[v] = new Map(files.map((f) => [f, { wasm: fs.statSync(path.join(d, f)).size, code: sizes.get(f.slice(0, -5)) ?? NaN }]));
+  }
+  const both = [...res.new.keys()].filter((f) => res.old.has(f) && Number.isFinite(res.old.get(f).code) && Number.isFinite(res.new.get(f).code));
+  const sum = (v, k) => both.reduce((s, f) => s + res[v].get(f)[k], 0);
+  const ratios = (k) => both.map((f) => res.new.get(f)[k] / res.old.get(f)[k]).sort((a, b) => a - b);
+  const q = (a, p) => a[Math.min(a.length - 1, Math.floor(p * a.length))];
+  // --time: compilation time of each set (no code printing), alternated old / new, 3 rounds, the fastest round of each
+  if (args.includes('--time')) {
+    const t = { old: [], new: [] };
+    for (let k = 0; k < 3; k++) for (const v of ['old', 'new']) {
+      const r = spawnSync(process.execPath, [...TIER, '--no-wasm-lazy-compilation', '--experimental-wasm-branch-hinting', SELF, '--child-modules', path.join(dir, v)], { encoding: 'utf8', maxBuffer: 1 << 26 });
+      t[v].push(parseFloat(/X87TIME (\S+)/.exec(r.stderr)?.[1] ?? 'NaN'));
+    }
+    console.log(`compilation (${TIER.join(' ')}, eager): old ${Math.min(...t.old).toFixed(0)} ms -> new ${Math.min(...t.new).toFixed(0)} ms (rounds: old ${t.old.map((x) => x.toFixed(0)).join(' ')}, new ${t.new.map((x) => x.toFixed(0)).join(' ')})`);
+  }
+  for (const k of ['wasm', 'code']) {
+    const o = sum('old', k), n = sum('new', k), r = ratios(k);
+    console.log(`${k === 'wasm' ? 'WASM module bytes ' : 'machine code bytes'}: ${both.length} x87 regions, old ${(o / 1048576).toFixed(2)} MiB (${(o / both.length / 1024).toFixed(1)} KiB per region) -> new ${(n / 1048576).toFixed(2)} MiB (${(n / both.length / 1024).toFixed(1)} KiB), ${(100 * (n / o - 1)).toFixed(1)} %; per-region ratio p10 ${q(r, 0.1).toFixed(2)} median ${q(r, 0.5).toFixed(2)} p90 ${q(r, 0.9).toFixed(2)}`);
+  }
+  process.exit(0);
 }
 
 const disasm = opt('--disasm', null);

@@ -926,6 +926,9 @@ class Emitter {
     // x87 arithmetic's cold paths: 'call' — a call to the runtime's kernels (fpmath-x87cold.js) on the hinted-unlikely
     // path; 'inline' — the same code emitted in every instruction (the earlier translation, for measurement)
     this.x87Cold = opts.x87Cold ?? JIT_DEFAULTS.x87Cold;
+    // exits rotate the x87 stack locals to shift 0 like in-region transfers (the earlier exits, for measurement): see
+    // x87ExitState
+    this.x87ExitRotate = !!(opts.x87ExitRotate ?? JIT_DEFAULTS.x87ExitRotate);
     this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
@@ -1159,11 +1162,12 @@ class Emitter {
     // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
     // raises the access violation)
     c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
-    // hash lookup: L_T2 = home slot, L_TA = entry address of the probe being tested
-    const found = c.block();
-    c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T2);
+    // hash lookup: home slot in L_T2 (L_T3 in the shared exit tail, where L_T2 holds the exit kind and the x87 stack
+    // was already written back), L_TA = entry address of the probe being tested
+    const found = c.block(), home = flush ? L_T2 : L_T3;
+    c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(home);
     for (let p = 0; p < HASH_PROBES; p++) {
-      c.get(L_T2); if (p) c.i32(p).add();
+      c.get(home); if (p) c.i32(p).add();
       c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
       c.i32load(0).get(L_TV).eq().br_if(found);
     }
@@ -1302,7 +1306,7 @@ class Emitter {
    */
   x87ExitState() {
     const saved = { shift: this.stShift, f32: this.f32Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
-    if (this.opts.x87ExitRotate ?? JIT_DEFAULTS.x87ExitRotate) { this.x87Normalize(); return saved; } // (measurement: the earlier exits)
+    if (this.x87ExitRotate) { this.x87Normalize(); return saved; } // (measurement: the earlier exits)
     this.materializeF32();
     this.f32Mask = 0;
     this.xmmShadowSync(this.xsDirty);
@@ -1409,7 +1413,7 @@ class Emitter {
     const c = this.c;
     if (!this.usesX87) return; // (other regions never change TOP)
     this.flushX87Regs(); this.flushX87Tags();
-    c.get(L_STATE).get(L_TOP); if (exit) c.get(L_XSH).add().i32(7).and(); c.i32store8(ST.FPU_TOP);
+    c.get(L_STATE).get(L_TOP); if (exit && !this.x87ExitRotate) c.get(L_XSH).add().i32(7).and(); c.i32store8(ST.FPU_TOP);
   }
   /**
    * TOP <- 0 (MMX access, EMMS, FNINIT). In an x87 region the logical locals must follow the

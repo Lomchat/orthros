@@ -3,6 +3,9 @@
 // which instructions run, how many stores are checked for self-modifying code (not addressed by ESP), how long the
 // blocks are, how often the code leaves its region. Used by tools/startbench.mjs --mix.
 import { decode, OP, OP_NAMES, OT } from '../src/cpu/decoder.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { translateRegion, buildRegionModule } from '../src/cpu/jit/translate.js';
 
 const READS_FIRST = new Set(['CMP', 'TEST', 'BT', 'JMP', 'CALL', 'PUSH', 'FLD', 'FILD', 'FBLD', 'FCOM', 'FCOMP', 'FICOM', 'FICOMP', 'FUCOM', 'FUCOMP',
   'FADD', 'FSUB', 'FSUBR', 'FMUL', 'FDIV', 'FDIVR', 'FIADD', 'FISUB', 'FISUBR', 'FIMUL', 'FIDIV', 'FIDIVR', 'FLDCW', 'FLDENV', 'FRSTOR', 'FXRSTOR',
@@ -93,6 +96,24 @@ export function jitMix(jit) {
 }
 
 /**
+ * ORTHROS_X87_DUMP=<dir> (with --mix): every live x87 region's module written to <dir>/new (as translated now) and to
+ * <dir>/old (the same region translated with the x87 options of the earlier code: cold paths inline, rotating exits,
+ * separate exit tails) — the game's own x87 regions, compiled afterwards by tools/x87-size.mjs --modules <dir> for
+ * their machine code.
+ */
+const X87_DUMP = globalThis.process?.env?.ORTHROS_X87_DUMP ?? null;
+const X87_OLD = { x87Cold: 'inline', x87ExitRotate: true, exitShare: false };
+function dumpX87Region(jit, r, code) {
+  const name = `x_${(r.entry >>> 0).toString(16)}_${r.fpc ?? 'g'}_${r.fnIdx}`; // (unique: versions share their entry)
+  for (const [sub, c] of [['new', code], ['old', null]]) {
+    const d = path.join(X87_DUMP, sub); fs.mkdirSync(d, { recursive: true });
+    let body = c;
+    if (!body) { try { body = translateRegion(jit.mem, r.entry, { ...jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false, ...X87_OLD }).code; } catch { return; } }
+    fs.writeFileSync(path.join(d, name + '.wasm'), buildRegionModule([body], [name]));
+  }
+}
+
+/**
  * Static shape of the translated code: every live region translated again under the listing (src/cpu/jit/listing.js),
  * its WASM operations counted per guest instruction kind and per part (prologue, block ends, epilogue: exits, chaining)
  * — with `counts`, weighted by the block executions too. What the code generator spends its operations on.
@@ -112,6 +133,7 @@ export function jitShape(jit, listRegion, max = 4000) {
     try { L = listRegion(jit.mem, r.entry, { ...jit.translateOpts(r.fnIdx, r.fpc), blockCounts: false }, { counts: jit.blockCounts(r), ops: false }); } catch { continue; }
     regions++; bytes += L.result.code.length;
     const isX87 = L.groups.some((g) => g.block >= 0 && !g.head && !g.tail && /^f/.test(g.label.trim().split(/\s+/)[1] ?? ''));
+    if (isX87 && X87_DUMP) dumpX87Region(jit, r, L.result.code);
     if (isX87) {
       x87.regions++; x87.bytes += L.result.code.length;
       for (const g of L.groups) {

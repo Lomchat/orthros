@@ -57,6 +57,19 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   last target and target changes (translate.js siteProf, three counters per site address in the block-counter area):
   totals by kind, how many sites make 90 % of the exits, the share at sites whose target changes in less than 5 % of
   the exits. `--jit-profile` also lists the fast-path API calls the dispatcher ran in WASM, by API.
+- **Code size of x87 regions** — `tools/x87-size.mjs [--ab <root>] [--cw 0x7f,...] [--disasm <case>@<cw>]`: small
+  regions shaped like compiler x87 output (the x87loop-bench loops, double and register operands) translated under
+  several control words: WASM operations per x87 arithmetic instruction, WASM body bytes and TurboFan machine code bytes
+  per region (V8's `--print-wasm-code`, eager TurboFan, branch hints honoured), against another src tree with `--ab`.
+  On a game: `startbench --mix` prints the x87 regions apart (`[shape] x87 regions: ...`), and with
+  `ORTHROS_X87_DUMP=<dir>` writes every live x87 region's module translated now and with the earlier x87 options
+  (`<dir>/new`, `<dir>/old`); `x87-size.mjs --modules <dir>` compiles both sets for their machine code.
+- **Hot-path cost of one region** — x87loop-bench's loops under `perf record -e cycles:u,instructions:u` with
+  `node --perf-prof --no-liftoff`, `perf inject -j`, the `JS:r_*` symbols' periods divided by the iterations: host
+  instructions per iteration are steady on a loaded machine where cycles and wall time are not. x87loop-bench itself
+  does not set `--experimental-wasm-branch-hinting`: without it V8 keeps the cold paths inline and a call on one of them
+  costs spills on the hot path (one of its loops measured +17-24 % that way, -4 % with the flag) — set the flag
+  (tools/node-wasm-flags.mjs) for anything meant to stand for Chrome.
 
 ## Where the time goes
 
@@ -398,6 +411,47 @@ Review re-measure (one more concurrent RotWK pair, `--gl-discard`, same learned 
 2.74 ns per instruction (−8.3 %), frames > 40 ms per minute 40 / 81, p99 47.5 / 57.1 ms; menu 2.71 / 3.07 (−11.5 %).
 An unparsable `?jitopts` is now reported (`[warn] jitopts ignored`), and `tools/headless.mjs --jit-opts` refuses
 one that is not JSON.
+
+## x87 regions: the size of the arithmetic (2026-10-06)
+
+In BFME1's map load the x87 arithmetic was ~10 % of the instructions executed but ~38 % of the translated code's
+weight: 212 WASM operations per FMUL, 177-186 per FSUB / FADD / FADDP, against 15 per MOV. The hot path of an operation
+in 24-bit round-to-nearest mode is short (the f32 operation and one exponent test; for double operands the f64
+operation, two integer tests and a demotion); the rest was the exact cold paths, inline in every instruction: the x87
+NaN rule (nanF32 / nanF64, ~75 operations), the 24-bit midpoint settlement from double operands (TwoSum / Dekker, ~70),
+the zero and infinity exactness tests, and a step exit that rotated the eight stack locals. Three changes (translation
+options for measurement, defaults on):
+
+- **Cold paths as runtime kernels** (`x87Cold: 'call'`; `'inline'` is the earlier code): fpmath-x87cold.js emits the
+  cold code once per operation code in three kernels of the runtime module — `x87ArithF32` (float operands: exact
+  zero / infinity, NaN rule), `x87RoundF32` (double operands: infinity, midpoint, NaN that is a float), `x87NanArith`
+  (53 / 64-bit precision: NaN rule, IE) — from the same emitters that still produce the inline form, so both run the
+  same operations on the same values. The region calls them on the branch-hinted path (TurboFan's deferred code: the
+  spills around the call are made there, not on the hot path — checked in the machine code and by host instructions
+  per iteration, below); what stays inline is what is frequent: the exponent / midpoint tests, a zero result (a product
+  by zero is common in 3D code), and for double operands the midpoints of float operands (sums of floats one exponent
+  apart land on one half the time). Removing the duplicated midpoint test from the cold path also lets TurboFan fuse
+  the hot path's compare and branch (it materialized the shared condition with setcc / movzx / test before).
+- **Exits without rotating the x87 stack** (`x87ExitRotate: false`; Emitter.x87ExitState): local L_ST0+k holds physical
+  register (L_TOP + k) & 7 whatever the block's pending shift, so an exit writes the shadows back and applies the tag
+  changes but leaves the locals where they are; the shift travels in L_XSH (the unused L_T8 renamed: 0 on every path
+  that does not set it, since a path setting it leaves) and the exit block stores TOP = (L_TOP + L_XSH) & 7. An exit in
+  the middle of a block that pushed (step exits of the arithmetic, SMC checks after FSTP, budget exits) no longer
+  emits the 30-operation rotation.
+- **One exit tail** (`exitShare`, every region): the jump exits (chained or not) and the code exits (step, time slice,
+  SMC, x87 mode) share one copy of the flushes — the x87 stack was written back three times in each x87 region's
+  epilogue (chained path, jump exit, code exit), the registers twice; L_T2 = -1 marks a jump exit, which tries the
+  chain first (the hash probe's home slot moves to L_T3 there).
+
+Exactness: tests/jit-x87-cold.test.js — operands of every class (zeros, float and double denormals, the float range's
+edges, overflowing / underflowing products, infinities, quiet and signaling NaNs of both signs, payloads that fit a
+float or not, midpoints from 0.9 / 0.1 / 1/3 / 2^-24+2^-60) through float, double and register operands under
+control words 0x7f, 0x47f, 0xc7f, 0x27f, 0x37f and without the float representation (ORTHROS_NO_F32): the kernels
+and the inline code give the same bits, status word and interpreter steps, and the interpreter's results; random
+floats times / plus / minus non-float doubles in a loop (the Dekker / TwoSum path); exits with a pending shift (SMC
+exit, step exit, time slices) against the interpreter and the rotating exits from TOP 0, 3, 7. Mutations caught: the
+exit block ignoring L_XSH, the wrong operation code passed to x87RoundF32. With the earlier options the translator
+emits the base commit's code (tools/x87-size.mjs: the same WASM and machine-code sizes for all 36 regions).
 
 ## Measured, not kept
 
