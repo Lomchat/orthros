@@ -182,7 +182,7 @@ async function start(m) {
     }).catch(() => {}).finally(() => {
       fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { regionQueue = list; log('file', `regions: ${list.length} learned from earlier sessions, translated ${bgTranslator ? 'ahead in a background worker' : 'while the game waits'}`); } }).catch(() => {});
     });
-    heatSink = (list) => fetch(heatUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ heat: list }) }).catch(() => {});
+    heatSink = (body) => fetch(heatUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {}); // (body: JSON { heat: [[module, offset, length], ...] })
     regionSink = (list, covered) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regions: list, covered }) }).catch(() => {});
   }
   // VFS: system dirs in memory, game folder over HTTP, profile in memory (mirrored to OPFS)
@@ -401,37 +401,42 @@ function gapEnd() {
   gap.cat = -1;
 }
 /**
- * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), at most ~1 ms per pump: a harvest pass every
- * 10 s, cut into steps, then its blocks mapped to module + offset (also cut) and posted.
+ * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), about 1-2 ms per pump at most: a harvest pass
+ * every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges them),
+ * one per pump: a whole pass at once was a 15-50 ms stall every 10 s, its post alone 5-20 ms for 20-40 k blocks.
+ * (timing: the longest step of each kind of the pass, logged with it)
  */
-const heatPost = { pairs: null, at: 0, list: [], passAt: 0, mod: null, maxMs: 0, steps: 0, passes: 0 };
+const heatPost = { pairs: null, at: 0, n: 0, posts: 0, passAt: 0, mod: null, steps: 0, max: { harvest: 0, end: 0, map: 0 } };
 function heatStep(now) {
   const t0 = performance.now(), h = heatPost;
+  let kind;
   if (!h.pairs && (vm.jit.harvestAt > 0 || now - h.passAt >= 10000)) {
     if (!vm.jit.harvestAt) h.passAt = now;
     h.pairs = vm.jit.harvestVisitsStep(1); h.at = 0; h.mod = null; h.steps++;
-    if (h.pairs) h.passes++;
+    kind = h.pairs ? 'end' : 'harvest';
   } else if (h.pairs) {
-    const pairs = h.pairs, list = h.list;
+    kind = 'map';
+    const pairs = h.pairs, out = [];
     let i = h.at;
     for (; i < pairs.length; i += 2) {
-      if ((i & 511) === 0 && i > h.at && performance.now() - t0 >= 1) break;
+      if ((i & 127) === 0 && i > h.at && performance.now() - t0 >= 0.5) break;
       const a = pairs[i];
       let mod = h.mod;
       if (!mod || a < mod.base || a >= mod.base + mod.size) mod = h.mod = vm.proc.moduleByAddr(a);
-      if (mod && pairs[i + 1] <= mod.base + mod.size) list.push([mod.name.toLowerCase(), a - mod.base, pairs[i + 1] - a]);
+      if (mod && pairs[i + 1] <= mod.base + mod.size) out.push(`[${JSON.stringify(mod.name.toLowerCase())},${a - mod.base},${pairs[i + 1] - a}]`);
     }
     h.at = i;
+    if (out.length) { heatSink(`{"heat":[${out.join(',')}]}`); h.n += out.length; h.posts++; }
     if (i >= pairs.length) {
       h.pairs = null;
-      if (list.length) { // (passes 10 s apart: a post each)
-        heatSink(list); h.list = [];
-        log('jit', `heat: ${list.length} blocks posted (harvest: ${h.passes} passes in ${h.steps} steps, longest ${h.maxMs.toFixed(2)} ms per pump; ${vm.jit.visitRegions.length} regions with flags left)`);
-        h.maxMs = 0; h.passes = h.steps = 0;
-      }
+      const dt = performance.now() - t0; if (dt > h.max.map) h.max.map = dt;
+      const m = h.max;
+      if (h.n) log('jit', `heat: ${h.n} blocks posted in ${h.posts} requests (pass in ${h.steps} steps; longest step: harvest ${m.harvest.toFixed(2)} ms, pass end ${m.end.toFixed(2)} ms, mapping and post ${m.map.toFixed(2)} ms; ${vm.jit.visitRegions.length} regions with flags left)`);
+      h.n = h.posts = h.steps = 0; h.max = { harvest: 0, end: 0, map: 0 };
+      return;
     }
   }
-  const dt = performance.now() - t0; if (dt > h.maxMs) h.maxMs = dt;
+  if (kind) { const dt = performance.now() - t0; if (dt > h.max[kind]) h.max[kind] = dt; }
 }
 function pump() {
   if (!running || stopped) return;
