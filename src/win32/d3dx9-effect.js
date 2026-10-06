@@ -122,7 +122,7 @@ export function defineEffects(X, vm, h) {
      * and the bindings read nodes of every parameter at the same sites, which stay monomorphic with one shape for all.
      */
     buildParam(type, value, annotations, path, parent = null, flags = 0, words = null) {
-      const node = { kind: 'param', name: type.name, semantic: type.semantic, type, flags, parent, handle: 0, version: 0, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null,
+      const node = { kind: 'param', name: type.name, semantic: type.semantic, type, leaf: leafTypeOf(type), flags, parent, handle: 0, version: 0, annotations: [], elements: [], members: [], words: null, obj: null, samplerStates: null,
         samplerOps: null, samplerConst: false, samplerTexOps: null, samplerSeen: null };
       const count = Math.max(1, type.elements);
       if (type.cls === PC.OBJECT) {
@@ -163,7 +163,7 @@ export function defineEffects(X, vm, h) {
     }
     tech(h) { const n = this.handles.get(h >>> 0); if (n) return n.kind === 'technique' ? n : null; if (!h) return null; const name = mem.readCString(h, 256); return this.techniques.find((t) => t.name === name) ?? null; }
     passOf(tech, h) { const n = this.handles.get(h >>> 0); if (n) return n.kind === 'pass' ? n : null; if (!h) return null; const name = mem.readCString(h, 256); return tech?.passes.find((p) => p.name === name) ?? null; }
-    leafType(p) { let t = p.type; while (t.cls === PC.STRUCT && t.members.length) t = t.members[0]; return t.type; }
+    leafType(p) { return p.leaf; }
 
     // ---- descriptions
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, gstr(this, 'Orthros D3DX')); mem.write32(p + 4, this.params.length); mem.write32(p + 8, this.techniques.length); mem.write32(p + 12, 0); }
@@ -209,6 +209,13 @@ export function defineEffects(X, vm, h) {
     wrote(n, ch) { if (ch || apiOpt.fxRef) this.touched(n); else if (this.recording) this.recording.add(n); }
     /** set `count` scalars of a numeric parameter from numbers */
     setNums(n, nums) { if (!n?.words) return D3DERR_INVALIDCALL; const t = this.leafType(n), cnt = Math.min(nums.length, n.words.length); let ch = false; for (let i = 0; i < cnt; i++) { const w = numToWord(t, nums[i]); if (n.words[i] !== w) { n.words[i] = w; ch = true; } } this.wrote(n, ch); return D3D_OK; }
+    /** setNums of one number (SetBool / SetInt / SetFloat: no array per call) */
+    setNum(n, v) {
+      if (n === null || n.words === null) return D3DERR_INVALIDCALL;
+      const w = n.words; let ch = false;
+      if (w.length !== 0) { const x = numToWord(n.leaf, v); if (w[0] !== x) { w[0] = x; ch = true; } }
+      this.wrote(n, ch); return D3D_OK;
+    }
     getNums(n, count) { const t = this.leafType(n), out = []; for (let i = 0; i < Math.min(count, n.words.length); i++) out.push(wordToNum(t, n.words[i])); return out; }
     SetValue(c) {
       const n = this.param(c.arg(1)), src = c.arg(2), bytes = c.arg(3); if (!n || !src) return D3DERR_INVALIDCALL;
@@ -225,15 +232,15 @@ export function defineEffects(X, vm, h) {
       leaves.forEach((l, i) => { if (4 * i < bytes) { const p = l.obj?.ptr ?? 0; mem.write32(dst + 4 * i, p); if (p && isTextureType(l.type.type)) com.addRef(com.objectAt(p)); } });
       return D3D_OK;
     }
-    SetBool(c) { return this.setNums(this.param(c.arg(1)), [c.arg(2) ? 1 : 0]); }
+    SetBool(c) { return this.setNum(this.param(c.arg(1)), c.arg(2) ? 1 : 0); }
     GetBool(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; mem.write32(c.arg(2), this.getNums(n, 1)[0] ? 1 : 0); }
     SetBoolArray(c) { const nums = []; for (let i = 0; i < c.arg(3); i++) nums.push(mem.read32(c.arg(2) + 4 * i) ? 1 : 0); return this.setNums(this.param(c.arg(1)), nums); }
     GetBoolArray(c) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; this.getNums(n, c.arg(3)).forEach((v, i) => mem.write32(c.arg(2) + 4 * i, v ? 1 : 0)); }
-    SetInt(c) { return this.setNums(this.param(c.arg(1)), [c.sarg(2)]); }
+    SetInt(c) { return this.setNum(this.param(c.arg(1)), c.sarg(2)); }
     GetInt(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; mem.write32(c.arg(2), Math.trunc(this.getNums(n, 1)[0]) >>> 0); }
     SetIntArray(c) { const nums = []; for (let i = 0; i < c.arg(3); i++) nums.push(mem.readS32(c.arg(2) + 4 * i)); return this.setNums(this.param(c.arg(1)), nums); }
     GetIntArray(c) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; this.getNums(n, c.arg(3)).forEach((v, i) => mem.write32(c.arg(2) + 4 * i, Math.trunc(v) >>> 0)); }
-    SetFloat(c) { return this.setNums(this.param(c.arg(1)), [c.argF32(2)]); }
+    SetFloat(c) { return this.setNum(this.param(c.arg(1)), c.argF32(2)); }
     GetFloat(c) { const n = this.param(c.arg(1)); if (!n?.words || !c.arg(2)) return D3DERR_INVALIDCALL; mem.writeF32(c.arg(2), this.getNums(n, 1)[0]); }
     SetFloatArray(c) { const nums = []; for (let i = 0; i < c.arg(3); i++) nums.push(mem.readF32(c.arg(2) + 4 * i)); return this.setNums(this.param(c.arg(1)), nums); }
     GetFloatArray(c) { const n = this.param(c.arg(1)); if (!n?.words) return D3DERR_INVALIDCALL; this.getNums(n, c.arg(3)).forEach((v, i) => mem.writeF32(c.arg(2) + 4 * i, v)); }
@@ -965,6 +972,9 @@ export function defineEffects(X, vm, h) {
   X.D3DXCreateEffectFromFileW = [8, fromFile(true)];
   X.D3DXCreateEffectPool = [1, (c) => { if (c.arg(0)) mem.write32(c.arg(0), 0); return E_NOTIMPL; }];
 }
+
+/** the scalar type of a parameter type's first scalar (a struct's: its first member's, recursively) */
+function leafTypeOf(t) { while (t.cls === PC.STRUCT && t.members.length) t = t.members[0]; return t.type; }
 
 /** a NUL-terminated string at the start of `bytes` */
 function cstrOf(bytes) { let s = ''; for (const b of bytes) { if (!b) break; s += String.fromCharCode(b); } return s; }
