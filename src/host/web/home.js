@@ -13,7 +13,7 @@ const LOGO = '/src/host/web/orthros_logo.png';
 
 const STRINGS = {
   en: {
-    tagline: 'Windows games, run from their own files in your browser.',
+    tagline: 'Your games, directly in your browser.',
     p1: 'Nothing to install', p2: 'The original game files', p3: 'Saves stay in your browser',
     library: 'Library', games: (n) => `${n} game${n > 1 ? 's' : ''}`,
     resume: 'Continue', first: 'Play', play: 'Play', lastPlayed: 'Last played',
@@ -26,7 +26,7 @@ const STRINGS = {
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
   fr: {
-    tagline: 'Vos jeux Windows, lancés depuis leurs propres fichiers, directement dans le navigateur.',
+    tagline: 'Vos jeux, directement dans le navigateur.',
     p1: 'Rien à installer', p2: 'Les fichiers d’origine du jeu', p3: 'Sauvegardes dans votre navigateur',
     library: 'Bibliothèque', games: (n) => `${n} jeu${n > 1 ? 'x' : ''}`,
     resume: 'Reprendre', first: 'Jouer à', play: 'Jouer', lastPlayed: 'Dernière partie',
@@ -209,7 +209,7 @@ export function mountHome({ onPlay }) {
     const v = chosen(g), d = [...backdrops.children].find((b) => b.dataset.name === g.id);
     if (!v?.cover || !v.available) { d?.remove(); return; }
     const bd = d ?? backdrops.appendChild(h('div', { class: 'hm-bd', 'data-name': g.id }));
-    bd.style.backgroundImage = `url(/api/cover/${encodeURIComponent(v.name)})`;
+    bd.style.backgroundImage = `url(${v.coverUrl ?? '/api/cover/' + encodeURIComponent(v.name)})`;
   }
   /** The hero button: resume the last game, or start the first one. */
   function renderCta() {
@@ -229,7 +229,7 @@ export function mountHome({ onPlay }) {
     const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
     function syncDownload() {
-      const v = chosen(g); dlRow.hidden = !v?.available; if (!v?.available) return;
+      const v = chosen(g); dlRow.hidden = !v?.available || v.downloadFirst === false; if (dlRow.hidden) return;
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
       dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;
@@ -249,7 +249,7 @@ export function mountHome({ onPlay }) {
       const v = chosen(g), ok = !!v?.available;
       el.classList.toggle('unavailable', !ok); el.tabIndex = ok ? 0 : -1;
       cover.classList.toggle('none', !v?.cover);
-      const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}` : LOGO;
+      const src = v?.cover ? (v.coverUrl ?? `/api/cover/${encodeURIComponent(v.name)}`) : LOGO;
       if (src !== shown) { // (the new image fades in over the old one)
         shown = src;
         const img = h('img', { src, alt: '', decoding: 'async', draggable: 'false', class: v?.cover ? '' : 'glyph' });
@@ -259,7 +259,7 @@ export function mountHome({ onPlay }) {
       cover.querySelector('.hm-badge')?.remove();
       if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
       desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
-      meta.textContent = ok ? `${v.exe} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
+      meta.textContent = ok ? `${(lang === 'fr' ? v.launchLabelFr : null) ?? v.launchLabel ?? v.exe} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
       playBtn.hidden = !ok;
       versions?.set(v?.name);
       langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
