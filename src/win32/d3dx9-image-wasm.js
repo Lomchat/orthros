@@ -545,6 +545,7 @@ function decodeDxtCode() {
   return { code: c, locals: [...Array(i32Count).fill(T.i32), ...Array(v128Count).fill(T.v128)] };
 }
 
+// snapshot: constant, the kernels' module bytes built once
 const moduleBytes = new Map();
 /** The kernels' module bytes (its memory imported as env.memory, shared or not). */
 export function imageModuleBytes(shared) {
@@ -570,7 +571,7 @@ export function imageModuleBytes(shared) {
   return b;
 }
 
-let supported = null;
+let supported = null; // snapshot: host capability, probed once
 /** WebAssembly SIMD available (and the module valid here)? */
 export function imageWasmSupported() {
   if (supported === null) { try { supported = typeof WebAssembly === 'object' && WebAssembly.validate(imageModuleBytes(false)); } catch { supported = false; } }

@@ -420,7 +420,7 @@ export const dxtKind = (fmt) => (fmt === FMT.DXT1 ? WASM_KIND.DXT1 : fmt === FMT
  * grown to the largest image met; null without WebAssembly SIMD, or switched off for a measurement
  * (?dbg=ORTHROS_DXT_WASM=0: the JavaScript code everywhere, the same bytes).
  */
-let wasmLocal;
+let wasmLocal; // snapshot: host-side kernels and scratch memory, one call at a time
 function localWasm() {
   if (globalThis.ORTHROS_DXT_WASM === 0) return null;
   if (wasmLocal === undefined) {

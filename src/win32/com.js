@@ -29,7 +29,7 @@ export function readGuid(mem, a) {
   return s;
 }
 const GUID_CACHE = new Map(), GUID_CACHE_MAX = 4096;
-let guidCached = 0;
+let guidCached = 0; // snapshot: cache of formatted GUID strings (a pure function of the bytes)
 function formatGuid(mem, a) {
   const h = (v, n) => v.toString(16).padStart(n, '0');
   const b = mem.bytes(a, 16);
