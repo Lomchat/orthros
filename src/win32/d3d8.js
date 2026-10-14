@@ -11,7 +11,7 @@ import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
-import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB } from '../cpu/jit/runtime.js';
+import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES } from '../cpu/jit/runtime.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -181,12 +181,20 @@ export function d3dCore(vm) {
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
      * contents (gfx.beforeWrite).
      */
-    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    ensureMem(proc, overwrite = false) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); if (!overwrite) mem.fill(this.mem, this.bytes, 0); } return this.mem; } // (overwrite: the caller writes every byte at once, no zeroing first)
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
-    ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
+    // (the object carries the surface's description after it, its address at +12: GetDesc on the JIT's fast path,
+    // runtime.js FID_SURF_DESC — the same 32 bytes GetDesc writes)
+    ptrOf(c) {
+      if (!this.ptr || !com.objectAt(this.ptr)) {
+        const p = this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this, SURF_DESC_BYTES);
+        mem.write32(p + 12, p + 24); this.GetDesc({ arg: () => p + 24 });
+      } else com.addRef(com.objectAt(this.ptr));
+      return this.ptr;
+    }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     /**
      * Released to no reference, the surface stays a valid object at the same address while its owner lives (a device's
@@ -234,22 +242,24 @@ export function d3dCore(vm) {
       if (this.locked) return D3DERR_INVALIDCALL;
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
       const base = this.ensureMem(c.proc);
-      let off = 0;
+      let off = 0, rectPx = 0;
       this.lockRect = null;
       if (pRect) {
-        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4);
+        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4), r0 = mem.readS32(pRect + 8), b0 = mem.readS32(pRect + 12);
         // (the rectangle written, for a partial upload: clamped; an empty or inverted one counts as the whole surface)
-        const r = Math.min(this.width, mem.readS32(pRect + 8)), b = Math.min(this.height, mem.readS32(pRect + 12)), cl = Math.max(0, l), ct = Math.max(0, t);
+        const r = Math.min(this.width, r0), b = Math.min(this.height, b0), cl = Math.max(0, l), ct = Math.max(0, t);
         if (r > cl && b > ct) this.lockRect = [cl, ct, r, b];
         const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
         off = blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width));
+        rectPx = Math.max(0, (r0 - l) * (b0 - t));
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
-      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += Math.max(0, (mem.readS32(pRect + 8) - mem.readS32(pRect)) * (mem.readS32(pRect + 12) - mem.readS32(pRect + 4))); k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
+      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += rectPx; k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
       if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
-      if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
+      const watch = globalThis.ORTHROS_WATCH_TEX;
+      if (watch && watch === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
       return D3D_OK;
     }
@@ -464,6 +474,8 @@ export function d3dCore(vm) {
       for (let i = 0; i < 8; i++) this.tss[i]?.attachShadow(u32, e(SHADOW_TSS + 40 * i), 40);
       for (let i = 0; i < 16; i++) this.samplers?.[i]?.attachShadow(u32, e(SHADOW_SAMP + 16 * i), 16);
       this.syncRefShadow();
+      for (let i = 0; i < SHADOW_LIGHTS; i++) { this.shadowLight(i); this.shadowLightOn(i); }
+      this.shadowMaterial(); this.shadowFvf();
       this.shadowOn();
     }
     /** shadow entry `i` := `v` (a 32-bit word; anything else: unknown) */
@@ -476,6 +488,23 @@ export function d3dCore(vm) {
       this.shadowSet(SHADOW_IB, this.indices?.ib);
     }
     shadowStream(n) { const s = this.streams?.[n], i = SHADOW_STREAM + 3 * n; this.shadowSet(i, s?.vb); this.shadowSet(i + 1, s?.offset); this.shadowSet(i + 2, s?.stride); }
+    /**
+     * The words of a D3DLIGHT for which SetLight(i) changes nothing (runtime.js DEFER_FX_LIGHT): its type as the integer
+     * the handler compares, its other members as the bits of the floats it holds (a NaN, which no float equals: unknown;
+     * a -0 the handler would also take as +0 is merely not filtered). A light not created yet: unknown.
+     */
+    shadowLight(i) {
+      if (!this.shadow || !(i >= 0 && i < SHADOW_LIGHTS)) return;
+      const l = this.lights.get(i), e = SHADOW_LIGHT + LIGHT_WORDS * i;
+      if (!l) { for (let k = 0; k < LIGHT_WORDS; k++) this.shadowSet(e + k, undefined); return; }
+      this.shadowSet(e, Number.isInteger(l[0]) ? l[0] : undefined);
+      for (let k = 1; k < LIGHT_WORDS; k++) this.shadowSet(e + k, l[k] === l[k] ? f32bits(l[k]) : undefined);
+    }
+    /** LightEnable(i, b) changes nothing when the light exists and b is its switch (runtime.js DEFER_FX_LIGHTON) */
+    shadowLightOn(i) { if (this.shadow && i >= 0 && i < SHADOW_LIGHTS) this.shadowSet(SHADOW_LIGHTON + i, this.lights.has(i) ? (this.lightEnabled.has(i) ? 1 : 0) : undefined); }
+    shadowMaterial() { if (this.shadow) for (let k = 0; k < MATERIAL_WORDS; k++) { const v = this.material[k]; this.shadowSet(SHADOW_MATERIAL + k, v === v ? f32bits(v) : undefined); } }
+    /** (Direct3D 9) SetFVF(f) changes nothing when f is the FVF and no declaration is set beside a non-zero one */
+    shadowFvf() { if (this.shadow) this.shadowSet(SHADOW_FVF, this.fvf && this.vertexDecl ? undefined : this.fvf); }
     /** the filter on unless a state block records (or a measurement switched it off: Vm.setApiFastPaths) */
     shadowOn() { if (this.shadow) mem.write32(this.shadow, this.recording || vm.stateFilterOff ? 0 : 1); }
     destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.releaseImplicit(); this.gfx?.destroy?.(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
@@ -584,7 +613,7 @@ export function d3dCore(vm) {
     MultiplyTransform(c) { const st = c.arg(1), p = c.arg(2); this.touchTransform(st); const a = this.transforms.get(st) ?? Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); const b = new Float32Array(16); for (let i = 0; i < 16; i++) b[i] = mem.readF32(p + 4 * i); const r = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += b[i * 4 + k] * a[k * 4 + j]; r[i * 4 + j] = s; } this.transforms.set(st, r); this.gfx?.setTransform?.(st, r); return D3D_OK; }
     SetViewport(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.viewport = { x: mem.read32(p), y: mem.read32(p + 4), w: mem.read32(p + 8), h: mem.read32(p + 12), minZ: mem.readF32(p + 16), maxZ: mem.readF32(p + 20) }; this.gfx?.setViewport?.(this.viewport); return D3D_OK; }
     GetViewport(c) { const p = c.arg(1), v = this.viewport; if (!p) return D3DERR_INVALIDCALL; mem.write32(p, v.x); mem.write32(p + 4, v.y); mem.write32(p + 8, v.w); mem.write32(p + 12, v.h); mem.writeF32(p + 16, v.minZ); mem.writeF32(p + 20, v.maxZ); return D3D_OK; }
-    SetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; let same = true; for (let i = 0; i < 17; i++) { const v = mem.readF32(p + 4 * i); if (v !== this.material[i]) { same = false; this.material[i] = v; } } if (same) return D3D_OK; this.lightVersion++; this.gfx?.setMaterial?.(this.material); return D3D_OK; }
+    SetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; let same = true; for (let i = 0; i < 17; i++) { const v = mem.readF32(p + 4 * i); if (v !== this.material[i]) { same = false; this.material[i] = v; } } this.shadowMaterial(); if (same) return D3D_OK; this.lightVersion++; this.gfx?.setMaterial?.(this.material); return D3D_OK; }
     GetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; for (let i = 0; i < 17; i++) mem.writeF32(p + 4 * i, this.material[i]); return D3D_OK; }
     SetLight(c) {
       const i = c.arg(1), p = c.arg(2); if (!p) return D3DERR_INVALIDCALL;
@@ -594,10 +623,10 @@ export function d3dCore(vm) {
       let same = !!old;
       for (let k = 1; k < 26; k++) { const v = mem.readF32(p + 4 * k); if (v !== l[k]) { same = false; l[k] = v; } }
       const type = mem.read32(p); if (type !== l[0]) { same = false; if (this.lightEnabled.has(i)) { this.stateVersion++; this.programVersion++; } /* the program key holds the types of the enabled lights */ l[0] = type; }
-      if (same) return D3D_OK;
-      this.lightVersion++; this.lights.set(i, l); this.gfx?.setLight?.(i, l); return D3D_OK; }
+      if (same) { this.shadowLight(i); return D3D_OK; }
+      this.lightVersion++; this.lights.set(i, l); this.shadowLight(i); this.shadowLightOn(i); this.gfx?.setLight?.(i, l); return D3D_OK; }
     GetLight(c) { const l = this.lights.get(c.arg(1)), p = c.arg(2); if (!l || !p) return D3DERR_INVALIDCALL; for (let k = 0; k < 26; k++) mem.writeF32(p + 4 * k, l[k]); mem.write32(p, l[0]); return D3D_OK; }
-    LightEnable(c) { const i = c.arg(1), want = c.arg(2) !== 0; if (this.lightEnabled.has(i) !== want) { this.lightVersion++; this.stateVersion++; this.programVersion++; } if (want) this.lightEnabled.add(i); else this.lightEnabled.delete(i); if (!this.lights.has(i)) { const l = new Float32Array(26); l[0] = 3; l[1] = l[2] = l[3] = l[4] = 1; l[19] = 1; this.lights.set(i, l); } this.gfx?.lightEnable?.(i, c.arg(2) !== 0); return D3D_OK; }
+    LightEnable(c) { const i = c.arg(1), want = c.arg(2) !== 0; if (this.lightEnabled.has(i) !== want) { this.lightVersion++; this.stateVersion++; this.programVersion++; } if (want) this.lightEnabled.add(i); else this.lightEnabled.delete(i); if (!this.lights.has(i)) { const l = new Float32Array(26); l[0] = 3; l[1] = l[2] = l[3] = l[4] = 1; l[19] = 1; this.lights.set(i, l); this.shadowLight(i); } this.shadowLightOn(i); this.gfx?.lightEnable?.(i, c.arg(2) !== 0); return D3D_OK; }
     GetLightEnable(c) { c.out32(2, this.lightEnabled.has(c.arg(1)) ? 1 : 0); return D3D_OK; }
     SetClipPlane(c) { const p = c.arg(2); const v = new Float32Array(4); for (let i = 0; i < 4; i++) v[i] = mem.readF32(p + 4 * i); this.clipPlanes.set(c.arg(1), v); this.gfx?.setClipPlane?.(c.arg(1), v); return D3D_OK; }
     GetClipPlane(c) { const v = this.clipPlanes.get(c.arg(1)), p = c.arg(2); for (let i = 0; i < 4; i++) mem.writeF32(p + 4 * i, v ? v[i] : 0); return D3D_OK; }

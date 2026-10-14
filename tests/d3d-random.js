@@ -6,8 +6,8 @@ import { registerDirect3D9 } from '../src/win32/d3d9.js';
 import { registerDirect3D8 } from '../src/win32/d3d8.js';
 
 /** A minimal VM for Direct3D: guest memory, allocator, COM objects (pointers reused once released), a call context. */
-export function d3dEnv(gfx, shared = false) {
-  const mem = new GuestMemory({ sizeBytes: 64 << 20, shared });
+export function d3dEnv(gfx, shared = false, sizeBytes = 64 << 20) { // (sizeBytes null: the whole guest space, for the JIT)
+  const mem = new GuestMemory({ sizeBytes, shared });
   let top = 0x100000; const freed = new Map(); // size -> addresses (reused: memory recycled like a real heap)
   const alloc = (n) => { n = (Math.max(n, 16) + 15) & ~15; const l = freed.get(n); if (l?.length) return l.pop(); const a = top; top += n; if (top > (60 << 20)) throw new Error('test heap full'); return a; };
   const sizes = new Map();
@@ -16,7 +16,7 @@ export function d3dEnv(gfx, shared = false) {
   const objects = new Map();
   const com = {
     objects, interface() {}, supports: () => true,
-    create(p, iface, impl) { const ptr = proc.processHeap.alloc(16); const obj = { ptr, impl, refs: 1, proc: p }; objects.set(ptr, obj); impl.comObject = obj; return ptr; },
+    create(p, iface, impl, extra = 0) { const ptr = proc.processHeap.alloc(24 + extra); const obj = { ptr, impl, refs: 1, proc: p }; objects.set(ptr, obj); impl.comObject = obj; return ptr; },
     objectAt: (ptr) => objects.get(ptr >>> 0) ?? null, implAt: (ptr) => objects.get(ptr >>> 0)?.impl ?? null,
     addRef: (o) => ++o.refs,
     release(o) { if (--o.refs > 0) return o.refs; if (o.impl.keepAlive) { o.refs = 0; return 0; } com.dispose(o); return 0; },

@@ -11,7 +11,7 @@ import { translateRegion, Emitter } from './translate.js';
 import { fmtInsn, OT } from '../decoder.js';
 
 // local names (translate.js layout)
-const LOCALS = { 0: 'blk', 1: 'state', 10: 'eflags', 11: 'lzop', 12: 'lzres', 13: 'lza', 14: 'lzb', 15: 'icount', 16: 'ta', 17: 'tv', 18: 't2', 19: 't3', 20: 't4', 21: 't5', 22: 't6', 23: 't7', 24: 'i64a', 25: 'i64b', 26: 'f64a', 27: 'f64b', 28: 'top', 29: 't8', 30: 'v0', 31: 'v1', 32: 'v2', 41: 'ftw', 42: 'fpc', 43: 'f64c', 44: 'fs', 53: 'f32a', 54: 'f32b', 55: 'f32c', 64: 'f64d', 65: 'f64e', 66: 'f64g', 67: 'f64h' };
+const LOCALS = { 0: 'blk', 1: 'state', 10: 'eflags', 11: 'lzop', 12: 'lzres', 13: 'lza', 14: 'lzb', 15: 'icount', 16: 'ta', 17: 'tv', 18: 't2', 19: 't3', 20: 't4', 21: 't5', 22: 't6', 23: 't7', 24: 'i64a', 25: 'i64b', 26: 'f64a', 27: 'f64b', 28: 'top', 29: 'xsh', 30: 'v0', 31: 'v1', 32: 'v2', 41: 'ftw', 42: 'fpc', 43: 'f64c', 44: 'fs', 53: 'f32a', 54: 'f32b', 55: 'f32c', 64: 'f64d', 65: 'f64e', 66: 'f64g', 67: 'f64h' };
 const REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
 export const localName = (i) => (i >= 2 && i < 10 ? REGS[i - 2] : i >= 33 && i < 41 ? `st${i - 33}` : i >= 45 && i < 53 ? `s32_${i - 45}` : i >= 56 && i < 64 ? `xmm${i - 56}` : i >= 68 && i < 76 ? `xmm${i - 68}.f32` : i >= 76 && i < 84 ? `xmm${i - 76}.f64` : i === 84 ? 'ic' : i >= 85 && i < 98 ? `ifs${i - 85}` : i >= 98 && i < 111 ? `ifr${i - 98}` : LOCALS[i] ?? `l${i}`);
 const TERMS = ['fallthrough', 'jmp', 'jcc', 'call', 'ret', 'indirect', 'exit', 'loop'];

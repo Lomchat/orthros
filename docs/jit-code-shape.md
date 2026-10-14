@@ -57,6 +57,19 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   last target and target changes (translate.js siteProf, three counters per site address in the block-counter area):
   totals by kind, how many sites make 90 % of the exits, the share at sites whose target changes in less than 5 % of
   the exits. `--jit-profile` also lists the fast-path API calls the dispatcher ran in WASM, by API.
+- **Code size of x87 regions** — `tools/x87-size.mjs [--ab <root>] [--cw 0x7f,...] [--disasm <case>@<cw>]`: small
+  regions shaped like compiler x87 output (the x87loop-bench loops, double and register operands) translated under
+  several control words: WASM operations per x87 arithmetic instruction, WASM body bytes and TurboFan machine code bytes
+  per region (V8's `--print-wasm-code`, eager TurboFan, branch hints honoured), against another src tree with `--ab`.
+  On a game: `startbench --mix` prints the x87 regions apart (`[shape] x87 regions: ...`), and with
+  `ORTHROS_X87_DUMP=<dir>` writes every live x87 region's module translated now and with the earlier x87 options
+  (`<dir>/new`, `<dir>/old`); `x87-size.mjs --modules <dir>` compiles both sets for their machine code.
+- **Hot-path cost of one region** — x87loop-bench's loops under `perf record -e cycles:u,instructions:u` with
+  `node --perf-prof --no-liftoff`, `perf inject -j`, the `JS:r_*` symbols' periods divided by the iterations: host
+  instructions per iteration are steady on a loaded machine where cycles and wall time are not. x87loop-bench itself
+  does not set `--experimental-wasm-branch-hinting`: without it V8 keeps the cold paths inline and a call on one of them
+  costs spills on the hot path (one of its loops measured +17-24 % that way, -4 % with the flag) — set the flag
+  (tools/node-wasm-flags.mjs) for anything meant to stand for Chrome.
 
 ## Where the time goes
 
@@ -399,8 +412,249 @@ Review re-measure (one more concurrent RotWK pair, `--gl-discard`, same learned 
 An unparsable `?jitopts` is now reported (`[warn] jitopts ignored`), and `tools/headless.mjs --jit-opts` refuses
 one that is not JSON.
 
+## BFME1's map load (2026-10-06 / 2026-10-14)
+
+BFME1's skirmish map load (`bfme-phases.txt`, the `loadscreen` phase) runs ~40 G guest instructions on the game's
+thread in ~60 s of Node real clock: ~1.4 ns per guest instruction, 95 % of it in translated code, the 10 hottest
+regions 63-68 % of the counted instructions (mix: MOV 18-21 %, JCC 9-9.5 %, FLD 6.4-7.7 %, CMP 5.2-5.5 %, FSTP
+5.0-5.9 %, FMUL 3.4-3.9 %, CALL 1.5 %, RET 1.2-1.4 %; block counters switched on at the load mark, so only the
+regions translated during the load are counted). Part of its x87 code runs under **24-bit precision with rounding
+toward zero** (control word 0xc7f-like: code that truncates for its FISTPs sets it for whole computations) — few
+regions (`startbench --x87-modes`, new, live regions by mode at the end of the load: none 6 642, 24-bit nearest 1 564,
+53-bit 57, 24-bit toward zero 30, 64-bit 4) but, by the A/B below, most of the time this branch saved: the x87
+arithmetic of a region specialized for a static directed 24-bit mode was the expensive part:
+every FADD / FMUL / FSUB... rounded its f64 result to the 24-bit grid with a vector mask (its constant rebuilt per
+instruction), a range test with f64 compares on |s| (two constants, three compares), and results already on the grid
+(exact sums of values with few significant bits, x − x) went out of line to an exactness test with f32 round trips of
+both operands: ~25 host instructions per arithmetic instruction.
+
+Changes (all generic, exact against the interpreter):
+
+- **Toward-zero rounding on the result's bits** (translate-x87.js `roundTowardZero24`): the f64 result's bit pattern,
+  integer tests only — off the 24-bit grid with an exponent field in [2, 0x7fe], masking the 29 low significand bits
+  is the x87 result (f64 rounding never crosses a grid point without landing on it); on the grid, a zero as computed
+  or the value itself when exact (`pushExactOnGridAt`: TwoSum's error term for sums, the operands' low bits for
+  products / quotients / square roots); anything else (denormal, infinite, NaN, the lowest normal binade) leaves the
+  region for the interpreter. ~11 host instructions for an off-grid result. The on-grid path is no longer hinted out of
+  line (common in that code), and TwoSum of a difference adds instead of negating (same values, no constant).
+- **Narrow values** (`Emitter.g24Mask`): registers known at translation time to hold a 24-bit significand (m32 and
+  m16 operands, FLD1 / FLDZ, results of 24-bit arithmetic, copies, FCHS / FABS / FXCH of such) — a product or quotient
+  of two needs no grid test, only the exponent test. Dropped wherever the f32 shadows are (block entry, fallbacks,
+  rotations). FST m32 under a static directed 24-bit mode stores a value that is already a float after one compare.
+- **The status word in a local** (`swLocal`, default on; translate.js `L_SW`): x87 regions load it with the stack
+  cache and write it back with it; the compares, FNSTSW, FNCLEX, the per-block C1 clear and the exception flags update
+  the local instead of a load and a store of the state block each (`FCOM; FNSTSW AX; TEST AH; Jcc` chained three
+  store-to-load forwardings, loop-carried). JIT option, so it can be A/B'd: `ORTHROS_JIT_DEFAULTS={"swLocal":false}`.
+  The translated-code cache keys on JIT_DEFAULTS: the first session after the change translates again.
+- Fidelity found by the new randomized status-word test: unordered FCOM / FICOM / FTST / FCOMI now raise IE as the
+  interpreter does (FUCOM / FUCOMI only for a signaling NaN) — in the compare's cold path (C2 / PF set).
+- Tools: per-phase `--jit-profile` in scenarios, `--list-top` lists the counted regions with their x87 mode,
+  `--x87-modes`, `tools/x87loop-bench.mjs --full / --src` and a 41-instruction sums-of-squares kernel.
+- Tests: tests/jit-x87-narrow.test.js (random programs under every precision / rounding control, time slices, a wide
+  operand whose product rounds onto the grid while inexact, narrow products / quotients chained past both ends of the
+  double range under truncation), tests/jit-x87-sw-local.test.js (random compare / FNSTSW / SAHF / branch / FNCLEX /
+  exception / FPREM programs with swLocal on and off, the whole status word compared, time slices).
+
+Results (base ca01ae8 against this branch at e1232f6):
+
+- **Node, concurrent real-clock pairs** (`startbench --input bfme-phases.txt`, the same profile copied for each run,
+  launch order alternated; `loadscreen` phase): quiet machine (load average ~20) 60.8 → 47.8 s (1.451 → 1.121 ns per
+  guest instruction) and 59.4 → 46.2 s (1.416 → 1.101 ns): **−21 / −22 % map-load time, −23 / −22 % ns per
+  instruction**; loaded machine (load average ~40, other projects) 75.7 → 48.8 s and 88.3 → 65.3 s (1.693 → 1.162,
+  2.042 → 1.400 ns). The same guest work (40.0-40.9 G instructions in every run).
+- **swLocal alone** (this branch, off / on, concurrent pairs, alternated): map load 1.201 → 1.161 and 1.196 → 1.172 ns
+  per instruction (−3.3 / −2.0 %), play 2.955 / 2.955 and 2.870 / 2.844 ns: most of the gain is the toward-zero path.
+- **Play, no regression**: BFME1 Node play (same pairs, quiet) 2.586 → 2.622 (+1.4 %) and 2.952 → 2.941 ns (−0.4 %),
+  thread CPU 74.2 / 75.5 and 85.9 / 85.0 s for the same 6 136 frames — within the spread. (The two loaded pairs showed
+  play +15 / +24 % for the branch: it finished its load ~25 s earlier, so its play overlapped the base's map load at full
+  CPU and the base played its last 25 s alone; not seen when the machine was quiet, nor with swLocal off / on, whose
+  loads end together.) Concurrent `--virtual` pairs (deterministic guest work), play / drive ns per instruction, two
+  alternated pairs each: BFME2 2.587 → 2.457 and 2.522 → 2.549, RotWK 2.308 → 2.308 and 2.714 → 2.671, Vice City drive
+  2.141 → 2.074 and 2.145 → 2.166 — neutral.
+- **Kernels** (`tools/x87loop-bench.mjs 2000000 --pos --ab <base>`, alternated in one process, median ns per
+  iteration, control word 0xc7f): sums of squares 83.8 → 34.4, fild + fmul + fstp 21.4 → 12.4, xform 39.9 → 31.6,
+  recurrence 18.5 → 15.4, e^x loop 38.1 → 29.8, fcom + fchs + fstp 12.6 → 10.3, fcomp + test ah 13.2 → 11.9.
+  Under 0x7f / 0x27f the machine's load (±30 % per run) hid any difference; `perf record` cycles of the translated
+  region per iteration (`perf record` on `node --no-liftoff --perf-prof`, as in the tool's header; 2 runs each): arith across blocks at
+  0xc7f 109 / 93 → 58 / 55, fcomp + test ah at 0x7f 34 / 28 → 22 / 22, recurrence at 0x7f 15 / 17 → 19 / 22 (the same
+  loop, two host instructions shorter — the C1 clear on a register instead of a read-modify-write of the state block —
+  sampling noise).
+- **Browser**, one concurrent pair (`headless.mjs --gl-discard`, bfme-phases, both browsers started together, the same
+  profile and learned data copied for each): loading screen 62.7 → 50.3 s (−20 %), guest 1.413 → 1.135 ns per
+  instruction; play 38 / 38 fps, 2.960 → 3.008 ns (+1.6 %, the branch's play phase 318 s against 302 s of the same
+  560 s session: within the Node pairs' spread), work p50 14.2 / 14.3 ms, p99 33.8 / 32.5 ms, frames > 40 ms per minute
+  9 / 8; menu 1.542 → 1.485 ns.
+
+## x87 regions: the size of the arithmetic (2026-10-06)
+
+In BFME1's map load the x87 arithmetic was ~10 % of the instructions executed but ~38 % of the translated code's
+weight: 212 WASM operations per FMUL, 177-186 per FSUB / FADD / FADDP, against 15 per MOV. The hot path of an operation
+in 24-bit round-to-nearest mode is short (the f32 operation and one exponent test; for double operands the f64
+operation, two integer tests and a demotion); the rest was the exact cold paths, inline in every instruction: the x87
+NaN rule (nanF32 / nanF64, ~75 operations), the 24-bit midpoint settlement from double operands (TwoSum / Dekker, ~70),
+the zero and infinity exactness tests, and a step exit that rotated the eight stack locals. Three changes (translation
+options for measurement, defaults on):
+
+- **Cold paths as runtime kernels** (`x87Cold: 'call'`; `'inline'` is the earlier code): fpmath-x87cold.js emits the
+  cold code once per operation code in three kernels of the runtime module — `x87ArithF32` (float operands: exact
+  zero / infinity, NaN rule), `x87RoundF32` (double operands: infinity, midpoint, NaN that is a float), `x87NanArith`
+  (53 / 64-bit precision: NaN rule, IE) — from the same emitters that still produce the inline form, so both run the
+  same operations on the same values. The region calls them on the branch-hinted path (TurboFan's deferred code: the
+  spills around the call are made there, not on the hot path — checked in the machine code and by host instructions
+  per iteration, below); what stays inline is what is frequent: the exponent / midpoint tests, a zero result (a product
+  by zero is common in 3D code), and for double operands the midpoints of float operands (sums of floats one exponent
+  apart land on one half the time). Removing the duplicated midpoint test from the cold path also lets TurboFan fuse
+  the hot path's compare and branch (it materialized the shared condition with setcc / movzx / test before).
+- **Exits without rotating the x87 stack** (`x87ExitRotate: false`; Emitter.x87ExitState): local L_ST0+k holds physical
+  register (L_TOP + k) & 7 whatever the block's pending shift, so an exit writes the shadows back and applies the tag
+  changes but leaves the locals where they are; the shift travels in L_XSH (the unused L_T8 renamed: 0 on every path
+  that does not set it, since a path setting it leaves) and the exit block stores TOP = (L_TOP + L_XSH) & 7. An exit in
+  the middle of a block that pushed (step exits of the arithmetic, SMC checks after FSTP, budget exits) no longer
+  emits the 30-operation rotation.
+- **One exit tail** (`exitShare`, every region): the jump exits (chained or not) and the code exits (step, time slice,
+  SMC, x87 mode) share one copy of the flushes — the x87 stack was written back three times in each x87 region's
+  epilogue (chained path, jump exit, code exit), the registers twice; L_T2 = -1 marks a jump exit, which tries the
+  chain first (the hash probe's home slot moves to L_T3 there).
+
+Size (static):
+
+- tools/x87-size.mjs, the 36 synthetic regions (9 loops x control words 0x7f, 0x27f, 0x37f, 0xc7f): WASM bodies
+  122 055 → 73 603 bytes (−39.7 %), TurboFan machine code 193 920 → 162 900 bytes (−16.0 %), Liftoff code 318 064 →
+  229 952 bytes (−27.7 %). By change: kernels −24.0 % WASM / −8.4 % machine code, unrotated exits −3.1 / −1.4 %
+  more, one exit tail −12.6 / −6.2 % more (a constant ~430 bytes of WASM per region: a large share of these small
+  regions). Operations per x87 arithmetic instruction: float operands (24-bit, round to nearest) 181 → 64, double
+  operands in that mode 301 → 92, 53 / 64-bit precision 126 → 23, 24-bit directed rounding 111 → 81 (its cold tail
+  was already shared; only the exits shrank).
+- BFME1, the bfme-phases scenario in Node with block counters (`startbench --mix`, `ORTHROS_X87_DUMP`): the 2 970 x87
+  regions live at the end of the run (of 17 017), each translated both ways (the same blocks): WASM
+  bodies 53 128 → 40 001 KiB (17.9 → 13.5 KiB per region, −24.7 %), operations per guest instruction in x87 regions
+  29.9 → 22.6; the 41 086 x87 arithmetic instructions 204.5 → 69.0 operations each, 30.6 % → 13.7 % of the x87
+  regions' operations (prologues 6.0 → 7.9 %, epilogues 5.2 → 4.0 %). Modules compiled (TurboFan, eager, hints):
+  54.30 → 41.32 MiB (−23.9 %; per region median −18 %, p10 −39 %, p90 −3 %), machine code 79.89 → 69.36 MiB
+  (−13.2 %; per region median −11 %, p10 −25 %, p90 −2 %); Liftoff code 121.0 → 96.2 MiB (−20.5 %). Compiling the
+  2 970 modules eagerly (`x87-size.mjs --modules <dir> --time`, best of 3 alternated rounds on the loaded machine):
+  Liftoff 3.09 → 2.62 s (−15 %), TurboFan 31.3 → 30.3 s (−3 %; rounds 46 / 41 / 31 against 36 / 31 / 30 s).
+- How often the cold paths run (BFME1 phases, profiling translations, `startbench --jit-profile`, counters
+  `x87Arith` / `x87ColdEntry` / `x87ColdCall`): 18 150 M arithmetic operations on these paths (12 % of the run's
+  146 G guest instructions), 1 167 M (6.4 % of them) entering the cold path — zeros and midpoints of float operands, still
+  inline —, 4.3 M (0.02 %) calling a kernel.
+
+Hot paths (x87loop-bench loops under `perf record`, branch hints on, host instructions per iteration in the region,
+two runs each, base commit → this code; cycles moved with the machine's load, by −10 to +10 % between runs of the same
+code, and were lower for the new code in 14 of the 18 pairs): `xform` 215 → 206; `recurrence` 46 → 42;
+`arith across blocks` 134.5 → 133; `exp in loop` 233 → 229; `fild+fmul+fstp` 57.4 → 52.3; `fadd m64 midpoints` (a
+double operand holding a float, its sums on a 24-bit midpoint 14 % of the time: the warm inline part of roundF32's
+cold path) 50.6 → 47.6; `fmul m64 0.9` 69.2 → 62.2; xform at 53-bit precision 157.8 → 155.8, with truncation (0xc7f)
+527.8 → 523.6. The machine code shows why: no extra spill on the hot paths, and roundF32's midpoint
+test fused into compare-and-branch (`and; cmp; jz` instead of `and; cmp; setz; movzx; test; jnz`, the shared
+condition gone from the cold path). Loops over NaN data (every operation calls a kernel; uninitialized memory in
+BFME's menus did that): float operands (xform, 9 NaN operations per iteration) region + kernels 411 + 188 = 599
+cycles against 739 inline — once the kernels test for a NaN result first (75 cycles per call before, 21 after);
+double operands at 24-bit 107 against 100; xform at 53-bit precision 376 + 237 = 613 against 339 (x87NanArith ~26
+cycles a call, plus the spills around it): the cost of the call where every operation is a NaN, a case seen in no
+game measured (4.3 M kernel calls in the whole BFME1 run above).
+
+Exactness: tests/jit-x87-cold.test.js — operands of every class (zeros, float and double denormals, the float range's
+edges, overflowing / underflowing products, infinities, quiet and signaling NaNs of both signs, payloads that fit a
+float or not, midpoints from 0.9 / 0.1 / 1/3 / 2^-24+2^-60) through float, double and register operands under
+control words 0x7f, 0x47f, 0xc7f, 0x27f, 0x37f and without the float representation (ORTHROS_NO_F32): the kernels
+and the inline code give the same bits, status word and interpreter steps, and the interpreter's results; random
+floats times / plus / minus non-float doubles in a loop (the Dekker / TwoSum path); exits with a pending shift (SMC
+exit, step exit, time slices) against the interpreter and the rotating exits from TOP 0, 3, 7. Mutations caught: the
+exit block ignoring L_XSH, the wrong operation code passed to x87RoundF32. With the earlier options the translator
+emits the base commit's code (tools/x87-size.mjs: the same WASM and machine-code sizes for all 36 regions).
+
+Whole runs (2026-10-14, base commit ca01ae8 in its own worktree against this code, concurrent pairs, launch order
+alternated; Node: `startbench --virtual`, the same guest instructions in both runs of a pair; browser: `--gl-discard`,
+copies of the same profile and learned data):
+
+- **CPU of the whole process (Node), the gain that clears the noise**: Vice City (vicecity-drive, 5 pairs) 101-112 s
+  → 91-99 s, −9.2 to −11.8 % in every pair; RotWK (rotwk-startup, 5 pairs) −0.4 to −3.3 %, all lower; BFME2
+  (bfme2-startup, 5 pairs) −2.0 to +0.5 %, 4 of 5 lower. The emulator thread's CPU over the phases did not move
+  (Vice City 9.9-14.3 s on both sides): the saving is in V8's compiler threads compiling the smaller x87 modules —
+  perf record (instructions:u, one RotWK pair): V8 compiler 347.6 → 338.5 G host instructions (−2.6 %), translated
+  regions 172.0 → 173.7 G (+1.0 %; the same tree under the old and new options: 188.7 → 188.5 G, −0.1 %: per-region
+  counts move by ±30 % between runs where a region polls the time stamp counter, so neither is a difference).
+  `perf stat` totals: Vice City 485.7 → 435.2 G instructions (−10.4 %), cycles −9.7 %; RotWK −0.4 / −0.6 %; BFME2
+  −0.6 / −1.9 %. In a browser the compiler threads run beside the emulator's worker: CPU left to the page and the other
+  threads on a client with few cores, not frame time.
+- **Emulator thread per phase (Node), within the noise**: guest ns per guest instruction / thread CPU per frame, base →
+  this code: RotWK play +1.0 to +4.9 % CPU per frame in the 5 cross-tree pairs, but −0.4 % and −2.1 % (and +1.1 % in
+  an earlier one) in same-tree pairs of the old and new options (`tools/ab-virtual.mjs`, which removes the second
+  source tree); BFME2 play −2.5 to +3.8 %; Vice City drive −1.8 to +9.1 %, drive-end −0.8 to +18 % (runs of 40 s
+  where the same code's pairs differ by as much); menus and loading screens ±5 %, `load` phases ±18 %.
+- **BFME1 in the browser (bfme-phases, 3 pairs)**: play 38.3 → 38.3, 36.2 → 36.9 and 38.3 → 38.3 fps, guest
+  10.7 → 10.9, 13.9 → 13.8 and 10.8 → 11.0 ms per frame; 3D menu guest +3.0 %, −10.3 %, +3.5 %; map load (load +
+  loading screen) 69.5 → 68.1 s, 111.5 → 113.9 s (a loaded machine) and 68.4 → 67.6 s. No frame-rate or map-load
+  change beyond the spread: play is not measurably faster for the 16 % less machine code of its x87 regions.
+- Exactness and tests: the full suite (`make test`) passes but tests/accounts.test.js (needs data_games in the tree,
+  fails on the base commit as well); with ORTHROS_NO_F32 the x87 suites fail the same two tests as on the base commit
+  (the 24-bit random sequences and the NaN test written for the float representation), nothing more.
+
+Kept for: 40 % less WASM and 13-16 % less machine code in x87 regions, compilation CPU −10 % on an x87-heavy game,
+host instructions per iteration equal or lower on the hot loops; not for frame time, which did not change.
+
+### Integration with the status word in a local and narrow values (2026-10-14)
+
+The two branches were written against the same base and meet in two places, both fixed when they were merged:
+- The cold kernels raise IE in the state block's status word, while regions with `swLocal` keep it in `L_SW` and write
+  it back at their exits — an IE raised by a kernel would have been overwritten by the stale local (and missed by a
+  later FNSTSW in the region). Around each kernel call the region now stores `L_SW` and reloads it (translate-x87.js
+  `swOut` / `swIn`, on the cold path only), and the inline form (`x87Cold: 'inline'`) raises into `L_SW` (`emitRaise`'s
+  `sw` argument). tests/jit-x87-nan-*.test.js and tests/jit-x87-cold.test.js fail without it; jit-x87-cold.test.js now
+  also runs every case with `swLocal` off.
+- `x87ExitState` (exits without rotation) did not save `g24Mask`, so `x87Restore` left it undefined after every exit:
+  the narrow-value knowledge was lost past the first cold exit of a block (the toward-zero products then took the grid
+  test again) and the Emitter field changed type. Saved now; tests/jit-x87-narrow.test.js checks the mask is the same
+  after each exit.
+
+### The five branches together (2026-10-14, integ-perf-1014 against main ab5e39a)
+
+perf-heap, perf-mapload-jit, perf-x87-size, perf-draw and perf-d3dx-image merged, measured against a worktree of main
+in concurrent pairs, launch order alternated. Warm profiles made for the occasion (one first-launch run per game; the
+BFME1 one set to 800 x 600, the resolution its scenario's clicks expect); no learned data copied (none was left), the
+same empty learn directory on both sides.
+
+| | main | integ |
+|---|---|---|
+| BFME1 map load (load + loadscreen), browser `--gl-discard` | 71.8 / 69.8 s | 54.2 / 53.4 s (−25 / −24 %) |
+| BFME1 map load, Node real clock | 58.8 / 57.8 s | 44.7 / 46.2 s (−24 / −20 %) |
+| BFME1 play, browser | 38.3 / 38.3 fps, work p50 16.0 / 13.4 ms | 38.3 / 38.3 fps, 15.5 / 13.2 ms |
+| BFME1 play, Node, emulator thread CPU over 160 s | 78.7 / 75.9 s | 76.5 / 71.9 s (−3 / −5 %) |
+| BFME1 menu, Node `--virtual` (identical work), thread CPU | 40.7 s | 39.6 s (−2.7 %; API 3.85 → 2.40 s) |
+| BFME1 3D menu fps, browser (4 pairs) | 19.3 / 22.4 / 13.0 / 21.7 | 19.6 / 21.9 / 12.8 / 22.1 |
+| BFME2 load + loadscreen, browser | 27.1 / 28.1 s | 25.9 / 24.7 s; loadscreen API 21.1 → 12.9, 27.4 → 15.6 ms per frame |
+| BFME2 play, browser | 30.2 / 30.2 fps | 30.2 / 30.2 fps |
+| BFME2 `--virtual`, thread CPU menu / loadscreen / play | 17.8 / 20.0 / 31.5 s | 17.9 / 16.5 / 31.1 s |
+| RotWK load + loadscreen, browser | 27.7 / 28.5 s | 26.4 / 29.4 s (within the spread) |
+| RotWK play, browser | 29.6 / 29.3 fps, API 4.3 / 4.6 ms | 29.6 / 29.5 fps, API 4.0 / 4.1 ms |
+| RotWK `--virtual`, thread CPU menu / loadscreen / play | 17.4 / 16.7 / 29.1 s | 16.6 / 15.6 / 28.4 s |
+| Vice City drive, Node `--virtual`: thread / process CPU | 9.8 / 21.4 s | 9.1 / 18.4 s |
+| Vice City drive, Node real clock: thread / process CPU | 10.5 / 22.0 s | 9.6 / 17.8 s |
+
+Guest nanoseconds per guest instruction rise in menus and play in the browser pairs (BFME2 menu 0.87 → 0.98, BFME1
+menu 1.30 → 1.40) while the JavaScript API time falls: the queued draws and the surface GetDesc run in the WebAssembly
+fast paths, counted as guest time. The emulator thread's CPU for identical work (`--virtual`) is equal or lower in every
+phase. Vice City in the browser did not reach its drive in either tree in 3 of 4 pairs (the start phase ends after
+36 000 frames of its intro); its comparison is the Node one. Rendering: `?glworker=compare-worker`, 0 differing frames
+(BFME1 menus 500 frames compared, every 10th; BFME2 menu to play 100, every 10th; Vice City menu to drive 80, every
+60th). Thin link
+(`tools/slow-net-check.mjs --bench vicecity-drive --speeds 1m`, nothing learned): menu 161 s, in game 245 s (main 145 /
+258 s), the bench done.
+
 ## Measured, not kept
 
+
+- Raising ZE / OE for an infinite result of x87 arithmetic at 53 / 64-bit precision in translated code (X87.arith
+  does): the test on the arithmetic hot path cost +15 % on the 53-bit sums-of-squares kernel; left unraised by the JIT
+  (documented in translate-x87.js).
+- Directed rounding up / down on the vector mask as toward zero used to: the sign-dependent step is cheaper as an
+  integer add on the bits (kept that way).
+- x87 arithmetic cold path (2026-10-06, tools/x87-size.mjs and host instructions per iteration of x87loop-bench's
+  `xform` under `perf record`, branch hints on): the inline zero test of a float result on its bit pattern (`x << 1 ==
+  0`) instead of float compares — the result's bits, shared with the hot path's exponent test, then stay live past it:
+  221 host instructions per iteration against 207; no inline zero test at all (exact zeros through the kernel too):
+  203, but every product by zero would be a call. Kept: float compares (207; the earlier code 215).
 - Chained exits each with its own chain code (`siteChain`: the hash probe and tail call at every exit site, the probe
   addresses constants for static targets) instead of one shared exit: RotWK +15 %, BFME2 +52 % (Node in-session) —
   every tail-call site pins all sixteen values to the call's argument places, and the code grows.

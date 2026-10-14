@@ -69,7 +69,7 @@ export function setup(mem = new GuestMemory()) {
   const objects = new Map();
   const com = {
     interface() {},
-    create(p, iface, impl) { const ptr = heap.alloc(24); objects.set(ptr, { ptr, impl, refs: 1 }); impl.comObject = objects.get(ptr); return ptr; },
+    create(p, iface, impl, extra = 0) { const ptr = heap.alloc(24 + extra); objects.set(ptr, { ptr, impl, refs: 1 }); impl.comObject = objects.get(ptr); return ptr; },
     objectAt: (p) => objects.get(p >>> 0) ?? null,
     implAt: (p) => objects.get(p >>> 0)?.impl ?? null,
     addRef: (o) => ++o.refs, release: (o) => --o.refs,

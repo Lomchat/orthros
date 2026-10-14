@@ -15,6 +15,22 @@ const MIN_USER = 16, SPLIT_MIN = HDR + FTR + MIN_USER;
 const CLASSES = 128;
 /** a free-list link that can be followed: 0 (end) or an address of the user space (cheap: no chunk search per step) */
 const plausible = (p) => p === 0 || (p >= 0x10000 && p < 0x7eb00000 && (p & 7) === 0);
+// Chunk lookup (chunkOf, called for every free block a search visits): past MAP_FROM chunks, a map of the 64 KB granules
+// of the 32-bit space gives the index + 1 of the chunk covering each (0: none). Chunks come from VMem, 64 KB aligned and
+// sized, so a granule belongs to one chunk at most; one shared by two chunks all the same is marked SHARED and looked up
+// by the linear scan. (A heap grown to hundreds of chunks spent most of its allocations in that scan.)
+const GRAN_SHIFT = 16, MAP_FROM = 8, SHARED = 0xffff;
+
+/**
+ * Zero `n` bytes at `a` (HEAP_ZERO_MEMORY), as `mem.fill(a, n, 0)`: an 8-aligned range is filled as doubles (+0: eight
+ * zero bytes) — on a shared buffer (background translator, render worker) a typed array's fill stores one element at a
+ * time, so bytes ran at ~2.4 GB/s against ~6.6 GB/s for doubles.
+ * @param {import('../cpu/memory.js').GuestMemory} m
+ */
+function zeroFill(m, a, n) {
+  if (((a | n) & 7) === 0 && a >= 0 && a + n <= m.size) m.f64.fill(0, a / 8, (a + n) / 8);
+  else m.fill(a, n, 0);
+}
 
 /** size class of an 8-aligned user size: exact classes up to 512 bytes, then powers of two */
 function classIndex(size) {
@@ -37,8 +53,11 @@ export class Heap {
     this.tag = opts.tag ?? 'heap';
     this.max = opts.max ?? 0; // 0 = growable
     this.heads = new Uint32Array(CLASSES);
+    /** @type {{ base: number, size: number }[]} */
     this.chunks = [];
-    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
+    /** @type {Uint16Array | null} granule -> chunk index + 1 (see MAP_FROM) */
+    this.gmap = null;
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one; loopedLists: cut where they looped back; see alloc)
     this.total = 0;
     this.grow(Math.max(opts.initial ?? MIN_CHUNK, MIN_CHUNK));
   }
@@ -49,6 +68,8 @@ export class Heap {
     const base = this.vmem.alloc(size, PAGE_READWRITE, 'heap:' + this.tag);
     if (!base) return false;
     this.chunks.push({ base, size });
+    if (this.gmap) this.mapChunk(this.chunks.length - 1);
+    else if (this.chunks.length >= MAP_FROM) { this.gmap = new Uint16Array(1 << (32 - GRAN_SHIFT)); for (let i = 0; i < this.chunks.length; i++) this.mapChunk(i); }
     this.total += size;
     const m = this.mem;
     // start sentinel: a used block with an empty user area (its footer, 0, stops backward merges); the first real
@@ -86,16 +107,21 @@ export class Heap {
   alloc(size, zero = false) {
     size = Math.max(MIN_USER, alignUp(size >>> 0, 8));
     if (size > 0x7fffffff) return 0;
-    const m = this.mem;
+    const m = this.mem, u32 = m.u32; // (u32[a >>> 2] = read32(a): every address read in the walk is 4-aligned)
     for (let attempt = 0; attempt < 2; attempt++) {
       for (let c = classIndex(size); c < CLASSES; c++) {
-        let b = this.heads[c], prev = 0;
+        let b = this.heads[c], prev = 0, mark = b, steps = 0, span = 1;
         while (b) {
-          const bs = m.read32(b - 8);
+          const bs = u32[(b - 8) >>> 2];
           // (a free block is used only if it is one: inside this heap, marked free, header and footer agreeing — a link
           // the program overwrote after freeing a block can point anywhere, even into another heap or a thread's
-          // stack, with any size: the rest of that list is dropped (leaked) rather than handed out)
-          if (!this.freeBlockOk(b, bs)) { if (prev) m.write32(prev, 0); else this.heads[c] = 0; this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1; break; }
+          // stack, with any size: the rest of that list is dropped (leaked) rather than handed out. freeBlockOk, inline)
+          const ch = this.chunkOf(b);
+          if (ch === null || u32[(b - 4) >>> 2] !== MAGIC_FREE || bs < MIN_USER || (bs & 7) !== 0 || b + bs + FTR + HDR > ch.base + ch.size || u32[(b + bs) >>> 2] !== bs) {
+            if (prev) m.write32(prev, 0); else this.heads[c] = 0;
+            this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1;
+            break;
+          }
           if (bs >= size) {
             this.unlink(b, c);
             const rem = bs - size;
@@ -104,17 +130,40 @@ export class Heap {
               this.setFree(b + size + FTR + HDR, rem - FTR - HDR);
             }
             m.write32(b - 4, MAGIC_USED);
-            if (zero) m.fill(b, m.read32(b - 8), 0);
+            if (zero) zeroFill(m, b, u32[(b - 8) >>> 2]);
             if (globalThis.ORTHROS_HEAP_WATCH && (b >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: alloc(${size}) -> ${b.toString(16)} from free block of ${bs} in class ${c} (chunk ${JSON.stringify(this.chunkOf(b))})`);
             return b;
           }
-          prev = b; b = m.read32(b);
+          prev = b; b = u32[b >>> 2];
           if (!plausible(b)) break; // (a list overwritten by the program: its rest ignored)
+          // (links the program rewrote into a loop of free blocks too small for the request: the walk would never end.
+          // Brent's cycle detection — `mark` moves to the current block after 1, 2, 4... steps; meeting it again means
+          // the walk came back — then the list is cut where it closes, see cutLoop. A walk that ends is not affected)
+          if (b === mark) { this.cutLoop(c, mark); break; }
+          if (++steps === span) { mark = b; span *= 2; steps = 0; }
         }
       }
       if (!this.grow(size + HDR + FTR + 32)) return 0;
     }
     return 0;
+  }
+
+  /**
+   * The free list of class `c` loops back on itself through block `inLoop` (alloc found it twice; the links on the way
+   * are those of blocks it checked): the last block of the loop, whose link leads back to its first, ends the list —
+   * every block stays in it once.
+   */
+  cutLoop(c, inLoop) {
+    const u32 = this.mem.u32;
+    let len = 1;
+    for (let p = u32[inLoop >>> 2]; p !== inLoop; p = u32[p >>> 2]) len++;
+    let first = this.heads[c], ahead = first;
+    for (let i = 0; i < len; i++) ahead = u32[ahead >>> 2];
+    while (first !== ahead) { first = u32[first >>> 2]; ahead = u32[ahead >>> 2]; }
+    let last = first;
+    for (let i = 1; i < len; i++) last = u32[last >>> 2];
+    this.mem.write32(last, 0);
+    this.stats.loopedLists = (this.stats.loopedLists ?? 0) + 1;
   }
 
   /** @returns {boolean} */
@@ -182,7 +231,7 @@ export class Heap {
         const rem = avail - size;
         if (rem >= SPLIT_MIN) { m.write32(addr - 8, size); m.write32(addr + size, size); this.setFree(addr + size + FTR + HDR, rem - FTR - HDR); }
         else { m.write32(addr - 8, avail); m.write32(addr + avail, avail); }
-        if (zero) m.fill(addr + old, m.read32(addr - 8) - old, 0);
+        if (zero) zeroFill(m, addr + old, m.read32(addr - 8) - old);
         if (globalThis.ORTHROS_HEAP_WATCH && (addr >>> 0) === (globalThis.ORTHROS_HEAP_WATCH >>> 0)) this.watchLog?.(`heap ${this.tag}: realloc in place ${addr.toString(16)} ${old} -> ${size} with next free ${nextU.toString(16)} of ${ns} (chunk ${JSON.stringify(this.chunkOf(addr))})`);
         return addr;
       }
@@ -191,7 +240,7 @@ export class Heap {
     const n = this.alloc(size, false);
     if (!n) return 0;
     m.copy(n, addr, old);
-    if (zero) m.fill(n + old, size - old, 0);
+    if (zero) zeroFill(m, n + old, size - old);
     this.free_(addr);
     return n;
   }
@@ -199,8 +248,24 @@ export class Heap {
   inHeap(addr) { return this.chunkOf(addr) !== null; }
   /** the chunk holding user address `addr` (between its sentinels), or null */
   chunkOf(addr) {
+    const g = this.gmap;
+    if (g !== null) {
+      const i = g[addr >>> GRAN_SHIFT]; // (any number: >>> gives 0..65535)
+      if (i === 0) return null;
+      if (i !== SHARED) { const c = this.chunks[i - 1]; return addr >= c.base + 16 + HDR && addr < c.base + c.size - 8 ? c : null; }
+    }
+    return this.chunkScan(addr);
+  }
+  /** chunkOf by a linear scan (few chunks; granules shared by two chunks) */
+  chunkScan(addr) {
     for (const c of this.chunks) if (addr >= c.base + 16 + HDR && addr < c.base + c.size - 8) return c;
     return null;
+  }
+  /** enter chunk `i` in the granule map */
+  mapChunk(i) {
+    const g = /** @type {Uint16Array} */ (this.gmap), c = this.chunks[i];
+    const g0 = c.base >>> GRAN_SHIFT, g1 = (c.base + c.size - 1) >>> GRAN_SHIFT;
+    for (let k = g0; k <= g1; k++) g[k] = g[k] === 0 && i + 1 < SHARED ? i + 1 : SHARED;
   }
   validate(addr) { return addr === 0 || this.size(addr) >= 0; }
 
@@ -217,7 +282,8 @@ export class Heap {
   destroy() {
     for (const c of this.chunks) this.vmem.release(c.base);
     this.chunks = [];
-    this.stats = {}; // (brokenLists: free lists cut at a block that was not one, see alloc)
+    this.gmap = null;
+    this.stats = {}; // (brokenLists: free lists cut at a block that was not one; loopedLists: cut where they looped back; see alloc)
     this.heads.fill(0);
   }
 }

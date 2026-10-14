@@ -9,6 +9,7 @@ import { addTrigKernels } from './fpmath-trig.js';
 import { addAtanKernels } from './fpmath-atan.js';
 import { addNanKernels } from './fpmath-nan.js';
 import { addRoundKernels } from './fpmath-round.js';
+import { addX87ColdKernels } from './fpmath-x87cold.js';
 import { emitD3dxFast, D3DX_FAST_FIRST, D3DX_FAST_LAST, D3DX_F64_LOCALS } from './fast-d3dx.js';
 
 /**
@@ -28,6 +29,10 @@ export const MATH_KERNELS = Object.freeze([
   ['nan2', [T.f64, T.f64], [T.f64, T.i32]], // x87 NaN-operand rule: (result, raise IE) (fpmath-nan.js)
   ['arith24', [T.f64, T.f64, T.i32, T.i32], [T.f64]], // exact PC=24 rounding of an operation (fpmath-round.js)
   ['f32rc', [T.f64, T.i32], [T.f32]], // FST m32 under a directed rounding mode (fpmath-round.js)
+  // cold paths of the x87 arithmetic (fpmath-x87cold.js): the state block for IE, the operands, the result, the operation
+  ['x87ArithF32', [T.i32, T.f32, T.f32, T.f32, T.i32], [T.f32, T.i32]], // 24-bit float result outside the normal range
+  ['x87RoundF32', [T.i32, T.f64, T.f64, T.f64, T.i32], [T.f32, T.i32]], // 24-bit rounding of a double result: rare cases
+  ['x87NanArith', [T.i32, T.f64, T.f64], [T.f64]], // NaN result of a double operation: the x87 rule, IE
 ]);
 
 export const EXIT_TRANSLATE = 7;
@@ -107,6 +112,8 @@ function chainStubCode(regionType, countChains, tailCalls = true) {
 // small block of per-process constants used by those implementations.
 export const FAST_TABLE = JIT_SCRATCH_BASE;
 export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle, +4 non-zero: the bindings' filter off (DEFER_F_TEX / STREAM / IB; measurement)
+/** the objects whose reference counts queued calls may change (REFS_SLOTS words, see DEFER_REFS) */
+export const REFS_SET = PROC_CONSTS + 0x100;
 /**
  * Deferred COM calls: state setters of the Direct3D devices (they always succeed and their effect is
  * only observable through other device calls) are recorded by the WASM fast path in a queue in guest
@@ -145,9 +152,30 @@ export const DEFER_F_RS = 1 << 18, DEFER_F_TSS = 1 << 19, DEFER_F_SAMP = 1 << 20
  * kept by the device (Device8.syncRefShadow and its setters) and forgotten by a queued effect commit that may bind them
  */
 export const DEFER_F_TEX = 1 << 24, DEFER_F_STREAM = 1 << 25, DEFER_F_IB = 1 << 26;
-export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB;
-/** a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them) */
+/**
+ * The same filter for the fixed-function lights, the material and the Direct3D 9 FVF: a kind number in bits 27-29 of the
+ * spec (DEFER_FX_*) — LightEnable of lights 0..7 (SHADOW_LIGHTON: the BOOL), SetLight of lights 0..7 and SetMaterial
+ * compared word for word with the structure they point to (SHADOW_LIGHT: 26 words per light, SHADOW_MATERIAL: 17),
+ * SetFVF (SHADOW_FVF). An entry is known only with a word for which the call changes nothing: the handlers compare a
+ * light's type as an integer (stored in a float: known below 2^24) and the other members as floats (a NaN, never equal
+ * to itself, is unknown; -0 and +0 are equal: either one found changes nothing) — d3d8.js shadowLight / shadowMaterial
+ * write them so, and the fast path likewise when it queues a call. DEFER_F_FORGET: queuing the call forgets the entries
+ * instead: DEFER_FX_DECL (SetVertexDeclaration, which resets the FVF) is never filtered and forgets SHADOW_FVF. A queued
+ * effect commit (DEFER_STATES) forgets SHADOW_FVF and SHADOW_LIGHTON as well: a pass may set them.
+ */
+export const DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_MASK = 7 << 27;
+export const DEFER_F_FORGET = 1 << 30;
+export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB | DEFER_FX_MASK;
+/**
+ * a queued call that may change COM reference counts (binding a texture, a buffer; an effect pass applying them). The
+ * queue's +4 word says whose: 0 nobody, REFS_ANY anyone, else the number of entries at REFS_SET — [object, change of its
+ * count once the queue has run, releases among it]: a Direct3D 9 binding whose shadow entry was known adds +1 to the
+ * object it binds and -1 to the one it replaces; any other, anyone. AddRef / Release stay on the fast path and return the
+ * count the object will have once the queue has run (unlisted: no change); a Release that would leave 0 at the queue's
+ * lowest point (all its releases before its bindings), the last reference included, goes to JavaScript.
+ */
 export const DEFER_REFS = 1 << 21;
+export const REFS_ANY = 0xffffffff, REFS_SLOTS = 16, REFS_ENTRY = 12;
 /**
  * a queued call that may change device states (an effect's CommitChanges applying its pass): the shadow entries listed
  * by the object's commit list (+20: COMMIT_LIST) are forgotten when it is queued — [shadow block, count, entry
@@ -161,13 +189,23 @@ export const COMMIT_LIST = 20;
  * and a null pointer, go to JavaScript at once)
  */
 export const DEFER_RAW = 1 << 23, DEFER_RAW_MAX = 1024;
-export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_TEX = SHADOW_SAMP + 16 * 16, SHADOW_STREAM = SHADOW_TEX + 16, SHADOW_IB = SHADOW_STREAM + 3 * 16, SHADOW_ENTRIES = SHADOW_IB + 1, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
+export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40, SHADOW_TEX = SHADOW_SAMP + 16 * 16, SHADOW_STREAM = SHADOW_TEX + 16, SHADOW_IB = SHADOW_STREAM + 3 * 16;
+/** D3DLIGHT8/9 and D3DMATERIAL8/9 in words; lights 0..SHADOW_LIGHTS-1 shadowed */
+export const LIGHT_WORDS = 26, MATERIAL_WORDS = 17, SHADOW_LIGHTS = 8;
+export const SHADOW_FVF = SHADOW_IB + 1, SHADOW_LIGHTON = SHADOW_FVF + 1, SHADOW_LIGHT = SHADOW_LIGHTON + SHADOW_LIGHTS, SHADOW_MATERIAL = SHADOW_LIGHT + LIGHT_WORDS * SHADOW_LIGHTS;
+export const SHADOW_ENTRIES = SHADOW_MATERIAL + MATERIAL_WORDS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
 export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
 export const FID_ADDREF = 21, FID_RELEASE = 22;
 /** GetTickCount's fast path (timeGetTime's is 19: they step differently, core/timer-res.js) */
 export const FID_TICKCOUNT = 28;
+/**
+ * IDirect3DSurface8/9::GetDesc on the fast path (FID_SURF_DESC): a surface's COM object keeps at +12 the address of its
+ * D3DSURFACE_DESC (SURF_DESC_BYTES, right after the object: d3d8.js Surface.ptrOf — a surface's description never
+ * changes), copied to the caller's structure
+ */
+export const FID_SURF_DESC = 29, SURF_DESC_BYTES = 32;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 /** +0 bytes used, +4 nonzero when a queued record may change reference counts (DEFER_REFS), +8 nonzero when one may
  * change device states (DEFER_STATES), records from +16 */
@@ -183,16 +221,25 @@ export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice9', [['SetTextureStageState', 4]], DEFER_F_TSS),
   ...deferSpecs('IDirect3DDevice9', [['SetSamplerState', 4]], DEFER_F_SAMP),
-  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3],
-    ['SetMaterial', 2, 1, 17], ['SetFVF', 2], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetVertexDeclaration', 2],
+  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2],
     ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4], ['SetSoftwareVertexProcessing', 2]]),
+  ...deferSpecs('IDirect3DDevice9', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
+  ...deferSpecs('IDirect3DDevice9', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
+  ...deferSpecs('IDirect3DDevice9', [['LightEnable', 3]], DEFER_FX_LIGHTON),
+  ...deferSpecs('IDirect3DDevice9', [['SetFVF', 2]], DEFER_FX_FVF),
+  ...deferSpecs('IDirect3DDevice9', [['SetVertexDeclaration', 2]], DEFER_FX_DECL | DEFER_F_FORGET),
+  // draws from buffers (DEFER_DRAWS)
+  ...deferSpecs('IDirect3DDevice9', [['DrawIndexedPrimitive', 7], ['DrawPrimitive', 4]]),
+  ...deferSpecs('IDirect3DDevice8', [['DrawIndexedPrimitive', 6], ['DrawPrimitive', 4]]),
   ...deferSpecs('IDirect3DDevice9', [['SetStreamSource', 5]], DEFER_REFS | DEFER_F_STREAM),
   ...deferSpecs('IDirect3DDevice9', [['SetIndices', 2]], DEFER_REFS | DEFER_F_IB),
   ...deferSpecs('IDirect3DDevice9', [['SetTexture', 3]], DEFER_REFS | DEFER_F_TEX),
   ...deferSpecs('IDirect3DDevice8', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice8', [['SetTextureStageState', 4]], DEFER_F_TSS),
-  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16], ['SetLight', 3, 2, 26], ['LightEnable', 3], ['SetMaterial', 2, 1, 17],
-    ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
+  ...deferSpecs('IDirect3DDevice8', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
+  ...deferSpecs('IDirect3DDevice8', [['LightEnable', 3]], DEFER_FX_LIGHTON),
   ...deferSpecs('IDirect3DDevice8', [['SetStreamSource', 4], ['SetIndices', 3], ['SetTexture', 3]], DEFER_REFS),
   // effect parameter setters: only effect calls observe the values (and a texture set here is released by JavaScript calls)
   ...deferSpecs('ID3DXEffect', [['SetBool', 3], ['SetInt', 3], ['SetFloat', 3], ['SetVector', 3, 2, 4], ['SetMatrix', 3, 2, 16], ['SetMatrixTranspose', 3, 2, 16]], DEFER_HANDLE),
@@ -202,9 +249,17 @@ export const DEFER_SPECS = {
   ...deferSpecs('ID3DXEffect', [['CommitChanges', 1]], DEFER_OBJ | DEFER_REFS | DEFER_STATES),
   ...deferSpecs('ID3DXEffect', [['EndPass', 1]], DEFER_OBJ),
 };
+/**
+ * The draws from vertex / index buffers are queued too: they always return D3D_OK, and what they read — the device state,
+ * buffers, textures, render targets — changes only through queued calls (run before them, in order) or calls handled in
+ * JavaScript, which run the queue first (Vm.dispatchThunkBody): a draw sees what it would have seen at its call. (The UP
+ * draws read the caller's memory at the call: not queued.) Jit opts.deferDraws false: handled at the call (measurement).
+ */
+export const DEFER_DRAWS = new Set(['IDirect3DDevice9::DrawIndexedPrimitive', 'IDirect3DDevice9::DrawPrimitive', 'IDirect3DDevice8::DrawIndexedPrimitive', 'IDirect3DDevice8::DrawPrimitive']);
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
-  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27 };
+  'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27,
+  'com.dll!IDirect3DSurface8::GetDesc': 29, 'com.dll!IDirect3DSurface9::GetDesc': 29 };
 /** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
 export const TICK_BASE = 0x1000000;
 
@@ -261,7 +316,8 @@ export function buildRuntime(opts = {}) {
   // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
   // defined here once, imported by every region module like round24 (WASM -> WASM, D004)
   {
-    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m), ...addRoundKernels(m) };
+    const x = addX87ColdKernels(m);
+    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m), ...addRoundKernels(m), x87ArithF32: x.arithF32, x87RoundF32: x.roundF32, x87NanArith: x.nanArith };
     for (const [name] of MATH_KERNELS) m.exportFunc(name, k[name]);
   }
 
@@ -382,7 +438,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT) + 1;
+    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT, FID_SURF_DESC) + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -465,10 +521,19 @@ export function buildRuntime(opts = {}) {
             kind(DEFER_F_SAMP, () => { c.get(A1).i32(16).ge_u().get(A2).i32(16).ge_u().or().br_if(nofilter); c.get(A1).i32(16).mul().get(A2).add().i32(SHADOW_SAMP).add().set(TEB); c.get(SP).i32(16).add().set(VP); });
             kind(DEFER_F_TEX, () => { c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.get(A1).i32(16).ge_u().br_if(nofilter); c.get(A1).i32(SHADOW_TEX).add().set(TEB); c.get(SP).i32(12).add().set(VP); });
             kind(DEFER_F_STREAM, () => { c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.get(A1).i32(16).ge_u().br_if(nofilter); c.get(A1).i32(3).mul().i32(SHADOW_STREAM).add().set(TEB); c.get(SP).i32(12).add().set(VP); c.i32(3).set(KC); });
+            // (lights, material, FVF: DEFER_FX_*; a structure's words from VP = its pointer)
+            const xkind = (k, emit) => { c.get(TM).i32(DEFER_FX_MASK).and().i32(k).eq(); const i = c.if_(); emit(); c.br(picked); c.end(); void i; };
+            const ptrOk = (p, words) => { c.get(p).eqz().get(p).i32(0x7fff0000 - 4 * words).ge_u().or().br_if(nofilter); };
+            xkind(DEFER_FX_LIGHTON, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); c.get(A1).i32(SHADOW_LIGHTON).add().set(TEB); c.get(SP).i32(12).add().set(VP); });
+            xkind(DEFER_FX_LIGHT, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); ptrOk(A2, LIGHT_WORDS); c.get(A1).i32(LIGHT_WORDS).mul().i32(SHADOW_LIGHT).add().set(TEB); c.get(A2).set(VP); c.i32(LIGHT_WORDS).set(KC); });
+            xkind(DEFER_FX_MATERIAL, () => { ptrOk(A1, MATERIAL_WORDS); c.i32(SHADOW_MATERIAL).set(TEB); c.get(A1).set(VP); c.i32(MATERIAL_WORDS).set(KC); });
+            xkind(DEFER_FX_FVF, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); });
+            xkind(DEFER_FX_DECL, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); }); // (never dropped: forgets the FVF)
             c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.i32(SHADOW_IB).set(TEB); c.get(SP).i32(8).add().set(VP); // (DEFER_F_IB)
             c.end(); void picked;
             c.get(FB).get(TEB).i32(3).shl().add().i32(16).add().set(FE); // (TEB reused: the entry index)
             const differs = c.block();
+            c.get(TM).i32(DEFER_FX_MASK).and().i32(DEFER_FX_DECL).eq().br_if(differs);
             c.i32(0).set(A2);
             const cmp = c.loop(); // every entry known and holding its value
             c.get(FE).get(A2).i32(3).shl().add().tee(FV).i32load(0).eqz().br_if(differs);
@@ -492,24 +557,75 @@ export function buildRuntime(opts = {}) {
           c.get(P).get(A2).i32(2).shl().add().get(SP).get(A2).i32(2).shl().add().i32load(4).i32store(8);
           c.get(A2).i32(1).add().set(A2); c.br(lp);
           c.end(); c.end(); void copy;
-          // the structure behind the pointer argument, copied after the arguments
+          // the structure behind the pointer argument, copied after the arguments (FB = the copy: TM keeps the spec,
+          // whose flags are read below)
           c.get(WD);
           const struct = c.if_();
           c.get(P).get(TM).i32(4).shr_u().i32(15).and().i32(2).shl().add().tee(A2).i32load(8).set(TEB); // TEB reused: source pointer
           c.get(TEB);
           const nonNull = c.if_();
-          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(TM).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
-          c.get(A2).get(TM).i32store(8);
+          c.get(P).get(N).i32(2).shl().add().i32(8).add().tee(FB).get(TEB).get(A0).get(N).i32(2).shl().sub().i32(8).sub().memcopy();
+          c.get(A2).get(FB).i32store(8);
           c.end(); void nonNull;
           c.end(); void struct;
           c.i32(DEFER_QUEUE).get(A1).get(A0).add().i32store(0);
-          c.get(TM).i32(DEFER_REFS).and(); const refs = c.if_(); c.i32(DEFER_QUEUE).i32(1).i32store(4); c.end(); void refs;
+          c.get(TM).i32(DEFER_REFS).and();
+          const refs = c.if_();
+          { // whose reference counts change (DEFER_REFS): the new binding +1, the one it replaces — the shadow entry's value,
+            // not yet overwritten below — -1, when the filter knew the entry (FE); else anyone (FV = entries, WD = object,
+            // A2 = entry index, TEB = entry address)
+            const done = c.block(); const any = c.block();
+            c.get(FE).eqz().br_if(any);
+            c.get(FE).i32load(0).eqz().br_if(any);
+            c.i32(DEFER_QUEUE).i32load(4).tee(FV).i32(REFS_SLOTS).gt_u().br_if(any); // (anyone already)
+            c.get(FE).i32load(4).get(VP).i32load(0).eq().br_if(done); // (the same buffer, another offset or stride: no count changes)
+            const add = (load, delta) => {
+              load(); c.tee(WD);
+              const nz = c.if_();
+              const have = c.block();
+              c.i32(0).set(A2);
+              const scan = c.loop(); // (its entry; a new one at the end)
+              c.get(A2).i32(REFS_ENTRY).mul().i32(REFS_SET).add().set(TEB);
+              c.get(A2).get(FV).eq();
+              const fresh = c.if_();
+              c.get(FV).i32(REFS_SLOTS).ge_u().br_if(any); // (no room: anyone)
+              c.get(TEB).get(WD).i32store(0); c.get(TEB).i32(0).i32store(4); c.get(TEB).i32(0).i32store(8);
+              c.get(FV).i32(1).add().set(FV); c.br(have);
+              c.end(); void fresh;
+              c.get(TEB).i32load(0).get(WD).eq().br_if(have);
+              c.get(A2).i32(1).add().set(A2); c.br(scan);
+              c.end(); void scan;
+              c.end(); void have;
+              c.get(TEB).get(TEB).i32load(4).i32(delta).add().i32store(4); // (the count's change once the queue has run)
+              if (delta < 0) c.get(TEB).get(TEB).i32load(8).i32(1).add().i32store(8); // (its releases: the queue's lowest point)
+              c.end(); void nz;
+            };
+            add(() => c.get(FE).i32load(4), -1);
+            add(() => c.get(VP).i32load(0), 1);
+            c.i32(DEFER_QUEUE).get(FV).i32store(4);
+            c.br(done);
+            c.end(); void any;
+            c.i32(DEFER_QUEUE).i32(REFS_ANY | 0).i32store(4);
+            c.end(); void done;
+          }
+          c.end(); void refs;
           c.get(FE);
-          const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j)
+          const known = c.if_(); // the shadow entries hold the values set from now on (A2 = j, WD = the word, TEB = the kind)
+          c.get(TM).i32(DEFER_FX_MASK).and().set(TEB);
           c.i32(0).set(A2);
           const wr = c.loop();
-          c.get(FE).get(A2).i32(3).shl().add().tee(FV).i32(1).i32store(0);
-          c.get(FV).get(VP).get(A2).i32(2).shl().add().i32load(0).i32store(4);
+          c.get(VP).get(A2).i32(2).shl().add().i32load(0).set(WD);
+          c.get(FE).get(A2).i32(3).shl().add().tee(FV);
+          { // known: not DEFER_F_FORGET; a light's type below 2^24 (stored as a float: exact); a member the handler
+            // compares as a float not a NaN (never equal to itself)
+            c.get(TM).i32(DEFER_F_FORGET).and(); const fg = c.if_(T.i32); c.i32(0); c.else_();
+            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(A2).eqz().and(); const ty = c.if_(T.i32); c.get(WD).i32(0x1000000).lt_u(); c.else_();
+            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(TEB).i32(DEFER_FX_MATERIAL).eq().or(); const fl = c.if_(T.i32); c.get(WD).i32(0x7fffffff).and().i32(0x7f800000).le_u(); c.else_(); c.i32(1); c.end(); void fl;
+            c.end(); void ty;
+            c.end(); void fg;
+          }
+          c.i32store(0);
+          c.get(FV).get(WD).i32store(4);
           c.get(A2).i32(1).add().tee(A2).get(KC).lt_u().br_if(wr);
           c.end(); void wr;
           c.end(); void known;
@@ -529,6 +645,8 @@ export function buildRuntime(opts = {}) {
             const inRange = c.if_(); c.get(FE).get(TEB).i32(3).shl().add().i32(0).i32store(16); c.end(); void inRange;
             c.get(A2).i32(1).add().set(A2); c.br(lp);
             c.end(); c.end(); void lpEnd;
+            // (and the FVF and the lights' switches, which commit lists do not name: a pass may set them)
+            for (let i = SHADOW_FVF; i < SHADOW_LIGHTON + SHADOW_LIGHTS; i++) c.get(FE).i32(0).i32store(16 + 8 * i);
             c.br(done);
             c.end(); void stale;
             c.i32(DEFER_QUEUE).i32(1).i32store(8);
@@ -562,12 +680,31 @@ export function buildRuntime(opts = {}) {
           // (only while no queued call may change counts: the value returned counts every reference taken so far)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
           c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled);
-          c.i32(DEFER_QUEUE).i32load(4).br_if(notHandled);
+          // (queued bindings: P = the change of this object's count once the queue has run, FB = the releases among it;
+          // anyone's count: JavaScript runs the queue first)
+          c.i32(0).set(P); c.i32(0).set(FB);
+          c.i32(DEFER_QUEUE).i32load(4).tee(TM);
+          const pend = c.if_();
+          c.get(TM).i32(REFS_SLOTS).gt_u().br_if(notHandled);
+          c.i32(0).set(N);
+          const found = c.block();
+          const scan = c.loop();
+          c.get(N).get(TM).ge_u().br_if(found);
+          c.get(N).i32(REFS_ENTRY).mul().i32(REFS_SET).add().tee(VP).i32load(0).get(A0).eq();
+          const hit = c.if_(); c.get(VP).i32load(4).set(P); c.get(VP).i32load(8).set(FB); c.br(found); c.end(); void hit;
+          c.get(N).i32(1).add().set(N); c.br(scan);
+          c.end(); void scan;
+          c.end(); void found;
+          c.end(); void pend;
+          // the count in memory moves now, the queued calls move it later; the value returned is the count once both have
           if (k === FID_ADDREF) c.get(A0).i32load(COM_REFS).i32(1).add().set(TM);
-          else { c.get(A0).i32load(COM_REFS).i32(1).sub().tee(TM).i32(1).lt_s().br_if(notHandled); } // (the last reference: JavaScript destroys)
+          else { // (the last reference — or one the queued releases could reach before their bindings: JavaScript; the count
+            // once the queue has run, at least this lowest point, is then at least 1 too)
+            c.get(A0).i32load(COM_REFS).i32(1).sub().tee(TM).get(FB).sub().i32(1).lt_s().br_if(notHandled);
+          }
           c.get(A0).get(TM).i32store(COM_REFS);
           c.i32(FAST_STATS).i32(FAST_STATS).i32load(4).i32(1).add().i32store(4);
-          c.get(STATE).get(TM); ret(1); break;
+          c.get(STATE).get(TM).get(P).add(); ret(1); break;
         }
         case 19: case FID_TICKCOUNT: // timeGetTime, GetTickCount: their JavaScript handlers' value (timer-res.js) from TICK_BASE
           c.get(STATE).call(k === 19 ? mmTimeIdx : tickCountIdx).f64c(TICK_BASE).f64add().i64trunc_sat_f64_s().wrap(); ret(0); break;
@@ -585,6 +722,14 @@ export function buildRuntime(opts = {}) {
           c.get(A2).eqz().get(A2).i32(0x7fff0000 - 64).ge_u().or().br_if(notHandled);
           c.get(A2).get(TM).i32(4).add().i32(PARAM_DESC_ENTRY - 4).memcopy();
           c.get(STATE).i32(0); ret(3); break;
+        }
+        case FID_SURF_DESC: { // GetDesc(this, desc): the surface's description, kept after its object (FB)
+          c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
+          c.get(A0).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled);
+          c.get(A1).eqz().get(A1).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled); // (null: JavaScript's error)
+          c.get(A1).get(FB).i32(SURF_DESC_BYTES).memcopy();
+          c.get(STATE).i32(0); ret(2); break;
         }
         default: // pure D3DX math (fast-d3dx.js)
           if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: VP + 1, notHandled, ret });
