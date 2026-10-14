@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
 import { VMem } from '../src/win32/vmem.js';
 import { Heap } from '../src/win32/heap.js';
+import { heapDamageLines } from '../src/core/vm.js';
 
 test('heap: frees next to an overwritten footer or free-list link stay inside the heap', () => {
   const mem = new GuestMemory();
@@ -76,4 +77,8 @@ test('heap: a free list the program turned into a loop is cut, the allocation go
   assert.equal(mem.read32(d), 0);
   assert.equal(heap.alloc(1250), c);
   assert.equal(heap.alloc(1050), d);
+  // the crash / hang report lists a heap whose only damage is a looping list
+  const clean = new Heap({ mem, vmem: new VMem(), tag: 'clean' });
+  heap.tag = 'looped';
+  assert.deepEqual(heapDamageLines([clean, heap]), ['heap looped: 0 overwritten boundary tags, 0 broken free lists, 2 looping free lists']);
 });

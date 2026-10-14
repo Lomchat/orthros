@@ -224,6 +224,13 @@ code), base → branch: boot to the menu (64 s) `HeapAlloc` 7.5 → 2.7 µs per 
 play 31.8 → 32.0 fps, `api` 4.0 → 3.8 ms per frame (`HeapFree` 1641 ms, 8.3 µs per call, before; below the 12
 costliest calls, under 754 ms, after). A single pair: the per-call figures are far outside any noise, the frame rates are not.
 
-Not done: after a growth, `alloc` walks the size classes again although the first pass found nothing — taking the new
-chunk's block directly gives the same block only when the first pass cut no list and the new block's class was empty;
-with walks of 1-4.6 blocks on average it is not worth the special case.
+Not done: after a growth, `alloc` walks the size classes again although the first pass found nothing. Taking the new
+chunk's block directly would return the same block in every case: the first pass only cut lists (broken or looping
+ones, the rest of every list it walked holds blocks too small), and `grow` links the new block at the head of its class,
+which is at least `classIndex(size)`, so the second pass reaches it after classes that still hold nothing large enough.
+The lists could differ only in a forged corner case: `link` writes the back link of the old head of the new block's
+class, and when the program built a fake free block whose header is that word, the second walk cuts the list holding
+it. Growth happens once per new chunk (1 MB or more), so the saved walk is not measurable; left as it is.
+
+The crash / hang report of `vm.js` lists every heap with overwritten boundary tags, broken free lists or looping free
+lists (`stats.badTags`, `brokenLists`, `loopedLists`).
