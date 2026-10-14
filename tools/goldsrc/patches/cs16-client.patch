@@ -1,0 +1,69 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1251583..1374434 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -18,6 +18,8 @@ endif()
+ option(BUILD_CLIENT "Build client library." ON)
+ option(BUILD_MAINUI "Build menu library." ON)
+ option(BUILD_SERVER "Build server library." ON)
++option(BUILD_YAPB "Build YaPB bots with the server library." ON)
++option(BUILD_EXTRAS "Download the bot graphs and pack extras.pk3." ON)
+ 
+ set(GAME_DIR "cstrike" CACHE STRING "Game directory name.")
+ set(CLIENT_INSTALL_DIR "cl_dlls" CACHE STRING "Client library location.")
+@@ -55,8 +57,10 @@ if(BUILD_SERVER)
+ 	# 	BUILD_IN_SOURCE 1
+ 	# 	INSTALL_COMMAND meson install -C build --destdir ${CMAKE_INSTALL_PREFIX}
+ 	# )
+-	add_subdirectory(3rdparty/yapb)
+-	set_target_postfix(yapb)
++	if(BUILD_YAPB)
++		add_subdirectory(3rdparty/yapb)
++		set_target_postfix(yapb)
++	endif()
+ 
+ 	set(XASH_COMPAT ON CACHE BOOL "" FORCE)
+ 	add_subdirectory(3rdparty/ReGameDLL_CS)
+@@ -68,6 +72,7 @@ if(BUILD_MAINUI)
+ 	add_subdirectory(3rdparty/mainui_cpp)
+ endif()
+ 
++if(BUILD_EXTRAS)
+ set(GRAPHS_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/graphs")
+ 
+ execute_process(
+@@ -111,6 +116,7 @@ else()
+ 		DESTINATION ${GAME_DIR}
+ 	)
+ endif()
++endif()
+ 
+ if(VITA)
+ 	install(
+diff --git a/cl_dll/cdll_int.cpp b/cl_dll/cdll_int.cpp
+index dc4405b..70818ee 100644
+--- a/cl_dll/cdll_int.cpp
++++ b/cl_dll/cdll_int.cpp
+@@ -340,7 +340,8 @@ int DLLEXPORT HUD_GetRenderInterface( int version, render_api_t *renderfuncs, re
+ 	// *callback = renderInterface;
+ 
+ 	// we have here a Host_Error, so check Xash for version
+-	if( g_iXash < MIN_XASH_VERSION )
++	// (an engine built without a build number, as the WebAssembly one, reports -1)
++	if( g_iXash < MIN_XASH_VERSION && g_iXash != -1 )
+ 	{
+ 		gRenderAPI.Host_Error("Xash3D version check failed!\nPlease update your Xash3D!\n");
+ 	}
+diff --git a/common/interface.h b/common/interface.h
+index 05e8b61..67b6510 100644
+--- a/common/interface.h
++++ b/common/interface.h
+@@ -23,7 +23,7 @@
+ 
+ #include "build.h"
+ 
+-#if XASH_LINUX == 1
++#if XASH_LINUX == 1 || XASH_EMSCRIPTEN == 1
+ #include <dlfcn.h> // dlopen,dlclose, et al
+ #include <unistd.h>
+ #endif
