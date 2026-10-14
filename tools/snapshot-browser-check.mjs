@@ -82,6 +82,7 @@ try {
     const s = await page.evaluate(() => ({ status: window.orthros.status, fps: window.orthros.stats?.fps, failed: window.orthros.snapshotFailed ?? null, restored: window.orthros.logs.some((l) => /restored from a snapshot/.test(l)) }));
     log(`after: ${JSON.stringify(s)}`);
     if (s.failed || !s.restored || s.status !== 'running') process.exitCode = 1;
+    if (!(s.fps >= 5)) { log('slow after the restore: the last log lines'); for (const l of await page.evaluate(() => window.orthros.logs.slice(-40))) console.log('  ' + l.slice(0, 400)); }
   }
 } catch (e) {
   if (e === null) { /* --once: done */ } else {
