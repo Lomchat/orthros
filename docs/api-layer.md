@@ -209,6 +209,28 @@ waits more for the render worker during the BFME2 load screen (`render` 2.4 -> 2
 uploaded there), which takes back part of the gain in time to play. The helper pool's work in the BFME2 load: 2 465 jobs,
 608 ms waited for the helpers (base) -> 1 233 jobs (256 x 256 loads only), 383 ms waited.
 
+Re-measured (2026-10-14, after the rebase: base `ca01ae8` and this branch at the same time in two browser slots,
+`--gl-discard`, launch order alternated, 1-minute load 20-56; "API" is the API time of the load + loadscreen phases,
+"per frame" that time over their frames):
+
+| Run (pair, first launched) | load + loadscreen | API time (per frame) | FilterTexture / LoadSurfaceFromMemory |
+| --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 33.1 -> 30.3 s | 6 520 -> 3 879 ms (28.3 -> 16.3) | 1 624 -> 535 / 1 201 -> 593 ms |
+| BFME2, variant first (no learned GL programs on either side) | 31.6 -> 27.1 s | 5 504 -> 3 164 ms (24.7 -> 15.9) | 1 403 -> 521 / 1 062 -> 548 ms |
+| RotWK rotwk-startup, variant first | 37.0 -> 33.0 s | 4 167 -> 2 914 ms (16.7 -> 13.7) | LoadSurfaceFromMemory 125 -> 43 ms |
+| RotWK, base first | 32.3 -> 31.8 s | 3 730 -> 2 786 ms (21.3 -> 13.9) | 112 -> 42 ms |
+| RotWK, base first (no learned GL programs on either side) | 28.0 -> 35.4 s (variant: I/O wait 2.8 -> 8.8 s) | 3 034 -> 2 291 ms (15.8 -> 12.3) | 382 -> 148 / 528 -> 246 ms |
+| BFME1 bfme-phases (map load), base first | 72.7 -> 73.5 s | 2 627 -> 2 686 ms | (none; GetDesc 158 -> 0 ms) |
+| BFME1, variant first | 68.1 -> 71.2 s | 2 444 -> 2 454 ms | (none; GetDesc 141 -> 0 ms) |
+
+The API time of the BFME2 and RotWK load screens drops by 25-45 % in every pair (the spread between pairs is smaller
+than the gain); the time to play follows in four pairs of five (the fifth lost on I/O wait, not API time). BFME1's map
+load is guest-bound and uses no D3DX image work: the same time within the spread (the `GetDesc` fast path removes
+~150 ms of API time, lost in the noise). Runs not counted: one BFME2 pair and one BFME1 pair where the menu was too
+slow under the server's load for the scenario's clicks to start the map (both sides), and a BFME1 variant that hit the
+intermittent access violation in the game's heap code during the menu, which base `main` also shows (the race under
+investigation in the green-thread scheduler; no D3DX image call there).
+
 ## Measuring within a session
 
 Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
