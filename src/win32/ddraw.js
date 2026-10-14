@@ -124,6 +124,7 @@ export function registerDirectDraw(api, vm) {
       return DD_OK;
     }
   }
+  for (const C of [DirectDraw, DirectDrawView]) vm.snap.cls(C, { name: `ddraw.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, pp, iid, outer) => {
     vm.firstD3DCall ??= { name: 'DirectDrawCreate', from: c.proc.symbolize(c.retAddr), apiCalls: vm.apiCalls };

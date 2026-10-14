@@ -309,6 +309,7 @@ export function registerDirectInput(api, vm) {
     EnumDevicesBySemantics() { return DI_OK; }
     ConfigureDevices() { return DI_OK; }
   }
+  for (const C of [Device, DirectInput]) vm.snap.cls(C, { name: `dinput8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, iidArg, outArg, version) => {
     const iid = iidArg >= 0 ? readGuid(mem, c.arg(iidArg)) : IID_IDirectInput7A;

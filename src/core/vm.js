@@ -14,6 +14,7 @@ import { Scheduler, WaitUnwind, PARK } from './sched.js';
 import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { timerResFromDebug } from './timer-res.js';
+import { vmSnapRegistry, sealVmSnapRegistry } from './vm-snapshot.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
@@ -58,6 +59,8 @@ export class Vm {
     this.sliceInsns = opts.sliceInsns || Number(globalThis.ORTHROS_SLICE_INSNS) || SLICE_INSNS;
     this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
     this.api = new ApiRegistry(this.mem);
+    /** what a snapshot of this machine holds (vm-snapshot.js): its modules declare their own state as they register */
+    this.snap = vmSnapRegistry(this);
     this.interp = new Interp(this.mem, null);
     // what faults in the null page (nullpage.js: 'writes' by default, true reads too — ?dbg=ORTHROS_NULL_READS=1 —, false)
     const nullPage = opts.nullPage ?? nullPageMode();
@@ -146,6 +149,7 @@ export class Vm {
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
+    sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }

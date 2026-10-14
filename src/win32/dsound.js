@@ -446,6 +446,7 @@ export function registerDirectSound(api, vm) {
     Initialize() { return this.initialized ? DSERR_ALLOCATED : DS_OK; }
     VerifyCertification(c) { c.out32(1, 0 /* DS_UNCERTIFIED */); return DS_OK; }
   }
+  for (const C of [Listener3D, Buffer3D, Audio, Buffer, DirectSound]) vm.snap.cls(C, { name: `dsound.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, outArg, v8) => {
     const pp = c.arg(outArg);

@@ -1,6 +1,7 @@
 // COM plumbing: interfaces are vtables of API thunks living in guest memory; objects are small
 // guest blocks [vtable, marker, id] whose methods dispatch to JS implementations. Unimplemented
 // methods are traced (once per method) and return E_NOTIMPL so the caller keeps going.
+import { snapshotClass } from '../core/snapshot.js';
 import { E } from './errors.js';
 import { COM_MARKER, COM_REFS } from '../cpu/jit/runtime.js';
 /** 'comx' log kind: the COM trace without the per-draw state setters, draws, buffer locks and reference counting */
@@ -39,6 +40,7 @@ class ComObject {
   get refs() { return this.mem.read32(this.ptr + COM_REFS) | 0; }
   set refs(v) { this.mem.write32(this.ptr + COM_REFS, v >>> 0); }
 }
+snapshotClass(ComObject, { skip: ['fns'], init: (o) => { o.fns = null; } }); // (snapshots, core/vm-snapshot.js: fns a cache)
 
 export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
@@ -59,6 +61,19 @@ export class Com {
     this.nextId = 1;
     this.tracedMissing = new Set();
     this.interface('IUnknown', IID_IUnknown, null, [['QueryInterface', 2], ['AddRef', 0], ['Release', 0]]);
+    // (a method's handler is defined when its interface first gets a vtable: a restored Vm defines it by name)
+    this.api.lazyDefs.set('com.dll', (fname) => {
+      const [name, method] = fname.split('::'), iface = this.interfaces.get(name), i = iface?.methods.findIndex((m) => m.name === method) ?? -1;
+      if (i >= 0) this.defineMethod(iface, i);
+      return this.api.lookup('com', fname);
+    });
+  }
+
+  /** The API handler of method `i` of `iface` (its thunk dispatches to the object's implementation). */
+  defineMethod(iface, i) {
+    const m = iface.methods[i], fname = `${iface.name}::${m.name}`;
+    if (!this.api.lookup('com', fname)) this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i), { com: { iface, index: i } }] });
+    return fname;
   }
 
   /**
@@ -84,14 +99,7 @@ export class Com {
     if (iface.vtable) return iface.vtable;
     const n = iface.methods.length;
     const vt = proc.processHeap.alloc(n * 4);
-    for (let i = 0; i < n; i++) {
-      const m = iface.methods[i];
-      const fname = `${iface.name}::${m.name}`;
-      if (!this.api.lookup('com', fname)) {
-        this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i), { com: { iface, index: i } }] });
-      }
-      this.mem.write32(vt + 4 * i, this.api.thunkFor('com', fname));
-    }
+    for (let i = 0; i < n; i++) this.mem.write32(vt + 4 * i, this.api.thunkFor('com', this.defineMethod(iface, i)));
     iface.vtable = vt;
     return vt;
   }

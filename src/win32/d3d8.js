@@ -750,6 +750,7 @@ export function registerDirect3D8(api, vm) {
       return D3D_OK;
     }
   }
+  for (const C of [Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, Direct3D]) vm.snap.cls(C, { name: `d3d8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   api.define('d3d8.dll', {
     Direct3DCreate8: [1, (c) => {

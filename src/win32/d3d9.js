@@ -423,6 +423,7 @@ export function registerDirect3D9(api, vm) {
       return D3D_OK;
     }
   }
+  for (const C of [Device9, Shader, VertexDecl, StateBlock, SwapChain, Query, Direct3D9]) vm.snap.cls(C, { name: `d3d9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   api.define('d3d9.dll', {
     Direct3DCreate9: [1, (c) => {

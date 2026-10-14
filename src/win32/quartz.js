@@ -195,6 +195,7 @@ export function registerQuartz(api, vm) {
     setVisible(v) { this.win.visible = v; this.player.refresh(); }
     windowChanged() { if (this.win.visible) this.player.refresh(); }
   }
+  for (const C of [Graph]) vm.snap.cls(C, { name: `quartz.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   // ---------------------------------------------------------------- the interfaces
   const GRAPH = {

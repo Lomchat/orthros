@@ -31,6 +31,7 @@ export function registerD3DX9(api, vm) {
     GetBufferSize() { return this.size; }
     destroy() { this.proc.vmem.release(this.addr); }
   }
+  for (const C of [DxBuffer]) vm.snap.cls(C, { name: `d3dx9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
   /** a new ID3DXBuffer holding `bytes` (Uint8Array) or `n` zero bytes */
   const newBuffer = (c, bytes, n = bytes?.length ?? 0) => { const b = new DxBuffer(c.proc, n); if (bytes) mem.writeBytes(b.addr, bytes); return com.create(c.proc, 'ID3DXBuffer', b); };
   const textBuffer = (c, s) => newBuffer(c, Uint8Array.from(s + '\0', (ch) => ch.charCodeAt(0) & 0xff));

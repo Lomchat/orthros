@@ -112,6 +112,7 @@ export function registerMci(api, vm) {
     }
     close() { this.finishNotify(NOTIFY_ABORTED); this.player.close(); devices.delete(this.id); log(`${this.name}: closed`); }
   }
+  for (const C of [Device]) vm.snap.cls(C, { name: `mci.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const byName = (n) => {
     if (n === undefined) return null;

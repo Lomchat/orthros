@@ -99,10 +99,10 @@ export function registerKernel32(api, vm) {
   for (const [k, v] of Object.entries(SIGNATURES)) api.signatures.set(k, v);
   const mem = vm.mem;
   const K = {};
-  const named = new Map(); // named kernel objects
-  const mutexStates = { mem, next: 0, free: [], // (Mutex state slots)
+  const named = vm.snap.known('kernel32.named', new Map()); // named kernel objects
+  const mutexStates = vm.snap.known('kernel32.mutexStates', { mem, next: 0, free: [], // (Mutex state slots)
     alloc() { return this.free.length ? this.free.pop() : this.next < MUTEX_STATE_COUNT ? MUTEX_STATES + MUTEX_STATE_SIZE * this.next++ : 0; },
-    release(a) { this.free.push(a); } };
+    release(a) { this.free.push(a); } });
 
   const createNamed = (ctx, nameArg, make) => {
     const name = nameArg;
@@ -297,7 +297,7 @@ export function registerKernel32(api, vm) {
     const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0 };
     if (ms === 0) {
       st.zero++;
-      const now = performance.now();
+      const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
       st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
       st.last = now; st.lastApi = vm.apiCalls;
       if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; return vm.sched.park(t, NEVER, 1, 'sleep') === PARK ? PARK : undefined; }

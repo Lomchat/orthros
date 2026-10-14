@@ -827,6 +827,7 @@ export function defineEffects(X, vm, h) {
       if (s.ps !== undefined) this.call(c, M.SetPixelShader, 1, s.ps);
     }
   }
+  for (const C of [Effect]) vm.snap.cls(C, { name: `d3dx9-effect.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, dev, src, len, pEffect, pErrors, flags) => {
     if (pEffect) mem.write32(pEffect, 0);
