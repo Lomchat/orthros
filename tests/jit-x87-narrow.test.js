@@ -197,3 +197,37 @@ test('narrow products and quotients chained past both ends of the double range u
     }
   }
 });
+
+test('narrow values survive the exits of a block (x87ExitState keeps g24Mask for the path that continues)', async () => {
+  // fld m32 ; fld m32 ; fmul st, st(1) ; fmul m32 ; fmul st, st(1) ; fstp m64 ; fstp m64 ; hlt under truncation at 24 bits:
+  // every product of two narrow values has a cold exit (roundTowardZero24); the knowledge must be the same after it
+  const { Emitter } = await import('../src/cpu/jit/translate.js');
+  const K = DATA;
+  const code = Uint8Array.from([0xd9, 0x05, ...le(K), 0xd9, 0x05, ...le(K + 4), 0xd8, 0xc9, 0xd8, 0x0d, ...le(K + 8), 0xd8, 0xc9,
+    0xdd, 0x1d, ...le(OUT), 0xdd, 0x1d, ...le(OUT + 8), 0xf4]);
+  const P = Emitter.prototype, exitState = P.x87ExitState, restore = P.x87Restore;
+  const seen = [];
+  P.x87ExitState = function () { const s = exitState.call(this); this._g24AtExit = this.g24Mask; return s; };
+  P.x87Restore = function (s) { const at = this._g24AtExit; restore.call(this, s); if (at !== undefined) seen.push([at, this.g24Mask]); };
+  try {
+    const run = (useJit) => {
+      const mem = new GuestMemory();
+      const cpu = new CpuState(mem, THREAD_STATES_BASE);
+      const I = new Interp(mem, cpu);
+      cpu.reset();
+      mem.writeF32(K, 1.5); mem.writeF32(K + 4, Math.fround(0.7)); mem.writeF32(K + 8, Math.fround(1.1));
+      mem.writeBytes(CODE, code);
+      mem.write16(cpu.base + ST.FPU_CW, 0x0c7f);
+      cpu.eip = CODE; cpu.esp = DATA + 0x10000; cpu.eflags = F.RESERVED1 | F.IF;
+      const end = CODE + code.length - 1;
+      let r;
+      if (useJit) { const jit = new Jit(mem, I, { smc: true }); jit.cpu = cpu; jit.boundaries = new Set([end]); do r = jit.run({ stopAt: end, maxInsns: 1e7 }); while (r === EXIT.TIMESLICE); }
+      else r = I.run({ stopAt: end, maxInsns: 1e7 });
+      assert.equal(r, EXIT.HALT);
+      return Buffer.from(mem.bytes(OUT, 16)).toString('hex');
+    };
+    assert.equal(run(true), run(false));
+  } finally { P.x87ExitState = exitState; P.x87Restore = restore; delete P._g24AtExit; }
+  assert.ok(seen.some(([at]) => at !== 0), 'exits taken with narrow values known');
+  for (const [at, after] of seen) assert.equal(after, at, 'g24Mask after the exit\'s restore');
+});

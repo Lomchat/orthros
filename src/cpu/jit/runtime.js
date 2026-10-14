@@ -9,6 +9,7 @@ import { addTrigKernels } from './fpmath-trig.js';
 import { addAtanKernels } from './fpmath-atan.js';
 import { addNanKernels } from './fpmath-nan.js';
 import { addRoundKernels } from './fpmath-round.js';
+import { addX87ColdKernels } from './fpmath-x87cold.js';
 import { emitD3dxFast, D3DX_FAST_FIRST, D3DX_FAST_LAST, D3DX_F64_LOCALS } from './fast-d3dx.js';
 
 /**
@@ -28,6 +29,10 @@ export const MATH_KERNELS = Object.freeze([
   ['nan2', [T.f64, T.f64], [T.f64, T.i32]], // x87 NaN-operand rule: (result, raise IE) (fpmath-nan.js)
   ['arith24', [T.f64, T.f64, T.i32, T.i32], [T.f64]], // exact PC=24 rounding of an operation (fpmath-round.js)
   ['f32rc', [T.f64, T.i32], [T.f32]], // FST m32 under a directed rounding mode (fpmath-round.js)
+  // cold paths of the x87 arithmetic (fpmath-x87cold.js): the state block for IE, the operands, the result, the operation
+  ['x87ArithF32', [T.i32, T.f32, T.f32, T.f32, T.i32], [T.f32, T.i32]], // 24-bit float result outside the normal range
+  ['x87RoundF32', [T.i32, T.f64, T.f64, T.f64, T.i32], [T.f32, T.i32]], // 24-bit rounding of a double result: rare cases
+  ['x87NanArith', [T.i32, T.f64, T.f64], [T.f64]], // NaN result of a double operation: the x87 rule, IE
 ]);
 
 export const EXIT_TRANSLATE = 7;
@@ -261,7 +266,8 @@ export function buildRuntime(opts = {}) {
   // ---- transcendental kernels (x87 F2XM1/FYL2X/FYL2XP1/FSCALE/FSIN/FCOS/FSINCOS/FPTAN/FPATAN):
   // defined here once, imported by every region module like round24 (WASM -> WASM, D004)
   {
-    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m), ...addRoundKernels(m) };
+    const x = addX87ColdKernels(m);
+    const k = { ...addExpKernels(m), ...addTrigKernels(m), ...addAtanKernels(m), ...addNanKernels(m), ...addRoundKernels(m), x87ArithF32: x.arithF32, x87RoundF32: x.roundF32, x87NanArith: x.nanArith };
     for (const [name] of MATH_KERNELS) m.exportFunc(name, k[name]);
   }
 
