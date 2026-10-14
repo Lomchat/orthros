@@ -12,7 +12,7 @@ import { THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, COM_MARKER, FAST_STATS, FX_SLOTS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, COM_MARKER, FAST_STATS, FX_SLOTS, FX_OWNER, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX } from '../src/cpu/jit/runtime.js';
 import { d3dEnv } from './d3d-random.js';
 import { defineEffects } from '../src/win32/d3dx9-effect.js';
 import { effectBinary, shader, op } from './fx-build.js';
@@ -279,7 +279,10 @@ test('effect technique calls queued: an End whose Begin is not the one that publ
   shadowCheck(A, 'begun twice');
 });
 
-test('a released effect: calls through a pointer kept after the Release reach JavaScript, the freed blocks are not written', () => {
+// variants: 'stale' the freed object keeps only its +0/+12/+16/+20 words (Com.dispose's clearing undone); 'marker' its
+// COM marker too, so the handle block's FX_OWNER word is the only guard left; 'owner' the handle block names it again,
+// so the COM marker is the only guard left
+for (const variant of ['stale', 'marker', 'owner']) test(`a released effect (${variant}): calls through a pointer kept after the Release reach JavaScript, the freed blocks are not written`, () => {
   // (Windows: the interface is gone, its memory the heap's; Orthros: the fast path must not trust the object's words —
   // here the stale words a heap leaves in the freed object, +12 the handle block and +20 the commit list, both freed too
   // and handed to another allocation)
@@ -289,15 +292,19 @@ test('a released effect: calls through a pointer kept after the Release reach Ja
   const hb = f.fx.handleBlock, commit = mem.read32(ptr + 20), restore = f.fx.techniques[0].restoreList;
   assert.ok(hb && commit && restore, 'blocks published');
   const words = [mem.read32(ptr), mem.read32(ptr + 12), mem.read32(ptr + 16), mem.read32(ptr + 20)];
+  assert.equal(mem.read32(ptr + 4), COM_MARKER); assert.equal(mem.read32(hb + FX_OWNER), ptr, 'the block names its effect');
   // the release (com.js: dispose); the heap keeps the freed bytes (no debug fill), and another allocation reuses them
   E.proc.processHeap.free_ = () => {};
   com.release(com.objectAt(ptr));
   assert.equal(com.objectAt(ptr), null);
-  if (!mem.read32(ptr + 12) && !mem.read32(ptr + 20)) { mem.write32(ptr + 12, words[1]); mem.write32(ptr + 20, words[3]); } // (the guard on its own)
-  mem.write32(ptr, words[0]); mem.write32(ptr + 16, words[2]);
+  assert.equal(mem.read32(ptr + 12), 0, 'dispose clears the handle block word'); assert.equal(mem.read32(ptr + 20), 0, 'and the commit list word');
+  assert.notEqual(mem.read32(ptr + 4), COM_MARKER, 'no marker after the release');
+  mem.write32(ptr, words[0]); mem.write32(ptr + 12, words[1]); mem.write32(ptr + 16, words[2]); mem.write32(ptr + 20, words[3]);
+  if (variant === 'marker') mem.write32(ptr + 4, COM_MARKER);
   const blocks = [[hb, FX_SLOTS + 16], [commit, 64], [restore, 64]];
   const fill = (a, n) => { for (let i = 0; i < n; i += 4) mem.write32(a + i, 0x01000001 + i); };
   blocks.forEach(([a, n]) => fill(a, n));
+  if (variant === 'owner') mem.write32(hb + FX_OWNER, ptr);
   const before = blocks.map(([a, n]) => Array.from(mem.bytes(a, n)));
   const q0 = mem.read32(DEFER_QUEUE);
   const S = { ...A, call: (m, args) => (com.implAt(args[0]) ? A.call(m, args) : 0x80004003) }; // (com.js dispatch: E_POINTER)

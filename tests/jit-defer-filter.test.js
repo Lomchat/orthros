@@ -10,7 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_WORDS, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
@@ -123,7 +123,7 @@ function runJit(env, calls, model, onThunk) {
     const n = mem.read32(DEFER_QUEUE);
     mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 4, 0); mem.write32(DEFER_QUEUE + 8, 0);
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & DEFER_WORDS;
       model.call(idx, Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i)));
       p += 4 * (2 + argc + words);
     }

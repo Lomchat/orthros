@@ -236,7 +236,7 @@ test('lights filter: a light set again with its own words, and its switch, never
   const drain = () => { // (the queued calls run on the device, as Vm.drainDeferred does)
     const nb = mem.read32(DEFER_QUEUE); mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 8, 0);
     for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & DEFER_WORDS;
       W.dev[names[idx]](W.ctx(Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i))));
       p += 4 * (2 + argc + words);
     }
@@ -287,7 +287,7 @@ for (const api9 of [true, false]) {
     const names = methods.map(([k]) => k.split('::')[1]);
     const nb = mem.read32(DEFER_QUEUE); mem.write32(DEFER_QUEUE, 0);
     for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & DEFER_WORDS;
       W.dev[names[idx]](W.ctx(Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i))));
       p += 4 * (2 + argc + words);
     }

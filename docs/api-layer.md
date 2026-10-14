@@ -18,7 +18,8 @@ frame down, all generic (no game-specific code), and how to switch them off with
   An engine calls them around every object it draws, and each call that reached JavaScript first ran the queue: in BFME2
   play (Node, per call) `SetTechnique` took 5.7 µs draining ~32 queued device setters and 1 µs of its own, `Begin`
   9.4 µs draining ~32 effect setters and 0.9 µs of its own — the work of the queue, plus a JavaScript round trip per
-  call. The effect keeps two words after its description cache (`FX_SLOTS`): the pass count of its technique as of
+  call. The effect keeps a 16-byte block after its description cache (`FX_SLOTS`, `FX_SLOT_BYTES`): two words, then at
+  +8 the effect's own COM object (`FX_OWNER`, see the stale-pointer fix below). The two words: the pass count of its technique as of
   every call issued (written by its handlers, and by a queued `SetTechnique` from the technique handle's word, which
   holds its pass count — 0 at every other handle), and the restore list of its open `Begin` (each shadow entry its
   `End` sets — render and stage states, textures — with the value `Begin` saved; published by `Begin` when it runs). A
@@ -235,7 +236,7 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
       two others the views differed (274 base / 235 branch: 4.0 -> 3.7; 234 base / 275 branch: 4.0 -> 3.5, lower with
       the heavier view); calls reaching JavaScript 5931-6265 -> 4945-5236 per frame; 29.7-29.8 fps either way.
     - Node (`startbench --bg`), BFME2, 2 pairs (134 draws per frame each side; "29 passes per frame" was first written
-      here, a figure no log of these runs keeps — the next measurement counts 25 in Node, 25-28.5 in the browser): api 5.23 -> 4.70, 5.30 ->
+      here, a figure no log of these runs keeps; later Node runs counted 25 or 29, the browser 25-28.5): api 5.23 -> 4.70, 5.30 ->
       4.82 ms per frame; effect calls (`SetTechnique`, `Begin`, `BeginPass`, `EndPass`, `End`, `CommitChanges`,
       `ApplyParameterBlock`, queue drains included) 1.07 -> 0.72, 1.06 -> 0.76. RotWK, 2 pairs (234-236 draws, 23
       passes): api 3.27 -> 2.68, 2.82 -> 2.32; effect calls 0.96 -> 0.62, 0.78 -> 0.51. Guest time within ±0.4 ms.
@@ -246,7 +247,13 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
     play phase ([apitop] in Node, the phase's call counts in the browser); objects = `SetTechnique` per frame:
     - Node (`startbench --bg`), BFME2, 2 pairs, 25 objects / 25 passes per frame each side: api 6.17 -> 5.48, 6.09 -> 5.60
       ms per frame (-0.69, -0.49); effect calls (`SetTechnique`, `Begin`, `BeginPass`, `End`, `ApplyParameterBlock`,
-      queue drains included) 1.79 -> 1.19, 1.76 -> 1.29. RotWK, 4 pairs, 22 objects / 23 passes per frame each side: api
+      queue drains included) 1.79 -> 1.19, 1.76 -> 1.29. These two pairs are the high end: a review reproduced -0.30 and
+      -0.36 in its like-for-like pairs, and a further 5 pairs (after the review fixes, 1-minute load 2-27) gave, passes
+      per frame base / branch in brackets: 4.46 -> 4.07 and 4.46 -> 4.11 (29 / 29: -0.39, -0.35, the only like-for-like
+      ones; effect calls 1.34 -> 0.98, 1.37 -> 0.96), 4.82 -> 4.58, 5.40 -> 5.15, 4.27 -> 4.07 (25 / 29: -0.24, -0.25,
+      -0.20, the branch drawing 4 more passes per frame). The gain in BFME2 Node play is therefore about -0.3 to -0.4 ms
+      per frame like for like, -0.5 to -0.7 at most. Passes per frame in Node are 25 or 29 (not always 25), and the two
+      sides of one pair can differ: a pair is compared like for like only when both sides have the same count. RotWK, 4 pairs, 22 objects / 23 passes per frame each side: api
       3.90 -> 3.23, 3.84 -> 4.40, 3.86 -> 3.32, 3.09 -> 2.71 (-0.67, +0.56, -0.54, -0.38); effect calls 1.94 -> 1.30,
       1.95 -> 2.17, 1.91 -> 1.25, 1.65 -> 1.07. The +0.56 pair: the branch's `BeginPass` (which runs the queue: the setters
       and draws queued before it) took 82 µs per call against 36-45 in every other run of either tree, the same guest
@@ -279,7 +286,10 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
   object found there by method name. The other fast paths reading COM words already checked the marker (AddRef /
   Release, the issued-state filter, the surface description). Tests: `jit-defer-technique.test.js` (a released effect
   with its stale words and freed blocks reused: every call to JavaScript, nothing written — failed before the fix: all
-  six calls on the fast path), `com-object-refs.test.js`, `jit-defer-filter.test.js`, `jit-surface-desc.test.js`.
+  six calls on the fast path; run three ways: the stale words alone, with the COM marker put back too so that
+  `FX_OWNER` is the only guard left, and with the handle block naming the object again so that `COM_MARKER` is — each
+  guard removed on its own makes its variant fail), `jit-param-desc.test.js` (`GetParameterDesc` with the marker
+  cleared, then with the block not naming the object: JavaScript each time), `com-object-refs.test.js`, `jit-defer-filter.test.js`, `jit-surface-desc.test.js`.
 - **Spec bits** (merge with the draw work): the technique-call flags moved to bits 14, 15 and 31 (`DEFER_FX_*` uses 27-29);
   a spec's structure-words field is 6 bits (`DEFER_WORDS`, the largest structure a light's 26 words; `deferSpecs`
   rejects a field out of range).
