@@ -608,6 +608,40 @@ The two branches were written against the same base and meet in two places, both
   test again) and the Emitter field changed type. Saved now; tests/jit-x87-narrow.test.js checks the mask is the same
   after each exit.
 
+### The five branches together (2026-10-14, integ-perf-1014 against main ab5e39a)
+
+perf-heap, perf-mapload-jit, perf-x87-size, perf-draw and perf-d3dx-image merged, measured against a worktree of main
+in concurrent pairs, launch order alternated. Warm profiles made for the occasion (one first-launch run per game; the
+BFME1 one set to 800 x 600, the resolution its scenario's clicks expect); no learned data copied (none was left), the
+same empty learn directory on both sides.
+
+| | main | integ |
+|---|---|---|
+| BFME1 map load (load + loadscreen), browser `--gl-discard` | 71.8 / 69.8 s | 54.2 / 53.4 s (−25 / −24 %) |
+| BFME1 map load, Node real clock | 58.8 / 57.8 s | 44.7 / 46.2 s (−24 / −20 %) |
+| BFME1 play, browser | 38.3 / 38.3 fps, work p50 16.0 / 13.4 ms | 38.3 / 38.3 fps, 15.5 / 13.2 ms |
+| BFME1 play, Node, emulator thread CPU over 160 s | 78.7 / 75.9 s | 76.5 / 71.9 s (−3 / −5 %) |
+| BFME1 menu, Node `--virtual` (identical work), thread CPU | 40.7 s | 39.6 s (−2.7 %; API 3.85 → 2.40 s) |
+| BFME1 3D menu fps, browser (4 pairs) | 19.3 / 22.4 / 13.0 / 21.7 | 19.6 / 21.9 / 12.8 / 22.1 |
+| BFME2 load + loadscreen, browser | 27.1 / 28.1 s | 25.9 / 24.7 s; loadscreen API 21.1 → 12.9, 27.4 → 15.6 ms per frame |
+| BFME2 play, browser | 30.2 / 30.2 fps | 30.2 / 30.2 fps |
+| BFME2 `--virtual`, thread CPU menu / loadscreen / play | 17.8 / 20.0 / 31.5 s | 17.9 / 16.5 / 31.1 s |
+| RotWK load + loadscreen, browser | 27.7 / 28.5 s | 26.4 / 29.4 s (within the spread) |
+| RotWK play, browser | 29.6 / 29.3 fps, API 4.3 / 4.6 ms | 29.6 / 29.5 fps, API 4.0 / 4.1 ms |
+| RotWK `--virtual`, thread CPU menu / loadscreen / play | 17.4 / 16.7 / 29.1 s | 16.6 / 15.6 / 28.4 s |
+| Vice City drive, Node `--virtual`: thread / process CPU | 9.8 / 21.4 s | 9.1 / 18.4 s |
+| Vice City drive, Node real clock: thread / process CPU | 10.5 / 22.0 s | 9.6 / 17.8 s |
+
+Guest nanoseconds per guest instruction rise in menus and play in the browser pairs (BFME2 menu 0.87 → 0.98, BFME1
+menu 1.30 → 1.40) while the JavaScript API time falls: the queued draws and the surface GetDesc run in the WebAssembly
+fast paths, counted as guest time. The emulator thread's CPU for identical work (`--virtual`) is equal or lower in every
+phase. Vice City in the browser did not reach its drive in either tree in 3 of 4 pairs (the start phase ends after
+36 000 frames of its intro); its comparison is the Node one. Rendering: `?glworker=compare-worker`, 0 differing frames
+(BFME1 menus 500 frames compared, every 10th; BFME2 menu to play 100, every 10th; Vice City menu to drive 80, every
+60th). Thin link
+(`tools/slow-net-check.mjs --bench vicecity-drive --speeds 1m`, nothing learned): menu 161 s, in game 245 s (main 145 /
+258 s), the bench done.
+
 ## Measured, not kept
 
 
