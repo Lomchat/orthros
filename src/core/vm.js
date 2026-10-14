@@ -15,6 +15,7 @@ import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { timerResFromDebug } from './timer-res.js';
 import { vmSnapRegistry, sealVmSnapRegistry } from './vm-snapshot.js';
+import { JIT_RANGES } from './snapshot.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
@@ -67,7 +68,8 @@ export class Vm {
     this.interp.nullPage = nullPage;
     if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jitArgs = [nullPage, interpRanges, opts]; // (newJit)
+    this.jit = opts.jit === false ? null : this.newJit(nullPage, interpRanges, opts);
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
@@ -160,6 +162,24 @@ export class Vm {
   /**
    * @param {{ exePath: string, args?: string, cwd?: string, env?: any, dllOverrides?: any, exeBytes?: Uint8Array }} opts
    */
+  /** A JIT on this machine's memory and interpreter, with the options the page or the tests ask for. */
+  newJit(nullPage, interpRanges, opts) {
+    return new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+  }
+
+  /**
+   * An empty JIT in place of this one: its tables in guest memory cleared, every API thunk and process constant given
+   * to it again — the machine then runs as one just restored from its snapshot does (tools/snapshot-check.mjs: the
+   * original and its copy compared at the JIT's speed, translating alike).
+   */
+  resetJit() {
+    for (const [s, e] of JIT_RANGES) this.mem.u8.fill(0, s, e);
+    this.jit = this.newJit(...this.jitArgs); this.exec = this.jit;
+    this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def);
+    this.api.thunks.forEach((t, i) => { if (t) this.jit.markFast(i, `${t.dll}!${t.name}`, t.def); });
+    if (this.proc) this.jit.setProcessConsts(this.proc.processHeap.handle);
+  }
+
   createProcess(opts) {
     const proc = (this.proc = new Process(this, opts));
     const bytes = opts.exeBytes ?? this.vfs.readFile(proc.exePath);

@@ -84,7 +84,7 @@ test('only at a quiet point; a snapshot is restored on the same kind of clock', 
   assert.throws(() => captureVm(a), /not a quiet point: inside a time slice/);
   a.depth = 0;
   const s = snap(a);
-  const vfs = new Vfs(); vfs.mount('C:\\', new MemBackend());
+  const vfs = new Vfs(); vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', new MemBackend());
   const real = new Vm({ vfs, clock: new RealClock(), jit: false, logKinds: [] });
   assert.throws(() => restoreVm(real, s), /virtual-clock snapshot restored on a real clock/);
 });

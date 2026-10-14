@@ -40,6 +40,12 @@ const LOCALE_EN_US = new Map(Object.entries({
  */
 export function localeInfoValue(lctype) { return LOCALE_EN_US.get(lctype & 0xffff); }
 
+/** An open file: its backend's file object, its path and mode — a snapshot keeps those and opens the path again. */
+export class FileHandle {
+  constructor(file, path, write) { this.type = 'file'; this.file = file; this.path = path; this.pos = 0; this.write = write; }
+  close() { this.file.close(); }
+}
+
 export function registerKernel32File(api, vm) {
   const mem = vm.mem;
   const K = {};
@@ -110,7 +116,7 @@ export function registerKernel32File(api, vm) {
       vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}, disp ${disposition}) FAILED error ${err}`);
       return c.fail(err) | INVALID_HANDLE;
     }
-    const h = c.proc.handles.create({ type: 'file', file: f, path: wp, pos: 0, write, close() { f.close(); } });
+    const h = c.proc.handles.create(new FileHandle(f, wp, write));
     vm.log('file', `open ${wp} (${write ? 'rw' : 'r'}) -> ${h}`);
     (vm.recentFiles ??= []).push(`${wp} (${write ? 'rw' : 'r'}, ${f.size?.() ?? '?'} bytes) by t${c.thread.id}`); if (vm.recentFiles.length > 24) vm.recentFiles.shift(); // (failure reports)
     if (write) vm.log('filectx', `open ${wp} for writing by t${c.thread.id}; its previous API calls:\n  ${vm.recentApiCalls(160, c.thread.id).join('\n  ')}`); // (what produced the data about to be written)

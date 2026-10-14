@@ -1,7 +1,7 @@
 // dsound.dll: DirectSound 8 — device object, primary/secondary buffers over guest memory, play
 // cursor driven by the audio clock (host mixer pull) or by the VM clock (headless), position
 // notifications, volume/pan/frequency, software mixing to a float stereo stream for the host.
-import { snapClass } from '../core/snapshot.js';
+import { snapClass, snapKnown } from '../core/snapshot.js';
 import { readGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER } from './com.js';
 
 const DS_OK = 0, DSERR_ALLOCATED = 0x8878000a, DSERR_CONTROLUNAVAIL = 0x8878001e, DSERR_INVALIDPARAM = 0x80070057, DSERR_INVALIDCALL = 0x88780032, DSERR_PRIOLEVELNEEDED = 0x88780046, DSERR_OUTOFMEMORY = 0x8007000e, DSERR_BADFORMAT = 0x88780064, DSERR_UNSUPPORTED = 0x80004001, DSERR_NODRIVER = 0x88780078, DSERR_BUFFERLOST = 0x88780096, DSERR_UNINITIALIZED = 0x887800aa;
@@ -68,8 +68,7 @@ export function registerDirectSound(api, vm) {
   const DIAG_BUFFERS = 32;
   /** a copy of a listener's or a 3D buffer's parameters (numbers and { x, y, z } vectors; structuredClone costs µs) */
   const clone3d = (o) => { const r = {}; for (const k in o) { const v = o[k]; r[k] = typeof v === 'object' && v !== null ? vec(v.x, v.y, v.z) : v; } return r; };
-  // snapshot: diagnostics
-  let diagBuffers = 0;
+  const diag = snapKnown(vm, 'dsound.diag', { buffers: 0 }); // (the buffers logged: their fields depend on it)
   const readVec = (a) => vec(mem.readF32(a), mem.readF32(a + 4), mem.readF32(a + 8));
   const writeVec = (a, v) => { mem.writeF32(a, v.x); mem.writeF32(a + 4, v.y); mem.writeF32(a + 8, v.z); };
   const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
@@ -233,8 +232,8 @@ export function registerDirectSound(api, vm) {
       this.iids = [IID_IDirectSoundBuffer, IID_IDirectSoundBuffer8];
       this.stoppedEvents = [];
       this.slot = -1; this.gen = 0;
-      this.diagOn = !this.primary && bytes > 0 && ++diagBuffers <= DIAG_BUFFERS;
-      if (diagBuffers === DIAG_BUFFERS + 1 && !this.primary && bytes > 0) vm.log('audio', `dsound: ${DIAG_BUFFERS} buffers created, the next ones not logged`);
+      this.diagOn = !this.primary && bytes > 0 && ++diag.buffers <= DIAG_BUFFERS;
+      if (diag.buffers === DIAG_BUFFERS + 1 && !this.primary && bytes > 0) vm.log('audio', `dsound: ${DIAG_BUFFERS} buffers created, the next ones not logged`);
       // 3D parameters (DS3DBUFFER defaults) of a DSBCAPS_CTRL3D secondary buffer
       this.ds3d = !this.primary && (flags & DSBCAPS_CTRL3D) ? { now: { pos: vec(), vel: vec(), coneInner: 360, coneOuter: 360, coneOrient: vec(0, 0, 1), coneOutside: 0, min: 1, max: 1e9, mode: DS3DMODE_NORMAL }, deferred: null } : null;
       audio().buffers.add(this);

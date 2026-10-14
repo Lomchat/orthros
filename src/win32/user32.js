@@ -390,7 +390,7 @@ export class WindowManager {
       const p = this.clampCursor(ev.x, ev.y); ev.x = p.x; ev.y = p.y;
       if (ev.dx === undefined) { ev.dx = ev.x - this.cursor.x; ev.dy = ev.y - this.cursor.y; }
     }
-    for (const l of this.rawListeners) l(ev); // raw input consumers (DirectInput devices)
+    for (const l of this.rawListeners) l.onRaw(ev); // raw input consumers (DirectInput devices: onRaw(ev))
     switch (ev.type) {
       case 'mousemove': {
         this.mouseStats.moves++;

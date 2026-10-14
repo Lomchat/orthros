@@ -22,6 +22,7 @@ import { WindowManager } from '../win32/user32.js';
 import { GdiState } from '../win32/gdi32.js';
 import { MemBackend } from '../vfs/vfs.js';
 import { StateTable } from '../win32/state-table.js';
+import { FileHandle } from '../win32/kernel32-file.js';
 import { Surface } from '../gfx/gdi/surface.js';
 import { TextEngine } from '../gfx/gdi/text.js';
 
@@ -30,7 +31,7 @@ const VM_TRANSIENT = ['vfs', 'clock', 'host', 'mem', 'api', 'interp', 'jit', 'ex
   'traceApiRet', 'traceApiSite', 'traceApiSiteMax', 'apiTrace', 'apiTracePos', 'apiTraceNames', 'apiTraceRets', 'apiTraceTids', 'apiHistCounts',
   'profile', 'progressAt', 'progressEvery', 'onProgress', 'heapProv', 'heapProvMap', 'stdout', 'onStdout', 'deadline', 'sliceInsns',
   'runOptsByDepth', 'traceCom', 'traceComQuiet', 'GuestCrash', 'returnThunk', 'callbackReturnThunk', 'exitThreadThunk', 'exitProcessThunk',
-  'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg'];
+  'jitArgs', 'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg'];
 
 snapshotConstant('sched.PARK', PARK);
 snapshotConstant('process.TS', TS);
@@ -60,6 +61,11 @@ snapshotClass(WindowManager);
 snapshotClass(GdiState);
 snapshotClass(MemBackend);
 snapshotClass(StateTable);
+// (an open file: opened again by its path in the restored machine's file system, at the same position)
+snapshotClass(FileHandle, { skip: ['file'], init: (h, vm) => {
+  h.file ??= vm.vfs.open(h.path, { write: h.write });
+  if (!h.file) throw new SnapshotError(`an open file is gone: ${h.path}`);
+} });
 snapshotClass(Surface, { name: 'gdi.Surface' });
 snapshotClass(TextEngine);
 
@@ -71,6 +77,9 @@ export function vmSnapRegistry(vm) {
   reg.known('mem.buffer', vm.mem.buffer, { state: false }); // (views on the guest memory: rebuilt on the restored Vm's)
   for (const [k, v] of Object.entries(vm.mem)) if (ArrayBuffer.isView(v)) reg.known(`mem.${k}`, v, { state: false }); // (its own views, shared)
   reg.known('vfs', vm.vfs, { state: false });
+  // (its mounts, built by the host alike: the in-memory ones — files the game wrote outside its profile — with their
+  // contents, the others the host's: the game's files, the profile folder)
+  for (const m of vm.vfs.mounts ?? []) reg.known(`vfs.mount:${m.lower}`, m.backend, { state: m.backend instanceof MemBackend });
   if (vm.host) reg.known('host', vm.host, { state: false });
   reg.known('clock', vm.clock, { save: saveClock, load: loadClock });
   reg.known('api', vm.api, { save: saveApi, load: loadApi });
@@ -138,6 +147,8 @@ export function notQuiet(vm) {
  * (the game, its version, the emulator's sources... — docs/snapshot.md).
  */
 export function captureVm(vm, meta = {}, problems = null) {
+  // (COM calls the JIT queued run at the next API call, by whichever thread makes it: now, by the last one that ran)
+  if (vm.mem.u32[DEFER_QUEUE >>> 2] && vm.lastThread && !vm.depth) vm.drainDeferred(vm.lastThread);
   const why = notQuiet(vm);
   if (why) throw new SnapshotError(`not a quiet point: ${why}`);
   const graph = encodeGraph(vm, vm.snap, problems);

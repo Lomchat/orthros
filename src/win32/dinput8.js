@@ -50,8 +50,7 @@ export function registerDirectInput(api, vm) {
       this.keys = new Uint8Array(256); // DIK state (0x80 = down)
       this.mouse = { x: 0, y: 0, z: 0, buttons: new Uint8Array(8), absX: 0, absY: 0 }; // accumulated relative motion since the last GetDeviceState
       this.event = 0;
-      this.listener = (ev) => this.onRaw(ev);
-      wmOf(vm).rawListeners.push(this.listener);
+      wmOf(vm).rawListeners.push(this); // (a listener: its onRaw(ev) — an object, kept in snapshots)
     }
     /**
      * The host's pending input taken (the window manager's queue pumped): DirectInput's data does not wait for the
@@ -59,7 +58,7 @@ export function registerDirectInput(api, vm) {
      * frame, sees the motion so far.
      */
     takeInput() { wmOf(vm).pump(); }
-    destroy() { if (this.kind === 'mouse') wmOf(vm).cursorHiddenBy(this, false); const l = wmOf(vm).rawListeners; const i = l.indexOf(this.listener); if (i >= 0) l.splice(i, 1); }
+    destroy() { if (this.kind === 'mouse') wmOf(vm).cursorHiddenBy(this, false); const l = wmOf(vm).rawListeners; const i = l.indexOf(this); if (i >= 0) l.splice(i, 1); }
     push(ofs, data) {
       if (!this.bufferSize) return;
       if (this.queue.length >= this.bufferSize) { this.overflow = true; this.queue.shift(); }

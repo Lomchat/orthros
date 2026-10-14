@@ -376,7 +376,7 @@ export function registerQuartz(api, vm) {
     queryInterface(c, iid) { const n = BY_IID.get(iid); return n ? this.g.part(c, n) : 0; }
     destroy() { this.g.released(name); }
   };
-  const define = (name, methods, iids) => { const C = part(name, iids); Object.assign(C.prototype, methods); PARTS[name] = C; };
+  const define = (name, methods, iids) => { const C = part(name, iids); Object.assign(C.prototype, methods); PARTS[name] = C; snapClass(vm, C, { name: `quartz.part.${name}` }); };
   define('IFilterGraph2', GRAPH, [IID.IFilterGraph, IID.IGraphBuilder]);
   define('IMediaControl', CONTROL);
   define('IMediaEventEx', EVENT, [IID.IMediaEvent]);
