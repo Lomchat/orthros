@@ -491,6 +491,36 @@ exit, step exit, time slices) against the interpreter and the rotating exits fro
 exit block ignoring L_XSH, the wrong operation code passed to x87RoundF32. With the earlier options the translator
 emits the base commit's code (tools/x87-size.mjs: the same WASM and machine-code sizes for all 36 regions).
 
+Whole runs (2026-10-14, base commit ca01ae8 in its own worktree against this code, concurrent pairs, launch order
+alternated; Node: `startbench --virtual`, the same guest instructions in both runs of a pair; browser: `--gl-discard`,
+copies of the same profile and learned data):
+
+- **CPU of the whole process (Node), the gain that clears the noise**: Vice City (vicecity-drive, 5 pairs) 101-112 s
+  → 91-99 s, −9.2 to −11.8 % in every pair; RotWK (rotwk-startup, 5 pairs) −0.4 to −3.3 %, all lower; BFME2
+  (bfme2-startup, 5 pairs) −2.0 to +0.5 %, 4 of 5 lower. The emulator thread's CPU over the phases did not move
+  (Vice City 9.9-14.3 s on both sides): the saving is in V8's compiler threads compiling the smaller x87 modules —
+  perf record (instructions:u, one RotWK pair): V8 compiler 347.6 → 338.5 G host instructions (−2.6 %), translated
+  regions 172.0 → 173.7 G (+1.0 %; the same tree under the old and new options: 188.7 → 188.5 G, −0.1 %: per-region
+  counts move by ±30 % between runs where a region polls the time stamp counter, so neither is a difference).
+  `perf stat` totals: Vice City 485.7 → 435.2 G instructions (−10.4 %), cycles −9.7 %; RotWK −0.4 / −0.6 %; BFME2
+  −0.6 / −1.9 %. In a browser the compiler threads run beside the emulator's worker: CPU left to the page and the other
+  threads on a client with few cores, not frame time.
+- **Emulator thread per phase (Node), within the noise**: guest ns per guest instruction / thread CPU per frame, base →
+  this code: RotWK play +1.0 to +4.9 % CPU per frame in the 5 cross-tree pairs, but −0.4 % and −2.1 % (and +1.1 % in
+  an earlier one) in same-tree pairs of the old and new options (`tools/ab-virtual.mjs`, which removes the second
+  source tree); BFME2 play −2.5 to +3.8 %; Vice City drive −1.8 to +9.1 %, drive-end −0.8 to +18 % (runs of 40 s
+  where the same code's pairs differ by as much); menus and loading screens ±5 %, `load` phases ±18 %.
+- **BFME1 in the browser (bfme-phases, 3 pairs)**: play 38.3 → 38.3, 36.2 → 36.9 and 38.3 → 38.3 fps, guest
+  10.7 → 10.9, 13.9 → 13.8 and 10.8 → 11.0 ms per frame; 3D menu guest +3.0 %, −10.3 %, +3.5 %; map load (load +
+  loading screen) 69.5 → 68.1 s, 111.5 → 113.9 s (a loaded machine) and 68.4 → 67.6 s. No frame-rate or map-load
+  change beyond the spread: play is not measurably faster for the 16 % less machine code of its x87 regions.
+- Exactness and tests: the full suite (`make test`) passes but tests/accounts.test.js (needs data_games in the tree,
+  fails on the base commit as well); with ORTHROS_NO_F32 the x87 suites fail the same two tests as on the base commit
+  (the 24-bit random sequences and the NaN test written for the float representation), nothing more.
+
+Kept for: 40 % less WASM and 13-16 % less machine code in x87 regions, compilation CPU −10 % on an x87-heavy game,
+host instructions per iteration equal or lower on the hot loops; not for frame time, which did not change.
+
 ## Measured, not kept
 
 - x87 arithmetic cold path (2026-10-06, tools/x87-size.mjs and host instructions per iteration of x87loop-bench's
