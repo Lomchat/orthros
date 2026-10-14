@@ -1,6 +1,7 @@
 // dsound.dll: DirectSound 8 — device object, primary/secondary buffers over guest memory, play
 // cursor driven by the audio clock (host mixer pull) or by the VM clock (headless), position
 // notifications, volume/pan/frequency, software mixing to a float stereo stream for the host.
+import { snapClass } from '../core/snapshot.js';
 import { readGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER } from './com.js';
 
 const DS_OK = 0, DSERR_ALLOCATED = 0x8878000a, DSERR_CONTROLUNAVAIL = 0x8878001e, DSERR_INVALIDPARAM = 0x80070057, DSERR_INVALIDCALL = 0x88780032, DSERR_PRIOLEVELNEEDED = 0x88780046, DSERR_OUTOFMEMORY = 0x8007000e, DSERR_BADFORMAT = 0x88780064, DSERR_UNSUPPORTED = 0x80004001, DSERR_NODRIVER = 0x88780078, DSERR_BUFFERLOST = 0x88780096, DSERR_UNINITIALIZED = 0x887800aa;
@@ -67,6 +68,7 @@ export function registerDirectSound(api, vm) {
   const DIAG_BUFFERS = 32;
   /** a copy of a listener's or a 3D buffer's parameters (numbers and { x, y, z } vectors; structuredClone costs µs) */
   const clone3d = (o) => { const r = {}; for (const k in o) { const v = o[k]; r[k] = typeof v === 'object' && v !== null ? vec(v.x, v.y, v.z) : v; } return r; };
+  // snapshot: diagnostics
   let diagBuffers = 0;
   const readVec = (a) => vec(mem.readF32(a), mem.readF32(a + 4), mem.readF32(a + 8));
   const writeVec = (a, v) => { mem.writeF32(a, v.x); mem.writeF32(a + 4, v.y); mem.writeF32(a + 8, v.z); };
@@ -446,7 +448,7 @@ export function registerDirectSound(api, vm) {
     Initialize() { return this.initialized ? DSERR_ALLOCATED : DS_OK; }
     VerifyCertification(c) { c.out32(1, 0 /* DS_UNCERTIFIED */); return DS_OK; }
   }
-  for (const C of [Listener3D, Buffer3D, Audio, Buffer, DirectSound]) vm.snap.cls(C, { name: `dsound.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Listener3D, Buffer3D, Audio, Buffer, DirectSound]) snapClass(vm, C, { name: `dsound.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, outArg, v8) => {
     const pp = c.arg(outArg);

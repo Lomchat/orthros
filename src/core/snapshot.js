@@ -117,6 +117,11 @@ export function snapshotClass(cls, opts = {}) {
   return cls;
 }
 
+/** `vm.snap.known(name, obj, opts)` on a Vm that has a snapshot registry (a test's minimal one may not): `obj`. */
+export const snapKnown = (vm, name, obj, opts) => (vm.snap ? vm.snap.known(name, obj, opts) : obj);
+/** `vm.snap.cls(cls, opts)` on a Vm that has a snapshot registry. */
+export const snapClass = (vm, cls, opts) => (vm.snap ? vm.snap.cls(cls, opts) : cls);
+
 /** A shared constant (a frozen object, a function) a snapshot may refer to, by name. */
 export function snapshotConstant(name, obj) { GLOBAL_CONSTS.set(name, obj); return obj; }
 
@@ -132,11 +137,11 @@ const isPlainProto = (p) => p === Object.prototype || p === null;
 export function encodeGraph(root, reg, problems = null) {
   const ids = new Map(), objects = [], blobs = [], from = [];
   const refuse = (e) => { if (!problems) throw e; problems.push(e.message); return { u: 1 }; };
-  const where = (id, key) => { const parts = [key]; for (let i = id; i >= 0 && from[i]; i = from[i][0]) parts.push(from[i][1]); return parts.reverse().join(''); };
+  const where = (id, key) => { const parts = [key]; for (let i = id; i >= 0; i = from[i][0]) parts.push(from[i][1]); return parts.reverse().join(''); };
   const queue = [];
   const ref = (v, parentId, key) => {
     let id = ids.get(v);
-    if (id === undefined) { id = objects.length; ids.set(v, id); objects.push(null); from.push(parentId < 0 ? null : [parentId, key]); queue.push(v); }
+    if (id === undefined) { id = objects.length; ids.set(v, id); objects.push(null); from.push([parentId, key]); queue.push(v); }
     return { r: id };
   };
   const value = (v, parentId, key, code = false) => {
@@ -165,8 +170,9 @@ export function encodeGraph(root, reg, problems = null) {
   const rootName = reg.knownName.get(root);
   if (rootName === undefined) throw new SnapshotError('the root is not a known object');
   ref(root, -1, rootName);
-  // (known objects saved by hooks are machine state wherever they are referenced from, or not: always in)
-  for (const [name, o] of reg.knownByName) if (reg.knownOpts.get(name).save) ref(o, -1, name);
+  // (known objects with state are in wherever they are referenced from, or not: the containers a module keeps in its
+  // closure are reachable from nothing else)
+  for (const [name, o] of reg.knownByName) if (reg.knownOpts.get(name).state) ref(o, -1, name);
   while (queue.length) {
     const o = queue.shift(), id = ids.get(o);
     const known = reg.knownName.get(o);

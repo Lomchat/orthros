@@ -69,6 +69,7 @@ export function vmSnapRegistry(vm) {
   reg.known('vm', vm, { skip: VM_TRANSIENT });
   reg.known('mem', vm.mem, { state: false });
   reg.known('mem.buffer', vm.mem.buffer, { state: false }); // (views on the guest memory: rebuilt on the restored Vm's)
+  for (const [k, v] of Object.entries(vm.mem)) if (ArrayBuffer.isView(v)) reg.known(`mem.${k}`, v, { state: false }); // (its own views, shared)
   reg.known('vfs', vm.vfs, { state: false });
   if (vm.host) reg.known('host', vm.host, { state: false });
   reg.known('clock', vm.clock, { save: saveClock, load: loadClock });

@@ -1,5 +1,6 @@
 // kernel32.dll: process, threads, synchronization, memory, modules, time, misc.
 // File/directory/environment/string APIs live in kernel32-file.js.
+import { snapKnown } from '../core/snapshot.js';
 import { SIGNATURES } from './signatures.js';
 import { E } from './errors.js';
 import { TS, PEB_ADDR, TEB_TLS_SLOTS } from './process.js';
@@ -99,8 +100,8 @@ export function registerKernel32(api, vm) {
   for (const [k, v] of Object.entries(SIGNATURES)) api.signatures.set(k, v);
   const mem = vm.mem;
   const K = {};
-  const named = vm.snap.known('kernel32.named', new Map()); // named kernel objects
-  const mutexStates = vm.snap.known('kernel32.mutexStates', { mem, next: 0, free: [], // (Mutex state slots)
+  const named = snapKnown(vm, 'kernel32.named', new Map()); // named kernel objects
+  const mutexStates = snapKnown(vm, 'kernel32.mutexStates', { mem, next: 0, free: [], // (Mutex state slots)
     alloc() { return this.free.length ? this.free.pop() : this.next < MUTEX_STATE_COUNT ? MUTEX_STATES + MUTEX_STATE_SIZE * this.next++ : 0; },
     release(a) { this.free.push(a); } });
 
@@ -458,6 +459,7 @@ export function registerKernel32(api, vm) {
   // ---------------------------------------------------------------- memory
   // failed allocations are legitimate (callers must handle them) but often the cause of a degraded behaviour: the first
   // ones are reported with the reserved address space
+  // snapshot: diagnostics
   let allocFailures = 0;
   const allocFailed = (c, what) => { if (++allocFailures <= 8) vm.warn(`${what} failed: out of address space (${(c.proc.vmem.reservedBytes?.() / 2 ** 20 | 0) || '?'} MiB reserved) from ${c.proc.symbolize(c.retAddr)}`); };
   K.VirtualAlloc = [4, (c) => {
@@ -674,6 +676,7 @@ export function registerKernel32(api, vm) {
     c.out64(2, msToFiletime(ms)); return 1;
   }];
   // TIME_ZONE_INFORMATION: Bias, StandardName[32], StandardDate, StandardBias, DaylightName[32], DaylightDate, DaylightBias
+  // snapshot: cache (time zone answers)
   const tziCache = new Map();
   const currentTzi = () => {
     const w = vm.clock.wall(), year = new Date(w).getUTCFullYear();

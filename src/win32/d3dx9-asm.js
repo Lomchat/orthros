@@ -12,6 +12,7 @@ const NO_DST = new Set([25, 26, 27, 28, 29, 30, 38, 39, 40, 41, 42, 43, 44, 45, 
 const T = { TEMP: 0, INPUT: 1, CONST: 2, ADDR: 3, TEXTURE: 3, RASTOUT: 4, ATTROUT: 5, TEXCRDOUT: 6, OUTPUT: 6, CONSTINT: 7, COLOROUT: 8, DEPTHOUT: 9, SAMPLER: 10, CONSTBOOL: 14, LOOP: 15, MISC: 17, LABEL: 18, PREDICATE: 19 };
 const COMPARE = { gt: 1, eq: 2, ge: 3, lt: 4, ne: 5, le: 6 };
 const USAGE = { position: 0, blendweight: 1, blendindices: 2, normal: 3, psize: 4, texcoord: 5, tangent: 6, binormal: 7, tessfactor: 8, positiont: 9, color: 10, fog: 11, depth: 12, sample: 13 };
+// snapshot: scratch
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 
 /** Preprocess assembly text. `include(name)` returns the included text or null. */

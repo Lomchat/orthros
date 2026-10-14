@@ -36,13 +36,13 @@ const HT = { ERROR: -2, NOWHERE: 0, CLIENT: 1, CAPTION: 2, LEFT: 10, RIGHT: 11, 
 const VK = { LBUTTON: 1, RBUTTON: 2, MBUTTON: 4, SHIFT: 0x10, CONTROL: 0x11, MENU: 0x12, CAPITAL: 0x14, LSHIFT: 0xa0, RSHIFT: 0xa1, LCONTROL: 0xa2, RCONTROL: 0xa3, LMENU: 0xa4, RMENU: 0xa5 };
 const CAPTION_H = 19, FRAME_THICK = 4, FRAME_THIN = 1, FRAME_DLG = 3, MENU_H = 19;
 
-let nextClassAtom = 0xc100;
 
 /** Window manager: one per process. */
 export class WindowManager {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
     this.vm = vm;
+    this.nextClassAtom = 0xc100; // (atoms of the classes the program registers)
     this.proc = vm.proc;
     this.mem = vm.mem;
     this.host = vm.host;
@@ -86,7 +86,7 @@ export class WindowManager {
 
   registerBuiltinClasses() {
     for (const name of ['BUTTON', 'STATIC', 'EDIT', 'LISTBOX', 'COMBOBOX', 'SCROLLBAR', '#32770', 'MDICLIENT', 'MSCTLS_TRACKBAR32', 'RICHEDIT']) {
-      this.classes.set(name.toLowerCase(), { name, wndProc: 'builtin', style: 0, cbClsExtra: 0, cbWndExtra: 4, hInstance: 0, hIcon: 0, hCursor: 0, hbrBackground: 0, menuName: 0, atom: nextClassAtom++, extra: new Uint8Array(0), builtin: true });
+      this.classes.set(name.toLowerCase(), { name, wndProc: 'builtin', style: 0, cbClsExtra: 0, cbWndExtra: 4, hInstance: 0, hIcon: 0, hCursor: 0, hbrBackground: 0, menuName: 0, atom: this.nextClassAtom++, extra: new Uint8Array(0), builtin: true });
     }
   }
 
@@ -563,7 +563,7 @@ export class WindowManager {
   registerClass(cls) {
     const key = cls.name.toLowerCase();
     if (this.classes.has(key) && !this.classes.get(key).builtin) return 0;
-    cls.atom = nextClassAtom++;
+    cls.atom = this.nextClassAtom++;
     this.classes.set(key, cls);
     this.classByAtom.set(cls.atom, cls);
     return cls.atom;

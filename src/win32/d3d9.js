@@ -2,6 +2,7 @@
 // memory, device state model) — DX9 vtables, vertex declarations, sampler states, shader objects
 // (vs/ps 1.x–2.x), state blocks, swap chain, queries. Rendering goes through the pluggable
 // backend (`vm.host.gfx`, see gfx/d3d8-webgl.js).
+import { snapKnown, snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
 import { d3dCore, FMT, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
@@ -24,7 +25,9 @@ const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.
 const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_LOCKABLE, FMT.D15S1, FMT.D24X4S4, 82 /* D24FS8 */]);
 const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 const MAX_SAMPLERS = 16, MAX_RTS = 4;
+// snapshot: diagnostics
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
+// snapshot: diagnostics
 const checkTrail = []; // last CheckDeviceFormat calls (args + verdict), kept for the placeholder-texture diagnostic
 const fmtName = (f) => (f > 0x20000000 ? String.fromCharCode(f & 0xff, (f >> 8) & 0xff, (f >> 16) & 0xff, f >>> 24) : String(f));
 
@@ -39,6 +42,7 @@ export function registerDirect3D9(api, vm) {
   const I = (name, parent, methods) => com.interface(name, IID[name], parent, methods);
   I('IDirect3D9', 'IUnknown', [['RegisterSoftwareDevice', 1], ['GetAdapterCount', 0], ['GetAdapterIdentifier', 3], ['GetAdapterModeCount', 2], ['EnumAdapterModes', 4], ['GetAdapterDisplayMode', 2], ['CheckDeviceType', 5], ['CheckDeviceFormat', 6], ['CheckDeviceMultiSampleType', 6], ['CheckDepthStencilMatch', 5], ['CheckDeviceFormatConversion', 4], ['GetDeviceCaps', 3], ['GetAdapterMonitor', 1], ['CreateDevice', 6]]);
   I('IDirect3DDevice9', 'IUnknown', [['TestCooperativeLevel', 0], ['GetAvailableTextureMem', 0], ['EvictManagedResources', 0], ['GetDirect3D', 1], ['GetDeviceCaps', 1], ['GetDisplayMode', 2], ['GetCreationParameters', 1], ['SetCursorProperties', 3], ['SetCursorPosition', 3], ['ShowCursor', 1], ['CreateAdditionalSwapChain', 2], ['GetSwapChain', 2], ['GetNumberOfSwapChains', 0], ['Reset', 1], ['Present', 4], ['GetBackBuffer', 4], ['GetRasterStatus', 2], ['SetDialogBoxMode', 1], ['SetGammaRamp', 3], ['GetGammaRamp', 2], ['CreateTexture', 8], ['CreateVolumeTexture', 9], ['CreateCubeTexture', 7], ['CreateVertexBuffer', 6], ['CreateIndexBuffer', 6], ['CreateRenderTarget', 8], ['CreateDepthStencilSurface', 8], ['UpdateSurface', 4], ['UpdateTexture', 2], ['GetRenderTargetData', 2], ['GetFrontBufferData', 2], ['StretchRect', 5], ['ColorFill', 3], ['CreateOffscreenPlainSurface', 6], ['SetRenderTarget', 2], ['GetRenderTarget', 2], ['SetDepthStencilSurface', 1], ['GetDepthStencilSurface', 1], ['BeginScene', 0], ['EndScene', 0], ['Clear', 6], ['SetTransform', 2], ['GetTransform', 2], ['MultiplyTransform', 2], ['SetViewport', 1], ['GetViewport', 1], ['SetMaterial', 1], ['GetMaterial', 1], ['SetLight', 2], ['GetLight', 2], ['LightEnable', 2], ['GetLightEnable', 2], ['SetClipPlane', 2], ['GetClipPlane', 2], ['SetRenderState', 2], ['GetRenderState', 2], ['CreateStateBlock', 2], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['SetClipStatus', 1], ['GetClipStatus', 1], ['GetTexture', 2], ['SetTexture', 2], ['GetTextureStageState', 3], ['SetTextureStageState', 3], ['GetSamplerState', 3], ['SetSamplerState', 3], ['ValidateDevice', 1], ['SetPaletteEntries', 2], ['GetPaletteEntries', 2], ['SetCurrentTexturePalette', 1], ['GetCurrentTexturePalette', 1], ['SetScissorRect', 1], ['GetScissorRect', 1], ['SetSoftwareVertexProcessing', 1], ['GetSoftwareVertexProcessing', 0], ['SetNPatchMode', 1], ['GetNPatchMode', 0], ['DrawPrimitive', 3], ['DrawIndexedPrimitive', 6], ['DrawPrimitiveUP', 4], ['DrawIndexedPrimitiveUP', 8], ['ProcessVertices', 6], ['CreateVertexDeclaration', 2], ['SetVertexDeclaration', 1], ['GetVertexDeclaration', 1], ['SetFVF', 1], ['GetFVF', 1], ['CreateVertexShader', 2], ['SetVertexShader', 1], ['GetVertexShader', 1], ['SetVertexShaderConstantF', 3], ['GetVertexShaderConstantF', 3], ['SetVertexShaderConstantI', 3], ['GetVertexShaderConstantI', 3], ['SetVertexShaderConstantB', 3], ['GetVertexShaderConstantB', 3], ['SetStreamSource', 4], ['GetStreamSource', 4], ['SetStreamSourceFreq', 2], ['GetStreamSourceFreq', 2], ['SetIndices', 1], ['GetIndices', 1], ['CreatePixelShader', 2], ['SetPixelShader', 1], ['GetPixelShader', 1], ['SetPixelShaderConstantF', 3], ['GetPixelShaderConstantF', 3], ['SetPixelShaderConstantI', 3], ['GetPixelShaderConstantI', 3], ['SetPixelShaderConstantB', 3], ['GetPixelShaderConstantB', 3], ['DrawRectPatch', 3], ['DrawTriPatch', 3], ['DeletePatch', 1], ['CreateQuery', 2]]);
+  // snapshot: constant
   const resourceMethods = [['GetDevice', 1], ['SetPrivateData', 4], ['GetPrivateData', 3], ['FreePrivateData', 1], ['SetPriority', 1], ['GetPriority', 0], ['PreLoad', 0], ['GetType', 0]];
   I('IDirect3DResource9', 'IUnknown', resourceMethods);
   I('IDirect3DBaseTexture9', 'IDirect3DResource9', [['SetLOD', 1], ['GetLOD', 0], ['GetLevelCount', 0], ['SetAutoGenFilterType', 1], ['GetAutoGenFilterType', 0], ['GenerateMipSubLevels', 0]]);
@@ -333,9 +337,9 @@ export function registerDirect3D9(api, vm) {
     }
   }
 
-  let nextShader = 1;
+  const shaderIds = snapKnown(vm, 'd3d9.shaderIds', { next: 1 }); // (shader handles)
   class Shader {
-    constructor(dev, kind, code) { this.dev = dev; this.kind = kind; this.code = code; this.handle = nextShader++; this.iids = [kind === 'vs' ? IID.IDirect3DVertexShader9 : IID.IDirect3DPixelShader9]; this.version = code[0] >>> 0; }
+    constructor(dev, kind, code) { this.dev = dev; this.kind = kind; this.code = code; this.handle = shaderIds.next++; this.iids = [kind === 'vs' ? IID.IDirect3DVertexShader9 : IID.IDirect3DPixelShader9]; this.version = code[0] >>> 0; }
     GetDevice(c) { c.out32(1, this.dev.ptr); com.addRef(com.objectAt(this.dev.ptr)); return D3D_OK; }
     GetFunction(c) { const p = c.arg(1), ps = c.arg(2); const size = mem.read32(ps); mem.write32(ps, this.code.length * 4); if (!p) return D3D_OK; if (size < this.code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < this.code.length; i++) mem.write32(p + 4 * i, this.code[i]); return D3D_OK; }
     destroy() { if (this.dev.vsObj === this) { this.dev.vsObj = null; this.dev.vertexShader = 0; } if (this.dev.psObj === this) { this.dev.psObj = null; this.dev.pixelShader = 0; } this.dev.gfx?.[this.kind === 'vs' ? 'deleteVertexShader' : 'deletePixelShader']?.(this); }
@@ -423,7 +427,7 @@ export function registerDirect3D9(api, vm) {
       return D3D_OK;
     }
   }
-  for (const C of [Device9, Shader, VertexDecl, StateBlock, SwapChain, Query, Direct3D9]) vm.snap.cls(C, { name: `d3d9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Device9, Shader, VertexDecl, StateBlock, SwapChain, Query, Direct3D9]) snapClass(vm, C, { name: `d3d9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   api.define('d3d9.dll', {
     Direct3DCreate9: [1, (c) => {

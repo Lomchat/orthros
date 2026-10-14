@@ -3,6 +3,7 @@
 // effect binding of d3dx9-effect.js only — raw-word constants, version moves on real changes, resolved device methods,
 // slot-indexed handles — back to the path before it). Read from the debug globals when they change (refreshApiOpt), not
 // at every call: reading a global property that does not exist is slow.
+// snapshot: the host's options (URL), not the machine's
 export const apiOpt = { off: false, glNoCache: false, glCheck: false, fxRef: false };
 export function refreshApiOpt() {
   apiOpt.off = globalThis.ORTHROS_API_OPT_OFF === 1;

@@ -1,6 +1,7 @@
 // DirectDraw (ddraw.dll): the device and display queries games make before or beside Direct3D 8/9 (video memory,
 // display modes, capabilities, the driver's identity, enumeration of the display devices). Surfaces, clippers and
 // palettes are not implemented (DDERR_UNSUPPORTED): a game drawing through DirectDraw itself needs more than this.
+import { snapClass } from '../core/snapshot.js';
 import { readGuid } from './com.js';
 
 export const IID_IDirectDraw = '6c14db80-a733-11ce-a521-0020af0be560';
@@ -124,7 +125,7 @@ export function registerDirectDraw(api, vm) {
       return DD_OK;
     }
   }
-  for (const C of [DirectDraw, DirectDrawView]) vm.snap.cls(C, { name: `ddraw.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [DirectDraw, DirectDrawView]) snapClass(vm, C, { name: `ddraw.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, pp, iid, outer) => {
     vm.firstD3DCall ??= { name: 'DirectDrawCreate', from: c.proc.symbolize(c.retAddr), apiCalls: vm.apiCalls };

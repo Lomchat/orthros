@@ -62,7 +62,7 @@ export class Com {
     this.tracedMissing = new Set();
     this.interface('IUnknown', IID_IUnknown, null, [['QueryInterface', 2], ['AddRef', 0], ['Release', 0]]);
     // (a method's handler is defined when its interface first gets a vtable: a restored Vm defines it by name)
-    this.api.lazyDefs.set('com.dll', (fname) => {
+    this.api.lazyDefs?.set('com.dll', (fname) => {
       const [name, method] = fname.split('::'), iface = this.interfaces.get(name), i = iface?.methods.findIndex((m) => m.name === method) ?? -1;
       if (i >= 0) this.defineMethod(iface, i);
       return this.api.lookup('com', fname);

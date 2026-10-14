@@ -197,6 +197,7 @@ export function defineD3DXMath(X, mem) {
   X.D3DXFloat16To32Array = [3, (c) => { const out = c.arg(0), src = c.arg(1), n = c.arg(2); for (let i = 0; i < n; i++) mem.writeF32(out + 4 * i, fromHalf(mem.read16(src + 2 * i))); return out; }];
 }
 
+// snapshot: scratch
 const hf = new Float32Array(1), hu = new Uint32Array(hf.buffer);
 /** float32 -> IEEE half bits (round to nearest even) */
 export function toHalf(v) {

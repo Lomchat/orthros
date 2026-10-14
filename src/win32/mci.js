@@ -4,6 +4,7 @@
 // pictures in the device's window (its own, a window given by `window handle`, a child of `parent`, or full screen),
 // sound through the DirectSound mixer, MM_MCINOTIFY to the callback window, `wait` blocking the caller until the end.
 // Other device types (cdaudio, sequencer...) answer as before (MCIERR_INVALID_DEVICE_ID), so programs go on without them.
+import { snapKnown, snapClass } from '../core/snapshot.js';
 import { MoviePlayer, MediaClock, RUNNING, PAUSED } from './movie-player.js';
 import { INFINITE } from '../core/sched.js';
 
@@ -49,8 +50,8 @@ export function registerMci(api, vm) {
   vm.media ??= new MediaClock(vm);
   const log = (m) => vm.log('video', `mci: ${m}`);
   /** @type {Map<number, Device>} */
-  const devices = new Map();
-  let nextId = 1;
+  const devices = snapKnown(vm, 'mci.devices', new Map());
+  const ids = snapKnown(vm, 'mci.ids', { next: 1 });
 
   class Device {
     constructor(proc, type, alias) {
@@ -112,7 +113,7 @@ export function registerMci(api, vm) {
     }
     close() { this.finishNotify(NOTIFY_ABORTED); this.player.close(); devices.delete(this.id); log(`${this.name}: closed`); }
   }
-  for (const C of [Device]) vm.snap.cls(C, { name: `mci.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Device]) snapClass(vm, C, { name: `mci.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const byName = (n) => {
     if (n === undefined) return null;
@@ -136,7 +137,7 @@ export function registerMci(api, vm) {
     const r = d.player.open(path);
     if (!r.ok) { d.player.close(); log(`open ${path}: ${r.message}`); return { error: r.code === 'not-found' ? MCIERR.FILE_NOT_FOUND : MCIERR.INVALID_FILE }; }
     d.win.parent = parent ?? 0; d.win.style = style ?? 0;
-    d.id = nextId++; devices.set(d.id, d);
+    d.id = ids.next++; devices.set(d.id, d);
     log(`open ${path} as ${type} ${d.name} (id ${d.id})`);
     if (notify) { const w = vm.wm?.windows.get(notify); if (w) vm.wm.post(w, MM_MCINOTIFY, NOTIFY_SUCCESSFUL, d.id); }
     return { device: d };

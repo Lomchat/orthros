@@ -147,6 +147,7 @@ export class Vm {
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
       exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
+      nextPid: 0x400, // (process ids: win32/process.js)
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
     sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)

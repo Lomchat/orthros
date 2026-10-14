@@ -124,6 +124,7 @@ export function registerKernel32File(api, vm) {
   K._lread = [3, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.file) return 0xffffffff; const d = f.file.read(f.pos, c.arg(2)); mem.writeBytes(c.arg(1), d); f.pos += d.length; return d.length; }];
   K._llseek = [3, (c) => { const f = fileOf(c, c.arg(0)); if (!f?.file) return 0xffffffff; const m = c.arg(2); f.pos = m === 0 ? c.sarg(1) : m === 1 ? f.pos + c.sarg(1) : f.file.size() + c.sarg(1); return f.pos; }];
 
+  // snapshot: diagnostics
   let this_shortReads = 0;
   /**
    * I/O on a file object is serialized, as Windows does for synchronous handles: while a thread's ReadFile waits parked

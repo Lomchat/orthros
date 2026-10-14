@@ -1,6 +1,7 @@
 // dinput8.dll / dinput.dll: DirectInput 8 (and 7 via the same objects) over the window manager's
 // raw input stream. System keyboard (256 DIK states from scan codes) and system mouse (relative
 // axes, buttons, wheel), immediate and buffered data, cooperative levels, enumeration.
+import { snapClass } from '../core/snapshot.js';
 import { Com, readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG } from './com.js';
 import { wmOf } from './user32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
@@ -30,6 +31,7 @@ export function registerDirectInput(api, vm) {
   // ---- interfaces (vtable order from dinput.h)
   com.interface('IDirectInput8A', IID_IDirectInput8A, 'IUnknown', [['CreateDevice', 3], ['EnumDevices', 4], ['GetDeviceStatus', 1], ['RunControlPanel', 2], ['Initialize', 2], ['FindDevice', 3], ['EnumDevicesBySemantics', 5], ['ConfigureDevices', 4]]);
   com.interface('IDirectInput7A', IID_IDirectInput7A, 'IUnknown', [['CreateDevice', 3], ['EnumDevices', 4], ['GetDeviceStatus', 1], ['RunControlPanel', 2], ['Initialize', 2], ['FindDevice', 3], ['CreateDeviceEx', 4]]);
+  // snapshot: constant
   const devMethods = [['GetCapabilities', 1], ['EnumObjects', 3], ['GetProperty', 2], ['SetProperty', 2], ['Acquire', 0], ['Unacquire', 0], ['GetDeviceState', 2], ['GetDeviceData', 4], ['SetDataFormat', 1], ['SetEventNotification', 1], ['SetCooperativeLevel', 2], ['GetObjectInfo', 3], ['GetDeviceInfo', 1], ['RunControlPanel', 2], ['Initialize', 3], ['CreateEffect', 4], ['EnumEffects', 3], ['GetEffectInfo', 2], ['GetForceFeedbackState', 1], ['SendForceFeedbackCommand', 1], ['EnumCreatedEffectObjects', 3], ['Escape', 1], ['Poll', 0], ['SendDeviceData', 4], ['EnumEffectsInFile', 4], ['WriteEffectToFile', 4], ['BuildActionMap', 3], ['SetActionMap', 3], ['GetImageInfo', 1]];
   com.interface('IDirectInputDevice8A', IID_IDirectInputDevice8A, 'IUnknown', devMethods);
   com.interface('IDirectInputDevice7A', IID_IDirectInputDevice7A, 'IUnknown', devMethods.slice(0, 26));
@@ -309,7 +311,7 @@ export function registerDirectInput(api, vm) {
     EnumDevicesBySemantics() { return DI_OK; }
     ConfigureDevices() { return DI_OK; }
   }
-  for (const C of [Device, DirectInput]) vm.snap.cls(C, { name: `dinput8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Device, DirectInput]) snapClass(vm, C, { name: `dinput8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, iidArg, outArg, version) => {
     const iid = iidArg >= 0 ? readGuid(mem, c.arg(iidArg)) : IID_IDirectInput7A;
