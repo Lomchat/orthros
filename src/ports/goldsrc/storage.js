@@ -18,11 +18,16 @@ export function writeStorage(db, store, key, value) {
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   });
 }
-/** Delete the entries of `store` whose key is not in `keep` (cached files of an older installation). */
-export function pruneStorage(db, store, keep) {
+export function storageKeys(db, store) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readwrite'), request = tx.objectStore(store).getAllKeys();
-    request.onsuccess = () => { for (const key of request.result) if (!keep.has(key)) tx.objectStore(store).delete(key); };
+    const request = db.transaction(store).objectStore(store).getAllKeys();
+    request.onerror = () => reject(request.error); request.onsuccess = () => resolve(request.result);
+  });
+}
+export function removeStorage(db, store, keys) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite'), os = tx.objectStore(store);
+    for (const key of keys) os.delete(key);
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   });
 }

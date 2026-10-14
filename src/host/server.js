@@ -32,6 +32,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
 
 export const listTree = (dir) => listGameTree({ folder: dir });
+/** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
+const treeFileSize = (tree, rel) => {
+  const parts = rel.split('/');
+  let node = tree;
+  for (let i = 0; i < parts.length - 1; i++) { node = Object.hasOwn(node.dirs, parts[i]) ? node.dirs[parts[i]] : null; if (!node) return null; }
+  return Object.hasOwn(node.files, parts.at(-1)) ? node.files[parts.at(-1)].size : null;
+};
 
 export function loadManifests(dir, extra = null) {
   const out = new Map();
@@ -144,7 +151,8 @@ export function createServer(opts = {}) {
     return m;
   };
   let learnDirty = new Set(), learnTimer = null;
-  const learnRead = (name, rel, start, end, sid) => {
+  // (`at`: the read's time as the page measured it — a page reporting the reads it served itself, e.g. a browser port)
+  const learnRead = (name, rel, start, end, sid, at = null) => {
     if (!sid || sid.length > 40) return;
     const now = Date.now();
     let ss = sessions.get(sid);
@@ -152,7 +160,7 @@ export function createServer(opts = {}) {
       if (sessions.size > 1000) for (const [k, v] of sessions) if (now - v.start > 6 * 3600e3) sessions.delete(k);
       sessions.set(sid, ss = { start: now, seen: new Set() });
     }
-    const m = learnedOf(name), t = now - ss.start;
+    const m = learnedOf(name), t = at ?? now - ss.start;
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
       const bits = pieceBits(Math.max(start, b * LEARN_BLOCK) - b * LEARN_BLOCK, Math.min(end, (b + 1) * LEARN_BLOCK) - b * LEARN_BLOCK);
@@ -464,7 +472,10 @@ export function createServer(opts = {}) {
     if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
     const accept = String(req.headers['accept-encoding'] ?? '');
     const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
-    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}`;
+    // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
+    // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
+    const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
+    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
@@ -480,12 +491,12 @@ export function createServer(opts = {}) {
     };
     const hit = encodedCache.get(key);
     if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
-    const buf = Buffer.alloc(end - start);
+    const buf = Buffer.alloc(end - start + pad);
     fs.open(file, 'r', (err, fd) => {
       if (err) return send(res, 500, String(err));
-      fs.read(fd, buf, 0, buf.length, start, (err2, n) => {
+      fs.read(fd, buf, pad, end - start, start, (err2, n) => {
         fs.close(fd, () => {});
-        if (err2 || n !== buf.length) return send(res, 500, String(err2 ?? 'short read'));
+        if (err2 || n !== end - start) return send(res, 500, String(err2 ?? 'short read'));
         if (!enc) return reply(buf, null);
         const t0 = performance.now();
         const done = (err3, out) => {
@@ -638,7 +649,31 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(man.profileSeed === false || lang === null ? { files: [] } : seedFor(m[1], lang)), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
-      if (m) { if (!getManifest(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
+      if (m) {
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        // a page that serves the game's reads itself (a browser port) reports them: { session, reads: [[path, start,
+        // end, t (ms since the game started)]] }, learned as the demand reads of the Windows games are
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 2 * 1024 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 2 * 1024 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            if (typeof rec?.session !== 'string' || !rec.session || rec.session.length > 40 || !Array.isArray(rec.reads)) return send(res, 400, 'bad report');
+            if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man));
+            const tree = treeObjs.get(m[1]);
+            for (const r of rec.reads.slice(0, 50000)) {
+              if (!Array.isArray(r) || typeof r[0] !== 'string' || r[0].length > 512) continue;
+              const [rel, start, end, t] = r, size2 = treeFileSize(tree, rel);
+              if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
+              learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
+            }
+            send(res, 204, '');
+          });
+          return;
+        }
+        return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' });
+      }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }

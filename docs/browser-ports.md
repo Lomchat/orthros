@@ -58,18 +58,39 @@ same as for Windows games: version files replace same-named base files, whatever
   `launchUrl` (`src/host/web/main.js`); the Windows pre-download row is for `win32` versions only.
 - `/ports/goldsrc/<manifest>/`: the port's page.
 - `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable.
-- `/game/<manifest>/...` and `/gamez/<manifest>/...`: the game's files, as for Windows games. The page reads each file
-  once, compressed when that saves bytes (files up to 64 MB), and skips native binaries (`.exe`, `.dll`, `.so`).
+- `/gamez/<manifest>/...?r=<start>-<end>`: the game's files, compressed when that saves bytes, as for Windows games
+  (see "Streamed files" below). Native binaries (`.exe`, `.dll`, `.so`) are not part of the engine's tree.
+- `/api/prefetch/<manifest>`: GET the learned list (files and pieces in the order sessions first read them); POST
+  `{ session, reads: [[path, start, end, t]] }`, the reads a page served, `t` in ms since its engine started.
 - `/api/udp/<manifest>` (WebSocket): the multiplayer relay. Each player gets one UDP socket to the version's dedicated
   server on `127.0.0.1:<multiplayer.port>`, never another destination; same-origin pages only, 64 players at once,
   idle connections closed after two minutes.
+
+## Streamed files
+
+The page does not download a game before starting it (`src/ports/goldsrc/files.js`). The engine sees the whole tree
+at once (names and sizes from `/api/tree`); a file's bytes arrive at its first read:
+
+- **Startup set.** The server's learned list orders the files and 64 KiB pieces sessions read, by the earliest time
+  since their engine started. Before starting the engine the page loads its leading part, up to the first pause of
+  2 s between two learned reads: what the engine reads from its start to its first idle moment (init, menu, and the
+  first map when the page asks for one). Six requests at a time, from the browser's copy when it has them.
+- **The rest in the background.** Once the engine runs: the files this browser keeps, then the rest of the learned
+  list in its order, three requests at a time. A big file of which sessions read a small part (a map list reading
+  headers) comes as those pieces only.
+- **Reads not there yet.** The engine is synchronous and runs in the page: a read of bytes not loaded yet fetches them
+  at once over a synchronous request (the page waits; mostly during a map load), whole runs of missing pieces per
+  request.
+- **Learning.** The page reports the pieces the engine read (path, range, time since its start) 30 s after the start,
+  every 2 minutes and when it is closed. The first session of a version, without a learned list, starts at once and
+  fetches every read; it teaches the next ones.
 
 ## Browser storage
 
 IndexedDB database `orthros-port:<game>:<version folder>` (the installation; unchanged since the first release):
 `profile` holds the engine's writable tree (saves, configuration), written every 10 s, when the page is hidden and on
-quit; `content` holds the game files keyed by path, size and modification time (entries of older files are deleted
-after a complete load). The settings' device tab and the account's online copies handle the Windows games' profiles
+quit; `content` holds the game files fetched, whole (`<path>\n<size>\n<mtime>`) or as 64 KiB pieces (the same key and
+`\n#<piece>`); entries of other files or older versions are deleted at the start. The settings' device tab and the account's online copies handle the Windows games' profiles
 only: a port's saves stay in this browser.
 
 ## Multiplayer servers

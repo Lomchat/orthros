@@ -1,9 +1,11 @@
 // The page of a GoldSrc browser port (src/host/goldsrc.js, docs/browser-ports.md), /ports/goldsrc/<manifest>/: the
-// pinned engine release the manifest names (/engines/<release>/), the version's game files (/game/<manifest>/, kept in
-// IndexedDB once read), the writable profile (saves, settings) in IndexedDB under the installation's key, multiplayer
-// through the server's relay (/api/udp/<manifest>). It never loads the Win32 runtime, and nothing here names a game.
+// pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (files.js: what
+// the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), the writable profile (saves,
+// settings) in IndexedDB under the installation's key, multiplayer through the server's relay (/api/udp/<manifest>).
+// It never loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
-import { openStorage, readStorage, writeStorage, pruneStorage, writableSnapshot, restoreSnapshot } from './storage.js';
+import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
+import { StreamedFiles, treeFiles, learnedPlan, PIECE } from './files.js';
 
 const STRINGS = {
   en: {
@@ -16,7 +18,7 @@ const STRINGS = {
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.', stopped: 'Game over. Saves and settings are kept.',
     cannotSave: 'Cannot save: ', lost: 'Connection to the server lost. Quit the game and start it again.',
     unreachable: 'Multiplayer server unreachable', refused: 'Multiplayer connection refused',
-    missing: (f) => `File unavailable: ${f}`, short: (f) => `Incomplete file: ${f}`, engineFiles: 'Engine resources unavailable',
+    engineFiles: 'Engine resources unavailable',
   },
   fr: {
     back: '← Tous les jeux', name: 'Pseudo', mode: 'Mode', play: 'Jouer', fullscreen: 'Plein écran', stop: 'Quitter et enregistrer', log: 'Journal de lancement',
@@ -28,7 +30,7 @@ const STRINGS = {
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.', stopped: 'Partie terminée. Les sauvegardes et réglages sont conservés.',
     cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur interrompue. Quitte la partie puis relance-la.',
     unreachable: 'Serveur multijoueur inaccessible', refused: 'Connexion multijoueur impossible',
-    missing: (f) => `Fichier indisponible : ${f}`, short: (f) => `Fichier incomplet : ${f}`, engineFiles: 'Ressources du moteur indisponibles',
+    engineFiles: 'Ressources du moteur indisponibles',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
@@ -52,21 +54,15 @@ window.addEventListener('error', event => {
 });
 const log = line => { logs.push(String(line)); if (logs.length > 500) logs.shift(); $('log').textContent = logs.slice(-100).join('\n'); };
 const fail = error => { session.state = 'error'; status(S.failed + (error.message ?? error)); log(error.stack ?? error); $('launch').disabled = false; socket?.close(); if (timer) clearInterval(timer); };
-/** Native binaries of the installation: useless to the WebAssembly engine, never downloaded. */
-const NATIVE = /\.(exe|dll|so|dylib)$/i;
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
-const fileUrl = (path, route = 'game') => `/${route}/${encodeURIComponent(name)}/` + path.split('/').map(encodeURIComponent).join('/');
-let config, files;
+const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+let config, files, streamed;
 try {
   const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
   config = session.config = await manifestResponse.json();
   if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
-  files = [];
-  (function walk(node, prefix) {
-    for (const [dir, sub] of Object.entries(node.dirs)) if (!dir.startsWith('.')) walk(sub, prefix + dir + '/');
-    for (const [file, st] of Object.entries(node.files)) if (!file.startsWith('.') && !NATIVE.test(file)) files.push({ path: prefix + file, size: st.size, mtime: st.mtime });
-  })(await treeResponse.json(), '');
+  files = treeFiles(await treeResponse.json());
   $('title').textContent = config.name; document.title = config.name + ' · Orthros';
   const g = config.goldsrc;
   for (const mode of ['solo', 'multiplayer']) {
@@ -109,22 +105,21 @@ async function connect(Net) {
   socket.onclose = () => { session.multiplayer = 'disconnected'; if (!stopped) status(S.lost); };
 }
 
-/** A game file: from the browser's cache, else from the server (compressed when that saves bytes), then cached. */
-async function gameFile(file, cache) {
-  const key = `${file.path}\n${file.size}\n${file.mtime}`;
-  let bytes = cache.enabled ? await readStorage(db, 'content', key) : null;
-  if (!bytes) {
-    if (file.size === 0) bytes = new Uint8Array(0);
-    else {
-      const response = await fetch(file.size <= 64 * 1024 * 1024 ? fileUrl(file.path, 'gamez') + `?r=0-${file.size}&p=1` : fileUrl(file.path));
-      if (!response.ok) throw new Error(S.missing(file.path));
-      bytes = new Uint8Array(await response.arrayBuffer());
-    }
-    if (bytes.length !== file.size) throw new Error(S.short(file.path));
-    if (cache.enabled) try { await writeStorage(db, 'content', key, bytes); } catch (error) { cache.enabled = false; log('Content cache unavailable: ' + error.message); }
-  }
-  cache.keys.add(key);
-  return bytes;
+/** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
+function reportReads(beacon = false) {
+  const reads = streamed?.takeReads(); if (!reads?.length) return;
+  const url = `/api/prefetch/${encodeURIComponent(name)}`, body = (list) => JSON.stringify({ session: sessionId, reads: list });
+  if (!beacon) { fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(reads) }).catch((error) => log('Read report failed: ' + error.message)); return; }
+  for (let i = 0; i < reads.length; i += 500) navigator.sendBeacon(url, new Blob([body(reads.slice(i, i + 500))], { type: 'application/json' })); // (a beacon carries 64 KiB at most)
+}
+
+/** After the start: the files kept in this browser, then the rest of the learned list, into the engine's tree. */
+async function loadInBackground(rest) {
+  const t = performance.now(), jobs = (list) => list.map((e) => () => streamed.load(e.file, e.pieces).catch((error) => log(`${e.file.path}: ${error.message}`)));
+  await StreamedFiles.pool(jobs(streamed.localNotLoaded()), 2);
+  await StreamedFiles.pool(jobs(rest), 3);
+  session.background = { ms: Math.round(performance.now() - t), ...streamed.stats };
+  log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
 $('start').addEventListener('submit', async event => {
@@ -137,7 +132,8 @@ $('start').addEventListener('submit', async event => {
     const { Xash3D, Net } = await import(base + 'engine/index.js');
     engine = session.engine = new Xash3D({
       canvas: $('canvas'),
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', '1024', '-height', '768'],
+      // (?debug: the engine's developer messages from its start)
+      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', '1024', '-height', '768', ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
       libraries: {
         xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
         menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
@@ -150,21 +146,35 @@ $('start').addEventListener('submit', async event => {
     const FS = engine.em.FS;
     FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir);
     restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
-    const total = files.reduce((sum, f) => sum + f.size, 0), cache = { enabled: true, keys: new Set() };
-    let loaded = 0, next = 0;
-    await Promise.all(Array.from({ length: 4 }, async () => {
-      while (next < files.length) {
-        const file = files[next++], bytes = await gameFile(file, cache);
-        const target = '/rodir/' + file.path; FS.mkdirTree(target.slice(0, target.lastIndexOf('/'))); FS.writeFile(target, bytes);
-        loaded += file.size; $('progress').value = loaded / Math.max(1, total);
-        status(S.files(Math.round(loaded / Math.max(1, total) * 100)));
-      }
-    }));
-    if (cache.enabled) pruneStorage(db, 'content', cache.keys).catch(error => log('Content cache cleanup failed: ' + error.message));
+    // (the game's files: its whole tree now, what earlier sessions read first loaded before the start, the rest later)
+    streamed = session.files = new StreamedFiles({ name, files, log, store: {
+      read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
+      keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
+    streamed.mount(FS, '/rodir');
+    const t0 = performance.now();
+    const [learned] = await Promise.all([fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).catch(() => []), streamed.openLocal().catch((error) => log('Content cache unavailable: ' + error.message))]);
+    const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
+    const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
+    let loaded = 0;
+    await StreamedFiles.pool(first.map((e) => async () => {
+      await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
+      $('progress').value = loaded / Math.max(1, total); status(S.files(Math.round(loaded / Math.max(1, total) * 100)));
+    }), 6);
+    session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
+    log(`Startup files: ${JSON.stringify(session.startup)}`);
     const extrasResponse = await fetch(base + 'engine/valve/extras.pk3');
     if (!extrasResponse.ok) throw new Error(S.engineFiles);
     FS.writeFile(`/rodir/${g.gameDir}/extras.pk3`, new Uint8Array(await extrasResponse.arrayBuffer())); FS.chdir('/rwdir');
+    // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
+    // can be after this — no console command before it has run; the reads are learned from its start)
+    const M = engine.em.Module, started = new Promise((resolve) => {
+      const initialized = M.onRuntimeInitialized; M.onRuntimeInitialized = () => { streamed.start(); initialized?.(); };
+      M.postRun = [...(Array.isArray(M.postRun) ? M.postRun : M.postRun ? [M.postRun] : []), resolve];
+    });
     engine.main();
+    await started;
+    loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
+    setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
     engine.Cmd_ExecuteString('developer ' + (new URLSearchParams(location.search).has('debug') ? '1' : '0'));
     const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
     engine.Cmd_ExecuteString(`name "${nickname}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
@@ -193,4 +203,4 @@ $('stop').addEventListener('click', async () => {
   } catch (error) { stopped = false; $('stop').disabled = false; status(S.cannotSave + (error?.message ?? String(error))); }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) save().catch(log); });
-window.addEventListener('pagehide', () => { stopped = true; if (timer) clearInterval(timer); socket?.close(); });
+window.addEventListener('pagehide', () => { stopped = true; if (timer) clearInterval(timer); socket?.close(); reportReads(true); });
