@@ -75,9 +75,12 @@ subtly wrong. So:
 | game, capture | objects | guest memory | snapshot (raw) | restore | then |
 |---|---|---|---|---|---|
 | Vice City, menu (130 s) | 3 792 | 25 MiB (6 395 pages) | 28.5 MiB | 0.09 s | a new game started, the city loaded, driven: identical for 200 000 slices (87 s of game, 7.5 M API calls) |
-| BFME2 1.09, 120 s | 35 368 | 112 MiB (28 575 pages) | 119.6 MiB | 0.37 s | identical for 3 000 slices |
+| BFME2 1.09, 120 s (first-launch benchmark) | 35 368 | 112 MiB (28 575 pages) | 119.6 MiB | 0.37 s | identical for 3 000 slices |
+| BFME2 1.09, 180 s (drawing, 8 threads) | 35 609 | 119 MiB (30 498 pages) | 127.2 MiB | 0.4-0.8 s | identical for 120 000 slices (30 s of game) |
 
-Compressed sizes (study of 2026-10-14): Vice City ~15 MB, BFME2 ~39 MB at zstd -19.
+Compressed sizes (study of 2026-10-14): Vice City ~15 MB, BFME2 ~39 MB at zstd -19. Under Node with an empty profile
+BFME2 spends its first 130 s of game time in its first-launch benchmark; its 3D menu was not reached there with the
+harness's startup scenario (18 draws per frame where the scenario waits for 150): the skirmish comparison is still to do.
 
 ## Next stages
 
