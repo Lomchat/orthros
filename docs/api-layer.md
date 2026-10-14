@@ -202,6 +202,27 @@ filter, draws queued.
   60.2 ms per frame; Node `framebench` pairs before the queued draws (filter only): `api` 4.38 → 3.97 and 3.66 → 3.45 ms per
   frame, wall per frame −1.4 / +0.7 ms (noise).
 
+**Measured again with every change (2026-10-14; base = the tree before them, both runs at once, launch order alternated,
+per frame base → branch).**
+- Node, virtual clock (the same guest work in both runs, identical guest instruction counts): BFME1 3D menu `api` 4.34 →
+  3.25 ms (two pairs, identical), emulator thread CPU 65.6-67.5 → 62.7-63.7; BFME1 menu `api` 3.58-3.65 → 3.05-3.11, thread
+  CPU 37.6-38.2 → 36.3-36.4; BFME2 (`bfme2-startup.txt`, one pair) menu `api` 4.28 → 3.97, play 5.03 → 4.87 (thread CPU
+  16.75 → 16.83: within the noise).
+- Node, real clock: BFME1 play `api` 2.67 → 2.38 and 3.59 → 3.25 (fps 33.9 → 34.3, 30.4 → 30.8); Vice City drive `api`
+  1.96 → 1.45 and 2.23 → 1.72, thread CPU 14.4 → 12.6 and 16.9 → 14.9. BFME2 play: `api` 5.82 → 6.60 and 6.76 → 8.12, but
+  not the same work: in both real-clock pairs the branch's runs drew more per frame (46 effect `Begin` / `SetTechnique` per
+  frame against 33, +6 % guest instructions), while in the virtual-clock pair (identical work) both run 33 — the game
+  renders more when it has the time; per-frame figures do not compare there.
+- Browser (`--gl-discard`, three BFME1 pairs, `bfme-phases.txt` with a 3D-menu phase; one pair on a machine at load
+  30-40): 3D menu `api` 12.1 → 10.4, 5.7 → 4.4, 5.3 → 4.1 ms, fps 7.7 → 7.8, 18.0 → 18.1, 18.7 → 19.5; menu `api` 4.4 →
+  4.1, 4.0 → 3.5, 4.0 → 3.3, fps 22.6 → 22.6, 24.2 → 24.5, 25.1 → 26.1; play `api` 5.9 → 4.9, 2.9 → 2.5, 3.5 → 3.0, fps
+  23.8 → 24.7 (loaded), 38.3 → 38.3 twice (the frame pacing's cap); map load (loadscreen) 75.2 → 69.6, 61.9 → 61.6, 62.1
+  → 62.1 s. BFME2 (two pairs, `bfme2-startup.txt`): menu `api` 5.2 → 4.3 and 5.2 → 4.6, play 30.2 / 30.1 fps in all four
+  runs (`api` 4.7 → 5.0 and 4.9 → 6.0: the same "more drawn" effect as in Node).
+- Fidelity: `?glworker=compare-worker` on the branch, BFME1 menu to play (35 frames compared, 0 differing) and Vice City
+  drive (220-1 460 frames compared, 0 differing); the randomized suites (`jit-defer-filter*.test.js`) against executing
+  every call.
+
 **Measured, not done.** Of the 2.5 MB per frame copied into the ring at `Unlock` in that menu, a whole-buffer lock of a
 dynamic vertex buffer without flags (1 per frame, 0.5-0.63 MB) never changes a byte, and the `NOOVERWRITE` / `DISCARD`
 ranges change 30-50 % of their bytes but 70-85 % of their 256-byte blocks (a shadow copy compared at each `Unlock`). Sending
