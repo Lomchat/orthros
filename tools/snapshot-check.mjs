@@ -32,6 +32,7 @@ if (!manifest) { console.error(`usage: snapshot-check.mjs <manifest> --games-dir
 const atMark = opt('at-mark'); // (a mark of --input: the capture once the scenario reached it)
 const at = Number(opt('at', atMark ? 1e6 : 20)) * 1000, then = Number(opt('then', 2000)), every = Number(opt('every', 0));
 const scratch = opt('keep') ?? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'snapshot-check-'));
+if (!opt('keep')) process.on('exit', () => fs.rmSync(scratch, { recursive: true, force: true })); // (whatever the exit: a refusal, a difference)
 fs.mkdirSync(scratch, { recursive: true });
 const log = (...a) => console.log(`[${((performance.now()) / 1000).toFixed(1)}s]`, ...a);
 
@@ -105,4 +106,3 @@ for (let i = 1; i <= then; i++) {
     log(`same after ${i} slices (guest ${(a.clock.now() / 1000).toFixed(2)} s, ${a.apiCalls} API calls)`);
   }
 }
-if (!opt('keep')) fs.rmSync(scratch, { recursive: true, force: true });
