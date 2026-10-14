@@ -20,7 +20,7 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r1` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r2` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -108,7 +108,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r1` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r2` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`).
@@ -141,35 +141,64 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
 
 ## Half-Life Arsenal
 
-`counter-strike-hl-arsenal`: Counter-Strike 1.6 with five Half-Life weapons bought beside its own — `9. Half-Life
-arsenal` of the buy menu, or the console aliases `python`, `crossbow`, `rpg`, `gauss`, `egon`. Both teams, every map;
-their ammo bought as any gun's (`6`/`7` of the menu); `$16000` to start (`mp_startmoney`, solo and multiplayer).
+`counter-strike-hl-arsenal`: Counter-Strike 1.6 with the fourteen Half-Life weapons bought beside its own — `9. Half-Life
+arsenal` of the buy menu, in four categories, or the console aliases of the table. Both teams, every map,
+Counter-Strike's economy (`$800` to start, its rewards; `mp_startmoney` among the manifest's commands changes it). Their
+ammo is bought as any gun's (`6`/`7` of the menu): the 9mm handgun and the MP5 share Counter-Strike's 9mm, the shotgun
+its buckshot.
 
-| Weapon | Slot | Price | Fire | Secondary |
+| Weapon (alias) | Menu, slot | Price | Damage | Notes |
 | --- | --- | --- | --- | --- |
-| .357 Magnum | pistol | $900 | 65, Counter-Strike's bullet penetration | zoom |
-| Crossbow | primary | $3000 | an explosive bolt in flight | zoom: an instant 120-damage bolt |
-| RPG | primary | $4500 | a rocket following the laser spot, 120 blast | laser spot on/off |
-| Gauss | primary | $4000 | 20, reflected by walls | charge up to 200: through walls, pushes its shooter |
-| Egon | primary | $5500 | a continuous beam, 12 every 0.1 s | — |
+| Crowbar (`crowbar`) | 1, knife | $300 | 25 a hit, 0.35 s | beside the knife |
+| 9mm Handgun (`9mmhandgun`) | 1, pistol | $400 | 22, 17 rounds | secondary: quicker, wilder |
+| .357 Magnum (`python`) | 1, pistol | $900 | 65, 6 rounds | zoom |
+| MP5 (`9mmar`) | 2, primary | $1800 | 21, 50 rounds, 10 a second | M203 contact grenade (`argrenade`): 100 blast, $300, 2 at most |
+| Shotgun (`shotgun`) | 2, primary | $2000 | 6 pellets of 18 | secondary: both barrels |
+| Crossbow (`crossbow`) | 2, primary | $3000 | bolt 50, then a 40 blast | zoom: an instant 100 |
+| Hornet Gun (`hgun`) | 3, primary | $2500 | 15 a hornet | 8 that grow back; homing, or straight darts |
+| Gauss (`gauss`) | 3, primary | $4000 | 20 | charged up to 200: through walls, pushes its shooter |
+| RPG (`rpg`) | 3, primary | $4500 | 120 blast | follows its laser spot; 3 spare rockets at most |
+| Egon (`egon`) | 3, primary | $5500 | 12 every 0.1 s | a continuous beam |
+| Hand Grenade (`handgrenade`) | 4, grenade | $300 | 100 blast | cooks from the pin, 3 s; 1 at most |
+| Satchel Charge (`satchel`) | 4, grenade | $600 | 150 blast | thrown, set off by its radio (secondary); 2 at most; gone with its owner |
+| Tripmine (`tripmine`) | 4, grenade | $500 | 150 blast | on a wall; its beam is set off by enemies only, the mine by shots; 2 at most |
+| Snarks (`snark`) | 4, grenade | $500 the 3 | 10 a bite, a growing pop | hunt the nearest enemy for 15 s; 6 at most |
 
-The `hl-arsenal` patches port the Half-Life SDK's `python.cpp`, `crossbow.cpp`, `rpg.cpp`, `gauss.cpp` and `egon.cpp`
-onto ReGameDLL's weapon classes (`dlls/wpn_shared/wpn_hl.cpp`, `dlls/hl_weapons.h`) and their client events
-(`cl_dll/events/event_hl.cpp`, from `ev_hldm.cpp`). The models, sounds, sprites and event scripts are the Half-Life
-ones already in the game's `valve` folder; nothing of the game's is copied or changed.
+Balance is Counter-Strike's scale, not Half-Life's (a player has 100 health and usually kevlar): the guns' damage as
+their nearest Counter-Strike counterparts', their armor penetration as these (the crowbar the knife's, the .357 the
+Desert Eagle's, the zoomed crossbow the Scout's, the Gauss and Egon the Desert Eagle's), the explosives the HE
+grenade's 100 for a grenade, the C4's role for none.
 
-- **Ids past 32.** Counter-Strike's ids fill the 32 bits of a player's `weapons` field: these are 32 to 36
+The `hl-arsenal` patches port the Half-Life SDK's weapons (`crowbar.cpp`, `glock.cpp`, `python.cpp`, `mp5.cpp`,
+`shotgun.cpp`, `crossbow.cpp`, `hornetgun.cpp` and `hornet.cpp`, `rpg.cpp`, `gauss.cpp`, `egon.cpp`, `handgrenade.cpp`,
+`satchel.cpp`, `tripmine.cpp`, `squeakgrenade.cpp`) onto ReGameDLL's weapon classes (`dlls/wpn_shared/wpn_hl.cpp`,
+`dlls/hl_weapons.h`) and their client events (`cl_dll/events/event_hl.cpp`, from `ev_hldm.cpp`). The models, sounds,
+sprites and event scripts are the Half-Life ones already in the game's `valve` folder; nothing of the game's is copied
+or changed.
+
+- **Ids past 32.** Counter-Strike's ids fill the 32 bits of a player's `weapons` field: these are 32 to 45
   (`MAX_WEAPONS` 64 on both sides, the engine predicts 64). The client learns which a player owns from the `HLWeapons`
-  message (its own bits), for the weapon menu and the HUD.
+  message (its own bits), for the weapon menu and the HUD. Their ammo types follow Counter-Strike's (`AmmoType`).
 - **Not predicted.** The current weapon id the client predicts from has 5 bits (`delta.lst`): while a Half-Life weapon
   is held, the server sends 0 and the client predicts nothing. Its animations come from the server (sent even to a
   predicting client), its fire effects from its events, which reach the shooter too.
-- **HUD sprites.** Half-Life's `sprites/weapon_*.txt` name sprite sheets (`640hud1.spr`, …) whose names
+- **HUD and kill icons.** Half-Life's `sprites/weapon_*.txt` name sprite sheets (`640hud1.spr`, …) whose names
   Counter-Strike's own shadow: the client loads them, for these weapons only, from `valve/sprites/` of the game tree
-  (its root is a search path of the engine).
-- **Counter-Strike's rules.** One primary, one pistol: buying one drops the other of its slot; weights as
-  Counter-Strike's, so a bought weapon is drawn. Dropped and dead players' weapons fall with their Half-Life world
-  model. Bots neither buy nor pick them up (their logic knows Counter-Strike's weapons only).
+  (its root is a search path of the engine; its file names lowercase). The death notice icons (`d_*`) of the Half-Life
+  `hud.txt` join Counter-Strike's: `d_hl_*` where Counter-Strike has one of the same name (`hl_grenade`, the hand and MP5
+  grenades, shows `d_hl_grenade`); a bolt's kill is `bolt` as in Half-Life. The MP5's grenades are counted left of its
+  clip.
+- **Counter-Strike's rules.** One primary, one pistol: buying one drops the other of its slot; the crowbar beside the
+  knife, the explosives in the grenade slot (bought again: one more, up to their limit; not dropped). Weights as
+  Counter-Strike's, so a bought gun is drawn. Dropped and dead players' guns fall with their Half-Life world model.
+  The freeze period stops the attacks that fire, the secondary ones too. Bots neither buy nor pick them up (their logic
+  knows Counter-Strike's weapons only).
+- **Teams.** Hornets and snarks hunt enemies only (in free for all, anyone but their owner); a tripmine lets its owner's
+  team through. Explosions hurt as a grenade's (`DMG_EXPLOSION`: Counter-Strike counts the kill, which a bomb's
+  `DMG_BLAST` would not), through no wall but through bodies, and not the attacker's teammates without friendly fire;
+  their owner, yes.
+- **Rounds.** A round restart removes what the weapons left in the map (grenades, charges, mines, snarks, hornets,
+  rockets, bolts).
 - **Effects.** The Egon's beams are the server's for every player, its shooter included (the Half-Life client's own
   beams follow a predicted aim this client does not have). Explosions are Half-Life's (Counter-Strike's grenade
   explosion is the flashbang's).

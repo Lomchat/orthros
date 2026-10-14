@@ -1,21 +1,33 @@
 diff --git a/cl_dll/ammo.cpp b/cl_dll/ammo.cpp
-index a78ad14..5c0a0de 100644
+index a78ad14..ac66fa8 100644
 --- a/cl_dll/ammo.cpp
 +++ b/cl_dll/ammo.cpp
-@@ -99,7 +99,11 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -99,7 +99,23 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	pWeapon->hAmmo = 0;
  	pWeapon->hAmmo2 = 0;
  
 -	snprintf(sz, sizeof(sz), "sprites/%s.txt", pWeapon->szName);
 +	// (the Half-Life arsenal's, ids from 32: the Half-Life sprite sheets, whose names Counter-Strike's own shadow,
 +	// from the valve folder of the game tree)
++	// from the valve folder of the game tree, whose file names are lowercase: weapon_9mmar.txt for weapon_9mmAR)
 +	const char *txtFormat = pWeapon->iId >= 32 ? "valve/sprites/%s.txt" : "sprites/%s.txt";
 +	const char *sprFormat = pWeapon->iId >= 32 ? "valve/sprites/%s.spr" : "sprites/%s.spr";
-+	snprintf(sz, sizeof(sz), txtFormat, pWeapon->szName);
++	char szName[MAX_WEAPON_NAME];
++	strncpy( szName, pWeapon->szName, sizeof( szName ) - 1 );
++	szName[sizeof( szName ) - 1] = 0;
++	if ( pWeapon->iId >= 32 )
++	{
++		for ( char *c = szName; *c; c++ )
++		{
++			if ( *c >= 'A' && *c <= 'Z' )
++				*c += 'a' - 'A';
++		}
++	}
++	snprintf(sz, sizeof(sz), txtFormat, szName);
  	client_sprite_t *pList = SPR_GetList(sz, &i);
  
  	if (!pList)
-@@ -110,7 +114,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -110,7 +126,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList( pList, "crosshair", iRes, i );
  	if (p)
  	{
@@ -24,7 +36,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hCrosshair = SPR_Load(sz);
  		pWeapon->rcCrosshair = p->rc;
  	}
-@@ -120,7 +124,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -120,7 +136,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "autoaim", iRes, i);
  	if (p)
  	{
@@ -33,7 +45,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hAutoaim = SPR_Load(sz);
  		pWeapon->rcAutoaim = p->rc;
  	}
-@@ -130,7 +134,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -130,7 +146,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList( pList, "zoom", iRes, i );
  	if (p)
  	{
@@ -42,7 +54,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hZoomedCrosshair = SPR_Load(sz);
  		pWeapon->rcZoomedCrosshair = p->rc;
  	}
-@@ -143,7 +147,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -143,7 +159,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "zoom_autoaim", iRes, i);
  	if (p)
  	{
@@ -51,7 +63,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hZoomedAutoaim = SPR_Load(sz);
  		pWeapon->rcZoomedAutoaim = p->rc;
  	}
-@@ -156,7 +160,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -156,7 +172,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "weapon", iRes, i);
  	if (p)
  	{
@@ -60,7 +72,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hInactive = SPR_Load(sz);
  		pWeapon->rcInactive = p->rc;
  
-@@ -168,7 +172,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -168,7 +184,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "weapon_s", iRes, i);
  	if (p)
  	{
@@ -69,7 +81,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hActive = SPR_Load(sz);
  		pWeapon->rcActive = p->rc;
  	}
-@@ -178,7 +182,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -178,7 +194,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "ammo", iRes, i);
  	if (p)
  	{
@@ -78,7 +90,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hAmmo = SPR_Load(sz);
  		pWeapon->rcAmmo = p->rc;
  
-@@ -190,7 +194,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -190,7 +206,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "ammo2", iRes, i);
  	if (p)
  	{
@@ -87,7 +99,7 @@ index a78ad14..5c0a0de 100644
  		pWeapon->hAmmo2 = SPR_Load(sz);
  		pWeapon->rcAmmo2 = p->rc;
  
-@@ -256,6 +260,7 @@ int CHudAmmo::Init(void)
+@@ -256,6 +272,7 @@ int CHudAmmo::Init(void)
  	HOOK_MESSAGE(gHUD.m_Ammo, AmmoX);
  	HOOK_MESSAGE(gHUD.m_Ammo, Crosshair);
  	HOOK_MESSAGE(gHUD.m_Ammo, Brass);
@@ -95,7 +107,7 @@ index a78ad14..5c0a0de 100644
  
  	HOOK_COMMAND(gHUD.m_Ammo, "slot1", Slot1);
  	HOOK_COMMAND(gHUD.m_Ammo, "slot2", Slot2);
-@@ -362,9 +367,10 @@ void CHudAmmo::Think(void)
+@@ -362,9 +379,10 @@ void CHudAmmo::Think(void)
  	if ( gHUD.m_fPlayerDead )
  		return;
  
@@ -107,7 +119,7 @@ index a78ad14..5c0a0de 100644
  
  		for (int i = 0; i < MAX_WEAPONS-1; i++ )
  		{
-@@ -372,7 +378,8 @@ void CHudAmmo::Think(void)
+@@ -372,7 +390,8 @@ void CHudAmmo::Think(void)
  
  			if ( p )
  			{
@@ -117,7 +129,7 @@ index a78ad14..5c0a0de 100644
  				{
  					gWR.PickupWeapon( p );
  				}
-@@ -659,6 +666,14 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
+@@ -659,6 +678,14 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
  
  }
  
@@ -132,6 +144,23 @@ index a78ad14..5c0a0de 100644
  int CHudAmmo::MsgFunc_Crosshair(const char *pszName, int iSize, void *pbuf)
  {
  	BufferReader reader( pszName, pbuf, iSize );
+@@ -1122,8 +1149,14 @@ int CHudAmmo::Draw(float flTime)
+ 		// Do we have secondary ammo?
+ 		if ((pw->iAmmo2Type != 0) && (gWR.CountAmmo(pw->iAmmo2Type) > 0))
+ 		{
+-			y -= gHUD.m_iFontHeight + gHUD.m_iFontHeight/4;
+-			x = ScreenWidth - 4 * AmmoWidth - iIconWidth;
++			// (the Half-Life arsenal's MP5 grenades: left of the clip, the account is above it here)
++			if (pw->iId >= 32)
++				x = ScreenWidth - 12 * AmmoWidth - m_pWeapon->rcAmmo.Width() - iIconWidth;
++			else
++			{
++				y -= gHUD.m_iFontHeight + gHUD.m_iFontHeight/4;
++				x = ScreenWidth - 4 * AmmoWidth - iIconWidth;
++			}
+ 			x = DrawUtils::DrawHudNumber(x, y, iFlags|DHN_3DIGITS, gWR.CountAmmo(pw->iAmmo2Type), r, g, b);
+ 
+ 			// Draw the ammo Icon
 diff --git a/cl_dll/ammohistory.h b/cl_dll/ammohistory.h
 index e77a067..33b67c6 100644
 --- a/cl_dll/ammohistory.h
@@ -183,14 +212,20 @@ index e824bc2..fdc8dff 100644
  
  // CS Weapon placeholder entities
 diff --git a/cl_dll/ev_common.cpp b/cl_dll/ev_common.cpp
-index 7d887ba..87dc493 100644
+index 7d887ba..c0f9706 100644
 --- a/cl_dll/ev_common.cpp
 +++ b/cl_dll/ev_common.cpp
-@@ -74,6 +74,16 @@ void Game_HookEvents( void )
+@@ -74,6 +74,22 @@ void Game_HookEvents( void )
  	HOOK_EVENT( vehicle, Vehicle );
  	HOOK_EVENT( xm1014, FireXM1014 );
  
 +	// Half-Life arsenal
++	HOOK_EVENT( glock1, FireHLGlock1 );
++	HOOK_EVENT( glock2, FireHLGlock2 );
++	HOOK_EVENT( mp5, FireHLMP5 );
++	HOOK_EVENT( mp52, FireHLMP52 );
++	HOOK_EVENT( shotgun1, FireHLShotgunSingle );
++	HOOK_EVENT( shotgun2, FireHLShotgunDouble );
 +	HOOK_EVENT( python, FirePython );
 +	HOOK_EVENT( gaussspin, SpinGauss );
 +	HOOK_EVENT( gauss, FireGauss );
@@ -205,18 +240,22 @@ index 7d887ba..87dc493 100644
  		HOOK_EVENT( m60, FireM60 );
 diff --git a/cl_dll/events/event_hl.cpp b/cl_dll/events/event_hl.cpp
 new file mode 100644
-index 0000000..f5e3b71
+index 0000000..98cc8d1
 --- /dev/null
 +++ b/cl_dll/events/event_hl.cpp
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,486 @@
 +/*
-+*	Half-Life arsenal: the client events of the Half-Life SDK's .357, crossbow, RPG, Gauss and Egon (ev_hldm.cpp),
-+*	on this client's helpers. These weapons are not predicted: the shooter receives their events as everyone does,
-+*	the weapon animation of a shot coming from here as in Half-Life, the others from the server.
++*	Half-Life arsenal: the client events of the Half-Life SDK's 9mm handgun, .357, MP5, shotgun, crossbow, RPG, Gauss
++*	and Egon (ev_hldm.cpp), on this client's helpers. These weapons are not predicted: the shooter receives their events
++*	as everyone does, the weapon animation of a shot coming from here as in Half-Life, the others from the server (the
++*	crowbar's, the hornet gun's and the thrown weapons' all from there).
 +*/
 +#include "events.h"
 +
++enum hl_glock_e { GLOCK_IDLE1 = 0, GLOCK_IDLE2, GLOCK_IDLE3, GLOCK_SHOOT, GLOCK_SHOOT_EMPTY, GLOCK_RELOAD, GLOCK_RELOAD_NOT_EMPTY, GLOCK_DRAW, GLOCK_HOLSTER, GLOCK_ADD_SILENCER };
 +enum hl_python_e { PYTHON_IDLE1 = 0, PYTHON_FIDGET, PYTHON_FIRE1, PYTHON_RELOAD, PYTHON_HOLSTER, PYTHON_DRAW, PYTHON_IDLE2, PYTHON_IDLE3 };
++enum hl_mp5_e { MP5_LONGIDLE = 0, MP5_IDLE1, MP5_LAUNCH, MP5_RELOAD, MP5_DEPLOY, MP5_FIRE1, MP5_FIRE2, MP5_FIRE3 };
++enum hl_shotgun_e { SHOTGUN_IDLE = 0, SHOTGUN_FIRE, SHOTGUN_FIRE2, SHOTGUN_RELOAD, SHOTGUN_PUMP, SHOTGUN_START_RELOAD, SHOTGUN_DRAW, SHOTGUN_HOLSTER, SHOTGUN_IDLE4, SHOTGUN_IDLE_DEEP };
 +enum hl_gauss_e { GAUSS_IDLE = 0, GAUSS_IDLE2, GAUSS_FIDGET, GAUSS_SPINUP, GAUSS_SPIN, GAUSS_FIRE, GAUSS_FIRE2, GAUSS_HOLSTER, GAUSS_DRAW };
 +enum hl_crossbow_e
 +{
@@ -239,6 +278,130 @@ index 0000000..f5e3b71
 +static void HL_DecalGunshot( pmtrace_t *pTrace )
 +{
 +	EV_HLDM_DecalGunshot( pTrace, BULLET_PLAYER_50AE, 0.5f, 40, 40, 40, true, true, 'C', false );
++}
++
++// (a Half-Life brass shell: models/shell.mdl, which the server precaches for these weapons)
++static void HL_EjectShell( event_args_t *args, Vector &origin, Vector &angles, Vector &forward, Vector &right, Vector &up, const char *model, int soundtype, int count = 1 )
++{
++	Vector velocity( args->velocity );
++	Vector ShellVelocity, ShellOrigin;
++	int shell = gEngfuncs.pEventAPI->EV_FindModelIndex( model );
++
++	for ( int i = 0; i < count; i++ )
++	{
++		EV_GetDefaultShellInfo( args, origin, velocity, ShellVelocity, ShellOrigin, forward, right, up, 20.0, -12.0, 4.0 );
++		EV_EjectBrass( ShellOrigin, ShellVelocity, angles[YAW], shell, soundtype );
++	}
++}
++
++// The 9mm handgun's two fire modes
++static void EV_FireHLGlock( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	Vector forward, right, up;
++	vec3_t vecSrc;
++
++	AngleVectors( angles, forward, right, up );
++
++	if ( EV_IsLocal( idx ) )
++	{
++		EV_MuzzleFlash();
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( args->bparam1 ? GLOCK_SHOOT_EMPTY : GLOCK_SHOOT, 0 );
++	}
++
++	HL_EjectShell( args, origin, angles, forward, right, up, "models/shell.mdl", TE_BOUNCE_SHELL );
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/pl_gun3.wav", gEngfuncs.pfnRandomFloat( 0.92, 1.0 ), ATTN_NORM, 0, 98 + gEngfuncs.pfnRandomLong( 0, 3 ) );
++
++	EV_GetGunPosition( args, vecSrc, origin );
++	Vector vSpread( args->fparam1, args->fparam2, 0.0f );
++	EV_HLDM_FireBullets( idx, forward, right, up, 1, vecSrc, forward, vSpread, 8192.0, BULLET_PLAYER_9MM, 1 );
++}
++
++void EV_FireHLGlock1( event_args_t *args )
++{
++	EV_FireHLGlock( args );
++}
++
++void EV_FireHLGlock2( event_args_t *args )
++{
++	EV_FireHLGlock( args );
++}
++
++void EV_FireHLMP5( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	Vector forward, right, up;
++	vec3_t vecSrc;
++
++	AngleVectors( angles, forward, right, up );
++
++	if ( EV_IsLocal( idx ) )
++	{
++		EV_MuzzleFlash();
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( MP5_FIRE1 + gEngfuncs.pfnRandomLong( 0, 2 ), 0 );
++	}
++
++	HL_EjectShell( args, origin, angles, forward, right, up, "models/shell.mdl", TE_BOUNCE_SHELL );
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, gEngfuncs.pfnRandomLong( 0, 1 ) ? "weapons/hks2.wav" : "weapons/hks1.wav", 1, ATTN_NORM, 0, 94 + gEngfuncs.pfnRandomLong( 0, 0xf ) );
++
++	EV_GetGunPosition( args, vecSrc, origin );
++	Vector vSpread( args->fparam1, args->fparam2, 0.0f );
++	EV_HLDM_FireBullets( idx, forward, right, up, 1, vecSrc, forward, vSpread, 8192.0, BULLET_PLAYER_9MM, 1 );
++}
++
++// The MP5's grenade launcher
++void EV_FireHLMP52( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++
++	if ( EV_IsLocal( idx ) )
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( MP5_LAUNCH, 0 );
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, gEngfuncs.pfnRandomLong( 0, 1 ) ? "weapons/glauncher2.wav" : "weapons/glauncher.wav", 1, ATTN_NORM, 0, 94 + gEngfuncs.pfnRandomLong( 0, 0xf ) );
++}
++
++// One barrel or both (the pellets of the server's cones, their traces here random)
++static void EV_FireHLShotgun( event_args_t *args, bool bDouble )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	Vector forward, right, up;
++	vec3_t vecSrc;
++
++	AngleVectors( angles, forward, right, up );
++
++	if ( EV_IsLocal( idx ) )
++	{
++		EV_MuzzleFlash();
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( bDouble ? SHOTGUN_FIRE2 : SHOTGUN_FIRE, 0 );
++	}
++
++	HL_EjectShell( args, origin, angles, forward, right, up, "models/shotgunshell.mdl", TE_BOUNCE_SHOTSHELL, bDouble ? 2 : 1 );
++
++	if ( bDouble )
++		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/dbarrel1.wav", gEngfuncs.pfnRandomFloat( 0.98, 1.0 ), ATTN_NORM, 0, 85 + gEngfuncs.pfnRandomLong( 0, 0x1f ) );
++	else
++		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/sbarrel1.wav", gEngfuncs.pfnRandomFloat( 0.95, 1.0 ), ATTN_NORM, 0, 93 + gEngfuncs.pfnRandomLong( 0, 0x1f ) );
++
++	EV_GetGunPosition( args, vecSrc, origin );
++	Vector vSpread = bDouble ? Vector( 0.09f, 0.06f, 0.0f ) : Vector( 0.0675f, 0.0675f, 0.0f );
++	EV_HLDM_FireBullets( idx, forward, right, up, bDouble ? 12 : 6, vecSrc, forward, vSpread, 3000.0, BULLET_PLAYER_BUCKSHOT, 1 );
++}
++
++void EV_FireHLShotgunSingle( event_args_t *args )
++{
++	EV_FireHLShotgun( args, false );
++}
++
++void EV_FireHLShotgunDouble( event_args_t *args )
++{
++	EV_FireHLShotgun( args, true );
 +}
 +
 +void EV_FirePython( event_args_t *args )
@@ -567,8 +730,124 @@ index 0000000..f5e3b71
 +	if ( args->iparam1 )
 +		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_OFF, 0.98, ATTN_NORM, 0, 100 );
 +}
+diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
+index 8d29ddd..6d6de50 100644
+--- a/cl_dll/hud.cpp
++++ b/cl_dll/hud.cpp
+@@ -336,6 +336,8 @@ void CHud :: Init( void )
+ 	m_iFOV = 0;
+ 
+ 	m_pSpriteList = NULL;
++	m_pSpriteListHL = NULL;
++	m_iSpriteCountAllResHL = 0;
+ 
+ 	// Clear any old HUD list
+ 	for( HUDLIST *pList = m_pHudList; pList; pList = m_pHudList )
+@@ -419,6 +421,28 @@ CHud :: ~CHud()
+ 	m_pHudList = NULL;
+ }
+ 
++// The Half-Life arsenal's death notice icons (d_*) of the Half-Life hud.txt at a resolution, after Counter-Strike's
++// sprites: named d_hl_* where Counter-Strike has one of the same name (d_hl_grenade). Their sprite sheets are the
++// valve folder's, whose names Counter-Strike's shadow.
++static bool HL_WantedSprite( const client_sprite_t *p, int iRes )
++{
++	return p->iRes == iRes && !strncmp( p->szName, "d_", 2 );
++}
++
++static void HL_SpriteName( char *dest, const client_sprite_t *p, const char *names, int count )
++{
++	for ( int i = 0; i < count; i++ )
++	{
++		if ( !strncmp( p->szName, names + i * MAX_SPRITE_NAME_LENGTH, MAX_SPRITE_NAME_LENGTH ) )
++		{
++			snprintf( dest, MAX_SPRITE_NAME_LENGTH, "d_hl_%s", p->szName + 2 );
++			return;
++		}
++	}
++
++	strncpy( dest, p->szName, MAX_SPRITE_NAME_LENGTH );
++}
++
+ void CHud :: VidInit( void )
+ {
+ 	static bool firstinit = true;
+@@ -444,6 +468,9 @@ void CHud :: VidInit( void )
+ 	{
+ 		// we need to load the hud.txt, and all sprites within
+ 		m_pSpriteList = SPR_GetList("sprites/hud.txt", &m_iSpriteCountAllRes);
++		m_pSpriteListHL = SPR_GetList("valve/sprites/hud.txt", &m_iSpriteCountAllResHL);
++		if( !m_pSpriteListHL )
++			m_iSpriteCountAllResHL = 0;
+ 
+ 		if( m_pSpriteList )
+ 		{
+@@ -457,6 +484,12 @@ void CHud :: VidInit( void )
+ 				p++;
+ 			}
+ 
++			for ( int j = 0; j < m_iSpriteCountAllResHL; j++ )
++			{
++				if ( HL_WantedSprite( &m_pSpriteListHL[j], m_iRes ) )
++					m_iSpriteCount++;
++			}
++
+ 			// allocated memory for sprite handle arrays
+ 			m_rghSprites      = new(std::nothrow) HSPRITE[m_iSpriteCount];
+ 			m_rgrcRects       = new(std::nothrow) wrect_t[m_iSpriteCount];
+@@ -470,7 +503,8 @@ void CHud :: VidInit( void )
+ 			}
+ 
+ 			p = m_pSpriteList;
+-			for ( int index = 0, j = 0; j < m_iSpriteCountAllRes; j++ )
++			int index = 0;
++			for ( int j = 0; j < m_iSpriteCountAllRes; j++ )
+ 			{
+ 				if ( p->iRes == m_iRes )
+ 				{
+@@ -485,6 +519,21 @@ void CHud :: VidInit( void )
+ 
+ 				p++;
+ 			}
++
++			int iCountCS = index;
++			for ( int j = 0; j < m_iSpriteCountAllResHL; j++ )
++			{
++				p = &m_pSpriteListHL[j];
++				if ( HL_WantedSprite( p, m_iRes ) )
++				{
++					char sz[256];
++					snprintf( sz, sizeof( sz ), "valve/sprites/%s.spr", p->szSprite );
++					m_rghSprites[index] = SPR_Load( sz );
++					m_rgrcRects[index] = p->rc;
++					HL_SpriteName( &m_rgszSpriteNames[index * MAX_SPRITE_NAME_LENGTH], p, m_rgszSpriteNames, iCountCS );
++					index++;
++				}
++			}
+ 		}
+ 	}
+ 	else
+@@ -505,6 +554,18 @@ void CHud :: VidInit( void )
+ 
+ 			p++;
+ 		}
++
++		for ( int j = 0; j < m_iSpriteCountAllResHL; j++ )
++		{
++			p = &m_pSpriteListHL[j];
++			if ( HL_WantedSprite( p, m_iRes ) )
++			{
++				char sz[256];
++				snprintf( sz, sizeof( sz ), "valve/sprites/%s.spr", p->szSprite );
++				m_rghSprites[index] = SPR_Load( sz );
++				index++;
++			}
++		}
+ 	}
+ 
+ 	// assumption: number_1, number_2, etc, are all listed and loaded sequentially
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index b75b3c9..6ad036c 100644
+index b75b3c9..7e3399b 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -180,6 +180,7 @@ public:
@@ -587,16 +866,31 @@ index b75b3c9..6ad036c 100644
  	int	m_fPlayerDead;
  	int m_iIntermission;
  	int m_iNoConsolePrint;
+@@ -1106,6 +1108,8 @@ private:
+ 	client_sprite_t	*m_pSpriteList;
+ 	int	m_iSpriteCount;
+ 	int	m_iSpriteCountAllRes;
++	client_sprite_t	*m_pSpriteListHL; // (the Half-Life arsenal's death notice icons, from the Half-Life hud.txt)
++	int	m_iSpriteCountAllResHL;
+ 	float m_flMouseSensitivity;
+ 	int	m_iConcussionEffect;
+ 	int	m_iForceCamera;
 diff --git a/cl_dll/include/events.h b/cl_dll/include/events.h
-index 36bdf73..26f999a 100644
+index 36bdf73..c5b1ecf 100644
 --- a/cl_dll/include/events.h
 +++ b/cl_dll/include/events.h
-@@ -98,6 +98,16 @@ DECLARE_EVENT(FireUMP45);
+@@ -98,6 +98,22 @@ DECLARE_EVENT(FireUMP45);
  DECLARE_EVENT(FireUSP);
  DECLARE_EVENT(Vehicle);
  DECLARE_EVENT(FireXM1014);
 +
 +// Half-Life arsenal (events/event_hl.cpp)
++DECLARE_EVENT(FireHLGlock1);
++DECLARE_EVENT(FireHLGlock2);
++DECLARE_EVENT(FireHLMP5);
++DECLARE_EVENT(FireHLMP52);
++DECLARE_EVENT(FireHLShotgunSingle);
++DECLARE_EVENT(FireHLShotgunDouble);
 +DECLARE_EVENT(FirePython);
 +DECLARE_EVENT(SpinGauss);
 +DECLARE_EVENT(FireGauss);
