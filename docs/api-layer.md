@@ -176,11 +176,36 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
   - Browser (`--gl-discard`), BFME2, 4 pairs: api 4.9 -> 4.4, 4.3 -> 4.0, 5.7 -> 5.5, 4.5 -> 3.8 ms per frame; effect
     calls 1.89 -> 1.34, 1.42 -> 1.15, 2.17 -> 1.57, 1.49 -> 1.04. In session (`bfme2-fxdefer-ab.txt`, one run): effect calls -0.08 to -0.26
     ms per frame, api within the noise (-0.2 / +0.2 / -0.1). Frame rate: 30 fps either way (the game's own cap on
-    this server); same draws per frame.
+    this server). The draws per frame of these pairs were not kept: BFME2's play lands on a light view (~134
+    `DrawIndexedPrimitive` per frame) or, in other runs, a heavier one (~210), and a pair compares only when both sides
+    land on the same one (an outside review saw the branch on the heavy view with api +0.1 under a load of 40-57, and
+    -1.0 ms per frame on a heavy / heavy pair).
   - Browser, RotWK, 2 pairs: api 4.4 -> 3.9, 3.4 -> 3.1 ms per frame; effect calls 1.21 -> 0.92, 0.74 -> 0.53; fps
     27.3 -> 28.1 (a loaded server) and 29.6 -> 29.7. RotWK's play alternates between two views (~158 draws / 20 passes
     and ~175 draws / 19 passes per frame): either tree lands on either one (the Node pairs had both ways round), so the
     per-call figures of a pair are not always the same scene; the branch had the heavier one in both browser pairs.
+  - Re-measured 2026-10-14 after the review (this tree with the review fixes against a fresh ca01ae8 worktree, run at
+    the same time, launch order alternated; no warm profile: the scenarios create the profile; load average 8-16;
+    draws = `DrawIndexedPrimitive` per frame of the play phase, passes = `BeginPass` per frame):
+    - Browser (`--gl-discard`), BFME2, 3 pairs, all on the light view (134 / 134 draws): api 4.1 -> 3.8, 3.6 -> 3.2,
+      4.1 -> 3.7 ms per frame (-0.3 to -0.4); calls reaching JavaScript 5143-5304 -> 4334-4398 per frame; guest
+      12.0-12.6 -> 12.2-12.8 ms; 30.1 fps either way.
+    - Browser, RotWK, 4 pairs: same view in two — 233 / 235 draws: api 4.4 -> 3.6; 235 / 234: 4.0 -> 3.7 —; in the
+      two others the views differed (274 base / 235 branch: 4.0 -> 3.7; 234 base / 275 branch: 4.0 -> 3.5, lower with
+      the heavier view); calls reaching JavaScript 5931-6265 -> 4945-5236 per frame; 29.7-29.8 fps either way.
+    - Node (`startbench --bg`), BFME2, 2 pairs (134 draws, 29 passes per frame each side): api 5.23 -> 4.70, 5.30 ->
+      4.82 ms per frame; effect calls (`SetTechnique`, `Begin`, `BeginPass`, `EndPass`, `End`, `CommitChanges`,
+      `ApplyParameterBlock`, queue drains included) 1.07 -> 0.72, 1.06 -> 0.76. RotWK, 2 pairs (234-236 draws, 23
+      passes): api 3.27 -> 2.68, 2.82 -> 2.32; effect calls 0.96 -> 0.62, 0.78 -> 0.51. Guest time within ±0.4 ms.
+    - The BFME2 heavy view did not occur in these runs.
+- **Release**: an effect frees its process-heap blocks when its last reference goes (the handle block with its
+  description cache and technique slots, the commit list, the restore lists of its techniques, the empty list of
+  `D3DXFX_DONOTSAVESTATE`); the queue has run by then (every call handled in JavaScript drains it first). Before, every
+  effect released kept them, a few hundred bytes to a few KiB per effect created. Test: `d3dx9-effect-bind.test.js`.
+- Test of the shaders picked in an array (the per-element cache, the device's shader compared by object):
+  `d3dx9-effect-bind.test.js` — passes indexing a shader array by `round(Sel)` and `round(Sel + 1)` with indexes out of
+  range (clamped, ±1e9 included), the device's shader set directly between commits (to none or another element),
+  against the reference path after every call.
 
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
@@ -205,8 +230,8 @@ Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of
 `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
 `dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
-`{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-ab.txt` for the queued technique
-calls. Tools: `tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the
+`{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-{ab,ba}.txt` for the queued
+technique calls (both orders). Tools: `tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the
 queued setters), `tools/effect-bind-bench.mjs` (effect setters and binds, `--base <tree>` against another checkout),
 `tools/effect-object-bench.mjs` (the effect calls of an engine drawing objects — technique, ~15 parameters, Begin,
 BeginPass, commits, End — over 6 effects with array-selected shaders, preshaders and expression states; `--jit`: as
