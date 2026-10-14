@@ -14,7 +14,7 @@ import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { registerDirect3D8 } from '../src/win32/d3d8.js';
 import { registerDirect3D9 } from '../src/win32/d3d9.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, COM_MARKER, COMMIT_LIST, FAST_STATS, COMMIT_LIST_WORDS } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, COM_MARKER, COMMIT_LIST, FAST_STATS, COMMIT_LIST_WORDS, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, STACK = 0x10090000, DATA = 0x10100000, HEAP = 0x11000000, THUNK_SIZE = 16;
 const FX = 0x10004100, FX_HANDLES = 0x10006000, FX_LIST = 0x10007800;
@@ -155,7 +155,7 @@ function runJitted(seed, n, api9, switching = false) {
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true }); jit.cpu = cpu;
   methods.forEach(([k], i) => { jit.markFast(i, k, true); mem.write32(SLOTS + 4 * i, THUNK_BASE + i * THUNK_SIZE); });
   // the effect: an Orthros object with a handle block (+12) and a commit list naming no shadowed state
-  mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, FX_HANDLES);
+  mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, FX_HANDLES); mem.write32(FX_HANDLES + FX_OWNER, FX);
   mem.write32(FX_LIST, W.dev.shadow); mem.write32(FX_LIST + 4, 0); mem.write32(FX + COMMIT_LIST, FX_LIST);
   void COMMIT_LIST_WORDS;
   const code = [];
@@ -168,7 +168,7 @@ function runJitted(seed, n, api9, switching = false) {
     const nb = mem.read32(DEFER_QUEUE);
     mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 4, 0); mem.write32(DEFER_QUEUE + 8, 0);
     for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(DEFER_SPEC + 4 * idx), words = spec & DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(DEFER_SPEC + 4 * idx), words = spec & DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & DEFER_WORDS;
       call(W, api9, names[idx], Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i)), st);
       p += 4 * (2 + argc + words);
     }
@@ -236,7 +236,7 @@ test('lights filter: a light set again with its own words, and its switch, never
   const drain = () => { // (the queued calls run on the device, as Vm.drainDeferred does)
     const nb = mem.read32(DEFER_QUEUE); mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 8, 0);
     for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & DEFER_WORDS;
       W.dev[names[idx]](W.ctx(Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i))));
       p += 4 * (2 + argc + words);
     }
@@ -287,7 +287,7 @@ for (const api9 of [true, false]) {
     const names = methods.map(([k]) => k.split('::')[1]);
     const nb = mem.read32(DEFER_QUEUE); mem.write32(DEFER_QUEUE, 0);
     for (let p = DEFER_QUEUE + 16, end = p + nb; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), words = (mem.read32(DEFER_SPEC + 4 * idx) >>> 8) & DEFER_WORDS;
       W.dev[names[idx]](W.ctx(Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i))));
       p += 4 * (2 + argc + words);
     }

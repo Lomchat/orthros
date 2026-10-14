@@ -66,3 +66,15 @@ test('StateTable.watchKeys: a group counter moves at every set of one of its key
     assert.deepEqual([...t.wv], [...exp]);
   }
 });
+
+test('COM objects: a released object keeps no marker and no pointer the JIT fast paths follow (+12, +20)', () => {
+  const { mem, com, proc, freed } = env();
+  let seen = null;
+  const impl = { destroy: () => { seen = [mem.read32(ptr + 4), mem.read32(ptr + 12), mem.read32(ptr + 20)]; } };
+  const ptr = com.create(proc, 'ITest', impl);
+  mem.write32(ptr + 12, 0x10005000); mem.write32(ptr + 20, 0x10007000);
+  com.release(com.objectAt(ptr));
+  assert.deepEqual(seen, [0, 0x10005000, 0x10007000], 'destroy sees its words (the marker already cleared)');
+  assert.deepEqual([mem.read32(ptr + 4), mem.read32(ptr + 12), mem.read32(ptr + 20)], [0, 0, 0]);
+  assert.deepEqual(freed, [ptr]);
+});

@@ -116,12 +116,13 @@ export class NodeScenario {
         // the visit flags of the translations made so far (opts.visit), added to the heat (Jit.harvestVisits)
         if (k === 'ORTHROS_JIT_HARVEST' && this.vm.jit) this.log(`[input] dbg ${k}: ${this.vm.jit.harvestVisits().length / 2} blocks visited`);
         // the API-layer switches, as the browser worker sets them (ORTHROS_API_OPT_OFF, ORTHROS_FX_BIND_OFF, ...: src/core/api-opt.js)
-        if (/^ORTHROS_(API_OPT_OFF|FX_BIND_OFF|GL_NOCACHE|D3DX_FAST_OFF|API_FAST_OFF|DRAW_OPT_OFF)$/.test(k)) {
+        if (/^ORTHROS_(API_OPT_OFF|FX_BIND_OFF|GL_NOCACHE|D3DX_FAST_OFF|API_FAST_OFF|DRAW_OPT_OFF|FX_DEFER_OFF)$/.test(k)) {
           globalThis[k] = v === undefined || v === '' ? undefined : Number(v);
           refreshApiOpt();
           if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') this.vm.jit?.setD3dxFast?.(!globalThis[k]);
           if (k === 'ORTHROS_API_FAST_OFF') this.vm.setApiFastPaths?.(!globalThis[k]);
           if (k === 'ORTHROS_DRAW_OPT_OFF') this.vm.jit?.setDrawOpt?.(!globalThis[k]);
+          if (k === 'ORTHROS_FX_DEFER_OFF') this.vm.jit?.setFxDefer?.(!globalThis[k]);
           this.log(`[input] dbg ${k}=${v ?? ''}`);
         } else if (/^ORTHROS_[A-Z0-9_]+$/.test(k) && !/^ORTHROS_(JIT_AB|JIT_HEAT|JIT_HARVEST)$/.test(k)) { // (other worker debug globals, as the browser worker sets them)
           globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v);

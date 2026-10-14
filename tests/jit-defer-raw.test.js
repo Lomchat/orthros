@@ -9,7 +9,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { Vm } from '../src/core/vm.js';
-import { DEFER_QUEUE, DEFER_RAW_MAX } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_RAW_MAX, COM_MARKER, FX_OWNER } from '../src/cpu/jit/runtime.js';
 
 const CODE = 0x20000000, SLOT = 0x10000100, OBJ = 0x10004000, HB = 0x10005000, DATA = 0x10006000, NAME = 0x10002000, IDX = 5, THUNK_SIZE = 16;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -26,7 +26,7 @@ test('SetRawValue: queued with a copy of its bytes, odd sizes / big sizes / null
   jit.cpu = cpu;
   jit.markFast(IDX, 'com.dll!ID3DXEffect::SetRawValue', true);
   mem.write32(SLOT, THUNK_BASE + IDX * THUNK_SIZE);
-  mem.write32(OBJ + 12, HB);
+  mem.write32(OBJ + 12, HB); mem.write32(OBJ + 4, COM_MARKER); mem.write32(HB + FX_OWNER, OBJ); // (a live effect: its block names it)
   for (let i = 0; i < 300; i++) mem.write32(DATA + 4 * i, 0x1000 + i);
   cpu.eip = CODE; cpu.esp = 0x10009000; cpu.eflags = F.RESERVED1 | F.IF;
   const toJs = [];

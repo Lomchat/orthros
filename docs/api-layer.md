@@ -14,6 +14,31 @@ frame down, all generic (no game-specific code), and how to switch them off with
   `jit-param-desc.test.js`.
 - **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
   taken at the call. Test: `jit-defer-raw.test.js`.
+- **`ID3DXEffect::SetTechnique`, `Begin` and `End`** join the deferred queue (`DEFER_TECH / DEFER_BEGIN / DEFER_END`).
+  An engine calls them around every object it draws, and each call that reached JavaScript first ran the queue: in BFME2
+  play (Node, per call) `SetTechnique` took 5.7 µs draining ~32 queued device setters and 1 µs of its own, `Begin`
+  9.4 µs draining ~32 effect setters and 0.9 µs of its own — the work of the queue, plus a JavaScript round trip per
+  call. The effect keeps a 16-byte block after its description cache (`FX_SLOTS`, `FX_SLOT_BYTES`): two words, then at
+  +8 the effect's own COM object (`FX_OWNER`, see the stale-pointer fix below). The two words: the pass count of its technique as of
+  every call issued (written by its handlers, and by a queued `SetTechnique` from the technique handle's word, which
+  holds its pass count — 0 at every other handle), and the restore list of its open `Begin` (each shadow entry its
+  `End` sets — render and stage states, textures — with the value `Begin` saved; published by `Begin` when it runs). A
+  queued `Begin` writes the pass count where its pointer points at once (the record's pointer is cleared: the handler,
+  run later, must not write there again) and clears the list (an earlier `Begin`'s). A queued `End` takes the list and
+  gives those shadow entries the values the restore will leave — the issued state, so the game's redundant sets of
+  them stay filtered; textures are forgotten instead (a texture released meanwhile is not bound again); no list (its
+  `Begin` still queued) or a state block recording: the filter off until the queue has run. A first version made `End`
+  forget every entry: the redundant sets that followed then reached JavaScript, and the in-session A/B showed no gain
+  (api +0.0 to +0.5 ms per frame with the queue on, Node). JavaScript keeps the rest: a technique by name, a parameter's
+  handle, a technique without passes, an effect with a state manager. Test: `jit-defer-technique.test.js` (random
+  engine-shaped sequences through the JIT against executing every call in order — the results, the pass counts written,
+  the device state at every draw and at the end, every shadow entry the filter trusts against the device —, `Begin`
+  twice without `End`, a restore list missing a state caught, the switch).
+- **Fix** (found with the above): a queued setter carrying a structure (`SetTransform`, `SetMaterial`, `SetLight`,
+  `SetViewport`, `SetScissorRect`, an effect's `SetVector` / `SetMatrix` / `SetMatrixTranspose` / `SetRawValue`) copied it
+  through the local holding its spec, and the flags read after the copy were the copy's address bits: each such call
+  passed as one that changes device states — an effect forgot its commit list, a device (no list) had its issued-state
+  filter switched off until the next drain. The copy has a local of its own now.
 - **`IDirect3DSurface8/9::GetDesc`** (`FID_SURF_DESC`): a surface's description never changes; its COM object carries
   the 32 bytes the handler writes right after itself (`Com.create`'s `extra` bytes, address at +12, written by
   `Surface.ptrOf`), and the call is a copy. Map loads that write textures texel by texel ask it ~130 k times per load
@@ -150,6 +175,128 @@ expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no
   but on a stage changed by others needs no comparison). BFME2 play: 79 % of shader binds find their stage unchanged,
   the bindings of the others changed with their parameters; unchanged bindings on a changed stage were 0.25 % of the
   visits, 3 % of those still owned — less than the bookkeeping cost.
+
+### Per pass and per object (2026-10-06)
+
+Where the time went (BFME2 play in Node, 60 s, base build; frame accounting per API call, the queue's drain measured
+apart, and a V8 profile): per object drawn the game calls `SetTechnique`, ~32 parameter setters, `Begin(flags 6)`,
+`BeginPass(0)`, ~3.7 x (setters, `CommitChanges`, a draw), `EndPass`, `End` — 33 objects, 38 passes per frame in that
+profile's scene (the play phase of the later measurements draws 25-29 objects of one pass each per frame, below). Of
+`BeginPass`'s 15.7 µs (all its own: nothing queued before it), the shader states took 70 % (`bindShader` 45 %, the
+array selector picking the vertex shader 7 %), render states 18 %; the time of `SetTechnique` / `Begin` was the queue
+(above). `End` restores ~4.5 render states per object that the next `BeginPass` sets again (350 k + 366 k
+`SetRenderState` per minute: real changes, the game's own state calls come between them).
+
+- **One shape per record**: parameter nodes (with their handle, version, leaf type, compiled sampler states),
+  techniques, passes, shader records and effect objects get every field at creation. Fields added at first use made
+  the nodes of different parameters different hidden classes, and the sites reading them in the setters, the bindings
+  (`b.top.version`) and the preshaders' input checks megamorphic. `version ?? 0` is gone with it.
+- **Pass operations**: the plain device (`plainDev`) taken once per pass applied, not per operation; a state whose value
+  is a constant read once at compile time; a shader an expression picks in an array kept per element on the state's
+  resolution (no map lookup per commit); the device's shader compared by object (`sh.impl`) instead of through its COM
+  record; `BeginPass` lists of all / dynamic operations' functions. The commit list is not rewritten when the same pass is
+  begun again on the same device shadow (only `publishCommit` writes it).
+- `SetBool` / `SetInt` / `SetFloat` set one number without an array per call.
+- **Parameter blocks**: an entry is compared and written only when the version of its top-level parameter moved since
+  the block last wrote it (recorded or applied) — any write changing one of its words moves it, through an element, a
+  member, the whole array or raw bytes. Test: `d3dx9-effect-bind.test.js` (each way, and a block recorded while
+  another is applied).
+- Measured (2026-10-06 and 2026-10-14; this tree, with the queued technique calls of the section above, against the
+  wave's base ca01ae8 or its pre-rewrite equivalent; base and branch run at the same time, launch order alternated;
+  `api` = mean API time per frame of the play phase; Node `startbench --bg`, `bfme2-startup.txt` /
+  `rotwk-startup.txt`):
+  - `tools/effect-object-bench.mjs` (instructions per frame, `perf stat`, 2 runs each): JavaScript calls 3.75 M ->
+    3.19 M (-15 %); `--jit` (guest code, deferred queue) 6.34-6.62 M -> 5.70-5.85 M (-11 %). In that bench the queued
+    technique calls themselves are a wash (`--no-defer` 5.68-5.77 M): the gain is the per-object work in JavaScript.
+  - Node, BFME2, 5 pairs: api 6.58 -> 6.09, 9.07 -> 8.18, 7.38 -> 8.31, 10.88 -> 9.30, 5.88 -> 5.54 ms per frame
+    (-0.3 to -1.6; one pair +0.9 where the branch's guest code also ran 11 % slower: a loaded server); the effect calls
+    (`SetTechnique` + `Begin` + `BeginPass` + `End` + `ApplyParameterBlock`, queue drains included) -0.27 to -1.04 ms
+    per frame in the four others. RotWK, 4 pairs: api 3.53 -> 2.98, 3.68 -> 2.97, 8.61 -> 7.68, 3.18 -> 2.68 (every
+    pair lower, -0.5 to -0.9); effect calls -0.31 to -0.71.
+  - Node, BFME2, the queued technique calls alone in session (`dbg:ORTHROS_FX_DEFER_OFF`, 20 s phases, 2 runs in each
+    order): every on phase below its off neighbour, api -0.09 to -1.14 ms per frame (median -0.5).
+  - Browser (`--gl-discard`), BFME2, 4 pairs: api 4.9 -> 4.4, 4.3 -> 4.0, 5.7 -> 5.5, 4.5 -> 3.8 ms per frame; effect
+    calls 1.89 -> 1.34, 1.42 -> 1.15, 2.17 -> 1.57, 1.49 -> 1.04. In session (`bfme2-fxdefer-ab.txt`, one run): effect calls -0.08 to -0.26
+    ms per frame, api within the noise (-0.2 / +0.2 / -0.1). Frame rate: 30 fps either way (the game's own cap on
+    this server). The draws per frame of these pairs were not kept: BFME2's play lands on a light view (~134
+    `DrawIndexedPrimitive` per frame) or, in other runs, a heavier one (~210), and a pair compares only when both sides
+    land on the same one (an outside review saw the branch on the heavy view with api +0.1 under a load of 40-57, and
+    -1.0 ms per frame on a heavy / heavy pair).
+  - Browser, RotWK, 2 pairs: api 4.4 -> 3.9, 3.4 -> 3.1 ms per frame; effect calls 1.21 -> 0.92, 0.74 -> 0.53; fps
+    27.3 -> 28.1 (a loaded server) and 29.6 -> 29.7. RotWK's play alternates between two views (~158 draws / 20 passes
+    and ~175 draws / 19 passes per frame): either tree lands on either one (the Node pairs had both ways round), so the
+    per-call figures of a pair are not always the same scene; the branch had the heavier one in both browser pairs.
+  - Re-measured 2026-10-14 after the review (this tree with the review fixes against a fresh ca01ae8 worktree, run at
+    the same time, launch order alternated; no warm profile: the scenarios create the profile; load average 8-16;
+    draws = `DrawIndexedPrimitive` per frame of the play phase, passes = `BeginPass` per frame):
+    - Browser (`--gl-discard`), BFME2, 3 pairs, all on the light view (134 / 134 draws): api 4.1 -> 3.8, 3.6 -> 3.2,
+      4.1 -> 3.7 ms per frame (-0.3 to -0.4); calls reaching JavaScript 5143-5304 -> 4334-4398 per frame; guest
+      12.0-12.6 -> 12.2-12.8 ms; 30.1 fps either way.
+    - Browser, RotWK, 4 pairs: same view in two — 233 / 235 draws: api 4.4 -> 3.6; 235 / 234: 4.0 -> 3.7 —; in the
+      two others the views differed (274 base / 235 branch: 4.0 -> 3.7; 234 base / 275 branch: 4.0 -> 3.5, lower with
+      the heavier view); calls reaching JavaScript 5931-6265 -> 4945-5236 per frame; 29.7-29.8 fps either way.
+    - Node (`startbench --bg`), BFME2, 2 pairs (134 draws per frame each side; "29 passes per frame" was first written
+      here, a figure no log of these runs keeps; later Node runs counted 25 or 29, the browser 25-28.5): api 5.23 -> 4.70, 5.30 ->
+      4.82 ms per frame; effect calls (`SetTechnique`, `Begin`, `BeginPass`, `EndPass`, `End`, `CommitChanges`,
+      `ApplyParameterBlock`, queue drains included) 1.07 -> 0.72, 1.06 -> 0.76. RotWK, 2 pairs (234-236 draws, 23
+      passes): api 3.27 -> 2.68, 2.82 -> 2.32; effect calls 0.96 -> 0.62, 0.78 -> 0.51. Guest time within ±0.4 ms.
+    - The BFME2 heavy view did not occur in these runs.
+  - Re-measured 2026-10-14 after merging main (fd93b77: queued draws, light / material / FVF filter, snapshots) and the
+    stale-pointer fix below, against a fd93b77 worktree; run at the same time, launch order alternated; warm profiles
+    (copies); load average 14-30 (one spike to 87, the run it hit discarded). Passes = `BeginPass` calls per frame of the
+    play phase ([apitop] in Node, the phase's call counts in the browser); objects = `SetTechnique` per frame:
+    - Node (`startbench --bg`), BFME2, 2 pairs, 25 objects / 25 passes per frame each side: api 6.17 -> 5.48, 6.09 -> 5.60
+      ms per frame (-0.69, -0.49); effect calls (`SetTechnique`, `Begin`, `BeginPass`, `End`, `ApplyParameterBlock`,
+      queue drains included) 1.79 -> 1.19, 1.76 -> 1.29. These two pairs are the high end: a review reproduced -0.30 and
+      -0.36 in its like-for-like pairs, and a further 5 pairs (after the review fixes, 1-minute load 2-27) gave, passes
+      per frame base / branch in brackets: 4.46 -> 4.07 and 4.46 -> 4.11 (29 / 29: -0.39, -0.35, the only like-for-like
+      ones; effect calls 1.34 -> 0.98, 1.37 -> 0.96), 4.82 -> 4.58, 5.40 -> 5.15, 4.27 -> 4.07 (25 / 29: -0.24, -0.25,
+      -0.20, the branch drawing 4 more passes per frame). The gain in BFME2 Node play is therefore about -0.3 to -0.4 ms
+      per frame like for like, -0.5 to -0.7 at most. Passes per frame in Node are 25 or 29 (not always 25), and the two
+      sides of one pair can differ: a pair is compared like for like only when both sides have the same count. RotWK, 4 pairs, 22 objects / 23 passes per frame each side: api
+      3.90 -> 3.23, 3.84 -> 4.40, 3.86 -> 3.32, 3.09 -> 2.71 (-0.67, +0.56, -0.54, -0.38); effect calls 1.94 -> 1.30,
+      1.95 -> 2.17, 1.91 -> 1.25, 1.65 -> 1.07. The +0.56 pair: the branch's `BeginPass` (which runs the queue: the setters
+      and draws queued before it) took 82 µs per call against 36-45 in every other run of either tree, the same guest
+      instructions per frame within 3 %; not reproduced in the two pairs run after it.
+    - Browser (`--gl-discard`), BFME2, 3 pairs, all 134-135 draws per frame: api 5.4 -> 4.5, 4.3 -> 3.9, 4.2 -> 3.8 ms per
+      frame (-0.9, -0.4, -0.4); fps 27.5 -> 28.0 (the loaded pair), 29.8 -> 30.0, 30.0 / 30.0. Objects (= passes) per
+      frame 28.5 base / 25.0 branch in the first pair, 25.1 / 25.1 in the third: the number of objects the game draws for
+      the same 134 draws varies between runs — the "25-29" seen across these documents.
+    - Browser, RotWK, 4 pairs: one on the same view (235 / 234 draws): api 3.9 -> 3.5; in the three others the base landed
+      on the heavy view (275 draws) and the branch on the light one (229-235): 3.8 -> 3.5, 4.4 -> 3.8, 4.2 -> 4.2 — not a
+      like-for-like comparison. That the branch was on the light view in all three was checked for a fidelity effect: a
+      branch run of `rotwk-fxdefer-ab.txt` (the queued technique calls switched off and on every 20 s) stayed on the heavy
+      view (274-283 draws per frame) in every on and off phase alike.
+    - Snapshot oracle (`snapshot-check.mjs bfme2 --at 180 --then 30000 --jit`): identical after 30 000 slices.
+- **Release**: an effect frees its process-heap blocks when its last reference goes (the handle block with its
+  description cache and technique slots, the commit list, the restore lists of its techniques, the empty list of
+  `D3DXFX_DONOTSAVESTATE`); the queue has run by then (every call handled in JavaScript drains it first). Before, every
+  effect released kept them, a few hundred bytes to a few KiB per effect created. Test: `d3dx9-effect-bind.test.js`.
+- **A pointer kept after the Release** (fixed after a review of the above): `Effect.destroy` freed the handle block, the
+  commit list and the restore lists, but the object's +12 / +20 words still pointed at them, and the queued effect
+  calls' guard (`DEFER_HANDLE` / `DEFER_OBJ`) checked only that +12 was non-zero — not `COM_MARKER`: a call through a
+  stale pointer (undefined behaviour on Windows, but no reason for Orthros to write into memory the heap has handed to
+  someone else) made the fast path write the technique slots, the pass count, the restore list's and the commit list's
+  shadow entries into reused memory. Now: `Com.dispose` clears +12 and +20 of every released object (after its
+  `destroy`); the queued effect calls and `GetParameterDesc` require a live object (`COM_MARKER`) whose handle block
+  names it back (`FX_OWNER`, written by `createEffect`, cleared by `destroy`); the device's state shadow names its device
+  too (`SHADOW_OWNER`, +4 of the block); `IDirect3DSurface::GetDesc` requires its description right after the object
+  (+12 == this + 24). A live object of another kind at a stale pointer's address therefore never passes for an effect,
+  a device or a surface either: the call goes to JavaScript, which reports the unknown object (E_POINTER) or calls the
+  object found there by method name. The other fast paths reading COM words already checked the marker (AddRef /
+  Release, the issued-state filter, the surface description). Tests: `jit-defer-technique.test.js` (a released effect
+  with its stale words and freed blocks reused: every call to JavaScript, nothing written — failed before the fix: all
+  six calls on the fast path; run three ways: the stale words alone, with the COM marker put back too so that
+  `FX_OWNER` is the only guard left, and with the handle block naming the object again so that `COM_MARKER` is — each
+  guard removed on its own makes its variant fail), `jit-param-desc.test.js` (`GetParameterDesc` with the marker
+  cleared, then with the block not naming the object: JavaScript each time), `com-object-refs.test.js`, `jit-defer-filter.test.js`, `jit-surface-desc.test.js`.
+- **Spec bits** (merge with the draw work): the technique-call flags moved to bits 14, 15 and 31 (`DEFER_FX_*` uses 27-29);
+  a spec's structure-words field is 6 bits (`DEFER_WORDS`, the largest structure a light's 26 words; `deferSpecs`
+  rejects a field out of range).
+- Test of the shaders picked in an array (the per-element cache, the device's shader compared by object):
+  `d3dx9-effect-bind.test.js` — passes indexing a shader array by `round(Sel)` and `round(Sel + 1)` with indexes out of
+  range (clamped, ±1e9 included), the device's shader set directly between commits (to none or another element),
+  against the reference path after every call.
 
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
@@ -302,11 +449,16 @@ the D3DX image work: of that section, `ORTHROS_API_OPT_OFF` and `ORTHROS_D3DX_FA
 fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' encoder) back on JavaScript, and the GUID
 string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
 `dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
-`dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods).
+`dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
+`dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
-`{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding. Tools: `tools/draw-bench.mjs` (device + backend per draw
-over a counting GL), `tools/setter-bench.mjs` (the queued setters), `tools/effect-bind-bench.mjs` (effect setters and
-binds, `--base <tree>` against another checkout). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
+`{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-{ab,ba}.txt` for the queued
+technique calls (both orders). Tools: `tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the
+queued setters), `tools/effect-bind-bench.mjs` (effect setters and binds, `--base <tree>` against another checkout),
+`tools/effect-object-bench.mjs` (the effect calls of an engine drawing objects — technique, ~15 parameters, Begin,
+BeginPass, commits, End — over 6 effects with array-selected shaders, preshaders and expression states; `--jit`: as
+guest code through the JIT and the deferred queue; `--base <tree>`; best read as instructions under `perf stat -e
+instructions:u`, insensitive to the server's load). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
 `dbg:ORTHROS_DRAW_OPT_OFF=1` handles the draws at their call again and switches the lights / material / FVF filter off
 (`=`: back on, the filter once the queue has run): `Jit.setDrawOpt`. (The fix of the clobbered spec, section 1, has no

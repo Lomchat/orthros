@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -112,7 +112,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0;
+    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
@@ -130,6 +130,8 @@ export class Jit {
     // (the fast paths of the API-layer work — D3DX math, effect parameter and surface descriptions, raw values — switchable for
     // measurement: setD3dxFast)
     if (dx !== undefined || fid === FID_PARAM_DESC || fid === FID_SURF_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+    // (an effect's technique calls queued: switchable on their own too, setFxDefer)
+    if (fid === undefined && defer !== undefined && (defer & (DEFER_TECH | DEFER_BEGIN | DEFER_END))) { (this.fxDefer ??= []).push(idx); this.setFxDefer(!this.fxDeferOff); }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
     if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
@@ -156,10 +158,20 @@ export class Jit {
   setD3dxFast(on) {
     this.d3dxFastOff = !on;
     for (const [idx, fid] of this.optFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
+    this.setFxDefer(!this.fxDeferOff);
     // (the bindings' issued-state filter: runtime.js DEFER_F_TEX / STREAM / IB — back on only once the queue has run: sets
     // queued while it was off did not update the shadow; Vm.drainDeferred ends optOnPending)
     this.optOnPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
     this.mem.write32(PROC_CONSTS + 4, on && !this.optOnPending ? 0 : 1);
+  }
+  /**
+   * (measurement, dbg:ORTHROS_FX_DEFER_OFF; off with the D3DX fast paths too) an effect's SetTechnique / Begin / End queued
+   * (runtime.js DEFER_TECH / BEGIN / END) or handled in JavaScript at once — either way the effect keeps its technique
+   * slots, so the switch may move at any time
+   */
+  setFxDefer(on) {
+    this.fxDeferOff = !on;
+    for (const idx of this.fxDefer ?? []) this.mem.u8[FAST_TABLE + idx] = on && !this.d3dxFastOff ? FID_DEFER : 0;
   }
   /** Per-process constants used by fast paths. */
   setProcessConsts(processHeapHandle) { this.mem.write32(PROC_CONSTS, processHeapHandle); }

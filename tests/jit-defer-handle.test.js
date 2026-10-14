@@ -8,7 +8,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_HANDLE_BYTES } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_HANDLE_BYTES, COM_MARKER, FX_OWNER } from '../src/cpu/jit/runtime.js';
 
 const CODE = 0x20000000, SLOT = 0x10000100, OBJ = 0x10004000, HB = 0x10005000, VEC = 0x10006000, NAME = 0x10002000, IDX = 5, THUNK_SIZE = 16;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -24,7 +24,7 @@ test('effect setters: queued with a handle of the object, left to JavaScript wit
   jit.cpu = cpu;
   jit.markFast(IDX, 'com.dll!ID3DXEffect::SetVector', true);
   mem.write32(SLOT, THUNK_BASE + IDX * THUNK_SIZE);
-  mem.write32(OBJ + 12, HB);
+  mem.write32(OBJ + 12, HB); mem.write32(OBJ + 4, COM_MARKER); mem.write32(HB + FX_OWNER, OBJ); // (a live effect: its block names it)
   [1.5, -2, 3.25, 4].forEach((v, i) => mem.writeF32(VEC + 4 * i, v));
   mem.writeCString(NAME, 'g_color');
   cpu.eip = CODE; cpu.esp = 0x10009000; cpu.eflags = F.RESERVED1 | F.IF;
@@ -60,7 +60,7 @@ test('effect CommitChanges: queued while the object allows it, left to JavaScrip
   jit.cpu = cpu;
   jit.markFast(IDX, 'com.dll!ID3DXEffect::CommitChanges', true);
   mem.write32(SLOT, THUNK_BASE + IDX * THUNK_SIZE);
-  mem.write32(OBJ + 12, HB);
+  mem.write32(OBJ + 12, HB); mem.write32(OBJ + 4, COM_MARKER); mem.write32(HB + FX_OWNER, OBJ); // (a live effect: its block names it)
   cpu.eip = CODE; cpu.esp = 0x10009000; cpu.eflags = F.RESERVED1 | F.IF;
   let toJs = 0, r;
   for (let n = 0; n < 100; n++) {
