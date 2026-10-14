@@ -14,6 +14,12 @@ frame down, all generic (no game-specific code), and how to switch them off with
   `jit-param-desc.test.js`.
 - **`ID3DXEffect::SetRawValue`** joins the deferred queue (`DEFER_RAW`): a copy of its bytes (whole words, up to 1 KiB) is
   taken at the call. Test: `jit-defer-raw.test.js`.
+- **`IDirect3DSurface8/9::GetDesc`** (`FID_SURF_DESC`): a surface's description never changes; its COM object carries
+  the 32 bytes the handler writes right after itself (`Com.create`'s `extra` bytes, address at +12, written by
+  `Surface.ptrOf`), and the call is a copy. Map loads that write textures texel by texel ask it ~130 k times per load
+  (BFME2), with a `LockRect` / `UnlockRect` pair each. A null output, a released object (marker cleared) or an object
+  without a description go to JavaScript. Switched with the D3DX fast paths (`ORTHROS_D3DX_FAST_OFF`). Test:
+  `jit-surface-desc.test.js` (every kind of surface, D3D8 and D3D9, against the handler).
 - **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
   `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
   calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
@@ -161,9 +167,140 @@ expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no
 Test: `gl-state-cache.test.js` drives random Direct3D 8 / 9 sessions over a GL that tracks its effective state and checks
 that every draw sees the same GL state, and every upload the same data, with and without these caches.
 
+## D3DX image work during map loads (src/win32/d3dx9-image.js, d3dx9-image-wasm.js)
+
+BFME2's map load loads ~1 225 textures with `D3DXLoadSurfaceFromMemory` (X8R8G8B8 256 x 256 into DXT1) and builds their
+mip chains with `D3DXFilterTexture` (DXT1 from the RGBA the load keeps, A1R5G5B5 from the level the game wrote with
+locks); RotWK's creates ~270 textures with `D3DXCreateTextureFromFileInMemoryEx` from DDS files, converting DXT levels
+through RGBA (decoded, resized, re-encoded). Before this work these were the most expensive APIs of the load screens
+(browser, BFME2: FilterTexture 1.3 s and LoadSurfaceFromMemory 1.0 s of its ~21 s; RotWK: CreateTexture 1.0 s), the
+DXT encoder (`colorBlock`) alone 17 % of the BFME2 load screen's Node profile.
+
+- **WebAssembly SIMD kernels written here** (`d3dx9-image-wasm.js`, built with the JIT's module builder, one module):
+  the DXT1/3/5 block encoder and decoder, the 32-bit red/blue swizzle (A8R8G8B8 / X8R8G8B8 <-> RGBA8), the 2:1 mip box
+  filter, and unpack / pack of the 16-bit formats (R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4). **Bit-exact** with the
+  JavaScript they replace: the DXT encoder takes every decision on the same values computed the same way — integer
+  luminance for the endpoints, the palette and each texel's projection on the endpoint axis in f64 with the same
+  operations in the same order (two texels per f64x2 lane pair), the same thresholds; DXT5 alpha levels and distances
+  in f64 with the same strict "nearer than every earlier level" scan; no fused multiply-add. The decoder builds each
+  block's palette with the same truncating integer divisions and gathers a row's texels with `i8x16.swizzle`. 16-bit
+  expansion uses tables made by the JavaScript expression (`i8x16.swizzle`), quantization the exact integer form of
+  `Math.round(v * m / 255)` (`floor((v m + 127) / 255)`, checked for every value). Small images (< 1024 texels,
+  `WASM_MIN_TEXELS`) stay in JavaScript for the swizzle, the 16-bit unpack / pack, the DXT decoder and the 2:1 filter;
+  the DXT encoder (`encodeDxt` / `encodeDxtRows`) and `mipChain` use the kernels at every size, down to 1 x 1 levels
+  (the same bytes: the exactness tests cover every size from 1 x 1). Single thread, Node, interleaved with the base (`d3dx-image-bench.mjs --vs`, loaded server): X8R8G8B8
+  256 x 256 -> DXT1 load 2.1-3.4 -> 0.5-1.3 ms, DXT1 mip chain from 256 0.80-0.97 -> 0.20-0.23 ms, A1R5G5B5 chain from
+  its level 0.36-0.77 -> 0.11-0.20 ms, DXT1 / DXT5 decode 0.80 / 1.13 -> 0.19 / 0.30 ms, TGA image information 0.5-0.9 ms
+  -> 2 µs; the same bytes from both trees.
+- The kernels run on a private memory of the emulator thread (grown to the largest image met, never shrunk; the
+  largest user is `mipChain`, which reserves two RGBA regions of the largest level plus every encoded level: from a
+  2048 x 2048 source ~35 MiB for a DXT1 chain, up to ~53 MiB for a 32-bit chain that includes its top level) — and in the DXT helper workers (D062), which now share one `WebAssembly.Memory` (shared)
+  with the emulator thread and encode their block rows in place (the JavaScript encoder where SIMD is missing). With a
+  4x faster encoder the hand-off pays only for larger images: the pool now takes images from 2048 blocks (was 1024).
+  Measured in Node with 4 helper threads on the loaded server (`DxtPool` against the local encoder, interleaved): 128 x
+  128 92 µs through the pool against 77-84 µs alone, 256 x 128 155 µs both, 256 x 256 274-329 against 314-441 µs, 512 x
+  512 787 against 1 248 µs.
+- **`D3DXFilterTexture` builds the whole chain at once** (`mipChain`): the source level's RGBA (kept by the load) or its
+  own data (16/32-bit: unpacked by the kernels) is copied in once, each level filtered and encoded inside the kernel
+  memory, the encoded levels copied out together; large DXT levels still go to the helpers. Formats without kernels, the
+  point filter and missing source data take the level-by-level loop as before.
+- `D3DXGetImageInfoFromFileInMemory` no longer copies the file nor decodes TGA / BMP pixels to report their header (the
+  same fields and the same rejections as the parsers: tested on generated headers of every type, depth, color map and
+  truncation); a DDS file is parsed in place (its levels are views of the guest's buffer, read before the call returns;
+  the guest memory never moves) instead of being copied whole; a surface filled whole by D3DX is not zero-filled first; `QueryInterface` keeps the strings of the GUIDs
+  it met by their four words and the normalized IIDs of each object (it formatted a GUID string per call: 3.1 -> 0.4 µs
+  per call in Node); `LockRect` no longer builds a `--watch-tex` key string per call.
+- Exactness tests: `d3dx9-image-exact.test.js` compares everything with `tests/fixtures/d3dx9-image-base.js` (the file
+  before this work, verbatim): DXT1-5 of random images of every size and alpha pattern (both encoders, block rows
+  apart, the helper pool with the encoder switched per job), mip chains (box / point, odd sizes, general resize steps),
+  every 16-bit value and channel value with tails, pitches and alignments, random DXT blocks decoded, image information;
+  `d3dx9-filter-texture.test.js` drives `D3DXLoadSurfaceFromMemory` + `D3DXFilterTexture` and
+  `D3DXCreateTextureFromFileInMemoryEx` (DDS levels as is, converted to a smaller size, generated, color key, another
+  format; the file's buffer overwritten afterwards) on Direct3D 9 textures against the base computation.
+- Switch: `?dbg=ORTHROS_DXT_WASM=0` (harness input `dbg:ORTHROS_DXT_WASM=0`) puts every conversion back on the
+  JavaScript code (the same bytes). Tools: `tools/d3dx-image-bench.mjs --vs <base tree>/src/win32` times both trees'
+  kernels interleaved in one process and checks they give the same bytes; `tools/startbench.mjs --d3dx-prof` prints the
+  D3DX work by kind of operation and the surface lock patterns at each scenario mark.
+
+Measured (2026-10-06, this server heavily loaded by other sessions — 1-minute load 25-65 —, base `bc34f7b` and this
+work run at the same time, launch order alternated; "load + loadscreen" is the time from the click that starts the map
+to the first playable frame, the two phases added because their boundary moves with the timing):
+
+| Run (pair, first launched) | load + loadscreen | API time | per call |
+| --- | --- | --- | --- |
+| Browser BFME2 (`--gl-discard`), pair 1, base first | 35.2 -> 32.8 s | 6 413 -> 4 172 ms | FilterTexture 1 665 -> 600 ms, LoadSurfaceFromMemory 1 231 -> 652 ms |
+| Browser BFME2, earlier build (`dbb1319`: pool from 1 024 blocks, no DXT decoder), base first | 41.3 -> 34.3 s | 7 467 -> 4 208 ms | FilterTexture 1 788 -> 591, LoadSurfaceFromMemory 1 364 -> 696 |
+| Browser BFME2, `dbb1319`, variant first | 27.3 -> 22.8 s | 5 440 -> 3 331 ms | FilterTexture 1 432 -> 425, LoadSurfaceFromMemory 1 059 -> 489 |
+| Browser RotWK, pair 1, base first | 32.4 -> 28.0 s | 3 398 -> 2 399 ms | CreateTextureFromFileInMemoryEx 3.5 -> 2.0 ms per call |
+| Browser RotWK, `dbb1319` (before the DXT decoder and the fused level conversions), base first | 28.9 -> 31.1 s | 3 218 -> 2 986 ms | CreateTextureFromFileInMemoryEx 998 -> 958 ms in all: no gain until the decoder |
+| Browser BFME1 (map load: guest-bound, no D3DX images), base first | 72.1 -> 72.5 s | 2 813 -> 2 882 ms | GetDesc 157 -> 0 ms (fast path); no difference beyond the noise |
+| Node BFME2 (`startbench`, bfme2-startup), base first | 25.5 -> 21.9 s | 6.46 -> 3.24 s | LoadSurfaceFromMemory 2.07 -> 0.67 ms, FilterTexture 0.71 -> 0.21 ms; thread CPU 24.1 -> 20.6 s |
+| Node BFME2, variant first | 22.8 -> 19.2 s | 6.01 -> 2.57 s | 1.93 -> 0.59 ms, 0.65 -> 0.18 ms; thread CPU 22.4 -> 18.9 s |
+| Node RotWK (rotwk-startup), base first | 19.2 -> 17.3 s | 2.32 -> 1.34 s | CreateTextureFromFileInMemoryEx 2.85 -> 1.72 ms; thread CPU 18.6 -> 16.8 s |
+| Node RotWK, variant first | 27.3 -> 25.3 s | 3.38 -> 2.28 s | 3.68 -> 2.18 ms; thread CPU 25.0 -> 23.1 s |
+
+In the BFME2 load the API calls of the map's texture writes stay: `LockRect` / `UnlockRect` ~130 k each (the game writes
+textures texel by texel), 0.4-0.6 s of the browser's load; `GetDesc` (as many) is gone from JavaScript, `QueryInterface`
+(31 k) 0.2-0.3 s -> 0.03-0.06 s, `D3DXGetImageInfoFromFileInMemory` 0.11-0.15 s -> 0. In the browser the emulator then
+waits more for the render worker during the BFME2 load screen (`render` 2.4 -> 2.8 s in pair 1; the textures are
+uploaded there), which takes back part of the gain in time to play. The helper pool's work in the BFME2 load: 2 465 jobs,
+608 ms waited for the helpers (base) -> 1 233 jobs (256 x 256 loads only), 383 ms waited.
+
+Re-measured (2026-10-14, after the rebase: base `ca01ae8` and this branch at the same time in two browser slots,
+`--gl-discard`, launch order alternated, 1-minute load 20-56; "API" is the API time of the load + loadscreen phases,
+"per frame" that time over their frames):
+
+| Run (pair, first launched) | load + loadscreen | API time (per frame) | FilterTexture / LoadSurfaceFromMemory |
+| --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 33.1 -> 30.3 s | 6 520 -> 3 879 ms (28.3 -> 16.3) | 1 624 -> 535 / 1 201 -> 593 ms |
+| BFME2, variant first (no learned GL programs on either side) | 31.6 -> 27.1 s | 5 504 -> 3 164 ms (24.7 -> 15.9) | 1 403 -> 521 / 1 062 -> 548 ms |
+| RotWK rotwk-startup, variant first | 37.0 -> 33.0 s | 4 167 -> 2 914 ms (16.7 -> 13.7) | LoadSurfaceFromMemory 125 -> 43 ms |
+| RotWK, base first | 32.3 -> 31.8 s | 3 730 -> 2 786 ms (21.3 -> 13.9) | 112 -> 42 ms |
+| RotWK, base first (no learned GL programs on either side) | 28.0 -> 35.4 s (variant: I/O wait 2.8 -> 8.8 s) | 3 034 -> 2 291 ms (15.8 -> 12.3) | 382 -> 148 / 528 -> 246 ms |
+| BFME1 bfme-phases (map load), base first | 72.7 -> 73.5 s | 2 627 -> 2 686 ms | (none; GetDesc 158 -> 0 ms) |
+| BFME1, variant first | 68.1 -> 71.2 s | 2 444 -> 2 454 ms | (none; GetDesc 141 -> 0 ms) |
+
+The API time of the BFME2 and RotWK load screens drops by 25-45 % in every pair (the spread between pairs is smaller
+than the gain); the time to play follows in four pairs of five (the fifth lost on I/O wait, not API time). BFME1's map
+load is guest-bound and uses no D3DX image work: the same time within the spread (the `GetDesc` fast path removes
+~150 ms of API time, lost in the noise). Runs not counted: one BFME2 pair and one BFME1 pair where the menu was too
+slow under the server's load for the scenario's clicks to start the map (both sides), and a BFME1 variant that hit the
+intermittent access violation in the game's heap code during the menu, which base `main` also shows (the race under
+investigation in the green-thread scheduler; no D3DX image call there).
+
+Re-measured after review (2026-10-14, code unchanged — only tests and this text —, Node `startbench` with a fresh
+profile each side, base `ca01ae8` and this branch at the same time, launch order alternated, 1-minute load 17-25; "API"
+is the API time of the load + loadscreen phases):
+
+| Run (pair, first launched) | load + loadscreen | API time | FilterTexture / LoadSurfaceFromMemory | thread CPU |
+| --- | --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 21.8 -> 17.7 s | 5 237 -> 2 201 ms (-58 %) | 1 471 -> 393 / 2 097 -> 619 ms | 21.7 -> 17.6 s |
+| BFME2, variant first | 22.3 -> 18.7 s | 5 593 -> 2 326 ms (-58 %) | 1 571 -> 450 / 2 301 -> 616 ms | 22.1 -> 18.6 s |
+| RotWK rotwk-startup, base first | 21.1 -> 19.2 s | 3 193 -> 2 082 ms (-35 %) | 560 -> 618 / 1 174 -> 308 ms | 20.4 -> 18.7 s |
+| RotWK, variant first | 17.7 -> 15.6 s | 2 838 -> 1 126 ms (-60 %) | 517 -> 126 / 1 058 -> 273 ms | 17.0 -> 15.0 s |
+| RotWK, base first | 20.1 -> 18.2 s | 3 012 -> 1 305 ms (-57 %) | 543 -> 91 / 1 093 -> 302 ms | 19.5 -> 17.5 s |
+
+Every pair gains in time to play (2-4 s) and API time; the gain is well beyond the spread between pairs. One outlier:
+in the first RotWK pair the variant's `D3DXFilterTexture` took 618 ms for its 592 calls (91-126 ms in the two other
+variant runs) — a stall of one run (the large DXT levels go to the helper pool, which waits for helpers on a loaded
+server), not reproduced.
+
+The 16-bit decode alone (`toRgba` of an R5G6B5 / A4R4G4B4 256 x 256 image, `d3dx-image-bench.mjs`) is the one operation
+where the kernels barely help: it is a table lookup per texel in JavaScript already, and the kernel adds a copy in and
+a copy out. A verification run on the loaded server (1-minute load 30-59, 9 runs) found it slower than the base (A/B
+1.10-2.02 for R5G6B5, 1.07-1.39 for A4R4G4B4, +0.03-0.5 ms per image); re-run at load 17-22 with 15 runs it was faster
+in each of 6 runs (A/B 0.62-0.86 and 0.60-0.89), and in-process against the same tree's JavaScript path
+(`ORTHROS_DXT_WASM=0` toggled, 200 interleaved calls) 0.18-0.23 against 0.20-0.27 ms (R5G6B5, one run of three slower
+by 6 %) and 0.10 against 0.14-0.15 ms (A4R4G4B4). Within the noise of a loaded server, so kept: the same kernel feeds
+the in-memory mip chains of 16-bit sources (A1R5G5B5 chain 0.35 -> 0.12 ms), and no game run shows a 16-bit decode on
+its own among the costly calls.
+
 ## Measuring within a session
 
-Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
+Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on) except
+the D3DX image work: of that section, `ORTHROS_API_OPT_OFF` and `ORTHROS_D3DX_FAST_OFF` cover only the surface `GetDesc`
+fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' encoder) back on JavaScript, and the GUID
+string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
 `dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
 `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),

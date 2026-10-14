@@ -153,10 +153,14 @@ export class NodeScenario {
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
       // (--jit-profile: the phase's transitions by kind, chained transitions and fallback steps)
       if (this.jitProf) this.log(`[jitprof] ${p.label}: ${this.jitProf()}`);
+      // (startbench --d3dx-prof: D3DX image work by kind, and the surface lock patterns, as the browser worker reports them)
+      const prof = this.vm.d3dxProf, ls = d3d?.lockStats, lp = p.locks ?? {};
+      if (prof?.size) { this.log(`[d3dx] ${p.label} D3DX image work (ms, count): ${[...prof].sort((a, b) => b[1].ms - a[1].ms).slice(0, 16).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); prof.clear(); }
+      if (ls && this.vm.apiTimes) { const dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0); this.log(`[d3dx] ${p.label} locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only`); }
     }
     if (!this.phase) { this.apiTop(); this.jitProf?.(); }
     this.frameDts = [];
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now() }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /**
    * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed

@@ -10,7 +10,7 @@ import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
-import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS } from '../cpu/jit/runtime.js';
+import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES } from '../cpu/jit/runtime.js';
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -179,12 +179,20 @@ export function d3dCore(vm) {
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
      * contents (gfx.beforeWrite).
      */
-    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); mem.fill(this.mem, this.bytes, 0); } return this.mem; }
+    ensureMem(proc, overwrite = false) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); if (!overwrite) mem.fill(this.mem, this.bytes, 0); } return this.mem; } // (overwrite: the caller writes every byte at once, no zeroing first)
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
-    ptrOf(c) { if (!this.ptr || !com.objectAt(this.ptr)) { this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this); } else com.addRef(com.objectAt(this.ptr)); return this.ptr; }
+    // (the object carries the surface's description after it, its address at +12: GetDesc on the JIT's fast path,
+    // runtime.js FID_SURF_DESC — the same 32 bytes GetDesc writes)
+    ptrOf(c) {
+      if (!this.ptr || !com.objectAt(this.ptr)) {
+        const p = this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this, SURF_DESC_BYTES);
+        mem.write32(p + 12, p + 24); this.GetDesc({ arg: () => p + 24 });
+      } else com.addRef(com.objectAt(this.ptr));
+      return this.ptr;
+    }
     destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     /**
      * Released to no reference, the surface stays a valid object at the same address while its owner lives (a device's
@@ -232,22 +240,24 @@ export function d3dCore(vm) {
       if (this.locked) return D3DERR_INVALIDCALL;
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
       const base = this.ensureMem(c.proc);
-      let off = 0;
+      let off = 0, rectPx = 0;
       this.lockRect = null;
       if (pRect) {
-        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4);
+        const l = mem.readS32(pRect), t = mem.readS32(pRect + 4), r0 = mem.readS32(pRect + 8), b0 = mem.readS32(pRect + 12);
         // (the rectangle written, for a partial upload: clamped; an empty or inverted one counts as the whole surface)
-        const r = Math.min(this.width, mem.readS32(pRect + 8)), b = Math.min(this.height, mem.readS32(pRect + 12)), cl = Math.max(0, l), ct = Math.max(0, t);
+        const r = Math.min(this.width, r0), b = Math.min(this.height, b0), cl = Math.max(0, l), ct = Math.max(0, t);
         if (r > cl && b > ct) this.lockRect = [cl, ct, r, b];
         const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
         off = blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width));
+        rectPx = Math.max(0, (r0 - l) * (b0 - t));
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
       this.locked = true; this.lockFlags = flags;
-      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += Math.max(0, (mem.readS32(pRect + 8) - mem.readS32(pRect)) * (mem.readS32(pRect + 12) - mem.readS32(pRect + 4))); k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
+      { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += rectPx; k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
       if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
-      if (globalThis.ORTHROS_WATCH_TEX === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
+      const watch = globalThis.ORTHROS_WATCH_TEX;
+      if (watch && watch === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
       return D3D_OK;
     }

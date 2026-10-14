@@ -4,7 +4,7 @@
 import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
-import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt } from './d3dx9-image.js';
+import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt, mipChain, mipChainReady, isDdsFile } from './d3dx9-image.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
@@ -86,7 +86,12 @@ export function registerD3DX9(api, vm) {
   /** D3DXIMAGE_INFO: Width, Height, Depth, MipLevels, Format, ResourceType, ImageFileFormat */
   const writeInfo = (p, im) => { if (!p) return; mem.write32(p, im.width); mem.write32(p + 4, im.height); mem.write32(p + 8, im.depth); mem.write32(p + 12, im.mips); mem.write32(p + 16, im.infoFmt ?? im.fmt); mem.write32(p + 20, im.kind === 'cube' ? 5 : im.kind === 'volume' ? 4 : 3); mem.write32(p + 24, im.fileFormat); };
   /** the image file at guest [a, a+n) (infoOnly: its D3DXIMAGE_INFO fields, pixels decoded only when that needs them) */
-  const imageAt = (c, a, n, infoOnly = false) => { if (!a || !n) return null; try { return (infoOnly ? parseImageInfo : parseImage)(mem.bytes(a, n).slice()); } catch (e) { vm.log('gfx', `d3dx: image decode failed: ${e.message}`); return null; } };
+  // (information only: the file read in place — its header, or a copy when it has to be decoded. A DDS file is parsed in
+  // place too: its levels are views of the guest's buffer, read before the call returns — the guest memory never moves)
+  const imageAt = (c, a, n, infoOnly = false) => {
+    if (!a || !n) return null;
+    try { const b = mem.bytes(a, n); return infoOnly ? parseImageInfo(b, true) : parseImage(isDdsFile(b) ? b : b.slice()); } catch (e) { vm.log('gfx', `d3dx: image decode failed: ${e.message}`); return null; }
+  };
   X.D3DXGetImageInfoFromFileInMemory = [3, (c) => { const im = imageAt(c, c.arg(0), c.arg(1), true); if (!im) return D3DXERR_INVALIDDATA; writeInfo(c.arg(2), im); return D3D_OK; }];
   const TEXTURE_OK = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.Q8W8V8U8]);
   /** the texture format D3DX picks for a requested one and the file's: a format the device takes (R8G8B8 -> X8R8G8B8...) */
@@ -101,6 +106,8 @@ export function registerD3DX9(api, vm) {
     const src = im.images[f][Math.min(i, im.mips - 1)];
     const sw = Math.max(1, im.width >> Math.min(i, im.mips - 1)), sh = Math.max(1, im.height >> Math.min(i, im.mips - 1)), sd = Math.max(1, im.depth >> Math.min(i, im.mips - 1));
     if (i < im.mips && sw === w && sh === h && sd === d && fmt === im.fmt && !colorKey) return src;
+    // (a 2D level with the box filter: decoded, resized and encoded in the kernels' memory — the loop's bytes)
+    if (d === 1 && sd === 1 && !colorKey && (filter & 0xff) !== FILTER_POINT && mipChainReady(fmt)) { const r = mipChain(fmt, src, sw, sh, [[w, h]], im.fmt); if (r) return r[0]; }
     // through RGBA8 (slice by slice for volumes)
     const out = new Uint8Array(surfaceBytes(fmt, w, h) * d);
     for (let z = 0; z < d; z++) {
@@ -115,7 +122,7 @@ export function registerD3DX9(api, vm) {
     return out;
   };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
-  const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
+  const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc, data.length >= s.bytes); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
   const fillVolume = (c, t, i, data) => { const l = t.levels[i]; t.dev.gfx?.beforeWrite?.(t); if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
 
   /**
@@ -142,12 +149,20 @@ export function registerD3DX9(api, vm) {
       for (let i = 0; i < n; i++) {
         const lw = Math.max(1, w >> i), lh = Math.max(1, h >> i), ld = Math.max(1, d >> i);
         // levels past the file's are generated from the previous level (D3DX's mip filter), others from the file
+        const tp = profOn() ? performance.now() : 0;
         let data = i < im.mips ? levelData(im, srcFace, i, fmt, lw, lh, ld, o.filter, o.colorKey) : null;
+        if (tp && data) prof(`CreateTexture level from file fmt ${im.fmt} -> ${fmt}${data === im.images[srcFace][i] ? ' (as is)' : ''}`, tp);
         if (!data) {
+          const tg = tp ? performance.now() : 0;
           const prevW = Math.max(1, w >> (i - 1)), prevH = Math.max(1, h >> (i - 1));
           const prev = kind === 'volume' ? null : kind === 'cube' ? t.faces[f][i - 1] : t.levels[i - 1];
-          if (prev && prev.mem) data = fromRgba(fmt, resizeRgba(toRgba(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH), prevW, prevH, lw, lh, (o.mipFilter & 0xff) === FILTER_POINT), lw, lh);
+          if (prev && prev.mem) {
+            // (from the previous level's data as written: decoded, resized, encoded — in the kernels' memory for a box filter)
+            const kernels = (o.mipFilter & 0xff) !== FILTER_POINT && mipChainReady(fmt) ? mipChain(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH, [[lw, lh]], fmt) : null;
+            data = kernels ? kernels[0] : fromRgba(fmt, resizeRgba(toRgba(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH), prevW, prevH, lw, lh, (o.mipFilter & 0xff) === FILTER_POINT), lw, lh);
+          }
           else data = levelData(im, srcFace, Math.min(i, im.mips - 1), fmt, lw, lh, ld, o.filter, o.colorKey);
+          if (tg) prof(`CreateTexture level generated fmt ${fmt}`, tg);
         }
         if (!data) continue;
         if (kind === 'volume') fillVolume(c, t, i, data);
@@ -161,7 +176,9 @@ export function registerD3DX9(api, vm) {
     // cube: (dev, src, size, size, levels, usage, fmt, pool, filter, mipFilter, key, info, palette, pp)
     // volume: (dev, src, size, w, h, d, levels, usage, fmt, pool, filter, mipFilter, key, info, palette, pp)
     const a = (i) => c.arg(i);
+    const tp = profOn() ? performance.now() : 0;
     const im = imageAt(c, a(1), a(2));
+    if (tp && im) prof(`CreateTexture parse file format ${im.fileFormat} fmt ${im.fmt}`, tp);
     const outIdx = kind === 'tex' ? 14 : kind === 'cube' ? 13 : 15;
     if (!im) { if (a(outIdx)) mem.write32(a(outIdx), 0); vm.log('gfx', `d3dx: ${kind} from memory: not a supported image (${a(2)} bytes)`); return D3DXERR_INVALIDDATA; }
     const o = kind === 'tex' ? { w: a(3), h: a(4), levels: a(5), usage: a(6), fmt: a(7), pool: a(8), filter: a(9), mipFilter: a(10), colorKey: a(11), info: a(12) }
@@ -326,6 +343,22 @@ export function registerD3DX9(api, vm) {
     const chains = t.faces ?? (t.levels && !t.depth ? [t.levels] : null);
     if (!chains) return D3D_OK;
     for (const lv of chains) {
+      // the whole chain below the first level holding data at once (d3dx9-image.js mipChain: the same levels as the
+      // loop below computes one by one), for a box filter and a format with kernels
+      let first = src + 1;
+      while (first < lv.length && !lv[first - 1].mem) first++;
+      if (!point && first < lv.length && lv.slice(first - 1).every((s) => s.fmt === lv[first].fmt)) {
+        const p = lv[first - 1], tp = profOn() ? performance.now() : 0, sizes = lv.slice(first).map((s) => [s.width, s.height]);
+        // (the source level's RGBA: kept by the load, else its data unpacked by the kernels, else decoded here)
+        const encs = !mipChainReady(p.fmt) ? null : p.rgbaCache ? mipChain(p.fmt, p.rgbaCache, p.width, p.height, sizes)
+          : isDxt(p.fmt) ? mipChain(p.fmt, toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height), p.width, p.height, sizes)
+            : mipChain(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height, sizes, p.fmt);
+        if (encs) {
+          for (let i = 0; i < encs.length; i++) fillSurface(c, lv[first + i], encs[i]);
+          if (tp) prof(`FilterTexture chain fmt ${p.fmt} from ${p.width}x${p.height} (${p.rgbaCache ? 'cached' : 'decoded'})`, tp);
+          continue;
+        }
+      }
       let rgba = null; // (the level just filtered, as RGBA: the next one comes from it rather than from its re-encoded form)
       for (let i = src + 1; i < lv.length; i++) {
         const p = lv[i - 1], s = lv[i];

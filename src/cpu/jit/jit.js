@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -112,7 +112,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.bg = null; this.stormAt = 0; this.stormCount = 0;
+    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
@@ -127,9 +127,9 @@ export class Jit {
     const defer = def && this.opts.deferCom !== false && (this.opts.deferDraws !== false || !DEFER_DRAWS.has(name)) ? DEFER_SPECS[name] : undefined;
     this.mem.u8[FAST_TABLE + idx] = fid ?? (defer !== undefined ? FID_DEFER : 0);
     this.mem.write32(DEFER_SPEC + 4 * idx, defer ?? 0);
-    // (the fast paths of the API-layer work — D3DX math, effect parameter descriptions, raw values — switchable for
+    // (the fast paths of the API-layer work — D3DX math, effect parameter and surface descriptions, raw values — switchable for
     // measurement: setD3dxFast)
-    if (dx !== undefined || fid === FID_PARAM_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
+    if (dx !== undefined || fid === FID_PARAM_DESC || fid === FID_SURF_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
     if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
