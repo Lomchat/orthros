@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "browser": {
+    "id": "xash3d-web-1.2.2",
+    "upstream": "https://github.com/sealdev224/webxash3d-fwgs-cstrike",
+    "commit": "ed3ec1fc3781c5dedd1dd52c23b2d96bfed7584c",
+    "engineArtifact": {
+      "source": "https://registry.npmjs.org/xash3d-fwgs/-/xash3d-fwgs-1.2.2.tgz",
+      "sha256": "2f6c404dd8a64757e35eeb5aa4c968e0fa471d2972c338070e0cc4b020998606"
+    },
+    "browserImportFixes": [
+      "engine/index.js:./constants.js",
+      "engine/index.js:./xash3d.js",
+      "engine/index.js:./net/index.js",
+      "engine/xash3d.js:./generated/xash.js",
+      "engine/xash3d.js:./constants.js",
+      "engine/utils/index.js:./queue.js",
+      "engine/utils/index.js:./rb.js",
+      "engine/net/net.js:../utils/index.js",
+      "engine/net/net.js:../xash3d.js",
+      "engine/net/index.js:./net.js",
+      "engine/net/index.js:./emNet.js"
+    ],
+    "files": [
+      {
+        "path": "halflife/valve/cl_dlls/client_emscripten_wasm32.wasm",
+        "source": "https://x8bitrain.github.io/webXash/assets/client_emscripten_wasm32-BB4CPMTx.wasm",
+        "sha256": "9899131ff1b213f6116d50abe3cdcffbc02d60a41c7d5fbc88d036aeb7f45e2e",
+        "bytes": 206433
+      },
+      {
+        "path": "halflife/valve/dlls/hl_emscripten_wasm32.wasm",
+        "source": "https://x8bitrain.github.io/webXash/assets/hl_emscripten_wasm32-C6FeFK01.wasm",
+        "sha256": "bf0af8180933d71af77e3215328d54029dc2dde359a5dd0ed208d5229d65a99a",
+        "bytes": 1072597
+      },
+      {
+        "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+        "source": "https://x8bitrain.github.io/webXash/assets/client_emscripten_wasm32-D-JUZ5gM.wasm",
+        "sha256": "3a8b26a14ce562ab3bcfbf2a8f57c2822ae04c2a134caedbb03355003ea5ecf7",
+        "bytes": 489444
+      },
+      {
+        "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+        "source": "https://x8bitrain.github.io/webXash/assets/menu_emscripten_wasm32-CxBArjop.wasm",
+        "sha256": "d5802742d32b9295efa7479114798c832248c758ee4474af0dafaa2773d7d086",
+        "bytes": 494161
+      },
+      {
+        "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+        "source": "https://x8bitrain.github.io/webXash/assets/cs_emscripten_wasm32-CWCeX_GV.wasm",
+        "sha256": "9c838823ddec4f65986a0f8e715d7b22f01e2e9dc9de59fe03752bcdebdc0b97",
+        "bytes": 1323625
+      },
+      {
+        "path": "engine/filesystem_stdio.wasm",
+        "sha256": "1be979f8cfae08192b59f6c08e8b27eb2eb56a1499219ae8b35106e85811e8f1",
+        "bytes": 56427
+      },
+      {
+        "path": "engine/libref_webgl2.wasm",
+        "sha256": "325c1102d2865fed1028d8413f2b553e892ac6f18eaf5701990d81559e057f52",
+        "bytes": 210106
+      },
+      {
+        "path": "engine/libmenu.wasm",
+        "sha256": "496afd048025bc9b28a01cc282cc465ead2acc3be4081c6f2cccf2b39cf62be5",
+        "bytes": 284681
+      },
+      {
+        "path": "engine/xash3d.d.ts",
+        "sha256": "82d979bac63c2793600536b0b3e504bd1af1ee068d64c40d4fc28db75691dbd9",
+        "bytes": 4734
+      },
+      {
+        "path": "engine/raw.js",
+        "sha256": "c2da7cb17457d0165a412ee692958d23792ee818f06be9430916a0d332c3deee",
+        "bytes": 501468
+      },
+      {
+        "path": "engine/xash.wasm",
+        "sha256": "1066cca502a5659b668611bc3fe2a867301e30bbe7e3c923891318a66e5ae8f2",
+        "bytes": 3923825
+      },
+      {
+        "path": "engine/constants.js",
+        "sha256": "1b9f0fa372b2c3bb4a79d555b699e2a75d17763c9a5c0b72008c96bbc5a2ee40",
+        "bytes": 522
+      },
+      {
+        "path": "engine/constants.d.ts",
+        "sha256": "e9a836cf85dd7e3e38629ca99da2dbab7dd6732762744333964aca5982a7ab93",
+        "bytes": 586
+      },
+      {
+        "path": "engine/index.js",
+        "sha256": "9111b82d16c68cb3f4c96cfb16e3852645b154cd2168a3351723dc00291c6668",
+        "bytes": 93
+      },
+      {
+        "path": "engine/index.d.ts",
+        "sha256": "0294e769d616f80706a1a3e415d3040ca07c85d0bd003f3b7bee7fdebe230de6",
+        "bytes": 78
+      },
+      {
+        "path": "engine/libref_soft.wasm",
+        "sha256": "8dca7719fc7b201a354966b54d6aa7a81e46cf30660eba077c2387265706e21e",
+        "bytes": 154230
+      },
+      {
+        "path": "engine/xash3d.js",
+        "sha256": "eb007fc593f272ed4794d90efa3722d019e64c68d82fef8687f6de6606c0f2d9",
+        "bytes": 9607
+      },
+      {
+        "path": "engine/utils/rb.d.ts",
+        "sha256": "2f6a159037d822c412e9457adef86e3a50fdb861466786892a1fc035471b36c3",
+        "bytes": 488
+      },
+      {
+        "path": "engine/utils/rb.js",
+        "sha256": "212612a4d0f41dad16af86098f3c5a6d4fb1b6efde11c31b826483cecd1d9583",
+        "bytes": 1402
+      },
+      {
+        "path": "engine/utils/queue.js",
+        "sha256": "f094363229cb25af8f805cadcc87e159d74cb605b66725efd5dd63f397be676d",
+        "bytes": 607
+      },
+      {
+        "path": "engine/utils/queue.d.ts",
+        "sha256": "a03ad1f37b6a30d85b7cc6991bbeed816b5b1b972c45aa4e81678c3398136637",
+        "bytes": 222
+      },
+      {
+        "path": "engine/utils/index.js",
+        "sha256": "3b06a9b0125ea1e1424dacd42cd578c8b9ce8d70982c1cabd82254768908fb5e",
+        "bytes": 53
+      },
+      {
+        "path": "engine/utils/index.d.ts",
+        "sha256": "f476d1b358483763e8e3968f5946bc5d83c8c06b28bdad48c17577078b78c0f4",
+        "bytes": 47
+      },
+      {
+        "path": "engine/generated/xash.js",
+        "sha256": "8fe75a79eb45943cce7f3e68832243d21eeb21013bb2b3b52cc509d058f1062b",
+        "bytes": 712227
+      },
+      {
+        "path": "engine/generated/xash.d.ts",
+        "sha256": "38010de80668a0ace0fb61db852c2d23592efb458cf90da0d61a5a9ea75cc44b",
+        "bytes": 13675
+      },
+      {
+        "path": "engine/valve/extras.pk3",
+        "sha256": "fc0acba14e6f2e5ea613b983aeedb63c64bd7063c8e0d487db08be72eaf88852",
+        "bytes": 1488559
+      },
+      {
+        "path": "engine/net/net.d.ts",
+        "sha256": "4aba4b8c28eaf14ce2a162e63191a39863526986f85f4c176eee8d3e9c76c32b",
+        "bytes": 2316
+      },
+      {
+        "path": "engine/net/net.js",
+        "sha256": "c32456d3f6346df0df0ee0ef0a5e4a296d037c6fe7cfcd63a89a5d48f32bc3fa",
+        "bytes": 5625
+      },
+      {
+        "path": "engine/net/emNet.js",
+        "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
+        "bytes": 11
+      },
+      {
+        "path": "engine/net/index.js",
+        "sha256": "1deaad3923642a6cbd164269bfe84e5566897d700be9443452f405e927809466",
+        "bytes": 54
+      },
+      {
+        "path": "engine/net/index.d.ts",
+        "sha256": "e8e22e04c972747203890acc11e0dbf4b98ee5d3b53d6129f0aad2948dd8d9a9",
+        "bytes": 48
+      },
+      {
+        "path": "engine/net/emNet.d.ts",
+        "sha256": "e38cc1b8bc3bd6951b344e84714164a953f53be93757b7d305aed2829db10e28",
+        "bytes": 4130
+      }
+    ]
+  },
+  "dedicatedServer": {
+    "id": "xash3d-dedicated-e0ece3d",
+    "repository": "https://github.com/FWGS/xash3d-fwgs",
+    "commit": "e0ece3d95241fc71af89f93336c2bab2273976d3",
+    "files": [
+      {
+        "path": "xash",
+        "sha256": "d41815b9c7cb972998f02d0d4f561aba07489829edab8572aee4c06d5b40b108"
+      },
+      {
+        "path": "filesystem_stdio.so",
+        "sha256": "3f42486cc5ef29af5b78247892a1d5a9d84c83f57b1b87bf2da9d3281741abcb"
+      }
+    ],
+    "submodules": {
+      "3rdparty/libbacktrace/libbacktrace": "b9e40069c0b47a722286b94eb5231f7f05c08713",
+      "3rdparty/library_suffix": "14fc7cd5b1e637d8fe722daa977e72eac9244e45",
+      "3rdparty/mbedtls/mbedtls": "701bb7cfdef4c8860e7fdafcec1e7ec8a05a37a9"
+    }
+  },
+  "referenceSdk": {
+    "repository": "https://github.com/FWGS/hlsdk-portable",
+    "commit": "6c168fc79d95c8ffb934fa37aaafbbd424e03c1a",
+    "purpose": "Retained SDK source for future game/server work; not claimed as the exact source of the recovered browser artifacts."
+  }
+}

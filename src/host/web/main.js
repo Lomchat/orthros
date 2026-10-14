@@ -3,7 +3,6 @@
 // headless harness (status, stats, screenshots, logs).
 import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host.js';
 import { mountHome } from './home.js';
-import { loadBrowserPorts } from './browser-ports.js';
 import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
@@ -99,17 +98,14 @@ async function startBench(name, manifest) {
 
 /** The home screen (home.js): the game list, one card per manifest; started games hand over to start(). */
 let home = null;
-let browserPorts = new Map();
 async function showMenu() {
   let last = null; try { last = localStorage.getItem('orthros.last'); } catch { /* no storage */ }
   home = mountHome({ onPlay: start });
   const load = async () => {
     home.setLoading();
     try {
-      const [res, ports] = await Promise.all([fetch('/api/manifests'), loadBrowserPorts()]);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      browserPorts = new Map(ports.map(item => [item.name, item]));
-      home.setGames([...(await res.json()).filter((g) => !g.hidden || params.has('all')), ...ports], last);
+      const res = await fetch('/api/manifests'); if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      home.setGames((await res.json()).filter((g) => !g.hidden || params.has('all')), last);
     } catch (e) { home.setError(String(e.message ?? e), load); }
   };
   await load();
@@ -117,18 +113,10 @@ async function showMenu() {
 
 async function start(name, language = null) {
   if (state.status !== 'menu') return;
-  if (name.startsWith('port-') && !browserPorts.has(name)) {
-    browserPorts = new Map((await loadBrowserPorts()).map(item => [item.name, item]));
-  }
-  const port = browserPorts.get(name);
-  if (port) {
-    try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
-    location.href = port.launchUrl;
-    return;
-  }
   state.status = 'loading';
   try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
+  if (manifest.launchUrl) { location.href = manifest.launchUrl; return; } // (a browser port: its own page, docs/browser-ports.md)
   const options = manifest.languages ?? [];
   if (!options.includes(language)) {
     try { language = localStorage.getItem('orthros.gameLanguage.' + (manifest.gameId ?? name)); } catch { language = null; }

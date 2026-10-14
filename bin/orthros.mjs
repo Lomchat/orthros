@@ -56,7 +56,7 @@ async function run() {
   const server = createServer({ extra: new Map([[name, manifest]]) });
   const port = await listen(server, Number(opt('port', 8080)));
   const url = `http://127.0.0.1:${port}/?manifest=${encodeURIComponent(name)}`;
-  console.log(`orthros: ${manifest.name ?? name} — ${manifest.exe} from ${manifest.folder}`);
+  console.log(`orthros: ${manifest.name ?? name} — ${manifest.exe ?? `${manifest.runtime} port`} from ${manifest.folder}`);
   console.log(`orthros: open ${url}`);
   if (rest.includes('--open')) {
     const chrome = findChrome();

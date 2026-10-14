@@ -1,0 +1,25 @@
+# The native dedicated server of a GoldSrc version (docs/browser-ports.md); the instance is the manifest id:
+#   install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now orthros-goldsrc@half-life-original-en
+[Unit]
+Description=Orthros GoldSrc dedicated server (%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/node /srv/orthros/tools/goldsrc/server.mjs %i
+WorkingDirectory=/srv/orthros
+DynamicUser=yes
+StateDirectory=orthros-goldsrc/%i
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5
+TasksMax=32
+CPUQuota=100%
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

@@ -8,8 +8,10 @@ __pycache__/
 /data_games
 /data_installers
 /data_wine
+/data_engines
 /.claude/
 /.charon-uploads/
 /CLAUDE.md
 /DECISIONS.md
 /STATUS.md
+/AGENTS.md

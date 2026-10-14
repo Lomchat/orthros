@@ -1,28 +1,115 @@
-# Browser ports on the existing Orthros home
+# Browser ports: games whose engine runs as browser code
 
-The existing home screen also displays optional browser-native installations. It fetches their
-metadata from `/ports/api/manifests`; an unavailable port service leaves Windows games usable.
-Original Windows manifest IDs, launch URLs, account routes, game files and saved profiles remain unchanged.
+Orthros runs two kinds of games. Both are declared by `data_games/<game>/manifest.json`, listed on the same home,
+served by the same server (`src/host/server.js`, `orthros.service`) on the same origin. The version's `runtime` says
+which kind it is:
 
-The home accepts local `/ports/<adapter>/<game>/<version>/` launch paths only. Those pages own their
-engines, asset loading, input, audio and storage. They do not enter the Win32 worker or import the CPU,
-PE loader, graphics or API implementations. The Windows pre-download controls apply only to Windows
-installations; port pages manage their own content caches.
+- **`win32`** (the default): the unmodified Windows game in Orthros' own emulator (`src/cpu`, `src/loader`, `src/win32`,
+  `src/gfx`, ...), written from scratch.
+- **`goldsrc`**: a browser port. The game's original files run on a pinned third-party GoldSrc engine, Xash3D FWGS
+  compiled to WebAssembly, with the game's client/server/menu modules compiled to WebAssembly too. Its page is
+  `src/ports/goldsrc/`; it never loads the Win32 runtime, and the Win32 runtime never imports it.
 
-The integration service lives in `/srv/game-hub`, in the private repository
-`Lomchat/orthros-game-hub`. Upstream engines are cloned in `/srv/game-ports`, compiled releases live in
-`/srv/game-releases`, and original port contents in `/srv/game-content/<game>/versions/<version>/files`.
-None of these belongs in Orthros' ignored Windows game trees or in this repository.
+Nothing in the code names a game: engine release, game directory, modules, maps and server ports come from the manifest.
 
-Caddy keeps the existing domain and proxies `/ports/*`, `/engine/*`, `/content/*` and `/multiplayer/*`
-to the sibling service on localhost:8096. The existing Orthros service remains on localhost:8095.
-Legacy `/library` and `/library/` links redirect to the original home: there is no second game library.
-The sibling repository owns the deployment recipes, pinned upstream references, validation records,
-native dedicated servers and WebSocket-to-local-UDP transport.
+## Where things are
 
-Port save identities use the game/version pair, independently from the engine release. Future mods
-need separate installations and save identities; original files remain read-only.
+| Path | Content | In Git |
+| --- | --- | --- |
+| `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
+| `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
+| `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
-To roll back the home integration, revert this change. To remove its server routes, remove only the
-Caddy matcher for the sibling service and disable its three new systemd services. Preserve all game
-data, accounts, browser origin and save IDs. Do not change the original Orthros service.
+The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
+carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
+sources no longer exist. `lock.json` and the install scripts reproduce them while their sources remain available;
+treat `data_engines/` like `data_games/` (the only copy of the recovered modules).
+
+## Manifest
+
+```json
+{
+  "schemaVersion": 1, "id": "half-life", "name": "Half-Life", "defaultVersion": "half-life-original-en",
+  "defaults": { "runtime": "goldsrc", "coverFile": "cover.svg" },
+  "versions": [{
+    "id": "half-life-original-en", "dir": "original-en", "version": "Original · English", "languages": ["en"],
+    "goldsrc": {
+      "engine": "xash3d-web-1.2.2", "gameDir": "valve",
+      "modules": { "client": "halflife/valve/cl_dlls/client_emscripten_wasm32.wasm",
+                   "server": "halflife/valve/dlls/hl_emscripten_wasm32.wasm", "menu": "engine/libmenu.wasm" },
+      "solo": { "map": "c0a0" },
+      "multiplayer": { "server": "xash3d-dedicated-e0ece3d", "port": 28015, "map": "crossfire", "maxPlayers": 16 }
+    }
+  }]
+}
+```
+
+The contract is in `game-manifest.schema.json`. A version offers `solo`, `multiplayer` or both. `coverFile` is an
+image beside `manifest.json`, for games whose own files hold none a browser displays. The base/version overlay is the
+same as for Windows games: version files replace same-named base files, whatever their case.
+
+## Server routes
+
+- `/api/manifests`: every version, with `runtime`; a port also has `launchUrl` and `modes`, and is `available` only
+  when its files, its engine release and the modules it names are installed. The home starts a port by opening its
+  `launchUrl` (`src/host/web/main.js`); the Windows pre-download row is for `win32` versions only.
+- `/ports/goldsrc/<manifest>/`: the port's page.
+- `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable.
+- `/game/<manifest>/...` and `/gamez/<manifest>/...`: the game's files, as for Windows games. The page reads each file
+  once, compressed when that saves bytes (files up to 64 MB), and skips native binaries (`.exe`, `.dll`, `.so`).
+- `/api/udp/<manifest>` (WebSocket): the multiplayer relay. Each player gets one UDP socket to the version's dedicated
+  server on `127.0.0.1:<multiplayer.port>`, never another destination; same-origin pages only, 64 players at once,
+  idle connections closed after two minutes.
+
+## Browser storage
+
+IndexedDB database `orthros-port:<game>:<version folder>` (the installation; unchanged since the first release):
+`profile` holds the engine's writable tree (saves, configuration), written every 10 s, when the page is hidden and on
+quit; `content` holds the game files keyed by path, size and modification time (entries of older files are deleted
+after a complete load). The settings' device tab and the account's online copies handle the Windows games' profiles
+only: a port's saves stay in this browser.
+
+## Multiplayer servers
+
+One native dedicated server per version, `orthros-goldsrc@<manifest>` (systemd, `DynamicUser`, its state in
+`/var/lib/private/orthros-goldsrc/<manifest>`), runs `tools/goldsrc/server.mjs`: it links the version's files into
+`$STATE_DIRECTORY/game` (the engine reads one directory) and starts the dedicated server on 127.0.0.1 only.
+Half-Life uses UDP 28015, Counter-Strike 28016.
+
+```sh
+python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
+sh tools/goldsrc/build-server.sh                 # dedicated server -> data_engines/ (gcc, 32-bit libraries)
+install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
+systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-original-en
+tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en solo --url https://orthros.chalco.website --reload
+tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-original-en multiplayer --url https://orthros.chalco.website --join-keys "{n},1"
+```
+
+## Same origin
+
+The ports share the Win32 runtime's origin (the owner's choice): their engine code can read this origin's browser
+storage and call the account's online-save API with the visitor's session. Account changes still require the password.
+The engine files are pinned by SHA-256 in `lock.json` and served only from releases a manifest names.
+
+## State (2026-10-14)
+
+Checked in headless Chromium (SwiftShader) with `tools/goldsrc/check.mjs`, from the home card: Half-Life single
+player (moves, saves, loads, quits and finds its save again), Half-Life and Counter-Strike multiplayer (two players on
+the dedicated server see each other, move, and both receive the score when one dies). Not checked: a whole campaign,
+long sessions, voice chat. Counter-Strike has no single-player mode: the recovered WebAssembly server module stays at
+the title screen. Known upstream messages: Half-Life's optional `ReqState` voice message has no handler;
+Counter-Strike warns about its HUD sprite count.
+
+## Third-party components
+
+- Xash3D FWGS WebAssembly package `xash3d-fwgs` 1.2.2 (npm) and its wrapper `sealdev224/webxash3d-fwgs-cstrike`
+  (MIT, copyright 2025 yohimik): `data_engines/xash3d-web-1.2.2/engine/`.
+- Game modules compiled to WebAssembly (client, server, menu), recovered from the deployed `x8bitrain/webXash` build;
+  their exact sources were unavailable on 2026-10-13: `halflife/`, `counterstrike/` of the same release.
+- Xash3D FWGS native engine `FWGS/xash3d-fwgs` at `e0ece3d` with libbacktrace, mbedTLS and miniz (their notices are in
+  the checkout): the dedicated server.
+- `FWGS/hlsdk-portable` at `6c168fc`: reference sources only, not the source of the recovered modules.
+- The game files are the games' own, never modified; their provenance is recorded in each manifest's `installedFrom`.

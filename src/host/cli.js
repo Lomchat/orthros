@@ -101,6 +101,7 @@ export async function main(argv) {
   const o = parseArgs(argv);
   if (!o.positional.length) { console.error('usage: node src/host/cli.js <manifest.json|folder> [--interp] [--log kinds] [--seconds N] [--status STATUS.md]'); process.exit(2); }
   const { manifest, dir } = loadManifest(o.positional[0]);
+  if ((manifest.runtime ?? 'win32') !== 'win32') { console.error(`${manifest.name}: a browser port (runtime ${manifest.runtime}), not a Windows game: open it from the home page (docs/browser-ports.md)`); process.exit(2); }
   const saveDir = manifest.saveDir ? path.resolve(path.dirname(o.positional[0]), manifest.saveDir) : null;
   const vfs = makeVfs(manifest, dir, saveDir);
   const clock = new RealClock();
