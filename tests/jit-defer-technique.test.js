@@ -12,7 +12,7 @@ import { THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, COM_MARKER, FAST_STATS, FX_SLOTS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, COM_MARKER, FAST_STATS, FX_SLOTS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX } from '../src/cpu/jit/runtime.js';
 import { d3dEnv } from './d3d-random.js';
 import { defineEffects } from '../src/win32/d3dx9-effect.js';
 import { effectBinary, shader, op } from './fx-build.js';
@@ -53,7 +53,7 @@ function effect(k) {
 
 /** an environment: device, two effects, textures; `jit`: guest code through the JIT (else the reference runs every call) */
 function session(jit) {
-  const E = d3dEnv(null, false, { fullMemory: true, objectBytes: 24 }), { mem, ctx, com, vm } = E;
+  const E = d3dEnv(null, false, null), { mem, ctx, com, vm } = E;
   const out = E.alloc(64), pp = E.alloc(64);
   [320, 240, 22, 1, 0, 0, 1, 0, 1, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));
   const d3d = E.defs.Direct3DCreate9[1](ctx([32]));
@@ -145,7 +145,7 @@ function runJit(S, calls, hook) {
     const n = mem.read32(DEFER_QUEUE);
     mem.write32(DEFER_QUEUE, 0); mem.write32(DEFER_QUEUE + 4, 0); mem.write32(DEFER_QUEUE + 8, 0);
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(DEFER_SPEC + 4 * idx), words = spec & DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(DEFER_SPEC + 4 * idx), words = spec & DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & DEFER_WORDS;
       S.call(idx, Array.from({ length: argc }, (_, i) => mem.read32(p + 8 + 4 * i)));
       p += 4 * (2 + argc + words);
     }

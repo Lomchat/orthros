@@ -103,6 +103,7 @@ export const GLYPH_W = 5, GLYPH_H = 7;
 export const CELL_W = 8, CELL_H = 12; // advance / line height at scale 1
 
 /** @type {Map<number, Uint8Array>} char code -> 7 row bitmasks (bit 4 = leftmost) */
+// snapshot: cache (rasterized glyphs)
 const glyphs = new Map();
 for (const [ch, rows] of Object.entries(G)) {
   const r = rows.split('|');

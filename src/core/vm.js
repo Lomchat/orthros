@@ -14,14 +14,30 @@ import { Scheduler, WaitUnwind, PARK } from './sched.js';
 import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { timerResFromDebug } from './timer-res.js';
+import { vmSnapRegistry, sealVmSnapRegistry } from './vm-snapshot.js';
+import { JIT_RANGES } from './snapshot.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, PROC_CONSTS } from '../cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, PROC_CONSTS } from '../cpu/jit/runtime.js';
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
 import { apiOpt } from './api-opt.js';
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+
+/**
+ * Crash / hang report lines for the heaps whose blocks the program damaged (Heap.stats: overwritten boundary tags, free
+ * lists cut at a block that was not one, free lists cut where they looped back), with each heap's bad-tag log.
+ * @param {Iterable<{ tag: string, stats: Record<string, number>, badTagLog?: string[] }>} heaps
+ */
+export function heapDamageLines(heaps) {
+  const out = [];
+  for (const hp of heaps) {
+    const s = hp.stats;
+    if (s.badTags || s.brokenLists || s.loopedLists) out.push(`heap ${hp.tag}: ${s.badTags ?? 0} overwritten boundary tags, ${s.brokenLists ?? 0} broken free lists, ${s.loopedLists ?? 0} looping free lists${hp.badTagLog ? '\n  ' + hp.badTagLog.join('\n  ') : ''}`);
+  }
+  return out;
+}
 
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
@@ -58,13 +74,16 @@ export class Vm {
     this.sliceInsns = opts.sliceInsns || Number(globalThis.ORTHROS_SLICE_INSNS) || SLICE_INSNS;
     this.mem = new GuestMemory({ shared: !!opts.sharedMemory }); // (shared: other workers read it, e.g. the background translator)
     this.api = new ApiRegistry(this.mem);
+    /** what a snapshot of this machine holds (vm-snapshot.js): its modules declare their own state as they register */
+    this.snap = vmSnapRegistry(this);
     this.interp = new Interp(this.mem, null);
     // what faults in the null page (nullpage.js: 'writes' by default, true reads too — ?dbg=ORTHROS_NULL_READS=1 —, false)
     const nullPage = opts.nullPage ?? nullPageMode();
     this.interp.nullPage = nullPage;
-    if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
+    { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows the guest's clock: a scaled one, a virtual one, a snapshot's — never the host's own time)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
-    this.jit = opts.jit === false ? null : new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    this.jitArgs = [nullPage, interpRanges, opts]; // (newJit)
+    this.jit = opts.jit === false ? null : this.newJit(nullPage, interpRanges, opts);
     this.exec = this.jit ?? this.interp; // executor: { run(opts), lastFault } bound to a cpu via .cpu
     this.ctx = new Ctx(this);
     // (debugging, ?dbg=ORTHROS_HEAP_PROV=1: the last heap operations on every block — op, thread, call site — shown in
@@ -144,8 +163,10 @@ export class Vm {
       firstD3DCall: null, audio: null, d3dDevices: null, d3dDevice: null, effectCtx: null,
       exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
+      nextPid: 0x400, // (process ids: win32/process.js)
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
+    sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)
   }
 
   log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
@@ -155,6 +176,24 @@ export class Vm {
   /**
    * @param {{ exePath: string, args?: string, cwd?: string, env?: any, dllOverrides?: any, exeBytes?: Uint8Array }} opts
    */
+  /** A JIT on this machine's memory and interpreter, with the options the page or the tests ask for. */
+  newJit(nullPage, interpRanges, opts) {
+    return new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+  }
+
+  /**
+   * An empty JIT in place of this one: its tables in guest memory cleared, every API thunk and process constant given
+   * to it again — the machine then runs as one just restored from its snapshot does (tools/snapshot-check.mjs: the
+   * original and its copy compared at the JIT's speed, translating alike).
+   */
+  resetJit() {
+    for (const [s, e] of JIT_RANGES) this.mem.u8.fill(0, s, e);
+    this.jit = this.newJit(...this.jitArgs); this.exec = this.jit;
+    this.api.onThunk = (idx, key, def) => this.jit.markFast(idx, key, def);
+    this.api.thunks.forEach((t, i) => { if (t) this.jit.markFast(i, `${t.dll}!${t.name}`, t.def); });
+    if (this.proc) this.jit.setProcessConsts(this.proc.processHeap.handle);
+  }
+
   createProcess(opts) {
     const proc = (this.proc = new Process(this, opts));
     const bytes = opts.exeBytes ?? this.vfs.readFile(proc.exePath);
@@ -530,7 +569,7 @@ export class Vm {
     const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc, com = this.com;
     let calls = 0;
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end; calls++) {
-      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], spec = u32[(DEFER_SPEC >>> 2) + idx], words = spec & DEFER_RAW ? u32[(p >>> 2) + 6] >>> 2 : (spec >>> 8) & 0xff; // (DEFER_RAW: the byte count argument)
+      const idx = u32[p >>> 2], argc = u32[(p >>> 2) + 1], spec = u32[(DEFER_SPEC >>> 2) + idx], words = spec & DEFER_RAW ? u32[(p >>> 2) + 6] >>> 2 : (spec >>> 8) & DEFER_WORDS; // (DEFER_RAW: the byte count argument)
       const def = thunks[idx].def;
       ctx.thread = thread; ctx.cpu = cpu; ctx.proc = proc; ctx.def = def; ctx.sp = p + 4; // (Ctx.bind; arg(i) reads the recorded arguments)
       if (hist && idx < hist.length) hist[idx]++;
@@ -542,6 +581,7 @@ export class Vm {
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
     if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
     if (this.jit?.optOnPending) { this.jit.optOnPending = false; m.write32(PROC_CONSTS + 4, 0); }
+    if (this.jit?.drawOptPending) { this.jit.drawOptPending = false; this.jit.setFxSpecs(true); }
   }
 
   /**
@@ -774,7 +814,7 @@ export class Vm {
     }
     // (ORTHROS_HEAP_PROV: what the registers of the threads that run point to — a thread spinning in a damaged list)
     if (this.heapProvMap) for (const t of proc.threads) if (t.state === TS.READY || t.state === TS.RUNNING) { lines.push(`  t${t.id} registers: eax=${(t.cpu.eax >>> 0).toString(16)} ecx=${(t.cpu.ecx >>> 0).toString(16)} edx=${(t.cpu.edx >>> 0).toString(16)} ebx=${(t.cpu.ebx >>> 0).toString(16)} esi=${(t.cpu.esi >>> 0).toString(16)} edi=${(t.cpu.edi >>> 0).toString(16)} ebp=${(t.cpu.ebp >>> 0).toString(16)}`); try { lines.push(...this.registerMemory(t.cpu)); } catch (e) { lines.push(`  (${e.message})`); } }
-    for (const hp of proc.heaps) if (hp.stats.badTags || hp.stats.brokenLists) lines.push(`heap ${hp.tag}: ${hp.stats.badTags ?? 0} overwritten boundary tags, ${hp.stats.brokenLists ?? 0} broken free lists${hp.badTagLog ? '\n  ' + hp.badTagLog.join('\n  ') : ''}`);
+    lines.push(...heapDamageLines(proc.heaps));
     // synchronization objects (mutexes/events/semaphores) and the last ownership transitions
     const sync = [];
     for (const [h, o] of proc.handles.map) {

@@ -2,6 +2,7 @@
 // graphics over DCs and images (image drawing with alpha, fills, lines), state setters.
 // Images are stored as 32bpp ARGB surfaces in guest memory (same byte layout as PixelFormat32bppARGB),
 // indexed images additionally keep their indices and palette so LockBits can hand them back.
+import { snapKnown } from '../core/snapshot.js';
 import { allocSurface, freeSurface, Surface } from '../gfx/gdi/surface.js';
 import { blit, fillRect, line, clipRect, rectEmpty } from '../gfx/gdi/raster.js';
 import { parseBitmapInfo, dibSurface } from './gdi32.js';
@@ -21,7 +22,7 @@ export function registerGdiplus(api, vm) {
   const mem = vm.mem;
   const GP = {};
   /** @type {Map<number, any>} guest object pointer -> image / graphics / brush / pen ... */
-  const objects = new Map();
+  const objects = snapKnown(vm, 'gdiplus.objects', new Map());
   const heap = (c) => c.proc.processHeap;
   const newObject = (c, o) => { o.ptr = heap(c).alloc(16); mem.write32(o.ptr, 0x2b696447); mem.write32(o.ptr + 4, 0); objects.set(o.ptr, o); return o; };
   const deleteObject = (c, o) => { objects.delete(o.ptr); heap(c).free_(o.ptr); };

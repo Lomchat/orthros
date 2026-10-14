@@ -1,6 +1,7 @@
 // COM plumbing: interfaces are vtables of API thunks living in guest memory; objects are small
 // guest blocks [vtable, marker, id] whose methods dispatch to JS implementations. Unimplemented
 // methods are traced (once per method) and return E_NOTIMPL so the caller keeps going.
+import { snapshotClass } from '../core/snapshot.js';
 import { E } from './errors.js';
 import { COM_MARKER, COM_REFS } from '../cpu/jit/runtime.js';
 /** 'comx' log kind: the COM trace without the per-draw state setters, draws, buffer locks and reference counting */
@@ -11,8 +12,25 @@ export const S_OK = 0, S_FALSE = 1, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80
 export const IID_IUnknown = '00000000-0000-0000-c000-000000000046';
 const MARKER = COM_MARKER; // '!COM'
 
-/** GUID in guest memory -> canonical lowercase string */
+/**
+ * GUID in guest memory -> canonical lowercase string. The strings of the GUIDs met are kept by their four words (a
+ * QueryInterface asks for the same few IIDs again and again: no string built per call); GUIDs past GUID_CACHE_MAX
+ * distinct ones are formatted each time.
+ */
 export function readGuid(mem, a) {
+  const u8 = mem.u8, p = a >>> 0;
+  if (!u8 || p + 16 > u8.length) return formatGuid(mem, a);
+  const w0 = (u8[p] | (u8[p + 1] << 8) | (u8[p + 2] << 16) | (u8[p + 3] << 24)) | 0, w1 = (u8[p + 4] | (u8[p + 5] << 8) | (u8[p + 6] << 16) | (u8[p + 7] << 24)) | 0;
+  const w2 = (u8[p + 8] | (u8[p + 9] << 8) | (u8[p + 10] << 16) | (u8[p + 11] << 24)) | 0, w3 = (u8[p + 12] | (u8[p + 13] << 8) | (u8[p + 14] << 16) | (u8[p + 15] << 24)) | 0;
+  let list = GUID_CACHE.get(w0);
+  if (list !== undefined) for (let i = 0; i < list.length; i += 4) if (list[i] === w1 && list[i + 1] === w2 && list[i + 2] === w3) return list[i + 3];
+  const s = formatGuid(mem, a);
+  if (guidCached < GUID_CACHE_MAX) { if (list === undefined) GUID_CACHE.set(w0, (list = [])); list.push(w1, w2, w3, s); guidCached++; }
+  return s;
+}
+const GUID_CACHE = new Map(), GUID_CACHE_MAX = 4096;
+let guidCached = 0; // snapshot: cache of formatted GUID strings (a pure function of the bytes)
+function formatGuid(mem, a) {
   const h = (v, n) => v.toString(16).padStart(n, '0');
   const b = mem.bytes(a, 16);
   return `${h(mem.read32(a), 8)}-${h(mem.read16(a + 4), 4)}-${h(mem.read16(a + 6), 4)}-${h(b[8], 2)}${h(b[9], 2)}-${Array.from(b.subarray(10, 16), (x) => h(x, 2)).join('')}`;
@@ -34,11 +52,14 @@ class ComObject {
     this.mem = mem; this.ptr = ptr; this.iface = iface; this.impl = impl; this.id = id; this.proc = proc;
     /** @type {any[]|null} methods resolved by index (Com.dispatch) */
     this.fns = null;
+    /** impl.iids as lowercase IIDs (Com.supports), and the array they were made from */
+    this.iidsNorm = undefined; this.iidsOf = undefined;
   }
   /** the reference count, in guest memory (the JIT's AddRef / Release fast path updates it there) */
   get refs() { return this.mem.read32(this.ptr + COM_REFS) | 0; }
   set refs(v) { this.mem.write32(this.ptr + COM_REFS, v >>> 0); }
 }
+snapshotClass(ComObject, { skip: ['fns'], init: (o) => { o.fns = null; } }); // (snapshots, core/vm-snapshot.js: fns a cache)
 
 export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
@@ -59,6 +80,19 @@ export class Com {
     this.nextId = 1;
     this.tracedMissing = new Set();
     this.interface('IUnknown', IID_IUnknown, null, [['QueryInterface', 2], ['AddRef', 0], ['Release', 0]]);
+    // (a method's handler is defined when its interface first gets a vtable: a restored Vm defines it by name)
+    this.api.lazyDefs?.set('com.dll', (fname) => {
+      const [name, method] = fname.split('::'), iface = this.interfaces.get(name), i = iface?.methods.findIndex((m) => m.name === method) ?? -1;
+      if (i >= 0) this.defineMethod(iface, i);
+      return this.api.lookup('com', fname);
+    });
+  }
+
+  /** The API handler of method `i` of `iface` (its thunk dispatches to the object's implementation). */
+  defineMethod(iface, i) {
+    const m = iface.methods[i], fname = `${iface.name}::${m.name}`;
+    if (!this.api.lookup('com', fname)) this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i), { com: { iface, index: i } }] });
+    return fname;
   }
 
   /**
@@ -84,14 +118,7 @@ export class Com {
     if (iface.vtable) return iface.vtable;
     const n = iface.methods.length;
     const vt = proc.processHeap.alloc(n * 4);
-    for (let i = 0; i < n; i++) {
-      const m = iface.methods[i];
-      const fname = `${iface.name}::${m.name}`;
-      if (!this.api.lookup('com', fname)) {
-        this.api.define('com', { [fname]: [m.argc + 1, (c) => this.dispatch(c, iface, i), { com: { iface, index: i } }] });
-      }
-      this.mem.write32(vt + 4 * i, this.api.thunkFor('com', fname));
-    }
+    for (let i = 0; i < n; i++) this.mem.write32(vt + 4 * i, this.api.thunkFor('com', this.defineMethod(iface, i)));
     iface.vtable = vt;
     return vt;
   }
@@ -101,12 +128,12 @@ export class Com {
    * `impl` may list extra interface names it answers to in `impl.iids` (array of IIDs or names).
    * @returns {number} guest pointer (refcount 1)
    */
-  create(proc, iface, impl) {
+  create(proc, iface, impl, extra = 0) {
     if (typeof iface === 'string') iface = this.interfaces.get(iface);
-    // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow),
-    // reference count, an effect's commit list] — the count in guest memory: AddRef/Release run on the JIT's fast path
-    // (runtime.js FID_ADDREF)
-    const ptr = proc.processHeap.alloc(24);
+    // [vtable, marker, id, a word for the object's fast paths (runtime.js: effect handle block, device state shadow,
+    // surface description), reference count, an effect's commit list] — the count in guest memory: AddRef/Release run
+    // on the JIT's fast path (runtime.js FID_ADDREF); `extra` bytes after them for the implementation (freed with it)
+    const ptr = proc.processHeap.alloc(24 + extra);
     this.mem.write32(ptr, this.vtableOf(proc, iface));
     this.mem.write32(ptr + 4, MARKER);
     this.mem.write32(ptr + 8, this.nextId);
@@ -153,7 +180,12 @@ export class Com {
   supports(obj, iid) {
     if (iid === IID_IUnknown) return true;
     for (let i = obj.iface; i; i = i.parent) if (i.iid === iid) return true;
-    for (const x of obj.impl.iids ?? []) { const s = x.includes('-') ? x.toLowerCase() : this.interfaces.get(x)?.iid; if (s === iid) return true; }
+    const iids = obj.impl.iids;
+    if (!iids) return false;
+    // impl.iids normalized once per array (the implementations assign a new array when it changes)
+    let norm = obj.iidsNorm;
+    if (norm === undefined || obj.iidsOf !== iids || norm.length !== iids.length) { norm = obj.iidsNorm = iids.map((x) => (x.includes('-') ? x.toLowerCase() : this.interfaces.get(x)?.iid)); obj.iidsOf = iids; }
+    for (let k = 0; k < norm.length; k++) if (norm[k] === iid) return true;
     return false;
   }
 

@@ -555,7 +555,8 @@ for (;;) {
     }
     // The browser's own events (Playwright's mouse: trusted, as a person's — with --ui the page captures the mouse on a
     // click): uiclick:<CSS selector> clicks a page element; pageclick:x,y clicks the game at screen pixel x,y;
-    // pagemove:dx,dy[,n] moves the mouse n times by dx,dy CSS pixels; lockstate logs the capture and the drawn cursor.
+    // pagemove:dx,dy[,n] moves the mouse n times by dx,dy CSS pixels; lockstate logs the capture, the drawn cursor and
+    // the cursors the page shows over the game (the guest's system cursor shown or hidden, the CSS cursor, the soft cursor).
     if (ev.kind === 'uiclick') { await page.locator(String(ev.args[0])).click({ timeout: 5000 }).then(() => console.log(`[ui] clicked ${ev.args[0]}`), (e) => console.log(`[ui] no ${ev.args[0]}: ${e.message.split('\n')[0]}`)); continue; }
     if (ev.kind === 'pageclick' || ev.kind === 'pagemove') {
       const box = await page.locator('#c2d').boundingBox(), sc = await page.evaluate(() => window.orthros.scale || 1);
@@ -564,7 +565,18 @@ for (;;) {
       continue;
     }
     if (ev.kind === 'unlock') { await page.evaluate(() => document.exitPointerLock()); continue; } // (the capture released, as Escape does)
-    if (ev.kind === 'lockstate') { console.log(`[ui] ${await page.evaluate(() => `pointer lock ${document.pointerLockElement ? document.pointerLockElement.id : 'none'}, bench ${window.orthros.benchActive ? 'running' : 'off'}, drawn cursor ${window.orthros.pointer?.vx},${window.orthros.pointer?.vy}`)}`); continue; }
+    // (with the cursors the page shows: the guest's system cursor visible or not, the CSS cursor over the game — 'none',
+    // a CSS keyword or an image cursor — and the soft cursor drawn under capture: one cursor at most)
+    if (ev.kind === 'lockstate') {
+      const st = await page.evaluate((pp) => {
+        const o = window.orthros, sc = document.getElementById('softcursor'), css = getComputedStyle(document.getElementById('c2d')).cursor;
+        const under = pp ? document.elementFromPoint(pp.x, pp.y) : null, toast = document.getElementById('toast');
+        return `pointer lock ${document.pointerLockElement ? document.pointerLockElement.id : 'none'}, bench ${o.benchActive ? 'running' : 'off'}, drawn cursor ${o.pointer?.vx},${o.pointer?.vy}, ` +
+          `guest cursor ${o.cursorVisible === false ? 'hidden' : 'shown'} (${o.cursor ? JSON.stringify(o.cursor) : 'arrow'}), css cursor ${css.startsWith('url(') ? 'image' : css}, ` +
+          `soft cursor ${getComputedStyle(sc).display === 'none' ? 'none' : 'drawn'}${under ? `, under the pointer ${under.id || under.tagName}` : ''}${toast && !toast.classList.contains('hidden') ? `, toast "${toast.textContent}"` : ''}`;
+      }, pagePointer);
+      console.log(`[ui] ${st}`); continue;
+    }
     // a key press likewise: held ~100 ms, with the physical key's scan code (DirectInput sees scan codes only)
     if (ev.kind === 'key') {
       const vk = ev.args[0], scan = ev.args[1] || scanCodeOfVk(vk);

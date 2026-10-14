@@ -222,7 +222,7 @@ async function makeJitSession(root) {
     if (!n) return;
     mem.write32(R.DEFER_QUEUE, 0); mem.write32(R.DEFER_QUEUE + 4, 0); mem.write32(R.DEFER_QUEUE + 8, 0);
     for (let p = R.DEFER_QUEUE + 16, end = p + n; p < end;) {
-      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(R.DEFER_SPEC + 4 * idx), words = spec & R.DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & 0xff;
+      const idx = mem.read32(p), argc = mem.read32(p + 4), spec = mem.read32(R.DEFER_SPEC + 4 * idx), words = spec & R.DEFER_RAW ? mem.read32(p + 24) >>> 2 : (spec >>> 8) & R.DEFER_WORDS;
       qctx.sp = p + 4; callAt(qctx, idx);
       p += 4 * (2 + argc + words);
     }

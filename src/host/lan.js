@@ -18,6 +18,8 @@ class WsPeer {
     this.socket = socket; this.onMessage = onMessage; this.onClose = onClose; this.buf = Buffer.alloc(0); this.parts = []; this.closed = false; this.log = log;
     socket.on('data', (d) => { this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d; try { this.parse(); } catch (e) { this.why = `error: ${e.message}`; this.close(); } });
     socket.on('close', () => { this.why ??= 'connection closed'; this.finish(); }); socket.on('error', (e) => { this.why ??= `socket error: ${e.message}`; this.finish(); });
+    // (an upgraded socket of the HTTP server stays half open when the page's side ends without a close message)
+    socket.on('end', () => { this.why ??= 'connection ended'; this.close(); });
     socket.setNoDelay(true);
   }
   parse() {
@@ -49,24 +51,29 @@ class WsPeer {
   finish() { if (this.closed) return; this.closed = true; this.onClose(); }
 }
 
-/** Accept WebSocket upgrades on /api/lan: the virtual LAN of each game (room). */
-export function attachLan(server, log = () => {}) {
+/** Complete the WebSocket handshake of an HTTP upgrade: a peer, or null (the socket destroyed) when it is not one. */
+export function acceptWebSocket(req, socket, onMessage, onClose, log) {
+  const key = req.headers['sec-websocket-key'];
+  if ((req.headers.upgrade ?? '').toLowerCase() !== 'websocket' || !key) { socket.destroy(); return null; }
+  const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  return new WsPeer(socket, onMessage, onClose, log);
+}
+
+/** WebSocket upgrades on /api/lan: the virtual LAN of each game (room). handle() returns false for other paths. */
+export function lanUpgrades(log = () => {}) {
   const rooms = new Map(); // room -> Map(ip string -> peer)
   const ipOf = (b, o) => `${b[o]}.${b[o + 1]}.${b[o + 2]}.${b[o + 3]}`;
-  server.on('upgrade', (req, socket) => {
-    const url = new URL(req.url, 'http://x');
-    if (url.pathname !== '/api/lan' || (req.headers.upgrade ?? '').toLowerCase() !== 'websocket') { socket.destroy(); return; }
-    const key = req.headers['sec-websocket-key'];
-    if (!key) { socket.destroy(); return; }
-    const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  const handle = (req, socket, url) => {
+    if (url.pathname !== '/api/lan') return false;
+    if ((req.headers.upgrade ?? '').toLowerCase() !== 'websocket' || !req.headers['sec-websocket-key']) { socket.destroy(); return true; }
     const roomName = (url.searchParams.get('room') ?? 'default').slice(0, 64);
     const room = rooms.get(roomName) ?? new Map(); rooms.set(roomName, room);
     let n = 2; while (room.has(`10.77.${n >> 8}.${n & 255}`) || (n & 255) === 0 || (n & 255) === 255) n++;
     const ip = `10.77.${n >> 8}.${n & 255}`, ipBytes = ip.split('.').map(Number);
     const announce = () => { for (const p of room.values()) p.ws.send(JSON.stringify({ type: 'peers', peers: room.size })); };
     const peer = { ip, ws: null };
-    peer.ws = new WsPeer(socket, (msg, text) => {
+    peer.ws = acceptWebSocket(req, socket, (msg, text) => {
       if (text || msg.length < LAN.HEADER) return;
       msg[1] = ipBytes[0]; msg[2] = ipBytes[1]; msg[3] = ipBytes[2]; msg[4] = ipBytes[3]; // (the source is the sender)
       const dst = ipOf(msg, 7), type = msg[0];
@@ -84,6 +91,7 @@ export function attachLan(server, log = () => {}) {
     peer.ws.send(JSON.stringify({ type: 'hello', ip, peers: room.size }));
     announce();
     log(`lan: ${ip} joined ${roomName} (${room.size} in the room)`);
-  });
-  return { rooms };
+    return true;
+  };
+  return { rooms, handle };
 }

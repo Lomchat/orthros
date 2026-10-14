@@ -64,6 +64,7 @@ function stockHandle(proc, i) {
   return h;
 }
 
+// snapshot: constant, built once
 let defaultPal = null;
 function defaultPalette() {
   if (defaultPal) return defaultPal;
@@ -139,6 +140,7 @@ export function registerGdi32(api, vm) {
   const touched = (dc) => { if (dc.window) vm.wm?.touch(dc.window); };
   const engine = () => vm.textEngine ?? (vm.textEngine = new TextEngine());
   /** The realized font selected into a DC (see gfx/gdi/text.js). */
+  // snapshot: diagnostics
   const loggedFonts = new Set();
   const realFont = (c, dc) => {
     const f = obj(c, dc.font);
@@ -460,6 +462,7 @@ export function registerGdi32(api, vm) {
   };
   G.TextOutA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), ansi(mem.readCStringN(c.arg(3), c.arg(4)))); return 1; }];
   G.TextOutW = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), mem.readWStringN(c.arg(3), c.arg(4))); return 1; }];
+  // snapshot: diagnostics
   let glyphIndexWarned = false;
   const extTextOut = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;

@@ -2,6 +2,12 @@
 
 Runtime navigateur qui exécute des jeux Windows **tels quels** (binaire inchangé) avec le CPU/RAM/GPU du client : émulation x86-32 (interpréteur de référence + recompilateur dynamique x86→WebAssembly), chargeur PE32, réimplémentation des API Win32/DirectX sur les API du navigateur, système de fichiers virtuel servi en HTTP.
 
+Second type de jeu, sur le même accueil et le même serveur : les **portages navigateur** (`"runtime": "goldsrc"` dans le
+manifeste). Les fichiers d'origine du jeu y tournent sur un moteur GoldSrc tiers épinglé, compilé en WebAssembly, dans
+sa propre page (`src/ports/goldsrc/`), sans passer par l'émulateur ; le multijoueur passe par un serveur dédié natif
+(Half-Life, Counter-Strike 1.6). Moteurs installés hors Git dans `data_engines/` : voir
+[docs/browser-ports.md](docs/browser-ports.md).
+
 - `CLAUDE.md` — contraintes, architecture, conventions.
 - `DECISIONS.md` — journal des décisions d'architecture.
 - `STATUS.md` — état courant (palier, ce qui marche, blocages, prochaine action).
@@ -29,7 +35,11 @@ nouveau clic la reprend, aussi après une perte de focus ou la fin d'une mesure 
 mouvements relatifs existent : DirectInput les reçoit sans bornage (caméras à la souris), le curseur du jeu part de sa
 position à lui (un `SetCursorPos` de recentrage compris) et s'arrête aux bords de l'écran et du rectangle `ClipCursor`
 (défilement par les bords) ; la page le dessine. Libre, le pointeur ne transmet de mouvement que tant qu'il reste
-sur le jeu (src/host/web/pointer.js).
+sur le jeu (src/host/web/pointer.js). Au-dessus du jeu, la page montre le curseur système du jeu et lui seul, visible
+quand Windows le montrerait : compteur de `ShowCursor` ≥ 0, une forme posée (`SetCursor(NULL)` l'ôte ; `WM_SETCURSOR`
+envoyé à chaque mouvement, `DefWindowProc` pose le curseur de la classe), aucune souris DirectInput exclusive acquise.
+Caché (un jeu qui dessine son propre curseur), la page n'en montre aucun, capturée ou non ; montré, sa forme (curseur
+CSS, ou curseur dessiné par la page sous capture) — jamais la flèche du navigateur par-dessus le curseur du jeu.
 
 Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
@@ -50,7 +60,8 @@ pour ajouter un jeu, il suffit d'ajouter son dossier et de recharger la page. Le
 ```
 
 Les identifiants de version sont stables : ils servent aux caches et sauvegardes. `exe` est recherché dans la
-superposition de `base/` et de `versions/<dir>/`. Les dépendances éventuelles se déclarent avec
+superposition de `base/` et de `versions/<dir>/`. Un portage navigateur déclare `"runtime": "goldsrc"` et un objet
+`goldsrc` (moteur, dossier du jeu, modules, modes) à la place de `exe` (docs/browser-ports.md). Les dépendances éventuelles se déclarent avec
 `requires: [{"game":"autre-jeu","version":"autre-jeu-1.0","mount":"C:\\AutreJeu"}]`.
 Un jeu qui vérifie la présence de son disque se déclare avec `"cdrom": "D"` (ou `{"drive":"D","label":"…"}`) :
 ses propres fichiers servent aussi de lecteur de CD-ROM.
@@ -66,7 +77,8 @@ menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore p
 sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est
 dans `/srv/orthros/data_wine/wine-prefix/` ; les installateurs et ressources de réimportation sont dans
 `/srv/orthros/data_installers/`. Ces trois dossiers sont exclus de Git. Le préfixe Wine ne conserve que les outils et
-manifests de l'installeur, sans copies installées des jeux ni cache de téléchargement.
+manifests de l'installeur, sans copies installées des jeux ni cache de téléchargement. `/srv/orthros/data_engines/`
+(moteurs des portages navigateur et leurs sources épinglées) est lui aussi hors Git et à préserver comme `data_games/`.
 
 ## Paramètres et compte facultatif
 

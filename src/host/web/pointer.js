@@ -14,6 +14,19 @@
 // no motion stuck at an edge).
 import { EV, BUTTON_AT_CURSOR } from '../browser-host.js';
 
+/**
+ * The cursor the page shows over the game: the guest's system cursor and nothing else (a game drawing its own cursor
+ * sprite hides the system one — ShowCursor, SetCursor(NULL), an exclusive DirectInput mouse — so the page draws none:
+ * never the browser's arrow over the game's sprite). `visible`: the guest's cursor shows (undefined before the worker
+ * said: the arrow at start, as Windows). Uncaptured: the guest's shape as the CSS cursor; captured (pointer lock, no
+ * CSS cursor exists): the page's soft cursor at the guest cursor's position.
+ * @returns {{ css: 'none' | 'guest', soft: boolean }}
+ */
+export function cursorView(visible, captured) {
+  if (visible === false) return { css: 'none', soft: false };
+  return captured ? { css: 'none', soft: true } : { css: 'guest', soft: false };
+}
+
 const SEQ_MASK = 0xffffff;
 const i16 = (v) => Math.max(-32768, Math.min(32767, Math.trunc(v)));
 const pack = (x, y) => ((i16(y) & 0xffff) << 16) | (i16(x) & 0xffff);

@@ -8,19 +8,44 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : mount, display, cover, registry, cdrom, profileSeed, languageFileAliases, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, mount, display, cover, coverFile, registry, cdrom, profileSeed, languageFileAliases, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "dir", "version", "exe"],
+        "required": ["id", "dir", "version"],
         "properties": {
           "id": { "$ref": "#/$defs/id" },
           "dir": { "$ref": "#/$defs/id" },
           "version": { "type": "string", "minLength": 1 },
           "versionOrder": { "type": "number" },
-          "exe": { "type": "string", "minLength": 1 },
+          "runtime": { "enum": ["win32", "goldsrc"], "default": "win32", "description": "win32 : le jeu Windows tel quel dans l'émulateur d'Orthros (exe obligatoire). goldsrc : portage navigateur, un moteur GoldSrc tiers épinglé, compilé en WebAssembly, sur les fichiers du jeu (goldsrc obligatoire ; docs/browser-ports.md). Aussi dans defaults." },
+          "exe": { "type": "string", "minLength": 1, "description": "Runtime win32 (obligatoire) : l'exécutable, cherché dans la superposition de base/ et versions/<dir>/." },
+          "coverFile": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.(png|jpe?g|svg|webp)$", "description": "Image de couverture à côté de manifest.json, pour un jeu dont les fichiers n'en ont aucune qu'un navigateur affiche (sinon cover : un fichier du jeu). Aussi dans defaults." },
+          "goldsrc": {
+            "type": "object",
+            "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data_engines/<engine>/. Un mode au moins : solo ou multiplayer.",
+            "required": ["engine", "gameDir", "modules"],
+            "properties": {
+              "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data_engines/ (tools/goldsrc/install-engine.py)." },
+              "gameDir": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "Dossier du jeu dans ses fichiers (-game du moteur)." },
+              "modules": { "type": "object", "required": ["client", "server"], "properties": { "client": { "type": "string" }, "server": { "type": "string" }, "menu": { "type": "string", "description": "Par défaut engine/libmenu.wasm." } } },
+              "solo": { "type": "object", "required": ["map"], "properties": { "map": { "type": "string" } } },
+              "multiplayer": {
+                "type": "object",
+                "required": ["server", "port", "map"],
+                "properties": {
+                  "server": { "$ref": "#/$defs/id", "description": "Release du serveur dédié natif dans data_engines/ (tools/goldsrc/build-server.sh)." },
+                  "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "Port UDP du serveur dédié, sur 127.0.0.1 seulement ; les joueurs passent par /api/udp/<manifeste>." },
+                  "map": { "type": "string" },
+                  "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 }
+                }
+              }
+            },
+            "anyOf": [{ "required": ["solo"] }, { "required": ["multiplayer"] }]
+          },
+          "installedFrom": { "type": "object", "description": "Provenance des fichiers installés (information seule)." },
           "languages": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z]{2}(-[A-Z]{2})?$" } },
           "languageFileAliases": {
             "type": "object",

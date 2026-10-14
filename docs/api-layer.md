@@ -38,12 +38,52 @@ frame down, all generic (no game-specific code), and how to switch them off with
   through the local holding its spec, and the flags read after the copy were the copy's address bits: each such call
   passed as one that changes device states — an effect forgot its commit list, a device (no list) had its issued-state
   filter switched off until the next drain. The copy has a local of its own now.
+- **`IDirect3DSurface8/9::GetDesc`** (`FID_SURF_DESC`): a surface's description never changes; its COM object carries
+  the 32 bytes the handler writes right after itself (`Com.create`'s `extra` bytes, address at +12, written by
+  `Surface.ptrOf`), and the call is a copy. Map loads that write textures texel by texel ask it ~130 k times per load
+  (BFME2), with a `LockRect` / `UnlockRect` pair each. A null output, a released object (marker cleared) or an object
+  without a description go to JavaScript. Switched with the D3DX fast paths (`ORTHROS_D3DX_FAST_OFF`). Test:
+  `jit-surface-desc.test.js` (every kind of surface, D3D8 and D3D9, against the handler).
 - **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
   `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
   calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
   queued `CommitChanges` may bind. Test: `jit-defer-filter.test.js` (randomized, against executing every call), and
   `d3dx9-effect-commit-list.test.js`.
+- **Fixed-function lights, material, FVF that change nothing** (`DEFER_FX_*`): `LightEnable` of lights 0..7, `SetLight` of
+  lights 0..7 and `SetMaterial` compared word for word with the structure they point to, Direct3D 9 `SetFVF` — Direct3D 8
+  and 9. Engines re-send their lights before every object: BFME1's 3D menu issued ~2 100 `LightEnable` and ~2 100
+  `SetLight` per frame (830 draws), 98-100 % of them no-ops, each one queued, copied (26 words) and run in JavaScript.
+  The shadow entries are known only for words with which the call is a no-op of its handler (a light's type below 2^24,
+  stored in a float; a member compared as a float not a NaN). Test: `jit-defer-filter-fx.test.js` (randomized sequences
+  through the JIT against the real Direct3D 8 / 9 devices executing every call: -0 for +0, NaN members, odd types, null
+  pointers, lights 8+, odd BOOLs, declarations resetting the FVF, state blocks, Reset, an effect commit setting lights
+  and the FVF; the devices agree at every draw, version counters included).
+- **Draws from buffers are queued** (`DEFER_DRAWS`: `DrawIndexedPrimitive`, `DrawPrimitive`, Direct3D 8 and 9): they
+  always return `D3D_OK`, and what they read changes only through queued calls (run before them) or calls handled in
+  JavaScript (which run the queue first: a buffer lock, a texture lock, `Present`, a query's `GetData`...). A frame's
+  draws and state setters then reach JavaScript in batches, at the next call handled there, instead of one round trip
+  out of the translated code per draw. (The UP draws read the caller's memory at the call: not queued.) Consequences
+  for the measurements: a draw's time is now part of the JavaScript call that runs the queue (in the per-API ranking,
+  `[apitop]`, `DrawIndexedPrimitive` no longer appears: its time is in `Lock`, `Unlock`, `Present`...). Jit option
+  `deferDraws: false` (Node: `ORTHROS_JIT_OPTS`) handles them at the call again.
+- **AddRef / Release while bindings are queued** (`REFS_SET`): COM `AddRef` / `Release` stay on the fast path only while no
+  queued call may change the object's count. That was "no queued binding at all"; with the draws queued the queue holds
+  bindings much longer, and in BFME1's play `IDirect3DTexture9::Release` became a JavaScript call 1.4 M times in 270 s
+  (against 0.28 M), each running the queue. A queued Direct3D 9 `SetTexture` / `SetStreamSource` / `SetIndices` whose
+  shadow entry was known now records +1 for the object it binds and −1 (a release) for the one it replaces, per object
+  (16 entries; any other binding call — Direct3D 8, effects — or more objects: anyone, as before). `AddRef` / `Release`
+  then stay on the fast path: the count in memory moves at once, the queued calls move it later, and the value returned
+  is the count once both have (the immediate execution's). A `Release` goes to JavaScript (which runs the queue first)
+  when the count could reach 0 at the queue's lowest point — all of the object's queued releases before its bindings —
+  so that no queued release destroys an object still referenced. Test: `jit-defer-filter.test.js` (randomized bindings,
+  `AddRef` / `Release` with counts kept low, and bindings made behind the shadow's back: every result and final count as
+  executing every call, and no count reaching 0 on the way).
 - The queued COM calls run straight on their object's method (`Com.callQueued`), `dispatch` only for unusual cases.
+- Fixed (2026-10-06): a queued call carrying a structure (`SetTransform`, `SetViewport`, `SetLight`, `SetMaterial`, the
+  effect `SetVector` / `SetMatrix` / `SetRawValue`) overwrote the local holding its spec with the address of the copy, so
+  the spec's `DEFER_STATES` test read a bit of that address (always set: the queue lives at 0x7fdb0000) and switched the
+  issued-state filter off until the next call handled in JavaScript. Every redundant state, texture, stream or index set
+  after a transform (in practice: after the first object's world matrix of every draw) reached JavaScript.
 
 ## Sleep(0): pacing, not work
 
@@ -223,9 +263,140 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
 Test: `gl-state-cache.test.js` drives random Direct3D 8 / 9 sessions over a GL that tracks its effective state and checks
 that every draw sees the same GL state, and every upload the same data, with and without these caches.
 
+## D3DX image work during map loads (src/win32/d3dx9-image.js, d3dx9-image-wasm.js)
+
+BFME2's map load loads ~1 225 textures with `D3DXLoadSurfaceFromMemory` (X8R8G8B8 256 x 256 into DXT1) and builds their
+mip chains with `D3DXFilterTexture` (DXT1 from the RGBA the load keeps, A1R5G5B5 from the level the game wrote with
+locks); RotWK's creates ~270 textures with `D3DXCreateTextureFromFileInMemoryEx` from DDS files, converting DXT levels
+through RGBA (decoded, resized, re-encoded). Before this work these were the most expensive APIs of the load screens
+(browser, BFME2: FilterTexture 1.3 s and LoadSurfaceFromMemory 1.0 s of its ~21 s; RotWK: CreateTexture 1.0 s), the
+DXT encoder (`colorBlock`) alone 17 % of the BFME2 load screen's Node profile.
+
+- **WebAssembly SIMD kernels written here** (`d3dx9-image-wasm.js`, built with the JIT's module builder, one module):
+  the DXT1/3/5 block encoder and decoder, the 32-bit red/blue swizzle (A8R8G8B8 / X8R8G8B8 <-> RGBA8), the 2:1 mip box
+  filter, and unpack / pack of the 16-bit formats (R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4). **Bit-exact** with the
+  JavaScript they replace: the DXT encoder takes every decision on the same values computed the same way — integer
+  luminance for the endpoints, the palette and each texel's projection on the endpoint axis in f64 with the same
+  operations in the same order (two texels per f64x2 lane pair), the same thresholds; DXT5 alpha levels and distances
+  in f64 with the same strict "nearer than every earlier level" scan; no fused multiply-add. The decoder builds each
+  block's palette with the same truncating integer divisions and gathers a row's texels with `i8x16.swizzle`. 16-bit
+  expansion uses tables made by the JavaScript expression (`i8x16.swizzle`), quantization the exact integer form of
+  `Math.round(v * m / 255)` (`floor((v m + 127) / 255)`, checked for every value). Small images (< 1024 texels,
+  `WASM_MIN_TEXELS`) stay in JavaScript for the swizzle, the 16-bit unpack / pack, the DXT decoder and the 2:1 filter;
+  the DXT encoder (`encodeDxt` / `encodeDxtRows`) and `mipChain` use the kernels at every size, down to 1 x 1 levels
+  (the same bytes: the exactness tests cover every size from 1 x 1). Single thread, Node, interleaved with the base (`d3dx-image-bench.mjs --vs`, loaded server): X8R8G8B8
+  256 x 256 -> DXT1 load 2.1-3.4 -> 0.5-1.3 ms, DXT1 mip chain from 256 0.80-0.97 -> 0.20-0.23 ms, A1R5G5B5 chain from
+  its level 0.36-0.77 -> 0.11-0.20 ms, DXT1 / DXT5 decode 0.80 / 1.13 -> 0.19 / 0.30 ms, TGA image information 0.5-0.9 ms
+  -> 2 µs; the same bytes from both trees.
+- The kernels run on a private memory of the emulator thread (grown to the largest image met, never shrunk; the
+  largest user is `mipChain`, which reserves two RGBA regions of the largest level plus every encoded level: from a
+  2048 x 2048 source ~35 MiB for a DXT1 chain, up to ~53 MiB for a 32-bit chain that includes its top level) — and in the DXT helper workers (D062), which now share one `WebAssembly.Memory` (shared)
+  with the emulator thread and encode their block rows in place (the JavaScript encoder where SIMD is missing). With a
+  4x faster encoder the hand-off pays only for larger images: the pool now takes images from 2048 blocks (was 1024).
+  Measured in Node with 4 helper threads on the loaded server (`DxtPool` against the local encoder, interleaved): 128 x
+  128 92 µs through the pool against 77-84 µs alone, 256 x 128 155 µs both, 256 x 256 274-329 against 314-441 µs, 512 x
+  512 787 against 1 248 µs.
+- **`D3DXFilterTexture` builds the whole chain at once** (`mipChain`): the source level's RGBA (kept by the load) or its
+  own data (16/32-bit: unpacked by the kernels) is copied in once, each level filtered and encoded inside the kernel
+  memory, the encoded levels copied out together; large DXT levels still go to the helpers. Formats without kernels, the
+  point filter and missing source data take the level-by-level loop as before.
+- `D3DXGetImageInfoFromFileInMemory` no longer copies the file nor decodes TGA / BMP pixels to report their header (the
+  same fields and the same rejections as the parsers: tested on generated headers of every type, depth, color map and
+  truncation); a DDS file is parsed in place (its levels are views of the guest's buffer, read before the call returns;
+  the guest memory never moves) instead of being copied whole; a surface filled whole by D3DX is not zero-filled first; `QueryInterface` keeps the strings of the GUIDs
+  it met by their four words and the normalized IIDs of each object (it formatted a GUID string per call: 3.1 -> 0.4 µs
+  per call in Node); `LockRect` no longer builds a `--watch-tex` key string per call.
+- Exactness tests: `d3dx9-image-exact.test.js` compares everything with `tests/fixtures/d3dx9-image-base.js` (the file
+  before this work, verbatim): DXT1-5 of random images of every size and alpha pattern (both encoders, block rows
+  apart, the helper pool with the encoder switched per job), mip chains (box / point, odd sizes, general resize steps),
+  every 16-bit value and channel value with tails, pitches and alignments, random DXT blocks decoded, image information;
+  `d3dx9-filter-texture.test.js` drives `D3DXLoadSurfaceFromMemory` + `D3DXFilterTexture` and
+  `D3DXCreateTextureFromFileInMemoryEx` (DDS levels as is, converted to a smaller size, generated, color key, another
+  format; the file's buffer overwritten afterwards) on Direct3D 9 textures against the base computation.
+- Switch: `?dbg=ORTHROS_DXT_WASM=0` (harness input `dbg:ORTHROS_DXT_WASM=0`) puts every conversion back on the
+  JavaScript code (the same bytes). Tools: `tools/d3dx-image-bench.mjs --vs <base tree>/src/win32` times both trees'
+  kernels interleaved in one process and checks they give the same bytes; `tools/startbench.mjs --d3dx-prof` prints the
+  D3DX work by kind of operation and the surface lock patterns at each scenario mark.
+
+Measured (2026-10-06, this server heavily loaded by other sessions — 1-minute load 25-65 —, base `bc34f7b` and this
+work run at the same time, launch order alternated; "load + loadscreen" is the time from the click that starts the map
+to the first playable frame, the two phases added because their boundary moves with the timing):
+
+| Run (pair, first launched) | load + loadscreen | API time | per call |
+| --- | --- | --- | --- |
+| Browser BFME2 (`--gl-discard`), pair 1, base first | 35.2 -> 32.8 s | 6 413 -> 4 172 ms | FilterTexture 1 665 -> 600 ms, LoadSurfaceFromMemory 1 231 -> 652 ms |
+| Browser BFME2, earlier build (`dbb1319`: pool from 1 024 blocks, no DXT decoder), base first | 41.3 -> 34.3 s | 7 467 -> 4 208 ms | FilterTexture 1 788 -> 591, LoadSurfaceFromMemory 1 364 -> 696 |
+| Browser BFME2, `dbb1319`, variant first | 27.3 -> 22.8 s | 5 440 -> 3 331 ms | FilterTexture 1 432 -> 425, LoadSurfaceFromMemory 1 059 -> 489 |
+| Browser RotWK, pair 1, base first | 32.4 -> 28.0 s | 3 398 -> 2 399 ms | CreateTextureFromFileInMemoryEx 3.5 -> 2.0 ms per call |
+| Browser RotWK, `dbb1319` (before the DXT decoder and the fused level conversions), base first | 28.9 -> 31.1 s | 3 218 -> 2 986 ms | CreateTextureFromFileInMemoryEx 998 -> 958 ms in all: no gain until the decoder |
+| Browser BFME1 (map load: guest-bound, no D3DX images), base first | 72.1 -> 72.5 s | 2 813 -> 2 882 ms | GetDesc 157 -> 0 ms (fast path); no difference beyond the noise |
+| Node BFME2 (`startbench`, bfme2-startup), base first | 25.5 -> 21.9 s | 6.46 -> 3.24 s | LoadSurfaceFromMemory 2.07 -> 0.67 ms, FilterTexture 0.71 -> 0.21 ms; thread CPU 24.1 -> 20.6 s |
+| Node BFME2, variant first | 22.8 -> 19.2 s | 6.01 -> 2.57 s | 1.93 -> 0.59 ms, 0.65 -> 0.18 ms; thread CPU 22.4 -> 18.9 s |
+| Node RotWK (rotwk-startup), base first | 19.2 -> 17.3 s | 2.32 -> 1.34 s | CreateTextureFromFileInMemoryEx 2.85 -> 1.72 ms; thread CPU 18.6 -> 16.8 s |
+| Node RotWK, variant first | 27.3 -> 25.3 s | 3.38 -> 2.28 s | 3.68 -> 2.18 ms; thread CPU 25.0 -> 23.1 s |
+
+In the BFME2 load the API calls of the map's texture writes stay: `LockRect` / `UnlockRect` ~130 k each (the game writes
+textures texel by texel), 0.4-0.6 s of the browser's load; `GetDesc` (as many) is gone from JavaScript, `QueryInterface`
+(31 k) 0.2-0.3 s -> 0.03-0.06 s, `D3DXGetImageInfoFromFileInMemory` 0.11-0.15 s -> 0. In the browser the emulator then
+waits more for the render worker during the BFME2 load screen (`render` 2.4 -> 2.8 s in pair 1; the textures are
+uploaded there), which takes back part of the gain in time to play. The helper pool's work in the BFME2 load: 2 465 jobs,
+608 ms waited for the helpers (base) -> 1 233 jobs (256 x 256 loads only), 383 ms waited.
+
+Re-measured (2026-10-14, after the rebase: base `ca01ae8` and this branch at the same time in two browser slots,
+`--gl-discard`, launch order alternated, 1-minute load 20-56; "API" is the API time of the load + loadscreen phases,
+"per frame" that time over their frames):
+
+| Run (pair, first launched) | load + loadscreen | API time (per frame) | FilterTexture / LoadSurfaceFromMemory |
+| --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 33.1 -> 30.3 s | 6 520 -> 3 879 ms (28.3 -> 16.3) | 1 624 -> 535 / 1 201 -> 593 ms |
+| BFME2, variant first (no learned GL programs on either side) | 31.6 -> 27.1 s | 5 504 -> 3 164 ms (24.7 -> 15.9) | 1 403 -> 521 / 1 062 -> 548 ms |
+| RotWK rotwk-startup, variant first | 37.0 -> 33.0 s | 4 167 -> 2 914 ms (16.7 -> 13.7) | LoadSurfaceFromMemory 125 -> 43 ms |
+| RotWK, base first | 32.3 -> 31.8 s | 3 730 -> 2 786 ms (21.3 -> 13.9) | 112 -> 42 ms |
+| RotWK, base first (no learned GL programs on either side) | 28.0 -> 35.4 s (variant: I/O wait 2.8 -> 8.8 s) | 3 034 -> 2 291 ms (15.8 -> 12.3) | 382 -> 148 / 528 -> 246 ms |
+| BFME1 bfme-phases (map load), base first | 72.7 -> 73.5 s | 2 627 -> 2 686 ms | (none; GetDesc 158 -> 0 ms) |
+| BFME1, variant first | 68.1 -> 71.2 s | 2 444 -> 2 454 ms | (none; GetDesc 141 -> 0 ms) |
+
+The API time of the BFME2 and RotWK load screens drops by 25-45 % in every pair (the spread between pairs is smaller
+than the gain); the time to play follows in four pairs of five (the fifth lost on I/O wait, not API time). BFME1's map
+load is guest-bound and uses no D3DX image work: the same time within the spread (the `GetDesc` fast path removes
+~150 ms of API time, lost in the noise). Runs not counted: one BFME2 pair and one BFME1 pair where the menu was too
+slow under the server's load for the scenario's clicks to start the map (both sides), and a BFME1 variant that hit the
+intermittent access violation in the game's heap code during the menu, which base `main` also shows (the race under
+investigation in the green-thread scheduler; no D3DX image call there).
+
+Re-measured after review (2026-10-14, code unchanged — only tests and this text —, Node `startbench` with a fresh
+profile each side, base `ca01ae8` and this branch at the same time, launch order alternated, 1-minute load 17-25; "API"
+is the API time of the load + loadscreen phases):
+
+| Run (pair, first launched) | load + loadscreen | API time | FilterTexture / LoadSurfaceFromMemory | thread CPU |
+| --- | --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 21.8 -> 17.7 s | 5 237 -> 2 201 ms (-58 %) | 1 471 -> 393 / 2 097 -> 619 ms | 21.7 -> 17.6 s |
+| BFME2, variant first | 22.3 -> 18.7 s | 5 593 -> 2 326 ms (-58 %) | 1 571 -> 450 / 2 301 -> 616 ms | 22.1 -> 18.6 s |
+| RotWK rotwk-startup, base first | 21.1 -> 19.2 s | 3 193 -> 2 082 ms (-35 %) | 560 -> 618 / 1 174 -> 308 ms | 20.4 -> 18.7 s |
+| RotWK, variant first | 17.7 -> 15.6 s | 2 838 -> 1 126 ms (-60 %) | 517 -> 126 / 1 058 -> 273 ms | 17.0 -> 15.0 s |
+| RotWK, base first | 20.1 -> 18.2 s | 3 012 -> 1 305 ms (-57 %) | 543 -> 91 / 1 093 -> 302 ms | 19.5 -> 17.5 s |
+
+Every pair gains in time to play (2-4 s) and API time; the gain is well beyond the spread between pairs. One outlier:
+in the first RotWK pair the variant's `D3DXFilterTexture` took 618 ms for its 592 calls (91-126 ms in the two other
+variant runs) — a stall of one run (the large DXT levels go to the helper pool, which waits for helpers on a loaded
+server), not reproduced.
+
+The 16-bit decode alone (`toRgba` of an R5G6B5 / A4R4G4B4 256 x 256 image, `d3dx-image-bench.mjs`) is the one operation
+where the kernels barely help: it is a table lookup per texel in JavaScript already, and the kernel adds a copy in and
+a copy out. A verification run on the loaded server (1-minute load 30-59, 9 runs) found it slower than the base (A/B
+1.10-2.02 for R5G6B5, 1.07-1.39 for A4R4G4B4, +0.03-0.5 ms per image); re-run at load 17-22 with 15 runs it was faster
+in each of 6 runs (A/B 0.62-0.86 and 0.60-0.89), and in-process against the same tree's JavaScript path
+(`ORTHROS_DXT_WASM=0` toggled, 200 interleaved calls) 0.18-0.23 against 0.20-0.27 ms (R5G6B5, one run of three slower
+by 6 %) and 0.10 against 0.14-0.15 ms (A4R4G4B4). Within the noise of a loaded server, so kept: the same kernel feeds
+the in-memory mip chains of 16-bit sources (A1R5G5B5 chain 0.35 -> 0.12 ms), and no game run shows a 16-bit decode on
+its own among the costly calls.
+
 ## Measuring within a session
 
-Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
+Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on) except
+the D3DX image work: of that section, `ORTHROS_API_OPT_OFF` and `ORTHROS_D3DX_FAST_OFF` cover only the surface `GetDesc`
+fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' encoder) back on JavaScript, and the GUID
+string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
 `dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
 `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
 `dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
@@ -238,3 +409,158 @@ BeginPass, commits, End — over 6 effects with array-selected shaders, preshade
 guest code through the JIT and the deferred queue; `--base <tree>`; best read as instructions under `perf stat -e
 instructions:u`, insensitive to the server's load). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
+`dbg:ORTHROS_DRAW_OPT_OFF=1` handles the draws at their call again and switches the lights / material / FVF filter off
+(`=`: back on, the filter once the queue has run): `Jit.setDrawOpt`. (The fix of the clobbered spec, section 1, has no
+switch.)
+
+## Draw submission per draw (2026-10-06)
+
+**Where it went.** BFME1's 3D main menu in Node (`tools/framebench.mjs --gfx recorder`, the render worker's recording
+with its commands dropped; 830-890 draws per frame), V8 profile of 300 frames, per frame: the JavaScript API calls 5.0
+ms, of which `IDirect3DVertexBuffer9::Unlock` 1.1 ms (all of it the copy of the written ranges into the command ring,
+2.5-2.7 MB per frame), `DrawIndexedPrimitive` 0.7 ms (the recorder's `flush` 0.6), the queued calls 1.3 ms (7 000-8 000 per
+frame: `LightEnable` 2 100, `SetLight` 2 100, `SetTransform` 750, `SetTextureStageState` 630, `SetRenderState` 420,
+`SetIndices` 350...), the dispatcher's own work 0.6 ms (2 700 calls handled in JavaScript per frame: 840 draws, 165 + 145
+vertex / index buffer Lock / Unlock pairs, heap calls). Counted per queued method, the calls that changed the device:
+`SetLight` 0 of 2 078, `LightEnable` 33 of 2 095, `SetSamplerState` / `SetTextureStageState` / `SetIndices` hundreds that
+the filter should have dropped — the clobbered spec of section 1.
+
+**Changes** (section 1): the spec kept (the filter stays on after a queued structure), lights / material / FVF in the
+filter, draws queued.
+
+**Measured.**
+- Deterministic in-session A/B (Node, `startbench --virtual`: the same guest work in both runs; BFME1 3D main menu, 40 s
+  of virtual time in 8 phases of 5 s, `dbg:ORTHROS_DRAW_OPT_OFF` alternated, run A starting on, run B off, both at
+  once, the render worker's recording as backend): `api` on − off = −2.63 ms per frame (every phase lower: −1.35 to
+  −4.02; api off 6.8-12.9 ms per frame in this slow virtual run); the emulator thread's CPU −0.96 ms per frame with a
+  spread of ±5 ms per phase between the runs (warm-up, V8 tiering), host instructions of the thread −6.8 M per frame
+  (spread ±15 M): within the noise of whole-thread measures.
+- Base against this branch (same deterministic run, both at once, everything included): BFME1 menu phase of
+  `bfme-phases.txt` (1 046 frames, 28.13 G guest instructions in both) `api` 6.88 → 5.92 ms per frame, thread CPU 62.6 →
+  60.2 ms per frame; Node `framebench` pairs before the queued draws (filter only): `api` 4.38 → 3.97 and 3.66 → 3.45 ms per
+  frame, wall per frame −1.4 / +0.7 ms (noise).
+
+**Measured again with every change (2026-10-14; base = the tree before them, both runs at once, launch order alternated,
+per frame base → branch).**
+- Node, virtual clock (the same guest work in both runs, identical guest instruction counts): BFME1 3D menu `api` 4.34 →
+  3.25 ms (two pairs, identical), emulator thread CPU 65.6-67.5 → 62.7-63.7; BFME1 menu `api` 3.58-3.65 → 3.05-3.11, thread
+  CPU 37.6-38.2 → 36.3-36.4; BFME2 (`bfme2-startup.txt`, one pair) menu `api` 4.28 → 3.97, play 5.03 → 4.87 (thread CPU
+  16.75 → 16.83: within the noise).
+- Node, real clock: BFME1 play `api` 2.67 → 2.38 and 3.59 → 3.25 (fps 33.9 → 34.3, 30.4 → 30.8); Vice City drive `api`
+  1.96 → 1.45 and 2.23 → 1.72, thread CPU 14.4 → 12.6 and 16.9 → 14.9. BFME2 play: `api` 5.82 → 6.60 and 6.76 → 8.12, but
+  not the same work: in both real-clock pairs the branch's runs drew more per frame (46 effect `Begin` / `SetTechnique` per
+  frame against 33, +6 % guest instructions), while in the virtual-clock pair (identical work) both run 33 — the game
+  renders more when it has the time; per-frame figures do not compare there.
+- Browser (`--gl-discard`, three BFME1 pairs, `bfme-phases.txt` with a 3D-menu phase; one pair on a machine at load
+  30-40): 3D menu `api` 12.1 → 10.4, 5.7 → 4.4, 5.3 → 4.1 ms, fps 7.7 → 7.8, 18.0 → 18.1, 18.7 → 19.5; menu `api` 4.4 →
+  4.1, 4.0 → 3.5, 4.0 → 3.3, fps 22.6 → 22.6, 24.2 → 24.5, 25.1 → 26.1; play `api` 5.9 → 4.9, 2.9 → 2.5, 3.5 → 3.0, fps
+  23.8 → 24.7 (loaded), 38.3 → 38.3 twice (the frame pacing's cap); map load (loadscreen) 75.2 → 69.6, 61.9 → 61.6, 62.1
+  → 62.1 s. BFME2 (two pairs, `bfme2-startup.txt`): menu `api` 5.2 → 4.3 and 5.2 → 4.6, play 30.2 / 30.1 fps in all four
+  runs (`api` 4.7 → 5.0 and 4.9 → 6.0: the same "more drawn" effect as in Node).
+- Fidelity: `?glworker=compare-worker` on the branch, BFME1 menu to play (35 frames compared, 0 differing) and Vice City
+  drive (220-1 460 frames compared, 0 differing); the randomized suites (`jit-defer-filter*.test.js`) against executing
+  every call.
+
+**Measured, not done.** Of the 2.5 MB per frame copied into the ring at `Unlock` in that menu, a whole-buffer lock of a
+dynamic vertex buffer without flags (1 per frame, 0.5-0.63 MB) never changes a byte, and the `NOOVERWRITE` / `DISCARD`
+ranges change 30-50 % of their bytes but 70-85 % of their 256-byte blocks (a shadow copy compared at each `Unlock`). Sending
+only the changed ranges would read twice the bytes it saves writing (the comparison against the shadow, then the shadow
+updated); in JavaScript the comparison is slower than the copy (~1-2 GB/s against 5-6 GB/s for a typed-array copy into
+shared memory, this machine). Only the unchanged whole-buffer lock would gain, ~0.1-0.2 ms per frame: not done.
+
+## Win32 heap (src/win32/heap.js)
+
+`HeapAlloc` was BFME1's costliest API call outside play. In Node (`startbench`, the runs below): 7-16 µs per call in
+the menu (100-320 calls per frame), 25-150 µs in the seconds after the skirmish click (`load`: 11-65 ms per frame),
+9-57 µs in the map load (`loadscreen`: 4-30 ms per frame); an earlier V8 profile gave `Heap.chunkOf` 10 % of the load
+phase.
+Counted (instrumented run): the game's own heap (`HeapCreate`, then `HeapAlloc` with `HEAP_ZERO_MEMORY`, 1 MB growth)
+holds ~730 chunks in the menu and ~960 after the map load (~200 growths in the 10 s after the click), and `chunkOf`
+scanned them one by one (~640 comparisons per call on average) — for every free block an allocation visits
+(`freeBlockOk`: 1-4.6 per allocation on average, up to ~620 when a power-of-two class holds many smaller blocks), for
+every `HeapFree` and `HeapSize`.
+
+- **Chunk lookup in O(1)**: past 8 chunks, a heap keeps a map of the 64 KB granules of the 32-bit space (a `Uint16Array`
+  of 65 536 entries, 128 KiB, only for heaps that large) giving the index + 1 of the chunk covering each granule. Chunks
+  come from `VMem` 64 KB aligned and sized, so a granule belongs to one chunk at most; one shared by two chunks all the
+  same (`SHARED`) is looked up by the linear scan, as are heaps of fewer chunks. `chunkOf` returns the chunk object the
+  scan returns, for any number.
+- **The allocation walk** checks each free block inline (`freeBlockOk`'s conditions, in the same order) with aligned
+  `Uint32Array` reads instead of a method call and `DataView` reads per word. The walk, its order and its robustness
+  checks are unchanged: the same block comes back for every request (which block a game gets back decides its reuse
+  patterns, docs/thread-scheduling.md), the same lists are cut (`brokenLists`), the same links ignored (`plausible`).
+- **`HEAP_ZERO_MEMORY`** (`zeroFill`): with the lookup fixed, zeroing was 55-85 % of `HeapAlloc`'s remaining time (the game
+  zeroes every block: 13-100 MB per 10 s in the menu, ~40 MB per 10 s in the map load). On a shared guest memory (the
+  browser with the background translator or the render worker, `startbench --bg`) a typed array's `fill` stores one
+  element at a time: through the byte view 2.4 GB/s, through `Uint32Array` 5.3, `Float64Array` 6.6 (8.0-8.4 for all three
+  on an unshared buffer); a 256-byte fill 0.197 against 0.056 µs. An 8-aligned range inside the memory is now filled as
+  doubles (+0: eight zero bytes), anything else as before — the same bytes. (`GuestMemory.fill` itself, used by many other
+  callers, still fills bytes: the same change there is left to a measurement of its own.)
+- **Looping free lists**: the randomized test below found programs whose writes into freed blocks turn a free list into
+  a loop of valid free blocks too small for the request — the walk never ended (the emulator hung). Brent's cycle
+  detection (one comparison per step: a mark moved to the current block after 1, 2, 4... steps) finds the loop, and
+  `cutLoop` ends the list at the last block of the loop (each block stays in the list once; `stats.loopedLists`). A
+  walk that ends is not affected: nothing is written during a walk, so meeting a visited block again means it would
+  repeat forever.
+
+Tests: `heap-lookup.test.js` — `chunkOf` against the linear scan for boundary and random addresses (interleaved heaps,
+granules shared by unaligned chunks, after `destroy`), and a differential run of random programs (allocations zeroed or
+not, frees, reallocations in place or moved, zeroed or not, double frees, frees of non-blocks, the program's data in its
+blocks, writes into freed blocks — links into the other heap, into nothing, unaligned, fake free blocks inside freed
+blocks and against the chunk's end sentinel, sizes — and past the end of live blocks) on this heap and on the linear-scan
+heap it replaced (old walk, old reallocation, byte fills), each in its own guest memory: same results, same contents read
+back from every block handed out, same chunks, same bytes in every chunk, same list heads and counters. Each of 14 single
+mutations of the new code (a check dropped or loosened, an off-by-one in the map or in a zeroed range) makes it fail.
+`heap-corruption.test.js`: a two-block loop and a self-linked block behind another are cut, their blocks still found (2
+more mutations of `cutLoop`).
+
+**Measured (2026-10-06).** Microbenchmark (a heap grown to 900 chunks, alloc / free of mixed sizes, half zeroed;
+concurrent pairs, two each): 15.3-15.4 → 0.72-0.79 µs per operation on an unshared memory, 18.3-18.5 → 0.93-1.03 µs on a
+shared one; a heap of 22 chunks (small blocks, no zeroing, shared): 0.17-0.19 → 0.12-0.13 µs.
+
+BFME1 in Node (`startbench --bg`, `tools/scenarios/bfme-phases.txt`; base and branch at the same time, launch order
+alternated). The server's load average was 23-65 during these runs (other projects): in two pairs neither run reached
+the skirmish (clicks timed in wall-clock seconds landing before the menus were ready), so pairs 4-8 used a copy of the
+scenario with the menu's step times doubled (menu phase 270 s). Final code (pairs 7 and 8, launched branch first / base
+first):
+
+| phase | measure | pair 7 base → branch | pair 8 base → branch |
+|---|---|---|---|
+| menu (270 s) | `HeapAlloc` µs per call | 9.4 → 1.4 | 9.0 → 1.6 |
+| | `HeapFree` µs per call | 2.9 → 1.1 | 3.2 → 1.1 |
+| | `api` ms per frame | 3.37 → 2.59 | 3.30 → 2.78 |
+| | frames | 6262 → 6404 | 6376 → 6492 |
+| load (4-6 s after the click) | `HeapAlloc` µs per call (ms per frame) | 50.0 → 3.4 (23.5 → 1.7) | 77.0 → 2.8 (33.3 → 1.3) |
+| loadscreen (map load) | duration | 60.3 → 60.8 s | 66.5 → 62.8 s |
+| | `HeapAlloc` µs per call (ms per frame) | 11.3 → 2.0 (6.1 → 1.0) | 8.6 → 2.4 (4.2 → 1.1) |
+| | `api` ms per frame | 16.4 → 10.8 | 16.1 → 10.4 |
+| play (160 s) | `HeapAlloc` µs per call | 3.6 → 1.7 | 2.7 → 1.1 |
+
+The chunk lookup alone (without the zero fill; pair 2 on the original scenario, pairs 4 and 5 on the slower one, plus
+two pairs that only completed the menu): menu `HeapAlloc` 7.2-16.4 → 2.5-6.8 µs, `api` -0.6 to -2.3 ms per frame;
+load 27-150 → 4.0-10.7 µs; loadscreen 9.6-56.7 → 5.3-8.6 µs (4.3-30.4 → 2.7-4.5 ms per frame). Across all seven pairs
+whose menu phase completed, the branch drew more menu frames in every pair (+0.4 to +2.5 %: the menu is CPU-bound and
+`api` is 8-9 % of its frame). The map load's duration did not move beyond its spread (differences +0.6, -2.5, -1.5,
++0.5, -3.7 s on loads of 54-73 s): the time saved in `HeapAlloc` there is 0.1-2 s per load. In a third final pair the
+branch's run ended right after the skirmish-setup click: the game exited by itself (no Orthros crash report), as in
+the known BFME1 race at that click, where the game's crash handler ends the process (docs/thread-scheduling.md, "The
+BFME1 investigation": a few percent of runs, more under load; the load average was 44 then); that pair is not counted.
+
+Browser (headless Chromium, `--gl-discard`, `bfme-phases.txt`, one pair at the same time, branch launched first; final
+code), base → branch: boot to the menu (64 s) `HeapAlloc` 7.5 → 2.7 µs per call (1455 → 520 ms in total), `HeapFree`
+2.5 → 1.4 µs; menu (134 s) `HeapAlloc` 4.8 → 1.9 µs (1632 → 642 ms), `HeapFree` 2.8 → 1.5 µs (1013 → 549 ms), `api`
+5.4 → 4.8 ms per frame, 18.9 → 19.1 fps; load (5.5 s) `HeapAlloc` 45 → 4.9 µs (21.7 → 2.3 ms per frame), `api` 59 →
+34 ms per frame; map load 66.2 s in both (its end is polled once a second), `HeapAlloc` 8.1 → 2.1 µs (323 → 79 ms);
+play 31.8 → 32.0 fps, `api` 4.0 → 3.8 ms per frame (`HeapFree` 1641 ms, 8.3 µs per call, before; below the 12
+costliest calls, under 754 ms, after). A single pair: the per-call figures are far outside any noise, the frame rates are not.
+
+Not done: after a growth, `alloc` walks the size classes again although the first pass found nothing. Taking the new
+chunk's block directly would return the same block in every case: the first pass only cut lists (broken or looping
+ones, the rest of every list it walked holds blocks too small), and `grow` links the new block at the head of its class,
+which is at least `classIndex(size)`, so the second pass reaches it after classes that still hold nothing large enough.
+The lists could differ only in a forged corner case: `link` writes the back link of the old head of the new block's
+class, and when the program built a fake free block whose header is that word, the second walk cuts the list holding
+it. Growth happens once per new chunk (1 MB or more), so the saved walk is not measurable; left as it is.
+
+The crash / hang report of `vm.js` lists every heap with overwritten boundary tags, broken free lists or looping free
+lists (`stats.badTags`, `brokenLists`, `loopedLists`).

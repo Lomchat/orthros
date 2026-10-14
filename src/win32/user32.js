@@ -30,16 +30,19 @@ const WS_CAPTION = 0x00c00000, WS_BORDER = 0x00800000, WS_DLGFRAME = 0x00400000,
 const WS_EX_TOOLWINDOW = 0x80, WS_EX_DLGMODALFRAME = 1, WS_EX_CLIENTEDGE = 0x200, WS_EX_TOPMOST = 8;
 const CW_USEDEFAULT = 0x80000000;
 const PM_REMOVE = 1;
+// system cursors (IDC_*) and the hit-test codes of WM_SETCURSOR's default processing
+const IDC_ARROW = 32512, IDC_IBEAM = 32513, IDC_SIZENWSE = 32642, IDC_SIZENESW = 32643, IDC_SIZEWE = 32644, IDC_SIZENS = 32645;
+const HT = { ERROR: -2, NOWHERE: 0, CLIENT: 1, CAPTION: 2, LEFT: 10, RIGHT: 11, TOP: 12, TOPLEFT: 13, TOPRIGHT: 14, BOTTOM: 15, BOTTOMLEFT: 16, BOTTOMRIGHT: 17, BORDER: 18 };
 const VK = { LBUTTON: 1, RBUTTON: 2, MBUTTON: 4, SHIFT: 0x10, CONTROL: 0x11, MENU: 0x12, CAPITAL: 0x14, LSHIFT: 0xa0, RSHIFT: 0xa1, LCONTROL: 0xa2, RCONTROL: 0xa3, LMENU: 0xa4, RMENU: 0xa5 };
 const CAPTION_H = 19, FRAME_THICK = 4, FRAME_THIN = 1, FRAME_DLG = 3, MENU_H = 19;
 
-let nextClassAtom = 0xc100;
 
 /** Window manager: one per process. */
 export class WindowManager {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
     this.vm = vm;
+    this.nextClassAtom = 0xc100; // (atoms of the classes the program registers)
     this.proc = vm.proc;
     this.mem = vm.mem;
     this.host = vm.host;
@@ -63,11 +66,16 @@ export class WindowManager {
     // how the game reads the mouse (the 'input' log's summary every 5 s): moves taken, GetCursorPos / SetCursorPos
     // calls, DirectInput mouse reads (dinput8.js)
     this.mouseStats = { moves: 0, get: 0, set: 0, clip: 0, diState: 0, diData: 0, diItems: 0, at: 0, shown: '' };
+    // the system cursor (see updateCursor): ShowCursor's display count (0 at start: a mouse is installed), SetCursor's
+    // shape (0: none; the arrow at start, as over the desktop), the exclusive DirectInput mice acquired (hide it)
     this.showCursorCount = 0;
+    this.sysCursors = new Map();
+    this.cursorHiders = new Set();
+    this.cursorState = ''; this.cursorCalls = 0; // (the 'input' log: the last state logged, ShowCursor calls logged)
     this.dirty = false;
     this.lastPresent = -1;
     this.presentInterval = 8;
-    this.cursorHandle = 0;
+    this.cursorHandle = this.systemCursor(IDC_ARROW);
     this.clipboard = null;
     this.hooks = [];
     this.nextTimerId = 0x100;
@@ -78,7 +86,7 @@ export class WindowManager {
 
   registerBuiltinClasses() {
     for (const name of ['BUTTON', 'STATIC', 'EDIT', 'LISTBOX', 'COMBOBOX', 'SCROLLBAR', '#32770', 'MDICLIENT', 'MSCTLS_TRACKBAR32', 'RICHEDIT']) {
-      this.classes.set(name.toLowerCase(), { name, wndProc: 'builtin', style: 0, cbClsExtra: 0, cbWndExtra: 4, hInstance: 0, hIcon: 0, hCursor: 0, hbrBackground: 0, menuName: 0, atom: nextClassAtom++, extra: new Uint8Array(0), builtin: true });
+      this.classes.set(name.toLowerCase(), { name, wndProc: 'builtin', style: 0, cbClsExtra: 0, cbWndExtra: 4, hInstance: 0, hIcon: 0, hCursor: 0, hbrBackground: 0, menuName: 0, atom: this.nextClassAtom++, extra: new Uint8Array(0), builtin: true });
     }
   }
 
@@ -170,6 +178,8 @@ export class WindowManager {
   /** A sent message (or a step of host input, `fn`) waiting for the thread of window `w` (deliverSent). */
   deferToThread(w, item) {
     const q = this.queueOf(w.thread ?? this.proc.threads[0]);
+    // (one WM_SETCURSOR waiting per window: the latest — every mouse move sends one, the queue keeps its other messages)
+    if (item.msg === WM.SETCURSOR && q.sent?.length) { const i = q.sent.findIndex((s) => s.msg === WM.SETCURSOR && s.w === item.w); if (i >= 0) q.sent.splice(i, 1); }
     (q.sent ??= []).push(item);
     if (q.sent.length > 256) q.sent.shift();
   }
@@ -221,21 +231,26 @@ export class WindowManager {
     const evs = this.host?.pollInput?.();
     if (evs) (this.pendingInput ??= []).push(...evs);
     const q = this.pendingInput;
-    if (!q?.length) return;
+    // (not re-entered: a message sent synchronously while an event is processed — WM_SETCURSOR at each mouse move, an
+    // activation — runs the game's window procedure, which may call GetCursorPos / GetAsyncKeyState; those see the
+    // state so far and leave the remaining events to this loop, as Windows reads input only in GetMessage / PeekMessage)
+    if (!q?.length || this.pumping) return;
     const dev = this.vm.d3dDevice, frames = dev && !dev.lost ? dev.frames : null, now = this.vm.clock.now();
     if (now - this.mouseStats.at >= 5000) this.logMouseStats(now);
-    let i = 0;
-    for (; i < q.length; i++) {
-      const ev = q[i];
-      if (ev.type === 'mouseup' && frames !== null) {
-        const d = this.pressedAt?.[ev.button];
-        if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
+    this.pumping = true;
+    try {
+      while (q.length) {
+        const ev = q[0];
+        if (ev.type === 'mouseup' && frames !== null) {
+          const d = this.pressedAt?.[ev.button];
+          if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
+        }
+        if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
+        if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
+        q.shift(); // (taken before it is processed: never processed twice)
+        this.inputEvent(ev);
       }
-      if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
-      if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
-      this.inputEvent(ev);
-    }
-    q.splice(0, i);
+    } finally { this.pumping = false; }
     this.reportCursor();
   }
   /** The 'input' log: how the game read the mouse over the last seconds (which of its paths a camera uses). */
@@ -305,6 +320,63 @@ export class WindowManager {
     this.host?.cursorPos?.(c.x, c.y, this.inputSeq);
   }
 
+  // ------------------------------------------------------------------ the system cursor
+  // Windows draws the cursor when its display count (ShowCursor) is >= 0, it has a shape (SetCursor: NULL removes it
+  // until the next SetCursor) and no exclusive DirectInput mouse is acquired (DirectInput hides it meanwhile). The
+  // shape is set again at each mouse move over a window by WM_SETCURSOR (DefWindowProc: the class cursor in the client
+  // area, the arrow or a sizing cursor elsewhere). The host shows exactly that: the page draws no cursor of its own.
+  /** The shared handle of a system cursor (LoadCursor(NULL, IDC_*) returns the same one every time, as Windows does). */
+  systemCursor(id) {
+    let h = this.sysCursors.get(id);
+    if (!h) { h = this.proc.handles.create({ type: 'gdi', kind: 'cursor', id, stock: true, shared: true }); this.sysCursors.set(id, h); }
+    return h;
+  }
+  /** SetCursor: the cursor's shape (0: none). Returns the previous one. */
+  setCursorShape(h) { const p = this.cursorHandle; this.cursorHandle = h >>> 0; if (this.cursorHandle !== p) this.updateCursor(); return p; }
+  /** ShowCursor: the display count changed by +1 / -1; returns the new count. */
+  showCursor(show) { this.showCursorCount += show ? 1 : -1; this.updateCursor(); return this.showCursorCount; }
+  /** An exclusive DirectInput mouse acquired (`on`) or unacquired / released: the cursor is hidden while one is. */
+  cursorHiddenBy(dev, on) { const n = this.cursorHiders.size; if (on) this.cursorHiders.add(dev); else this.cursorHiders.delete(dev); if (this.cursorHiders.size !== n) this.updateCursor(); }
+  // (DirectInput's hiding lasts while the application is in the foreground: deactivated — the page lost the focus — its
+  // foreground devices are unacquired on Windows, the cursor shows again over its window)
+  cursorVisible() { return this.showCursorCount >= 0 && this.cursorHandle !== 0 && (this.cursorHiders.size === 0 || this.appInactive === true); }
+  /** The cursor's state to the host (its shape, then whether it shows); logged ('input') when it changes. */
+  updateCursor() {
+    const d = this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
+    const o = h ? this.proc.handles.getAs(h, 'gdi') : null;
+    if (o?.kind === 'cursor') d?.setCursor?.(o.image ? h : 'sys' + (o.id || IDC_ARROW), o.image ?? null, o.id || IDC_ARROW);
+    d?.showCursor?.(vis);
+    // (logged when it shows or hides, and when its shape changes while shown: a game hiding it at every WM_SETCURSOR
+    // would log every mouse move otherwise)
+    const key = vis ? `shown ${h}` : 'hidden';
+    if (key !== this.cursorState) {
+      this.cursorState = key;
+      if (this.vm.logKinds?.has('input')) this.vm.log('input', `cursor ${vis ? 'shown' : 'hidden'} (display count ${this.showCursorCount}, ${!h ? 'no shape' : o?.image ? `image cursor ${o.file ?? h.toString(16)}` : `system cursor ${o?.id ?? '?'}`}${this.cursorHiders.size ? ', exclusive DirectInput mouse acquired' : ''})`);
+    }
+  }
+  /** The hit-test code of a screen point in window `w` (as DefWindowProc's WM_NCHITTEST answers for its frame). */
+  hitTest(w, x, y) {
+    const c = w.client;
+    if (x >= c.l && x < c.r && y >= c.t && y < c.b) return HT.CLIENT;
+    if (x < w.rect.l || x >= w.rect.r || y < w.rect.t || y >= w.rect.b) return HT.NOWHERE;
+    if (w.style & WS_THICKFRAME) {
+      const k = 4, left = x < w.rect.l + k, right = x >= w.rect.r - k, top = y < w.rect.t + k, bottom = y >= w.rect.b - k;
+      if (top) return left ? HT.TOPLEFT : right ? HT.TOPRIGHT : HT.TOP;
+      if (bottom) return left ? HT.BOTTOMLEFT : right ? HT.BOTTOMRIGHT : HT.BOTTOM;
+      if (left) return HT.LEFT;
+      if (right) return HT.RIGHT;
+    }
+    return y < c.t && (w.style & WS_CAPTION) === WS_CAPTION ? HT.CAPTION : HT.BORDER;
+  }
+  /**
+   * The mouse moved or a button changed over window `w` (mouse not captured): WM_SETCURSOR (wParam the window, lParam
+   * hit-test code and mouse message) lets the window set the cursor's shape; outside any window, the desktop's arrow.
+   */
+  setCursorAt(w, x, y, mouseMsg) {
+    if (!w || w.desktop) { this.setCursorShape(this.systemCursor(IDC_ARROW)); return; }
+    this.send(w, WM.SETCURSOR, w.hwnd, ((mouseMsg & 0xffff) << 16) | (this.hitTest(w, x, y) & 0xffff));
+  }
+
   inputEvent(ev) {
     const defer = this.deferSends; this.deferSends = true; // (its sent messages wait for the window's thread: send())
     try { this.inputEvent1(ev); } finally { this.deferSends = defer; }
@@ -318,12 +390,13 @@ export class WindowManager {
       const p = this.clampCursor(ev.x, ev.y); ev.x = p.x; ev.y = p.y;
       if (ev.dx === undefined) { ev.dx = ev.x - this.cursor.x; ev.dy = ev.y - this.cursor.y; }
     }
-    for (const l of this.rawListeners) l(ev); // raw input consumers (DirectInput devices)
+    for (const l of this.rawListeners) l.onRaw(ev); // raw input consumers (DirectInput devices: onRaw(ev))
     switch (ev.type) {
       case 'mousemove': {
         this.mouseStats.moves++;
         this.cursor = { x: ev.x, y: ev.y };
         const w = this.capture ? this.windows.get(this.capture) : this.windowAt(ev.x, ev.y);
+        if (!this.capture) this.setCursorAt(w, ev.x, ev.y, WM.MOUSEMOVE); // (the window under the cursor sets its shape)
         if (w && !w.desktop) this.post(w, WM.MOUSEMOVE, this.mkFlags(), ((ev.y - w.client.t) & 0xffff) << 16 | ((ev.x - w.client.l) & 0xffff));
         break;
       }
@@ -335,10 +408,11 @@ export class WindowManager {
         this.keyState[vk] = ev.type === 'mousedown' ? 0x80 : 0;
         if (ev.type === 'mousedown') this.asyncPressed[vk] = 1;
         const w = this.capture ? this.windows.get(this.capture) : this.windowAt(ev.x, ev.y);
-        if (!w || w.desktop) break;
-        if (ev.type === 'mousedown') this.activate(this.topLevel(w), true);
         const base = [WM.LBUTTONDOWN, WM.RBUTTONDOWN, WM.MBUTTONDOWN][ev.button] ?? WM.LBUTTONDOWN;
         const msg = ev.type === 'mousedown' ? (ev.dbl ? base + 2 : base) : base + 1;
+        if (!this.capture) this.setCursorAt(w, ev.x, ev.y, msg);
+        if (!w || w.desktop) break;
+        if (ev.type === 'mousedown') this.activate(this.topLevel(w), true);
         this.vm.log('input', `mouse ${ev.type} button ${ev.button} at ${ev.x},${ev.y} -> hwnd=${w.hwnd.toString(16)} msg=${msg.toString(16)} client ${ev.x - w.client.l},${ev.y - w.client.t}${this.capture ? ' (captured)' : ''}`);
         this.post(w, msg, this.mkFlags(), ((ev.y - w.client.t) & 0xffff) << 16 | ((ev.x - w.client.l) & 0xffff));
         break;
@@ -388,6 +462,7 @@ export class WindowManager {
         };
         if (w && this.deferSends && this.mustDefer(w)) this.deferToThread(w, { fn: activate }); else activate();
         if (!ev.focused) this.keyState.fill(0);
+        this.appInactive = !ev.focused; this.updateCursor();
         break;
       }
       case 'close': {
@@ -488,7 +563,7 @@ export class WindowManager {
   registerClass(cls) {
     const key = cls.name.toLowerCase();
     if (this.classes.has(key) && !this.classes.get(key).builtin) return 0;
-    cls.atom = nextClassAtom++;
+    cls.atom = this.nextClassAtom++;
     this.classes.set(key, cls);
     this.classByAtom.set(cls.atom, cls);
     return cls.atom;
@@ -688,7 +763,20 @@ export class WindowManager {
       case WM.SETTEXT: w.title = lParam ? mem.readCString(lParam) : ''; this.host?.display?.setTitle?.(w.title); return 1;
       case WM.GETTEXT: { if (!wParam) return 0; const n = Math.min(w.title.length, wParam - 1); mem.writeCString(lParam, w.title.slice(0, n)); return n; }
       case WM.GETTEXTLENGTH: return w.title.length;
-      case WM.SETCURSOR: return 0;
+      case WM.SETCURSOR: {
+        // a child asks its parent first (TRUE: the parent set the cursor); the client area takes the class cursor (a
+        // class without one: the application sets it), the frame the arrow or a sizing cursor
+        if ((w.style & WS_CHILD) && w.parent && !w.parent.desktop && this.send(w.parent, WM.SETCURSOR, wParam, lParam)) return 1;
+        const ht = (lParam << 16) >> 16;
+        if (ht === HT.CLIENT) {
+          const h = w.cls?.hCursor || (w.cls?.builtin ? this.systemCursor(w.cls.name === 'EDIT' || w.cls.name === 'RICHEDIT' ? IDC_IBEAM : IDC_ARROW) : 0);
+          if (!h) return 0;
+          this.setCursorShape(h); return 1;
+        }
+        if (ht === HT.ERROR || ht === HT.NOWHERE) return 0;
+        const id = { [HT.LEFT]: IDC_SIZEWE, [HT.RIGHT]: IDC_SIZEWE, [HT.TOP]: IDC_SIZENS, [HT.BOTTOM]: IDC_SIZENS, [HT.TOPLEFT]: IDC_SIZENWSE, [HT.BOTTOMRIGHT]: IDC_SIZENWSE, [HT.TOPRIGHT]: IDC_SIZENESW, [HT.BOTTOMLEFT]: IDC_SIZENESW }[ht] ?? IDC_ARROW;
+        this.setCursorShape(this.systemCursor(id)); return 1;
+      }
       case WM.MOUSEACTIVATE: return 1; // MA_ACTIVATE
       case WM.ACTIVATE: if ((wParam & 0xffff) !== 0) this.setFocus(w); return 0;
       case WM.SYSCOMMAND: {
@@ -1140,18 +1228,11 @@ export function registerUser32(api, vm) {
   // (the cursor is moved inside the new rectangle at once, as Windows does)
   U.ClipCursor = [1, (c) => { const w = wm(); w.mouseStats.clip++; const r = c.arg(0) ? readRect(c.arg(0)) : null; w.clip = r && r.r > r.l && r.b > r.t ? r : null; w.cursor = w.clampCursor(w.cursor.x, w.cursor.y); w.reportCursor(); return 1; }];
   U.GetClipCursor = [1, (c) => { writeRect(c.arg(0), wm().clip ?? { l: 0, t: 0, r: wm().screen.width, b: wm().screen.height }); return 1; }];
-  // the cursor shows when the display count is >= 0 and a cursor shape is set (SetCursor(NULL) removes the shape until
-  // the next SetCursor: the two are independent, as in Windows)
-  const cursorShown = (w) => w.showCursorCount >= 0 && !w.cursorRemoved; // (before any SetCursor: the system arrow)
-  U.ShowCursor = [1, (c) => { const w = wm(); w.showCursorCount += c.arg(0) ? 1 : -1; vm.host?.display?.showCursor?.(cursorShown(w)); return w.showCursorCount >>> 0; }];
-  U.SetCursor = [1, (c) => {
-    const p = wm().cursorHandle, h = c.arg(0);
-    wm().cursorHandle = h; wm().cursorRemoved = !h;
-    if (h !== p) { const o = h ? c.proc.handles.getAs(h, 'gdi') : null; if (o?.kind === 'cursor') vm.host?.display?.setCursor?.(o.image ? h : 'sys' + (o.id || 32512), o.image ?? null, o.id || 32512); vm.host?.display?.showCursor?.(cursorShown(wm())); }
-    return p;
-  }];
+  // (the system cursor's state: WindowManager.updateCursor)
+  U.ShowCursor = [1, (c) => { const w = wm(), n = w.showCursor(c.arg(0) !== 0); if (w.cursorCalls < 16) { w.cursorCalls++; vm.log('input', `ShowCursor(${c.arg(0) ? 'TRUE' : 'FALSE'}) -> ${n} from ${c.proc.symbolize(c.retAddr)}`); } return n >>> 0; }];
+  U.SetCursor = [1, (c) => wm().setCursorShape(c.arg(0))];
   U.GetCursor = [0, () => wm().cursorHandle];
-  U.GetCursorInfo = [1, (c) => { const p = c.arg(0); mem.write32(p + 4, wm().showCursorCount >= 0 ? 1 : 0); mem.write32(p + 8, wm().cursorHandle); mem.write32(p + 12, wm().cursor.x); mem.write32(p + 16, wm().cursor.y); return 1; }];
+  U.GetCursorInfo = [1, (c) => { const p = c.arg(0); mem.write32(p + 4, wm().cursorVisible() ? 1 : 0); mem.write32(p + 8, wm().cursorHandle); mem.write32(p + 12, wm().cursor.x); mem.write32(p + 16, wm().cursor.y); return 1; }];
   U.MapVirtualKeyA = [2, (c) => mapVirtualKey(c.arg(0), c.arg(1))];
   U.MapVirtualKeyW = U.MapVirtualKeyA;
   U.MapVirtualKeyExA = [3, (c) => mapVirtualKey(c.arg(0), c.arg(1))];
@@ -1212,7 +1293,8 @@ export function registerUser32(api, vm) {
   const pseudoIcon = (c, kind, id) => c.proc.handles.create({ type: 'gdi', kind, id, stock: true });
   U.LoadIconA = [2, (c) => pseudoIcon(c, 'icon', c.arg(1))];
   U.LoadIconW = U.LoadIconA;
-  U.LoadCursorA = [2, (c) => pseudoIcon(c, 'cursor', c.arg(1))];
+  // (a system cursor — no module, an IDC_* id — is one shared handle: SetCursor of it and the class cursor compare equal)
+  U.LoadCursorA = [2, (c) => !c.arg(0) && c.arg(1) < 0x10000 ? wm().systemCursor(c.arg(1)) : pseudoIcon(c, 'cursor', c.arg(1))];
   U.LoadCursorW = U.LoadCursorA;
   /** A cursor from a .cur/.ani file: its frames and animation (gfx/gdi/cursor.js), shown by the host on SetCursor. */
   const cursorFromFile = (c, name) => {
@@ -1231,7 +1313,7 @@ export function registerUser32(api, vm) {
   U.CreateIconFromResourceEx = [7, (c) => pseudoIcon(c, 'icon', 0)];
   U.CreateIconFromResource = [4, (c) => pseudoIcon(c, 'icon', 0)];
   U.LookupIconIdFromDirectoryEx = [5, () => 1];
-  U.DestroyIcon = [1, (c) => { c.proc.handles.map.delete(c.arg(0)); return 1; }];
+  U.DestroyIcon = [1, (c) => { if (!c.proc.handles.get(c.arg(0))?.shared) c.proc.handles.map.delete(c.arg(0)); return 1; }];
   U.DestroyCursor = U.DestroyIcon;
   U.CopyIcon = [1, (c) => c.arg(0)];
   U.GetIconInfo = [2, (c) => { const p = c.arg(1); mem.write32(p, 1); mem.write32(p + 4, 0); mem.write32(p + 8, 0); mem.write32(p + 12, 0); mem.write32(p + 16, 0); return 1; }];
@@ -1250,6 +1332,7 @@ export function registerUser32(api, vm) {
       return pseudoIcon(c, 'icon', 0);
     }
     if (type === 0) return loadBitmapRes(c, c.arg(0), c.arg(1) < 0x10000 ? c.arg(1) : wide ? mem.readWString(c.arg(1)) : mem.readCString(c.arg(1)));
+    if (type === 2 && !c.arg(0) && c.arg(1) < 0x10000) return wm().systemCursor(c.arg(1)); // (OCR_*: a system cursor)
     return pseudoIcon(c, type === 1 ? 'icon' : 'cursor', c.arg(1));
   }
   function loadBitmapRes(c, hinst, name) {

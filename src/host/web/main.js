@@ -7,7 +7,7 @@ import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
-import { PointerInput, winButton } from './pointer.js';
+import { PointerInput, winButton, cursorView } from './pointer.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -116,6 +116,7 @@ async function start(name, language = null) {
   state.status = 'loading';
   try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
+  if (manifest.launchUrl) { location.href = manifest.launchUrl; return; } // (a browser port: its own page, docs/browser-ports.md)
   const options = manifest.languages ?? [];
   if (!options.includes(language)) {
     try { language = localStorage.getItem('orthros.gameLanguage.' + (manifest.gameId ?? name)); } catch { language = null; }
@@ -186,8 +187,8 @@ function onWorkerMessage(m) {
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
-    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''}`, null, m.code !== 0, true); break;
-    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true, true); break;
+    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''}`, null, m.code !== 0, true); break;
+    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -203,18 +204,24 @@ function onWorkerMessage(m) {
 
 /** Windows system cursor ids (IDC_*) as CSS cursors */
 const SYSTEM_CURSORS = { 32512: 'default', 32513: 'text', 32514: 'wait', 32515: 'crosshair', 32516: 'default', 32642: 'nwse-resize', 32643: 'nesw-resize', 32644: 'ew-resize', 32645: 'ns-resize', 32646: 'move', 32648: 'not-allowed', 32649: 'pointer', 32650: 'progress', 32651: 'help' };
+/** The game stopped: its cursor goes with it (a game that hid it must not leave the page without one) and the mouse is released. */
+function releaseGuestCursor() {
+  if (document.pointerLockElement) document.exitPointerLock();
+  state.cursorVisible = undefined; state.cursor = null; applyCursor();
+}
 /** Show the guest cursor on the frame (inherited by both canvases): hidden, a system cursor, or an animated image cursor. */
 function applyCursor() {
   clearTimeout(state.cursorTimer);
   const frame = $('frame');
   $('c2d').style.cursor = '';
-  if (state.cursorVisible === false) { frame.style.cursor = 'none'; drawSoftCursor(); return; }
+  const view = cursorView(state.cursorVisible, state.pointerLocked);
+  if (!view.soft && view.css === 'none') { frame.style.cursor = 'none'; drawSoftCursor(); return; }
   const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
-  if (!def) { frame.style.cursor = state.pointerLocked ? 'none' : SYSTEM_CURSORS[cur?.system] ?? 'default'; drawSoftCursor(); return; }
+  if (!def) { frame.style.cursor = view.css === 'none' ? 'none' : SYSTEM_CURSORS[cur?.system] ?? 'default'; drawSoftCursor(); return; }
   let step = 0;
   const show = () => {
     const s = def.steps[step % def.steps.length];
-    frame.style.cursor = state.pointerLocked ? 'none' : def.frames[s.frame];
+    frame.style.cursor = view.css === 'none' ? 'none' : def.frames[s.frame];
     state.softStep = step; drawSoftCursor();
     if (def.steps.length > 1) { step++; state.cursorTimer = setTimeout(show, Math.max(16, s.ms)); }
   };
@@ -488,7 +495,7 @@ async function enterPlayMode() {
 }
 function drawSoftCursor() {
   const el = $('softcursor');
-  if (!state.pointerLocked || state.cursorVisible === false) { el.style.display = 'none'; return; }
+  if (!cursorView(state.cursorVisible, state.pointerLocked).soft) { el.style.display = 'none'; return; }
   const cur = state.cursor, def = cur?.id !== undefined ? state.cursors?.get(cur.id) : null;
   const frame = def ? def.frames[def.steps[(state.softStep ?? 0) % def.steps.length].frame] : null;
   const url = frame ? frame.match(/url\((.*?)\) (\d+) (\d+)/) : null;

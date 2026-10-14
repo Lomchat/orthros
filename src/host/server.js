@@ -1,7 +1,8 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N]
+//   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player
@@ -20,16 +21,24 @@ import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
-import { attachLan } from './lan.js';
+import { lanUpgrades, acceptWebSocket } from './lan.js';
+import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, portLaunchUrl, udpRelay } from './goldsrc.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
 
 export const listTree = (dir) => listGameTree({ folder: dir });
+/** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
+const treeFileSize = (tree, rel) => {
+  const parts = rel.split('/');
+  let node = tree;
+  for (let i = 0; i < parts.length - 1; i++) { node = Object.hasOwn(node.dirs, parts[i]) ? node.dirs[parts[i]] : null; if (!node) return null; }
+  return Object.hasOwn(node.files, parts.at(-1)) ? node.files[parts.at(-1)].size : null;
+};
 
 export function loadManifests(dir, extra = null) {
   const out = new Map();
@@ -76,12 +85,14 @@ export function buildVersion(root = ROOT) {
 export function createServer(opts = {}) {
   const manifestDir = opts.manifests ? path.resolve(opts.manifests) : null;
   const gamesDir = path.resolve(opts.gamesDir ?? DEFAULT_GAMES_DIR);
+  const enginesDir = path.resolve(opts.enginesDir ?? DEFAULT_ENGINES_DIR);
   const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra);
   let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
   const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
-  const coverFile = (man) => man.cover && resolveGameFile(man, man.cover);
+  const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
+  const runtimeOf = (man) => man.runtime ?? 'win32';
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -94,11 +105,11 @@ export function createServer(opts = {}) {
   const link = opts.net ? new SimLink(opts.net) : null;
   const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
-  const sendFile = (req, res, file, mime) => {
+  const sendFile = (req, res, file, mime, extra = {}) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile()) return send(res, 404, 'not found');
     const range = req.headers.range;
-    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString() });
+    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), ...extra });
     if (range) {
       const m = /^bytes=(\d*)-(\d*)$/.exec(range);
       if (!m) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
@@ -140,7 +151,8 @@ export function createServer(opts = {}) {
     return m;
   };
   let learnDirty = new Set(), learnTimer = null;
-  const learnRead = (name, rel, start, end, sid) => {
+  // (`at`: the read's time as the page measured it — a page reporting the reads it served itself, e.g. a browser port)
+  const learnRead = (name, rel, start, end, sid, at = null) => {
     if (!sid || sid.length > 40) return;
     const now = Date.now();
     let ss = sessions.get(sid);
@@ -148,7 +160,7 @@ export function createServer(opts = {}) {
       if (sessions.size > 1000) for (const [k, v] of sessions) if (now - v.start > 6 * 3600e3) sessions.delete(k);
       sessions.set(sid, ss = { start: now, seen: new Set() });
     }
-    const m = learnedOf(name), t = now - ss.start;
+    const m = learnedOf(name), t = at ?? now - ss.start;
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
       const bits = pieceBits(Math.max(start, b * LEARN_BLOCK) - b * LEARN_BLOCK, Math.min(end, (b + 1) * LEARN_BLOCK) - b * LEARN_BLOCK);
@@ -460,7 +472,10 @@ export function createServer(opts = {}) {
     if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
     const accept = String(req.headers['accept-encoding'] ?? '');
     const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
-    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}`;
+    // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
+    // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
+    const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
+    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
@@ -476,12 +491,12 @@ export function createServer(opts = {}) {
     };
     const hit = encodedCache.get(key);
     if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
-    const buf = Buffer.alloc(end - start);
+    const buf = Buffer.alloc(end - start + pad);
     fs.open(file, 'r', (err, fd) => {
       if (err) return send(res, 500, String(err));
-      fs.read(fd, buf, 0, buf.length, start, (err2, n) => {
+      fs.read(fd, buf, pad, end - start, start, (err2, n) => {
         fs.close(fd, () => {});
-        if (err2 || n !== buf.length) return send(res, 500, String(err2 ?? 'short read'));
+        if (err2 || n !== end - start) return send(res, 500, String(err2 ?? 'short read'));
         if (!enc) return reply(buf, null);
         const t0 = performance.now();
         const done = (err3, out) => {
@@ -529,21 +544,29 @@ export function createServer(opts = {}) {
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
           try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) { if (!treeObjs.has(name)) treeObjs.set(name, listGameTree(m)); bytes = sizeOf(treeObjs.get(name)); } } catch { /* folder missing */ }
+          const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
-            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], exe: m.exe,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], runtime, exe: port ? null : m.exe,
+            modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, cover: !!coverFile(m), bytes, available: bytes !== null };
+            hidden: !!m.hidden, cover: !!coverFile(m), bytes,
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
       let m = /^\/api\/manifest\/([^/]+)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, saveDir: undefined }), { 'Content-Type': 'application/json' }); }
+      if (m) {
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, saveDir: undefined, coverPath: undefined, launchUrl }), { 'Content-Type': 'application/json' });
+      }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
         const man = getManifest(m[1]), f = man && coverFile(man);
         if (!f) return send(res, 404, 'no cover');
         const ext = path.extname(f).toLowerCase();
-        res.writeHead(200, { 'Content-Type': ext === '.png' ? 'image/png' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin' });
+        res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
+          ...(ext === '.svg' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}) }); // (an SVG opened by itself runs nothing)
         fs.createReadStream(f).pipe(res);
         return;
       }
@@ -626,10 +649,44 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(man.profileSeed === false || lang === null ? { files: [] } : seedFor(m[1], lang)), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/prefetch\/([^/]+)$/.exec(p);
-      if (m) { if (!getManifest(m[1])) return send(res, 404, 'no such manifest'); return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' }); }
+      if (m) {
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        // a page that serves the game's reads itself (a browser port) reports them: { session, reads: [[path, start,
+        // end, t (ms since the game started)]] }, learned as the demand reads of the Windows games are
+        if (req.method === 'POST') {
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= 2 * 1024 * 1024) body += d; });
+          req.on('end', () => {
+            if (size > 2 * 1024 * 1024) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            if (typeof rec?.session !== 'string' || !rec.session || rec.session.length > 40 || !Array.isArray(rec.reads)) return send(res, 400, 'bad report');
+            if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man));
+            const tree = treeObjs.get(m[1]);
+            for (const r of rec.reads.slice(0, 50000)) {
+              if (!Array.isArray(r) || typeof r[0] !== 'string' || r[0].length > 512) continue;
+              const [rel, start, end, t] = r, size2 = treeFileSize(tree, rel);
+              if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
+              learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
+            }
+            send(res, 204, '');
+          });
+          return;
+        }
+        return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' });
+      }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
+      // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
+      // immutable under their release id
+      m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
+      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
+      m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
+      if (m) {
+        if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1])) return send(res, 404, 'no such engine');
+        const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
+        return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': 'public, max-age=31536000, immutable' });
+      }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         const file = path.join(ROOT, p);
         if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
@@ -640,7 +697,12 @@ export function createServer(opts = {}) {
       return send(res, 500, String(e.stack || e));
     }
   });
-  attachLan(server, opts.lanLog ?? ((m) => console.log(m))); // (the virtual LAN of the games: WebSocket /api/lan)
+  // WebSockets: the virtual LAN of the Win32 games (/api/lan) and the multiplayer relay of the ports (/api/udp/<manifest>)
+  const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m))), udpRelay({ getManifest, accept: acceptWebSocket, log: (m) => console.log(m) })];
+  server.on('upgrade', (req, socket) => {
+    let url; try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
+    if (!upgrades.some((u) => u.handle(req, socket, url))) socket.destroy();
+  });
   return server;
 }
 
@@ -650,6 +712,6 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
   for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }
