@@ -137,3 +137,100 @@ Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phas
 over a counting GL), `tools/setter-bench.mjs` (the queued setters), `tools/effect-bind-bench.mjs` (effect setters and
 binds, `--base <tree>` against another checkout). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
+
+## Win32 heap (src/win32/heap.js)
+
+`HeapAlloc` was BFME1's costliest API call outside play. In Node (`startbench`, the runs below): 7-16 µs per call in
+the menu (100-320 calls per frame), 25-150 µs in the seconds after the skirmish click (`load`: 11-65 ms per frame),
+9-57 µs in the map load (`loadscreen`: 4-30 ms per frame); an earlier V8 profile gave `Heap.chunkOf` 10 % of the load
+phase.
+Counted (instrumented run): the game's own heap (`HeapCreate`, then `HeapAlloc` with `HEAP_ZERO_MEMORY`, 1 MB growth)
+holds ~730 chunks in the menu and ~960 after the map load (~200 growths in the 10 s after the click), and `chunkOf`
+scanned them one by one (~640 comparisons per call on average) — for every free block an allocation visits
+(`freeBlockOk`: 1-4.6 per allocation on average, up to ~620 when a power-of-two class holds many smaller blocks), for
+every `HeapFree` and `HeapSize`.
+
+- **Chunk lookup in O(1)**: past 8 chunks, a heap keeps a map of the 64 KB granules of the 32-bit space (a `Uint16Array`
+  of 65 536 entries, 128 KiB, only for heaps that large) giving the index + 1 of the chunk covering each granule. Chunks
+  come from `VMem` 64 KB aligned and sized, so a granule belongs to one chunk at most; one shared by two chunks all the
+  same (`SHARED`) is looked up by the linear scan, as are heaps of fewer chunks. `chunkOf` returns the chunk object the
+  scan returns, for any number.
+- **The allocation walk** checks each free block inline (`freeBlockOk`'s conditions, in the same order) with aligned
+  `Uint32Array` reads instead of a method call and `DataView` reads per word. The walk, its order and its robustness
+  checks are unchanged: the same block comes back for every request (which block a game gets back decides its reuse
+  patterns, docs/thread-scheduling.md), the same lists are cut (`brokenLists`), the same links ignored (`plausible`).
+- **`HEAP_ZERO_MEMORY`** (`zeroFill`): with the lookup fixed, zeroing was 55-85 % of `HeapAlloc`'s remaining time (the game
+  zeroes every block: 13-100 MB per 10 s in the menu, ~40 MB per 10 s in the map load). On a shared guest memory (the
+  browser with the background translator or the render worker, `startbench --bg`) a typed array's `fill` stores one
+  element at a time: through the byte view 2.4 GB/s, through `Uint32Array` 5.3, `Float64Array` 6.6 (8.0-8.4 for all three
+  on an unshared buffer); a 256-byte fill 0.197 against 0.056 µs. An 8-aligned range inside the memory is now filled as
+  doubles (+0: eight zero bytes), anything else as before — the same bytes. (`GuestMemory.fill` itself, used by many other
+  callers, still fills bytes: the same change there is left to a measurement of its own.)
+- **Looping free lists**: the randomized test below found programs whose writes into freed blocks turn a free list into
+  a loop of valid free blocks too small for the request — the walk never ended (the emulator hung). Brent's cycle
+  detection (one comparison per step: a mark moved to the current block after 1, 2, 4... steps) finds the loop, and
+  `cutLoop` ends the list at the last block of the loop (each block stays in the list once; `stats.loopedLists`). A
+  walk that ends is not affected: nothing is written during a walk, so meeting a visited block again means it would
+  repeat forever.
+
+Tests: `heap-lookup.test.js` — `chunkOf` against the linear scan for boundary and random addresses (interleaved heaps,
+granules shared by unaligned chunks, after `destroy`), and a differential run of random programs (allocations zeroed or
+not, frees, reallocations in place or moved, zeroed or not, double frees, frees of non-blocks, the program's data in its
+blocks, writes into freed blocks — links into the other heap, into nothing, unaligned, fake free blocks inside freed
+blocks and against the chunk's end sentinel, sizes — and past the end of live blocks) on this heap and on the linear-scan
+heap it replaced (old walk, old reallocation, byte fills), each in its own guest memory: same results, same contents read
+back from every block handed out, same chunks, same bytes in every chunk, same list heads and counters. Each of 14 single
+mutations of the new code (a check dropped or loosened, an off-by-one in the map or in a zeroed range) makes it fail.
+`heap-corruption.test.js`: a two-block loop and a self-linked block behind another are cut, their blocks still found (2
+more mutations of `cutLoop`).
+
+**Measured (2026-10-06).** Microbenchmark (a heap grown to 900 chunks, alloc / free of mixed sizes, half zeroed;
+concurrent pairs, two each): 15.3-15.4 → 0.72-0.79 µs per operation on an unshared memory, 18.3-18.5 → 0.93-1.03 µs on a
+shared one; a heap of 22 chunks (small blocks, no zeroing, shared): 0.17-0.19 → 0.12-0.13 µs.
+
+BFME1 in Node (`startbench --bg`, `tools/scenarios/bfme-phases.txt`; base and branch at the same time, launch order
+alternated). The server's load average was 23-65 during these runs (other projects): in two pairs neither run reached
+the skirmish (clicks timed in wall-clock seconds landing before the menus were ready), so pairs 4-8 used a copy of the
+scenario with the menu's step times doubled (menu phase 270 s). Final code (pairs 7 and 8, launched branch first / base
+first):
+
+| phase | measure | pair 7 base → branch | pair 8 base → branch |
+|---|---|---|---|
+| menu (270 s) | `HeapAlloc` µs per call | 9.4 → 1.4 | 9.0 → 1.6 |
+| | `HeapFree` µs per call | 2.9 → 1.1 | 3.2 → 1.1 |
+| | `api` ms per frame | 3.37 → 2.59 | 3.30 → 2.78 |
+| | frames | 6262 → 6404 | 6376 → 6492 |
+| load (4-6 s after the click) | `HeapAlloc` µs per call (ms per frame) | 50.0 → 3.4 (23.5 → 1.7) | 77.0 → 2.8 (33.3 → 1.3) |
+| loadscreen (map load) | duration | 60.3 → 60.8 s | 66.5 → 62.8 s |
+| | `HeapAlloc` µs per call (ms per frame) | 11.3 → 2.0 (6.1 → 1.0) | 8.6 → 2.4 (4.2 → 1.1) |
+| | `api` ms per frame | 16.4 → 10.8 | 16.1 → 10.4 |
+| play (160 s) | `HeapAlloc` µs per call | 3.6 → 1.7 | 2.7 → 1.1 |
+
+The chunk lookup alone (without the zero fill; pair 2 on the original scenario, pairs 4 and 5 on the slower one, plus
+two pairs that only completed the menu): menu `HeapAlloc` 7.2-16.4 → 2.5-6.8 µs, `api` -0.6 to -2.3 ms per frame;
+load 27-150 → 4.0-10.7 µs; loadscreen 9.6-56.7 → 5.3-8.6 µs (4.3-30.4 → 2.7-4.5 ms per frame). Across all seven pairs
+whose menu phase completed, the branch drew more menu frames in every pair (+0.4 to +2.5 %: the menu is CPU-bound and
+`api` is 8-9 % of its frame). The map load's duration did not move beyond its spread (differences +0.6, -2.5, -1.5,
++0.5, -3.7 s on loads of 54-73 s): the time saved in `HeapAlloc` there is 0.1-2 s per load. In a third final pair the
+branch's run ended right after the skirmish-setup click: the game exited by itself (no Orthros crash report), as in
+the known BFME1 race at that click, where the game's crash handler ends the process (docs/thread-scheduling.md, "The
+BFME1 investigation": a few percent of runs, more under load; the load average was 44 then); that pair is not counted.
+
+Browser (headless Chromium, `--gl-discard`, `bfme-phases.txt`, one pair at the same time, branch launched first; final
+code), base → branch: boot to the menu (64 s) `HeapAlloc` 7.5 → 2.7 µs per call (1455 → 520 ms in total), `HeapFree`
+2.5 → 1.4 µs; menu (134 s) `HeapAlloc` 4.8 → 1.9 µs (1632 → 642 ms), `HeapFree` 2.8 → 1.5 µs (1013 → 549 ms), `api`
+5.4 → 4.8 ms per frame, 18.9 → 19.1 fps; load (5.5 s) `HeapAlloc` 45 → 4.9 µs (21.7 → 2.3 ms per frame), `api` 59 →
+34 ms per frame; map load 66.2 s in both (its end is polled once a second), `HeapAlloc` 8.1 → 2.1 µs (323 → 79 ms);
+play 31.8 → 32.0 fps, `api` 4.0 → 3.8 ms per frame (`HeapFree` 1641 ms, 8.3 µs per call, before; below the 12
+costliest calls, under 754 ms, after). A single pair: the per-call figures are far outside any noise, the frame rates are not.
+
+Not done: after a growth, `alloc` walks the size classes again although the first pass found nothing. Taking the new
+chunk's block directly would return the same block in every case: the first pass only cut lists (broken or looping
+ones, the rest of every list it walked holds blocks too small), and `grow` links the new block at the head of its class,
+which is at least `classIndex(size)`, so the second pass reaches it after classes that still hold nothing large enough.
+The lists could differ only in a forged corner case: `link` writes the back link of the old head of the new block's
+class, and when the program built a fake free block whose header is that word, the second walk cuts the list holding
+it. Growth happens once per new chunk (1 MB or more), so the saved walk is not measurable; left as it is.
+
+The crash / hang report of `vm.js` lists every heap with overwritten boundary tags, broken free lists or looping free
+lists (`stats.badTags`, `brokenLists`, `loopedLists`).

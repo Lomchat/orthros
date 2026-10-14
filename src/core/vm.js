@@ -23,6 +23,20 @@ import { apiOpt } from './api-opt.js';
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
+/**
+ * Crash / hang report lines for the heaps whose blocks the program damaged (Heap.stats: overwritten boundary tags, free
+ * lists cut at a block that was not one, free lists cut where they looped back), with each heap's bad-tag log.
+ * @param {Iterable<{ tag: string, stats: Record<string, number>, badTagLog?: string[] }>} heaps
+ */
+export function heapDamageLines(heaps) {
+  const out = [];
+  for (const hp of heaps) {
+    const s = hp.stats;
+    if (s.badTags || s.brokenLists || s.loopedLists) out.push(`heap ${hp.tag}: ${s.badTags ?? 0} overwritten boundary tags, ${s.brokenLists ?? 0} broken free lists, ${s.loopedLists ?? 0} looping free lists${hp.badTagLog ? '\n  ' + hp.badTagLog.join('\n  ') : ''}`);
+  }
+  return out;
+}
+
 export class ProcessExit extends Error {
   constructor(code) { super(`process exit ${code}`); this.code = code; }
 }
@@ -774,7 +788,7 @@ export class Vm {
     }
     // (ORTHROS_HEAP_PROV: what the registers of the threads that run point to — a thread spinning in a damaged list)
     if (this.heapProvMap) for (const t of proc.threads) if (t.state === TS.READY || t.state === TS.RUNNING) { lines.push(`  t${t.id} registers: eax=${(t.cpu.eax >>> 0).toString(16)} ecx=${(t.cpu.ecx >>> 0).toString(16)} edx=${(t.cpu.edx >>> 0).toString(16)} ebx=${(t.cpu.ebx >>> 0).toString(16)} esi=${(t.cpu.esi >>> 0).toString(16)} edi=${(t.cpu.edi >>> 0).toString(16)} ebp=${(t.cpu.ebp >>> 0).toString(16)}`); try { lines.push(...this.registerMemory(t.cpu)); } catch (e) { lines.push(`  (${e.message})`); } }
-    for (const hp of proc.heaps) if (hp.stats.badTags || hp.stats.brokenLists) lines.push(`heap ${hp.tag}: ${hp.stats.badTags ?? 0} overwritten boundary tags, ${hp.stats.brokenLists ?? 0} broken free lists${hp.badTagLog ? '\n  ' + hp.badTagLog.join('\n  ') : ''}`);
+    lines.push(...heapDamageLines(proc.heaps));
     // synchronization objects (mutexes/events/semaphores) and the last ownership transitions
     const sync = [];
     for (const [h, o] of proc.handles.map) {
