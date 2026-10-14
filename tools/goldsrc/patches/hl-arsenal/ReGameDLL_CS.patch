@@ -37,7 +37,7 @@ index 5be847b..bedeac6 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..00d4c52 100644
+index b802a2e..f697401 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
 @@ -83,6 +83,7 @@ int gmsgFog = 0;
@@ -58,7 +58,7 @@ index b802a2e..00d4c52 100644
  }
  
  void WriteSigonMessages()
-@@ -399,6 +403,34 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
+@@ -399,6 +403,97 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
  
  LINK_HOOK_VOID_CHAIN(ShowVGUIMenu, (CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu), pPlayer, MenuType, BitMask, szOldMenu);
  
@@ -75,25 +75,138 @@ index b802a2e..00d4c52 100644
 +		"\\yBuy Item\\w\n\n1. Handgun\n2. Shotgun\n3. Sub-Machine Gun\n4. Rifle\n5. Machine Gun\n\n6. Primary weapon ammo\n7. Secondary weapon ammo\n\n8. Equipment\n9. Half-Life arsenal\n\n0. Exit");
 +}
 +
-+static void HL_ShowArsenalMenu(CBasePlayer *pPlayer)
++// Its categories, then their items (WEAPON_NONE: the MP5's grenades)
++struct HLBuyItem
 +{
-+	char text[192];
-+	Q_snprintf(text, sizeof(text), "\\yHalf-Life arsenal\\w\n\n1. .357 Magnum ($%d)\n2. Crossbow ($%d)\n3. RPG ($%d)\n4. Gauss ($%d)\n5. Egon ($%d)\n\n0. Exit",
-+		HL_PYTHON_PRICE, HL_CROSSBOW_PRICE, HL_RPG_PRICE, HL_GAUSS_PRICE, HL_EGON_PRICE);
-+	ShowMenu(pPlayer, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_0), -1, FALSE, text);
++	const char *name;
++	WeaponIdType id;
++	int price;
++};
++
++struct HLBuyCategory
++{
++	const char *title;
++	HLBuyItem items[5];
++};
++
++static const HLBuyCategory HL_BuyCategories[] =
++{
++	{ "Melee and handguns", { { "Crowbar", WEAPON_HL_CROWBAR, HL_CROWBAR_PRICE }, { "9mm Handgun", WEAPON_HL_GLOCK, HL_GLOCK_PRICE }, { ".357 Magnum", WEAPON_HL_PYTHON, HL_PYTHON_PRICE } } },
++	{ "Rifles", { { "MP5", WEAPON_HL_MP5, HL_MP5_PRICE }, { "Shotgun", WEAPON_HL_SHOTGUN, HL_SHOTGUN_PRICE }, { "Crossbow", WEAPON_HL_CROSSBOW, HL_CROSSBOW_PRICE } } },
++	{ "Heavy weapons", { { "Hornet Gun", WEAPON_HL_HORNETGUN, HL_HORNETGUN_PRICE }, { "Gauss", WEAPON_HL_GAUSS, HL_GAUSS_PRICE }, { "RPG", WEAPON_HL_RPG, HL_RPG_PRICE }, { "Egon", WEAPON_HL_EGON, HL_EGON_PRICE } } },
++	{ "Explosives", { { "Hand Grenade", WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE }, { "MP5 Grenade", WEAPON_NONE, HL_ARGRENADE_PRICE }, { "Satchel Charge", WEAPON_HL_SATCHEL, HL_SATCHEL_PRICE }, { "Tripmine", WEAPON_HL_TRIPMINE, HL_TRIPMINE_PRICE }, { "3 Snarks", WEAPON_HL_SNARK, HL_SNARK_PRICE } } },
++};
++
++// (a long menu in several messages, as their size is limited)
++static void HL_ShowMenuText(CBasePlayer *pPlayer, int bitsValidSlots, const char *pszText)
++{
++	char chunk[176];
++	int len = Q_strlen(pszText);
++	for (int i = 0; i < len; i += sizeof(chunk) - 1)
++	{
++		Q_strlcpy(chunk, pszText + i);
++		ShowMenu(pPlayer, bitsValidSlots, -1, (i + int(sizeof(chunk)) - 1 < len) ? TRUE : FALSE, chunk);
++	}
 +}
 +
-+static void HL_BuyArsenal(CBasePlayer *pPlayer, int iSlot)
++static void HL_ShowArsenalMenu(CBasePlayer *pPlayer)
 +{
-+	static const WeaponIdType weapons[] = { WEAPON_HL_PYTHON, WEAPON_HL_CROSSBOW, WEAPON_HL_RPG, WEAPON_HL_GAUSS, WEAPON_HL_EGON };
-+	if (iSlot >= 1 && iSlot <= int(ARRAYSIZE(weapons)))
-+		BuyWeaponByWeaponID(pPlayer, weapons[iSlot - 1]);
++	char text[256] = "\\yHalf-Life arsenal\\w\n\n";
++	int bits = MENU_KEY_0;
++	for (int i = 0; i < int(ARRAYSIZE(HL_BuyCategories)); i++)
++	{
++		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\n", i + 1, HL_BuyCategories[i].title);
++		bits |= 1 << i;
++	}
++
++	Q_strlcat(text, "\n0. Exit");
++	HL_ShowMenuText(pPlayer, bits, text);
++}
++
++static void HL_ShowCategoryMenu(CBasePlayer *pPlayer, int iCategory)
++{
++	const HLBuyCategory &category = HL_BuyCategories[iCategory];
++	char text[512];
++	Q_snprintf(text, sizeof(text), "\\yHalf-Life arsenal: %s\\w\n\n", category.title);
++
++	int bits = MENU_KEY_0;
++	for (int i = 0; i < int(ARRAYSIZE(category.items)) && category.items[i].name; i++)
++	{
++		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\\R$%d\n", i + 1, category.items[i].name, category.items[i].price);
++		bits |= 1 << i;
++	}
++
++	Q_strlcat(text, "\n0. Exit");
++	HL_ShowMenuText(pPlayer, bits, text);
++}
++
++static void HL_BuyCategoryItem(CBasePlayer *pPlayer, int iCategory, int iSlot)
++{
++	const HLBuyCategory &category = HL_BuyCategories[iCategory];
++	if (iSlot < 1 || iSlot > int(ARRAYSIZE(category.items)) || !category.items[iSlot - 1].name)
++		return;
++
++	const HLBuyItem &item = category.items[iSlot - 1];
++	if (item.id == WEAPON_NONE)
++		HL_BuyARGrenade(pPlayer);
++	else
++		BuyWeaponByWeaponID(pPlayer, item.id);
 +}
 +
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -2935,6 +2967,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -1094,6 +1189,13 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+ 	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
+ 		return false;
+ 
++	// (the Half-Life arsenal's pistols have no shield animations)
++	if (pPlayer->HasShield() && IsHLWeapon(iWeapon) && IsSecondaryWeapon(iWeapon))
++		return false;
++
++	if (iWeapon == WEAPON_SHIELDGUN && pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && IsHLWeapon(pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId))
++		return false;
++
+ 	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
+ 		return false;
+ 
+@@ -1564,6 +1666,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+ 	if (!CanBuyThis(pPlayer, weaponID))
+ 		return nullptr;
+ 
++	// (the Half-Life arsenal's of the knife and grenade slots: no gun of the player's to drop for them)
++	if (IsHLWeapon(weaponID) && !IsPrimaryWeapon(weaponID) && !IsSecondaryWeapon(weaponID))
++		return HL_BuyEquipment(pPlayer, weaponID);
++
+ 	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
+ 	if (!info || !info->entityName)
+ 		return nullptr;
+@@ -2296,6 +2402,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+ 		return false;
+ 	}
+ 
++	// (none to buy: the Half-Life arsenal's hornets grow back)
++	if (info->buyClipSize <= 0)
++		return false;
++
+ 	// Purchase the ammo if the player has enough money
+ 	if (pPlayer->m_iAccount >= info->clipCost)
+ 	{
+@@ -2421,6 +2531,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+ 	WeaponIdType weaponID = WEAPON_NONE;
+ 	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
+ 
++	// (the Half-Life arsenal's MP5 grenades: ammo of its own)
++	if (FStrEq(pszCommand, "argrenade") || FStrEq(pszCommand, "mp5grenade"))
++	{
++		HL_BuyARGrenade(pPlayer);
++		return TRUE;
++	}
++
+ 	// Ok, we have weapon info ID.
+ 	if (weaponID != WEAPON_NONE)
+ 	{
+@@ -2935,6 +3052,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -109,15 +222,27 @@ index b802a2e..00d4c52 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3105,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3190,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
 +			case Menu_BuyHL:
 +			{
++				if (canOpenOldMenu() && slot >= 1 && slot <= int(ARRAYSIZE(HL_BuyCategories)) && (pPlayer->m_signals.GetState() & SIGNAL_BUY))
++				{
++					pPlayer->m_iMenu = _Menu(Menu_BuyHLCategory + slot - 1);
++					HL_ShowCategoryMenu(pPlayer, slot - 1);
++				}
++				break;
++			}
++			case Menu_BuyHLCategory:
++			case Menu_BuyHLCategory + 1:
++			case Menu_BuyHLCategory + 2:
++			case Menu_BuyHLCategory + 3:
++			{
 +				if (canOpenOldMenu())
 +				{
-+					HL_BuyArsenal(pPlayer, slot);
++					HL_BuyCategoryItem(pPlayer, pPlayer->m_iMenu - Menu_BuyHLCategory, slot);
 +					pPlayer->BuildRebuyStruct();
 +				}
 +				break;
@@ -125,7 +250,7 @@ index b802a2e..00d4c52 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3617,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3714,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -134,7 +259,7 @@ index b802a2e..00d4c52 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -4925,7 +4975,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4925,7 +5072,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -143,7 +268,7 @@ index b802a2e..00d4c52 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5134,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5231,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
@@ -164,17 +289,21 @@ index d873bd2..d7fa8db 100644
 +extern int gmsgHLWeapons;
 diff --git a/regamedll/dlls/hl_weapons.h b/regamedll/dlls/hl_weapons.h
 new file mode 100644
-index 0000000..e16139f
+index 0000000..7926031
 --- /dev/null
 +++ b/regamedll/dlls/hl_weapons.h
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,642 @@
 +/*
-+*	Half-Life arsenal: five Half-Life weapons bought and used in Counter-Strike, ported from the Half-Life SDK
-+*	(python.cpp, crossbow.cpp, rpg.cpp, gauss.cpp, egon.cpp) onto this game's weapon classes.
++*	Half-Life arsenal: the fourteen Half-Life weapons bought and used in Counter-Strike, ported from the Half-Life SDK
++*	(crowbar.cpp, glock.cpp, python.cpp, mp5.cpp, shotgun.cpp, crossbow.cpp, rpg.cpp, gauss.cpp, egon.cpp, hornetgun.cpp,
++*	hornet.cpp, handgrenade.cpp, satchel.cpp, tripmine.cpp, squeakgrenade.cpp) onto this game's weapon classes.
 +*
 +*	Their ids follow the 32 of Counter-Strike: pev->weapons has 32 bits, so a player's Half-Life weapons reach the
 +*	client by the HLWeapons message, and the client does not predict them (clientdata m_iId is 0 while one is held,
 +*	its delta field has 5 bits). Their animations come from the server, their fire effects from the Half-Life events.
++*
++*	Their numbers are Counter-Strike's scale, not Half-Life's (a player has 100 health and kevlar here): see the
++*	balance table of docs/browser-ports.md.
 +*/
 +#pragma once
 +
@@ -183,15 +312,43 @@ index 0000000..e16139f
 +// The bit of a weapon in pev->weapons, none for the Half-Life weapons
 +inline int WeaponBit(int id) { return (id >= 0 && id < 32) ? (1 << id) : 0; }
 +
++// The share of a hit an armored player takes, as Counter-Strike's table in CBasePlayer::TakeDamage (1 for none)
++float HL_ArmorRatio(int id);
++
++// Buying a Half-Life weapon of the knife or grenade slots, and the MP5's grenades (client.cpp's menus and aliases)
++CBaseEntity *HL_BuyEquipment(CBasePlayer *pPlayer, WeaponIdType weaponID);
++bool HL_BuyARGrenade(CBasePlayer *pPlayer);
++
++// Removes what the Half-Life weapons left in the map, at each round restart
++void HL_CleanUpMap();
++
 +// Their animations are sent whether or not the client predicts its weapons: it does not predict these
 +class CHLWeapon: public CBasePlayerWeapon
 +{
 +public:
 +	virtual void SendWeaponAnim(int iAnim, int skiplocal = 0) { CBasePlayerWeapon::SendWeaponAnim(iAnim, 0); }
 +	virtual BOOL UseDecrement() { return TRUE; }
++
++protected:
++	// (whether its attack may fire, as Counter-Strike checks for a primary attack: not in the freeze period)
++	bool CanFire();
 +};
 +
-+// (weights as Counter-Strike's: a pistol 7, a primary 25 to 30 — the heavier is switched to when bought)
++// (weights as Counter-Strike's: a knife 0, a grenade 1 to 2, a pistol 7, a primary 25 to 30 — the heavier is
++// switched to when bought; below 0 never automatically)
++
++// Crowbar: the knife slot, beside the knife
++#define HL_CROWBAR_PRICE             300
++#define HL_CROWBAR_DAMAGE            25
++#define HL_CROWBAR_MAX_SPEED         250.0f
++#define HL_CROWBAR_WEIGHT            0
++
++// 9mm handgun (Glock 17): Counter-Strike's 9mm ammo; aimed shots, or quicker wild ones
++#define HL_GLOCK_PRICE               400
++#define HL_GLOCK_MAX_CLIP            17
++#define HL_GLOCK_DAMAGE              22
++#define HL_GLOCK_MAX_SPEED           250.0f
++#define HL_GLOCK_WEIGHT              7
 +
 +// .357 Magnum revolver: pistol slot
 +#define HL_PYTHON_PRICE              900
@@ -203,22 +360,47 @@ index 0000000..e16139f
 +#define HL_PYTHON_MAX_SPEED          250.0f
 +#define HL_PYTHON_WEIGHT             7
 +
++// MP5 and its M203 launcher: Counter-Strike's 9mm ammo; its contact grenades are bought apart
++#define HL_MP5_PRICE                 1800
++#define HL_MP5_MAX_CLIP              50
++#define HL_MP5_DAMAGE                21
++#define HL_MP5_MAX_SPEED             240.0f
++#define HL_MP5_WEIGHT                30
++#define HL_ARGRENADE_PRICE           300
++#define HL_ARGRENADE_MAX_CARRY       2
++#define HL_ARGRENADE_DAMAGE          100
++
++// Shotgun (SPAS-12): Counter-Strike's buckshot; one barrel, or both
++#define HL_SHOTGUN_PRICE             2000
++#define HL_SHOTGUN_MAX_CLIP          8
++#define HL_SHOTGUN_PELLETS           6
++#define HL_SHOTGUN_DAMAGE            18 // (a pellet)
++#define HL_SHOTGUN_MAX_SPEED         230.0f
++#define HL_SHOTGUN_WEIGHT            30
++
 +// Crossbow: zoomed, an instant bolt; otherwise an explosive bolt in flight
 +#define HL_CROSSBOW_PRICE            3000
 +#define HL_CROSSBOW_MAX_CLIP         5
 +#define HL_CROSSBOW_MAX_CARRY        30
 +#define HL_CROSSBOW_AMMO_PRICE       150
 +#define HL_CROSSBOW_AMMO_BUY         5
-+#define HL_CROSSBOW_SNIPER_DAMAGE    120
++#define HL_CROSSBOW_SNIPER_DAMAGE    100
 +#define HL_CROSSBOW_BOLT_DAMAGE      50
 +#define HL_CROSSBOW_BOLT_BLAST       40
 +#define HL_CROSSBOW_MAX_SPEED        230.0f
 +#define HL_CROSSBOW_WEIGHT           30
 +
++// Hornet gun: hornets that home in, or straight darts; they grow back, nothing to buy
++#define HL_HORNETGUN_PRICE           2500
++#define HL_HORNET_MAX_CARRY          8
++#define HL_HORNET_DAMAGE             15
++#define HL_HORNETGUN_MAX_SPEED       240.0f
++#define HL_HORNETGUN_WEIGHT          30
++
 +// Rocket launcher, its rocket following the laser spot
 +#define HL_RPG_PRICE                 4500
 +#define HL_RPG_MAX_CLIP              1
-+#define HL_RPG_MAX_CARRY             5
++#define HL_RPG_MAX_CARRY             3
 +#define HL_RPG_AMMO_PRICE            300
 +#define HL_RPG_AMMO_BUY              1
 +#define HL_RPG_DAMAGE                120
@@ -243,6 +425,78 @@ index 0000000..e16139f
 +#define HL_EGON_MAX_SPEED            210.0f
 +#define HL_EGON_WEIGHT               30
 +
++// Hand grenade: cooking from the moment its pin is pulled, 3 s
++#define HL_HANDGRENADE_PRICE         300
++#define HL_HANDGRENADE_MAX_CARRY     1
++#define HL_HANDGRENADE_DAMAGE        100
++#define HL_HANDGRENADE_MAX_SPEED     250.0f
++#define HL_HANDGRENADE_WEIGHT        2
++
++// Satchel charge: thrown, then set off by its radio; gone with its owner
++#define HL_SATCHEL_PRICE             600
++#define HL_SATCHEL_MAX_CARRY         2
++#define HL_SATCHEL_DAMAGE            150
++#define HL_SATCHEL_MAX_SPEED         250.0f
++#define HL_SATCHEL_WEIGHT            -10
++
++// Tripmine: on a wall, its laser sets it off — not for its owner's team
++#define HL_TRIPMINE_PRICE            500
++#define HL_TRIPMINE_MAX_CARRY        2
++#define HL_TRIPMINE_DAMAGE           150
++#define HL_TRIPMINE_MAX_SPEED        250.0f
++#define HL_TRIPMINE_WEIGHT           -10
++
++// Snarks: a pack of three, hunting the nearest enemy for 15 s
++#define HL_SNARK_PRICE               500
++#define HL_SNARK_DEFAULT_GIVE        3
++#define HL_SNARK_MAX_CARRY           6
++#define HL_SNARK_BITE_DAMAGE         10
++#define HL_SNARK_POP_DAMAGE          5
++#define HL_SNARK_MAX_SPEED           250.0f
++#define HL_SNARK_WEIGHT              2
++
++class CHLCrowbar: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual void Holster(int skiplocal = 0);
++	virtual float GetMaxSpeed() { return HL_CROWBAR_MAX_SPEED; }
++	virtual int iItemSlot() { return KNIFE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void WeaponIdle();
++
++	void EXPORT SwingAgain();
++	void EXPORT Smack();
++
++private:
++	BOOL Swing(BOOL fFirst);
++	TraceResult m_trHit;
++};
++
++class CHLGlock: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual float GetMaxSpeed() { return HL_GLOCK_MAX_SPEED; }
++	virtual int iItemSlot() { return PISTOL_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void SecondaryAttack();
++	virtual void Reload();
++	virtual void WeaponIdle();
++	virtual BOOL IsPistol() { return TRUE; }
++
++private:
++	void GlockFire(float flSpread, float flCycleTime, bool bAimed);
++	unsigned short m_usFireGlock1;
++	unsigned short m_usFireGlock2;
++};
++
 +class CHLPython: public CHLWeapon
 +{
 +public:
@@ -262,6 +516,48 @@ index 0000000..e16139f
 +private:
 +	float m_flSoundTime;
 +	unsigned short m_usFirePython;
++};
++
++class CHLMP5: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual float GetMaxSpeed() { return HL_MP5_MAX_SPEED; }
++	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void SecondaryAttack();
++	virtual void Reload();
++	virtual void WeaponIdle();
++
++private:
++	unsigned short m_usMP5;
++	unsigned short m_usMP52;
++};
++
++class CHLShotgun: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual void Holster(int skiplocal = 0);
++	virtual float GetMaxSpeed() { return HL_SHOTGUN_MAX_SPEED; }
++	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void SecondaryAttack();
++	virtual void Reload();
++	virtual void ItemPostFrame();
++	virtual void WeaponIdle();
++
++private:
++	void Fire(int iShells);
++	float m_flPumpTime;
++	unsigned short m_usSingleFire;
++	unsigned short m_usDoubleFire;
 +};
 +
 +class CHLCrossbow: public CHLWeapon
@@ -297,6 +593,55 @@ index 0000000..e16139f
 +	void EXPORT BubbleThink();
 +	void EXPORT BoltTouch(CBaseEntity *pOther);
 +	void EXPORT ExplodeThink();
++};
++
++class CHLHornetGun: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL IsUseable() { return TRUE; }
++	virtual float GetMaxSpeed() { return HL_HORNETGUN_MAX_SPEED; }
++	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void SecondaryAttack();
++	virtual void Reload();
++	virtual void WeaponIdle();
++
++private:
++	void Fire(bool bDart);
++	float m_flRechargeTime;
++	int m_iFirePhase;
++};
++
++class CHLHornet: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int Classify() { return CLASS_NONE; }
++
++	void EXPORT StartTrack();
++	void EXPORT StartDart();
++	void EXPORT TrackTarget();
++	void EXPORT TrackTouch(CBaseEntity *pOther);
++	void EXPORT DieTouch(CBaseEntity *pOther);
++
++private:
++	void IgniteTrail();
++	void Buzz();
++	bool IsEnemy(CBaseEntity *pOther);
++
++	EHANDLE m_hEnemy;
++	Vector m_vecEnemyLKP;
++	float m_flStopAttack;
++	float m_flFlySpeed;
++	int m_iHornetType;
++	int m_iTrail;
++	int m_iOwnerTeam;
 +};
 +
 +class CHLLaserSpot: public CBaseEntity
@@ -348,9 +693,9 @@ index 0000000..e16139f
 +	void EXPORT FollowThink();
 +	void EXPORT RocketTouch(CBaseEntity *pOther);
 +	void Explode(TraceResult *pTrace);
++	void Forget();
 +
 +private:
-+	void Forget();
 +	EntityHandle<CHLRpg> m_hLauncher;
 +	int m_iTrail;
 +	float m_flIgniteTime;
@@ -421,11 +766,190 @@ index 0000000..e16139f
 +	unsigned short m_usEgonFire;
 +	unsigned short m_usEgonStop;
 +};
++
++// The hand grenade's and the MP5's: a timed one that bounces, or a contact one
++class CHLGrenade: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++
++	static CHLGrenade *ShootTimed(entvars_t *pevOwner, Vector vecStart, Vector vecVelocity, float time);
++	static CHLGrenade *ShootContact(entvars_t *pevOwner, Vector vecStart, Vector vecVelocity);
++	void EXPORT BounceTouch(CBaseEntity *pOther);
++	void EXPORT ExplodeTouch(CBaseEntity *pOther);
++	void EXPORT TumbleThink();
++	void EXPORT FlyThink();
++	void EXPORT Detonate();
++	void EXPORT Smoke();
++
++private:
++	void Explode(TraceResult *pTrace);
++	float m_flNextHit;
++};
++
++class CHLHandGrenade: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual BOOL CanHolster() { return m_flStartThrow == 0; }
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL CanDrop() { return FALSE; }
++	virtual float GetMaxSpeed() { return HL_HANDGRENADE_MAX_SPEED; }
++	virtual int iItemSlot() { return GRENADE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void WeaponIdle();
++};
++
++class CHLSatchelCharge: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual void Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value);
++
++	void EXPORT SatchelSlide(CBaseEntity *pOther);
++	void EXPORT SatchelThink();
++	void EXPORT Detonate();
++
++private:
++	Vector m_lastBounceOrigin;
++};
++
++class CHLSatchel: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual int AddToPlayer(CBasePlayer *pPlayer);
++	virtual BOOL CanDeploy();
++	virtual BOOL Deploy();
++	virtual BOOL IsUseable() { return CanDeploy(); }
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL CanDrop() { return FALSE; }
++	virtual float GetMaxSpeed() { return HL_SATCHEL_MAX_SPEED; }
++	virtual int iItemSlot() { return GRENADE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void SecondaryAttack();
++	virtual void WeaponIdle();
++
++private:
++	enum { SATCHEL_IDLE, SATCHEL_READY, SATCHEL_RELOAD };
++	void Throw();
++	bool HasCharges();
++	int m_chargeReady;
++};
++
++class CHLTripmineGrenade: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual BOOL TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType);
++	virtual void Killed(entvars_t *pevAttacker, int iGib);
++
++	void EXPORT PowerupThink();
++	void EXPORT BeamBreakThink();
++	void EXPORT DelayDeathThink();
++	void KillBeam();
++
++private:
++	void MakeBeam();
++	bool LetsThrough(CBaseEntity *pEntity);
++
++	float m_flPowerUp;
++	Vector m_vecDir;
++	Vector m_vecEnd;
++	float m_flBeamLength;
++	EHANDLE m_hOwner;
++	CBeam *m_pBeam;
++	Vector m_posOwner;
++	Vector m_angleOwner;
++	edict_t *m_pRealOwner; // (the player who laid it: its pev->owner is the wall it sits on)
++	int m_iOwnerTeam;
++};
++
++class CHLTripmine: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL CanDrop() { return FALSE; }
++	virtual float GetMaxSpeed() { return HL_TRIPMINE_MAX_SPEED; }
++	virtual int iItemSlot() { return GRENADE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void WeaponIdle();
++};
++
++class CHLSnarkGrenade: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual int BloodColor() { return BLOOD_COLOR_YELLOW; }
++	virtual void Killed(entvars_t *pevAttacker, int iGib);
++
++	void EXPORT SuperBounceTouch(CBaseEntity *pOther);
++	void EXPORT HuntThink();
++
++private:
++	CBaseEntity *FindEnemy();
++
++	float m_flDie;
++	Vector m_vecTarget;
++	float m_flNextHunt;
++	float m_flNextHit;
++	float m_flNextBite;
++	float m_flNextBounceSound;
++	Vector m_posPrev;
++	EHANDLE m_hOwner;
++	EHANDLE m_hEnemy;
++	int m_iOwnerTeam;
++};
++
++class CHLSqueak: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL CanDrop() { return FALSE; }
++	virtual float GetMaxSpeed() { return HL_SNARK_MAX_SPEED; }
++	virtual int iItemSlot() { return GRENADE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void WeaponIdle();
++
++private:
++	int m_fJustThrown;
++};
 diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
-index 2b91a50..b01fd21 100644
+index 2b91a50..653e2ab 100644
 --- a/regamedll/dlls/multiplay_gamerules.cpp
 +++ b/regamedll/dlls/multiplay_gamerules.cpp
-@@ -4259,6 +4259,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
+@@ -658,6 +658,9 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
+ 	// Remove grenades and C4
+ 	UTIL_RemoveOther("grenade");
+ 
++	// (and what the Half-Life arsenal left: its grenades, charges, mines, snarks, hornets, rockets and bolts)
++	HL_CleanUpMap();
++
+ #ifndef REGAMEDLL_FIXES
+ 	// Remove defuse kit
+ 	// Old code only removed 4 kits and stopped.
+@@ -4259,6 +4262,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
  // Returns FALSE if the player is not allowed to pick up this weapon
  BOOL EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CanHavePlayerItem)(CBasePlayer *pPlayer, CBasePlayerItem *pItem)
  {
@@ -437,10 +961,10 @@ index 2b91a50..b01fd21 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..01eb6f9 100644
+index 1d04cc9..8e9d8c7 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
-@@ -201,6 +201,11 @@ const char *GetCSModelName(int item_id)
+@@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
  	case WEAPON_KNIFE:        modelName = "models/w_knife.mdl"; break;
  	case WEAPON_P90:          modelName = "models/w_p90.mdl"; break;
  	case WEAPON_SHIELDGUN:    modelName = "models/w_shield.mdl"; break;
@@ -449,10 +973,41 @@ index 1d04cc9..01eb6f9 100644
 +	case WEAPON_HL_RPG:       modelName = "models/w_rpg.mdl"; break;
 +	case WEAPON_HL_GAUSS:     modelName = "models/w_gauss.mdl"; break;
 +	case WEAPON_HL_EGON:      modelName = "models/w_egon.mdl"; break;
++	case WEAPON_HL_CROWBAR:   modelName = "models/w_crowbar.mdl"; break;
++	case WEAPON_HL_GLOCK:     modelName = "models/w_9mmhandgun.mdl"; break;
++	case WEAPON_HL_MP5:       modelName = "models/w_9mmar.mdl"; break;
++	case WEAPON_HL_SHOTGUN:   modelName = "models/w_shotgun.mdl"; break;
++	case WEAPON_HL_HORNETGUN: modelName = "models/w_hgun.mdl"; break;
++	case WEAPON_HL_HANDGRENADE: modelName = "models/w_grenade.mdl"; break;
++	case WEAPON_HL_SATCHEL:   modelName = "models/w_satchel.mdl"; break;
++	case WEAPON_HL_TRIPMINE:  modelName = "models/v_tripmine.mdl"; break;
++	case WEAPON_HL_SNARK:     modelName = "models/w_sqknest.mdl"; break;
  	default:
  		ALERT(at_console, "CBasePlayer::PackDeadPlayerItems(): Unhandled item- not creating weaponbox\n");
  	}
-@@ -7495,6 +7500,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -885,6 +899,10 @@ const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t
+ 	else if (!Q_strncmp(killer_weapon_name, cut_func, sizeof(cut_func) - 1))
+ 		killer_weapon_name += sizeof(cut_func) - 1;
+ 
++	// (the Half-Life arsenal's crossbow bolt has its Half-Life death notice icon, d_bolt)
++	if (!Q_strcmp(killer_weapon_name, "crossbow_bolt"))
++		killer_weapon_name = "bolt";
++
+ 	return killer_weapon_name;
+ }
+ 
+@@ -1228,6 +1246,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+ 			case WEAPON_AK47:
+ 				flRatio *= 1.55;
+ 				break;
++			default:
++				// (the Half-Life arsenal's)
++				flRatio *= HL_ArmorRatio(iGunType);
++				break;
+ 			}
+ 		}
+ 
+@@ -7495,6 +7517,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  	{
  		m_fInitHUD = FALSE;
  		gInitHUD = FALSE;
@@ -460,7 +1015,7 @@ index 1d04cc9..01eb6f9 100644
  #ifdef REGAMEDLL_FIXES
  		m_signals.Reset();
  #else
-@@ -7893,6 +7899,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7893,6 +7916,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		m_iLastClientHealth = m_iClientHealth;
  	}
  #endif // #ifdef BUILD_LATEST
@@ -486,7 +1041,7 @@ index 1d04cc9..01eb6f9 100644
  }
  
  bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
-@@ -8374,7 +8399,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
+@@ -8374,7 +8416,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
  		}
  
  		// take item off hud
@@ -496,20 +1051,22 @@ index 1d04cc9..01eb6f9 100644
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
 diff --git a/regamedll/dlls/player.h b/regamedll/dlls/player.h
-index 7809834..4d02c07 100644
+index 7809834..7d45dd9 100644
 --- a/regamedll/dlls/player.h
 +++ b/regamedll/dlls/player.h
-@@ -196,7 +196,8 @@ enum _Menu
+@@ -196,7 +196,10 @@ enum _Menu
  	Menu_Radio1,
  	Menu_Radio2,
  	Menu_Radio3,
 -	Menu_ClientBuy
 +	Menu_ClientBuy,
-+	Menu_BuyHL // (the Half-Life arsenal's buy menu)
++	Menu_BuyHL,         // (the Half-Life arsenal's buy menu: its categories,
++	Menu_BuyHLCategory, // then the items of each: this one and the three after it)
++	Menu_BuyHLCategoryLast = Menu_BuyHLCategory + 3
  };
  
  enum TeamName
-@@ -922,6 +923,8 @@ public:
+@@ -922,6 +925,8 @@ public:
  	int m_iLastClientHealth;
  	float m_tmNextAccountHealthUpdate;
  #endif
@@ -519,10 +1076,10 @@ index 7809834..4d02c07 100644
  
  CWeaponBox *CreateWeaponBox(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo);
 diff --git a/regamedll/dlls/weapons.cpp b/regamedll/dlls/weapons.cpp
-index ac57533..018618e 100644
+index ac57533..3e61940 100644
 --- a/regamedll/dlls/weapons.cpp
 +++ b/regamedll/dlls/weapons.cpp
-@@ -378,6 +378,13 @@ void WeaponsPrecache()
+@@ -378,6 +378,22 @@ void WeaponsPrecache()
  	UTIL_PrecacheOtherWeapon("weapon_galil");
  	UTIL_PrecacheOtherWeapon("weapon_famas");
  
@@ -532,11 +1089,20 @@ index ac57533..018618e 100644
 +	UTIL_PrecacheOtherWeapon("weapon_rpg");
 +	UTIL_PrecacheOtherWeapon("weapon_gauss");
 +	UTIL_PrecacheOtherWeapon("weapon_egon");
++	UTIL_PrecacheOtherWeapon("weapon_crowbar");
++	UTIL_PrecacheOtherWeapon("weapon_9mmhandgun");
++	UTIL_PrecacheOtherWeapon("weapon_9mmAR");
++	UTIL_PrecacheOtherWeapon("weapon_shotgun");
++	UTIL_PrecacheOtherWeapon("weapon_hornetgun");
++	UTIL_PrecacheOtherWeapon("weapon_handgrenade");
++	UTIL_PrecacheOtherWeapon("weapon_satchel");
++	UTIL_PrecacheOtherWeapon("weapon_tripmine");
++	UTIL_PrecacheOtherWeapon("weapon_snark");
 +
  	if (g_pGameRules->IsDeathmatch())
  	{
  		// container for dropped deathmatch weapons
-@@ -958,7 +965,7 @@ void CBasePlayerWeapon::HandleInfiniteAmmo()
+@@ -958,7 +974,7 @@ void CBasePlayerWeapon::HandleInfiniteAmmo()
  	else if ((nInfiniteAmmo == WPNMODE_INFINITE_BPAMMO
  #ifdef REGAMEDLL_API
  		&&
@@ -545,7 +1111,7 @@ index ac57533..018618e 100644
  #endif
  		)
  		|| (IsGrenadeWeapon(m_iId) && infiniteGrenades.value == 1.0f))
-@@ -1220,7 +1227,7 @@ bool CBasePlayerItem::DestroyItem()
+@@ -1220,7 +1236,7 @@ bool CBasePlayerItem::DestroyItem()
  				m_pPlayer->SetProgressBarTime(0);
  			}
  
@@ -554,7 +1120,7 @@ index ac57533..018618e 100644
  
  			// No more weapon
  			if ((m_pPlayer->pev->weapons & ~(1 << WEAPON_SUIT)) == 0) {
-@@ -1323,7 +1330,7 @@ int CBasePlayerWeapon::AddDuplicate(CBasePlayerItem *pOriginal)
+@@ -1323,7 +1339,7 @@ int CBasePlayerWeapon::AddDuplicate(CBasePlayerItem *pOriginal)
  int CBasePlayerWeapon::AddToPlayer(CBasePlayer *pPlayer)
  {
  	m_pPlayer = pPlayer;
@@ -563,7 +1129,7 @@ index ac57533..018618e 100644
  
  	if (!m_iPrimaryAmmoType)
  	{
-@@ -2032,6 +2039,19 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
+@@ -2032,6 +2048,19 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
  	if (pPlayer->m_bIsVIP || pPlayer->m_bShieldDrawn)
  		return;
  
@@ -597,10 +1163,10 @@ index f7294b7..05d2be8 100644
  #define ITEM_FLAG_SELECTONEMPTY     		BIT(0)
  #define ITEM_FLAG_NOAUTORELOAD      		BIT(1)
 diff --git a/regamedll/dlls/weapontype.cpp b/regamedll/dlls/weapontype.cpp
-index cc341d7..05308ec 100644
+index cc341d7..0ecc4ba 100644
 --- a/regamedll/dlls/weapontype.cpp
 +++ b/regamedll/dlls/weapontype.cpp
-@@ -32,6 +32,13 @@ WeaponStruct g_weaponStruct[MAX_WEAPONS] =
+@@ -32,6 +32,22 @@ WeaponStruct g_weaponStruct[MAX_WEAPONS] =
  
  	{ WEAPON_SHIELDGUN, SHIELDGUN_PRICE,    TERRORIST,      AUTOBUYCLASS_PRIMARY,   0                   },
  
@@ -610,11 +1176,20 @@ index cc341d7..05308ec 100644
 +	{ WEAPON_HL_RPG,      HL_RPG_PRICE,      TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   HL_RPG_AMMO_PRICE      },
 +	{ WEAPON_HL_GAUSS,    HL_GAUSS_PRICE,    TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   HL_URANIUM_AMMO_PRICE  },
 +	{ WEAPON_HL_EGON,     HL_EGON_PRICE,     TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   HL_URANIUM_AMMO_PRICE  },
++	{ WEAPON_HL_CROWBAR,     HL_CROWBAR_PRICE,     TERRORIST|CT, AUTOBUYCLASS_NONE,      0                   },
++	{ WEAPON_HL_GLOCK,       HL_GLOCK_PRICE,       TERRORIST|CT, AUTOBUYCLASS_SECONDARY, AMMO_9MM_PRICE      },
++	{ WEAPON_HL_MP5,         HL_MP5_PRICE,         TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   AMMO_9MM_PRICE      },
++	{ WEAPON_HL_SHOTGUN,     HL_SHOTGUN_PRICE,     TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   AMMO_BUCKSHOT_PRICE },
++	{ WEAPON_HL_HORNETGUN,   HL_HORNETGUN_PRICE,   TERRORIST|CT, AUTOBUYCLASS_PRIMARY,   0                   },
++	{ WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE, TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
++	{ WEAPON_HL_SATCHEL,     HL_SATCHEL_PRICE,     TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
++	{ WEAPON_HL_TRIPMINE,    HL_TRIPMINE_PRICE,    TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
++	{ WEAPON_HL_SNARK,       HL_SNARK_PRICE,       TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
 +
  	{ 0, 0, 0, 0, 0 },
  	{ 0, 0, 0, 0, 0 },
  	{ 0, 0, 0, 0, 0 },
-@@ -119,6 +126,11 @@ WeaponAliasInfo g_weaponAliasInfo[] =
+@@ -119,6 +135,20 @@ WeaponAliasInfo g_weaponAliasInfo[] =
  	{ "elite",      WEAPON_ELITE        },
  	{ "fiveseven",  WEAPON_FIVESEVEN    },
  	{ "mp5navy",    WEAPON_MP5N         },
@@ -623,10 +1198,19 @@ index cc341d7..05308ec 100644
 +	{ "rpg",        WEAPON_HL_RPG       },
 +	{ "gauss",      WEAPON_HL_GAUSS     },
 +	{ "egon",       WEAPON_HL_EGON      },
++	{ "crowbar",    WEAPON_HL_CROWBAR   },
++	{ "9mmhandgun", WEAPON_HL_GLOCK     },
++	{ "9mmAR",      WEAPON_HL_MP5       },
++	{ "shotgun",    WEAPON_HL_SHOTGUN   },
++	{ "hornetgun",  WEAPON_HL_HORNETGUN },
++	{ "handgrenade", WEAPON_HL_HANDGRENADE },
++	{ "satchel",    WEAPON_HL_SATCHEL   },
++	{ "tripmine",   WEAPON_HL_TRIPMINE  },
++	{ "snark",      WEAPON_HL_SNARK     },
  	{ nullptr,      WEAPON_NONE         },
  };
  
-@@ -166,6 +178,12 @@ WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
+@@ -166,6 +196,25 @@ WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
  	{ "p90",        WEAPON_P90,         "#FNP90"               },
  	{ "c90",        WEAPON_P90,         "#FNP90"               },
  	{ "m249",       WEAPON_M249,        "#M249"                },
@@ -636,10 +1220,23 @@ index cc341d7..05308ec 100644
 +	{ "rpg",        WEAPON_HL_RPG,      "RPG"                    },
 +	{ "gauss",      WEAPON_HL_GAUSS,    "Gauss"                  },
 +	{ "egon",       WEAPON_HL_EGON,     "Egon"                   },
++	{ "crowbar",    WEAPON_HL_CROWBAR,  "Crowbar"                },
++	{ "9mmhandgun", WEAPON_HL_GLOCK,    "9mm Handgun"            },
++	{ "hlglock",    WEAPON_HL_GLOCK,    "9mm Handgun"            },
++	{ "9mmar",      WEAPON_HL_MP5,      "MP5"                    },
++	{ "hlmp5",      WEAPON_HL_MP5,      "MP5"                    },
++	{ "shotgun",    WEAPON_HL_SHOTGUN,  "Shotgun"                },
++	{ "hornetgun",  WEAPON_HL_HORNETGUN, "Hornet Gun"            },
++	{ "hgun",       WEAPON_HL_HORNETGUN, "Hornet Gun"            },
++	{ "handgrenade", WEAPON_HL_HANDGRENADE, "Hand Grenade"       },
++	{ "satchel",    WEAPON_HL_SATCHEL,  "Satchel Charge"         },
++	{ "tripmine",   WEAPON_HL_TRIPMINE, "Tripmine"               },
++	{ "snark",      WEAPON_HL_SNARK,    "Snarks"                 },
++	{ "snarks",     WEAPON_HL_SNARK,    "Snarks"                 },
  	{ nullptr,      WEAPON_NONE,        nullptr                },
  };
  
-@@ -208,6 +226,11 @@ WeaponClassAliasInfo g_weaponClassAliasInfo[] =
+@@ -208,6 +257,20 @@ WeaponClassAliasInfo g_weaponClassAliasInfo[] =
  	{ "elite",      WEAPONCLASS_PISTOL          },
  	{ "fiveseven",  WEAPONCLASS_PISTOL          },
  	{ "mp5navy",    WEAPONCLASS_SUBMACHINEGUN   },
@@ -648,10 +1245,19 @@ index cc341d7..05308ec 100644
 +	{ "rpg",        WEAPONCLASS_MACHINEGUN      },
 +	{ "gauss",      WEAPONCLASS_MACHINEGUN      },
 +	{ "egon",       WEAPONCLASS_MACHINEGUN      },
++	{ "crowbar",    WEAPONCLASS_KNIFE           },
++	{ "9mmhandgun", WEAPONCLASS_PISTOL          },
++	{ "9mmAR",      WEAPONCLASS_SUBMACHINEGUN   },
++	{ "shotgun",    WEAPONCLASS_SHOTGUN         },
++	{ "hornetgun",  WEAPONCLASS_MACHINEGUN      },
++	{ "handgrenade", WEAPONCLASS_GRENADE        },
++	{ "satchel",    WEAPONCLASS_GRENADE         },
++	{ "tripmine",   WEAPONCLASS_GRENADE         },
++	{ "snark",      WEAPONCLASS_GRENADE         },
  	{ "grenade",    WEAPONCLASS_GRENADE         },
  	{ "pistol",     WEAPONCLASS_PISTOL          },
  	{ "SMG",        WEAPONCLASS_SUBMACHINEGUN   },
-@@ -263,6 +286,13 @@ WeaponInfoStruct g_weaponInfo_default[] =
+@@ -263,6 +326,22 @@ WeaponInfoStruct g_weaponInfo_default[] =
  #endif
  
  	{ WEAPON_SHIELDGUN,      SHIELDGUN_PRICE,                   0,                       0,                     0,                  0,                      AMMO_NONE,          "weapon_shield",       nullptr,           nullptr        },
@@ -662,10 +1268,19 @@ index cc341d7..05308ec 100644
 +	{ WEAPON_HL_RPG,      HL_RPG_PRICE,      HL_RPG_AMMO_PRICE,      HL_RPG_AMMO_BUY,      HL_RPG_MAX_CLIP,      HL_RPG_MAX_CARRY,      AMMO_HL_ROCKETS, "weapon_rpg",      nullptr, "rockets" },
 +	{ WEAPON_HL_GAUSS,    HL_GAUSS_PRICE,    HL_URANIUM_AMMO_PRICE,  HL_URANIUM_AMMO_BUY,  WEAPON_NOCLIP,        HL_URANIUM_MAX_CARRY,  AMMO_HL_URANIUM, "weapon_gauss",    nullptr, "uranium" },
 +	{ WEAPON_HL_EGON,     HL_EGON_PRICE,     HL_URANIUM_AMMO_PRICE,  HL_URANIUM_AMMO_BUY,  WEAPON_NOCLIP,        HL_URANIUM_MAX_CARRY,  AMMO_HL_URANIUM, "weapon_egon",     nullptr, "uranium" },
++	{ WEAPON_HL_CROWBAR,     HL_CROWBAR_PRICE,     0,                   0,                 WEAPON_NOCLIP,       0,                        AMMO_NONE,           "weapon_crowbar",     nullptr,         nullptr          },
++	{ WEAPON_HL_GLOCK,       HL_GLOCK_PRICE,       AMMO_9MM_PRICE,      AMMO_9MM_BUY,      HL_GLOCK_MAX_CLIP,   MAX_AMMO_9MM,             AMMO_9MM,            "weapon_9mmhandgun",  "ammo_9mm",      "9mm"            },
++	{ WEAPON_HL_MP5,         HL_MP5_PRICE,         AMMO_9MM_PRICE,      AMMO_9MM_BUY,      HL_MP5_MAX_CLIP,     MAX_AMMO_9MM,             AMMO_9MM,            "weapon_9mmAR",       "ammo_9mm",      "9mm"            },
++	{ WEAPON_HL_SHOTGUN,     HL_SHOTGUN_PRICE,     AMMO_BUCKSHOT_PRICE, AMMO_BUCKSHOT_BUY, HL_SHOTGUN_MAX_CLIP, MAX_AMMO_BUCKSHOT,        AMMO_BUCKSHOT,       "weapon_shotgun",     "ammo_buckshot", "buckshot"       },
++	{ WEAPON_HL_HORNETGUN,   HL_HORNETGUN_PRICE,   0,                   0,                 WEAPON_NOCLIP,       HL_HORNET_MAX_CARRY,      AMMO_HL_HORNETS,     "weapon_hornetgun",   nullptr,         "Hornets"        },
++	{ WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE, 0,                   0,                 WEAPON_NOCLIP,       HL_HANDGRENADE_MAX_CARRY, AMMO_HL_HANDGRENADE, "weapon_handgrenade", nullptr,         "Hand Grenade"   },
++	{ WEAPON_HL_SATCHEL,     HL_SATCHEL_PRICE,     0,                   0,                 WEAPON_NOCLIP,       HL_SATCHEL_MAX_CARRY,     AMMO_HL_SATCHEL,     "weapon_satchel",     nullptr,         "Satchel Charge" },
++	{ WEAPON_HL_TRIPMINE,    HL_TRIPMINE_PRICE,    0,                   0,                 WEAPON_NOCLIP,       HL_TRIPMINE_MAX_CARRY,    AMMO_HL_TRIPMINE,    "weapon_tripmine",    nullptr,         "Trip Mine"      },
++	{ WEAPON_HL_SNARK,       HL_SNARK_PRICE,       0,                   0,                 WEAPON_NOCLIP,       HL_SNARK_MAX_CARRY,       AMMO_HL_SNARKS,      "weapon_snark",       nullptr,         "Snarks"         },
  #ifndef REGAMEDLL_FIXES
  	{ 0,                     0,                                 0,                       0,                     0,                  0,                      AMMO_NONE,          nullptr,               nullptr,           nullptr        },
  #endif
-@@ -286,6 +316,10 @@ AmmoInfoStruct g_ammoInfo_default[] =
+@@ -286,6 +365,16 @@ AmmoInfoStruct g_ammoInfo_default[] =
  	{ AMMO_HEGRENADE,    AMMO_HEGRENADE_PRICE,    AMMO_HEGRENADE_BUY,    MAX_AMMO_HEGRENADE,    nullptr,           "HEGrenade"    },
  	{ AMMO_SMOKEGRENADE, AMMO_SMOKEGRENADE_PRICE, AMMO_SMOKEGRENADE_BUY, MAX_AMMO_SMOKEGRENADE, nullptr,           "SmokeGrenade" },
  	{ AMMO_C4,           0,                       0,                     MAX_AMMO_C4,           nullptr,           "C4"           },
@@ -673,10 +1288,16 @@ index cc341d7..05308ec 100644
 +	{ AMMO_HL_BOLTS,     HL_CROSSBOW_AMMO_PRICE,  HL_CROSSBOW_AMMO_BUY,  HL_CROSSBOW_MAX_CARRY, nullptr,           "bolts"        },
 +	{ AMMO_HL_ROCKETS,   HL_RPG_AMMO_PRICE,       HL_RPG_AMMO_BUY,       HL_RPG_MAX_CARRY,      nullptr,           "rockets"      },
 +	{ AMMO_HL_URANIUM,   HL_URANIUM_AMMO_PRICE,   HL_URANIUM_AMMO_BUY,   HL_URANIUM_MAX_CARRY,  nullptr,           "uranium"      },
++	{ AMMO_HL_ARGRENADES, HL_ARGRENADE_PRICE,     1,                     HL_ARGRENADE_MAX_CARRY, nullptr,          "ARgrenades"   },
++	{ AMMO_HL_HORNETS,   0,                       0,                     HL_HORNET_MAX_CARRY,   nullptr,           "Hornets"      },
++	{ AMMO_HL_HANDGRENADE, HL_HANDGRENADE_PRICE,  1,                     HL_HANDGRENADE_MAX_CARRY, nullptr,        "Hand Grenade" },
++	{ AMMO_HL_SATCHEL,   HL_SATCHEL_PRICE,        1,                     HL_SATCHEL_MAX_CARRY,  nullptr,           "Satchel Charge" },
++	{ AMMO_HL_TRIPMINE,  HL_TRIPMINE_PRICE,       1,                     HL_TRIPMINE_MAX_CARRY, nullptr,           "Trip Mine"    },
++	{ AMMO_HL_SNARKS,    HL_SNARK_PRICE,          HL_SNARK_DEFAULT_GIVE, HL_SNARK_MAX_CARRY,    nullptr,           "Snarks"       },
  };
  
  AmmoInfoStruct g_ammoInfo[ARRAYSIZE(g_ammoInfo_default)];
-@@ -322,6 +356,11 @@ WeaponSlotInfo g_weaponSlotInfo_default[] = {
+@@ -322,6 +411,20 @@ WeaponSlotInfo g_weaponSlotInfo_default[] = {
  	{ WEAPON_AK47,          PRIMARY_WEAPON_SLOT,    "weapon_ak47"           },
  	{ WEAPON_P90,           PRIMARY_WEAPON_SLOT,    "weapon_p90"            },
  	{ WEAPON_SHIELDGUN,     NONE_SLOT,              "weapon_shield"         },
@@ -685,10 +1306,19 @@ index cc341d7..05308ec 100644
 +	{ WEAPON_HL_RPG,        PRIMARY_WEAPON_SLOT,    "weapon_rpg"            },
 +	{ WEAPON_HL_GAUSS,      PRIMARY_WEAPON_SLOT,    "weapon_gauss"          },
 +	{ WEAPON_HL_EGON,       PRIMARY_WEAPON_SLOT,    "weapon_egon"           },
++	{ WEAPON_HL_CROWBAR,    KNIFE_SLOT,             "weapon_crowbar"        },
++	{ WEAPON_HL_GLOCK,      PISTOL_SLOT,            "weapon_9mmhandgun"     },
++	{ WEAPON_HL_MP5,        PRIMARY_WEAPON_SLOT,    "weapon_9mmAR"          },
++	{ WEAPON_HL_SHOTGUN,    PRIMARY_WEAPON_SLOT,    "weapon_shotgun"        },
++	{ WEAPON_HL_HORNETGUN,  PRIMARY_WEAPON_SLOT,    "weapon_hornetgun"      },
++	{ WEAPON_HL_HANDGRENADE, GRENADE_SLOT,          "weapon_handgrenade"    },
++	{ WEAPON_HL_SATCHEL,    GRENADE_SLOT,           "weapon_satchel"        },
++	{ WEAPON_HL_TRIPMINE,   GRENADE_SLOT,           "weapon_tripmine"       },
++	{ WEAPON_HL_SNARK,      GRENADE_SLOT,           "weapon_snark"          },
  };
  
  WeaponSlotInfo g_weaponSlotInfo[ARRAYSIZE(g_weaponSlotInfo_default)];
-@@ -466,6 +505,10 @@ bool IsPrimaryWeapon(int id)
+@@ -466,6 +569,13 @@ bool IsPrimaryWeapon(int id)
  	case WEAPON_AK47:
  	case WEAPON_P90:
  	case WEAPON_SHIELDGUN:
@@ -696,18 +1326,22 @@ index cc341d7..05308ec 100644
 +	case WEAPON_HL_RPG:
 +	case WEAPON_HL_GAUSS:
 +	case WEAPON_HL_EGON:
++	case WEAPON_HL_MP5:
++	case WEAPON_HL_SHOTGUN:
++	case WEAPON_HL_HORNETGUN:
  		return true;
  	default:
  		break;
-@@ -485,6 +528,7 @@ bool IsSecondaryWeapon(int id)
+@@ -485,6 +595,8 @@ bool IsSecondaryWeapon(int id)
  	case WEAPON_USP:
  	case WEAPON_GLOCK18:
  	case WEAPON_DEAGLE:
 +	case WEAPON_HL_PYTHON:
++	case WEAPON_HL_GLOCK:
  		return true;
  	default:
  		break;
-@@ -595,6 +639,10 @@ WeaponSlotInfo *GetWeaponSlot(const char *weaponName)
+@@ -595,6 +707,10 @@ WeaponSlotInfo *GetWeaponSlot(const char *weaponName)
  
  bool CanBuyWeaponByMaptype(int playerTeam, WeaponIdType weaponID, bool useAssasinationRestrictions)
  {
@@ -719,10 +1353,10 @@ index cc341d7..05308ec 100644
  	{
  		if (playerTeam == CT)
 diff --git a/regamedll/dlls/weapontype.h b/regamedll/dlls/weapontype.h
-index 2005b6a..2d5e960 100644
+index 2005b6a..ceb0506 100644
 --- a/regamedll/dlls/weapontype.h
 +++ b/regamedll/dlls/weapontype.h
-@@ -61,6 +61,16 @@ enum WeaponIdType
+@@ -61,6 +61,25 @@ enum WeaponIdType
  	WEAPON_AK47,
  	WEAPON_KNIFE,
  	WEAPON_P90,
@@ -734,12 +1368,21 @@ index 2005b6a..2d5e960 100644
 +	WEAPON_HL_RPG,
 +	WEAPON_HL_GAUSS,
 +	WEAPON_HL_EGON,
-+	WEAPON_HL_LAST = WEAPON_HL_EGON,
++	WEAPON_HL_CROWBAR,
++	WEAPON_HL_GLOCK,
++	WEAPON_HL_MP5,
++	WEAPON_HL_SHOTGUN,
++	WEAPON_HL_HORNETGUN,
++	WEAPON_HL_HANDGRENADE,
++	WEAPON_HL_SATCHEL,
++	WEAPON_HL_TRIPMINE,
++	WEAPON_HL_SNARK,
++	WEAPON_HL_LAST = WEAPON_HL_SNARK,
 +
  	WEAPON_SHIELDGUN = 99
  };
  
-@@ -284,6 +294,12 @@ enum AmmoType
+@@ -284,6 +303,18 @@ enum AmmoType
  	AMMO_SMOKEGRENADE,
  	AMMO_C4,
  
@@ -748,20 +1391,157 @@ index 2005b6a..2d5e960 100644
 +	AMMO_HL_BOLTS,
 +	AMMO_HL_ROCKETS,
 +	AMMO_HL_URANIUM,
++	AMMO_HL_ARGRENADES,
++	AMMO_HL_HORNETS,
++	AMMO_HL_HANDGRENADE,
++	AMMO_HL_SATCHEL,
++	AMMO_HL_TRIPMINE,
++	AMMO_HL_SNARKS,
 +
  	AMMO_MAX_TYPES
  };
  
 diff --git a/regamedll/dlls/wpn_shared/wpn_hl.cpp b/regamedll/dlls/wpn_shared/wpn_hl.cpp
 new file mode 100644
-index 0000000..16887f2
+index 0000000..b4aefad
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_hl.cpp
-@@ -0,0 +1,1626 @@
-+// Half-Life arsenal (hl_weapons.h): the Half-Life SDK's .357, crossbow, RPG, Gauss and Egon on Counter-Strike's
-+// weapon classes. Their fire events reach the shooter too (no FEV_NOTHOST: the client does not predict them); their
-+// timers are the decremented ones of Counter-Strike's weapons, their own delays in game time.
+@@ -0,0 +1,4458 @@
++// Half-Life arsenal (hl_weapons.h): the Half-Life SDK's weapons on Counter-Strike's weapon classes. Their fire events
++// reach the shooter too (no FEV_NOTHOST: the client does not predict them); their timers are the decremented ones of
++// Counter-Strike's weapons, their own delays in game time. Their entities are named with MAKE_STRING_CLASS: the game
++// finds entities by classname in a table of its own, which a bare pev->classname does not enter.
 +#include "precompiled.h"
++
++extern bool g_bClientPrintEnable; // (client.cpp)
++
++// (the Half-Life SDK's aim cones)
++static const Vector HL_CONE_SHOTGUN(0.0675f, 0.0675f, 0.0f);
++static const Vector HL_CONE_DOUBLESHOTGUN(0.09f, 0.06f, 0.0f);
++
++float HL_ArmorRatio(int id)
++{
++	switch (id)
++	{
++		case WEAPON_HL_CROWBAR:  return 1.7f;  // (as the knife)
++		case WEAPON_HL_GLOCK:    return 1.05f; // (as the Glock 18)
++		case WEAPON_HL_PYTHON:   return 1.5f;  // (as the Desert Eagle)
++		case WEAPON_HL_CROSSBOW: return 1.7f;  // (as the Scout)
++		case WEAPON_HL_GAUSS:
++		case WEAPON_HL_EGON:     return 1.5f;
++		default:                 return 1.0f;
++	}
++}
++
++bool CHLWeapon::CanFire()
++{
++	return !g_pGameRules->IsMultiplayer() || (m_pPlayer->m_bCanShoot && !g_pGameRules->IsFreezePeriod() && !m_pPlayer->m_bIsDefusing);
++}
++
++// Whether a player is an enemy of a team, for the weapons that choose their target (never their owner's own)
++static bool HL_IsEnemyOf(int iTeam, CBaseEntity *pEntity, CBaseEntity *pOwner)
++{
++	if (!pEntity || pEntity == pOwner || !pEntity->IsPlayer() || !pEntity->IsAlive())
++		return false;
++
++	CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pEntity);
++	if (pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST)
++		return false;
++
++#ifdef REGAMEDLL_ADD
++	if (CSGameRules()->IsFreeForAll())
++		return true;
++#endif
++
++	return pPlayer->m_iTeam != iTeam;
++}
++
++static int HL_TeamOf(edict_t *pOwner)
++{
++	CBaseEntity *pEntity = pOwner ? CBaseEntity::Instance(pOwner) : nullptr;
++	return (pEntity && pEntity->IsPlayer()) ? static_cast<CBasePlayer *>(pEntity)->m_iTeam : UNASSIGNED;
++}
++
++// The nearest enemy player a hunter sees within a range, in its field of view (the cosine, on the horizontal plane)
++static CBaseEntity *HL_FindEnemy(CBaseEntity *pHunter, int iTeam, CBaseEntity *pOwner, float flRange, float flFieldOfView)
++{
++	UTIL_MakeVectors(pHunter->pev->angles);
++	Vector2D vecForward = gpGlobals->v_forward.Make2D().Normalize();
++
++	CBaseEntity *pBest = nullptr;
++	float flBest = flRange;
++
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (!UTIL_IsValidPlayer(pPlayer) || !HL_IsEnemyOf(iTeam, pPlayer, pOwner))
++			continue;
++
++		float flDist = (pPlayer->Center() - pHunter->pev->origin).Length();
++		if (flDist >= flBest)
++			continue;
++
++		Vector2D vecLOS = (pPlayer->pev->origin - pHunter->pev->origin).Make2D().Normalize();
++		if (DotProduct(vecLOS, vecForward) <= flFieldOfView)
++			continue;
++
++		if (!pHunter->FVisible(pPlayer))
++			continue;
++
++		pBest = pPlayer;
++		flBest = flDist;
++	}
++
++	return pBest;
++}
++
++// Half-Life's radius damage, through no wall (bodies do not shield, as in Counter-Strike). On players as a grenade's
++// (DMG_EXPLOSION: the kill counts, unlike the bomb's DMG_BLAST), and not on the attacker's teammates without friendly fire.
++static void HL_RadiusDamage(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, float flRadius, int bitsDamageType = DMG_EXPLOSION)
++{
++	if (!pevAttacker)
++		pevAttacker = pevInflictor;
++
++	CBaseEntity *pAttacker = CBaseEntity::Instance(pevAttacker);
++	CBasePlayer *pAttackingPlayer = (pAttacker && pAttacker->IsPlayer()) ? static_cast<CBasePlayer *>(pAttacker) : nullptr;
++
++	float falloff = flRadius ? flDamage / flRadius : 1.0f;
++	bool bInWater = (UTIL_PointContents(vecSrc) == CONTENTS_WATER);
++	vecSrc.z += 1.0f; // (in case it lies on the ground)
++
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, flRadius)))
++	{
++		if (pEntity->pev->takedamage == DAMAGE_NO)
++			continue;
++
++		// (blasts do not go into or out of water)
++		if (bInWater && pEntity->pev->waterlevel == 0)
++			continue;
++
++		if (!bInWater && pEntity->pev->waterlevel == 3)
++			continue;
++
++		if (pAttackingPlayer && pEntity->IsPlayer() && pEntity != pAttackingPlayer && !friendlyfire.value
++			&& g_pGameRules->PlayerRelationship(pAttackingPlayer, pEntity) == GR_TEAMMATE)
++			continue;
++
++		Vector vecSpot = pEntity->BodyTarget(vecSrc);
++		TraceResult tr;
++		UTIL_TraceLine(vecSrc, vecSpot, ignore_monsters, ENT(pevInflictor), &tr);
++		if (tr.flFraction != 1.0f && tr.pHit != pEntity->edict())
++			continue;
++
++		if (tr.fStartSolid)
++			tr.vecEndPos = vecSrc;
++
++		float flAdjustedDamage = flDamage - (vecSrc - tr.vecEndPos).Length() * falloff;
++		if (flAdjustedDamage < 1.0f)
++			continue;
++
++		pEntity->TakeDamage(pevInflictor, pevAttacker, flAdjustedDamage, bitsDamageType);
++	}
++}
 +
 +// An explosion at a point: the Half-Life fireball, its blast damage, a scorch mark
 +static void HL_Explosion(CBaseEntity *pSource, TraceResult *pTrace, entvars_t *pevOwner, float flDamage, float flRadius, int iScale)
@@ -770,8 +1550,11 @@ index 0000000..16887f2
 +	if (pTrace && pTrace->flFraction != 1.0f)
 +		origin = pTrace->vecEndPos + pTrace->vecPlaneNormal * 8.0f; // (out of the wall a bit)
 +
++	pSource->pev->origin = origin;
++	iScale = clamp(iScale, 1, 255);
++
 +	int iContents = UTIL_PointContents(origin);
-+	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, origin);
++	MESSAGE_BEGIN(MSG_PAS, SVC_TEMPENTITY, origin);
 +		WRITE_BYTE(TE_EXPLOSION);
 +		WRITE_COORD(origin.x);
 +		WRITE_COORD(origin.y);
@@ -783,7 +1566,7 @@ index 0000000..16887f2
 +	MESSAGE_END();
 +
 +	pSource->pev->owner = nullptr; // (the blast traces must not skip the owner)
-+	::RadiusDamage(origin, pSource->pev, pevOwner, flDamage, flRadius, CLASS_NONE, DMG_BLAST);
++	HL_RadiusDamage(origin, pSource->pev, pevOwner, flDamage, flRadius);
 +
 +	if (pTrace && pTrace->flFraction != 1.0f)
 +		UTIL_DecalTrace(pTrace, RANDOM_LONG(0, 1) ? DECAL_SCORCH1 : DECAL_SCORCH2);
@@ -793,6 +1576,355 @@ index 0000000..16887f2
 +{
 +	pPlayer->m_iFOV = fov;
 +	pPlayer->pev->fov = fov;
++}
++
++// A weapon's spread, still, moving faster than a walk, or in the air
++static float HL_Spread(CBasePlayer *pPlayer, float flStill, float flMoving, float flAir, float flWalkSpeed = 0.0f)
++{
++	if (!(pPlayer->pev->flags & FL_ONGROUND))
++		return flAir;
++
++	return pPlayer->pev->velocity.Length2D() > flWalkSpeed ? flMoving : flStill;
++}
++
++static void HL_SetViewModels(CBasePlayer *pPlayer, const char *szViewModel, const char *szWeaponModel)
++{
++	pPlayer->pev->viewmodel = ALLOC_STRING(szViewModel);
++	pPlayer->pev->weaponmodel = ALLOC_STRING(szWeaponModel);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Crowbar
++
++enum hl_crowbar_e
++{
++	CROWBAR_IDLE = 0,
++	CROWBAR_DRAW,
++	CROWBAR_HOLSTER,
++	CROWBAR_ATTACK1HIT,
++	CROWBAR_ATTACK1MISS,
++	CROWBAR_ATTACK2MISS,
++	CROWBAR_ATTACK2HIT,
++	CROWBAR_ATTACK3MISS,
++	CROWBAR_ATTACK3HIT
++};
++
++#define HL_CROWBAR_BODYHIT_VOLUME 128
++#define HL_CROWBAR_WALLHIT_VOLUME 512
++
++LINK_ENTITY_TO_CLASS(weapon_crowbar, CHLCrowbar, CCSPlayerWeapon)
++
++void CHLCrowbar::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_CROWBAR;
++	SET_MODEL(edict(), "models/w_crowbar.mdl");
++	m_iClip = WEAPON_NOCLIP;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLCrowbar::Precache()
++{
++	PRECACHE_MODEL("models/v_crowbar.mdl");
++	PRECACHE_MODEL("models/w_crowbar.mdl");
++	PRECACHE_MODEL("models/p_crowbar.mdl");
++
++	PRECACHE_SOUND("weapons/cbar_hit1.wav");
++	PRECACHE_SOUND("weapons/cbar_hit2.wav");
++	PRECACHE_SOUND("weapons/cbar_hitbod1.wav");
++	PRECACHE_SOUND("weapons/cbar_hitbod2.wav");
++	PRECACHE_SOUND("weapons/cbar_hitbod3.wav");
++	PRECACHE_SOUND("weapons/cbar_miss1.wav");
++}
++
++int CHLCrowbar::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = nullptr;
++	p->iMaxAmmo1 = -1;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 2;
++	p->iPosition = 2;
++	p->iId = m_iId = WEAPON_HL_CROWBAR;
++	p->iFlags = 0;
++	p->iWeight = HL_CROWBAR_WEIGHT;
++	return 1;
++}
++
++BOOL CHLCrowbar::Deploy()
++{
++	return DefaultDeploy("models/v_crowbar.mdl", "models/p_crowbar.mdl", CROWBAR_DRAW, "knife", 0);
++}
++
++void CHLCrowbar::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	SendWeaponAnim(CROWBAR_HOLSTER);
++}
++
++void CHLCrowbar::PrimaryAttack()
++{
++	if (!Swing(TRUE))
++	{
++		// (a miss: one more try a moment later, the target may have come closer)
++		SetThink(&CHLCrowbar::SwingAgain);
++		pev->nextthink = gpGlobals->time + 0.1f;
++	}
++}
++
++void CHLCrowbar::SwingAgain()
++{
++	Swing(FALSE);
++}
++
++void CHLCrowbar::Smack()
++{
++	DecalGunshot(&m_trHit, BULLET_PLAYER_CROWBAR, false, m_pPlayer ? m_pPlayer->pev : nullptr, false);
++}
++
++BOOL CHLCrowbar::Swing(BOOL fFirst)
++{
++	if (!m_pPlayer)
++		return FALSE;
++
++	TraceResult tr;
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle);
++	Vector vecSrc = m_pPlayer->GetGunPosition();
++	Vector vecEnd = vecSrc + gpGlobals->v_forward * 32.0f;
++
++	UTIL_TraceLine(vecSrc, vecEnd, dont_ignore_monsters, ENT(m_pPlayer->pev), &tr);
++	if (tr.flFraction >= 1.0f)
++	{
++		UTIL_TraceHull(vecSrc, vecEnd, dont_ignore_monsters, head_hull, ENT(m_pPlayer->pev), &tr);
++		if (tr.flFraction < 1.0f)
++		{
++			// (the point of the object the hull hit)
++			CBaseEntity *pHit = CBaseEntity::Instance(tr.pHit);
++			if (!pHit || pHit->IsBSPModel())
++				FindHullIntersection(vecSrc, tr, VEC_DUCK_HULL_MIN, VEC_DUCK_HULL_MAX, m_pPlayer->edict());
++
++			vecEnd = tr.vecEndPos;
++		}
++	}
++
++	if (tr.flFraction >= 1.0f)
++	{
++		if (fFirst)
++		{
++			static const int missAnims[] = { CROWBAR_ATTACK1MISS, CROWBAR_ATTACK2MISS, CROWBAR_ATTACK3MISS };
++			SendWeaponAnim(missAnims[(m_iSwing++) % 3]);
++			EMIT_SOUND_DYN(ENT(m_pPlayer->pev), CHAN_WEAPON, "weapons/cbar_miss1.wav", VOL_NORM, ATTN_NORM, 0, 94 + RANDOM_LONG(0, 15));
++			m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 2.0f;
++			m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++		}
++
++		return FALSE;
++	}
++
++	static const int hitAnims[] = { CROWBAR_ATTACK1HIT, CROWBAR_ATTACK2HIT, CROWBAR_ATTACK3HIT };
++	SendWeaponAnim(hitAnims[(m_iSwing++) % 3]);
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++	m_flNextPrimaryAttack = GetNextAttackDelay(0.35f);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 2.0f;
++
++	float flVol = 1.0f;
++	bool bHitWorld = true;
++
++	CBaseEntity *pEntity = CBaseEntity::Instance(tr.pHit);
++	if (pEntity)
++	{
++		ClearMultiDamage();
++		pEntity->TraceAttack(m_pPlayer->pev, HL_CROWBAR_DAMAGE, gpGlobals->v_forward, &tr, DMG_NEVERGIB | DMG_BULLET);
++		ApplyMultiDamage(m_pPlayer->pev, m_pPlayer->pev);
++
++		if (pEntity->Classify() != CLASS_NONE && pEntity->Classify() != CLASS_MACHINE && pEntity->Classify() != CLASS_VEHICLE)
++		{
++			static const char *bodySounds[] = { "weapons/cbar_hitbod1.wav", "weapons/cbar_hitbod2.wav", "weapons/cbar_hitbod3.wav" };
++			EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_ITEM, bodySounds[RANDOM_LONG(0, 2)], VOL_NORM, ATTN_NORM);
++			m_pPlayer->m_iWeaponVolume = HL_CROWBAR_BODYHIT_VOLUME;
++
++			if (!pEntity->IsAlive())
++				return TRUE;
++
++			flVol = 0.1f;
++			bHitWorld = false;
++		}
++	}
++
++	if (bHitWorld)
++	{
++		TEXTURETYPE_PlaySound(&tr, vecSrc, vecSrc + (vecEnd - vecSrc) * 2.0f, BULLET_PLAYER_CROWBAR);
++		EMIT_SOUND_DYN(ENT(m_pPlayer->pev), CHAN_ITEM, RANDOM_LONG(0, 1) ? "weapons/cbar_hit2.wav" : "weapons/cbar_hit1.wav", VOL_NORM, ATTN_NORM, 0, 98 + RANDOM_LONG(0, 3));
++
++		// (its mark a moment later)
++		m_trHit = tr;
++		SetThink(&CHLCrowbar::Smack);
++		pev->nextthink = gpGlobals->time + 0.2f;
++	}
++
++	m_pPlayer->m_iWeaponVolume = int(flVol * HL_CROWBAR_WALLHIT_VOLUME);
++	return TRUE;
++}
++
++void CHLCrowbar::WeaponIdle()
++{
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	SendWeaponAnim(CROWBAR_IDLE);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// 9mm handgun
++
++enum hl_glock_e
++{
++	GLOCK_IDLE1 = 0,
++	GLOCK_IDLE2,
++	GLOCK_IDLE3,
++	GLOCK_SHOOT,
++	GLOCK_SHOOT_EMPTY,
++	GLOCK_RELOAD,
++	GLOCK_RELOAD_NOT_EMPTY,
++	GLOCK_DRAW,
++	GLOCK_HOLSTER,
++	GLOCK_ADD_SILENCER
++};
++
++LINK_ENTITY_TO_CLASS(weapon_9mmhandgun, CHLGlock, CCSPlayerWeapon)
++
++void CHLGlock::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_GLOCK;
++	SET_MODEL(edict(), "models/w_9mmhandgun.mdl");
++	m_iDefaultAmmo = HL_GLOCK_MAX_CLIP;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLGlock::Precache()
++{
++	PRECACHE_MODEL("models/v_9mmhandgun.mdl");
++	PRECACHE_MODEL("models/w_9mmhandgun.mdl");
++	PRECACHE_MODEL("models/p_9mmhandgun.mdl");
++	PRECACHE_MODEL("models/shell.mdl");
++
++	PRECACHE_SOUND("items/9mmclip1.wav");
++	PRECACHE_SOUND("items/9mmclip2.wav");
++	PRECACHE_SOUND("weapons/pl_gun3.wav");
++
++	m_usFireGlock1 = PRECACHE_EVENT(1, "events/glock1.sc");
++	m_usFireGlock2 = PRECACHE_EVENT(1, "events/glock2.sc");
++}
++
++int CHLGlock::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "9mm";
++	p->iMaxAmmo1 = MAX_AMMO_9MM;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = HL_GLOCK_MAX_CLIP;
++	p->iSlot = 1;
++	p->iPosition = 8;
++	p->iId = m_iId = WEAPON_HL_GLOCK;
++	p->iFlags = 0;
++	p->iWeight = HL_GLOCK_WEIGHT;
++	return 1;
++}
++
++BOOL CHLGlock::Deploy()
++{
++	return DefaultDeploy("models/v_9mmhandgun.mdl", "models/p_9mmhandgun.mdl", GLOCK_DRAW, "onehanded", 0);
++}
++
++void CHLGlock::PrimaryAttack()
++{
++	GlockFire(HL_Spread(m_pPlayer, 0.01f, 0.04f, 0.15f), 0.25f, true);
++}
++
++void CHLGlock::SecondaryAttack()
++{
++	if (!CanFire())
++		return;
++
++	GlockFire(HL_Spread(m_pPlayer, 0.07f, 0.09f, 0.2f), 0.15f, false);
++}
++
++void CHLGlock::GlockFire(float flSpread, float flCycleTime, bool bAimed)
++{
++	if (m_iClip <= 0)
++	{
++		if (m_fFireOnEmpty)
++		{
++			PlayEmptySound();
++			m_flNextPrimaryAttack = GetNextAttackDelay(0.2f);
++		}
++
++		return;
++	}
++
++	m_iClip--;
++	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++	m_pPlayer->m_iWeaponVolume = NORMAL_GUN_VOLUME;
++	m_pPlayer->m_iWeaponFlash = NORMAL_GUN_FLASH;
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
++	Vector vecSrc = m_pPlayer->GetGunPosition();
++	Vector vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, flSpread, 8192, 1, BULLET_PLAYER_9MM, HL_GLOCK_DAMAGE, 0.75f, m_pPlayer->pev, true, m_pPlayer->random_seed);
++
++	PLAYBACK_EVENT_FULL(0, m_pPlayer->edict(), bAimed ? m_usFireGlock1 : m_usFireGlock2, 0.0f, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, 0, 0, m_iClip == 0, 0);
++
++	m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(flCycleTime);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++	m_pPlayer->pev->punchangle.x -= bAimed ? 1.0f : 1.5f;
++}
++
++void CHLGlock::Reload()
++{
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip == HL_GLOCK_MAX_CLIP)
++		return;
++
++	if (DefaultReload(HL_GLOCK_MAX_CLIP, m_iClip == 0 ? GLOCK_RELOAD : GLOCK_RELOAD_NOT_EMPTY, 1.5f))
++	{
++		m_pPlayer->SetAnimation(PLAYER_RELOAD);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++	}
++}
++
++void CHLGlock::WeaponIdle()
++{
++	ResetEmptySound();
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase() || m_iClip == 0)
++		return;
++
++	int iAnim;
++	float flRand = UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f);
++	if (flRand <= 0.3f)
++	{
++		iAnim = GLOCK_IDLE3;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 49.0f / 16.0f;
++	}
++	else if (flRand <= 0.6f)
++	{
++		iAnim = GLOCK_IDLE1;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 60.0f / 16.0f;
++	}
++	else
++	{
++		iAnim = GLOCK_IDLE2;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 40.0f / 16.0f;
++	}
++
++	SendWeaponAnim(iAnim);
 +}
 +
 +// ---------------------------------------------------------------------------------------------------------------------
@@ -814,7 +1946,6 @@ index 0000000..16887f2
 +
 +void CHLPython::Spawn()
 +{
-+	pev->classname = MAKE_STRING("weapon_357");
 +	Precache();
 +	m_iId = WEAPON_HL_PYTHON;
 +	SET_MODEL(edict(), "models/w_357.mdl");
@@ -903,8 +2034,7 @@ index 0000000..16887f2
 +
 +	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
 +	Vector vecSrc = m_pPlayer->GetGunPosition();
-+	float flSpread = (m_pPlayer->pev->flags & FL_ONGROUND) ? (m_pPlayer->pev->velocity.Length2D() > 0 ? 0.04f : 0.01f) : 0.15f;
-+	Vector vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, flSpread, 8192, 2, BULLET_PLAYER_50AE, HL_PYTHON_DAMAGE, 0.86f, m_pPlayer->pev, true, m_pPlayer->random_seed);
++	Vector vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, HL_Spread(m_pPlayer, 0.01f, 0.04f, 0.15f), 8192, 2, BULLET_PLAYER_50AE, HL_PYTHON_DAMAGE, 0.86f, m_pPlayer->pev, true, m_pPlayer->random_seed);
 +
 +	PLAYBACK_EVENT_FULL(0, m_pPlayer->edict(), m_usFirePython, 0.0f, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, 0, 0, 0, 0);
 +
@@ -965,17 +2095,391 @@ index 0000000..16887f2
 +}
 +
 +// ---------------------------------------------------------------------------------------------------------------------
++// MP5 and its M203 launcher
++
++enum hl_mp5_e
++{
++	MP5_LONGIDLE = 0,
++	MP5_IDLE1,
++	MP5_LAUNCH,
++	MP5_RELOAD,
++	MP5_DEPLOY,
++	MP5_FIRE1,
++	MP5_FIRE2,
++	MP5_FIRE3
++};
++
++LINK_ENTITY_TO_CLASS(weapon_9mmAR, CHLMP5, CCSPlayerWeapon)
++
++void CHLMP5::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_MP5;
++	SET_MODEL(edict(), "models/w_9mmar.mdl");
++	m_iDefaultAmmo = HL_MP5_MAX_CLIP;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLMP5::Precache()
++{
++	PRECACHE_MODEL("models/v_9mmar.mdl");
++	PRECACHE_MODEL("models/w_9mmar.mdl");
++	PRECACHE_MODEL("models/p_9mmar.mdl");
++	PRECACHE_MODEL("models/shell.mdl");
++
++	PRECACHE_SOUND("items/clipinsert1.wav");
++	PRECACHE_SOUND("items/cliprelease1.wav");
++	PRECACHE_SOUND("weapons/hks1.wav");
++	PRECACHE_SOUND("weapons/hks2.wav");
++	PRECACHE_SOUND("weapons/hks3.wav");
++	PRECACHE_SOUND("weapons/glauncher.wav");
++	PRECACHE_SOUND("weapons/glauncher2.wav");
++	PRECACHE_SOUND("weapons/357_cock1.wav");
++
++	UTIL_PrecacheOther("hl_grenade");
++
++	m_usMP5 = PRECACHE_EVENT(1, "events/mp5.sc");
++	m_usMP52 = PRECACHE_EVENT(1, "events/mp52.sc");
++}
++
++int CHLMP5::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "9mm";
++	p->iMaxAmmo1 = MAX_AMMO_9MM;
++	p->pszAmmo2 = "ARgrenades";
++	p->iMaxAmmo2 = HL_ARGRENADE_MAX_CARRY;
++	p->iMaxClip = HL_MP5_MAX_CLIP;
++	p->iSlot = 0;
++	p->iPosition = 23;
++	p->iId = m_iId = WEAPON_HL_MP5;
++	p->iFlags = 0;
++	p->iWeight = HL_MP5_WEIGHT;
++	return 1;
++}
++
++BOOL CHLMP5::Deploy()
++{
++	return DefaultDeploy("models/v_9mmar.mdl", "models/p_9mmar.mdl", MP5_DEPLOY, "mp5", 0);
++}
++
++void CHLMP5::PrimaryAttack()
++{
++	if (m_pPlayer->pev->waterlevel == 3 || m_iClip <= 0)
++	{
++		PlayEmptySound();
++		m_flNextPrimaryAttack = UTIL_WeaponTimeBase() + 0.15f;
++		return;
++	}
++
++	m_pPlayer->m_iWeaponVolume = NORMAL_GUN_VOLUME;
++	m_pPlayer->m_iWeaponFlash = NORMAL_GUN_FLASH;
++	m_iClip--;
++	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
++	Vector vecSrc = m_pPlayer->GetGunPosition();
++	Vector vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, HL_Spread(m_pPlayer, 0.03f, 0.06f, 0.2f, 140.0f), 8192, 1, BULLET_PLAYER_9MM, HL_MP5_DAMAGE, 0.84f, m_pPlayer->pev, false, m_pPlayer->random_seed);
++
++	PLAYBACK_EVENT_FULL(0, m_pPlayer->edict(), m_usMP5, 0.0f, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, 0, 0, 0, 0);
++
++	m_flNextPrimaryAttack = GetNextAttackDelay(0.1f);
++	if (m_flNextPrimaryAttack < UTIL_WeaponTimeBase())
++		m_flNextPrimaryAttack = UTIL_WeaponTimeBase() + 0.1f;
++
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++	m_pPlayer->pev->punchangle.x -= RANDOM_FLOAT(0.3f, 0.8f);
++	m_pPlayer->pev->punchangle.y += RANDOM_FLOAT(-0.4f, 0.4f);
++}
++
++void CHLMP5::SecondaryAttack()
++{
++	if (!CanFire())
++		return;
++
++	if (m_pPlayer->pev->waterlevel == 3 || m_pPlayer->m_rgAmmo[m_iSecondaryAmmoType] <= 0)
++	{
++		PlayEmptySound();
++		m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
++		return;
++	}
++
++	m_pPlayer->m_iWeaponVolume = NORMAL_GUN_VOLUME;
++	m_pPlayer->m_iWeaponFlash = BRIGHT_GUN_FLASH;
++	m_pPlayer->m_rgAmmo[m_iSecondaryAmmoType]--;
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
++	CHLGrenade::ShootContact(m_pPlayer->pev, m_pPlayer->pev->origin + m_pPlayer->pev->view_ofs + gpGlobals->v_forward * 16.0f, gpGlobals->v_forward * 800.0f);
++
++	PLAYBACK_EVENT(0, m_pPlayer->edict(), m_usMP52);
++
++	m_flNextPrimaryAttack = GetNextAttackDelay(1.0f);
++	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 1.0f;
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 5.0f;
++	m_pPlayer->pev->punchangle.x -= 5.0f;
++}
++
++void CHLMP5::Reload()
++{
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip == HL_MP5_MAX_CLIP)
++		return;
++
++	if (DefaultReload(HL_MP5_MAX_CLIP, MP5_RELOAD, 1.5f))
++		m_pPlayer->SetAnimation(PLAYER_RELOAD);
++}
++
++void CHLMP5::WeaponIdle()
++{
++	ResetEmptySound();
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	SendWeaponAnim(RANDOM_LONG(0, 1) ? MP5_IDLE1 : MP5_LONGIDLE);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Shotgun
++
++enum hl_shotgun_e
++{
++	SHOTGUN_IDLE = 0,
++	SHOTGUN_FIRE,
++	SHOTGUN_FIRE2,
++	SHOTGUN_RELOAD,
++	SHOTGUN_PUMP,
++	SHOTGUN_START_RELOAD,
++	SHOTGUN_DRAW,
++	SHOTGUN_HOLSTER,
++	SHOTGUN_IDLE4,
++	SHOTGUN_IDLE_DEEP
++};
++
++LINK_ENTITY_TO_CLASS(weapon_shotgun, CHLShotgun, CCSPlayerWeapon)
++
++void CHLShotgun::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_SHOTGUN;
++	SET_MODEL(edict(), "models/w_shotgun.mdl");
++	m_iDefaultAmmo = HL_SHOTGUN_MAX_CLIP;
++	m_flPumpTime = 0.0f;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLShotgun::Precache()
++{
++	PRECACHE_MODEL("models/v_shotgun.mdl");
++	PRECACHE_MODEL("models/w_shotgun.mdl");
++	PRECACHE_MODEL("models/p_shotgun.mdl");
++	PRECACHE_MODEL("models/shotgunshell.mdl");
++
++	PRECACHE_SOUND("weapons/dbarrel1.wav");
++	PRECACHE_SOUND("weapons/sbarrel1.wav");
++	PRECACHE_SOUND("weapons/reload1.wav");
++	PRECACHE_SOUND("weapons/reload3.wav");
++	PRECACHE_SOUND("weapons/357_cock1.wav");
++	PRECACHE_SOUND("weapons/scock1.wav");
++
++	m_usSingleFire = PRECACHE_EVENT(1, "events/shotgun1.sc");
++	m_usDoubleFire = PRECACHE_EVENT(1, "events/shotgun2.sc");
++}
++
++int CHLShotgun::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "buckshot";
++	p->iMaxAmmo1 = MAX_AMMO_BUCKSHOT;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = HL_SHOTGUN_MAX_CLIP;
++	p->iSlot = 0;
++	p->iPosition = 24;
++	p->iId = m_iId = WEAPON_HL_SHOTGUN;
++	p->iFlags = 0;
++	p->iWeight = HL_SHOTGUN_WEIGHT;
++	return 1;
++}
++
++BOOL CHLShotgun::Deploy()
++{
++	return DefaultDeploy("models/v_shotgun.mdl", "models/p_shotgun.mdl", SHOTGUN_DRAW, "shotgun", 0);
++}
++
++void CHLShotgun::Holster(int skiplocal)
++{
++	m_flPumpTime = 0.0f;
++	CBasePlayerWeapon::Holster(skiplocal);
++}
++
++void CHLShotgun::PrimaryAttack()
++{
++	Fire(1);
++}
++
++void CHLShotgun::SecondaryAttack()
++{
++	if (!CanFire())
++		return;
++
++	Fire(2);
++}
++
++void CHLShotgun::Fire(int iShells)
++{
++	if (m_pPlayer->pev->waterlevel == 3)
++	{
++		PlayEmptySound();
++		m_flNextPrimaryAttack = GetNextAttackDelay(0.15f);
++		return;
++	}
++
++	if (m_iClip < iShells)
++	{
++		Reload();
++		if (m_iClip == 0 || iShells > 1)
++			PlayEmptySound();
++
++		return;
++	}
++
++	m_pPlayer->m_iWeaponVolume = LOUD_GUN_VOLUME;
++	m_pPlayer->m_iWeaponFlash = NORMAL_GUN_FLASH;
++	m_iClip -= iShells;
++	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
++	Vector vecSrc = m_pPlayer->GetGunPosition();
++	Vector vecAiming = gpGlobals->v_forward;
++	Vector vecCone = (iShells > 1) ? HL_CONE_DOUBLESHOTGUN : HL_CONE_SHOTGUN;
++	m_pPlayer->FireBuckshots(HL_SHOTGUN_PELLETS * iShells, vecSrc, vecAiming, vecCone, 3000.0f, 0, HL_SHOTGUN_DAMAGE, m_pPlayer->pev);
++
++	PLAYBACK_EVENT_FULL(0, m_pPlayer->edict(), iShells > 1 ? m_usDoubleFire : m_usSingleFire, 0.0f, (float *)&g_vecZero, (float *)&g_vecZero, 0, 0, 0, 0, 0, 0);
++
++	float flDelay = (iShells > 1) ? 1.5f : 0.75f;
++	m_flPumpTime = gpGlobals->time + ((iShells > 1) ? 0.95f : 0.5f);
++	m_flNextPrimaryAttack = GetNextAttackDelay(flDelay);
++	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + flDelay;
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + (m_iClip ? flDelay + 4.5f : flDelay);
++	m_fInSpecialReload = 0;
++	m_pPlayer->pev->punchangle.x -= (iShells > 1) ? 10.0f : 5.0f;
++}
++
++// (shell by shell: to the side, one in, again, then the pump)
++void CHLShotgun::Reload()
++{
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip == HL_SHOTGUN_MAX_CLIP)
++		return;
++
++	if (m_flNextPrimaryAttack > UTIL_WeaponTimeBase())
++		return;
++
++	if (m_fInSpecialReload == 0)
++	{
++		m_pPlayer->SetAnimation(PLAYER_RELOAD);
++		SendWeaponAnim(SHOTGUN_START_RELOAD);
++		m_fInSpecialReload = 1;
++		m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.6f;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.6f;
++		m_flNextPrimaryAttack = GetNextAttackDelay(1.0f);
++		m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 1.0f;
++	}
++	else if (m_fInSpecialReload == 1)
++	{
++		if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++			return;
++
++		m_fInSpecialReload = 2;
++		EMIT_SOUND_DYN(ENT(m_pPlayer->pev), CHAN_ITEM, RANDOM_LONG(0, 1) ? "weapons/reload1.wav" : "weapons/reload3.wav", VOL_NORM, ATTN_NORM, 0, 85 + RANDOM_LONG(0, 0x1f));
++		SendWeaponAnim(SHOTGUN_RELOAD);
++		m_flNextReload = UTIL_WeaponTimeBase() + 0.5f;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
++	}
++	else
++	{
++		m_iClip++;
++		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++		m_fInSpecialReload = 1;
++	}
++}
++
++void CHLShotgun::ItemPostFrame()
++{
++	if (m_flPumpTime != 0.0f && m_flPumpTime < gpGlobals->time)
++	{
++		EMIT_SOUND_DYN(ENT(m_pPlayer->pev), CHAN_ITEM, "weapons/scock1.wav", VOL_NORM, ATTN_NORM, 0, 95 + RANDOM_LONG(0, 0x1f));
++		m_flPumpTime = 0.0f;
++	}
++
++	CBasePlayerWeapon::ItemPostFrame();
++}
++
++void CHLShotgun::WeaponIdle()
++{
++	ResetEmptySound();
++
++	if (m_flTimeWeaponIdle >= UTIL_WeaponTimeBase())
++		return;
++
++	if (m_iClip == 0 && m_fInSpecialReload == 0 && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++	{
++		Reload();
++	}
++	else if (m_fInSpecialReload != 0)
++	{
++		if (m_iClip != HL_SHOTGUN_MAX_CLIP && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		{
++			Reload();
++		}
++		else
++		{
++			SendWeaponAnim(SHOTGUN_PUMP);
++			EMIT_SOUND_DYN(ENT(m_pPlayer->pev), CHAN_ITEM, "weapons/scock1.wav", VOL_NORM, ATTN_NORM, 0, 95 + RANDOM_LONG(0, 0x1f));
++			m_fInSpecialReload = 0;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.5f;
++		}
++	}
++	else
++	{
++		int iAnim;
++		float flRand = UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f);
++		if (flRand <= 0.8f)
++		{
++			iAnim = SHOTGUN_IDLE_DEEP;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + (60.0f / 12.0f);
++		}
++		else if (flRand <= 0.95f)
++		{
++			iAnim = SHOTGUN_IDLE;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + (20.0f / 9.0f);
++		}
++		else
++		{
++			iAnim = SHOTGUN_IDLE4;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + (20.0f / 9.0f);
++		}
++		SendWeaponAnim(iAnim);
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
 +// Crossbow and its bolt
 +
 +#define HL_BOLT_AIR_VELOCITY   2000
 +#define HL_BOLT_WATER_VELOCITY 1000
 +
-+LINK_ENTITY_TO_CLASS(hl_crossbow_bolt, CHLCrossbowBolt, CCSEntity)
++LINK_ENTITY_TO_CLASS(crossbow_bolt, CHLCrossbowBolt, CCSEntity)
 +
 +CHLCrossbowBolt *CHLCrossbowBolt::BoltCreate()
 +{
 +	CHLCrossbowBolt *pBolt = GetClassPtr<CCSEntity>((CHLCrossbowBolt *)nullptr);
-+	pBolt->pev->classname = MAKE_STRING("hl_crossbow_bolt");
++	MAKE_STRING_CLASS("crossbow_bolt", pBolt->pev);
 +	pBolt->Spawn();
 +	return pBolt;
 +}
@@ -1090,7 +2594,7 @@ index 0000000..16887f2
 +	PRECACHE_SOUND("weapons/xbow_fire1.wav");
 +	PRECACHE_SOUND("weapons/xbow_reload1.wav");
 +
-+	UTIL_PrecacheOther("hl_crossbow_bolt");
++	UTIL_PrecacheOther("crossbow_bolt");
 +
 +	m_usCrossbow = PRECACHE_EVENT(1, "events/crossbow1.sc");
 +	m_usCrossbow2 = PRECACHE_EVENT(1, "events/crossbow2.sc");
@@ -1235,6 +2739,392 @@ index 0000000..16887f2
 +}
 +
 +// ---------------------------------------------------------------------------------------------------------------------
++// Hornet gun and its hornets
++
++enum hl_hgun_e
++{
++	HGUN_IDLE1 = 0,
++	HGUN_FIDGETSWAY,
++	HGUN_FIDGETSHAKE,
++	HGUN_DOWN,
++	HGUN_UP,
++	HGUN_SHOOT
++};
++
++#define HL_HORNET_TYPE_RED     0
++#define HL_HORNET_TYPE_ORANGE  1
++#define HL_HORNET_RED_SPEED    600.0f
++#define HL_HORNET_ORANGE_SPEED 800.0f
++#define HL_HORNET_BUZZ_VOLUME  0.8f
++#define HL_HORNET_RECHARGE     0.3f // (a hornet back, in multiplayer)
++
++LINK_ENTITY_TO_CLASS(hornet, CHLHornet, CCSAnimating)
++
++void CHLHornet::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("hornet", pev);
++	pev->movetype = MOVETYPE_FLY;
++	pev->solid = SOLID_BBOX;
++	pev->takedamage = DAMAGE_YES;
++	pev->health = 1; // (weak)
++
++	m_flStopAttack = gpGlobals->time + 3.5f;
++	if (RANDOM_LONG(1, 5) <= 2)
++	{
++		m_iHornetType = HL_HORNET_TYPE_RED;
++		m_flFlySpeed = HL_HORNET_RED_SPEED;
++	}
++	else
++	{
++		m_iHornetType = HL_HORNET_TYPE_ORANGE;
++		m_flFlySpeed = HL_HORNET_ORANGE_SPEED;
++	}
++
++	SET_MODEL(edict(), "models/hornet.mdl");
++	UTIL_SetSize(pev, Vector(-4, -4, -4), Vector(4, 4, 4));
++
++	m_hEnemy = nullptr;
++	m_vecEnemyLKP = g_vecZero;
++	m_iOwnerTeam = HL_TeamOf(pev->owner);
++	pev->dmg = HL_HORNET_DAMAGE;
++
++	SetTouch(&CHLHornet::DieTouch);
++	SetThink(&CHLHornet::StartTrack);
++	pev->nextthink = gpGlobals->time + 0.1f;
++	ResetSequenceInfo();
++}
++
++void CHLHornet::Precache()
++{
++	PRECACHE_MODEL("models/hornet.mdl");
++
++	PRECACHE_SOUND("hornet/ag_buzz1.wav");
++	PRECACHE_SOUND("hornet/ag_buzz2.wav");
++	PRECACHE_SOUND("hornet/ag_buzz3.wav");
++	PRECACHE_SOUND("hornet/ag_hornethit1.wav");
++	PRECACHE_SOUND("hornet/ag_hornethit2.wav");
++	PRECACHE_SOUND("hornet/ag_hornethit3.wav");
++
++	m_iTrail = PRECACHE_MODEL("sprites/laserbeam.spr");
++}
++
++void CHLHornet::StartTrack()
++{
++	IgniteTrail();
++	SetTouch(&CHLHornet::TrackTouch);
++	SetThink(&CHLHornet::TrackTarget);
++	pev->nextthink = gpGlobals->time + 0.1f;
++}
++
++void CHLHornet::StartDart()
++{
++	IgniteTrail();
++	SetTouch(&CHLHornet::DieTouch);
++	SetThink(&CBaseEntity::SUB_Remove);
++	pev->nextthink = gpGlobals->time + 4.0f;
++}
++
++void CHLHornet::IgniteTrail()
++{
++	MESSAGE_BEGIN(MSG_BROADCAST, SVC_TEMPENTITY);
++		WRITE_BYTE(TE_BEAMFOLLOW);
++		WRITE_SHORT(entindex());
++		WRITE_SHORT(m_iTrail);
++		WRITE_BYTE(10); // life
++		WRITE_BYTE(2);  // width
++		if (m_iHornetType == HL_HORNET_TYPE_RED)
++		{
++			WRITE_BYTE(179); // r, g, b
++			WRITE_BYTE(39);
++			WRITE_BYTE(14);
++		}
++		else
++		{
++			WRITE_BYTE(255);
++			WRITE_BYTE(128);
++			WRITE_BYTE(0);
++		}
++		WRITE_BYTE(128); // brightness
++	MESSAGE_END();
++}
++
++void CHLHornet::Buzz()
++{
++	static const char *sounds[] = { "hornet/ag_buzz1.wav", "hornet/ag_buzz2.wav", "hornet/ag_buzz3.wav" };
++	EMIT_SOUND(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], HL_HORNET_BUZZ_VOLUME, ATTN_NORM);
++}
++
++bool CHLHornet::IsEnemy(CBaseEntity *pOther)
++{
++	return HL_IsEnemyOf(m_iOwnerTeam, pOther, pev->owner ? CBaseEntity::Instance(pev->owner) : nullptr);
++}
++
++void CHLHornet::TrackTarget()
++{
++	StudioFrameAdvance();
++
++	if (gpGlobals->time > m_flStopAttack)
++	{
++		SetTouch(nullptr);
++		SetThink(&CBaseEntity::SUB_Remove);
++		pev->nextthink = gpGlobals->time + 0.1f;
++		return;
++	}
++
++	// (an enemy within 25 degrees of its heading, as Half-Life's)
++	if (!m_hEnemy.IsValid() || !IsEnemy(m_hEnemy))
++		m_hEnemy = HL_FindEnemy(this, m_iOwnerTeam, pev->owner ? CBaseEntity::Instance(pev->owner) : nullptr, 512, 0.9f);
++
++	if (m_hEnemy.IsValid() && FVisible(m_hEnemy))
++		m_vecEnemyLKP = m_hEnemy->BodyTarget(pev->origin);
++	else
++		m_vecEnemyLKP = m_vecEnemyLKP + pev->velocity * m_flFlySpeed * 0.1f;
++
++	Vector vecDirToEnemy = (m_vecEnemyLKP - pev->origin).Normalize();
++	Vector vecFlightDir = (pev->velocity.Length() < 0.1f) ? vecDirToEnemy : pev->velocity.Normalize();
++
++	// (how much it has to turn)
++	float flDelta = DotProduct(vecFlightDir, vecDirToEnemy);
++	if (flDelta < 0.5f)
++		Buzz();
++
++	if (flDelta <= 0 && m_iHornetType == HL_HORNET_TYPE_RED)
++		flDelta = 0.25f; // (no sharp turns for the red ones)
++
++	pev->velocity = (vecFlightDir + vecDirToEnemy).Normalize();
++
++	if (m_iHornetType == HL_HORNET_TYPE_RED)
++	{
++		pev->velocity = pev->velocity * (m_flFlySpeed * flDelta);
++		pev->nextthink = gpGlobals->time + RANDOM_FLOAT(0.1f, 0.3f);
++	}
++	else
++	{
++		pev->velocity = pev->velocity * m_flFlySpeed;
++		pev->nextthink = gpGlobals->time + 0.1f;
++	}
++
++	pev->angles = UTIL_VecToAngles(pev->velocity);
++	pev->solid = SOLID_BBOX;
++}
++
++void CHLHornet::TrackTouch(CBaseEntity *pOther)
++{
++	if (pOther->edict() == pev->owner || pOther->pev->modelindex == pev->modelindex)
++	{
++		pev->solid = SOLID_NOT;
++		return;
++	}
++
++	// (off the walls and the shooter's teammates: it stings enemies only)
++	if (!IsEnemy(pOther))
++	{
++		pev->velocity = pev->velocity.Normalize();
++		pev->velocity.x *= -1.0f;
++		pev->velocity.y *= -1.0f;
++		pev->origin = pev->origin + pev->velocity * 4.0f;
++		pev->velocity = pev->velocity * m_flFlySpeed;
++		return;
++	}
++
++	DieTouch(pOther);
++}
++
++void CHLHornet::DieTouch(CBaseEntity *pOther)
++{
++	if (pOther && pOther->pev->takedamage && pev->owner)
++	{
++		static const char *sounds[] = { "hornet/ag_hornethit1.wav", "hornet/ag_hornethit2.wav", "hornet/ag_hornethit3.wav" };
++		EMIT_SOUND(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], VOL_NORM, ATTN_NORM);
++
++		TraceResult tr = UTIL_GetGlobalTrace();
++		entvars_t *pevOwner = VARS(pev->owner);
++
++		ClearMultiDamage();
++		pOther->TraceAttack(pevOwner, pev->dmg, pev->velocity.Normalize(), &tr, DMG_BULLET);
++		ApplyMultiDamage(pev, pevOwner);
++	}
++
++	// (invisible, its trail fading out)
++	pev->modelindex = 0;
++	pev->solid = SOLID_NOT;
++	SetTouch(nullptr);
++	SetThink(&CBaseEntity::SUB_Remove);
++	pev->nextthink = gpGlobals->time + 1.0f;
++}
++
++LINK_ENTITY_TO_CLASS(weapon_hornetgun, CHLHornetGun, CCSPlayerWeapon)
++
++void CHLHornetGun::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_HORNETGUN;
++	SET_MODEL(edict(), "models/w_hgun.mdl");
++	m_iDefaultAmmo = HL_HORNET_MAX_CARRY;
++	m_iFirePhase = 0;
++	m_flRechargeTime = 0.0f;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLHornetGun::Precache()
++{
++	PRECACHE_MODEL("models/v_hgun.mdl");
++	PRECACHE_MODEL("models/w_hgun.mdl");
++	PRECACHE_MODEL("models/p_hgun.mdl");
++
++	PRECACHE_SOUND("agrunt/ag_fire1.wav");
++	PRECACHE_SOUND("agrunt/ag_fire2.wav");
++	PRECACHE_SOUND("agrunt/ag_fire3.wav");
++
++	UTIL_PrecacheOther("hornet");
++}
++
++int CHLHornetGun::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "Hornets";
++	p->iMaxAmmo1 = HL_HORNET_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 0;
++	p->iPosition = 25;
++	p->iId = m_iId = WEAPON_HL_HORNETGUN;
++	p->iFlags = ITEM_FLAG_NOAUTOSWITCHEMPTY | ITEM_FLAG_NOAUTORELOAD;
++	p->iWeight = HL_HORNETGUN_WEIGHT;
++	return 1;
++}
++
++BOOL CHLHornetGun::Deploy()
++{
++	return DefaultDeploy("models/v_hgun.mdl", "models/p_hgun.mdl", HGUN_UP, "mp5", 0);
++}
++
++void CHLHornetGun::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	SendWeaponAnim(HGUN_DOWN);
++
++	// (never quite empty: it is never retired)
++	if (!m_pPlayer->m_rgAmmo[PrimaryAmmoIndex()])
++		m_pPlayer->m_rgAmmo[PrimaryAmmoIndex()] = 1;
++}
++
++void CHLHornetGun::PrimaryAttack()
++{
++	Fire(false);
++}
++
++void CHLHornetGun::SecondaryAttack()
++{
++	if (!CanFire())
++		return;
++
++	Fire(true);
++}
++
++// (a homing hornet, or a straight dart from one of eight points around the barrel)
++void CHLHornetGun::Fire(bool bDart)
++{
++	Reload();
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
++		return;
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle);
++	Vector vecSrc = m_pPlayer->GetGunPosition() + gpGlobals->v_forward * 16.0f + gpGlobals->v_right * 8.0f + gpGlobals->v_up * -12.0f;
++
++	if (bDart)
++	{
++		static const float phases[8][2] = { { 8, 0 }, { 8, 8 }, { 0, 8 }, { -8, 8 }, { -8, 0 }, { -8, -8 }, { 0, -8 }, { 8, -8 } };
++		const float *phase = phases[m_iFirePhase];
++		m_iFirePhase = (m_iFirePhase + 1) % 8;
++		vecSrc = vecSrc + gpGlobals->v_up * phase[0] + gpGlobals->v_right * phase[1];
++	}
++
++	CHLHornet *pHornet = GetClassPtr<CCSAnimating>((CHLHornet *)nullptr);
++	UTIL_SetOrigin(pHornet->pev, vecSrc);
++	pHornet->pev->angles = m_pPlayer->pev->v_angle;
++	pHornet->pev->owner = m_pPlayer->edict();
++	pHornet->Spawn();
++
++	if (bDart)
++	{
++		pHornet->pev->velocity = gpGlobals->v_forward * 1200.0f;
++		pHornet->pev->angles = UTIL_VecToAngles(pHornet->pev->velocity);
++		pHornet->SetThink(&CHLHornet::StartDart);
++	}
++	else
++	{
++		pHornet->pev->velocity = gpGlobals->v_forward * 300.0f;
++	}
++
++	m_flRechargeTime = gpGlobals->time + HL_HORNET_RECHARGE;
++	m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++	m_pPlayer->m_iWeaponVolume = bDart ? NORMAL_GUN_VOLUME : QUIET_GUN_VOLUME;
++	m_pPlayer->m_iWeaponFlash = DIM_GUN_FLASH;
++
++	static const char *sounds[] = { "agrunt/ag_fire1.wav", "agrunt/ag_fire2.wav", "agrunt/ag_fire3.wav" };
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, sounds[RANDOM_LONG(0, 2)], VOL_NORM, ATTN_NORM);
++	SendWeaponAnim(HGUN_SHOOT);
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	if (bDart)
++	{
++		m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.1f;
++	}
++	else
++	{
++		m_flNextPrimaryAttack = m_flNextPrimaryAttack + 0.25f;
++		if (m_flNextPrimaryAttack < UTIL_WeaponTimeBase())
++			m_flNextPrimaryAttack = UTIL_WeaponTimeBase() + 0.25f;
++	}
++
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++	m_pPlayer->pev->punchangle.x -= RANDOM_FLOAT(0.0f, 1.0f);
++}
++
++// (the hornets grow back)
++void CHLHornetGun::Reload()
++{
++	int &ammo = m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType];
++	while (ammo < HL_HORNET_MAX_CARRY && m_flRechargeTime < gpGlobals->time)
++	{
++		ammo++;
++		m_flRechargeTime += HL_HORNET_RECHARGE;
++	}
++}
++
++void CHLHornetGun::WeaponIdle()
++{
++	Reload();
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	int iAnim;
++	float flRand = UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f);
++	if (flRand <= 0.75f)
++	{
++		iAnim = HGUN_IDLE1;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 30.0f / 16.0f * 2.0f;
++	}
++	else if (flRand <= 0.875f)
++	{
++		iAnim = HGUN_FIDGETSWAY;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 40.0f / 16.0f;
++	}
++	else
++	{
++		iAnim = HGUN_FIDGETSHAKE;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 35.0f / 16.0f;
++	}
++	SendWeaponAnim(iAnim);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
 +// RPG, its laser spot and its rocket
 +
 +enum hl_rpg_e
@@ -1251,13 +3141,13 @@ index 0000000..16887f2
 +	RPG_FIDGET_UL  // unloaded fidget
 +};
 +
-+LINK_ENTITY_TO_CLASS(hl_laser_spot, CHLLaserSpot, CCSEntity)
++LINK_ENTITY_TO_CLASS(laser_spot, CHLLaserSpot, CCSEntity)
 +
 +CHLLaserSpot *CHLLaserSpot::CreateSpot()
 +{
 +	CHLLaserSpot *pSpot = GetClassPtr<CCSEntity>((CHLLaserSpot *)nullptr);
 +	pSpot->Spawn();
-+	pSpot->pev->classname = MAKE_STRING("hl_laser_spot");
++	MAKE_STRING_CLASS("laser_spot", pSpot->pev);
 +	return pSpot;
 +}
 +
@@ -1292,7 +3182,7 @@ index 0000000..16887f2
 +	PRECACHE_MODEL("sprites/laserdot.spr");
 +}
 +
-+LINK_ENTITY_TO_CLASS(hl_rpg_rocket, CHLRpgRocket, CCSEntity)
++LINK_ENTITY_TO_CLASS(rpg_rocket, CHLRpgRocket, CCSEntity)
 +
 +CHLRpgRocket *CHLRpgRocket::CreateRpgRocket(Vector vecOrigin, Vector vecAngles, CBaseEntity *pOwner, CHLRpg *pLauncher)
 +{
@@ -1319,7 +3209,7 @@ index 0000000..16887f2
 +	UTIL_SetSize(pev, Vector(0, 0, 0), Vector(0, 0, 0));
 +	UTIL_SetOrigin(pev, pev->origin);
 +
-+	pev->classname = MAKE_STRING("hl_rpg_rocket");
++	MAKE_STRING_CLASS("rpg_rocket", pev);
 +
 +	SetThink(&CHLRpgRocket::IgniteThink);
 +
@@ -1412,7 +3302,7 @@ index 0000000..16887f2
 +	float flMax = 4096;
 +
 +	// (the nearest visible laser spot ahead)
-+	while ((pOther = UTIL_FindEntityByClassname(pOther, "hl_laser_spot")))
++	while ((pOther = UTIL_FindEntityByClassname(pOther, "laser_spot")))
 +	{
 +		UTIL_TraceLine(pev->origin, pOther->pev->origin, dont_ignore_monsters, ENT(pev), &tr);
 +		if (tr.flFraction >= 0.9f)
@@ -1496,8 +3386,8 @@ index 0000000..16887f2
 +	PRECACHE_MODEL("models/v_rpg.mdl");
 +	PRECACHE_MODEL("models/p_rpg.mdl");
 +
-+	UTIL_PrecacheOther("hl_laser_spot");
-+	UTIL_PrecacheOther("hl_rpg_rocket");
++	UTIL_PrecacheOther("laser_spot");
++	UTIL_PrecacheOther("rpg_rocket");
 +
 +	PRECACHE_SOUND("weapons/rocketfire1.wav");
 +	PRECACHE_SOUND("weapons/glauncher.wav");
@@ -1769,6 +3659,10 @@ index 0000000..16887f2
 +
 +void CHLGauss::SecondaryAttack()
 +{
++	// (no charging in the freeze period; a charge already going may finish)
++	if (m_fInAttack == 0 && !CanFire())
++		return;
++
 +	if (m_pPlayer->pev->waterlevel == 3)
 +	{
 +		if (m_fInAttack != 0)
@@ -1956,7 +3850,7 @@ index 0000000..16887f2
 +				vecSrc = tr.vecEndPos + vecDir * 8.0f;
 +				vecDest = vecSrc + vecDir * 8192.0f;
 +
-+				::RadiusDamage(tr.vecEndPos, pev, m_pPlayer->pev, flDamage * n, flDamage * n * 2.5f, CLASS_NONE, DMG_BLAST);
++				HL_RadiusDamage(tr.vecEndPos, pev, m_pPlayer->pev, flDamage * n, flDamage * n * 2.5f);
 +
 +				if (n == 0.0f)
 +					n = 0.1f;
@@ -1986,7 +3880,7 @@ index 0000000..16887f2
 +								n = 1.0f;
 +
 +							flDamage -= n;
-+							::RadiusDamage(beam_tr.vecEndPos + vecDir * 8, pev, m_pPlayer->pev, flDamage, flDamage * 1.75f, CLASS_NONE, DMG_BLAST);
++							HL_RadiusDamage(beam_tr.vecEndPos + vecDir * 8, pev, m_pPlayer->pev, flDamage, flDamage * 1.75f);
 +							vecSrc = beam_tr.vecEndPos + vecDir;
 +						}
 +						else
@@ -2065,7 +3959,7 @@ index 0000000..16887f2
 +
 +#define HL_EGON_PRIMARY_VOLUME 450
 +#define HL_EGON_BEAM_SPRITE    "sprites/xbeam1.spr"
-+#define HL_EGON_FLARE_SPRITE   "sprites/XSpark1.spr"
++#define HL_EGON_FLARE_SPRITE   "sprites/xspark1.spr"
 +#define HL_EGON_SOUND_OFF      "weapons/egon_off1.wav"
 +#define HL_EGON_SOUND_RUN      "weapons/egon_run3.wav"
 +#define HL_EGON_SOUND_STARTUP  "weapons/egon_windup2.wav"
@@ -2252,7 +4146,7 @@ index 0000000..16887f2
 +			pEntity->TraceAttack(m_pPlayer->pev, HL_EGON_DAMAGE, vecDir, &tr, DMG_ENERGYBEAM | DMG_ALWAYSGIB);
 +
 +		ApplyMultiDamage(m_pPlayer->pev, m_pPlayer->pev);
-+		::RadiusDamage(tr.vecEndPos, pev, m_pPlayer->pev, HL_EGON_DAMAGE * 0.25f, 128, CLASS_NONE, DMG_ENERGYBEAM | DMG_BLAST | DMG_ALWAYSGIB);
++		HL_RadiusDamage(tr.vecEndPos, pev, m_pPlayer->pev, HL_EGON_DAMAGE * 0.25f, 128, DMG_ENERGYBEAM | DMG_EXPLOSION);
 +
 +		if (!m_pPlayer->IsAlive())
 +			return;
@@ -2383,6 +4277,1593 @@ index 0000000..16887f2
 +	m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
 +	m_fireState = FIRE_OFF;
 +	DestroyEffect();
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Grenades: the hand grenade's and the MP5's
++
++LINK_ENTITY_TO_CLASS(hl_grenade, CHLGrenade, CCSAnimating)
++
++void CHLGrenade::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("hl_grenade", pev);
++	pev->movetype = MOVETYPE_BOUNCE;
++	pev->solid = SOLID_BBOX;
++
++	SET_MODEL(edict(), "models/grenade.mdl");
++	UTIL_SetSize(pev, Vector(0, 0, 0), Vector(0, 0, 0));
++
++	pev->dmg = HL_ARGRENADE_DAMAGE;
++	m_flNextHit = 0.0f;
++}
++
++void CHLGrenade::Precache()
++{
++	PRECACHE_MODEL("models/grenade.mdl");
++	PRECACHE_MODEL("models/w_grenade.mdl");
++
++	PRECACHE_SOUND("weapons/grenade_hit1.wav");
++	PRECACHE_SOUND("weapons/grenade_hit2.wav");
++	PRECACHE_SOUND("weapons/grenade_hit3.wav");
++	PRECACHE_SOUND("weapons/debris1.wav");
++	PRECACHE_SOUND("weapons/debris2.wav");
++	PRECACHE_SOUND("weapons/debris3.wav");
++}
++
++CHLGrenade *CHLGrenade::ShootTimed(entvars_t *pevOwner, Vector vecStart, Vector vecVelocity, float time)
++{
++	CHLGrenade *pGrenade = GetClassPtr<CCSAnimating>((CHLGrenade *)nullptr);
++	pGrenade->Spawn();
++	UTIL_SetOrigin(pGrenade->pev, vecStart);
++	pGrenade->pev->velocity = vecVelocity;
++	pGrenade->pev->angles = UTIL_VecToAngles(pGrenade->pev->velocity);
++	pGrenade->pev->owner = ENT(pevOwner);
++
++	pGrenade->SetTouch(&CHLGrenade::BounceTouch);
++	pGrenade->pev->dmgtime = gpGlobals->time + time;
++	pGrenade->SetThink(&CHLGrenade::TumbleThink);
++	pGrenade->pev->nextthink = gpGlobals->time + 0.1f;
++	if (time < 0.1f)
++	{
++		pGrenade->pev->nextthink = gpGlobals->time;
++		pGrenade->pev->velocity = Vector(0, 0, 0);
++	}
++
++	SET_MODEL(pGrenade->edict(), "models/w_grenade.mdl");
++	pGrenade->pev->sequence = RANDOM_LONG(3, 6);
++	pGrenade->ResetSequenceInfo();
++	pGrenade->pev->framerate = 1.0f;
++
++	pGrenade->pev->gravity = 0.5f;
++	pGrenade->pev->friction = 0.8f;
++	pGrenade->pev->dmg = HL_HANDGRENADE_DAMAGE;
++	return pGrenade;
++}
++
++CHLGrenade *CHLGrenade::ShootContact(entvars_t *pevOwner, Vector vecStart, Vector vecVelocity)
++{
++	CHLGrenade *pGrenade = GetClassPtr<CCSAnimating>((CHLGrenade *)nullptr);
++	pGrenade->Spawn();
++	pGrenade->pev->gravity = 0.5f; // (aerodynamic)
++	UTIL_SetOrigin(pGrenade->pev, vecStart);
++	pGrenade->pev->velocity = vecVelocity;
++	pGrenade->pev->angles = UTIL_VecToAngles(pGrenade->pev->velocity);
++	pGrenade->pev->owner = ENT(pevOwner);
++
++	pGrenade->SetThink(&CHLGrenade::FlyThink);
++	pGrenade->pev->nextthink = gpGlobals->time;
++	pGrenade->pev->avelocity.x = RANDOM_FLOAT(-100, -500);
++	pGrenade->SetTouch(&CHLGrenade::ExplodeTouch);
++	pGrenade->pev->dmg = HL_ARGRENADE_DAMAGE;
++	return pGrenade;
++}
++
++void CHLGrenade::BounceTouch(CBaseEntity *pOther)
++{
++	if (pOther->edict() == pev->owner)
++		return;
++
++	// (a knock on whom it hits in flight)
++	if (m_flNextHit < gpGlobals->time && pev->velocity.Length() > 100 && pev->owner)
++	{
++		entvars_t *pevOwner = VARS(pev->owner);
++		TraceResult tr = UTIL_GetGlobalTrace();
++		ClearMultiDamage();
++		pOther->TraceAttack(pevOwner, 1, gpGlobals->v_forward, &tr, DMG_CLUB);
++		ApplyMultiDamage(pev, pevOwner);
++		m_flNextHit = gpGlobals->time + 1.0f;
++	}
++
++	if (pev->flags & FL_ONGROUND)
++	{
++		pev->velocity = pev->velocity * 0.8f;
++		pev->sequence = 1;
++		ResetSequenceInfo();
++	}
++	else
++	{
++		static const char *sounds[] = { "weapons/grenade_hit1.wav", "weapons/grenade_hit2.wav", "weapons/grenade_hit3.wav" };
++		EMIT_SOUND(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], 0.25f, ATTN_NORM);
++	}
++
++	pev->framerate = pev->velocity.Length() / 200.0f;
++	if (pev->framerate > 1.0f)
++	{
++		pev->framerate = 1.0f;
++	}
++	else if (pev->framerate < 0.5f)
++	{
++		pev->framerate = 0.0f;
++		pev->frame = 0.0f;
++	}
++}
++
++void CHLGrenade::ExplodeTouch(CBaseEntity *pOther)
++{
++	TraceResult tr;
++	Vector vecSpot = pev->origin - pev->velocity.Normalize() * 32;
++	UTIL_TraceLine(vecSpot, vecSpot + pev->velocity.Normalize() * 64, ignore_monsters, ENT(pev), &tr);
++	Explode(&tr);
++}
++
++void CHLGrenade::TumbleThink()
++{
++	if (!IsInWorld())
++	{
++		UTIL_Remove(this);
++		return;
++	}
++
++	StudioFrameAdvance();
++	pev->nextthink = gpGlobals->time + 0.1f;
++
++	if (pev->dmgtime <= gpGlobals->time)
++		SetThink(&CHLGrenade::Detonate);
++
++	if (pev->waterlevel != 0)
++	{
++		pev->velocity = pev->velocity * 0.5f;
++		pev->framerate = 0.2f;
++	}
++}
++
++void CHLGrenade::FlyThink()
++{
++	if (!IsInWorld())
++	{
++		UTIL_Remove(this);
++		return;
++	}
++
++	pev->nextthink = gpGlobals->time + 0.2f;
++
++	if (pev->waterlevel != 0)
++		pev->velocity = pev->velocity * 0.5f;
++}
++
++void CHLGrenade::Detonate()
++{
++	TraceResult tr;
++	Vector vecSpot = pev->origin + Vector(0, 0, 8);
++	UTIL_TraceLine(vecSpot, vecSpot + Vector(0, 0, -40), ignore_monsters, ENT(pev), &tr);
++	Explode(&tr);
++}
++
++void CHLGrenade::Explode(TraceResult *pTrace)
++{
++	pev->model = iStringNull; // (invisible)
++	pev->solid = SOLID_NOT;
++	pev->takedamage = DAMAGE_NO;
++
++	entvars_t *pevOwner = pev->owner ? VARS(pev->owner) : nullptr;
++	HL_Explosion(this, pTrace, pevOwner, pev->dmg, pev->dmg * 2.5f, int((pev->dmg - 50) * 0.6f));
++
++	static const char *sounds[] = { "weapons/debris1.wav", "weapons/debris2.wav", "weapons/debris3.wav" };
++	EMIT_SOUND(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], 0.55f, ATTN_NORM);
++
++	pev->effects |= EF_NODRAW;
++	pev->velocity = g_vecZero;
++	SetTouch(nullptr);
++	SetThink(&CHLGrenade::Smoke);
++	pev->nextthink = gpGlobals->time + 0.3f;
++}
++
++void CHLGrenade::Smoke()
++{
++	if (UTIL_PointContents(pev->origin) == CONTENTS_WATER)
++	{
++		UTIL_Bubbles(pev->origin - Vector(64, 64, 64), pev->origin + Vector(64, 64, 64), 100);
++	}
++	else
++	{
++		MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pev->origin);
++			WRITE_BYTE(TE_SMOKE);
++			WRITE_COORD(pev->origin.x);
++			WRITE_COORD(pev->origin.y);
++			WRITE_COORD(pev->origin.z);
++			WRITE_SHORT(g_sModelIndexSmoke);
++			WRITE_BYTE(clamp(int((pev->dmg - 50) * 0.8f), 1, 255)); // scale * 10
++			WRITE_BYTE(12); // framerate
++		MESSAGE_END();
++	}
++
++	UTIL_Remove(this);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Hand grenade
++
++enum hl_handgrenade_e
++{
++	HANDGRENADE_IDLE = 0,
++	HANDGRENADE_FIDGET,
++	HANDGRENADE_PINPULL,
++	HANDGRENADE_THROW1, // toss
++	HANDGRENADE_THROW2, // medium
++	HANDGRENADE_THROW3, // hard
++	HANDGRENADE_HOLSTER,
++	HANDGRENADE_DRAW
++};
++
++LINK_ENTITY_TO_CLASS(weapon_handgrenade, CHLHandGrenade, CCSPlayerWeapon)
++
++void CHLHandGrenade::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_HANDGRENADE;
++	SET_MODEL(edict(), "models/w_grenade.mdl");
++	m_iDefaultAmmo = 1;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLHandGrenade::Precache()
++{
++	PRECACHE_MODEL("models/w_grenade.mdl");
++	PRECACHE_MODEL("models/v_grenade.mdl");
++	PRECACHE_MODEL("models/p_grenade.mdl");
++
++	UTIL_PrecacheOther("hl_grenade");
++}
++
++int CHLHandGrenade::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "Hand Grenade";
++	p->iMaxAmmo1 = HL_HANDGRENADE_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 3;
++	p->iPosition = 4;
++	p->iId = m_iId = WEAPON_HL_HANDGRENADE;
++	p->iFlags = ITEM_FLAG_LIMITINWORLD | ITEM_FLAG_EXHAUSTIBLE;
++	p->iWeight = HL_HANDGRENADE_WEIGHT;
++	return 1;
++}
++
++BOOL CHLHandGrenade::Deploy()
++{
++	m_flReleaseThrow = -1;
++	return DefaultDeploy("models/v_grenade.mdl", "models/p_grenade.mdl", HANDGRENADE_DRAW, "grenade", 0);
++}
++
++void CHLHandGrenade::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	m_flStartThrow = 0.0f;
++	m_flReleaseThrow = 0.0f;
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, "common/null.wav", VOL_NORM, ATTN_NORM);
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		SendWeaponAnim(HANDGRENADE_HOLSTER);
++	else
++		DestroyItem();
++}
++
++void CHLHandGrenade::PrimaryAttack()
++{
++	// (the pin pulled: it cooks from now on)
++	if (!m_flStartThrow && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] > 0)
++	{
++		m_flStartThrow = gpGlobals->time;
++		m_flReleaseThrow = 0.0f;
++		SendWeaponAnim(HANDGRENADE_PINPULL);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
++	}
++}
++
++void CHLHandGrenade::WeaponIdle()
++{
++	if (m_flReleaseThrow == 0.0f && m_flStartThrow)
++		m_flReleaseThrow = gpGlobals->time;
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	if (m_flStartThrow)
++	{
++		// (thrown harder upwards than downwards)
++		Vector angThrow = m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle;
++		if (angThrow.x < 0.0f)
++			angThrow.x = -10.0f + angThrow.x * ((90.0f - 10.0f) / 90.0f);
++		else
++			angThrow.x = -10.0f + angThrow.x * ((90.0f + 10.0f) / 90.0f);
++
++		float flVel = (90.0f - angThrow.x) * 6.5f;
++		if (flVel > 1000.0f)
++			flVel = 1000.0f;
++
++		UTIL_MakeVectors(angThrow);
++		Vector vecSrc = m_pPlayer->pev->origin + m_pPlayer->pev->view_ofs + gpGlobals->v_forward * 16.0f;
++		Vector vecThrow = gpGlobals->v_forward * flVel + m_pPlayer->pev->velocity;
++
++		float time = m_flStartThrow - gpGlobals->time + 3.0f;
++		if (time < 0.0f)
++			time = 0.0f;
++
++		CHLGrenade::ShootTimed(m_pPlayer->pev, vecSrc, vecThrow, time);
++
++		if (flVel < 500.0f)
++			SendWeaponAnim(HANDGRENADE_THROW1);
++		else if (flVel < 1000.0f)
++			SendWeaponAnim(HANDGRENADE_THROW2);
++		else
++			SendWeaponAnim(HANDGRENADE_THROW3);
++
++		m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++		m_flReleaseThrow = 0.0f;
++		m_flStartThrow = 0.0f;
++		m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
++
++		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++		if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		{
++			// (the animation finishes first)
++			m_flTimeWeaponIdle = m_flNextSecondaryAttack = m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
++		}
++		return;
++	}
++	else if (m_flReleaseThrow > 0.0f)
++	{
++		// (just thrown: the next one, or none left)
++		m_flStartThrow = 0.0f;
++
++		if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		{
++			RetireWeapon();
++			return;
++		}
++
++		SendWeaponAnim(HANDGRENADE_DRAW);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++		m_flReleaseThrow = -1.0f;
++		return;
++	}
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++	{
++		int iAnim;
++		if (UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f) <= 0.75f)
++		{
++			iAnim = HANDGRENADE_IDLE;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++		}
++		else
++		{
++			iAnim = HANDGRENADE_FIDGET;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 75.0f / 30.0f;
++		}
++
++		SendWeaponAnim(iAnim);
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Satchel charge and its radio
++
++enum hl_satchel_e
++{
++	SATCHEL_IDLE1 = 0,
++	SATCHEL_FIDGET1,
++	SATCHEL_DRAW,
++	SATCHEL_DROP
++};
++
++enum hl_satchel_radio_e
++{
++	SATCHEL_RADIO_IDLE1 = 0,
++	SATCHEL_RADIO_FIDGET1,
++	SATCHEL_RADIO_DRAW,
++	SATCHEL_RADIO_FIRE,
++	SATCHEL_RADIO_HOLSTER
++};
++
++LINK_ENTITY_TO_CLASS(monster_satchel, CHLSatchelCharge, CCSAnimating)
++
++void CHLSatchelCharge::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("monster_satchel", pev);
++	pev->movetype = MOVETYPE_BOUNCE;
++	pev->solid = SOLID_BBOX;
++
++	SET_MODEL(edict(), "models/w_satchel.mdl");
++	UTIL_SetSize(pev, Vector(-4, -4, -4), Vector(4, 4, 4)); // (point sized, may be stepped over)
++	UTIL_SetOrigin(pev, pev->origin);
++
++	SetTouch(&CHLSatchelCharge::SatchelSlide);
++	SetThink(&CHLSatchelCharge::SatchelThink);
++	pev->nextthink = gpGlobals->time + 0.1f;
++
++	pev->gravity = 0.5f;
++	pev->friction = 0.8f;
++	pev->dmg = HL_SATCHEL_DAMAGE;
++	pev->sequence = 1;
++	m_lastBounceOrigin = g_vecZero;
++}
++
++void CHLSatchelCharge::Precache()
++{
++	PRECACHE_MODEL("models/w_satchel.mdl");
++	PRECACHE_SOUND("weapons/g_bounce1.wav");
++	PRECACHE_SOUND("weapons/g_bounce2.wav");
++	PRECACHE_SOUND("weapons/g_bounce3.wav");
++}
++
++// (set off by its owner's radio)
++void CHLSatchelCharge::Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value)
++{
++	SetThink(&CHLSatchelCharge::Detonate);
++	pev->nextthink = gpGlobals->time;
++}
++
++void CHLSatchelCharge::SatchelSlide(CBaseEntity *pOther)
++{
++	if (pOther->edict() == pev->owner)
++		return;
++
++	pev->gravity = 1; // (normal gravity now)
++
++	TraceResult tr;
++	UTIL_TraceLine(pev->origin, pev->origin - Vector(0, 0, 10), ignore_monsters, edict(), &tr);
++	if (tr.flFraction < 1.0f)
++	{
++		// (on the ground: it slows down)
++		pev->velocity = pev->velocity * 0.95f;
++		pev->avelocity = pev->avelocity * 0.9f;
++	}
++
++	if (!(pev->flags & FL_ONGROUND) && pev->velocity.Length2D() > 10.0f && pev->origin != m_lastBounceOrigin)
++	{
++		static const char *sounds[] = { "weapons/g_bounce1.wav", "weapons/g_bounce2.wav", "weapons/g_bounce3.wav" };
++		EMIT_SOUND(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], VOL_NORM, ATTN_NORM);
++	}
++
++	m_lastBounceOrigin = pev->origin;
++}
++
++void CHLSatchelCharge::SatchelThink()
++{
++	pev->nextthink = gpGlobals->time + 0.1f;
++
++	// (gone with its owner, as Half-Life's)
++	CBaseEntity *pOwner = pev->owner ? CBaseEntity::Instance(pev->owner) : nullptr;
++	if (!IsInWorld() || !pOwner || !pOwner->IsPlayer() || !pOwner->IsAlive())
++	{
++		UTIL_Remove(this);
++		return;
++	}
++
++	if (pev->waterlevel == 3)
++	{
++		pev->movetype = MOVETYPE_FLY;
++		pev->velocity = pev->velocity * 0.8f;
++		pev->avelocity = pev->avelocity * 0.9f;
++		pev->velocity.z += 8;
++	}
++	else if (pev->waterlevel == 0)
++	{
++		pev->movetype = MOVETYPE_BOUNCE;
++	}
++	else
++	{
++		pev->velocity.z -= 8.0f;
++	}
++}
++
++void CHLSatchelCharge::Detonate()
++{
++	TraceResult tr;
++	Vector vecSpot = pev->origin + Vector(0, 0, 8);
++	UTIL_TraceLine(vecSpot, vecSpot + Vector(0, 0, -40), ignore_monsters, ENT(pev), &tr);
++
++	entvars_t *pevOwner = pev->owner ? VARS(pev->owner) : nullptr;
++	pev->model = iStringNull;
++	pev->solid = SOLID_NOT;
++	pev->effects |= EF_NODRAW;
++	HL_Explosion(this, &tr, pevOwner, pev->dmg, pev->dmg * 2.5f, int((pev->dmg - 50) * 0.6f));
++
++	SetTouch(nullptr);
++	SetThink(&CBaseEntity::SUB_Remove);
++	pev->nextthink = gpGlobals->time + 0.1f;
++}
++
++LINK_ENTITY_TO_CLASS(weapon_satchel, CHLSatchel, CCSPlayerWeapon)
++
++void CHLSatchel::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_SATCHEL;
++	SET_MODEL(edict(), "models/w_satchel.mdl");
++	m_iDefaultAmmo = 1;
++	m_chargeReady = SATCHEL_IDLE;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLSatchel::Precache()
++{
++	PRECACHE_MODEL("models/v_satchel.mdl");
++	PRECACHE_MODEL("models/v_satchel_radio.mdl");
++	PRECACHE_MODEL("models/w_satchel.mdl");
++	PRECACHE_MODEL("models/p_satchel.mdl");
++	PRECACHE_MODEL("models/p_satchel_radio.mdl");
++
++	UTIL_PrecacheOther("monster_satchel");
++}
++
++int CHLSatchel::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "Satchel Charge";
++	p->iMaxAmmo1 = HL_SATCHEL_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 3;
++	p->iPosition = 5;
++	p->iId = m_iId = WEAPON_HL_SATCHEL;
++	p->iFlags = ITEM_FLAG_SELECTONEMPTY | ITEM_FLAG_LIMITINWORLD | ITEM_FLAG_EXHAUSTIBLE;
++	p->iWeight = HL_SATCHEL_WEIGHT;
++	return 1;
++}
++
++// (whether charges its holder threw are lying around)
++bool CHLSatchel::HasCharges()
++{
++	if (!m_pPlayer)
++		return false;
++
++	CBaseEntity *pCharge = nullptr;
++	while ((pCharge = UTIL_FindEntityByClassname(pCharge, "monster_satchel")))
++	{
++		if (pCharge->pev->owner == m_pPlayer->edict() && !(pCharge->pev->flags & FL_KILLME))
++			return true;
++	}
++
++	return false;
++}
++
++int CHLSatchel::AddToPlayer(CBasePlayer *pPlayer)
++{
++	int bResult = CBasePlayerWeapon::AddToPlayer(pPlayer);
++	m_chargeReady = HasCharges() ? SATCHEL_READY : SATCHEL_IDLE;
++	return bResult;
++}
++
++BOOL CHLSatchel::CanDeploy()
++{
++	return m_pPlayer->m_rgAmmo[PrimaryAmmoIndex()] > 0 || HasCharges();
++}
++
++BOOL CHLSatchel::Deploy()
++{
++	m_chargeReady = HasCharges() ? SATCHEL_READY : SATCHEL_IDLE;
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 1.0f;
++
++	BOOL result;
++	if (m_chargeReady == SATCHEL_READY)
++		result = DefaultDeploy("models/v_satchel_radio.mdl", "models/p_satchel_radio.mdl", SATCHEL_RADIO_DRAW, "c4", 0);
++	else
++		result = DefaultDeploy("models/v_satchel.mdl", "models/p_satchel.mdl", SATCHEL_DRAW, "grenade", 0);
++
++	if (result)
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 2.0f;
++
++	return result;
++}
++
++void CHLSatchel::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, "common/null.wav", VOL_NORM, ATTN_NORM);
++
++	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] && !HasCharges())
++	{
++		DestroyItem();
++		return;
++	}
++
++	SendWeaponAnim(m_chargeReady == SATCHEL_READY ? SATCHEL_RADIO_HOLSTER : SATCHEL_DROP);
++}
++
++void CHLSatchel::PrimaryAttack()
++{
++	if (m_chargeReady != SATCHEL_RELOAD)
++		Throw();
++}
++
++// (the radio sets off every charge of its holder)
++void CHLSatchel::SecondaryAttack()
++{
++	if (m_chargeReady != SATCHEL_READY)
++		return;
++
++	SendWeaponAnim(SATCHEL_RADIO_FIRE);
++
++	edict_t *pPlayer = m_pPlayer->edict();
++	CBaseEntity *pCharge = nullptr;
++	while ((pCharge = UTIL_FindEntityByClassname(pCharge, "monster_satchel")))
++	{
++		if (pCharge->pev->owner == pPlayer)
++			pCharge->Use(m_pPlayer, m_pPlayer, USE_ON, 0);
++	}
++
++	m_chargeReady = SATCHEL_RELOAD;
++	m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
++	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
++}
++
++void CHLSatchel::Throw()
++{
++	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		return;
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle);
++	Vector vecThrow = gpGlobals->v_forward * 274 + m_pPlayer->pev->velocity;
++
++	CHLSatchelCharge *pCharge = GetClassPtr<CCSAnimating>((CHLSatchelCharge *)nullptr);
++	UTIL_SetOrigin(pCharge->pev, m_pPlayer->pev->origin);
++	pCharge->pev->owner = m_pPlayer->edict();
++	pCharge->Spawn();
++	pCharge->pev->velocity = vecThrow;
++	pCharge->pev->avelocity.y = 400;
++
++	HL_SetViewModels(m_pPlayer, "models/v_satchel_radio.mdl", "models/p_satchel_radio.mdl");
++	Q_strlcpy(m_pPlayer->m_szAnimExtention, "c4");
++	SendWeaponAnim(SATCHEL_RADIO_DRAW);
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	m_chargeReady = SATCHEL_READY;
++	m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++	m_flNextPrimaryAttack = GetNextAttackDelay(1.0f);
++	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
++}
++
++void CHLSatchel::WeaponIdle()
++{
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	switch (m_chargeReady)
++	{
++		case SATCHEL_IDLE:
++			SendWeaponAnim(SATCHEL_FIDGET1);
++			break;
++
++		case SATCHEL_READY:
++			SendWeaponAnim(SATCHEL_RADIO_FIDGET1);
++			break;
++
++		case SATCHEL_RELOAD:
++		{
++			// (set off: the next charge, or none left)
++			if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++			{
++				m_chargeReady = SATCHEL_IDLE;
++				RetireWeapon();
++				return;
++			}
++
++			HL_SetViewModels(m_pPlayer, "models/v_satchel.mdl", "models/p_satchel.mdl");
++			Q_strlcpy(m_pPlayer->m_szAnimExtention, "grenade");
++			SendWeaponAnim(SATCHEL_DRAW);
++
++			m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
++			m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
++			m_chargeReady = SATCHEL_IDLE;
++			break;
++		}
++	}
++
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Tripmine
++
++enum hl_tripmine_e
++{
++	TRIPMINE_IDLE1 = 0,
++	TRIPMINE_IDLE2,
++	TRIPMINE_ARM1,
++	TRIPMINE_ARM2,
++	TRIPMINE_FIDGET,
++	TRIPMINE_HOLSTER,
++	TRIPMINE_DRAW,
++	TRIPMINE_WORLD,
++	TRIPMINE_GROUND
++};
++
++LINK_ENTITY_TO_CLASS(monster_tripmine, CHLTripmineGrenade, CCSAnimating)
++
++void CHLTripmineGrenade::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("monster_tripmine", pev);
++	pev->movetype = MOVETYPE_FLY;
++	pev->solid = SOLID_NOT;
++
++	SET_MODEL(edict(), "models/v_tripmine.mdl");
++	pev->frame = 0;
++	pev->body = 3;
++	pev->sequence = TRIPMINE_WORLD;
++	ResetSequenceInfo();
++	pev->framerate = 0;
++
++	UTIL_SetSize(pev, Vector(-8, -8, -8), Vector(8, 8, 8));
++	UTIL_SetOrigin(pev, pev->origin);
++
++	m_flPowerUp = gpGlobals->time + 2.5f;
++	SetThink(&CHLTripmineGrenade::PowerupThink);
++	pev->nextthink = gpGlobals->time + 0.2f;
++
++	pev->takedamage = DAMAGE_YES;
++	pev->dmg = HL_TRIPMINE_DAMAGE;
++	pev->health = 1; // (any damage sets it off)
++
++	m_pBeam = nullptr;
++	m_hOwner = nullptr;
++	m_pRealOwner = pev->owner;
++	m_iOwnerTeam = HL_TeamOf(pev->owner);
++
++	if (pev->owner)
++	{
++		EMIT_SOUND(ENT(pev), CHAN_VOICE, "weapons/mine_deploy.wav", VOL_NORM, ATTN_NORM);
++		EMIT_SOUND(ENT(pev), CHAN_BODY, "weapons/mine_charge.wav", 0.2f, ATTN_NORM); // (charging up)
++	}
++
++	UTIL_MakeAimVectors(pev->angles);
++	m_vecDir = gpGlobals->v_forward;
++	m_vecEnd = pev->origin + m_vecDir * 2048.0f;
++}
++
++void CHLTripmineGrenade::Precache()
++{
++	PRECACHE_MODEL("models/v_tripmine.mdl");
++	PRECACHE_MODEL("sprites/laserbeam.spr");
++	PRECACHE_SOUND("weapons/mine_deploy.wav");
++	PRECACHE_SOUND("weapons/mine_activate.wav");
++	PRECACHE_SOUND("weapons/mine_charge.wav");
++}
++
++// (waits until it holds to a wall, then arms after its charge-up)
++void CHLTripmineGrenade::PowerupThink()
++{
++	TraceResult tr;
++
++	if (!m_hOwner.IsValid())
++	{
++		// (what it sits on, its owner from now on: it moves, the mine goes)
++		edict_t *oldowner = pev->owner;
++		pev->owner = nullptr;
++		UTIL_TraceLine(pev->origin + m_vecDir * 8.0f, pev->origin - m_vecDir * 32.0f, dont_ignore_monsters, ENT(pev), &tr);
++
++		if (tr.fStartSolid || (oldowner && tr.pHit == oldowner))
++		{
++			pev->owner = oldowner;
++			m_flPowerUp += 0.1f;
++			pev->nextthink = gpGlobals->time + 0.1f;
++			return;
++		}
++
++		if (tr.flFraction < 1.0f)
++		{
++			pev->owner = tr.pHit;
++			m_hOwner = CBaseEntity::Instance(pev->owner);
++			m_posOwner = m_hOwner->pev->origin;
++			m_angleOwner = m_hOwner->pev->angles;
++		}
++		else
++		{
++			STOP_SOUND(ENT(pev), CHAN_VOICE, "weapons/mine_deploy.wav");
++			STOP_SOUND(ENT(pev), CHAN_BODY, "weapons/mine_charge.wav");
++			SetThink(&CBaseEntity::SUB_Remove);
++			pev->nextthink = gpGlobals->time + 0.1f;
++			KillBeam();
++			return;
++		}
++	}
++	else if (m_posOwner != m_hOwner->pev->origin || m_angleOwner != m_hOwner->pev->angles)
++	{
++		// (its wall moved: no mine)
++		STOP_SOUND(ENT(pev), CHAN_VOICE, "weapons/mine_deploy.wav");
++		STOP_SOUND(ENT(pev), CHAN_BODY, "weapons/mine_charge.wav");
++		SetThink(&CBaseEntity::SUB_Remove);
++		KillBeam();
++		pev->nextthink = gpGlobals->time + 0.1f;
++		return;
++	}
++
++	if (gpGlobals->time > m_flPowerUp)
++	{
++		// (armed: solid, and its beam on)
++		pev->solid = SOLID_BBOX;
++		UTIL_SetOrigin(pev, pev->origin);
++		MakeBeam();
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, "weapons/mine_activate.wav", 0.5f, ATTN_NORM, 1, 75);
++	}
++
++	pev->nextthink = gpGlobals->time + 0.1f;
++}
++
++void CHLTripmineGrenade::KillBeam()
++{
++	if (m_pBeam)
++	{
++		UTIL_Remove(m_pBeam);
++		m_pBeam = nullptr;
++	}
++}
++
++void CHLTripmineGrenade::MakeBeam()
++{
++	TraceResult tr;
++	UTIL_TraceLine(pev->origin, m_vecEnd, dont_ignore_monsters, ENT(pev), &tr);
++	m_flBeamLength = tr.flFraction;
++
++	SetThink(&CHLTripmineGrenade::BeamBreakThink);
++	pev->nextthink = gpGlobals->time + 0.1f;
++
++	Vector vecTmpEnd = pev->origin + m_vecDir * 2048.0f * m_flBeamLength;
++
++	m_pBeam = CBeam::BeamCreate("sprites/laserbeam.spr", 10);
++	m_pBeam->pev->spawnflags |= SF_BEAM_TEMPORARY;
++	m_pBeam->PointEntInit(vecTmpEnd, entindex());
++	m_pBeam->SetColor(0, 214, 198);
++	m_pBeam->SetScrollRate(255);
++	m_pBeam->SetBrightness(64);
++}
++
++// (its owner's team walks through the beam)
++bool CHLTripmineGrenade::LetsThrough(CBaseEntity *pEntity)
++{
++	if (!pEntity || !pEntity->IsPlayer())
++		return false;
++
++#ifdef REGAMEDLL_ADD
++	if (CSGameRules()->IsFreeForAll())
++		return pEntity->edict() == m_pRealOwner;
++#endif
++
++	return static_cast<CBasePlayer *>(pEntity)->m_iTeam == m_iOwnerTeam;
++}
++
++void CHLTripmineGrenade::BeamBreakThink()
++{
++	bool bBlowup = false;
++
++	TraceResult tr;
++	gpGlobals->trace_flags = FTRACE_SIMPLEBOX;
++	UTIL_TraceLine(pev->origin, m_vecEnd, dont_ignore_monsters, ENT(pev), &tr);
++
++	if (!m_pBeam)
++		MakeBeam();
++
++	if (Q_fabs(m_flBeamLength - tr.flFraction) > 0.001f)
++	{
++		if (!LetsThrough(CBaseEntity::Instance(tr.pHit)))
++			bBlowup = true;
++	}
++	else if (!m_hOwner.IsValid() || m_posOwner != m_hOwner->pev->origin || m_angleOwner != m_hOwner->pev->angles)
++	{
++		// (its wall went or moved)
++		bBlowup = true;
++	}
++
++	if (bBlowup)
++	{
++		pev->owner = m_pRealOwner;
++		pev->health = 0;
++		Killed(VARS(pev->owner), GIB_NORMAL);
++		return;
++	}
++
++	pev->nextthink = gpGlobals->time + 0.1f;
++}
++
++BOOL CHLTripmineGrenade::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
++{
++	if (gpGlobals->time < m_flPowerUp && flDamage < pev->health)
++	{
++		// (disarmed before it is ready)
++		SetThink(&CBaseEntity::SUB_Remove);
++		pev->nextthink = gpGlobals->time + 0.1f;
++		KillBeam();
++		return FALSE;
++	}
++
++	return CBaseAnimating::TakeDamage(pevInflictor, pevAttacker, flDamage, bitsDamageType);
++}
++
++void CHLTripmineGrenade::Killed(entvars_t *pevAttacker, int iGib)
++{
++	pev->takedamage = DAMAGE_NO;
++
++	// (the kill goes to whoever set it off by shooting it, otherwise to whom laid it)
++	pev->owner = (pevAttacker && (pevAttacker->flags & FL_CLIENT)) ? ENT(pevAttacker) : m_pRealOwner;
++
++	SetThink(&CHLTripmineGrenade::DelayDeathThink);
++	pev->nextthink = gpGlobals->time + RANDOM_FLOAT(0.1f, 0.3f);
++
++	EMIT_SOUND(ENT(pev), CHAN_BODY, "common/null.wav", 0.5f, ATTN_NORM); // (the charge-up off)
++}
++
++void CHLTripmineGrenade::DelayDeathThink()
++{
++	KillBeam();
++
++	TraceResult tr;
++	UTIL_TraceLine(pev->origin + m_vecDir * 8, pev->origin - m_vecDir * 64.0f, dont_ignore_monsters, ENT(pev), &tr);
++
++	entvars_t *pevOwner = pev->owner ? VARS(pev->owner) : nullptr;
++	pev->model = iStringNull;
++	pev->solid = SOLID_NOT;
++	pev->effects |= EF_NODRAW;
++	HL_Explosion(this, &tr, pevOwner, pev->dmg, pev->dmg * 2.5f, int((pev->dmg - 50) * 0.6f));
++
++	SetThink(&CBaseEntity::SUB_Remove);
++	pev->nextthink = gpGlobals->time + 0.1f;
++}
++
++LINK_ENTITY_TO_CLASS(weapon_tripmine, CHLTripmine, CCSPlayerWeapon)
++
++void CHLTripmine::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_TRIPMINE;
++	SET_MODEL(edict(), "models/v_tripmine.mdl");
++	pev->frame = 0;
++	pev->body = 3;
++	pev->sequence = TRIPMINE_GROUND;
++	pev->framerate = 0;
++	m_iDefaultAmmo = 1;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CHLTripmine::Precache()
++{
++	PRECACHE_MODEL("models/v_tripmine.mdl");
++	PRECACHE_MODEL("models/p_tripmine.mdl");
++	UTIL_PrecacheOther("monster_tripmine");
++}
++
++int CHLTripmine::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "Trip Mine";
++	p->iMaxAmmo1 = HL_TRIPMINE_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 3;
++	p->iPosition = 6;
++	p->iId = m_iId = WEAPON_HL_TRIPMINE;
++	p->iFlags = ITEM_FLAG_LIMITINWORLD | ITEM_FLAG_EXHAUSTIBLE;
++	p->iWeight = HL_TRIPMINE_WEIGHT;
++	return 1;
++}
++
++BOOL CHLTripmine::Deploy()
++{
++	pev->body = 0;
++	return DefaultDeploy("models/v_tripmine.mdl", "models/p_tripmine.mdl", TRIPMINE_DRAW, "c4", 0);
++}
++
++void CHLTripmine::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, "common/null.wav", VOL_NORM, ATTN_NORM);
++
++	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++	{
++		DestroyItem();
++		return;
++	}
++
++	SendWeaponAnim(TRIPMINE_HOLSTER);
++}
++
++// (on the wall within reach, facing out of it)
++void CHLTripmine::PrimaryAttack()
++{
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
++		return;
++
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
++	Vector vecSrc = m_pPlayer->GetGunPosition();
++	Vector vecAiming = gpGlobals->v_forward;
++
++	TraceResult tr;
++	UTIL_TraceLine(vecSrc, vecSrc + vecAiming * 128.0f, dont_ignore_monsters, ENT(m_pPlayer->pev), &tr);
++
++	if (tr.flFraction < 1.0f)
++	{
++		CBaseEntity *pEntity = CBaseEntity::Instance(tr.pHit);
++		if (pEntity && !(pEntity->pev->flags & FL_CONVEYOR))
++		{
++			CHLTripmineGrenade *pMine = GetClassPtr<CCSAnimating>((CHLTripmineGrenade *)nullptr);
++			UTIL_SetOrigin(pMine->pev, tr.vecEndPos + tr.vecPlaneNormal * 8.0f);
++			pMine->pev->angles = UTIL_VecToAngles(tr.vecPlaneNormal);
++			pMine->pev->owner = m_pPlayer->edict();
++			pMine->Spawn();
++
++			m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++			m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++			if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
++			{
++				RetireWeapon();
++				return;
++			}
++
++			SendWeaponAnim(TRIPMINE_DRAW); // (the next one in hand)
++		}
++	}
++
++	m_flNextPrimaryAttack = GetNextAttackDelay(0.3f);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++}
++
++void CHLTripmine::WeaponIdle()
++{
++	pev->body = 0;
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
++	{
++		RetireWeapon();
++		return;
++	}
++
++	int iAnim;
++	float flRand = UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f);
++	if (flRand <= 0.25f)
++	{
++		iAnim = TRIPMINE_IDLE1;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 90.0f / 30.0f;
++	}
++	else if (flRand <= 0.75f)
++	{
++		iAnim = TRIPMINE_IDLE2;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 60.0f / 30.0f;
++	}
++	else
++	{
++		iAnim = TRIPMINE_FIDGET;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 100.0f / 30.0f;
++	}
++
++	SendWeaponAnim(iAnim);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Snarks
++
++enum hl_w_squeak_e
++{
++	WSQUEAK_IDLE1 = 0,
++	WSQUEAK_FIDGET,
++	WSQUEAK_JUMP,
++	WSQUEAK_RUN
++};
++
++enum hl_squeak_e
++{
++	SQUEAK_IDLE1 = 0,
++	SQUEAK_FIDGETFIT,
++	SQUEAK_FIDGETNIP,
++	SQUEAK_DOWN,
++	SQUEAK_UP,
++	SQUEAK_THROW
++};
++
++#define HL_SNARK_DETONATE_DELAY 15.0f
++#define HL_SNARK_HEALTH         2
++
++LINK_ENTITY_TO_CLASS(monster_snark, CHLSnarkGrenade, CCSAnimating)
++
++void CHLSnarkGrenade::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("monster_snark", pev);
++	pev->movetype = MOVETYPE_BOUNCE;
++	pev->solid = SOLID_BBOX;
++
++	SET_MODEL(edict(), "models/w_squeak.mdl");
++	UTIL_SetSize(pev, Vector(-4, -4, 0), Vector(4, 4, 8));
++	UTIL_SetOrigin(pev, pev->origin);
++
++	SetTouch(&CHLSnarkGrenade::SuperBounceTouch);
++	SetThink(&CHLSnarkGrenade::HuntThink);
++	pev->nextthink = gpGlobals->time + 0.1f;
++	m_flNextHunt = gpGlobals->time + 1E6f;
++
++	pev->takedamage = DAMAGE_AIM;
++	pev->health = HL_SNARK_HEALTH;
++	pev->gravity = 0.5f;
++	pev->friction = 0.5f;
++	pev->dmg = HL_SNARK_POP_DAMAGE;
++
++	m_flDie = gpGlobals->time + HL_SNARK_DETONATE_DELAY;
++	m_flNextHit = 0.0f;
++	m_flNextBite = 0.0f;
++	m_flNextBounceSound = gpGlobals->time;
++	m_posPrev = pev->origin;
++	m_vecTarget = g_vecZero;
++	m_hEnemy = nullptr;
++	m_hOwner = pev->owner ? CBaseEntity::Instance(pev->owner) : nullptr;
++	m_iOwnerTeam = HL_TeamOf(pev->owner);
++
++	pev->sequence = WSQUEAK_RUN;
++	ResetSequenceInfo();
++}
++
++void CHLSnarkGrenade::Precache()
++{
++	PRECACHE_MODEL("models/w_squeak.mdl");
++	PRECACHE_SOUND("squeek/sqk_blast1.wav");
++	PRECACHE_SOUND("common/bodysplat.wav");
++	PRECACHE_SOUND("squeek/sqk_die1.wav");
++	PRECACHE_SOUND("squeek/sqk_hunt1.wav");
++	PRECACHE_SOUND("squeek/sqk_hunt2.wav");
++	PRECACHE_SOUND("squeek/sqk_hunt3.wav");
++	PRECACHE_SOUND("squeek/sqk_deploy1.wav");
++}
++
++CBaseEntity *CHLSnarkGrenade::FindEnemy()
++{
++	return HL_FindEnemy(this, m_iOwnerTeam, m_hOwner, 512, 0.0f);
++}
++
++// (it pops: a little blast that grew with each bite)
++void CHLSnarkGrenade::Killed(entvars_t *pevAttacker, int iGib)
++{
++	pev->model = iStringNull; // (invisible)
++	SetThink(&CBaseEntity::SUB_Remove);
++	SetTouch(nullptr);
++	pev->nextthink = gpGlobals->time + 0.1f;
++	pev->takedamage = DAMAGE_NO;
++
++	EMIT_SOUND_DYN(ENT(pev), CHAN_ITEM, "squeek/sqk_blast1.wav", VOL_NORM, 0.5f, 0, PITCH_NORM);
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, "common/bodysplat.wav", 0.75f, ATTN_NORM, 0, 200);
++	UTIL_BloodDrips(pev->origin, BloodColor(), 80);
++
++	entvars_t *pevOwner = m_hOwner.IsValid() ? m_hOwner->pev : pev;
++	HL_RadiusDamage(pev->origin, pev, pevOwner, pev->dmg, pev->dmg * 2.5f);
++
++	if (m_hOwner.IsValid())
++		pev->owner = m_hOwner->edict();
++}
++
++void CHLSnarkGrenade::HuntThink()
++{
++	if (!IsInWorld())
++	{
++		SetTouch(nullptr);
++		UTIL_Remove(this);
++		return;
++	}
++
++	StudioFrameAdvance();
++	pev->nextthink = gpGlobals->time + 0.1f;
++
++	// (its time is up)
++	if (gpGlobals->time >= m_flDie)
++	{
++		g_vecAttackDir = pev->velocity.Normalize();
++		pev->health = -1;
++		Killed(pev, 0);
++		return;
++	}
++
++	// (float in the water)
++	if (pev->waterlevel != 0)
++	{
++		if (pev->movetype == MOVETYPE_BOUNCE)
++			pev->movetype = MOVETYPE_FLY;
++
++		pev->velocity = pev->velocity * 0.9f;
++		pev->velocity.z += 8.0f;
++	}
++	else if (pev->movetype == MOVETYPE_FLY)
++	{
++		pev->movetype = MOVETYPE_BOUNCE;
++	}
++
++	// (hunts at each bounce, at least every 2 s)
++	if (m_flNextHunt > gpGlobals->time)
++		return;
++
++	m_flNextHunt = gpGlobals->time + 2.0f;
++
++	if (!m_hEnemy.IsValid() || !HL_IsEnemyOf(m_iOwnerTeam, m_hEnemy, m_hOwner))
++		m_hEnemy = FindEnemy();
++
++	if (m_flDie - gpGlobals->time <= 0.5f && m_flDie - gpGlobals->time >= 0.3f)
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, "squeek/sqk_die1.wav", VOL_NORM, ATTN_NORM, 0, 100 + RANDOM_LONG(0, 0x3F));
++
++	if (m_hEnemy.IsValid())
++	{
++		if (FVisible(m_hEnemy))
++			m_vecTarget = (m_hEnemy->EyePosition() - pev->origin).Normalize();
++
++		float flVel = pev->velocity.Length();
++		float flAdj = 50.0f / (flVel + 10.0f);
++		if (flAdj > 1.2f)
++			flAdj = 1.2f;
++
++		pev->velocity = pev->velocity * flAdj + m_vecTarget * 300.0f;
++	}
++
++	if (pev->flags & FL_ONGROUND)
++	{
++		pev->avelocity = Vector(0, 0, 0);
++	}
++	else if (pev->avelocity == Vector(0, 0, 0))
++	{
++		pev->avelocity.x = RANDOM_FLOAT(-100, 100);
++		pev->avelocity.z = RANDOM_FLOAT(-100, 100);
++	}
++
++	// (stuck: a random jump)
++	if ((pev->origin - m_posPrev).Length() < 1.0f)
++	{
++		pev->velocity.x = RANDOM_FLOAT(-100, 100);
++		pev->velocity.y = RANDOM_FLOAT(-100, 100);
++	}
++
++	m_posPrev = pev->origin;
++
++	pev->angles = UTIL_VecToAngles(pev->velocity);
++	pev->angles.z = 0;
++	pev->angles.x = 0;
++}
++
++void CHLSnarkGrenade::SuperBounceTouch(CBaseEntity *pOther)
++{
++	TraceResult tr = UTIL_GetGlobalTrace();
++
++	// (not its thrower until it has bounced once)
++	if (pev->owner && pOther->edict() == pev->owner)
++		return;
++
++	pev->owner = nullptr;
++	pev->angles.x = 0;
++	pev->angles.z = 0;
++
++	if (m_flNextHit > gpGlobals->time)
++		return;
++
++	// (higher pitched as it nears its end)
++	float flpitch = 155.0f - 60.0f * ((m_flDie - gpGlobals->time) / HL_SNARK_DETONATE_DELAY);
++
++	if (!(pOther->pev->flags & FL_WORLDBRUSH) && pOther->pev->takedamage && m_flNextBite < gpGlobals->time
++		&& tr.pHit == pOther->edict() && pOther->pev->modelindex != pev->modelindex && HL_IsEnemyOf(m_iOwnerTeam, pOther, m_hOwner))
++	{
++		// (a bite)
++		entvars_t *pevOwner = m_hOwner.IsValid() ? m_hOwner->pev : pev;
++		ClearMultiDamage();
++		pOther->TraceAttack(pevOwner, HL_SNARK_BITE_DAMAGE, gpGlobals->v_forward, &tr, DMG_SLASH);
++		ApplyMultiDamage(pev, pevOwner);
++
++		pev->dmg += HL_SNARK_POP_DAMAGE; // (more blast)
++		EMIT_SOUND_DYN(ENT(pev), CHAN_WEAPON, "squeek/sqk_deploy1.wav", VOL_NORM, ATTN_NORM, 0, int(flpitch));
++		m_flNextBite = gpGlobals->time + 0.5f;
++	}
++
++	m_flNextHit = gpGlobals->time + 0.1f;
++	m_flNextHunt = gpGlobals->time;
++
++	if (gpGlobals->time < m_flNextBounceSound)
++		return;
++
++	if (!(pev->flags & FL_ONGROUND))
++	{
++		static const char *sounds[] = { "squeek/sqk_hunt1.wav", "squeek/sqk_hunt2.wav", "squeek/sqk_hunt3.wav" };
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, sounds[RANDOM_LONG(0, 2)], VOL_NORM, ATTN_NORM, 0, int(flpitch));
++	}
++
++	m_flNextBounceSound = gpGlobals->time + 0.5f;
++}
++
++LINK_ENTITY_TO_CLASS(weapon_snark, CHLSqueak, CCSPlayerWeapon)
++
++void CHLSqueak::Spawn()
++{
++	Precache();
++	m_iId = WEAPON_HL_SNARK;
++	SET_MODEL(edict(), "models/w_sqknest.mdl");
++	m_iDefaultAmmo = HL_SNARK_DEFAULT_GIVE;
++	m_fJustThrown = 0;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++
++	pev->sequence = 1;
++	pev->animtime = gpGlobals->time;
++	pev->framerate = 1.0f;
++}
++
++void CHLSqueak::Precache()
++{
++	PRECACHE_MODEL("models/w_sqknest.mdl");
++	PRECACHE_MODEL("models/v_squeak.mdl");
++	PRECACHE_MODEL("models/p_squeak.mdl");
++	PRECACHE_SOUND("squeek/sqk_hunt2.wav");
++	PRECACHE_SOUND("squeek/sqk_hunt3.wav");
++	UTIL_PrecacheOther("monster_snark");
++}
++
++int CHLSqueak::GetItemInfo(ItemInfo *p)
++{
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = "Snarks";
++	p->iMaxAmmo1 = HL_SNARK_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 3;
++	p->iPosition = 7;
++	p->iId = m_iId = WEAPON_HL_SNARK;
++	p->iFlags = ITEM_FLAG_LIMITINWORLD | ITEM_FLAG_EXHAUSTIBLE;
++	p->iWeight = HL_SNARK_WEIGHT;
++	return 1;
++}
++
++BOOL CHLSqueak::Deploy()
++{
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, RANDOM_LONG(0, 1) ? "squeek/sqk_hunt3.wav" : "squeek/sqk_hunt2.wav", VOL_NORM, ATTN_NORM, 0, 100);
++	m_pPlayer->m_iWeaponVolume = QUIET_GUN_VOLUME;
++
++	BOOL result = DefaultDeploy("models/v_squeak.mdl", "models/p_squeak.mdl", SQUEAK_UP, "grenade", 0);
++	if (result)
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.7f;
++
++	return result;
++}
++
++void CHLSqueak::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, "common/null.wav", VOL_NORM, ATTN_NORM);
++
++	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++	{
++		DestroyItem();
++		return;
++	}
++
++	SendWeaponAnim(SQUEAK_DOWN);
++}
++
++// (set down in front, launched by its holder's look and speed)
++void CHLSqueak::PrimaryAttack()
++{
++	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		return;
++
++	UTIL_MakeVectors(Vector(0, m_pPlayer->pev->v_angle.y, m_pPlayer->pev->v_angle.z));
++	Vector forward = gpGlobals->v_forward;
++	UTIL_MakeVectors(m_pPlayer->pev->v_angle);
++
++	// (looking down: dropped at the feet; up: thrown forwards)
++	float flVel = (m_pPlayer->pev->v_angle.x <= 0) ? 1.0f : m_pPlayer->pev->v_angle.x / 90.0f;
++
++	Vector trace_origin = m_pPlayer->pev->origin;
++	if (m_pPlayer->pev->flags & FL_DUCKING)
++		trace_origin = trace_origin - Vector(0, 0, 1) * (flVel + 1.0f) * -18;
++
++	forward = forward * flVel + gpGlobals->v_forward * (1 - flVel);
++
++	TraceResult tr;
++	UTIL_TraceLine(trace_origin + forward * 24.0f, trace_origin + gpGlobals->v_forward * 60.0f, dont_ignore_monsters, nullptr, &tr);
++
++	if (tr.fAllSolid || tr.fStartSolid || tr.flFraction <= 0.25f)
++		return;
++
++	SendWeaponAnim(SQUEAK_THROW);
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++
++	CHLSnarkGrenade *pSnark = GetClassPtr<CCSAnimating>((CHLSnarkGrenade *)nullptr);
++	UTIL_SetOrigin(pSnark->pev, tr.vecEndPos);
++	pSnark->pev->angles = m_pPlayer->pev->v_angle;
++	pSnark->pev->owner = m_pPlayer->edict();
++	pSnark->Spawn();
++	pSnark->pev->velocity = forward * 200.0f + m_pPlayer->pev->velocity;
++
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, RANDOM_LONG(0, 1) ? "squeek/sqk_hunt3.wav" : "squeek/sqk_hunt2.wav", VOL_NORM, ATTN_NORM, 0, 105);
++	m_pPlayer->m_iWeaponVolume = QUIET_GUN_VOLUME;
++
++	m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++	m_fJustThrown = 1;
++	m_flNextPrimaryAttack = GetNextAttackDelay(0.3f);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.0f;
++}
++
++void CHLSqueak::WeaponIdle()
++{
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	if (m_fJustThrown)
++	{
++		// (the next one, or none left)
++		m_fJustThrown = 0;
++
++		if (!m_pPlayer->m_rgAmmo[PrimaryAmmoIndex()])
++		{
++			RetireWeapon();
++			return;
++		}
++
++		SendWeaponAnim(SQUEAK_UP);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++		return;
++	}
++
++	int iAnim;
++	float flRand = UTIL_SharedRandomFloat(m_pPlayer->random_seed, 0.0f, 1.0f);
++	if (flRand <= 0.75f)
++	{
++		iAnim = SQUEAK_IDLE1;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 30.0f / 16.0f * 2.0f;
++	}
++	else if (flRand <= 0.875f)
++	{
++		iAnim = SQUEAK_FIDGETFIT;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 70.0f / 16.0f;
++	}
++	else
++	{
++		iAnim = SQUEAK_FIDGETNIP;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 80.0f / 16.0f;
++	}
++
++	SendWeaponAnim(iAnim);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Buying, and the round restart
++
++CBaseEntity *HL_BuyEquipment(CBasePlayer *pPlayer, WeaponIdType weaponID)
++{
++	if (!pPlayer->CanPlayerBuy(true))
++		return nullptr;
++
++	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
++	if (!info || !info->entityName)
++		return nullptr;
++
++	// (the crowbar once; the others as many as can be carried)
++	if (!info->ammoName2)
++	{
++		if (pPlayer->HasNamedPlayerItem(info->entityName))
++		{
++			if (g_bClientPrintEnable)
++				ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cstrike_Already_Own_Weapon");
++
++			return nullptr;
++		}
++	}
++	else
++	{
++		int iAmmo = CBasePlayer::GetAmmoIndex(info->ammoName2);
++		if (iAmmo >= 0 && pPlayer->m_rgAmmo[iAmmo] >= info->maxRounds)
++		{
++			if (g_bClientPrintEnable)
++				ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");
++
++			return nullptr;
++		}
++	}
++
++	if (pPlayer->m_iAccount < info->cost)
++	{
++		if (g_bClientPrintEnable)
++		{
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
++			BlinkAccount(pPlayer);
++		}
++
++		return nullptr;
++	}
++
++	CBaseEntity *pEntity = pPlayer->GiveNamedItem(info->entityName);
++	pPlayer->AddAccount(-info->cost, RT_PLAYER_BOUGHT_SOMETHING);
++
++	if (TheTutor)
++		TheTutor->OnEvent(EVENT_PLAYER_BOUGHT_SOMETHING, pPlayer);
++
++	return pEntity;
++}
++
++// (the MP5's: for its owner only)
++bool HL_BuyARGrenade(CBasePlayer *pPlayer)
++{
++	if (!pPlayer->CanPlayerBuy(true))
++		return false;
++
++	if (!pPlayer->HasNamedPlayerItem("weapon_9mmAR"))
++	{
++		if (g_bClientPrintEnable)
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "The MP5 grenades need the MP5");
++
++		return false;
++	}
++
++	if (pPlayer->AmmoInventory(CBasePlayer::GetAmmoIndex("ARgrenades")) >= HL_ARGRENADE_MAX_CARRY)
++	{
++		if (g_bClientPrintEnable)
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");
++
++		return false;
++	}
++
++	if (pPlayer->m_iAccount < HL_ARGRENADE_PRICE)
++	{
++		if (g_bClientPrintEnable)
++		{
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
++			BlinkAccount(pPlayer);
++		}
++
++		return false;
++	}
++
++	pPlayer->GiveAmmo(1, "ARgrenades", HL_ARGRENADE_MAX_CARRY);
++	EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/9mmclip1.wav", VOL_NORM, ATTN_NORM);
++	pPlayer->AddAccount(-HL_ARGRENADE_PRICE, RT_PLAYER_BOUGHT_SOMETHING);
++	return true;
++}
++
++void HL_CleanUpMap()
++{
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "rpg_rocket")))
++	{
++		static_cast<CHLRpgRocket *>(pEntity)->Forget();
++		UTIL_Remove(pEntity);
++	}
++
++	pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_tripmine")))
++	{
++		static_cast<CHLTripmineGrenade *>(pEntity)->KillBeam();
++		UTIL_Remove(pEntity);
++	}
++
++	UTIL_RemoveOther("hl_grenade");
++	UTIL_RemoveOther("monster_satchel");
++	UTIL_RemoveOther("monster_snark");
++	UTIL_RemoveOther("hornet");
++	UTIL_RemoveOther("crossbow_bolt");
 +}
 diff --git a/regamedll/regamedll/dlls.h b/regamedll/regamedll/dlls.h
 index 2bef63d..4e65706 100644
