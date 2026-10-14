@@ -577,7 +577,7 @@ export function createServer(opts = {}) {
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, saveDir: undefined, coverPath: undefined, launchUrl }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path

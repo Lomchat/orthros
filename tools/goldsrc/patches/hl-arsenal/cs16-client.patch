@@ -1,0 +1,636 @@
+diff --git a/cl_dll/ammo.cpp b/cl_dll/ammo.cpp
+index a78ad14..5c0a0de 100644
+--- a/cl_dll/ammo.cpp
++++ b/cl_dll/ammo.cpp
+@@ -99,7 +99,11 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	pWeapon->hAmmo = 0;
+ 	pWeapon->hAmmo2 = 0;
+ 
+-	snprintf(sz, sizeof(sz), "sprites/%s.txt", pWeapon->szName);
++	// (the Half-Life arsenal's, ids from 32: the Half-Life sprite sheets, whose names Counter-Strike's own shadow,
++	// from the valve folder of the game tree)
++	const char *txtFormat = pWeapon->iId >= 32 ? "valve/sprites/%s.txt" : "sprites/%s.txt";
++	const char *sprFormat = pWeapon->iId >= 32 ? "valve/sprites/%s.spr" : "sprites/%s.spr";
++	snprintf(sz, sizeof(sz), txtFormat, pWeapon->szName);
+ 	client_sprite_t *pList = SPR_GetList(sz, &i);
+ 
+ 	if (!pList)
+@@ -110,7 +114,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList( pList, "crosshair", iRes, i );
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hCrosshair = SPR_Load(sz);
+ 		pWeapon->rcCrosshair = p->rc;
+ 	}
+@@ -120,7 +124,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "autoaim", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hAutoaim = SPR_Load(sz);
+ 		pWeapon->rcAutoaim = p->rc;
+ 	}
+@@ -130,7 +134,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList( pList, "zoom", iRes, i );
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hZoomedCrosshair = SPR_Load(sz);
+ 		pWeapon->rcZoomedCrosshair = p->rc;
+ 	}
+@@ -143,7 +147,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "zoom_autoaim", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hZoomedAutoaim = SPR_Load(sz);
+ 		pWeapon->rcZoomedAutoaim = p->rc;
+ 	}
+@@ -156,7 +160,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "weapon", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hInactive = SPR_Load(sz);
+ 		pWeapon->rcInactive = p->rc;
+ 
+@@ -168,7 +172,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "weapon_s", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hActive = SPR_Load(sz);
+ 		pWeapon->rcActive = p->rc;
+ 	}
+@@ -178,7 +182,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "ammo", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hAmmo = SPR_Load(sz);
+ 		pWeapon->rcAmmo = p->rc;
+ 
+@@ -190,7 +194,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 	p = GetSpriteList(pList, "ammo2", iRes, i);
+ 	if (p)
+ 	{
+-		snprintf(sz, sizeof(sz), "sprites/%s.spr", p->szSprite);
++		snprintf(sz, sizeof(sz), sprFormat, p->szSprite);
+ 		pWeapon->hAmmo2 = SPR_Load(sz);
+ 		pWeapon->rcAmmo2 = p->rc;
+ 
+@@ -256,6 +260,7 @@ int CHudAmmo::Init(void)
+ 	HOOK_MESSAGE(gHUD.m_Ammo, AmmoX);
+ 	HOOK_MESSAGE(gHUD.m_Ammo, Crosshair);
+ 	HOOK_MESSAGE(gHUD.m_Ammo, Brass);
++	HOOK_MESSAGE(gHUD.m_Ammo, HLWeapons);
+ 
+ 	HOOK_COMMAND(gHUD.m_Ammo, "slot1", Slot1);
+ 	HOOK_COMMAND(gHUD.m_Ammo, "slot2", Slot2);
+@@ -362,9 +367,10 @@ void CHudAmmo::Think(void)
+ 	if ( gHUD.m_fPlayerDead )
+ 		return;
+ 
+-	if ( gHUD.m_iWeaponBits != gWR.iOldWeaponBits )
++	if ( gHUD.m_iWeaponBits != gWR.iOldWeaponBits || gHUD.m_iWeaponBitsHL != gWR.iOldWeaponBitsHL )
+ 	{
+ 		gWR.iOldWeaponBits = gHUD.m_iWeaponBits;
++		gWR.iOldWeaponBitsHL = gHUD.m_iWeaponBitsHL;
+ 
+ 		for (int i = 0; i < MAX_WEAPONS-1; i++ )
+ 		{
+@@ -372,7 +378,8 @@ void CHudAmmo::Think(void)
+ 
+ 			if ( p )
+ 			{
+-				if ( gHUD.m_iWeaponBits & ( 1 << p->iId ) )
++				// (ids from 32: the Half-Life arsenal's, from the HLWeapons message)
++				if ( p->iId < 32 ? ( gHUD.m_iWeaponBits & ( 1 << p->iId ) ) : ( gHUD.m_iWeaponBitsHL & ( 1 << ( p->iId - 32 ) ) ) )
+ 				{
+ 					gWR.PickupWeapon( p );
+ 				}
+@@ -659,6 +666,14 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
+ 
+ }
+ 
++// The Half-Life arsenal's weapons the player owns (bit 0 for id 32)
++int CHudAmmo::MsgFunc_HLWeapons(const char *pszName, int iSize, void *pbuf)
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	gHUD.m_iWeaponBitsHL = reader.ReadLong();
++	return 1;
++}
++
+ int CHudAmmo::MsgFunc_Crosshair(const char *pszName, int iSize, void *pbuf)
+ {
+ 	BufferReader reader( pszName, pbuf, iSize );
+diff --git a/cl_dll/ammohistory.h b/cl_dll/ammohistory.h
+index e77a067..33b67c6 100644
+--- a/cl_dll/ammohistory.h
++++ b/cl_dll/ammohistory.h
+@@ -17,7 +17,7 @@
+ //
+ #pragma once
+ // this is the max number of items in each bucket
+-#define MAX_WEAPON_POSITIONS		22
++#define MAX_WEAPON_POSITIONS		26 // (the Half-Life arsenal's primaries at 19 to 22)
+ 
+ class WeaponsResource
+ {
+@@ -39,12 +39,14 @@ public:
+ 	void Reset( void )
+ 	{
+ 		iOldWeaponBits = 0;
++		iOldWeaponBitsHL = 0;
+ 		memset( rgSlots, 0, sizeof rgSlots );
+ 		memset( riAmmo, 0, sizeof riAmmo );
+ 	}
+ 
+ ///// WEAPON /////
+ 	int			iOldWeaponBits;
++	int			iOldWeaponBitsHL; // (the Half-Life arsenal's weapons, from id 32: HLWeapons message)
+ 
+ 	WEAPON *GetWeapon( int iId ) { return &rgWeapons[iId]; }
+ 	void AddWeapon( WEAPON *wp ) 
+diff --git a/cl_dll/cs_wpn/cs_weapons.cpp b/cl_dll/cs_wpn/cs_weapons.cpp
+index e824bc2..fdc8dff 100644
+--- a/cl_dll/cs_wpn/cs_weapons.cpp
++++ b/cl_dll/cs_wpn/cs_weapons.cpp
+@@ -63,7 +63,7 @@ globalvars_t  *gpGlobals;
+ ItemInfo CBasePlayerItem::ItemInfoArray[MAX_WEAPONS];
+ 
+ // Pool of client side entities/entvars_t
+-static entvars_t	ev[ 32 ];
++static entvars_t	ev[ MAX_WEAPONS ];
+ static int			num_ents = 0;
+ 
+ // The entity we'll use to represent the local client
+@@ -72,7 +72,7 @@ static CBasePlayer	player;
+ // Local version of game .dll global variables ( time, etc. )
+ static globalvars_t	Globals = { };
+ 
+-static CBasePlayerWeapon *g_pWpns[ 32 ];
++static CBasePlayerWeapon *g_pWpns[ MAX_WEAPONS ];
+ 
+ 
+ // CS Weapon placeholder entities
+diff --git a/cl_dll/ev_common.cpp b/cl_dll/ev_common.cpp
+index 7d887ba..87dc493 100644
+--- a/cl_dll/ev_common.cpp
++++ b/cl_dll/ev_common.cpp
+@@ -74,6 +74,16 @@ void Game_HookEvents( void )
+ 	HOOK_EVENT( vehicle, Vehicle );
+ 	HOOK_EVENT( xm1014, FireXM1014 );
+ 
++	// Half-Life arsenal
++	HOOK_EVENT( python, FirePython );
++	HOOK_EVENT( gaussspin, SpinGauss );
++	HOOK_EVENT( gauss, FireGauss );
++	HOOK_EVENT( crossbow1, FireCrossbow );
++	HOOK_EVENT( crossbow2, FireCrossbow2 );
++	HOOK_EVENT( rpg, FireRpg );
++	HOOK_EVENT( egon_fire, EgonFire );
++	HOOK_EVENT( egon_stop, EgonStop );
++
+ 	if( !stricmp( gEngfuncs.pfnGetGameDirectory(), "czeror" ) )
+ 	{
+ 		HOOK_EVENT( m60, FireM60 );
+diff --git a/cl_dll/events/event_hl.cpp b/cl_dll/events/event_hl.cpp
+new file mode 100644
+index 0000000..f5e3b71
+--- /dev/null
++++ b/cl_dll/events/event_hl.cpp
+@@ -0,0 +1,358 @@
++/*
++*	Half-Life arsenal: the client events of the Half-Life SDK's .357, crossbow, RPG, Gauss and Egon (ev_hldm.cpp),
++*	on this client's helpers. These weapons are not predicted: the shooter receives their events as everyone does,
++*	the weapon animation of a shot coming from here as in Half-Life, the others from the server.
++*/
++#include "events.h"
++
++enum hl_python_e { PYTHON_IDLE1 = 0, PYTHON_FIDGET, PYTHON_FIRE1, PYTHON_RELOAD, PYTHON_HOLSTER, PYTHON_DRAW, PYTHON_IDLE2, PYTHON_IDLE3 };
++enum hl_gauss_e { GAUSS_IDLE = 0, GAUSS_IDLE2, GAUSS_FIDGET, GAUSS_SPINUP, GAUSS_SPIN, GAUSS_FIRE, GAUSS_FIRE2, GAUSS_HOLSTER, GAUSS_DRAW };
++enum hl_crossbow_e
++{
++	CROSSBOW_IDLE1 = 0, CROSSBOW_IDLE2, CROSSBOW_FIDGET1, CROSSBOW_FIDGET2, CROSSBOW_FIRE1, CROSSBOW_FIRE2, CROSSBOW_FIRE3,
++	CROSSBOW_RELOAD, CROSSBOW_DRAW1, CROSSBOW_DRAW2, CROSSBOW_HOLSTER1, CROSSBOW_HOLSTER2
++};
++enum hl_rpg_e { RPG_IDLE = 0, RPG_FIDGET, RPG_RELOAD, RPG_FIRE2, RPG_HOLSTER1, RPG_DRAW1, RPG_HOLSTER2, RPG_DRAW_UL, RPG_IDLE_UL, RPG_FIDGET_UL };
++enum hl_egon_e { EGON_IDLE1 = 0, EGON_FIDGET1, EGON_ALTFIREON, EGON_ALTFIRECYCLE, EGON_ALTFIREOFF, EGON_FIRE1, EGON_FIRE2, EGON_FIRE3, EGON_FIRE4, EGON_DRAW, EGON_HOLSTER };
++
++#define HL_SND_CHANGE_PITCH   (1 << 7)
++#define HL_EGON_FIRE_WIDE     1
++#define HL_EGON_SOUND_OFF     "weapons/egon_off1.wav"
++#define HL_EGON_SOUND_RUN     "weapons/egon_run3.wav"
++#define HL_EGON_SOUND_STARTUP "weapons/egon_windup2.wav"
++
++// (this client's gunshot decal, as events/ev_cs16.cpp defines it: include/ev_hldm.h declares an older one)
++void EV_HLDM_DecalGunshot( pmtrace_t *pTrace, int iBulletType, float scale, int r, int g, int b, bool bCreateWallPuff, bool bCreateSparks, char cTextureType, bool isSky );
++
++// (a Half-Life bullet mark: a gunshot decal with its puff and sparks)
++static void HL_DecalGunshot( pmtrace_t *pTrace )
++{
++	EV_HLDM_DecalGunshot( pTrace, BULLET_PLAYER_50AE, 0.5f, 40, 40, 40, true, true, 'C', false );
++}
++
++void EV_FirePython( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	Vector forward, right, up;
++	vec3_t vecSrc;
++
++	AngleVectors( angles, forward, right, up );
++
++	if ( EV_IsLocal( idx ) )
++	{
++		EV_MuzzleFlash();
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( PYTHON_FIRE1, 1 ); // (body 1: the multiplayer scope)
++	}
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, Com_RandomLong( 0, 1 ) ? "weapons/357_shot2.wav" : "weapons/357_shot1.wav",
++		gEngfuncs.pfnRandomFloat( 0.8f, 0.9f ), ATTN_NORM, 0, PITCH_NORM );
++
++	EV_GetGunPosition( args, vecSrc, origin );
++	Vector vSpread( args->fparam1, args->fparam2, 0.0f );
++	EV_HLDM_FireBullets( idx, forward, right, up, 1, vecSrc, forward, vSpread, 8192.0, BULLET_PLAYER_50AE, 2 );
++}
++
++void EV_SpinGauss( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++
++	if ( args->bparam2 ) // (overcharged)
++	{
++		gEngfuncs.pEventAPI->EV_StopSound( idx, CHAN_WEAPON, "ambience/pulsemachine.wav" );
++		return;
++	}
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "ambience/pulsemachine.wav", 1.0, ATTN_NORM, args->bparam1 ? HL_SND_CHANGE_PITCH : 0, args->iparam1 );
++}
++
++static void EV_StopPreviousGauss( int idx )
++{
++	// (no gauss spin left queued for this player)
++	gEngfuncs.pEventAPI->EV_KillEvents( idx, "events/gaussspin.sc" );
++	gEngfuncs.pEventAPI->EV_StopSound( idx, CHAN_WEAPON, "ambience/pulsemachine.wav" );
++}
++
++void EV_FireGauss( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	float flDamage = args->fparam1;
++	int m_fPrimaryFire = args->bparam1;
++	vec3_t vecSrc, vecDest, forward, right, up;
++	pmtrace_t tr, beam_tr;
++	int fHasPunched = 0;
++	int fFirstBeam = 1;
++	int nMaxHits = 10;
++
++	if ( args->bparam2 )
++	{
++		EV_StopPreviousGauss( idx );
++		return;
++	}
++
++	EV_GetGunPosition( args, vecSrc, origin );
++
++	int m_iBeam = gEngfuncs.pEventAPI->EV_FindModelIndex( "sprites/smoke.spr" );
++	int m_iGlow = gEngfuncs.pEventAPI->EV_FindModelIndex( "sprites/hotglow.spr" );
++	int m_iBalls = m_iGlow;
++
++	AngleVectors( angles, forward, right, up );
++	VectorMA( vecSrc, 8192, forward, vecDest );
++
++	if ( EV_IsLocal( idx ) )
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( GAUSS_FIRE2, 2 );
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/gauss2.wav", 0.5 + flDamage * ( 1.0 / 400.0 ), ATTN_NORM, 0, 85 + gEngfuncs.pfnRandomLong( 0, 0x1f ) );
++
++	while ( flDamage > 10 && nMaxHits > 0 )
++	{
++		nMaxHits--;
++
++		gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( false, true );
++		gEngfuncs.pEventAPI->EV_PushPMStates();
++		gEngfuncs.pEventAPI->EV_SetSolidPlayers( idx - 1 );
++		gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++		gEngfuncs.pEventAPI->EV_PlayerTrace( vecSrc, vecDest, PM_STUDIO_BOX, -1, &tr );
++		gEngfuncs.pEventAPI->EV_PopPMStates();
++
++		if ( tr.allsolid )
++			break;
++
++		if ( fFirstBeam )
++		{
++			if ( EV_IsLocal( idx ) )
++				EV_MuzzleFlash();
++
++			fFirstBeam = 0;
++			gEngfuncs.pEfxAPI->R_BeamEntPoint( idx | 0x1000, tr.endpos, m_iBeam, 0.1, m_fPrimaryFire ? 1.0 : 2.5, 0.0,
++				m_fPrimaryFire ? 128.0 : flDamage, 0, 0, 0, 255, m_fPrimaryFire ? 128 : 255, m_fPrimaryFire ? 0 : 255 );
++		}
++		else
++		{
++			gEngfuncs.pEfxAPI->R_BeamPoints( vecSrc, tr.endpos, m_iBeam, 0.1, m_fPrimaryFire ? 1.0 : 2.5, 0.0,
++				m_fPrimaryFire ? 128.0 : flDamage, 0, 0, 0, 255, m_fPrimaryFire ? 128 : 255, m_fPrimaryFire ? 0 : 255 );
++		}
++
++		physent_t *pEntity = gEngfuncs.pEventAPI->EV_GetPhysent( tr.ent );
++		if ( pEntity == NULL )
++			break;
++
++		if ( pEntity->solid == SOLID_BSP )
++		{
++			float n = -DotProduct( tr.plane.normal, forward );
++
++			if ( n < 0.5 ) // (60 degrees: it reflects)
++			{
++				vec3_t r;
++				VectorMA( forward, 2.0 * n, tr.plane.normal, r );
++				VectorCopy( r, forward );
++				VectorMA( tr.endpos, 8.0, forward, vecSrc );
++				VectorMA( vecSrc, 8192.0, forward, vecDest );
++
++				gEngfuncs.pEfxAPI->R_TempSprite( tr.endpos, vec3_origin, 0.2, m_iGlow, kRenderGlow, kRenderFxNoDissipation, flDamage * n / 255.0, flDamage * n * 0.5 * 0.1, FTENT_FADEOUT );
++
++				vec3_t fwd;
++				VectorAdd( tr.endpos, tr.plane.normal, fwd );
++				gEngfuncs.pEfxAPI->R_Sprite_Trail( TE_SPRITETRAIL, tr.endpos, fwd, m_iBalls, 3, 0.1, gEngfuncs.pfnRandomFloat( 10, 20 ) / 100.0, 100, 255, 100 );
++
++				if ( n == 0 )
++					n = 0.1;
++
++				flDamage = flDamage * ( 1 - n );
++			}
++			else
++			{
++				// (a tunnel)
++				HL_DecalGunshot( &tr );
++				gEngfuncs.pEfxAPI->R_TempSprite( tr.endpos, vec3_origin, 1.0, m_iGlow, kRenderGlow, kRenderFxNoDissipation, flDamage / 255.0, 6.0, FTENT_FADEOUT );
++
++				if ( fHasPunched )
++					break;
++
++				fHasPunched = 1;
++
++				// (the charged shot through the wall)
++				if ( !m_fPrimaryFire )
++				{
++					vec3_t start;
++					VectorMA( tr.endpos, 8.0, forward, start );
++
++					gEngfuncs.pEventAPI->EV_PushPMStates();
++					gEngfuncs.pEventAPI->EV_SetSolidPlayers( idx - 1 );
++					gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++					gEngfuncs.pEventAPI->EV_PlayerTrace( start, vecDest, PM_STUDIO_BOX, -1, &beam_tr );
++
++					if ( !beam_tr.allsolid )
++					{
++						vec3_t delta;
++
++						// (backwards to the exit point)
++						gEngfuncs.pEventAPI->EV_PlayerTrace( beam_tr.endpos, tr.endpos, PM_STUDIO_BOX, -1, &beam_tr );
++						VectorSubtract( beam_tr.endpos, tr.endpos, delta );
++
++						float len = Vector( delta ).Length();
++						if ( len < flDamage )
++						{
++							if ( len == 0 )
++								len = 1;
++
++							flDamage -= len;
++
++							vec3_t fwd;
++							VectorSubtract( tr.endpos, forward, fwd );
++							gEngfuncs.pEfxAPI->R_Sprite_Trail( TE_SPRITETRAIL, tr.endpos, fwd, m_iBalls, 3, 0.1, gEngfuncs.pfnRandomFloat( 10, 20 ) / 100.0, 100, 255, 100 );
++
++							HL_DecalGunshot( &beam_tr );
++							gEngfuncs.pEfxAPI->R_TempSprite( beam_tr.endpos, vec3_origin, 0.1, m_iGlow, kRenderGlow, kRenderFxNoDissipation, flDamage / 255.0, 6.0, FTENT_FADEOUT );
++
++							VectorSubtract( beam_tr.endpos, forward, fwd );
++							gEngfuncs.pEfxAPI->R_Sprite_Trail( TE_SPRITETRAIL, beam_tr.endpos, fwd, m_iBalls, (int)( flDamage * 0.3 ), 0.1, gEngfuncs.pfnRandomFloat( 10, 20 ) / 100.0, 200, 255, 40 );
++
++							VectorAdd( beam_tr.endpos, forward, vecSrc );
++						}
++					}
++					else
++					{
++						flDamage = 0;
++					}
++
++					gEngfuncs.pEventAPI->EV_PopPMStates();
++				}
++				else
++				{
++					// (the primary slug never goes through: a glow and some balls)
++					gEngfuncs.pEfxAPI->R_TempSprite( tr.endpos, vec3_origin, 0.2, m_iGlow, kRenderGlow, kRenderFxNoDissipation, 200.0 / 255.0, 0.3, FTENT_FADEOUT );
++
++					vec3_t fwd;
++					VectorAdd( tr.endpos, tr.plane.normal, fwd );
++					gEngfuncs.pEfxAPI->R_Sprite_Trail( TE_SPRITETRAIL, tr.endpos, fwd, m_iBalls, 8, 0.6, gEngfuncs.pfnRandomFloat( 10, 20 ) / 100.0, 100, 255, 200 );
++
++					flDamage = 0;
++				}
++			}
++		}
++		else
++		{
++			VectorAdd( tr.endpos, forward, vecSrc );
++		}
++	}
++}
++
++// (keeps a stuck bolt where it hit)
++static void EV_BoltCallback( struct tempent_s *ent, float frametime, float currenttime )
++{
++	ent->entity.origin = ent->entity.baseline.vuser1;
++	ent->entity.angles = ent->entity.baseline.vuser2;
++}
++
++// The zoomed shot: an instant bolt, stuck where it lands
++void EV_FireCrossbow2( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	Vector angles( args->angles );
++	vec3_t vecSrc, vecEnd, forward, right, up;
++	pmtrace_t tr;
++
++	AngleVectors( angles, forward, right, up );
++	EV_GetGunPosition( args, vecSrc, origin );
++	VectorMA( vecSrc, 8192, forward, vecEnd );
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/xbow_fire1.wav", 1, ATTN_NORM, 0, 93 + gEngfuncs.pfnRandomLong( 0, 0xF ) );
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_ITEM, "weapons/xbow_reload1.wav", gEngfuncs.pfnRandomFloat( 0.95, 1.0 ), ATTN_NORM, 0, 93 + gEngfuncs.pfnRandomLong( 0, 0xF ) );
++
++	if ( EV_IsLocal( idx ) )
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( args->iparam1 ? CROSSBOW_FIRE1 : CROSSBOW_FIRE3, 1 );
++
++	gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( false, true );
++	gEngfuncs.pEventAPI->EV_PushPMStates();
++	gEngfuncs.pEventAPI->EV_SetSolidPlayers( idx - 1 );
++	gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++	gEngfuncs.pEventAPI->EV_PlayerTrace( vecSrc, vecEnd, PM_STUDIO_BOX, -1, &tr );
++
++	if ( tr.fraction < 1.0 )
++	{
++		physent_t *pe = gEngfuncs.pEventAPI->EV_GetPhysent( tr.ent );
++
++		// (in the world: stuck there for a while)
++		if ( pe && pe->solid == SOLID_BSP )
++		{
++			gEngfuncs.pEventAPI->EV_PlaySound( idx, tr.endpos, CHAN_BODY, "weapons/xbow_hit1.wav", gEngfuncs.pfnRandomFloat( 0.95, 1.0 ), ATTN_NORM, 0, PITCH_NORM );
++
++			int iModelIndex = gEngfuncs.pEventAPI->EV_FindModelIndex( "models/crossbow_bolt.mdl" );
++			TEMPENTITY *bolt = gEngfuncs.pEfxAPI->R_TempModel( tr.endpos - forward * 10, Vector( 0, 0, 0 ), angles, 5, iModelIndex, TE_BOUNCE_NULL );
++			if ( bolt )
++			{
++				bolt->flags |= ( FTENT_CLIENTCUSTOM ); // (so that it does not fall)
++				bolt->entity.baseline.vuser1 = tr.endpos - forward * 10; // (its origin and angles once stuck)
++				bolt->entity.baseline.vuser2 = angles;
++				bolt->callback = EV_BoltCallback;
++			}
++		}
++	}
++
++	gEngfuncs.pEventAPI->EV_PopPMStates();
++}
++
++// The bolt in flight (the server's entity)
++void EV_FireCrossbow( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/xbow_fire1.wav", 1, ATTN_NORM, 0, 93 + gEngfuncs.pfnRandomLong( 0, 0xF ) );
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_ITEM, "weapons/xbow_reload1.wav", gEngfuncs.pfnRandomFloat( 0.95, 1.0 ), ATTN_NORM, 0, 93 + gEngfuncs.pfnRandomLong( 0, 0xF ) );
++
++	if ( EV_IsLocal( idx ) )
++	{
++		if ( args->iparam1 )
++			gEngfuncs.pEventAPI->EV_WeaponAnimation( CROSSBOW_FIRE1, 1 );
++		else if ( args->iparam2 )
++			gEngfuncs.pEventAPI->EV_WeaponAnimation( CROSSBOW_FIRE3, 1 );
++	}
++}
++
++void EV_FireRpg( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, "weapons/rocketfire1.wav", 0.9, ATTN_NORM, 0, PITCH_NORM );
++	gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_ITEM, "weapons/glauncher.wav", 0.7, ATTN_NORM, 0, PITCH_NORM );
++
++	if ( EV_IsLocal( idx ) )
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( RPG_FIRE2, 1 );
++}
++
++// (its beams are the server's, the shooter's included)
++void EV_EgonFire( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++	int iFireMode = args->iparam2;
++	int iStartup = args->bparam1;
++	static const int fireAnims[] = { EGON_FIRE1, EGON_FIRE2, EGON_FIRE3, EGON_FIRE4 };
++
++	if ( iStartup )
++		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_STARTUP, iFireMode == HL_EGON_FIRE_WIDE ? 0.98 : 0.9, ATTN_NORM, 0, iFireMode == HL_EGON_FIRE_WIDE ? 125 : 100 );
++	else
++		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_STATIC, HL_EGON_SOUND_RUN, iFireMode == HL_EGON_FIRE_WIDE ? 0.98 : 0.9, ATTN_NORM, 0, iFireMode == HL_EGON_FIRE_WIDE ? 125 : 100 );
++
++	if ( EV_IsLocal( idx ) )
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( fireAnims[gEngfuncs.pfnRandomLong( 0, 3 )], 1 );
++}
++
++void EV_EgonStop( event_args_t *args )
++{
++	int idx = args->entindex;
++	Vector origin( args->origin );
++
++	gEngfuncs.pEventAPI->EV_StopSound( idx, CHAN_STATIC, HL_EGON_SOUND_RUN );
++
++	if ( args->iparam1 )
++		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_OFF, 0.98, ATTN_NORM, 0, 100 );
++}
+diff --git a/cl_dll/hud.h b/cl_dll/hud.h
+index b75b3c9..6ad036c 100644
+--- a/cl_dll/hud.h
++++ b/cl_dll/hud.h
+@@ -180,6 +180,7 @@ public:
+ 	CHudMsgFunc(HideWeapon);
+ 	CHudMsgFunc(Crosshair);
+ 	CHudMsgFunc(Brass);
++	CHudMsgFunc(HLWeapons);
+ 
+ 
+ 	void SlotInput( int iSlot );
+@@ -1083,6 +1084,7 @@ public:
+ 	SCREENINFO  m_truescrinfo;
+ 
+ 	int	m_iWeaponBits;
++	int	m_iWeaponBitsHL; // (the Half-Life arsenal's weapons owned, bit 0 for id 32: HLWeapons message)
+ 	int	m_fPlayerDead;
+ 	int m_iIntermission;
+ 	int m_iNoConsolePrint;
+diff --git a/cl_dll/include/events.h b/cl_dll/include/events.h
+index 36bdf73..26f999a 100644
+--- a/cl_dll/include/events.h
++++ b/cl_dll/include/events.h
+@@ -98,6 +98,16 @@ DECLARE_EVENT(FireUMP45);
+ DECLARE_EVENT(FireUSP);
+ DECLARE_EVENT(Vehicle);
+ DECLARE_EVENT(FireXM1014);
++
++// Half-Life arsenal (events/event_hl.cpp)
++DECLARE_EVENT(FirePython);
++DECLARE_EVENT(SpinGauss);
++DECLARE_EVENT(FireGauss);
++DECLARE_EVENT(FireCrossbow);
++DECLARE_EVENT(FireCrossbow2);
++DECLARE_EVENT(FireRpg);
++DECLARE_EVENT(EgonFire);
++DECLARE_EVENT(EgonStop);
+ DECLARE_EVENT(TrainPitchAdjust);
+ 
+ // CZERODS START
+diff --git a/dlls/cdll_dll.h b/dlls/cdll_dll.h
+index 2869c1c..e85ae84 100644
+--- a/dlls/cdll_dll.h
++++ b/dlls/cdll_dll.h
+@@ -15,7 +15,7 @@
+ #ifndef CDLL_DLL_H
+ #define CDLL_DLL_H
+ 
+-#define MAX_WEAPONS 32
++#define MAX_WEAPONS 64 // (the Half-Life arsenal's ids from 32: the engine predicts 64)
+ #define MAX_WEAPON_SLOTS 5
+ #define MAX_ITEM_TYPES 6
+ #define MAX_ITEMS 4
+diff --git a/dlls/weapons.h b/dlls/weapons.h
+index f000e54..7d9e2cf 100644
+--- a/dlls/weapons.h
++++ b/dlls/weapons.h
+@@ -115,7 +115,7 @@ public:
+ 
+ #define WEAPON_ALLWEAPONS (~(1 << WEAPON_SUIT))
+ #define WEAPON_SUIT 31
+-#define MAX_WEAPONS 32
++#define MAX_WEAPONS 64 // (the Half-Life arsenal's ids from 32: the engine predicts 64)
+ 
+ #define MAX_NORMAL_BATTERY 100
+ 

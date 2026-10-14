@@ -18,9 +18,9 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 | --- | --- | --- |
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
-| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` and `cmake/` (game modules from source), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r1` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -49,9 +49,18 @@ treat `data_engines/` like `data_games/` (the only copy of the recovered modules
 
 The contract is in `game-manifest.schema.json`. A version offers `solo`, `multiplayer` or both. `coverFile` is an
 image beside `manifest.json`, for games whose own files hold none a browser displays. The base/version overlay is the
-same as for Windows games: version files replace same-named base files, whatever their case.
-`multiplayer.gameLibrary` (optional) is a native game library in the `engine` release that the dedicated server loads
-instead of the one the game's `liblist.gam` names (`-dll`): the server side of modules built from source.
+same as for Windows games: version files replace same-named base files, whatever their case. Optional fields:
+
+- `requires` (on the version, without `mount`): other ports' versions whose files lie beneath this version's own, in
+  order — a game over another's files, as the two Counter-Strike games below over `counter-strike`'s, without a copy.
+  In the page's tree, the files served and the dedicated server's linked tree alike (`gameLayers`, game-files.js).
+- `goldsrc.extras`: the release's archives mounted in the game folder (`engine/valve/extras.pk3` by default, the page
+  only); declared, the dedicated server gets them too (linked into its game folder).
+- `goldsrc.solo.commands` / `goldsrc.multiplayer.commands`: console commands before the map, one per entry (the page;
+  `+command` arguments of the dedicated server) — `maxplayers 10` and `deathmatch 1` make a solo game a listen server
+  with Counter-Strike's round rules and bots (with one player the game installs its training rules: no team, no bot).
+- `multiplayer.gameLibrary`: a native game library in the `engine` release that the dedicated server loads instead of
+  the one the game's `liblist.gam` names (`-dll`): the server side of modules built from source.
 
 The page starts the engine with `-dll` set to the name the engine's wrapper preloads the server module under
 (`DEFAULT_SERVER_LIBRARY` of its `constants.js`): the engine otherwise opens the library the game's `liblist.gam` names
@@ -97,29 +106,73 @@ at once (names and sizes from `/api/tree`); a file's bytes arrive at its first r
 The browser release's game modules were recovered from a deployed build whose sources no longer exist.
 `tools/goldsrc/build-modules.sh` builds Counter-Strike's from public sources instead, pinned in `lock.json` "modules":
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
-`mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). The result is a release of its own,
-`data_engines/xash3d-web-1.2.2-cs16-15278ca/`: the engine files of `xash3d-web-1.2.2` (checked against the lock) and
-under `counterstrike/cstrike/` the three WebAssembly modules and `dlls/cs.so`, the same server compiled natively for the
-32-bit dedicated server (`multiplayer.gameLibrary`).
+`mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
+on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r1` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
+`dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
+`orthros-bots.pk3` (`goldsrc.extras`).
 
-- **Sources.** `data_engines/src/cs16-client` stays at the pinned commits (checked, clean); the build works on a copy in
-  scratch, where `tools/goldsrc/patches/` are applied: a few one-line portability fixes (Emscripten is neither Linux nor
-  Apple for these sources), the client's engine version check accepting the build number `-1` the WebAssembly engine
-  reports, options to skip the YaPB bots and the downloaded bot graphs, and `SOURCE_DATE_EPOCH` for ReGameDLL's build
-  date.
+- **Sources.** `data_engines/src/cs16-client` stays at the pinned commits (checked, clean); a build works on a copy in
+  scratch, where its patches (`tools/goldsrc/patches/`) are applied. The common ones: a few one-line portability fixes
+  (Emscripten is neither Linux nor Apple for these sources), the client's engine version check accepting the build
+  number `-1` the WebAssembly engine reports, options to skip the YaPB bots and the downloaded bot graphs,
+  `SOURCE_DATE_EPOCH` for ReGameDLL's build date, and `-bots`: bots on a dedicated server too (ReGameDLL decides it at
+  load, before `bot_enable` can be set).
 - **WebAssembly.** In the pinned image `emscripten/emsdk:4.0.23` (the engine's Emscripten), without network.
   `cmake/emscripten-side-modules.cmake` makes each shared library a side module (`-sSIDE_MODULE=1`), as the engine's
   own build does; `cmake/hidden-visibility.cmake` compiles the server with hidden visibility, as the recovered one was:
   Emscripten's dynamic linker has one symbol table for every module, where the client's same-named weapon and entity
   symbols would otherwise bind in place of the server's. The menu renders fonts with stb_truetype (no FreeType).
-- **Reproducible.** The pinned commit's time is the build time the sources record: two builds give the same bytes, and
-  the script refuses WebAssembly modules whose SHA-256 differ from the lock's. The native library depends on the host's
-  g++ (its digest is in the release's `release.json` only).
+- **Bots.** Counter-Strike 1.6 ships no bot data: `orthros-bots.pk3` holds the profiles of cs16-client's extras
+  (`BotProfile.db`; not `BotChatter.db`, whose loading crashes the dedicated server) and a navigation mesh per official
+  map, `maps/<map>.nav`, learned by the build's native server (`tools/goldsrc/bot-nav.mjs`: one bot on a map without a
+  mesh learns it, 15 to 90 s a map, four at once) on the files of `modules.bots.game`. The bots read it through the
+  engine's file system, archives included. (A map without a mesh would be learned by the game itself, into its
+  writable `maps/` folder: not checked.)
+- **Reproducible.** The pinned commit's time is the build time the sources record: two builds give the same
+  WebAssembly modules, and the script refuses one whose SHA-256 differs from the lock's. The meshes nearly so (between
+  two builds one of the 25 differed, `de_torn`, by 0.03 %): the bots' archive (sorted entries, a fixed date) is not
+  pinned, nor the native library, which depends on the host's g++; their digests are in the release's `release.json`.
 - **Checked** (2026-10-14, headless Chromium, `check.mjs` and a probe): the rebuilt modules behave as the recovered ones —
   same exports for the server (216), every entry point of the client and menu; two players on the dedicated server,
-  first with Valve's `cs.so`, then with the native ReGameDLL (`multiplayer.gameLibrary`), move, see each other and get
-  the same score. In single player both module sets now start the local server (`-dll`, above) on `de_dust2`, up to the
-  spectator view and the team menu (`chooseteam`).
+  first with Valve's `cs.so`, then with the native ReGameDLL, move, see each other and get the same score. Single player
+  on a listen server (`solo.commands`): team menu, rounds, bots that play.
+
+## Half-Life Arsenal
+
+`counter-strike-hl-arsenal`: Counter-Strike 1.6 with five Half-Life weapons bought beside its own — `9. Half-Life
+arsenal` of the buy menu, or the console aliases `python`, `crossbow`, `rpg`, `gauss`, `egon`. Both teams, every map;
+their ammo bought as any gun's (`6`/`7` of the menu); `$16000` to start (`mp_startmoney`, solo and multiplayer).
+
+| Weapon | Slot | Price | Fire | Secondary |
+| --- | --- | --- | --- | --- |
+| .357 Magnum | pistol | $900 | 65, Counter-Strike's bullet penetration | zoom |
+| Crossbow | primary | $3000 | an explosive bolt in flight | zoom: an instant 120-damage bolt |
+| RPG | primary | $4500 | a rocket following the laser spot, 120 blast | laser spot on/off |
+| Gauss | primary | $4000 | 20, reflected by walls | charge up to 200: through walls, pushes its shooter |
+| Egon | primary | $5500 | a continuous beam, 12 every 0.1 s | — |
+
+The `hl-arsenal` patches port the Half-Life SDK's `python.cpp`, `crossbow.cpp`, `rpg.cpp`, `gauss.cpp` and `egon.cpp`
+onto ReGameDLL's weapon classes (`dlls/wpn_shared/wpn_hl.cpp`, `dlls/hl_weapons.h`) and their client events
+(`cl_dll/events/event_hl.cpp`, from `ev_hldm.cpp`). The models, sounds, sprites and event scripts are the Half-Life
+ones already in the game's `valve` folder; nothing of the game's is copied or changed.
+
+- **Ids past 32.** Counter-Strike's ids fill the 32 bits of a player's `weapons` field: these are 32 to 36
+  (`MAX_WEAPONS` 64 on both sides, the engine predicts 64). The client learns which a player owns from the `HLWeapons`
+  message (its own bits), for the weapon menu and the HUD.
+- **Not predicted.** The current weapon id the client predicts from has 5 bits (`delta.lst`): while a Half-Life weapon
+  is held, the server sends 0 and the client predicts nothing. Its animations come from the server (sent even to a
+  predicting client), its fire effects from its events, which reach the shooter too.
+- **HUD sprites.** Half-Life's `sprites/weapon_*.txt` name sprite sheets (`640hud1.spr`, …) whose names
+  Counter-Strike's own shadow: the client loads them, for these weapons only, from `valve/sprites/` of the game tree
+  (its root is a search path of the engine).
+- **Counter-Strike's rules.** One primary, one pistol: buying one drops the other of its slot; weights as
+  Counter-Strike's, so a bought weapon is drawn. Dropped and dead players' weapons fall with their Half-Life world
+  model. Bots neither buy nor pick them up (their logic knows Counter-Strike's weapons only).
+- **Effects.** The Egon's beams are the server's for every player, its shooter included (the Half-Life client's own
+  beams follow a predicted aim this client does not have). Explosions are Half-Life's (Counter-Strike's grenade
+  explosion is the flashbang's).
 
 ## Browser storage
 
@@ -134,12 +187,12 @@ only: a port's saves stay in this browser.
 One native dedicated server per version, `orthros-goldsrc@<manifest>` (systemd, `DynamicUser`, its state in
 `/var/lib/private/orthros-goldsrc/<manifest>`), runs `tools/goldsrc/server.mjs`: it links the version's files into
 `$STATE_DIRECTORY/game` (the engine reads one directory) and starts the dedicated server on 127.0.0.1 only.
-Half-Life uses UDP 28015, Counter-Strike 28016.
+Half-Life uses UDP 28015, Counter-Strike 28016, Counter-Strike (rebuilt) 28017, Half-Life Arsenal 28018.
 
 ```sh
 python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
 sh tools/goldsrc/build-server.sh                 # dedicated server -> data_engines/ (gcc, 32-bit libraries)
-sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data_engines/ (Docker, g++ -m32)
+sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data_engines/ (Docker, g++ -m32, the game's files)
 install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
 systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-original-en
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en solo --url https://orthros.chalco.website --reload
@@ -155,12 +208,17 @@ The engine files are pinned by SHA-256 in `lock.json` and served only from relea
 ## State (2026-10-14)
 
 Checked in headless Chromium (SwiftShader) with `tools/goldsrc/check.mjs`, from the home card: Half-Life single
-player (moves, saves, loads, quits and finds its save again), Half-Life and Counter-Strike multiplayer (two players on
-the dedicated server see each other, move, and both receive the score when one dies). Not checked: a whole campaign,
-long sessions, voice chat. Counter-Strike's manifest offers no single-player mode yet: its local server starts since
-`-dll` (above), but the team menu does not open by itself at the start and the bots lack their profile database
-(`BotProfile.db`, in cs16-client's extras). Known upstream messages: Half-Life's optional `ReqState` voice message has
-no handler; Counter-Strike warns about its HUD sprite count.
+player (moves, saves, loads, quits and finds its save again); Half-Life and the three Counter-Strike games in
+multiplayer (two players on the dedicated server see each other, move, and both receive the score when one dies);
+`counter-strike-rebuilt` and `counter-strike-hl-arsenal` in single player (`--no-save`: the team menu, moving, eight
+players with the bots). With a probe, in the Arsenal: each of the five weapons bought (menu and aliases, money
+taken), drawn with its Half-Life model and HUD icon, fired (bullets, bolts — in flight and zoomed, stuck in the wall —
+rockets following the spot, the Gauss's beams and charged blast, the Egon's beam), its ammo bought, dropped; the
+Gauss and RPG on the multiplayer server too. Blast damage checked on the shooter; hits on other players go through
+the same calls as Counter-Strike's weapons, not checked by aiming at one. Not checked: a whole campaign, long
+sessions, voice chat, `counter-strike`'s single player (its manifest offers none: it keeps the recovered modules, to
+compare). Known upstream messages: Half-Life's optional `ReqState` voice message has no handler; Counter-Strike warns
+about its HUD sprite count.
 
 ## Third-party components
 
@@ -172,6 +230,8 @@ no handler; Counter-Strike warns about its HUD sprite count.
   the checkout): the dedicated server.
 - `FWGS/hlsdk-portable` at `6c168fc`: reference sources only, not the source of the recovered modules.
 - `Velaron/cs16-client` at `15278ca` (GPL 2 or later, with the Half-Life engine exception) and its submodules
-  `Velaron/ReGameDLL_CS` (MIT), `Velaron/mainui_cpp` (GPL 2 or later), `FWGS/MiniUTL`: the modules of
-  `xash3d-web-1.2.2-cs16-15278ca`, built by `build-modules.sh`; their notices are in the checkout.
+  `Velaron/ReGameDLL_CS` (MIT), `Velaron/mainui_cpp` (GPL 2 or later), `FWGS/MiniUTL`: the modules of the
+  `xash3d-web-1.2.2-cs16-15278ca-*` releases, built by `build-modules.sh`; their notices are in the checkout. The
+  Half-Life Arsenal's weapons and events are ported from the Half-Life SDK (`FWGS/hlsdk-portable`): its licence allows
+  non-commercial enhancements to Valve's products only.
 - The game files are the games' own, never modified; their provenance is recorded in each manifest's `installedFrom`.

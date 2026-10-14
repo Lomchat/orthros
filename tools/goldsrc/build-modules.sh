@@ -1,25 +1,31 @@
 #!/bin/sh
 # Build the game modules of a GoldSrc browser port from pinned sources (lock.json "modules", docs/browser-ports.md) into
-# a browser engine release data_engines/<id>/: the engine files of the release it extends (checked against lock.json
-# "browser"), the client, menu and server modules compiled to WebAssembly in the pinned Emscripten image (no network),
-# and the server library compiled natively (32-bit Linux) for the dedicated server (goldsrc.multiplayer.gameLibrary).
-# Sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; the build works on
-# a copy in scratch where tools/goldsrc/patches/ are applied. Every WebAssembly module lock.json "modules.files" lists
-# must come out identical. Needs git, Docker, Python 3, cmake, g++ with 32-bit libraries. An installed release is never
-# overwritten.
-# Usage: sh tools/goldsrc/build-modules.sh [<engines-dir>]
+# a browser engine release data_engines/<id>/ per build of "modules.builds": the engine files of the release it extends
+# (checked against lock.json "browser"); the client, menu and server modules compiled to WebAssembly in the pinned
+# Emscripten image (no network); the server library compiled natively (32-bit Linux) for the dedicated server
+# (goldsrc.multiplayer.gameLibrary); the bots' archive (goldsrc.extras): their profiles and the navigation meshes the
+# native server learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed).
+# Sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; each build works on
+# a copy in scratch where its patches (tools/goldsrc/patches/) are applied. Every module lock.json lists must come out
+# identical. Needs git, Docker, Python 3, Node, cmake, g++ with 32-bit libraries. An installed release is
+# never overwritten.
+# Usage: sh tools/goldsrc/build-modules.sh [<build id>...] [--engines-dir <dir>] [--games-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engines=${1:-$root/data_engines}
+engines=$root/data_engines games=$root/data_games ids=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --engines-dir) engines=$2; shift 2 ;;
+    --games-dir) games=$2; shift 2 ;;
+    *) ids="$ids $1"; shift ;;
+  esac
+done
 lock=$root/tools/goldsrc/lock.json
 field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['modules'][sys.argv[2]])" "$lock" "$1"; }
-id=$(field id); repository=$(field repository); commit=$(field commit); image=$(field emsdk)
+[ -n "$ids" ] || ids=$(python3 -c "import json,sys; print(' '.join(b['id'] for b in json.load(open(sys.argv[1]))['modules']['builds']))" "$lock")
+repository=$(field repository); commit=$(field commit); image=$(field emsdk)
 source=$engines/src/$(basename "$repository")
-build=/tmp/orthros-scratch/goldsrc-modules-build
-release=$engines/$id
 "$root/tools/disk-check.sh"
-if [ -e "$release/release.json" ]; then echo 'Modules release already installed; preserving it.'; exit 0; fi
-if [ -e "$release" ]; then echo "$release exists without release.json: review it before building." >&2; exit 1; fi
 if [ ! -d "$source/.git" ]; then
   mkdir -p "$engines/src"
   git clone "$repository" "$source"
@@ -37,46 +43,70 @@ if have != want: sys.exit(f'Submodules differ from lock.json: {sorted(set(have.i
 PY
 # (the pinned commit's time stands for the build time the sources record: the same sources give the same modules)
 export SOURCE_DATE_EPOCH="$(git -C "$source" log -1 --format=%ct)"
-rm -rf "$build"; mkdir -p "$build/wasm" "$build/out"
-# (the copy keeps the submodules' relative git links: the patches go through git, which knows the files' line endings)
-cp -a "$source" "$build/src"
-python3 - "$lock" "$build/src" "$root/tools/goldsrc/patches" <<'PY'
+
+for id in $ids; do
+  release=$engines/$id
+  if [ -e "$release/release.json" ]; then echo "$id: already installed; preserving it."; continue; fi
+  if [ -e "$release" ]; then echo "$release exists without release.json: review it before building." >&2; exit 1; fi
+  build=/tmp/orthros-scratch/goldsrc-modules-build/$id
+  rm -rf "$build"; mkdir -p "$build/wasm" "$build/out" "$build/navs"
+  # (the copy keeps the submodules' relative git links: the patches go through git, which knows the files' line endings)
+  cp -a "$source" "$build/src"
+  python3 - "$lock" "$id" "$build/src" "$root/tools/goldsrc/patches" <<'PY'
 import json, subprocess, sys
-for repo, patch in json.load(open(sys.argv[1]))['modules']['patches'].items():
-    subprocess.run(['git', '-C', f'{sys.argv[2]}/{repo}', 'apply', f'{sys.argv[3]}/{patch}'], check=True)
+build = next(b for b in json.load(open(sys.argv[1]))['modules']['builds'] if b['id'] == sys.argv[2])
+for repo, patch in build['patches']:
+    subprocess.run(['git', '-C', f'{sys.argv[3]}/{repo}', 'apply', f'{sys.argv[4]}/{patch}'], check=True)
 PY
-docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH \
-  -v "$build/src:/cs" -v "$build/wasm:/build" -v "$build/out:/out" -v "$root/tools/goldsrc/cmake:/cmake:ro" -w /cs "$image" sh -c '
-  emcmake cmake -S /cs -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/out \
-    -DCMAKE_PROJECT_INCLUDE=/cmake/emscripten-side-modules.cmake -DCMAKE_PROJECT_regamedll_INCLUDE=/cmake/hidden-visibility.cmake \
-    -DMAINUI_USE_STB=ON -DBUILD_YAPB=OFF -DBUILD_EXTRAS=OFF && cmake --build /build -j8 --target install'
-CXX="g++ -m32" cmake -S "$build/src/3rdparty/ReGameDLL_CS" -B "$build/native" -DCMAKE_BUILD_TYPE=Release -DXASH_COMPAT=ON
-cmake --build "$build/native" -j8
-python3 - "$lock" "$engines" "$build" "$root/tools/goldsrc" <<'PY'
-import hashlib, json, pathlib, shutil, sys
+  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH \
+    -v "$build/src:/cs" -v "$build/wasm:/build" -v "$build/out:/out" -v "$root/tools/goldsrc/cmake:/cmake:ro" -w /cs "$image" sh -c '
+    emcmake cmake -S /cs -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/out \
+      -DCMAKE_PROJECT_INCLUDE=/cmake/emscripten-side-modules.cmake -DCMAKE_PROJECT_regamedll_INCLUDE=/cmake/hidden-visibility.cmake \
+      -DMAINUI_USE_STB=ON -DBUILD_YAPB=OFF -DBUILD_EXTRAS=OFF && cmake --build /build -j8 --target install'
+  CXX="g++ -m32" cmake -S "$build/src/3rdparty/ReGameDLL_CS" -B "$build/native" -DCMAKE_BUILD_TYPE=Release -DXASH_COMPAT=ON
+  cmake --build "$build/native" -j8
+  # (the navigation meshes: learned by the native server on the game's maps)
+  python3 -c "import json,sys; b=json.load(open(sys.argv[1]))['modules']['bots']; print(b['game']); print(','.join(b['maps'])); print(b['profiles'])" "$lock" > "$build/bots.txt"
+  node "$root/tools/goldsrc/bot-nav.mjs" "$(sed -n 1p "$build/bots.txt")" --library "$build/native/regamedll/cs.so" \
+    --profiles "$build/src/$(sed -n 3p "$build/bots.txt")" --out "$build/navs" --maps "$(sed -n 2p "$build/bots.txt")" \
+    --games-dir "$games" --engines-dir "$engines"
+  python3 - "$lock" "$id" "$engines" "$build" "$root/tools/goldsrc" <<'PY'
+import hashlib, json, pathlib, shutil, sys, zipfile
 lock = json.load(open(sys.argv[1])); mods = lock['modules']
-engines, build, tools = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4])
+build_spec = next(b for b in mods['builds'] if b['id'] == sys.argv[2])
+engines, build, tools = pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), pathlib.Path(sys.argv[5])
 sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
 stage = build / 'stage'
 base = engines / mods['engine']
 if lock['browser']['id'] != mods['engine'] or not (base / 'release.json').exists(): sys.exit(f'{base}: install the engine first (tools/goldsrc/install-engine.py)')
+want = {e['path']: e['sha256'] for e in build_spec['files']}
 files = []
 def put(src, rel, check=None):
-    dest = stage / rel; dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(src, dest)
+    dest = stage / rel; dest.parent.mkdir(parents=True, exist_ok=True)
+    if src: shutil.copyfile(src, dest)
     digest = sha(dest)
     if check and digest != check: sys.exit(f'Integrity mismatch: {rel}')
+    if not check and rel in want and want[rel] != digest: sys.exit(f'{rel}: not the build lock.json pins')
     files.append({'path': rel, 'sha256': digest, 'bytes': dest.stat().st_size})
 for entry in lock['browser']['files']:
     if entry['path'].startswith('engine/'): put(base / entry['path'], entry['path'], entry['sha256'])
-want = {e['path']: e['sha256'] for e in mods['files']}
 for kind in ['cl_dlls/client', 'cl_dlls/menu', 'dlls/cs']:
-    rel = f"{mods['gameDir']}/{kind}_emscripten_wasm32.wasm"
-    put(build / 'out' / 'cstrike' / f'{kind}_emscripten_wasm32.wasm', rel, want.get(rel))
+    put(build / 'out' / 'cstrike' / f'{kind}_emscripten_wasm32.wasm', f"{mods['gameDir']}/{kind}_emscripten_wasm32.wasm")
 put(build / 'native' / 'regamedll' / 'cs.so', f"{mods['gameDir']}/dlls/cs.so")
-inputs = {str(f.relative_to(tools)): sha(f) for d in ['patches', 'cmake'] for f in sorted((tools / d).iterdir())}
-release = {k: mods[k] for k in ('id', 'engine', 'repository', 'commit', 'submodules', 'emsdk')}
-(stage / 'release.json').write_text(json.dumps({**release, 'inputs': inputs, 'files': files}, indent=2) + '\n')
+# (the bots' archive, reproducible: sorted entries, a fixed date)
+bots = mods['bots']; rel = f"{mods['gameDir']}/{bots['archive']}"
+(stage / rel).parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(stage / rel, 'w', zipfile.ZIP_DEFLATED) as z:
+    entries = [('BotProfile.db', build / 'src' / bots['profiles'])] + [(f'maps/{n.name}', n) for n in sorted((build / 'navs').glob('*.nav'))]
+    for name, src in entries:
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)); info.compress_type = zipfile.ZIP_DEFLATED; info.external_attr = 0o644 << 16
+        z.writestr(info, src.read_bytes())
+put(None, rel)
+inputs = {str(f.relative_to(tools)): sha(f) for d in ['patches', 'cmake'] for f in sorted((tools / d).rglob('*')) if f.is_file()}
+release = {k: mods[k] for k in ('engine', 'repository', 'commit', 'submodules', 'emsdk')}
+(stage / 'release.json').write_text(json.dumps({'id': build_spec['id'], **release, 'patches': build_spec['patches'], 'inputs': inputs, 'files': files}, indent=2) + '\n')
 PY
-mv "$build/stage" "$release"
-rm -rf "$build"
-echo "Built $release"
+  mv "$build/stage" "$release"
+  rm -rf "$build"
+  echo "Built $release"
+done

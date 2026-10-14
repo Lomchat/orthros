@@ -146,7 +146,8 @@ $('start').addEventListener('submit', async event => {
     if ($('mode').value === 'multiplayer') await connect(Net);
     status(S.init); await engine.init();
     const FS = engine.em.FS;
-    FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir);
+    // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
+    FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
     restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
     // (the game's files: its whole tree now, what earlier sessions read first loaded before the start, the rest later)
     streamed = session.files = new StreamedFiles({ name, files, log, store: {
@@ -164,9 +165,13 @@ $('start').addEventListener('submit', async event => {
     }), 6);
     session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
     log(`Startup files: ${JSON.stringify(session.startup)}`);
-    const extrasResponse = await fetch(base + 'engine/valve/extras.pk3');
-    if (!extrasResponse.ok) throw new Error(S.engineFiles);
-    FS.writeFile(`/rodir/${g.gameDir}/extras.pk3`, new Uint8Array(await extrasResponse.arrayBuffer())); FS.chdir('/rwdir');
+    // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
+    for (const extra of g.extras ?? ['engine/valve/extras.pk3']) {
+      const extrasResponse = await fetch(base + extra);
+      if (!extrasResponse.ok) throw new Error(S.engineFiles);
+      FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
+    }
+    FS.chdir('/rwdir');
     // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
     // can be after this — no console command before it has run; the reads are learned from its start)
     const M = engine.em.Module, started = new Promise((resolve) => {
@@ -181,7 +186,7 @@ $('start').addEventListener('submit', async event => {
     const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
     engine.Cmd_ExecuteString(`name "${nickname}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
     if ($('mode').value === 'multiplayer') engine.Cmd_ExecuteString('connect 127.0.0.1:8080');
-    else engine.Cmd_ExecuteString(`map ${g.solo.map}`);
+    else { for (const command of g.solo.commands ?? []) engine.Cmd_ExecuteString(command); engine.Cmd_ExecuteString(`map ${g.solo.map}`); }
     session.command = command => engine.Cmd_ExecuteString(command);
     session.state = 'running'; status(S.running);
     $('start').classList.add('hidden'); $('progress').classList.add('hidden'); $('stop').disabled = false;

@@ -1,10 +1,12 @@
 // Browser check of a GoldSrc port (docs/browser-ports.md), from the Orthros home: the version's card starts its page,
-// the engine boots and draws; `solo` then moves, saves, loads (--reload: quits, starts again and finds the save);
+// the engine boots and draws; `solo` then moves, saves, loads (--reload: quits, starts again and finds the save; --no-save:
+// a game without saves — it joins (--join-keys), moves, and counts the players, bots included, --min-players);
 // `multiplayer` runs two players in separate browser contexts on the version's dedicated server, checks both see
 // each other, move, and receive the same score when the first one dies. Evidence under /tmp/orthros-scratch/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/check.mjs <manifest> <solo|multiplayer> [--url http://127.0.0.1:8080]
-//     [--reload] [--join-keys "{n},1"]   (keys each player presses after joining, {n}: its number — a team menu)
+//     [--reload] [--join-keys "{n},1"] [--no-save] [--min-players n]   (keys each player presses after joining, {n}: its
+//     number — a team menu)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -60,8 +62,8 @@ try {
     await page.waitForTimeout(7000);
     await page.screenshot({ path: path.join(root, `client-${i}.png`) });
   }
-  if (mode === 'multiplayer') {
-    const keys = arg('--join-keys');
+  const keys = arg('--join-keys');
+  if (mode === 'multiplayer' || args.includes('--no-save')) {
     if (keys) for (let i = 0; i < clients.length; i++) {
       await focusGame(clients[i].page);
       for (const k of keys.split(',')) { await clients[i].page.keyboard.press(k.replace('{n}', String(i + 1))); await clients[i].page.waitForTimeout(1000); }
@@ -69,7 +71,8 @@ try {
     await clients[0].page.waitForTimeout(8000); // (a round may freeze players at its start)
     for (const { page } of clients) {
       await page.evaluate(() => portSession.command('status'));
-      await page.waitForFunction((names) => names.every((n) => portSession.logs.some((l) => l.endsWith(n))), nicknames, { timeout: 20000 });
+      // (a status line holds the name, followed by the address on a listen server)
+      await page.waitForFunction((names) => names.every((n) => portSession.logs.some((l) => l.includes(n))), nicknames.slice(0, clients.length), { timeout: 20000 });
     }
     for (const { page } of clients) {
       await page.evaluate(() => portSession.command('viewpos')); await page.waitForTimeout(100);
@@ -82,8 +85,20 @@ try {
         after = await lastPos(page);
         if (after !== before) break;
       }
-      if (!before || !after || before === after) throw new Error('Multiplayer movement did not update the player position');
+      if (!before || !after || before === after) throw new Error('Movement did not update the player position');
       console.log('MOVEMENT', JSON.stringify({ before, after }));
+    }
+    if (arg('--min-players')) {
+      // (the players status lists: a line per client after its "# score ping ..." header, bots included)
+      const page = clients[0].page;
+      await page.evaluate(() => portSession.command('status')); await page.waitForTimeout(1500);
+      const players = await page.evaluate(() => {
+        const logs = portSession.logs, head = logs.findLastIndex((l) => l.includes('# score'));
+        let n = 0; for (let i = head + 1; head >= 0 && i < logs.length && /^\[[^\]]*\]\s+\d+\s+-?\d+\s/.test(logs[i]); i++) n++;
+        return n;
+      });
+      if (players < Number(arg('--min-players'))) throw new Error(`${players} players, fewer than ${arg('--min-players')}`);
+      console.log('PLAYERS', players);
     }
   } else {
     const page = clients[0].page, saves = `/rwdir/${manifest.goldsrc.gameDir}/save`;

@@ -31,7 +31,8 @@
               "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data_engines/ (tools/goldsrc/install-engine.py)." },
               "gameDir": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "Dossier du jeu dans ses fichiers (-game du moteur)." },
               "modules": { "type": "object", "required": ["client", "server"], "properties": { "client": { "type": "string" }, "server": { "type": "string" }, "menu": { "type": "string", "description": "Par défaut engine/libmenu.wasm." } } },
-              "solo": { "type": "object", "required": ["map"], "properties": { "map": { "type": "string" } } },
+              "extras": { "type": "array", "items": { "type": "string", "pattern": "\\.pk3$" }, "description": "Archives de la release montées dans le dossier du jeu (moteur et serveur dédié), noms distincts. Par défaut engine/valve/extras.pk3 (page seulement)." },
+              "solo": { "type": "object", "required": ["map"], "properties": { "map": { "type": "string" }, "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes de console avant la carte (maxplayers, deathmatch, bots…), une par entrée." } } },
               "multiplayer": {
                 "type": "object",
                 "required": ["server", "port", "map"],
@@ -40,6 +41,7 @@
                   "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "Port UDP du serveur dédié, sur 127.0.0.1 seulement ; les joueurs passent par /api/udp/<manifeste>." },
                   "map": { "type": "string" },
                   "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 },
+                  "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes du serveur dédié avant la carte (+commande), une par entrée." },
                   "gameLibrary": { "type": "string", "description": "Bibliothèque de jeu native du serveur dédié, chemin de la release goldsrc.engine (tools/goldsrc/build-modules.sh), au lieu de celle que nomment les fichiers du jeu." }
                 }
               }
@@ -70,9 +72,10 @@
           },
           "requires": {
             "type": "array",
+            "description": "Versions d'autres jeux dont celle-ci a besoin. win32 : chacune montée à son chemin Windows (mount obligatoire). goldsrc : leurs fichiers sous ceux de la version, dans l'ordre (sans mount) — un mod sur son jeu.",
             "items": {
               "type": "object",
-              "required": ["game", "version", "mount"],
+              "required": ["game", "version"],
               "properties": {
                 "game": { "$ref": "#/$defs/id" },
                 "version": { "$ref": "#/$defs/id" },

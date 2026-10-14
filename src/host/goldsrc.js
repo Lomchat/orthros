@@ -13,6 +13,11 @@ import { gameLayers } from './game-files.js';
 export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_engines');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const MAP = /^[A-Za-z0-9_.-]+$/;
+const COMMAND = /^[\x20-\x7e]{1,200}$/;
+// (console commands of a manifest: one per entry, none chained)
+const commandsOk = (list) => Array.isArray(list) && list.every((c) => typeof c === 'string' && COMMAND.test(c) && !c.includes(';'));
+/** The archives a version mounts in its game folder (release paths): the engine's own by default. */
+export const goldsrcExtras = (g) => g.extras ?? ['engine/valve/extras.pk3'];
 const safePath = (value) => typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !value.includes('\\') && value.split('/').every((part) => part && part !== '.' && part !== '..' && !part.startsWith('.'));
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -24,11 +29,14 @@ export function goldsrcProblem(g) {
   if (!isObject(g.modules) || !['client', 'server'].every((k) => safePath(g.modules[k])) || (g.modules.menu !== undefined && !safePath(g.modules.menu))) return 'goldsrc.modules.client et .server (et .menu) doivent être des chemins de la release';
   if (g.solo === undefined && g.multiplayer === undefined) return 'goldsrc.solo ou goldsrc.multiplayer obligatoire';
   if (g.solo !== undefined && (!isObject(g.solo) || !MAP.test(g.solo.map ?? ''))) return 'goldsrc.solo.map invalide';
+  if (g.solo?.commands !== undefined && !commandsOk(g.solo.commands)) return 'goldsrc.solo.commands : commandes de console, une par entrée';
+  if (g.extras !== undefined && (!Array.isArray(g.extras) || !g.extras.every((e) => safePath(e) && /\.pk3$/i.test(e)) || new Set(g.extras.map((e) => path.posix.basename(e).toLowerCase())).size !== g.extras.length)) return 'goldsrc.extras : archives .pk3 de la release, de noms distincts';
   if (g.multiplayer !== undefined) {
     const mp = g.multiplayer;
     if (!isObject(mp) || !MAP.test(mp.map ?? '') || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535 || !ID.test(mp.server ?? '')) return 'goldsrc.multiplayer : server, port (1024-65535) et map obligatoires';
     if (mp.maxPlayers !== undefined && (!Number.isInteger(mp.maxPlayers) || mp.maxPlayers < 2 || mp.maxPlayers > 32)) return 'goldsrc.multiplayer.maxPlayers invalide';
     if (mp.gameLibrary !== undefined && !safePath(mp.gameLibrary)) return 'goldsrc.multiplayer.gameLibrary doit être un chemin de la release';
+    if (mp.commands !== undefined && !commandsOk(mp.commands)) return 'goldsrc.multiplayer.commands : commandes de console, une par entrée';
   }
   return null;
 }
@@ -48,7 +56,7 @@ export function engineFile(enginesDir, release, rel) {
 /** The engine release and every module the version names are installed. */
 export function goldsrcInstalled(manifest, enginesDir) {
   const g = manifest.goldsrc;
-  return !!engineFile(enginesDir, g.engine, 'release.json') && ['engine/index.js', 'engine/xash.wasm', ...Object.values(g.modules)].every((f) => engineFile(enginesDir, g.engine, f));
+  return !!engineFile(enginesDir, g.engine, 'release.json') && ['engine/index.js', 'engine/xash.wasm', ...Object.values(g.modules), ...goldsrcExtras(g)].every((f) => engineFile(enginesDir, g.engine, f));
 }
 
 /** The browser launch page of a port. */

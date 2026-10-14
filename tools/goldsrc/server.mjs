@@ -26,11 +26,21 @@ if (mp.gameLibrary !== undefined && !gameLibrary) { console.error(`${g.engine}/$
 // (one directory for the engine: the version's files over the base's, linked afresh at each start)
 const game = path.join(state, 'game');
 console.log(`${id}: ${linkGameLayers(man, game)} game files linked`);
+// (the archives goldsrc.extras names in the game folder, as the page mounts them: bot profiles, navigation meshes)
+const gameFolder = path.join(game, fs.readdirSync(game).find((n) => n.toLowerCase() === g.gameDir.toLowerCase()) ?? g.gameDir);
+fs.mkdirSync(gameFolder, { recursive: true });
+for (const extra of g.extras ?? []) {
+  const file = engineFile(engines, g.engine, extra), dest = path.join(gameFolder, path.basename(extra));
+  if (!file) { console.error(`${g.engine}/${extra}: archive not installed`); process.exit(1); }
+  fs.rmSync(dest, { force: true }); fs.symlinkSync(file, dest);
+}
 fs.mkdirSync(path.join(state, g.gameDir), { recursive: true });
 const cfg = path.join(state, g.gameDir, 'server.cfg');
 if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, `hostname "Orthros - ${man.name}"\nsv_lan 1\nsv_cheats 0\nsv_maxrate 100000\nsv_minrate 10000\nmp_timelimit 30\n`);
 const child = spawn(path.join(release, 'xash'), ['-dedicated', '-noip6', '-rodir', game, '-game', g.gameDir,
-  ...(gameLibrary ? ['-dll', gameLibrary] : []), '-port', String(mp.port), '+ip', '127.0.0.1', '+maxplayers', String(mp.maxPlayers ?? 16), '+map', mp.map], {
+  ...(gameLibrary ? ['-dll', gameLibrary] : []), '-port', String(mp.port), '+ip', '127.0.0.1', '+maxplayers', String(mp.maxPlayers ?? 16),
+  // (goldsrc.multiplayer.commands: the version's settings, before the map starts)
+  ...(mp.commands ?? []).flatMap((c) => c.split(' ').map((w, i) => (i ? w : `+${w}`))), '+map', mp.map], {
   cwd: state,
   env: { ...process.env, XASH3D_BASEDIR: state, XASH3D_LIBDIR: release, LD_LIBRARY_PATH: release },
   stdio: 'inherit',

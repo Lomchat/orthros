@@ -1,3 +1,17 @@
+diff --git a/regamedll/dlls/util.cpp b/regamedll/dlls/util.cpp
+index e0ffed5..4a46b15 100644
+--- a/regamedll/dlls/util.cpp
++++ b/regamedll/dlls/util.cpp
+@@ -1680,7 +1680,8 @@ bool UTIL_AreBotsAllowed()
+ 
+ #ifdef REGAMEDLL_ADD
+ 	// let enables zBot by default from listen server?
+-	if (!IS_DEDICATED_SERVER())
++	// (-bots: on a dedicated server too, decided before bot_enable could be set)
++	if (!IS_DEDICATED_SERVER() || (g_engfuncs.pfnEngCheckParm && ENG_CHECK_PARM("-bots", nullptr)))
+ 	{
+ 		return true;
+ 	}
 diff --git a/regamedll/game_shared/counter.h b/regamedll/game_shared/counter.h
 index 84f03ce..4e5682e 100644
 --- a/regamedll/game_shared/counter.h

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export function gameLayers(manifest) {
-  return manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder];
+  // (underlays: the folders of versions a GoldSrc port requires, beneath its own — game-catalog.js)
+  return [...(manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder]), ...(manifest.underlays ?? [])];
 }
 
 /** List one layer, replacing same-named entries without changing the guest-visible path. */
