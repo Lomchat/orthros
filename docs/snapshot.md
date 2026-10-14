@@ -1,0 +1,92 @@
+# Snapshots of the machine
+
+A Windows game spends 20 to 60 s reaching its menu under Orthros, 92 % of it its own start-up code: streaming the game
+files faster cannot shorten that. A snapshot of the whole emulated machine taken at the menu, restored by a later
+session, would let the game go on from there. Stage 1 (this document) proves it can be done exactly, in Node; stages 2
+and 3 (a player's own snapshot kept in the browser, then one shared by the server) build on it.
+
+## What a snapshot is
+
+- **Guest memory**: every 4 KiB page holding anything (zero pages implied), the JIT's tables left out (`JIT_RANGES`:
+  the restored machine translates again).
+- **The emulator's JavaScript state**: everything reachable from the Vm (processes, threads, handles, heaps, windows,
+  COM objects, Direct3D devices and resources, sound buffers, registry, files...), one record per object, references by
+  index, typed arrays' bytes apart (`src/core/snapshot.js`).
+
+It is taken at a **quiet point** only: between two time slices, no thread inside a dispatch loop or a callback, no nested
+wait, no file read in flight; the COM calls the JIT queued are run first (`notQuiet`, `captureVm` in
+`src/core/vm-snapshot.js`). A snapshot is restored in a **fresh Vm built like the captured one** (same game, files,
+host, kind of clock) whose process was not created (`restoreVm`).
+
+## Nothing left out silently
+
+The point of the design: Orthros changes every day, and a snapshot that misses one field goes on with a machine that is
+subtly wrong. So:
+
+1. **In by default.** Every field of every reachable object is in the snapshot. A class says which of its fields are
+   transient (caches, links to the host, diagnostics) and how to rebuild them (`skip`, `init`).
+2. **Refused loudly.** The walk refuses what it cannot rebuild — a function, an object of a class nobody registered, an
+   accessor, a view on a buffer it does not know — and names the path (`a function (hook) at
+   vm.proc.threads[0].hook`). A capture that meets one fails; with a list (`captureVm(vm, meta, problems)`) it gives
+   every refusal at once: the work a new kind of state needs. In production the game then starts the usual way.
+3. **Known objects keep their identity.** What every Vm builds alike — the Vm itself, its memory and the memory's views,
+   its API registry, its clock, its file system's mounts, the whole graph its modules leave on it once constructed
+   (`SnapRegistry.knowGraph`), the containers a module keeps in its closure (`snapKnown(vm, name, container)`) — is
+   referred to by name and its contents restored in place, so the closures holding it stay valid. A function in a known
+   object is code: the restored Vm's own, checked to be there.
+4. **Hidden state is linted.** A variable a module keeps at its top level or in a closure that takes the Vm is invisible
+   to the walk. `tests/snapshot-lint.test.js` fails on every such declaration that may hold state (a `let` starting from
+   a value of its own, a `const` bound to a container) unless it is handed over (`snapKnown`) or says why it is not
+   state (`// snapshot: constant`, `cache`, `diagnostics`, `scratch`...). Names in capitals are constant tables by the
+   sources' convention. It found, among others: process ids and window class atoms counted at the module level (shared
+   by every Vm of the page), Direct3D resource and shader ids, MCI devices, GDI+ objects, kernel32's named objects and
+   mutex slots.
+5. **An oracle checks the result.** A machine and its restored copy, run alike, must stay the same — guest memory and
+   every object of the state (`snapshotsDiffer`). `tests/snapshot.test.js` does it on the test programs (threads,
+   synchronization, priorities, timers, DirectX, MCI) in `make test`; `tools/snapshot-check.mjs` on games. A field a
+   change adds and the restore misses makes them differ: the DirectSound counter of logged buffers, believed to be mere
+   diagnostics, was caught that way.
+
+## Special cases
+
+- **Parked threads.** A thread blocked in an API call at top level is parked with closures the call made (its wake
+  condition, what it claims on wake-up), its call rolled back to the thunk. At a restore the call is executed again as at
+  its first try to make them again, then the snapshot's state is put back over what that changed (`decodeGraph`'s
+  `reimpose`) and the wait keeps its deadline. No blocking API needs code of its own, present or future.
+- **API thunks.** The registry is restored by name: which DLL function each slot holds, the handlers the restored Vm's
+  own. Handlers a module defines as the game reaches them (COM methods) are defined again by name (`ApiRegistry.lazyDefs`).
+- **Open files** are opened again by their path, at the same position (`FileHandle`). In-memory mounts (files the game
+  wrote outside its profile) are kept with their contents; the others are the host's (the game's files, the profile
+  folder: see stage 2).
+- **CPU states** are views on the guest memory (rebuilt by address); a PE image's file bytes, only read while it was
+  mapped, are not kept.
+- **Time** goes on from where it was: a virtual clock's state, a real clock's origin moved. Everything the guest can
+  observe reads the guest's clock, never the host's: the time stamp counter (RDTSC: it read `performance.now()`, which
+  made BFME2's copy compute other values from the same state), kernel32's Sleep(0) storms — the same on a real clock,
+  continuous across a snapshot, deterministic on a virtual one.
+- **The JIT** starts empty in the restored machine. `Vm.resetJit()` gives the original an empty one too, so both
+  translate alike: the oracle then compares them at the JIT's speed.
+
+## Results (stage 1, Node, virtual clock)
+
+`node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data_games [--at <s> | --input <scenario> --at-mark
+<label>] [--jit] [--input-after <scenario>] [--then <slices>] [--every <slices>]`
+
+| game, capture | objects | guest memory | snapshot (raw) | restore | then |
+|---|---|---|---|---|---|
+| Vice City, menu (130 s) | 3 792 | 25 MiB (6 395 pages) | 28.5 MiB | 0.09 s | a new game started, the city loaded, driven: identical for 200 000 slices (87 s of game, 7.5 M API calls) |
+| BFME2 1.09, 120 s | 35 368 | 112 MiB (28 575 pages) | 119.6 MiB | 0.37 s | identical for 3 000 slices |
+
+Compressed sizes (study of 2026-10-14): Vice City ~15 MB, BFME2 ~39 MB at zstd -19.
+
+## Next stages
+
+- **Stage 1b, in the page**: the host side rebuilt after a restore — WebGL resources from the Direct3D state (the
+  context-loss path), render targets drawn once (read back before the capture), the audio worklet's voices, the
+  cursor, the display mode.
+- **Stage 2, per player**: a snapshot kept in the browser (OPFS) at the menu, used at the next launch when its key
+  matches, else the usual start. The key covers whatever the restored machine would see differently: the snapshot
+  format, the sources of the state-owning code (the walk's classes: a deployed change to them invalidates, the JIT's do
+  not), the game version's file tree, the game language, the display mode, and the profile files and registry keys the
+  game read before the capture (a player who changed a setting gets a fresh start).
+- **Stage 3, shared**: the server makes the snapshot itself in Node from the shared first-launch profile, for new players.

@@ -124,6 +124,7 @@ function loadApi(api, d) {
  * restored in place (see SnapRegistry.knowGraph).
  */
 export function sealVmSnapRegistry(vm) {
+  vm.snap.known('vm.ctx', vm.ctx, { state: false }); // (the call context handlers get, rebound at every call: effectCtx points at it)
   const transient = new Set(VM_TRANSIENT);
   vm.snap.knowGraph(vm, (o, k) => o === vm && transient.has(k));
 }

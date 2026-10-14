@@ -66,7 +66,7 @@ export class Vm {
     // what faults in the null page (nullpage.js: 'writes' by default, true reads too — ?dbg=ORTHROS_NULL_READS=1 —, false)
     const nullPage = opts.nullPage ?? nullPageMode();
     this.interp.nullPage = nullPage;
-    if (this.clock.scale && this.clock.scale !== 1) { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows a scaled clock)
+    { const clock = this.clock; this.interp.hooks.rdtsc = () => BigInt(Math.floor(clock.now() * CPU_MHZ * 1000)); } // (the time stamp counter follows the guest's clock: a scaled one, a virtual one, a snapshot's — never the host's own time)
     const interpRanges = globalThis.ORTHROS_INTERP_RANGES ? String(globalThis.ORTHROS_INTERP_RANGES).split(',').map((r) => r.split(':').map((x) => parseInt(x, 16))) : null; // (debugging: see Jit, --interp-range)
     this.jitArgs = [nullPage, interpRanges, opts]; // (newJit)
     this.jit = opts.jit === false ? null : this.newJit(nullPage, interpRanges, opts);
