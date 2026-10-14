@@ -49,3 +49,23 @@ test('shared snapshots: published by the server\'s session only, served compress
     assert.ok(zlib.gunzipSync(fs.readFileSync(path.join(dir, 'learn', 'snapshots', 'g', `en-${KEY3}.gz`))).equals(snap(1000)));
   } finally { s.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a sandboxed server only queues the publishing sessions (their tokens in a file a runner reads)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-snapqueue-'));
+  fs.mkdirSync(path.join(dir, 'man')); fs.mkdirSync(path.join(dir, 'learn'));
+  fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const s = createServer({ manifests: path.join(dir, 'man'), learnDir: path.join(dir, 'learn'), snapshotJobs: 'queue' });
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const u = (p) => `http://127.0.0.1:${s.address().port}${p}`;
+  try {
+    assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=fr`))).status, 404);
+    assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=fr`))).status, 404); // (asked twice: queued once)
+    const q = JSON.parse(fs.readFileSync(path.join(dir, 'learn', 'snapshots', 'queue.json'), 'utf8')).jobs;
+    assert.equal(q.length, 1); assert.deepEqual([q[0].name, q[0].lang, q[0].key], ['g', 'fr', KEY]); assert.match(q[0].token, /^[0-9a-f]{32}$/);
+    const post = (token, key = KEY) => fetch(u(`/api/snapshot/g?key=${key}&lang=fr&token=${token}`), { method: 'POST', body: snap(2000) });
+    assert.equal((await post('0'.repeat(32))).status, 403);
+    assert.equal((await post(q[0].token, KEY2)).status, 403); // (a token is for its own key)
+    assert.equal((await post(q[0].token)).status, 204);
+    assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=fr`))).status, 200);
+  } finally { s.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

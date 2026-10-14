@@ -87,3 +87,32 @@ export class SnapshotJobs {
     child.on('exit', done); child.on('error', done);
   }
 }
+
+/**
+ * The same requests kept in a file for a runner outside this server (tools/snapshot-jobs.mjs): a server that may not
+ * start browsers itself — a sandboxed service, with no home nor the shared /tmp of the browser slots — only queues them,
+ * each with its token. A request stays two hours (the runner's session posts meanwhile); the same key is not queued
+ * again within `retryMs`.
+ */
+export class SnapshotQueue {
+  constructor(file, { retryMs = 6 * 3600e3, ttlMs = 2 * 3600e3, max = 32 } = {}) {
+    this.file = file; this.retryMs = retryMs; this.ttlMs = ttlMs; this.max = max;
+    try { this.jobs = JSON.parse(fs.readFileSync(file, 'utf8')).jobs ?? []; } catch { this.jobs = []; }
+  }
+  save() {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    fs.writeFileSync(this.file + '.tmp', JSON.stringify({ v: 1, jobs: this.jobs })); fs.renameSync(this.file + '.tmp', this.file);
+  }
+  want(name, lang, key) {
+    const now = Date.now();
+    this.jobs = this.jobs.filter((j) => now - j.at < Math.max(this.ttlMs, this.retryMs));
+    if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key) || this.jobs.length >= this.max) return false;
+    this.jobs.push({ name, lang, key, token: crypto.randomBytes(16).toString('hex'), at: now });
+    this.save();
+    return true;
+  }
+  job(token, name, lang, key) {
+    const j = this.jobs.find((x) => x.token === token);
+    return j && j.name === name && j.lang === lang && j.key === key && Date.now() - j.at < this.ttlMs ? j : null;
+  }
+}

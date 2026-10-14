@@ -145,3 +145,9 @@ snapshot; nothing of a player is ever replaced. Another first-launch profile lea
 then makes a new one). Kept with the learned data (`<learn>/snapshots/`), gzip- and
 brotli-compressed, the two most recent keys per game version and language. Not downloaded when it would take longer
 than 60 s at the connection's last measured rate; kept as the player's own once it applied.
+
+A sandboxed server (the production service: a dynamic user, no home, its own /tmp) does not start browsers: with
+`--snapshot-queue` it only queues the request with its token (`<learn>/snapshots/queue.json`), and
+`tools/snapshot-jobs.mjs --queue <file> --server <url>`, run outside the sandbox (the `orthros-snapshot-jobs` service),
+runs the sessions through the browser slot guard. `node tools/snapshot-shared-check.mjs <manifest> [--queue]`: the whole
+path on a private server — a first new player, the server's session, a second new player who must start from it.

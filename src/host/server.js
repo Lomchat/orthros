@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N] [--snapshot-jobs]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -12,7 +12,9 @@
 //            distinct sessions that must report a set identical before it is offered, default 2), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
-//            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots)
+//            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
+//            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
+//            (a sandboxed server: no browser from it)
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,7 +33,7 @@ import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
-import { SnapshotStore, SnapshotJobs, SNAPSHOT_KEY } from './snapshot-store.js';
+import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -412,8 +414,12 @@ export function createServer(opts = {}) {
   // shared snapshots (snapshot-store.js, docs/snapshot.md stage 3): kept with the learned data; their publishing
   // sessions started by this server only when asked (--snapshot-jobs: headless browsers on this machine)
   const snapshots = opts.learnDir ? new SnapshotStore(path.join(opts.learnDir, 'snapshots')) : null;
-  // (tests: opts.snapshotJobs an object of the same interface — want, job — instead of browsers)
-  const snapshotJobs = !snapshots || !opts.snapshotJobs ? null : opts.snapshotJobs !== true ? opts.snapshotJobs : new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') });
+  // (opts.snapshotJobs: 'queue' — requests left in a file for tools/snapshot-jobs.mjs —, true — sessions started here —,
+  // or, in tests, an object of the same interface: want, job)
+  const snapshotJobs = !snapshots || !opts.snapshotJobs ? null
+    : opts.snapshotJobs === 'queue' ? new SnapshotQueue(path.join(snapshots.dir, 'queue.json'))
+      : opts.snapshotJobs === true ? new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') })
+        : opts.snapshotJobs;
   const seedFor = (name, lang) => {
     let best = null;
     for (const s of seedsOf(name).sets) if (s.lang === lang && s.sessions.length >= seedQuorum && (!best || s.sessions.length > best.sessions.length || (s.sessions.length === best.sessions.length && s.at > best.at))) best = s;
@@ -754,6 +760,6 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
   for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }
