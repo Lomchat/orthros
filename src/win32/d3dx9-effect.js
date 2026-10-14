@@ -368,6 +368,12 @@ export function defineEffects(X, vm, h) {
       for (const p of this.allParams()) if (p.obj?.ptr && isTextureType(p.type.type) && com.objectAt(p.obj.ptr)) com.release(com.objectAt(p.obj.ptr));
       for (const sh of this.shaders.values()) if (sh.ptr && com.objectAt(sh.ptr)) com.release(com.objectAt(sh.ptr));
       if (com.objectAt(this.dev)) com.release(com.objectAt(this.dev));
+      // (its process-heap blocks; every queued call on it ran before this Release: Vm.dispatchThunkBody drains first)
+      const heap = this.proc.processHeap;
+      for (const t of this.techniques) if (t.restoreList) { heap.free_(t.restoreList); t.restoreList = 0; t.restoreShadow = 0; }
+      if (this.commitBlock) { heap.free_(this.commitBlock); this.commitBlock = 0; }
+      if (this.noRestore) { heap.free_(this.noRestore); this.noRestore = 0; }
+      if (this.handleBlock) { heap.free_(this.handleBlock); this.handleBlock = 0; }
     }
     *allParams() { const walk = function* (n) { yield n; for (const e of n.elements) yield* walk(e); for (const m of n.members) yield* walk(m); }; for (const p of this.params) yield* walk(p); }
 

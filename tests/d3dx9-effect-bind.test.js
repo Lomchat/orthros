@@ -74,7 +74,7 @@ const PARAMS = [
 const TEXTURES = [['T0', 'T1'], ['T0'], []];
 
 /** a session: environment, device, effects; every call made with the effect runtime's path given (reference or not) */
-function session(ref, overlap = false) { // (ref: the reference path, or null: either)
+function session(ref, overlap = false, list = null) { // (ref: the reference path, or null: either)
   const touched = [], smCalls = [];
   const E = d3dEnv({ createDevice: () => ({ constTouched: (s, a, b) => touched.push(s, a, b) }) }), { mem, ctx, com, vm } = E;
   const out = E.alloc(64), pp = E.alloc(64);
@@ -85,7 +85,7 @@ function session(ref, overlap = false) { // (ref: the reference path, or null: e
   Object.assign(vm, { effectCtx: null, callGuest: (t, fn, args) => { smCalls.push(fn, ...args.map((a) => a >>> 0)); return 0; }, log: () => {} });
   const X = {}; com.interface ??= () => {};
   defineEffects(X, vm, { callMethod: (c, self, name, args) => com.implAt(self)[name](ctx([self, ...args])), textBuffer: () => 0 });
-  const fxs = effects(overlap).map((bytes) => {
+  const fxs = (list ?? effects(overlap)).map((bytes) => {
     const src = E.alloc(bytes.length); mem.writeBytes(src, bytes);
     assert.equal(X.D3DXCreateEffect[1](ctx([devPtr, src, bytes.length, 0, 0, 0, 0, out, 0])), 0);
     const ptr = mem.read32(out);
@@ -336,4 +336,69 @@ test('parameter blocks: an entry whose parameter has not changed since the block
     call('SetVector', h('Color'), put([0, 0, 0, 0])); call('SetVector', eh, put([0, 0, 0, 0]));
     call('ApplyParameterBlock', C); assert.deepEqual([words('Color'), Array.from(elem.words)], [wa, wa], 'a block recorded from an applied one');
   }
+});
+
+/**
+ * An effect whose passes pick their vertex shader in an array by an expression of a parameter (pickShader: the pick
+ * cached per element, the device's shader compared with the element's): pass 0 indexes VSArr by round(Sel), pass 1 by
+ * round(Sel + 1), both clamped to the array; the three shaders bind Fs at different registers.
+ */
+function selectEffect() {
+  const fs = { cls: S, type: F }, sel = fs, color = vec(4);
+  const vss = [0, 8, 40].map((r) => shader(true, [['Fs', 2, r, 1, fs], ['Color', 2, r + 1, 1, color]]));
+  const ps = shader(false, [['Color', 2, 0, 1, color]]);
+  const mov = { literals: [], insns: [[0x1000, 1, [{ table: 2, offset: 0 }], { table: 4, offset: 0 }]], inputs: [['Sel', 2, 0, 1, sel]] };
+  const add1 = { literals: [1], insns: [[0x2040, 1, [{ table: 2, offset: 0 }, { table: 1, offset: 0 }], { table: 4, offset: 0 }]], inputs: [['Sel', 2, 0, 1, sel]] };
+  return effectBinary({
+    params: [{ name: 'Sel', t: sel }, { name: 'Fs', t: fs }, { name: 'Color', t: color }, { name: 'VSArr', t: { cls: PC.OBJECT, type: PT.VERTEXSHADER, elements: 3 }, shaders: vss }],
+    techniques: [{ name: 'T', passes: [
+      { name: 'P0', states: [{ op: op('vs'), select: { array: 'VSArr', expr: mov } }, { op: op('ps'), value: ps }, { op: op('rs', 7), value: 1 }] },
+      { name: 'P1', states: [{ op: op('vs'), select: { array: 'VSArr', expr: add1 } }, { op: op('ps'), value: ps }] }] }],
+  });
+}
+
+test('effect shaders picked in an array by an expression: the same shader and constants as the reference path after every call (indexes out of range clamped, the device\'s shader changed between commits)', () => {
+  const SELS = [-3, -1, -0.6, -0.4, 0, 0.4, 0.6, 1, 1.49, 1.5, 2, 2.5, 3, 7, 1e9, -1e9];
+  for (let seed = 1; seed <= 6; seed++) {
+    const all = [session(true, false, [selectEffect()]), session(false, false, [selectEffect()]), session(null, false, [selectEffect()])], [A] = all, rnd = rng(seed * 104729);
+    const h = (S, nm) => S.fxs[0].fx.GetParameterByName(S.ctx([S.fxs[0].ptr, 0, S.name(nm)])) >>> 0;
+    const elem = (S, j) => S.fxs[0].fx.handleOf(S.fxs[0].fx.param(h(S, 'VSArr')).elements[j]);
+    const call = (S, name, ...a) => S.run(() => S.fxs[0].fx[name](S.ctx([S.fxs[0].ptr, ...a])));
+    let begun = false, pass = -1; const seen = new Set();
+    for (let i = 0; i < 1500; i++) {
+      const r = rnd(12), x = SELS[rnd(SELS.length)], y = (rnd(201) - 100) / 4, j = rnd(3), pi = rnd(2);
+      for (const S of all) {
+        if (r < 4) call(S, 'SetFloat', h(S, 'Sel'), fw(x));
+        else if (r < 5) call(S, 'SetFloat', h(S, 'Fs'), fw(y));
+        else if (r < 6) { [y, -y, 1, 0.5].forEach((v, k) => S.mem.writeF32(S.scratch + 4 * k, v)); call(S, 'SetVector', h(S, 'Color'), S.scratch); }
+        else if (r < 8) { if (pass >= 0) call(S, 'CommitChanges'); }
+        else if (r < 9) { // (the device's shader changed directly: no shader, or another element of the array)
+          let p = 0; if (j > 0) { call(S, 'GetVertexShader', elem(S, j), S.scratch + 64); p = S.mem.read32(S.scratch + 64); }
+          S.run(() => S.dev.SetVertexShader(S.ctx([S.devPtr, p])));
+        } else if (r < 10) { if (!begun) call(S, 'Begin', 0, 0); else if (pass < 0) call(S, 'BeginPass', pi); }
+        else if (r < 11) { if (pass >= 0) call(S, 'EndPass'); else if (begun) call(S, 'End'); }
+        else { if (begun && pass >= 0) { call(S, 'EndPass'); call(S, 'BeginPass', pi); } }
+      }
+      if (r === 9) { if (!begun) begun = true; else if (pass < 0) pass = pi; }
+      else if (r === 10) { if (pass >= 0) pass = -1; else if (begun) begun = false; }
+      else if (r === 11 && begun && pass >= 0) pass = pi;
+      const where = `seed ${seed} step ${i} (r ${r})`;
+      compare(A, all[1], false, true, where);
+      compare(A, all[2], false, true, `${where} (switched paths)`);
+      if (pass >= 0) seen.add(A.dev.vsObj?.ptr ?? 0);
+    }
+    assert.ok(seen.size >= 3, `the passes picked every element (seed ${seed})`);
+  }
+});
+
+test('effect release: its process-heap blocks freed (handle block, commit list, restore lists)', () => {
+  const S = session(false), fx = S.fxs[0], e = fx.fx, heap = e.proc.processHeap, freed = [], free0 = heap.free_.bind(heap);
+  S.run(() => { e.Begin(S.ctx([fx.ptr, 0, 0])); e.BeginPass(S.ctx([fx.ptr, 0])); e.CommitChanges(S.ctx([fx.ptr])); e.EndPass(S.ctx([fx.ptr])); e.End(S.ctx([fx.ptr])); });
+  S.run(() => { e.Begin(S.ctx([fx.ptr, 0, 1])); e.End(S.ctx([fx.ptr])); }); // (D3DXFX_DONOTSAVESTATE: the shared empty list)
+  const blocks = [e.handleBlock, e.commitBlock, e.noRestore, ...e.techniques.map((t) => t.restoreList)];
+  assert.ok(blocks.every((b) => b !== 0), 'every block allocated');
+  heap.free_ = (a) => { freed.push(a >>> 0); return free0(a); };
+  try { while (S.E.com.objectAt(fx.ptr)) S.E.com.release(S.E.com.objectAt(fx.ptr)); } finally { heap.free_ = free0; }
+  for (const b of blocks) assert.ok(freed.includes(b >>> 0), `block 0x${b.toString(16)} freed`);
+  assert.equal(e.handleBlock, 0);
 });
