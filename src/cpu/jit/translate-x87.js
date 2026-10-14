@@ -40,12 +40,27 @@ function slot(E, i) { return E.stLocal(i) - L_ST0; }
 function isF32(E, i) { return ((E.f32Mask >> slot(E, i)) & 1) === 1; }
 /** push ST(i) (f64) */
 function loadST(E, i) { const k = slot(E, i); if ((E.f32Mask >> k) & 1) E.c.get(L_S32 + k).f64promote(); else E.c.get(L_ST0 + k); }
-/** the f64 local of ST(i), about to be written with an f64 value (the f32 shadow no longer holds it) */
-function stW(E, i) { const k = slot(E, i); E.f32Mask &= ~(1 << k); return L_ST0 + k; }
+/**
+ * the f64 local of ST(i), about to be written with an f64 value (the f32 shadow no longer holds it; nothing known of its
+ * significand: the handler marks it narrow afterwards when it is, see narrow)
+ */
+function stW(E, i) { const k = slot(E, i); E.f32Mask &= ~(1 << k); E.g24Mask &= ~(1 << k); return L_ST0 + k; }
 /** ST(i) back in its f64 local (before code that writes the f64 local conditionally) */
 function toF64(E, i) { const k = slot(E, i); if ((E.f32Mask >> k) & 1) { E.c.get(L_S32 + k).f64promote().set(L_ST0 + k); E.f32Mask &= ~(1 << k); } }
-/** f32 on the stack (an exact float) -> ST(i) held in the f32 shadow, marked valid */
-function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32Mask |= 1 << k; tagValid(E, i); }
+/** f32 on the stack (an exact float) -> ST(i) held in the f32 shadow, marked valid (and narrow) */
+function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32Mask |= 1 << k; E.g24Mask |= 1 << k; tagValid(E, i); }
+/**
+ * Narrow values (Emitter.g24Mask, bit k for local L_ST0+k): ST(i) is known, at this point of the block, to hold a value
+ * whose significand fits in 24 bits — every finite f64 whose 29 low significand bits are clear, any exponent — or a
+ * zero, an infinity or a NaN: an m32 operand, FLD1 / FLDZ, a 16-bit integer, the result of an arithmetic instruction
+ * under 24-bit precision (always on its grid), a copy of such a value. Unknown (0) at block entry, after fallbacks and
+ * wherever the f32 shadows are dropped. A product or quotient of two narrow values needs no test of its f64 result
+ * against the 24-bit grid under directed rounding (roundDirected24): the product is exact, and an f64 quotient on the
+ * grid is exact.
+ */
+function narrow(E, i) { return ((E.g24Mask >> slot(E, i)) & 1) === 1; }
+/** mark ST(i) narrow (or not) */
+function setNarrow(E, i, on) { const b = 1 << slot(E, i); if (on) E.g24Mask |= b; else E.g24Mask &= ~b; }
 /** 24-bit precision, round to nearest, known statically: register values may be kept as floats */
 function f32Mode(E) { return E.fpcStatic === 0 && !globalThis.ORTHROS_NO_F32; }
 /**
@@ -109,13 +124,14 @@ function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else 
  * Every other 24-bit case (directed rounding, midpoints, zero/denormal/huge/inf/nan results) goes
  * through the arith24 kernel, which redoes the operation with its exact error term: the same result
  * as the interpreter, without double-rounding artefacts (fpmath-round.js).
+ * `narrowOps`: both operands are narrow (see narrow), known statically.
  */
-function roundPC(E, op, insn) {
+function roundPC(E, op, insn, narrowOps = false) {
   const c = E.c;
   // mode known statically (region specialized for it): 53/64-bit precision rounds nothing; 24-bit precision
   // with rounding to nearest keeps only the result tests
   if (E.fpcStatic !== null && (E.fpcStatic & 0x300) !== 0) return;
-  if (E.fpcStatic !== null && E.fpcStatic !== 0) { roundDirected24(E, op, insn, E.fpcStatic >> 10); return; }
+  if (E.fpcStatic !== null && E.fpcStatic !== 0) { roundDirected24(E, op, insn, E.fpcStatic >> 10, narrowOps); return; }
   if (E.fpcStatic === 0) {
     c.set(L_F64C);
     const done = c.block();
@@ -180,10 +196,6 @@ function roundPC(E, op, insn) {
   c.end(); void pc;
   c.get(L_F64C);
 }
-/** i64x2 lanes as v128.const bytes */
-const i64x2Bytes = (v) => { const b = new Uint8Array(16), dv = new DataView(b.buffer); dv.setBigInt64(0, v, true); dv.setBigInt64(8, v, true); return b; };
-/** clears the 29 significand bits below the 24 an x87 register keeps under 24-bit precision */
-const V_GRID24 = i64x2Bytes(~0x1fffffffn);
 /**
  * 24-bit precision with a directed rounding (1 down, 2 up, 3 toward zero) known statically — code written to truncate
  * its FISTPs sets it for whole functions. The f64 result s on the stack is rounded without any call: off the 24-bit
@@ -192,40 +204,84 @@ const V_GRID24 = i64x2Bytes(~0x1fffffffn);
  * except when rounding down (x - x = -0). Anything else — inexact on the grid, denormal, infinite or NaN results,
  * zeros rounding down — leaves the region for the interpreter (stepExit: no call in the region, whose hot paths would
  * otherwise keep no value in a register). NaN results included: the caller needs no NaN test of its own
- * (roundPCExcludesNaN).
- * Code shape (TurboFan): the rounded value is computed unconditionally — toward zero in a vector register (f64x2.splat,
- * v128.and, lane 0 back: no round trip through an integer register, measured faster there), down / up on the integer
- * bits (the sign-dependent step is cheaper there than as vector ops, measured) —; the hot path is two predicted
- * branches to the end, and everything else shares one cold tail with one exit. The previous nesting (if normal { if
- * off-grid {...} else {... exit} } else {... exit}, plus a NaN test with its own exit in the caller) gave every
- * arithmetic instruction three exit edges, each carrying the whole register state to the region's exit block: a
- * truncating vertex transform ran 2.5x slower than the round-to-nearest one (tools/x87loop-bench.mjs xform).
+ * (roundPCExcludesNaN). Toward zero (the common one): roundTowardZero24.
+ * Code shape (TurboFan): the rounded value is computed unconditionally on the integer bits (the sign-dependent step is
+ * cheaper there than as vector ops, measured); the hot path is two predicted branches to the end, and everything else
+ * shares one cold tail with one exit. The previous nesting (if normal { if off-grid {...} else {... exit} } else {...
+ * exit}, plus a NaN test with its own exit in the caller) gave every arithmetic instruction three exit edges, each
+ * carrying the whole register state to the region's exit block: a truncating vertex transform ran 2.5x slower than the
+ * round-to-nearest one (tools/x87loop-bench.mjs xform).
  */
-function roundDirected24(E, op, insn, rc) {
+function roundDirected24(E, op, insn, rc, narrowOps = false) {
   const c = E.c;
   c.set(L_F64C);
-  // L_F64D = s with its significand cut to 24 bits (toward zero), plus the step for down-negative / up-positive
-  if (rc === 3) c.get(L_F64C).f64x2splat().v128const(V_GRID24).v128and().f64x2extractlane(0).set(L_F64D);
-  else {
-    // the step where the sign calls for it (an i64 add: a carry into the exponent lands on the next binade's grid
-    // point); the bits stay in L_I64A for the grid test
-    c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).i64(~0x1fffffffn).i64and();
-    c.get(L_I64A).i64(0n); if (rc === 1) c.i64lt_s(); else c.i64ge_s();
-    c.extend_u().i64(29n).i64shl().i64add().f64reinterpret_i64().set(L_F64D);
-  }
+  if (rc === 3) { roundTowardZero24(E, op, insn, narrowOps); return; }
+  // L_F64D = s with its significand cut to 24 bits (toward zero), plus the step for down-negative / up-positive: an
+  // i64 add (a carry into the exponent lands on the next binade's grid point); the bits stay in L_I64A for the grid test
+  c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).i64(~0x1fffffffn).i64and();
+  c.get(L_I64A).i64(0n); if (rc === 1) c.i64lt_s(); else c.i64ge_s();
+  c.extend_u().i64(29n).i64shl().i64add().f64reinterpret_i64().set(L_F64D);
   const done = c.block();
   const cold = c.block();
   // f64-normal s (NaN fails both compares): its 24-bit grid is the top of its f64 significand
   c.get(L_F64C).f64abs().f64c(DBL_MIN).f64ge().get(L_F64C).f64abs().f64c(Number.MAX_VALUE).f64le().and().eqz().hint(false).br_if(cold);
   // off the grid (the truncation removed something): L_F64D is the result
-  if (rc === 3) c.get(L_F64D).get(L_F64C).f64ne();
-  else c.get(L_I64A).wrap().i32(0x1fffffff).and();
+  c.get(L_I64A).wrap().i32(0x1fffffff).and();
   c.hint(true).br_if(done);
-  // on the grid: s itself when it is exact (toward zero: L_F64D is already s), else the interpreter
-  if (rc !== 3) c.get(L_F64C).set(L_F64D);
+  // on the grid: s itself when it is exact, else the interpreter
+  c.get(L_F64C).set(L_F64D);
   pushExactOnGrid(E, op); c.br_if(done);
   c.end(); // cold
   if (rc !== 1) c.get(L_F64C).set(L_F64D).get(L_F64C).f64c(0).f64eq().br_if(done); // a zero as computed: +0 for x - x
+  E.stepExit(insn);
+  c.end(); // done
+  c.get(L_F64D);
+}
+/**
+ * roundDirected24 toward zero (the f64 result s in L_F64C, the operands in L_F64A / L_F64B): the truncation of s to 24
+ * significant bits, from its bit pattern (L_I64A) with integer tests only — the rounding mode of code that truncates
+ * (its FISTPs, or everything: a whole map-loading computation of a game). s off the 24-bit grid with an f64 exponent
+ * field in [2, 0x7fe]: the exact result lies strictly between the same two grid points (f64 rounding never crosses a
+ * grid point without landing on it), so masking the 29 low significand bits is the x87 result. On the grid: s itself
+ * when exact (pushExactOnGridAt), a zero as computed; anything else (denormal, infinite, NaN, the lowest normal
+ * binade — kept out so that no rounding near the denormals needs a thought) leaves the region for the interpreter. A
+ * product or quotient of two narrow operands (`narrowOps`, see narrow) is masked without the grid test: on the grid it
+ * is exact (product: at most 48 significant bits; quotient: an f64 quotient of 24-bit significands on the grid is
+ * exact), so only the exponent test remains.
+ * The previous code computed the mask in a vector register (its constant rebuilt for each instruction) and tested the
+ * range with f64 compares on |s| (two constants loaded, three compares, results combined as integers), and the on-grid
+ * exactness with f32 round trips of both operands: ~25 host instructions per arithmetic instruction where an off-grid
+ * result now takes ~11 (tools/x87loop-bench.mjs, docs/jit-code-shape.md "BFME1's map load").
+ */
+function roundTowardZero24(E, op, insn, narrowOps) {
+  const c = E.c;
+  c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+  const done = c.block();
+  const cold = c.block();
+  // the exponent field of s outside [2, 0x7fe] (zero, denormal, the lowest normal binade, infinite, NaN)
+  const pushOutOfRange = () => { c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00200000).sub().i32(0x7fd00000).ge_u(); };
+  const pushMasked = () => { c.get(L_I64A).i64(~0x1fffffffn).i64and().f64reinterpret_i64().set(L_F64D); };
+  const exactProduct = narrowOps && (op === 1 || op === 6 || op === 7);
+  if (exactProduct) {
+    pushOutOfRange(); c.hint(false).br_if(cold);
+    pushMasked();
+    c.br(done);
+  } else {
+    // (not hinted: results on the grid — exact sums of values with few significant bits, zeros — are common in some
+    // code, and an out-of-line path costs them a jump there and back)
+    const grid = c.block();
+    c.get(L_I64A).wrap().i32(0x1fffffff).and().eqz().br_if(grid);
+    pushOutOfRange(); c.hint(false).br_if(cold);
+    pushMasked();
+    c.br(done);
+    c.end(); // grid: s on the 24-bit grid — a zero as computed (+0 for x - x), or itself when in range and exact
+    c.get(L_F64C).set(L_F64D);
+    c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done);
+    pushOutOfRange(); c.hint(false).br_if(cold);
+    pushExactOnGridAt(E, op); c.hint(true).br_if(done);
+  }
+  c.end(); // cold
+  if (exactProduct) c.get(L_F64C).set(L_F64D).get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // a zero as computed
   E.stepExit(insn);
   c.end(); // done
   c.get(L_F64D);
@@ -239,7 +295,13 @@ function roundPCExcludesNaN(E) { return E.fpcStatic !== null && (E.fpcStatic & 0
  */
 function pushF32Directed(E, rc) {
   const c = E.c;
-  c.get(L_F64A).f32demote().tee(L_F32C);
+  // 24-bit precision: a value that is already a float (every result in the float range) is stored as is — one compare
+  // instead of the magnitudes' (two absolute values, their constants loaded in the hot path); under 53 / 64-bit
+  // precision the values rarely are, the compare would only add to the store
+  const pc24 = E.fpcStatic !== null && (E.fpcStatic & 0x300) === 0;
+  let exact = null;
+  if (pc24) { c.get(L_F64A).f32demote().tee(L_F32C).f64promote().get(L_F64A).f64eq(); exact = c.hint(true).if_(T.f32); c.get(L_F32C); c.else_(); c.get(L_F32C); }
+  else c.get(L_F64A).f32demote().tee(L_F32C);
   if (rc === 3) c.f64promote().f64abs().get(L_F64A).f64abs().f64gt();
   else if (rc === 1) c.f64promote().get(L_F64A).f64gt();
   else c.f64promote().get(L_F64A).f64lt();
@@ -260,6 +322,7 @@ function pushF32Directed(E, rc) {
   }
   c.f32reinterpret_i32();
   c.else_(); c.get(L_F32C); c.end(); void adj;
+  if (exact !== null) c.end(); // (exact)
 }
 /**
  * i32 1 when the f64 result in L_F64C (on the 24-bit grid) of operation `op` on L_F64A / L_F64B is exact: both
@@ -271,14 +334,38 @@ function pushExactOnGrid(E, op) {
   isFloat(L_F64A);
   if (op !== 8) { isFloat(L_F64B); c.and(); }
   if (op === 1 || op >= 6) return;
-  // TwoSum: s = x + y computed; err = (x - (s - (s - x))) + (y - (s - x)) with y = B (add), -B (sub), and x = B, y = -A (subr)
+  pushTwoSumExact(E, op); c.and();
+}
+/**
+ * i32 1 when the sum / difference s (L_F64C) of operation `op` (0 add, 4 sub, 5 subr) on L_F64A / L_F64B is exact:
+ * TwoSum's error term is zero (exact whatever the operands, barring overflow).
+ */
+function pushTwoSumExact(E, op) {
+  const c = E.c;
+  // TwoSum: s = x + y computed; err = (x - (s - (s - x))) + (y - (s - x)) with y = B (add), -B (sub), and x = B, y = -A
+  // (subr) — for a negated y written err = (x - (s - bb)) - (|y| + bb): the same values (negation is exact and rounding to
+  // nearest symmetric) without the sign flip's constant
   const [x, y, negY] = op === 0 ? [L_F64A, L_F64B, false] : op === 4 ? [L_F64A, L_F64B, true] : [L_F64B, L_F64A, true];
-  const pushY = () => { c.get(y); if (negY) c.f64neg(); };
   // bb = s - x (in L_F64B's place would clobber an operand: computed twice instead)
   const pushBB = () => { c.get(L_F64C).get(x).f64sub(); };
   c.get(x); c.get(L_F64C); pushBB(); c.f64sub(); c.f64sub(); // x - (s - bb)
-  pushY(); pushBB(); c.f64sub(); // y - bb
-  c.f64add().f64c(0).f64eq().and();
+  c.get(y); pushBB(); if (negY) c.f64add().f64sub(); else c.f64sub().f64add(); // - (|y| + bb) / + (y - bb)
+  c.f64c(0).f64eq();
+}
+/**
+ * i32 1 when the f64 result s (L_F64C, on the 24-bit grid, its exponent field at least 2) of operation `op` on L_F64A /
+ * L_F64B is exact: a sum or difference whose TwoSum error term is zero; a product, quotient or square root of operands
+ * whose significands fit in 24 bits (their 29 low bits clear) — the product has at most 48 significant bits, and an f64
+ * quotient or square root of such operands that lands on the 24-bit grid is the exact value (otherwise it lies at
+ * least 2^-49 relative away from any 24-bit value, farther than the f64 rounding can move it). s above the lowest
+ * normal binade: the exact value is normal, so no underflow can have rounded it onto the grid.
+ */
+function pushExactOnGridAt(E, op) {
+  const c = E.c;
+  if (op === 0 || op === 4 || op === 5) { pushTwoSumExact(E, op); return; }
+  c.get(L_F64A).i64reinterpret_f64();
+  if (op !== 8) c.get(L_F64B).i64reinterpret_f64().i64or();
+  c.wrap().i32(0x1fffffff).and().eqz();
 }
 /** f64 on the stack rounded to an integer by rounding control 0 nearest, 1 down, 2 up, 3 toward zero */
 const ROUND_BY_RC = [(c) => c.f64nearest(), (c) => c.f64floor(), (c) => c.f64ceil(), (c) => c.f64trunc()];
@@ -317,22 +404,35 @@ function loadIntOperand(E, o) {
 }
 function setCC(E, c0, c2, c3) { // constants 0/1
   const c = E.c;
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or().i32store16(ST.FPU_SW);
+  E.swGet(); c.i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or(); E.swSet();
 }
-/** compare F64A (a) with F64B (b): sets C0/C2/C3 */
-function compareCC(E) {
+/**
+ * After an unordered compare (cold): IE as the interpreter raises it (X87.compare) — FCOM / FICOM / FTST / FCOMI for any
+ * NaN operand, the unordered FUCOM family (`quiet`) only for a signaling one (an f64 NaN with its quiet bit clear).
+ */
+function unorderedIE(E, quiet) {
+  const c = E.c, QUIET = 0x0008000000000000n;
+  if (!quiet) { raise(E, 0); return; }
+  c.get(L_F64A).get(L_F64A).f64ne().get(L_F64A).i64reinterpret_f64().i64(QUIET).i64and().i64eqz().and();
+  c.get(L_F64B).get(L_F64B).f64ne().get(L_F64B).i64reinterpret_f64().i64(QUIET).i64and().i64eqz().and().or();
+  const ie = c.if_(); raise(E, 0); c.end(); void ie;
+}
+/** compare F64A (a) with F64B (b): sets C0/C2/C3 (and IE when unordered, see unorderedIE) */
+function compareCC(E, quiet = false) {
   const c = E.c;
   // bits = a<b ? C0 : a==b ? C3 : (a>b ? 0 : C0|C2|C3)
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and();
+  E.swGet(); c.i32(~SW_CC).and();
   c.get(L_F64A).get(L_F64B).f64lt(); const i1 = c.if_(T.i32); c.i32(C0); c.else_();
   c.get(L_F64A).get(L_F64B).f64eq(); const i2 = c.if_(T.i32); c.i32(C3); c.else_();
   c.get(L_F64A).get(L_F64B).f64gt(); const i3 = c.if_(T.i32); c.i32(0); c.else_(); c.i32(C0 | C2 | C3); c.end(); void i3;
   c.end(); void i2;
   c.end(); void i1;
-  c.or().i32store16(ST.FPU_SW);
+  c.or(); E.swSet();
+  // unordered (C2 is set by nothing else here)
+  E.swGet(); c.i32(C2).and(); const u = c.hint(false).if_(); unorderedIE(E, quiet); c.end(); void u;
 }
-/** compare F64A with F64B into EFLAGS (FCOMI family) */
-function compareEflags(E) {
+/** compare F64A with F64B into EFLAGS (FCOMI family; IE when unordered, see unorderedIE) */
+function compareEflags(E, quiet = false) {
   const c = E.c;
   E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
   c.get(L_EFLAGS).i32(~(F.ZF | F.PF | F.CF | F.OF | F.SF | F.AF)).and();
@@ -342,6 +442,7 @@ function compareEflags(E) {
   c.end(); void i2;
   c.end(); void i1;
   c.or().set(L_EFLAGS);
+  c.get(L_EFLAGS).i32(F.PF).and(); const u = c.hint(false).if_(); unorderedIE(E, quiet); c.end(); void u; // (PF: unordered)
 }
 
 // ---- loads / stores
@@ -352,16 +453,17 @@ HANDLERS[OP.FLD] = (E, insn) => {
   // 24-bit mode: a float operand (or a register held as one) stays a float
   if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.ea(o); E.c.f32load(0, 0); push(E); storeST32Stack(E, 0); return; }
   if (o.t === OT.ST && isF32(E, o.r)) { E.c.get(L_S32 + slot(E, o.r)); push(E); storeST32Stack(E, 0); return; }
+  const nw = o.t === OT.ST ? narrow(E, o.r) : o.t === OT.MEM && o.size === 4; // (see narrow)
   loadFpOperand(E, o); // value on the WASM stack survives the rotation of the locals
-  push(E); storeSTStack(E, 0);
+  push(E); storeSTStack(E, 0); setNarrow(E, 0, nw);
 };
-HANDLERS[OP.FILD] = (E, insn) => { loadIntOperand(E, insn.ops[0]); push(E); storeSTStack(E, 0); };
+HANDLERS[OP.FILD] = (E, insn) => { loadIntOperand(E, insn.ops[0]); push(E); storeSTStack(E, 0); setNarrow(E, 0, insn.ops[0].size === 2); };
 /** scratch locals of the inline m80 conversions (fpmath-f80.js) */
 const F80_LOAD = { m: L_I64A, se: L_T4, e: L_T5, r: L_F64A }, F80_STORE = { b: L_I64A, exp: L_T4, sg: L_T5 };
 function fstore(E, insn, doPop) {
   const c = E.c; const o = insn.ops[0];
   if (o.t === OT.ST) {
-    if (isF32(E, 0)) { c.get(L_S32 + slot(E, 0)); storeST32Stack(E, o.r); } else { loadST(E, 0); storeSTStack(E, o.r); }
+    if (isF32(E, 0)) { c.get(L_S32 + slot(E, 0)); storeST32Stack(E, o.r); } else { const nw = narrow(E, 0); loadST(E, 0); storeSTStack(E, o.r); setNarrow(E, o.r, nw); }
     if (doPop) pop(E);
     return;
   }
@@ -422,7 +524,7 @@ HANDLERS[OP.FISTTP] = (E, insn) => istore(E, insn, true, true);
 // ---- constants
 const constant = (v) => (E, insn) => {
   if (f32Mode(E) && !f32Off('const', insn.addr) && Math.fround(v) === v) { E.c.f32c(v); push(E); storeST32Stack(E, 0); return; }
-  E.c.f64c(v); push(E); storeSTStack(E, 0);
+  E.c.f64c(v); push(E); storeSTStack(E, 0); setNarrow(E, 0, Math.fround(v) === v);
 };
 HANDLERS[OP.FLD1] = constant(1); HANDLERS[OP.FLDZ] = constant(0); HANDLERS[OP.FLDPI] = constant(Math.PI);
 HANDLERS[OP.FLDL2E] = constant(Math.LOG2E); HANDLERS[OP.FLDL2T] = constant(Math.log2(10)); HANDLERS[OP.FLDLG2] = constant(Math.LOG10E * Math.LN2); HANDLERS[OP.FLDLN2] = constant(Math.LN2);
@@ -611,12 +713,15 @@ function arith(op, doPop, integer) {
         return;
       }
     }
+    let narrowOps;
     if (insn.ops.length === 2 && insn.ops[0].t === OT.ST && insn.ops[1].t === OT.ST) {
       dst = insn.ops[0].r;
+      narrowOps = narrow(E, dst) && narrow(E, insn.ops[1].r);
       loadST(E, dst); c.set(L_F64A);
       loadST(E, insn.ops[1].r); c.set(L_F64B);
     } else {
       const o = insn.ops[insn.ops.length - 1];
+      narrowOps = narrow(E, 0) && (o.t === OT.ST ? narrow(E, o.r) : o.t === OT.MEM && (integer ? o.size === 2 : o.size === 4));
       loadST(E, 0); c.set(L_F64A);
       if (o.t === OT.ST) loadST(E, o.r);
       else if (integer) loadIntOperand(E, o);
@@ -634,11 +739,16 @@ function arith(op, doPop, integer) {
     if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
       const noNaN = roundPCExcludesNaN(E);
-      roundPC(E, op, insn); c.set(L_F64C);
+      roundPC(E, op, insn, narrowOps); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
       if (!noNaN) { c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_(); nanF64(E, null); c.end(); void nan; }
+      // (ZE / OE of an infinite result at 53 / 64-bit precision are not raised here, unlike X87.arith: testing for it on
+      // this hot path cost +15 % on a 53-bit sums-of-squares loop, tools/x87loop-bench.mjs; docs/jit-code-shape.md)
       c.get(L_F64C); storeSTStack(E, dst);
+      // (24-bit precision with a static directed rounding: every result that stays in the region is on its 24-bit grid,
+      // or a zero)
+      if (noNaN) setNarrow(E, dst, true);
     }
     if (doPop) pop(E);
   };
@@ -651,7 +761,7 @@ HANDLERS[OP.FDIV] = arith(6, false, false); HANDLERS[OP.FDIVP] = arith(6, true, 
 HANDLERS[OP.FDIVR] = arith(7, false, false); HANDLERS[OP.FDIVRP] = arith(7, true, false); HANDLERS[OP.FIDIVR] = arith(7, false, true);
 
 // ---- comparisons
-function cmp(pops, integer, eflags) {
+function cmp(pops, integer, eflags, quiet = false) {
   return (E, insn) => {
     const c = E.c;
     loadST(E, 0); c.set(L_F64A);
@@ -663,15 +773,15 @@ function cmp(pops, integer, eflags) {
       else if (!loadFpOperand(E, o)) { E.fallback(insn); return; }
     }
     c.set(L_F64B);
-    if (eflags) compareEflags(E); else compareCC(E);
+    if (eflags) compareEflags(E, quiet); else compareCC(E, quiet);
     for (let i = 0; i < pops; i++) pop(E);
   };
 }
 HANDLERS[OP.FCOM] = cmp(0, false, false); HANDLERS[OP.FCOMP] = cmp(1, false, false); HANDLERS[OP.FCOMPP] = cmp(2, false, false);
-HANDLERS[OP.FUCOM] = cmp(0, false, false); HANDLERS[OP.FUCOMP] = cmp(1, false, false); HANDLERS[OP.FUCOMPP] = cmp(2, false, false);
+HANDLERS[OP.FUCOM] = cmp(0, false, false, true); HANDLERS[OP.FUCOMP] = cmp(1, false, false, true); HANDLERS[OP.FUCOMPP] = cmp(2, false, false, true);
 HANDLERS[OP.FICOM] = cmp(0, true, false); HANDLERS[OP.FICOMP] = cmp(1, true, false);
 HANDLERS[OP.FCOMI] = cmp(0, false, true); HANDLERS[OP.FCOMIP] = cmp(1, false, true);
-HANDLERS[OP.FUCOMI] = cmp(0, false, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, true);
+HANDLERS[OP.FUCOMI] = cmp(0, false, true, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, true, true);
 /**
  * FXAM: the class of ST(0) in C3 C2 C0 (empty 101, NaN 001, infinity 011, zero 100, denormal 110, normal 010) and its
  * sign in C1 — every condition code, C1 included (code tests the sign through FNSTSW). Empty: from the block's static
@@ -680,7 +790,7 @@ HANDLERS[OP.FUCOMI] = cmp(0, false, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, 
 HANDLERS[OP.FXAM] = (E) => {
   const c = E.c;
   loadST(E, 0); c.set(L_F64A);
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~SW_CC).and();
+  E.swGet(); c.i32(~SW_CC).and();
   c.get(L_F64A).i64reinterpret_f64().i64(63).i64shr_u().wrap().i32(9).shl().or(); // C1 = sign (NaN and -0 included)
   const bit = E.stTagBit(0);
   const known = (E.stValid & 1) || (E.tagSet & bit) ? 0 : (E.tagClr & bit) ? 1 : -1; // (0 valid, 1 empty, -1 run time)
@@ -692,13 +802,13 @@ HANDLERS[OP.FXAM] = (E) => {
   c.get(L_F64A).f64abs().f64c(2.2250738585072014e-308).f64lt(); const i4 = c.if_(T.i32); c.i32(C2 | C3); c.else_(); c.i32(C2); c.end();
   c.end(); c.end(); c.end(); c.end();
   void ie; void i1; void i2; void i3; void i4;
-  c.or().i32store16(ST.FPU_SW);
+  c.or(); E.swSet();
 };
 HANDLERS[OP.FTST] = (E) => { const c = E.c; loadST(E, 0); c.set(L_F64A); c.f64c(0).set(L_F64B); compareCC(E); };
 
 // ---- unary / stack
-HANDLERS[OP.FCHS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32neg(); storeST32Stack(E, 0); } else { loadST(E, 0); E.c.f64neg(); storeSTStack(E, 0); } };
-HANDLERS[OP.FABS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32abs(); storeST32Stack(E, 0); } else { loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); } };
+HANDLERS[OP.FCHS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32neg(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0); loadST(E, 0); E.c.f64neg(); storeSTStack(E, 0); setNarrow(E, 0, nw); } };
+HANDLERS[OP.FABS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32abs(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0); loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); setNarrow(E, 0, nw); } };
 // FSQRT of a negative operand is an invalid arithmetic operand (IE, the indefinite); a NaN operand
 // follows the x87 rule (nanOutcome, D034) like the transcendentals; sqrt(-0) = -0
 HANDLERS[OP.FSQRT] = (E, insn) => {
@@ -725,16 +835,16 @@ HANDLERS[OP.FRNDINT] = (E) => { loadST(E, 0); roundRC(E, false); storeSTStack(E,
  */
 function inlineTrans() { return !globalThis.ORTHROS_NO_X87_INLINE; }
 /** status word |= bits (C2 for an out-of-range trig argument) */
-function orSW(E, bits) { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(bits).or().i32store16(ST.FPU_SW); }
+function orSW(E, bits) { E.swGet(); E.c.i32(bits).or(); E.swSet(); }
 /**
  * Raise the exception `bit` (0 IE ... 5 PE) like X87.raise: the flag is set; ES (the summary bit)
  * only when the exception is unmasked in the control word (mask bit `bit` clear), SDM 8.1.3.
  */
 function raise(E, bit) {
   const c = E.c;
-  c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(1 << bit).or();
+  E.swGet(); c.i32(1 << bit).or();
   c.get(L_STATE).i32load16u(ST.FPU_CW).i32(bit).shr_u().i32(1).and().i32(1).xor().i32(7).shl().or();
-  c.i32store16(ST.FPU_SW);
+  E.swSet();
 }
 function indefinite(c) { c.i64(INDEFINITE_BITS).f64reinterpret_i64(); }
 /**
@@ -916,6 +1026,8 @@ HANDLERS[OP.FXCH] = (E, insn) => {
     c.get(L_S32 + ka).get(L_S32 + kb).set(L_S32 + ka).set(L_S32 + kb);
     E.f32Mask = (E.f32Mask & ~((1 << ka) | (1 << kb))) | (ma << kb) | (mb << ka);
   }
+  const na = (E.g24Mask >> ka) & 1, nb = (E.g24Mask >> kb) & 1; // (narrow values move with them too)
+  E.g24Mask = (E.g24Mask & ~((1 << ka) | (1 << kb))) | (na << kb) | (nb << ka);
   tagValid(E, 0); tagValid(E, i);
 };
 HANDLERS[OP.FFREE] = (E, insn) => {
@@ -934,10 +1046,10 @@ HANDLERS[OP.FLDCW] = (E, insn) => {
 HANDLERS[OP.FNSTCW] = (E, insn) => { const c = E.c; E.eaTo(insn.ops[0]); c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32store16(0); E.smcCheck(insn, 2); };
 HANDLERS[OP.FNSTSW] = (E, insn) => {
   const c = E.c; const o = insn.ops[0];
-  c.get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
+  E.swGet(); c.i32(~0x3800).and(); E.pushStPhys(0); c.i32(11).shl().or().set(L_TV);
   if (o.t === OT.REG) E.storeRegFrom(2, 0, L_TV); else { E.eaTo(o); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); }
 };
-HANDLERS[OP.FNCLEX] = (E) => { const c = E.c; c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x80ff).and().i32store16(ST.FPU_SW); };
+HANDLERS[OP.FNCLEX] = (E) => { E.swGet(); E.c.i32(~0x80ff).and(); E.swSet(); };
 HANDLERS[OP.FCMOVCC] = (E, insn) => {
   const c = E.c; const i = insn.ops[0].r;
   E.applyTags(); // the tag update below is conditional (run time)
@@ -947,7 +1059,7 @@ HANDLERS[OP.FCMOVCC] = (E, insn) => {
 };
 function fninit(E) {
   const c = E.c;
-  c.get(L_STATE).i32(0x037f).i32store16(ST.FPU_CW); c.get(L_STATE).i32(0).i32store16(ST.FPU_SW);
+  c.get(L_STATE).i32(0x037f).i32store16(ST.FPU_CW); c.i32(0); E.swSet();
   E.x87SetTop0(); // register contents are kept (as the interpreter does), only re-based on TOP = 0
   c.i32(0).set(L_FTW); E.stValid = 0;
   c.i32(0x300).set(L_FPC);
@@ -971,7 +1083,7 @@ const DBL_MIN = 2.2250738585072014e-308;
 function storeEnv(E) {
   const c = E.c;
   c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_CW).i32(0xffff0000 | 0).or().i32store(0, 0);
-  c.get(L_TA).get(L_STATE).i32load16u(ST.FPU_SW).i32(~0x3800 & 0xffff).and().get(L_TOP).i32(11).shl().or().i32(0xffff0000 | 0).or().i32store(4, 0);
+  c.get(L_TA); E.swGet(); c.i32(~0x3800 & 0xffff).and().get(L_TOP).i32(11).shl().or().i32(0xffff0000 | 0).or().i32store(4, 0);
   // tags in ST order (tag of ST(i) at bits 2i), then rotated left by 2 TOP into physical order
   for (let i = 0; i < 8; i++) {
     c.get(L_ST0 + i).f64abs().set(L_F64A);
@@ -999,7 +1111,7 @@ function loadEnv(E, keepRegs) {
   c.get(L_T4).i32(0xf00).and().set(L_FPC);
   E.fpcStatic = null;
   c.get(L_TA).i32load16u(4).set(L_TV);
-  c.get(L_STATE).get(L_TV).i32(~0x3800 & 0xffff).and().i32store16(ST.FPU_SW);
+  c.get(L_TV).i32(~0x3800 & 0xffff).and(); E.swSet();
   c.get(L_TV).i32(11).shr_u().i32(7).and();
   if (keepRegs) {
     // a new TOP re-bases the locals on the physical registers (written back, reloaded); the usual restore of
@@ -1079,7 +1191,7 @@ for (const name of C1_CLEARING) {
   const op = OP[name], h = HANDLERS[op];
   if (op === undefined || !h) continue;
   HANDLERS[op] = (E, insn, b) => {
-    if (!E.c1Clear) { E.c.get(L_STATE).get(L_STATE).i32load16u(ST.FPU_SW).i32(~(1 << 9)).and().i32store16(ST.FPU_SW); E.c1Clear = true; }
+    if (!E.c1Clear) { E.swGet(); E.c.i32(~(1 << 9)).and(); E.swSet(); E.c1Clear = true; }
     h(E, insn, b);
   };
 }
