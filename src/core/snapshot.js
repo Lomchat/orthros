@@ -12,6 +12,7 @@
 // restored Vm's own, checked to be there. State kept in a closure and not handed over is invisible to the walk:
 // tests/snapshot-lint.test.js looks for it in the sources.
 import { GUEST_SPACE, PAGE_SIZE, JIT_HASH_BASE, THUNK_BASE, JIT_ALT_BASE, SMC_MAP_BASE, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../cpu/memory.js';
+import { ModuleBuilder, Code, T } from '../cpu/jit/wasm.js';
 
 export const SNAPSHOT_FORMAT = 1;
 
@@ -22,6 +23,8 @@ export const JIT_RANGES = [[JIT_HASH_BASE, THUNK_BASE], [JIT_ALT_BASE, SMC_MAP_B
 export class SnapshotError extends Error {
   constructor(message, path = '') { super(path ? `${message} at ${path}` : message); this.path = path; }
 }
+/** A snapshot that does not apply to this machine's start (another profile, registry, format): refused before any change. */
+export class SnapshotStale extends SnapshotError {}
 
 const TYPED = { Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array };
 
@@ -97,8 +100,9 @@ export class SnapRegistry {
  * @property {object} proto
  * @property {Set<string>} skip fields not in a snapshot (transient: caches, host links)
  * @property {(obj: any, vm: any) => void} [init] after a restore, rebuilds the skipped fields of `obj`
- * @property {(obj: any, vm: any) => void} [resume] once the restored machine is whole: hands the new host what `obj`
- *   had shown the captured one (a display mode, a cursor...)
+ * @property {(obj: any, vm: any) => (void|Promise<void>)} [resume] once the restored machine is whole: hands the new
+ *   host what `obj` had shown the captured one (a display mode, a cursor, fonts...); a promise: what the host waits for
+ *   before running the machine (vm.restoring)
  * @property {(obj: any) => any} [save] the object as plain data (no object references), instead of its fields
  * @property {(data: any, vm: any) => any} [load] the object from what save() returned
  */
@@ -274,7 +278,12 @@ export function decodeGraph(graph, reg, vm) {
   return {
     root: out[graph.root],
     reimpose() { fill(true); for (const [e, o] of inits) e.init(o, vm); },
-    resume() { for (const o of out) { const e = o !== null && typeof o === 'object' ? reg.byProto.get(Object.getPrototypeOf(o)) : null; if (e?.resume) e.resume(o, vm); } },
+    /** The resume hooks run; what they return that the host waits for (promises) before the machine goes on. */
+    resume() {
+      const waits = [];
+      for (const o of out) { const e = o !== null && typeof o === 'object' ? reg.byProto.get(Object.getPrototypeOf(o)) : null; const r = e?.resume?.(o, vm); if (r?.then) waits.push(r); }
+      return waits;
+    },
   };
 }
 
@@ -284,21 +293,56 @@ const inJit = (a) => JIT_RANGES.some(([s, e]) => a >= s && a < e);
 
 /** The guest memory's pages holding anything (zero pages implied), the JIT's tables left out. */
 export function capturePages(mem) {
-  const u8 = mem.u8, w = new BigUint64Array(u8.buffer, 0, Math.min(u8.byteLength, GUEST_SPACE) >>> 3);
+  const u8 = mem.u8, n = Math.min(u8.byteLength, GUEST_SPACE) / PAGE_SIZE;
   const index = [], data = [];
-  const perPage = PAGE_SIZE >>> 3;
-  for (let p = 0, n = w.length / perPage; p < n; p++) {
+  const next = pageScanner(mem);
+  for (let p = next(0, n); p < n; p = next(p + 1, n)) {
     const a = p * PAGE_SIZE;
     if (inJit(a)) continue;
-    const s = p * perPage;
-    let i = s; const e = s + perPage;
-    while (i < e && w[i] === 0n) i++;
-    if (i === e) continue;
     index.push(p); data.push(u8.subarray(a, a + PAGE_SIZE));
   }
   const all = new Uint8Array(index.length * PAGE_SIZE);
   data.forEach((d, i) => all.set(d, i * PAGE_SIZE));
   return { pageSize: PAGE_SIZE, index: Uint32Array.from(index), data: all };
+}
+
+// snapshot: cache, a scanner per memory
+const scanners = new WeakMap();
+/**
+ * next(p, end): the first page in [p, end) holding a nonzero byte, else end. WebAssembly SIMD on the memory itself (2 GB
+ * scanned in a fraction of the 850 ms a JavaScript loop takes: most of it never touched, the same zero page read again);
+ * the JavaScript loop where it is not available.
+ */
+function pageScanner(mem) {
+  let next = mem.memory ? scanners.get(mem.memory) : undefined;
+  if (next) return next;
+  try {
+    const shared = typeof SharedArrayBuffer !== 'undefined' && mem.memory.buffer instanceof SharedArrayBuffer;
+    const m = new ModuleBuilder(), c = new Code(), P = 0, END = 1, A = 2, E = 3, ACC = 4;
+    m.importMemory('env', 'memory', 1, shared ? 65536 : undefined, shared);
+    const found = c.block(), pages = c.loop();
+    c.get(P).get(END).ge_u().br_if(found);
+    c.get(P).i32(12).shl().tee(A).i32(PAGE_SIZE).add().set(E);
+    c.v128const(new Uint8Array(16)).set(ACC);
+    const words = c.loop(); // (64 bytes a turn)
+    c.get(ACC).get(A).v128load(0).v128or().get(A).v128load(16).v128or().get(A).v128load(32).v128or().get(A).v128load(48).v128or().set(ACC);
+    c.get(A).i32(64).add().tee(A).get(E).lt_u().br_if(words);
+    c.end();
+    c.get(ACC).v128anytrue().br_if(found);
+    c.get(P).i32(1).add().set(P).br(pages);
+    c.end(); c.end(); void found;
+    c.get(P);
+    m.exportFunc('next', m.func([T.i32, T.i32], [T.i32], [T.i32, T.i32, T.v128], c, 'next'));
+    next = new WebAssembly.Instance(new WebAssembly.Module(m.build()), { env: { memory: mem.memory } }).exports.next;
+  } catch {
+    const w = new Int32Array(mem.u8.buffer, 0, Math.min(mem.u8.byteLength, GUEST_SPACE) >>> 2), per = PAGE_SIZE >>> 2;
+    next = (p, end) => {
+      for (; p < end; p++) { let i = p * per; const e = i + per; while (i < e && (w[i] | w[i + 1] | w[i + 2] | w[i + 3]) === 0) i += 4; if (i < e) return p; }
+      return end;
+    };
+  }
+  if (mem.memory) scanners.set(mem.memory, next);
+  return next;
 }
 
 /** Write `pages` into `mem` (whose other pages, the JIT's tables aside, must be zero: a fresh Vm's). */

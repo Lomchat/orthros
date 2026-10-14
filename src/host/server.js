@@ -27,6 +27,7 @@ import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
+import { snapshotSourcesHash } from './snapshot-sources.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
@@ -524,6 +525,8 @@ export function createServer(opts = {}) {
         return;
       }
       if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
+      // (the sources snapshots depend on, docs/snapshot.md: a page keeps its snapshot of a game only while they are the same)
+      if (p === '/api/snapshot-sources') return send(res, 200, JSON.stringify(snapshotSourcesHash(ROOT)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         let body = '', size = 0;

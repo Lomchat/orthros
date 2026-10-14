@@ -26,8 +26,9 @@ import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
 import { LearnedHeat } from '../../cpu/jit/heat.js';
-import { captureVm, restoreVm } from '../../core/vm-snapshot.js';
-import { encodeSnapshot, decodeSnapshot } from '../../core/snapshot.js';
+import { captureVm, restoreVm, notQuiet, persistentChanged } from '../../core/vm-snapshot.js';
+import { encodeSnapshot, decodeSnapshot, SnapshotStale } from '../../core/snapshot.js';
+import { SnapshotWatch } from '../snapshot-watch.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -51,7 +52,8 @@ let learnedHeat = null, heatModules = 0, heatSink = null;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
-let snapshotWanted = null; // (the page asked for a snapshot of the machine: taken at the next quiet point — docs/snapshot.md)
+let snapshotWanted = null; // (the page asked for a snapshot of the machine: { id, at }, taken at the next quiet point — docs/snapshot.md)
+let snapshotWatch = null, autoSeen = null; // (this session's automatic snapshot, once the game settled: snapshot-watch.js; what it saw of the profile)
 /** shared first-launch profile (profile-seed.js): files offered by the server to an empty profile; a first session's watch */
 let seedWatch = null, seedSink = null, profileSeeded = 0;
 const channel = new MessageChannel();
@@ -114,13 +116,23 @@ async function flushProfile(force = false) {
   if (!force && now - lastFlush < 2000) return;
   for (const s of fileStores) s.flush(force); // (the game file block stores' index: a sync point every 2 s, at once when forced)
   if (!opfsDir || !profile) { lastFlush = now; return; }
-  const dirty = [...profile.files].filter(([, f]) => f.mtime > lastFlush);
+  const changes = profile.changes ? [...profile.changes] : []; profile.changes?.clear();
+  const dirty = new Map([...profile.files].filter(([, f]) => f.mtime > lastFlush));
+  for (const k of changes) if (profile.files.has(k)) dirty.set(k, profile.files.get(k)); // (renamed: same date)
   lastFlush = now;
+  const dirOf = async (parts, create) => { let dir = opfsDir; for (let i = 0; i < parts.length; i++) dir = await dir.getDirectoryHandle(profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i], { create }); return dir; };
+  // (folders made, files removed or renamed away: the browser's copy follows — a folder the game made and a snapshot
+  // saw must be there at the next start, a deleted save must not come back)
+  for (const k of changes) {
+    if (profile.files.has(k)) continue;
+    const parts = k.split('/');
+    try { if (profile.dirs.has(k)) await dirOf(parts, true); else await (await dirOf(parts.slice(0, -1), false)).removeEntry(profile.names.get(k) ?? parts[parts.length - 1]); }
+    catch { /* already so */ }
+  }
   for (const [key, f] of dirty) {
     try {
       const parts = key.split('/');
-      let dir = opfsDir;
-      for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(profile.names.get(parts.slice(0, parts.indexOf(d) + 1).join('/')) ?? d, { create: true });
+      const dir = await dirOf(parts.slice(0, -1), true);
       const fh = await dir.getFileHandle(profile.names.get(key) ?? parts[parts.length - 1], { create: true });
       const w = await fh.createWritable();
       await w.write(f.data.subarray(0, f.len));
@@ -260,6 +272,9 @@ async function start(m) {
   // wrote, as the server learned them, are put in place: the game skips its first-launch work; else this session's are
   // learned. Manifest compat flag "profileSeed": false, ?profileseed=0: off)
   if (m.opts.profileSeed && manifest.profileSeed !== false && profile.files.size === 0) await seedProfile(m.opts.gameLanguage ?? '', m.opts.session ?? '');
+  // (the profile is the player's, kept across sessions: what the game sees of it from here is recorded — a snapshot
+  // applies only to a profile as its machine saw it, docs/snapshot.md)
+  profile.seen = new Map(); profile.changes = new Set();
   vfs.mount('C:\\Users\\Player', profile);
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
@@ -321,12 +336,24 @@ async function start(m) {
   }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
   // (a snapshot of this game's machine, docs/snapshot.md: it goes on from there instead of starting)
+  let restored = false;
   if (m.snapshot) {
     const t0 = performance.now();
-    try { restoreVm(vm, decodeSnapshot(new Uint8Array(m.snapshot))); }
-    catch (e) { post({ type: 'snapshot-failed', error: String(e.stack || e) }); return; }
-    log('loader', `restored from a snapshot of ${(m.snapshot.byteLength / 1048576).toFixed(1)} MiB in ${(performance.now() - t0).toFixed(0)} ms`);
-  } else try {
+    let snap = null;
+    try { snap = decodeSnapshot(new Uint8Array(m.snapshot)); } catch (e) { log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message }); }
+    if (snap) try { restoreVm(vm, snap); restored = true; }
+    catch (e) {
+      // (one that does not apply — the profile or settings changed since — was refused before any change: the usual start;
+      // a restore that failed midway leaves a machine in pieces: the page starts again without it)
+      if (!(e instanceof SnapshotStale)) { post({ type: 'snapshot-failed', error: String(e.stack || e) }); return; }
+      log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message });
+    }
+    // (the host's side catching up first — the game's fonts decoded again by this page's browser — at most 5 s)
+    if (restored && vm.restoring) await Promise.race([vm.restoring, new Promise((r) => setTimeout(r, 5000))]);
+    if (restored) log('loader', `restored from a snapshot of ${(m.snapshot.byteLength / 1048576).toFixed(1)} MiB in ${(performance.now() - t0).toFixed(0)} ms`);
+  }
+  if (!restored && m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch();
+  if (!restored) try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
@@ -486,16 +513,43 @@ function heatStep(now, budgetMs) {
   }
   if (kind) { const dt = performance.now() - t0; if (dt > h.max[kind]) h.max[kind] = dt; }
 }
-/** The page asked for a snapshot (docs/snapshot.md): taken now — between two runs — and sent as bytes, or every field it refused. */
-function takeSnapshot() {
-  const id = snapshotWanted; snapshotWanted = null;
-  const t0 = performance.now(), problems = [];
+/**
+ * The page asked for a snapshot (docs/snapshot.md): taken at the first quiet point — between two runs, no file read in
+ * flight — and sent as bytes, or every field it refused; none within 15 s, what kept the machine busy.
+ */
+function snapshotStep() {
+  const why = vm.readsInFlight ? `${vm.readsInFlight} file read(s) in flight` : notQuiet(vm);
+  if (!why) { takeSnapshot(snapshotWanted.id); snapshotWanted = null; return; }
+  if (performance.now() - snapshotWanted.at < 15000) return;
+  post({ type: 'snapshot', id: snapshotWanted.id, error: `no quiet point in 15 s (last: ${why})` }); snapshotWanted = null;
+}
+/** A snapshot now (a quiet point), to the page; `id` 'auto': this session's automatic one (refused at the first problem). */
+function takeSnapshot(id) {
+  const t0 = performance.now(), problems = id === 'auto' ? null : [];
   try {
     const s = captureVm(vm, { manifest: manifestName, at: vm.clock.now() }, problems);
-    if (problems.length) { post({ type: 'snapshot', id, problems }); return; }
-    const bytes = encodeSnapshot(s);
-    post({ type: 'snapshot', id, bytes: bytes.buffer, ms: performance.now() - t0, objects: s.graph.objects.length, pages: s.pages.index.length }, [bytes.buffer]);
-  } catch (e) { post({ type: 'snapshot', id, error: String(e.message ?? e) }); }
+    if (problems?.length) { post({ type: 'snapshot', id, problems }); return false; }
+    if (id === 'auto') autoSeen = s.meta.persistent;
+    const t1 = performance.now(), bytes = encodeSnapshot(s);
+    post({ type: 'snapshot', id, bytes: bytes.buffer, ms: performance.now() - t0, timing: { ...s.timing, encodeMs: performance.now() - t1 }, objects: s.graph.objects.length, pages: s.pages.index.length }, [bytes.buffer]);
+    return true;
+  } catch (e) { post({ type: 'snapshot', id, error: String(e.message ?? e) }); return false; }
+}
+/** The automatic snapshot (snapshot-watch.js): tried once the game settled, at a quiet point; kept once the session went on. */
+function snapshotAutoStep() {
+  const w = snapshotWatch, now = performance.now(), frames = host.framesPresented;
+  if (w.ripe(now, frames)) {
+    // (kept only with the profile as its machine saw it: the next start would refuse it otherwise)
+    const changed = persistentChanged(vm, autoSeen);
+    if (!changed) { w.kept(); post({ type: 'snapshot-keep' }); snapshotWatch = null; return; }
+    log('loader', `snapshot dropped, taken again later: ${changed}`); post({ type: 'snapshot-drop' }); w.dropped(now, frames);
+    if (w.done) snapshotWatch = null;
+    return;
+  }
+  if (!w.due(now, frames, vm.vfs.opens) || vm.readsInFlight || notQuiet(vm)) return;
+  const ok = takeSnapshot('auto');
+  w.tried(ok, performance.now(), host.framesPresented);
+  if (w.done) snapshotWatch = null;
 }
 function pump() {
   if (!running || stopped) return;
@@ -537,7 +591,8 @@ function pump() {
   // DirectSound exists; until the worklet uses it (no audio output yet, ?audiomix=worker) the ring path below goes on
   if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
   acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.host);
-  if (snapshotWanted !== null && !vm.readsInFlight) takeSnapshot();
+  if (snapshotWanted) snapshotStep();
+  else if (snapshotWatch) snapshotAutoStep();
   host.audioHook ??= () => { const p = acct.enter(ACCT.audio); host.renderAudio(vm); acct.leave(p); };
   host.idleWork ??= heatSlack; // (a nested wait of the guest: the heat harvest's steps, see heatSlack)
   const now = acct.stamp();
@@ -766,7 +821,7 @@ self.onmessage = (e) => {
   else if (m.type === 'threads') { if (vm) log('hang', `threads on request:\n${vm.threadsReport()}\n${threadDetails()}`); } // (debugging: harness input `threads`)
   else if (m.type === 'burst') { if (vm) vm.startApiBurst(vm.proc.threads.find((t) => t.id === m.tid) ?? vm.proc.threads[0], m.n ?? 3000, !!m.noGfx); } // (debugging: --log apiburst, harness input burst:N[,tid])
   else if (m.type === 'stop') stop('stop requested');
-  else if (m.type === 'snapshot') { snapshotWanted = m.id ?? 0; if (running && !stopped) schedulePump(0); } // (docs/snapshot.md)
+  else if (m.type === 'snapshot') { snapshotWanted = { id: m.id ?? 0, at: performance.now() }; if (running && !stopped) schedulePump(0); } // (docs/snapshot.md)
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; d.countFrames = m.count ?? 0; log('gfx', `d3d-webgl: ${m.count ? 'GL call count' : 'capture'} requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0, m.wasm ?? 0) : 'no vm' });
   else if (m.type === 'jitlist') { if (vm) log('jitlist', jitList(parseInt(m.eip, 16), m.ops !== false)); } // (debugging: harness input jitlist:<hex eip>)

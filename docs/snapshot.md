@@ -56,8 +56,14 @@ subtly wrong. So:
 - **API thunks.** The registry is restored by name: which DLL function each slot holds, the handlers the restored Vm's
   own. Handlers a module defines as the game reaches them (COM methods) are defined again by name (`ApiRegistry.lazyDefs`).
 - **Open files** are opened again by their path, at the same position (`FileHandle`). In-memory mounts (files the game
-  wrote outside its profile) are kept with their contents; the others are the host's (the game's files, the profile
-  folder: see stage 2).
+  wrote outside its profile) are kept with their contents; the others are the host's: the game's files, and the
+  player's profile — a **persistent mount** (`MemBackend.seen`), see below.
+- **The host's side** of the machine's objects is not in a snapshot: what a backend keeps on a Direct3D resource (the
+  WebGL backend's texture record, the recorder's mirror record — its shader and declaration ids live in its own
+  `WeakMap`), the sound mixer's voice table and slots, the recorder's marks on state tables. A restored resource is one
+  no backend has seen: created and uploaded whole at its first use. What the host showed comes back through `resume`
+  hooks (`snapshotClass(cls, { resume })`, run once the machine is whole): the window manager sets the display mode,
+  title and cursor again.
 - **CPU states** are views on the guest memory (rebuilt by address); a PE image's file bytes, only read while it was
   mapped, are not kept.
 - **Time** goes on from where it was: a virtual clock's state, a real clock's origin moved. Everything the guest can
@@ -82,14 +88,45 @@ Compressed sizes (study of 2026-10-14): Vice City ~15 MB, BFME2 ~39 MB at zstd -
 BFME2 spends its first 130 s of game time in its first-launch benchmark; its 3D menu was not reached there with the
 harness's startup scenario (18 draws per frame where the scenario waits for 150): the skirmish comparison is still to do.
 
+## In the page: a player's own snapshot (stages 1b and 2)
+
+A session that did not start from a snapshot takes one **once the game settled**: no file opened for 4 s while it went
+on presenting frames (its loading over, a screen waiting for the player), at the next quiet point
+(`src/host/snapshot-watch.js`, the worker's `snapshotAutoStep`). A capture refused — a movie playing, a kind of state not
+supported yet — is tried again after the next settled stretch, four times at most. The page keeps it in OPFS
+(`orthros-snapshot-<manifest>/machine.bin`, then `machine.json` with its key, written last; the data manager counts it
+with the game's cache and clears it with it) once the session went on for 20 s more **with the profile still as the
+snapshot's machine saw it** — the next start would refuse it otherwise: a game often writes its settings as it reaches
+its menu, just after a screen where it settled first; that snapshot is dropped and another taken at the next settled
+stretch. The capture stalls the game once, for 0.6 s in Vice City (most of it reading the 2 GB of guest memory for its
+pages: a WebAssembly SIMD scan, bounded by the page faults of the untouched pages). The next start of the game goes on
+from it when:
+
+1. **its key is the same** (the page): Orthros' **state-owning sources** — the modules the emulator worker loads,
+   followed from `src/core/vm.js` and `src/host/web/worker.js` through their imports, but for the JIT's translator and
+   the GPU backends, which a restore rebuilds anyway (`/api/snapshot-sources`, `src/host/snapshot-sources.js`: a
+   deployed change to the JIT or the WebGL backend keeps snapshots, one to an API module or the machine does not;
+   `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state) — the game version's manifest and
+   file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...);
+2. **its machine's start is this session's** (the worker, before anything changes: `snapshotStale`): the registry the
+   process starts with (seeded from the manifest, the player's settings), and every path of the player's profile the
+   game had seen — its existence and size (`stat`), its listing (`readdir`), its bytes (`open`) — is as it saw it. The
+   profile is never the snapshot's: it stays the player's, kept by the browser; saves made after the snapshot in a
+   folder the game had not listed leave it valid, a changed setting or a new save where the game had listed its saves
+   gives a usual start (and a new snapshot, the old one deleted).
+
+A restore that fails midway (not refused beforehand) leaves a machine in pieces: the page deletes the snapshot and
+starts again. `?snapshot=0`: none; headless runs: none unless `?snapshot=auto`. `window.orthros.snapshot()` takes one
+now, `saveSnapshot()` keeps it as the automatic one.
+
+`tools/with-browser-slot.sh node tools/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data_games`: a
+session with automatic snapshots until it kept one, then the page opened again (`--manual --at <s>`: asked for at that
+time).
+
+| game | snapshot | taken in (graph, pages, encoding) | restored in |
+|---|---|---|---|
+| Vice City, menu | 28.5 MiB | 0.6 s (20, 580, 36 ms) — 3.2 s with the earlier JavaScript page scan | 67-90 ms |
+
 ## Next stages
 
-- **Stage 1b, in the page**: the host side rebuilt after a restore — WebGL resources from the Direct3D state (the
-  context-loss path), render targets drawn once (read back before the capture), the audio worklet's voices, the
-  cursor, the display mode.
-- **Stage 2, per player**: a snapshot kept in the browser (OPFS) at the menu, used at the next launch when its key
-  matches, else the usual start. The key covers whatever the restored machine would see differently: the snapshot
-  format, the sources of the state-owning code (the walk's classes: a deployed change to them invalidates, the JIT's do
-  not), the game version's file tree, the game language, the display mode, and the profile files and registry keys the
-  game read before the capture (a player who changed a setting gets a fresh start).
 - **Stage 3, shared**: the server makes the snapshot itself in Node from the shared first-launch profile, for new players.

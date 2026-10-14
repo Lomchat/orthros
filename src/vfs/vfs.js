@@ -13,6 +13,7 @@ export class Vfs {
   constructor() {
     /** @type {Array<{prefix: string, backend: any}>} sorted longest-prefix first */
     this.mounts = [];
+    this.opens = 0; // (files opened: the host watches the game's loading — a snapshot is taken once it settles)
     /** @type {Map<string, {type: number, label: string, fs: string, serial: number}>} drives besides C: (letter -> Windows drive type, volume) */
     this.drives = new Map();
   }
@@ -46,7 +47,7 @@ export class Vfs {
 
   stat(winPath) { const r = this.resolve(winPath); return r ? r.backend.stat(r.rel) : null; }
   readdir(winPath) { const r = this.resolve(winPath); return r ? r.backend.readdir(r.rel) : null; }
-  open(winPath, opts = {}) { const r = this.resolve(winPath); return r ? r.backend.open(r.rel, opts) : null; }
+  open(winPath, opts = {}) { this.opens++; const r = this.resolve(winPath); return r ? r.backend.open(r.rel, opts) : null; }
   mkdir(winPath) { const r = this.resolve(winPath); return r ? r.backend.mkdir(r.rel) : false; }
   unlink(winPath) { const r = this.resolve(winPath); return r ? r.backend.unlink(r.rel) : false; }
   rename(from, to) {
@@ -104,6 +105,9 @@ export function normalizeWin(p, cwd = 'C:\\') {
   return drive + '\\' + parts.join('\\');
 }
 
+/** What a machine saw of a path of a persistent mount (MemBackend.seen): whether it is there, its listing, its bytes. */
+export const SEEN = Object.freeze({ STAT: 1, LIST: 2, DATA: 4 });
+
 /** In-memory backend (writable). */
 export class MemBackend {
   constructor() {
@@ -112,16 +116,27 @@ export class MemBackend {
     /** @type {Set<string>} lowercase dir paths */
     this.dirs = new Set(['']);
     this.names = new Map(); // lowercase -> original name path
+    // A persistent mount (the player's profile: the host keeps it across sessions, the machine does not own it) records
+    // what the machine saw of each path (SEEN bits): a snapshot goes on only from a profile as its machine saw it
+    // (seenFingerprint, docs/snapshot.md). null: not recorded.
+    /** @type {Map<string, number>|null} */
+    this.seen = null;
+    // Entries made, removed or renamed since a mirror last took them (a mirror of the backend replays them: the profile's
+    // copy in the browser's storage, which file writes alone would leave with empty folders lost, deleted files back).
+    /** @type {Set<string>|null} */
+    this.changes = null;
   }
   key(rel) { return rel.toLowerCase(); }
+  saw(k, bit) { if (this.seen) this.seen.set(k, (this.seen.get(k) ?? 0) | bit); return k; }
   stat(rel) {
-    const k = this.key(rel);
+    const k = this.saw(this.key(rel), SEEN.STAT);
     if (this.dirs.has(k)) return { size: 0, isDir: true, mtime: 0 };
     const f = this.files.get(k);
     return f ? { size: f.len, isDir: false, mtime: f.mtime } : null;
   }
-  readdir(rel) {
-    const k = this.key(rel);
+  readdir(rel) { return this.listing(this.saw(this.key(rel), SEEN.LIST)); }
+  /** The entries of directory `k` (a lowercase path), or null. */
+  listing(k) {
     if (!this.dirs.has(k)) return null;
     const out = [];
     const prefix = k ? k + '/' : '';
@@ -130,7 +145,7 @@ export class MemBackend {
     return out;
   }
   open(rel, opts = {}) {
-    const k = this.key(rel);
+    const k = this.saw(this.key(rel), SEEN.DATA);
     let f = this.files.get(k);
     if (!f) {
       if (!opts.create) return null;
@@ -139,21 +154,24 @@ export class MemBackend {
       f = { data: new Uint8Array(0), len: 0, mtime: Date.now() };
       this.files.set(k, f);
       this.names.set(k, rel.split('/').pop());
+      this.changes?.add(k);
     } else if (opts.truncate) { f.len = 0; }
     return new MemFile(f);
   }
   mkdir(rel) {
-    const k = this.key(rel);
+    const k = this.saw(this.key(rel), SEEN.STAT);
     const parent = k.includes('/') ? k.slice(0, k.lastIndexOf('/')) : '';
     if (!this.dirs.has(parent) || this.dirs.has(k) || this.files.has(k)) return false;
-    this.dirs.add(k); this.names.set(k, rel.split('/').pop());
+    this.dirs.add(k); this.names.set(k, rel.split('/').pop()); this.changes?.add(k);
     return true;
   }
-  unlink(rel) { return this.files.delete(this.key(rel)); }
+  unlink(rel) { const k = this.saw(this.key(rel), SEEN.DATA), r = this.files.delete(k); if (r) this.changes?.add(k); return r; }
   rename(from, to) {
+    this.saw(this.key(from), SEEN.DATA); this.saw(this.key(to), SEEN.DATA);
     const f = this.files.get(this.key(from));
     if (!f) return false;
     this.files.delete(this.key(from)); this.files.set(this.key(to), f); this.names.set(this.key(to), to.split('/').pop());
+    this.changes?.add(this.key(from)); this.changes?.add(this.key(to));
     return true;
   }
 }
@@ -180,4 +198,28 @@ class MemFile {
   }
   truncate(len) { this.f.len = Math.min(len, this.f.len); if (len > this.f.len) { this.write(this.f.len, new Uint8Array(len - this.f.len)); } }
   close() {}
+}
+
+/**
+ * What `backend` holds now at the paths in `seen` (lowercase path -> SEEN bits), as far as those bits go: kind, size,
+ * listing (names and sizes), bytes (a hash). Equal fingerprints: a machine that saw those paths sees them alike now.
+ * Modification times are left out (a profile loaded from the browser's storage gets new ones each session).
+ */
+export function seenFingerprint(backend, seen) {
+  const out = {};
+  for (const k of [...seen.keys()].sort()) {
+    const bits = seen.get(k);
+    let v;
+    if (backend.dirs.has(k)) v = bits & SEEN.LIST ? 'd:' + (backend.listing(k) ?? []).map((e) => `${e.name.toLowerCase()}${e.isDir ? '/' : ':' + e.size}`).sort().join('|') : 'd';
+    else { const f = backend.files.get(k); v = !f ? '-' : bits & SEEN.DATA ? `f:${f.len}:${hashBytes(f.data.subarray(0, f.len))}` : `f:${f.len}`; }
+    out[k] = [bits, v];
+  }
+  return out;
+}
+
+/** A 64-bit hash of `b` (two 32-bit FNV-style lanes): change detection, not security. */
+export function hashBytes(b) {
+  let h1 = 0x811c9dc5, h2 = 0x9747b28c ^ b.length;
+  for (let i = 0; i < b.length; i++) { h1 = Math.imul(h1 ^ b[i], 0x01000193); h2 = Math.imul(h2 ^ b[i], 0x5bd1e995); h2 ^= h2 >>> 15; }
+  return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }

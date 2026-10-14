@@ -46,3 +46,20 @@ test('every module variable that could hold machine state is handed to snapshots
   }
   assert.deepEqual(found, [], `\n${found.join('\n')}\n(docs/snapshot.md: hand it over with vm.snap.known(...) or annotate // snapshot: <why>)`);
 });
+
+test('modules that register snapshot state are among the sources a snapshot depends on', async () => {
+  // (src/host/snapshot-sources.js: a change to a module left out of the hash keeps snapshots valid — it must own no state)
+  const { snapshotSourceFiles } = await import('../src/host/snapshot-sources.js');
+  const sources = new Set(snapshotSourceFiles(ROOT)), out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${e.name}`;
+      if (e.isDirectory()) { if (e.name !== 'ports') walk(rel); continue; }
+      if (!e.name.endsWith('.js') || sources.has(rel) || rel === 'src/core/snapshot.js') continue;
+      if (/\bsnapshotClass\(|\bsnap(Known|Class)\(vm,|\bsnap\.(known|cls|knowGraph)\(/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8'))) out.push(rel);
+    }
+  };
+  walk('src');
+  assert.ok(sources.has('src/win32/kernel32.js') && sources.has('src/core/vm-snapshot.js') && !sources.has('src/cpu/jit/translate.js'), 'the closure is followed');
+  assert.deepEqual(out, [], 'modules outside the snapshot sources (src/host/snapshot-sources.js) registering state');
+});

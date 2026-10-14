@@ -1,6 +1,8 @@
 // Browser-only profile and cache operations. Nothing here sends game files to the server.
 const PROFILE_PREFIX = 'orthros-';
 const CACHE_PREFIX = 'orthros-files-';
+// (a game's snapshot of its machine, docs/snapshot.md: regenerable like the cache, counted and cleared with it)
+export const SNAPSHOT_PREFIX = 'orthros-snapshot-';
 const ARCHIVE_FORMAT = 'orthros-profile';
 const MAX_FILES = 10000;
 const MAX_RAW = 128 * 1024 * 1024;
@@ -32,11 +34,11 @@ export async function scanStorage() {
   const games = new Map(), asides = [];
   for await (const [name, handle] of root.entries()) {
     if (handle.kind !== 'directory') continue;
-    if (name.startsWith(CACHE_PREFIX)) {
-      const game = name.slice(CACHE_PREFIX.length);
+    if (name.startsWith(CACHE_PREFIX) || name.startsWith(SNAPSHOT_PREFIX)) {
+      const game = name.slice((name.startsWith(CACHE_PREFIX) ? CACHE_PREFIX : SNAPSHOT_PREFIX).length);
       const row = games.get(game) ?? { game, profile: 0, cache: 0, files: 0, locked: 0 };
       const size = await dirBytes(handle);
-      row.cache = size.bytes; row.locked += size.locked; games.set(game, row);
+      row.cache += size.bytes; row.locked += size.locked; games.set(game, row);
     } else if (name.startsWith(PROFILE_PREFIX)) {
       const game = name.slice(PROFILE_PREFIX.length);
       const size = await dirBytes(handle);
@@ -163,6 +165,7 @@ export async function removeCache(game, state) {
   if (state?.manifest === game && ['running', 'loading', 'starting'].includes(state.status))
     throw new Error('Quitte ce jeu avant de vider son cache.');
   const root = await navigator.storage.getDirectory();
+  await root.removeEntry(SNAPSHOT_PREFIX + game, { recursive: true }).catch(() => {}); // (often none)
   await root.removeEntry(CACHE_PREFIX + game, { recursive: true });
 }
 export async function removeProfile(game, state) {

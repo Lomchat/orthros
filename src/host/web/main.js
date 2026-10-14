@@ -8,6 +8,7 @@ import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 import { PointerInput, winButton, cursorView } from './pointer.js';
+import { SNAPSHOT_PREFIX } from './data-store.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -115,6 +116,7 @@ async function start(name, language = null) {
   if (state.status !== 'menu') return;
   state.status = 'loading';
   try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
+  const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   if (manifest.launchUrl) { location.href = manifest.launchUrl; return; } // (a browser port: its own page, docs/browser-ports.md)
   const options = manifest.languages ?? [];
@@ -141,8 +143,14 @@ async function start(name, language = null) {
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
   const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
-  // (?snapshot=1: the machine restored from this browser's snapshot of the game, docs/snapshot.md)
-  const snapshot = params.get('snapshot') === '1' ? await loadSnapshot(name) : null;
+  // (this browser's snapshot of the game, docs/snapshot.md: the machine goes on from it)
+  let snapshot = null;
+  const sources = await sourcesReq;
+  if (sources?.hash) {
+    state.snapshotKey = await snapshotKey(sources.hash, name, manifest, tree, opts);
+    snapshot = await loadSnapshot(name, state.snapshotKey);
+    opts.snapshotAuto = true; // (the worker takes one unless it restored this one)
+  }
   if (snapshot) log('loader', `snapshot of ${(snapshot.byteLength / 1048576).toFixed(1)} MiB found: the game goes on from it`);
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, snapshot }, snapshot ? [snapshot] : []);
   setupInput();
@@ -171,31 +179,68 @@ addEventListener('resize', fit);
 document.addEventListener('fullscreenchange', fit);
 
 /**
- * Snapshots of the game's machine (docs/snapshot.md): window.orthros.snapshot() asks the worker for one (taken at its
- * next quiet point: { bytes, objects, pages, ms } or the fields it refused); saveSnapshot() keeps it in this browser's
- * OPFS (orthros-snapshots/<manifest>.bin), which ?snapshot=1 restores at the next start.
+ * Snapshots of the game's machine (docs/snapshot.md). A session that did not start from one takes one once the game
+ * settled (the worker's SnapshotWatch) and keeps it in this browser's OPFS once the session went on
+ * (orthros-snapshot-<manifest>/machine.bin, then machine.json with its key). The next start of the game goes on from it
+ * while its key is the same — Orthros' state-owning sources (/api/snapshot-sources), the game version's manifest and
+ * files, the language and the options that change the machine; the worker then checks the profile files and the registry
+ * the snapshot's machine saw. ?snapshot=0: none; headless runs: none unless ?snapshot=auto.
+ * window.orthros.snapshot() asks the worker for one now ({ bytes, objects, pages, ms } or the fields it refused);
+ * saveSnapshot() keeps it as the automatic one.
  */
+const snapshotsOn = () => params.get('snapshot') === 'auto' || (!headless && params.get('snapshot') !== '0');
 const snapshotWaits = new Map(); let snapshotSeq = 0;
 state.snapshot = () => new Promise((resolve) => { const id = ++snapshotSeq; snapshotWaits.set(id, resolve); state.worker?.postMessage({ type: 'snapshot', id }); });
 state.saveSnapshot = async () => {
   const r = await state.snapshot();
-  if (!r.bytes) return { ...r, saved: false };
-  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('orthros-snapshots', { create: true });
-  const w = await (await dir.getFileHandle(`${state.manifest}.bin`, { create: true })).createWritable();
-  await w.write(r.bytes); await w.close();
-  return { saved: true, bytes: r.bytes.byteLength, objects: r.objects, pages: r.pages, ms: r.ms };
+  if (!r.bytes || !state.snapshotKey) return { ...r, saved: false, error: r.error ?? (r.bytes ? 'snapshots are off in this session' : undefined) };
+  await storeSnapshot(state.manifest, state.snapshotKey, r.bytes);
+  return { saved: true, bytes: r.bytes.byteLength, objects: r.objects, pages: r.pages, ms: r.ms, timing: r.timing };
 };
-async function loadSnapshot(name) {
+/** The key a snapshot of game `name` is kept under (see above): a hex string. */
+async function snapshotKey(sources, name, manifest, tree, opts) {
+  const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: opts.dbg, jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off };
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest, tree, machine })));
+  return Array.from(new Uint8Array(d).subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+const snapshotDir = async (name, create = false) => (await navigator.storage.getDirectory()).getDirectoryHandle(SNAPSHOT_PREFIX + name, { create });
+/** This browser's snapshot of game `name` when it was kept under `key`: its bytes, else null. */
+async function loadSnapshot(name, key) {
   try {
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('orthros-snapshots');
-    return await (await (await dir.getFileHandle(`${name}.bin`)).getFile()).arrayBuffer();
+    const dir = await snapshotDir(name), info = JSON.parse(await (await (await dir.getFileHandle('machine.json')).getFile()).text());
+    if (info.key !== key) return null;
+    const bytes = await (await (await dir.getFileHandle('machine.bin')).getFile()).arrayBuffer();
+    return bytes.byteLength === info.bytes ? bytes : null;
   } catch { return null; }
 }
+/** Keep `bytes` as the snapshot of game `name` (its key written last: one half written is never used). */
+async function storeSnapshot(name, key, bytes) {
+  const dir = await snapshotDir(name, true);
+  await dir.removeEntry('machine.json').catch(() => {});
+  const b = await (await dir.getFileHandle('machine.bin', { create: true })).createWritable(); await b.write(bytes); await b.close();
+  const j = await (await dir.getFileHandle('machine.json', { create: true })).createWritable(); await j.write(JSON.stringify({ key, bytes: bytes.byteLength, at: new Date().toISOString() })); await j.close();
+}
+async function dropSnapshot(name) { await (await navigator.storage.getDirectory()).removeEntry(SNAPSHOT_PREFIX + name, { recursive: true }).catch(() => {}); }
 
 function onWorkerMessage(m) {
   switch (m.type) {
-    case 'snapshot': snapshotWaits.get(m.id)?.(m); snapshotWaits.delete(m.id); break;
-    case 'snapshot-failed': log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error; break;
+    case 'snapshot':
+      if (m.id !== 'auto') { snapshotWaits.get(m.id)?.(m); snapshotWaits.delete(m.id); break; }
+      if (!m.bytes) { log('loader', `automatic snapshot refused: ${m.error}`); break; }
+      state.snapshotPending = m.bytes; // (kept once the session went on: snapshot-keep)
+      log('loader', `snapshot of the game taken: ${(m.bytes.byteLength / 1048576).toFixed(1)} MiB in ${m.ms.toFixed(0)} ms (${Object.entries(m.timing).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ')})`);
+      break;
+    case 'snapshot-keep': {
+      const bytes = state.snapshotPending; state.snapshotPending = null;
+      if (bytes && state.snapshotKey) storeSnapshot(state.manifest, state.snapshotKey, bytes).then(() => { state.snapshotStored = true; log('loader', 'snapshot kept: the next start of this game goes on from it'); }, (e) => log('warn', `snapshot not kept: ${e.message}`));
+      break;
+    }
+    case 'snapshot-stale': dropSnapshot(state.manifest); break; // (the worker said why in its log; a new one is taken)
+    case 'snapshot-drop': state.snapshotPending = null; break; // (the profile changed after it: taken again later)
+    case 'snapshot-failed': // (a restore that failed midway: started again without the snapshot)
+      log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error;
+      dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
+      break;
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;

@@ -14,7 +14,7 @@ import { Scheduler, WaitUnwind, PARK } from './sched.js';
 import { acct, C as ACCT } from './frame-acct.js';
 import { RealClock } from './clock.js';
 import { timerResFromDebug } from './timer-res.js';
-import { vmSnapRegistry, sealVmSnapRegistry } from './vm-snapshot.js';
+import { vmSnapRegistry, sealVmSnapRegistry, startConditions } from './vm-snapshot.js';
 import { JIT_RANGES } from './snapshot.js';
 import { registerBuiltins } from '../win32/builtins.js';
 import { Jit } from '../cpu/jit/jit.js';
@@ -196,6 +196,7 @@ export class Vm {
 
   createProcess(opts) {
     const proc = (this.proc = new Process(this, opts));
+    proc.start = startConditions(this); // (what a snapshot of this machine applies to: core/vm-snapshot.js)
     const bytes = opts.exeBytes ?? this.vfs.readFile(proc.exePath);
     if (!bytes) throw new Error(`exe not found: ${proc.exePath}`);
     if (this.jit) this.jit.setProcessConsts(proc.processHeap.handle);

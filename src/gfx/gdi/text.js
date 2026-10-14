@@ -61,12 +61,21 @@ export class TextEngine {
   constructor() {
     /** registered faces: lower-case family / full name -> { info, css } */
     this.faces = new Map();
-    this.pending = 0; // font files still being decoded by the browser
     this.version = 0; // bumped when a registered face finishes loading (realized fonts are recomputed)
+    this.attachHost();
+    this.files = new Map(); // registered path (lower case) -> families
+  }
+
+  /**
+   * The browser's side: its canvas, its font set and the faces it is decoding (not machine state: a snapshot's restore
+   * attaches the new page's, then reloadFonts gives it the registered fonts again).
+   */
+  attachHost() {
+    this.pending = 0; // font files still being decoded by the browser
+    this.onReady = null; // (called when none is left)
     this.canvas = null; this.ctx = null;
     this.hasCanvas = typeof OffscreenCanvas !== 'undefined' && typeof FontFace !== 'undefined' && !globalThis.ORTHROS_GDI_BITMAP_FONTS; // (debugging: ?dbg=ORTHROS_GDI_BITMAP_FONTS=1, the built-in bitmap font only)
     this.fontSet = this.hasCanvas ? (globalThis.fonts ?? globalThis.document?.fonts ?? null) : null;
-    this.files = new Map(); // registered path (lower case) -> families
   }
 
   /** Ready to measure: no registered font file is still loading (a thread may wait on this after AddFontResource). */
@@ -88,18 +97,31 @@ export class TextEngine {
       const entry = { info, css };
       if (!this.faces.has(info.family.toLowerCase()) || !/bold|italic/i.test(info.subfamily)) this.faces.set(info.family.toLowerCase(), entry);
       if (info.fullName) this.faces.set(info.fullName.toLowerCase(), entry);
-      if (this.hasCanvas && this.fontSet) {
-        try {
-          const desc = { weight: String(info.weight), style: info.italic ? 'italic' : 'normal' };
-          // a collection face is its own sfnt starting at `offset`: the browser needs the single font
-          const data = info.offset ? extractFace(bytes, info.offset) : bytes;
-          const face = new FontFace(info.family, data.slice().buffer, desc);
-          this.pending++;
-          face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });
-        } catch { /* unusable font data: the face falls back to a system family */ }
-      }
+      this.loadFace(info, bytes);
     }
     return infos.length;
+  }
+
+  /** The browser decodes face `info` of font file `bytes` (pending until it is done). */
+  loadFace(info, bytes) {
+    if (!this.hasCanvas || !this.fontSet) return;
+    try {
+      const desc = { weight: String(info.weight), style: info.italic ? 'italic' : 'normal' };
+      // a collection face is its own sfnt starting at `offset`: the browser needs the single font
+      const data = info.offset ? extractFace(bytes, info.offset) : bytes;
+      const face = new FontFace(info.family, data.slice().buffer, desc);
+      this.pending++;
+      face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });
+    } catch { /* unusable font data: the face falls back to a system family */ }
+  }
+
+  /**
+   * After a snapshot's restore (core/vm-snapshot.js): the registered font files, read again (`readFile(path)`), given to
+   * the new page's browser. Resolves once it decoded them (at once without a browser).
+   */
+  reloadFonts(readFile) {
+    for (const path of this.files.keys()) { const bytes = readFile(path); if (bytes) for (const info of parseFontFile(bytes)) this.loadFace(info, bytes); }
+    return this.ready ? Promise.resolve() : new Promise((resolve) => { this.onReady = () => { this.onReady = null; resolve(); }; });
   }
 
   /** Families registered through AddFontResource, for font enumeration. */
