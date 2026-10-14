@@ -406,8 +406,19 @@ function setCC(E, c0, c2, c3) { // constants 0/1
   const c = E.c;
   E.swGet(); c.i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or(); E.swSet();
 }
-/** compare F64A (a) with F64B (b): sets C0/C2/C3 */
-function compareCC(E) {
+/**
+ * After an unordered compare (cold): IE as the interpreter raises it (X87.compare) — FCOM / FICOM / FTST / FCOMI for any
+ * NaN operand, the unordered FUCOM family (`quiet`) only for a signaling one (an f64 NaN with its quiet bit clear).
+ */
+function unorderedIE(E, quiet) {
+  const c = E.c, QUIET = 0x0008000000000000n;
+  if (!quiet) { raise(E, 0); return; }
+  c.get(L_F64A).get(L_F64A).f64ne().get(L_F64A).i64reinterpret_f64().i64(QUIET).i64and().i64eqz().and();
+  c.get(L_F64B).get(L_F64B).f64ne().get(L_F64B).i64reinterpret_f64().i64(QUIET).i64and().i64eqz().and().or();
+  const ie = c.if_(); raise(E, 0); c.end(); void ie;
+}
+/** compare F64A (a) with F64B (b): sets C0/C2/C3 (and IE when unordered, see unorderedIE) */
+function compareCC(E, quiet = false) {
   const c = E.c;
   // bits = a<b ? C0 : a==b ? C3 : (a>b ? 0 : C0|C2|C3)
   E.swGet(); c.i32(~SW_CC).and();
@@ -417,9 +428,11 @@ function compareCC(E) {
   c.end(); void i2;
   c.end(); void i1;
   c.or(); E.swSet();
+  // unordered (C2 is set by nothing else here)
+  E.swGet(); c.i32(C2).and(); const u = c.hint(false).if_(); unorderedIE(E, quiet); c.end(); void u;
 }
-/** compare F64A with F64B into EFLAGS (FCOMI family) */
-function compareEflags(E) {
+/** compare F64A with F64B into EFLAGS (FCOMI family; IE when unordered, see unorderedIE) */
+function compareEflags(E, quiet = false) {
   const c = E.c;
   E.discardFlags(); // ZF/PF/CF set, OF/SF/AF cleared: nothing of the previous flags survives
   c.get(L_EFLAGS).i32(~(F.ZF | F.PF | F.CF | F.OF | F.SF | F.AF)).and();
@@ -429,6 +442,7 @@ function compareEflags(E) {
   c.end(); void i2;
   c.end(); void i1;
   c.or().set(L_EFLAGS);
+  c.get(L_EFLAGS).i32(F.PF).and(); const u = c.hint(false).if_(); unorderedIE(E, quiet); c.end(); void u; // (PF: unordered)
 }
 
 // ---- loads / stores
@@ -729,6 +743,8 @@ function arith(op, doPop, integer) {
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // interpreter runs the instruction (an exit rather than a call to the nan2 kernel, see stepExit)
       if (!noNaN) { c.get(L_F64C).get(L_F64C).f64ne(); const nan = c.hint(false).if_(); nanF64(E, null); c.end(); void nan; }
+      // (ZE / OE of an infinite result at 53 / 64-bit precision are not raised here, unlike X87.arith: testing for it on
+      // this hot path cost +15 % on a 53-bit sums-of-squares loop, tools/x87loop-bench.mjs; docs/jit-code-shape.md)
       c.get(L_F64C); storeSTStack(E, dst);
       // (24-bit precision with a static directed rounding: every result that stays in the region is on its 24-bit grid,
       // or a zero)
@@ -745,7 +761,7 @@ HANDLERS[OP.FDIV] = arith(6, false, false); HANDLERS[OP.FDIVP] = arith(6, true, 
 HANDLERS[OP.FDIVR] = arith(7, false, false); HANDLERS[OP.FDIVRP] = arith(7, true, false); HANDLERS[OP.FIDIVR] = arith(7, false, true);
 
 // ---- comparisons
-function cmp(pops, integer, eflags) {
+function cmp(pops, integer, eflags, quiet = false) {
   return (E, insn) => {
     const c = E.c;
     loadST(E, 0); c.set(L_F64A);
@@ -757,15 +773,15 @@ function cmp(pops, integer, eflags) {
       else if (!loadFpOperand(E, o)) { E.fallback(insn); return; }
     }
     c.set(L_F64B);
-    if (eflags) compareEflags(E); else compareCC(E);
+    if (eflags) compareEflags(E, quiet); else compareCC(E, quiet);
     for (let i = 0; i < pops; i++) pop(E);
   };
 }
 HANDLERS[OP.FCOM] = cmp(0, false, false); HANDLERS[OP.FCOMP] = cmp(1, false, false); HANDLERS[OP.FCOMPP] = cmp(2, false, false);
-HANDLERS[OP.FUCOM] = cmp(0, false, false); HANDLERS[OP.FUCOMP] = cmp(1, false, false); HANDLERS[OP.FUCOMPP] = cmp(2, false, false);
+HANDLERS[OP.FUCOM] = cmp(0, false, false, true); HANDLERS[OP.FUCOMP] = cmp(1, false, false, true); HANDLERS[OP.FUCOMPP] = cmp(2, false, false, true);
 HANDLERS[OP.FICOM] = cmp(0, true, false); HANDLERS[OP.FICOMP] = cmp(1, true, false);
 HANDLERS[OP.FCOMI] = cmp(0, false, true); HANDLERS[OP.FCOMIP] = cmp(1, false, true);
-HANDLERS[OP.FUCOMI] = cmp(0, false, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, true);
+HANDLERS[OP.FUCOMI] = cmp(0, false, true, true); HANDLERS[OP.FUCOMIP] = cmp(1, false, true, true);
 /**
  * FXAM: the class of ST(0) in C3 C2 C0 (empty 101, NaN 001, infinity 011, zero 100, denormal 110, normal 010) and its
  * sign in C1 — every condition code, C1 included (code tests the sign through FNSTSW). Empty: from the block's static
