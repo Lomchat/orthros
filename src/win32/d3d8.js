@@ -684,7 +684,15 @@ export function d3dCore(vm) {
     DeletePatch() { return D3DERR_INVALIDCALL; }
   }
 
-  vm.d3dCore = { Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
+  // (snapshots, core/vm-snapshot.js: a device's backend — WebGL, or the recorder of a render worker — is the host's; a
+  // restored device asks the restored machine's host for a new one, which recreates its GL objects as after a lost context)
+  // snapshot: constant
+  const deviceSnap = { skip: ['gfx'], init: (d) => { d.gfx ??= vm.host?.gfx?.createDevice?.(d) ?? null; } };
+  // (the fields a backend keeps on resources — the WebGL backend's GL texture record, the recorder's mirror record — are
+  // its own: a restored resource is one no backend has seen, which they create and upload whole at its first use)
+  // snapshot: constant
+  const resourceSnap = { skip: ['rec', 'glOwner', 'glRec', 'glGen'] };
+  vm.d3dCore = { deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
   return vm.d3dCore;
 }
 
@@ -753,7 +761,7 @@ export function registerDirect3D8(api, vm) {
       return D3D_OK;
     }
   }
-  for (const C of [Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, Direct3D]) snapClass(vm, C, { name: `d3d8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, Direct3D]) snapClass(vm, C, { name: `d3d8.${C.name}`, ...(C === Device ? d3dCore(vm).deviceSnap : C === Direct3D ? {} : d3dCore(vm).resourceSnap) });
 
   api.define('d3d8.dll', {
     Direct3DCreate8: [1, (c) => {

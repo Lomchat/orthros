@@ -288,7 +288,7 @@ export class WindowManager {
     if (d && d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; }
     if (!w || !h) { w = d?.defaultWidth ?? this.screen.width; h = d?.defaultHeight ?? this.screen.height; }
     if (d) d.setMode(w, h, bpp, fullscreen);
-    this.screen = { width: w, height: h, bpp };
+    this.screen = { width: w, height: h, bpp, fullscreen };
     this.desktop.rect = { l: 0, t: 0, r: w, b: h }; this.desktop.client = { l: 0, t: 0, r: w, b: h };
     this.vm.log('win', `display mode ${w}x${h}x${bpp}${fullscreen ? ' fullscreen' : ''}`);
     for (const x of this.zorder) this.post(x, WM.DISPLAYCHANGE, bpp, (h << 16) | w);
@@ -342,10 +342,7 @@ export class WindowManager {
   cursorVisible() { return this.showCursorCount >= 0 && this.cursorHandle !== 0 && (this.cursorHiders.size === 0 || this.appInactive === true); }
   /** The cursor's state to the host (its shape, then whether it shows); logged ('input') when it changes. */
   updateCursor() {
-    const d = this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
-    const o = h ? this.proc.handles.getAs(h, 'gdi') : null;
-    if (o?.kind === 'cursor') d?.setCursor?.(o.image ? h : 'sys' + (o.id || IDC_ARROW), o.image ?? null, o.id || IDC_ARROW);
-    d?.showCursor?.(vis);
+    const { h, vis, o } = this.cursorToHost();
     // (logged when it shows or hides, and when its shape changes while shown: a game hiding it at every WM_SETCURSOR
     // would log every mouse move otherwise)
     const key = vis ? `shown ${h}` : 'hidden';
@@ -353,6 +350,23 @@ export class WindowManager {
       this.cursorState = key;
       if (this.vm.logKinds?.has('input')) this.vm.log('input', `cursor ${vis ? 'shown' : 'hidden'} (display count ${this.showCursorCount}, ${!h ? 'no shape' : o?.image ? `image cursor ${o.file ?? h.toString(16)}` : `system cursor ${o?.id ?? '?'}`}${this.cursorHiders.size ? ', exclusive DirectInput mouse acquired' : ''})`);
     }
+  }
+  /** After a snapshot's restore (core/vm-snapshot.js): the new host shows what the captured one did — mode, title, cursor. */
+  resumeHost() {
+    const d = this.host?.display, s = this.screen;
+    if (d && (d.width !== s.width || d.height !== s.height || d.fullscreen !== (s.fullscreen ?? false))) {
+      if (d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; }
+      d.setMode(s.width, s.height, s.bpp, s.fullscreen ?? false);
+    }
+    if (this.shownTitle !== undefined) d?.setTitle?.(this.shownTitle);
+    this.cursorToHost();
+  }
+  cursorToHost() {
+    const d = this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
+    const o = h ? this.proc.handles.getAs(h, 'gdi') : null;
+    if (o?.kind === 'cursor') d?.setCursor?.(o.image ? h : 'sys' + (o.id || IDC_ARROW), o.image ?? null, o.id || IDC_ARROW);
+    d?.showCursor?.(vis);
+    return { h, vis, o };
   }
   /** The hit-test code of a screen point in window `w` (as DefWindowProc's WM_NCHITTEST answers for its frame). */
   hitTest(w, x, y) {
@@ -760,7 +774,7 @@ export class WindowManager {
         return 1;
       }
       case WM.CLOSE: this.destroyWindow(w); return 0;
-      case WM.SETTEXT: w.title = lParam ? mem.readCString(lParam) : ''; this.host?.display?.setTitle?.(w.title); return 1;
+      case WM.SETTEXT: w.title = lParam ? mem.readCString(lParam) : ''; this.shownTitle = w.title; this.host?.display?.setTitle?.(w.title); return 1;
       case WM.GETTEXT: { if (!wParam) return 0; const n = Math.min(w.title.length, wParam - 1); mem.writeCString(lParam, w.title.slice(0, n)); return n; }
       case WM.GETTEXTLENGTH: return w.title.length;
       case WM.SETCURSOR: {

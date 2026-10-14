@@ -141,7 +141,10 @@ async function start(name, language = null) {
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
   const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
-  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts });
+  // (?snapshot=1: the machine restored from this browser's snapshot of the game, docs/snapshot.md)
+  const snapshot = params.get('snapshot') === '1' ? await loadSnapshot(name) : null;
+  if (snapshot) log('loader', `snapshot of ${(snapshot.byteLength / 1048576).toFixed(1)} MiB found: the game goes on from it`);
+  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, snapshot }, snapshot ? [snapshot] : []);
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => { state.audioStats.noteError(e.message ?? String(e)); log('warn', `audio unavailable: ${e.message}`); });
   if (performance.measureUserAgentSpecificMemory) { const tick = async () => { try { const m = await performance.measureUserAgentSpecificMemory(); state.memoryMB = Math.round(m.bytes / 1048576); } catch { /* not available */ } setTimeout(tick, 5000); }; tick(); }
@@ -167,8 +170,32 @@ function fit() {
 addEventListener('resize', fit);
 document.addEventListener('fullscreenchange', fit);
 
+/**
+ * Snapshots of the game's machine (docs/snapshot.md): window.orthros.snapshot() asks the worker for one (taken at its
+ * next quiet point: { bytes, objects, pages, ms } or the fields it refused); saveSnapshot() keeps it in this browser's
+ * OPFS (orthros-snapshots/<manifest>.bin), which ?snapshot=1 restores at the next start.
+ */
+const snapshotWaits = new Map(); let snapshotSeq = 0;
+state.snapshot = () => new Promise((resolve) => { const id = ++snapshotSeq; snapshotWaits.set(id, resolve); state.worker?.postMessage({ type: 'snapshot', id }); });
+state.saveSnapshot = async () => {
+  const r = await state.snapshot();
+  if (!r.bytes) return { ...r, saved: false };
+  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('orthros-snapshots', { create: true });
+  const w = await (await dir.getFileHandle(`${state.manifest}.bin`, { create: true })).createWritable();
+  await w.write(r.bytes); await w.close();
+  return { saved: true, bytes: r.bytes.byteLength, objects: r.objects, pages: r.pages, ms: r.ms };
+};
+async function loadSnapshot(name) {
+  try {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('orthros-snapshots');
+    return await (await (await dir.getFileHandle(`${name}.bin`)).getFile()).arrayBuffer();
+  } catch { return null; }
+}
+
 function onWorkerMessage(m) {
   switch (m.type) {
+    case 'snapshot': snapshotWaits.get(m.id)?.(m); snapshotWaits.delete(m.id); break;
+    case 'snapshot-failed': log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error; break;
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;

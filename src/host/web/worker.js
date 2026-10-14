@@ -26,6 +26,8 @@ import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
 import { LearnedHeat } from '../../cpu/jit/heat.js';
+import { captureVm, restoreVm } from '../../core/vm-snapshot.js';
+import { encodeSnapshot, decodeSnapshot } from '../../core/snapshot.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -49,6 +51,7 @@ let learnedHeat = null, heatModules = 0, heatSink = null;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
+let snapshotWanted = null; // (the page asked for a snapshot of the machine: taken at the next quiet point — docs/snapshot.md)
 /** shared first-launch profile (profile-seed.js): files offered by the server to an empty profile; a first session's watch */
 let seedWatch = null, seedSink = null, profileSeeded = 0;
 const channel = new MessageChannel();
@@ -317,7 +320,13 @@ async function start(m) {
     vm.registry.setString(manifest.languageRegistryKey, 'Language', m.opts.gameLanguage === 'fr' ? 'French' : 'English');
   }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
-  try {
+  // (a snapshot of this game's machine, docs/snapshot.md: it goes on from there instead of starting)
+  if (m.snapshot) {
+    const t0 = performance.now();
+    try { restoreVm(vm, decodeSnapshot(new Uint8Array(m.snapshot))); }
+    catch (e) { post({ type: 'snapshot-failed', error: String(e.stack || e) }); return; }
+    log('loader', `restored from a snapshot of ${(m.snapshot.byteLength / 1048576).toFixed(1)} MiB in ${(performance.now() - t0).toFixed(0)} ms`);
+  } else try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
@@ -477,6 +486,17 @@ function heatStep(now, budgetMs) {
   }
   if (kind) { const dt = performance.now() - t0; if (dt > h.max[kind]) h.max[kind] = dt; }
 }
+/** The page asked for a snapshot (docs/snapshot.md): taken now — between two runs — and sent as bytes, or every field it refused. */
+function takeSnapshot() {
+  const id = snapshotWanted; snapshotWanted = null;
+  const t0 = performance.now(), problems = [];
+  try {
+    const s = captureVm(vm, { manifest: manifestName, at: vm.clock.now() }, problems);
+    if (problems.length) { post({ type: 'snapshot', id, problems }); return; }
+    const bytes = encodeSnapshot(s);
+    post({ type: 'snapshot', id, bytes: bytes.buffer, ms: performance.now() - t0, objects: s.graph.objects.length, pages: s.pages.index.length }, [bytes.buffer]);
+  } catch (e) { post({ type: 'snapshot', id, error: String(e.message ?? e) }); }
+}
 function pump() {
   if (!running || stopped) return;
   gapEnd();
@@ -517,6 +537,7 @@ function pump() {
   // DirectSound exists; until the worklet uses it (no audio output yet, ?audiomix=worker) the ring path below goes on
   if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
   acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.host);
+  if (snapshotWanted !== null && !vm.readsInFlight) takeSnapshot();
   host.audioHook ??= () => { const p = acct.enter(ACCT.audio); host.renderAudio(vm); acct.leave(p); };
   host.idleWork ??= heatSlack; // (a nested wait of the guest: the heat harvest's steps, see heatSlack)
   const now = acct.stamp();
@@ -745,6 +766,7 @@ self.onmessage = (e) => {
   else if (m.type === 'threads') { if (vm) log('hang', `threads on request:\n${vm.threadsReport()}\n${threadDetails()}`); } // (debugging: harness input `threads`)
   else if (m.type === 'burst') { if (vm) vm.startApiBurst(vm.proc.threads.find((t) => t.id === m.tid) ?? vm.proc.threads[0], m.n ?? 3000, !!m.noGfx); } // (debugging: --log apiburst, harness input burst:N[,tid])
   else if (m.type === 'stop') stop('stop requested');
+  else if (m.type === 'snapshot') { snapshotWanted = m.id ?? 0; if (running && !stopped) schedulePump(0); } // (docs/snapshot.md)
   else if (m.type === 'capture') { const d = host?.gfx?.device; if (d) { d.captureAt = d.frame + 1; d.captureDraws = !!m.draws; d.countFrames = m.count ?? 0; log('gfx', `d3d-webgl: ${m.count ? 'GL call count' : 'capture'} requested at frame ${d.frame + 1}`); } }
   else if (m.type === 'regions') post({ type: 'regions', text: vm ? regionMix(m.eips, m.list ?? 0, m.wasm ?? 0) : 'no vm' });
   else if (m.type === 'jitlist') { if (vm) log('jitlist', jitList(parseInt(m.eip, 16), m.ops !== false)); } // (debugging: harness input jitlist:<hex eip>)

@@ -97,18 +97,20 @@ export class SnapRegistry {
  * @property {object} proto
  * @property {Set<string>} skip fields not in a snapshot (transient: caches, host links)
  * @property {(obj: any, vm: any) => void} [init] after a restore, rebuilds the skipped fields of `obj`
+ * @property {(obj: any, vm: any) => void} [resume] once the restored machine is whole: hands the new host what `obj`
+ *   had shown the captured one (a display mode, a cursor...)
  * @property {(obj: any) => any} [save] the object as plain data (no object references), instead of its fields
  * @property {(data: any, vm: any) => any} [load] the object from what save() returned
  */
 const GLOBAL_CLASSES = new Map(), GLOBAL_CONSTS = new Map();
 function classEntry(cls, opts) {
-  return { name: opts.name ?? cls.name, proto: cls.prototype, skip: new Set(opts.skip ?? []), init: opts.init, save: opts.save, load: opts.load };
+  return { name: opts.name ?? cls.name, proto: cls.prototype, skip: new Set(opts.skip ?? []), init: opts.init, resume: opts.resume, save: opts.save, load: opts.load };
 }
 
 /**
  * Declare a class (defined at a module's top level) whose instances a snapshot may hold. `skip`: transient fields
- * (rebuilt by `init(obj, vm)` after a restore); `save`/`load`: the object as plain data instead (a view on the guest
- * memory, ...).
+ * (rebuilt by `init(obj, vm)` after a restore); `resume(obj, vm)`: what the host showed, shown again once the machine
+ * is restored; `save`/`load`: the object as plain data instead (a view on the guest memory, ...).
  */
 export function snapshotClass(cls, opts = {}) {
   const e = classEntry(cls, opts);
@@ -269,7 +271,11 @@ export function decodeGraph(graph, reg, vm) {
   });
   fill(false);
   for (const [e, o] of inits) e.init(o, vm);
-  return { root: out[graph.root], reimpose() { fill(true); for (const [e, o] of inits) e.init(o, vm); } };
+  return {
+    root: out[graph.root],
+    reimpose() { fill(true); for (const [e, o] of inits) e.init(o, vm); },
+    resume() { for (const o of out) { const e = o !== null && typeof o === 'object' ? reg.byProto.get(Object.getPrototypeOf(o)) : null; if (e?.resume) e.resume(o, vm); } },
+  };
 }
 
 // ---------------------------------------------------------------- the guest memory

@@ -427,7 +427,7 @@ export function registerDirect3D9(api, vm) {
       return D3D_OK;
     }
   }
-  for (const C of [Device9, Shader, VertexDecl, StateBlock, SwapChain, Query, Direct3D9]) snapClass(vm, C, { name: `d3d9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  for (const C of [Device9, Shader, VertexDecl, StateBlock, SwapChain, Query, Direct3D9]) snapClass(vm, C, { name: `d3d9.${C.name}`, ...(C === Device9 ? core.deviceSnap : {}) }); // (snapshots: core/vm-snapshot.js)
 
   api.define('d3d9.dll', {
     Direct3DCreate9: [1, (c) => {

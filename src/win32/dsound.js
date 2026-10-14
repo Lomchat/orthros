@@ -447,7 +447,9 @@ export function registerDirectSound(api, vm) {
     Initialize() { return this.initialized ? DSERR_ALLOCATED : DS_OK; }
     VerifyCertification(c) { c.out32(1, 0 /* DS_UNCERTIFIED */); return DS_OK; }
   }
-  for (const C of [Listener3D, Buffer3D, Audio, Buffer, DirectSound]) snapClass(vm, C, { name: `dsound.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  // (snapshots, core/vm-snapshot.js: the voice table shared with the page's AudioWorklet is the host's — a restored mixer
+  // gets a new one, handed over by the worker as for a new one, where its buffers take new slots)
+  for (const C of [Listener3D, Buffer3D, Audio, Buffer, DirectSound]) snapClass(vm, C, { name: `dsound.${C.name}`, ...(C === Audio ? { skip: ['voices', 'voicesF', 'freeSlots'], init: (a) => { a.voices ??= null; a.voicesF ??= null; a.freeSlots ??= []; } } : C === Buffer ? { skip: ['slot'], init: (b) => { b.slot ??= -1; } } : {}) });
 
   const create = (c, outArg, v8) => {
     const pp = c.arg(outArg);

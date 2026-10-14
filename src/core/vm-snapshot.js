@@ -57,10 +57,10 @@ snapshotClass(Com, { skip: ['vm'], init: (c, vm) => { c.vm = vm; } });
 snapshotClass(Seh, { skip: ['vm'], init: (s, vm) => { s.vm = vm; } });
 snapshotClass(Mutex);
 snapshotClass(Registry);
-snapshotClass(WindowManager);
+snapshotClass(WindowManager, { resume: (wm) => wm.resumeHost() });
 snapshotClass(GdiState);
 snapshotClass(MemBackend);
-snapshotClass(StateTable);
+snapshotClass(StateTable, { skip: ['rec', 'recId', 'recMark'], init: (t) => { t.rec ??= null; } }); // (the recorder's change marks: the host's)
 // (an open file: opened again by its path in the restored machine's file system, at the same position)
 snapshotClass(FileHandle, { skip: ['file'], init: (h, vm) => {
   h.file ??= vm.vfs.open(h.path, { write: h.write });
@@ -177,6 +177,7 @@ export function restoreVm(vm, snap) {
     vm.sched.markReady(t); t.wakeAt = Infinity; t.blockReason = null; // (the call would not block now: it runs again when scheduled)
   }
   if (vm.jit) vm.jit.setProcessConsts(vm.proc.processHeap.handle);
+  graph.resume();
   return vm;
 }
 

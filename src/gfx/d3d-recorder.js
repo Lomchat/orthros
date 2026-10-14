@@ -52,6 +52,8 @@ export class RenderLink {
     this.lastWorkEnd = 0; // ring position after the last command that may read bound resources (draws, clears...)
     this.deferred = []; // memory releases waiting for the render worker: [addr, position] pairs
     this.recorders = new Set(); this.curDev = -1; this.nextDeviceId = 1; this.nextObjId = 1;
+    // (the mirror's ids of shaders and vertex declarations: kept here, not on the guest's objects, which snapshots save)
+    this.objIds = new WeakMap();
     this.proc = null; this.failed = false;
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
     this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
@@ -299,7 +301,7 @@ export class Recorder {
   createPixelShader() { this.shaderHook = true; }
   deleteVertexShader(sh) { this.shaderHook = true; this.deleteShader(sh); }
   deletePixelShader(sh) { this.shaderHook = true; this.deleteShader(sh); }
-  deleteShader(sh) { if (sh.recId && !this.link.failed) { this.sel(); this.w.c1(OP.SHADER_DELETE, sh.recId); sh.recId = 0; } }
+  deleteShader(sh) { const id = this.link.objIds.get(sh); if (id && !this.link.failed) { this.sel(); this.w.c1(OP.SHADER_DELETE, id); this.link.objIds.delete(sh); } }
   constTouched(k, lo, hi) { const s = this.s; if (lo < s.cLo[k]) s.cLo[k] = lo; if (hi > s.cHi[k]) s.cHi[k] = hi; }
   surfaceDirty(sf, rect) {
     const rr = recOf(sf); if (!rr || rr.destroyed || this.link.failed) return;
@@ -367,18 +369,19 @@ export class Recorder {
   }
   shaderId(sh, dx9) {
     if (!sh) return 0;
-    if (sh.recId) return sh.recId;
-    const id = sh.recId = this.link.nextObjId++;
+    let id = this.link.objIds.get(sh); if (id) return id;
+    this.link.objIds.set(sh, id = this.link.nextObjId++);
     if (dx9) this.w.put(OP.SHADER9, id, sh.kind === 'ps' ? 1 : 0, sh.handle >>> 0, sh.code);
     else this.w.put(OP.SHADER8, id, sh.decl ? 0 : 1, sh.handle >>> 0, sh.usage, sh.decl ?? null, sh.code ?? null);
     return id;
   }
   /** a vertex declaration released (VertexDecl.destroy) */
-  declDestroyed(d) { if (d.recId && !this.link.failed) { this.w.c1(OP.DECL_DELETE, d.recId); d.recId = 0; } }
+  declDestroyed(d) { const id = this.link.objIds.get(d); if (id && !this.link.failed) { this.w.c1(OP.DECL_DELETE, id); this.link.objIds.delete(d); } }
   declId(d) {
     if (!d) return 0;
-    if (!d.recId) { d.recId = this.link.nextObjId++; this.w.put(OP.DECL_CREATE, d.recId, d.bytes); }
-    return d.recId;
+    let id = this.link.objIds.get(d);
+    if (!id) { this.link.objIds.set(d, id = this.link.nextObjId++); this.w.put(OP.DECL_CREATE, id, d.bytes); }
+    return id;
   }
   // ---------------------------------------------------------------- state
   /** Record every backend-visible change of the device since the last flush (before each command that reads them). */
