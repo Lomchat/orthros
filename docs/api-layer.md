@@ -179,7 +179,8 @@ expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no
 
 Where the time went (BFME2 play in Node, 60 s, base build; frame accounting per API call, the queue's drain measured
 apart, and a V8 profile): per object drawn the game calls `SetTechnique`, ~32 parameter setters, `Begin(flags 6)`,
-`BeginPass(0)`, ~3.7 x (setters, `CommitChanges`, a draw), `EndPass`, `End` — 33 objects, 38 passes per frame. Of
+`BeginPass(0)`, ~3.7 x (setters, `CommitChanges`, a draw), `EndPass`, `End` — 33 objects, 38 passes per frame in that
+profile's scene (the play phase of the later measurements draws 25-29 objects of one pass each per frame, below). Of
 `BeginPass`'s 15.7 µs (all its own: nothing queued before it), the shader states took 70 % (`bindShader` 45 %, the
 array selector picking the vertex shader 7 %), render states 18 %; the time of `SetTechnique` / `Begin` was the queue
 (above). `End` restores ~4.5 render states per object that the next `BeginPass` sets again (350 k + 366 k
@@ -233,11 +234,33 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
     - Browser, RotWK, 4 pairs: same view in two — 233 / 235 draws: api 4.4 -> 3.6; 235 / 234: 4.0 -> 3.7 —; in the
       two others the views differed (274 base / 235 branch: 4.0 -> 3.7; 234 base / 275 branch: 4.0 -> 3.5, lower with
       the heavier view); calls reaching JavaScript 5931-6265 -> 4945-5236 per frame; 29.7-29.8 fps either way.
-    - Node (`startbench --bg`), BFME2, 2 pairs (134 draws, 29 passes per frame each side): api 5.23 -> 4.70, 5.30 ->
+    - Node (`startbench --bg`), BFME2, 2 pairs (134 draws per frame each side; "29 passes per frame" was first written
+      here, a figure no log of these runs keeps — the next measurement counts 25 in Node, 25-28.5 in the browser): api 5.23 -> 4.70, 5.30 ->
       4.82 ms per frame; effect calls (`SetTechnique`, `Begin`, `BeginPass`, `EndPass`, `End`, `CommitChanges`,
       `ApplyParameterBlock`, queue drains included) 1.07 -> 0.72, 1.06 -> 0.76. RotWK, 2 pairs (234-236 draws, 23
       passes): api 3.27 -> 2.68, 2.82 -> 2.32; effect calls 0.96 -> 0.62, 0.78 -> 0.51. Guest time within ±0.4 ms.
     - The BFME2 heavy view did not occur in these runs.
+  - Re-measured 2026-10-14 after merging main (fd93b77: queued draws, light / material / FVF filter, snapshots) and the
+    stale-pointer fix below, against a fd93b77 worktree; run at the same time, launch order alternated; warm profiles
+    (copies); load average 14-30 (one spike to 87, the run it hit discarded). Passes = `BeginPass` calls per frame of the
+    play phase ([apitop] in Node, the phase's call counts in the browser); objects = `SetTechnique` per frame:
+    - Node (`startbench --bg`), BFME2, 2 pairs, 25 objects / 25 passes per frame each side: api 6.17 -> 5.48, 6.09 -> 5.60
+      ms per frame (-0.69, -0.49); effect calls (`SetTechnique`, `Begin`, `BeginPass`, `End`, `ApplyParameterBlock`,
+      queue drains included) 1.79 -> 1.19, 1.76 -> 1.29. RotWK, 4 pairs, 22 objects / 23 passes per frame each side: api
+      3.90 -> 3.23, 3.84 -> 4.40, 3.86 -> 3.32, 3.09 -> 2.71 (-0.67, +0.56, -0.54, -0.38); effect calls 1.94 -> 1.30,
+      1.95 -> 2.17, 1.91 -> 1.25, 1.65 -> 1.07. The +0.56 pair: the branch's `BeginPass` (which runs the queue: the setters
+      and draws queued before it) took 82 µs per call against 36-45 in every other run of either tree, the same guest
+      instructions per frame within 3 %; not reproduced in the two pairs run after it.
+    - Browser (`--gl-discard`), BFME2, 3 pairs, all 134-135 draws per frame: api 5.4 -> 4.5, 4.3 -> 3.9, 4.2 -> 3.8 ms per
+      frame (-0.9, -0.4, -0.4); fps 27.5 -> 28.0 (the loaded pair), 29.8 -> 30.0, 30.0 / 30.0. Objects (= passes) per
+      frame 28.5 base / 25.0 branch in the first pair, 25.1 / 25.1 in the third: the number of objects the game draws for
+      the same 134 draws varies between runs — the "25-29" seen across these documents.
+    - Browser, RotWK, 4 pairs: one on the same view (235 / 234 draws): api 3.9 -> 3.5; in the three others the base landed
+      on the heavy view (275 draws) and the branch on the light one (229-235): 3.8 -> 3.5, 4.4 -> 3.8, 4.2 -> 4.2 — not a
+      like-for-like comparison. That the branch was on the light view in all three was checked for a fidelity effect: a
+      branch run of `rotwk-fxdefer-ab.txt` (the queued technique calls switched off and on every 20 s) stayed on the heavy
+      view (274-283 draws per frame) in every on and off phase alike.
+    - Snapshot oracle (`snapshot-check.mjs bfme2 --at 180 --then 30000 --jit`): identical after 30 000 slices.
 - **Release**: an effect frees its process-heap blocks when its last reference goes (the handle block with its
   description cache and technique slots, the commit list, the restore lists of its techniques, the empty list of
   `D3DXFX_DONOTSAVESTATE`); the queue has run by then (every call handled in JavaScript drains it first). Before, every
